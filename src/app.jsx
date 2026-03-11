@@ -109,7 +109,7 @@ const SAMPLES = [
 export default function QuizAbcdApp() {
   const [questionPool, setQuestionPool] = useState(SAMPLES);
   const [quizLength,   setQuizLength]   = useState(10);
-  const [questions,    setQuestions]    = useState(() => SAMPLES.slice(0, 10)); // Default safe load
+  const [questions,    setQuestions]    = useState(() => SAMPLES.slice(0, 10)); 
   
   const [idx,          setIdx]          = useState(0);
   const [selected,     setSelected]     = useState(null);
@@ -135,25 +135,32 @@ export default function QuizAbcdApp() {
   const score    = useMemo(()=>Object.values(answers).filter(a=>a.isCorrect).length,[answers]);
   const answeredCount = Object.keys(answers).length;
 
-  // ── start / tasowanie pytań ────────────────────────────────────────────────
-  // Pozbawione zależności od questionPool, by uniknąć pętli
+  // ── start / tasowanie pytań (NAPRAWIONE) ───────────────────────────────────
   const startQuiz = useCallback((customPool, customLength) => {
-    setQuestionPool(prevPool => {
-      const p = customPool || prevPool;
-      const l = customLength || quizLength;
-      const shuffled = [...p].sort(() => 0.5 - Math.random());
-      const selected = l === "all" ? shuffled : shuffled.slice(0, l);
-      
-      setQuestions(selected.length ? selected : p);
-      setIdx(0); setSelected(null); setAnswers({});
-      setShowResult(false); setStartedAt(Date.now()); setQStartedAt(Date.now());
-      setFinishedAt(null); setActiveTab("quiz"); setChatStatus("idle"); setChatRes("");
-      
-      return p;
-    });
-  }, [quizLength]);
+    // Odczytujemy pule i dlugosc bezpiecznie
+    const poolToUse = customPool || questionPool;
+    const lengthToUse = customLength || quizLength;
+    
+    // Tasowanie
+    const shuffled = [...poolToUse].sort(() => 0.5 - Math.random());
+    const selectedQ = lengthToUse === "all" ? shuffled : shuffled.slice(0, lengthToUse);
+    
+    // Bezpieczne ustawianie stanu (płaskie wywołania, bez zagnieżdżeń)
+    if (customPool) setQuestionPool(customPool);
+    setQuestions(selectedQ.length ? selectedQ : poolToUse);
+    setIdx(0);
+    setSelected(null);
+    setAnswers({});
+    setShowResult(false);
+    setStartedAt(Date.now());
+    setQStartedAt(Date.now());
+    setFinishedAt(null);
+    setActiveTab("quiz");
+    setChatStatus("idle");
+    setChatRes("");
+  }, [questionPool, quizLength]);
 
-  // ── POBIERANIE Z BAZY - BEZ INFINITE LOOPS! ────────────────────────────────
+  // ── DB ─────────────────────────────────────────────────────────────────────
   const loadQfromDB = useCallback(async()=>{
     if (!SB_ENABLED){setQStatus("disabled");return;}
     setQStatus("loading");
@@ -162,12 +169,13 @@ export default function QuizAbcdApp() {
       if (!rows.length){setQStatus("ok");return;}
       const parsed = rows.map(rowToQ);
       setQuestionPool(parsed); 
-      // Tylko początkowe wstrzyknięcie 10 pytań, bez odpalania startQuiz
+      
+      // Inicjalizacja bez wywoływania dodatkowych hooków
       const shuffled = [...parsed].sort(() => 0.5 - Math.random());
       setQuestions(shuffled.slice(0, 10));
       setQStatus("ok");
     } catch(e){setQStatus("error");}
-  },[]); // <-- pusta tablica zależności to klucz do wyeliminowania infinite loop
+  },[]);
 
   const loadAttempts = useCallback(async()=>{
     if (!SB_ENABLED) return;
@@ -178,7 +186,6 @@ export default function QuizAbcdApp() {
     } catch(e){}
   },[]);
 
-  // To uruchamia się raz po wejściu na stronę
   useEffect(()=>{loadQfromDB();loadAttempts();},[loadQfromDB,loadAttempts]);
 
   // ── nawigacja pytań ────────────────────────────────────────────────────────
@@ -224,7 +231,7 @@ export default function QuizAbcdApp() {
       if (!parsed.length){setImportMsg("Import nieudany.");return;}
       startQuiz(parsed, quizLength);
       setImportMsg(`Zaimportowano ${parsed.length} pytań z ${file.name}.`);
-    } catch(e){setImportMsg(`Błąd: ${e.message}`);} finally{e.target.value="";}
+    } catch(err){setImportMsg(`Błąd: ${err.message}`);} finally{e.target.value="";}
   },[quizLength, startQuiz]);
 
   // ── statystyki ─────────────────────────────────────────────────────────────

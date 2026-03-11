@@ -109,7 +109,7 @@ const SAMPLES = [
 export default function QuizAbcdApp() {
   const [questionPool, setQuestionPool] = useState(SAMPLES);
   const [quizLength,   setQuizLength]   = useState(10);
-  const [questions,    setQuestions]    = useState(SAMPLES);
+  const [questions,    setQuestions]    = useState(() => SAMPLES.slice(0, 10)); // Default safe load
   
   const [idx,          setIdx]          = useState(0);
   const [selected,     setSelected]     = useState(null);
@@ -135,17 +135,25 @@ export default function QuizAbcdApp() {
   const score    = useMemo(()=>Object.values(answers).filter(a=>a.isCorrect).length,[answers]);
   const answeredCount = Object.keys(answers).length;
 
-  // ── start / tasowanie ──────────────────────────────────────────────────────
-  const startQuiz = useCallback((pool = questionPool, length = quizLength) => {
-    const shuffled = [...pool].sort(() => 0.5 - Math.random());
-    const selected = length === "all" ? shuffled : shuffled.slice(0, length);
-    setQuestions(selected.length ? selected : pool);
-    setIdx(0); setSelected(null); setAnswers({});
-    setShowResult(false); setStartedAt(Date.now()); setQStartedAt(Date.now());
-    setFinishedAt(null); setActiveTab("quiz"); setChatStatus("idle"); setChatRes("");
-  }, [questionPool, quizLength]);
+  // ── start / tasowanie pytań ────────────────────────────────────────────────
+  // Pozbawione zależności od questionPool, by uniknąć pętli
+  const startQuiz = useCallback((customPool, customLength) => {
+    setQuestionPool(prevPool => {
+      const p = customPool || prevPool;
+      const l = customLength || quizLength;
+      const shuffled = [...p].sort(() => 0.5 - Math.random());
+      const selected = l === "all" ? shuffled : shuffled.slice(0, l);
+      
+      setQuestions(selected.length ? selected : p);
+      setIdx(0); setSelected(null); setAnswers({});
+      setShowResult(false); setStartedAt(Date.now()); setQStartedAt(Date.now());
+      setFinishedAt(null); setActiveTab("quiz"); setChatStatus("idle"); setChatRes("");
+      
+      return p;
+    });
+  }, [quizLength]);
 
-  // ── DB ─────────────────────────────────────────────────────────────────────
+  // ── POBIERANIE Z BAZY - BEZ INFINITE LOOPS! ────────────────────────────────
   const loadQfromDB = useCallback(async()=>{
     if (!SB_ENABLED){setQStatus("disabled");return;}
     setQStatus("loading");
@@ -153,10 +161,13 @@ export default function QuizAbcdApp() {
       const rows=await sbSelect("quiz_questions","is_active=eq.true&order=question_no.asc&limit=5000");
       if (!rows.length){setQStatus("ok");return;}
       const parsed = rows.map(rowToQ);
-      setQuestionPool(parsed); startQuiz(parsed, quizLength);
+      setQuestionPool(parsed); 
+      // Tylko początkowe wstrzyknięcie 10 pytań, bez odpalania startQuiz
+      const shuffled = [...parsed].sort(() => 0.5 - Math.random());
+      setQuestions(shuffled.slice(0, 10));
       setQStatus("ok");
     } catch(e){setQStatus("error");}
-  },[quizLength, startQuiz]);
+  },[]); // <-- pusta tablica zależności to klucz do wyeliminowania infinite loop
 
   const loadAttempts = useCallback(async()=>{
     if (!SB_ENABLED) return;
@@ -167,6 +178,7 @@ export default function QuizAbcdApp() {
     } catch(e){}
   },[]);
 
+  // To uruchamia się raz po wejściu na stronę
   useEffect(()=>{loadQfromDB();loadAttempts();},[loadQfromDB,loadAttempts]);
 
   // ── nawigacja pytań ────────────────────────────────────────────────────────
@@ -201,6 +213,19 @@ export default function QuizAbcdApp() {
       setChatStatus('loaded');
     }, 1000);
   }, [chatStatus, current]);
+
+  // ── Naprawiony import plików ───────────────────────────────────────────────
+  const handleImport = useCallback(async(e)=>{
+    const file=e.target.files?.[0]; if (!file) return;
+    try {
+      let parsed=[];
+      if (file.name.toLowerCase().endsWith(".txt")) parsed=parseTxt(await file.text(),file.name);
+      else { const wb=XLSX.read(await file.arrayBuffer(),{type:"array"}); parsed=parseRows(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:""}),file.name); }
+      if (!parsed.length){setImportMsg("Import nieudany.");return;}
+      startQuiz(parsed, quizLength);
+      setImportMsg(`Zaimportowano ${parsed.length} pytań z ${file.name}.`);
+    } catch(e){setImportMsg(`Błąd: ${e.message}`);} finally{e.target.value="";}
+  },[quizLength, startQuiz]);
 
   // ── statystyki ─────────────────────────────────────────────────────────────
   const stats = useMemo(()=>{
@@ -244,7 +269,6 @@ export default function QuizAbcdApp() {
   const streak = useMemo(()=>{ let s=0; const c=new Date(); while(dayMap[dayKey(c.getTime())]){s++;c.setDate(c.getDate()-1);} return s; },[dayMap]);
   const plan   = useMemo(()=>buildPlan(uniq,stats.weakest),[uniq,stats.weakest]);
   const calDays= useMemo(()=>buildCalDays(calMonth),[calMonth]);
-  const chart  = [...uniq].reverse().map((a,i)=>({name:`#${i+1}`,accuracy:a.percent,mastery:a.mastery}));
 
   const tabs=[
     {id:"quiz", label:"Quiz"}, {id:"calendar", label:"Kalendarz"}, {id:"plan", label:"Plan nauki"},
@@ -254,18 +278,16 @@ export default function QuizAbcdApp() {
   // ── WIDOKI ─────────────────────────────────────────────────────────────────
   const QuizView = () => (
     <div className="flex flex-col h-full overflow-y-auto pr-2 pb-10">
-      {/* Progress Bar */}
       <div className="mb-6">
         <div className="flex justify-between text-xs font-semibold text-slate-500 tracking-wider uppercase mb-2">
           <span>Question {idx + 1} of {total}</span>
           <span>{Math.round((idx / Math.max(total, 1)) * 100)}%</span>
         </div>
         <div className="h-2 w-full bg-slate-200 rounded-full overflow-hidden">
-          <div className="h-full bg-blue-600 transition-all duration-300" style={{width:`${((idx)/total)*100}%`}} />
+          <div className="h-full bg-blue-600 transition-all duration-300" style={{width:`${((idx)/Math.max(total,1))*100}%`}} />
         </div>
       </div>
 
-      {/* Question */}
       <div className="mb-8">
         <div className="text-sm text-slate-500 font-medium mb-3 flex items-center gap-2">
           <span className="bg-slate-200 text-slate-700 px-2 py-0.5 rounded-md text-xs">{current.category || "General"}</span>
@@ -275,7 +297,6 @@ export default function QuizAbcdApp() {
         <h2 className="text-[22px] font-semibold text-slate-800 leading-snug">{current.question}</h2>
       </div>
 
-      {/* Answers */}
       <div className="space-y-3 flex-1">
         {optionKeys.map(key => {
           const isSel = selected === key;
@@ -302,7 +323,6 @@ export default function QuizAbcdApp() {
         })}
       </div>
 
-      {/* AI Box */}
       {selected && (
         <div className="mt-6 bg-slate-100 rounded-xl p-4 border border-slate-200">
            <div className="text-sm font-medium text-slate-800 mb-1">{current.correct ? (selected === current.correct ? "✓ Poprawnie." : `✗ Poprawna odpowiedź: ${current.correct}.`) : "Klucz niedostępny."}</div>
@@ -316,7 +336,6 @@ export default function QuizAbcdApp() {
         </div>
       )}
 
-      {/* Bottom Nav */}
       <div className="mt-8 pt-4 border-t border-slate-200 flex justify-between items-center shrink-0">
         <button onClick={prev} disabled={idx === 0} className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-30 transition-colors">
           <IcoLeft/> Previous
@@ -328,7 +347,6 @@ export default function QuizAbcdApp() {
     </div>
   );
 
-  // ── INNE WIDOKI (Uproszczone do układu) ────────────────────────────────────
   const ResultsView = () => (
     <div className="h-full overflow-y-auto pr-2 pb-10 space-y-6">
       <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><IcoTrophy/> Ukończono</h2>
@@ -382,7 +400,7 @@ export default function QuizAbcdApp() {
         <h3 className="font-bold text-lg text-slate-800 border-b pb-2">Baza Pytań ({questionPool.length})</h3>
         <p className="text-sm text-slate-600">{importMsg}</p>
         <button onClick={()=>fileRef.current?.click()} className="w-full flex justify-center items-center gap-2 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-medium transition-colors"><IcoUpload/> Importuj CSV / TXT</button>
-        <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls,.txt" className="hidden" onChange={e=>{/* logic handled in handler */}}/>
+        <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls,.txt" className="hidden" onChange={handleImport}/>
       </div>
 
       <div className="p-6 bg-white border border-slate-200 rounded-2xl space-y-4">
@@ -438,7 +456,7 @@ export default function QuizAbcdApp() {
       {/* 2. Main Content Area */}
       <main className="flex-1 flex overflow-hidden">
         
-        {/* Lewa Strona: Aktywny Widok (z przewijaniem wewnętrznym jeśli trzeba) */}
+        {/* Lewa Strona: Aktywny Widok */}
         <div className="flex-1 px-6 pt-6 pb-0 overflow-hidden flex flex-col">
           <div className="max-w-3xl w-full mx-auto flex-1 overflow-hidden">
             {activeTab === "quiz" && <QuizView />}
@@ -449,7 +467,7 @@ export default function QuizAbcdApp() {
           </div>
         </div>
 
-        {/* Prawa Strona: Panel Statystyk (Tylko w trybie Quiz/Results) */}
+        {/* Prawa Strona: Panel Statystyk */}
         {(activeTab === "quiz" || activeTab === "results") && (
           <aside className="hidden lg:flex w-80 bg-white border-l border-slate-200 p-6 flex-col gap-8 shrink-0 overflow-y-auto">
             
@@ -477,7 +495,7 @@ export default function QuizAbcdApp() {
                 <span>{answeredCount} / {total}</span>
               </div>
               <div className="h-2 w-full bg-slate-100 rounded-full mb-6">
-                <div className="h-full bg-slate-800 rounded-full" style={{width:`${(answeredCount/total)*100}%`}}></div>
+                <div className="h-full bg-slate-800 rounded-full transition-all duration-300" style={{width:`${(answeredCount/Math.max(total,1))*100}%`}}></div>
               </div>
 
               <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Accuracy</div>

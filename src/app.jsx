@@ -18,8 +18,16 @@ const Icon = ({ d, size = 16, className = "", strokeWidth = 1.75 }) => (
     <path d={d} />
   </svg>
 );
-const IcoBrain = ({ size = 16 }) => <Icon size={size} d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18a4 4 0 1 0 7.967-1.517 4 4 0 0 0 .556-6.588 4 4 0 0 0-2.526-5.77A3 3 0 0 0 12 5" />;
-const IcoTrophy = ({ size = 16 }) => <Icon size={size} d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6m12 5h1.5a2.5 2.5 0 0 0 0-5H18M12 12v4m-4 4h8M3 3h18v6a9 9 0 0 1-18 0V3z" />;
+
+const IcoBrain = ({ size = 16 }) => (
+  <Icon
+    size={size}
+    d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18a4 4 0 1 0 7.967-1.517 4 4 0 0 0 .556-6.588 4 4 0 0 0-2.526-5.77A3 3 0 0 0 12 5"
+  />
+);
+const IcoTrophy = ({ size = 16 }) => (
+  <Icon size={size} d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6m12 5h1.5a2.5 2.5 0 0 0 0-5H18M12 12v4m-4 4h8M3 3h18v6a9 9 0 0 1-18 0V3z" />
+);
 const IcoClock = ({ size = 16 }) => <Icon size={size} d="M12 2a10 10 0 1 1 0 20A10 10 0 0 1 12 2zm0 4v6l4 2" />;
 const IcoCalendar = ({ size = 16 }) => <Icon size={size} d="M8 2v4M16 2v4M3 8h18M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z" />;
 const IcoBook = ({ size = 16 }) => <Icon size={size} d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20M4 4.5A2.5 2.5 0 0 1 6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5z" />;
@@ -30,19 +38,22 @@ const IcoLeft = ({ size = 16 }) => <Icon size={size} d="M19 12H5M12 19l-7-7 7-7"
 const IcoRight = ({ size = 16 }) => <Icon size={size} d="M5 12h14M12 5l7 7-7 7" />;
 const IcoUpload = ({ size = 16 }) => <Icon size={size} d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" />;
 const IcoCloud = ({ size = 16 }) => <Icon size={size} d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z" />;
-const IcoTrash = ({ size = 16 }) => <Icon size={size} d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" />;
-const IcoKeyboard = ({ size = 16 }) => <Icon size={size} d="M20 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zM8 15H6v-2h2v2zm0-4H6V9h2v2zm4 4h-2v-2h2v2zm0-4h-2V9h2v2zm4 4h-2v-2h2v2zm0-4h-2V9h2v2zm4 4h-2V9h2v6z" />;
 const IcoCheck = ({ size = 16 }) => <Icon size={size} d="M20 6L9 17l-5-5" />;
 const IcoCross = ({ size = 16 }) => <Icon size={size} d="M18 6L6 18M6 6l12 12" />;
-const IcoStar = ({ size = 16 }) => <Icon size={size} d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />;
-const IcoTarget = ({ size = 16 }) => <Icon size={size} d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83M12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8z" />;
 const IcoTrending = ({ size = 16 }) => <Icon size={size} d="M3 17l6-6 4 4 7-8M14 7h6v6" />;
 const IcoBolt = ({ size = 16 }) => <Icon size={size} d="M13 2L4 14h6l-1 8 9-12h-6l1-8z" />;
+const IcoTarget = ({ size = 16 }) => <Icon size={size} d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83M12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8z" />;
 
 // ── Config & Helpers ──────────────────────────────────────────────────────────
 const SUPABASE_URL = "https://ylqloszldyzpeaikweyl.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlscWxvc3psZHl6cGVhaWt3ZXlsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMyNDg2NDUsImV4cCI6MjA4ODgyNDY0NX0.JgwZKn5_ifnoZHViOGb7aED9sZ3MnijeeI66cFhSJaQ";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlscWxvc3psZHl6cGVhaWt3ZXlsIiwicm9sZSI6ImFub24iLCJ9";
 const SB_ENABLED = SUPABASE_URL.startsWith("https://") && SUPABASE_ANON_KEY.startsWith("eyJ");
+
+const STORAGE_KEY = "quiz_abcd_attempts_v6";
+const CLOUD_SETTINGS_KEY = "quiz_abcd_cloud_settings_v2";
+const optionKeys = ["A", "B", "C", "D"];
+const diffW = { easy: 1, medium: 1.5, hard: 2 };
+const DEFAULT_MODEL = "claude-sonnet-4-5-20250929";
 
 const sbH = (prefer = "return=representation") => ({
   "Content-Type": "application/json",
@@ -50,11 +61,13 @@ const sbH = (prefer = "return=representation") => ({
   Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
   Prefer: prefer,
 });
+
 async function sbSelect(table, params = "") {
   const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${params}`, { headers: sbH() });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
+
 async function sbInsert(table, row) {
   const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
     method: "POST",
@@ -64,28 +77,36 @@ async function sbInsert(table, row) {
   if (!r.ok) throw new Error(await r.text());
 }
 
-const STORAGE_KEY = "quiz_abcd_attempts_v4";
-const optionKeys = ["A", "B", "C", "D"];
-const diffW = { easy: 1, medium: 1.5, hard: 2 };
 const normDiff = (v) => {
   const r = String(v || "medium").trim().toLowerCase();
   return ["easy", "medium", "hard"].includes(r) ? r : "medium";
 };
+
 const fmt = (ms) => `${(ms / 1000).toFixed(1)}s`;
+
 const dayKey = (ts) => {
   const d = new Date(ts);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 };
+
 const humanDate = (key) => {
   const d = new Date(`${key}T12:00:00`);
-  return d.toLocaleDateString("pl-PL", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+  return d.toLocaleDateString("pl-PL", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
 };
+
 const som = (d) => new Date(d.getFullYear(), d.getMonth(), 1);
 const addM = (d, n) => new Date(d.getFullYear(), d.getMonth() + n, 1);
+
 const isSameMonth = (key, monthDate) => {
   const d = new Date(`${key}T12:00:00`);
   return d.getMonth() === monthDate.getMonth() && d.getFullYear() === monthDate.getFullYear();
 };
+
 const loadLocal = () => {
   try {
     return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
@@ -93,11 +114,27 @@ const loadLocal = () => {
     return [];
   }
 };
+
 const saveLocal = (list) => {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify((list || []).slice(0, 200)));
   } catch {}
 };
+
+const loadCloudSettings = () => {
+  try {
+    return JSON.parse(localStorage.getItem(CLOUD_SETTINGS_KEY) || "{}");
+  } catch {
+    return {};
+  }
+};
+
+const saveCloudSettings = (settings) => {
+  try {
+    localStorage.setItem(CLOUD_SETTINGS_KEY, JSON.stringify(settings));
+  } catch {}
+};
+
 const dedupe = (items) => {
   const m = new Map();
   for (const a of items || []) {
@@ -107,6 +144,7 @@ const dedupe = (items) => {
   }
   return [...m.values()].sort((a, b) => b.finishedAt - a.finishedAt);
 };
+
 const rowToQ = (row, i) => ({
   id: row.id ?? i + 1,
   questionNo: row.question_no ?? i + 1,
@@ -129,6 +167,7 @@ function parseRows(rows, sourceFile = null) {
       const d = row.D ?? row.d ?? row.option_d;
       const correct = String(row.correct ?? row.Correct ?? row.correct_answer ?? "").trim().toUpperCase();
       if (!q || !a || !b || !c || !d) return null;
+
       return {
         id: `import-${i + 1}`,
         questionNo: Number(row.questionNo ?? i + 1),
@@ -157,6 +196,7 @@ function parseTxt(text, sourceFile = "import.txt") {
       const block = m[2].trim();
       const p = block.match(/^([\s\S]*?)\nA\.\s*([\s\S]*?)\nB\.\s*([\s\S]*?)\nC\.\s*([\s\S]*?)\nD\.\s*([\s\S]*?)(?:\nView answer|$)/);
       if (!p) return null;
+
       return {
         id: `txt-${no}`,
         questionNo: no,
@@ -183,6 +223,7 @@ function buildCalDays(month) {
   const fw = (start.getDay() + 6) % 7;
   const gs = new Date(start);
   gs.setDate(start.getDate() - fw);
+
   return Array.from({ length: 42 }, (_, i) => {
     const d = new Date(gs);
     d.setDate(gs.getDate() + i);
@@ -192,15 +233,23 @@ function buildCalDays(month) {
 
 function buildPlan(history, weakCat) {
   if (!history.length) {
-    return { recommendation: "Ukończ kilka prób quizu, a system przygotuje lepszy plan.", improvements: [], weeklyPlan: [] };
+    return {
+      recommendation: "Ukończ kilka prób quizu, a system przygotuje lepszy plan.",
+      improvements: [],
+      weeklyPlan: [],
+    };
   }
+
   const l5 = history.slice(0, 5);
   const avgAcc = Math.round(l5.reduce((s, a) => s + a.percent, 0) / l5.length);
+
   const wm = {};
   l5.forEach((a) => {
     if (a.weakestCategory) wm[a.weakestCategory] = (wm[a.weakestCategory] || 0) + 1;
   });
+
   const weak = Object.entries(wm).sort((a, b) => b[1] - a[1])[0]?.[0] || weakCat?.category || "Mieszane tematy";
+
   return {
     readiness: avgAcc >= 85 ? "Zaawansowany" : avgAcc >= 65 ? "Średniozaawansowany" : "Buduj podstawy",
     recommendation:
@@ -223,6 +272,112 @@ function buildPlan(history, weakCat) {
       { day: "Nd", task: "Lekka powtórka i reset", duration: "15m" },
     ],
   };
+}
+
+function buildLocalTrainingSummary({ attempt, stats, questions, answers }) {
+  const weakestAreas = stats.byCat
+    .filter((x) => x.percent < 70)
+    .sort((a, b) => a.percent - b.percent)
+    .slice(0, 3)
+    .map((x) => `${x.category} (${x.percent}%)`);
+
+  const strongestAreas = stats.byCat
+    .filter((x) => x.percent >= 70)
+    .sort((a, b) => b.percent - a.percent)
+    .slice(0, 3)
+    .map((x) => `${x.category} (${x.percent}%)`);
+
+  const hardMistakes = questions.filter((q) => q.difficulty === "hard" && answers[q.id] && !answers[q.id].isCorrect).length;
+
+  const accuracy = attempt.percent;
+  const pace = attempt.avgResponseMs;
+
+  const wentWell = [];
+  const watchOut = [];
+  const improve = [];
+
+  if (accuracy >= 80) wentWell.push("Dobra skuteczność w całej sesji.");
+  if (stats.strongest?.category) wentWell.push(`Najlepiej poszedł obszar: ${stats.strongest.category}.`);
+  if (pace > 0 && pace < 12000) wentWell.push("Tempo było płynne i bez dużych przestojów.");
+  if (!wentWell.length) wentWell.push("Ta sesja daje już dobry materiał do dalszej poprawy.");
+
+  if (accuracy < 70) watchOut.push("Dokładność wymaga poprawy — zwolnij przy podobnie brzmiących odpowiedziach.");
+  if (hardMistakes > 0) watchOut.push(`Pojawiły się błędy w trudniejszych pytaniach: ${hardMistakes}.`);
+  if (stats.weakest?.category) watchOut.push(`Najwięcej uwagi wymaga obszar: ${stats.weakest.category}.`);
+  if (pace > 18000) watchOut.push("Średni czas odpowiedzi jest dość wysoki — pilnuj pierwszej selekcji odpowiedzi.");
+
+  if (weakestAreas.length) improve.push(`Skup powtórkę na: ${weakestAreas.join(", ")}.`);
+  if (strongestAreas.length) improve.push(`Utrwal też mocne obszary: ${strongestAreas.join(", ")}.`);
+  improve.push("Po następnym treningu porównaj, czy poprawiły się wynik i tempo jednocześnie.");
+
+  return {
+    source: "local",
+    title: accuracy >= 80 ? "Bardzo solidna sesja" : accuracy >= 65 ? "Dobra baza do poprawy" : "Sesja diagnostyczna",
+    text: [
+      `Co poszło dobrze: ${wentWell.join(" ")}`,
+      `Co poszło słabiej: ${watchOut.join(" ") || "Brak większych sygnałów ostrzegawczych."}`,
+      `Na co zwrócić uwagę: ${improve.join(" ")}`,
+    ].join("\n\n"),
+  };
+}
+
+async function fetchCloudTrainingSummary({ apiKey, model, attempt, stats, questions, answers }) {
+  const wrongQuestions = questions
+    .filter((q) => answers[q.id] && !answers[q.id].isCorrect)
+    .slice(0, 8)
+    .map((q) => ({
+      question: q.question,
+      correct: q.correct,
+      selected: answers[q.id]?.selected,
+      category: q.category,
+      difficulty: q.difficulty,
+    }));
+
+  const prompt = [
+    "Jesteś trenerem przygotowującym do nauki testowej.",
+    "Napisz krótkie, konkretne podsumowanie treningu po polsku.",
+    "Struktura: 1) Co poszło dobrze 2) Co poszło źle 3) Na co zwrócić uwagę 4) Obszary do poprawy.",
+    "Maksymalnie 180 słów.",
+    "Bądź praktyczny i zwięzły.",
+    "Dane sesji:",
+    JSON.stringify(
+      {
+        percent: attempt.percent,
+        score: attempt.score,
+        totalQuestions: attempt.totalQuestions,
+        avgResponseMs: attempt.avgResponseMs,
+        strongestCategory: stats.strongest?.category || null,
+        weakestCategory: stats.weakest?.category || null,
+        byCategory: stats.byCat,
+        wrongQuestions,
+      },
+      null,
+      2
+    ),
+  ].join("\n");
+
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: model || DEFAULT_MODEL,
+      max_tokens: 350,
+      temperature: 0.3,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+
+  if (!res.ok) throw new Error(`Cloud API error: ${res.status}`);
+
+  const data = await res.json();
+  const text = (data.content || []).filter((x) => x.type === "text").map((x) => x.text).join("\n").trim();
+  if (!text) throw new Error("Cloud API returned empty summary");
+
+  return { source: "cloud", title: "Podsumowanie AI", text };
 }
 
 const SAMPLES = [
@@ -271,49 +426,65 @@ const SAMPLES = [
   },
 ];
 
-// ── COLOUR TOKENS ─────────────────────────────────────────────────────────────
+// ── Premium Color Tokens ──────────────────────────────────────────────────────
 const C = {
-  bg: "#F5F7FB",
+  bg: "#F2F0E9",
   surface: "#FFFFFF",
   card: "#FFFFFF",
-  cardAlt: "#F8FAFD",
-  border: "#E6EBF4",
-  accent: "#4F6BFF",
-  accentSoft: "#EEF2FF",
-  accentL: "#7E92FF",
-  accent2: "#14B8A6",
-  text: "#172033",
-  textSub: "#667085",
-  muted: "#98A2B3",
-  green: "#12B76A",
-  red: "#F04438",
-  yellow: "#F79009",
-  shadow: "0 12px 32px rgba(16, 24, 40, 0.06)",
+  cardAlt: "#FAF8F2",
+  panel: "#F7F4EC",
+  border: "#DCD7C9",
+  borderSoft: "#E7E1D2",
+
+  accent: "#4B5EAA",
+  accentHover: "#3D4B8A",
+  accentSoft: "#EEF1FA",
+  accent2: "#8294C4",
+
+  text: "#1A1A1B",
+  textStrong: "#2C3E50",
+  textSub: "#5F645C",
+  muted: "#8C8A7E",
+
+  successBg: "#E6F2ED",
+  success: "#2D6A4F",
+  successText: "#1B4332",
+
+  errorBg: "#F9EAE1",
+  error: "#A54242",
+  errorText: "#7B2E2E",
+
+  tagBg: "#E5E5E5",
+  tagText: "#666666",
+
+  yellow: "#B08968",
+
+  shadow: "0 4px 20px rgba(0, 0, 0, 0.03)",
+  shadowSm: "0 2px 10px rgba(0, 0, 0, 0.025)",
 };
 
-// ── INLINE STYLES HELPERS ─────────────────────────────────────────────────────
 const s = {
   card: {
     background: C.card,
     border: `1px solid ${C.border}`,
-    borderRadius: 20,
+    borderRadius: 22,
     boxShadow: C.shadow,
   },
   cardSm: {
     background: C.card,
     border: `1px solid ${C.border}`,
     borderRadius: 16,
-    boxShadow: "0 6px 18px rgba(16, 24, 40, 0.04)",
+    boxShadow: C.shadowSm,
   },
   btn: (variant = "primary") => ({
-    display: "flex",
+    display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    padding: "10px 18px",
-    borderRadius: 12,
+    padding: "10px 16px",
+    borderRadius: 14,
     fontSize: 13,
-    fontWeight: 700,
+    fontWeight: 600,
     cursor: "pointer",
     border: "none",
     transition: "all .18s ease",
@@ -322,23 +493,187 @@ const s = {
       : variant === "ghost"
       ? { background: C.surface, color: C.textSub, border: `1px solid ${C.border}` }
       : variant === "soft"
-      ? { background: C.accentSoft, color: C.accent, border: `1px solid #DBE4FF` }
+      ? { background: C.accentSoft, color: C.accent, border: `1px solid ${C.borderSoft}` }
       : variant === "danger"
-      ? { background: "#FFF0F0", color: C.red, border: `1px solid #FFD7D5` }
+      ? { background: C.errorBg, color: C.error, border: `1px solid #E7C6B8` }
       : { background: C.cardAlt, color: C.text, border: `1px solid ${C.border}` }),
   }),
   metric: {
-    ...{
-      background: C.card,
-      border: `1px solid ${C.border}`,
-      borderRadius: 16,
-      boxShadow: "0 6px 18px rgba(16, 24, 40, 0.04)",
-    },
-    padding: "16px 18px",
+    background: C.card,
+    border: `1px solid ${C.border}`,
+    borderRadius: 16,
+    boxShadow: "none",
+    padding: "14px 16px",
+  },
+  input: {
+    width: "100%",
+    padding: "12px 14px",
+    borderRadius: 14,
+    border: `1px solid ${C.border}`,
+    background: "#fff",
+    color: C.text,
+    fontSize: 14,
+    outline: "none",
+  },
+  label: {
+    display: "block",
+    fontSize: 12,
+    fontWeight: 700,
+    color: C.textSub,
+    marginBottom: 8,
+    letterSpacing: ".02em",
   },
 };
 
+const GLOBAL_CSS = `
+  * { box-sizing: border-box; }
+  html, body, #root { height: 100%; margin: 0; }
+  body {
+    background: #F2F0E9;
+    color: #1A1A1B;
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+
+  button, input, select, textarea { font-family: inherit; }
+
+  .app-shell {
+    min-height: 100vh;
+    background:
+      radial-gradient(circle at top left, rgba(75,94,170,.06), transparent 24%),
+      radial-gradient(circle at bottom right, rgba(130,148,196,.08), transparent 22%),
+      #F2F0E9;
+    padding: 20px;
+  }
+
+  .app-frame {
+    max-width: 1440px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    gap: 18px;
+    min-height: calc(100vh - 40px);
+  }
+
+  .sidebar {
+    background: rgba(255,255,255,.62);
+    backdrop-filter: blur(10px);
+    border: 1px solid #DCD7C9;
+    border-radius: 24px;
+    padding: 18px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.03);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .content-area {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .tinyLabel {
+    font-size: 11px;
+    font-weight: 700;
+    color: #5F645C;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+  }
+
+  .quiz-inline-stats {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0,1fr));
+    gap: 12px;
+    margin-top: 18px;
+  }
+
+  .soft-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    border: 1px solid #DCD7C9;
+    background: #F7F4EC;
+    color: #5F645C;
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  .tab-btn {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 14px;
+    border-radius: 16px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: #5F645C;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all .18s ease;
+  }
+
+  .tab-btn:hover {
+    background: #F7F4EC;
+    color: #2C3E50;
+    border-color: #E7E1D2;
+  }
+
+  .tab-btn.active {
+    background: linear-gradient(135deg, #4B5EAA, #8294C4);
+    color: white;
+    box-shadow: 0 8px 18px rgba(75,94,170,.18);
+  }
+
+  .field-help {
+    font-size: 12px;
+    color: #8C8A7E;
+    line-height: 1.45;
+    margin-top: 6px;
+  }
+
+  .settings-grid {
+    display: grid;
+    grid-template-columns: 1.15fr 0.85fr;
+    gap: 16px;
+    height: calc(100vh - 210px);
+    overflow: hidden;
+  }
+
+  .settings-stack {
+    display: grid;
+    grid-template-rows: repeat(3, minmax(0,1fr));
+    gap: 16px;
+    min-height: 0;
+  }
+
+  .calendar-grid {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0,1fr));
+    gap: 10px;
+  }
+
+  @media (max-width: 1180px) {
+    .app-frame { grid-template-columns: 1fr; }
+    .sidebar { flex-direction: row; overflow-x: auto; }
+    .settings-grid { grid-template-columns: 1fr; height: auto; }
+    .settings-stack { grid-template-rows: none; }
+  }
+
+  @media (max-width: 840px) {
+    .quiz-inline-stats { grid-template-columns: repeat(2, minmax(0,1fr)); }
+    .calendar-grid { gap: 8px; }
+  }
+`;
+
+// ── App ───────────────────────────────────────────────────────────────────────
 function QuizAbcdApp() {
+  const initialCloud = loadCloudSettings();
+
   const [questionPool, setQuestionPool] = useState(SAMPLES);
   const [quizLength, setQuizLength] = useState(10);
   const [questions, setQuestions] = useState(() => SAMPLES.slice(0, 10));
@@ -349,19 +684,34 @@ function QuizAbcdApp() {
   const [startedAt, setStartedAt] = useState(() => Date.now());
   const [qStartedAt, setQStartedAt] = useState(() => Date.now());
   const [finishedAt, setFinishedAt] = useState(null);
+
   const [history, setHistory] = useState(() => loadLocal());
   const [importMsg, setImportMsg] = useState(null);
   const [activeTab, setActiveTab] = useState("quiz");
+
   const [calMonth, setCalMonth] = useState(() => som(new Date()));
   const [selectedCalDay, setSelectedCalDay] = useState(() => dayKey(Date.now()));
+
   const [chatStatus, setChatStatus] = useState("idle");
   const [chatRes, setChatRes] = useState("");
+
+  const [cloudApiEnabled, setCloudApiEnabled] = useState(Boolean(initialCloud.cloudApiEnabled));
+  const [cloudApiKey, setCloudApiKey] = useState(initialCloud.cloudApiKey || "");
+  const [cloudModel, setCloudModel] = useState(initialCloud.cloudModel || DEFAULT_MODEL);
+
+  const [trainingSummary, setTrainingSummary] = useState(null);
+  const [trainingSummaryStatus, setTrainingSummaryStatus] = useState("idle");
+
   const fileRef = useRef(null);
+
+  useEffect(() => {
+    saveCloudSettings({ cloudApiEnabled, cloudApiKey, cloudModel });
+  }, [cloudApiEnabled, cloudApiKey, cloudModel]);
 
   const total = questions.length;
   const current = questions[idx] || SAMPLES[0];
-  const score = useMemo(() => Object.values(answers).filter((a) => a.isCorrect).length, [answers]);
   const answeredCount = Object.keys(answers).length;
+  const score = useMemo(() => Object.values(answers).filter((a) => a.isCorrect).length, [answers]);
 
   const startQuiz = useCallback(
     (customPool, customLength) => {
@@ -369,6 +719,7 @@ function QuizAbcdApp() {
       const len = customLength !== undefined ? customLength : quizLength;
       const shuffled = [...pool].sort(() => 0.5 - Math.random());
       const selectedQuestions = len === "all" ? shuffled : shuffled.slice(0, len);
+
       if (customPool) setQuestionPool(customPool);
       setQuestions(selectedQuestions.length ? selectedQuestions : pool);
       setIdx(0);
@@ -381,6 +732,8 @@ function QuizAbcdApp() {
       setActiveTab("quiz");
       setChatStatus("idle");
       setChatRes("");
+      setTrainingSummary(null);
+      setTrainingSummaryStatus("idle");
     },
     [questionPool, quizLength]
   );
@@ -394,7 +747,7 @@ function QuizAbcdApp() {
       setQuestionPool(parsed);
       const shuffled = [...parsed].sort(() => 0.5 - Math.random());
       setQuestions(shuffled.slice(0, quizLength === "all" ? shuffled.length : quizLength));
-    } catch (e) {}
+    } catch {}
   }, [quizLength]);
 
   const loadAttempts = useCallback(async () => {
@@ -415,11 +768,11 @@ function QuizAbcdApp() {
         source: "supabase",
       }));
       setHistory((prev) => {
-        const m = dedupe([...mapped, ...prev]);
-        saveLocal(m);
-        return m;
+        const merged = dedupe([...mapped, ...prev]);
+        saveLocal(merged);
+        return merged;
       });
-    } catch (e) {}
+    } catch {}
   }, []);
 
   useEffect(() => {
@@ -472,52 +825,16 @@ function QuizAbcdApp() {
     }
   }, [answers, idx, questions]);
 
-  const askAI = useCallback(async () => {
-    if (chatStatus === "loading") return;
-    setChatStatus("loading");
-    setTimeout(() => {
-      setChatRes(
-        `Kategoria: "${current.category}". Najpierw porównaj pojęcia kluczowe w odpowiedziach, a potem wyklucz zbyt ogólne lub zbyt wąskie opcje. W tym pytaniu odpowiedź ${current.correct} najlepiej pasuje do standardowej definicji.`
-      );
-      setChatStatus("loaded");
-    }, 900);
-  }, [chatStatus, current]);
-
-  const handleImport = useCallback(
-    async (e) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-      try {
-        let parsed = [];
-        if (file.name.toLowerCase().endsWith(".txt")) {
-          parsed = parseTxt(await file.text(), file.name);
-        } else {
-          const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
-          parsed = parseRows(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "" }), file.name);
-        }
-        if (!parsed.length) {
-          setImportMsg("Import nieudany – sprawdź format pliku.");
-          return;
-        }
-        startQuiz(parsed, quizLength);
-        setImportMsg(`✓ Zaimportowano ${parsed.length} pytań z \"${file.name}\"`);
-      } catch (err) {
-        setImportMsg(`✗ Błąd: ${err.message}`);
-      } finally {
-        e.target.value = "";
-      }
-    },
-    [quizLength, startQuiz]
-  );
-
   const stats = useMemo(() => {
     const list = questions.map((q) => ({ q, a: answers[q.id] })).filter((x) => x.a);
     const totalTimeMs = (finishedAt ?? Date.now()) - startedAt;
-    const avgResponseMs = list.length ? list.reduce((s, x) => s + x.a.responseTimeMs, 0) / list.length : 0;
+    const avgResponseMs = list.length ? list.reduce((s0, x) => s0 + x.a.responseTimeMs, 0) / list.length : 0;
     const correctCount = list.filter((x) => x.a.isCorrect).length;
+
     const wTotal = questions.reduce((s0, q) => s0 + (diffW[q.difficulty || "medium"] || 1.5), 0);
     const wScore = list.reduce((s0, x) => s0 + (x.a.isCorrect ? diffW[x.q.difficulty || "medium"] || 1.5 : 0), 0);
     const mastery = wTotal ? Math.round((wScore / wTotal) * 100) : 0;
+
     const byCat = Object.values(
       questions.reduce((acc, q) => {
         const cat = q.category || "General";
@@ -527,8 +844,10 @@ function QuizAbcdApp() {
         return acc;
       }, {})
     ).map((c) => ({ ...c, percent: Math.round((c.correct / c.total) * 100) }));
+
     const weakest = byCat.length ? [...byCat].sort((a, b) => a.percent - b.percent)[0] : null;
     const strongest = byCat.length ? [...byCat].sort((a, b) => b.percent - a.percent)[0] : null;
+
     return {
       totalTimeMs,
       avgResponseMs,
@@ -541,9 +860,9 @@ function QuizAbcdApp() {
     };
   }, [answers, questions, startedAt, finishedAt]);
 
-  useEffect(() => {
-    if (!showResult || !finishedAt) return;
-    const attempt = {
+  const attemptDraft = useMemo(() => {
+    if (!showResult || !finishedAt) return null;
+    return {
       id: `${finishedAt}-${Math.random().toString(36).slice(2, 7)}`,
       finishedAt,
       totalQuestions: total,
@@ -556,64 +875,173 @@ function QuizAbcdApp() {
       weakestCategory: stats.weakest?.category || null,
       source: "local",
     };
+  }, [showResult, finishedAt, total, score, stats]);
+
+  useEffect(() => {
+    if (!attemptDraft) return;
+
     setHistory((prev) => {
-      if (prev.some((a) => a.finishedAt === finishedAt)) return prev;
-      const m = dedupe([attempt, ...prev]);
-      saveLocal(m);
-      return m;
+      if (prev.some((a) => a.finishedAt === attemptDraft.finishedAt)) return prev;
+      const merged = dedupe([attemptDraft, ...prev]);
+      saveLocal(merged);
+      return merged;
     });
+
     if (SB_ENABLED) {
       sbInsert("quiz_attempts", {
-        attempt_id: attempt.id,
-        finished_at: new Date(attempt.finishedAt).toISOString(),
-        total_questions: attempt.totalQuestions,
-        score: attempt.score,
-        percent: attempt.percent,
-        mastery: attempt.mastery,
-        avg_response_ms: attempt.avgResponseMs,
-        total_time_ms: attempt.totalTimeMs,
-        strongest_category: attempt.strongestCategory,
-        weakest_category: attempt.weakestCategory,
+        attempt_id: attemptDraft.id,
+        finished_at: new Date(attemptDraft.finishedAt).toISOString(),
+        total_questions: attemptDraft.totalQuestions,
+        score: attemptDraft.score,
+        percent: attemptDraft.percent,
+        mastery: attemptDraft.mastery,
+        avg_response_ms: attemptDraft.avgResponseMs,
+        total_time_ms: attemptDraft.totalTimeMs,
+        strongest_category: attemptDraft.strongestCategory,
+        weakest_category: attemptDraft.weakestCategory,
       })
         .then(() => loadAttempts())
         .catch(() => {});
     }
-  }, [showResult, finishedAt, score, stats, total, loadAttempts]);
+  }, [attemptDraft, loadAttempts]);
+
+  useEffect(() => {
+    if (!attemptDraft) return;
+    let cancelled = false;
+
+    const runSummary = async () => {
+      setTrainingSummaryStatus("loading");
+
+      const local = buildLocalTrainingSummary({
+        attempt: attemptDraft,
+        stats,
+        questions,
+        answers,
+      });
+
+      if (!cloudApiEnabled || !cloudApiKey.trim()) {
+        if (!cancelled) {
+          setTrainingSummary(local);
+          setTrainingSummaryStatus("done");
+        }
+        return;
+      }
+
+      try {
+        const cloud = await fetchCloudTrainingSummary({
+          apiKey: cloudApiKey.trim(),
+          model: cloudModel.trim() || DEFAULT_MODEL,
+          attempt: attemptDraft,
+          stats,
+          questions,
+          answers,
+        });
+
+        if (!cancelled) {
+          setTrainingSummary(cloud);
+          setTrainingSummaryStatus("done");
+        }
+      } catch {
+        if (!cancelled) {
+          setTrainingSummary({
+            ...local,
+            text: `${local.text}\n\nCloud API nie zwróciło odpowiedzi, więc pokazano analizę lokalną.`,
+          });
+          setTrainingSummaryStatus("done");
+        }
+      }
+    };
+
+    runSummary();
+    return () => {
+      cancelled = true;
+    };
+  }, [attemptDraft, cloudApiEnabled, cloudApiKey, cloudModel, stats, questions, answers]);
+
+  const askAI = useCallback(async () => {
+    if (chatStatus === "loading") return;
+    setChatStatus("loading");
+
+    setTimeout(() => {
+      setChatRes(
+        `Kategoria: "${current.category}". Najpierw porównaj pojęcia kluczowe w odpowiedziach, potem wyklucz zbyt ogólne lub zbyt wąskie opcje. W tym pytaniu odpowiedź ${current.correct} najlepiej pasuje do standardowej definicji.`
+      );
+      setChatStatus("loaded");
+    }, 700);
+  }, [chatStatus, current]);
+
+  const handleImport = useCallback(
+    async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+
+      try {
+        let parsed = [];
+        if (file.name.toLowerCase().endsWith(".txt")) {
+          parsed = parseTxt(await file.text(), file.name);
+        } else {
+          const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
+          parsed = parseRows(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "" }), file.name);
+        }
+
+        if (!parsed.length) {
+          setImportMsg("Import nieudany – sprawdź format pliku.");
+          return;
+        }
+
+        startQuiz(parsed, quizLength);
+        setImportMsg(`✓ Zaimportowano ${parsed.length} pytań z "${file.name}"`);
+      } catch (err) {
+        setImportMsg(`✗ Błąd: ${err.message}`);
+      } finally {
+        e.target.value = "";
+      }
+    },
+    [quizLength, startQuiz]
+  );
 
   useEffect(() => {
     const h = (e) => {
-      if (e.target?.tagName === "INPUT" || e.target?.tagName === "TEXTAREA") return;
+      if (e.target?.tagName === "INPUT" || e.target?.tagName === "TEXTAREA" || e.target?.tagName === "SELECT") return;
+
       const k = e.key.toUpperCase();
+
       if (!showResult && !selected && optionKeys.includes(k)) {
         e.preventDefault();
         handleAnswer(k);
         return;
       }
+
       if (e.key === "Enter" && selected) {
         e.preventDefault();
         next();
         return;
       }
+
       if (k === "R") {
         e.preventDefault();
         startQuiz(questionPool, quizLength);
         return;
       }
+
       if ((e.key === "ArrowRight" || e.key === "ArrowDown") && selected) {
         e.preventDefault();
         next();
         return;
       }
+
       if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
         e.preventDefault();
         prev();
       }
     };
+
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
   }, [handleAnswer, next, prev, startQuiz, selected, showResult, questionPool, quizLength]);
 
   const uniq = useMemo(() => dedupe(history), [history]);
+
   const attemptsByDay = useMemo(() => {
     const m = {};
     uniq.forEach((a) => {
@@ -624,6 +1052,7 @@ function QuizAbcdApp() {
     Object.values(m).forEach((list) => list.sort((a, b) => b.finishedAt - a.finishedAt));
     return m;
   }, [uniq]);
+
   const dayMap = useMemo(() => {
     const m = {};
     Object.entries(attemptsByDay).forEach(([key, list]) => {
@@ -645,6 +1074,7 @@ function QuizAbcdApp() {
 
   const plan = useMemo(() => buildPlan(uniq, stats.weakest), [uniq, stats.weakest]);
   const calDays = useMemo(() => buildCalDays(calMonth), [calMonth]);
+
   const selectedDayAttempts = attemptsByDay[selectedCalDay] || [];
   const selectedDaySummary = useMemo(() => {
     if (!selectedDayAttempts.length) return null;
@@ -658,14 +1088,12 @@ function QuizAbcdApp() {
   }, [selectedDayAttempts]);
 
   const monthAttempts = useMemo(() => uniq.filter((a) => isSameMonth(dayKey(a.finishedAt), calMonth)), [uniq, calMonth]);
-  const monthDaysActive = useMemo(
-    () => Object.keys(dayMap).filter((key) => isSameMonth(key, calMonth)).length,
-    [dayMap, calMonth]
-  );
+  const monthDaysActive = useMemo(() => Object.keys(dayMap).filter((key) => isSameMonth(key, calMonth)).length, [dayMap, calMonth]);
   const monthAvg = useMemo(
     () => (monthAttempts.length ? Math.round(monthAttempts.reduce((s0, a) => s0 + a.percent, 0) / monthAttempts.length) : 0),
     [monthAttempts]
   );
+
   const bestStudyDay = useMemo(() => {
     const entries = Object.entries(dayMap).filter(([key]) => isSameMonth(key, calMonth));
     if (!entries.length) return null;
@@ -680,12 +1108,12 @@ function QuizAbcdApp() {
   }, [dayMap, calMonth]);
 
   const getHeat = (info) => {
-    if (!info) return { bg: "transparent", color: C.textSub, border: C.border, dot: "transparent" };
+    if (!info) return { bg: "transparent", border: C.border };
     const ratio = maxCountInMonth ? info.count / maxCountInMonth : info.count > 0 ? 1 : 0;
-    if (ratio >= 0.8) return { bg: "#DDE5FF", color: C.accent, border: "#BDD0FF", dot: C.accent };
-    if (ratio >= 0.5) return { bg: "#EAF0FF", color: C.accent, border: "#D5E0FF", dot: C.accentL };
-    if (ratio > 0) return { bg: "#F4F7FF", color: C.text, border: C.border, dot: C.accentL };
-    return { bg: "transparent", color: C.textSub, border: C.border, dot: "transparent" };
+    if (ratio >= 0.8) return { bg: "#DDE5FF", border: "#BDD0FF" };
+    if (ratio >= 0.5) return { bg: "#EAF0FF", border: "#D5E0FF" };
+    if (ratio > 0) return { bg: "#F4F7FF", border: C.border };
+    return { bg: "transparent", border: C.border };
   };
 
   const TABS = [
@@ -697,204 +1125,698 @@ function QuizAbcdApp() {
   ];
 
   const pct = answeredCount > 0 ? Math.round((stats.correctCount / answeredCount) * 100) : 0;
-  const progressPct = Math.round((idx / Math.max(total - 1, 1)) * 100);
-  const nextUnlocked = !!selected;
 
   const QuizView = () => {
-    const diffColor = { easy: C.green, medium: C.yellow, hard: C.red }[current.difficulty || "medium"];
+    const diffColor = { easy: C.success, medium: C.yellow, hard: C.error }[current.difficulty || "medium"];
+
     return (
-      <div className="quiz-grid">
-        <div style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}>
-          <div style={{ ...s.card, padding: "24px 28px" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-              <span className="tinyLabel">Pytanie {idx + 1} / {to = () => {
-    if (!showResult)
-      return (
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: 16, color: C.textSub }}>
-          <div style={{ width: 72, height: 72, borderRadius: 22, background: C.accentSoft, display: "flex", alignItems: "center", justifyContent: "center", color: C.accent }}>
-            <IcoTrophy size={34} />
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <div style={{ ...s.card, padding: "24px 24px 22px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+            <span className="tinyLabel">Pytanie {idx + 1} / {total}</span>
+            <span style={{ width: 4, height: 4, borderRadius: "50%", background: C.muted }} />
+            <span
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                padding: "5px 10px",
+                borderRadius: 999,
+                background: C.tagBg,
+                color: C.tagText,
+                textTransform: "capitalize",
+              }}
+            >
+              {current.difficulty}
+            </span>
+            <span
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                padding: "5px 10px",
+                borderRadius: 999,
+                background: C.tagBg,
+                color: C.tagText,
+              }}
+            >
+              {current.category}
+            </span>
           </div>
-          <p style={{ fontSize: 14 }}>Ukończ quiz, aby zobaczyć wyniki.</p>
-          <button onClick={() => setActiveTab("quiz")} style={s.btn("primary")}>Wróć do quizu</button>
-        </div>
-      );
-    const pctFinal = Math.round((score / Math.max(total, 1)) * 100);
-    const ring = 2 * Math.PI * 52;
-    return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 18, height: "100%" }}>
-        <div style={{ ...s.card, padding: "28px 26px", display: "flex", alignItems: "center", gap: 24, flexWrap: "wrap" }}>
-          <div style={{ position: "relative", width: 120, height: 120, flexShrink: 0 }}>
-            <svg width={120} height={120} style={{ transform: "rotate(-90deg)" }}>
-              <circle cx={60} cy={60} r={52} fill="none" stroke="#EAF0F7" strokeWidth={10} />
-              <circle
-                cx={60}
-                cy={60}
-                r={52}
-                fill="none"
-                stroke={C.accent}
-                strokeWidth={10}
-                strokeDasharray={ring}
-                strokeDashoffset={ring * (1 - pctFinal / 100)}
-                strokeLinecap="round"
-                style={{ transition: "stroke-dashoffset 1s ease" }}
-              />
-            </svg>
-            <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
-              <span style={{ fontSize: 26, fontWeight: 800, color: C.text }}>{pctFinal}%</span>
-            </div>
+
+          <div
+            style={{
+              height: 8,
+              borderRadius: 999,
+              background: "#E9E5DA",
+              overflow: "hidden",
+              marginBottom: 18,
+            }}
+          >
+            <div
+              style={{
+                width: `${((idx + 1) / total) * 100}%`,
+                height: "100%",
+                background: "linear-gradient(90deg, #4B5EAA, #8294C4)",
+                borderRadius: 999,
+                transition: "width .2s ease",
+              }}
+            />
           </div>
-          <div style={{ flex: 1, minWidth: 240 }}>
-            <div style={{ fontSize: 26, fontWeight: 800, color: C.text, marginBottom: 4, letterSpacing: "-.03em" }}>Quiz ukończony</div>
-            <div style={{ fontSize: 14, color: C.textSub, marginBottom: 12 }}>{score} poprawnych na {total} pytań</div>
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <button onClick={() => startQuiz(questionPool, quizLength)} style={{ ...s.btn("primary"), fontSize: 12, padding: "8px 16px" }}>
-                <IcoRefresh size={13} /> Nowa sesja
-              </button>
-              <button onClick={() => setActiveTab("plan")} style={{ ...s.btn("soft"), fontSize: 12, padding: "8px 16px" }}>
-                <IcoBook size={13} /> Plan nauki
-              </button>
-            </div>
+
+          <h2
+            style={{
+              fontSize: 29,
+              fontWeight: 500,
+              color: C.textStrong,
+              lineHeight: 1.38,
+              margin: 0,
+              letterSpacing: "-0.01em",
+            }}
+          >
+            {current.question}
+          </h2>
+
+          <div style={{ marginTop: 12, fontSize: 14, color: C.textSub, lineHeight: 1.65 }}>
+            Wybierz jedną odpowiedź. Po wyborze od razu zobaczysz informację zwrotną i możesz przejść dalej.
+          </div>
+
+          <div className="quiz-inline-stats">
+            {[
+              ["Postęp", `${idx + 1}/${total}`],
+              ["Skuteczność", `${pct}%`],
+              ["Śr. czas", answeredCount ? fmt(stats.avgResponseMs) : "—"],
+              ["Seria", `${streak} 🔥`],
+            ].map(([label, value]) => (
+              <div key={label} style={{ ...s.metric, background: C.cardAlt }}>
+                <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>{label}</div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: C.textStrong }}>{value}</div>
+              </div>
+            ))}
           </div>
         </div>
 
-        <div className="results-grid">
-          {[
-            { l: "Czas na pytanie", v: fmt(stats.avgResponseMs), c: C.yellow },
-            { l: "Całkowity czas", v: fmt(stats.totalTimeMs), c: C.text },
-            { l: "Poprawne", v: stats.correctCount, c: C.green },
-            { l: "Błędne", v: stats.incorrectCount, c: C.red },
-          ].map((item) => (
-            <div key={item.l} style={{ ...s.cardSm, padding: "16px 18px" }}>
-              <div className="tinyLabel" style={{ marginBottom: 8 }}>{item.l}</div>
-              <div style={{ fontSize: 26, fontWeight: 800, color: item.c }}>{item.v}</div>
-            </div>
-          ))}
+        <div style={{ display: "grid", gap: 12 }}>
+          {optionKeys.map((key) => {
+            const isSel = selected === key;
+            const isCorr = current.correct === key;
+            const reveal = !!selected;
+
+            let bg = "#FFFFFF";
+            let border = C.border;
+            let color = C.textStrong;
+            let labelBg = C.cardAlt;
+            let labelColor = C.textSub;
+            let iconEl = null;
+
+            if (reveal) {
+              if (isCorr) {
+                bg = C.successBg;
+                border = C.success;
+                color = C.successText;
+                labelBg = C.success;
+                labelColor = "#fff";
+                iconEl = <IcoCheck size={15} />;
+              } else if (isSel) {
+                bg = C.errorBg;
+                border = C.error;
+                color = C.errorText;
+                labelBg = C.error;
+                labelColor = "#fff";
+                iconEl = <IcoCross size={15} />;
+              }
+            }
+
+            return (
+              <button
+                key={key}
+                onClick={() => handleAnswer(key)}
+                disabled={!!selected}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 16,
+                  padding: "18px 18px",
+                  borderRadius: 18,
+                  border: `1px solid ${border}`,
+                  background: bg,
+                  cursor: selected ? "default" : "pointer",
+                  textAlign: "left",
+                  width: "100%",
+                  boxShadow: "none",
+                  transition: "all .16s ease",
+                }}
+              >
+                <span
+                  style={{
+                    width: 42,
+                    height: 42,
+                    borderRadius: 14,
+                    background: labelBg,
+                    color: labelColor,
+                    fontSize: 13,
+                    fontWeight: 700,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                    border: `1px solid ${reveal && (isCorr || isSel) ? "transparent" : C.border}`,
+                  }}
+                >
+                  {key}
+                </span>
+
+                <span
+                  style={{
+                    fontSize: 15,
+                    fontWeight: 400,
+                    color,
+                    flex: 1,
+                    lineHeight: 1.58,
+                  }}
+                >
+                  {current.options[key]}
+                </span>
+
+                {iconEl && <span style={{ flexShrink: 0, color: isCorr ? C.success : C.error, display: "flex" }}>{iconEl}</span>}
+              </button>
+            );
+          })}
         </div>
 
-        {stats.byCat.length > 0 && (
-          <div style={{ ...s.card, padding: "20px 22px", flex: 1 }}>
-            <div className="tinyLabel" style={{ marginBottom: 14 }}>Wyniki wg kategorii</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {stats.byCat.map((c) => (
-                <div key={c.category}>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                    <span style={{ fontSize: 14, color: C.text, fontWeight: 600 }}>{c.category}</span>
-                    <span style={{ fontSize: 13, fontWeight: 800, color: c.percent >= 70 ? C.green : C.red }}>{c.percent}%</span>
-                  </div>
-                  <div style={{ height: 8, background: "#EEF2F7", borderRadius: 999, overflow: "hidden" }}>
-                    <div style={{ height: "100%", width: `${c.percent}%`, background: c.percent >= 70 ? C.green : C.red, borderRadius: 999, transition: "width .6s ease" }} />
-                  </div>
-                </div>
-              ))}
+        {selected && (
+          <div style={{ ...s.card, padding: "18px 20px", background: C.cardAlt }}>
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 800,
+                color: selected === current.correct ? C.success : C.error,
+                marginBottom: 6,
+              }}
+            >
+              {current.correct ? (selected === current.correct ? "✓ Dobra odpowiedź." : `✗ Poprawna odpowiedź: ${current.correct}`) : "Klucz niedostępny."}
             </div>
+
+            <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.7 }}>{current.explanation}</div>
+
+            {chatStatus === "idle" && (
+              <button onClick={askAI} style={{ ...s.btn("soft"), marginTop: 12, fontSize: 12, padding: "8px 14px" }}>
+                <IcoChat size={13} /> Wyjaśnij szerzej
+              </button>
+            )}
+
+            {chatStatus === "loading" && <div style={{ fontSize: 12, color: C.accent, marginTop: 10 }}>Analiza odpowiedzi...</div>}
+
+            {chatStatus === "loaded" && (
+              <div
+                style={{
+                  fontSize: 13,
+                  color: C.text,
+                  marginTop: 12,
+                  padding: "13px 14px",
+                  background: "#fff",
+                  borderRadius: 14,
+                  border: `1px solid ${C.border}`,
+                  lineHeight: 1.65,
+                }}
+              >
+                {chatRes}
+              </div>
+            )}
           </div>
         )}
+
+        <div style={{ display: "flex", gap: 10, justifyContent: "space-between", flexWrap: "wrap" }}>
+          <button onClick={prev} disabled={idx === 0} style={{ ...s.btn("ghost"), opacity: idx === 0 ? 0.45 : 1 }}>
+            <IcoLeft size={14} /> Poprzednie
+          </button>
+
+          <div style={{ display: "flex", gap: 10 }}>
+            <button onClick={() => startQuiz(questionPool, quizLength)} style={s.btn("ghost")}>
+              <IcoRefresh size={14} /> Restart
+            </button>
+
+            <button onClick={next} disabled={!selected} style={{ ...s.btn("primary"), opacity: !selected ? 0.55 : 1 }}>
+              {idx === total - 1 ? "Zakończ" : "Dalej"} <IcoRight size={14} />
+            </button>
+          </div>
+        </div>
       </div>
     );
   };
 
-  const CalendarView = () => {
-    const recentActiveDays = Object.entries(dayMap)
-      .sort((a, b) => (a[0] < b[0] ? 1 : -1))
-      .slice(0, 6);
+  const ResultsView = () => (
+    <div style={{ display: "grid", gap: 16 }}>
+      <div style={{ ...s.card, padding: 22 }}>
+        <div className="tinyLabel" style={{ marginBottom: 10 }}>
+          Podsumowanie sesji
+        </div>
+        <div style={{ fontSize: 30, fontWeight: 700, color: C.textStrong, marginBottom: 8 }}>
+          {attemptDraft ? `${attemptDraft.percent}% poprawnych` : "Brak zakończonej sesji"}
+        </div>
+        <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.65 }}>
+          Tu widzisz wynik, tempo oraz najważniejsze obszary do poprawy po ostatnim treningu.
+        </div>
 
-    return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 16, height: "100%" }}>
-        <div className="calendar-top-grid">
+        <div className="quiz-inline-stats" style={{ marginTop: 20 }}>
           {[
-            { l: "Aktywne dni", v: monthDaysActive, hint: "w tym miesiącu", icon: <IcoCalendar size={16} />, tone: C.accent },
-            { l: "Próby", v: monthAttempts.length, hint: "wszystkie sesje", icon: <IcoBrain size={16} />, tone: C.accent2 },
-            { l: "Śr. wynik", v: monthAttempts.length ? `${monthAvg}%` : "—", hint: "miesięczna średnia", icon: <IcoTrending size={16} />, tone: C.green },
-            { l: "Seria", v: `${streak} dni`, hint: "ciągłość nauki", icon: <IcoBolt size={16} />, tone: C.yellow },
-          ].map((c) => (
-            <div key={c.l} style={{ ...s.cardSm, padding: "16px 18px" }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-                <div className="tinyLabel">{c.l}</div>
-                <span style={{ width: 32, height: 32, borderRadius: 10, background: `${c.tone}18`, color: c.tone, display: "flex", alignItems: "center", justifyContent: "center" }}>{c.icon}</span>
-              </div>
-              <div style={{ fontSize: 26, fontWeight: 800, color: C.text }}>{c.v}</div>
-              <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>{c.hint}</div>
+            ["Wynik", attemptDraft ? `${attemptDraft.score}/${attemptDraft.totalQuestions}` : "—"],
+            ["Mastery", attemptDraft ? `${attemptDraft.mastery}%` : "—"],
+            ["Śr. czas", attemptDraft ? fmt(attemptDraft.avgResponseMs) : "—"],
+            ["Łączny czas", attemptDraft ? fmt(attemptDraft.totalTimeMs) : "—"],
+          ].map(([label, value]) => (
+            <div key={label} style={{ ...s.metric, background: C.cardAlt }}>
+              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>{label}</div>
+              <div style={{ fontSize: 20, fontWeight: 700, color: C.textStrong }}>{value}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        <div style={{ ...s.card, padding: 20 }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong, marginBottom: 12 }}>Kategorie</div>
+          <div style={{ display: "grid", gap: 10 }}>
+            {stats.byCat.length ? (
+              stats.byCat.map((x) => (
+                <div key={x.category} style={{ padding: 12, borderRadius: 14, background: C.cardAlt, border: `1px solid ${C.border}` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: C.textStrong }}>{x.category}</div>
+                    <div style={{ fontSize: 13, color: C.textSub }}>{x.percent}%</div>
+                  </div>
+                  <div style={{ height: 7, borderRadius: 999, background: "#E9E5DA", marginTop: 10, overflow: "hidden" }}>
+                    <div
+                      style={{
+                        width: `${x.percent}%`,
+                        height: "100%",
+                        borderRadius: 999,
+                        background: "linear-gradient(90deg, #4B5EAA, #8294C4)",
+                      }}
+                    />
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div style={{ fontSize: 14, color: C.textSub }}>Zakończ quiz, aby zobaczyć statystyki kategorii.</div>
+            )}
+          </div>
+        </div>
+
+        <div style={{ ...s.card, padding: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+            <IcoBolt size={16} />
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>
+              {trainingSummary?.title || "Analiza treningu"}
+            </div>
+          </div>
+
+          {trainingSummaryStatus === "loading" && <div style={{ fontSize: 14, color: C.textSub }}>Przygotowuję analizę sesji…</div>}
+
+          {trainingSummaryStatus !== "loading" && trainingSummary && (
+            <div
+              style={{
+                whiteSpace: "pre-wrap",
+                fontSize: 14,
+                color: C.textSub,
+                lineHeight: 1.75,
+                background: C.cardAlt,
+                border: `1px solid ${C.border}`,
+                padding: 14,
+                borderRadius: 14,
+              }}
+            >
+              {trainingSummary.text}
+            </div>
+          )}
+
+          {trainingSummaryStatus !== "loading" && !trainingSummary && (
+            <div style={{ fontSize: 14, color: C.textSub }}>Zakończ quiz, aby otrzymać podsumowanie treningu.</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+  const CalendarView = () => (
+    <div style={{ display: "grid", gridTemplateColumns: "1.2fr .8fr", gap: 16 }}>
+      <div style={{ ...s.card, padding: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+          <div>
+            <div className="tinyLabel" style={{ marginBottom: 8 }}>
+              Aktywność nauki
+            </div>
+            <div style={{ fontSize: 26, fontWeight: 700, color: C.textStrong }}>
+              {calMonth.toLocaleDateString("pl-PL", { month: "long", year: "numeric" })}
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => setCalMonth(addM(calMonth, -1))} style={s.btn("ghost")}>
+              <IcoLeft size={14} />
+            </button>
+            <button onClick={() => setCalMonth(som(new Date()))} style={s.btn("soft")}>
+              Dziś
+            </button>
+            <button onClick={() => setCalMonth(addM(calMonth, 1))} style={s.btn("ghost")}>
+              <IcoRight size={14} />
+            </button>
+          </div>
+        </div>
+
+        <div className="calendar-grid" style={{ marginBottom: 10 }}>
+          {["Pn", "Wt", "Śr", "Cz", "Pt", "So", "Nd"].map((d) => (
+            <div key={d} style={{ textAlign: "center", fontSize: 12, fontWeight: 700, color: C.textSub, paddingBottom: 4 }}>
+              {d}
             </div>
           ))}
         </div>
 
-        <div className="calendar-main-grid" style={{ minHeight: 0, flex: 1 }}>
-          <div style={{ ...s.card, padding: 20, minHeight: 0, display: "flex", flexDirection: "column" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, gap: 10, flexWrap: "wrap" }}>
-              <div>
-                <div style={{ fontSize: 22, fontWeight: 800, color: C.text, textTransform: "capitalize", letterSpacing: "-.03em" }}>
-                  {calMonth.toLocaleString("pl-PL", { month: "long", year: "numeric" })}
-                </div>
-                <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>Kliknij dzień, aby zobaczyć szczegóły aktywności.</div>
+        <div className="calendar-grid">
+          {calDays.map((d) => {
+            const info = dayMap[d.key];
+            const heat = getHeat(info);
+            const isSelected = selectedCalDay === d.key;
+            return (
+              <button
+                key={d.key}
+                onClick={() => setSelectedCalDay(d.key)}
+                style={{
+                  minHeight: 86,
+                  borderRadius: 16,
+                  border: `1px solid ${isSelected ? C.accent : heat.border}`,
+                  background: isSelected ? "#EEF1FA" : heat.bg,
+                  padding: 10,
+                  textAlign: "left",
+                  cursor: "pointer",
+                  color: d.inCurrent ? C.textStrong : C.muted,
+                }}
+              >
+                <div style={{ fontSize: 13, fontWeight: 700 }}>{d.date.getDate()}</div>
+                {info && (
+                  <div style={{ marginTop: 10, fontSize: 11, color: C.textSub, lineHeight: 1.4 }}>
+                    <div>{info.count} sesji</div>
+                    <div>{info.avgPercent}% avg</div>
+                  </div>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gap: 16 }}>
+        <div style={{ ...s.card, padding: 20 }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong, marginBottom: 8 }}>{humanDate(selectedCalDay)}</div>
+
+          {selectedDaySummary ? (
+            <div style={{ display: "grid", gap: 10 }}>
+              <div className="soft-chip">{selectedDaySummary.count} sesji</div>
+              <div style={{ fontSize: 14, color: C.textSub }}>Średni wynik: {selectedDaySummary.avgPercent}%</div>
+              <div style={{ fontSize: 14, color: C.textSub }}>Najlepszy wynik: {selectedDaySummary.bestPercent}%</div>
+              <div style={{ fontSize: 14, color: C.textSub }}>Śr. czas odpowiedzi: {fmt(selectedDaySummary.avgResponseMs)}</div>
+            </div>
+          ) : (
+            <div style={{ fontSize: 14, color: C.textSub }}>Brak sesji w tym dniu.</div>
+          )}
+        </div>
+
+        <div style={{ ...s.card, padding: 20 }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong, marginBottom: 12 }}>Miesiąc w skrócie</div>
+          <div style={{ display: "grid", gap: 10 }}>
+            <div style={{ ...s.metric, background: C.cardAlt }}>
+              <div style={{ fontSize: 11, color: C.textSub }}>Aktywne dni</div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: C.textStrong }}>{monthDaysActive}</div>
+            </div>
+            <div style={{ ...s.metric, background: C.cardAlt }}>
+              <div style={{ fontSize: 11, color: C.textSub }}>Śr. wynik</div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: C.textStrong }}>{monthAvg}%</div>
+            </div>
+            <div style={{ ...s.metric, background: C.cardAlt }}>
+              <div style={{ fontSize: 11, color: C.textSub }}>Najaktywniejszy dzień</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: C.textStrong }}>
+                {bestStudyDay ? `${bestStudyDay[0]} · ${bestStudyDay[1].count} sesji` : "—"}
               </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={() => setCalMonth((m) => addM(m, -1))} style={{ ...s.btn("ghost"), padding: "8px 12px" }}><IcoLeft size={14} /></button>
-                <button onClick={() => setCalMonth(som(new Date()))} style={{ ...s.btn("soft"), padding: "8px 14px", fontSize: 12 }}>Dziś</button>
-                <button onClick={() => setCalMonth((m) => addM(m, 1))} style={{ ...s.btn("ghost"), padding: "8px 12px" }}><IcoRight size={14} /></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const PlanView = () => (
+    <div style={{ display: "grid", gap: 16 }}>
+      <div style={{ ...s.card, padding: 22 }}>
+        <div className="tinyLabel" style={{ marginBottom: 8 }}>
+          Plan rozwoju
+        </div>
+        <div style={{ fontSize: 28, fontWeight: 700, color: C.textStrong, marginBottom: 8 }}>
+          {plan.readiness || "Plan nauki"}
+        </div>
+        <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.7 }}>{plan.recommendation}</div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        <div style={{ ...s.card, padding: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+            <IcoTarget size={16} />
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Co poprawić</div>
+          </div>
+
+          <div style={{ display: "grid", gap: 10 }}>
+            {(plan.improvements || []).length ? (
+              plan.improvements.map((item, i) => (
+                <div key={i} style={{ padding: 12, borderRadius: 14, background: C.cardAlt, border: `1px solid ${C.border}` }}>
+                  <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.6 }}>{item}</div>
+                </div>
+              ))
+            ) : (
+              <div style={{ fontSize: 14, color: C.textSub }}>Brak danych do planu. Zrób kilka sesji quizu.</div>
+            )}
+          </div>
+        </div>
+
+        <div style={{ ...s.card, padding: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+            <IcoBook size={16} />
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Tydzień nauki</div>
+          </div>
+
+          <div style={{ display: "grid", gap: 10 }}>
+            {(plan.weeklyPlan || []).length ? (
+              plan.weeklyPlan.map((x) => (
+                <div
+                  key={x.day}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "70px 1fr 60px",
+                    gap: 12,
+                    alignItems: "center",
+                    padding: 12,
+                    borderRadius: 14,
+                    background: C.cardAlt,
+                    border: `1px solid ${C.border}`,
+                  }}
+                >
+                  <div style={{ fontSize: 13, fontWeight: 700, color: C.textStrong }}>{x.day}</div>
+                  <div style={{ fontSize: 14, color: C.textSub }}>{x.task}</div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: C.textSub, textAlign: "right" }}>{x.duration}</div>
+                </div>
+              ))
+            ) : (
+              <div style={{ fontSize: 14, color: C.textSub }}>Brak tygodniowego planu.</div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const SettingsView = () => (
+    <div className="settings-grid">
+      <div style={{ ...s.card, padding: 20, display: "flex", flexDirection: "column", justifyContent: "space-between", minHeight: 0 }}>
+        <div>
+          <div className="tinyLabel" style={{ marginBottom: 10 }}>
+            Konfiguracja quizu
+          </div>
+          <div style={{ fontSize: 28, fontWeight: 600, color: C.textStrong, marginBottom: 8 }}>Ustawienia nauki</div>
+          <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.65, marginBottom: 20 }}>
+            Minimum chaosu, maksimum skupienia. Wszystko w jednym spokojnym panelu.
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+            <div>
+              <label style={s.label}>Liczba pytań</label>
+              <select
+                value={quizLength}
+                onChange={(e) => setQuizLength(e.target.value === "all" ? "all" : Number(e.target.value))}
+                style={s.input}
+              >
+                <option value={10}>10 pytań</option>
+                <option value={20}>20 pytań</option>
+                <option value={30}>30 pytań</option>
+                <option value="all">Cała baza</option>
+              </select>
+            </div>
+
+            <div>
+              <label style={s.label}>Źródło pytań</label>
+              <div style={{ ...s.input, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span>{questionPool?.length || 0} pytań</span>
+                <span className="soft-chip">
+                  <IcoBook size={12} /> aktywne
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <div style={{ display: "flex", gap: 10, marginTop: 18, flexWrap: "wrap" }}>
+            <button onClick={() => startQuiz(questionPool, quizLength)} style={s.btn("primary")}>
+              <IcoRefresh size={14} /> Nowa sesja
+            </button>
+
+            <button onClick={() => fileRef.current?.click()} style={s.btn("ghost")}>
+              <IcoUpload size={14} /> Import pytań
+            </button>
+
+            <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv,.txt" onChange={handleImport} style={{ display: "none" }} />
+          </div>
+
+          {importMsg && <div style={{ marginTop: 12, fontSize: 13, color: C.textSub }}>{importMsg}</div>}
+        </div>
+      </div>
+
+      <div className="settings-stack">
+        <div style={{ ...s.card, padding: 18, minHeight: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <IcoCloud size={16} />
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Cloud AI</div>
+            </div>
+
+            <button
+              onClick={() => setCloudApiEnabled((v) => !v)}
+              style={{
+                ...s.btn(cloudApiEnabled ? "primary" : "ghost"),
+                padding: "8px 12px",
+                minWidth: 92,
+              }}
+            >
+              {cloudApiEnabled ? "Włączone" : "Wyłączone"}
+            </button>
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <label style={s.label}>Klucz API</label>
+            <input
+              type="password"
+              value={cloudApiKey}
+              onChange={(e) => setCloudApiKey(e.target.value)}
+              placeholder="sk-ant-..."
+              style={s.input}
+            />
+            <div className="field-help">Nie zapisuj prawdziwego klucza bezpośrednio w kodzie app.jsx.</div>
+          </div>
+
+          <div>
+            <label style={s.label}>Model</label>
+            <input value={cloudModel} onChange={(e) => setCloudModel(e.target.value)} placeholder={DEFAULT_MODEL} style={s.input} />
+          </div>
+        </div>
+
+        <div style={{ ...s.card, padding: 18, minHeight: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+            <IcoTrending size={16} />
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Stan aplikacji</div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div style={{ ...s.metric, background: C.cardAlt }}>
+              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>Baza pytań</div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: C.textStrong }}>{questionPool.length}</div>
+            </div>
+
+            <div style={{ ...s.metric, background: C.cardAlt }}>
+              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>Sesje</div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: C.textStrong }}>{history.length}</div>
+            </div>
+          </div>
+
+          <div style={{ marginTop: 14 }} className="soft-chip">
+            <IcoCheck size={12} />
+            {SB_ENABLED ? "Supabase aktywne" : "Tryb lokalny"}
+          </div>
+        </div>
+
+        <div style={{ ...s.card, padding: 18, minHeight: 0, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+              <IcoTarget size={16} />
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Styl premium</div>
+            </div>
+
+            <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.65 }}>
+              Paleta oparta o papier ryżowy, indygo i stonowane kolory ziemi. Dzięki temu aplikacja wygląda spokojniej,
+              dojrzalej i bardziej premium.
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14 }}>
+            <span className="soft-chip">Wabi-sabi</span>
+            <span className="soft-chip">Japandi</span>
+            <span className="soft-chip">Zen UI</span>
+            <span className="soft-chip">Low-noise</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderTab = () => {
+    if (activeTab === "quiz") return <QuizView />;
+    if (activeTab === "results") return <ResultsView />;
+    if (activeTab === "calendar") return <CalendarView />;
+    if (activeTab === "plan") return <PlanView />;
+    if (activeTab === "settings") return <SettingsView />;
+    return <QuizView />;
+  };
+
+  return (
+    <>
+      <style>{GLOBAL_CSS}</style>
+
+      <div className="app-shell">
+        <div className="app-frame">
+          <aside className="sidebar">
+            <div style={{ padding: "8px 8px 14px" }}>
+              <div className="tinyLabel" style={{ marginBottom: 8 }}>
+                Study Suite
+              </div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: C.textStrong }}>Zen Quiz</div>
+              <div style={{ fontSize: 13, color: C.textSub, marginTop: 6, lineHeight: 1.5 }}>
+                Skupienie, rytm, jakość odpowiedzi.
               </div>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: 8, marginBottom: 10 }}>
-              {["Pn", "Wt", "Śr", "Cz", "Pt", "So", "Nd"].map((d) => (
-                <div key={d} style={{ textAlign: "center", fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: ".08em" }}>{d}</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {TABS.map((tab) => (
+                <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`tab-btn ${activeTab === tab.id ? "active" : ""}`}>
+                  {tab.icon}
+                  <span>{tab.label}</span>
+                </button>
               ))}
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: 8, minHeight: 0 }}>
-              {calDays.map((i) => {
-                const info = dayMap[i.key];
-                const heat = getHeat(info);
-                const isSelected = selectedCalDay === i.key;
-                const isToday = dayKey(Date.now()) === i.key;
-                return (
-                  <button
-                    key={i.key}
-                    onClick={() => setSelectedCalDay(i.key)}
-                    style={{
-                      minHeight: 86,
-                      borderRadius: 16,
-                      border: `1px solid ${isSelected ? C.accent : heat.border}`,
-                      background: isSelected ? "#EEF2FF" : i.inCurrent ? heat.bg : "#FAFBFD",
-                      cursor: "pointer",
-                      textAlign: "left",
-                      padding: 10,
-                      position: "relative",
-                      transition: "all .18s ease",
-                      opacity: i.inCurrent ? 1 : 0.62,
-                      boxShadow: isSelected ? "0 10px 24px rgba(79, 107, 255, 0.12)" : "none",
-                    }}
-                  >
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-                      <span style={{ fontSize: 13, fontWeight: 800, color: isSelected ? C.accent : i.inCurrent ? C.text : C.muted }}>{i.date.getDate()}</span>
-                      {isToday && <span style={{ width: 8, height: 8, borderRadius: "50%", background: C.accent }} />}
-                    </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                      <span style={{ fontSize: 11, color: info ? C.textSub : C.muted, fontWeight: 700 }}>
-                        {info ? `${info.count} ${info.count === 1 ? "sesja" : "sesje"}` : "brak"}
-                      </span>
-                      {info && (
-                        <>
-                          <div style={{ height: 5, borderRadius: 999, background: "rgba(79,107,255,.12)", overflow: "hidden" }}>
-                            <div style={{ width: `${info.avgPercent}%`, height: "100%", background: info.avgPercent >= 70 ? C.green : C.accent, borderRadius: 999 }} />
-                          </div>
-                          <div style={{ fontSize: 10, color: C.textSub }}>avg {info.avgPercent}%</div>
-                        </>
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
+            <div style={{ marginTop: "auto", ...s.cardSm, padding: 14, background: C.cardAlt }}>
+              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>Dzisiejsza forma</div>
+              <div style={{ fontSize: 24, fontWeight: 700, color: C.textStrong }}>{pct || 0}%</div>
             </div>
+          </aside>
 
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 16, flexWrap: "wrap" }}>
-              <span style={{ fontSize: 11, color: C.textSub, fontWeight: 700 }}>Intensywność</span>
-              {[
-                ["0", "transparent"],
-                ["1", "#F4F7FF"],
-                ["2", "#EAF0FF"],
-                ["3+", "#DDE5FF"],
-              ].map(([label, bg]) => (
-                <div key={label} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <span style={{ width: 16, height: 16, borderRadius: 5, background: bg, border: `1px solid ${C.border}` }} />
-                  <span style={{ fontSize: 11, color: C.textSub }}>{label}</span>
-                </d
+          <main className="content-area">{renderTab()}</main>
+        </div>
+      </div>
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<QuizAbcdApp />);

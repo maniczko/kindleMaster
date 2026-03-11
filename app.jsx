@@ -1,11 +1,10 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import * as XLSX from "xlsx";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from "recharts";
 
-// ── inline SVG icons (no lucide-react) ───────────────────────────────────────
+// ── icons ─────────────────────────────────────────────────────────────────────
 const Icon = ({ d, size = 16 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
-    stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d={d} />
   </svg>
 );
@@ -28,512 +27,459 @@ const IcoTrash    = () => <Icon d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" />;
 const IcoRefresh  = () => <Icon d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />;
 
 // ── Supabase config ───────────────────────────────────────────────────────────
-// ANON KEY musi być kluczem JWT (zaczyna się od eyJ...) z Project Settings → API
 const SUPABASE_URL      = "https://ylqloszldyzpeaikweyl.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlscWxvc3psZHl6cGVhaWt3ZXlsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMyNDg2NDUsImV4cCI6MjA4ODgyNDY0NX0.JgwZKn5_ifnoZHViOGb7aED9sZ3MnijeeI66cFhSJaQ";
+// Supabase REST działa tylko gdy uruchamiasz lokalnie (Vite/Next.js).
+// W artefakcie Claude fetch jest blokowany przez sandbox — użyj opcji lokalnej.
+const SB_ENABLED = SUPABASE_URL.startsWith("https://") && SUPABASE_ANON_KEY.startsWith("eyJ");
 
-const SB_ENABLED =
-  SUPABASE_URL.startsWith("https://") &&
-  !SUPABASE_URL.includes("YOUR_PROJECT") &&
-  !!SUPABASE_ANON_KEY &&
-  !SUPABASE_ANON_KEY.includes("YOUR_KEY");
-
-// ── Supabase REST helpers (no library) ───────────────────────────────────────
-const sbHeaders = () => ({
+// ── Supabase REST ─────────────────────────────────────────────────────────────
+const sbH = (prefer = "return=representation") => ({
   "Content-Type": "application/json",
   apikey: SUPABASE_ANON_KEY,
   Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-  Prefer: "return=representation",
+  Prefer: prefer,
 });
-
 async function sbSelect(table, params = "") {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${params}`, { headers: sbHeaders() });
-  if (!res.ok) { const e = await res.text(); throw new Error(e); }
-  return res.json();
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${params}`, { headers: sbH() });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
 }
-
 async function sbUpsert(table, rows) {
-  const BATCH = 100;
-  for (let i = 0; i < rows.length; i += BATCH) {
-    const chunk = rows.slice(i, i + BATCH);
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+  for (let i = 0; i < rows.length; i += 100) {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
       method: "POST",
-      mode: "cors",
-      headers: {
-        "Content-Type": "application/json",
-        apikey: SUPABASE_ANON_KEY,
-        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-        Prefer: "resolution=merge-duplicates,return=minimal",
-      },
-      body: JSON.stringify(chunk),
+      headers: sbH("resolution=merge-duplicates,return=minimal"),
+      body: JSON.stringify(rows.slice(i, i + 100)),
     });
-    if (!res.ok) { const e = await res.text(); throw new Error(`Batch ${i/BATCH+1}: ${e}`); }
+    if (!r.ok) throw new Error(`Batch ${i/100+1}: ${await r.text()}`);
   }
 }
-
 async function sbInsert(table, row) {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
-    method: "POST", headers: sbHeaders(), body: JSON.stringify(row),
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+    method: "POST", headers: sbH(), body: JSON.stringify(row),
   });
-  if (!res.ok) { const e = await res.text(); throw new Error(e); }
+  if (!r.ok) throw new Error(await r.text());
 }
 
-// ── domain helpers ────────────────────────────────────────────────────────────
-const STORAGE_KEY = "quiz_abcd_attempts_v1";
-const optionKeys = ["A", "B", "C", "D"];
-const difficultyWeights = { easy: 1, medium: 1.5, hard: 2 };
+// ── constants / helpers ───────────────────────────────────────────────────────
+const STORAGE_KEY = "quiz_abcd_attempts_v2";
+const optionKeys = ["A","B","C","D"];
+const diffW = { easy:1, medium:1.5, hard:2 };
+const normDiff = v => { const r = String(v||"medium").trim().toLowerCase(); return ["easy","medium","hard"].includes(r)?r:"medium"; };
+const fmt = ms => `${(ms/1000).toFixed(1)}s`;
+const dayKey = ts => { const d=new Date(ts); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; };
+const som = d => new Date(d.getFullYear(),d.getMonth(),1);
+const addM = (d,n) => new Date(d.getFullYear(),d.getMonth()+n,1);
 
-const normalizeDifficulty = (v) => {
-  const r = String(v || "medium").trim().toLowerCase();
-  return ["easy", "medium", "hard"].includes(r) ? r : "medium";
+const loadLocal = () => { try { return JSON.parse(localStorage.getItem(STORAGE_KEY)||"[]"); } catch { return []; } };
+const saveLocal = list => { try { localStorage.setItem(STORAGE_KEY,JSON.stringify((list||[]).slice(0,100))); } catch {} };
+const dedupe = items => {
+  const m = new Map();
+  for (const a of (items||[])) {
+    if (!a?.id) continue;
+    const ex = m.get(a.id);
+    if (!ex || (ex.source!=="supabase" && a.source==="supabase")) m.set(a.id,a);
+  }
+  return [...m.values()].sort((a,b)=>b.finishedAt-a.finishedAt);
 };
-
-const loadLocalAttempts = () => { try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); } catch { return []; } };
-const saveLocalAttempt = (a) => { const u = [a, ...loadLocalAttempts()].slice(0, 50); localStorage.setItem(STORAGE_KEY, JSON.stringify(u)); return u; };
 
 // ── question mapping ──────────────────────────────────────────────────────────
-function rowToQuestion(row, i) {
-  return {
-    id: row.id ?? i + 1,
-    questionNo: row.question_no ?? i + 1,
-    question: row.question_text,
-    options: { A: row.option_a, B: row.option_b, C: row.option_c, D: row.option_d },
-    correct: row.correct_answer || null,
-    explanation: row.explanation || "Brak wyjaśnienia.",
-    category: row.category || "General",
-    difficulty: normalizeDifficulty(row.difficulty || "medium"),
-    sourceType: row.source_type || "database",
-    sourceFile: row.source_file || null,
-  };
-}
-
-function questionToRow(q, i) {
-  return {
-    question_no: q.questionNo ?? i + 1,
-    question_text: q.question,
-    option_a: q.options.A, option_b: q.options.B,
-    option_c: q.options.C, option_d: q.options.D,
-    correct_answer: q.correct || null,
-    explanation: q.explanation || null,
-    category: q.category || "General",
-    difficulty: normalizeDifficulty(q.difficulty || "medium"),
-    source_type: q.sourceType || "import",
-    source_file: q.sourceFile || null,
-    is_active: true,
-  };
-}
+const rowToQ = (row,i) => ({
+  id: row.id??i+1, questionNo: row.question_no??i+1,
+  question: row.question_text,
+  options: { A:row.option_a, B:row.option_b, C:row.option_c, D:row.option_d },
+  correct: row.correct_answer||null,
+  explanation: row.explanation||"Brak wyjaśnienia.",
+  category: row.category||"General",
+  difficulty: normDiff(row.difficulty||"medium"),
+  sourceType: row.source_type||"database", sourceFile: row.source_file||null,
+});
+const qToRow = (q,i) => ({
+  question_no: q.questionNo??i+1,
+  question_text: q.question,
+  option_a: q.options.A, option_b: q.options.B, option_c: q.options.C, option_d: q.options.D,
+  correct_answer: q.correct||null, explanation: q.explanation||null,
+  category: q.category||"General", difficulty: normDiff(q.difficulty||"medium"),
+  source_type: q.sourceType||"import", source_file: q.sourceFile||null, is_active: true,
+});
 
 // ── file parsers ──────────────────────────────────────────────────────────────
-function parseQuestionsFromRows(rows, sourceFile = null) {
-  return rows.map((row, i) => {
-    const question = row.question ?? row.Question ?? row.pytanie ?? row.Pytanie;
-    const a = row.A ?? row.a ?? row.optionA;
-    const b = row.B ?? row.b ?? row.optionB;
-    const c = row.C ?? row.c ?? row.optionC;
-    const d = row.D ?? row.d ?? row.optionD;
-    const correct = String(row.correct ?? row.Correct ?? row.poprawna ?? "").trim().toUpperCase();
-    if (!question || !a || !b || !c || !d) return null;
+function parseRows(rows, sourceFile=null) {
+  return (rows||[]).map((row,i) => {
+    const q = row.question??row.Question??row.pytanie??row.question_text;
+    const a = row.A??row.a??row.optionA??row.option_a;
+    const b = row.B??row.b??row.optionB??row.option_b;
+    const c = row.C??row.c??row.optionC??row.option_c;
+    const d = row.D??row.d??row.optionD??row.option_d;
+    const correct = String(row.correct??row.Correct??row.poprawna??row.correct_answer??"").trim().toUpperCase();
+    if (!q||!a||!b||!c||!d) return null;
     return {
-      id: row.id ?? i + 1, questionNo: Number(row.questionNo ?? row.nr ?? i + 1),
-      question: String(question).trim(),
-      options: { A: String(a).trim(), B: String(b).trim(), C: String(c).trim(), D: String(d).trim() },
-      correct: optionKeys.includes(correct) ? correct : null,
-      explanation: String(row.explanation ?? row.wyjasnienie ?? "Brak wyjaśnienia.").trim(),
-      category: String(row.category ?? row.kategoria ?? "General").trim(),
-      difficulty: normalizeDifficulty(row.difficulty ?? row.trudnosc ?? "medium"),
-      sourceType: "spreadsheet", sourceFile,
+      id: row.id??`import-${i+1}`, questionNo: Number(row.questionNo??row.nr??row.question_no??i+1),
+      question: String(q).trim(),
+      options: { A:String(a).trim(), B:String(b).trim(), C:String(c).trim(), D:String(d).trim() },
+      correct: optionKeys.includes(correct)?correct:null,
+      explanation: String(row.explanation??row.wyjasnienie??"Brak wyjaśnienia.").trim(),
+      category: String(row.category??row.kategoria??"General").trim(),
+      difficulty: normDiff(row.difficulty??row.trudnosc??"medium"),
+      sourceType:"spreadsheet", sourceFile,
     };
   }).filter(Boolean);
 }
-
-function parseQuestionsFromTxt(text, sourceFile = "import.txt") {
-  const norm = text.replace(/\r/g, "");
-  return [...norm.matchAll(/Question\s+#(\d+)\s*([\s\S]*?)(?=\nQuestion\s+#\d+|$)/g)].map(match => {
-    const no = Number(match[1]);
-    const block = match[2].trim();
-    const m = block.match(/^([\s\S]*?)\nA\.\s*([\s\S]*?)\nB\.\s*([\s\S]*?)\nC\.\s*([\s\S]*?)\nD\.\s*([\s\S]*?)(?:\nView answer|$)/);
-    if (!m) return null;
-    return {
-      id: no, questionNo: no,
-      question: m[1].replace(/\s+/g, " ").trim(),
-      options: { A: m[2].replace(/\s+/g, " ").trim(), B: m[3].replace(/\s+/g, " ").trim(), C: m[4].replace(/\s+/g, " ").trim(), D: m[5].replace(/\s+/g, " ").trim() },
-      correct: null, explanation: "Brak odpowiedzi w pliku źródłowym.",
-      category: "Import", difficulty: "medium", sourceType: "txt_import", sourceFile,
-    };
-  }).filter(Boolean);
+function parseTxt(text, sourceFile="import.txt") {
+  return [...String(text||"").replace(/\r/g,"").matchAll(/Question\s+#(\d+)\s*([\s\S]*?)(?=\nQuestion\s+#\d+|$)/g)]
+    .map(m => {
+      const no=Number(m[1]), block=m[2].trim();
+      const p=block.match(/^([\s\S]*?)\nA\.\s*([\s\S]*?)\nB\.\s*([\s\S]*?)\nC\.\s*([\s\S]*?)\nD\.\s*([\s\S]*?)(?:\nView answer|$)/);
+      if (!p) return null;
+      return {
+        id:`txt-${no}`, questionNo:no,
+        question: p[1].replace(/\s+/g," ").trim(),
+        options:{ A:p[2].replace(/\s+/g," ").trim(), B:p[3].replace(/\s+/g," ").trim(), C:p[4].replace(/\s+/g," ").trim(), D:p[5].replace(/\s+/g," ").trim() },
+        correct:null, explanation:"Brak odpowiedzi w pliku źródłowym.",
+        category:"Import", difficulty:"medium", sourceType:"txt_import", sourceFile,
+      };
+    }).filter(Boolean);
 }
 
-// ── calendar helpers ──────────────────────────────────────────────────────────
-const formatDayKey = (ts) => { const d = new Date(ts); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; };
-const startOfMonth = (d) => new Date(d.getFullYear(), d.getMonth(), 1);
-const addMonths = (d, n) => new Date(d.getFullYear(), d.getMonth() + n, 1);
-
-function buildCalendarDays(month) {
-  const start = startOfMonth(month);
-  const firstWeekday = (start.getDay() + 6) % 7;
-  const gridStart = new Date(start); gridStart.setDate(start.getDate() - firstWeekday);
-  return Array.from({ length: 42 }, (_, i) => {
-    const date = new Date(gridStart); date.setDate(gridStart.getDate() + i);
-    return { date, key: formatDayKey(date.getTime()), inCurrentMonth: date.getMonth() === start.getMonth() };
-  });
+// ── calendar ──────────────────────────────────────────────────────────────────
+function buildCalDays(month) {
+  const start=som(month), fw=(start.getDay()+6)%7;
+  const gs=new Date(start); gs.setDate(start.getDate()-fw);
+  return Array.from({length:42},(_,i)=>{ const d=new Date(gs); d.setDate(gs.getDate()+i); return {date:d,key:dayKey(d.getTime()),inCurrent:d.getMonth()===start.getMonth()}; });
 }
 
-function buildStudyPlan(history, weakestCategory) {
-  if (!history.length) return { readiness:"Brak danych", recommendation:"Ukończ kilka prób quizu, aby wygenerować plan.", focusAreas:[], weeklyPlan:[], improvements:[] };
-  const last5 = history.slice(0, 5);
-  const avgAcc = Math.round(last5.reduce((s, a) => s + a.percent, 0) / last5.length);
-  const avgPace = (last5.reduce((s, a) => s + a.avgResponseMs, 0) / last5.length / 1000).toFixed(1);
-  const weakMap = {}, strongMap = {};
-  last5.forEach(a => {
-    if (a.weakestCategory) weakMap[a.weakestCategory] = (weakMap[a.weakestCategory] || 0) + 1;
-    if (a.strongestCategory) strongMap[a.strongestCategory] = (strongMap[a.strongestCategory] || 0) + 1;
-  });
-  const weak = Object.entries(weakMap).sort((a,b)=>b[1]-a[1])[0]?.[0] || weakestCategory?.category || "Mieszane tematy";
-  const strong = Object.entries(strongMap).sort((a,b)=>b[1]-a[1])[0]?.[0] || "Wiedza ogólna";
-  const readiness = avgAcc >= 85 ? "Zaawansowany" : avgAcc >= 65 ? "Średniozaawansowany" : "Buduj podstawy";
-  const recommendation = avgAcc >= 85 ? "Gotowy na trudniejsze zestawy i testy czasowe." : avgAcc >= 65 ? "Dobra baza — wzmocnij słabe kategorie." : "Skup się najpierw na dokładności.";
+// ── study plan ────────────────────────────────────────────────────────────────
+function buildPlan(history, weakCat) {
+  if (!history.length) return { readiness:"Brak danych", recommendation:"Ukończ kilka prób quizu.", improvements:[], weeklyPlan:[] };
+  const l5=history.slice(0,5);
+  const avgAcc=Math.round(l5.reduce((s,a)=>s+a.percent,0)/l5.length);
+  const avgPace=Number((l5.reduce((s,a)=>s+a.avgResponseMs,0)/l5.length/1000).toFixed(1));
+  const wm={},sm={};
+  l5.forEach(a=>{ if(a.weakestCategory) wm[a.weakestCategory]=(wm[a.weakestCategory]||0)+1; if(a.strongestCategory) sm[a.strongestCategory]=(sm[a.strongestCategory]||0)+1; });
+  const weak=Object.entries(wm).sort((a,b)=>b[1]-a[1])[0]?.[0]||weakCat?.category||"Mieszane tematy";
+  const strong=Object.entries(sm).sort((a,b)=>b[1]-a[1])[0]?.[0]||"Wiedza ogólna";
   return {
-    readiness, recommendation,
-    focusAreas: [
-      { area: weak, reason: "Najczęściej pojawia się jako Twoja najsłabsza kategoria.", priority: avgAcc < 50 ? "Wysoki" : avgAcc < 75 ? "Średni" : "Niski" },
-      { area: avgPace > 18 ? "Szybkość decyzji" : "Konsekwencja pod presją", reason: avgPace > 18 ? "Średnie tempo sugeruje za długie zastanawianie się." : "Tempo jest ok — kolejny zysk to stała dokładność.", priority: avgPace > 18 ? "Wysoki" : "Średni" },
-      { area: strong, reason: "Użyj swojej mocnej strony do budowania pewności siebie.", priority: "Niski" },
-    ],
-    weeklyPlan: [
-      { day:"Dzień 1", task:`Przejrzyj błędy z ostatnich 3 prób, szczególnie ${weak}.`, duration:"25 min" },
-      { day:"Dzień 2", task:`Skupiony quiz z ${weak} i 3 krótkie wnioski.`, duration:"30 min" },
-      { day:"Dzień 3", task:"Quiz mieszany z czasomierzem. Odpowiadaj pewnie.", duration:"20 min" },
-      { day:"Dzień 4", task:"Wróć do wyjaśnień i podsumuj zasady własnymi słowami.", duration:"20 min" },
-      { day:"Dzień 5", task:`Zestaw pewności w ${strong}, potem 5 trudniejszych pytań ze słabych obszarów.`, duration:"25 min" },
-      { day:"Dzień 6", task:"Pełny próbny quiz — porównaj wynik z poprzednimi.", duration:"30 min" },
-      { day:"Dzień 7", task:"Lekki przegląd: co się poprawiło, co powtórzyć w przyszłym tygodniu.", duration:"15 min" },
-    ],
+    readiness: avgAcc>=85?"Zaawansowany":avgAcc>=65?"Średniozaawansowany":"Buduj podstawy",
+    recommendation: avgAcc>=85?"Gotowy na trudniejsze zestawy.":avgAcc>=65?"Dobra baza — wzmocnij słabe kategorie.":"Skup się najpierw na dokładności.",
     improvements: [
-      avgAcc < 70 ? "Zwolnij przy trudnych pytaniach i skup się na TYM, dlaczego poprawna odpowiedź jest prawidłowa." : "Utrzymaj dokładność i zwiększaj trudność przez mieszanie kategorii.",
-      avgPace > 18 ? "Pracuj nad szybkością: odpowiadaj szybciej na łatwe pytania." : "Tempo jest dobre — popraw się przez szybsze wykrywanie dystraktorów.",
-      `Przeznacz dodatkowy czas na ćwiczenia z ${weak}.`,
+      avgAcc<70?"Zwolnij przy trudnych pytaniach i skup się na tym, dlaczego odpowiedź jest poprawna.":"Utrzymaj dokładność i mieszaj kategorie.",
+      avgPace>18?"Pracuj nad szybkością: szybciej odpowiadaj na łatwe pytania.":"Tempo jest dobre — wykrywaj dystraktory szybciej.",
+      `Przeznacz dodatkowy czas na ćwiczenia z kategorii: ${weak}.`,
+    ],
+    weeklyPlan:[
+      {day:"Dzień 1", task:`Przejrzyj błędy z ostatnich 3 prób, szczególnie ${weak}.`, duration:"25 min"},
+      {day:"Dzień 2", task:`Skupiony quiz z ${weak} i 3 krótkie wnioski.`, duration:"30 min"},
+      {day:"Dzień 3", task:"Quiz mieszany z czasomierzem. Odpowiadaj pewnie.", duration:"20 min"},
+      {day:"Dzień 4", task:"Wróć do wyjaśnień i podsumuj zasady własnymi słowami.", duration:"20 min"},
+      {day:"Dzień 5", task:`Zestaw pewności w ${strong}, potem 5 trudniejszych pytań.`, duration:"25 min"},
+      {day:"Dzień 6", task:"Pełny próbny quiz — porównaj wynik z poprzednimi.", duration:"30 min"},
+      {day:"Dzień 7", task:"Lekki przegląd: co się poprawiło, co powtórzyć.", duration:"15 min"},
     ],
   };
 }
 
-const sampleQuestions = [
-  { id:1, questionNo:1, question:"Który dokument formalnie definiuje zakres projektu?", options:{A:"Rejestr ryzyk",B:"Karta projektu",C:"Lessons learned",D:"Dziennik problemów"}, correct:"B", explanation:"Karta projektu (project charter) formalnie autoryzuje projekt i określa jego zakres.", category:"Zarządzanie projektami", difficulty:"medium", sourceType:"sample" },
-  { id:2, questionNo:2, question:"Co oznacza skrót VAT?", options:{A:"Value Added Tax",B:"Variable Asset Transfer",C:"Verified Accounting Tool",D:"Value Allocation Table"}, correct:"A", explanation:"VAT to podatek od wartości dodanej (ang. Value Added Tax).", category:"Finanse", difficulty:"easy", sourceType:"sample" },
-  { id:3, questionNo:3, question:"Które zdanie to najbardziej naturalne wyrażenie w angielskim biznesowym?", options:{A:"Let us cut to the chase.",B:"Let us cut to the hunt.",C:"Let us go to the speed.",D:"Let us go to the cut."}, correct:"A", explanation:'"Cut to the chase" oznacza "przejdź od razu do sedna sprawy".', category:"Język angielski", difficulty:"easy", sourceType:"sample" },
+// ── sample data ───────────────────────────────────────────────────────────────
+const SAMPLES = [
+  {id:1,questionNo:1,question:"Który dokument formalnie definiuje zakres projektu?",options:{A:"Rejestr ryzyk",B:"Karta projektu",C:"Lessons learned",D:"Dziennik problemów"},correct:"B",explanation:"Karta projektu formalnie autoryzuje projekt i określa jego zakres.",category:"Zarządzanie projektami",difficulty:"medium",sourceType:"sample"},
+  {id:2,questionNo:2,question:"Co oznacza skrót VAT?",options:{A:"Value Added Tax",B:"Variable Asset Transfer",C:"Verified Accounting Tool",D:"Value Allocation Table"},correct:"A",explanation:"VAT to podatek od wartości dodanej.",category:"Finanse",difficulty:"easy",sourceType:"sample"},
+  {id:3,questionNo:3,question:"Które zdanie brzmi najbardziej naturalnie w angielskim biznesowym?",options:{A:"Let us cut to the chase.",B:"Let us cut to the hunt.",C:"Let us go to the speed.",D:"Let us go to the cut."},correct:"A",explanation:'"Cut to the chase" oznacza „przejdźmy do sedna".',category:"Język angielski",difficulty:"easy",sourceType:"sample"},
 ];
 
-// ── shared UI primitives ──────────────────────────────────────────────────────
-const Card = ({ children, className = "" }) => <div className={`bg-white rounded-2xl shadow-sm border border-slate-200 ${className}`}>{children}</div>;
-const CardHeader = ({ children }) => <div className="p-5 pb-0">{children}</div>;
-const CardTitle = ({ children, className = "" }) => <h2 className={`font-semibold text-slate-800 ${className}`}>{children}</h2>;
-const CardContent = ({ children, className = "" }) => <div className={`p-5 ${className}`}>{children}</div>;
-const Badge = ({ children, variant = "outline" }) => {
-  const styles = { outline:"border border-slate-300 text-slate-600", secondary:"bg-slate-100 text-slate-700", destructive:"bg-red-100 text-red-700 border border-red-200", success:"bg-green-100 text-green-700 border border-green-200" };
-  return <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${styles[variant]||styles.outline}`}>{children}</span>;
+// ── UI primitives ─────────────────────────────────────────────────────────────
+const Card = ({children,className=""}) => <div className={`rounded-2xl border border-slate-200 bg-white shadow-sm ${className}`}>{children}</div>;
+const CH = ({children}) => <div className="p-5 pb-0">{children}</div>;
+const CT = ({children,className=""}) => <h2 className={`font-semibold text-slate-800 ${className}`}>{children}</h2>;
+const CC = ({children,className=""}) => <div className={`p-5 ${className}`}>{children}</div>;
+const Badge = ({children,variant="outline"}) => {
+  const s={outline:"border border-slate-300 text-slate-600",secondary:"bg-slate-100 text-slate-700",destructive:"border border-red-200 bg-red-100 text-red-700",success:"border border-green-200 bg-green-100 text-green-700"};
+  return <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${s[variant]||s.outline}`}>{children}</span>;
 };
-const Btn = ({ children, onClick, disabled, variant = "default", className = "" }) => {
-  const styles = { default:"bg-slate-900 text-white hover:bg-slate-700", outline:"border border-slate-300 bg-white text-slate-700 hover:bg-slate-50", danger:"border border-red-300 bg-white text-red-600 hover:bg-red-50" };
-  return <button onClick={onClick} disabled={disabled} className={`inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-medium transition-colors focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed ${styles[variant]||styles.default} ${className}`}>{children}</button>;
+const Btn = ({children,onClick,disabled,variant="default",className=""}) => {
+  const s={default:"bg-slate-900 text-white hover:bg-slate-700",outline:"border border-slate-300 bg-white text-slate-700 hover:bg-slate-50",danger:"border border-red-300 bg-white text-red-600 hover:bg-red-50"};
+  return <button onClick={onClick} disabled={disabled} className={`inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-medium transition-colors focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${s[variant]||s.default} ${className}`}>{children}</button>;
 };
-const Progress = ({ value, className = "" }) => (
-  <div className={`w-full bg-slate-200 rounded-full overflow-hidden ${className}`}>
-    <div className="bg-slate-900 h-full rounded-full transition-all" style={{ width:`${Math.min(100,Math.max(0,value))}%` }} />
+const Progress = ({value,className=""}) => (
+  <div className={`w-full overflow-hidden rounded-full bg-slate-200 ${className}`}>
+    <div className="h-full rounded-full bg-slate-900 transition-all" style={{width:`${Math.min(100,Math.max(0,value))}%`}} />
   </div>
 );
-const StatusDot = ({ status }) => {
-  const colors = { idle:"bg-slate-300", loading:"bg-yellow-400 animate-pulse", ok:"bg-green-500", error:"bg-red-500", disabled:"bg-slate-300" };
-  return <span className={`inline-block h-2 w-2 rounded-full ${colors[status]||"bg-slate-300"}`} />;
+const Dot = ({status}) => {
+  const c={idle:"bg-slate-300",loading:"animate-pulse bg-yellow-400",ok:"bg-green-500",error:"bg-red-500",disabled:"bg-slate-300"};
+  return <span className={`inline-block h-2 w-2 rounded-full ${c[status]||"bg-slate-300"}`}/>;
 };
 
-// ── main app ──────────────────────────────────────────────────────────────────
+// ── app ───────────────────────────────────────────────────────────────────────
 export default function QuizAbcdApp() {
-  const [questions, setQuestions]             = useState(sampleQuestions);
-  const [currentIndex, setCurrentIndex]       = useState(0);
-  const [selected, setSelected]               = useState(null);
-  const [answers, setAnswers]                 = useState({});
-  const [showResult, setShowResult]           = useState(false);
-  const [startedAt]                           = useState(() => Date.now());
-  const [questionStartedAt, setQSA]           = useState(() => Date.now());
-  const [finishedAt, setFinishedAt]           = useState(null);
-  const [attemptHistory, setAttemptHistory]   = useState(() => loadLocalAttempts());
-  const [importMsg, setImportMsg]             = useState("Importuj CSV, Excel lub TXT.");
-  const [activeTab, setActiveTab]             = useState("quiz");
-  const [calendarMonth, setCalendarMonth]     = useState(() => startOfMonth(new Date()));
-  const fileInputRef                          = useRef(null);
+  const [questions,   setQuestions]   = useState(SAMPLES);
+  const [idx,         setIdx]         = useState(0);
+  const [selected,    setSelected]    = useState(null);
+  const [answers,     setAnswers]     = useState({});
+  const [showResult,  setShowResult]  = useState(false);
+  const [startedAt,   setStartedAt]   = useState(()=>Date.now());
+  const [qStartedAt,  setQStartedAt]  = useState(()=>Date.now());
+  const [finishedAt,  setFinishedAt]  = useState(null);
+  const [history,     setHistory]     = useState(()=>loadLocal());
+  const [importMsg,   setImportMsg]   = useState("Importuj CSV, Excel lub TXT.");
+  const [activeTab,   setActiveTab]   = useState("quiz");
+  const [calMonth,    setCalMonth]    = useState(()=>som(new Date()));
+  const [qStatus,     setQStatus]     = useState("idle");
+  const [qMsg,        setQMsg]        = useState(SB_ENABLED?"Kliknij 'Wczytaj z bazy'.":"Supabase nie jest skonfigurowany.");
+  const [attStatus,   setAttStatus]   = useState("idle");
+  const [testMsg,     setTestMsg]     = useState("");
+  const fileRef = useRef(null);
 
-  // cloud status
-  const [qStatus,   setQStatus]   = useState("idle");
-  const [qMsg,      setQMsg]      = useState(SB_ENABLED ? "Kliknij 'Wczytaj z bazy' lub zaimportuj plik." : "Supabase nie jest skonfigurowany.");
-  const [attStatus, setAttStatus] = useState("idle");
-  const [testMsg,   setTestMsg]   = useState("");
+  const total   = questions.length;
+  const current = questions[idx] || SAMPLES[0];
+  const answered = Object.keys(answers).length;
+  const score   = useMemo(()=>Object.values(answers).filter(a=>a.isCorrect).length,[answers]);
 
-  // ── Supabase: wczytaj pytania ─────────────────────────────────────────────
-  const loadQuestionsFromDB = async () => {
-    if (!SB_ENABLED) { setQStatus("disabled"); setQMsg("Supabase nie jest skonfigurowany."); return; }
-    setQStatus("loading"); setQMsg("Wczytuję pytania z Supabase…");
+  // ── reset ──────────────────────────────────────────────────────────────────
+  const reset = useCallback((qs=null)=>{
+    if (qs) setQuestions(qs);
+    setIdx(0); setSelected(null); setAnswers({});
+    setShowResult(false); setStartedAt(Date.now()); setQStartedAt(Date.now());
+    setFinishedAt(null); setActiveTab("quiz");
+  },[]);
+
+  // ── Supabase: pytania ──────────────────────────────────────────────────────
+  const loadQfromDB = useCallback(async()=>{
+    if (!SB_ENABLED){setQStatus("disabled");setQMsg("Supabase nie jest skonfigurowany.");return;}
+    setQStatus("loading");setQMsg("Wczytuję pytania z Supabase…");
     try {
-      const rows = await sbSelect("quiz_questions", "is_active=eq.true&order=question_no.asc&limit=5000");
-      if (!rows.length) { setQStatus("ok"); setQMsg("Baza pytań jest pusta. Zaimportuj plik i kliknij 'Wyślij do bazy'."); return; }
-      const parsed = rows.map(rowToQuestion);
-      setQuestions(parsed);
-      setCurrentIndex(0); setSelected(null); setAnswers({});
-      setShowResult(false); setFinishedAt(null); setActiveTab("quiz");
-      setQStatus("ok"); setQMsg(`Wczytano ${parsed.length} pytań z Supabase.`);
-    } catch (e) { setQStatus("error"); setQMsg(`Błąd wczytywania pytań: ${e.message}`); }
-  };
+      const rows=await sbSelect("quiz_questions","is_active=eq.true&order=question_no.asc&limit=5000");
+      if (!rows.length){setQStatus("ok");setQMsg("Baza pytań jest pusta. Zaimportuj plik i wyślij do bazy.");return;}
+      reset(rows.map(rowToQ));
+      setQStatus("ok");setQMsg(`Wczytano ${rows.length} pytań z Supabase.`);
+    } catch(e){setQStatus("error");setQMsg(`Błąd wczytywania: ${e.message}`);}
+  },[reset]);
 
-  // ── Supabase: wyślij pytania ──────────────────────────────────────────────
-  const pushQuestionsToDB = async () => {
-    if (!SB_ENABLED) { setQStatus("disabled"); setQMsg("Supabase nie jest skonfigurowany."); return; }
-    if (!questions.length) { setQMsg("Brak pytań do wysłania."); return; }
-    setQStatus("loading"); setQMsg(`Wysyłam ${questions.length} pytań do Supabase…`);
+  const pushQtoDB = useCallback(async()=>{
+    if (!SB_ENABLED){setQStatus("disabled");return;}
+    if (!questions.length){setQMsg("Brak pytań do wysłania.");return;}
+    setQStatus("loading");setQMsg(`Wysyłam ${questions.length} pytań…`);
     try {
-      const rows = questions.map(questionToRow);
-      await sbUpsert("quiz_questions", rows);
-      setQStatus("ok"); setQMsg(`Wysłano ${rows.length} pytań do Supabase.`);
-    } catch (e) { setQStatus("error"); setQMsg(`Błąd wysyłania pytań: ${e.message}`); }
-  };
+      await sbUpsert("quiz_questions",questions.map(qToRow));
+      setQStatus("ok");setQMsg(`Wysłano ${questions.length} pytań do Supabase.`);
+    } catch(e){setQStatus("error");setQMsg(`Błąd wysyłania: ${e.message}`);}
+  },[questions]);
 
-  // ── Supabase: wczytaj statystyki ──────────────────────────────────────────
-  const loadAttemptsFromDB = async () => {
-    if (!SB_ENABLED) { setAttStatus("disabled"); return; }
+  // ── Supabase: statystyki ───────────────────────────────────────────────────
+  const loadAttempts = useCallback(async()=>{
+    if (!SB_ENABLED){setAttStatus("disabled");return;}
     setAttStatus("loading");
     try {
-      const rows = await sbSelect("quiz_attempts", "order=finished_at.desc&limit=50");
-      const mapped = rows.map(r => ({
-        id: r.attempt_id, finishedAt: new Date(r.finished_at).getTime(),
-        totalQuestions: r.total_questions, score: r.score, percent: r.percent,
-        mastery: r.mastery, avgResponseMs: r.avg_response_ms,
-        totalTimeMs: r.total_time_ms,
-        strongestCategory: r.strongest_category,
-        weakestCategory: r.weakest_category, source: "supabase",
+      const rows=await sbSelect("quiz_attempts","order=finished_at.desc&limit=100");
+      const mapped=rows.map(r=>({
+        id:r.attempt_id, finishedAt:new Date(r.finished_at).getTime(),
+        totalQuestions:r.total_questions, score:r.score, percent:r.percent,
+        mastery:r.mastery, avgResponseMs:r.avg_response_ms, totalTimeMs:r.total_time_ms,
+        strongestCategory:r.strongest_category, weakestCategory:r.weakest_category, source:"supabase",
       }));
-      if (mapped.length) setAttemptHistory(mapped);
+      setHistory(prev=>{ const m=dedupe([...mapped,...prev]); saveLocal(m); return m; });
       setAttStatus("ok");
-    } catch (e) { setAttStatus("error"); console.error(e); }
-  };
+    } catch(e){setAttStatus("error");console.error(e);}
+  },[]);
 
-  const testConnection = async () => {
+  // ── test połączenia ────────────────────────────────────────────────────────
+  const testConn = useCallback(async()=>{
     setTestMsg("Testuję…");
-    if (!SB_ENABLED) { setTestMsg("❌ Klucz nie jest ustawiony — uzupełnij SUPABASE_ANON_KEY w kodzie."); return; }
+    if (!SB_ENABLED){setTestMsg("❌ Brak poprawnego klucza Supabase.");return;}
     try {
-      const res = await fetch(`${SUPABASE_URL}/rest/v1/quiz_questions?limit=1`, {
-        headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
-      });
-      if (res.ok) {
-        const d = await res.json();
-        setTestMsg(`✅ Połączenie OK. Tabela quiz_questions istnieje (${d.length} wierszy w próbce).`);
-      } else {
-        const e = await res.text();
-        setTestMsg(`❌ HTTP ${res.status}: ${e}`);
-      }
-    } catch (e) {
-      setTestMsg(`❌ Sieć/CORS: ${e.message} — sprawdź czy klucz zaczyna się od eyJ...`);
-    }
-  };
+      const r=await fetch(`${SUPABASE_URL}/rest/v1/quiz_questions?limit=1`,{headers:{apikey:SUPABASE_ANON_KEY,Authorization:`Bearer ${SUPABASE_ANON_KEY}`}});
+      if (r.ok){const d=await r.json();setTestMsg(`✅ Połączenie OK. Tabela quiz_questions istnieje (próbka: ${d.length} rekord).`);}
+      else setTestMsg(`❌ HTTP ${r.status}: ${await r.text()}`);
+    } catch(e){setTestMsg(`❌ Sieć/CORS: ${e.message} — ten błąd oznacza, że artefakt Claude blokuje fetch. Uruchom app lokalnie.`);}
+  },[]);
 
-  // wczytaj dane przy starcie
-  useEffect(() => { loadQuestionsFromDB(); loadAttemptsFromDB(); }, []);
+  useEffect(()=>{loadQfromDB();loadAttempts();},[loadQfromDB,loadAttempts]);
 
-  const current = questions[currentIndex] || sampleQuestions[0];
-  const total   = questions.length;
-  const answeredCount = Object.keys(answers).length;
-  const score   = useMemo(() => Object.values(answers).filter(a => a.isCorrect).length, [answers]);
-
-  const handleAnswer = (key) => {
-    if (selected || showResult) return;
-    const responseTimeMs = Date.now() - questionStartedAt;
+  // ── odpowiadanie ───────────────────────────────────────────────────────────
+  const handleAnswer = useCallback((key)=>{
+    if (selected||showResult) return;
     setSelected(key);
-    setAnswers(prev => ({ ...prev, [current.id]: { questionId:current.id, selected:key, correct:current.correct, isCorrect:current.correct ? key===current.correct : false, responseTimeMs, category:current.category||"General", difficulty:current.difficulty||"medium" } }));
-  };
+    setAnswers(prev=>({...prev,[current.id]:{questionId:current.id,selected:key,correct:current.correct,isCorrect:current.correct?key===current.correct:false,responseTimeMs:Date.now()-qStartedAt,category:current.category||"General",difficulty:current.difficulty||"medium"}}));
+  },[current,qStartedAt,selected,showResult]);
 
-  const nextQuestion = () => {
-    if (currentIndex < total - 1) {
-      const ni = currentIndex + 1;
-      setCurrentIndex(ni); setSelected(answers[questions[ni].id]?.selected ?? null); setQSA(Date.now());
-    } else {
-      setFinishedAt(Date.now()); setShowResult(true); setActiveTab("results");
-    }
-  };
+  const next = useCallback(()=>{
+    if (idx<total-1){const ni=idx+1;setIdx(ni);setSelected(answers[questions[ni].id]?.selected??null);setQStartedAt(Date.now());}
+    else{setFinishedAt(Date.now());setShowResult(true);setActiveTab("results");}
+  },[answers,idx,questions,total]);
 
-  const restart = () => { setCurrentIndex(0); setSelected(null); setAnswers({}); setShowResult(false); setQSA(Date.now()); setFinishedAt(null); setActiveTab("quiz"); };
-
-  const handleFileImport = async (e) => {
-    const file = e.target.files?.[0]; if (!file) return;
+  // ── import pliku ───────────────────────────────────────────────────────────
+  const handleImport = useCallback(async(e)=>{
+    const file=e.target.files?.[0]; if (!file) return;
     try {
-      let parsed = [];
+      let parsed=[];
       if (file.name.toLowerCase().endsWith(".txt")) {
-        parsed = parseQuestionsFromTxt(await file.text(), file.name);
+        parsed=parseTxt(await file.text(),file.name);
       } else {
-        const wb = XLSX.read(await file.arrayBuffer(), { type:"array" });
-        parsed = parseQuestionsFromRows(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval:"" }), file.name);
+        const wb=XLSX.read(await file.arrayBuffer(),{type:"array"});
+        parsed=parseRows(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:""}),file.name);
       }
-      if (!parsed.length) { setImportMsg("Import nieudany — sprawdź nagłówki kolumn lub format TXT."); return; }
-      setQuestions(parsed); setCurrentIndex(0); setSelected(null); setAnswers({});
-      setShowResult(false); setQSA(Date.now()); setFinishedAt(null); setActiveTab("quiz");
-      setImportMsg(`Zaimportowano ${parsed.length} pytań z ${file.name}.${parsed.some(q=>!q.correct) ? " Niektóre pytania nie mają klucza odpowiedzi." : ""}`);
-      setQStatus("idle"); setQMsg(`Zaimportowano ${parsed.length} pytań lokalnie. Kliknij 'Wyślij do bazy', aby zapisać w Supabase.`);
-    } catch (err) { setImportMsg(`Import nieudany: ${err.message}`); }
-    finally { e.target.value = ""; }
-  };
+      if (!parsed.length){setImportMsg("Import nieudany — sprawdź nagłówki kolumn lub format TXT.");return;}
+      reset(parsed);
+      setImportMsg(`Zaimportowano ${parsed.length} pytań z ${file.name}.${parsed.some(q=>!q.correct)?" Niektóre pytania nie mają klucza odpowiedzi.":""}`);
+      setQMsg(`Zaimportowano ${parsed.length} pytań lokalnie. Kliknij 'Wyślij do bazy', aby zapisać w Supabase.`);
+      setQStatus("idle");
+    } catch(e){setImportMsg(`Import nieudany: ${e.message}`);}
+    finally{e.target.value="";}
+  },[reset]);
 
-  const stats = useMemo(() => {
-    const list = questions.map(q => ({ q, a:answers[q.id] })).filter(x => x.a);
-    const totalTimeMs = (finishedAt ?? Date.now()) - startedAt;
-    const avgResponseMs = list.length ? list.reduce((s,x)=>s+x.a.responseTimeMs,0)/list.length : 0;
-    const correctCount = list.filter(x=>x.a.isCorrect).length;
-    const incorrectCount = list.length - correctCount;
-    const wTotal = questions.reduce((s,q)=>s+(difficultyWeights[q.difficulty||"medium"]||1.5),0);
-    const wScore = list.reduce((s,x)=>s+(x.a.isCorrect?(difficultyWeights[x.q.difficulty||"medium"]||1.5):0),0);
-    const mastery = wTotal ? Math.round((wScore/wTotal)*100) : 0;
-    const byCategory = Object.values(questions.reduce((acc,q)=>{
-      const cat = q.category||"General";
-      if(!acc[cat]) acc[cat]={category:cat,total:0,correct:0};
-      acc[cat].total++; if(answers[q.id]?.isCorrect) acc[cat].correct++; return acc;
+  // ── statystyki ─────────────────────────────────────────────────────────────
+  const stats = useMemo(()=>{
+    const list=questions.map(q=>({q,a:answers[q.id]})).filter(x=>x.a);
+    const totalTimeMs=(finishedAt??Date.now())-startedAt;
+    const avgResponseMs=list.length?list.reduce((s,x)=>s+x.a.responseTimeMs,0)/list.length:0;
+    const correctCount=list.filter(x=>x.a.isCorrect).length;
+    const incorrectCount=list.length-correctCount;
+    const wTotal=questions.reduce((s,q)=>s+(diffW[q.difficulty||"medium"]||1.5),0);
+    const wScore=list.reduce((s,x)=>s+(x.a.isCorrect?(diffW[x.q.difficulty||"medium"]||1.5):0),0);
+    const mastery=wTotal?Math.round((wScore/wTotal)*100):0;
+    const byCat=Object.values(questions.reduce((acc,q)=>{
+      const cat=q.category||"General";
+      if (!acc[cat]) acc[cat]={category:cat,total:0,correct:0};
+      acc[cat].total++; if (answers[q.id]?.isCorrect) acc[cat].correct++;
+      return acc;
     },{})).map(c=>({...c,percent:Math.round((c.correct/c.total)*100)}));
-    const weakest  = byCategory.length ? [...byCategory].sort((a,b)=>a.percent-b.percent)[0] : null;
-    const strongest = byCategory.length ? [...byCategory].sort((a,b)=>b.percent-a.percent)[0] : null;
-    const fastest  = list.filter(x=>x.a.isCorrect).sort((a,b)=>a.a.responseTimeMs-b.a.responseTimeMs)[0];
-    const slowest  = [...list].sort((a,b)=>b.a.responseTimeMs-a.a.responseTimeMs)[0];
-    const perf = mastery>=90?"Doskonale":mastery>=75?"Bardzo dobrze":mastery>=60?"Solidna podstawa":"Dalej ćwicz";
-    return { totalTimeMs, avgResponseMs, correctCount, incorrectCount, mastery, byCategory, weakest, strongest, fastest, slowest, perf };
-  }, [answers, questions, startedAt, finishedAt]);
+    const weakest=byCat.length?[...byCat].sort((a,b)=>a.percent-b.percent)[0]:null;
+    const strongest=byCat.length?[...byCat].sort((a,b)=>b.percent-a.percent)[0]:null;
+    const perf=mastery>=90?"Doskonale":mastery>=75?"Bardzo dobrze":mastery>=60?"Solidna podstawa":"Dalej ćwicz";
+    return {totalTimeMs,avgResponseMs,correctCount,incorrectCount,mastery,byCat,weakest,strongest,perf};
+  },[answers,questions,startedAt,finishedAt]);
 
-  // zapisz próbę lokalnie + Supabase
-  useEffect(() => {
-    if (!showResult || !finishedAt) return;
-    const percent = Math.round((score/total)*100);
-    const attempt = {
+  // ── zapis próby ────────────────────────────────────────────────────────────
+  useEffect(()=>{
+    if (!showResult||!finishedAt) return;
+    const pct=Math.round((score/Math.max(total,1))*100);
+    const attempt={
       id:`${finishedAt}-${Math.random().toString(36).slice(2,7)}`,
-      finishedAt, totalQuestions:total, score, percent,
+      finishedAt, totalQuestions:total, score, percent:pct,
       mastery:stats.mastery, avgResponseMs:Math.round(stats.avgResponseMs),
       totalTimeMs:Math.round(stats.totalTimeMs),
       strongestCategory:stats.strongest?.category||null,
       weakestCategory:stats.weakest?.category||null, source:"local",
     };
-    setAttemptHistory(prev => { if(prev[0]?.finishedAt===finishedAt) return prev; return saveLocalAttempt(attempt); });
+    setHistory(prev=>{
+      if (prev.some(a=>a.finishedAt===finishedAt&&a.score===score)) return prev;
+      const m=dedupe([attempt,...prev]); saveLocal(m); return m;
+    });
     if (!SB_ENABLED) return;
-    sbInsert("quiz_attempts", {
-      attempt_id: attempt.id,
-      finished_at: new Date(attempt.finishedAt).toISOString(),
-      total_questions: attempt.totalQuestions, score: attempt.score, percent: attempt.percent,
-      mastery: attempt.mastery, avg_response_ms: attempt.avgResponseMs,
-      total_time_ms: attempt.totalTimeMs,
-      strongest_category: attempt.strongestCategory, weakest_category: attempt.weakestCategory,
-    }).then(() => { setAttStatus("ok"); loadAttemptsFromDB(); }).catch(e => { setAttStatus("error"); console.error(e); });
-  }, [showResult, finishedAt]);
+    sbInsert("quiz_attempts",{
+      attempt_id:attempt.id, finished_at:new Date(attempt.finishedAt).toISOString(),
+      total_questions:attempt.totalQuestions, score:attempt.score, percent:attempt.percent,
+      mastery:attempt.mastery, avg_response_ms:attempt.avgResponseMs, total_time_ms:attempt.totalTimeMs,
+      strongest_category:attempt.strongestCategory, weakest_category:attempt.weakestCategory,
+    }).then(()=>{setAttStatus("ok");loadAttempts();}).catch(e=>{setAttStatus("error");console.error(e);});
+  },[showResult,finishedAt,score,stats,total,loadAttempts]);
 
-  useEffect(() => {
-    const onKey = (e) => {
-      const tag = e.target?.tagName;
-      if (tag==="INPUT"||tag==="TEXTAREA"||e.target?.isContentEditable) return;
-      const k = e.key.toUpperCase();
-      if (!showResult && !selected && optionKeys.includes(k)) { e.preventDefault(); handleAnswer(k); return; }
-      if (e.key==="Enter" && !showResult && selected) { e.preventDefault(); nextQuestion(); return; }
-      if (k==="R") { e.preventDefault(); restart(); }
+  // ── klawiatura ─────────────────────────────────────────────────────────────
+  useEffect(()=>{
+    const h=e=>{
+      if (e.target?.tagName==="INPUT"||e.target?.tagName==="TEXTAREA") return;
+      const k=e.key.toUpperCase();
+      if (!showResult&&!selected&&optionKeys.includes(k)){e.preventDefault();handleAnswer(k);return;}
+      if (e.key==="Enter"&&!showResult&&selected){e.preventDefault();next();return;}
+      if (k==="R"){e.preventDefault();reset();}
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [showResult, selected, questionStartedAt, answers, questions]);
+    window.addEventListener("keydown",h);
+    return ()=>window.removeEventListener("keydown",h);
+  },[handleAnswer,next,reset,selected,showResult]);
 
-  const fmt = (ms) => `${(ms/1000).toFixed(1)}s`;
-  const studyDaysMap = useMemo(() => { const m={}; attemptHistory.forEach(a=>{ const k=formatDayKey(a.finishedAt); m[k]=(m[k]||0)+1; }); return m; }, [attemptHistory]);
-  const calendarDays = useMemo(() => buildCalendarDays(calendarMonth), [calendarMonth]);
-  const currentStreak = useMemo(() => { let s=0; const c=new Date(); while(studyDaysMap[formatDayKey(c.getTime())]){s++;c.setDate(c.getDate()-1);} return s; }, [studyDaysMap]);
-  const studyPlan = useMemo(() => buildStudyPlan(attemptHistory, stats.weakest), [attemptHistory, stats.weakest]);
-  const chartData = [...attemptHistory].reverse().map((a,i)=>({ name:`#${i+1}`, accuracy:a.percent, mastery:a.mastery, avgSeconds:Number((a.avgResponseMs/1000).toFixed(1)) }));
-  const prev = attemptHistory[1] || null;
-  const trend = prev && showResult ? { score:score-prev.score, percent:Math.round((score/total)*100)-prev.percent, avgResponseMs:Math.round(stats.avgResponseMs)-prev.avgResponseMs } : null;
+  // ── pochodne ───────────────────────────────────────────────────────────────
+  const uniq   = useMemo(()=>dedupe(history),[history]);
+  const dayMap = useMemo(()=>{ const m={}; uniq.forEach(a=>{const k=dayKey(a.finishedAt);m[k]=(m[k]||0)+1;}); return m; },[uniq]);
+  const streak = useMemo(()=>{ let s=0; const c=new Date(); while(dayMap[dayKey(c.getTime())]){s++;c.setDate(c.getDate()-1);} return s; },[dayMap]);
+  const plan   = useMemo(()=>buildPlan(uniq,stats.weakest),[uniq,stats.weakest]);
+  const calDays= useMemo(()=>buildCalDays(calMonth),[calMonth]);
+  const chart  = [...uniq].reverse().map((a,i)=>({name:`#${i+1}`,accuracy:a.percent,mastery:a.mastery,avgSeconds:Number((a.avgResponseMs/1000).toFixed(1))}));
+  const prevA  = uniq[1]||null;
+  const trend  = prevA&&showResult?{score:score-prevA.score,percent:Math.round((score/Math.max(total,1))*100)-prevA.percent,avgResponseMs:Math.round(stats.avgResponseMs)-prevA.avgResponseMs}:null;
 
-  // ── tabs ──────────────────────────────────────────────────────────────────
-  const tabs = [
-    { id:"quiz",     label:"Quiz",        icon:null },
-    { id:"calendar", label:"Kalendarz",   icon:<IcoCalendar /> },
-    { id:"plan",     label:"Plan nauki",  icon:<IcoBook /> },
-    ...(showResult ? [{ id:"results", label:"Wyniki", icon:<IcoChart /> }] : []),
-    { id:"settings", label:"Ustawienia",  icon:<IcoSettings /> },
+  const tabs=[
+    {id:"quiz",label:"Quiz",icon:null},
+    {id:"calendar",label:"Kalendarz",icon:<IcoCalendar/>},
+    {id:"plan",label:"Plan nauki",icon:<IcoBook/>},
+    ...(showResult?[{id:"results",label:"Wyniki",icon:<IcoChart/>}]:[]),
+    {id:"settings",label:"Ustawienia",icon:<IcoSettings/>},
   ];
 
-  // ── Quiz View ─────────────────────────────────────────────────────────────
+  // ── widok: Quiz ────────────────────────────────────────────────────────────
   const QuizView = () => (
     <div className="space-y-4">
+      <Card><CC className="flex flex-wrap items-center gap-3 py-3 text-sm text-slate-600">
+        <span className="flex items-center gap-1 font-medium text-slate-700"><IcoKeyboard/> Skróty</span>
+        <Badge>A/B/C/D = odpowiedź</Badge><Badge>Enter = dalej</Badge><Badge>R = restart</Badge>
+      </CC></Card>
+      <Progress value={(idx/Math.max(total,1))*100} className="h-3"/>
       <Card>
-        <CardContent className="flex flex-wrap items-center gap-3 py-3 text-sm text-slate-600">
-          <span className="flex items-center gap-1 font-medium text-slate-700"><IcoKeyboard /> Skróty</span>
-          <Badge>A / B / C / D = odpowiedź</Badge>
-          <Badge>Enter = dalej</Badge>
-          <Badge>R = restart</Badge>
-        </CardContent>
-      </Card>
-      <Progress value={(currentIndex/Math.max(total,1))*100} className="h-3" />
-      <Card>
-        <CardHeader><CardTitle className="text-xl">Pytanie {currentIndex+1} z {total}</CardTitle></CardHeader>
-        <CardContent className="space-y-5">
+        <CH><CT className="text-xl">Pytanie {idx+1} z {total}</CT></CH>
+        <CC className="space-y-5">
           <div className="flex flex-wrap gap-2">
             <Badge variant="secondary">{current.category||"General"}</Badge>
             <Badge>{current.difficulty||"medium"}</Badge>
             <Badge>Q#{current.questionNo??current.id}</Badge>
-            {current.sourceFile && <Badge><IcoFile /> {current.sourceFile}</Badge>}
+            {current.sourceFile&&<Badge><IcoFile/> {current.sourceFile}</Badge>}
           </div>
           <p className="text-lg font-medium leading-relaxed">{current.question}</p>
           <div className="grid gap-3">
-            {optionKeys.map(key => {
+            {optionKeys.map(key=>{
               const isSel=selected===key, isCorr=current.correct===key, reveal=!!selected;
               let border="border-slate-200 hover:bg-slate-50";
-              if(reveal&&current.correct&&isCorr) border="border-green-500 bg-green-50";
-              else if(reveal&&isSel&&current.correct&&!isCorr) border="border-red-400 bg-red-50";
+              if (reveal&&current.correct&&isCorr) border="border-green-500 bg-green-50";
+              else if (reveal&&isSel&&current.correct&&!isCorr) border="border-red-400 bg-red-50";
               return (
                 <button key={key} onClick={()=>handleAnswer(key)}
-                  className={`w-full text-left flex items-center gap-3 rounded-2xl border-2 px-4 py-4 text-base transition-colors ${border}`}>
+                  className={`flex w-full items-center gap-3 rounded-2xl border-2 px-4 py-4 text-left text-base transition-colors ${border}`}>
                   <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-sm font-semibold">{key}</span>
                   <span>{current.options[key]}</span>
                 </button>
               );
             })}
           </div>
-          {selected && (
+          {selected&&(
             <div className="rounded-xl bg-slate-100 p-4 text-sm text-slate-700">
-              <div className="font-medium">{current.correct ? selected===current.correct ? "✓ Poprawnie." : `✗ Poprawna odpowiedź: ${current.correct}.` : "Klucz odpowiedzi niedostępny."}</div>
+              <div className="font-medium">{current.correct?(selected===current.correct?"✓ Poprawnie.":`✗ Poprawna odpowiedź: ${current.correct}.`):"Klucz odpowiedzi niedostępny."}</div>
               <div className="mt-1">{current.explanation}</div>
             </div>
           )}
           <div className="flex flex-wrap gap-3">
-            <Btn onClick={nextQuestion} disabled={!selected}>{currentIndex===total-1?"Pokaż wyniki":"Następne pytanie"}</Btn>
-            <Btn variant="outline" onClick={restart}><IcoRotate /> Reset</Btn>
+            <Btn onClick={next} disabled={!selected}>{idx===total-1?"Pokaż wyniki":"Następne pytanie"}</Btn>
+            <Btn variant="outline" onClick={()=>reset()}><IcoRotate/> Reset</Btn>
           </div>
-        </CardContent>
+        </CC>
       </Card>
     </div>
   );
 
-  // ── Results View ──────────────────────────────────────────────────────────
+  // ── widok: Wyniki ──────────────────────────────────────────────────────────
   const ResultsView = () => {
-    const pct = Math.round((score/total)*100);
+    const pct=Math.round((score/Math.max(total,1))*100);
     return (
       <div className="space-y-4">
         <Card>
-          <CardHeader><CardTitle className="flex items-center gap-2 text-2xl"><IcoTrophy /> Quiz ukończony</CardTitle></CardHeader>
-          <CardContent className="space-y-6">
+          <CH><CT className="flex items-center gap-2 text-2xl"><IcoTrophy/> Quiz ukończony</CT></CH>
+          <CC className="space-y-6">
             <div>
               <div className="mb-2 text-lg font-medium">Wynik: {score}/{total}</div>
-              <Progress value={pct} className="h-3" />
-              <div className="mt-2 text-sm text-slate-600">{pct}% poprawnych odpowiedzi — {stats.perf}</div>
+              <Progress value={pct} className="h-3"/>
+              <div className="mt-2 text-sm text-slate-600">{pct}% poprawnych — {stats.perf}</div>
             </div>
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
               {[
-                { icon:<IcoBrain />,  label:"Mastery",      value:`${stats.mastery}%`,          sub:stats.perf },
-                { icon:<IcoClock />,  label:"Śr. tempo",    value:fmt(stats.avgResponseMs),      sub:"na pytanie" },
-                { icon:<IcoTarget />, label:"Dokładność",   value:`${pct}%`,                     sub:`${stats.correctCount} poprawne, ${stats.incorrectCount} błędne` },
-                { icon:<IcoTrend />,  label:"Całk. czas",   value:fmt(stats.totalTimeMs),        sub:"cała próba" },
+                {icon:<IcoBrain/>,label:"Mastery",value:`${stats.mastery}%`,sub:stats.perf},
+                {icon:<IcoClock/>,label:"Śr. tempo",value:fmt(stats.avgResponseMs),sub:"na pytanie"},
+                {icon:<IcoTarget/>,label:"Dokładność",value:`${pct}%`,sub:`${stats.correctCount} popr., ${stats.incorrectCount} błędne`},
+                {icon:<IcoTrend/>,label:"Całk. czas",value:fmt(stats.totalTimeMs),sub:"cała próba"},
               ].map(c=>(
-                <Card key={c.label}><CardContent className="p-5">
+                <Card key={c.label}><CC className="p-5">
                   <div className="flex items-center gap-1 text-sm text-slate-500">{c.icon} {c.label}</div>
                   <div className="mt-2 text-2xl font-semibold">{c.value}</div>
                   <div className="mt-1 text-sm text-slate-600">{c.sub}</div>
-                </CardContent></Card>
+                </CC></Card>
               ))}
             </div>
-            {trend && (
+            {trend&&(
               <div className="rounded-xl bg-slate-100 p-4 text-sm text-slate-700">
                 <div className="font-medium">vs poprzednia próba</div>
                 <div className="mt-2 flex flex-wrap gap-4">
@@ -544,20 +490,32 @@ export default function QuizAbcdApp() {
               </div>
             )}
             <Card>
-              <CardHeader><CardTitle>Wykresy postępów</CardTitle></CardHeader>
-              <CardContent className="space-y-6">
-                <div className="h-64"><ResponsiveContainer width="100%" height="100%"><LineChart data={chartData}><CartesianGrid strokeDasharray="3 3"/><XAxis dataKey="name"/><YAxis domain={[0,100]}/><Tooltip/><Line type="monotone" dataKey="accuracy" stroke="#334155" strokeWidth={2}/><Line type="monotone" dataKey="mastery" stroke="#94a3b8" strokeWidth={2}/></LineChart></ResponsiveContainer></div>
-                <div className="h-48"><ResponsiveContainer width="100%" height="100%"><BarChart data={chartData}><CartesianGrid strokeDasharray="3 3"/><XAxis dataKey="name"/><YAxis/><Tooltip/><Bar dataKey="avgSeconds" fill="#334155"/></BarChart></ResponsiveContainer></div>
-              </CardContent>
+              <CH><CT>Wykresy postępów</CT></CH>
+              <CC className="space-y-6">
+                <div className="h-64"><ResponsiveContainer width="100%" height="100%"><LineChart data={chart}><CartesianGrid strokeDasharray="3 3"/><XAxis dataKey="name"/><YAxis domain={[0,100]}/><Tooltip/><Line type="monotone" dataKey="accuracy" stroke="#334155" strokeWidth={2}/><Line type="monotone" dataKey="mastery" stroke="#94a3b8" strokeWidth={2}/></LineChart></ResponsiveContainer></div>
+                <div className="h-48"><ResponsiveContainer width="100%" height="100%"><BarChart data={chart}><CartesianGrid strokeDasharray="3 3"/><XAxis dataKey="name"/><YAxis/><Tooltip/><Bar dataKey="avgSeconds" fill="#334155"/></BarChart></ResponsiveContainer></div>
+              </CC>
             </Card>
             <Card>
-              <CardHeader><CardTitle>Historia prób</CardTitle></CardHeader>
-              <CardContent className="space-y-3">
-                {!attemptHistory.length && <p className="text-sm text-slate-600">Brak zapisanych prób.</p>}
-                {attemptHistory.map((a,i)=>(
+              <CH><CT>Kategorie</CT></CH>
+              <CC className="space-y-2 text-sm text-slate-700">
+                {stats.byCat.map(c=>(
+                  <div key={c.category} className="flex items-center gap-3">
+                    <span className="w-40 truncate font-medium">{c.category}</span>
+                    <Progress value={c.percent} className="h-2 flex-1"/>
+                    <span className="w-12 text-right">{c.percent}%</span>
+                  </div>
+                ))}
+              </CC>
+            </Card>
+            <Card>
+              <CH><CT>Historia prób</CT></CH>
+              <CC className="space-y-3">
+                {!uniq.length&&<p className="text-sm text-slate-600">Brak zapisanych prób.</p>}
+                {uniq.map((a,i)=>(
                   <div key={a.id} className="rounded-xl border p-4 text-sm text-slate-700">
-                    <div className="flex flex-wrap justify-between gap-2">
-                      <span className="font-medium">Próba {attemptHistory.length-i}</span>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-medium">Próba {uniq.length-i}</span>
                       <div className="flex items-center gap-2">
                         <span className="text-slate-500">{new Date(a.finishedAt).toLocaleString()}</span>
                         <Badge variant={a.source==="supabase"?"success":"outline"}>{a.source==="supabase"?"☁ chmura":"💾 lokalnie"}</Badge>
@@ -565,158 +523,138 @@ export default function QuizAbcdApp() {
                     </div>
                     <div className="mt-2 flex flex-wrap gap-4">
                       <span>Wynik: {a.score}/{a.totalQuestions}</span>
-                      <span>Dokladność: {a.percent}%</span>
+                      <span>Dokładność: {a.percent}%</span>
                       <span>Mastery: {a.mastery}%</span>
                       <span>Tempo: {fmt(a.avgResponseMs)}</span>
                     </div>
                     <p className="mt-1 text-slate-600">Mocna: {a.strongestCategory||"—"} · Słaba: {a.weakestCategory||"—"}</p>
                   </div>
                 ))}
-                <Btn variant="danger" onClick={()=>{ localStorage.removeItem(STORAGE_KEY); setAttemptHistory([]); }}><IcoTrash /> Wyczyść lokalną historię</Btn>
-              </CardContent>
+                <Btn variant="danger" onClick={()=>{localStorage.removeItem(STORAGE_KEY);setHistory([]);}}><IcoTrash/> Wyczyść historię</Btn>
+              </CC>
             </Card>
-          </CardContent>
+          </CC>
         </Card>
       </div>
     );
   };
 
-  // ── Calendar View ─────────────────────────────────────────────────────────
+  // ── widok: Kalendarz ───────────────────────────────────────────────────────
   const CalendarView = () => (
     <div className="space-y-4">
       <div className="grid gap-4 sm:grid-cols-3">
-        {[
-          { label:"Dni nauki", value:Object.keys(studyDaysMap).length, sub:"unikalne dni" },
-          { label:"Bieżąca seria", value:currentStreak, sub:"dni z rzędu" },
-          { label:"Zapisane próby", value:attemptHistory.length, sub:"łącznie" },
-        ].map(c=>(
-          <Card key={c.label}><CardContent className="p-5"><div className="text-sm text-slate-500">{c.label}</div><div className="mt-2 text-2xl font-semibold">{c.value}</div><div className="mt-1 text-sm text-slate-600">{c.sub}</div></CardContent></Card>
-        ))}
+        {[{label:"Dni nauki",value:Object.keys(dayMap).length,sub:"unikalne dni"},{label:"Bieżąca seria",value:streak,sub:"dni z rzędu"},{label:"Zapisane próby",value:uniq.length,sub:"łącznie"}]
+          .map(c=><Card key={c.label}><CC className="p-5"><div className="text-sm text-slate-500">{c.label}</div><div className="mt-2 text-2xl font-semibold">{c.value}</div><div className="mt-1 text-sm text-slate-600">{c.sub}</div></CC></Card>)}
       </div>
       <Card>
-        <CardHeader>
+        <CH>
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <CardTitle className="flex items-center gap-2"><IcoCalendar /> {calendarMonth.toLocaleString("pl-PL",{month:"long",year:"numeric"})}</CardTitle>
+            <CT className="flex items-center gap-2"><IcoCalendar/> {calMonth.toLocaleString("pl-PL",{month:"long",year:"numeric"})}</CT>
             <div className="flex gap-2">
-              <Btn variant="outline" onClick={()=>setCalendarMonth(m=>addMonths(m,-1))}>← Poprz.</Btn>
-              <Btn variant="outline" onClick={()=>setCalendarMonth(startOfMonth(new Date()))}>Dziś</Btn>
-              <Btn variant="outline" onClick={()=>setCalendarMonth(m=>addMonths(m,1))}>Nast. →</Btn>
+              <Btn variant="outline" onClick={()=>setCalMonth(m=>addM(m,-1))}>← Poprz.</Btn>
+              <Btn variant="outline" onClick={()=>setCalMonth(som(new Date()))}>Dziś</Btn>
+              <Btn variant="outline" onClick={()=>setCalMonth(m=>addM(m,1))}>Nast. →</Btn>
             </div>
           </div>
-        </CardHeader>
-        <CardContent className="space-y-3">
+        </CH>
+        <CC className="space-y-3">
           <div className="grid grid-cols-7 gap-1 text-center text-xs font-medium text-slate-500">
             {["Pn","Wt","Śr","Cz","Pt","So","Nd"].map(d=><div key={d}>{d}</div>)}
           </div>
           <div className="grid grid-cols-7 gap-1">
-            {calendarDays.map(item=>{
-              const count=studyDaysMap[item.key]||0, isToday=item.key===formatDayKey(Date.now());
+            {calDays.map(item=>{
+              const cnt=dayMap[item.key]||0, isToday=item.key===dayKey(Date.now());
               return (
-                <div key={item.key} className={`min-h-16 rounded-xl border p-1.5 text-xs ${item.inCurrentMonth?"bg-white":"bg-slate-50 text-slate-400"} ${count?"border-slate-900":"border-slate-100"}`}>
+                <div key={item.key} className={`min-h-16 rounded-xl border p-1.5 text-xs ${item.inCurrent?"bg-white":"bg-slate-50 text-slate-400"} ${cnt?"border-slate-900":"border-slate-100"}`}>
                   <div className={`font-medium ${isToday?"underline":""}`}>{item.date.getDate()}</div>
-                  {count>0 && <><div className="mt-1 h-1.5 rounded-full bg-slate-900"/><div className="mt-1 text-slate-600">×{count}</div></>}
+                  {cnt>0&&<><div className="mt-1 h-1.5 rounded-full bg-slate-900"/><div className="mt-1 text-slate-600">×{cnt}</div></>}
                 </div>
               );
             })}
           </div>
-        </CardContent>
+        </CC>
       </Card>
     </div>
   );
 
-  // ── Plan View ─────────────────────────────────────────────────────────────
+  // ── widok: Plan nauki ──────────────────────────────────────────────────────
   const PlanView = () => (
     <div className="space-y-4">
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {[
-          { label:"Gotowość", value:studyPlan.readiness, sub:"wg ostatnich wyników" },
-          { label:"Najsłabszy obszar", value:stats.weakest?.category||"—", sub:"pracuj tutaj najpierw" },
-          { label:"Najmocniejszy obszar", value:stats.strongest?.category||"—", sub:"buduj pewność siebie" },
-          { label:"Rekomendacja", value:studyPlan.recommendation, sub:"", small:true },
-        ].map(c=>(
-          <Card key={c.label}><CardContent className="p-5"><div className="text-sm text-slate-500">{c.label}</div><div className={`mt-2 ${c.small?"text-base":"text-2xl"} font-semibold`}>{c.value}</div>{c.sub&&<div className="mt-1 text-sm text-slate-600">{c.sub}</div>}</CardContent></Card>
-        ))}
+          {label:"Gotowość",value:plan.readiness,sub:"wg ostatnich wyników"},
+          {label:"Najsłabszy obszar",value:stats.weakest?.category||"—",sub:"pracuj tutaj najpierw"},
+          {label:"Najmocniejszy obszar",value:stats.strongest?.category||"—",sub:"buduj pewność"},
+          {label:"Rekomendacja",value:plan.recommendation,sub:"",small:true},
+        ].map(c=><Card key={c.label}><CC className="p-5"><div className="text-sm text-slate-500">{c.label}</div><div className={`mt-2 ${c.small?"text-base":"text-2xl"} font-semibold`}>{c.value}</div>{c.sub&&<div className="mt-1 text-sm text-slate-600">{c.sub}</div>}</CC></Card>)}
       </div>
       <Card>
-        <CardHeader><CardTitle className="flex items-center gap-2"><IcoSpark /> Co poprawić</CardTitle></CardHeader>
-        <CardContent className="space-y-3 text-sm">{studyPlan.improvements.map((t,i)=><div key={i} className="rounded-xl bg-slate-100 p-4 text-slate-700">{t}</div>)}</CardContent>
+        <CH><CT className="flex items-center gap-2"><IcoSpark/> Co poprawić</CT></CH>
+        <CC className="space-y-3 text-sm">{plan.improvements.map((t,i)=><div key={i} className="rounded-xl bg-slate-100 p-4 text-slate-700">{t}</div>)}</CC>
       </Card>
       <Card>
-        <CardHeader><CardTitle>7-dniowy plan treningowy</CardTitle></CardHeader>
-        <CardContent className="space-y-3">
-          {studyPlan.weeklyPlan.map(item=>(
+        <CH><CT>7-dniowy plan treningowy</CT></CH>
+        <CC className="space-y-3">
+          {plan.weeklyPlan.map(item=>(
             <div key={item.day} className="rounded-xl border p-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="font-medium">{item.day}</span>
-                <Badge>{item.duration}</Badge>
+                <span className="font-medium">{item.day}</span><Badge>{item.duration}</Badge>
               </div>
               <p className="mt-1 text-sm text-slate-600">{item.task}</p>
             </div>
           ))}
-        </CardContent>
+        </CC>
       </Card>
     </div>
   );
 
-  // ── Settings View ─────────────────────────────────────────────────────────
+  // ── widok: Ustawienia ──────────────────────────────────────────────────────
   const SettingsView = () => (
     <div className="space-y-4">
-      {/* Import pliku */}
       <Card>
-        <CardHeader><CardTitle className="flex items-center gap-2"><IcoUpload /> Import pytań z pliku</CardTitle></CardHeader>
-        <CardContent className="space-y-4 text-sm text-slate-600">
+        <CH><CT className="flex items-center gap-2"><IcoUpload/> Import pytań z pliku</CT></CH>
+        <CC className="space-y-4 text-sm text-slate-600">
           <p>{importMsg}</p>
-          <Btn variant="outline" onClick={()=>fileInputRef.current?.click()}><IcoUpload /> Importuj CSV / Excel / TXT</Btn>
-          <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls,.txt" className="hidden" onChange={handleFileImport} />
+          <Btn variant="outline" onClick={()=>fileRef.current?.click()}><IcoUpload/> Importuj CSV / Excel / TXT</Btn>
+          <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls,.txt" className="hidden" onChange={handleImport}/>
           <div className="rounded-xl bg-slate-100 p-3">
-            Kolumny arkusza: <code className="text-xs">question, A, B, C, D, correct, explanation, category, difficulty</code>.<br/>
-            Format TXT: <code className="text-xs">Question #2</code> + linie A./B./C./D.
+            Kolumny arkusza: <code className="text-xs">question, A, B, C, D, correct, explanation, category, difficulty</code><br/>
+            Format TXT: <code className="text-xs">Question #1</code> + linie A./B./C./D.
           </div>
-        </CardContent>
+        </CC>
       </Card>
-
-      {/* Supabase — pytania */}
       <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <IcoCloud /> Supabase — pytania
-            <StatusDot status={qStatus} />
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3 text-sm text-slate-600">
+        <CH><CT className="flex items-center gap-2"><IcoCloud/> Supabase — pytania <Dot status={qStatus}/></CT></CH>
+        <CC className="space-y-3 text-sm text-slate-600">
           <p>{qMsg}</p>
           <div className="flex flex-wrap gap-3">
-            <Btn variant="outline" onClick={testConnection}>🔌 Test połączenia</Btn>
-            <Btn variant="outline" onClick={loadQuestionsFromDB}><IcoRefresh /> Wczytaj z bazy</Btn>
-            <Btn variant="outline" onClick={pushQuestionsToDB}><IcoCloud /> Wyślij do bazy ({questions.length} pyt.)</Btn>
+            <Btn variant="outline" onClick={testConn}>🔌 Test połączenia</Btn>
+            <Btn variant="outline" onClick={loadQfromDB}><IcoRefresh/> Wczytaj z bazy</Btn>
+            <Btn variant="outline" onClick={pushQtoDB}><IcoCloud/> Wyślij do bazy ({questions.length} pyt.)</Btn>
           </div>
-          {testMsg && <div className="rounded-xl bg-slate-100 p-3 text-sm text-slate-700 font-mono">{testMsg}</div>}
-          <div className="rounded-xl bg-slate-100 p-3 space-y-1">
-            <p>Załadowano: <strong>{questions.length}</strong> pytań</p>
-            <p>Bez klucza odpowiedzi: <strong>{questions.filter(q=>!q.correct).length}</strong></p>
+          {testMsg&&<div className="rounded-xl bg-slate-100 p-3 font-mono text-xs">{testMsg}</div>}
+          <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-amber-800 text-xs">
+            ⚠️ <strong>Uwaga:</strong> Supabase REST jest blokowany przez sandbox artefaktu Claude. Aby korzystać z synchronizacji, uruchom app lokalnie: <code>npm create vite@latest quiz -- --template react</code>, zainstaluj <code>xlsx recharts</code> i ustaw zmienne środowiskowe <code>VITE_SUPABASE_URL</code> i <code>VITE_SUPABASE_ANON_KEY</code>.
+          </div>
+          <div className="space-y-1">
+            <p>Załadowane pytania: <strong>{questions.length}</strong></p>
+            <p>Bez klucza: <strong>{questions.filter(q=>!q.correct).length}</strong></p>
             <p>Źródła: {[...new Set(questions.map(q=>q.sourceType))].join(", ")||"—"}</p>
           </div>
-        </CardContent>
+        </CC>
       </Card>
-
-      {/* Supabase — statystyki */}
       <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <IcoChart /> Supabase — statystyki prób
-            <StatusDot status={attStatus} />
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3 text-sm text-slate-600">
-          <p>Wyniki prób są automatycznie zapisywane lokalnie i w Supabase po każdym ukończonym quizie.</p>
-          <Btn variant="outline" onClick={loadAttemptsFromDB}><IcoRefresh /> Odśwież historię</Btn>
-          <p>Zapisane próby: <strong>{attemptHistory.length}</strong></p>
-        </CardContent>
+        <CH><CT className="flex items-center gap-2"><IcoChart/> Supabase — statystyki <Dot status={attStatus}/></CT></CH>
+        <CC className="space-y-3 text-sm text-slate-600">
+          <p>Wyniki prób są zapisywane lokalnie (localStorage) i wysyłane do Supabase po każdym ukończonym quizie.</p>
+          <Btn variant="outline" onClick={loadAttempts}><IcoRefresh/> Odśwież z chmury</Btn>
+          <p>Zapisane próby: <strong>{uniq.length}</strong></p>
+        </CC>
       </Card>
     </div>
   );
 
-  // ── render ────────────────────────────────────────────────────────────────
+  // ── render ─────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-slate-50 p-6">
       <div className="mx-auto max-w-5xl space-y-5">
@@ -726,13 +664,12 @@ export default function QuizAbcdApp() {
             <p className="text-sm text-slate-600">Quiz wielokrotnego wyboru z analityką, kalendarzem i planem nauki.</p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Badge variant="secondary">{answeredCount}/{total} odpowiedzi</Badge>
-            <Badge>{attemptHistory.length} prób</Badge>
+            <Badge variant="secondary">{answered}/{total} odpowiedzi</Badge>
+            <Badge>{uniq.length} prób</Badge>
             <Badge>{questions.length} pytań</Badge>
-            {SB_ENABLED && <Badge variant="success">☁ Supabase aktywne</Badge>}
+            {SB_ENABLED&&<Badge variant="success">☁ Supabase skonfigurowane</Badge>}
           </div>
         </div>
-
         <div className="flex flex-wrap gap-2">
           {tabs.map(t=>(
             <button key={t.id} onClick={()=>setActiveTab(t.id)}
@@ -741,12 +678,11 @@ export default function QuizAbcdApp() {
             </button>
           ))}
         </div>
-
-        {activeTab==="quiz"     && <QuizView />}
-        {activeTab==="calendar" && <CalendarView />}
-        {activeTab==="plan"     && <PlanView />}
-        {activeTab==="results"  && showResult && <ResultsView />}
-        {activeTab==="settings" && <SettingsView />}
+        {activeTab==="quiz"&&<QuizView/>}
+        {activeTab==="calendar"&&<CalendarView/>}
+        {activeTab==="plan"&&<PlanView/>}
+        {activeTab==="results"&&showResult&&<ResultsView/>}
+        {activeTab==="settings"&&<SettingsView/>}
       </div>
     </div>
   );

@@ -1,4 +1,5 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import ReactDOM from "react-dom/client"; // <--- DODAJ TĘ LINIJKĘ
 import * as XLSX from "xlsx";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from "recharts";
 
@@ -685,5 +686,15 @@ export default function QuizAbcdApp() {
         {activeTab==="settings"&&<SettingsView/>}
       </div>
     </div>
+  );
+}
+const rootElement = document.getElementById("root");
+
+if (rootElement) {
+  const root = ReactDOM.createRoot(rootElement);
+  root.render(
+    <React.StrictMode>
+      <QuizAbcdApp />
+    </React.StrictMode>
   );
 }

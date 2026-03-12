@@ -1,7 +1,27 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import ReactDOM from "react-dom/client";
 import * as XLSX from "xlsx";
-
+import "./app.css";
+import { C, s } from "./theme";
+import {
+  IcoBrain,
+  IcoTrophy,
+  IcoClock,
+  IcoCalendar,
+  IcoBook,
+  IcoSettings,
+  IcoRefresh,
+  IcoChat,
+  IcoLeft,
+  IcoRight,
+  IcoUpload,
+  IcoCloud,
+  IcoCheck,
+  IcoCross,
+  IcoTrending,
+  IcoBolt,
+  IcoTarget,
+} from "./icons";
 // ── SVG Icons ─────────────────────────────────────────────────────────────────
 const Icon = ({ d, size = 16, className = "", strokeWidth = 1.75 }) => (
   <svg

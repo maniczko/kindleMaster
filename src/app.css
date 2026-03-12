@@ -85,7 +85,7 @@ button, input, select, textarea { font-family: inherit; }
   gap: 12px;
 }
 
-.sidebar-footer > div:last-child:not(.sidebar-progress-card) {
+.sidebar-footer > :not(.sidebar-primary) {
   display: none;
 }
 

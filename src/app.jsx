@@ -578,7 +578,7 @@ const GLOBAL_CSS = `
     gap: 12px;
   }
 
-  .sidebar-footer > div:last-child:not(.sidebar-progress-card) {
+  .sidebar-footer > :not(.sidebar-primary) {
     display: none;
   }
 
@@ -2579,12 +2579,12 @@ function QuizAbcdApp() {
         <div className="app-frame">
           <aside className="sidebar">
             <div className="brand-panel">
-              <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
                 <ZenQuizLogo size={68} />
                 <div>
                   <div className="tinyLabel" style={{ marginBottom: 8 }}>
                     Study Suite
-              </div>
+                  </div>
                   <div className="brand-title" style={{ fontSize: 28, fontWeight: 700, color: C.textStrong }}>Zen Quiz</div>
                   <div style={{ fontSize: 13, color: C.textSub, marginTop: 6, lineHeight: 1.5 }}>
                 Skupienie, rytm, jakość odpowiedzi.
@@ -2595,6 +2595,37 @@ function QuizAbcdApp() {
             </div>
 
             <div className="sidebar-footer">
+              <div className="sidebar-primary" style={{ display: "grid", gap: 12 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: C.textSub, textTransform: "uppercase", letterSpacing: ".05em" }}>
+                  Postęp nauki
+                </div>
+
+                <div className="mini-grid">
+                  {[
+                    ["Dzisiejsza forma", `${pct || 0}%`],
+                    ["Bieżąca seria", `${streak} dni`],
+                    ["Baza pytań", questionPool.length],
+                    ["Zapisane sesje", history.length],
+                  ].map(([label, value]) => (
+                    <div key={label} style={{ ...s.cardSm, padding: 14, background: "rgba(255,255,255,.72)" }}>
+                      <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>{label}</div>
+                      <div style={{ fontSize: 21, fontWeight: 700, color: C.textStrong }}>{value}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ ...s.cardSm, padding: 14, background: C.cardAlt }}>
+                  <div style={{ fontSize: 11, color: C.textSub, marginBottom: 8 }}>Skuteczność i postęp</div>
+                  <div style={{ display: "grid", gap: 8 }}>
+                    <div style={{ fontSize: 13, color: C.textSub, lineHeight: 1.6 }}>
+                      Ostatni wynik: <strong style={{ color: C.textStrong }}>{attemptDraft ? `${attemptDraft.score}/${attemptDraft.totalQuestions}` : "—"}</strong>
+                    </div>
+                    <div style={{ fontSize: 13, color: C.textSub, lineHeight: 1.6 }}>
+                      Mastery: <strong style={{ color: C.textStrong }}>{attemptDraft ? `${attemptDraft.mastery}%` : "—"}</strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
               <div style={{ fontSize: 12, fontWeight: 700, color: C.textSub, textTransform: "uppercase", letterSpacing: ".05em" }}>
                 PostÄ™p nauki
               </div>
@@ -2677,7 +2708,7 @@ function QuizAbcdApp() {
                     <IcoCalendar size={14} /> Kalendarz
                   </button>
                   <button onClick={() => setActiveTab("settings")} style={s.btn(activeTab === "settings" ? "soft" : "ghost")}>
-                    <IcoSettings size={14} /> Integracje
+                    <IcoSettings size={14} /> Ustawienia
                   </button>
                 </div>
               </div>

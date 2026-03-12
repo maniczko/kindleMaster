@@ -39,11 +39,14 @@ const DEFAULT_SUPABASE_ANON_KEY = (
 ).trim();
 const CLOUD_BROWSER_NOTICE =
   "Ta aplikacja działa wyłącznie w przeglądarce. Bez backend proxy lub Edge Function nie wykonasz bezpiecznego połączenia z Claude API z tego widoku.";
+const CLOUD_ROTATE_NOTICE = "Jeśli ten sekret był już wklejony do frontendu albo udostępniony, obróć go w panelu Anthropic i użyj nowego wyłącznie po stronie backendu.";
 
 const isJwtLike = (value) => {
   const parts = String(value || "").trim().split(".");
   return parts.length === 3 && parts.every(Boolean);
 };
+
+const looksLikeAnthropicKey = (value) => /^sk-ant-[a-z0-9_-]+$/i.test(String(value || "").trim());
 
 const isValidSupabaseUrl = (value) => {
   try {
@@ -907,7 +910,7 @@ function QuizAbcdApp() {
   const [chatRes, setChatRes] = useState("");
 
   const [cloudApiEnabled, setCloudApiEnabled] = useState(Boolean(initialCloud.cloudApiEnabled));
-  const [cloudApiKey, setCloudApiKey] = useState(initialCloud.cloudApiKey || "");
+  const [cloudApiKey, setCloudApiKey] = useState("");
   const [cloudModel, setCloudModel] = useState(initialCloud.cloudModel || DEFAULT_MODEL);
   const [supabaseUrl, setSupabaseUrl] = useState(initialSupabase.supabaseUrl || DEFAULT_SUPABASE_URL);
   const [supabaseAnonKey, setSupabaseAnonKey] = useState(initialSupabase.supabaseAnonKey || DEFAULT_SUPABASE_ANON_KEY);
@@ -920,8 +923,8 @@ function QuizAbcdApp() {
   const fileRef = useRef(null);
 
   useEffect(() => {
-    saveCloudSettings({ cloudApiEnabled, cloudApiKey, cloudModel });
-  }, [cloudApiEnabled, cloudApiKey, cloudModel]);
+    saveCloudSettings({ cloudApiEnabled, cloudModel });
+  }, [cloudApiEnabled, cloudModel]);
 
   useEffect(() => {
     saveSupabaseSettings({ supabaseUrl, supabaseAnonKey });
@@ -1049,7 +1052,15 @@ function QuizAbcdApp() {
       return;
     }
 
-    setCloudCheck({ status: "info", message: CLOUD_BROWSER_NOTICE });
+    if (!looksLikeAnthropicKey(cloudApiKey)) {
+      setCloudCheck({ status: "error", message: "Format klucza nie wygląda na poprawny klucz Anthropic (`sk-ant-...`)." });
+      return;
+    }
+
+    setCloudCheck({
+      status: "info",
+      message: `Format klucza wygląda poprawnie, ale to nie klucz jest blokadą. ${CLOUD_BROWSER_NOTICE}`,
+    });
   }, [cloudApiEnabled, cloudApiKey]);
 
   const handleAnswer = useCallback(
@@ -1202,7 +1213,11 @@ function QuizAbcdApp() {
       if (!cancelled) {
         setTrainingSummary({
           ...local,
-          text: `${local.text}\n\nCloud AI pozostaje wyłączone w praktyce dla tej wersji frontendu. Żeby użyć Claude, podłącz backend proxy lub Edge Function i tam trzymaj klucz API.`,
+          text: `${local.text}\n\n${
+            looksLikeAnthropicKey(cloudApiKey)
+              ? "Klucz wygląda poprawnie, ale ten frontend nie powinien używać go bezpośrednio."
+              : "Format klucza nie wygląda na prawidłowy klucz Anthropic."
+          } ${CLOUD_BROWSER_NOTICE} ${CLOUD_ROTATE_NOTICE}`,
         });
         setTrainingSummaryStatus("done");
       }
@@ -2486,7 +2501,9 @@ function QuizAbcdApp() {
               placeholder="sk-ant-..."
               style={s.input}
             />
-            <div className="field-help">Klucz pozostaje lokalnie w przeglądarce. Nie zapisuj go w kodzie ani repozytorium.</div>
+            <div className="field-help">
+              Klucz nie jest zapisywany. Nie trzymaj go w kodzie ani repozytorium; jeśli był gdziekolwiek ujawniony, obróć go w panelu Anthropic.
+            </div>
           </div>
 
           <div style={{ marginBottom: 12 }}>

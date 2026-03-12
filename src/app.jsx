@@ -158,6 +158,18 @@ const toneForPercent = (value) => {
   return { bg: C.errorBg, color: C.errorText, border: "#E8C9B9" };
 };
 
+const toneForStatus = (status) => {
+  if (status === "success") return { bg: C.successBg, color: C.successText, border: "#CFE3D8" };
+  if (status === "error") return { bg: C.errorBg, color: C.errorText, border: "#E8C9B9" };
+  if (status === "loading") return { bg: C.accentSoft, color: C.accent, border: "#D6DDF3" };
+  return { bg: C.cardAlt, color: C.textSub, border: C.border };
+};
+
+const getErrorText = (error) => {
+  const message = String(error?.message || error || "Nieznany błąd").trim();
+  return message.length > 180 ? `${message.slice(0, 177)}...` : message;
+};
+
 const loadLocal = () => {
   try {
     return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
@@ -481,10 +493,21 @@ const SAMPLES = [
 const GLOBAL_CSS = `
   * { box-sizing: border-box; }
   html, body, #root { height: 100%; margin: 0; }
+  :root {
+    --paper: #F2F0E9;
+    --paper-strong: #ECE7DA;
+    --surface: rgba(255,255,255,.78);
+    --surface-strong: rgba(255,255,255,.92);
+    --ink: #1A1A1B;
+    --ink-subtle: #5F645C;
+  }
   body {
-    background: #F2F0E9;
+    background:
+      radial-gradient(circle at top left, rgba(75,94,170,.12), transparent 28%),
+      radial-gradient(circle at 85% 10%, rgba(176,137,104,.12), transparent 24%),
+      linear-gradient(180deg, #F5F1E8 0%, #EFE8DB 100%);
     color: #1A1A1B;
-    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-family: "Aptos", "Segoe UI", "Trebuchet MS", sans-serif;
   }
 
   button, input, select, textarea { font-family: inherit; }
@@ -492,30 +515,70 @@ const GLOBAL_CSS = `
   .app-shell {
     min-height: 100vh;
     background:
-      radial-gradient(circle at top left, rgba(75,94,170,.06), transparent 24%),
-      radial-gradient(circle at bottom right, rgba(130,148,196,.08), transparent 22%),
-      #F2F0E9;
-    padding: 20px;
+      radial-gradient(circle at top left, rgba(75,94,170,.08), transparent 24%),
+      radial-gradient(circle at bottom right, rgba(130,148,196,.10), transparent 22%),
+      linear-gradient(180deg, rgba(255,255,255,.1), rgba(255,255,255,0)),
+      var(--paper);
+    padding: 24px;
   }
 
   .app-frame {
-    max-width: 1440px;
+    max-width: 1520px;
     margin: 0 auto;
     display: grid;
-    grid-template-columns: 220px 1fr;
-    gap: 18px;
-    min-height: calc(100vh - 40px);
+    grid-template-columns: 280px minmax(0, 1fr);
+    gap: 22px;
+    align-items: start;
+    min-height: calc(100vh - 48px);
   }
 
   .sidebar {
-    background: rgba(255,255,255,.62);
-    backdrop-filter: blur(10px);
-    border: 1px solid #DCD7C9;
-    border-radius: 24px;
-    padding: 18px;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.03);
+    position: sticky;
+    top: 24px;
+    background:
+      linear-gradient(180deg, rgba(255,255,255,.88), rgba(250,248,242,.92)),
+      rgba(255,255,255,.72);
+    backdrop-filter: blur(18px);
+    border: 1px solid rgba(220,215,201,.95);
+    border-radius: 30px;
+    padding: 20px;
+    box-shadow: 0 18px 48px rgba(44,62,80,.08);
     display: flex;
     flex-direction: column;
+    gap: 16px;
+    min-height: calc(100vh - 48px);
+    overflow: hidden;
+  }
+
+  .brand-panel {
+    padding: 18px;
+    border-radius: 24px;
+    background:
+      linear-gradient(145deg, rgba(75,94,170,.13), rgba(255,255,255,.66) 58%, rgba(176,137,104,.10));
+    border: 1px solid rgba(220,215,201,.9);
+  }
+
+  .brand-title,
+  .workspace-title {
+    font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+    letter-spacing: -.03em;
+  }
+
+  .nav-rail {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .sidebar-footer {
+    margin-top: auto;
+    display: grid;
+    gap: 12px;
+  }
+
+  .mini-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0,1fr));
     gap: 10px;
   }
 
@@ -523,6 +586,52 @@ const GLOBAL_CSS = `
     min-width: 0;
     display: flex;
     flex-direction: column;
+    gap: 18px;
+  }
+
+  .workspace-hero {
+    position: sticky;
+    top: 24px;
+    z-index: 5;
+    display: grid;
+    gap: 16px;
+    padding: 22px;
+    border-radius: 30px;
+    background:
+      linear-gradient(135deg, rgba(75,94,170,.10), rgba(255,255,255,.95) 42%, rgba(246,242,233,.98));
+    border: 1px solid rgba(220,215,201,.95);
+    box-shadow: 0 18px 46px rgba(44,62,80,.06);
+  }
+
+  .workspace-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 18px;
+    flex-wrap: wrap;
+  }
+
+  .workspace-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .workspace-stats {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0,1fr));
+    gap: 12px;
+  }
+
+  .workspace-stat {
+    padding: 14px 16px;
+    border-radius: 18px;
+    border: 1px solid rgba(220,215,201,.95);
+    background: rgba(255,255,255,.72);
+  }
+
+  .workspace-stack {
+    display: grid;
     gap: 16px;
   }
 
@@ -559,10 +668,11 @@ const GLOBAL_CSS = `
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 12px 14px;
-    border-radius: 16px;
-    border: 1px solid transparent;
-    background: transparent;
+    justify-content: flex-start;
+    padding: 14px;
+    border-radius: 18px;
+    border: 1px solid rgba(220,215,201,.7);
+    background: rgba(255,255,255,.38);
     color: #5F645C;
     font-size: 14px;
     font-weight: 600;
@@ -571,15 +681,45 @@ const GLOBAL_CSS = `
   }
 
   .tab-btn:hover {
-    background: #F7F4EC;
+    background: rgba(255,255,255,.74);
     color: #2C3E50;
-    border-color: #E7E1D2;
+    border-color: #D8D2C4;
   }
 
   .tab-btn.active {
     background: linear-gradient(135deg, #4B5EAA, #8294C4);
     color: white;
     box-shadow: 0 8px 18px rgba(75,94,170,.18);
+  }
+
+  .tab-btn-icon {
+    width: 34px;
+    height: 34px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 12px;
+    background: rgba(255,255,255,.48);
+  }
+
+  .tab-btn.active .tab-btn-icon {
+    background: rgba(255,255,255,.2);
+  }
+
+  .tab-btn-text {
+    display: grid;
+    gap: 2px;
+    text-align: left;
+  }
+
+  .tab-btn-text strong {
+    font-size: 14px;
+    font-weight: 700;
+  }
+
+  .tab-btn-text span {
+    font-size: 11px;
+    opacity: .78;
   }
 
   .field-help {
@@ -638,7 +778,11 @@ const GLOBAL_CSS = `
 
   @media (max-width: 1180px) {
     .app-frame { grid-template-columns: 1fr; }
-    .sidebar { flex-direction: row; overflow-x: auto; }
+    .sidebar {
+      position: static;
+      min-height: auto;
+    }
+    .workspace-hero { position: static; }
     .settings-grid { grid-template-columns: 1fr; height: auto; }
     .settings-stack { grid-template-rows: none; }
     .calendar-layout { grid-template-columns: 1fr; }
@@ -647,8 +791,15 @@ const GLOBAL_CSS = `
 
   @media (max-width: 840px) {
     .quiz-inline-stats { grid-template-columns: repeat(2, minmax(0,1fr)); }
+    .workspace-stats { grid-template-columns: repeat(2, minmax(0,1fr)); }
     .calendar-grid { gap: 8px; }
     .calendar-session-list { max-height: none; }
+    .nav-rail {
+      flex-direction: row;
+      overflow: auto;
+      padding-bottom: 4px;
+    }
+    .mini-grid { grid-template-columns: 1fr; }
   }
 `;
 
@@ -680,6 +831,8 @@ function QuizAbcdApp() {
   const [cloudApiEnabled, setCloudApiEnabled] = useState(Boolean(initialCloud.cloudApiEnabled));
   const [cloudApiKey, setCloudApiKey] = useState(initialCloud.cloudApiKey || "");
   const [cloudModel, setCloudModel] = useState(initialCloud.cloudModel || DEFAULT_MODEL);
+  const [supabaseCheck, setSupabaseCheck] = useState({ status: "idle", message: "Nie sprawdzono połączenia." });
+  const [cloudCheck, setCloudCheck] = useState({ status: "idle", message: "Nie sprawdzono połączenia." });
 
   const [trainingSummary, setTrainingSummary] = useState(null);
   const [trainingSummaryStatus, setTrainingSummaryStatus] = useState("idle");
@@ -761,6 +914,62 @@ function QuizAbcdApp() {
     loadQfromDB();
     loadAttempts();
   }, [loadQfromDB, loadAttempts]);
+
+  const checkSupabaseConnection = useCallback(async () => {
+    if (!SB_ENABLED) {
+      setSupabaseCheck({ status: "error", message: "Brak poprawnej konfiguracji URL lub klucza anon." });
+      return;
+    }
+
+    setSupabaseCheck({ status: "loading", message: "Sprawdzam połączenie z Supabase..." });
+
+    try {
+      const rows = await sbSelect("quiz_questions", "select=id&limit=1");
+      setSupabaseCheck({
+        status: "success",
+        message: `Połączenie działa. Odczyt zakończony poprawnie${rows.length ? " i zwrócono dane." : ", ale tabela jest pusta."}`,
+      });
+    } catch (error) {
+      setSupabaseCheck({ status: "error", message: getErrorText(error) });
+    }
+  }, []);
+
+  const checkCloudConnection = useCallback(async () => {
+    if (!cloudApiEnabled) {
+      setCloudCheck({ status: "error", message: "Cloud AI jest wyłączone." });
+      return;
+    }
+
+    if (!cloudApiKey.trim()) {
+      setCloudCheck({ status: "error", message: "Brakuje klucza API." });
+      return;
+    }
+
+    setCloudCheck({ status: "loading", message: "Sprawdzam połączenie z Cloud API..." });
+
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": cloudApiKey.trim(),
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: cloudModel.trim() || DEFAULT_MODEL,
+          max_tokens: 12,
+          temperature: 0,
+          messages: [{ role: "user", content: "Reply with OK." }],
+        }),
+      });
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      setCloudCheck({ status: "success", message: "Cloud API odpowiedziało poprawnie." });
+    } catch (error) {
+      setCloudCheck({ status: "error", message: getErrorText(error) });
+    }
+  }, [cloudApiEnabled, cloudApiKey, cloudModel]);
 
   const handleAnswer = useCallback(
     (key) => {
@@ -1226,12 +1435,13 @@ function QuizAbcdApp() {
   const todayCalKey = dayKey(Date.now());
 
   const TABS = [
-    { id: "quiz", label: "Quiz", icon: <IcoBrain size={15} /> },
-    { id: "results", label: "Wyniki", icon: <IcoTrophy size={15} /> },
-    { id: "calendar", label: "Kalendarz", icon: <IcoCalendar size={15} /> },
-    { id: "plan", label: "Plan", icon: <IcoBook size={15} /> },
-    { id: "settings", label: "Ustawienia", icon: <IcoSettings size={15} /> },
+    { id: "quiz", label: "Quiz", icon: <IcoBrain size={15} />, eyebrow: "Tryb pracy", description: "Bieżąca sesja, pytania i tempo odpowiedzi." },
+    { id: "results", label: "Wyniki", icon: <IcoTrophy size={15} />, eyebrow: "Analiza", description: "Ostatni wynik, mastery i feedback po treningu." },
+    { id: "calendar", label: "Kalendarz", icon: <IcoCalendar size={15} />, eyebrow: "Historia", description: "Rytm nauki dzień po dniu, tygodnie i serie." },
+    { id: "plan", label: "Plan", icon: <IcoBook size={15} />, eyebrow: "Strategia", description: "Rekomendacje i tygodniowy plan rozwoju." },
+    { id: "settings", label: "Ustawienia", icon: <IcoSettings size={15} />, eyebrow: "Zaplecze", description: "Źródła danych, import i integracje." },
   ];
+  const activeTabMeta = TABS.find((tab) => tab.id === activeTab) || TABS[0];
 
   const pct = answeredCount > 0 ? Math.round((stats.correctCount / answeredCount) * 100) : 0;
 
@@ -1713,6 +1923,7 @@ function QuizAbcdApp() {
                 <IcoRight size={14} />
               </button>
             </div>
+
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginTop: 18 }}>
@@ -2206,6 +2417,27 @@ function QuizAbcdApp() {
             <label style={s.label}>Model</label>
             <input value={cloudModel} onChange={(e) => setCloudModel(e.target.value)} placeholder={DEFAULT_MODEL} style={s.input} />
           </div>
+
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 14 }}>
+            <button onClick={checkCloudConnection} style={s.btn("soft")}>
+              <IcoCloud size={14} /> Test Cloud API
+            </button>
+          </div>
+
+          <div
+            style={{
+              marginTop: 12,
+              padding: 12,
+              borderRadius: 14,
+              background: toneForStatus(cloudCheck.status).bg,
+              color: toneForStatus(cloudCheck.status).color,
+              border: `1px solid ${toneForStatus(cloudCheck.status).border}`,
+              fontSize: 13,
+              lineHeight: 1.6,
+            }}
+          >
+            {cloudCheck.message}
+          </div>
         </div>
 
         <div style={{ ...s.card, padding: 18, minHeight: 0 }}>
@@ -2228,7 +2460,7 @@ function QuizAbcdApp() {
 
           <div style={{ marginTop: 14 }} className="soft-chip">
             <IcoCheck size={12} />
-            {SB_ENABLED ? "Supabase aktywne" : "Tryb lokalny"}
+            {SB_ENABLED ? "Supabase skonfigurowane" : "Tryb lokalny"}
           </div>
         </div>
 
@@ -2236,7 +2468,7 @@ function QuizAbcdApp() {
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
               <IcoTarget size={16} />
-              <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Styl premium</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Diagnostyka integracji</div>
             </div>
 
             <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.65 }}>
@@ -2245,11 +2477,31 @@ function QuizAbcdApp() {
             </div>
           </div>
 
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 14 }}>
+            <button onClick={checkSupabaseConnection} style={s.btn("soft")}>
+              <IcoCheck size={14} /> Test Supabase
+            </button>
+          </div>
+
+          <div
+            style={{
+              marginTop: 12,
+              padding: 12,
+              borderRadius: 14,
+              background: toneForStatus(supabaseCheck.status).bg,
+              color: toneForStatus(supabaseCheck.status).color,
+              border: `1px solid ${toneForStatus(supabaseCheck.status).border}`,
+              fontSize: 13,
+              lineHeight: 1.6,
+            }}
+          >
+            {supabaseCheck.message}
+          </div>
+
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14 }}>
-            <span className="soft-chip">Wabi-sabi</span>
-            <span className="soft-chip">Japandi</span>
-            <span className="soft-chip">Zen UI</span>
-            <span className="soft-chip">Low-noise</span>
+            <span className="soft-chip">Supabase</span>
+            <span className="soft-chip">Cloud API</span>
+            <span className="soft-chip">Runtime checks</span>
           </div>
         </div>
       </div>
@@ -2272,32 +2524,98 @@ function QuizAbcdApp() {
       <div className="app-shell">
         <div className="app-frame">
           <aside className="sidebar">
-            <div style={{ padding: "8px 8px 14px" }}>
+            <div className="brand-panel" style={{ padding: "8px 8px 14px" }}>
               <div className="tinyLabel" style={{ marginBottom: 8 }}>
                 Study Suite
               </div>
-              <div style={{ fontSize: 22, fontWeight: 700, color: C.textStrong }}>Zen Quiz</div>
+              <div className="brand-title" style={{ fontSize: 28, fontWeight: 700, color: C.textStrong }}>Zen Quiz</div>
               <div style={{ fontSize: 13, color: C.textSub, marginTop: 6, lineHeight: 1.5 }}>
                 Skupienie, rytm, jakość odpowiedzi.
               </div>
             </div>
 
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <div className="nav-rail">
               {TABS.map((tab) => (
                 <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`tab-btn ${activeTab === tab.id ? "active" : ""}`}>
-                  {tab.icon}
-                  <span>{tab.label}</span>
+                  <span className="tab-btn-icon">{tab.icon}</span>
+                  <span className="tab-btn-text">
+                    <strong>{tab.label}</strong>
+                    <span>{tab.eyebrow}</span>
+                  </span>
                 </button>
               ))}
             </div>
 
-            <div style={{ marginTop: "auto", ...s.cardSm, padding: 14, background: C.cardAlt }}>
-              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>Dzisiejsza forma</div>
-              <div style={{ fontSize: 24, fontWeight: 700, color: C.textStrong }}>{pct || 0}%</div>
+            <div className="sidebar-footer">
+              <div className="mini-grid">
+                {[
+                  ["Skuteczność", `${pct || 0}%`],
+                  ["Seria", `${streak} dni`],
+                  ["Sesje", history.length],
+                  ["Pytania", questionPool.length],
+                ].map(([label, value]) => (
+                  <div key={label} style={{ ...s.cardSm, padding: 14, background: "rgba(255,255,255,.72)" }}>
+                    <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>{label}</div>
+                    <div style={{ fontSize: 21, fontWeight: 700, color: C.textStrong }}>{value}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ ...s.cardSm, padding: 14, background: C.cardAlt }}>
+                <div style={{ fontSize: 11, color: C.textSub, marginBottom: 8 }}>Stan integracji</div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <span className="soft-chip">{SB_ENABLED ? "Supabase skonfigurowane" : "Tryb lokalny"}</span>
+                  <span className="soft-chip">{cloudApiEnabled ? "Cloud AI włączone" : "Cloud AI wyłączone"}</span>
+                </div>
+              </div>
             </div>
           </aside>
 
-          <main className="content-area">{renderTab()}</main>
+          <main className="content-area">
+            <section className="workspace-hero">
+              <div className="workspace-header">
+                <div>
+                  <div className="tinyLabel" style={{ marginBottom: 8 }}>
+                    {activeTabMeta.eyebrow}
+                  </div>
+                  <div className="workspace-title" style={{ fontSize: 36, fontWeight: 700, color: C.textStrong }}>
+                    {activeTabMeta.label}
+                  </div>
+                  <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.7, maxWidth: 760, marginTop: 8 }}>
+                    {activeTabMeta.description}
+                  </div>
+                </div>
+
+                <div className="workspace-meta">
+                  <button onClick={() => startQuiz(questionPool, quizLength)} style={s.btn("primary")}>
+                    <IcoRefresh size={14} /> Nowa sesja
+                  </button>
+                  <button onClick={() => setActiveTab("calendar")} style={s.btn(activeTab === "calendar" ? "soft" : "ghost")}>
+                    <IcoCalendar size={14} /> Kalendarz
+                  </button>
+                  <button onClick={() => setActiveTab("settings")} style={s.btn(activeTab === "settings" ? "soft" : "ghost")}>
+                    <IcoSettings size={14} /> Integracje
+                  </button>
+                </div>
+              </div>
+
+              <div className="workspace-stats">
+                {[
+                  ["Dzisiejsza forma", `${pct || 0}%`],
+                  ["Bieżąca seria", `${streak} dni`],
+                  ["Baza pytań", questionPool.length],
+                  ["Zapisane sesje", history.length],
+                ].map(([label, value]) => (
+                  <div key={label} className="workspace-stat">
+                    <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>{label}</div>
+                    <div style={{ fontSize: 22, fontWeight: 700, color: C.textStrong }}>{value}</div>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <div className="workspace-stack">{renderTab()}</div>
+          </main>
         </div>
       </div>
     </>

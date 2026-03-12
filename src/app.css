@@ -1,10 +1,21 @@
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
+:root {
+  --paper: #F2F0E9;
+  --paper-strong: #ECE7DA;
+  --surface: rgba(255,255,255,.78);
+  --surface-strong: rgba(255,255,255,.92);
+  --ink: #1A1A1B;
+  --ink-subtle: #5F645C;
+}
 
 body {
-  background: #F2F0E9;
+  background:
+    radial-gradient(circle at top left, rgba(75,94,170,.12), transparent 28%),
+    radial-gradient(circle at 85% 10%, rgba(176,137,104,.12), transparent 24%),
+    linear-gradient(180deg, #F5F1E8 0%, #EFE8DB 100%);
   color: #1A1A1B;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: "Aptos", "Segoe UI", "Trebuchet MS", sans-serif;
 }
 
 button, input, select, textarea { font-family: inherit; }
@@ -12,30 +23,70 @@ button, input, select, textarea { font-family: inherit; }
 .app-shell {
   min-height: 100vh;
   background:
-    radial-gradient(circle at top left, rgba(75,94,170,.06), transparent 24%),
-    radial-gradient(circle at bottom right, rgba(130,148,196,.08), transparent 22%),
-    #F2F0E9;
-  padding: 20px;
+    radial-gradient(circle at top left, rgba(75,94,170,.08), transparent 24%),
+    radial-gradient(circle at bottom right, rgba(130,148,196,.10), transparent 22%),
+    linear-gradient(180deg, rgba(255,255,255,.1), rgba(255,255,255,0)),
+    var(--paper);
+  padding: 24px;
 }
 
 .app-frame {
-  max-width: 1440px;
+  max-width: 1520px;
   margin: 0 auto;
   display: grid;
-  grid-template-columns: 220px 1fr;
-  gap: 18px;
-  min-height: calc(100vh - 40px);
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 22px;
+  align-items: start;
+  min-height: calc(100vh - 48px);
 }
 
 .sidebar {
-  background: rgba(255,255,255,.62);
-  backdrop-filter: blur(10px);
-  border: 1px solid #DCD7C9;
-  border-radius: 24px;
-  padding: 18px;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.03);
+  position: sticky;
+  top: 24px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.88), rgba(250,248,242,.92)),
+    rgba(255,255,255,.72);
+  backdrop-filter: blur(18px);
+  border: 1px solid rgba(220,215,201,.95);
+  border-radius: 30px;
+  padding: 20px;
+  box-shadow: 0 18px 48px rgba(44,62,80,.08);
   display: flex;
   flex-direction: column;
+  gap: 16px;
+  min-height: calc(100vh - 48px);
+  overflow: hidden;
+}
+
+.brand-panel {
+  padding: 18px;
+  border-radius: 24px;
+  background:
+    linear-gradient(145deg, rgba(75,94,170,.13), rgba(255,255,255,.66) 58%, rgba(176,137,104,.10));
+  border: 1px solid rgba(220,215,201,.9);
+}
+
+.brand-title,
+.workspace-title {
+  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  letter-spacing: -.03em;
+}
+
+.nav-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sidebar-footer {
+  margin-top: auto;
+  display: grid;
+  gap: 12px;
+}
+
+.mini-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0,1fr));
   gap: 10px;
 }
 
@@ -43,6 +94,52 @@ button, input, select, textarea { font-family: inherit; }
   min-width: 0;
   display: flex;
   flex-direction: column;
+  gap: 18px;
+}
+
+.workspace-hero {
+  position: sticky;
+  top: 24px;
+  z-index: 5;
+  display: grid;
+  gap: 16px;
+  padding: 22px;
+  border-radius: 30px;
+  background:
+    linear-gradient(135deg, rgba(75,94,170,.10), rgba(255,255,255,.95) 42%, rgba(246,242,233,.98));
+  border: 1px solid rgba(220,215,201,.95);
+  box-shadow: 0 18px 46px rgba(44,62,80,.06);
+}
+
+.workspace-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.workspace-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.workspace-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0,1fr));
+  gap: 12px;
+}
+
+.workspace-stat {
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(220,215,201,.95);
+  background: rgba(255,255,255,.72);
+}
+
+.workspace-stack {
+  display: grid;
   gap: 16px;
 }
 
@@ -79,10 +176,11 @@ button, input, select, textarea { font-family: inherit; }
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 12px 14px;
-  border-radius: 16px;
-  border: 1px solid transparent;
-  background: transparent;
+  justify-content: flex-start;
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(220,215,201,.7);
+  background: rgba(255,255,255,.38);
   color: #5F645C;
   font-size: 14px;
   font-weight: 600;
@@ -91,15 +189,45 @@ button, input, select, textarea { font-family: inherit; }
 }
 
 .tab-btn:hover {
-  background: #F7F4EC;
+  background: rgba(255,255,255,.74);
   color: #2C3E50;
-  border-color: #E7E1D2;
+  border-color: #D8D2C4;
 }
 
 .tab-btn.active {
   background: linear-gradient(135deg, #4B5EAA, #8294C4);
   color: white;
   box-shadow: 0 8px 18px rgba(75,94,170,.18);
+}
+
+.tab-btn-icon {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  background: rgba(255,255,255,.48);
+}
+
+.tab-btn.active .tab-btn-icon {
+  background: rgba(255,255,255,.2);
+}
+
+.tab-btn-text {
+  display: grid;
+  gap: 2px;
+  text-align: left;
+}
+
+.tab-btn-text strong {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.tab-btn-text span {
+  font-size: 11px;
+  opacity: .78;
 }
 
 .field-help {
@@ -158,7 +286,11 @@ button, input, select, textarea { font-family: inherit; }
 
 @media (max-width: 1180px) {
   .app-frame { grid-template-columns: 1fr; }
-  .sidebar { flex-direction: row; overflow-x: auto; }
+  .sidebar {
+    position: static;
+    min-height: auto;
+  }
+  .workspace-hero { position: static; }
   .settings-grid { grid-template-columns: 1fr; height: auto; }
   .settings-stack { grid-template-rows: none; }
   .calendar-layout { grid-template-columns: 1fr; }
@@ -167,6 +299,13 @@ button, input, select, textarea { font-family: inherit; }
 
 @media (max-width: 840px) {
   .quiz-inline-stats { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  .workspace-stats { grid-template-columns: repeat(2, minmax(0,1fr)); }
   .calendar-grid { gap: 8px; }
   .calendar-session-list { max-height: none; }
+  .nav-rail {
+    flex-direction: row;
+    overflow: auto;
+    padding-bottom: 4px;
+  }
+  .mini-grid { grid-template-columns: 1fr; }
 }

@@ -42,3 +42,25 @@ export const IcoCross = ({ size = 16 }) => <Icon size={size} d="M18 6L6 18M6 6l1
 export const IcoTrending = ({ size = 16 }) => <Icon size={size} d="M3 17l6-6 4 4 7-8M14 7h6v6" />;
 export const IcoBolt = ({ size = 16 }) => <Icon size={size} d="M13 2L4 14h6l-1 8 9-12h-6l1-8z" />;
 export const IcoTarget = ({ size = 16 }) => <Icon size={size} d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83M12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8z" />;
+
+export const ZenQuizLogo = ({ size = 64 }) => (
+  <svg width={size} height={size} viewBox="0 0 72 72" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <defs>
+      <linearGradient id="zqBg" x1="12" y1="8" x2="60" y2="66" gradientUnits="userSpaceOnUse">
+        <stop stopColor="#2C3E50" />
+        <stop offset="0.55" stopColor="#4B5EAA" />
+        <stop offset="1" stopColor="#B08968" />
+      </linearGradient>
+      <linearGradient id="zqAccent" x1="20" y1="18" x2="52" y2="52" gradientUnits="userSpaceOnUse">
+        <stop stopColor="#FFF9F0" />
+        <stop offset="1" stopColor="#F2E8D9" />
+      </linearGradient>
+    </defs>
+
+    <rect x="6" y="6" width="60" height="60" rx="22" fill="url(#zqBg)" />
+    <rect x="11" y="11" width="50" height="50" rx="18" stroke="rgba(255,255,255,.22)" strokeWidth="1.5" />
+    <path d="M22 22H50L27 50H50" stroke="url(#zqAccent)" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M48 18C54.0751 18 59 22.9249 59 29" stroke="#F8F3EA" strokeWidth="3" strokeLinecap="round" opacity="0.8" />
+    <circle cx="20" cy="52" r="4" fill="#F8F3EA" opacity="0.9" />
+  </svg>
+);

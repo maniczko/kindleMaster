@@ -21,6 +21,7 @@ import {
   IcoTrending,
   IcoBolt,
   IcoTarget,
+  ZenQuizLogo,
 } from "./icons";
 
 // ── Config & Helpers ──────────────────────────────────────────────────────────
@@ -526,7 +527,7 @@ const GLOBAL_CSS = `
     max-width: 1520px;
     margin: 0 auto;
     display: grid;
-    grid-template-columns: 280px minmax(0, 1fr);
+    grid-template-columns: 300px minmax(0, 1fr);
     gap: 22px;
     align-items: start;
     min-height: calc(100vh - 48px);
@@ -566,12 +567,18 @@ const GLOBAL_CSS = `
 
   .nav-rail {
     display: flex;
-    flex-direction: column;
-    gap: 8px;
+    gap: 10px;
+    overflow-x: auto;
+    padding-bottom: 4px;
   }
 
   .sidebar-footer {
     margin-top: auto;
+    display: grid;
+    gap: 12px;
+  }
+
+  .progress-panel {
     display: grid;
     gap: 12px;
   }
@@ -609,6 +616,11 @@ const GLOBAL_CSS = `
     justify-content: space-between;
     gap: 18px;
     flex-wrap: wrap;
+  }
+
+  .top-nav-shell {
+    display: grid;
+    gap: 14px;
   }
 
   .workspace-meta {
@@ -664,7 +676,7 @@ const GLOBAL_CSS = `
   }
 
   .tab-btn {
-    width: 100%;
+    min-width: 0;
     display: flex;
     align-items: center;
     gap: 10px;
@@ -722,6 +734,12 @@ const GLOBAL_CSS = `
     opacity: .78;
   }
 
+  .tab-btn.top {
+    width: auto;
+    min-width: 168px;
+    background: rgba(255,255,255,.58);
+  }
+
   .field-help {
     font-size: 12px;
     color: #8C8A7E;
@@ -731,17 +749,32 @@ const GLOBAL_CSS = `
 
   .settings-grid {
     display: grid;
-    grid-template-columns: 1.15fr 0.85fr;
+    grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr);
     gap: 16px;
-    height: calc(100vh - 210px);
-    overflow: hidden;
+    align-items: start;
   }
 
   .settings-stack {
     display: grid;
-    grid-template-rows: repeat(3, minmax(0,1fr));
     gap: 16px;
-    min-height: 0;
+    align-content: start;
+  }
+
+  .settings-main-card {
+    display: grid;
+    gap: 22px;
+  }
+
+  .settings-section-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+  }
+
+  .settings-actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
   }
 
   .calendar-grid {
@@ -783,8 +816,7 @@ const GLOBAL_CSS = `
       min-height: auto;
     }
     .workspace-hero { position: static; }
-    .settings-grid { grid-template-columns: 1fr; height: auto; }
-    .settings-stack { grid-template-rows: none; }
+    .settings-grid { grid-template-columns: 1fr; }
     .calendar-layout { grid-template-columns: 1fr; }
     .calendar-bottom-grid { grid-template-columns: 1fr; }
   }
@@ -794,12 +826,9 @@ const GLOBAL_CSS = `
     .workspace-stats { grid-template-columns: repeat(2, minmax(0,1fr)); }
     .calendar-grid { gap: 8px; }
     .calendar-session-list { max-height: none; }
-    .nav-rail {
-      flex-direction: row;
-      overflow: auto;
-      padding-bottom: 4px;
-    }
     .mini-grid { grid-template-columns: 1fr; }
+    .settings-section-grid { grid-template-columns: 1fr; }
+    .tab-btn.top { min-width: 150px; }
   }
 `;
 
@@ -1896,10 +1925,10 @@ function QuizAbcdApp() {
             <div>
               <div className="tinyLabel" style={{ marginBottom: 8 }}>
                 Kalendarz nauki
-              </div>
+                  </div>
               <div style={{ fontSize: 28, fontWeight: 700, color: C.textStrong }}>
                 {calMonth.toLocaleDateString("pl-PL", { month: "long", year: "numeric" })}
-              </div>
+                  </div>
               <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.65, marginTop: 8, maxWidth: 700 }}>
                 Widok miesięczny pokazuje rytm pracy, skuteczność i obciążenie nauką. Ostatnia aktywność:{" "}
                 {lastActiveDayKey ? humanDate(lastActiveDayKey) : "brak zapisanych sesji"}.
@@ -2327,7 +2356,7 @@ function QuizAbcdApp() {
 
   const SettingsView = () => (
     <div className="settings-grid">
-      <div style={{ ...s.card, padding: 20, display: "flex", flexDirection: "column", justifyContent: "space-between", minHeight: 0 }}>
+      <div className="settings-main-card" style={{ ...s.card, padding: 20 }}>
         <div>
           <div className="tinyLabel" style={{ marginBottom: 10 }}>
             Konfiguracja quizu
@@ -2337,7 +2366,7 @@ function QuizAbcdApp() {
             Minimum chaosu, maksimum skupienia. Wszystko w jednym spokojnym panelu.
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+          <div className="settings-section-grid">
             <div>
               <label style={s.label}>Liczba pytań</label>
               <select
@@ -2365,7 +2394,7 @@ function QuizAbcdApp() {
         </div>
 
         <div>
-          <div style={{ display: "flex", gap: 10, marginTop: 18, flexWrap: "wrap" }}>
+          <div className="settings-actions" style={{ marginTop: 18 }}>
             <button onClick={() => startQuiz(questionPool, quizLength)} style={s.btn("primary")}>
               <IcoRefresh size={14} /> Nowa sesja
             </button>
@@ -2524,29 +2553,27 @@ function QuizAbcdApp() {
       <div className="app-shell">
         <div className="app-frame">
           <aside className="sidebar">
-            <div className="brand-panel" style={{ padding: "8px 8px 14px" }}>
-              <div className="tinyLabel" style={{ marginBottom: 8 }}>
-                Study Suite
+            <div className="brand-panel">
+              <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14 }}>
+                <ZenQuizLogo size={68} />
+                <div>
+                  <div className="tinyLabel" style={{ marginBottom: 8 }}>
+                    Study Suite
               </div>
-              <div className="brand-title" style={{ fontSize: 28, fontWeight: 700, color: C.textStrong }}>Zen Quiz</div>
-              <div style={{ fontSize: 13, color: C.textSub, marginTop: 6, lineHeight: 1.5 }}>
+                  <div className="brand-title" style={{ fontSize: 28, fontWeight: 700, color: C.textStrong }}>Zen Quiz</div>
+                  <div style={{ fontSize: 13, color: C.textSub, marginTop: 6, lineHeight: 1.5 }}>
                 Skupienie, rytm, jakość odpowiedzi.
               </div>
             </div>
 
-            <div className="nav-rail">
-              {TABS.map((tab) => (
-                <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`tab-btn ${activeTab === tab.id ? "active" : ""}`}>
-                  <span className="tab-btn-icon">{tab.icon}</span>
-                  <span className="tab-btn-text">
-                    <strong>{tab.label}</strong>
-                    <span>{tab.eyebrow}</span>
-                  </span>
-                </button>
-              ))}
+              </div>
             </div>
 
             <div className="sidebar-footer">
+              <div style={{ fontSize: 12, fontWeight: 700, color: C.textSub, textTransform: "uppercase", letterSpacing: ".05em" }}>
+                PostÄ™p nauki
+              </div>
+
               <div className="mini-grid">
                 {[
                   ["Skuteczność", `${pct || 0}%`],
@@ -2562,9 +2589,9 @@ function QuizAbcdApp() {
               </div>
 
               <div style={{ ...s.cardSm, padding: 14, background: C.cardAlt }}>
-                <div style={{ fontSize: 11, color: C.textSub, marginBottom: 8 }}>Stan integracji</div>
+                <div style={{ fontSize: 11, color: C.textSub, marginBottom: 8 }}>Tempo i jakość</div>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <span className="soft-chip">{SB_ENABLED ? "Supabase skonfigurowane" : "Tryb lokalny"}</span>
+                  <span className="soft-chip">Mastery: {attemptDraft ? `${attemptDraft.mastery}%` : "—"}</span>
                   <span className="soft-chip">{cloudApiEnabled ? "Cloud AI włączone" : "Cloud AI wyłączone"}</span>
                 </div>
               </div>
@@ -2573,6 +2600,25 @@ function QuizAbcdApp() {
 
           <main className="content-area">
             <section className="workspace-hero">
+              <div className="top-nav-shell">
+                <div className="tinyLabel">Nawigacja</div>
+                <div className="nav-rail">
+                  {TABS.map((tab) => (
+                    <button
+                      key={tab.id}
+                      onClick={() => setActiveTab(tab.id)}
+                      className={`tab-btn top ${activeTab === tab.id ? "active" : ""}`}
+                    >
+                      <span className="tab-btn-icon">{tab.icon}</span>
+                      <span className="tab-btn-text">
+                        <strong>{tab.label}</strong>
+                        <span>{tab.eyebrow}</span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <div className="workspace-header">
                 <div>
                   <div className="tinyLabel" style={{ marginBottom: 8 }}>

@@ -34,7 +34,7 @@ button, input, select, textarea { font-family: inherit; }
   max-width: 1520px;
   margin: 0 auto;
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
+  grid-template-columns: 300px minmax(0, 1fr);
   gap: 22px;
   align-items: start;
   min-height: calc(100vh - 48px);
@@ -74,12 +74,18 @@ button, input, select, textarea { font-family: inherit; }
 
 .nav-rail {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 4px;
 }
 
 .sidebar-footer {
   margin-top: auto;
+  display: grid;
+  gap: 12px;
+}
+
+.progress-panel {
   display: grid;
   gap: 12px;
 }
@@ -117,6 +123,11 @@ button, input, select, textarea { font-family: inherit; }
   justify-content: space-between;
   gap: 18px;
   flex-wrap: wrap;
+}
+
+.top-nav-shell {
+  display: grid;
+  gap: 14px;
 }
 
 .workspace-meta {
@@ -172,7 +183,7 @@ button, input, select, textarea { font-family: inherit; }
 }
 
 .tab-btn {
-  width: 100%;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -230,6 +241,12 @@ button, input, select, textarea { font-family: inherit; }
   opacity: .78;
 }
 
+.tab-btn.top {
+  width: auto;
+  min-width: 168px;
+  background: rgba(255,255,255,.58);
+}
+
 .field-help {
   font-size: 12px;
   color: #8C8A7E;
@@ -239,17 +256,32 @@ button, input, select, textarea { font-family: inherit; }
 
 .settings-grid {
   display: grid;
-  grid-template-columns: 1.15fr 0.85fr;
+  grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr);
   gap: 16px;
-  height: calc(100vh - 210px);
-  overflow: hidden;
+  align-items: start;
 }
 
 .settings-stack {
   display: grid;
-  grid-template-rows: repeat(3, minmax(0,1fr));
   gap: 16px;
-  min-height: 0;
+  align-content: start;
+}
+
+.settings-main-card {
+  display: grid;
+  gap: 22px;
+}
+
+.settings-section-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.settings-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .calendar-grid {
@@ -291,8 +323,7 @@ button, input, select, textarea { font-family: inherit; }
     min-height: auto;
   }
   .workspace-hero { position: static; }
-  .settings-grid { grid-template-columns: 1fr; height: auto; }
-  .settings-stack { grid-template-rows: none; }
+  .settings-grid { grid-template-columns: 1fr; }
   .calendar-layout { grid-template-columns: 1fr; }
   .calendar-bottom-grid { grid-template-columns: 1fr; }
 }
@@ -302,10 +333,7 @@ button, input, select, textarea { font-family: inherit; }
   .workspace-stats { grid-template-columns: repeat(2, minmax(0,1fr)); }
   .calendar-grid { gap: 8px; }
   .calendar-session-list { max-height: none; }
-  .nav-rail {
-    flex-direction: row;
-    overflow: auto;
-    padding-bottom: 4px;
-  }
   .mini-grid { grid-template-columns: 1fr; }
+  .settings-section-grid { grid-template-columns: 1fr; }
+  .tab-btn.top { min-width: 150px; }
 }

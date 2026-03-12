@@ -442,68 +442,6 @@ const C = {
   shadowSm: "0 2px 10px rgba(0, 0, 0, 0.025)",
 };
 
-const s = {
-  card: {
-    background: C.card,
-    border: `1px solid ${C.border}`,
-    borderRadius: 22,
-    boxShadow: C.shadow,
-  },
-  cardSm: {
-    background: C.card,
-    border: `1px solid ${C.border}`,
-    borderRadius: 16,
-    boxShadow: C.shadowSm,
-  },
-  btn: (variant = "primary") => ({
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    padding: "10px 16px",
-    borderRadius: 14,
-    fontSize: 13,
-    fontWeight: 600,
-    cursor: "pointer",
-    border: "none",
-    transition: "all .18s ease",
-    ...(variant === "primary"
-      ? { background: C.accent, color: "#fff" }
-      : variant === "ghost"
-      ? { background: C.surface, color: C.textSub, border: `1px solid ${C.border}` }
-      : variant === "soft"
-      ? { background: C.accentSoft, color: C.accent, border: `1px solid ${C.borderSoft}` }
-      : variant === "danger"
-      ? { background: C.errorBg, color: C.error, border: `1px solid #E7C6B8` }
-      : { background: C.cardAlt, color: C.text, border: `1px solid ${C.border}` }),
-  }),
-  metric: {
-    background: C.card,
-    border: `1px solid ${C.border}`,
-    borderRadius: 16,
-    boxShadow: "none",
-    padding: "14px 16px",
-  },
-  input: {
-    width: "100%",
-    padding: "12px 14px",
-    borderRadius: 14,
-    border: `1px solid ${C.border}`,
-    background: "#fff",
-    color: C.text,
-    fontSize: 14,
-    outline: "none",
-  },
-  label: {
-    display: "block",
-    fontSize: 12,
-    fontWeight: 700,
-    color: C.textSub,
-    marginBottom: 8,
-    letterSpacing: ".02em",
-  },
-};
-
 const GLOBAL_CSS = `
   * { box-sizing: border-box; }
   html, body, #root { height: 100%; margin: 0; }

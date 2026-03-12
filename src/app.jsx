@@ -405,42 +405,6 @@ const SAMPLES = [
   },
 ];
 
-// ── Premium Color Tokens ──────────────────────────────────────────────────────
-const C = {
-  bg: "#F2F0E9",
-  surface: "#FFFFFF",
-  card: "#FFFFFF",
-  cardAlt: "#FAF8F2",
-  panel: "#F7F4EC",
-  border: "#DCD7C9",
-  borderSoft: "#E7E1D2",
-
-  accent: "#4B5EAA",
-  accentHover: "#3D4B8A",
-  accentSoft: "#EEF1FA",
-  accent2: "#8294C4",
-
-  text: "#1A1A1B",
-  textStrong: "#2C3E50",
-  textSub: "#5F645C",
-  muted: "#8C8A7E",
-
-  successBg: "#E6F2ED",
-  success: "#2D6A4F",
-  successText: "#1B4332",
-
-  errorBg: "#F9EAE1",
-  error: "#A54242",
-  errorText: "#7B2E2E",
-
-  tagBg: "#E5E5E5",
-  tagText: "#666666",
-
-  yellow: "#B08968",
-
-  shadow: "0 4px 20px rgba(0, 0, 0, 0.03)",
-  shadowSm: "0 2px 10px rgba(0, 0, 0, 0.025)",
-};
 
 const GLOBAL_CSS = `
   * { box-sizing: border-box; }

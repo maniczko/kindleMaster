@@ -1477,6 +1477,29 @@ function QuizAbcdApp() {
   const activeTabMeta = TABS.find((tab) => tab.id === activeTab) || TABS[0];
 
   const pct = answeredCount > 0 ? Math.round((stats.correctCount / answeredCount) * 100) : 0;
+  const sessionProgress = total ? Math.round(((idx + 1) / total) * 100) : 0;
+  const sidebarMetrics = [
+    {
+      label: "Postęp",
+      value: `${idx + 1}/${total}`,
+      note: `${sessionProgress}% bieżącej sesji`,
+    },
+    {
+      label: "Skuteczność",
+      value: `${pct || 0}%`,
+      note: answeredCount ? `${stats.correctCount}/${answeredCount} trafnych` : "Po pierwszej odpowiedzi pojawi się wynik",
+    },
+    {
+      label: "Śr. czas",
+      value: answeredCount ? fmt(stats.avgResponseMs) : "—",
+      note: answeredCount ? "na jedną odpowiedź" : "Brak danych czasowych",
+    },
+    {
+      label: "Seria",
+      value: `${streak} dni`,
+      note: longestStreak ? `Rekord: ${longestStreak} dni` : "Zacznij od pierwszej sesji",
+    },
+  ];
 
   const QuizView = () => {
     const diffColor = { easy: C.success, medium: C.yellow, hard: C.error }[current.difficulty || "medium"];
@@ -1602,28 +1625,29 @@ function QuizAbcdApp() {
                 key={key}
                 onClick={() => handleAnswer(key)}
                 disabled={!!selected}
+                className="answer-option"
                 style={{
+                  "--answer-bg": bg,
+                  "--answer-border": border,
+                  "--answer-text": color,
+                  "--answer-label-bg": labelBg,
+                  "--answer-label-color": labelColor,
                   display: "flex",
                   alignItems: "center",
                   gap: 16,
                   padding: "18px 18px",
                   borderRadius: 18,
-                  border: `1px solid ${border}`,
-                  background: bg,
                   cursor: selected ? "default" : "pointer",
                   textAlign: "left",
                   width: "100%",
-                  boxShadow: "none",
-                  transition: "all .16s ease",
                 }}
               >
                 <span
+                  className="answer-option-label"
                   style={{
                     width: 42,
                     height: 42,
                     borderRadius: 14,
-                    background: labelBg,
-                    color: labelColor,
                     fontSize: 13,
                     fontWeight: 700,
                     display: "flex",
@@ -1637,10 +1661,10 @@ function QuizAbcdApp() {
                 </span>
 
                 <span
+                  className="answer-option-text"
                   style={{
                     fontSize: 15,
                     fontWeight: 400,
-                    color,
                     flex: 1,
                     lineHeight: 1.58,
                   }}
@@ -2573,8 +2597,6 @@ function QuizAbcdApp() {
 
   return (
     <>
-      <style>{GLOBAL_CSS}</style>
-
       <div className="app-shell">
         <div className="app-frame">
           <aside className="sidebar">
@@ -2596,6 +2618,67 @@ function QuizAbcdApp() {
 
             <div className="sidebar-footer">
               <div className="sidebar-primary" style={{ display: "grid", gap: 12 }}>
+                <div className="sidebar-summary-card">
+                  <div className="sidebar-summary-head">
+                    <div>
+                      <div className="tinyLabel" style={{ marginBottom: 8 }}>
+                        Lewy panel
+                      </div>
+                      <div style={{ fontSize: 24, fontWeight: 700, color: C.textStrong, lineHeight: 1.1 }}>Postęp nauki</div>
+                    </div>
+
+                    <div className="soft-chip">
+                      {activeTabMeta.icon}
+                      {activeTabMeta.label}
+                    </div>
+                  </div>
+
+                  <div className="sidebar-summary-body">
+                    Najważniejsze liczby są teraz w jednym miejscu: postęp, skuteczność, średni czas i seria.
+                  </div>
+                </div>
+
+                <div className="sidebar-metric-grid">
+                  {sidebarMetrics.map((item) => (
+                    <div key={item.label} className="sidebar-metric">
+                      <div className="sidebar-metric-label">{item.label}</div>
+                      <div className="sidebar-metric-value">{item.value}</div>
+                      <div className="sidebar-metric-note">{item.note}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="sidebar-focus-card">
+                  <div className="tinyLabel">Stan sesji</div>
+
+                  <div className="sidebar-focus-row">
+                    <span className="sidebar-focus-label">Ostatni wynik</span>
+                    <span className="sidebar-focus-value">
+                      {attemptDraft ? `${attemptDraft.score}/${attemptDraft.totalQuestions}` : "—"}
+                    </span>
+                  </div>
+
+                  <div className="sidebar-focus-row">
+                    <span className="sidebar-focus-label">Mastery</span>
+                    <span className="sidebar-focus-value">{attemptDraft ? `${attemptDraft.mastery}%` : "—"}</span>
+                  </div>
+
+                  <div className="sidebar-focus-row">
+                    <span className="sidebar-focus-label">Baza pytań</span>
+                    <span className="sidebar-focus-value">{questionPool.length}</span>
+                  </div>
+
+                  <div className="sidebar-focus-row">
+                    <span className="sidebar-focus-label">Sesje zapisane</span>
+                    <span className="sidebar-focus-value">{uniq.length}</span>
+                  </div>
+
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <span className="soft-chip">{cloudApiEnabled ? "Cloud AI włączone" : "Cloud AI wyłączone"}</span>
+                    <span className="soft-chip">{SB_ENABLED ? "Supabase aktywne" : "Tryb lokalny"}</span>
+                  </div>
+                </div>
+
                 <div style={{ fontSize: 12, fontWeight: 700, color: C.textSub, textTransform: "uppercase", letterSpacing: ".05em" }}>
                   Postęp nauki
                 </div>
@@ -2704,12 +2787,10 @@ function QuizAbcdApp() {
                   <button onClick={() => startQuiz(questionPool, quizLength)} style={s.btn("primary")}>
                     <IcoRefresh size={14} /> Nowa sesja
                   </button>
-                  <button onClick={() => setActiveTab("calendar")} style={s.btn(activeTab === "calendar" ? "soft" : "ghost")}>
-                    <IcoCalendar size={14} /> Kalendarz
-                  </button>
-                  <button onClick={() => setActiveTab("settings")} style={s.btn(activeTab === "settings" ? "soft" : "ghost")}>
-                    <IcoSettings size={14} /> Ustawienia
-                  </button>
+                  <span className="soft-chip">
+                    {activeTabMeta.icon}
+                    {activeTabMeta.eyebrow}
+                  </span>
                 </div>
               </div>
 

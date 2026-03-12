@@ -25,33 +25,63 @@ import {
 } from "./icons";
 
 // ── Config & Helpers ──────────────────────────────────────────────────────────
-const SUPABASE_URL = "https://ylqloszldyzpeaikweyl.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlscWxvc3psZHl6cGVhaWt3ZXlsIiwicm9sZSI6ImFub24iLCJ9";
-const SB_ENABLED = SUPABASE_URL.startsWith("https://") && SUPABASE_ANON_KEY.startsWith("eyJ");
-
 const STORAGE_KEY = "quiz_abcd_attempts_v6";
 const CLOUD_SETTINGS_KEY = "quiz_abcd_cloud_settings_v2";
+const SUPABASE_SETTINGS_KEY = "quiz_abcd_supabase_settings_v1";
 const optionKeys = ["A", "B", "C", "D"];
 const diffW = { easy: 1, medium: 1.5, hard: 2 };
 const DEFAULT_MODEL = "claude-sonnet-4-5-20250929";
+const DEFAULT_SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || "https://ylqloszldyzpeaikweyl.supabase.co").trim();
+const DEFAULT_SUPABASE_ANON_KEY = (
+  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+  import.meta.env.VITE_SUPABASE_ANON_KEY ||
+  ""
+).trim();
+const CLOUD_BROWSER_NOTICE =
+  "Ta aplikacja działa wyłącznie w przeglądarce. Bez backend proxy lub Edge Function nie wykonasz bezpiecznego połączenia z Claude API z tego widoku.";
 
-const sbH = (prefer = "return=representation") => ({
-  "Content-Type": "application/json",
-  apikey: SUPABASE_ANON_KEY,
-  Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-  Prefer: prefer,
-});
+const isJwtLike = (value) => {
+  const parts = String(value || "").trim().split(".");
+  return parts.length === 3 && parts.every(Boolean);
+};
 
-async function sbSelect(table, params = "") {
-  const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${params}`, { headers: sbH() });
+const isValidSupabaseUrl = (value) => {
+  try {
+    const parsed = new URL(String(value || "").trim());
+    return parsed.protocol === "https:" || parsed.protocol === "http:";
+  } catch {
+    return false;
+  }
+};
+
+const isValidSupabaseKey = (value) => {
+  const key = String(value || "").trim();
+  return key.startsWith("sb_publishable_") || isJwtLike(key);
+};
+
+const hasSupabaseConfig = (config) => isValidSupabaseUrl(config?.url) && isValidSupabaseKey(config?.apiKey);
+
+const sbH = (apiKey, prefer = "return=representation") => {
+  const headers = {
+    "Content-Type": "application/json",
+    apikey: apiKey,
+    Prefer: prefer,
+  };
+
+  if (isJwtLike(apiKey)) headers.Authorization = `Bearer ${apiKey}`;
+  return headers;
+};
+
+async function sbSelect(config, table, params = "") {
+  const r = await fetch(`${config.url}/rest/v1/${table}?${params}`, { headers: sbH(config.apiKey) });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
 
-async function sbInsert(table, row) {
-  const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+async function sbInsert(config, table, row) {
+  const r = await fetch(`${config.url}/rest/v1/${table}`, {
     method: "POST",
-    headers: sbH(),
+    headers: sbH(config.apiKey),
     body: JSON.stringify(row),
   });
   if (!r.ok) throw new Error(await r.text());
@@ -196,6 +226,20 @@ const loadCloudSettings = () => {
 const saveCloudSettings = (settings) => {
   try {
     localStorage.setItem(CLOUD_SETTINGS_KEY, JSON.stringify(settings));
+  } catch {}
+};
+
+const loadSupabaseSettings = () => {
+  try {
+    return JSON.parse(localStorage.getItem(SUPABASE_SETTINGS_KEY) || "{}");
+  } catch {
+    return {};
+  }
+};
+
+const saveSupabaseSettings = (settings) => {
+  try {
+    localStorage.setItem(SUPABASE_SETTINGS_KEY, JSON.stringify(settings));
   } catch {}
 };
 
@@ -839,6 +883,7 @@ const GLOBAL_CSS = `
 // ── App ───────────────────────────────────────────────────────────────────────
 function QuizAbcdApp() {
   const initialCloud = loadCloudSettings();
+  const initialSupabase = loadSupabaseSettings();
 
   const [questionPool, setQuestionPool] = useState(SAMPLES);
   const [quizLength, setQuizLength] = useState(10);
@@ -864,6 +909,8 @@ function QuizAbcdApp() {
   const [cloudApiEnabled, setCloudApiEnabled] = useState(Boolean(initialCloud.cloudApiEnabled));
   const [cloudApiKey, setCloudApiKey] = useState(initialCloud.cloudApiKey || "");
   const [cloudModel, setCloudModel] = useState(initialCloud.cloudModel || DEFAULT_MODEL);
+  const [supabaseUrl, setSupabaseUrl] = useState(initialSupabase.supabaseUrl || DEFAULT_SUPABASE_URL);
+  const [supabaseAnonKey, setSupabaseAnonKey] = useState(initialSupabase.supabaseAnonKey || DEFAULT_SUPABASE_ANON_KEY);
   const [supabaseCheck, setSupabaseCheck] = useState({ status: "idle", message: "Nie sprawdzono połączenia." });
   const [cloudCheck, setCloudCheck] = useState({ status: "idle", message: "Nie sprawdzono połączenia." });
 
@@ -875,6 +922,27 @@ function QuizAbcdApp() {
   useEffect(() => {
     saveCloudSettings({ cloudApiEnabled, cloudApiKey, cloudModel });
   }, [cloudApiEnabled, cloudApiKey, cloudModel]);
+
+  useEffect(() => {
+    saveSupabaseSettings({ supabaseUrl, supabaseAnonKey });
+  }, [supabaseUrl, supabaseAnonKey]);
+
+  useEffect(() => {
+    setSupabaseCheck({ status: "idle", message: "Nie sprawdzono połączenia." });
+  }, [supabaseUrl, supabaseAnonKey]);
+
+  useEffect(() => {
+    setCloudCheck({ status: "idle", message: "Nie sprawdzono połączenia." });
+  }, [cloudApiEnabled, cloudApiKey, cloudModel]);
+
+  const supabaseConfig = useMemo(
+    () => ({
+      url: supabaseUrl.trim().replace(/\/+$/, ""),
+      apiKey: supabaseAnonKey.trim(),
+    }),
+    [supabaseUrl, supabaseAnonKey]
+  );
+  const sbEnabled = useMemo(() => hasSupabaseConfig(supabaseConfig), [supabaseConfig]);
 
   const total = questions.length;
   const current = questions[idx] || SAMPLES[0];
@@ -907,21 +975,21 @@ function QuizAbcdApp() {
   );
 
   const loadQfromDB = useCallback(async () => {
-    if (!SB_ENABLED) return;
+    if (!sbEnabled) return;
     try {
-      const rows = await sbSelect("quiz_questions", "is_active=eq.true&order=question_no.asc&limit=5000");
+      const rows = await sbSelect(supabaseConfig, "quiz_questions", "is_active=eq.true&order=question_no.asc&limit=5000");
       if (!rows.length) return;
       const parsed = rows.map(rowToQ);
       setQuestionPool(parsed);
       const shuffled = [...parsed].sort(() => 0.5 - Math.random());
       setQuestions(shuffled.slice(0, quizLength === "all" ? shuffled.length : quizLength));
     } catch {}
-  }, [quizLength]);
+  }, [quizLength, sbEnabled, supabaseConfig]);
 
   const loadAttempts = useCallback(async () => {
-    if (!SB_ENABLED) return;
+    if (!sbEnabled) return;
     try {
-      const rows = await sbSelect("quiz_attempts", "order=finished_at.desc&limit=100");
+      const rows = await sbSelect(supabaseConfig, "quiz_attempts", "order=finished_at.desc&limit=100");
       const mapped = rows.map((r) => ({
         id: r.attempt_id,
         finishedAt: new Date(r.finished_at).getTime(),
@@ -941,7 +1009,7 @@ function QuizAbcdApp() {
         return merged;
       });
     } catch {}
-  }, []);
+  }, [sbEnabled, supabaseConfig]);
 
   useEffect(() => {
     loadQfromDB();
@@ -949,15 +1017,18 @@ function QuizAbcdApp() {
   }, [loadQfromDB, loadAttempts]);
 
   const checkSupabaseConnection = useCallback(async () => {
-    if (!SB_ENABLED) {
-      setSupabaseCheck({ status: "error", message: "Brak poprawnej konfiguracji URL lub klucza anon." });
+    if (!sbEnabled) {
+      setSupabaseCheck({
+        status: "error",
+        message: "Wpisz poprawny Supabase URL oraz pełny publishable key (`sb_publishable_...`) albo pełny anon JWT z 3 segmentami.",
+      });
       return;
     }
 
     setSupabaseCheck({ status: "loading", message: "Sprawdzam połączenie z Supabase..." });
 
     try {
-      const rows = await sbSelect("quiz_questions", "select=id&limit=1");
+      const rows = await sbSelect(supabaseConfig, "quiz_questions", "select=id&limit=1");
       setSupabaseCheck({
         status: "success",
         message: `Połączenie działa. Odczyt zakończony poprawnie${rows.length ? " i zwrócono dane." : ", ale tabela jest pusta."}`,
@@ -965,7 +1036,7 @@ function QuizAbcdApp() {
     } catch (error) {
       setSupabaseCheck({ status: "error", message: getErrorText(error) });
     }
-  }, []);
+  }, [sbEnabled, supabaseConfig]);
 
   const checkCloudConnection = useCallback(async () => {
     if (!cloudApiEnabled) {
@@ -978,31 +1049,8 @@ function QuizAbcdApp() {
       return;
     }
 
-    setCloudCheck({ status: "loading", message: "Sprawdzam połączenie z Cloud API..." });
-
-    try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-api-key": cloudApiKey.trim(),
-          "anthropic-version": "2023-06-01",
-        },
-        body: JSON.stringify({
-          model: cloudModel.trim() || DEFAULT_MODEL,
-          max_tokens: 12,
-          temperature: 0,
-          messages: [{ role: "user", content: "Reply with OK." }],
-        }),
-      });
-
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-      setCloudCheck({ status: "success", message: "Cloud API odpowiedziało poprawnie." });
-    } catch (error) {
-      setCloudCheck({ status: "error", message: getErrorText(error) });
-    }
-  }, [cloudApiEnabled, cloudApiKey, cloudModel]);
+    setCloudCheck({ status: "info", message: CLOUD_BROWSER_NOTICE });
+  }, [cloudApiEnabled, cloudApiKey]);
 
   const handleAnswer = useCallback(
     (key) => {
@@ -1111,8 +1159,8 @@ function QuizAbcdApp() {
       return merged;
     });
 
-    if (SB_ENABLED) {
-      sbInsert("quiz_attempts", {
+    if (sbEnabled) {
+      sbInsert(supabaseConfig, "quiz_attempts", {
         attempt_id: attemptDraft.id,
         finished_at: new Date(attemptDraft.finishedAt).toISOString(),
         total_questions: attemptDraft.totalQuestions,
@@ -1127,7 +1175,7 @@ function QuizAbcdApp() {
         .then(() => loadAttempts())
         .catch(() => {});
     }
-  }, [attemptDraft, loadAttempts]);
+  }, [attemptDraft, loadAttempts, sbEnabled, supabaseConfig]);
 
   useEffect(() => {
     if (!attemptDraft) return;
@@ -1151,28 +1199,12 @@ function QuizAbcdApp() {
         return;
       }
 
-      try {
-        const cloud = await fetchCloudTrainingSummary({
-          apiKey: cloudApiKey.trim(),
-          model: cloudModel.trim() || DEFAULT_MODEL,
-          attempt: attemptDraft,
-          stats,
-          questions,
-          answers,
+      if (!cancelled) {
+        setTrainingSummary({
+          ...local,
+          text: `${local.text}\n\nCloud AI pozostaje wyłączone w praktyce dla tej wersji frontendu. Żeby użyć Claude, podłącz backend proxy lub Edge Function i tam trzymaj klucz API.`,
         });
-
-        if (!cancelled) {
-          setTrainingSummary(cloud);
-          setTrainingSummaryStatus("done");
-        }
-      } catch {
-        if (!cancelled) {
-          setTrainingSummary({
-            ...local,
-            text: `${local.text}\n\nCloud API nie zwróciło odpowiedzi, więc pokazano analizę lokalną.`,
-          });
-          setTrainingSummaryStatus("done");
-        }
+        setTrainingSummaryStatus("done");
       }
     };
 
@@ -2454,17 +2486,21 @@ function QuizAbcdApp() {
               placeholder="sk-ant-..."
               style={s.input}
             />
-            <div className="field-help">Nie zapisuj prawdziwego klucza bezpośrednio w kodzie app.jsx.</div>
+            <div className="field-help">Klucz pozostaje lokalnie w przeglądarce. Nie zapisuj go w kodzie ani repozytorium.</div>
           </div>
 
-          <div>
+          <div style={{ marginBottom: 12 }}>
             <label style={s.label}>Model</label>
             <input value={cloudModel} onChange={(e) => setCloudModel(e.target.value)} placeholder={DEFAULT_MODEL} style={s.input} />
           </div>
 
+          <div className="field-help">
+            Ten frontend nie wykonuje już bezpośredniego testu do Anthropic. Aktualny układ wymaga backend proxy albo Edge Function.
+          </div>
+
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 14 }}>
             <button onClick={checkCloudConnection} style={s.btn("soft")}>
-              <IcoCloud size={14} /> Test Cloud API
+              <IcoCloud size={14} /> Status Cloud AI
             </button>
           </div>
 
@@ -2486,59 +2522,31 @@ function QuizAbcdApp() {
 
         <div style={{ ...s.card, padding: 18, minHeight: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-            <IcoTrending size={16} />
-            <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Stan aplikacji</div>
+            <IcoCheck size={16} />
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Supabase</div>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <div style={{ ...s.metric, background: C.cardAlt }}>
-              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>Baza pytań</div>
-              <div style={{ fontSize: 22, fontWeight: 700, color: C.textStrong }}>{questionPool.length}</div>
-            </div>
-
-            <div style={{ ...s.metric, background: C.cardAlt }}>
-              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>Sesje</div>
-              <div style={{ fontSize: 22, fontWeight: 700, color: C.textStrong }}>{history.length}</div>
-            </div>
+          <div style={{ marginBottom: 12 }}>
+            <label style={s.label}>Supabase URL</label>
+            <input
+              value={supabaseUrl}
+              onChange={(e) => setSupabaseUrl(e.target.value)}
+              placeholder="https://twoj-projekt.supabase.co"
+              style={s.input}
+            />
           </div>
 
-          <div style={{ marginTop: 14 }} className="soft-chip">
-            <IcoCheck size={12} />
-            {SB_ENABLED ? "Supabase skonfigurowane" : "Tryb lokalny"}
-          </div>
-        </div>
-
-        <div style={{ ...s.card, padding: 18, minHeight: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-            <IcoClock size={16} />
-            <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Tempo i jakość</div>
-          </div>
-
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            {[
-              ["Mastery", attemptDraft ? `${attemptDraft.mastery}%` : "—"],
-              ["Śr. czas", answeredCount ? fmt(stats.avgResponseMs) : "—"],
-              ["Ostatni wynik", attemptDraft ? `${attemptDraft.score}/${attemptDraft.totalQuestions}` : "—"],
-              ["Cloud AI", cloudApiEnabled ? "Włączone" : "Wyłączone"],
-            ].map(([label, value]) => (
-              <div key={label} style={{ ...s.metric, background: C.cardAlt }}>
-                <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>{label}</div>
-                <div style={{ fontSize: 18, fontWeight: 700, color: C.textStrong }}>{value}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div style={{ ...s.card, padding: 18, minHeight: 0, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
           <div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-              <IcoTarget size={16} />
-              <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Diagnostyka integracji</div>
-            </div>
-
-            <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.65 }}>
-              Paleta oparta o papier ryżowy, indygo i stonowane kolory ziemi. Dzięki temu aplikacja wygląda spokojniej,
-              dojrzalej i bardziej premium.
+            <label style={s.label}>Publishable / anon key</label>
+            <input
+              type="password"
+              value={supabaseAnonKey}
+              onChange={(e) => setSupabaseAnonKey(e.target.value)}
+              placeholder="sb_publishable_... lub pełny anon JWT"
+              style={s.input}
+            />
+            <div className="field-help">
+              Wklej pełny publishable key albo pełny anon JWT. Dotychczasowy błąd wynikał z niepełnego klucza w kodzie.
             </div>
           </div>
 
@@ -2562,11 +2570,60 @@ function QuizAbcdApp() {
           >
             {supabaseCheck.message}
           </div>
+        </div>
+
+        <div style={{ ...s.card, padding: 18, minHeight: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+            <IcoTrending size={16} />
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Stan aplikacji</div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div style={{ ...s.metric, background: C.cardAlt }}>
+              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>Baza pytań</div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: C.textStrong }}>{questionPool.length}</div>
+            </div>
+
+            <div style={{ ...s.metric, background: C.cardAlt }}>
+              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>Sesje</div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: C.textStrong }}>{history.length}</div>
+            </div>
+          </div>
 
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14 }}>
-            <span className="soft-chip">Supabase</span>
-            <span className="soft-chip">Cloud API</span>
-            <span className="soft-chip">Runtime checks</span>
+            <span className="soft-chip">
+              <IcoCheck size={12} />
+              {sbEnabled ? "Supabase gotowe" : "Tryb lokalny"}
+            </span>
+            <span className="soft-chip">
+              <IcoCloud size={12} />
+              {cloudApiEnabled ? "Cloud wymaga backendu" : "Cloud AI wyłączone"}
+            </span>
+          </div>
+        </div>
+
+        <div style={{ ...s.card, padding: 18, minHeight: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+            <IcoClock size={16} />
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Tempo i jakość</div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            {[
+              ["Mastery", attemptDraft ? `${attemptDraft.mastery}%` : "—"],
+              ["Śr. czas", answeredCount ? fmt(stats.avgResponseMs) : "—"],
+              ["Ostatni wynik", attemptDraft ? `${attemptDraft.score}/${attemptDraft.totalQuestions}` : "—"],
+              ["Cloud AI", cloudApiEnabled ? "Włączone" : "Wyłączone"],
+            ].map(([label, value]) => (
+              <div key={label} style={{ ...s.metric, background: C.cardAlt }}>
+                <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>{label}</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: C.textStrong }}>{value}</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ marginTop: 14, fontSize: 13, color: C.textSub, lineHeight: 1.65 }}>
+            Widok ustawień został spłaszczony do zwartej siatki, żeby zredukować pionowy scroll i szybciej odsłaniać pola integracji.
           </div>
         </div>
       </div>

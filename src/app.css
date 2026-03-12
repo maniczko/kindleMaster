@@ -364,20 +364,26 @@ button, input, select, textarea { font-family: inherit; }
 
 .settings-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr);
+  grid-template-columns: minmax(320px, 0.92fr) minmax(0, 1.08fr);
   gap: 16px;
   align-items: start;
 }
 
 .settings-stack {
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
   align-content: start;
 }
 
+.settings-stack > * {
+  min-height: 100%;
+}
+
 .settings-main-card {
   display: grid;
-  gap: 22px;
+  gap: 18px;
+  align-content: start;
 }
 
 .settings-section-grid {
@@ -431,8 +437,13 @@ button, input, select, textarea { font-family: inherit; }
     max-height: none;
   }
   .settings-grid { grid-template-columns: 1fr; }
+  .settings-stack { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .calendar-layout { grid-template-columns: 1fr; }
   .calendar-bottom-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 920px) {
+  .settings-stack { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 840px) {

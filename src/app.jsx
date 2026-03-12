@@ -60,6 +60,8 @@ const isValidSupabaseKey = (value) => {
   return key.startsWith("sb_publishable_") || isJwtLike(key);
 };
 
+const looksLikeAnthropicKey = (value) => String(value || "").trim().startsWith("sk-ant-");
+
 const hasSupabaseConfig = (config) => isValidSupabaseUrl(config?.url) && isValidSupabaseKey(config?.apiKey);
 
 const sbH = (apiKey, prefer = "return=representation") => {
@@ -439,11 +441,17 @@ async function invokeCloudFunction({ supabaseConfig, body }) {
   // Edge Functions typically expect Bearer auth; anon JWT works here.
   headers.Authorization = `Bearer ${supabaseConfig.apiKey}`;
 
-  const res = await fetch(`${supabaseConfig.url}/functions/v1/${CLOUD_FUNCTION_NAME}`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-  });
+  let res;
+
+  try {
+    res = await fetch(`${supabaseConfig.url}/functions/v1/${CLOUD_FUNCTION_NAME}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw new Error("Nie udało się połączyć z Supabase Edge Function. Sprawdź Supabase URL, deploy funkcji `claude-summary` i połączenie sieciowe.");
+  }
 
   const text = await res.text();
   let data = null;
@@ -951,6 +959,7 @@ function QuizAbcdApp() {
     [supabaseUrl, supabaseAnonKey]
   );
   const sbEnabled = useMemo(() => hasSupabaseConfig(supabaseConfig), [supabaseConfig]);
+  const manualCloudApiKey = looksLikeAnthropicKey(cloudApiKeyDraft) ? cloudApiKeyDraft.trim() : "";
 
   const total = questions.length;
   const current = questions[idx] || SAMPLES[0];
@@ -1052,6 +1061,22 @@ function QuizAbcdApp() {
       return;
     }
 
+    if (cloudApiKeyDraft.trim() && isJwtLike(cloudApiKeyDraft.trim())) {
+      setCloudCheck({
+        status: "error",
+        message: "To pole oczekuje klucza Anthropic `sk-ant-...`. Wklejony ciąg `eyJ...` wygląda jak Supabase anon JWT i powinien trafić do pola `Publishable / anon key` poniżej.",
+      });
+      return;
+    }
+
+    if (cloudApiKeyDraft.trim() && !looksLikeAnthropicKey(cloudApiKeyDraft.trim())) {
+      setCloudCheck({
+        status: "error",
+        message: "Cloud API key musi mieć format Anthropic `sk-ant-...`. Jeśli chcesz użyć klucza Supabase, wklej go w pole `Publishable / anon key`.",
+      });
+      return;
+    }
+
     if (!sbEnabled) {
       setCloudCheck({ status: "error", message: "Najpierw skonfiguruj poprawnie Supabase URL i klucz anon." });
       return;
@@ -1065,7 +1090,7 @@ function QuizAbcdApp() {
         body: {
           action: "health",
           model: cloudModel.trim() || DEFAULT_MODEL,
-          apiKey: cloudApiKeyDraft.trim() || undefined,
+          apiKey: manualCloudApiKey || undefined,
         },
       });
 
@@ -1080,7 +1105,7 @@ function QuizAbcdApp() {
           : "";
       setCloudCheck({ status: "error", message: `${getErrorText(error)}${hint}` });
     }
-  }, [cloudApiEnabled, sbEnabled, supabaseConfig, cloudModel, cloudApiKeyDraft]);
+  }, [cloudApiEnabled, sbEnabled, supabaseConfig, cloudModel, cloudApiKeyDraft, manualCloudApiKey]);
 
   const handleAnswer = useCallback(
     (key) => {
@@ -1233,7 +1258,7 @@ function QuizAbcdApp() {
         const cloud = await fetchCloudTrainingSummary({
           supabaseConfig,
           model: cloudModel.trim() || DEFAULT_MODEL,
-          cloudApiKey: cloudApiKeyDraft,
+          cloudApiKey: manualCloudApiKey,
           attempt: attemptDraft,
           stats,
           questions,
@@ -1259,7 +1284,7 @@ function QuizAbcdApp() {
     return () => {
       cancelled = true;
     };
-  }, [attemptDraft, cloudApiEnabled, cloudModel, cloudApiKeyDraft, stats, questions, answers, sbEnabled, supabaseConfig]);
+  }, [attemptDraft, cloudApiEnabled, cloudModel, cloudApiKeyDraft, manualCloudApiKey, stats, questions, answers, sbEnabled, supabaseConfig]);
 
   const askAI = useCallback(async () => {
     if (chatStatus === "loading") return;
@@ -2532,6 +2557,9 @@ function QuizAbcdApp() {
             <div className="field-help">
               To pole jest tymczasowe i nie jest zapisywane w aplikacji. Jeśli zostawisz je puste, Cloud użyje sekretu `ANTHROPIC_API_KEY` z Supabase Edge Function.
             </div>
+            <div className="field-help">
+              Klucz zaczynający się od `eyJ...` to zwykle Supabase anon JWT, nie klucz Cloud API.
+            </div>
           </div>
 
           <div style={{ marginBottom: 12 }}>
@@ -2621,22 +2649,24 @@ function QuizAbcdApp() {
           </div>
         </div>
 
-        <div style={{ ...s.card, padding: 16, minHeight: 0 }}>
+        <div className="settings-summary-card" style={{ ...s.card, padding: 16, minHeight: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
             <IcoTrending size={16} />
-            <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Stan aplikacji</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Stan i tempo</div>
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <div style={{ ...s.metric, background: C.cardAlt }}>
-              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>Baza pytań</div>
-              <div style={{ fontSize: 22, fontWeight: 700, color: C.textStrong }}>{questionPool.length}</div>
-            </div>
-
-            <div style={{ ...s.metric, background: C.cardAlt }}>
-              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>Sesje</div>
-              <div style={{ fontSize: 22, fontWeight: 700, color: C.textStrong }}>{history.length}</div>
-            </div>
+            {[
+              ["Baza pytań", questionPool.length],
+              ["Sesje", history.length],
+              ["Mastery", attemptDraft ? `${attemptDraft.mastery}%` : "—"],
+              ["Śr. czas", answeredCount ? fmt(stats.avgResponseMs) : "—"],
+            ].map(([label, value]) => (
+              <div key={label} style={{ ...s.metric, background: C.cardAlt }}>
+                <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>{label}</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: C.textStrong }}>{value}</div>
+              </div>
+            ))}
           </div>
 
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14 }}>
@@ -2648,29 +2678,8 @@ function QuizAbcdApp() {
               <IcoCloud size={12} />
               {cloudApiEnabled ? "Cloud przez Edge Function" : "Cloud AI wyłączone"}
             </span>
+            {attemptDraft && <span className="soft-chip">Wynik: {attemptDraft.score}/{attemptDraft.totalQuestions}</span>}
           </div>
-        </div>
-
-        <div style={{ ...s.card, padding: 16, minHeight: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-            <IcoClock size={16} />
-            <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Tempo i jakość</div>
-          </div>
-
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            {[
-              ["Mastery", attemptDraft ? `${attemptDraft.mastery}%` : "—"],
-              ["Śr. czas", answeredCount ? fmt(stats.avgResponseMs) : "—"],
-              ["Ostatni wynik", attemptDraft ? `${attemptDraft.score}/${attemptDraft.totalQuestions}` : "—"],
-              ["Cloud AI", cloudApiEnabled ? "Włączone" : "Wyłączone"],
-            ].map(([label, value]) => (
-              <div key={label} style={{ ...s.metric, background: C.cardAlt }}>
-                <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>{label}</div>
-                <div style={{ fontSize: 18, fontWeight: 700, color: C.textStrong }}>{value}</div>
-              </div>
-            ))}
-          </div>
-
         </div>
       </div>
     </div>

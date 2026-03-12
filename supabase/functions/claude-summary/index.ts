@@ -68,10 +68,13 @@ Deno.serve(async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
   try {
-    const anthropicApiKey = Deno.env.get("ANTHROPIC_API_KEY")?.trim();
-    if (!anthropicApiKey) return json({ error: "Missing ANTHROPIC_API_KEY secret in Supabase Edge Functions." }, 500);
-
     const body = await req.json().catch(() => ({}));
+    const requestApiKey = String(body?.apiKey || "").trim();
+    const anthropicApiKey = requestApiKey || Deno.env.get("ANTHROPIC_API_KEY")?.trim();
+    if (!anthropicApiKey) {
+      return json({ error: "Missing ANTHROPIC_API_KEY secret in Supabase Edge Functions or apiKey in request body." }, 500);
+    }
+
     const action = String(body?.action || "").trim();
     const model = String(body?.model || DEFAULT_MODEL).trim() || DEFAULT_MODEL;
 

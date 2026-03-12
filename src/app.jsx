@@ -460,7 +460,7 @@ async function invokeCloudFunction({ supabaseConfig, body }) {
   return data || {};
 }
 
-async function fetchCloudTrainingSummary({ supabaseConfig, model, attempt, stats, questions, answers }) {
+async function fetchCloudTrainingSummary({ supabaseConfig, model, cloudApiKey, attempt, stats, questions, answers }) {
   const wrongQuestions = questions
     .filter((q) => answers[q.id] && !answers[q.id].isCorrect)
     .slice(0, 8)
@@ -477,6 +477,7 @@ async function fetchCloudTrainingSummary({ supabaseConfig, model, attempt, stats
     body: {
       action: "training_summary",
       model: model || DEFAULT_MODEL,
+      apiKey: cloudApiKey?.trim() || undefined,
       payload: {
         percent: attempt.percent,
         score: attempt.score,
@@ -915,6 +916,7 @@ function QuizAbcdApp() {
 
   const [cloudApiEnabled, setCloudApiEnabled] = useState(Boolean(initialCloud.cloudApiEnabled));
   const [cloudModel, setCloudModel] = useState(initialCloud.cloudModel || DEFAULT_MODEL);
+  const [cloudApiKeyDraft, setCloudApiKeyDraft] = useState("");
   const [supabaseUrl, setSupabaseUrl] = useState(initialSupabase.supabaseUrl || DEFAULT_SUPABASE_URL);
   const [supabaseAnonKey, setSupabaseAnonKey] = useState(initialSupabase.supabaseAnonKey || DEFAULT_SUPABASE_ANON_KEY);
   const [supabaseCheck, setSupabaseCheck] = useState({ status: "idle", message: "Nie sprawdzono połączenia." });
@@ -939,7 +941,7 @@ function QuizAbcdApp() {
 
   useEffect(() => {
     setCloudCheck({ status: "idle", message: "Nie sprawdzono połączenia." });
-  }, [cloudApiEnabled, cloudModel, supabaseUrl, supabaseAnonKey]);
+  }, [cloudApiEnabled, cloudModel, cloudApiKeyDraft, supabaseUrl, supabaseAnonKey]);
 
   const supabaseConfig = useMemo(
     () => ({
@@ -1060,7 +1062,11 @@ function QuizAbcdApp() {
     try {
       const result = await invokeCloudFunction({
         supabaseConfig,
-        body: { action: "health", model: cloudModel.trim() || DEFAULT_MODEL },
+        body: {
+          action: "health",
+          model: cloudModel.trim() || DEFAULT_MODEL,
+          apiKey: cloudApiKeyDraft.trim() || undefined,
+        },
       });
 
       setCloudCheck({
@@ -1074,7 +1080,7 @@ function QuizAbcdApp() {
           : "";
       setCloudCheck({ status: "error", message: `${getErrorText(error)}${hint}` });
     }
-  }, [cloudApiEnabled, sbEnabled, supabaseConfig, cloudModel]);
+  }, [cloudApiEnabled, sbEnabled, supabaseConfig, cloudModel, cloudApiKeyDraft]);
 
   const handleAnswer = useCallback(
     (key) => {
@@ -1227,6 +1233,7 @@ function QuizAbcdApp() {
         const cloud = await fetchCloudTrainingSummary({
           supabaseConfig,
           model: cloudModel.trim() || DEFAULT_MODEL,
+          cloudApiKey: cloudApiKeyDraft,
           attempt: attemptDraft,
           stats,
           questions,
@@ -1252,7 +1259,7 @@ function QuizAbcdApp() {
     return () => {
       cancelled = true;
     };
-  }, [attemptDraft, cloudApiEnabled, cloudModel, stats, questions, answers, sbEnabled, supabaseConfig]);
+  }, [attemptDraft, cloudApiEnabled, cloudModel, cloudApiKeyDraft, stats, questions, answers, sbEnabled, supabaseConfig]);
 
   const askAI = useCallback(async () => {
     if (chatStatus === "loading") return;
@@ -1631,7 +1638,7 @@ function QuizAbcdApp() {
 
           <h2
             style={{
-              fontSize: 29,
+              fontSize: 28,
               fontWeight: 500,
               color: C.textStrong,
               lineHeight: 1.38,
@@ -2514,13 +2521,16 @@ function QuizAbcdApp() {
           </div>
 
           <div style={{ marginBottom: 12 }}>
-            <label style={s.label}>Sekret Anthropic</label>
-            <div style={{ ...s.input, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-              <span>ANTHROPIC_API_KEY</span>
-              <span className="soft-chip">Supabase secret</span>
-            </div>
+            <label style={s.label}>Cloud API key</label>
+            <input
+              type="password"
+              value={cloudApiKeyDraft}
+              onChange={(e) => setCloudApiKeyDraft(e.target.value)}
+              placeholder="sk-ant-... (opcjonalnie)"
+              style={s.input}
+            />
             <div className="field-help">
-              Nie wpisuj klucza tutaj. Ustaw go w Supabase jako sekret Edge Function: `ANTHROPIC_API_KEY`.
+              To pole jest tymczasowe i nie jest zapisywane w aplikacji. Jeśli zostawisz je puste, Cloud użyje sekretu `ANTHROPIC_API_KEY` z Supabase Edge Function.
             </div>
           </div>
 
@@ -2531,6 +2541,10 @@ function QuizAbcdApp() {
 
           <div className="field-help">
             {CLOUD_BROWSER_NOTICE}
+          </div>
+
+          <div className="field-help">
+            Docelowo najlepiej ustawić klucz jako sekret Supabase, ale do szybkiego testu możesz wkleić go tutaj jednorazowo.
           </div>
 
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 14 }}>
@@ -2678,13 +2692,10 @@ function QuizAbcdApp() {
           <aside className="sidebar">
             <div className="brand-panel">
               <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-                <ZenQuizLogo size={68} />
+                <ZenQuizLogo size={60} />
                 <div>
-                  <div className="tinyLabel" style={{ marginBottom: 8 }}>
-                    Study Suite
-                  </div>
-                  <div className="brand-title" style={{ fontSize: 28, fontWeight: 700, color: C.textStrong }}>Zen Quiz</div>
-                  <div style={{ fontSize: 13, color: C.textSub, marginTop: 6, lineHeight: 1.5 }}>
+                  <div className="brand-title" style={{ fontSize: 26, fontWeight: 700, color: C.textStrong }}>Zen Quiz</div>
+                  <div style={{ fontSize: 12, color: C.textSub, marginTop: 4, lineHeight: 1.45 }}>
                 Skupienie, rytm, jakość odpowiedzi.
               </div>
             </div>
@@ -2697,7 +2708,7 @@ function QuizAbcdApp() {
                 <div className="sidebar-summary-card">
                   <div className="sidebar-summary-head">
                     <div>
-                      <div style={{ fontSize: 24, fontWeight: 700, color: C.textStrong, lineHeight: 1.1 }}>Postęp nauki</div>
+                      <div style={{ fontSize: 22, fontWeight: 700, color: C.textStrong, lineHeight: 1.1 }}>Postęp nauki</div>
                     </div>
 
                     <div className="soft-chip">
@@ -2824,13 +2835,15 @@ function QuizAbcdApp() {
                 </div>
               </div>
 
-              <div className="workspace-header">
-                <div>
-                  <div className="workspace-title" style={{ fontSize: 36, fontWeight: 700, color: C.textStrong }}>
-                    {activeTabMeta.label}
+              {activeTab !== "quiz" && (
+                <div className="workspace-header">
+                  <div>
+                    <div className="workspace-title" style={{ fontSize: 36, fontWeight: 700, color: C.textStrong }}>
+                      {activeTabMeta.label}
+                    </div>
                   </div>
                 </div>
-              </div>
+              )}
 
               <div className="workspace-stats">
                 {[

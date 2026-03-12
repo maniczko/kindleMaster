@@ -62,6 +62,7 @@ const normDiff = (v) => {
 };
 
 const fmt = (ms) => `${(ms / 1000).toFixed(1)}s`;
+const weekdayLabels = ["Pn", "Wt", "Śr", "Cz", "Pt", "So", "Nd"];
 
 const dayKey = (ts) => {
   const d = new Date(ts);
@@ -78,12 +79,83 @@ const humanDate = (key) => {
   });
 };
 
+const shortDay = (key) =>
+  new Date(`${key}T12:00:00`).toLocaleDateString("pl-PL", {
+    day: "numeric",
+    month: "short",
+  });
+
+const fmtDuration = (ms) => {
+  if (!ms) return "0 min";
+  if (ms < 30000) return "< 1 min";
+  const totalMinutes = Math.round(ms / 60000);
+  if (totalMinutes < 60) return `${totalMinutes} min`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes ? `${hours} h ${minutes} min` : `${hours} h`;
+};
+
+const fmtDurationCompact = (ms) => {
+  if (!ms) return "0m";
+  if (ms < 30000) return "<1m";
+  const totalMinutes = Math.round(ms / 60000);
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes ? `${hours}h ${minutes}m` : `${hours}h`;
+};
+
+const fmtClock = (ts) =>
+  new Date(ts).toLocaleTimeString("pl-PL", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
 const som = (d) => new Date(d.getFullYear(), d.getMonth(), 1);
 const addM = (d, n) => new Date(d.getFullYear(), d.getMonth() + n, 1);
+const daysInMonth = (d) => new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+
+const startOfWeek = (input) => {
+  const d = new Date(input);
+  const offset = (d.getDay() + 6) % 7;
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - offset);
+  return d;
+};
+
+const weekKey = (ts) => dayKey(startOfWeek(ts).getTime());
+
+const weekLabel = (key) => {
+  const start = new Date(`${key}T12:00:00`);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 6);
+  return `${shortDay(dayKey(start.getTime()))} - ${shortDay(dayKey(end.getTime()))}`;
+};
+
+const diffDaysBetweenKeys = (left, right) => {
+  const a = new Date(`${left}T12:00:00`);
+  const b = new Date(`${right}T12:00:00`);
+  return Math.round((b - a) / 86400000);
+};
 
 const isSameMonth = (key, monthDate) => {
   const d = new Date(`${key}T12:00:00`);
   return d.getMonth() === monthDate.getMonth() && d.getFullYear() === monthDate.getFullYear();
+};
+
+const pickTopLabel = (items, field) => {
+  const scores = {};
+  for (const item of items || []) {
+    if (!item?.[field]) continue;
+    scores[item[field]] = (scores[item[field]] || 0) + 1;
+  }
+  return Object.entries(scores).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+};
+
+const toneForPercent = (value) => {
+  if (value >= 85) return { bg: C.successBg, color: C.successText, border: "#CFE3D8" };
+  if (value >= 65) return { bg: "#F4E8D9", color: "#8A5A24", border: "#E6C9A8" };
+  return { bg: C.errorBg, color: C.errorText, border: "#E8C9B9" };
 };
 
 const loadLocal = () => {
@@ -538,16 +610,45 @@ const GLOBAL_CSS = `
     gap: 10px;
   }
 
+  .calendar-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+    gap: 16px;
+  }
+
+  .calendar-side {
+    display: grid;
+    gap: 16px;
+    min-height: 0;
+  }
+
+  .calendar-bottom-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+  }
+
+  .calendar-session-list {
+    display: grid;
+    gap: 10px;
+    max-height: 520px;
+    overflow: auto;
+    padding-right: 4px;
+  }
+
   @media (max-width: 1180px) {
     .app-frame { grid-template-columns: 1fr; }
     .sidebar { flex-direction: row; overflow-x: auto; }
     .settings-grid { grid-template-columns: 1fr; height: auto; }
     .settings-stack { grid-template-rows: none; }
+    .calendar-layout { grid-template-columns: 1fr; }
+    .calendar-bottom-grid { grid-template-columns: 1fr; }
   }
 
   @media (max-width: 840px) {
     .quiz-inline-stats { grid-template-columns: repeat(2, minmax(0,1fr)); }
     .calendar-grid { gap: 8px; }
+    .calendar-session-list { max-height: none; }
   }
 `;
 
@@ -937,21 +1038,73 @@ function QuizAbcdApp() {
   const dayMap = useMemo(() => {
     const m = {};
     Object.entries(attemptsByDay).forEach(([key, list]) => {
-      const avg = Math.round(list.reduce((s0, a) => s0 + a.percent, 0) / list.length);
-      m[key] = { count: list.length, avgPercent: avg, best: Math.max(...list.map((a) => a.percent)) };
+      const avgPercent = Math.round(list.reduce((s0, a) => s0 + a.percent, 0) / list.length);
+      const avgMastery = Math.round(list.reduce((s0, a) => s0 + a.mastery, 0) / list.length);
+      const avgResponseMs = Math.round(list.reduce((s0, a) => s0 + a.avgResponseMs, 0) / list.length);
+      const totalTimeMs = list.reduce((s0, a) => s0 + a.totalTimeMs, 0);
+
+      m[key] = {
+        count: list.length,
+        avgPercent,
+        avgMastery,
+        avgResponseMs,
+        totalTimeMs,
+        bestPercent: Math.max(...list.map((a) => a.percent)),
+        strongestCategory: pickTopLabel(list, "strongestCategory"),
+        weakestCategory: pickTopLabel(list, "weakestCategory"),
+      };
     });
     return m;
   }, [attemptsByDay]);
 
+  const activeDayKeys = useMemo(() => Object.keys(dayMap).sort(), [dayMap]);
+
   const streak = useMemo(() => {
-    let s0 = 0;
-    const c = new Date();
-    while (dayMap[dayKey(c.getTime())]) {
-      s0++;
-      c.setDate(c.getDate() - 1);
+    if (!activeDayKeys.length) return 0;
+
+    let cursor = new Date();
+    cursor.setHours(0, 0, 0, 0);
+
+    if (!dayMap[dayKey(cursor.getTime())]) {
+      cursor.setDate(cursor.getDate() - 1);
+      if (!dayMap[dayKey(cursor.getTime())]) return 0;
     }
-    return s0;
-  }, [dayMap]);
+
+    let value = 0;
+    while (dayMap[dayKey(cursor.getTime())]) {
+      value++;
+      cursor.setDate(cursor.getDate() - 1);
+    }
+    return value;
+  }, [activeDayKeys, dayMap]);
+
+  const longestStreak = useMemo(() => {
+    if (!activeDayKeys.length) return 0;
+    let best = 0;
+    let current = 0;
+    let prev = null;
+
+    activeDayKeys.forEach((key) => {
+      current = prev && diffDaysBetweenKeys(prev, key) === 1 ? current + 1 : 1;
+      best = Math.max(best, current);
+      prev = key;
+    });
+
+    return best;
+  }, [activeDayKeys]);
+
+  const lastActiveDayKey = activeDayKeys[activeDayKeys.length - 1] || null;
+
+  useEffect(() => {
+    if (selectedCalDay && isSameMonth(selectedCalDay, calMonth)) return;
+
+    const fallback =
+      [...activeDayKeys]
+        .reverse()
+        .find((key) => isSameMonth(key, calMonth)) || dayKey(som(calMonth).getTime());
+
+    setSelectedCalDay(fallback);
+  }, [activeDayKeys, calMonth, selectedCalDay]);
 
   const plan = useMemo(() => buildPlan(uniq, stats.weakest), [uniq, stats.weakest]);
   const calDays = useMemo(() => buildCalDays(calMonth), [calMonth]);
@@ -962,24 +1115,97 @@ function QuizAbcdApp() {
     return {
       count: selectedDayAttempts.length,
       avgPercent: Math.round(selectedDayAttempts.reduce((s0, a) => s0 + a.percent, 0) / selectedDayAttempts.length),
+      avgMastery: Math.round(selectedDayAttempts.reduce((s0, a) => s0 + a.mastery, 0) / selectedDayAttempts.length),
       bestPercent: Math.max(...selectedDayAttempts.map((a) => a.percent)),
-      avgTime: Math.round(selectedDayAttempts.reduce((s0, a) => s0 + a.totalTimeMs, 0) / selectedDayAttempts.length),
+      totalTimeMs: selectedDayAttempts.reduce((s0, a) => s0 + a.totalTimeMs, 0),
+      avgTimeMs: Math.round(selectedDayAttempts.reduce((s0, a) => s0 + a.totalTimeMs, 0) / selectedDayAttempts.length),
       avgResponseMs: Math.round(selectedDayAttempts.reduce((s0, a) => s0 + a.avgResponseMs, 0) / selectedDayAttempts.length),
+      strongestCategory: pickTopLabel(selectedDayAttempts, "strongestCategory"),
+      weakestCategory: pickTopLabel(selectedDayAttempts, "weakestCategory"),
     };
   }, [selectedDayAttempts]);
 
   const monthAttempts = useMemo(() => uniq.filter((a) => isSameMonth(dayKey(a.finishedAt), calMonth)), [uniq, calMonth]);
   const monthDaysActive = useMemo(() => Object.keys(dayMap).filter((key) => isSameMonth(key, calMonth)).length, [dayMap, calMonth]);
-  const monthAvg = useMemo(
-    () => (monthAttempts.length ? Math.round(monthAttempts.reduce((s0, a) => s0 + a.percent, 0) / monthAttempts.length) : 0),
-    [monthAttempts]
-  );
+  const monthSummary = useMemo(() => {
+    if (!monthAttempts.length) {
+      return {
+        totalSessions: 0,
+        avgPercent: 0,
+        avgMastery: 0,
+        totalTimeMs: 0,
+        avgResponseMs: 0,
+        bestPercent: 0,
+        completionRate: 0,
+        strongestCategory: null,
+        weakestCategory: null,
+      };
+    }
+
+    return {
+      totalSessions: monthAttempts.length,
+      avgPercent: Math.round(monthAttempts.reduce((s0, a) => s0 + a.percent, 0) / monthAttempts.length),
+      avgMastery: Math.round(monthAttempts.reduce((s0, a) => s0 + a.mastery, 0) / monthAttempts.length),
+      totalTimeMs: monthAttempts.reduce((s0, a) => s0 + a.totalTimeMs, 0),
+      avgResponseMs: Math.round(monthAttempts.reduce((s0, a) => s0 + a.avgResponseMs, 0) / monthAttempts.length),
+      bestPercent: Math.max(...monthAttempts.map((a) => a.percent)),
+      completionRate: Math.round((monthDaysActive / Math.max(daysInMonth(calMonth), 1)) * 100),
+      strongestCategory: pickTopLabel(monthAttempts, "strongestCategory"),
+      weakestCategory: pickTopLabel(monthAttempts, "weakestCategory"),
+    };
+  }, [monthAttempts, monthDaysActive, calMonth]);
+  const monthAvg = monthSummary.avgPercent;
 
   const bestStudyDay = useMemo(() => {
     const entries = Object.entries(dayMap).filter(([key]) => isSameMonth(key, calMonth));
     if (!entries.length) return null;
     return entries.sort((a, b) => b[1].count - a[1].count || b[1].avgPercent - a[1].avgPercent)[0];
   }, [dayMap, calMonth]);
+
+  const weekdaySummary = useMemo(
+    () =>
+      weekdayLabels.map((label, index) => {
+        const list = monthAttempts.filter((attempt) => {
+          const day = new Date(attempt.finishedAt);
+          return (day.getDay() + 6) % 7 === index;
+        });
+
+        return {
+          label,
+          count: list.length,
+          avgPercent: list.length ? Math.round(list.reduce((s0, a) => s0 + a.percent, 0) / list.length) : 0,
+          totalTimeMs: list.reduce((s0, a) => s0 + a.totalTimeMs, 0),
+        };
+      }),
+    [monthAttempts]
+  );
+
+  const bestWeekday = useMemo(() => {
+    const active = weekdaySummary.filter((day) => day.count);
+    if (!active.length) return null;
+    return [...active].sort((a, b) => b.count - a.count || b.avgPercent - a.avgPercent)[0];
+  }, [weekdaySummary]);
+
+  const weeklySummary = useMemo(() => {
+    const grouped = {};
+
+    monthAttempts.forEach((attempt) => {
+      const key = weekKey(attempt.finishedAt);
+      if (!grouped[key]) grouped[key] = [];
+      grouped[key].push(attempt);
+    });
+
+    return Object.entries(grouped)
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([key, list]) => ({
+        key,
+        label: weekLabel(key),
+        count: list.length,
+        avgPercent: Math.round(list.reduce((s0, a) => s0 + a.percent, 0) / list.length),
+        avgMastery: Math.round(list.reduce((s0, a) => s0 + a.mastery, 0) / list.length),
+        totalTimeMs: list.reduce((s0, a) => s0 + a.totalTimeMs, 0),
+      }));
+  }, [monthAttempts]);
 
   const maxCountInMonth = useMemo(() => {
     const counts = Object.entries(dayMap)
@@ -991,11 +1217,13 @@ function QuizAbcdApp() {
   const getHeat = (info) => {
     if (!info) return { bg: "transparent", border: C.border };
     const ratio = maxCountInMonth ? info.count / maxCountInMonth : info.count > 0 ? 1 : 0;
-    if (ratio >= 0.8) return { bg: "#DDE5FF", border: "#BDD0FF" };
-    if (ratio >= 0.5) return { bg: "#EAF0FF", border: "#D5E0FF" };
-    if (ratio > 0) return { bg: "#F4F7FF", border: C.border };
+    if (ratio >= 0.8) return { bg: "#DDE5FF", border: "#BDD0FF", glow: "0 10px 18px rgba(75,94,170,.08)" };
+    if (ratio >= 0.5) return { bg: "#EAF0FF", border: "#D5E0FF", glow: "0 8px 14px rgba(75,94,170,.05)" };
+    if (ratio > 0) return { bg: "#F4F7FF", border: C.border, glow: "none" };
     return { bg: "transparent", border: C.border };
   };
+
+  const todayCalKey = dayKey(Date.now());
 
   const TABS = [
     { id: "quiz", label: "Quiz", icon: <IcoBrain size={15} /> },
@@ -1336,7 +1564,7 @@ function QuizAbcdApp() {
     </div>
   );
 
-  const CalendarView = () => (
+  const CalendarViewLegacy = () => (
     <div style={{ display: "grid", gridTemplateColumns: "1.2fr .8fr", gap: 16 }}>
       <div style={{ ...s.card, padding: 20 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
@@ -1441,6 +1669,382 @@ function QuizAbcdApp() {
       </div>
     </div>
   );
+
+  const EnhancedCalendarView = () => {
+    const selectedTone = toneForPercent(selectedDaySummary?.avgPercent ?? monthSummary.avgPercent);
+
+    return (
+      <div style={{ display: "grid", gap: 16 }}>
+        <div
+          style={{
+            ...s.card,
+            padding: 22,
+            background: "linear-gradient(135deg, rgba(75,94,170,.08), rgba(255,255,255,.92) 42%, rgba(250,248,242,1))",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
+            <div>
+              <div className="tinyLabel" style={{ marginBottom: 8 }}>
+                Kalendarz nauki
+              </div>
+              <div style={{ fontSize: 28, fontWeight: 700, color: C.textStrong }}>
+                {calMonth.toLocaleDateString("pl-PL", { month: "long", year: "numeric" })}
+              </div>
+              <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.65, marginTop: 8, maxWidth: 700 }}>
+                Widok miesięczny pokazuje rytm pracy, skuteczność i obciążenie nauką. Ostatnia aktywność:{" "}
+                {lastActiveDayKey ? humanDate(lastActiveDayKey) : "brak zapisanych sesji"}.
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button onClick={() => setCalMonth(addM(calMonth, -1))} style={s.btn("ghost")}>
+                <IcoLeft size={14} />
+              </button>
+              <button
+                onClick={() => {
+                  setCalMonth(som(new Date()));
+                  setSelectedCalDay(todayCalKey);
+                }}
+                style={s.btn("soft")}
+              >
+                Dziś
+              </button>
+              <button onClick={() => setCalMonth(addM(calMonth, 1))} style={s.btn("ghost")}>
+                <IcoRight size={14} />
+              </button>
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginTop: 18 }}>
+            {[
+              ["Bieżąca seria", streak ? `${streak} dni` : "0 dni"],
+              ["Najdłuższa seria", longestStreak ? `${longestStreak} dni` : "0 dni"],
+              ["Sesje w miesiącu", monthSummary.totalSessions],
+              ["Czas nauki", fmtDuration(monthSummary.totalTimeMs)],
+            ].map(([label, value]) => (
+              <div key={label} style={{ ...s.metric, background: "rgba(255,255,255,.74)" }}>
+                <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>{label}</div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: C.textStrong }}>{value}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="calendar-layout">
+          <div style={{ ...s.card, padding: 20 }}>
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: C.textStrong, marginBottom: 6 }}>Aktywność dzienna</div>
+                <div style={{ fontSize: 13, color: C.textSub, lineHeight: 1.6 }}>
+                  Każda komórka pokazuje liczbę sesji, średni wynik i łączny czas w danym dniu.
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <span className="soft-chip">Więcej koloru = więcej sesji</span>
+                <span className="soft-chip">Obramowanie = wybrany dzień</span>
+              </div>
+            </div>
+
+            <div className="calendar-grid" style={{ marginBottom: 10 }}>
+              {weekdayLabels.map((d) => (
+                <div key={d} style={{ textAlign: "center", fontSize: 12, fontWeight: 700, color: C.textSub, paddingBottom: 4 }}>
+                  {d}
+                </div>
+              ))}
+            </div>
+
+            <div className="calendar-grid">
+              {calDays.map((d) => {
+                const info = dayMap[d.key];
+                const heat = getHeat(info);
+                const isSelected = selectedCalDay === d.key;
+                const isToday = d.key === todayCalKey;
+
+                return (
+                  <button
+                    key={d.key}
+                    onClick={() => setSelectedCalDay(d.key)}
+                    style={{
+                      minHeight: 108,
+                      borderRadius: 18,
+                      border: `1px solid ${isSelected ? C.accent : isToday ? C.accent2 : heat.border}`,
+                      background: isSelected ? "#EEF1FA" : heat.bg,
+                      boxShadow: isSelected ? "0 0 0 2px rgba(75,94,170,.08)" : heat.glow,
+                      padding: 10,
+                      textAlign: "left",
+                      cursor: "pointer",
+                      color: d.inCurrent ? C.textStrong : C.muted,
+                      display: "flex",
+                      flexDirection: "column",
+                      justifyContent: "space-between",
+                      gap: 8,
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
+                      <div style={{ fontSize: 14, fontWeight: 700 }}>{d.date.getDate()}</div>
+                      {info ? (
+                        <span
+                          style={{
+                            fontSize: 11,
+                            fontWeight: 700,
+                            padding: "4px 7px",
+                            borderRadius: 999,
+                            background: "rgba(255,255,255,.72)",
+                            border: `1px solid ${heat.border}`,
+                            color: C.textSub,
+                          }}
+                        >
+                          {info.count}x
+                        </span>
+                      ) : isToday ? (
+                        <span style={{ fontSize: 10, fontWeight: 700, color: C.accent }}>dziś</span>
+                      ) : null}
+                    </div>
+
+                    {info ? (
+                      <div style={{ display: "grid", gap: 4 }}>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: C.textStrong }}>{info.avgPercent}% śr.</div>
+                        <div style={{ fontSize: 11, color: C.textSub }}>{fmtDurationCompact(info.totalTimeMs)}</div>
+                        <div style={{ fontSize: 11, color: C.textSub }}>best {info.bestPercent}%</div>
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 11, color: d.inCurrent ? C.muted : "#B6B1A4" }}>{d.inCurrent ? "Brak sesji" : ""}</div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="calendar-side">
+            <div style={{ ...s.card, padding: 20 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 10, flexWrap: "wrap" }}>
+                <div style={{ fontSize: 18, fontWeight: 700, color: C.textStrong }}>{humanDate(selectedCalDay)}</div>
+                {selectedDaySummary && (
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "6px 10px",
+                      borderRadius: 999,
+                      background: selectedTone.bg,
+                      color: selectedTone.color,
+                      border: `1px solid ${selectedTone.border}`,
+                      fontSize: 12,
+                      fontWeight: 700,
+                    }}
+                  >
+                    {selectedDaySummary.avgPercent}% średnio
+                  </span>
+                )}
+              </div>
+
+              {selectedDaySummary ? (
+                <div style={{ display: "grid", gap: 12 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0,1fr))", gap: 10 }}>
+                    {[
+                      ["Sesje", selectedDaySummary.count],
+                      ["Najlepszy wynik", `${selectedDaySummary.bestPercent}%`],
+                      ["Mastery", `${selectedDaySummary.avgMastery}%`],
+                      ["Śr. reakcja", fmt(selectedDaySummary.avgResponseMs)],
+                      ["Śr. długość", fmtDuration(selectedDaySummary.avgTimeMs)],
+                      ["Łączny czas", fmtDuration(selectedDaySummary.totalTimeMs)],
+                    ].map(([label, value]) => (
+                      <div key={label} style={{ ...s.metric, background: C.cardAlt, padding: "12px 14px" }}>
+                        <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>{label}</div>
+                        <div style={{ fontSize: 17, fontWeight: 700, color: C.textStrong }}>{value}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div style={{ display: "grid", gap: 8 }}>
+                    {selectedDaySummary.strongestCategory && (
+                      <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.6 }}>
+                        Najczęściej mocny obszar: <strong style={{ color: C.textStrong }}>{selectedDaySummary.strongestCategory}</strong>
+                      </div>
+                    )}
+                    {selectedDaySummary.weakestCategory && (
+                      <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.6 }}>
+                        Najczęściej wraca do poprawy: <strong style={{ color: C.textStrong }}>{selectedDaySummary.weakestCategory}</strong>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.7 }}>
+                  Brak sesji w tym dniu. Wybierz aktywną datę albo zacznij nowy quiz, aby zapisać postęp w kalendarzu.
+                </div>
+              )}
+            </div>
+
+            <div style={{ ...s.card, padding: 20 }}>
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong, marginBottom: 12 }}>Sesje z wybranego dnia</div>
+
+              {selectedDayAttempts.length ? (
+                <div className="calendar-session-list">
+                  {selectedDayAttempts.map((attempt) => {
+                    const tone = toneForPercent(attempt.percent);
+                    return (
+                      <div
+                        key={attempt.id}
+                        style={{
+                          padding: 14,
+                          borderRadius: 16,
+                          background: C.cardAlt,
+                          border: `1px solid ${C.border}`,
+                          display: "grid",
+                          gap: 8,
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                          <div style={{ fontSize: 14, fontWeight: 700, color: C.textStrong }}>{fmtClock(attempt.finishedAt)}</div>
+                          <span
+                            style={{
+                              fontSize: 12,
+                              fontWeight: 700,
+                              padding: "6px 10px",
+                              borderRadius: 999,
+                              background: tone.bg,
+                              color: tone.color,
+                              border: `1px solid ${tone.border}`,
+                            }}
+                          >
+                            {attempt.percent}%
+                          </span>
+                        </div>
+
+                        <div style={{ fontSize: 13, color: C.textSub, lineHeight: 1.65 }}>
+                          Wynik {attempt.score}/{attempt.totalQuestions} • mastery {attempt.mastery}% • czas {fmtDuration(attempt.totalTimeMs)}
+                        </div>
+
+                        {(attempt.strongestCategory || attempt.weakestCategory) && (
+                          <div style={{ fontSize: 13, color: C.textSub, lineHeight: 1.6 }}>
+                            {attempt.strongestCategory ? `Mocna kategoria: ${attempt.strongestCategory}` : "Mocna kategoria: —"}
+                            {" • "}
+                            {attempt.weakestCategory ? `Do poprawy: ${attempt.weakestCategory}` : "Do poprawy: —"}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div style={{ fontSize: 14, color: C.textSub }}>Po zapisaniu sesji zobaczysz tu szczegółową listę podejść z tego dnia.</div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="calendar-bottom-grid">
+          <div style={{ ...s.card, padding: 20 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
+              <div style={{ fontSize: 18, fontWeight: 700, color: C.textStrong }}>Miesiąc w skrócie</div>
+              {bestStudyDay && <span className="soft-chip">Najaktywniejszy dzień: {shortDay(bestStudyDay[0])}</span>}
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0,1fr))", gap: 10, marginBottom: 14 }}>
+              {[
+                ["Aktywne dni", monthDaysActive],
+                ["Śr. wynik", `${monthSummary.avgPercent}%`],
+                ["Śr. mastery", `${monthSummary.avgMastery}%`],
+                ["Pokrycie miesiąca", `${monthSummary.completionRate}%`],
+              ].map(([label, value]) => (
+                <div key={label} style={{ ...s.metric, background: C.cardAlt, padding: "12px 14px" }}>
+                  <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>{label}</div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: C.textStrong }}>{value}</div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ display: "grid", gap: 8, marginBottom: 16 }}>
+              <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.65 }}>
+                Najlepszy wynik w miesiącu: <strong style={{ color: C.textStrong }}>{monthSummary.bestPercent || 0}%</strong>
+                {" • "}
+                Średni czas odpowiedzi: <strong style={{ color: C.textStrong }}>{fmt(monthSummary.avgResponseMs || 0)}</strong>
+              </div>
+              <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.65 }}>
+                {bestWeekday
+                  ? `Najczęściej uczysz się w ${bestWeekday.label} (${bestWeekday.count} sesji, śr. ${bestWeekday.avgPercent}%).`
+                  : "Brak wystarczających danych do oceny rytmu tygodnia."}
+              </div>
+              {monthSummary.weakestCategory && (
+                <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.65 }}>
+                  Najczęściej do poprawy wraca: <strong style={{ color: C.textStrong }}>{monthSummary.weakestCategory}</strong>
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: "grid", gap: 10 }}>
+              {weekdaySummary.map((day) => (
+                <div key={day.label} style={{ display: "grid", gridTemplateColumns: "36px 1fr auto", alignItems: "center", gap: 10 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: C.textStrong }}>{day.label}</div>
+                  <div style={{ height: 8, borderRadius: 999, background: "#E9E5DA", overflow: "hidden" }}>
+                    <div
+                      style={{
+                        width: `${bestWeekday?.count ? (day.count / bestWeekday.count) * 100 : 0}%`,
+                        height: "100%",
+                        borderRadius: 999,
+                        background: "linear-gradient(90deg, #4B5EAA, #8294C4)",
+                      }}
+                    />
+                  </div>
+                  <div style={{ fontSize: 12, color: C.textSub, minWidth: 76, textAlign: "right" }}>
+                    {day.count ? `${day.count} • ${day.avgPercent}%` : "0"}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ ...s.card, padding: 20 }}>
+            <div style={{ fontSize: 18, fontWeight: 700, color: C.textStrong, marginBottom: 12 }}>Przegląd tygodni</div>
+
+            {weeklySummary.length ? (
+              <div style={{ display: "grid", gap: 10 }}>
+                {weeklySummary.map((week) => (
+                  <div
+                    key={week.key}
+                    style={{
+                      padding: 14,
+                      borderRadius: 16,
+                      background: C.cardAlt,
+                      border: `1px solid ${C.border}`,
+                      display: "grid",
+                      gap: 8,
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: C.textStrong }}>{week.label}</div>
+                      <span className="soft-chip">{week.count} sesji</span>
+                    </div>
+
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0,1fr))", gap: 10 }}>
+                      {[
+                        ["Śr. wynik", `${week.avgPercent}%`],
+                        ["Mastery", `${week.avgMastery}%`],
+                        ["Czas", fmtDuration(week.totalTimeMs)],
+                      ].map(([label, value]) => (
+                        <div key={label} style={{ ...s.metric, background: "#fff", padding: "10px 12px" }}>
+                          <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>{label}</div>
+                          <div style={{ fontSize: 15, fontWeight: 700, color: C.textStrong }}>{value}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.7 }}>
+                Gdy pojawi się kilka sesji w miesiącu, zobaczysz tu tygodniowe porównanie obciążenia i jakości nauki.
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   const PlanView = () => (
     <div style={{ display: "grid", gap: 16 }}>
@@ -1655,7 +2259,7 @@ function QuizAbcdApp() {
   const renderTab = () => {
     if (activeTab === "quiz") return <QuizView />;
     if (activeTab === "results") return <ResultsView />;
-    if (activeTab === "calendar") return <CalendarView />;
+    if (activeTab === "calendar") return <EnhancedCalendarView />;
     if (activeTab === "plan") return <PlanView />;
     if (activeTab === "settings") return <SettingsView />;
     return <QuizView />;

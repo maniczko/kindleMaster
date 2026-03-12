@@ -92,7 +92,7 @@ button, input, select, textarea { font-family: inherit; }
   gap: 14px;
 }
 
-.sidebar-primary > :nth-child(n + 4) {
+.sidebar-primary > :nth-child(n + 3) {
   display: none;
 }
 
@@ -156,34 +156,6 @@ button, input, select, textarea { font-family: inherit; }
   font-size: 12px;
   color: #8C8A7E;
   line-height: 1.45;
-}
-
-.sidebar-focus-card {
-  padding: 16px;
-  border-radius: 20px;
-  border: 1px solid #DCD7C9;
-  background: #F7F4EC;
-  display: grid;
-  gap: 12px;
-}
-
-.sidebar-focus-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.sidebar-focus-label {
-  font-size: 12px;
-  color: #5F645C;
-}
-
-.sidebar-focus-value {
-  font-size: 14px;
-  font-weight: 700;
-  color: #2C3E50;
-  text-align: right;
 }
 
 .progress-panel {

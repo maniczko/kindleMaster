@@ -1574,19 +1574,6 @@ function QuizAbcdApp() {
             Wybierz jedną odpowiedź. Po wyborze od razu zobaczysz informację zwrotną i możesz przejść dalej.
           </div>
 
-          <div className="quiz-inline-stats">
-            {[
-              ["Postęp", `${idx + 1}/${total}`],
-              ["Skuteczność", `${pct}%`],
-              ["Śr. czas", answeredCount ? fmt(stats.avgResponseMs) : "—"],
-              ["Seria", `${streak} 🔥`],
-            ].map(([label, value]) => (
-              <div key={label} style={{ ...s.metric, background: C.cardAlt }}>
-                <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>{label}</div>
-                <div style={{ fontSize: 20, fontWeight: 700, color: C.textStrong }}>{value}</div>
-              </div>
-            ))}
-          </div>
         </div>
 
         <div style={{ display: "grid", gap: 12 }}>
@@ -2648,37 +2635,6 @@ function QuizAbcdApp() {
                   ))}
                 </div>
 
-                <div className="sidebar-focus-card">
-                  <div className="tinyLabel">Stan sesji</div>
-
-                  <div className="sidebar-focus-row">
-                    <span className="sidebar-focus-label">Ostatni wynik</span>
-                    <span className="sidebar-focus-value">
-                      {attemptDraft ? `${attemptDraft.score}/${attemptDraft.totalQuestions}` : "—"}
-                    </span>
-                  </div>
-
-                  <div className="sidebar-focus-row">
-                    <span className="sidebar-focus-label">Mastery</span>
-                    <span className="sidebar-focus-value">{attemptDraft ? `${attemptDraft.mastery}%` : "—"}</span>
-                  </div>
-
-                  <div className="sidebar-focus-row">
-                    <span className="sidebar-focus-label">Baza pytań</span>
-                    <span className="sidebar-focus-value">{questionPool.length}</span>
-                  </div>
-
-                  <div className="sidebar-focus-row">
-                    <span className="sidebar-focus-label">Sesje zapisane</span>
-                    <span className="sidebar-focus-value">{uniq.length}</span>
-                  </div>
-
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    <span className="soft-chip">{cloudApiEnabled ? "Cloud AI włączone" : "Cloud AI wyłączone"}</span>
-                    <span className="soft-chip">{SB_ENABLED ? "Supabase aktywne" : "Tryb lokalny"}</span>
-                  </div>
-                </div>
-
                 <div style={{ fontSize: 12, fontWeight: 700, color: C.textSub, textTransform: "uppercase", letterSpacing: ".05em" }}>
                   Postęp nauki
                 </div>
@@ -2784,13 +2740,17 @@ function QuizAbcdApp() {
                 </div>
 
                 <div className="workspace-meta">
-                  <button onClick={() => startQuiz(questionPool, quizLength)} style={s.btn("primary")}>
+                  <button
+                    onClick={() => startQuiz(questionPool, quizLength)}
+                    style={{
+                      ...s.btn("ghost"),
+                      padding: "8px 12px",
+                      fontSize: 12,
+                      opacity: 0.9,
+                    }}
+                  >
                     <IcoRefresh size={14} /> Nowa sesja
                   </button>
-                  <span className="soft-chip">
-                    {activeTabMeta.icon}
-                    {activeTabMeta.eyebrow}
-                  </span>
                 </div>
               </div>
 

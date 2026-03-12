@@ -85,6 +85,10 @@ button, input, select, textarea { font-family: inherit; }
   gap: 12px;
 }
 
+.sidebar-footer > div:last-child:not(.sidebar-progress-card) {
+  display: none;
+}
+
 .progress-panel {
   display: grid;
   gap: 12px;
@@ -137,7 +141,7 @@ button, input, select, textarea { font-family: inherit; }
 }
 
 .workspace-stats {
-  display: grid;
+  display: none;
   grid-template-columns: repeat(4, minmax(0,1fr));
   gap: 12px;
 }

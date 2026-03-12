@@ -578,6 +578,10 @@ const GLOBAL_CSS = `
     gap: 12px;
   }
 
+  .sidebar-footer > div:last-child:not(.sidebar-progress-card) {
+    display: none;
+  }
+
   .progress-panel {
     display: grid;
     gap: 12px;
@@ -630,7 +634,7 @@ const GLOBAL_CSS = `
   }
 
   .workspace-stats {
-    display: grid;
+    display: none;
     grid-template-columns: repeat(4, minmax(0,1fr));
     gap: 12px;
   }
@@ -1932,7 +1936,7 @@ function QuizAbcdApp() {
               <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.65, marginTop: 8, maxWidth: 700 }}>
                 Widok miesięczny pokazuje rytm pracy, skuteczność i obciążenie nauką. Ostatnia aktywność:{" "}
                 {lastActiveDayKey ? humanDate(lastActiveDayKey) : "brak zapisanych sesji"}.
-              </div>
+                  </div>
             </div>
 
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -2493,6 +2497,27 @@ function QuizAbcdApp() {
           </div>
         </div>
 
+        <div style={{ ...s.card, padding: 18, minHeight: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+            <IcoClock size={16} />
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Tempo i jakość</div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            {[
+              ["Mastery", attemptDraft ? `${attemptDraft.mastery}%` : "—"],
+              ["Śr. czas", answeredCount ? fmt(stats.avgResponseMs) : "—"],
+              ["Ostatni wynik", attemptDraft ? `${attemptDraft.score}/${attemptDraft.totalQuestions}` : "—"],
+              ["Cloud AI", cloudApiEnabled ? "Włączone" : "Wyłączone"],
+            ].map(([label, value]) => (
+              <div key={label} style={{ ...s.metric, background: C.cardAlt }}>
+                <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>{label}</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: C.textStrong }}>{value}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
         <div style={{ ...s.card, padding: 18, minHeight: 0, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
@@ -2586,6 +2611,18 @@ function QuizAbcdApp() {
                     <div style={{ fontSize: 21, fontWeight: 700, color: C.textStrong }}>{value}</div>
                   </div>
                 ))}
+              </div>
+
+              <div className="sidebar-progress-card" style={{ ...s.cardSm, padding: 14, background: C.cardAlt }}>
+                <div style={{ fontSize: 11, color: C.textSub, marginBottom: 8 }}>Skuteczność i postęp</div>
+                <div style={{ display: "grid", gap: 8 }}>
+                  <div style={{ fontSize: 13, color: C.textSub, lineHeight: 1.6 }}>
+                    Ostatni wynik: <strong style={{ color: C.textStrong }}>{attemptDraft ? `${attemptDraft.score}/${attemptDraft.totalQuestions}` : "—"}</strong>
+                  </div>
+                  <div style={{ fontSize: 13, color: C.textSub, lineHeight: 1.6 }}>
+                    Aktywna karta: <strong style={{ color: C.textStrong }}>{activeTabMeta.label}</strong>
+                  </div>
+                </div>
               </div>
 
               <div style={{ ...s.cardSm, padding: 14, background: C.cardAlt }}>

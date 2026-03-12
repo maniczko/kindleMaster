@@ -1,0 +1,112 @@
+import { corsHeaders } from "../_shared/cors.ts";
+
+const DEFAULT_MODEL = "claude-sonnet-4-5-20250929";
+const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
+
+function json(data: unknown, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "application/json",
+    },
+  });
+}
+
+function getErrorMessage(error: unknown) {
+  const message = String((error as Error)?.message || error || "Unknown error").trim();
+  return message.length > 500 ? `${message.slice(0, 497)}...` : message;
+}
+
+async function callAnthropic({ apiKey, model, prompt, maxTokens = 350 }: { apiKey: string; model: string; prompt: string; maxTokens?: number }) {
+  const response = await fetch(ANTHROPIC_URL, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: model || DEFAULT_MODEL,
+      max_tokens: maxTokens,
+      temperature: 0.3,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+
+  const text = await response.text();
+  let data: any = null;
+
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {}
+
+  if (!response.ok) {
+    throw new Error(data?.error?.message || data?.error || text || `Anthropic HTTP ${response.status}`);
+  }
+
+  const content = (data?.content || []).filter((item: any) => item?.type === "text").map((item: any) => item.text).join("\n").trim();
+  if (!content) throw new Error("Anthropic returned empty content");
+
+  return content;
+}
+
+function buildTrainingPrompt(payload: Record<string, unknown>) {
+  return [
+    "Jesteś trenerem przygotowującym do nauki testowej.",
+    "Napisz krótkie, konkretne podsumowanie treningu po polsku.",
+    "Struktura: 1) Co poszło dobrze 2) Co poszło źle 3) Na co zwrócić uwagę 4) Obszary do poprawy.",
+    "Maksymalnie 180 słów.",
+    "Bądź praktyczny i zwięzły.",
+    "Dane sesji:",
+    JSON.stringify(payload, null, 2),
+  ].join("\n");
+}
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+
+  try {
+    const anthropicApiKey = Deno.env.get("ANTHROPIC_API_KEY")?.trim();
+    if (!anthropicApiKey) return json({ error: "Missing ANTHROPIC_API_KEY secret in Supabase Edge Functions." }, 500);
+
+    const body = await req.json().catch(() => ({}));
+    const action = String(body?.action || "").trim();
+    const model = String(body?.model || DEFAULT_MODEL).trim() || DEFAULT_MODEL;
+
+    if (action === "health") {
+      const text = await callAnthropic({
+        apiKey: anthropicApiKey,
+        model,
+        prompt: "Reply with exactly: OK",
+        maxTokens: 12,
+      });
+
+      return json({
+        ok: true,
+        message: `Cloud AI działa przez Edge Function. Model odpowiedział: ${text}`,
+      });
+    }
+
+    if (action === "training_summary") {
+      const prompt = buildTrainingPrompt((body?.payload as Record<string, unknown>) || {});
+      const text = await callAnthropic({
+        apiKey: anthropicApiKey,
+        model,
+        prompt,
+        maxTokens: 350,
+      });
+
+      return json({
+        ok: true,
+        title: "Podsumowanie AI",
+        text,
+      });
+    }
+
+    return json({ error: "Unsupported action" }, 400);
+  } catch (error) {
+    return json({ error: getErrorMessage(error) }, 500);
+  }
+});

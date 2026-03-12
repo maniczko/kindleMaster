@@ -37,16 +37,14 @@ const DEFAULT_SUPABASE_ANON_KEY = (
   import.meta.env.VITE_SUPABASE_ANON_KEY ||
   ""
 ).trim();
+const CLOUD_FUNCTION_NAME = "claude-summary";
 const CLOUD_BROWSER_NOTICE =
-  "Ta aplikacja działa wyłącznie w przeglądarce. Bez backend proxy lub Edge Function nie wykonasz bezpiecznego połączenia z Claude API z tego widoku.";
-const CLOUD_ROTATE_NOTICE = "Jeśli ten sekret był już wklejony do frontendu albo udostępniony, obróć go w panelu Anthropic i użyj nowego wyłącznie po stronie backendu.";
+  "Ta aplikacja działa wyłącznie w przeglądarce, więc Claude jest wołany przez Supabase Edge Function, a nie bezpośrednio z frontendu.";
 
 const isJwtLike = (value) => {
   const parts = String(value || "").trim().split(".");
   return parts.length === 3 && parts.every(Boolean);
 };
-
-const looksLikeAnthropicKey = (value) => /^sk-ant-[a-z0-9_-]+$/i.test(String(value || "").trim());
 
 const isValidSupabaseUrl = (value) => {
   try {
@@ -432,7 +430,37 @@ function buildLocalTrainingSummary({ attempt, stats, questions, answers }) {
   };
 }
 
-async function fetchCloudTrainingSummary({ apiKey, model, attempt, stats, questions, answers }) {
+async function invokeCloudFunction({ supabaseConfig, body }) {
+  const headers = {
+    "Content-Type": "application/json",
+    apikey: supabaseConfig.apiKey,
+  };
+
+  // Edge Functions typically expect Bearer auth; anon JWT works here.
+  headers.Authorization = `Bearer ${supabaseConfig.apiKey}`;
+
+  const res = await fetch(`${supabaseConfig.url}/functions/v1/${CLOUD_FUNCTION_NAME}`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+
+  const text = await res.text();
+  let data = null;
+
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {}
+
+  if (!res.ok) {
+    const message = data?.error || text || `HTTP ${res.status}`;
+    throw new Error(message);
+  }
+
+  return data || {};
+}
+
+async function fetchCloudTrainingSummary({ supabaseConfig, model, attempt, stats, questions, answers }) {
   const wrongQuestions = questions
     .filter((q) => answers[q.id] && !answers[q.id].isCorrect)
     .slice(0, 8)
@@ -444,15 +472,12 @@ async function fetchCloudTrainingSummary({ apiKey, model, attempt, stats, questi
       difficulty: q.difficulty,
     }));
 
-  const prompt = [
-    "Jesteś trenerem przygotowującym do nauki testowej.",
-    "Napisz krótkie, konkretne podsumowanie treningu po polsku.",
-    "Struktura: 1) Co poszło dobrze 2) Co poszło źle 3) Na co zwrócić uwagę 4) Obszary do poprawy.",
-    "Maksymalnie 180 słów.",
-    "Bądź praktyczny i zwięzły.",
-    "Dane sesji:",
-    JSON.stringify(
-      {
+  const data = await invokeCloudFunction({
+    supabaseConfig,
+    body: {
+      action: "training_summary",
+      model: model || DEFAULT_MODEL,
+      payload: {
         percent: attempt.percent,
         score: attempt.score,
         totalQuestions: attempt.totalQuestions,
@@ -462,33 +487,12 @@ async function fetchCloudTrainingSummary({ apiKey, model, attempt, stats, questi
         byCategory: stats.byCat,
         wrongQuestions,
       },
-      null,
-      2
-    ),
-  ].join("\n");
-
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
     },
-    body: JSON.stringify({
-      model: model || DEFAULT_MODEL,
-      max_tokens: 350,
-      temperature: 0.3,
-      messages: [{ role: "user", content: prompt }],
-    }),
   });
 
-  if (!res.ok) throw new Error(`Cloud API error: ${res.status}`);
+  if (!data?.text) throw new Error("Cloud function returned empty summary");
 
-  const data = await res.json();
-  const text = (data.content || []).filter((x) => x.type === "text").map((x) => x.text).join("\n").trim();
-  if (!text) throw new Error("Cloud API returned empty summary");
-
-  return { source: "cloud", title: "Podsumowanie AI", text };
+  return { source: "cloud", title: data.title || "Podsumowanie AI", text: data.text };
 }
 
 const SAMPLES = [
@@ -910,7 +914,6 @@ function QuizAbcdApp() {
   const [chatRes, setChatRes] = useState("");
 
   const [cloudApiEnabled, setCloudApiEnabled] = useState(Boolean(initialCloud.cloudApiEnabled));
-  const [cloudApiKey, setCloudApiKey] = useState("");
   const [cloudModel, setCloudModel] = useState(initialCloud.cloudModel || DEFAULT_MODEL);
   const [supabaseUrl, setSupabaseUrl] = useState(initialSupabase.supabaseUrl || DEFAULT_SUPABASE_URL);
   const [supabaseAnonKey, setSupabaseAnonKey] = useState(initialSupabase.supabaseAnonKey || DEFAULT_SUPABASE_ANON_KEY);
@@ -936,7 +939,7 @@ function QuizAbcdApp() {
 
   useEffect(() => {
     setCloudCheck({ status: "idle", message: "Nie sprawdzono połączenia." });
-  }, [cloudApiEnabled, cloudApiKey, cloudModel]);
+  }, [cloudApiEnabled, cloudModel, supabaseUrl, supabaseAnonKey]);
 
   const supabaseConfig = useMemo(
     () => ({
@@ -1047,21 +1050,31 @@ function QuizAbcdApp() {
       return;
     }
 
-    if (!cloudApiKey.trim()) {
-      setCloudCheck({ status: "error", message: "Brakuje klucza API." });
+    if (!sbEnabled) {
+      setCloudCheck({ status: "error", message: "Najpierw skonfiguruj poprawnie Supabase URL i klucz anon." });
       return;
     }
 
-    if (!looksLikeAnthropicKey(cloudApiKey)) {
-      setCloudCheck({ status: "error", message: "Format klucza nie wygląda na poprawny klucz Anthropic (`sk-ant-...`)." });
-      return;
-    }
+    setCloudCheck({ status: "loading", message: "Sprawdzam Cloud AI przez Supabase Edge Function..." });
 
-    setCloudCheck({
-      status: "info",
-      message: `Format klucza wygląda poprawnie, ale to nie klucz jest blokadą. ${CLOUD_BROWSER_NOTICE}`,
-    });
-  }, [cloudApiEnabled, cloudApiKey]);
+    try {
+      const result = await invokeCloudFunction({
+        supabaseConfig,
+        body: { action: "health", model: cloudModel.trim() || DEFAULT_MODEL },
+      });
+
+      setCloudCheck({
+        status: "success",
+        message: result?.message || "Edge Function odpowiedziała poprawnie i ma dostęp do sekretu Anthropic.",
+      });
+    } catch (error) {
+      const hint =
+        !isJwtLike(supabaseConfig.apiKey) && String(error?.message || "").includes("JWT")
+          ? " Do wywołania funkcji użyj pełnego anon JWT albo skonfiguruj funkcję inaczej."
+          : "";
+      setCloudCheck({ status: "error", message: `${getErrorText(error)}${hint}` });
+    }
+  }, [cloudApiEnabled, sbEnabled, supabaseConfig, cloudModel]);
 
   const handleAnswer = useCallback(
     (key) => {
@@ -1202,7 +1215,7 @@ function QuizAbcdApp() {
         answers,
       });
 
-      if (!cloudApiEnabled || !cloudApiKey.trim()) {
+      if (!cloudApiEnabled || !sbEnabled) {
         if (!cancelled) {
           setTrainingSummary(local);
           setTrainingSummaryStatus("done");
@@ -1210,16 +1223,28 @@ function QuizAbcdApp() {
         return;
       }
 
-      if (!cancelled) {
-        setTrainingSummary({
-          ...local,
-          text: `${local.text}\n\n${
-            looksLikeAnthropicKey(cloudApiKey)
-              ? "Klucz wygląda poprawnie, ale ten frontend nie powinien używać go bezpośrednio."
-              : "Format klucza nie wygląda na prawidłowy klucz Anthropic."
-          } ${CLOUD_BROWSER_NOTICE} ${CLOUD_ROTATE_NOTICE}`,
+      try {
+        const cloud = await fetchCloudTrainingSummary({
+          supabaseConfig,
+          model: cloudModel.trim() || DEFAULT_MODEL,
+          attempt: attemptDraft,
+          stats,
+          questions,
+          answers,
         });
-        setTrainingSummaryStatus("done");
+
+        if (!cancelled) {
+          setTrainingSummary(cloud);
+          setTrainingSummaryStatus("done");
+        }
+      } catch {
+        if (!cancelled) {
+          setTrainingSummary({
+            ...local,
+            text: `${local.text}\n\nCloud AI jest włączone, ale Edge Function nie zwróciła odpowiedzi. Sprawdź sekret ANTHROPIC_API_KEY oraz deploy funkcji w Supabase.`,
+          });
+          setTrainingSummaryStatus("done");
+        }
       }
     };
 
@@ -1227,7 +1252,7 @@ function QuizAbcdApp() {
     return () => {
       cancelled = true;
     };
-  }, [attemptDraft, cloudApiEnabled, cloudApiKey, cloudModel, stats, questions, answers]);
+  }, [attemptDraft, cloudApiEnabled, cloudModel, stats, questions, answers, sbEnabled, supabaseConfig]);
 
   const askAI = useCallback(async () => {
     if (chatStatus === "loading") return;
@@ -2493,16 +2518,13 @@ function QuizAbcdApp() {
           </div>
 
           <div style={{ marginBottom: 12 }}>
-            <label style={s.label}>Klucz API</label>
-            <input
-              type="password"
-              value={cloudApiKey}
-              onChange={(e) => setCloudApiKey(e.target.value)}
-              placeholder="sk-ant-..."
-              style={s.input}
-            />
+            <label style={s.label}>Sekret Anthropic</label>
+            <div style={{ ...s.input, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+              <span>ANTHROPIC_API_KEY</span>
+              <span className="soft-chip">Supabase secret</span>
+            </div>
             <div className="field-help">
-              Klucz nie jest zapisywany. Nie trzymaj go w kodzie ani repozytorium; jeśli był gdziekolwiek ujawniony, obróć go w panelu Anthropic.
+              Nie wpisuj klucza tutaj. Ustaw go w Supabase jako sekret Edge Function: `ANTHROPIC_API_KEY`.
             </div>
           </div>
 
@@ -2512,12 +2534,12 @@ function QuizAbcdApp() {
           </div>
 
           <div className="field-help">
-            Ten frontend nie wykonuje już bezpośredniego testu do Anthropic. Aktualny układ wymaga backend proxy albo Edge Function.
+            {CLOUD_BROWSER_NOTICE}
           </div>
 
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 14 }}>
             <button onClick={checkCloudConnection} style={s.btn("soft")}>
-              <IcoCloud size={14} /> Status Cloud AI
+              <IcoCloud size={14} /> Test Cloud AI
             </button>
           </div>
 
@@ -2614,7 +2636,7 @@ function QuizAbcdApp() {
             </span>
             <span className="soft-chip">
               <IcoCloud size={12} />
-              {cloudApiEnabled ? "Cloud wymaga backendu" : "Cloud AI wyłączone"}
+              {cloudApiEnabled ? "Cloud przez Edge Function" : "Cloud AI wyłączone"}
             </span>
           </div>
         </div>

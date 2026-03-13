@@ -7064,4 +7064,5 @@ function QuizAbcdApp() {
   );
 }
 
+window.__ZEN_QUIZ_STARTED__ = true;
 ReactDOM.createRoot(document.getElementById("root")).render(<QuizAbcdApp />);

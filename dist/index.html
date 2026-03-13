@@ -5,7 +5,60 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Quiz App</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script type="module" crossorigin src="/assets/index-DaFiuyWy.js"></script>
+    <script>
+      (function () {
+        function escapeHtml(value) {
+          return String(value || "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;");
+        }
+
+        function showStartupError(message, title) {
+          const root = document.getElementById("root");
+          if (!root) return;
+          root.innerHTML = `
+            <div style="min-height:100vh;padding:32px;background:linear-gradient(180deg,#f5f1e8 0%,#efe8db 100%);font-family:'Segoe UI',sans-serif;color:#1a1a1b;">
+              <div style="max-width:840px;margin:0 auto;border:1px solid #dcd7c9;border-radius:24px;background:rgba(255,255,255,.92);padding:24px;box-shadow:0 18px 48px rgba(44,62,80,.08);">
+                <div style="font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#5f645c;margin-bottom:10px;">Zen Quiz</div>
+                <h1 style="margin:0 0 12px;font-size:28px;line-height:1.15;">${escapeHtml(title || "Blad startu aplikacji")}</h1>
+                <p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:#5f645c;">
+                  Frontend nie wystartowal poprawnie. Skopiuj ten komunikat i wklej go do Codexa albo sprawdz deploy na Vercel.
+                </p>
+                <pre style="margin:0;padding:16px;border-radius:18px;background:#f7f4ec;border:1px solid #dcd7c9;white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:1.55;color:#2c3e50;">${escapeHtml(message || "Brak szczegolow bledu.")}</pre>
+              </div>
+            </div>
+          `;
+        }
+
+        window.addEventListener(
+          "error",
+          function (event) {
+            showStartupError(event.error?.stack || event.error?.message || event.message, "Blad JavaScript przy starcie");
+          },
+          true
+        );
+
+        window.addEventListener("unhandledrejection", function (event) {
+          const reason = event.reason;
+          showStartupError(reason?.stack || reason?.message || String(reason || "Unhandled promise rejection"), "Blad promise przy starcie");
+        });
+
+        window.addEventListener("load", function () {
+          setTimeout(function () {
+            if (!window.__ZEN_QUIZ_STARTED__) {
+              showStartupError(
+                "Bundle aplikacji nie wystartowal. Na Vercel sprawdz: Framework Preset = Vite, Build Command = npm run build, Output Directory = dist.",
+                "Frontend nie zostal uruchomiony"
+              );
+            }
+          }, 2500);
+        });
+      })();
+    </script>
+    <script type="module" crossorigin src="/assets/index-C7coCIrm.js"></script>
     <link rel="stylesheet" crossorigin href="/assets/index-DzuTgP0-.css">
   </head>
   <body>

@@ -70,6 +70,28 @@ function buildTrainingPrompt(payload: Record<string, unknown>) {
 function buildStudyPlanPrompt(payload: Record<string, unknown>) {
   return [
     "Jestes trenerem przygotowujacym szczegolowy plan nauki po polsku.",
+    "Masz przygotowac adaptacyjny plan powtorek w stylu Anki, ale z komentarzem AI.",
+    "Zwroc tylko poprawny JSON bez markdown i bez dodatkowego komentarza.",
+    'Wymagany format: {"readiness":"...","recommendation":"...","improvements":["..."],"focusAreas":[{"category":"...","priority":"Wysoki|Sredni|Niski","accuracy":62,"reviewCount":18,"weakHits":3,"deck":"PgMP","reason":"...","suggestion":"..."}],"reviewQueue":[{"label":"Dzisiaj","dueDate":"2026-03-13","dueLabel":"13 mar","category":"...","priority":"Wysoki","duration":"30m","deck":"PgMP","reason":"...","task":"..."}],"weeklyPlan":[{"day":"Pon","date":"2026-03-13","dateLabel":"13 mar","task":"...","duration":"25m","focusCategory":"...","priority":"Wysoki","deck":"PgMP","note":"..."}]}',
+    "Zasady:",
+    "- recommendation: 1 zwiezly akapit po polsku",
+    "- improvements: 3 do 5 konkretnych punktow",
+    "- focusAreas: 3 do 6 najwazniejszych kategorii lub zakresow do poprawy",
+    "- reviewQueue: 4 do 8 najblizszych powtorek, ulozonych jak kolejka spaced repetition",
+    "- weeklyPlan: 7 dni od Pon do Nd",
+    "- plan ma byc praktyczny i oparty na najslabszych obszarach, decku, trendzie wynikow i historii powtorek",
+    "- accuracy, reviewCount i weakHits maja byc liczbami",
+    "- priority ustaw jako Wysoki, Sredni albo Niski",
+    "- dueDate i date zwracaj w formacie YYYY-MM-DD",
+    "- dueLabel i dateLabel zwracaj po polsku, krotko, np. 13 mar",
+    "- suggestion ma zawierac konkretna wskazowke jak sie uczyc tego obszaru",
+    "- task i note maja byc gotowe do wpisania do kalendarza jako blok nauki",
+    "Dane wejsciowe:",
+    JSON.stringify(payload, null, 2),
+  ].join("\n");
+
+  return [
+    "Jestes trenerem przygotowujacym szczegolowy plan nauki po polsku.",
     "Na podstawie wynikow przygotuj realistyczny plan tygodniowy.",
     "Zwroc tylko poprawny JSON bez markdown i bez dodatkowego komentarza.",
     'Wymagany format: {"readiness":"...","recommendation":"...","improvements":["..."],"weeklyPlan":[{"day":"Pon","task":"...","duration":"25m"}]}',
@@ -166,6 +188,70 @@ function extractJsonObject(text: string) {
 }
 
 function normalizeStudyPlan(data: any) {
+  const safeRecommendation = String(data?.recommendation || "").trim();
+  const safeImprovements = Array.isArray(data?.improvements)
+    ? data.improvements.map((item: any) => String(item || "").trim()).filter(Boolean).slice(0, 6)
+    : [];
+  const safeFocusAreas = Array.isArray(data?.focusAreas)
+    ? data.focusAreas
+        .map((item: any) => ({
+          category: String(item?.category || "").trim(),
+          priority: String(item?.priority || "Sredni").trim() || "Sredni",
+          accuracy: Number(item?.accuracy || 0),
+          reviewCount: Number(item?.reviewCount || 0),
+          weakHits: Number(item?.weakHits || 0),
+          deck: String(item?.deck || "").trim(),
+          reason: String(item?.reason || "").trim(),
+          suggestion: String(item?.suggestion || "").trim(),
+        }))
+        .filter((item: any) => item.category)
+        .slice(0, 6)
+    : [];
+  const safeReviewQueue = Array.isArray(data?.reviewQueue)
+    ? data.reviewQueue
+        .map((item: any) => ({
+          label: String(item?.label || "").trim(),
+          dueDate: String(item?.dueDate || "").trim(),
+          dueLabel: String(item?.dueLabel || "").trim(),
+          category: String(item?.category || "").trim(),
+          priority: String(item?.priority || "Sredni").trim() || "Sredni",
+          duration: String(item?.duration || "").trim(),
+          deck: String(item?.deck || "").trim(),
+          reason: String(item?.reason || "").trim(),
+          task: String(item?.task || "").trim(),
+        }))
+        .filter((item: any) => item.task)
+        .slice(0, 10)
+    : [];
+  const safeWeeklyPlan = Array.isArray(data?.weeklyPlan)
+    ? data.weeklyPlan
+        .map((item: any) => ({
+          day: String(item?.day || "").trim(),
+          date: String(item?.date || "").trim(),
+          dateLabel: String(item?.dateLabel || "").trim(),
+          task: String(item?.task || "").trim(),
+          duration: String(item?.duration || "").trim(),
+          focusCategory: String(item?.focusCategory || "").trim(),
+          priority: String(item?.priority || "Sredni").trim() || "Sredni",
+          deck: String(item?.deck || "").trim(),
+          note: String(item?.note || "").trim(),
+        }))
+        .filter((item: any) => item.day && item.task)
+        .slice(0, 7)
+    : [];
+
+  if (!safeRecommendation) throw new Error("Cloud returned invalid study plan");
+
+  return {
+    ok: true,
+    readiness: String(data?.readiness || "Plan AI").trim() || "Plan AI",
+    recommendation: safeRecommendation,
+    improvements: safeImprovements,
+    focusAreas: safeFocusAreas,
+    reviewQueue: safeReviewQueue,
+    weeklyPlan: safeWeeklyPlan,
+  };
+
   const recommendation = String(data?.recommendation || "").trim();
   const improvements = Array.isArray(data?.improvements)
     ? data.improvements.map((item: any) => String(item || "").trim()).filter(Boolean).slice(0, 6)

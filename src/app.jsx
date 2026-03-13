@@ -1362,6 +1362,229 @@ function buildPlan(history, weakCat) {
   };
 }
 
+function addDays(date, amount) {
+  const next = new Date(date);
+  next.setHours(0, 0, 0, 0);
+  next.setDate(next.getDate() + amount);
+  return next;
+}
+
+function parseDurationMinutes(value = "25m") {
+  const text = String(value || "").trim().toLowerCase();
+  if (!text) return 25;
+
+  const hours = text.match(/(\d+)\s*h/);
+  const minutes = text.match(/(\d+)\s*(m|min)/);
+  const total = (hours ? Number(hours[1]) * 60 : 0) + (minutes ? Number(minutes[1]) : 0);
+  return total || Math.max(Number.parseInt(text, 10) || 25, 5);
+}
+
+function toGoogleCalendarStamp(date) {
+  return new Date(date).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+}
+
+function buildGoogleCalendarUrl(event) {
+  if (!event?.title || !event?.start) return "";
+
+  const url = new URL("https://calendar.google.com/calendar/render");
+  url.searchParams.set("action", "TEMPLATE");
+  url.searchParams.set("text", event.title);
+  url.searchParams.set("dates", `${toGoogleCalendarStamp(event.start)}/${toGoogleCalendarStamp(event.end)}`);
+  if (event.details) url.searchParams.set("details", event.details);
+  return url.toString();
+}
+
+function buildReviewFocusAreas({ history, statsByCat = [], questionPool = [], weakCat, activeDeckName = DEFAULT_DECK_NAME }) {
+  const activeQuestions = (questionPool || []).filter((question) => question.isActive !== false);
+  const questionCountByCategory = {};
+  const deckCountByCategory = {};
+  const weakHits = {};
+
+  activeQuestions.forEach((question) => {
+    const category = String(question.category || "General").trim() || "General";
+    const deck = String(question.deck || activeDeckName || DEFAULT_DECK_NAME).trim() || DEFAULT_DECK_NAME;
+    questionCountByCategory[category] = (questionCountByCategory[category] || 0) + 1;
+    if (!deckCountByCategory[category]) deckCountByCategory[category] = {};
+    deckCountByCategory[category][deck] = (deckCountByCategory[category][deck] || 0) + 1;
+  });
+
+  history.slice(0, 8).forEach((attempt) => {
+    const category = String(attempt?.weakestCategory || "").trim();
+    if (!category) return;
+    weakHits[category] = (weakHits[category] || 0) + 1;
+  });
+
+  const categories = new Set([
+    ...statsByCat.map((item) => item.category),
+    ...Object.keys(questionCountByCategory),
+    ...Object.keys(weakHits),
+    weakCat?.category || "",
+  ]);
+
+  const priorities = ["Wysoki", "Sredni", "Niski"];
+
+  return [...categories]
+    .filter(Boolean)
+    .map((category) => {
+      const categoryStats = statsByCat.find((item) => item.category === category) || null;
+      const accuracy = Number(categoryStats?.percent || (category === weakCat?.category ? 58 : 72));
+      const questionCount = Number(questionCountByCategory[category] || categoryStats?.total || 0);
+      const repeatHits = Number(weakHits[category] || 0);
+      const deck = Object.entries(deckCountByCategory[category] || {}).sort((a, b) => b[1] - a[1])[0]?.[0] || activeDeckName || DEFAULT_DECK_NAME;
+      const priorityScore = Math.max(0, 100 - accuracy) + repeatHits * 12 + Math.min(questionCount, 12);
+      const priority = priorityScore >= 58 ? "Wysoki" : priorityScore >= 34 ? "Sredni" : "Niski";
+
+      return {
+        category,
+        priority,
+        accuracy,
+        reviewCount: questionCount,
+        weakHits: repeatHits,
+        deck,
+        reason:
+          repeatHits > 1
+            ? `Kategoria wraca jako slabszy obszar w ${repeatHits} ostatnich sesjach.`
+            : accuracy < 70
+            ? `Skutecznosc spadla tu do ${accuracy}%.`
+            : `To duzy zakres (${questionCount} kart), wiec warto go utrwalac regularnie.`,
+        suggestion:
+          priority === "Wysoki"
+            ? "Zacznij od bledow i zakoncz blok jednym szybkim quizem."
+            : priority === "Sredni"
+            ? "Powtorz definicje i zaleznosci, a potem sprawdz je w zestawie mieszanym."
+            : "Wystarczy lekka powtorka kontrolna i utrwalenie najwazniejszych definicji.",
+      };
+    })
+    .sort((a, b) => {
+      const priorityDelta = priorities.indexOf(a.priority) - priorities.indexOf(b.priority);
+      if (priorityDelta !== 0) return priorityDelta;
+      return b.weakHits - a.weakHits || a.accuracy - b.accuracy;
+    })
+    .slice(0, 4);
+}
+
+function buildReviewQueue(focusAreas = [], startDate = new Date()) {
+  const offsetsByPriority = {
+    Wysoki: [0, 1, 3, 7],
+    Sredni: [1, 3, 7],
+    Niski: [3, 7, 14],
+  };
+
+  return focusAreas.flatMap((area) => {
+    const offsets = offsetsByPriority[area.priority] || offsetsByPriority.Sredni;
+    return offsets.map((offset, index) => {
+      const date = addDays(startDate, offset);
+      const dateKey = dayKey(date.getTime());
+
+      return {
+        label: offset === 0 ? "Dzisiaj" : offset === 1 ? "Jutro" : `Za ${offset} dni`,
+        dueDate: dateKey,
+        dueLabel: shortDay(dateKey),
+        category: area.category,
+        priority: area.priority,
+        deck: area.deck,
+        duration: area.priority === "Wysoki" && offset <= 1 ? "30m" : offset >= 7 ? "15m" : "20m",
+        reason: area.reason,
+        task: index === 0 ? `Pierwsza powtorka: ${area.category}` : `Powtorka ${index + 1}: ${area.category}`,
+      };
+    });
+  });
+}
+
+function buildWeeklyReviewPlan(focusAreas = [], reviewQueue = [], startDate = new Date()) {
+  const topArea = focusAreas[0]?.category || "Mieszane powtorki";
+
+  return Array.from({ length: 7 }, (_, index) => {
+    const date = addDays(startDate, index);
+    const dateKey = dayKey(date.getTime());
+    const queueItem = reviewQueue.find((item) => item.dueDate === dateKey);
+    const fallbackArea = focusAreas[index % Math.max(focusAreas.length, 1)] || null;
+    const duration = queueItem?.duration || (index === 5 ? "35m" : index === 6 ? "15m" : "20m");
+
+    return {
+      day: weekdayLabels[(date.getDay() + 6) % 7] || shortDay(dateKey),
+      date: dateKey,
+      dateLabel: shortDay(dateKey),
+      task:
+        queueItem?.task ||
+        (index === 5
+          ? "Probny quiz mieszany i analiza bledow"
+          : index === 6
+          ? `Lekka powtorka: ${topArea}`
+          : `Blok fokusowy: ${fallbackArea?.category || topArea}`),
+      duration,
+      focusCategory: queueItem?.category || fallbackArea?.category || topArea,
+      priority: queueItem?.priority || fallbackArea?.priority || "Sredni",
+      deck: queueItem?.deck || fallbackArea?.deck || DEFAULT_DECK_NAME,
+      note: queueItem?.reason || fallbackArea?.suggestion || "Powtorka aktywna oparta na ostatnich wynikach.",
+    };
+  });
+}
+
+function buildAdaptivePlan({ history, weakCat, statsByCat = [], questionPool = [], activeDeckName = DEFAULT_DECK_NAME }) {
+  if (!history.length) {
+    return {
+      recommendation: "Ukoncz kilka prob quizu, a system przygotuje lepszy plan powtorek.",
+      improvements: [],
+      focusAreas: [],
+      reviewQueue: [],
+      weeklyPlan: [],
+    };
+  }
+
+  const recent = history.slice(0, 6);
+  const avgAcc = Math.round(recent.reduce((sum, attempt) => sum + attempt.percent, 0) / recent.length);
+  const focusAreas = buildReviewFocusAreas({ history, statsByCat, questionPool, weakCat, activeDeckName });
+  const reviewQueue = buildReviewQueue(focusAreas);
+  const weeklyPlan = buildWeeklyReviewPlan(focusAreas, reviewQueue);
+  const topArea = focusAreas[0]?.category || weakCat?.category || "Mieszane powtorki";
+
+  return {
+    readiness: avgAcc >= 85 ? "Utrwalaj i przesuwaj limit" : avgAcc >= 65 ? "Stabilizuj kluczowe obszary" : "Buduj fundamenty",
+    recommendation:
+      avgAcc >= 85
+        ? "Masz dobra baze. Pracuj jak w Anki: krotsze, regularne powtorki, a trudniejsze kategorie wrzucaj w osobne bloki kontrolne."
+        : avgAcc >= 65
+        ? "Najwiekszy zysk da teraz regularna kolejka powtorek na najslabszych kategoriach i szybkie testy mieszane po kazdym bloku."
+        : "Skup sie na najwazniejszych kategoriach, powtarzaj je czesciej niz reszte i nie dokladaj nowych materialow, dopoki poprawa nie stanie sie stabilna.",
+    improvements: [
+      focusAreas[0] ? `Najwyzszy priorytet ma teraz ${focusAreas[0].category} (${focusAreas[0].priority.toLowerCase()} priorytet).` : `Najczesciej wracajacy obszar do poprawy: ${topArea}.`,
+      avgAcc < 70 ? "Najpierw dokladnosc, potem tempo. Powtorki zaczynaj od bledow z ostatnich sesji." : "Utrzymuj dokladnosc i zamykaj kazdy blok jednym szybkim quizem kontrolnym.",
+      focusAreas[1] ? `Drugi obszar do dogrania: ${focusAreas[1].category}.` : `Najczesciej wracajacy obszar do poprawy: ${topArea}.`,
+    ],
+    focusAreas,
+    reviewQueue,
+    weeklyPlan,
+  };
+}
+
+function buildStudyPlanCalendarLink(item, index = 0, fallbackDeck = DEFAULT_DECK_NAME) {
+  const rawDate = String(item?.date || item?.dueDate || "").trim();
+  const start = rawDate ? new Date(`${rawDate}T09:00:00`) : addDays(new Date(), index);
+  if (!rawDate) start.setHours(9, 0, 0, 0);
+
+  const durationMinutes = parseDurationMinutes(item?.duration || "25m");
+  const end = new Date(start.getTime() + durationMinutes * 60 * 1000);
+  const focusArea = item?.focusCategory || item?.category || item?.label || "Blok powtorki";
+  const deck = item?.deck || fallbackDeck || DEFAULT_DECK_NAME;
+  const details = [
+    deck ? `Deck: ${deck}` : "",
+    item?.task ? `Plan: ${item.task}` : "",
+    item?.reason ? `Powod: ${item.reason}` : "",
+    item?.note ? `Notatka: ${item.note}` : "",
+    "Wydarzenie wygenerowane z planu powtorkowego Zen Quiz.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return buildGoogleCalendarUrl({
+    title: `Zen Quiz: ${focusArea}`,
+    start,
+    end,
+    details,
+  });
+}
+
 function DeckProgressRing({ progress, size = 28, stroke = 3.5 }) {
   const safeProgress = Math.max(0, Math.min(100, Number(progress || 0)));
   const radius = (size - stroke) / 2;
@@ -1392,12 +1615,49 @@ function normalizeStudyPlanResponse(data) {
   const improvements = Array.isArray(data?.improvements)
     ? data.improvements.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 6)
     : [];
+  const focusAreas = Array.isArray(data?.focusAreas)
+    ? data.focusAreas
+        .map((item) => ({
+          category: String(item?.category || "").trim(),
+          priority: String(item?.priority || "Sredni").trim() || "Sredni",
+          accuracy: Number(item?.accuracy || 0),
+          reviewCount: Number(item?.reviewCount || 0),
+          weakHits: Number(item?.weakHits || 0),
+          deck: String(item?.deck || DEFAULT_DECK_NAME).trim() || DEFAULT_DECK_NAME,
+          reason: String(item?.reason || "").trim(),
+          suggestion: String(item?.suggestion || "").trim(),
+        }))
+        .filter((item) => item.category)
+        .slice(0, 6)
+    : [];
+  const reviewQueue = Array.isArray(data?.reviewQueue)
+    ? data.reviewQueue
+        .map((item) => ({
+          label: String(item?.label || "").trim(),
+          dueDate: String(item?.dueDate || "").trim(),
+          dueLabel: String(item?.dueLabel || "").trim(),
+          category: String(item?.category || "").trim(),
+          priority: String(item?.priority || "Sredni").trim() || "Sredni",
+          duration: String(item?.duration || "").trim(),
+          deck: String(item?.deck || DEFAULT_DECK_NAME).trim() || DEFAULT_DECK_NAME,
+          reason: String(item?.reason || "").trim(),
+          task: String(item?.task || "").trim(),
+        }))
+        .filter((item) => item.label && item.task)
+        .slice(0, 10)
+    : [];
   const weeklyPlan = Array.isArray(data?.weeklyPlan)
     ? data.weeklyPlan
         .map((item) => ({
           day: String(item?.day || "").trim(),
+          date: String(item?.date || "").trim(),
+          dateLabel: String(item?.dateLabel || "").trim(),
           task: String(item?.task || "").trim(),
           duration: String(item?.duration || "").trim(),
+          focusCategory: String(item?.focusCategory || "").trim(),
+          priority: String(item?.priority || "Sredni").trim() || "Sredni",
+          deck: String(item?.deck || DEFAULT_DECK_NAME).trim() || DEFAULT_DECK_NAME,
+          note: String(item?.note || "").trim(),
         }))
         .filter((item) => item.day && item.task)
         .slice(0, 7)
@@ -1410,6 +1670,8 @@ function normalizeStudyPlanResponse(data) {
     readiness: String(data?.readiness || "Plan AI").trim() || "Plan AI",
     recommendation,
     improvements,
+    focusAreas,
+    reviewQueue,
     weeklyPlan,
   };
 }
@@ -1545,6 +1807,8 @@ async function fetchCloudStudyPlan({
   latestAttempt,
   weekdaySummary,
   weeklySummary,
+  categorySummary,
+  activeDeckName,
 }) {
   const recentAttempts = [...history]
     .sort((a, b) => b.finishedAt - a.finishedAt)
@@ -1570,6 +1834,17 @@ async function fetchCloudStudyPlan({
         weakestCategory: weakCat?.category || null,
         strongestCategory: strongCat?.category || null,
         avgResponseMs: Math.round(avgResponseMs || 0),
+        activeDeckName: activeDeckName || DEFAULT_DECK_NAME,
+        categorySummary: (categorySummary || []).map((item) => ({
+          category: item.category,
+          priority: item.priority,
+          accuracy: item.accuracy,
+          reviewCount: item.reviewCount,
+          weakHits: item.weakHits,
+          deck: item.deck,
+          reason: item.reason,
+          suggestion: item.suggestion,
+        })),
         latestAttempt: latestAttempt
           ? {
               percent: latestAttempt.percent,
@@ -3849,7 +4124,20 @@ function QuizAbcdApp() {
     setSelectedCalDay(fallback);
   }, [activeDayKeys, calMonth, selectedCalDay]);
 
-  const localPlan = useMemo(() => ({ source: "local", ...buildPlan(uniq, stats.weakest) }), [uniq, stats.weakest]);
+  const localPlan = useMemo(
+    () =>
+      ({
+        source: "local",
+        ...buildAdaptivePlan({
+          history: uniq,
+          weakCat: stats.weakest,
+          statsByCat: stats.byCat,
+          questionPool,
+          activeDeckName,
+        }),
+      }),
+    [uniq, stats.weakest, stats.byCat, questionPool, activeDeckName]
+  );
   const calDays = useMemo(() => buildCalDays(calMonth), [calMonth]);
 
   const selectedDayAttempts = attemptsByDay[selectedCalDay] || [];
@@ -4053,10 +4341,19 @@ function QuizAbcdApp() {
           latestAttempt: attemptDraft,
           weekdaySummary,
           weeklySummary,
+          categorySummary: localPlan.focusAreas,
+          activeDeckName,
         });
 
         if (!cancelled) {
-          setStudyPlan(cloudPlan);
+          setStudyPlan({
+            ...localPlan,
+            ...cloudPlan,
+            improvements: cloudPlan?.improvements?.length ? cloudPlan.improvements : localPlan.improvements,
+            focusAreas: cloudPlan?.focusAreas?.length ? cloudPlan.focusAreas : localPlan.focusAreas,
+            reviewQueue: cloudPlan?.reviewQueue?.length ? cloudPlan.reviewQueue : localPlan.reviewQueue,
+            weeklyPlan: cloudPlan?.weeklyPlan?.length ? cloudPlan.weeklyPlan : localPlan.weeklyPlan,
+          });
           setStudyPlanStatus("done");
         }
       } catch {
@@ -4089,6 +4386,7 @@ function QuizAbcdApp() {
     attemptDraft,
     weekdaySummary,
     weeklySummary,
+    activeDeckName,
   ]);
 
   const maxCountInMonth = useMemo(() => {
@@ -5639,6 +5937,289 @@ function QuizAbcdApp() {
 
   const PlanView = () => {
     const activePlan = studyPlan || localPlan;
+    const focusAreas = activePlan?.focusAreas || [];
+    const reviewQueue = activePlan?.reviewQueue || [];
+    const weeklyPlan = activePlan?.weeklyPlan || [];
+    const improvements = activePlan?.improvements || [];
+
+    const getPriorityTone = (priority) => {
+      const value = String(priority || "").toLowerCase();
+      if (value.includes("wys")) return { bg: "rgba(196, 102, 90, .12)", border: "rgba(196, 102, 90, .28)", color: "#9A4C3B" };
+      if (value.includes("nis")) return { bg: "rgba(112, 132, 104, .12)", border: "rgba(112, 132, 104, .24)", color: "#5C7054" };
+      return { bg: "rgba(75, 94, 170, .11)", border: "rgba(75, 94, 170, .22)", color: "#4B5EAA" };
+    };
+
+    return (
+      <div style={{ display: "grid", gap: 16 }}>
+        <div style={{ ...s.card, padding: 22 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 10 }}>
+            <div className="tinyLabel">Plan powtorek</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <span className="soft-chip">
+                <IcoCloud size={12} />
+                {activePlan?.source === "cloud" ? "AI + historia nauki" : "Plan lokalny"}
+              </span>
+              <span className="soft-chip">
+                <IcoBook size={12} />
+                {activeDeckName || DEFAULT_DECK_NAME}
+              </span>
+            </div>
+          </div>
+
+          <div style={{ fontSize: 28, fontWeight: 700, color: C.textStrong, marginBottom: 8 }}>
+            {activePlan?.readiness || "Plan nauki"}
+          </div>
+          <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.75 }}>{activePlan?.recommendation}</div>
+
+          {studyPlanStatus === "loading" && (
+            <div style={{ marginTop: 12, fontSize: 13, color: C.textSub }}>
+              Cloud AI analizuje historie wynikow, slabiej utrwalone kategorie i buduje kolejne powtorki.
+            </div>
+          )}
+
+          {improvements.length > 0 && (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10, marginTop: 16 }}>
+              {improvements.map((item, index) => (
+                <div
+                  key={`${item}-${index}`}
+                  style={{
+                    padding: "12px 14px",
+                    borderRadius: 14,
+                    background: C.cardAlt,
+                    border: `1px solid ${C.border}`,
+                    fontSize: 13,
+                    color: C.textSub,
+                    lineHeight: 1.6,
+                  }}
+                >
+                  {item}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1.1fr .9fr", gap: 16 }}>
+          <div style={{ ...s.card, padding: 20 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+              <IcoTarget size={16} />
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Najwazniejsze obszary</div>
+            </div>
+
+            <div style={{ display: "grid", gap: 10 }}>
+              {focusAreas.length ? (
+                focusAreas.map((area, index) => {
+                  const tone = getPriorityTone(area.priority);
+                  return (
+                    <div
+                      key={`${area.category}-${index}`}
+                      style={{
+                        padding: 14,
+                        borderRadius: 16,
+                        background: C.cardAlt,
+                        border: `1px solid ${C.border}`,
+                        display: "grid",
+                        gap: 10,
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                        <div>
+                          <div style={{ fontSize: 15, fontWeight: 700, color: C.textStrong }}>{area.category}</div>
+                          <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>
+                            Deck: {area.deck || activeDeckName || DEFAULT_DECK_NAME}
+                          </div>
+                        </div>
+                        <span
+                          style={{
+                            padding: "6px 10px",
+                            borderRadius: 999,
+                            fontSize: 11,
+                            fontWeight: 700,
+                            letterSpacing: ".04em",
+                            background: tone.bg,
+                            border: `1px solid ${tone.border}`,
+                            color: tone.color,
+                            textTransform: "uppercase",
+                          }}
+                        >
+                          {area.priority || "Sredni"}
+                        </span>
+                      </div>
+
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 }}>
+                        {[
+                          ["Skutecznosc", `${Math.max(0, Math.round(area.accuracy || 0))}%`],
+                          ["Powtorki", String(area.reviewCount || 0)],
+                          ["Sygnaly", String(area.weakHits || 0)],
+                        ].map(([label, value]) => (
+                          <div key={label} style={{ padding: 10, borderRadius: 12, background: "#fff", border: `1px solid ${C.border}` }}>
+                            <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>{label}</div>
+                            <div style={{ fontSize: 18, fontWeight: 700, color: C.textStrong }}>{value}</div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div style={{ fontSize: 13, color: C.textSub, lineHeight: 1.65 }}>
+                        {area.reason || area.suggestion || "To jest obszar, ktory najczesciej wraca jako luka do utrwalenia."}
+                      </div>
+                      {area.suggestion && <div style={{ fontSize: 13, color: C.textStrong, lineHeight: 1.65 }}>{area.suggestion}</div>}
+                    </div>
+                  );
+                })
+              ) : (
+                <div style={{ fontSize: 14, color: C.textSub }}>Brak danych do planu. Zrob kilka sesji quizu, aby zbudowac kolejne powtorki.</div>
+              )}
+            </div>
+          </div>
+
+          <div style={{ ...s.card, padding: 20 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+              <IcoClock size={16} />
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Kolejka Anki-like</div>
+            </div>
+
+            <div style={{ display: "grid", gap: 10 }}>
+              {reviewQueue.length ? (
+                reviewQueue.map((item, index) => {
+                  const tone = getPriorityTone(item.priority);
+                  const calendarUrl = buildStudyPlanCalendarLink(item, index, activeDeckName);
+                  return (
+                    <div
+                      key={`${item.label}-${item.category}-${index}`}
+                      style={{
+                        padding: 14,
+                        borderRadius: 16,
+                        background: C.cardAlt,
+                        border: `1px solid ${C.border}`,
+                        display: "grid",
+                        gap: 8,
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+                        <div>
+                          <div style={{ fontSize: 14, fontWeight: 700, color: C.textStrong }}>{item.label || item.dueLabel || "Powtorka"}</div>
+                          <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>{item.category || "Mieszane"}</div>
+                        </div>
+                        <span
+                          style={{
+                            padding: "6px 10px",
+                            borderRadius: 999,
+                            fontSize: 11,
+                            fontWeight: 700,
+                            background: tone.bg,
+                            border: `1px solid ${tone.border}`,
+                            color: tone.color,
+                          }}
+                        >
+                          {item.priority || "Sredni"}
+                        </span>
+                      </div>
+
+                      <div style={{ fontSize: 13, color: C.textSub, lineHeight: 1.6 }}>{item.task}</div>
+                      {item.reason && <div style={{ fontSize: 12, color: C.textSub, lineHeight: 1.55 }}>{item.reason}</div>}
+
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                        <span className="soft-chip">
+                          <IcoClock size={12} />
+                          {item.duration || "25m"}
+                        </span>
+                        <a
+                          href={calendarUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          style={{ ...s.btn("ghost"), padding: "9px 12px", textDecoration: "none" }}
+                        >
+                          <IcoCalendar size={14} /> Google Calendar
+                        </a>
+                      </div>
+                    </div>
+                  );
+                })
+              ) : (
+                <div style={{ fontSize: 14, color: C.textSub }}>Kolejka powtorek pojawi sie po kilku sesjach i analizie AI.</div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ ...s.card, padding: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <IcoCalendar size={16} />
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Tydzien nauki i Google Calendar</div>
+            </div>
+            <div style={{ fontSize: 12, color: C.textSub }}>Kliknij Dodaj, aby wstawic blok do swojego kalendarza.</div>
+          </div>
+
+          <div style={{ display: "grid", gap: 10 }}>
+            {weeklyPlan.length ? (
+              weeklyPlan.map((item, index) => {
+                const tone = getPriorityTone(item.priority);
+                const calendarUrl = buildStudyPlanCalendarLink(item, index, activeDeckName);
+                return (
+                  <div
+                    key={`${item.day}-${item.date || index}`}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "88px 1fr auto",
+                      gap: 12,
+                      alignItems: "center",
+                      padding: 14,
+                      borderRadius: 16,
+                      background: C.cardAlt,
+                      border: `1px solid ${C.border}`,
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: C.textStrong }}>{item.day}</div>
+                      <div style={{ fontSize: 11, color: C.textSub, marginTop: 4 }}>{item.dateLabel || item.date || "-"}</div>
+                    </div>
+
+                    <div style={{ display: "grid", gap: 6 }}>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: C.textStrong }}>{item.task}</div>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        {item.focusCategory && <span className="soft-chip">{item.focusCategory}</span>}
+                        {item.duration && (
+                          <span className="soft-chip">
+                            <IcoClock size={12} />
+                            {item.duration}
+                          </span>
+                        )}
+                        <span
+                          style={{
+                            padding: "6px 10px",
+                            borderRadius: 999,
+                            fontSize: 11,
+                            fontWeight: 700,
+                            background: tone.bg,
+                            border: `1px solid ${tone.border}`,
+                            color: tone.color,
+                          }}
+                        >
+                          {item.priority || "Sredni"}
+                        </span>
+                      </div>
+                      {item.note && <div style={{ fontSize: 12, color: C.textSub, lineHeight: 1.55 }}>{item.note}</div>}
+                    </div>
+
+                    <a
+                      href={calendarUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ ...s.btn("ghost"), padding: "9px 12px", textDecoration: "none", whiteSpace: "nowrap" }}
+                    >
+                      <IcoCalendar size={14} /> Dodaj
+                    </a>
+                  </div>
+                );
+              })
+            ) : (
+              <div style={{ fontSize: 14, color: C.textSub }}>Brak tygodniowego planu. Zrob kilka sesji, aby uruchomic harmonogram powtorek.</div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
 
     return (
     <div style={{ display: "grid", gap: 16 }}>

@@ -627,6 +627,12 @@ async function signOutAuth(config, accessToken) {
   });
 }
 
+async function fetchAuthSettings(config) {
+  return authRequest(config, "settings", {
+    method: "GET",
+  });
+}
+
 async function upsertProfileRecord(config, accessToken, user, displayName) {
   if (!config?.url || !accessToken || !user?.id) return null;
 
@@ -2684,12 +2690,41 @@ function QuizAbcdApp() {
       return;
     }
 
-    setAuthStatus({
-      status: "loading",
-      message: "Przekierowuje do logowania Google przez Supabase...",
-    });
+    const run = async () => {
+      setAuthStatus({
+        status: "loading",
+        message: "Sprawdzam konfiguracje Google w Supabase...",
+      });
 
-    window.location.assign(buildOAuthAuthorizeUrl(supabaseConfig, "google"));
+      try {
+        const settings = await fetchAuthSettings(supabaseConfig);
+        const googleEnabled = Boolean(
+          settings?.external?.google === true ||
+            settings?.external?.google === "true" ||
+            settings?.external_google_enabled === true
+        );
+
+        if (!googleEnabled) {
+          setAuthStatus({
+            status: "error",
+            message:
+              "Google provider nie jest wlaczony w Supabase. Wejdz w Authentication -> Providers -> Google, wlacz go i uzupelnij Google Client ID oraz Client Secret.",
+          });
+          return;
+        }
+
+        setAuthStatus({
+          status: "loading",
+          message: "Przekierowuje do logowania Google przez Supabase...",
+        });
+
+        window.location.assign(buildOAuthAuthorizeUrl(supabaseConfig, "google"));
+      } catch (error) {
+        setAuthStatus({ status: "error", message: getErrorText(error) });
+      }
+    };
+
+    run();
   }, [sbEnabled, supabaseConfig]);
 
   useEffect(() => {

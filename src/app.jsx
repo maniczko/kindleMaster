@@ -598,6 +598,31 @@ function buildPlan(history, weakCat) {
   };
 }
 
+function DeckProgressRing({ progress, size = 28, stroke = 3.5 }) {
+  const safeProgress = Math.max(0, Math.min(100, Number(progress || 0)));
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const dashOffset = circumference - (safeProgress / 100) * circumference;
+
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
+      <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke="rgba(220,215,201,.78)" strokeWidth={stroke} />
+      <circle
+        cx={size / 2}
+        cy={size / 2}
+        r={radius}
+        fill="none"
+        stroke="#E56767"
+        strokeWidth={stroke}
+        strokeLinecap="round"
+        strokeDasharray={circumference}
+        strokeDashoffset={dashOffset}
+        transform={`rotate(-90 ${size / 2} ${size / 2})`}
+      />
+    </svg>
+  );
+}
+
 function normalizeStudyPlanResponse(data) {
   const recommendation = String(data?.recommendation || "").trim();
   const improvements = Array.isArray(data?.improvements)
@@ -1265,6 +1290,7 @@ function QuizAbcdApp() {
   const [selectedDeck, setSelectedDeck] = useState(() =>
     normalizeDeck(initialUi.selectedDeck || import.meta.env.VITE_SUPABASE_DEFAULT_DECK || ALL_DECKS_LABEL, ALL_DECKS_LABEL)
   );
+  const [expandedDecks, setExpandedDecks] = useState(() => ({ PgMP: true }));
 
   const [calMonth, setCalMonth] = useState(() => som(new Date()));
   const [selectedCalDay, setSelectedCalDay] = useState(() => dayKey(Date.now()));
@@ -1505,7 +1531,6 @@ function QuizAbcdApp() {
       const shuffled = [...pool].sort(() => 0.5 - Math.random());
       const selectedQuestions = len === "all" ? shuffled : shuffled.slice(0, len);
 
-      if (customPool) setQuestionPool(customPool);
       setQuestions(selectedQuestions.length ? selectedQuestions : pool);
       setIdx(0);
       setSelected(null);
@@ -1526,6 +1551,19 @@ function QuizAbcdApp() {
       );
     },
     [filteredQuestionPool, quizLength]
+  );
+
+  const getDeckPool = useCallback(
+    (deckName, categoryName = "") => {
+      const scopedPool = questionPool.filter((question) => {
+        const matchesDeck = normalizeDeck(question.deck) === deckName;
+        const matchesCategory = !categoryName || String(question.category || "Bez kategorii") === categoryName;
+        return matchesDeck && matchesCategory;
+      });
+
+      return filterQuestionsByTags(scopedPool, selectedTagFilters, userTagMap);
+    },
+    [questionPool, selectedTagFilters, userTagMap]
   );
 
   const loadQfromDB = useCallback(async () => {
@@ -2014,6 +2052,7 @@ function QuizAbcdApp() {
           return;
         }
 
+        setQuestionPool(parsed);
         startQuiz(parsed, quizLength);
         setImportMsg(`✓ Zaimportowano ${parsed.length} pytań z "${file.name}"`);
       } catch (err) {
@@ -2250,6 +2289,57 @@ function QuizAbcdApp() {
       }));
   }, [monthAttempts]);
 
+  const activeDeckName = useMemo(() => {
+    if (selectedDeck !== ALL_DECKS_LABEL) return selectedDeck;
+    return questionPool.find((question) => normalizeDeck(question.deck))?.deck || DEFAULT_DECKS[0];
+  }, [selectedDeck, questionPool]);
+
+  const deckGroups = useMemo(() => {
+    const order = new Map(DEFAULT_DECKS.map((deck, index) => [deck, index]));
+    const grouped = new Map(DEFAULT_DECKS.map((deck) => [deck, { name: deck, count: 0, categories: [] }]));
+
+    questionPool.forEach((question) => {
+      const deck = normalizeDeck(question.deck);
+      const category = String(question.category || "Bez kategorii").trim() || "Bez kategorii";
+      if (!grouped.has(deck)) grouped.set(deck, { name: deck, count: 0, categories: [] });
+
+      const entry = grouped.get(deck);
+      entry.count += 1;
+
+      const categoryEntry = entry.categories.find((item) => item.name === category);
+      if (categoryEntry) categoryEntry.count += 1;
+      else entry.categories.push({ name: category, count: 1 });
+    });
+
+    return [...grouped.values()]
+      .map((entry) => ({
+        ...entry,
+        categories: entry.categories.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, "pl")),
+      }))
+      .sort((a, b) => {
+        if (a.name === activeDeckName) return -1;
+        if (b.name === activeDeckName) return 1;
+        if (order.has(a.name) && order.has(b.name)) return order.get(a.name) - order.get(b.name);
+        if (order.has(a.name)) return -1;
+        if (order.has(b.name)) return 1;
+        return b.count - a.count || a.name.localeCompare(b.name, "pl");
+      });
+  }, [questionPool, activeDeckName]);
+
+  const maxDeckCount = useMemo(() => Math.max(...deckGroups.map((deck) => deck.count), 1), [deckGroups]);
+  const getDeckProgress = useCallback(
+    (count, maxValue = maxDeckCount) => {
+      const safeMax = Math.max(Number(maxValue || 0), 1);
+      return Math.round((Number(count || 0) / safeMax) * 100);
+    },
+    [maxDeckCount]
+  );
+
+  useEffect(() => {
+    if (!activeDeckName) return;
+    setExpandedDecks((prev) => (prev[activeDeckName] ? prev : { ...prev, [activeDeckName]: true }));
+  }, [activeDeckName]);
+
   useEffect(() => {
     if (!uniq.length) {
       setStudyPlan(localPlan);
@@ -2342,9 +2432,10 @@ function QuizAbcdApp() {
 
   const TABS = [
     { id: "quiz", label: "Quiz", icon: <IcoBrain size={15} /> },
+    { id: "decks", label: "Decki", icon: <IcoBook size={15} /> },
     { id: "results", label: "Wyniki", icon: <IcoTrophy size={15} /> },
     { id: "calendar", label: "Kalendarz", icon: <IcoCalendar size={15} /> },
-    { id: "plan", label: "Plan", icon: <IcoBook size={15} /> },
+    { id: "plan", label: "Plan", icon: <IcoTarget size={15} /> },
     { id: "settings", label: "Ustawienia", icon: <IcoSettings size={15} /> },
   ];
   const activeTabMeta = TABS.find((tab) => tab.id === activeTab) || TABS[0];
@@ -2373,6 +2464,57 @@ function QuizAbcdApp() {
       note: longestStreak ? `Rekord: ${longestStreak} dni` : "Zacznij od pierwszej sesji",
     },
   ];
+
+  const toggleDeckExpansion = useCallback((deckName) => {
+    setExpandedDecks((prev) => ({ ...prev, [deckName]: !prev[deckName] }));
+  }, []);
+
+  const selectDeckFromLibrary = useCallback((deckName) => {
+    setSelectedDeck(deckName);
+    setExpandedDecks((prev) => ({ ...prev, [deckName]: true }));
+  }, []);
+
+  const startDeckSession = useCallback(
+    (deckName) => {
+      const pool = getDeckPool(deckName);
+      setSelectedDeck(deckName);
+      startQuiz(pool, quizLength);
+    },
+    [getDeckPool, startQuiz, quizLength]
+  );
+
+  const startDeckCategorySession = useCallback(
+    (deckName, categoryName) => {
+      const pool = getDeckPool(deckName, categoryName);
+      setSelectedDeck(deckName);
+      setExpandedDecks((prev) => ({ ...prev, [deckName]: true }));
+      startQuiz(pool, quizLength);
+    },
+    [getDeckPool, startQuiz, quizLength]
+  );
+
+  const DeckProgressRing = ({ progress = 0, active = false }) => {
+    const safeProgress = Math.max(0, Math.min(100, Number(progress || 0)));
+    const radius = 10;
+    const circumference = 2 * Math.PI * radius;
+    const offset = circumference - (safeProgress / 100) * circumference;
+
+    return (
+      <span className={`deck-ring ${active ? "active" : ""}`} aria-hidden="true">
+        <svg width="28" height="28" viewBox="0 0 28 28">
+          <circle cx="14" cy="14" r={radius} className="deck-ring-track" />
+          <circle
+            cx="14"
+            cy="14"
+            r={radius}
+            className="deck-ring-fill"
+            strokeDasharray={circumference}
+            strokeDashoffset={offset}
+          />
+        </svg>
+      </span>
+    );
+  };
 
   const QuizView = () => {
     const diffColor = { easy: C.success, medium: C.yellow, hard: C.error }[current.difficulty || "medium"];
@@ -3348,6 +3490,117 @@ function QuizAbcdApp() {
   );
   };
 
+  const DecksView = () => {
+    const activeDeck = deckGroups.find((deck) => deck.name === activeDeckName) || deckGroups[0] || null;
+    const activeDeckPool = activeDeck ? getDeckPool(activeDeck.name) : [];
+
+    return (
+      <div className="deck-view">
+        <div className="deck-hero" style={{ ...s.card, padding: 18 }}>
+          <div className="deck-hero-head">
+            <div>
+              <div className="tinyLabel" style={{ marginBottom: 8 }}>
+                Biblioteka deckow
+              </div>
+              <div className="deck-hero-title">{activeDeck?.name || "Brak deckow"}</div>
+              <div className="deck-hero-copy">
+                Wybierz deck jak w Anki: rozwin liste, sprawdz sekcje i uruchom sesje dla calosci albo pojedynczej kategorii.
+              </div>
+            </div>
+
+            <button onClick={() => activeDeck && startDeckSession(activeDeck.name)} style={s.btn("ghost")} disabled={!activeDeck}>
+              <IcoRight size={14} /> Start deck
+            </button>
+          </div>
+
+          <div className="deck-hero-metrics">
+            <div className="deck-hero-metric">
+              <span className="deck-hero-label">Cards</span>
+              <strong>{activeDeck?.count || 0}</strong>
+            </div>
+            <div className="deck-hero-metric">
+              <span className="deck-hero-label">Kategorie</span>
+              <strong>{activeDeck?.categories.length || 0}</strong>
+            </div>
+            <div className="deck-hero-metric">
+              <span className="deck-hero-label">Po tagach</span>
+              <strong>{activeDeckPool.length}</strong>
+            </div>
+          </div>
+
+          {selectedTagFilters.length > 0 && (
+            <div className="field-help">
+              Aktywne tagi zawezaja liczbe kart przy starcie sesji. Lista deckow pokazuje pelna zawartosc, a przycisk start respektuje biezace filtry.
+            </div>
+          )}
+        </div>
+
+        <div className="deck-board" style={{ ...s.card, padding: 14 }}>
+          <div className="deck-section-label">ACTIVE</div>
+
+          <div className="deck-list">
+            {deckGroups.map((deck) => {
+              const isActive = deck.name === activeDeckName;
+              const isExpanded = Boolean(expandedDecks[deck.name]);
+
+              return (
+                <div key={deck.name} className={`deck-item ${isActive ? "active" : ""}`}>
+                  <div className={`deck-row ${isActive ? "active" : ""}`}>
+                    <button
+                      type="button"
+                      className="deck-toggle"
+                      aria-label={isExpanded ? `Zwin ${deck.name}` : `Rozwin ${deck.name}`}
+                      onClick={() => toggleDeckExpansion(deck.name)}
+                    >
+                      {isExpanded ? "-" : "+"}
+                    </button>
+
+                    <button type="button" className="deck-main" onClick={() => selectDeckFromLibrary(deck.name)}>
+                      <div className="deck-copy">
+                        <div className="deck-title">{deck.name}</div>
+                        <div className="deck-subtitle">
+                          {deck.categories.length} kategorii
+                          {isActive ? " - aktywny deck" : ""}
+                        </div>
+                      </div>
+
+                      <div className="deck-right">
+                        <span className="deck-count">{deck.count} kart</span>
+                        <DeckProgressRing progress={getDeckProgress(deck.count)} active={isActive} />
+                      </div>
+                    </button>
+                  </div>
+
+                  {isExpanded && deck.categories.length > 0 && (
+                    <div className="deck-subrows">
+                      {deck.categories.map((category) => (
+                        <button
+                          key={`${deck.name}-${category.name}`}
+                          type="button"
+                          className="deck-subrow"
+                          onClick={() => startDeckCategorySession(deck.name, category.name)}
+                        >
+                          <div className="deck-subrow-spacer" />
+                          <div className="deck-copy">
+                            <div className="deck-title">{category.name}</div>
+                          </div>
+                          <div className="deck-right">
+                            <span className="deck-count">{category.count} kart</span>
+                            <DeckProgressRing progress={getDeckProgress(category.count, deck.count)} />
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const SettingsView = () => (
     <div className="settings-grid">
       <div className="settings-main-card" style={{ ...s.card, padding: 16 }}>
@@ -3362,14 +3615,11 @@ function QuizAbcdApp() {
 
           <div className="settings-section-grid">
             <div>
-              <label style={s.label}>Deck / talia</label>
-              <select value={selectedDeck} onChange={(e) => setSelectedDeck(e.target.value)} style={s.input}>
-                {availableDecks.map((deck) => (
-                  <option key={deck} value={deck}>
-                    {deck}
-                  </option>
-                ))}
-              </select>
+              <label style={s.label}>Aktywny deck</label>
+              <div style={{ ...s.input, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                <span>{selectedDeck === ALL_DECKS_LABEL ? "Wszystkie decki" : selectedDeck}</span>
+                <span className="soft-chip">zakladka Decki</span>
+              </div>
             </div>
 
             <div>
@@ -3395,12 +3645,18 @@ function QuizAbcdApp() {
                 </span>
               </div>
             </div>
+
+            <div>
+              <label style={s.label}>Zakres po tagach</label>
+              <div style={{ ...s.input, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                <span>{filteredQuestionPool.length} pytan</span>
+                <span className="soft-chip">{selectedTagFilters.length ? `${selectedTagFilters.length} tagi` : "bez filtra"}</span>
+              </div>
+            </div>
           </div>
 
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
-            <span className="soft-chip">Deck: {selectedDeck}</span>
-            <span className="soft-chip">W decku: {deckQuestionPool.length}</span>
-            <span className="soft-chip">Po tagach: {filteredQuestionPool.length}</span>
+          <div className="field-help" style={{ marginTop: 12 }}>
+            Wybor i uruchamianie deckow przenioslem do osobnej zakladki `Decki`, a ustawienia zostaja tylko panelem konfiguracji.
           </div>
         </div>
 
@@ -3562,9 +3818,6 @@ function QuizAbcdApp() {
             <div className="field-help">
               Klucz zaczynający się od `eyJ...` to zwykle Supabase anon JWT, nie klucz Cloud API.
             </div>
-            <div className="field-help">
-              To pole zapisuje siÄ™ lokalnie w przeglÄ…darce. JeĹ›li chcesz mieÄ‡ je na staĹ‚e bez rÄ™cznego wpisywania, ustaw `VITE_SUPABASE_URL` i `VITE_SUPABASE_PUBLISHABLE_KEY` w `.env.local`.
-            </div>
           </div>
 
           <div style={{ marginBottom: 12 }}>
@@ -3629,6 +3882,9 @@ function QuizAbcdApp() {
             />
             <div className="field-help">
               Wklej pełny publishable key albo pełny anon JWT. Dotychczasowy błąd wynikał z niepełnego klucza w kodzie.
+            </div>
+            <div className="field-help">
+              Jeśli chcesz mieć te dane stale bez ręcznego wpisywania, ustaw `VITE_SUPABASE_URL` i `VITE_SUPABASE_PUBLISHABLE_KEY` w `.env.local`.
             </div>
           </div>
 
@@ -3755,6 +4011,7 @@ function QuizAbcdApp() {
 
   const renderTab = () => {
     if (activeTab === "quiz") return <QuizView />;
+    if (activeTab === "decks") return <DecksView />;
     if (activeTab === "results") return <ResultsView />;
     if (activeTab === "calendar") return <EnhancedCalendarView />;
     if (activeTab === "plan") return <PlanView />;

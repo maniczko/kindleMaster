@@ -75,9 +75,25 @@ const isJwtLike = (value) => {
   return parts.length === 3 && parts.every(Boolean);
 };
 
+const normalizeSupabaseUrl = (value) => {
+  const raw = String(value || "").trim().replace(/\/+$/, "");
+  if (!raw) return "";
+
+  try {
+    const parsed = new URL(raw);
+    const dashboardMatch = parsed.hostname === "supabase.com" ? parsed.pathname.match(/^\/dashboard\/project\/([^/]+)/i) : null;
+    if (dashboardMatch?.[1]) {
+      return `https://${dashboardMatch[1]}.supabase.co`;
+    }
+    return raw;
+  } catch {
+    return raw;
+  }
+};
+
 const isValidSupabaseUrl = (value) => {
   try {
-    const parsed = new URL(String(value || "").trim());
+    const parsed = new URL(normalizeSupabaseUrl(value));
     return parsed.protocol === "https:" || parsed.protocol === "http:";
   } catch {
     return false;
@@ -2019,7 +2035,7 @@ function QuizAbcdApp() {
   const [cloudApiEnabled, setCloudApiEnabled] = useState(Boolean(initialCloud.cloudApiEnabled));
   const [cloudModel, setCloudModel] = useState(initialCloud.cloudModel || DEFAULT_MODEL);
   const [cloudApiKeyDraft, setCloudApiKeyDraft] = useState("");
-  const [supabaseUrl, setSupabaseUrl] = useState(initialSupabase.supabaseUrl || DEFAULT_SUPABASE_URL);
+  const [supabaseUrl, setSupabaseUrl] = useState(normalizeSupabaseUrl(initialSupabase.supabaseUrl || DEFAULT_SUPABASE_URL));
   const [supabaseAnonKey, setSupabaseAnonKey] = useState(initialSupabase.supabaseAnonKey || DEFAULT_SUPABASE_ANON_KEY);
   const [authSession, setAuthSession] = useState(() => initialAuthSession);
   const [authUser, setAuthUser] = useState(() => initialAuthSession?.user || null);
@@ -2077,7 +2093,7 @@ function QuizAbcdApp() {
   }, [cloudApiEnabled, cloudModel]);
 
   useEffect(() => {
-    saveSupabaseSettings({ supabaseUrl, supabaseAnonKey });
+    saveSupabaseSettings({ supabaseUrl: normalizeSupabaseUrl(supabaseUrl), supabaseAnonKey });
   }, [supabaseUrl, supabaseAnonKey]);
 
   useEffect(() => {
@@ -2102,7 +2118,7 @@ function QuizAbcdApp() {
 
   const supabaseConfig = useMemo(
     () => ({
-      url: supabaseUrl.trim().replace(/\/+$/, ""),
+      url: normalizeSupabaseUrl(supabaseUrl),
       apiKey: supabaseAnonKey.trim(),
     }),
     [supabaseUrl, supabaseAnonKey]

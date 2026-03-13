@@ -46,6 +46,7 @@ export const IcoUser = ({ size = 16 }) => <Icon size={size} d="M20 21a8 8 0 0 0-
 export const IcoKey = ({ size = 16 }) => <Icon size={size} d="M21 2l-2 2m-2 2l-4.5 4.5M15 8l2 2M6 14a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm0 0l3-3" />;
 export const IcoTag = ({ size = 16 }) => <Icon size={size} d="M20 10l-8.5 8.5a2.12 2.12 0 0 1-3 0L3.5 13.5a2.12 2.12 0 0 1 0-3L12 2h8v8zM17 7h.01" />;
 export const IcoLogout = ({ size = 16 }) => <Icon size={size} d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" />;
+export const IcoEdit = ({ size = 16 }) => <Icon size={size} d="M12 20h9M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />;
 
 export const ZenQuizLogo = ({ size = 64 }) => (
   <svg width={size} height={size} viewBox="0 0 72 72" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">

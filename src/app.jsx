@@ -25,6 +25,7 @@ import {
   IcoKey,
   IcoTag,
   IcoLogout,
+  IcoEdit,
   ZenQuizLogo,
 } from "./icons";
 
@@ -34,12 +35,18 @@ const CLOUD_SETTINGS_KEY = "quiz_abcd_cloud_settings_v2";
 const SUPABASE_SETTINGS_KEY = "quiz_abcd_supabase_settings_v1";
 const AUTH_SESSION_KEY = "quiz_abcd_auth_session_v1";
 const UI_SETTINGS_KEY = "quiz_abcd_ui_settings_v1";
+const QUESTION_LIBRARY_KEY = "quiz_abcd_questions_v1";
 const optionKeys = ["A", "B", "C", "D"];
 const diffW = { easy: 1, medium: 1.5, hard: 2 };
 const DEFAULT_MODEL = "claude-sonnet-4-5-20250929";
 const DEFAULT_DECK_NAME = "General knowledge";
 const ALL_DECKS_LABEL = "Wszystkie decki";
 const DEFAULT_DECKS = ["English", "PgMP", "Russian", DEFAULT_DECK_NAME];
+const QUESTION_TYPES = [
+  { id: "single_choice", label: "Jednokrotny wybor" },
+  { id: "multi_select", label: "Wielokrotny wybor" },
+  { id: "flashcard", label: "Fiszka" },
+];
 const DEFAULT_SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || "https://ylqloszldyzpeaikweyl.supabase.co").trim();
 const DEFAULT_SUPABASE_ANON_KEY = (
   import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
@@ -132,6 +139,158 @@ const resolveDeck = (candidate, category, sourceFile = "") => {
   const fileDeck = inferDeckFromFile(sourceFile);
   return normalizeDeck(fileDeck, DEFAULT_DECK_NAME);
 };
+
+const normalizeQuestionType = (value) => {
+  const type = String(value || "").trim().toLowerCase();
+  return QUESTION_TYPES.some((item) => item.id === type) ? type : "single_choice";
+};
+
+const parseAnswerKeys = (value) => {
+  if (Array.isArray(value)) {
+    return [...new Map(value.map((item) => [String(item || "").trim().toUpperCase(), true])).keys()].filter((item) => optionKeys.includes(item));
+  }
+
+  const text = String(value || "").toUpperCase();
+  return [...new Set(text.match(/[A-D]/g) || [])];
+};
+
+const normalizeOptionMap = (source = {}) =>
+  optionKeys.reduce((acc, key) => {
+    acc[key] = String(source?.[key] ?? source?.[key.toLowerCase()] ?? "").trim();
+    return acc;
+  }, {});
+
+const getVisibleOptionKeys = (question) => optionKeys.filter((key) => String(question?.options?.[key] || "").trim());
+
+const inferQuestionType = ({ questionType, options, correctAnswers, answerBack }) => {
+  const explicit = String(questionType || "").trim().toLowerCase();
+  if (QUESTION_TYPES.some((item) => item.id === explicit)) return explicit;
+
+  const visibleOptions = optionKeys.filter((key) => String(options?.[key] || "").trim());
+  const keys = parseAnswerKeys(correctAnswers);
+
+  if (visibleOptions.length < 2 && String(answerBack || "").trim()) return "flashcard";
+  if (keys.length > 1) return "multi_select";
+  return "single_choice";
+};
+
+const normalizeCorrectAnswers = ({ questionType, correctAnswers, correct }) => {
+  const type = normalizeQuestionType(questionType);
+  if (type === "flashcard") return [];
+
+  const parsed = parseAnswerKeys(correctAnswers);
+  const fallback = parseAnswerKeys(correct);
+  const result = parsed.length ? parsed : fallback;
+  return type === "single_choice" ? result.slice(0, 1) : result;
+};
+
+const setsEqual = (left, right) => {
+  const a = [...new Set(left || [])].sort();
+  const b = [...new Set(right || [])].sort();
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+};
+
+const questionTypeLabel = (type) => QUESTION_TYPES.find((item) => item.id === normalizeQuestionType(type))?.label || "Jednokrotny wybor";
+
+const formatAnswerKeys = (keys = [], question) => {
+  const list = parseAnswerKeys(keys);
+  if (!list.length) return "Brak klucza";
+  return list
+    .map((key) => {
+      const text = String(question?.options?.[key] || "").trim();
+      return text ? `${key}. ${text}` : key;
+    })
+    .join(" | ");
+};
+
+const formatQuestionAnswer = (question, answer) => {
+  const type = normalizeQuestionType(question?.questionType);
+  if (type === "flashcard") {
+    if (answer === "correct") return "Umiem";
+    if (answer === "incorrect") return "Do poprawy";
+    return String(question?.answerBack || question?.explanation || "Brak odpowiedzi.").trim();
+  }
+
+  return formatAnswerKeys(Array.isArray(answer) ? answer : [answer], question);
+};
+
+const createQuestionRecord = (input = {}, index = 0) => {
+  const options = normalizeOptionMap(input.options || {
+    A: input.optionA ?? input.option_a,
+    B: input.optionB ?? input.option_b,
+    C: input.optionC ?? input.option_c,
+    D: input.optionD ?? input.option_d,
+  });
+  const questionType = inferQuestionType({
+    questionType: input.questionType ?? input.question_type ?? input.type,
+    options,
+    correctAnswers: input.correctAnswers ?? input.correct_answers ?? input.correct_answer ?? input.correct,
+    answerBack: input.answerBack ?? input.answer_back ?? input.answer,
+  });
+  const correctAnswers = normalizeCorrectAnswers({
+    questionType,
+    correctAnswers: input.correctAnswers ?? input.correct_answers,
+    correct: input.correct ?? input.correct_answer,
+  });
+  const answerBack = String(input.answerBack ?? input.answer_back ?? input.answer ?? input.explanation ?? "").trim();
+  const explanation = String(input.explanation ?? input.answerBack ?? input.answer_back ?? "Brak wyjasnienia.").trim() || "Brak wyjasnienia.";
+
+  return {
+    id: input.id ?? `local-${Date.now()}-${index}`,
+    questionNo: Number(input.questionNo ?? input.question_no ?? index + 1) || index + 1,
+    questionType,
+    question: String(input.question || input.question_text || "").trim(),
+    options,
+    correct: correctAnswers[0] || null,
+    correctAnswers,
+    answerBack,
+    explanation,
+    deck: resolveDeck(input.deck || input.deck_name || input.deck_title || input.collection_name, input.category, input.sourceFile || input.source_file),
+    category: String(input.category || "General").trim() || "General",
+    tags: normalizeTags(input.tags || input.tag_list || input.tag || []),
+    difficulty: normDiff(input.difficulty || "medium"),
+    sourceType: input.sourceType || input.source_type || "database",
+    sourceFile: input.sourceFile || input.source_file || null,
+    isActive: input.isActive ?? input.is_active ?? true,
+  };
+};
+
+const mergeQuestionLibraries = (primary = [], override = []) => {
+  const merged = new Map();
+  primary.forEach((question, index) => {
+    const normalized = createQuestionRecord(question, index);
+    merged.set(String(normalized.id), normalized);
+  });
+  override.forEach((question, index) => {
+    const normalized = createQuestionRecord(question, index);
+    merged.set(String(normalized.id), normalized);
+  });
+  return [...merged.values()].sort((a, b) => (a.questionNo || 0) - (b.questionNo || 0));
+};
+
+const questionToSupabaseRow = (question) => ({
+  question_no: Number(question.questionNo || 1),
+  question_text: String(question.question || "").trim(),
+  question_type: normalizeQuestionType(question.questionType),
+  option_a: String(question.options?.A || "").trim() || null,
+  option_b: String(question.options?.B || "").trim() || null,
+  option_c: String(question.options?.C || "").trim() || null,
+  option_d: String(question.options?.D || "").trim() || null,
+  correct_answer: question.correct || null,
+  correct_answers: normalizeCorrectAnswers({
+    questionType: question.questionType,
+    correctAnswers: question.correctAnswers,
+    correct: question.correct,
+  }),
+  answer_back: String(question.answerBack || "").trim() || null,
+  explanation: String(question.explanation || "").trim() || null,
+  deck: normalizeDeck(question.deck),
+  category: String(question.category || "General").trim() || "General",
+  tags: normalizeTags(question.tags || []),
+  difficulty: normDiff(question.difficulty),
+  source_type: question.sourceType || "editor",
+  is_active: question.isActive !== false,
+});
 
 const filterQuestionsByTags = (questions, activeTags, userTagMap = {}) => {
   const filters = normalizeTags(activeTags).map((tag) => tag.toLowerCase());
@@ -396,6 +555,20 @@ const saveLocal = (list) => {
   } catch {}
 };
 
+const loadQuestionLibrary = () => {
+  try {
+    return (JSON.parse(localStorage.getItem(QUESTION_LIBRARY_KEY) || "[]") || []).map((item, index) => createQuestionRecord(item, index));
+  } catch {
+    return [];
+  }
+};
+
+const saveQuestionLibrary = (list) => {
+  try {
+    localStorage.setItem(QUESTION_LIBRARY_KEY, JSON.stringify((list || []).map((item, index) => createQuestionRecord(item, index))));
+  } catch {}
+};
+
 const loadCloudSettings = () => {
   try {
     return JSON.parse(localStorage.getItem(CLOUD_SETTINGS_KEY) || "{}");
@@ -463,19 +636,28 @@ const dedupe = (items) => {
   return [...m.values()].sort((a, b) => b.finishedAt - a.finishedAt);
 };
 
-const rowToQ = (row, i) => ({
-  id: row.id ?? i + 1,
-  questionNo: row.question_no ?? i + 1,
-  question: row.question_text,
-  options: { A: row.option_a, B: row.option_b, C: row.option_c, D: row.option_d },
-  correct: row.correct_answer || null,
-  explanation: row.explanation || "Brak wyjaśnienia.",
-  deck: resolveDeck(row.deck || row.deck_name || row.deck_title || row.collection_name, row.category, row.source_file),
-  category: row.category || "General",
-  tags: normalizeTags(row.tags || row.tag_list || row.tag || []),
-  difficulty: normDiff(row.difficulty || "medium"),
-  sourceType: row.source_type || "database",
-});
+const rowToQ = (row, i) =>
+  createQuestionRecord(
+    {
+      id: row.id ?? i + 1,
+      questionNo: row.question_no ?? i + 1,
+      questionType: row.question_type || row.type,
+      question: row.question_text,
+      options: { A: row.option_a, B: row.option_b, C: row.option_c, D: row.option_d },
+      correct: row.correct_answer || null,
+      correctAnswers: row.correct_answers || [],
+      answerBack: row.answer_back || "",
+      explanation: row.explanation || "Brak wyjasnienia.",
+      deck: resolveDeck(row.deck || row.deck_name || row.deck_title || row.collection_name, row.category, row.source_file),
+      category: row.category || "General",
+      tags: normalizeTags(row.tags || row.tag_list || row.tag || []),
+      difficulty: normDiff(row.difficulty || "medium"),
+      sourceType: row.source_type || "database",
+      sourceFile: row.source_file || null,
+      isActive: row.is_active ?? true,
+    },
+    i
+  );
 
 function parseRows(rows, sourceFile = null) {
   return (rows || [])
@@ -541,6 +723,63 @@ function parseTxt(text, sourceFile = "import.txt") {
     })
     .filter(Boolean);
 }
+
+const parseImportedRows = (rows, sourceFile = null) => {
+  return (rows || [])
+    .map((row, index) => {
+      const questionText = row.question ?? row.Question ?? row.pytanie ?? row.question_text;
+      if (!questionText) return null;
+
+      const options = normalizeOptionMap({
+        A: row.A ?? row.a ?? row.option_a,
+        B: row.B ?? row.b ?? row.option_b,
+        C: row.C ?? row.c ?? row.option_c,
+        D: row.D ?? row.d ?? row.option_d,
+      });
+      const answerBack = row.answer_back ?? row.answerBack ?? row.answer ?? row.back ?? "";
+      const questionType = inferQuestionType({
+        questionType: row.question_type ?? row.QuestionType ?? row.type ?? row.Type,
+        options,
+        correctAnswers: row.correct_answers ?? row.correct ?? row.Correct ?? row.correct_answer,
+        answerBack,
+      });
+
+      if (questionType !== "flashcard" && optionKeys.filter((key) => options[key]).length < 2) return null;
+
+      return createQuestionRecord(
+        {
+          id: `import-${index + 1}`,
+          questionNo: Number(row.questionNo ?? row.question_no ?? index + 1),
+          questionType,
+          question: String(questionText).trim(),
+          options,
+          correct: row.correct ?? row.Correct ?? row.correct_answer ?? "",
+          correctAnswers: row.correct_answers ?? row.correct ?? row.Correct ?? row.correct_answer ?? "",
+          answerBack,
+          explanation: String(row.explanation ?? row.Explanation ?? answerBack ?? "Brak wyjasnienia.").trim(),
+          deck: resolveDeck(row.deck ?? row.Deck ?? row.deck_name ?? row.deckName ?? row.collection ?? row.Collection, row.category, sourceFile),
+          category: String(row.category ?? "General").trim(),
+          tags: normalizeTags(row.tags ?? row.Tags ?? row.tag ?? row.Tag ?? row.labels ?? row.Labels ?? []),
+          difficulty: normDiff(row.difficulty ?? "medium"),
+          sourceType: "spreadsheet",
+          sourceFile,
+        },
+        index
+      );
+    })
+    .filter(Boolean);
+};
+
+const parseImportedTxt = (text, sourceFile = "import.txt") =>
+  parseTxt(text, sourceFile).map((item, index) =>
+    createQuestionRecord(
+      {
+        ...item,
+        questionType: item.questionType || "single_choice",
+      },
+      index
+    )
+  );
 
 function buildCalDays(month) {
   const start = som(month);
@@ -739,8 +978,9 @@ async function fetchCloudTrainingSummary({ supabaseConfig, model, cloudApiKey, a
     .slice(0, 8)
     .map((q) => ({
       question: q.question,
-      correct: q.correct,
-      selected: answers[q.id]?.selected,
+      questionType: normalizeQuestionType(q.questionType),
+      correct: formatQuestionAnswer(q, q.correctAnswers || q.correct),
+      selected: formatQuestionAnswer(q, answers[q.id]?.selected),
       category: q.category,
       difficulty: q.difficulty,
     }));
@@ -918,7 +1158,39 @@ const SAMPLES = [
     difficulty: "easy",
     sourceType: "sample",
   },
-];
+  {
+    id: 6,
+    questionNo: 6,
+    questionType: "multi_select",
+    question: "Which practices usually improve recall in a spaced-repetition workflow?",
+    options: {
+      A: "Active recall",
+      B: "Spacing reviews over time",
+      C: "Reading notes once without testing",
+      D: "Short feedback after mistakes",
+    },
+    correctAnswers: ["A", "B", "D"],
+    explanation: "Spaced repetition works best with active recall, spacing and fast feedback loops.",
+    deck: "General knowledge",
+    category: "Learning",
+    tags: ["learning::memory", "multi-select", "study-system"],
+    difficulty: "medium",
+    sourceType: "sample",
+  },
+  {
+    id: 7,
+    questionNo: 7,
+    questionType: "flashcard",
+    question: "PgMP: What is the main purpose of a Program Charter?",
+    answerBack: "To formally authorize the program and define high-level outcomes, scope and governance.",
+    explanation: "Use this like an Anki basic card: recall the answer first, then self-grade.",
+    deck: "PgMP",
+    category: "Foundations",
+    tags: ["pgmp::charter", "flashcard", "anki-style"],
+    difficulty: "medium",
+    sourceType: "sample",
+  },
+].map((question, index) => createQuestionRecord(question, index));
 
 
 const GLOBAL_CSS = `
@@ -1272,10 +1544,13 @@ function QuizAbcdApp() {
   const initialSupabase = loadSupabaseSettings();
   const initialAuthSession = loadAuthSession();
   const initialUi = loadUiSettings();
+  const initialQuestionLibrary = loadQuestionLibrary();
 
-  const [questionPool, setQuestionPool] = useState(SAMPLES);
+  const [questionPool, setQuestionPool] = useState(() => (initialQuestionLibrary.length ? mergeQuestionLibraries(SAMPLES, initialQuestionLibrary) : SAMPLES));
   const [quizLength, setQuizLength] = useState(10);
-  const [questions, setQuestions] = useState(() => SAMPLES.slice(0, 10));
+  const [questions, setQuestions] = useState(() =>
+    (initialQuestionLibrary.length ? mergeQuestionLibraries(SAMPLES, initialQuestionLibrary) : SAMPLES).slice(0, 10)
+  );
   const [idx, setIdx] = useState(0);
   const [selected, setSelected] = useState(null);
   const [answers, setAnswers] = useState({});
@@ -1324,6 +1599,13 @@ function QuizAbcdApp() {
   const [userTagMap, setUserTagMap] = useState({});
   const [selectedTagFilters, setSelectedTagFilters] = useState([]);
   const [questionTagDraft, setQuestionTagDraft] = useState("");
+  const [editorSearch, setEditorSearch] = useState("");
+  const [editorDeckFilter, setEditorDeckFilter] = useState("all");
+  const [editorSelectedId, setEditorSelectedId] = useState(null);
+  const [editorStatus, setEditorStatus] = useState({
+    status: "idle",
+    message: "Dodawaj i edytuj pytania jak w Anki. Zapis lokalny jest natychmiastowy, a przy poprawnej konfiguracji moze tez trafic do Supabase.",
+  });
   const [tagSaveState, setTagSaveState] = useState({
     status: "idle",
     message: "Tagi działają jak w Anki: możesz przypisać wiele etykiet i budować sesje po tagach.",
@@ -1346,6 +1628,10 @@ function QuizAbcdApp() {
   useEffect(() => {
     saveUiSettings({ selectedDeck });
   }, [selectedDeck]);
+
+  useEffect(() => {
+    saveQuestionLibrary(questionPool);
+  }, [questionPool]);
 
   useEffect(() => {
     setSupabaseCheck({ status: "idle", message: "Nie sprawdzono połączenia." });
@@ -1396,14 +1682,125 @@ function QuizAbcdApp() {
   const total = questions.length;
   const current = questions[idx] || SAMPLES[0];
   const currentDeck = normalizeDeck(current?.deck, selectedDeck === ALL_DECKS_LABEL ? DEFAULT_DECK_NAME : selectedDeck);
+  const currentQuestionType = normalizeQuestionType(current?.questionType);
+  const currentVisibleOptions = useMemo(() => getVisibleOptionKeys(current), [current]);
+  const currentAnswer = answers[current?.id] || null;
   const currentQuestionTags = useMemo(() => getQuestionTags(current, userTagMap), [current, userTagMap]);
   const currentUserTags = useMemo(() => normalizeTags(userTagMap[String(current?.id)] || []), [current, userTagMap]);
   const answeredCount = Object.keys(answers).length;
   const score = useMemo(() => Object.values(answers).filter((a) => a.isCorrect).length, [answers]);
 
+  const buildSelectionState = useCallback((question, answer = null) => {
+    const type = normalizeQuestionType(question?.questionType);
+    if (answer) {
+      if (type === "multi_select") return Array.isArray(answer.selected) ? answer.selected : [];
+      return answer.selected ?? null;
+    }
+    return type === "multi_select" ? [] : null;
+  }, []);
+
+  const createEditorDraft = useCallback(
+    (question = null) => {
+      if (question) {
+        const normalized = createQuestionRecord(question, 0);
+        return {
+          ...normalized,
+          tagsText: normalizeTags(normalized.tags).join(" "),
+        };
+      }
+
+      const nextQuestionNo = Math.max(...questionPool.map((item) => Number(item.questionNo || 0)), 0) + 1;
+      return {
+        ...createQuestionRecord(
+          {
+            id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            questionNo: nextQuestionNo,
+            questionType: "single_choice",
+            question: "",
+            options: { A: "", B: "", C: "", D: "" },
+            correct: "A",
+            correctAnswers: ["A"],
+            answerBack: "",
+            explanation: "",
+            deck: selectedDeck !== ALL_DECKS_LABEL ? selectedDeck : DEFAULT_DECK_NAME,
+            category: "General",
+            tags: [],
+            difficulty: "medium",
+            sourceType: "editor-local",
+          },
+          nextQuestionNo
+        ),
+        tagsText: "",
+      };
+    },
+    [questionPool, selectedDeck]
+  );
+
+  const editorDecks = useMemo(() => availableDecks.filter((deck) => deck !== ALL_DECKS_LABEL), [availableDecks]);
+  const editorFilteredQuestions = useMemo(() => {
+    const q = String(editorSearch || "").trim().toLowerCase();
+    return questionPool.filter((question) => {
+      const deckMatch = editorDeckFilter === "all" || normalizeDeck(question.deck) === editorDeckFilter;
+      if (!deckMatch) return false;
+      if (!q) return true;
+      const haystack = [
+        question.question,
+        question.category,
+        question.deck,
+        ...(question.tags || []),
+      ]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [questionPool, editorSearch, editorDeckFilter]);
+
+  const selectedEditorQuestion = useMemo(
+    () => questionPool.find((question) => String(question.id) === String(editorSelectedId)) || null,
+    [questionPool, editorSelectedId]
+  );
+  const [editorDraft, setEditorDraft] = useState(null);
+  const editorPreview = useMemo(
+    () =>
+      editorDraft
+        ? createQuestionRecord(
+            {
+              ...editorDraft,
+              tags: editorDraft.tagsText,
+            },
+            0
+          )
+        : null,
+    [editorDraft]
+  );
+
   useEffect(() => {
     setQuestionTagDraft(currentUserTags.join(" "));
   }, [currentUserTags]);
+
+  useEffect(() => {
+    if (!questions.length) return;
+    if (idx >= questions.length) {
+      setIdx(Math.max(questions.length - 1, 0));
+      setSelected(buildSelectionState(questions[Math.max(questions.length - 1, 0)], answers[questions[Math.max(questions.length - 1, 0)]?.id] || null));
+    }
+  }, [answers, buildSelectionState, idx, questions]);
+
+  useEffect(() => {
+    if (!questionPool.length) return;
+    if ((!editorSelectedId || !questionPool.some((question) => String(question.id) === String(editorSelectedId))) && !editorDraft) {
+      setEditorSelectedId(String(questionPool[0].id));
+    }
+  }, [questionPool, editorSelectedId, editorDraft]);
+
+  useEffect(() => {
+    if (selectedEditorQuestion) {
+      setEditorDraft(createEditorDraft(selectedEditorQuestion));
+      return;
+    }
+
+    setEditorDraft((prev) => prev || createEditorDraft());
+  }, [selectedEditorQuestion, createEditorDraft]);
 
   const upsertUserProfile = useCallback(
     async (user, displayName) => {
@@ -1530,10 +1927,11 @@ function QuizAbcdApp() {
       const len = customLength !== undefined ? customLength : quizLength;
       const shuffled = [...pool].sort(() => 0.5 - Math.random());
       const selectedQuestions = len === "all" ? shuffled : shuffled.slice(0, len);
+      const nextQuestions = selectedQuestions.length ? selectedQuestions : pool;
 
-      setQuestions(selectedQuestions.length ? selectedQuestions : pool);
+      setQuestions(nextQuestions);
       setIdx(0);
-      setSelected(null);
+      setSelected(buildSelectionState(nextQuestions[0], null));
       setAnswers({});
       setShowResult(false);
       setStartedAt(Date.now());
@@ -1550,7 +1948,7 @@ function QuizAbcdApp() {
           : prev
       );
     },
-    [filteredQuestionPool, quizLength]
+    [filteredQuestionPool, quizLength, buildSelectionState]
   );
 
   const getDeckPool = useCallback(
@@ -1572,8 +1970,9 @@ function QuizAbcdApp() {
       const rows = await sbSelect(supabaseConfig, "quiz_questions", "is_active=eq.true&order=question_no.asc&limit=5000");
       if (!rows.length) return;
       const parsed = rows.map(rowToQ);
-      setQuestionPool(parsed);
-      const shuffled = [...parsed].sort(() => 0.5 - Math.random());
+      const merged = mergeQuestionLibraries(parsed, loadQuestionLibrary());
+      setQuestionPool(merged);
+      const shuffled = [...merged].sort(() => 0.5 - Math.random());
       setQuestions(shuffled.slice(0, quizLength === "all" ? shuffled.length : quizLength));
     } catch {}
   }, [quizLength, sbEnabled, supabaseConfig]);
@@ -1836,31 +2235,77 @@ function QuizAbcdApp() {
     }
   }, [sbEnabled, authUser?.id, authAccessToken, questionTagDraft, supabaseConfig, current.id]);
 
-  const handleAnswer = useCallback(
-    (key) => {
-      if (selected || showResult) return;
-      setSelected(key);
+  const commitAnswer = useCallback(
+    (selectedValue, isCorrect) => {
+      setSelected(selectedValue);
       setAnswers((prev) => ({
         ...prev,
         [current.id]: {
           questionId: current.id,
-          selected: key,
+          selected: selectedValue,
           correct: current.correct,
-          isCorrect: current.correct ? key === current.correct : false,
+          correctAnswers: current.correctAnswers || [],
+          isCorrect,
           responseTimeMs: Date.now() - qStartedAt,
           category: current.category || "General",
           difficulty: current.difficulty || "medium",
+          questionType: currentQuestionType,
         },
       }));
     },
-    [current, qStartedAt, selected, showResult]
+    [current, currentQuestionType, qStartedAt]
+  );
+
+  const handleAnswer = useCallback(
+    (key) => {
+      if (currentQuestionType !== "single_choice" || currentAnswer || showResult) return;
+      const answerKey = String(key || "").toUpperCase();
+      if (!currentVisibleOptions.includes(answerKey)) return;
+      commitAnswer(answerKey, current.correct ? answerKey === current.correct : false);
+    },
+    [commitAnswer, current.correct, currentAnswer, currentQuestionType, currentVisibleOptions, showResult]
+  );
+
+  const toggleMultiSelectChoice = useCallback(
+    (key) => {
+      if (currentQuestionType !== "multi_select" || currentAnswer || showResult) return;
+      const answerKey = String(key || "").toUpperCase();
+      if (!currentVisibleOptions.includes(answerKey)) return;
+      setSelected((prev) => {
+        const currentSelection = Array.isArray(prev) ? prev : [];
+        return currentSelection.includes(answerKey)
+          ? currentSelection.filter((item) => item !== answerKey)
+          : [...currentSelection, answerKey];
+      });
+    },
+    [currentAnswer, currentQuestionType, currentVisibleOptions, showResult]
+  );
+
+  const submitMultiSelectAnswer = useCallback(() => {
+    if (currentQuestionType !== "multi_select" || currentAnswer || showResult) return;
+    const chosen = parseAnswerKeys(Array.isArray(selected) ? selected : []);
+    if (!chosen.length) return;
+    commitAnswer(chosen, setsEqual(chosen, current.correctAnswers || []));
+  }, [commitAnswer, current.correctAnswers, currentAnswer, currentQuestionType, selected, showResult]);
+
+  const revealFlashcard = useCallback(() => {
+    if (currentQuestionType !== "flashcard" || currentAnswer || showResult) return;
+    setSelected("__revealed__");
+  }, [currentAnswer, currentQuestionType, showResult]);
+
+  const gradeFlashcard = useCallback(
+    (isCorrect) => {
+      if (currentQuestionType !== "flashcard" || currentAnswer || showResult) return;
+      commitAnswer(isCorrect ? "correct" : "incorrect", Boolean(isCorrect));
+    },
+    [commitAnswer, currentAnswer, currentQuestionType, showResult]
   );
 
   const next = useCallback(() => {
     if (idx < total - 1) {
       const ni = idx + 1;
       setIdx(ni);
-      setSelected(answers[questions[ni].id]?.selected ?? null);
+      setSelected(buildSelectionState(questions[ni], answers[questions[ni].id] || null));
       setQStartedAt(Date.now());
       setChatStatus("idle");
       setChatRes("");
@@ -1869,17 +2314,17 @@ function QuizAbcdApp() {
       setShowResult(true);
       setActiveTab("results");
     }
-  }, [answers, idx, questions, total]);
+  }, [answers, idx, questions, total, buildSelectionState]);
 
   const prev = useCallback(() => {
     if (idx > 0) {
       const ni = idx - 1;
       setIdx(ni);
-      setSelected(answers[questions[ni].id]?.selected ?? null);
+      setSelected(buildSelectionState(questions[ni], answers[questions[ni].id] || null));
       setChatStatus("idle");
       setChatRes("");
     }
-  }, [answers, idx, questions]);
+  }, [answers, idx, questions, buildSelectionState]);
 
   const stats = useMemo(() => {
     const list = questions.map((q) => ({ q, a: answers[q.id] })).filter((x) => x.a);
@@ -2033,6 +2478,20 @@ function QuizAbcdApp() {
     }, 700);
   }, [chatStatus, current]);
 
+  const askAIEnhanced = useCallback(async () => {
+    if (chatStatus === "loading") return;
+    setChatStatus("loading");
+
+    setTimeout(() => {
+      setChatRes(
+        currentQuestionType === "flashcard"
+          ? `Kategoria: "${current.category}". Najpierw odpowiedz z pamieci, a potem porownaj swoja odpowiedz z wzorcem: ${current.answerBack || current.explanation}.`
+          : `Kategoria: "${current.category}". Najpierw porownaj pojecia kluczowe w odpowiedziach, potem odrzuc zbyt ogolne lub zbyt waskie opcje. Poprawny wzorzec to ${formatQuestionAnswer(current, current.correctAnswers || current.correct)}.`
+      );
+      setChatStatus("loaded");
+    }, 700);
+  }, [chatStatus, current, currentQuestionType]);
+
   const handleImport = useCallback(
     async (e) => {
       const file = e.target.files?.[0];
@@ -2041,10 +2500,10 @@ function QuizAbcdApp() {
       try {
         let parsed = [];
         if (file.name.toLowerCase().endsWith(".txt")) {
-          parsed = parseTxt(await file.text(), file.name);
+          parsed = parseImportedTxt(await file.text(), file.name);
         } else {
           const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
-          parsed = parseRows(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "" }), file.name);
+          parsed = parseImportedRows(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "" }), file.name);
         }
 
         if (!parsed.length) {
@@ -2070,13 +2529,33 @@ function QuizAbcdApp() {
 
       const k = e.key.toUpperCase();
 
-      if (!showResult && !selected && optionKeys.includes(k)) {
+      if (!showResult && !currentAnswer && optionKeys.includes(k)) {
+        if (currentQuestionType === "single_choice") {
+          e.preventDefault();
+          handleAnswer(k);
+          return;
+        }
+
+        if (currentQuestionType === "multi_select") {
+          e.preventDefault();
+          toggleMultiSelectChoice(k);
+          return;
+        }
+      }
+
+      if (e.key === "Enter" && currentQuestionType === "flashcard" && !currentAnswer && selected !== "__revealed__") {
         e.preventDefault();
-        handleAnswer(k);
+        revealFlashcard();
         return;
       }
 
-      if (e.key === "Enter" && selected) {
+      if (e.key === "Enter" && currentQuestionType === "multi_select" && !currentAnswer && Array.isArray(selected) && selected.length) {
+        e.preventDefault();
+        submitMultiSelectAnswer();
+        return;
+      }
+
+      if (e.key === "Enter" && currentAnswer) {
         e.preventDefault();
         next();
         return;
@@ -2088,7 +2567,7 @@ function QuizAbcdApp() {
         return;
       }
 
-      if ((e.key === "ArrowRight" || e.key === "ArrowDown") && selected) {
+      if ((e.key === "ArrowRight" || e.key === "ArrowDown") && currentAnswer) {
         e.preventDefault();
         next();
         return;
@@ -2102,7 +2581,226 @@ function QuizAbcdApp() {
 
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
-  }, [handleAnswer, next, prev, startQuiz, selected, showResult, questionPool, quizLength]);
+  }, [
+    currentAnswer,
+    currentQuestionType,
+    handleAnswer,
+    next,
+    prev,
+    revealFlashcard,
+    selected,
+    showResult,
+    startQuiz,
+    submitMultiSelectAnswer,
+    toggleMultiSelectChoice,
+    quizLength,
+  ]);
+
+  const upsertQuestionInState = useCallback((nextQuestion, previousId = null) => {
+    const previousKey = String(previousId ?? nextQuestion.id);
+    setQuestionPool((prev) => {
+      const filtered = prev.filter((question) => String(question.id) !== previousKey);
+      return mergeQuestionLibraries(filtered, [nextQuestion]);
+    });
+    setQuestions((prev) => prev.map((question) => (String(question.id) === previousKey ? nextQuestion : question)));
+  }, []);
+
+  const removeQuestionFromState = useCallback(
+    (questionId) => {
+      const questionKey = String(questionId);
+      setQuestionPool((prev) => prev.filter((question) => String(question.id) !== questionKey));
+      setQuestions((prev) => prev.filter((question) => String(question.id) !== questionKey));
+      setAnswers((prev) => {
+        const next = { ...prev };
+        delete next[questionKey];
+        return next;
+      });
+      if (String(current?.id) === questionKey) {
+        setIdx(0);
+        setSelected(null);
+      }
+    },
+    [current?.id]
+  );
+
+  const updateEditorField = useCallback((field, value) => {
+    setEditorDraft((prev) => (prev ? { ...prev, [field]: value } : prev));
+  }, []);
+
+  const updateEditorOption = useCallback((key, value) => {
+    setEditorDraft((prev) => (prev ? { ...prev, options: { ...prev.options, [key]: value } } : prev));
+  }, []);
+
+  const updateEditorCorrectAnswer = useCallback((key) => {
+    setEditorDraft((prev) => {
+      if (!prev) return prev;
+      const type = normalizeQuestionType(prev.questionType);
+      const currentKeys = parseAnswerKeys(prev.correctAnswers || prev.correct);
+
+      if (type === "single_choice") {
+        return { ...prev, correct: key, correctAnswers: [key] };
+      }
+
+      if (type === "multi_select") {
+        const nextKeys = currentKeys.includes(key) ? currentKeys.filter((item) => item !== key) : [...currentKeys, key];
+        return { ...prev, correct: nextKeys[0] || null, correctAnswers: nextKeys };
+      }
+
+      return prev;
+    });
+  }, []);
+
+  const applyEditorQuestionType = useCallback((nextType) => {
+    setEditorDraft((prev) => {
+      if (!prev) return prev;
+      const type = normalizeQuestionType(nextType);
+      const visibleOptions = optionKeys.filter((key) => String(prev.options?.[key] || "").trim());
+      let nextCorrectAnswers = parseAnswerKeys(prev.correctAnswers || prev.correct).filter((key) => visibleOptions.includes(key));
+
+      if (type === "single_choice") {
+        nextCorrectAnswers = [nextCorrectAnswers[0] || visibleOptions[0] || "A"];
+      } else if (type === "multi_select") {
+        if (nextCorrectAnswers.length < 2) nextCorrectAnswers = visibleOptions.slice(0, Math.min(2, visibleOptions.length));
+      } else {
+        nextCorrectAnswers = [];
+      }
+
+      return {
+        ...prev,
+        questionType: type,
+        correct: nextCorrectAnswers[0] || null,
+        correctAnswers: nextCorrectAnswers,
+      };
+    });
+  }, []);
+
+  const createNewQuestion = useCallback(() => {
+    setEditorSelectedId(null);
+    setEditorDraft(createEditorDraft());
+    setEditorStatus({
+      status: "idle",
+      message: "Nowe pytanie gotowe. Ustaw typ, deck i tresc, a potem zapisz.",
+    });
+    setActiveTab("editor");
+  }, [createEditorDraft]);
+
+  const saveEditorQuestion = useCallback(async () => {
+    if (!editorDraft) return;
+
+    const normalized = createQuestionRecord(
+      {
+        ...editorDraft,
+        tags: editorDraft.tagsText,
+        sourceType: editorDraft.sourceType || "editor-local",
+      },
+      0
+    );
+    const visibleOptions = getVisibleOptionKeys(normalized);
+
+    if (!normalized.question) {
+      setEditorStatus({ status: "error", message: "Pytanie nie moze byc puste." });
+      return;
+    }
+
+    if (normalized.questionType === "flashcard") {
+      if (!String(normalized.answerBack || normalized.explanation || "").trim()) {
+        setEditorStatus({ status: "error", message: "Fiszka wymaga pola odpowiedzi po drugiej stronie." });
+        return;
+      }
+    } else {
+      if (visibleOptions.length < 2) {
+        setEditorStatus({ status: "error", message: "Pytanie wyboru potrzebuje przynajmniej 2 opcji." });
+        return;
+      }
+
+      if (normalized.questionType === "single_choice" && normalized.correctAnswers.length !== 1) {
+        setEditorStatus({ status: "error", message: "Jednokrotny wybor musi miec dokladnie 1 poprawna odpowiedz." });
+        return;
+      }
+
+      if (normalized.questionType === "multi_select" && normalized.correctAnswers.length < 2) {
+        setEditorStatus({ status: "error", message: "Wielokrotny wybor powinien miec co najmniej 2 poprawne odpowiedzi." });
+        return;
+      }
+
+      if (normalized.correctAnswers.some((key) => !visibleOptions.includes(key))) {
+        setEditorStatus({ status: "error", message: "Poprawne odpowiedzi musza wskazywac tylko niepuste opcje." });
+        return;
+      }
+    }
+
+    const previousId = editorSelectedId || normalized.id;
+    let savedQuestion = normalized;
+    let statusMessage = "Pytanie zapisane lokalnie.";
+
+    upsertQuestionInState(savedQuestion, previousId);
+    setEditorSelectedId(String(savedQuestion.id));
+    setEditorDraft(createEditorDraft(savedQuestion));
+
+    if (sbEnabled) {
+      setEditorStatus({ status: "loading", message: "Zapisuje pytanie do biblioteki i probuje zsynchronizowac z Supabase..." });
+
+      try {
+        const isLocalId = /^(local|import|txt)-/i.test(String(savedQuestion.id));
+        const payload = questionToSupabaseRow({
+          ...savedQuestion,
+          sourceType: isLocalId ? "editor" : savedQuestion.sourceType || "editor",
+        });
+        const result = isLocalId
+          ? await sbInsert(supabaseConfig, "quiz_questions", payload, authAccessToken)
+          : await sbPatch(supabaseConfig, "quiz_questions", `id=eq.${encodeURIComponent(savedQuestion.id)}`, payload, authAccessToken);
+        const rawPersisted = Array.isArray(result) ? result[0] : result;
+
+        if (rawPersisted) {
+          const persisted = rowToQ(rawPersisted, 0);
+          savedQuestion = persisted;
+          upsertQuestionInState(savedQuestion, previousId);
+          setEditorSelectedId(String(savedQuestion.id));
+          setEditorDraft(createEditorDraft(savedQuestion));
+          statusMessage = "Pytanie zapisane lokalnie i w Supabase.";
+        }
+      } catch (error) {
+        statusMessage = `Pytanie zapisane lokalnie, ale Supabase odrzucilo zapis: ${getErrorText(error)}`;
+      }
+    }
+
+    setEditorStatus({ status: "success", message: statusMessage });
+  }, [authAccessToken, createEditorDraft, editorDraft, editorSelectedId, sbEnabled, supabaseConfig, upsertQuestionInState]);
+
+  const deleteEditorQuestion = useCallback(async () => {
+    const question = selectedEditorQuestion;
+    if (!question) return;
+
+    const questionId = String(question.id);
+    removeQuestionFromState(questionId);
+    setEditorStatus({ status: "success", message: "Pytanie usuniete z lokalnej biblioteki." });
+
+    if (sbEnabled && !/^(local|import|txt)-/i.test(questionId)) {
+      try {
+        await sbPatch(
+          supabaseConfig,
+          "quiz_questions",
+          `id=eq.${encodeURIComponent(questionId)}`,
+          { is_active: false },
+          authAccessToken
+        );
+        setEditorStatus({ status: "success", message: "Pytanie ukryte lokalnie i w Supabase." });
+      } catch (error) {
+        setEditorStatus({
+          status: "error",
+          message: `Pytanie usuniete lokalnie, ale nie udalo sie oznaczyc go jako nieaktywne w Supabase: ${getErrorText(error)}`,
+        });
+      }
+    }
+
+    const nextQuestion = questionPool.find((item) => String(item.id) !== questionId);
+    if (nextQuestion) {
+      setEditorSelectedId(String(nextQuestion.id));
+    } else {
+      setEditorSelectedId(null);
+      setEditorDraft(createEditorDraft());
+    }
+  }, [authAccessToken, createEditorDraft, questionPool, removeQuestionFromState, sbEnabled, selectedEditorQuestion, supabaseConfig]);
 
   const uniq = useMemo(() => dedupe(history), [history]);
 
@@ -2433,6 +3131,7 @@ function QuizAbcdApp() {
   const TABS = [
     { id: "quiz", label: "Quiz", icon: <IcoBrain size={15} /> },
     { id: "decks", label: "Decki", icon: <IcoBook size={15} /> },
+    { id: "editor", label: "Edytor", icon: <IcoEdit size={15} /> },
     { id: "results", label: "Wyniki", icon: <IcoTrophy size={15} /> },
     { id: "calendar", label: "Kalendarz", icon: <IcoCalendar size={15} /> },
     { id: "plan", label: "Plan", icon: <IcoTarget size={15} /> },
@@ -2518,6 +3217,15 @@ function QuizAbcdApp() {
 
   const QuizView = () => {
     const diffColor = { easy: C.success, medium: C.yellow, hard: C.error }[current.difficulty || "medium"];
+    const multiSelectDraft = Array.isArray(currentAnswer?.selected) ? currentAnswer.selected : Array.isArray(selected) ? selected : [];
+    const flashcardRevealed = currentQuestionType === "flashcard" && (selected === "__revealed__" || Boolean(currentAnswer));
+    const canGoNext = Boolean(currentAnswer);
+    const answerHint =
+      currentQuestionType === "multi_select"
+        ? "Zaznacz wszystkie poprawne odpowiedzi, a potem kliknij Sprawdz."
+        : currentQuestionType === "flashcard"
+        ? "Sprobuj odpowiedziec z pamieci, odkryj odpowiedz i ocen siebie."
+        : "Wybierz jedna odpowiedz. Po wyborze od razu zobaczysz informacje zwrotna i mozesz przejsc dalej.";
 
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -2561,6 +3269,18 @@ function QuizAbcdApp() {
               }}
             >
               {current.category}
+            </span>
+            <span
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                padding: "5px 10px",
+                borderRadius: 999,
+                background: C.accentSoft,
+                color: C.accent,
+              }}
+            >
+              {questionTypeLabel(currentQuestionType)}
             </span>
             {currentQuestionTags.map((tag) => {
               const isActive = selectedTagFilters.some((item) => item.toLowerCase() === tag.toLowerCase());
@@ -2631,9 +3351,151 @@ function QuizAbcdApp() {
           )}
 
         </div>
+        {currentQuestionType === "flashcard" && (
+          <div style={{ ...s.card, padding: 20, background: "rgba(255,255,255,.86)" }}>
+            {!flashcardRevealed && !currentAnswer && (
+              <div style={{ display: "grid", gap: 12 }}>
+                <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.7 }}>
+                  Sprobuj odpowiedziec z pamieci. Gdy bedziesz gotowy, odkryj odpowiedz i ocen siebie.
+                </div>
+                <button onClick={revealFlashcard} style={{ ...s.btn("soft"), width: "fit-content" }}>
+                  <IcoBook size={14} /> Pokaz odpowiedz
+                </button>
+              </div>
+            )}
 
-        <div style={{ display: "grid", gap: 12 }}>
-          {optionKeys.map((key) => {
+            {flashcardRevealed && !currentAnswer && (
+              <div style={{ display: "grid", gap: 14 }}>
+                <div style={{ padding: 16, borderRadius: 16, background: C.cardAlt, border: `1px solid ${C.border}` }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: C.textSub, marginBottom: 6 }}>Odpowiedz</div>
+                  <div style={{ fontSize: 16, color: C.textStrong, lineHeight: 1.7 }}>{current.answerBack || current.explanation}</div>
+                </div>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <button onClick={() => gradeFlashcard(true)} style={s.btn("soft")}>
+                    <IcoCheck size={14} /> Umiem
+                  </button>
+                  <button onClick={() => gradeFlashcard(false)} style={s.btn("ghost")}>
+                    <IcoRefresh size={14} /> Do poprawy
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {currentQuestionType === "multi_select" && (
+          <div style={{ display: "grid", gap: 12 }}>
+            {currentVisibleOptions.map((key) => {
+              const reveal = Boolean(currentAnswer);
+              const selectedKeys = reveal ? currentAnswer?.selected || [] : multiSelectDraft;
+              const isSel = selectedKeys.includes(key);
+              const isCorr = (current.correctAnswers || []).includes(key);
+
+              let bg = "#FFFFFF";
+              let border = C.border;
+              let color = C.textStrong;
+              let labelBg = C.cardAlt;
+              let labelColor = C.textSub;
+              let iconEl = null;
+
+              if (reveal) {
+                if (isCorr) {
+                  bg = C.successBg;
+                  border = C.success;
+                  color = C.successText;
+                  labelBg = C.success;
+                  labelColor = "#fff";
+                  iconEl = <IcoCheck size={15} />;
+                } else if (isSel) {
+                  bg = C.errorBg;
+                  border = C.error;
+                  color = C.errorText;
+                  labelBg = C.error;
+                  labelColor = "#fff";
+                  iconEl = <IcoCross size={15} />;
+                }
+              } else if (isSel) {
+                bg = C.accentSoft;
+                border = C.accent2;
+                color = C.textStrong;
+                labelBg = C.accent;
+                labelColor = "#fff";
+              }
+
+              return (
+                <button
+                  key={key}
+                  onClick={() => toggleMultiSelectChoice(key)}
+                  disabled={reveal}
+                  className="answer-option"
+                  style={{
+                    "--answer-bg": bg,
+                    "--answer-border": border,
+                    "--answer-text": color,
+                    "--answer-label-bg": labelBg,
+                    "--answer-label-color": labelColor,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 16,
+                    padding: "18px 18px",
+                    borderRadius: 18,
+                    cursor: reveal ? "default" : "pointer",
+                    textAlign: "left",
+                    width: "100%",
+                  }}
+                >
+                  <span
+                    className="answer-option-label"
+                    style={{
+                      width: 42,
+                      height: 42,
+                      borderRadius: 14,
+                      fontSize: 13,
+                      fontWeight: 700,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      flexShrink: 0,
+                      border: `1px solid ${reveal && (isCorr || isSel) ? "transparent" : C.border}`,
+                    }}
+                  >
+                    {key}
+                  </span>
+
+                  <span
+                    className="answer-option-text"
+                    style={{
+                      fontSize: 15,
+                      fontWeight: 400,
+                      flex: 1,
+                      lineHeight: 1.58,
+                    }}
+                  >
+                    {current.options[key]}
+                  </span>
+
+                  {iconEl && <span style={{ flexShrink: 0, color: isCorr ? C.success : C.error, display: "flex" }}>{iconEl}</span>}
+                </button>
+              );
+            })}
+
+            {!currentAnswer && (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                <span className="soft-chip">{multiSelectDraft.length ? `${multiSelectDraft.length} zaznaczone` : "Nic nie zaznaczono"}</span>
+                <button
+                  onClick={submitMultiSelectAnswer}
+                  disabled={!multiSelectDraft.length}
+                  style={{ ...s.btn("soft"), opacity: multiSelectDraft.length ? 1 : 0.5 }}
+                >
+                  <IcoCheck size={14} /> Sprawdz
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {currentQuestionType === "single_choice" && <div style={{ display: "grid", gap: 12 }}>
+          {currentVisibleOptions.map((key) => {
             const isSel = selected === key;
             const isCorr = current.correct === key;
             const reveal = !!selected;
@@ -2719,9 +3581,9 @@ function QuizAbcdApp() {
               </button>
             );
           })}
-        </div>
+        </div>}
 
-        {selected && (
+        {currentQuestionType === "single_choice" && selected && (
           <div style={{ ...s.card, padding: "18px 20px", background: C.cardAlt }}>
             <div
               style={{
@@ -2737,8 +3599,99 @@ function QuizAbcdApp() {
             <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.7 }}>{current.explanation}</div>
 
             {chatStatus === "idle" && (
-              <button onClick={askAI} style={{ ...s.btn("soft"), marginTop: 12, fontSize: 12, padding: "8px 14px" }}>
+              <button onClick={askAIEnhanced} style={{ ...s.btn("soft"), marginTop: 12, fontSize: 12, padding: "8px 14px" }}>
                 <IcoChat size={13} /> Wyjaśnij szerzej
+              </button>
+            )}
+
+            {chatStatus === "loading" && <div style={{ fontSize: 12, color: C.accent, marginTop: 10 }}>Analiza odpowiedzi...</div>}
+
+            {chatStatus === "loaded" && (
+              <div
+                style={{
+                  fontSize: 13,
+                  color: C.text,
+                  marginTop: 12,
+                  padding: "13px 14px",
+                  background: "#fff",
+                  borderRadius: 14,
+                  border: `1px solid ${C.border}`,
+                  lineHeight: 1.65,
+                }}
+              >
+                {chatRes}
+              </div>
+            )}
+          </div>
+        )}
+
+        {currentQuestionType === "multi_select" && currentAnswer && (
+          <div style={{ ...s.card, padding: "18px 20px", background: C.cardAlt }}>
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 800,
+                color: currentAnswer.isCorrect ? C.success : C.error,
+                marginBottom: 6,
+              }}
+            >
+              {currentAnswer.isCorrect
+                ? "OK - poprawny zestaw odpowiedzi."
+                : `Poprawny wzorzec: ${formatQuestionAnswer(current, current.correctAnswers || current.correct)}`}
+            </div>
+
+            <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.7 }}>{current.explanation}</div>
+
+            {chatStatus === "idle" && (
+              <button onClick={askAIEnhanced} style={{ ...s.btn("soft"), marginTop: 12, fontSize: 12, padding: "8px 14px" }}>
+                <IcoChat size={13} /> Wyjasnij szerzej
+              </button>
+            )}
+
+            {chatStatus === "loading" && <div style={{ fontSize: 12, color: C.accent, marginTop: 10 }}>Analiza odpowiedzi...</div>}
+
+            {chatStatus === "loaded" && (
+              <div
+                style={{
+                  fontSize: 13,
+                  color: C.text,
+                  marginTop: 12,
+                  padding: "13px 14px",
+                  background: "#fff",
+                  borderRadius: 14,
+                  border: `1px solid ${C.border}`,
+                  lineHeight: 1.65,
+                }}
+              >
+                {chatRes}
+              </div>
+            )}
+          </div>
+        )}
+
+        {currentQuestionType === "flashcard" && currentAnswer && (
+          <div style={{ ...s.card, padding: "18px 20px", background: C.cardAlt }}>
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 800,
+                color: currentAnswer.isCorrect ? C.success : C.error,
+                marginBottom: 6,
+              }}
+            >
+              {currentAnswer.isCorrect ? "OK - oznaczone jako umiem." : "Do poprawy - wroc do tej fiszki w kolejnej sesji."}
+            </div>
+
+            <div style={{ padding: "12px 14px", borderRadius: 14, background: "#fff", border: `1px solid ${C.border}`, marginBottom: 10 }}>
+              <div style={{ fontSize: 12, color: C.textSub, marginBottom: 6 }}>Druga strona karty</div>
+              <div style={{ fontSize: 15, color: C.textStrong, lineHeight: 1.65 }}>{current.answerBack || current.explanation}</div>
+            </div>
+
+            <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.7 }}>{current.explanation}</div>
+
+            {chatStatus === "idle" && (
+              <button onClick={askAIEnhanced} style={{ ...s.btn("soft"), marginTop: 12, fontSize: 12, padding: "8px 14px" }}>
+                <IcoChat size={13} /> Wyjasnij szerzej
               </button>
             )}
 
@@ -2825,7 +3778,7 @@ function QuizAbcdApp() {
               <IcoRefresh size={14} /> Restart
             </button>
 
-            <button onClick={next} disabled={!selected} style={{ ...s.btn("primary"), opacity: !selected ? 0.55 : 1 }}>
+            <button onClick={next} disabled={!canGoNext} style={{ ...s.btn("primary"), opacity: !canGoNext ? 0.55 : 1 }}>
               {idx === total - 1 ? "Zakończ" : "Dalej"} <IcoRight size={14} />
             </button>
           </div>
@@ -3601,6 +4554,265 @@ function QuizAbcdApp() {
     );
   };
 
+  const EditorView = () => (
+    <div className="editor-layout">
+      <div className="editor-sidebar" style={{ ...s.card, padding: 16 }}>
+        <div className="editor-toolbar">
+          <div>
+            <div className="tinyLabel" style={{ marginBottom: 8 }}>
+              Biblioteka pytan
+            </div>
+            <div style={{ fontSize: 24, fontWeight: 700, color: C.textStrong }}>Edytor pytan</div>
+          </div>
+
+          <button onClick={createNewQuestion} style={s.btn("soft")}>
+            <IcoEdit size={14} /> Nowe pytanie
+          </button>
+        </div>
+
+        <div className="editor-filter-grid">
+          <input value={editorSearch} onChange={(e) => setEditorSearch(e.target.value)} placeholder="Szukaj po tresci, decku, tagach..." style={s.input} />
+
+          <select value={editorDeckFilter} onChange={(e) => setEditorDeckFilter(e.target.value)} style={s.input}>
+            <option value="all">Wszystkie decki</option>
+            {editorDecks.map((deck) => (
+              <option key={deck} value={deck}>
+                {deck}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="editor-list">
+          {editorFilteredQuestions.length ? (
+            editorFilteredQuestions.map((question) => {
+              const active = String(question.id) === String(editorSelectedId);
+              return (
+                <button
+                  key={question.id}
+                  type="button"
+                  className={`editor-item ${active ? "active" : ""}`}
+                  onClick={() => setEditorSelectedId(String(question.id))}
+                >
+                  <div className="editor-item-head">
+                    <strong>#{question.questionNo}</strong>
+                    <span className="soft-chip">{questionTypeLabel(question.questionType)}</span>
+                  </div>
+                  <div className="editor-item-title">{question.question}</div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+                    <span className="soft-chip">{question.deck}</span>
+                    <span className="soft-chip">{question.category}</span>
+                  </div>
+                </button>
+              );
+            })
+          ) : (
+            <div style={{ fontSize: 14, color: C.textSub }}>Brak pytan po tym filtrze.</div>
+          )}
+        </div>
+      </div>
+
+      <div className="editor-main" style={{ ...s.card, padding: 18 }}>
+        {editorDraft && (
+          <>
+            <div className="editor-toolbar" style={{ marginBottom: 14 }}>
+              <div>
+                <div className="tinyLabel" style={{ marginBottom: 8 }}>
+                  Formularz
+                </div>
+                <div style={{ fontSize: 24, fontWeight: 700, color: C.textStrong }}>
+                  {selectedEditorQuestion ? "Edycja pytania" : "Nowe pytanie"}
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <button onClick={createNewQuestion} style={s.btn("ghost")}>
+                  <IcoRefresh size={14} /> Wyczyść
+                </button>
+                <button onClick={saveEditorQuestion} style={s.btn("soft")}>
+                  <IcoCheck size={14} /> Zapisz
+                </button>
+                <button onClick={deleteEditorQuestion} disabled={!selectedEditorQuestion} style={{ ...s.btn("danger"), opacity: selectedEditorQuestion ? 1 : 0.5 }}>
+                  <IcoCross size={14} /> Usun
+                </button>
+              </div>
+            </div>
+
+            <div
+              style={{
+                marginBottom: 14,
+                padding: 12,
+                borderRadius: 14,
+                background: toneForStatus(editorStatus.status).bg,
+                color: toneForStatus(editorStatus.status).color,
+                border: `1px solid ${toneForStatus(editorStatus.status).border}`,
+                fontSize: 13,
+                lineHeight: 1.6,
+              }}
+            >
+              {editorStatus.message}
+            </div>
+
+            <div className="editor-form-grid">
+              <div>
+                <label style={s.label}>Numer</label>
+                <input
+                  type="number"
+                  value={editorDraft.questionNo}
+                  onChange={(e) => updateEditorField("questionNo", Number(e.target.value || 0))}
+                  style={s.input}
+                />
+              </div>
+
+              <div>
+                <label style={s.label}>Typ pytania</label>
+                <select value={editorDraft.questionType} onChange={(e) => applyEditorQuestionType(e.target.value)} style={s.input}>
+                  {QUESTION_TYPES.map((type) => (
+                    <option key={type.id} value={type.id}>
+                      {type.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label style={s.label}>Deck</label>
+                <select value={editorDraft.deck} onChange={(e) => updateEditorField("deck", e.target.value)} style={s.input}>
+                  {editorDecks.map((deck) => (
+                    <option key={deck} value={deck}>
+                      {deck}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label style={s.label}>Kategoria</label>
+                <input value={editorDraft.category} onChange={(e) => updateEditorField("category", e.target.value)} style={s.input} />
+              </div>
+
+              <div className="editor-field-span">
+                <label style={s.label}>Pytanie / przod karty</label>
+                <textarea value={editorDraft.question} onChange={(e) => updateEditorField("question", e.target.value)} rows={4} style={{ ...s.input, resize: "vertical" }} />
+              </div>
+
+              {editorDraft.questionType === "flashcard" ? (
+                <div className="editor-field-span">
+                  <label style={s.label}>Odpowiedz / tyl karty</label>
+                  <textarea
+                    value={editorDraft.answerBack}
+                    onChange={(e) => updateEditorField("answerBack", e.target.value)}
+                    rows={4}
+                    style={{ ...s.input, resize: "vertical" }}
+                  />
+                </div>
+              ) : (
+                <div className="editor-field-span">
+                  <label style={s.label}>Opcje</label>
+                  <div className="editor-option-grid">
+                    {optionKeys.map((key) => {
+                      const checked = parseAnswerKeys(editorDraft.correctAnswers || editorDraft.correct).includes(key);
+                      return (
+                        <div key={key} className="editor-option-card">
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 8 }}>
+                            <strong style={{ color: C.textStrong }}>{key}</strong>
+                            <button
+                              type="button"
+                              onClick={() => updateEditorCorrectAnswer(key)}
+                              style={{
+                                ...s.btn(checked ? "soft" : "ghost"),
+                                padding: "7px 10px",
+                                minWidth: 104,
+                              }}
+                            >
+                              {editorDraft.questionType === "multi_select" ? "Poprawna" : "Wybierz"}
+                            </button>
+                          </div>
+                          <input value={editorDraft.options[key]} onChange={(e) => updateEditorOption(key, e.target.value)} placeholder={`Opcja ${key}`} style={s.input} />
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              <div className="editor-field-span">
+                <label style={s.label}>Wyjasnienie</label>
+                <textarea
+                  value={editorDraft.explanation}
+                  onChange={(e) => updateEditorField("explanation", e.target.value)}
+                  rows={3}
+                  style={{ ...s.input, resize: "vertical" }}
+                />
+              </div>
+
+              <div>
+                <label style={s.label}>Poziom</label>
+                <select value={editorDraft.difficulty} onChange={(e) => updateEditorField("difficulty", e.target.value)} style={s.input}>
+                  <option value="easy">easy</option>
+                  <option value="medium">medium</option>
+                  <option value="hard">hard</option>
+                </select>
+              </div>
+
+              <div className="editor-field-span">
+                <label style={s.label}>Tagi</label>
+                <input
+                  value={editorDraft.tagsText}
+                  onChange={(e) => updateEditorField("tagsText", e.target.value)}
+                  placeholder="anki::basic jungle::mcq tricky"
+                  style={s.input}
+                />
+              </div>
+            </div>
+
+            {editorPreview && (
+              <div className="editor-preview" style={{ ...s.cardSm, padding: 16 }}>
+                <div className="tinyLabel" style={{ marginBottom: 10 }}>
+                  Preview
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+                  <span className="soft-chip">{questionTypeLabel(editorPreview.questionType)}</span>
+                  <span className="soft-chip">{editorPreview.deck}</span>
+                  <span className="soft-chip">{editorPreview.category}</span>
+                </div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: C.textStrong, lineHeight: 1.45 }}>{editorPreview.question || "Podglad pytania pojawi sie tutaj."}</div>
+
+                {editorPreview.questionType === "flashcard" ? (
+                  <div style={{ marginTop: 14, padding: 14, borderRadius: 16, background: "#fff", border: `1px solid ${C.border}` }}>
+                    <div style={{ fontSize: 12, color: C.textSub, marginBottom: 6 }}>Tyl karty</div>
+                    <div style={{ fontSize: 15, color: C.textStrong, lineHeight: 1.7 }}>{editorPreview.answerBack || "Brak odpowiedzi."}</div>
+                  </div>
+                ) : (
+                  <div style={{ display: "grid", gap: 10, marginTop: 14 }}>
+                    {getVisibleOptionKeys(editorPreview).map((key) => {
+                      const correct = (editorPreview.correctAnswers || []).includes(key);
+                      return (
+                        <div
+                          key={key}
+                          style={{
+                            padding: "12px 14px",
+                            borderRadius: 16,
+                            border: `1px solid ${correct ? C.success : C.border}`,
+                            background: correct ? C.successBg : "#fff",
+                            color: correct ? C.successText : C.textStrong,
+                          }}
+                        >
+                          <strong style={{ marginRight: 8 }}>{key}</strong>
+                          {editorPreview.options[key]}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+
   const SettingsView = () => (
     <div className="settings-grid">
       <div className="settings-main-card" style={{ ...s.card, padding: 16 }}>
@@ -4012,6 +5224,7 @@ function QuizAbcdApp() {
   const renderTab = () => {
     if (activeTab === "quiz") return <QuizView />;
     if (activeTab === "decks") return <DecksView />;
+    if (activeTab === "editor") return <EditorView />;
     if (activeTab === "results") return <ResultsView />;
     if (activeTab === "calendar") return <EnhancedCalendarView />;
     if (activeTab === "plan") return <PlanView />;

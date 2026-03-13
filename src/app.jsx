@@ -35,6 +35,7 @@ import {
   IcoPlay,
   IcoLayers,
   IcoTrash,
+  IcoMore,
   ZenQuizLogo,
 } from "./icons";
 
@@ -2060,6 +2061,7 @@ function QuizAbcdApp() {
     normalizeDeck(initialUi.selectedDeck || import.meta.env.VITE_SUPABASE_DEFAULT_DECK || ALL_DECKS_LABEL, ALL_DECKS_LABEL)
   );
   const [expandedDecks, setExpandedDecks] = useState(() => ({ PgMP: true }));
+  const [openDeckMenu, setOpenDeckMenu] = useState(null);
 
   const [calMonth, setCalMonth] = useState(() => som(new Date()));
   const [selectedCalDay, setSelectedCalDay] = useState(() => dayKey(Date.now()));
@@ -3225,7 +3227,7 @@ function QuizAbcdApp() {
         status: "error",
         message: canUseLocalFallback
           ? "Nie udalo sie wygenerowac pytan z tego materialu. Sprobuj krotszy, bardziej tekstowy dokument."
-          : "Wybrane typy pytan wymagaja generowania przez Cloud. Sprawdz Cloud AI albo wybierz fiszki, cloze albo type answer.",
+          : getCloudGenerationErrorMessage(cloudError),
       });
       return;
     }
@@ -3253,6 +3255,7 @@ function QuizAbcdApp() {
     generatorQuestionTypes,
     generatorPageTexts,
     generatorSourceName,
+    getCloudGenerationErrorMessage,
     manualCloudApiKey,
     questionPool,
     sbEnabled,
@@ -3967,13 +3970,19 @@ function QuizAbcdApp() {
     setExpandedDecks((prev) => ({ ...prev, [deckName]: !prev[deckName] }));
   }, []);
 
+  const toggleDeckMenu = useCallback((deckName) => {
+    setOpenDeckMenu((prev) => (prev === deckName ? null : deckName));
+  }, []);
+
   const selectDeckFromLibrary = useCallback((deckName) => {
+    setOpenDeckMenu(null);
     setSelectedDeck(deckName);
     setExpandedDecks((prev) => ({ ...prev, [deckName]: true }));
   }, []);
 
   const startDeckSession = useCallback(
     (deckName) => {
+      setOpenDeckMenu(null);
       const pool = getDeckPool(deckName);
       setSelectedDeck(deckName);
       startQuiz(pool, quizLength);
@@ -3983,6 +3992,7 @@ function QuizAbcdApp() {
 
   const startDeckCategorySession = useCallback(
     (deckName, categoryName) => {
+      setOpenDeckMenu(null);
       const pool = getDeckPool(deckName, categoryName);
       setSelectedDeck(deckName);
       setExpandedDecks((prev) => ({ ...prev, [deckName]: true }));
@@ -4010,6 +4020,7 @@ function QuizAbcdApp() {
       const normalizedDeck = normalizeDeck(deckName);
       const affected = questionPool.filter((question) => normalizeDeck(question.deck) === normalizedDeck);
       if (!affected.length) return;
+      setOpenDeckMenu(null);
 
       setQuestionPool((prev) =>
         prev.map((question) =>
@@ -4057,6 +4068,7 @@ function QuizAbcdApp() {
       const normalizedDeck = normalizeDeck(deckName);
       const affected = questionPool.filter((question) => normalizeDeck(question.deck) === normalizedDeck);
       if (!affected.length) return;
+      setOpenDeckMenu(null);
 
       const persistedRows = affected.filter((question) => isPersistedQuestionId(question.id));
       setQuestionPool((prev) => prev.filter((question) => normalizeDeck(question.deck) !== normalizedDeck));
@@ -4092,6 +4104,34 @@ function QuizAbcdApp() {
       }
     },
     [questionPool, selectedDeck, sbEnabled, syncDeckActiveState]
+  );
+
+  const getCloudGenerationErrorMessage = useCallback(
+    (cloudError = "") => {
+      if (!cloudApiEnabled) {
+        return "Wybrane typy pytan wymagaja generowania przez Cloud, ale Cloud AI jest wylaczone w Ustawieniach.";
+      }
+
+      const cloudDraft = cloudApiKeyDraft.trim();
+      if (cloudDraft && isJwtLike(cloudDraft)) {
+        return "Pole Cloud API key zawiera Supabase JWT (`eyJ...`). Wklej je do `Publishable / anon key`, a w Cloud zostaw klucz Anthropic `sk-ant-...` albo puste pole z sekretem w Edge Function.";
+      }
+
+      if (cloudDraft && !looksLikeAnthropicKey(cloudDraft)) {
+        return "Pole Cloud API key ma zly format. Uzyj klucza Anthropic `sk-ant-...` albo zostaw pole puste i korzystaj z sekretu `ANTHROPIC_API_KEY` w Supabase.";
+      }
+
+      if (!sbEnabled) {
+        return "Wybrane typy pytan wymagaja Cloud, ale aplikacja nie ma poprawnego polaczenia z Supabase. Sprawdz URL projektu i publishable / anon key.";
+      }
+
+      if (cloudError) {
+        return `Cloud nie odpowiedzial dla wybranych typow pytan: ${cloudError}`;
+      }
+
+      return "Wybrane typy pytan wymagaja Cloud. Sprawdz deploy funkcji `claude-summary`, sekret `ANTHROPIC_API_KEY` i polaczenie z Supabase Edge Function.";
+    },
+    [cloudApiEnabled, cloudApiKeyDraft, sbEnabled]
   );
 
   const DeckProgressRing = ({ progress = 0, active = false }) => {
@@ -5523,32 +5563,6 @@ function QuizAbcdApp() {
               <button onClick={() => activeDeck && startDeckSession(activeDeck.name)} style={s.btn("ghost")} disabled={!activeDeck || !deckCanStart}>
                 <IcoRight size={14} /> Start deck
               </button>
-              {activeDeck && (
-                <button onClick={() => setDeckActiveState(activeDeck.name, !activeDeck.isActive)} style={s.btn(activeDeck.isActive ? "soft" : "ghost")}>
-                  {activeDeck.isActive ? <IcoCross size={14} /> : <IcoRefresh size={14} />}
-                  {activeDeck.isActive ? "Dezaktywuj" : "Aktywuj"}
-                </button>
-              )}
-              {activeDeck && (
-                <button onClick={() => deleteDeckFromLibrary(activeDeck.name)} style={s.btn("ghost")}>
-                  <IcoTrash size={14} /> Usun deck
-                </button>
-              )}
-            </div>
-          </div>
-
-          <div className="deck-hero-metrics">
-            <div className="deck-hero-metric">
-              <span className="deck-hero-label">Aktywne karty</span>
-              <strong>{activeDeck?.count || 0}</strong>
-            </div>
-            <div className="deck-hero-metric">
-              <span className="deck-hero-label">Kategorie</span>
-              <strong>{activeDeck?.activeCategories || 0}</strong>
-            </div>
-            <div className="deck-hero-metric">
-              <span className="deck-hero-label">Ukryte</span>
-              <strong>{activeDeck?.inactiveCount || 0}</strong>
             </div>
           </div>
 
@@ -5577,6 +5591,7 @@ function QuizAbcdApp() {
             {deckGroups.map((deck) => {
               const isActive = deck.name === activeDeckName;
               const isExpanded = Boolean(expandedDecks[deck.name]);
+              const menuOpen = openDeckMenu === deck.name;
 
               return (
                 <div key={deck.name} className={`deck-item ${isActive ? "active" : ""}`}>
@@ -5605,7 +5620,37 @@ function QuizAbcdApp() {
                         <DeckProgressRing progress={getDeckProgress(deck.count)} active={isActive} />
                       </div>
                     </button>
+
+                    <div className="deck-row-actions">
+                      <button
+                        type="button"
+                        className={`deck-menu-toggle ${menuOpen ? "open" : ""}`}
+                        aria-label={`Zarzadzaj deckiem ${deck.name}`}
+                        aria-expanded={menuOpen}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          toggleDeckMenu(deck.name);
+                        }}
+                      >
+                        <IcoMore size={16} />
+                      </button>
+                    </div>
                   </div>
+
+                  {menuOpen && (
+                    <div className="deck-menu">
+                      <button type="button" className="deck-menu-item" onClick={() => startDeckSession(deck.name)} disabled={!deck.count}>
+                        <IcoRight size={14} /> Start deck
+                      </button>
+                      <button type="button" className="deck-menu-item" onClick={() => setDeckActiveState(deck.name, !deck.isActive)}>
+                        {deck.isActive ? <IcoCross size={14} /> : <IcoRefresh size={14} />}
+                        {deck.isActive ? "Dezaktywuj deck" : "Aktywuj deck"}
+                      </button>
+                      <button type="button" className="deck-menu-item danger" onClick={() => deleteDeckFromLibrary(deck.name)}>
+                        <IcoTrash size={14} /> Usun deck
+                      </button>
+                    </div>
+                  )}
 
                   {isExpanded && deck.categories.length > 0 && (
                     <div className="deck-subrows">

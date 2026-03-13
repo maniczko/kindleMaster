@@ -513,11 +513,24 @@ async function sbPatch(config, table, params, row, accessToken = "") {
 }
 
 async function authRequest(config, path, { method = "GET", body, accessToken = "" } = {}) {
-  const r = await fetch(`${config.url}/auth/v1/${path}`, {
-    method,
-    headers: sbH(config.apiKey, "return=representation", accessToken),
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  const endpoint = `${config.url}/auth/v1/${path}`;
+  let r;
+
+  try {
+    r = await fetch(endpoint, {
+      method,
+      headers: sbH(config.apiKey, "return=representation", accessToken),
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch {
+    const hint = !isValidSupabaseUrl(config?.url)
+      ? "Sprawdz Supabase URL."
+      : !isValidSupabaseKey(config?.apiKey)
+        ? "Sprawdz publishable / anon key."
+        : "Sprawdz Supabase URL, publishable / anon key oraz polaczenie sieciowe z projektem.";
+    throw new Error(`Nie udalo sie polaczyc z Supabase Auth. ${hint}`);
+  }
+
   const text = await r.text();
   let data = null;
 
@@ -682,6 +695,9 @@ const toneForStatus = (status) => {
 
 const getErrorText = (error) => {
   const message = String(error?.message || error || "Nieznany błąd").trim();
+  if (/failed to fetch/i.test(message)) {
+    return "Nie udalo sie polaczyc z Supabase. Sprawdz URL projektu, publishable / anon key i polaczenie sieciowe.";
+  }
   return message.length > 180 ? `${message.slice(0, 177)}...` : message;
 };
 
@@ -6565,19 +6581,19 @@ function QuizAbcdApp() {
   );
 
   const renderTab = () => {
-    if (activeTab === "quiz") return <QuizView />;
-    if (activeTab === "decks") return <DecksView />;
-    if (activeTab === "generator") return <GeneratorView />;
-    if (activeTab === "editor") return <EditorView />;
-    if (activeTab === "results") return <ResultsView />;
-    if (activeTab === "calendar") return <EnhancedCalendarView />;
-    if (activeTab === "plan") return <PlanView />;
-    if (activeTab === "settings") return <SettingsView />;
-    return <QuizView />;
+    if (activeTab === "quiz") return QuizView();
+    if (activeTab === "decks") return DecksView();
+    if (activeTab === "generator") return GeneratorView();
+    if (activeTab === "editor") return EditorView();
+    if (activeTab === "results") return ResultsView();
+    if (activeTab === "calendar") return EnhancedCalendarView();
+    if (activeTab === "plan") return PlanView();
+    if (activeTab === "settings") return SettingsView();
+    return QuizView();
   };
 
   if (!authUser) {
-    return <LandingView />;
+    return LandingView();
   }
 
   return (

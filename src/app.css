@@ -710,8 +710,55 @@ button, input, select, textarea { font-family: inherit; }
   background: rgba(255,255,255,.76);
 }
 
+.editor-media-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
 .editor-preview {
   margin-top: 16px;
+}
+
+.question-media-stack {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.question-media-stack.compact {
+  margin-top: 14px;
+}
+
+.question-media-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(220,215,201,.95);
+  background: rgba(255,255,255,.82);
+}
+
+.question-media-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #6B7280;
+  letter-spacing: .02em;
+}
+
+.question-media-image {
+  width: 100%;
+  max-height: 320px;
+  object-fit: contain;
+  border-radius: 14px;
+  background: rgba(244,241,233,.72);
+}
+
+.question-media-audio {
+  width: 100%;
 }
 
 .settings-grid {
@@ -818,7 +865,8 @@ button, input, select, textarea { font-family: inherit; }
   .calendar-session-list { max-height: none; }
   .mini-grid { grid-template-columns: 1fr; }
   .editor-form-grid,
-  .editor-option-grid { grid-template-columns: 1fr; }
+  .editor-option-grid,
+  .editor-media-grid { grid-template-columns: 1fr; }
   .settings-section-grid { grid-template-columns: 1fr; }
   .tab-btn.top { min-width: 118px; }
   .deck-row { grid-template-columns: 40px minmax(0, 1fr); }

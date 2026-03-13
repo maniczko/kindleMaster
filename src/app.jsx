@@ -26,6 +26,8 @@ import {
   IcoTag,
   IcoLogout,
   IcoEdit,
+  IcoImage,
+  IcoVolume,
   ZenQuizLogo,
 } from "./icons";
 
@@ -234,6 +236,8 @@ const createQuestionRecord = (input = {}, index = 0) => {
   });
   const answerBack = String(input.answerBack ?? input.answer_back ?? input.answer ?? input.explanation ?? "").trim();
   const explanation = String(input.explanation ?? input.answerBack ?? input.answer_back ?? "Brak wyjasnienia.").trim() || "Brak wyjasnienia.";
+  const imageUrl = String(input.imageUrl ?? input.image_url ?? input.image ?? "").trim();
+  const audioUrl = String(input.audioUrl ?? input.audio_url ?? input.audio ?? "").trim();
 
   return {
     id: input.id ?? `local-${Date.now()}-${index}`,
@@ -245,6 +249,8 @@ const createQuestionRecord = (input = {}, index = 0) => {
     correctAnswers,
     answerBack,
     explanation,
+    imageUrl,
+    audioUrl,
     deck: resolveDeck(input.deck || input.deck_name || input.deck_title || input.collection_name, input.category, input.sourceFile || input.source_file),
     category: String(input.category || "General").trim() || "General",
     tags: normalizeTags(input.tags || input.tag_list || input.tag || []),
@@ -284,6 +290,8 @@ const questionToSupabaseRow = (question) => ({
   }),
   answer_back: String(question.answerBack || "").trim() || null,
   explanation: String(question.explanation || "").trim() || null,
+  image_url: String(question.imageUrl || "").trim() || null,
+  audio_url: String(question.audioUrl || "").trim() || null,
   deck: normalizeDeck(question.deck),
   category: String(question.category || "General").trim() || "General",
   tags: normalizeTags(question.tags || []),
@@ -291,6 +299,38 @@ const questionToSupabaseRow = (question) => ({
   source_type: question.sourceType || "editor",
   is_active: question.isActive !== false,
 });
+
+const QuestionMediaBlock = ({ imageUrl, audioUrl, compact = false }) => {
+  const safeImageUrl = String(imageUrl || "").trim();
+  const safeAudioUrl = String(audioUrl || "").trim();
+
+  if (!safeImageUrl && !safeAudioUrl) return null;
+
+  return (
+    <div className={`question-media-stack ${compact ? "compact" : ""}`}>
+      {safeImageUrl && (
+        <div className="question-media-card">
+          <div className="question-media-label">
+            <IcoImage size={14} /> Obraz
+          </div>
+          <img src={safeImageUrl} alt="Ilustracja do pytania" className="question-media-image" loading="lazy" />
+        </div>
+      )}
+
+      {safeAudioUrl && (
+        <div className="question-media-card">
+          <div className="question-media-label">
+            <IcoVolume size={14} /> Audio
+          </div>
+          <audio controls preload="none" className="question-media-audio">
+            <source src={safeAudioUrl} />
+            Twoja przegladarka nie obsluguje audio.
+          </audio>
+        </div>
+      )}
+    </div>
+  );
+};
 
 const filterQuestionsByTags = (questions, activeTags, userTagMap = {}) => {
   const filters = normalizeTags(activeTags).map((tag) => tag.toLowerCase());
@@ -647,6 +687,8 @@ const rowToQ = (row, i) =>
       correct: row.correct_answer || null,
       correctAnswers: row.correct_answers || [],
       answerBack: row.answer_back || "",
+      imageUrl: row.image_url || row.image || "",
+      audioUrl: row.audio_url || row.audio || "",
       explanation: row.explanation || "Brak wyjasnienia.",
       deck: resolveDeck(row.deck || row.deck_name || row.deck_title || row.collection_name, row.category, row.source_file),
       category: row.category || "General",
@@ -681,6 +723,8 @@ function parseRows(rows, sourceFile = null) {
           D: String(d).trim(),
         },
         correct: optionKeys.includes(correct) ? correct : null,
+        imageUrl: row.image_url ?? row.imageUrl ?? row.image ?? "",
+        audioUrl: row.audio_url ?? row.audioUrl ?? row.audio ?? "",
         explanation: String(row.explanation ?? "Brak wyjaśnienia.").trim(),
         deck: resolveDeck(row.deck ?? row.Deck ?? row.deck_name ?? row.deckName ?? row.collection ?? row.Collection, row.category, sourceFile),
         category: String(row.category ?? "General").trim(),
@@ -756,6 +800,8 @@ const parseImportedRows = (rows, sourceFile = null) => {
           correct: row.correct ?? row.Correct ?? row.correct_answer ?? "",
           correctAnswers: row.correct_answers ?? row.correct ?? row.Correct ?? row.correct_answer ?? "",
           answerBack,
+          imageUrl: row.image_url ?? row.imageUrl ?? row.image ?? "",
+          audioUrl: row.audio_url ?? row.audioUrl ?? row.audio ?? "",
           explanation: String(row.explanation ?? row.Explanation ?? answerBack ?? "Brak wyjasnienia.").trim(),
           deck: resolveDeck(row.deck ?? row.Deck ?? row.deck_name ?? row.deckName ?? row.collection ?? row.Collection, row.category, sourceFile),
           category: String(row.category ?? "General").trim(),
@@ -3340,6 +3386,8 @@ function QuizAbcdApp() {
             {current.question}
           </h2>
 
+          <QuestionMediaBlock imageUrl={current.imageUrl} audioUrl={current.audioUrl} />
+
           <div style={{ marginTop: 12, fontSize: 14, color: C.textSub, lineHeight: 1.65 }}>
             Wybierz jedną odpowiedź. Po wyborze od razu zobaczysz informację zwrotną i możesz przejść dalej.
           </div>
@@ -4696,6 +4744,30 @@ function QuizAbcdApp() {
                 <textarea value={editorDraft.question} onChange={(e) => updateEditorField("question", e.target.value)} rows={4} style={{ ...s.input, resize: "vertical" }} />
               </div>
 
+              <div className="editor-field-span">
+                <div className="editor-media-grid">
+                  <div>
+                    <label style={s.label}>Obraz URL</label>
+                    <input
+                      value={editorDraft.imageUrl || ""}
+                      onChange={(e) => updateEditorField("imageUrl", e.target.value)}
+                      placeholder="/media/question.jpg lub https://..."
+                      style={s.input}
+                    />
+                  </div>
+
+                  <div>
+                    <label style={s.label}>Dzwiek URL</label>
+                    <input
+                      value={editorDraft.audioUrl || ""}
+                      onChange={(e) => updateEditorField("audioUrl", e.target.value)}
+                      placeholder="/media/question.mp3 lub https://..."
+                      style={s.input}
+                    />
+                  </div>
+                </div>
+              </div>
+
               {editorDraft.questionType === "flashcard" ? (
                 <div className="editor-field-span">
                   <label style={s.label}>Odpowiedz / tyl karty</label>
@@ -4777,6 +4849,8 @@ function QuizAbcdApp() {
                   <span className="soft-chip">{editorPreview.category}</span>
                 </div>
                 <div style={{ fontSize: 18, fontWeight: 700, color: C.textStrong, lineHeight: 1.45 }}>{editorPreview.question || "Podglad pytania pojawi sie tutaj."}</div>
+
+                <QuestionMediaBlock imageUrl={editorPreview.imageUrl} audioUrl={editorPreview.audioUrl} compact />
 
                 {editorPreview.questionType === "flashcard" ? (
                   <div style={{ marginTop: 14, padding: 14, borderRadius: 16, background: "#fff", border: `1px solid ${C.border}` }}>

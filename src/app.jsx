@@ -3055,6 +3055,7 @@ function QuizAbcdApp() {
             ? `PDF zaladowany. Odczytano ${payload.pageCount} stron i ${text.trim().length} znakow z "${file.name}".`
             : `Material zaladowany. Odczytano ${text.trim().length} znakow z "${file.name}".`,
       });
+      setActiveTab("generator");
     } catch (error) {
       setGeneratorStatus({ status: "error", message: getErrorText(error) });
     }
@@ -6367,6 +6368,197 @@ function QuizAbcdApp() {
     </div>
   );
 
+  const LandingView = () => (
+    <div className="landing-shell">
+      <div className="landing-nav">
+        <div className="landing-brand">
+          <ZenQuizLogo size={54} />
+          <div>
+            <div className="landing-brand-title">Zen Quiz</div>
+            <div className="landing-brand-copy">Pytania generowane z twoich materiałów w kilka sekund.</div>
+          </div>
+        </div>
+
+        <div className="landing-auth-switch">
+          <button type="button" className={authMode === "register" ? "active" : ""} onClick={() => setAuthMode("register")}>
+            sign up
+          </button>
+          <span className="landing-auth-separator">|</span>
+          <button type="button" className={authMode === "login" ? "active" : ""} onClick={() => setAuthMode("login")}>
+            login
+          </button>
+        </div>
+      </div>
+
+      <div className="landing-main">
+        <section className="landing-hero-card">
+          <div className="landing-kicker">get practice questions made for you in seconds</div>
+          <div className="landing-copy">
+            Dodaj dokument lub URL, a Zen Quiz przygotuje pierwszą paczkę pytań do nauki i od razu ułoży ją w deckach.
+          </div>
+
+          <div
+            className="landing-upload-panel"
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              const file = e.dataTransfer?.files?.[0];
+              if (file) handleGeneratorFile(file);
+            }}
+          >
+            <div className="landing-upload-title">{generatorSourceName ? generatorSourceName : "drag a file here"}</div>
+            <div className="landing-upload-copy">{generatorSourceName ? "plik jest już gotowy do generatora" : "or click to select a file"}</div>
+            <button type="button" onClick={() => generatorFileRef.current?.click()} style={s.btn("soft")}>
+              <IcoUpload size={14} /> wybierz plik
+            </button>
+            <input
+              ref={generatorFileRef}
+              type="file"
+              accept=".txt,.md,.csv,.json,.xlsx,.xls,.pdf,.doc,.docx,.ppt,.pptx,image/*,audio/*,video/*"
+              onChange={handleGeneratorFileChange}
+              style={{ display: "none" }}
+            />
+          </div>
+
+          <div className="landing-or">or</div>
+
+          <input
+            value={generatorLink}
+            onChange={(e) => setGeneratorLink(e.target.value)}
+            placeholder="paste any link here"
+            className="landing-link-input"
+          />
+
+          <div className="landing-support-block">
+            <div className="landing-support-title">works on:</div>
+            <div className="landing-support-grid">
+              {[
+                "lecture slides",
+                "YouTube videos",
+                "PDFs",
+                "video / audio files",
+                "Word documents",
+                "textbooks",
+                "PowerPoints",
+                "notes",
+              ].map((item) => (
+                <div key={item} className="landing-support-item">
+                  <span className="landing-support-dot" />
+                  <span>{item}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div
+            className="landing-generator-status"
+            style={{
+              background: toneForStatus(generatorStatus.status).bg,
+              color: toneForStatus(generatorStatus.status).color,
+              border: `1px solid ${toneForStatus(generatorStatus.status).border}`,
+            }}
+          >
+            {generatorStatus.message}
+          </div>
+        </section>
+
+        <aside className="landing-auth-card">
+          <div>
+            <div className="tinyLabel" style={{ marginBottom: 8 }}>
+              {authMode === "register" ? "Create Account" : "Welcome Back"}
+            </div>
+            <div className="landing-auth-title">{authMode === "register" ? "Załóż konto" : "Zaloguj się"}</div>
+            <div className="landing-auth-copy">
+              {authMode === "register"
+                ? "Po rejestracji zapisujemy wyniki, tagi i decki użytkownika w Supabase."
+                : "Zaloguj się, aby wrócić do generatora, wyników i swojej biblioteki pytań."}
+            </div>
+          </div>
+
+          <form
+            className="landing-auth-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              handleAuthSubmit();
+            }}
+          >
+            <div>
+              <label style={s.label}>E-mail</label>
+              <input value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} placeholder="twoj@email.com" style={s.input} />
+            </div>
+
+            <div>
+              <label style={s.label}>Hasło</label>
+              <input
+                type="password"
+                value={authPassword}
+                onChange={(e) => setAuthPassword(e.target.value)}
+                placeholder="minimum 6 znaków"
+                style={s.input}
+              />
+            </div>
+
+            {authMode === "register" && (
+              <div>
+                <label style={s.label}>Nazwa użytkownika</label>
+                <input
+                  value={profileNameDraft}
+                  onChange={(e) => setProfileNameDraft(e.target.value)}
+                  placeholder="jak mamy pokazywać twój profil"
+                  style={s.input}
+                />
+              </div>
+            )}
+
+            <button type="submit" style={s.btn("primary")} disabled={authStatus.status === "loading"}>
+              <IcoKey size={14} /> {authMode === "register" ? "Utwórz konto" : "Zaloguj"}
+            </button>
+          </form>
+
+          <div
+            className="landing-auth-status"
+            style={{
+              background: toneForStatus(authStatus.status).bg,
+              color: toneForStatus(authStatus.status).color,
+              border: `1px solid ${toneForStatus(authStatus.status).border}`,
+            }}
+          >
+            {authStatus.message}
+          </div>
+
+          <div className="landing-config-card">
+            <div className="landing-config-head">
+              <span>Supabase connection</span>
+              <span className={`landing-config-badge ${sbEnabled ? "ready" : ""}`}>{sbEnabled ? "gotowe" : "wymaga ustawień"}</span>
+            </div>
+
+            <div className="landing-config-grid">
+              <div>
+                <label style={s.label}>Supabase URL</label>
+                <input value={supabaseUrl} onChange={(e) => setSupabaseUrl(e.target.value)} placeholder="https://twoj-projekt.supabase.co" style={s.input} />
+              </div>
+
+              <div>
+                <label style={s.label}>Publishable / anon key</label>
+                <input
+                  type="password"
+                  value={supabaseAnonKey}
+                  onChange={(e) => setSupabaseAnonKey(e.target.value)}
+                  placeholder="sb_publishable_... albo pełny JWT"
+                  style={s.input}
+                />
+              </div>
+            </div>
+
+            <div className="field-help">
+              Jeśli pola są już zapisane w `.env.local` albo localStorage, nie musisz ich ruszać. Ten panel jest tylko po to, żeby ekran startowy działał od razu.
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  );
+
   const renderTab = () => {
     if (activeTab === "quiz") return <QuizView />;
     if (activeTab === "decks") return <DecksView />;
@@ -6378,6 +6570,10 @@ function QuizAbcdApp() {
     if (activeTab === "settings") return <SettingsView />;
     return <QuizView />;
   };
+
+  if (!authUser) {
+    return <LandingView />;
+  }
 
   return (
     <>

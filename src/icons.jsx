@@ -54,6 +54,7 @@ export const IcoFileText = ({ size = 16 }) => <Icon size={size} d="M14 2H7a2 2 0
 export const IcoVideo = ({ size = 16 }) => <Icon size={size} d="M15 10 20 7v10l-5-3M4 6h9a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z" />;
 export const IcoPlay = ({ size = 16 }) => <Icon size={size} d="m8 5 11 7-11 7V5z" />;
 export const IcoLayers = ({ size = 16 }) => <Icon size={size} d="m12 3 9 5-9 5-9-5 9-5zm-9 9 9 5 9-5M3 16l9 5 9-5" />;
+export const IcoTrash = ({ size = 16 }) => <Icon size={size} d="M3 6h18M8 6V4h8v2M6 6l1 14a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-14M10 11v6M14 11v6" />;
 
 export const ZenQuizLogo = ({ size = 64 }) => (
   <svg width={size} height={size} viewBox="0 0 72 72" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">

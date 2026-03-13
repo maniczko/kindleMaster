@@ -34,6 +34,7 @@ import {
   IcoVideo,
   IcoPlay,
   IcoLayers,
+  IcoTrash,
   ZenQuizLogo,
 } from "./icons";
 
@@ -194,6 +195,8 @@ const normalizeQuestionType = (value) => {
 
 const normalizeRequestedQuestionTypes = (value) =>
   [...new Set((Array.isArray(value) ? value : []).map((item) => normalizeQuestionType(item)).filter(Boolean))];
+
+const isPersistedQuestionId = (value) => !/^(local|import|txt|generated-local)-/i.test(String(value || ""));
 
 const parseTextAnswers = (value) => {
   const source = Array.isArray(value)
@@ -2112,6 +2115,10 @@ function QuizAbcdApp() {
     status: "idle",
     message: "Dolacz material, wybierz typy pytan i wygeneruj nowa paczke do biblioteki.",
   });
+  const [deckLibraryStatus, setDeckLibraryStatus] = useState({
+    status: "idle",
+    message: "Wybierz deck, aby nim zarzadzac: start, dezaktywacja albo usuniecie z biblioteki.",
+  });
   const [tagSaveState, setTagSaveState] = useState({
     status: "idle",
     message: "Tagi działają jak w Anki: możesz przypisać wiele etykiet i budować sesje po tagach.",
@@ -2165,16 +2172,17 @@ function QuizAbcdApp() {
     return generatorPageTexts.slice(safeStart - 1, safeEnd).join("\n\n").trim();
   }, [generatorPageEnd, generatorPageStart, generatorPageTexts, generatorSourceText]);
   const authAccessToken = String(authSession?.access_token || "").trim();
+  const activeQuestionPool = useMemo(() => questionPool.filter((question) => question.isActive !== false), [questionPool]);
   const availableDecks = useMemo(() => {
-    const list = [...DEFAULT_DECKS, ...questionPool.map((question) => normalizeDeck(question.deck))];
+    const list = [...DEFAULT_DECKS, ...activeQuestionPool.map((question) => normalizeDeck(question.deck))];
     return [ALL_DECKS_LABEL, ...new Map(list.map((deck) => [deck.toLowerCase(), deck])).values()];
-  }, [questionPool]);
+  }, [activeQuestionPool]);
   const deckQuestionPool = useMemo(
     () =>
       selectedDeck === ALL_DECKS_LABEL
-        ? questionPool
-        : questionPool.filter((question) => normalizeDeck(question.deck) === selectedDeck),
-    [questionPool, selectedDeck]
+        ? activeQuestionPool
+        : activeQuestionPool.filter((question) => normalizeDeck(question.deck) === selectedDeck),
+    [activeQuestionPool, selectedDeck]
   );
   const availableTags = useMemo(
     () =>
@@ -2479,7 +2487,7 @@ function QuizAbcdApp() {
 
   const getDeckPool = useCallback(
     (deckName, categoryName = "") => {
-      const scopedPool = questionPool.filter((question) => {
+      const scopedPool = activeQuestionPool.filter((question) => {
         const matchesDeck = normalizeDeck(question.deck) === deckName;
         const matchesCategory = !categoryName || String(question.category || "Bez kategorii") === categoryName;
         return matchesDeck && matchesCategory;
@@ -2487,7 +2495,7 @@ function QuizAbcdApp() {
 
       return filterQuestionsByTags(scopedPool, selectedTagFilters, userTagMap);
     },
-    [questionPool, selectedTagFilters, userTagMap]
+    [activeQuestionPool, selectedTagFilters, userTagMap]
   );
 
   const loadQfromDB = useCallback(async () => {
@@ -3761,30 +3769,48 @@ function QuizAbcdApp() {
 
   const activeDeckName = useMemo(() => {
     if (selectedDeck !== ALL_DECKS_LABEL) return selectedDeck;
-    return questionPool.find((question) => normalizeDeck(question.deck))?.deck || DEFAULT_DECKS[0];
-  }, [selectedDeck, questionPool]);
+    return activeQuestionPool.find((question) => normalizeDeck(question.deck))?.deck || DEFAULT_DECKS[0];
+  }, [selectedDeck, activeQuestionPool]);
 
   const deckGroups = useMemo(() => {
     const order = new Map(DEFAULT_DECKS.map((deck, index) => [deck, index]));
-    const grouped = new Map(DEFAULT_DECKS.map((deck) => [deck, { name: deck, count: 0, categories: [] }]));
+    const grouped = new Map(
+      DEFAULT_DECKS.map((deck) => [
+        deck,
+        { name: deck, count: 0, totalCount: 0, inactiveCount: 0, categories: [], activeCategories: 0, isActive: false },
+      ])
+    );
 
     questionPool.forEach((question) => {
       const deck = normalizeDeck(question.deck);
       const category = String(question.category || "Bez kategorii").trim() || "Bez kategorii";
-      if (!grouped.has(deck)) grouped.set(deck, { name: deck, count: 0, categories: [] });
+      const questionIsActive = question.isActive !== false;
+      if (!grouped.has(deck)) grouped.set(deck, { name: deck, count: 0, totalCount: 0, inactiveCount: 0, categories: [], activeCategories: 0, isActive: false });
 
       const entry = grouped.get(deck);
-      entry.count += 1;
+      entry.totalCount += 1;
+      if (questionIsActive) {
+        entry.count += 1;
+        entry.isActive = true;
+      } else {
+        entry.inactiveCount += 1;
+      }
 
       const categoryEntry = entry.categories.find((item) => item.name === category);
-      if (categoryEntry) categoryEntry.count += 1;
-      else entry.categories.push({ name: category, count: 1 });
+      if (categoryEntry) {
+        categoryEntry.totalCount += 1;
+        if (questionIsActive) categoryEntry.count += 1;
+        else categoryEntry.inactiveCount += 1;
+      } else {
+        entry.categories.push({ name: category, count: questionIsActive ? 1 : 0, totalCount: 1, inactiveCount: questionIsActive ? 0 : 1 });
+      }
     });
 
     return [...grouped.values()]
       .map((entry) => ({
         ...entry,
-        categories: entry.categories.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, "pl")),
+        activeCategories: entry.categories.filter((item) => item.count > 0).length,
+        categories: entry.categories.sort((a, b) => b.totalCount - a.totalCount || a.name.localeCompare(b.name, "pl")),
       }))
       .sort((a, b) => {
         if (a.name === activeDeckName) return -1;
@@ -3963,6 +3989,109 @@ function QuizAbcdApp() {
       startQuiz(pool, quizLength);
     },
     [getDeckPool, startQuiz, quizLength]
+  );
+
+  const syncDeckActiveState = useCallback(
+    async (deckName, nextActive) => {
+      if (!sbEnabled) return;
+      await sbPatch(
+        supabaseConfig,
+        "quiz_questions",
+        `deck=eq.${encodeURIComponent(deckName)}`,
+        { is_active: nextActive },
+        authAccessToken
+      );
+    },
+    [sbEnabled, supabaseConfig, authAccessToken]
+  );
+
+  const setDeckActiveState = useCallback(
+    async (deckName, nextActive) => {
+      const normalizedDeck = normalizeDeck(deckName);
+      const affected = questionPool.filter((question) => normalizeDeck(question.deck) === normalizedDeck);
+      if (!affected.length) return;
+
+      setQuestionPool((prev) =>
+        prev.map((question) =>
+          normalizeDeck(question.deck) === normalizedDeck
+            ? {
+                ...question,
+                isActive: nextActive,
+              }
+            : question
+        )
+      );
+
+      if (!nextActive && selectedDeck === normalizedDeck) {
+        setSelectedDeck(ALL_DECKS_LABEL);
+      } else if (nextActive) {
+        setSelectedDeck(normalizedDeck);
+        setExpandedDecks((prev) => ({ ...prev, [normalizedDeck]: true }));
+      }
+
+      setDeckLibraryStatus({
+        status: "loading",
+        message: `${nextActive ? "Aktywuje" : "Dezaktywuje"} deck "${normalizedDeck}"...`,
+      });
+
+      try {
+        await syncDeckActiveState(normalizedDeck, nextActive);
+        setDeckLibraryStatus({
+          status: "success",
+          message: sbEnabled
+            ? `Deck "${normalizedDeck}" ${nextActive ? "jest znowu aktywny" : "zostal zdezaktywowany"} lokalnie i w Supabase.`
+            : `Deck "${normalizedDeck}" ${nextActive ? "jest znowu aktywny" : "zostal zdezaktywowany"} lokalnie.`,
+        });
+      } catch (error) {
+        setDeckLibraryStatus({
+          status: "error",
+          message: `Deck "${normalizedDeck}" zmienil stan lokalnie, ale synchronizacja z Supabase nie udala sie: ${getErrorText(error)}`,
+        });
+      }
+    },
+    [questionPool, selectedDeck, sbEnabled, syncDeckActiveState]
+  );
+
+  const deleteDeckFromLibrary = useCallback(
+    async (deckName) => {
+      const normalizedDeck = normalizeDeck(deckName);
+      const affected = questionPool.filter((question) => normalizeDeck(question.deck) === normalizedDeck);
+      if (!affected.length) return;
+
+      const persistedRows = affected.filter((question) => isPersistedQuestionId(question.id));
+      setQuestionPool((prev) => prev.filter((question) => normalizeDeck(question.deck) !== normalizedDeck));
+
+      if (selectedDeck === normalizedDeck) {
+        setSelectedDeck(ALL_DECKS_LABEL);
+      }
+
+      setDeckLibraryStatus({
+        status: "loading",
+        message: `Usuwam deck "${normalizedDeck}" z biblioteki...`,
+      });
+
+      if (!persistedRows.length || !sbEnabled) {
+        setDeckLibraryStatus({
+          status: "success",
+          message: `Deck "${normalizedDeck}" usuniety z lokalnej biblioteki.`,
+        });
+        return;
+      }
+
+      try {
+        await syncDeckActiveState(normalizedDeck, false);
+        setDeckLibraryStatus({
+          status: "success",
+          message: `Deck "${normalizedDeck}" usuniety lokalnie i oznaczony jako nieaktywny w Supabase.`,
+        });
+      } catch (error) {
+        setDeckLibraryStatus({
+          status: "error",
+          message: `Deck "${normalizedDeck}" usuniety lokalnie, ale nie udalo sie ukryc go w Supabase: ${getErrorText(error)}`,
+        });
+      }
+    },
+    [questionPool, selectedDeck, sbEnabled, syncDeckActiveState]
   );
 
   const DeckProgressRing = ({ progress = 0, active = false }) => {
@@ -5374,7 +5503,7 @@ function QuizAbcdApp() {
 
   const DecksView = () => {
     const activeDeck = deckGroups.find((deck) => deck.name === activeDeckName) || deckGroups[0] || null;
-    const activeDeckPool = activeDeck ? getDeckPool(activeDeck.name) : [];
+    const deckCanStart = Boolean(activeDeck?.count);
 
     return (
       <div className="deck-view">
@@ -5390,24 +5519,48 @@ function QuizAbcdApp() {
               </div>
             </div>
 
-            <button onClick={() => activeDeck && startDeckSession(activeDeck.name)} style={s.btn("ghost")} disabled={!activeDeck}>
-              <IcoRight size={14} /> Start deck
-            </button>
+            <div className="deck-hero-actions">
+              <button onClick={() => activeDeck && startDeckSession(activeDeck.name)} style={s.btn("ghost")} disabled={!activeDeck || !deckCanStart}>
+                <IcoRight size={14} /> Start deck
+              </button>
+              {activeDeck && (
+                <button onClick={() => setDeckActiveState(activeDeck.name, !activeDeck.isActive)} style={s.btn(activeDeck.isActive ? "soft" : "ghost")}>
+                  {activeDeck.isActive ? <IcoCross size={14} /> : <IcoRefresh size={14} />}
+                  {activeDeck.isActive ? "Dezaktywuj" : "Aktywuj"}
+                </button>
+              )}
+              {activeDeck && (
+                <button onClick={() => deleteDeckFromLibrary(activeDeck.name)} style={s.btn("ghost")}>
+                  <IcoTrash size={14} /> Usun deck
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="deck-hero-metrics">
             <div className="deck-hero-metric">
-              <span className="deck-hero-label">Cards</span>
+              <span className="deck-hero-label">Aktywne karty</span>
               <strong>{activeDeck?.count || 0}</strong>
             </div>
             <div className="deck-hero-metric">
               <span className="deck-hero-label">Kategorie</span>
-              <strong>{activeDeck?.categories.length || 0}</strong>
+              <strong>{activeDeck?.activeCategories || 0}</strong>
             </div>
             <div className="deck-hero-metric">
-              <span className="deck-hero-label">Po tagach</span>
-              <strong>{activeDeckPool.length}</strong>
+              <span className="deck-hero-label">Ukryte</span>
+              <strong>{activeDeck?.inactiveCount || 0}</strong>
             </div>
+          </div>
+
+          <div
+            className="deck-library-status"
+            style={{
+              background: toneForStatus(deckLibraryStatus.status).bg,
+              color: toneForStatus(deckLibraryStatus.status).color,
+              border: `1px solid ${toneForStatus(deckLibraryStatus.status).border}`,
+            }}
+          >
+            {deckLibraryStatus.message}
           </div>
 
           {selectedTagFilters.length > 0 && (
@@ -5418,7 +5571,7 @@ function QuizAbcdApp() {
         </div>
 
         <div className="deck-board" style={{ ...s.card, padding: 14 }}>
-          <div className="deck-section-label">ACTIVE</div>
+          <div className="deck-section-label">DECKS</div>
 
           <div className="deck-list">
             {deckGroups.map((deck) => {
@@ -5441,12 +5594,13 @@ function QuizAbcdApp() {
                       <div className="deck-copy">
                         <div className="deck-title">{deck.name}</div>
                         <div className="deck-subtitle">
-                          {deck.categories.length} kategorii
-                          {isActive ? " - aktywny deck" : ""}
+                          {deck.count} aktywnych / {deck.inactiveCount} ukrytych
+                          {isActive ? " - wybrany deck" : ""}
                         </div>
                       </div>
 
                       <div className="deck-right">
+                        <span className={`deck-state-badge ${deck.isActive ? "active" : "inactive"}`}>{deck.isActive ? "Aktywny" : "Ukryty"}</span>
                         <span className="deck-count">{deck.count} kart</span>
                         <DeckProgressRing progress={getDeckProgress(deck.count)} active={isActive} />
                       </div>
@@ -5461,10 +5615,14 @@ function QuizAbcdApp() {
                           type="button"
                           className="deck-subrow"
                           onClick={() => startDeckCategorySession(deck.name, category.name)}
+                          disabled={!category.count}
                         >
                           <div className="deck-subrow-spacer" />
                           <div className="deck-copy">
                             <div className="deck-title">{category.name}</div>
+                            <div className="deck-subtitle">
+                              {category.count} aktywnych / {category.inactiveCount} ukrytych
+                            </div>
                           </div>
                           <div className="deck-right">
                             <span className="deck-count">{category.count} kart</span>
@@ -6622,7 +6780,7 @@ function QuizAbcdApp() {
             </button>
           </form>
 
-          <div
+          {authStatus.status !== "idle" && <div
             className="landing-auth-status"
             style={{
               background: toneForStatus(authStatus.status).bg,
@@ -6631,9 +6789,9 @@ function QuizAbcdApp() {
             }}
           >
             {authStatus.message}
-          </div>
+          </div>}
 
-          <div className="landing-config-card">
+          {!sbEnabled && <div className="landing-config-card">
             <div className="landing-config-head">
               <span>Supabase connection</span>
               <span className={`landing-config-badge ${sbEnabled ? "ready" : ""}`}>{sbEnabled ? "gotowe" : "wymaga ustawień"}</span>
@@ -6660,7 +6818,7 @@ function QuizAbcdApp() {
             <div className="field-help">
               Jeśli pola są już zapisane w `.env.local` albo localStorage, nie musisz ich ruszać. Ten panel jest tylko po to, żeby ekran startowy działał od razu.
             </div>
-          </div>
+          </div>}
         </aside>
       </div>
     </div>

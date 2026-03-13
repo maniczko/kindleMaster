@@ -847,6 +847,12 @@ button, input, select, textarea { font-family: inherit; }
   flex-wrap: wrap;
 }
 
+.deck-hero-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .deck-hero-title {
   font-size: 30px;
   font-weight: 700;
@@ -866,6 +872,13 @@ button, input, select, textarea { font-family: inherit; }
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
+}
+
+.deck-library-status {
+  padding: 11px 13px;
+  border-radius: 18px;
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .deck-hero-metric {
@@ -992,6 +1005,27 @@ button, input, select, textarea { font-family: inherit; }
   flex-shrink: 0;
 }
 
+.deck-state-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.deck-state-badge.active {
+  background: rgba(76,145,104,.12);
+  color: #2E6642;
+}
+
+.deck-state-badge.inactive {
+  background: rgba(194,118,109,.12);
+  color: #8F4C47;
+}
+
 .deck-count {
   min-width: 72px;
   font-size: 15px;
@@ -1017,6 +1051,11 @@ button, input, select, textarea { font-family: inherit; }
 
 .deck-subrow:hover {
   background: rgba(255,255,255,.56);
+}
+
+.deck-subrow:disabled {
+  opacity: .58;
+  cursor: not-allowed;
 }
 
 .deck-subrow + .deck-subrow {

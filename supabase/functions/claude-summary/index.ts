@@ -83,6 +83,26 @@ function buildStudyPlanPrompt(payload: Record<string, unknown>) {
   ].join("\n");
 }
 
+function buildQuestionGenerationPrompt(payload: Record<string, unknown>) {
+  return [
+    "Jestes systemem generujacym pytania do nauki z dostarczonego materialu.",
+    "Zwroc tylko poprawny JSON bez markdown i bez dodatkowego komentarza.",
+    'Wymagany format: {"questions":[{"questionType":"single_choice|multi_select|flashcard|cloze_deletion|type_answer","question":"...","options":{"A":"...","B":"...","C":"...","D":"..."},"correctAnswers":["..."],"answerBack":"...","explanation":"...","difficulty":"easy|medium|hard","category":"...","tags":["..."]}]}',
+    "Zasady:",
+    "- generuj tylko typy wskazane w payload.questionTypes",
+    "- single_choice: 4 opcje, 1 poprawna odpowiedz, correctAnswers = ['A']",
+    "- multi_select: 4 opcje, 2 lub 3 poprawne odpowiedzi, correctAnswers = ['A','C']",
+    "- flashcard: bez opcji, answerBack wymagane",
+    "- cloze_deletion: pytanie z markerami {{c1::odpowiedz}} lub {{c1::odpowiedz::podpowiedz}}",
+    "- type_answer: bez opcji, correctAnswers to lista akceptowanych odpowiedzi tekstowych",
+    "- explanation ma byc krotkie i praktyczne",
+    "- tags maja byc zwięzłe i przydatne do filtrowania",
+    "- liczba pytan ma byc bliska payload.questionCount",
+    "Dane wejsciowe:",
+    JSON.stringify(payload, null, 2),
+  ].join("\n");
+}
+
 function extractJsonObject(text: string) {
   const fencedMatch = text.match(/```json\s*([\s\S]*?)```/i) || text.match(/```\s*([\s\S]*?)```/i);
   const candidate = fencedMatch ? fencedMatch[1] : text;
@@ -121,6 +141,32 @@ function normalizeStudyPlan(data: any) {
     improvements,
     weeklyPlan,
   };
+}
+
+function normalizeGeneratedQuestions(data: any) {
+  const questions = Array.isArray(data?.questions)
+    ? data.questions
+        .map((item: any) => ({
+          questionType: String(item?.questionType || item?.type || "").trim(),
+          question: String(item?.question || "").trim(),
+          options: typeof item?.options === "object" && item?.options ? item.options : {},
+          correctAnswers: Array.isArray(item?.correctAnswers)
+            ? item.correctAnswers.map((value: any) => String(value || "").trim()).filter(Boolean)
+            : String(item?.correctAnswer || item?.answer || "")
+                .split(/[\n,;|]+/)
+                .map((value) => String(value || "").trim())
+                .filter(Boolean),
+          answerBack: String(item?.answerBack || "").trim(),
+          explanation: String(item?.explanation || "").trim(),
+          difficulty: String(item?.difficulty || "medium").trim(),
+          category: String(item?.category || "Generator").trim(),
+          tags: Array.isArray(item?.tags) ? item.tags.map((value: any) => String(value || "").trim()).filter(Boolean) : [],
+        }))
+        .filter((item: any) => item.question)
+    : [];
+
+  if (!questions.length) throw new Error("Cloud returned empty questions batch");
+  return { ok: true, questions };
 }
 
 Deno.serve(async (req) => {
@@ -178,6 +224,18 @@ Deno.serve(async (req) => {
       });
 
       return json(normalizeStudyPlan(extractJsonObject(text)));
+    }
+
+    if (action === "generate_questions") {
+      const prompt = buildQuestionGenerationPrompt((body?.payload as Record<string, unknown>) || {});
+      const text = await callAnthropic({
+        apiKey: anthropicApiKey,
+        model,
+        prompt,
+        maxTokens: 2200,
+      });
+
+      return json(normalizeGeneratedQuestions(extractJsonObject(text)));
     }
 
     return json({ error: "Unsupported action" }, 400);

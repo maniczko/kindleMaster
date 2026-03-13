@@ -761,6 +761,114 @@ button, input, select, textarea { font-family: inherit; }
   width: 100%;
 }
 
+.generator-layout {
+  display: grid;
+  gap: 16px;
+}
+
+.generator-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.generator-upload {
+  margin-top: 16px;
+  padding: 28px 18px;
+  border-radius: 28px;
+  border: 1.5px solid rgba(117,196,144,.8);
+  background: rgba(224,241,231,.66);
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  text-align: center;
+}
+
+.generator-file-types {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.generator-link-row {
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.generator-config-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.generator-density-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  border: 1px solid rgba(220,215,201,.95);
+  border-radius: 18px;
+  overflow: hidden;
+  background: rgba(255,255,255,.76);
+}
+
+.generator-density-btn {
+  border: 0;
+  background: transparent;
+  padding: 12px 14px;
+  font-size: 15px;
+  color: #5F645C;
+  cursor: pointer;
+  transition: background .18s ease, color .18s ease;
+}
+
+.generator-density-btn.active {
+  background: #E7F0EB;
+  color: #244F36;
+  font-weight: 700;
+}
+
+.generator-types-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.generator-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(220,215,201,.95);
+  background: rgba(255,255,255,.76);
+  color: #5F645C;
+  cursor: pointer;
+}
+
+.generator-check.active {
+  border-color: #8EA4F1;
+  background: #F0F4FF;
+  color: #2C3E50;
+}
+
+.generator-preview-list {
+  display: grid;
+  gap: 12px;
+}
+
+.generator-preview-item {
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(220,215,201,.95);
+  background: rgba(255,255,255,.78);
+}
+
 .settings-grid {
   display: grid;
   grid-template-columns: minmax(250px, 0.72fr) minmax(0, 0.94fr) minmax(0, 0.94fr);
@@ -866,7 +974,10 @@ button, input, select, textarea { font-family: inherit; }
   .mini-grid { grid-template-columns: 1fr; }
   .editor-form-grid,
   .editor-option-grid,
-  .editor-media-grid { grid-template-columns: 1fr; }
+  .editor-media-grid,
+  .generator-config-grid,
+  .generator-types-grid,
+  .generator-link-row { grid-template-columns: 1fr; }
   .settings-section-grid { grid-template-columns: 1fr; }
   .tab-btn.top { min-width: 118px; }
   .deck-row { grid-template-columns: 40px minmax(0, 1fr); }

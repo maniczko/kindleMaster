@@ -48,7 +48,10 @@ const QUESTION_TYPES = [
   { id: "single_choice", label: "Jednokrotny wybor" },
   { id: "multi_select", label: "Wielokrotny wybor" },
   { id: "flashcard", label: "Fiszka" },
+  { id: "cloze_deletion", label: "Cloze deletion" },
+  { id: "type_answer", label: "Type answer" },
 ];
+const CLOZE_PATTERN = /\{\{c\d+::(.*?)(?:::(.*?))?\}\}/gi;
 const DEFAULT_SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || "https://ylqloszldyzpeaikweyl.supabase.co").trim();
 const DEFAULT_SUPABASE_ANON_KEY = (
   import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
@@ -147,6 +150,24 @@ const normalizeQuestionType = (value) => {
   return QUESTION_TYPES.some((item) => item.id === type) ? type : "single_choice";
 };
 
+const parseTextAnswers = (value) => {
+  const source = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+    ? value.split(/\r?\n|;|\|/g)
+    : [];
+
+  const unique = new Map();
+  source.forEach((item) => {
+    const answer = String(item || "").trim();
+    if (!answer) return;
+    const key = answer.toLowerCase();
+    if (!unique.has(key)) unique.set(key, answer);
+  });
+
+  return [...unique.values()];
+};
+
 const parseAnswerKeys = (value) => {
   if (Array.isArray(value)) {
     return [...new Map(value.map((item) => [String(item || "").trim().toUpperCase(), true])).keys()].filter((item) => optionKeys.includes(item));
@@ -164,21 +185,80 @@ const normalizeOptionMap = (source = {}) =>
 
 const getVisibleOptionKeys = (question) => optionKeys.filter((key) => String(question?.options?.[key] || "").trim());
 
-const inferQuestionType = ({ questionType, options, correctAnswers, answerBack }) => {
+const extractClozeEntries = (questionText = "") => {
+  const matches = [];
+  String(questionText || "").replace(CLOZE_PATTERN, (_, answer, hint = "") => {
+    matches.push({
+      answer: String(answer || "").trim(),
+      hint: String(hint || "").trim(),
+    });
+    return _;
+  });
+  return matches;
+};
+
+const hasClozeTokens = (questionText = "") => extractClozeEntries(questionText).length > 0;
+
+const renderClozePrompt = (questionText = "") => {
+  let index = 0;
+  return String(questionText || "").replace(CLOZE_PATTERN, (_, __, hint = "") => {
+    index += 1;
+    return `[${String(hint || `luka ${index}`).trim()}]`;
+  });
+};
+
+const revealClozeText = (questionText = "") => String(questionText || "").replace(CLOZE_PATTERN, (_, answer) => String(answer || "").trim());
+
+const normalizeComparableText = (value) =>
+  String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+
+const matchesTypedAnswer = (submitted, accepted = []) => {
+  const candidate = normalizeComparableText(submitted);
+  if (!candidate) return false;
+  return parseTextAnswers(accepted).some((answer) => normalizeComparableText(answer) === candidate);
+};
+
+const matchesClozeAnswers = (submitted = [], accepted = []) => {
+  const left = (submitted || []).map((item) => normalizeComparableText(item)).filter(Boolean);
+  const right = parseTextAnswers(accepted).map((item) => normalizeComparableText(item)).filter(Boolean);
+  return left.length === right.length && left.every((item, index) => item === right[index]);
+};
+
+const getQuestionDisplayText = (question) =>
+  normalizeQuestionType(question?.questionType) === "cloze_deletion" ? renderClozePrompt(question?.question || "") : String(question?.question || "").trim();
+
+const inferQuestionType = ({ questionType, question, options, correctAnswers, answerBack }) => {
   const explicit = String(questionType || "").trim().toLowerCase();
   if (QUESTION_TYPES.some((item) => item.id === explicit)) return explicit;
 
   const visibleOptions = optionKeys.filter((key) => String(options?.[key] || "").trim());
   const keys = parseAnswerKeys(correctAnswers);
+  const textAnswers = parseTextAnswers(correctAnswers);
 
+  if (hasClozeTokens(question)) return "cloze_deletion";
+  if (!visibleOptions.length && textAnswers.length) return "type_answer";
   if (visibleOptions.length < 2 && String(answerBack || "").trim()) return "flashcard";
   if (keys.length > 1) return "multi_select";
   return "single_choice";
 };
 
-const normalizeCorrectAnswers = ({ questionType, correctAnswers, correct }) => {
+const normalizeCorrectAnswers = ({ questionType, question, correctAnswers, correct, answerBack }) => {
   const type = normalizeQuestionType(questionType);
   if (type === "flashcard") return [];
+  if (type === "type_answer") {
+    const parsed = parseTextAnswers(correctAnswers);
+    return parsed.length ? parsed : parseTextAnswers(answerBack);
+  }
+  if (type === "cloze_deletion") {
+    const parsed = parseTextAnswers(correctAnswers);
+    const derived = extractClozeEntries(question).map((item) => item.answer);
+    return parsed.length ? parsed : derived;
+  }
 
   const parsed = parseAnswerKeys(correctAnswers);
   const fallback = parseAnswerKeys(correct);
@@ -212,6 +292,13 @@ const formatQuestionAnswer = (question, answer) => {
     if (answer === "incorrect") return "Do poprawy";
     return String(question?.answerBack || question?.explanation || "Brak odpowiedzi.").trim();
   }
+  if (type === "type_answer") {
+    return parseTextAnswers(Array.isArray(answer) ? answer : [answer]).join(" | ") || parseTextAnswers(question?.correctAnswers || []).join(" | ");
+  }
+  if (type === "cloze_deletion") {
+    if (Array.isArray(answer) && answer.length) return answer.map((item) => String(item || "").trim()).filter(Boolean).join(" | ");
+    return revealClozeText(question?.question || "") || parseTextAnswers(question?.correctAnswers || []).join(" | ");
+  }
 
   return formatAnswerKeys(Array.isArray(answer) ? answer : [answer], question);
 };
@@ -223,18 +310,25 @@ const createQuestionRecord = (input = {}, index = 0) => {
     C: input.optionC ?? input.option_c,
     D: input.optionD ?? input.option_d,
   });
+  const questionText = String(input.question || input.question_text || "").trim();
+  const answerBack = String(input.answerBack ?? input.answer_back ?? input.answer ?? input.explanation ?? "").trim();
   const questionType = inferQuestionType({
     questionType: input.questionType ?? input.question_type ?? input.type,
+    question: questionText,
     options,
     correctAnswers: input.correctAnswers ?? input.correct_answers ?? input.correct_answer ?? input.correct,
-    answerBack: input.answerBack ?? input.answer_back ?? input.answer,
+    answerBack,
   });
   const correctAnswers = normalizeCorrectAnswers({
     questionType,
+    question: questionText,
     correctAnswers: input.correctAnswers ?? input.correct_answers,
     correct: input.correct ?? input.correct_answer,
+    answerBack,
   });
-  const answerBack = String(input.answerBack ?? input.answer_back ?? input.answer ?? input.explanation ?? "").trim();
+  const normalizedAnswerBack =
+    answerBack ||
+    (questionType === "cloze_deletion" ? revealClozeText(questionText) : questionType === "type_answer" ? correctAnswers[0] || "" : "");
   const explanation = String(input.explanation ?? input.answerBack ?? input.answer_back ?? "Brak wyjasnienia.").trim() || "Brak wyjasnienia.";
   const imageUrl = String(input.imageUrl ?? input.image_url ?? input.image ?? "").trim();
   const audioUrl = String(input.audioUrl ?? input.audio_url ?? input.audio ?? "").trim();
@@ -243,11 +337,11 @@ const createQuestionRecord = (input = {}, index = 0) => {
     id: input.id ?? `local-${Date.now()}-${index}`,
     questionNo: Number(input.questionNo ?? input.question_no ?? index + 1) || index + 1,
     questionType,
-    question: String(input.question || input.question_text || "").trim(),
+    question: questionText,
     options,
-    correct: correctAnswers[0] || null,
+    correct: questionType === "single_choice" ? correctAnswers[0] || null : null,
     correctAnswers,
-    answerBack,
+    answerBack: normalizedAnswerBack,
     explanation,
     imageUrl,
     audioUrl,
@@ -282,11 +376,13 @@ const questionToSupabaseRow = (question) => ({
   option_b: String(question.options?.B || "").trim() || null,
   option_c: String(question.options?.C || "").trim() || null,
   option_d: String(question.options?.D || "").trim() || null,
-  correct_answer: question.correct || null,
+  correct_answer: normalizeQuestionType(question.questionType) === "single_choice" ? question.correct || null : null,
   correct_answers: normalizeCorrectAnswers({
     questionType: question.questionType,
+    question: question.question,
     correctAnswers: question.correctAnswers,
     correct: question.correct,
+    answerBack: question.answerBack,
   }),
   answer_back: String(question.answerBack || "").trim() || null,
   explanation: String(question.explanation || "").trim() || null,
@@ -783,12 +879,13 @@ const parseImportedRows = (rows, sourceFile = null) => {
       const answerBack = row.answer_back ?? row.answerBack ?? row.answer ?? row.back ?? "";
       const questionType = inferQuestionType({
         questionType: row.question_type ?? row.QuestionType ?? row.type ?? row.Type,
+        question: questionText,
         options,
         correctAnswers: row.correct_answers ?? row.correct ?? row.Correct ?? row.correct_answer,
         answerBack,
       });
 
-      if (questionType !== "flashcard" && optionKeys.filter((key) => options[key]).length < 2) return null;
+      if (!["flashcard", "type_answer", "cloze_deletion"].includes(questionType) && optionKeys.filter((key) => options[key]).length < 2) return null;
 
       return createQuestionRecord(
         {
@@ -826,6 +923,212 @@ const parseImportedTxt = (text, sourceFile = "import.txt") =>
       index
     )
   );
+
+const MATERIAL_STOPWORDS = new Set([
+  "this",
+  "that",
+  "these",
+  "those",
+  "with",
+  "from",
+  "into",
+  "about",
+  "they",
+  "them",
+  "their",
+  "there",
+  "have",
+  "will",
+  "would",
+  "could",
+  "should",
+  "your",
+  "ours",
+  "because",
+  "przez",
+  "ktore",
+  "ktory",
+  "oraz",
+  "oraz",
+  "jest",
+  "byla",
+  "byly",
+  "tego",
+  "tegoroczny",
+  "dla",
+  "oraz",
+  "that",
+  "what",
+]);
+
+const splitMaterialIntoSentences = (materialText = "") => {
+  const normalized = String(materialText || "")
+    .replace(/\r/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!normalized) return [];
+
+  const chunks = normalized
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((item) => item.trim())
+    .filter((item) => item.length >= 40);
+
+  const unique = new Map();
+  chunks.forEach((item) => {
+    const key = item.toLowerCase();
+    if (!unique.has(key)) unique.set(key, item);
+  });
+
+  return [...unique.values()];
+};
+
+const pickClozeToken = (sentence = "", used = new Set()) => {
+  const tokens = String(sentence || "")
+    .match(/[\p{L}\p{N}\-]{4,}/gu)
+    ?.map((item) => item.trim())
+    .filter((item) => item && !MATERIAL_STOPWORDS.has(item.toLowerCase()))
+    .sort((left, right) => right.length - left.length) || [];
+
+  return tokens.find((token) => !used.has(token.toLowerCase())) || tokens[0] || "";
+};
+
+const replaceTokenOnce = (sentence = "", token = "", replacement = "_____") => {
+  if (!token) return sentence;
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return String(sentence || "").replace(new RegExp(`\\b${escaped}\\b`, "i"), replacement);
+};
+
+const estimateQuestionCount = (density) => {
+  if (density === "low") return 6;
+  if (density === "high") return 16;
+  return 10;
+};
+
+const buildLocalGeneratedQuestions = ({ materialText, questionTypes, questionCount, deck, sourceName, startQuestionNo = 1 }) => {
+  const sentences = splitMaterialIntoSentences(materialText).slice(0, Math.max(questionCount * 2, 12));
+  if (!sentences.length) return [];
+
+  const selectedTypes = questionTypes.length ? questionTypes : ["cloze_deletion", "type_answer"];
+  const localTypes = selectedTypes.filter((type) => ["cloze_deletion", "type_answer", "flashcard"].includes(type));
+  const generationTypes = localTypes.length ? localTypes : ["cloze_deletion", "type_answer"];
+  const usedTokens = new Set();
+  const generated = [];
+
+  for (let index = 0; index < questionCount; index += 1) {
+    const sentence = sentences[index % sentences.length];
+    const type = generationTypes[index % generationTypes.length];
+    const token = pickClozeToken(sentence, usedTokens);
+    if (token) usedTokens.add(token.toLowerCase());
+
+    const base = {
+      id: `generated-local-${Date.now()}-${index}`,
+      questionNo: startQuestionNo + index,
+      deck,
+      category: sourceName || "Generator",
+      difficulty: index % 4 === 0 ? "hard" : index % 3 === 0 ? "easy" : "medium",
+      tags: [`generator::${type}`, "source::material"],
+      sourceType: "generator-local",
+      sourceFile: sourceName || null,
+    };
+
+    if (type === "flashcard") {
+      generated.push(
+        createQuestionRecord(
+          {
+            ...base,
+            questionType: "flashcard",
+            question: sentence,
+            answerBack: sentence,
+            explanation: "Lokalny fallback wygenerowal fiszke na podstawie materialu.",
+          },
+          index
+        )
+      );
+      continue;
+    }
+
+    if (!token) continue;
+
+    if (type === "type_answer") {
+      generated.push(
+        createQuestionRecord(
+          {
+            ...base,
+            questionType: "type_answer",
+            question: `Uzupelnij brakujace pojecie na podstawie materialu: ${replaceTokenOnce(sentence, token, "_____")}`,
+            correctAnswers: [token],
+            answerBack: sentence,
+            explanation: "Wpisz brakujace pojecie albo zwrot wynikajacy z materialu.",
+          },
+          index
+        )
+      );
+      continue;
+    }
+
+    generated.push(
+      createQuestionRecord(
+        {
+          ...base,
+          questionType: "cloze_deletion",
+          question: replaceTokenOnce(sentence, token, `{{c1::${token}}}`),
+          answerBack: sentence,
+          explanation: "Uzupelnij luke zgodnie z kontekstem materialu.",
+        },
+        index
+      )
+    );
+  }
+
+  return generated.filter(Boolean);
+};
+
+const normalizeGeneratedQuestionBatch = ({ questions, defaultDeck, sourceName, startQuestionNo = 1 }) => {
+  const source = Array.isArray(questions) ? questions : [];
+
+  return source
+    .map((question, index) =>
+      createQuestionRecord(
+        {
+          ...question,
+          id: question.id || `generated-cloud-${Date.now()}-${index}`,
+          questionNo: question.questionNo ?? question.question_no ?? startQuestionNo + index,
+          deck: question.deck || defaultDeck,
+          category: question.category || sourceName || "Generator",
+          tags: mergeTags(question.tags || [], [`generator::${normalizeQuestionType(question.questionType || question.type)}`]),
+          sourceType: question.sourceType || "generator-cloud",
+          sourceFile: question.sourceFile || sourceName || null,
+        },
+        index
+      )
+    )
+    .filter((question) => {
+      const type = normalizeQuestionType(question.questionType);
+      if (!question.question) return false;
+      if (type === "flashcard") return Boolean(question.answerBack || question.explanation);
+      if (type === "type_answer") return parseTextAnswers(question.correctAnswers || []).length > 0;
+      if (type === "cloze_deletion") return extractClozeEntries(question.question).length > 0;
+      return getVisibleOptionKeys(question).length >= 2;
+    });
+};
+
+async function extractMaterialTextFromFile(file) {
+  const name = String(file?.name || "").toLowerCase();
+  if (!file) return "";
+
+  if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
+    const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" });
+    return workbook.SheetNames.map((sheetName) => XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName])).join("\n\n");
+  }
+
+  if (name.endsWith(".csv") || name.endsWith(".txt") || name.endsWith(".md") || name.endsWith(".json")) {
+    return await file.text();
+  }
+
+  if (String(file.type || "").startsWith("text/")) return await file.text();
+  return "";
+}
 
 function buildCalDays(month) {
   const start = som(month);
@@ -1116,6 +1419,43 @@ async function fetchCloudStudyPlan({
   });
 
   return normalizeStudyPlanResponse(data);
+}
+
+async function fetchCloudGeneratedQuestions({
+  supabaseConfig,
+  model,
+  cloudApiKey,
+  sourceName,
+  materialText,
+  questionTypes,
+  questionCount,
+  language,
+  deck,
+  startQuestionNo,
+}) {
+  const data = await invokeCloudFunction({
+    supabaseConfig,
+    body: {
+      action: "generate_questions",
+      model: model || DEFAULT_MODEL,
+      apiKey: cloudApiKey?.trim() || undefined,
+      payload: {
+        sourceName,
+        materialText,
+        questionTypes,
+        questionCount,
+        language,
+        deck,
+      },
+    },
+  });
+
+  return normalizeGeneratedQuestionBatch({
+    questions: data?.questions || [],
+    defaultDeck: deck,
+    sourceName,
+    startQuestionNo,
+  });
 }
 
 const SAMPLES = [
@@ -1652,12 +1992,25 @@ function QuizAbcdApp() {
     status: "idle",
     message: "Dodawaj i edytuj pytania jak w Anki. Zapis lokalny jest natychmiastowy, a przy poprawnej konfiguracji moze tez trafic do Supabase.",
   });
+  const [generatorSourceName, setGeneratorSourceName] = useState("");
+  const [generatorSourceText, setGeneratorSourceText] = useState("");
+  const [generatorLink, setGeneratorLink] = useState("");
+  const [generatorDensity, setGeneratorDensity] = useState("med");
+  const [generatorDeckName, setGeneratorDeckName] = useState(() => (selectedDeck !== ALL_DECKS_LABEL ? selectedDeck : DEFAULT_DECK_NAME));
+  const [generatorLanguage, setGeneratorLanguage] = useState("Polish");
+  const [generatorQuestionTypes, setGeneratorQuestionTypes] = useState(() => ["single_choice", "type_answer", "cloze_deletion"]);
+  const [generatorQuestions, setGeneratorQuestions] = useState([]);
+  const [generatorStatus, setGeneratorStatus] = useState({
+    status: "idle",
+    message: "Dolacz material, wybierz typy pytan i wygeneruj nowa paczke do biblioteki.",
+  });
   const [tagSaveState, setTagSaveState] = useState({
     status: "idle",
     message: "Tagi działają jak w Anki: możesz przypisać wiele etykiet i budować sesje po tagach.",
   });
 
   const fileRef = useRef(null);
+  const generatorFileRef = useRef(null);
 
   useEffect(() => {
     saveCloudSettings({ cloudApiEnabled, cloudModel });
@@ -1696,6 +2049,7 @@ function QuizAbcdApp() {
   );
   const sbEnabled = useMemo(() => hasSupabaseConfig(supabaseConfig), [supabaseConfig]);
   const manualCloudApiKey = looksLikeAnthropicKey(cloudApiKeyDraft) ? cloudApiKeyDraft.trim() : "";
+  const generatorQuestionCount = useMemo(() => estimateQuestionCount(generatorDensity), [generatorDensity]);
   const authAccessToken = String(authSession?.access_token || "").trim();
   const availableDecks = useMemo(() => {
     const list = [...DEFAULT_DECKS, ...questionPool.map((question) => normalizeDeck(question.deck))];
@@ -1730,9 +2084,11 @@ function QuizAbcdApp() {
   const currentDeck = normalizeDeck(current?.deck, selectedDeck === ALL_DECKS_LABEL ? DEFAULT_DECK_NAME : selectedDeck);
   const currentQuestionType = normalizeQuestionType(current?.questionType);
   const currentVisibleOptions = useMemo(() => getVisibleOptionKeys(current), [current]);
+  const currentClozeEntries = useMemo(() => extractClozeEntries(current?.question || ""), [current]);
   const currentAnswer = answers[current?.id] || null;
   const currentQuestionTags = useMemo(() => getQuestionTags(current, userTagMap), [current, userTagMap]);
   const currentUserTags = useMemo(() => normalizeTags(userTagMap[String(current?.id)] || []), [current, userTagMap]);
+  const currentPromptText = useMemo(() => getQuestionDisplayText(current), [current]);
   const answeredCount = Object.keys(answers).length;
   const score = useMemo(() => Object.values(answers).filter((a) => a.isCorrect).length, [answers]);
 
@@ -1740,9 +2096,17 @@ function QuizAbcdApp() {
     const type = normalizeQuestionType(question?.questionType);
     if (answer) {
       if (type === "multi_select") return Array.isArray(answer.selected) ? answer.selected : [];
+      if (type === "cloze_deletion") {
+        if (Array.isArray(answer.selected)) return answer.selected;
+        return extractClozeEntries(question?.question || "").map(() => "");
+      }
+      if (type === "type_answer") return String(answer.selected || "");
       return answer.selected ?? null;
     }
-    return type === "multi_select" ? [] : null;
+    if (type === "multi_select") return [];
+    if (type === "cloze_deletion") return extractClozeEntries(question?.question || "").map(() => "");
+    if (type === "type_answer") return "";
+    return null;
   }, []);
 
   const createEditorDraft = useCallback(
@@ -1752,6 +2116,7 @@ function QuizAbcdApp() {
         return {
           ...normalized,
           tagsText: normalizeTags(normalized.tags).join(" "),
+          acceptedAnswersText: parseTextAnswers(normalized.correctAnswers || []).join("\n"),
         };
       }
 
@@ -1777,6 +2142,7 @@ function QuizAbcdApp() {
           nextQuestionNo
         ),
         tagsText: "",
+        acceptedAnswersText: "",
       };
     },
     [questionPool, selectedDeck]
@@ -2347,6 +2713,42 @@ function QuizAbcdApp() {
     [commitAnswer, currentAnswer, currentQuestionType, showResult]
   );
 
+  const updateTypeAnswerDraft = useCallback(
+    (value) => {
+      if (currentQuestionType !== "type_answer" || currentAnswer || showResult) return;
+      setSelected(String(value || ""));
+    },
+    [currentAnswer, currentQuestionType, showResult]
+  );
+
+  const submitTypeAnswer = useCallback(() => {
+    if (currentQuestionType !== "type_answer" || currentAnswer || showResult) return;
+    const draft = String(selected || "").trim();
+    if (!draft) return;
+    commitAnswer(draft, matchesTypedAnswer(draft, current.correctAnswers || []));
+  }, [commitAnswer, current.correctAnswers, currentAnswer, currentQuestionType, selected, showResult]);
+
+  const updateClozeDraft = useCallback(
+    (blankIndex, value) => {
+      if (currentQuestionType !== "cloze_deletion" || currentAnswer || showResult) return;
+      setSelected((prev) => {
+        const base =
+          Array.isArray(prev) && prev.length === currentClozeEntries.length ? [...prev] : currentClozeEntries.map(() => "");
+        base[blankIndex] = String(value || "");
+        return base;
+      });
+    },
+    [currentAnswer, currentClozeEntries, currentQuestionType, showResult]
+  );
+
+  const submitClozeAnswer = useCallback(() => {
+    if (currentQuestionType !== "cloze_deletion" || currentAnswer || showResult) return;
+    const draft =
+      Array.isArray(selected) && selected.length === currentClozeEntries.length ? selected.map((item) => String(item || "").trim()) : currentClozeEntries.map(() => "");
+    if (!draft.length || draft.some((item) => !item)) return;
+    commitAnswer(draft, matchesClozeAnswers(draft, current.correctAnswers || []));
+  }, [commitAnswer, current.correctAnswers, currentAnswer, currentClozeEntries, currentQuestionType, selected, showResult]);
+
   const next = useCallback(() => {
     if (idx < total - 1) {
       const ni = idx + 1;
@@ -2569,6 +2971,146 @@ function QuizAbcdApp() {
     [quizLength, startQuiz]
   );
 
+  const toggleGeneratorQuestionType = useCallback((type) => {
+    setGeneratorQuestionTypes((prev) => {
+      const exists = prev.includes(type);
+      if (exists) return prev.filter((item) => item !== type);
+      return [...prev, type];
+    });
+  }, []);
+
+  const handleGeneratorFile = useCallback(async (file) => {
+    if (!file) return;
+
+    setGeneratorStatus({
+      status: "loading",
+      message: `Czytam material z pliku "${file.name}"...`,
+    });
+
+    try {
+      const text = await extractMaterialTextFromFile(file);
+      setGeneratorSourceName(file.name);
+      setGeneratorSourceText(text);
+      if (!text.trim()) {
+        setGeneratorStatus({
+          status: "error",
+          message: "Ten typ pliku nie daje sie jeszcze odczytac bez backendowego parsera. Najlepiej dzialaja txt, csv, json i xlsx.",
+        });
+        return;
+      }
+
+      setGeneratorStatus({
+        status: "success",
+        message: `Material zaladowany. Odczytano ${text.trim().length} znakow z "${file.name}".`,
+      });
+    } catch (error) {
+      setGeneratorStatus({ status: "error", message: getErrorText(error) });
+    }
+  }, []);
+
+  const handleGeneratorFileChange = useCallback(
+    async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      await handleGeneratorFile(file);
+      e.target.value = "";
+    },
+    [handleGeneratorFile]
+  );
+
+  const generateQuestionsFromMaterial = useCallback(async () => {
+    const materialText = String(generatorSourceText || "").trim();
+    const sourceName = String(generatorSourceName || generatorLink || "Material").trim();
+    const deck = normalizeDeck(generatorDeckName, DEFAULT_DECK_NAME);
+    const startQuestionNo = Math.max(...questionPool.map((item) => Number(item.questionNo || 0)), 0) + 1;
+
+    if (!materialText) {
+      setGeneratorStatus({
+        status: "error",
+        message: "Najpierw wgraj plik tekstowy albo wklej material do generatora.",
+      });
+      return;
+    }
+
+    if (!generatorQuestionTypes.length) {
+      setGeneratorStatus({
+        status: "error",
+        message: "Wybierz przynajmniej jeden typ pytania do wygenerowania.",
+      });
+      return;
+    }
+
+    setGeneratorStatus({
+      status: "loading",
+      message: "Generuje pytania z materialu...",
+    });
+
+    let generated = [];
+    let usedFallback = false;
+
+    if (cloudApiEnabled && sbEnabled) {
+      try {
+        generated = await fetchCloudGeneratedQuestions({
+          supabaseConfig,
+          model: cloudModel.trim() || DEFAULT_MODEL,
+          cloudApiKey: manualCloudApiKey,
+          sourceName,
+          materialText,
+          questionTypes: generatorQuestionTypes,
+          questionCount: generatorQuestionCount,
+          language: generatorLanguage,
+          deck,
+          startQuestionNo,
+        });
+      } catch {
+        usedFallback = true;
+      }
+    } else {
+      usedFallback = true;
+    }
+
+    if (!generated.length) {
+      generated = buildLocalGeneratedQuestions({
+        materialText,
+        questionTypes: generatorQuestionTypes,
+        questionCount: generatorQuestionCount,
+        deck,
+        sourceName,
+        startQuestionNo,
+      });
+      usedFallback = true;
+    }
+
+    if (!generated.length) {
+      setGeneratorStatus({
+        status: "error",
+        message: "Nie udalo sie wygenerowac pytan z tego materialu. Sprobuj krotszy, bardziej tekstowy dokument.",
+      });
+      return;
+    }
+
+    setGeneratorQuestions(generated);
+    setQuestionPool((prev) => mergeQuestionLibraries(prev, generated));
+    setGeneratorStatus({
+      status: "success",
+      message: `${usedFallback ? "Wygenerowano lokalnie" : "Cloud wygenerowal"} ${generated.length} pytan i dodano je do biblioteki. Mozesz od razu wystartowac sesje z preview.`,
+    });
+  }, [
+    cloudApiEnabled,
+    cloudModel,
+    generatorDeckName,
+    generatorLanguage,
+    generatorLink,
+    generatorQuestionCount,
+    generatorQuestionTypes,
+    generatorSourceName,
+    generatorSourceText,
+    manualCloudApiKey,
+    questionPool,
+    sbEnabled,
+    supabaseConfig,
+  ]);
+
   useEffect(() => {
     const h = (e) => {
       if (e.target?.tagName === "INPUT" || e.target?.tagName === "TEXTAREA" || e.target?.tagName === "SELECT") return;
@@ -2598,6 +3140,25 @@ function QuizAbcdApp() {
       if (e.key === "Enter" && currentQuestionType === "multi_select" && !currentAnswer && Array.isArray(selected) && selected.length) {
         e.preventDefault();
         submitMultiSelectAnswer();
+        return;
+      }
+
+      if (e.key === "Enter" && currentQuestionType === "type_answer" && !currentAnswer && String(selected || "").trim()) {
+        e.preventDefault();
+        submitTypeAnswer();
+        return;
+      }
+
+      if (
+        e.key === "Enter" &&
+        currentQuestionType === "cloze_deletion" &&
+        !currentAnswer &&
+        Array.isArray(selected) &&
+        selected.length &&
+        selected.every((item) => String(item || "").trim())
+      ) {
+        e.preventDefault();
+        submitClozeAnswer();
         return;
       }
 
@@ -2637,7 +3198,9 @@ function QuizAbcdApp() {
     selected,
     showResult,
     startQuiz,
+    submitClozeAnswer,
     submitMultiSelectAnswer,
+    submitTypeAnswer,
     toggleMultiSelectChoice,
     quizLength,
   ]);
@@ -2737,6 +3300,10 @@ function QuizAbcdApp() {
       {
         ...editorDraft,
         tags: editorDraft.tagsText,
+        correctAnswers:
+          editorDraft.questionType === "type_answer" || editorDraft.questionType === "cloze_deletion"
+            ? editorDraft.acceptedAnswersText
+            : editorDraft.correctAnswers,
         sourceType: editorDraft.sourceType || "editor-local",
       },
       0
@@ -2751,6 +3318,25 @@ function QuizAbcdApp() {
     if (normalized.questionType === "flashcard") {
       if (!String(normalized.answerBack || normalized.explanation || "").trim()) {
         setEditorStatus({ status: "error", message: "Fiszka wymaga pola odpowiedzi po drugiej stronie." });
+        return;
+      }
+    } else if (normalized.questionType === "type_answer") {
+      if (!normalized.correctAnswers.length) {
+        setEditorStatus({ status: "error", message: "Type answer potrzebuje co najmniej jednej akceptowanej odpowiedzi." });
+        return;
+      }
+    } else if (normalized.questionType === "cloze_deletion") {
+      const clozeEntries = extractClozeEntries(normalized.question);
+      if (!clozeEntries.length) {
+        setEditorStatus({ status: "error", message: "Cloze deletion wymaga skladni {{c1::odpowiedz}} w tresci pytania." });
+        return;
+      }
+      if (!normalized.correctAnswers.length) {
+        setEditorStatus({ status: "error", message: "Nie udalo sie odczytac odpowiedzi cloze. Dodaj markery {{c1::...}} albo uzupelnij liste odpowiedzi." });
+        return;
+      }
+      if (parseTextAnswers(editorDraft.acceptedAnswersText).length && normalized.correctAnswers.length !== clozeEntries.length) {
+        setEditorStatus({ status: "error", message: "Liczba odpowiedzi cloze musi odpowiadac liczbie luk w pytaniu." });
         return;
       }
     } else {
@@ -3177,6 +3763,7 @@ function QuizAbcdApp() {
   const TABS = [
     { id: "quiz", label: "Quiz", icon: <IcoBrain size={15} /> },
     { id: "decks", label: "Decki", icon: <IcoBook size={15} /> },
+    { id: "generator", label: "Generator", icon: <IcoUpload size={15} /> },
     { id: "editor", label: "Edytor", icon: <IcoEdit size={15} /> },
     { id: "results", label: "Wyniki", icon: <IcoTrophy size={15} /> },
     { id: "calendar", label: "Kalendarz", icon: <IcoCalendar size={15} /> },
@@ -3264,6 +3851,13 @@ function QuizAbcdApp() {
   const QuizView = () => {
     const diffColor = { easy: C.success, medium: C.yellow, hard: C.error }[current.difficulty || "medium"];
     const multiSelectDraft = Array.isArray(currentAnswer?.selected) ? currentAnswer.selected : Array.isArray(selected) ? selected : [];
+    const typedAnswerDraft = currentAnswer?.selected ? String(currentAnswer.selected || "") : String(selected || "");
+    const clozeDraft =
+      Array.isArray(currentAnswer?.selected) && currentAnswer.selected.length
+        ? currentAnswer.selected
+        : Array.isArray(selected) && selected.length === currentClozeEntries.length
+        ? selected
+        : currentClozeEntries.map(() => "");
     const flashcardRevealed = currentQuestionType === "flashcard" && (selected === "__revealed__" || Boolean(currentAnswer));
     const canGoNext = Boolean(currentAnswer);
     const answerHint =
@@ -3271,6 +3865,10 @@ function QuizAbcdApp() {
         ? "Zaznacz wszystkie poprawne odpowiedzi, a potem kliknij Sprawdz."
         : currentQuestionType === "flashcard"
         ? "Sprobuj odpowiedziec z pamieci, odkryj odpowiedz i ocen siebie."
+        : currentQuestionType === "type_answer"
+        ? "Wpisz odpowiedz wlasnymi slowami. System porowna ja z akceptowanym wzorcem."
+        : currentQuestionType === "cloze_deletion"
+        ? "Uzupelnij wszystkie luki i sprawdz pelne zdanie po wyslaniu odpowiedzi."
         : "Wybierz jedna odpowiedz. Po wyborze od razu zobaczysz informacje zwrotna i mozesz przejsc dalej.";
 
     return (
@@ -3383,7 +3981,7 @@ function QuizAbcdApp() {
               letterSpacing: "-0.01em",
             }}
           >
-            {current.question}
+            {currentPromptText}
           </h2>
 
           <QuestionMediaBlock imageUrl={current.imageUrl} audioUrl={current.audioUrl} />
@@ -3534,6 +4132,73 @@ function QuizAbcdApp() {
                   onClick={submitMultiSelectAnswer}
                   disabled={!multiSelectDraft.length}
                   style={{ ...s.btn("soft"), opacity: multiSelectDraft.length ? 1 : 0.5 }}
+                >
+                  <IcoCheck size={14} /> Sprawdz
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {currentQuestionType === "type_answer" && (
+          <div style={{ ...s.card, padding: 20, background: "rgba(255,255,255,.86)", display: "grid", gap: 12 }}>
+            <textarea
+              value={typedAnswerDraft}
+              onChange={(e) => updateTypeAnswerDraft(e.target.value)}
+              rows={3}
+              disabled={Boolean(currentAnswer)}
+              placeholder="Wpisz odpowiedz"
+              style={{ ...s.input, resize: "vertical", opacity: currentAnswer ? 0.78 : 1 }}
+            />
+
+            {!currentAnswer && (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                <span className="soft-chip">{String(typedAnswerDraft || "").trim() ? "Odpowiedz gotowa do sprawdzenia" : "Wpisz odpowiedz"}</span>
+                <button
+                  onClick={submitTypeAnswer}
+                  disabled={!String(typedAnswerDraft || "").trim()}
+                  style={{ ...s.btn("soft"), opacity: String(typedAnswerDraft || "").trim() ? 1 : 0.5 }}
+                >
+                  <IcoCheck size={14} /> Sprawdz
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {currentQuestionType === "cloze_deletion" && (
+          <div style={{ ...s.card, padding: 20, background: "rgba(255,255,255,.86)", display: "grid", gap: 12 }}>
+            <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.7 }}>
+              Uzupelnij {currentClozeEntries.length} {currentClozeEntries.length === 1 ? "brakujacy fragment" : "brakujace fragmenty"}.
+            </div>
+
+            <div className="generator-config-grid">
+              {currentClozeEntries.map((entry, blankIndex) => (
+                <div key={`${current.id}-blank-${blankIndex}`}>
+                  <label style={s.label}>Luka {blankIndex + 1}</label>
+                  <input
+                    value={clozeDraft[blankIndex] || ""}
+                    onChange={(e) => updateClozeDraft(blankIndex, e.target.value)}
+                    disabled={Boolean(currentAnswer)}
+                    placeholder={entry.hint || `Odpowiedz ${blankIndex + 1}`}
+                    style={{ ...s.input, opacity: currentAnswer ? 0.78 : 1 }}
+                  />
+                </div>
+              ))}
+            </div>
+
+            {!currentAnswer && (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                <span className="soft-chip">
+                  {clozeDraft.filter((item) => String(item || "").trim()).length}/{currentClozeEntries.length} uzupelnionych
+                </span>
+                <button
+                  onClick={submitClozeAnswer}
+                  disabled={!clozeDraft.length || clozeDraft.some((item) => !String(item || "").trim())}
+                  style={{
+                    ...s.btn("soft"),
+                    opacity: clozeDraft.length && clozeDraft.every((item) => String(item || "").trim()) ? 1 : 0.5,
+                  }}
                 >
                   <IcoCheck size={14} /> Sprawdz
                 </button>
@@ -3761,6 +4426,59 @@ function QuizAbcdApp() {
                 {chatRes}
               </div>
             )}
+          </div>
+        )}
+
+        {currentQuestionType === "type_answer" && currentAnswer && (
+          <div style={{ ...s.card, padding: "18px 20px", background: C.cardAlt }}>
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 800,
+                color: currentAnswer.isCorrect ? C.success : C.error,
+                marginBottom: 6,
+              }}
+            >
+              {currentAnswer.isCorrect
+                ? "OK - odpowiedz pasuje do akceptowanego wzorca."
+                : `Akceptowane odpowiedzi: ${formatQuestionAnswer(current, current.correctAnswers || []) || "Brak wzorca"}`}
+            </div>
+
+            <div style={{ padding: "12px 14px", borderRadius: 14, background: "#fff", border: `1px solid ${C.border}`, marginBottom: 10 }}>
+              <div style={{ fontSize: 12, color: C.textSub, marginBottom: 6 }}>Twoja odpowiedz</div>
+              <div style={{ fontSize: 15, color: C.textStrong, lineHeight: 1.65 }}>{String(currentAnswer.selected || "").trim() || "Brak odpowiedzi."}</div>
+            </div>
+
+            {!!String(current.answerBack || "").trim() && (
+              <div style={{ padding: "12px 14px", borderRadius: 14, background: "#fff", border: `1px solid ${C.border}`, marginBottom: 10 }}>
+                <div style={{ fontSize: 12, color: C.textSub, marginBottom: 6 }}>Wzorcowa odpowiedz</div>
+                <div style={{ fontSize: 15, color: C.textStrong, lineHeight: 1.65 }}>{current.answerBack}</div>
+              </div>
+            )}
+
+            <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.7 }}>{current.explanation}</div>
+          </div>
+        )}
+
+        {currentQuestionType === "cloze_deletion" && currentAnswer && (
+          <div style={{ ...s.card, padding: "18px 20px", background: C.cardAlt }}>
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 800,
+                color: currentAnswer.isCorrect ? C.success : C.error,
+                marginBottom: 6,
+              }}
+            >
+              {currentAnswer.isCorrect ? "OK - wszystkie luki uzupelnione poprawnie." : "Czesc luk wymaga poprawy."}
+            </div>
+
+            <div style={{ padding: "12px 14px", borderRadius: 14, background: "#fff", border: `1px solid ${C.border}`, marginBottom: 10 }}>
+              <div style={{ fontSize: 12, color: C.textSub, marginBottom: 6 }}>Pelne zdanie</div>
+              <div style={{ fontSize: 15, color: C.textStrong, lineHeight: 1.65 }}>{current.answerBack || revealClozeText(current.question || "")}</div>
+            </div>
+
+            <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.7 }}>{current.explanation}</div>
           </div>
         )}
 
@@ -4602,6 +5320,213 @@ function QuizAbcdApp() {
     );
   };
 
+  const GeneratorView = () => (
+    <div className="generator-layout">
+      <div style={{ ...s.card, padding: 18 }}>
+        <div className="generator-head">
+          <div>
+            <div className="tinyLabel" style={{ marginBottom: 8 }}>
+              Create New Questions
+            </div>
+            <div style={{ fontSize: 26, fontWeight: 700, color: C.textStrong, marginBottom: 6 }}>Generator materialow</div>
+            <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.65 }}>
+              Wgraj material lub wklej tekst, wybierz typy pytan i od razu zbuduj nowa sesje.
+            </div>
+          </div>
+
+          <button onClick={generateQuestionsFromMaterial} style={s.btn("primary")}>
+            <IcoCloud size={14} /> Generate questions
+          </button>
+        </div>
+
+        <div
+          className="generator-upload"
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault();
+            const file = e.dataTransfer?.files?.[0];
+            if (file) handleGeneratorFile(file);
+          }}
+        >
+          <button type="button" onClick={() => generatorFileRef.current?.click()} style={s.btn("soft")}>
+            <IcoUpload size={14} /> click to upload
+          </button>
+
+          <div style={{ fontSize: 14, color: C.textSub }}>or drag & drop files here</div>
+
+          <div className="generator-file-types">
+            {["PDF", "Power Point", "Word docx", "Anki import", "Audio file", "Video file", "Image", "TXT", "XLSX"].map((label) => (
+              <span key={label} className="soft-chip">
+                {label}
+              </span>
+            ))}
+          </div>
+
+          <input
+            ref={generatorFileRef}
+            type="file"
+            accept=".txt,.md,.csv,.json,.xlsx,.xls,.pdf,.doc,.docx,.ppt,.pptx,image/*,audio/*,video/*"
+            onChange={handleGeneratorFileChange}
+            style={{ display: "none" }}
+          />
+        </div>
+
+        <div className="generator-link-row">
+          <input
+            value={generatorLink}
+            onChange={(e) => setGeneratorLink(e.target.value)}
+            placeholder="or paste any link here"
+            style={s.input}
+          />
+          <span className="soft-chip">Websites</span>
+          <span className="soft-chip">YouTube</span>
+          <span className="soft-chip">Google Docs</span>
+        </div>
+
+        <div className="generator-config-grid" style={{ marginTop: 16 }}>
+          <div style={{ ...s.cardSm, padding: 16, background: "rgba(255,255,255,.82)" }}>
+            <div className="tinyLabel" style={{ marginBottom: 8 }}>
+              Material
+            </div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong, marginBottom: 10 }}>
+              {generatorSourceName || "Brak pliku"}
+            </div>
+            <textarea
+              value={generatorSourceText}
+              onChange={(e) => setGeneratorSourceText(e.target.value)}
+              rows={10}
+              placeholder="Wklej tutaj tekst materialu, jesli nie chcesz korzystac z uploadu."
+              style={{ ...s.input, resize: "vertical" }}
+            />
+            <div className="field-help">
+              Bez backendowego parsera najlepiej dzialaja materialy tekstowe, CSV i XLSX. Link jest traktowany jako etykieta zrodla, nie jako automatyczny scraper.
+            </div>
+          </div>
+
+          <div style={{ ...s.cardSm, padding: 16, background: "rgba(255,255,255,.82)" }}>
+            <div className="tinyLabel" style={{ marginBottom: 8 }}>
+              Generation Setup
+            </div>
+
+            <div style={{ marginBottom: 14 }}>
+              <label style={s.label}>Deck docelowy</label>
+              <select value={generatorDeckName} onChange={(e) => setGeneratorDeckName(e.target.value)} style={s.input}>
+                {editorDecks.map((deck) => (
+                  <option key={deck} value={deck}>
+                    {deck}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div style={{ marginBottom: 14 }}>
+              <label style={s.label}>Number of questions</label>
+              <div className="generator-density-row">
+                {[
+                  ["low", "low"],
+                  ["med", "med"],
+                  ["high", "high"],
+                ].map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setGeneratorDensity(value)}
+                    className={`generator-density-btn ${generatorDensity === value ? "active" : ""}`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className="field-help">Szacowany wynik: {generatorQuestionCount} pytan.</div>
+            </div>
+
+            <div style={{ marginBottom: 14 }}>
+              <label style={s.label}>Question types</label>
+              <div className="generator-types-grid">
+                {QUESTION_TYPES.map((type) => {
+                  const active = generatorQuestionTypes.includes(type.id);
+                  return (
+                    <label key={type.id} className={`generator-check ${active ? "active" : ""}`}>
+                      <input type="checkbox" checked={active} onChange={() => toggleGeneratorQuestionType(type.id)} />
+                      <span>{type.label}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 14 }}>
+              <label style={s.label}>Generation language</label>
+              <select value={generatorLanguage} onChange={(e) => setGeneratorLanguage(e.target.value)} style={s.input}>
+                <option value="Polish">Polish</option>
+                <option value="English">English</option>
+              </select>
+            </div>
+
+            <div
+              style={{
+                padding: 12,
+                borderRadius: 14,
+                background: toneForStatus(generatorStatus.status).bg,
+                color: toneForStatus(generatorStatus.status).color,
+                border: `1px solid ${toneForStatus(generatorStatus.status).border}`,
+                fontSize: 13,
+                lineHeight: 1.6,
+              }}
+            >
+              {generatorStatus.message}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ ...s.card, padding: 18 }}>
+        <div className="generator-head" style={{ marginBottom: 14 }}>
+          <div>
+            <div className="tinyLabel" style={{ marginBottom: 8 }}>
+              Preview
+            </div>
+            <div style={{ fontSize: 22, fontWeight: 700, color: C.textStrong }}>Wygenerowane pytania</div>
+          </div>
+
+          {generatorQuestions.length > 0 && (
+            <button onClick={() => startQuiz(generatorQuestions, generatorQuestions.length)} style={s.btn("ghost")}>
+              <IcoRight size={14} /> Start generated deck
+            </button>
+          )}
+        </div>
+
+        <div className="generator-preview-list">
+          {generatorQuestions.length ? (
+            generatorQuestions.map((question) => (
+              <div key={question.id} className="generator-preview-item">
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+                  <span className="soft-chip">#{question.questionNo}</span>
+                  <span className="soft-chip">{questionTypeLabel(question.questionType)}</span>
+                  <span className="soft-chip">{question.deck}</span>
+                </div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong, lineHeight: 1.5 }}>{getQuestionDisplayText(question)}</div>
+                <div style={{ marginTop: 10, fontSize: 14, color: C.textSub, lineHeight: 1.6 }}>
+                  {question.questionType === "flashcard"
+                    ? question.answerBack
+                    : question.questionType === "type_answer"
+                    ? `Akceptowane: ${formatQuestionAnswer(question, question.correctAnswers || [])}`
+                    : question.questionType === "cloze_deletion"
+                    ? `Pelna tresc: ${question.answerBack || revealClozeText(question.question || "")}`
+                    : `Poprawna odpowiedz: ${formatQuestionAnswer(question, question.correctAnswers || question.correct)}`}
+                </div>
+              </div>
+            ))
+          ) : (
+            <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.65 }}>
+              Po generowaniu zobaczysz tutaj preview paczki pytan, zanim zaczniesz nowa sesje.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
   const EditorView = () => (
     <div className="editor-layout">
       <div className="editor-sidebar" style={{ ...s.card, padding: 16 }}>
@@ -4646,7 +5571,7 @@ function QuizAbcdApp() {
                     <strong>#{question.questionNo}</strong>
                     <span className="soft-chip">{questionTypeLabel(question.questionType)}</span>
                   </div>
-                  <div className="editor-item-title">{question.question}</div>
+                  <div className="editor-item-title">{getQuestionDisplayText(question)}</div>
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
                     <span className="soft-chip">{question.deck}</span>
                     <span className="soft-chip">{question.category}</span>
@@ -4778,6 +5703,37 @@ function QuizAbcdApp() {
                     style={{ ...s.input, resize: "vertical" }}
                   />
                 </div>
+              ) : editorDraft.questionType === "type_answer" || editorDraft.questionType === "cloze_deletion" ? (
+                <div className="editor-field-span">
+                  <div className="editor-media-grid">
+                    <div>
+                      <label style={s.label}>Akceptowane odpowiedzi</label>
+                      <textarea
+                        value={editorDraft.acceptedAnswersText || ""}
+                        onChange={(e) => updateEditorField("acceptedAnswersText", e.target.value)}
+                        rows={4}
+                        placeholder={editorDraft.questionType === "cloze_deletion" ? "Jedna odpowiedz na luke, kazda w nowej linii" : "Jedna odpowiedz w linii lub kilka wariantow"}
+                        style={{ ...s.input, resize: "vertical" }}
+                      />
+                      <div className="field-help">
+                        {editorDraft.questionType === "cloze_deletion"
+                          ? "W tresci pytania uzyj skladni {{c1::odpowiedz}} lub {{c1::odpowiedz::podpowiedz}}."
+                          : "Mozesz podac kilka akceptowanych wariantow, po jednym w linii."}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label style={s.label}>{editorDraft.questionType === "cloze_deletion" ? "Pelna wersja zdania" : "Wzorcowa odpowiedz"}</label>
+                      <textarea
+                        value={editorDraft.answerBack}
+                        onChange={(e) => updateEditorField("answerBack", e.target.value)}
+                        rows={4}
+                        placeholder={editorDraft.questionType === "cloze_deletion" ? "Opcjonalnie. Zostaw puste, aby system uzyl pelnej tresci cloze." : "Opcjonalna odpowiedz wzorcowa"}
+                        style={{ ...s.input, resize: "vertical" }}
+                      />
+                    </div>
+                  </div>
+                </div>
               ) : (
                 <div className="editor-field-span">
                   <label style={s.label}>Opcje</label>
@@ -4848,7 +5804,9 @@ function QuizAbcdApp() {
                   <span className="soft-chip">{editorPreview.deck}</span>
                   <span className="soft-chip">{editorPreview.category}</span>
                 </div>
-                <div style={{ fontSize: 18, fontWeight: 700, color: C.textStrong, lineHeight: 1.45 }}>{editorPreview.question || "Podglad pytania pojawi sie tutaj."}</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: C.textStrong, lineHeight: 1.45 }}>
+                  {getQuestionDisplayText(editorPreview) || "Podglad pytania pojawi sie tutaj."}
+                </div>
 
                 <QuestionMediaBlock imageUrl={editorPreview.imageUrl} audioUrl={editorPreview.audioUrl} compact />
 
@@ -4856,6 +5814,30 @@ function QuizAbcdApp() {
                   <div style={{ marginTop: 14, padding: 14, borderRadius: 16, background: "#fff", border: `1px solid ${C.border}` }}>
                     <div style={{ fontSize: 12, color: C.textSub, marginBottom: 6 }}>Tyl karty</div>
                     <div style={{ fontSize: 15, color: C.textStrong, lineHeight: 1.7 }}>{editorPreview.answerBack || "Brak odpowiedzi."}</div>
+                  </div>
+                ) : editorPreview.questionType === "type_answer" ? (
+                  <div style={{ display: "grid", gap: 10, marginTop: 14 }}>
+                    <div style={{ padding: "12px 14px", borderRadius: 16, border: `1px solid ${C.success}`, background: C.successBg, color: C.successText }}>
+                      <div style={{ fontSize: 12, color: C.textSub, marginBottom: 6 }}>Akceptowane odpowiedzi</div>
+                      <div style={{ fontSize: 15, lineHeight: 1.7 }}>{formatQuestionAnswer(editorPreview, editorPreview.correctAnswers || []) || "Brak wzorca."}</div>
+                    </div>
+                    {!!String(editorPreview.answerBack || "").trim() && (
+                      <div style={{ padding: "12px 14px", borderRadius: 16, border: `1px solid ${C.border}`, background: "#fff", color: C.textStrong }}>
+                        <div style={{ fontSize: 12, color: C.textSub, marginBottom: 6 }}>Wzorcowa odpowiedz</div>
+                        <div style={{ fontSize: 15, lineHeight: 1.7 }}>{editorPreview.answerBack}</div>
+                      </div>
+                    )}
+                  </div>
+                ) : editorPreview.questionType === "cloze_deletion" ? (
+                  <div style={{ display: "grid", gap: 10, marginTop: 14 }}>
+                    <div style={{ padding: "12px 14px", borderRadius: 16, border: `1px solid ${C.border}`, background: "#fff", color: C.textStrong }}>
+                      <div style={{ fontSize: 12, color: C.textSub, marginBottom: 6 }}>Pelna tresc</div>
+                      <div style={{ fontSize: 15, lineHeight: 1.7 }}>{editorPreview.answerBack || revealClozeText(editorPreview.question || "")}</div>
+                    </div>
+                    <div style={{ padding: "12px 14px", borderRadius: 16, border: `1px solid ${C.success}`, background: C.successBg, color: C.successText }}>
+                      <div style={{ fontSize: 12, color: C.textSub, marginBottom: 6 }}>Luki</div>
+                      <div style={{ fontSize: 15, lineHeight: 1.7 }}>{formatQuestionAnswer(editorPreview, editorPreview.correctAnswers || []) || "Brak luk."}</div>
+                    </div>
                   </div>
                 ) : (
                   <div style={{ display: "grid", gap: 10, marginTop: 14 }}>
@@ -5298,6 +6280,7 @@ function QuizAbcdApp() {
   const renderTab = () => {
     if (activeTab === "quiz") return <QuizView />;
     if (activeTab === "decks") return <DecksView />;
+    if (activeTab === "generator") return <GeneratorView />;
     if (activeTab === "editor") return <EditorView />;
     if (activeTab === "results") return <ResultsView />;
     if (activeTab === "calendar") return <EnhancedCalendarView />;

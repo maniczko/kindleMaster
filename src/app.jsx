@@ -3255,7 +3255,6 @@ function QuizAbcdApp() {
     generatorQuestionTypes,
     generatorPageTexts,
     generatorSourceName,
-    getCloudGenerationErrorMessage,
     manualCloudApiKey,
     questionPool,
     sbEnabled,
@@ -4106,33 +4105,30 @@ function QuizAbcdApp() {
     [questionPool, selectedDeck, sbEnabled, syncDeckActiveState]
   );
 
-  const getCloudGenerationErrorMessage = useCallback(
-    (cloudError = "") => {
-      if (!cloudApiEnabled) {
-        return "Wybrane typy pytan wymagaja generowania przez Cloud, ale Cloud AI jest wylaczone w Ustawieniach.";
-      }
+  function getCloudGenerationErrorMessage(cloudError = "") {
+    if (!cloudApiEnabled) {
+      return "Wybrane typy pytan wymagaja generowania przez Cloud, ale Cloud AI jest wylaczone w Ustawieniach.";
+    }
 
-      const cloudDraft = cloudApiKeyDraft.trim();
-      if (cloudDraft && isJwtLike(cloudDraft)) {
-        return "Pole Cloud API key zawiera Supabase JWT (`eyJ...`). Wklej je do `Publishable / anon key`, a w Cloud zostaw klucz Anthropic `sk-ant-...` albo puste pole z sekretem w Edge Function.";
-      }
+    const cloudDraft = cloudApiKeyDraft.trim();
+    if (cloudDraft && isJwtLike(cloudDraft)) {
+      return "Pole Cloud API key zawiera Supabase JWT (`eyJ...`). Wklej je do `Publishable / anon key`, a w Cloud zostaw klucz Anthropic `sk-ant-...` albo puste pole z sekretem w Edge Function.";
+    }
 
-      if (cloudDraft && !looksLikeAnthropicKey(cloudDraft)) {
-        return "Pole Cloud API key ma zly format. Uzyj klucza Anthropic `sk-ant-...` albo zostaw pole puste i korzystaj z sekretu `ANTHROPIC_API_KEY` w Supabase.";
-      }
+    if (cloudDraft && !looksLikeAnthropicKey(cloudDraft)) {
+      return "Pole Cloud API key ma zly format. Uzyj klucza Anthropic `sk-ant-...` albo zostaw pole puste i korzystaj z sekretu `ANTHROPIC_API_KEY` w Supabase.";
+    }
 
-      if (!sbEnabled) {
-        return "Wybrane typy pytan wymagaja Cloud, ale aplikacja nie ma poprawnego polaczenia z Supabase. Sprawdz URL projektu i publishable / anon key.";
-      }
+    if (!sbEnabled) {
+      return "Wybrane typy pytan wymagaja Cloud, ale aplikacja nie ma poprawnego polaczenia z Supabase. Sprawdz URL projektu i publishable / anon key.";
+    }
 
-      if (cloudError) {
-        return `Cloud nie odpowiedzial dla wybranych typow pytan: ${cloudError}`;
-      }
+    if (cloudError) {
+      return `Cloud nie odpowiedzial dla wybranych typow pytan: ${cloudError}`;
+    }
 
-      return "Wybrane typy pytan wymagaja Cloud. Sprawdz deploy funkcji `claude-summary`, sekret `ANTHROPIC_API_KEY` i polaczenie z Supabase Edge Function.";
-    },
-    [cloudApiEnabled, cloudApiKeyDraft, sbEnabled]
-  );
+    return "Wybrane typy pytan wymagaja Cloud. Sprawdz deploy funkcji `claude-summary`, sekret `ANTHROPIC_API_KEY` i polaczenie z Supabase Edge Function.";
+  }
 
   const DeckProgressRing = ({ progress = 0, active = false }) => {
     const safeProgress = Math.max(0, Math.min(100, Number(progress || 0)));

@@ -49,6 +49,11 @@ export const IcoLogout = ({ size = 16 }) => <Icon size={size} d="M9 21H5a2 2 0 0
 export const IcoEdit = ({ size = 16 }) => <Icon size={size} d="M12 20h9M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />;
 export const IcoImage = ({ size = 16 }) => <Icon size={size} d="M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5zm4 10 2.5-3 3.5 4.5 2.5-3 3.5 4.5M8.5 8.5h.01" />;
 export const IcoVolume = ({ size = 16 }) => <Icon size={size} d="M11 5 6 9H3v6h3l5 4V5zm4.5 3.5a5 5 0 0 1 0 7m2.5-9.5a8.5 8.5 0 0 1 0 12" />;
+export const IcoLink = ({ size = 16 }) => <Icon size={size} d="M10 13a5 5 0 0 0 7.07 0l2.83-2.83a5 5 0 0 0-7.07-7.07L11 4M14 11a5 5 0 0 0-7.07 0L4.1 13.83a5 5 0 0 0 7.07 7.07L13 19" />;
+export const IcoFileText = ({ size = 16 }) => <Icon size={size} d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7zm0 0v5h5M9 13h6M9 17h6M9 9h1" />;
+export const IcoVideo = ({ size = 16 }) => <Icon size={size} d="M15 10 20 7v10l-5-3M4 6h9a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z" />;
+export const IcoPlay = ({ size = 16 }) => <Icon size={size} d="m8 5 11 7-11 7V5z" />;
+export const IcoLayers = ({ size = 16 }) => <Icon size={size} d="m12 3 9 5-9 5-9-5 9-5zm-9 9 9 5 9-5M3 16l9 5 9-5" />;
 
 export const ZenQuizLogo = ({ size = 64 }) => (
   <svg width={size} height={size} viewBox="0 0 72 72" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">

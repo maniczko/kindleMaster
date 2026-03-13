@@ -29,6 +29,11 @@ import {
   IcoEdit,
   IcoImage,
   IcoVolume,
+  IcoLink,
+  IcoFileText,
+  IcoVideo,
+  IcoPlay,
+  IcoLayers,
   ZenQuizLogo,
 } from "./icons";
 
@@ -6433,18 +6438,18 @@ function QuizAbcdApp() {
             <div className="landing-support-title">works on:</div>
             <div className="landing-support-grid">
               {[
-                "lecture slides",
-                "YouTube videos",
-                "PDFs",
-                "video / audio files",
-                "Word documents",
-                "textbooks",
-                "PowerPoints",
-                "notes",
+                { label: "lecture slides", icon: <IcoLayers size={15} /> },
+                { label: "YouTube videos", icon: <IcoPlay size={15} /> },
+                { label: "PDFs", icon: <IcoFileText size={15} /> },
+                { label: "video / audio files", icon: <IcoVideo size={15} /> },
+                { label: "Word documents", icon: <IcoFileText size={15} /> },
+                { label: "textbooks", icon: <IcoBook size={15} /> },
+                { label: "PowerPoints", icon: <IcoLayers size={15} /> },
+                { label: "notes", icon: <IcoEdit size={15} /> },
               ].map((item) => (
-                <div key={item} className="landing-support-item">
-                  <span className="landing-support-dot" />
-                  <span>{item}</span>
+                <div key={item.label} className="landing-support-item">
+                  <span className="landing-support-icon">{item.icon}</span>
+                  <span>{item.label}</span>
                 </div>
               ))}
             </div>

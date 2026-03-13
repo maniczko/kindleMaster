@@ -59,6 +59,23 @@ const QUESTION_TYPES = [
   { id: "cloze_deletion", label: "Cloze deletion" },
   { id: "type_answer", label: "Type answer" },
 ];
+const QUESTION_TYPE_ALIASES = {
+  multiple_choice: "single_choice",
+  multiplechoice: "single_choice",
+  mcq: "single_choice",
+  singlechoice: "single_choice",
+  single: "single_choice",
+  multi: "multi_select",
+  multiple_select: "multi_select",
+  multiselect: "multi_select",
+  flash_card: "flashcard",
+  card: "flashcard",
+  cloze: "cloze_deletion",
+  typeanswer: "type_answer",
+  typed_answer: "type_answer",
+  free_response: "type_answer",
+  free_text: "type_answer",
+};
 const CLOZE_PATTERN = /\{\{c\d+::(.*?)(?:::(.*?))?\}\}/gi;
 const DEFAULT_SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || "https://ylqloszldyzpeaikweyl.supabase.co").trim();
 const DEFAULT_SUPABASE_ANON_KEY = (
@@ -170,9 +187,13 @@ const resolveDeck = (candidate, category, sourceFile = "") => {
 };
 
 const normalizeQuestionType = (value) => {
-  const type = String(value || "").trim().toLowerCase();
+  const raw = String(value || "").trim().toLowerCase();
+  const type = QUESTION_TYPE_ALIASES[raw] || raw;
   return QUESTION_TYPES.some((item) => item.id === type) ? type : "single_choice";
 };
+
+const normalizeRequestedQuestionTypes = (value) =>
+  [...new Set((Array.isArray(value) ? value : []).map((item) => normalizeQuestionType(item)).filter(Boolean))];
 
 const parseTextAnswers = (value) => {
   const source = Array.isArray(value)
@@ -1049,8 +1070,9 @@ const buildLocalGeneratedQuestions = ({ materialText, questionTypes, questionCou
   const sentences = splitMaterialIntoSentences(materialText).slice(0, Math.max(questionCount * 2, 12));
   if (!sentences.length) return [];
 
-  const selectedTypes = questionTypes.length ? questionTypes : ["cloze_deletion", "type_answer"];
+  const selectedTypes = normalizeRequestedQuestionTypes(questionTypes).length ? normalizeRequestedQuestionTypes(questionTypes) : ["cloze_deletion", "type_answer"];
   const localTypes = selectedTypes.filter((type) => ["cloze_deletion", "type_answer", "flashcard"].includes(type));
+  if (localTypes.length !== selectedTypes.length) return [];
   const generationTypes = localTypes.length ? localTypes : ["cloze_deletion", "type_answer"];
   const usedTokens = new Set();
   const generated = [];
@@ -1124,8 +1146,9 @@ const buildLocalGeneratedQuestions = ({ materialText, questionTypes, questionCou
   return generated.filter(Boolean);
 };
 
-const normalizeGeneratedQuestionBatch = ({ questions, defaultDeck, sourceName, startQuestionNo = 1 }) => {
+const normalizeGeneratedQuestionBatch = ({ questions, defaultDeck, sourceName, startQuestionNo = 1, allowedQuestionTypes = [] }) => {
   const source = Array.isArray(questions) ? questions : [];
+  const allowedTypes = normalizeRequestedQuestionTypes(allowedQuestionTypes);
 
   return source
     .map((question, index) =>
@@ -1145,11 +1168,19 @@ const normalizeGeneratedQuestionBatch = ({ questions, defaultDeck, sourceName, s
     )
     .filter((question) => {
       const type = normalizeQuestionType(question.questionType);
+      const visibleOptions = getVisibleOptionKeys(question);
+      const correctKeys = parseAnswerKeys(question.correctAnswers || question.correct);
+
+      if (allowedTypes.length && !allowedTypes.includes(type)) return false;
       if (!question.question) return false;
-      if (type === "flashcard") return Boolean(question.answerBack || question.explanation);
-      if (type === "type_answer") return parseTextAnswers(question.correctAnswers || []).length > 0;
+      if (type === "flashcard") return !visibleOptions.length && Boolean(question.answerBack || question.explanation);
+      if (type === "type_answer") return !visibleOptions.length && parseTextAnswers(question.correctAnswers || []).length > 0;
       if (type === "cloze_deletion") return extractClozeEntries(question.question).length > 0;
-      return getVisibleOptionKeys(question).length >= 2;
+      if (type === "single_choice") return visibleOptions.length === 4 && correctKeys.length === 1 && correctKeys.every((key) => visibleOptions.includes(key));
+      if (type === "multi_select") {
+        return visibleOptions.length === 4 && correctKeys.length >= 2 && correctKeys.length <= 3 && correctKeys.every((key) => visibleOptions.includes(key));
+      }
+      return false;
     });
 };
 
@@ -1528,6 +1559,7 @@ async function fetchCloudGeneratedQuestions({
     defaultDeck: deck,
     sourceName,
     startQuestionNo,
+    allowedQuestionTypes: questionTypes,
   });
 }
 
@@ -3113,6 +3145,9 @@ function QuizAbcdApp() {
     const sourceName = String(generatorSourceName || generatorLink || "Material").trim();
     const deck = normalizeDeck(generatorDeckName, DEFAULT_DECK_NAME);
     const startQuestionNo = Math.max(...questionPool.map((item) => Number(item.questionNo || 0)), 0) + 1;
+    const requestedQuestionTypes = normalizeRequestedQuestionTypes(generatorQuestionTypes);
+    const localSupportedTypes = ["cloze_deletion", "type_answer", "flashcard"];
+    const canUseLocalFallback = requestedQuestionTypes.length > 0 && requestedQuestionTypes.every((type) => localSupportedTypes.includes(type));
 
     if (!materialText) {
       setGeneratorStatus({
@@ -3122,7 +3157,7 @@ function QuizAbcdApp() {
       return;
     }
 
-    if (!generatorQuestionTypes.length) {
+    if (!requestedQuestionTypes.length) {
       setGeneratorStatus({
         status: "error",
         message: "Wybierz przynajmniej jeden typ pytania do wygenerowania.",
@@ -3151,7 +3186,7 @@ function QuizAbcdApp() {
           cloudApiKey: manualCloudApiKey,
           sourceName,
           materialText,
-          questionTypes: generatorQuestionTypes,
+          questionTypes: requestedQuestionTypes,
           questionCount: generatorQuestionCount,
           language: generatorLanguage,
           deck,
@@ -3165,10 +3200,10 @@ function QuizAbcdApp() {
       usedFallback = true;
     }
 
-    if (!generated.length) {
+    if (!generated.length && canUseLocalFallback) {
       generated = buildLocalGeneratedQuestions({
         materialText,
-        questionTypes: generatorQuestionTypes,
+        questionTypes: requestedQuestionTypes,
         questionCount: generatorQuestionCount,
         deck,
         sourceName,
@@ -3180,7 +3215,9 @@ function QuizAbcdApp() {
     if (!generated.length) {
       setGeneratorStatus({
         status: "error",
-        message: "Nie udalo sie wygenerowac pytan z tego materialu. Sprobuj krotszy, bardziej tekstowy dokument.",
+        message: canUseLocalFallback
+          ? "Nie udalo sie wygenerowac pytan z tego materialu. Sprobuj krotszy, bardziej tekstowy dokument."
+          : "Wybrane typy pytan wymagaja generowania przez Cloud. Sprawdz Cloud AI albo wybierz fiszki, cloze albo type answer.",
       });
       return;
     }

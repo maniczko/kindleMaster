@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import ReactDOM from "react-dom/client";
 import * as XLSX from "xlsx";
+import { GlobalWorkerOptions, getDocument } from "pdfjs-dist";
 import "./app.css";
 import { C, s } from "./theme";
 import {
@@ -30,6 +31,8 @@ import {
   IcoVolume,
   ZenQuizLogo,
 } from "./icons";
+
+GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
 
 // ── Config & Helpers ──────────────────────────────────────────────────────────
 const STORAGE_KEY = "quiz_abcd_attempts_v6";
@@ -1115,19 +1118,52 @@ const normalizeGeneratedQuestionBatch = ({ questions, defaultDeck, sourceName, s
 
 async function extractMaterialTextFromFile(file) {
   const name = String(file?.name || "").toLowerCase();
-  if (!file) return "";
+  if (!file) return { text: "", pageTexts: [], pageCount: 0, kind: "empty" };
+
+  if (name.endsWith(".pdf")) {
+    const buffer = await file.arrayBuffer();
+    const pdf = await getDocument({ data: buffer }).promise;
+    const pageTexts = [];
+
+    for (let pageNo = 1; pageNo <= pdf.numPages; pageNo += 1) {
+      const page = await pdf.getPage(pageNo);
+      const content = await page.getTextContent();
+      const text = (content.items || [])
+        .map((item) => String(item?.str || "").trim())
+        .filter(Boolean)
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+      pageTexts.push(text);
+    }
+
+    return {
+      text: pageTexts.join("\n\n").trim(),
+      pageTexts,
+      pageCount: pdf.numPages,
+      kind: "pdf",
+    };
+  }
 
   if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
     const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" });
-    return workbook.SheetNames.map((sheetName) => XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName])).join("\n\n");
+    return {
+      text: workbook.SheetNames.map((sheetName) => XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName])).join("\n\n"),
+      pageTexts: [],
+      pageCount: 0,
+      kind: "spreadsheet",
+    };
   }
 
   if (name.endsWith(".csv") || name.endsWith(".txt") || name.endsWith(".md") || name.endsWith(".json")) {
-    return await file.text();
+    return { text: await file.text(), pageTexts: [], pageCount: 0, kind: "text" };
   }
 
-  if (String(file.type || "").startsWith("text/")) return await file.text();
-  return "";
+  if (String(file.type || "").startsWith("text/")) {
+    return { text: await file.text(), pageTexts: [], pageCount: 0, kind: "text" };
+  }
+
+  return { text: "", pageTexts: [], pageCount: 0, kind: "unsupported" };
 }
 
 function buildCalDays(month) {
@@ -1995,6 +2031,9 @@ function QuizAbcdApp() {
   const [generatorSourceName, setGeneratorSourceName] = useState("");
   const [generatorSourceText, setGeneratorSourceText] = useState("");
   const [generatorLink, setGeneratorLink] = useState("");
+  const [generatorPageTexts, setGeneratorPageTexts] = useState([]);
+  const [generatorPageStart, setGeneratorPageStart] = useState(1);
+  const [generatorPageEnd, setGeneratorPageEnd] = useState(1);
   const [generatorDensity, setGeneratorDensity] = useState("med");
   const [generatorDeckName, setGeneratorDeckName] = useState(() => (selectedDeck !== ALL_DECKS_LABEL ? selectedDeck : DEFAULT_DECK_NAME));
   const [generatorLanguage, setGeneratorLanguage] = useState("Polish");
@@ -2050,6 +2089,12 @@ function QuizAbcdApp() {
   const sbEnabled = useMemo(() => hasSupabaseConfig(supabaseConfig), [supabaseConfig]);
   const manualCloudApiKey = looksLikeAnthropicKey(cloudApiKeyDraft) ? cloudApiKeyDraft.trim() : "";
   const generatorQuestionCount = useMemo(() => estimateQuestionCount(generatorDensity), [generatorDensity]);
+  const generatorMaterialText = useMemo(() => {
+    if (!generatorPageTexts.length) return String(generatorSourceText || "").trim();
+    const safeStart = Math.max(1, Math.min(generatorPageStart, generatorPageTexts.length));
+    const safeEnd = Math.max(safeStart, Math.min(generatorPageEnd, generatorPageTexts.length));
+    return generatorPageTexts.slice(safeStart - 1, safeEnd).join("\n\n").trim();
+  }, [generatorPageEnd, generatorPageStart, generatorPageTexts, generatorSourceText]);
   const authAccessToken = String(authSession?.access_token || "").trim();
   const availableDecks = useMemo(() => {
     const list = [...DEFAULT_DECKS, ...questionPool.map((question) => normalizeDeck(question.deck))];
@@ -2988,20 +3033,27 @@ function QuizAbcdApp() {
     });
 
     try {
-      const text = await extractMaterialTextFromFile(file);
+      const payload = await extractMaterialTextFromFile(file);
+      const text = String(payload.text || "").trim();
       setGeneratorSourceName(file.name);
       setGeneratorSourceText(text);
+      setGeneratorPageTexts(payload.pageTexts || []);
+      setGeneratorPageStart(1);
+      setGeneratorPageEnd(payload.pageCount || 1);
       if (!text.trim()) {
         setGeneratorStatus({
           status: "error",
-          message: "Ten typ pliku nie daje sie jeszcze odczytac bez backendowego parsera. Najlepiej dzialaja txt, csv, json i xlsx.",
+          message: "Ten typ pliku nadal wymaga backendowego parsera. W tej wersji frontend czyta juz PDF, txt, csv, json i xlsx.",
         });
         return;
       }
 
       setGeneratorStatus({
         status: "success",
-        message: `Material zaladowany. Odczytano ${text.trim().length} znakow z "${file.name}".`,
+        message:
+          payload.kind === "pdf"
+            ? `PDF zaladowany. Odczytano ${payload.pageCount} stron i ${text.trim().length} znakow z "${file.name}".`
+            : `Material zaladowany. Odczytano ${text.trim().length} znakow z "${file.name}".`,
       });
     } catch (error) {
       setGeneratorStatus({ status: "error", message: getErrorText(error) });
@@ -3019,7 +3071,7 @@ function QuizAbcdApp() {
   );
 
   const generateQuestionsFromMaterial = useCallback(async () => {
-    const materialText = String(generatorSourceText || "").trim();
+    const materialText = String(generatorMaterialText || "").trim();
     const sourceName = String(generatorSourceName || generatorLink || "Material").trim();
     const deck = normalizeDeck(generatorDeckName, DEFAULT_DECK_NAME);
     const startQuestionNo = Math.max(...questionPool.map((item) => Number(item.questionNo || 0)), 0) + 1;
@@ -3101,10 +3153,13 @@ function QuizAbcdApp() {
     generatorDeckName,
     generatorLanguage,
     generatorLink,
+    generatorMaterialText,
+    generatorPageEnd,
+    generatorPageStart,
     generatorQuestionCount,
     generatorQuestionTypes,
+    generatorPageTexts,
     generatorSourceName,
-    generatorSourceText,
     manualCloudApiKey,
     questionPool,
     sbEnabled,
@@ -5383,7 +5438,7 @@ function QuizAbcdApp() {
           <span className="soft-chip">Google Docs</span>
         </div>
 
-        <div className="generator-config-grid" style={{ marginTop: 16 }}>
+          <div className="generator-config-grid" style={{ marginTop: 16 }}>
           <div style={{ ...s.cardSm, padding: 16, background: "rgba(255,255,255,.82)" }}>
             <div className="tinyLabel" style={{ marginBottom: 8 }}>
               Material
@@ -5391,16 +5446,51 @@ function QuizAbcdApp() {
             <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong, marginBottom: 10 }}>
               {generatorSourceName || "Brak pliku"}
             </div>
+            {generatorPageTexts.length > 0 && (
+              <div className="generator-page-range">
+                <div>
+                  <label style={s.label}>page range</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={generatorPageTexts.length}
+                    value={generatorPageStart}
+                    onChange={(e) => setGeneratorPageStart(Math.max(1, Math.min(Number(e.target.value || 1), generatorPageTexts.length)))}
+                    style={s.input}
+                  />
+                </div>
+                <div>
+                  <label style={s.label}>to</label>
+                  <input
+                    type="number"
+                    min={generatorPageStart}
+                    max={generatorPageTexts.length}
+                    value={generatorPageEnd}
+                    onChange={(e) =>
+                      setGeneratorPageEnd(Math.max(generatorPageStart, Math.min(Number(e.target.value || generatorPageTexts.length), generatorPageTexts.length)))
+                    }
+                    style={s.input}
+                  />
+                </div>
+                <div className="generator-page-meta">{generatorPageTexts.length} pages total</div>
+              </div>
+            )}
             <textarea
               value={generatorSourceText}
-              onChange={(e) => setGeneratorSourceText(e.target.value)}
+              onChange={(e) => {
+                setGeneratorSourceText(e.target.value);
+                setGeneratorPageTexts([]);
+                setGeneratorPageStart(1);
+                setGeneratorPageEnd(1);
+              }}
               rows={10}
               placeholder="Wklej tutaj tekst materialu, jesli nie chcesz korzystac z uploadu."
               style={{ ...s.input, resize: "vertical" }}
             />
             <div className="field-help">
-              Bez backendowego parsera najlepiej dzialaja materialy tekstowe, CSV i XLSX. Link jest traktowany jako etykieta zrodla, nie jako automatyczny scraper.
+              Bez backendowego parsera najlepiej dzialaja materialy tekstowe, PDF, CSV i XLSX. Link jest traktowany jako etykieta zrodla, nie jako automatyczny scraper.
             </div>
+            {generatorPageTexts.length > 0 && <div className="field-help">Do generowania zostanie uzyty zakres stron {generatorPageStart}-{generatorPageEnd}.</div>}
           </div>
 
           <div style={{ ...s.cardSm, padding: 16, background: "rgba(255,255,255,.82)" }}>

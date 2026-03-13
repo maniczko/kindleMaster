@@ -807,6 +807,21 @@ button, input, select, textarea { font-family: inherit; }
   gap: 14px;
 }
 
+.generator-page-range {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 12px;
+}
+
+.generator-page-meta {
+  font-size: 14px;
+  font-weight: 700;
+  color: #8C8A7E;
+  padding-bottom: 12px;
+}
+
 .generator-density-row {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -977,6 +992,7 @@ button, input, select, textarea { font-family: inherit; }
   .editor-media-grid,
   .generator-config-grid,
   .generator-types-grid,
+  .generator-page-range,
   .generator-link-row { grid-template-columns: 1fr; }
   .settings-section-grid { grid-template-columns: 1fr; }
   .tab-btn.top { min-width: 118px; }

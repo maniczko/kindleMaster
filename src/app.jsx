@@ -21,6 +21,10 @@ import {
   IcoTrending,
   IcoBolt,
   IcoTarget,
+  IcoUser,
+  IcoKey,
+  IcoTag,
+  IcoLogout,
   ZenQuizLogo,
 } from "./icons";
 
@@ -28,6 +32,7 @@ import {
 const STORAGE_KEY = "quiz_abcd_attempts_v6";
 const CLOUD_SETTINGS_KEY = "quiz_abcd_cloud_settings_v2";
 const SUPABASE_SETTINGS_KEY = "quiz_abcd_supabase_settings_v1";
+const AUTH_SESSION_KEY = "quiz_abcd_auth_session_v1";
 const optionKeys = ["A", "B", "C", "D"];
 const diffW = { easy: 1, medium: 1.5, hard: 2 };
 const DEFAULT_MODEL = "claude-sonnet-4-5-20250929";
@@ -64,30 +69,170 @@ const looksLikeAnthropicKey = (value) => String(value || "").trim().startsWith("
 
 const hasSupabaseConfig = (config) => isValidSupabaseUrl(config?.url) && isValidSupabaseKey(config?.apiKey);
 
-const sbH = (apiKey, prefer = "return=representation") => {
+const normalizeTagValue = (value) => String(value || "").trim().replace(/^#/, "").replace(/\s*::\s*/g, "::");
+
+const normalizeTags = (value) => {
+  const source = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+    ? value.startsWith("{") && value.endsWith("}")
+      ? value
+          .slice(1, -1)
+          .split(",")
+          .map((item) => item.replace(/^"|"$/g, ""))
+      : value.split(/[,\n;]+/).length > 1
+      ? value.split(/[,\n;]+/)
+      : value.split(/\s+/)
+    : [];
+
+  const unique = new Map();
+  source.forEach((item) => {
+    const tag = normalizeTagValue(item);
+    if (!tag) return;
+    const key = tag.toLowerCase();
+    if (!unique.has(key)) unique.set(key, tag);
+  });
+
+  return [...unique.values()];
+};
+
+const mergeTags = (...sets) => normalizeTags(sets.flatMap((set) => normalizeTags(set)));
+
+const getQuestionTags = (question, userTagMap = {}) => mergeTags(question?.tags || [], userTagMap?.[String(question?.id)] || []);
+
+const filterQuestionsByTags = (questions, activeTags, userTagMap = {}) => {
+  const filters = normalizeTags(activeTags).map((tag) => tag.toLowerCase());
+  if (!filters.length) return questions || [];
+
+  return (questions || []).filter((question) => {
+    const tags = new Set(getQuestionTags(question, userTagMap).map((tag) => tag.toLowerCase()));
+    return filters.every((tag) => tags.has(tag));
+  });
+};
+
+const buildAuthSession = (data) => {
+  if (!data?.access_token) return null;
+
+  return {
+    access_token: data.access_token,
+    refresh_token: data.refresh_token || "",
+    token_type: data.token_type || "bearer",
+    expires_in: Number(data.expires_in || 0),
+    expires_at: Number(data.expires_at || 0),
+    user: data.user || null,
+  };
+};
+
+const sbH = (apiKey, prefer = "return=representation", accessToken = "") => {
   const headers = {
     "Content-Type": "application/json",
     apikey: apiKey,
     Prefer: prefer,
   };
 
-  if (isJwtLike(apiKey)) headers.Authorization = `Bearer ${apiKey}`;
+  const bearer = String(accessToken || "").trim() || (isJwtLike(apiKey) ? apiKey : "");
+  if (bearer) headers.Authorization = `Bearer ${bearer}`;
   return headers;
 };
 
-async function sbSelect(config, table, params = "") {
-  const r = await fetch(`${config.url}/rest/v1/${table}?${params}`, { headers: sbH(config.apiKey) });
+async function sbSelect(config, table, params = "", accessToken = "") {
+  const suffix = params ? `?${params}` : "";
+  const r = await fetch(`${config.url}/rest/v1/${table}${suffix}`, { headers: sbH(config.apiKey, "return=representation", accessToken) });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
 
-async function sbInsert(config, table, row) {
+async function sbInsert(config, table, row, accessToken = "") {
   const r = await fetch(`${config.url}/rest/v1/${table}`, {
     method: "POST",
-    headers: sbH(config.apiKey),
+    headers: sbH(config.apiKey, "return=representation", accessToken),
     body: JSON.stringify(row),
   });
   if (!r.ok) throw new Error(await r.text());
+  const text = await r.text();
+  return text ? JSON.parse(text) : null;
+}
+
+async function sbUpsert(config, table, row, accessToken = "", onConflict = "") {
+  const query = onConflict ? `?on_conflict=${encodeURIComponent(onConflict)}` : "";
+  const r = await fetch(`${config.url}/rest/v1/${table}${query}`, {
+    method: "POST",
+    headers: sbH(config.apiKey, "resolution=merge-duplicates,return=representation", accessToken),
+    body: JSON.stringify(row),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  const text = await r.text();
+  return text ? JSON.parse(text) : null;
+}
+
+async function sbPatch(config, table, params, row, accessToken = "") {
+  const r = await fetch(`${config.url}/rest/v1/${table}?${params}`, {
+    method: "PATCH",
+    headers: sbH(config.apiKey, "return=representation", accessToken),
+    body: JSON.stringify(row),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  const text = await r.text();
+  return text ? JSON.parse(text) : null;
+}
+
+async function authRequest(config, path, { method = "GET", body, accessToken = "" } = {}) {
+  const r = await fetch(`${config.url}/auth/v1/${path}`, {
+    method,
+    headers: sbH(config.apiKey, "return=representation", accessToken),
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const text = await r.text();
+  let data = null;
+
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {}
+
+  if (!r.ok) {
+    throw new Error(data?.msg || data?.error_description || data?.error || text || `HTTP ${r.status}`);
+  }
+
+  return data || {};
+}
+
+async function signUpWithPassword(config, email, password, displayName) {
+  return authRequest(config, "signup", {
+    method: "POST",
+    body: {
+      email,
+      password,
+      data: { display_name: displayName || undefined },
+    },
+  });
+}
+
+async function signInWithPassword(config, email, password) {
+  return authRequest(config, "token?grant_type=password", {
+    method: "POST",
+    body: { email, password },
+  });
+}
+
+async function refreshAuthSession(config, refreshToken) {
+  return authRequest(config, "token?grant_type=refresh_token", {
+    method: "POST",
+    body: { refresh_token: refreshToken },
+  });
+}
+
+async function fetchAuthUser(config, accessToken) {
+  return authRequest(config, "user", {
+    method: "GET",
+    accessToken,
+  });
+}
+
+async function signOutAuth(config, accessToken) {
+  return authRequest(config, "logout", {
+    method: "POST",
+    accessToken,
+  });
 }
 
 const normDiff = (v) => {
@@ -246,6 +391,21 @@ const saveSupabaseSettings = (settings) => {
   } catch {}
 };
 
+const loadAuthSession = () => {
+  try {
+    return JSON.parse(localStorage.getItem(AUTH_SESSION_KEY) || "null");
+  } catch {
+    return null;
+  }
+};
+
+const saveAuthSession = (session) => {
+  try {
+    if (!session) localStorage.removeItem(AUTH_SESSION_KEY);
+    else localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(session));
+  } catch {}
+};
+
 const dedupe = (items) => {
   const m = new Map();
   for (const a of items || []) {
@@ -264,6 +424,7 @@ const rowToQ = (row, i) => ({
   correct: row.correct_answer || null,
   explanation: row.explanation || "Brak wyjaśnienia.",
   category: row.category || "General",
+  tags: normalizeTags(row.tags || row.tag_list || row.tag || []),
   difficulty: normDiff(row.difficulty || "medium"),
   sourceType: row.source_type || "database",
 });
@@ -292,6 +453,7 @@ function parseRows(rows, sourceFile = null) {
         correct: optionKeys.includes(correct) ? correct : null,
         explanation: String(row.explanation ?? "Brak wyjaśnienia.").trim(),
         category: String(row.category ?? "General").trim(),
+        tags: normalizeTags(row.tags ?? row.Tags ?? row.tag ?? row.Tag ?? row.labels ?? row.Labels ?? []),
         difficulty: normDiff(row.difficulty ?? "medium"),
         sourceType: "spreadsheet",
         sourceFile,
@@ -321,6 +483,7 @@ function parseTxt(text, sourceFile = "import.txt") {
         correct: null,
         explanation: "Brak odpowiedzi w pliku.",
         category: "Import",
+        tags: [],
         difficulty: "medium",
         sourceType: "txt_import",
         sourceFile,
@@ -382,6 +545,33 @@ function buildPlan(history, weakCat) {
       { day: "Sob", task: "Pełny próbny quiz", duration: "30m" },
       { day: "Nd", task: "Lekka powtórka i reset", duration: "15m" },
     ],
+  };
+}
+
+function normalizeStudyPlanResponse(data) {
+  const recommendation = String(data?.recommendation || "").trim();
+  const improvements = Array.isArray(data?.improvements)
+    ? data.improvements.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 6)
+    : [];
+  const weeklyPlan = Array.isArray(data?.weeklyPlan)
+    ? data.weeklyPlan
+        .map((item) => ({
+          day: String(item?.day || "").trim(),
+          task: String(item?.task || "").trim(),
+          duration: String(item?.duration || "").trim(),
+        }))
+        .filter((item) => item.day && item.task)
+        .slice(0, 7)
+    : [];
+
+  if (!recommendation) throw new Error("Cloud function returned invalid study plan");
+
+  return {
+    source: "cloud",
+    readiness: String(data?.readiness || "Plan AI").trim() || "Plan AI",
+    recommendation,
+    improvements,
+    weeklyPlan,
   };
 }
 
@@ -504,6 +694,69 @@ async function fetchCloudTrainingSummary({ supabaseConfig, model, cloudApiKey, a
   return { source: "cloud", title: data.title || "Podsumowanie AI", text: data.text };
 }
 
+async function fetchCloudStudyPlan({
+  supabaseConfig,
+  model,
+  cloudApiKey,
+  history,
+  weakCat,
+  strongCat,
+  avgResponseMs,
+  latestAttempt,
+  weekdaySummary,
+  weeklySummary,
+}) {
+  const recentAttempts = [...history]
+    .sort((a, b) => b.finishedAt - a.finishedAt)
+    .slice(0, 8)
+    .map((attempt) => ({
+      finishedAt: new Date(attempt.finishedAt).toISOString(),
+      percent: attempt.percent,
+      mastery: attempt.mastery,
+      avgResponseMs: attempt.avgResponseMs,
+      totalTimeMs: attempt.totalTimeMs,
+      strongestCategory: attempt.strongestCategory || null,
+      weakestCategory: attempt.weakestCategory || null,
+    }));
+
+  const data = await invokeCloudFunction({
+    supabaseConfig,
+    body: {
+      action: "study_plan",
+      model: model || DEFAULT_MODEL,
+      apiKey: cloudApiKey?.trim() || undefined,
+      payload: {
+        recentAttempts,
+        weakestCategory: weakCat?.category || null,
+        strongestCategory: strongCat?.category || null,
+        avgResponseMs: Math.round(avgResponseMs || 0),
+        latestAttempt: latestAttempt
+          ? {
+              percent: latestAttempt.percent,
+              mastery: latestAttempt.mastery,
+              totalQuestions: latestAttempt.totalQuestions,
+              score: latestAttempt.score,
+            }
+          : null,
+        weekdaySummary: (weekdaySummary || []).map((day) => ({
+          day: day.day,
+          count: day.count,
+          avgPercent: day.avgPercent,
+        })),
+        weeklySummary: (weeklySummary || []).slice(-4).map((week) => ({
+          label: week.label,
+          count: week.count,
+          avgPercent: week.avgPercent,
+          avgMastery: week.avgMastery,
+          totalTimeMs: week.totalTimeMs,
+        })),
+      },
+    },
+  });
+
+  return normalizeStudyPlanResponse(data);
+}
+
 const SAMPLES = [
   {
     id: 1,
@@ -513,6 +766,7 @@ const SAMPLES = [
     correct: "B",
     explanation: "Project Charter formalnie autoryzuje projekt i określa jego ramy.",
     category: "PgMP",
+    tags: ["pgmp::scope", "foundations", "charter"],
     difficulty: "medium",
     sourceType: "sample",
   },
@@ -529,6 +783,7 @@ const SAMPLES = [
     correct: "B",
     explanation: "Program budget jest wejściem, nie wyjściem procesu Direct and Manage.",
     category: "PgMP",
+    tags: ["pgmp::execution", "outputs", "tricky"],
     difficulty: "medium",
     sourceType: "sample",
   },
@@ -545,6 +800,7 @@ const SAMPLES = [
     correct: "A",
     explanation: "VAT to podatek od wartości dodanej.",
     category: "Finance",
+    tags: ["finance::tax", "definitions", "easy-win"],
     difficulty: "easy",
     sourceType: "sample",
   },
@@ -900,6 +1156,7 @@ const GLOBAL_CSS = `
 function QuizAbcdApp() {
   const initialCloud = loadCloudSettings();
   const initialSupabase = loadSupabaseSettings();
+  const initialAuthSession = loadAuthSession();
 
   const [questionPool, setQuestionPool] = useState(SAMPLES);
   const [quizLength, setQuizLength] = useState(10);
@@ -927,11 +1184,31 @@ function QuizAbcdApp() {
   const [cloudApiKeyDraft, setCloudApiKeyDraft] = useState("");
   const [supabaseUrl, setSupabaseUrl] = useState(initialSupabase.supabaseUrl || DEFAULT_SUPABASE_URL);
   const [supabaseAnonKey, setSupabaseAnonKey] = useState(initialSupabase.supabaseAnonKey || DEFAULT_SUPABASE_ANON_KEY);
+  const [authSession, setAuthSession] = useState(() => initialAuthSession);
+  const [authUser, setAuthUser] = useState(() => initialAuthSession?.user || null);
+  const [profileNameDraft, setProfileNameDraft] = useState(() => initialAuthSession?.user?.user_metadata?.display_name || "");
+  const [authMode, setAuthMode] = useState("login");
+  const [authEmail, setAuthEmail] = useState(() => initialAuthSession?.user?.email || "");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authStatus, setAuthStatus] = useState({
+    status: "idle",
+    message: "Zaloguj się, aby zapisywać konto, wyniki i prywatne tagi w Supabase.",
+  });
   const [supabaseCheck, setSupabaseCheck] = useState({ status: "idle", message: "Nie sprawdzono połączenia." });
   const [cloudCheck, setCloudCheck] = useState({ status: "idle", message: "Nie sprawdzono połączenia." });
 
   const [trainingSummary, setTrainingSummary] = useState(null);
   const [trainingSummaryStatus, setTrainingSummaryStatus] = useState("idle");
+  const [studyPlan, setStudyPlan] = useState(null);
+  const [studyPlanStatus, setStudyPlanStatus] = useState("idle");
+  const [userProfile, setUserProfile] = useState(null);
+  const [userTagMap, setUserTagMap] = useState({});
+  const [selectedTagFilters, setSelectedTagFilters] = useState([]);
+  const [questionTagDraft, setQuestionTagDraft] = useState("");
+  const [tagSaveState, setTagSaveState] = useState({
+    status: "idle",
+    message: "Tagi działają jak w Anki: możesz przypisać wiele etykiet i budować sesje po tagach.",
+  });
 
   const fileRef = useRef(null);
 
@@ -942,6 +1219,10 @@ function QuizAbcdApp() {
   useEffect(() => {
     saveSupabaseSettings({ supabaseUrl, supabaseAnonKey });
   }, [supabaseUrl, supabaseAnonKey]);
+
+  useEffect(() => {
+    saveAuthSession(authSession);
+  }, [authSession]);
 
   useEffect(() => {
     setSupabaseCheck({ status: "idle", message: "Nie sprawdzono połączenia." });
@@ -960,15 +1241,153 @@ function QuizAbcdApp() {
   );
   const sbEnabled = useMemo(() => hasSupabaseConfig(supabaseConfig), [supabaseConfig]);
   const manualCloudApiKey = looksLikeAnthropicKey(cloudApiKeyDraft) ? cloudApiKeyDraft.trim() : "";
+  const authAccessToken = String(authSession?.access_token || "").trim();
+  const availableTags = useMemo(
+    () =>
+      mergeTags(
+        questionPool.flatMap((question) => question.tags || []),
+        Object.values(userTagMap).flat()
+      ).sort((a, b) => a.localeCompare(b, "pl")),
+    [questionPool, userTagMap]
+  );
+  const filteredQuestionPool = useMemo(
+    () => filterQuestionsByTags(questionPool, selectedTagFilters, userTagMap),
+    [questionPool, selectedTagFilters, userTagMap]
+  );
 
   const total = questions.length;
   const current = questions[idx] || SAMPLES[0];
+  const currentQuestionTags = useMemo(() => getQuestionTags(current, userTagMap), [current, userTagMap]);
+  const currentUserTags = useMemo(() => normalizeTags(userTagMap[String(current?.id)] || []), [current, userTagMap]);
   const answeredCount = Object.keys(answers).length;
   const score = useMemo(() => Object.values(answers).filter((a) => a.isCorrect).length, [answers]);
 
+  useEffect(() => {
+    setQuestionTagDraft(currentUserTags.join(" "));
+  }, [currentUserTags]);
+
+  const upsertUserProfile = useCallback(
+    async (user, displayName) => {
+      if (!sbEnabled || !authAccessToken || !user?.id) return null;
+
+      const row = {
+        id: user.id,
+        email: user.email || "",
+        display_name: String(displayName || user?.user_metadata?.display_name || user?.email?.split("@")[0] || "").trim() || null,
+        updated_at: new Date().toISOString(),
+      };
+
+      const result = await sbUpsert(supabaseConfig, "profiles", row, authAccessToken, "id");
+      return result?.[0] || row;
+    },
+    [sbEnabled, supabaseConfig, authAccessToken]
+  );
+
+  useEffect(() => {
+    if (!authSession) {
+      setAuthUser(null);
+      setUserProfile(null);
+      setUserTagMap({});
+      return;
+    }
+
+    if (!sbEnabled) return;
+
+    let cancelled = false;
+
+    const restoreUser = async () => {
+      try {
+        let nextSession = authSession;
+        const now = Math.floor(Date.now() / 1000);
+
+        if (authSession?.refresh_token && authSession?.expires_at && authSession.expires_at <= now + 60) {
+          const refreshed = buildAuthSession(await refreshAuthSession(supabaseConfig, authSession.refresh_token));
+          if (refreshed) {
+            nextSession = refreshed;
+            if (!cancelled) {
+              setAuthSession(refreshed);
+              setAuthUser(refreshed.user || null);
+            }
+          }
+        }
+
+        const user = await fetchAuthUser(supabaseConfig, nextSession.access_token);
+        if (cancelled) return;
+
+        setAuthUser(user);
+        setAuthEmail((prev) => prev || user?.email || "");
+        setProfileNameDraft((prev) => prev || user?.user_metadata?.display_name || "");
+      } catch (error) {
+        if (cancelled) return;
+
+        setAuthSession(null);
+        setAuthUser(null);
+        setUserProfile(null);
+        setUserTagMap({});
+        setAuthStatus({
+          status: "error",
+          message: `Sesja wygasła albo nie udało się odczytać użytkownika: ${getErrorText(error)}`,
+        });
+      }
+    };
+
+    restoreUser();
+    return () => {
+      cancelled = true;
+    };
+  }, [authSession, sbEnabled, supabaseConfig]);
+
+  useEffect(() => {
+    if (!sbEnabled || !authUser?.id || !authAccessToken) return;
+
+    let cancelled = false;
+
+    const loadAccountData = async () => {
+      try {
+        const [profileRows, tagRows] = await Promise.all([
+          sbSelect(supabaseConfig, "profiles", `select=id,email,display_name,created_at,updated_at&id=eq.${authUser.id}&limit=1`, authAccessToken),
+          sbSelect(supabaseConfig, "user_question_tags", `select=question_id,tags&user_id=eq.${authUser.id}&limit=5000`, authAccessToken),
+        ]);
+
+        let profile = profileRows?.[0] || null;
+        if (!profile) profile = await upsertUserProfile(authUser, authUser?.user_metadata?.display_name || "");
+        if (cancelled) return;
+
+        setUserProfile(profile);
+        setProfileNameDraft(profile?.display_name || authUser?.user_metadata?.display_name || "");
+
+        const nextTagMap = {};
+        (tagRows || []).forEach((row) => {
+          nextTagMap[String(row.question_id)] = normalizeTags(row.tags || []);
+        });
+        setUserTagMap(nextTagMap);
+      } catch (error) {
+        if (cancelled) return;
+
+        setAuthStatus({
+          status: "error",
+          message: `Nie udało się załadować profilu albo tagów z bazy. Uruchom migrację SQL i sprawdź RLS. ${getErrorText(error)}`,
+        });
+      }
+    };
+
+    loadAccountData();
+    return () => {
+      cancelled = true;
+    };
+  }, [sbEnabled, authUser?.id, authAccessToken, supabaseConfig, upsertUserProfile]);
+
   const startQuiz = useCallback(
     (customPool, customLength) => {
-      const pool = customPool || questionPool;
+      const pool = customPool || filteredQuestionPool;
+      if (!pool.length) {
+        setTagSaveState({
+          status: "error",
+          message: "Brak pytań dla aktywnych tagów. Usuń filtr albo dodaj tagi do pytań.",
+        });
+        return;
+      }
+
       const len = customLength !== undefined ? customLength : quizLength;
       const shuffled = [...pool].sort(() => 0.5 - Math.random());
       const selectedQuestions = len === "all" ? shuffled : shuffled.slice(0, len);
@@ -987,8 +1406,13 @@ function QuizAbcdApp() {
       setChatRes("");
       setTrainingSummary(null);
       setTrainingSummaryStatus("idle");
+      setTagSaveState((prev) =>
+        prev.status === "error"
+          ? { status: "idle", message: "Tagi działają jak w Anki: możesz przypisać wiele etykiet i budować sesje po tagach." }
+          : prev
+      );
     },
-    [questionPool, quizLength]
+    [filteredQuestionPool, quizLength]
   );
 
   const loadQfromDB = useCallback(async () => {
@@ -1004,9 +1428,14 @@ function QuizAbcdApp() {
   }, [quizLength, sbEnabled, supabaseConfig]);
 
   const loadAttempts = useCallback(async () => {
-    if (!sbEnabled) return;
+    if (!sbEnabled || !authAccessToken || !authUser?.id) return;
     try {
-      const rows = await sbSelect(supabaseConfig, "quiz_attempts", "order=finished_at.desc&limit=100");
+      const rows = await sbSelect(
+        supabaseConfig,
+        "quiz_attempts",
+        `user_id=eq.${authUser.id}&order=finished_at.desc&limit=100`,
+        authAccessToken
+      );
       const mapped = rows.map((r) => ({
         id: r.attempt_id,
         finishedAt: new Date(r.finished_at).getTime(),
@@ -1026,7 +1455,7 @@ function QuizAbcdApp() {
         return merged;
       });
     } catch {}
-  }, [sbEnabled, supabaseConfig]);
+  }, [sbEnabled, supabaseConfig, authAccessToken, authUser?.id]);
 
   useEffect(() => {
     loadQfromDB();
@@ -1106,6 +1535,155 @@ function QuizAbcdApp() {
       setCloudCheck({ status: "error", message: `${getErrorText(error)}${hint}` });
     }
   }, [cloudApiEnabled, sbEnabled, supabaseConfig, cloudModel, cloudApiKeyDraft, manualCloudApiKey]);
+
+  const handleAuthSubmit = useCallback(async () => {
+    if (!sbEnabled) {
+      setAuthStatus({
+        status: "error",
+        message: "Najpierw ustaw poprawny Supabase URL i publishable / anon key.",
+      });
+      return;
+    }
+
+    const email = String(authEmail || "").trim().toLowerCase();
+    const password = String(authPassword || "");
+    const displayName = String(profileNameDraft || "").trim();
+
+    if (!email.includes("@")) {
+      setAuthStatus({ status: "error", message: "Podaj poprawny adres e-mail." });
+      return;
+    }
+
+    if (password.length < 6) {
+      setAuthStatus({ status: "error", message: "Hasło musi mieć co najmniej 6 znaków." });
+      return;
+    }
+
+    setAuthStatus({
+      status: "loading",
+      message: authMode === "register" ? "Tworzę konto w Supabase..." : "Loguję użytkownika...",
+    });
+
+    try {
+      const data =
+        authMode === "register"
+          ? await signUpWithPassword(supabaseConfig, email, password, displayName)
+          : await signInWithPassword(supabaseConfig, email, password);
+
+      const session = buildAuthSession(data);
+      const nextUser = data?.user || session?.user || null;
+
+      if (session) {
+        setAuthSession(session);
+        setAuthUser(nextUser);
+      } else {
+        setAuthSession(null);
+        setAuthUser(null);
+      }
+
+      setAuthEmail(email);
+      setAuthPassword("");
+
+      if (session && nextUser) {
+        const profile = await upsertUserProfile(nextUser, displayName);
+        setUserProfile(profile);
+        setProfileNameDraft(profile?.display_name || displayName);
+      }
+
+      setAuthStatus({
+        status: "success",
+        message:
+          session && nextUser
+            ? authMode === "register"
+              ? "Konto gotowe. Profil i sesja zostały zapisane."
+              : "Zalogowano. Profil i tagi zostały zsynchronizowane."
+            : "Konto utworzone. Jeśli w projekcie jest włączone potwierdzenie e-mail, potwierdź adres i zaloguj się ponownie.",
+      });
+    } catch (error) {
+      setAuthStatus({ status: "error", message: getErrorText(error) });
+    }
+  }, [sbEnabled, authEmail, authPassword, profileNameDraft, authMode, supabaseConfig, upsertUserProfile]);
+
+  const handleProfileSave = useCallback(async () => {
+    if (!sbEnabled || !authUser?.id || !authAccessToken) {
+      setAuthStatus({ status: "error", message: "Zaloguj się, aby zapisać profil." });
+      return;
+    }
+
+    setAuthStatus({ status: "loading", message: "Zapisuję profil użytkownika..." });
+
+    try {
+      const profile = await upsertUserProfile(authUser, profileNameDraft);
+      setUserProfile(profile);
+      setProfileNameDraft(profile?.display_name || "");
+      setAuthStatus({ status: "success", message: "Profil zapisany w tabeli `profiles`." });
+    } catch (error) {
+      setAuthStatus({ status: "error", message: getErrorText(error) });
+    }
+  }, [sbEnabled, authUser, authAccessToken, upsertUserProfile, profileNameDraft]);
+
+  const handleSignOut = useCallback(async () => {
+    if (sbEnabled && authAccessToken) {
+      try {
+        await signOutAuth(supabaseConfig, authAccessToken);
+      } catch {}
+    }
+
+    setAuthSession(null);
+    setAuthUser(null);
+    setUserProfile(null);
+    setUserTagMap({});
+    setAuthPassword("");
+    setAuthStatus({ status: "success", message: "Wylogowano z aplikacji." });
+  }, [sbEnabled, authAccessToken, supabaseConfig]);
+
+  const toggleTagFilter = useCallback((tag) => {
+    const normalized = normalizeTagValue(tag);
+    if (!normalized) return;
+
+    setSelectedTagFilters((prev) => {
+      const exists = prev.some((item) => item.toLowerCase() === normalized.toLowerCase());
+      return exists ? prev.filter((item) => item.toLowerCase() !== normalized.toLowerCase()) : [...prev, normalized];
+    });
+  }, []);
+
+  const saveQuestionTags = useCallback(async () => {
+    if (!sbEnabled || !authUser?.id || !authAccessToken) {
+      setTagSaveState({ status: "error", message: "Zaloguj się, aby zapisywać prywatne tagi do pytań." });
+      return;
+    }
+
+    const tags = normalizeTags(questionTagDraft);
+
+    setTagSaveState({ status: "loading", message: "Zapisuję tagi pytania w Supabase..." });
+
+    try {
+      await sbUpsert(
+        supabaseConfig,
+        "user_question_tags",
+        {
+          user_id: authUser.id,
+          question_id: String(current.id),
+          tags,
+          updated_at: new Date().toISOString(),
+        },
+        authAccessToken,
+        "user_id,question_id"
+      );
+
+      setUserTagMap((prev) => ({
+        ...prev,
+        [String(current.id)]: tags,
+      }));
+
+      setTagSaveState({
+        status: "success",
+        message: tags.length ? "Tagi zapisane. Nowe sesje uwzględnią ten zestaw." : "Tagi wyczyszczone dla tego pytania.",
+      });
+    } catch (error) {
+      setTagSaveState({ status: "error", message: getErrorText(error) });
+    }
+  }, [sbEnabled, authUser?.id, authAccessToken, questionTagDraft, supabaseConfig, current.id]);
 
   const handleAnswer = useCallback(
     (key) => {
@@ -1214,23 +1792,29 @@ function QuizAbcdApp() {
       return merged;
     });
 
-    if (sbEnabled) {
-      sbInsert(supabaseConfig, "quiz_attempts", {
-        attempt_id: attemptDraft.id,
-        finished_at: new Date(attemptDraft.finishedAt).toISOString(),
-        total_questions: attemptDraft.totalQuestions,
-        score: attemptDraft.score,
-        percent: attemptDraft.percent,
-        mastery: attemptDraft.mastery,
-        avg_response_ms: attemptDraft.avgResponseMs,
-        total_time_ms: attemptDraft.totalTimeMs,
-        strongest_category: attemptDraft.strongestCategory,
-        weakest_category: attemptDraft.weakestCategory,
-      })
+    if (sbEnabled && authUser?.id && authAccessToken) {
+      sbInsert(
+        supabaseConfig,
+        "quiz_attempts",
+        {
+          attempt_id: attemptDraft.id,
+          user_id: authUser.id,
+          finished_at: new Date(attemptDraft.finishedAt).toISOString(),
+          total_questions: attemptDraft.totalQuestions,
+          score: attemptDraft.score,
+          percent: attemptDraft.percent,
+          mastery: attemptDraft.mastery,
+          avg_response_ms: attemptDraft.avgResponseMs,
+          total_time_ms: attemptDraft.totalTimeMs,
+          strongest_category: attemptDraft.strongestCategory,
+          weakest_category: attemptDraft.weakestCategory,
+        },
+        authAccessToken
+      )
         .then(() => loadAttempts())
         .catch(() => {});
     }
-  }, [attemptDraft, loadAttempts, sbEnabled, supabaseConfig]);
+  }, [attemptDraft, loadAttempts, sbEnabled, supabaseConfig, authUser?.id, authAccessToken]);
 
   useEffect(() => {
     if (!attemptDraft) return;
@@ -1348,7 +1932,7 @@ function QuizAbcdApp() {
 
       if (k === "R") {
         e.preventDefault();
-        startQuiz(questionPool, quizLength);
+        startQuiz(undefined, quizLength);
         return;
       }
 
@@ -1452,7 +2036,7 @@ function QuizAbcdApp() {
     setSelectedCalDay(fallback);
   }, [activeDayKeys, calMonth, selectedCalDay]);
 
-  const plan = useMemo(() => buildPlan(uniq, stats.weakest), [uniq, stats.weakest]);
+  const localPlan = useMemo(() => ({ source: "local", ...buildPlan(uniq, stats.weakest) }), [uniq, stats.weakest]);
   const calDays = useMemo(() => buildCalDays(calMonth), [calMonth]);
 
   const selectedDayAttempts = attemptsByDay[selectedCalDay] || [];
@@ -1553,6 +2137,78 @@ function QuizAbcdApp() {
       }));
   }, [monthAttempts]);
 
+  useEffect(() => {
+    if (!uniq.length) {
+      setStudyPlan(localPlan);
+      setStudyPlanStatus("idle");
+      return;
+    }
+
+    if (activeTab !== "plan") return;
+
+    let cancelled = false;
+
+    const runPlan = async () => {
+      setStudyPlanStatus("loading");
+
+      if (!cloudApiEnabled || !sbEnabled) {
+        if (!cancelled) {
+          setStudyPlan(localPlan);
+          setStudyPlanStatus("done");
+        }
+        return;
+      }
+
+      try {
+        const cloudPlan = await fetchCloudStudyPlan({
+          supabaseConfig,
+          model: cloudModel.trim() || DEFAULT_MODEL,
+          cloudApiKey: manualCloudApiKey,
+          history: uniq,
+          weakCat: stats.weakest,
+          strongCat: stats.strongest,
+          avgResponseMs: stats.avgResponseMs,
+          latestAttempt: attemptDraft,
+          weekdaySummary,
+          weeklySummary,
+        });
+
+        if (!cancelled) {
+          setStudyPlan(cloudPlan);
+          setStudyPlanStatus("done");
+        }
+      } catch {
+        if (!cancelled) {
+          setStudyPlan({
+            ...localPlan,
+            recommendation: `${localPlan.recommendation} Cloud AI nie odpowiedziało, więc pokazuję plan lokalny.`,
+          });
+          setStudyPlanStatus("done");
+        }
+      }
+    };
+
+    runPlan();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeTab,
+    uniq,
+    localPlan,
+    cloudApiEnabled,
+    sbEnabled,
+    supabaseConfig,
+    cloudModel,
+    manualCloudApiKey,
+    stats.weakest,
+    stats.strongest,
+    stats.avgResponseMs,
+    attemptDraft,
+    weekdaySummary,
+    weeklySummary,
+  ]);
+
   const maxCountInMonth = useMemo(() => {
     const counts = Object.entries(dayMap)
       .filter(([key]) => isSameMonth(key, calMonth))
@@ -1639,6 +2295,29 @@ function QuizAbcdApp() {
             >
               {current.category}
             </span>
+            {currentQuestionTags.map((tag) => {
+              const isActive = selectedTagFilters.some((item) => item.toLowerCase() === tag.toLowerCase());
+
+              return (
+                <button
+                  key={tag}
+                  type="button"
+                  onClick={() => toggleTagFilter(tag)}
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 700,
+                    padding: "5px 10px",
+                    borderRadius: 999,
+                    border: `1px solid ${isActive ? C.accent : C.border}`,
+                    background: isActive ? C.accentSoft : C.cardAlt,
+                    color: isActive ? C.accent : C.textSub,
+                    cursor: "pointer",
+                  }}
+                >
+                  #{tag}
+                </button>
+              );
+            })}
           </div>
 
           <div
@@ -1677,6 +2356,12 @@ function QuizAbcdApp() {
           <div style={{ marginTop: 12, fontSize: 14, color: C.textSub, lineHeight: 1.65 }}>
             Wybierz jedną odpowiedź. Po wyborze od razu zobaczysz informację zwrotną i możesz przejść dalej.
           </div>
+          {selectedTagFilters.length > 0 && (
+            <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <span className="soft-chip">Filtr sesji: {selectedTagFilters.join(", ")}</span>
+              <span className="soft-chip">{filteredQuestionPool.length} pytań po filtrze</span>
+            </div>
+          )}
 
         </div>
 
@@ -1811,13 +2496,65 @@ function QuizAbcdApp() {
           </div>
         )}
 
+        <div style={{ ...s.cardSm, padding: 16, background: "rgba(255,255,255,.82)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+            <IcoTag size={15} />
+            <div style={{ fontSize: 14, fontWeight: 700, color: C.textStrong }}>Tagi pytania</div>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {currentQuestionTags.length ? (
+              currentQuestionTags.map((tag) => (
+                <span key={tag} className="soft-chip">
+                  #{tag}
+                </span>
+              ))
+            ) : (
+              <div style={{ fontSize: 13, color: C.textSub }}>To pytanie nie ma jeszcze żadnych tagów.</div>
+            )}
+          </div>
+
+          <div style={{ marginTop: 12 }}>
+            <label style={s.label}>Twoje tagi</label>
+            <input
+              value={questionTagDraft}
+              onChange={(e) => setQuestionTagDraft(e.target.value)}
+              placeholder="np. pgmp::scope review tricky"
+              style={s.input}
+            />
+            <div className="field-help">Rozdzielaj tagi spacją, przecinkiem albo średnikiem. Zapis działa jak prywatne tagi Anki dla zalogowanego użytkownika.</div>
+          </div>
+
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12 }}>
+            <button onClick={saveQuestionTags} style={s.btn("soft")}>
+              <IcoTag size={14} /> Zapisz tagi
+            </button>
+            {!authUser && <span className="soft-chip">Zaloguj się w ustawieniach, aby zapisać tagi</span>}
+          </div>
+
+          <div
+            style={{
+              marginTop: 12,
+              padding: 10,
+              borderRadius: 14,
+              background: toneForStatus(tagSaveState.status).bg,
+              color: toneForStatus(tagSaveState.status).color,
+              border: `1px solid ${toneForStatus(tagSaveState.status).border}`,
+              fontSize: 12,
+              lineHeight: 1.55,
+            }}
+          >
+            {tagSaveState.message}
+          </div>
+        </div>
+
         <div style={{ display: "flex", gap: 10, justifyContent: "space-between", flexWrap: "wrap" }}>
           <button onClick={prev} disabled={idx === 0} style={{ ...s.btn("ghost"), opacity: idx === 0 ? 0.45 : 1 }}>
             <IcoLeft size={14} /> Poprzednie
           </button>
 
           <div style={{ display: "flex", gap: 10 }}>
-            <button onClick={() => startQuiz(questionPool, quizLength)} style={s.btn("ghost")}>
+            <button onClick={() => startQuiz(undefined, quizLength)} style={s.btn("ghost")}>
               <IcoRefresh size={14} /> Restart
             </button>
 
@@ -2405,16 +3142,28 @@ function QuizAbcdApp() {
     );
   };
 
-  const PlanView = () => (
+  const PlanView = () => {
+    const activePlan = studyPlan || localPlan;
+
+    return (
     <div style={{ display: "grid", gap: 16 }}>
       <div style={{ ...s.card, padding: 22 }}>
-        <div className="tinyLabel" style={{ marginBottom: 8 }}>
-          Plan rozwoju
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 8 }}>
+          <div className="tinyLabel">Plan rozwoju</div>
+          <span className="soft-chip">
+            <IcoCloud size={12} />
+            {activePlan?.source === "cloud" ? "Plan AI" : "Plan lokalny"}
+          </span>
         </div>
         <div style={{ fontSize: 28, fontWeight: 700, color: C.textStrong, marginBottom: 8 }}>
-          {plan.readiness || "Plan nauki"}
+          {activePlan?.readiness || "Plan nauki"}
         </div>
-        <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.7 }}>{plan.recommendation}</div>
+        <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.7 }}>{activePlan?.recommendation}</div>
+        {studyPlanStatus === "loading" && (
+          <div style={{ marginTop: 12, fontSize: 13, color: C.textSub }}>
+            Cloud AI przygotowuje szczegółowy plan na podstawie wyników i historii sesji.
+          </div>
+        )}
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
@@ -2425,8 +3174,8 @@ function QuizAbcdApp() {
           </div>
 
           <div style={{ display: "grid", gap: 10 }}>
-            {(plan.improvements || []).length ? (
-              plan.improvements.map((item, i) => (
+            {(activePlan?.improvements || []).length ? (
+              activePlan.improvements.map((item, i) => (
                 <div key={i} style={{ padding: 12, borderRadius: 14, background: C.cardAlt, border: `1px solid ${C.border}` }}>
                   <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.6 }}>{item}</div>
                 </div>
@@ -2444,8 +3193,8 @@ function QuizAbcdApp() {
           </div>
 
           <div style={{ display: "grid", gap: 10 }}>
-            {(plan.weeklyPlan || []).length ? (
-              plan.weeklyPlan.map((x) => (
+            {(activePlan?.weeklyPlan || []).length ? (
+              activePlan.weeklyPlan.map((x) => (
                 <div
                   key={x.day}
                   style={{
@@ -2472,16 +3221,17 @@ function QuizAbcdApp() {
       </div>
     </div>
   );
+  };
 
   const SettingsView = () => (
     <div className="settings-grid">
-      <div className="settings-main-card" style={{ ...s.card, padding: 18 }}>
+      <div className="settings-main-card" style={{ ...s.card, padding: 16 }}>
         <div>
-          <div className="tinyLabel" style={{ marginBottom: 10 }}>
+          <div className="tinyLabel" style={{ marginBottom: 8 }}>
             Konfiguracja quizu
           </div>
-          <div style={{ fontSize: 28, fontWeight: 600, color: C.textStrong, marginBottom: 8 }}>Ustawienia nauki</div>
-          <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.65, marginBottom: 20 }}>
+          <div style={{ fontSize: 24, fontWeight: 600, color: C.textStrong, marginBottom: 6 }}>Ustawienia nauki</div>
+          <div style={{ fontSize: 13, color: C.textSub, lineHeight: 1.55, marginBottom: 14 }}>
             Minimum chaosu, maksimum skupienia. Wszystko w jednym spokojnym panelu.
           </div>
 
@@ -2513,7 +3263,7 @@ function QuizAbcdApp() {
         </div>
 
         <div>
-          <div className="settings-actions" style={{ marginTop: 14 }}>
+          <div className="settings-actions" style={{ marginTop: 10 }}>
             <button onClick={() => fileRef.current?.click()} style={s.btn("ghost")}>
               <IcoUpload size={14} /> Import pytań
             </button>
@@ -2526,7 +3276,117 @@ function QuizAbcdApp() {
       </div>
 
       <div className="settings-stack">
-        <div style={{ ...s.card, padding: 16, minHeight: 0 }}>
+        <div style={{ ...s.card, padding: 14, minHeight: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <IcoUser size={16} />
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Konto</div>
+            </div>
+            {authUser && (
+              <span className="soft-chip">
+                <IcoCheck size={12} /> zalogowany
+              </span>
+            )}
+          </div>
+
+          {authUser ? (
+            <>
+              <div style={{ marginBottom: 12 }}>
+                <label style={s.label}>E-mail</label>
+                <input value={authUser.email || authEmail} readOnly style={{ ...s.input, background: C.cardAlt }} />
+              </div>
+
+              <div style={{ marginBottom: 12 }}>
+                <label style={s.label}>Nazwa użytkownika</label>
+                <input value={profileNameDraft} onChange={(e) => setProfileNameDraft(e.target.value)} placeholder="Jak pokazywać profil" style={s.input} />
+              </div>
+
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <button onClick={handleProfileSave} style={s.btn("soft")}>
+                  <IcoUser size={14} /> Zapisz profil
+                </button>
+                <button onClick={handleSignOut} style={s.btn("ghost")}>
+                  <IcoLogout size={14} /> Wyloguj
+                </button>
+              </div>
+
+              <div className="field-help">
+                Profil zapisuje się w tabeli `profiles`, a wyniki i tagi są powiązane z tym kontem.
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                <button
+                  type="button"
+                  onClick={() => setAuthMode("login")}
+                  style={{ ...s.btn(authMode === "login" ? "primary" : "ghost"), flex: 1, padding: "8px 10px" }}
+                >
+                  Logowanie
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAuthMode("register")}
+                  style={{ ...s.btn(authMode === "register" ? "primary" : "ghost"), flex: 1, padding: "8px 10px" }}
+                >
+                  Rejestracja
+                </button>
+              </div>
+
+              <div style={{ marginBottom: 12 }}>
+                <label style={s.label}>E-mail</label>
+                <input value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} placeholder="twoj@email.com" style={s.input} />
+              </div>
+
+              <div style={{ marginBottom: 12 }}>
+                <label style={s.label}>Hasło</label>
+                <input type="password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} placeholder="minimum 6 znaków" style={s.input} />
+              </div>
+
+              <div style={{ marginBottom: 12 }}>
+                <label style={s.label}>Nazwa użytkownika</label>
+                <input
+                  value={profileNameDraft}
+                  onChange={(e) => setProfileNameDraft(e.target.value)}
+                  placeholder="opcjonalnie przy rejestracji"
+                  style={s.input}
+                />
+              </div>
+
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <button onClick={handleAuthSubmit} style={s.btn("soft")}>
+                  <IcoKey size={14} /> {authMode === "register" ? "Utwórz konto" : "Zaloguj"}
+                </button>
+              </div>
+
+              <div className="field-help">Konto wykorzystuje Supabase Auth. Po zalogowaniu wyniki i tagi będą zapisywane w bazie.</div>
+            </>
+          )}
+
+          <div
+            style={{
+              marginTop: 12,
+              padding: 12,
+              borderRadius: 14,
+              background: toneForStatus(authStatus.status).bg,
+              color: toneForStatus(authStatus.status).color,
+              border: `1px solid ${toneForStatus(authStatus.status).border}`,
+              fontSize: 13,
+              lineHeight: 1.6,
+            }}
+          >
+            {authStatus.message}
+          </div>
+
+          {userProfile && (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+              <span className="soft-chip">Profil: {userProfile.display_name || userProfile.email}</span>
+              <span className="soft-chip">Tagi prywatne: {Object.keys(userTagMap).length}</span>
+            </div>
+          )}
+        </div>
+
+        <div style={{ ...s.card, padding: 14, minHeight: 0 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <IcoCloud size={16} />
@@ -2597,7 +3457,7 @@ function QuizAbcdApp() {
           </div>
         </div>
 
-        <div style={{ ...s.card, padding: 16, minHeight: 0 }}>
+        <div style={{ ...s.card, padding: 14, minHeight: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
             <IcoCheck size={16} />
             <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Supabase</div>
@@ -2649,7 +3509,70 @@ function QuizAbcdApp() {
           </div>
         </div>
 
-        <div className="settings-summary-card" style={{ ...s.card, padding: 16, minHeight: 0 }}>
+        <div style={{ ...s.card, padding: 14, minHeight: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+            <IcoTag size={16} />
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Tagi i filtry</div>
+          </div>
+
+          <div className="field-help">
+            Tagi są prywatne dla użytkownika i działają jak w Anki: możesz przypisać wiele etykiet do pytania, a potem budować sesje po tagach.
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+            <button
+              type="button"
+              onClick={() => setSelectedTagFilters([])}
+              style={{
+                ...s.btn(selectedTagFilters.length ? "ghost" : "soft"),
+                padding: "8px 10px",
+              }}
+            >
+              Wszystkie
+            </button>
+            {availableTags.map((tag) => {
+              const active = selectedTagFilters.some((item) => item.toLowerCase() === tag.toLowerCase());
+              return (
+                <button
+                  key={tag}
+                  type="button"
+                  onClick={() => toggleTagFilter(tag)}
+                  style={{
+                    ...s.btn(active ? "soft" : "ghost"),
+                    padding: "8px 10px",
+                  }}
+                >
+                  #{tag}
+                </button>
+              );
+            })}
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 14 }}>
+            <div style={{ ...s.metric, background: C.cardAlt }}>
+              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>Aktywne filtry</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: C.textStrong }}>{selectedTagFilters.length || "—"}</div>
+            </div>
+            <div style={{ ...s.metric, background: C.cardAlt }}>
+              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>Pytania po filtrze</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: C.textStrong }}>{filteredQuestionPool.length}</div>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+            {selectedTagFilters.length ? (
+              selectedTagFilters.map((tag) => (
+                <span key={tag} className="soft-chip">
+                  #{tag}
+                </span>
+              ))
+            ) : (
+              <span className="soft-chip">Brak aktywnych filtrów</span>
+            )}
+          </div>
+        </div>
+
+        <div className="settings-summary-card" style={{ ...s.card, padding: 14, minHeight: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
             <IcoTrending size={16} />
             <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Stan i tempo</div>
@@ -2743,7 +3666,7 @@ function QuizAbcdApp() {
 
                 <div className="sidebar-session-action">
                   <button
-                    onClick={() => startQuiz(questionPool, quizLength)}
+                    onClick={() => startQuiz(undefined, quizLength)}
                     style={{
                       ...s.btn("ghost"),
                       width: "100%",

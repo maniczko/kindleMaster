@@ -42,6 +42,10 @@ export const IcoCross = ({ size = 16 }) => <Icon size={size} d="M18 6L6 18M6 6l1
 export const IcoTrending = ({ size = 16 }) => <Icon size={size} d="M3 17l6-6 4 4 7-8M14 7h6v6" />;
 export const IcoBolt = ({ size = 16 }) => <Icon size={size} d="M13 2L4 14h6l-1 8 9-12h-6l1-8z" />;
 export const IcoTarget = ({ size = 16 }) => <Icon size={size} d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83M12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8z" />;
+export const IcoUser = ({ size = 16 }) => <Icon size={size} d="M20 21a8 8 0 0 0-16 0M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z" />;
+export const IcoKey = ({ size = 16 }) => <Icon size={size} d="M21 2l-2 2m-2 2l-4.5 4.5M15 8l2 2M6 14a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm0 0l3-3" />;
+export const IcoTag = ({ size = 16 }) => <Icon size={size} d="M20 10l-8.5 8.5a2.12 2.12 0 0 1-3 0L3.5 13.5a2.12 2.12 0 0 1 0-3L12 2h8v8zM17 7h.01" />;
+export const IcoLogout = ({ size = 16 }) => <Icon size={size} d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" />;
 
 export const ZenQuizLogo = ({ size = 64 }) => (
   <svg width={size} height={size} viewBox="0 0 72 72" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">

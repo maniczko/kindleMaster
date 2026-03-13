@@ -1,7 +1,11 @@
-import { corsHeaders } from "../_shared/cors.ts";
-
 const DEFAULT_MODEL = "claude-sonnet-4-5-20250929";
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Cache-Control": "no-store",
+};
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -63,6 +67,62 @@ function buildTrainingPrompt(payload: Record<string, unknown>) {
   ].join("\n");
 }
 
+function buildStudyPlanPrompt(payload: Record<string, unknown>) {
+  return [
+    "Jestes trenerem przygotowujacym szczegolowy plan nauki po polsku.",
+    "Na podstawie wynikow przygotuj realistyczny plan tygodniowy.",
+    "Zwroc tylko poprawny JSON bez markdown i bez dodatkowego komentarza.",
+    'Wymagany format: {"readiness":"...","recommendation":"...","improvements":["..."],"weeklyPlan":[{"day":"Pon","task":"...","duration":"25m"}]}',
+    "Zasady:",
+    "- recommendation: 1 zwięzly akapit",
+    "- improvements: 3 do 5 konkretnych punktow",
+    "- weeklyPlan: 7 dni od Pon do Nd",
+    "- plan ma byc praktyczny i oparty na najslabszych obszarach oraz trendzie wynikow",
+    "Dane wejsciowe:",
+    JSON.stringify(payload, null, 2),
+  ].join("\n");
+}
+
+function extractJsonObject(text: string) {
+  const fencedMatch = text.match(/```json\s*([\s\S]*?)```/i) || text.match(/```\s*([\s\S]*?)```/i);
+  const candidate = fencedMatch ? fencedMatch[1] : text;
+  const start = candidate.indexOf("{");
+  const end = candidate.lastIndexOf("}");
+
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error("Cloud returned invalid JSON");
+  }
+
+  return JSON.parse(candidate.slice(start, end + 1));
+}
+
+function normalizeStudyPlan(data: any) {
+  const recommendation = String(data?.recommendation || "").trim();
+  const improvements = Array.isArray(data?.improvements)
+    ? data.improvements.map((item: any) => String(item || "").trim()).filter(Boolean).slice(0, 6)
+    : [];
+  const weeklyPlan = Array.isArray(data?.weeklyPlan)
+    ? data.weeklyPlan
+        .map((item: any) => ({
+          day: String(item?.day || "").trim(),
+          task: String(item?.task || "").trim(),
+          duration: String(item?.duration || "").trim(),
+        }))
+        .filter((item: any) => item.day && item.task)
+        .slice(0, 7)
+    : [];
+
+  if (!recommendation) throw new Error("Cloud returned invalid study plan");
+
+  return {
+    ok: true,
+    readiness: String(data?.readiness || "Plan AI").trim() || "Plan AI",
+    recommendation,
+    improvements,
+    weeklyPlan,
+  };
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
@@ -106,6 +166,18 @@ Deno.serve(async (req) => {
         title: "Podsumowanie AI",
         text,
       });
+    }
+
+    if (action === "study_plan") {
+      const prompt = buildStudyPlanPrompt((body?.payload as Record<string, unknown>) || {});
+      const text = await callAnthropic({
+        apiKey: anthropicApiKey,
+        model,
+        prompt,
+        maxTokens: 650,
+      });
+
+      return json(normalizeStudyPlan(extractJsonObject(text)));
     }
 
     return json({ error: "Unsupported action" }, 400);

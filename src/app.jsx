@@ -1136,7 +1136,7 @@ const normalizeGeneratedQuestionBatch = ({ questions, defaultDeck, sourceName, s
           questionNo: question.questionNo ?? question.question_no ?? startQuestionNo + index,
           deck: question.deck || defaultDeck,
           category: question.category || sourceName || "Generator",
-          tags: mergeTags(question.tags || [], [`generator::${normalizeQuestionType(question.questionType || question.type)}`]),
+          tags: mergeTags(question.tags || [], [`generator::${normalizeQuestionType(question.questionType || question.type)}`, "source::material", "cloud::verified"]),
           sourceType: question.sourceType || "generator-cloud",
           sourceFile: question.sourceFile || sourceName || null,
         },
@@ -3132,13 +3132,18 @@ function QuizAbcdApp() {
 
     setGeneratorStatus({
       status: "loading",
-      message: "Generuje pytania z materialu...",
+      message:
+        cloudApiEnabled && sbEnabled
+          ? "Cloud analizuje material, wybiera najwazniejsze tresci i przygotowuje pytania..."
+          : "Generuje pytania z materialu...",
     });
 
     let generated = [];
     let usedFallback = false;
+    let cloudError = "";
+    const attemptedCloud = cloudApiEnabled && sbEnabled;
 
-    if (cloudApiEnabled && sbEnabled) {
+    if (attemptedCloud) {
       try {
         generated = await fetchCloudGeneratedQuestions({
           supabaseConfig,
@@ -3152,8 +3157,9 @@ function QuizAbcdApp() {
           deck,
           startQuestionNo,
         });
-      } catch {
+      } catch (error) {
         usedFallback = true;
+        cloudError = getErrorText(error);
       }
     } else {
       usedFallback = true;
@@ -3183,7 +3189,11 @@ function QuizAbcdApp() {
     setQuestionPool((prev) => mergeQuestionLibraries(prev, generated));
     setGeneratorStatus({
       status: "success",
-      message: `${usedFallback ? "Wygenerowano lokalnie" : "Cloud wygenerowal"} ${generated.length} pytan i dodano je do biblioteki. Mozesz od razu wystartowac sesje z preview.`,
+      message: !usedFallback
+        ? `Cloud przeanalizowal material, wybral najwazniejsze tresci i przygotowal ${generated.length} pytan.`
+        : attemptedCloud
+          ? `Cloud nie zwrocil kompletnego zestawu (${cloudError || "brak odpowiedzi"}). Wygenerowano lokalnie ${generated.length} pytan bez pelnej weryfikacji merytorycznej.`
+          : `Wygenerowano lokalnie ${generated.length} pytan. Bez Cloud walidacja merytoryczna jest ograniczona.`,
     });
   }, [
     cloudApiEnabled,
@@ -4079,9 +4089,10 @@ function QuizAbcdApp() {
 
           <QuestionMediaBlock imageUrl={current.imageUrl} audioUrl={current.audioUrl} />
 
-          <div style={{ marginTop: 12, fontSize: 14, color: C.textSub, lineHeight: 1.65 }}>
+          {false && <div style={{ marginTop: 12, fontSize: 14, color: C.textSub, lineHeight: 1.65 }}>
             Wybierz jedną odpowiedź. Po wyborze od razu zobaczysz informację zwrotną i możesz przejść dalej.
-          </div>
+          </div>}
+          <div style={{ marginTop: 12, fontSize: 14, color: C.textSub, lineHeight: 1.65 }}>{answerHint}</div>
           {selectedTagFilters.length > 0 && (
             <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
               <span className="soft-chip">Filtr sesji: {selectedTagFilters.join(", ")}</span>
@@ -4091,12 +4102,30 @@ function QuizAbcdApp() {
 
         </div>
         {currentQuestionType === "flashcard" && (
-          <div style={{ ...s.card, padding: 20, background: "rgba(255,255,255,.86)" }}>
-            {!flashcardRevealed && !currentAnswer && (
-              <div style={{ display: "grid", gap: 12 }}>
-                <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.7 }}>
-                  Sprobuj odpowiedziec z pamieci. Gdy bedziesz gotowy, odkryj odpowiedz i ocen siebie.
+          <div className={`flashcard-stage ${flashcardRevealed || currentAnswer ? "revealed" : ""}`}>
+            <div className="flashcard-stack">
+              <div className={`flashcard-face ${flashcardRevealed || currentAnswer ? "back" : "front"}`}>
+                <div className="flashcard-face-top">
+                  <span className="flashcard-face-label">{flashcardRevealed || currentAnswer ? "Tyl karty" : "Przod karty"}</span>
+                  <span className="flashcard-face-hint">
+                    {flashcardRevealed || currentAnswer ? "Porownaj to z tym, co odtworzyles z pamieci." : "Najpierw odpowiedz sobie w glowie."}
+                  </span>
                 </div>
+
+                <div className="flashcard-face-body">
+                  {flashcardRevealed || currentAnswer ? current.answerBack || current.explanation : current.question}
+                </div>
+
+                <div className="flashcard-face-foot">
+                  {flashcardRevealed || currentAnswer
+                    ? current.explanation || "Zanotuj brakujacy fragment i wroc do karty jeszcze raz."
+                    : "Sprobuj przywolac definicje, proces albo najwazniejsza zaleznosc, zanim odkryjesz rewers."}
+                </div>
+              </div>
+            </div>
+
+            {!flashcardRevealed && !currentAnswer && (
+              <div className="flashcard-actions">
                 <button onClick={revealFlashcard} style={{ ...s.btn("soft"), width: "fit-content" }}>
                   <IcoBook size={14} /> Pokaz odpowiedz
                 </button>
@@ -4104,12 +4133,9 @@ function QuizAbcdApp() {
             )}
 
             {flashcardRevealed && !currentAnswer && (
-              <div style={{ display: "grid", gap: 14 }}>
-                <div style={{ padding: 16, borderRadius: 16, background: C.cardAlt, border: `1px solid ${C.border}` }}>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: C.textSub, marginBottom: 6 }}>Odpowiedz</div>
-                  <div style={{ fontSize: 16, color: C.textStrong, lineHeight: 1.7 }}>{current.answerBack || current.explanation}</div>
-                </div>
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <div className="flashcard-actions">
+                <div className="flashcard-judge-note">Oceń fiszkę od razu po odkryciu tylu karty.</div>
+                <div className="flashcard-judge-buttons">
                   <button onClick={() => gradeFlashcard(true)} style={s.btn("soft")}>
                     <IcoCheck size={14} /> Umiem
                   </button>
@@ -4476,7 +4502,7 @@ function QuizAbcdApp() {
         )}
 
         {currentQuestionType === "flashcard" && currentAnswer && (
-          <div style={{ ...s.card, padding: "18px 20px", background: C.cardAlt }}>
+          <div style={{ ...s.card, padding: "18px 20px", background: C.cardAlt }} className="flashcard-review-card">
             <div
               style={{
                 fontSize: 12,
@@ -4488,9 +4514,16 @@ function QuizAbcdApp() {
               {currentAnswer.isCorrect ? "OK - oznaczone jako umiem." : "Do poprawy - wroc do tej fiszki w kolejnej sesji."}
             </div>
 
-            <div style={{ padding: "12px 14px", borderRadius: 14, background: "#fff", border: `1px solid ${C.border}`, marginBottom: 10 }}>
-              <div style={{ fontSize: 12, color: C.textSub, marginBottom: 6 }}>Druga strona karty</div>
-              <div style={{ fontSize: 15, color: C.textStrong, lineHeight: 1.65 }}>{current.answerBack || current.explanation}</div>
+            <div className="flashcard-review-grid">
+              <div className="flashcard-mini-face">
+                <div className="flashcard-mini-label">Przod</div>
+                <div className="flashcard-mini-copy">{current.question}</div>
+              </div>
+
+              <div className="flashcard-mini-face back">
+                <div className="flashcard-mini-label">Tyl</div>
+                <div className="flashcard-mini-copy">{current.answerBack || current.explanation}</div>
+              </div>
             </div>
 
             <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.7 }}>{current.explanation}</div>
@@ -4575,7 +4608,7 @@ function QuizAbcdApp() {
           </div>
         )}
 
-        <div style={{ ...s.cardSm, padding: 16, background: "rgba(255,255,255,.82)" }}>
+        {false && <div style={{ ...s.cardSm, padding: 16, background: "rgba(255,255,255,.82)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
             <IcoTag size={15} />
             <div style={{ fontSize: 14, fontWeight: 700, color: C.textStrong }}>Tagi pytania</div>
@@ -4625,7 +4658,7 @@ function QuizAbcdApp() {
           >
             {tagSaveState.message}
           </div>
-        </div>
+        </div>}
 
         <div style={{ display: "flex", gap: 10, justifyContent: "space-between", flexWrap: "wrap" }}>
           <button onClick={prev} disabled={idx === 0} style={{ ...s.btn("ghost"), opacity: idx === 0 ? 0.45 : 1 }}>

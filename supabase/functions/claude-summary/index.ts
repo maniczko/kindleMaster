@@ -103,6 +103,51 @@ function buildQuestionGenerationPrompt(payload: Record<string, unknown>) {
   ].join("\n");
 }
 
+function buildKeyPointExtractionPrompt(payload: Record<string, unknown>) {
+  return [
+    "Jestes analitykiem materialu edukacyjnego.",
+    "Na podstawie materialu wybierz tylko najwazniejsze tresci, z ktorych warto tworzyc pytania.",
+    "Priorytet: definicje, etapy, role, reguly, zaleznosci przyczynowo-skutkowe, wyjatki, porownania, wymagania, ryzyka i kluczowe liczby.",
+    "Pomijaj ciekawostki, wstepy, ozdobniki, marginalne detale i tresci bez wartosci do nauki lub egzaminu.",
+    "Zwroc tylko poprawny JSON bez markdown i bez dodatkowego komentarza.",
+    'Format: {"keyPoints":[{"topic":"...","importance":"high|medium","evidence":"...","reason":"..."}]}',
+    "Zasady:",
+    "- maksymalnie 12 punktow",
+    "- evidence ma byc krotkim cytatem lub wierna parafraza z materialu",
+    "- jesli material jest slaby, zwroc mniej punktow zamiast dopelniac liste na sile",
+    "Dane wejsciowe:",
+    JSON.stringify(payload, null, 2),
+  ].join("\n");
+}
+
+function buildReviewedQuestionGenerationPrompt(payload: Record<string, unknown>, keyPoints: Array<Record<string, unknown>> = []) {
+  return [
+    "Jestes systemem generujacym pytania do nauki z dostarczonego materialu.",
+    "Masz korzystac tylko z tresci waznych, istotnych i jednoznacznie wspartych materialem.",
+    "Najpierw oprzyj sie na sekcji keyPoints, a dopiero potem na reszcie materialu.",
+    "Jesli material nie wspiera jednoznacznej odpowiedzi, nie tworz pytania.",
+    "Pomijaj pytania trywialne, poboczne, zbyt ogolne albo o malo istotne detale.",
+    "Zwroc tylko poprawny JSON bez markdown i bez dodatkowego komentarza.",
+    'Wymagany format: {"questions":[{"questionType":"single_choice|multi_select|flashcard|cloze_deletion|type_answer","question":"...","options":{"A":"...","B":"...","C":"...","D":"..."},"correctAnswers":["..."],"answerBack":"...","explanation":"...","difficulty":"easy|medium|hard","category":"...","tags":["..."]}]}',
+    "Zasady:",
+    "- generuj tylko typy wskazane w payload.questionTypes",
+    "- single_choice: 4 opcje, 1 poprawna odpowiedz, correctAnswers = ['A']",
+    "- multi_select: 4 opcje, 2 lub 3 poprawne odpowiedzi, correctAnswers = ['A','C']",
+    "- flashcard: bez opcji, answerBack wymagane",
+    "- cloze_deletion: pytanie z markerami {{c1::odpowiedz}} lub {{c1::odpowiedz::podpowiedz}}",
+    "- type_answer: bez opcji, correctAnswers to lista akceptowanych odpowiedzi tekstowych",
+    "- explanation ma byc krotkie, praktyczne i ma wyjasniac dlaczego tresc jest wazna",
+    "- tags maja byc zwiezle i przydatne do filtrowania",
+    "- liczba pytan ma byc bliska payload.questionCount",
+    "- lepiej zwrocic mniej pytan niz tworzyc pytania o malo istotne fragmenty",
+    "- pytania maja testowac kluczowe pojecia, zaleznosci, etapy, role, decyzje, ryzyka lub definicje z materialu",
+    "keyPoints:",
+    JSON.stringify(keyPoints, null, 2),
+    "Dane wejsciowe:",
+    JSON.stringify(payload, null, 2),
+  ].join("\n");
+}
+
 function extractJsonObject(text: string) {
   const fencedMatch = text.match(/```json\s*([\s\S]*?)```/i) || text.match(/```\s*([\s\S]*?)```/i);
   const candidate = fencedMatch ? fencedMatch[1] : text;
@@ -141,6 +186,22 @@ function normalizeStudyPlan(data: any) {
     improvements,
     weeklyPlan,
   };
+}
+
+function normalizeKeyPoints(data: any) {
+  const keyPoints = Array.isArray(data?.keyPoints)
+    ? data.keyPoints
+        .map((item: any) => ({
+          topic: String(item?.topic || "").trim(),
+          importance: String(item?.importance || "medium").trim() || "medium",
+          evidence: String(item?.evidence || "").trim(),
+          reason: String(item?.reason || "").trim(),
+        }))
+        .filter((item: any) => item.topic && item.evidence)
+        .slice(0, 12)
+    : [];
+
+  return { keyPoints };
 }
 
 function normalizeGeneratedQuestions(data: any) {
@@ -227,15 +288,30 @@ Deno.serve(async (req) => {
     }
 
     if (action === "generate_questions") {
-      const prompt = buildQuestionGenerationPrompt((body?.payload as Record<string, unknown>) || {});
+      const payload = (body?.payload as Record<string, unknown>) || {};
+      let keyPoints: Array<Record<string, unknown>> = [];
+
+      try {
+        const keyPointsText = await callAnthropic({
+          apiKey: anthropicApiKey,
+          model,
+          prompt: buildKeyPointExtractionPrompt(payload),
+          maxTokens: 900,
+        });
+        keyPoints = normalizeKeyPoints(extractJsonObject(keyPointsText)).keyPoints;
+      } catch {}
+
       const text = await callAnthropic({
         apiKey: anthropicApiKey,
         model,
-        prompt,
+        prompt: buildReviewedQuestionGenerationPrompt(payload, keyPoints),
         maxTokens: 2200,
       });
 
-      return json(normalizeGeneratedQuestions(extractJsonObject(text)));
+      return json({
+        ...normalizeGeneratedQuestions(extractJsonObject(text)),
+        keyPoints,
+      });
     }
 
     return json({ error: "Unsupported action" }, 400);

@@ -666,6 +666,160 @@ button, input, select, textarea { font-family: inherit; }
   color: var(--answer-text);
 }
 
+.flashcard-stage {
+  display: grid;
+  gap: 14px;
+  padding: 22px;
+  border-radius: 28px;
+  border: 1px solid rgba(220,215,201,.95);
+  background:
+    radial-gradient(circle at top right, rgba(75,94,170,.12), transparent 28%),
+    linear-gradient(160deg, rgba(255,255,255,.96), rgba(247,244,236,.96));
+  box-shadow: 0 20px 42px rgba(44,62,80,.08);
+}
+
+.flashcard-stack {
+  position: relative;
+  padding-top: 14px;
+}
+
+.flashcard-stack::before,
+.flashcard-stack::after {
+  content: "";
+  position: absolute;
+  inset: 0 18px auto 18px;
+  height: calc(100% - 10px);
+  border-radius: 26px;
+  border: 1px solid rgba(220,215,201,.78);
+  background: rgba(255,255,255,.72);
+}
+
+.flashcard-stack::before {
+  transform: translateY(-10px) rotate(-1.4deg);
+}
+
+.flashcard-stack::after {
+  transform: translateY(-4px) rotate(.9deg);
+}
+
+.flashcard-face {
+  position: relative;
+  z-index: 1;
+  min-height: 240px;
+  display: grid;
+  align-content: space-between;
+  gap: 20px;
+  padding: 26px 28px;
+  border-radius: 26px;
+  border: 1px solid rgba(220,215,201,.95);
+  background: rgba(255,255,255,.96);
+  box-shadow: 0 16px 36px rgba(44,62,80,.08);
+}
+
+.flashcard-face.back {
+  background:
+    radial-gradient(circle at top right, rgba(104,148,122,.12), transparent 26%),
+    linear-gradient(160deg, rgba(244,249,244,.98), rgba(255,255,255,.96));
+}
+
+.flashcard-face-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.flashcard-face-label {
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: #F7F4EC;
+  border: 1px solid #DCD7C9;
+  color: #5F645C;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+
+.flashcard-face-hint {
+  font-size: 13px;
+  color: #7B7F77;
+}
+
+.flashcard-face-body {
+  font-size: clamp(22px, 2.6vw, 30px);
+  font-weight: 600;
+  line-height: 1.35;
+  color: #1A1A1B;
+  letter-spacing: -.03em;
+}
+
+.flashcard-face-foot {
+  font-size: 14px;
+  color: #5F645C;
+  line-height: 1.65;
+  padding-top: 14px;
+  border-top: 1px dashed rgba(220,215,201,.95);
+}
+
+.flashcard-actions {
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+}
+
+.flashcard-judge-note {
+  font-size: 13px;
+  color: #5F645C;
+}
+
+.flashcard-judge-buttons {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.flashcard-review-card {
+  display: grid;
+  gap: 12px;
+}
+
+.flashcard-review-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.flashcard-mini-face {
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid #DCD7C9;
+  background: rgba(255,255,255,.92);
+}
+
+.flashcard-mini-face.back {
+  background: rgba(244,249,244,.98);
+}
+
+.flashcard-mini-label {
+  font-size: 11px;
+  font-weight: 800;
+  color: #7B7F77;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  margin-bottom: 8px;
+}
+
+.flashcard-mini-copy {
+  font-size: 15px;
+  color: #1A1A1B;
+  line-height: 1.65;
+}
+
 .field-help {
   font-size: 12px;
   color: #8C8A7E;
@@ -1308,6 +1462,8 @@ button, input, select, textarea { font-family: inherit; }
   .generator-types-grid,
   .generator-page-range,
   .generator-link-row { grid-template-columns: 1fr; }
+  .flashcard-face { min-height: 208px; padding: 22px 20px; }
+  .flashcard-review-grid { grid-template-columns: 1fr; }
   .settings-section-grid { grid-template-columns: 1fr; }
   .tab-btn.top { min-width: 118px; }
   .deck-row { grid-template-columns: 40px minmax(0, 1fr); }

@@ -489,13 +489,15 @@ const filterQuestionsByTags = (questions, activeTags, userTagMap = {}) => {
 
 const buildAuthSession = (data) => {
   if (!data?.access_token) return null;
+  const expiresIn = Number(data.expires_in || 0);
+  const expiresAt = Number(data.expires_at || 0) || (expiresIn ? Math.floor(Date.now() / 1000) + expiresIn : 0);
 
   return {
     access_token: data.access_token,
     refresh_token: data.refresh_token || "",
     token_type: data.token_type || "bearer",
-    expires_in: Number(data.expires_in || 0),
-    expires_at: Number(data.expires_at || 0),
+    expires_in: expiresIn,
+    expires_at: expiresAt,
     user: data.user || null,
   };
 };
@@ -624,6 +626,66 @@ async function signOutAuth(config, accessToken) {
     accessToken,
   });
 }
+
+async function upsertProfileRecord(config, accessToken, user, displayName) {
+  if (!config?.url || !accessToken || !user?.id) return null;
+
+  const row = {
+    id: user.id,
+    email: user.email || "",
+    display_name: String(displayName || user?.user_metadata?.display_name || user?.email?.split("@")[0] || "").trim() || null,
+    updated_at: new Date().toISOString(),
+  };
+
+  const result = await sbUpsert(config, "profiles", row, accessToken, "id");
+  return result?.[0] || row;
+}
+
+const getOAuthRedirectUrl = () => {
+  if (typeof window === "undefined") return "";
+  return `${window.location.origin}${window.location.pathname}`;
+};
+
+const parseOAuthCallback = (href = "") => {
+  const source = String(href || "");
+  if (!source) return { session: null, error: "" };
+
+  const url = new URL(source);
+  const hashParams = new URLSearchParams(String(url.hash || "").replace(/^#/, ""));
+  const searchParams = url.searchParams;
+  const error = hashParams.get("error_description") || hashParams.get("error") || searchParams.get("error_description") || searchParams.get("error") || "";
+
+  if (error) {
+    return { session: null, error: decodeURIComponent(error) };
+  }
+
+  const accessToken = hashParams.get("access_token");
+  if (!accessToken) return { session: null, error: "" };
+
+  return {
+    session: buildAuthSession({
+      access_token: accessToken,
+      refresh_token: hashParams.get("refresh_token") || "",
+      token_type: hashParams.get("token_type") || "bearer",
+      expires_in: Number(hashParams.get("expires_in") || 0),
+      expires_at: Number(hashParams.get("expires_at") || 0),
+    }),
+    error: "",
+  };
+};
+
+const clearOAuthCallbackUrl = () => {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  url.hash = "";
+  ["code", "error", "error_description", "error_code", "state"].forEach((key) => url.searchParams.delete(key));
+  window.history.replaceState({}, document.title, `${url.pathname}${url.search}`);
+};
+
+const buildOAuthAuthorizeUrl = (config, provider = "google") => {
+  const redirectTo = getOAuthRedirectUrl();
+  return `${config.url}/auth/v1/authorize?provider=${encodeURIComponent(provider)}&redirect_to=${encodeURIComponent(redirectTo)}`;
+};
 
 const normDiff = (v) => {
   const r = String(v || "medium").trim().toLowerCase();
@@ -2341,16 +2403,7 @@ function QuizAbcdApp() {
   const upsertUserProfile = useCallback(
     async (user, displayName) => {
       if (!sbEnabled || !authAccessToken || !user?.id) return null;
-
-      const row = {
-        id: user.id,
-        email: user.email || "",
-        display_name: String(displayName || user?.user_metadata?.display_name || user?.email?.split("@")[0] || "").trim() || null,
-        updated_at: new Date().toISOString(),
-      };
-
-      const result = await sbUpsert(supabaseConfig, "profiles", row, authAccessToken, "id");
-      return result?.[0] || row;
+      return upsertProfileRecord(supabaseConfig, authAccessToken, user, displayName);
     },
     [sbEnabled, supabaseConfig, authAccessToken]
   );
@@ -2622,6 +2675,99 @@ function QuizAbcdApp() {
     }
   }, [cloudApiEnabled, sbEnabled, supabaseConfig, cloudModel, cloudApiKeyDraft, manualCloudApiKey]);
 
+  const handleGoogleAuth = useCallback(() => {
+    if (!sbEnabled) {
+      setAuthStatus({
+        status: "error",
+        message: "Najpierw ustaw poprawny Supabase URL i publishable / anon key.",
+      });
+      return;
+    }
+
+    setAuthStatus({
+      status: "loading",
+      message: "Przekierowuje do logowania Google przez Supabase...",
+    });
+
+    window.location.assign(buildOAuthAuthorizeUrl(supabaseConfig, "google"));
+  }, [sbEnabled, supabaseConfig]);
+
+  useEffect(() => {
+    const { session, error } = parseOAuthCallback(typeof window !== "undefined" ? window.location.href : "");
+    if (!session && !error) return;
+
+    let cancelled = false;
+
+    const finalizeGoogleAuth = async () => {
+      if (error) {
+        clearOAuthCallbackUrl();
+        if (!cancelled) {
+          setAuthStatus({ status: "error", message: `Google login nie powiodl sie: ${error}` });
+        }
+        return;
+      }
+
+      if (!session?.access_token) {
+        clearOAuthCallbackUrl();
+        return;
+      }
+
+      if (!sbEnabled) {
+        clearOAuthCallbackUrl();
+        if (!cancelled) {
+          setAuthStatus({
+            status: "error",
+            message: "Google zwrocilo sesje, ale aplikacja nie ma poprawnego polaczenia z Supabase. Sprawdz URL projektu i publishable / anon key.",
+          });
+        }
+        return;
+      }
+
+      if (!cancelled) {
+        setAuthStatus({
+          status: "loading",
+          message: "Konfiguruje sesje Google i pobieram profil z Supabase...",
+        });
+      }
+
+      try {
+        const user = await fetchAuthUser(supabaseConfig, session.access_token);
+        const nextSession = {
+          ...session,
+          user,
+        };
+        const displayName = String(user?.user_metadata?.full_name || user?.user_metadata?.name || user?.user_metadata?.display_name || user?.email?.split("@")[0] || "").trim();
+        const profile = await upsertProfileRecord(supabaseConfig, session.access_token, user, displayName);
+
+        clearOAuthCallbackUrl();
+
+        if (cancelled) return;
+        setAuthSession(nextSession);
+        setAuthUser(user);
+        setAuthEmail(String(user?.email || "").trim());
+        setAuthPassword("");
+        setUserProfile(profile);
+        setProfileNameDraft(profile?.display_name || displayName);
+        setAuthMode("login");
+        setAuthStatus({
+          status: "success",
+          message: "Zalogowano przez Google. Profil i sesja zostaly zapisane.",
+        });
+      } catch (oauthError) {
+        clearOAuthCallbackUrl();
+        if (!cancelled) {
+          setAuthStatus({ status: "error", message: getErrorText(oauthError) });
+        }
+      }
+    };
+
+    finalizeGoogleAuth();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sbEnabled, supabaseConfig]);
+
   const handleAuthSubmit = useCallback(async () => {
     if (!sbEnabled) {
       setAuthStatus({
@@ -2671,7 +2817,7 @@ function QuizAbcdApp() {
       setAuthPassword("");
 
       if (session && nextUser) {
-        const profile = await upsertUserProfile(nextUser, displayName);
+        const profile = await upsertProfileRecord(supabaseConfig, session.access_token, nextUser, displayName);
         setUserProfile(profile);
         setProfileNameDraft(profile?.display_name || displayName);
       }
@@ -2688,7 +2834,7 @@ function QuizAbcdApp() {
     } catch (error) {
       setAuthStatus({ status: "error", message: getErrorText(error) });
     }
-  }, [sbEnabled, authEmail, authPassword, profileNameDraft, authMode, supabaseConfig, upsertUserProfile]);
+  }, [sbEnabled, authEmail, authPassword, profileNameDraft, authMode, supabaseConfig]);
 
   const handleProfileSave = useCallback(async () => {
     if (!sbEnabled || !authUser?.id || !authAccessToken) {
@@ -6417,6 +6563,9 @@ function QuizAbcdApp() {
               </div>
 
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <button onClick={handleGoogleAuth} style={s.btn("ghost")}>
+                  <IcoUser size={14} /> Kontynuuj z Google
+                </button>
                 <button onClick={handleAuthSubmit} style={s.btn("soft")}>
                   <IcoKey size={14} /> {authMode === "register" ? "Utwórz konto" : "Zaloguj"}
                 </button>
@@ -6779,6 +6928,19 @@ function QuizAbcdApp() {
                 ? "Po rejestracji zapisujemy wyniki, tagi i decki użytkownika w Supabase."
                 : "Zaloguj się, aby wrócić do generatora, wyników i swojej biblioteki pytań."}
             </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleGoogleAuth}
+            className="landing-google-btn"
+            style={{ ...s.btn("ghost"), width: "100%", justifyContent: "center" }}
+          >
+            <IcoUser size={14} /> Kontynuuj z Google
+          </button>
+
+          <div className="landing-auth-divider">
+            <span>albo</span>
           </div>
 
           <form

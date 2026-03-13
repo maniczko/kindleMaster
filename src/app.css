@@ -279,6 +279,38 @@ button, input, select, textarea { font-family: inherit; }
   gap: 12px;
 }
 
+.landing-google-btn {
+  width: 100%;
+  justify-content: center;
+}
+
+.landing-auth-divider {
+  position: relative;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: #8B8F86;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+
+.landing-auth-divider::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  border-top: 1px solid rgba(220,215,201,.95);
+  transform: translateY(-50%);
+}
+
+.landing-auth-divider span {
+  position: relative;
+  display: inline-block;
+  padding: 0 10px;
+  background: rgba(255,255,255,.9);
+}
+
 .landing-config-card {
   margin-top: 2px;
   padding: 14px;

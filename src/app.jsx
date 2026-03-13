@@ -33,9 +33,13 @@ const STORAGE_KEY = "quiz_abcd_attempts_v6";
 const CLOUD_SETTINGS_KEY = "quiz_abcd_cloud_settings_v2";
 const SUPABASE_SETTINGS_KEY = "quiz_abcd_supabase_settings_v1";
 const AUTH_SESSION_KEY = "quiz_abcd_auth_session_v1";
+const UI_SETTINGS_KEY = "quiz_abcd_ui_settings_v1";
 const optionKeys = ["A", "B", "C", "D"];
 const diffW = { easy: 1, medium: 1.5, hard: 2 };
 const DEFAULT_MODEL = "claude-sonnet-4-5-20250929";
+const DEFAULT_DECK_NAME = "General knowledge";
+const ALL_DECKS_LABEL = "Wszystkie decki";
+const DEFAULT_DECKS = ["English", "PgMP", "Russian", DEFAULT_DECK_NAME];
 const DEFAULT_SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || "https://ylqloszldyzpeaikweyl.supabase.co").trim();
 const DEFAULT_SUPABASE_ANON_KEY = (
   import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
@@ -99,6 +103,35 @@ const normalizeTags = (value) => {
 const mergeTags = (...sets) => normalizeTags(sets.flatMap((set) => normalizeTags(set)));
 
 const getQuestionTags = (question, userTagMap = {}) => mergeTags(question?.tags || [], userTagMap?.[String(question?.id)] || []);
+
+const normalizeDeck = (value, fallback = DEFAULT_DECK_NAME) => {
+  const deck = String(value || "").trim();
+  return deck || fallback;
+};
+
+const inferDeckFromFile = (sourceFile) => {
+  const base = String(sourceFile || "")
+    .replace(/\.[^.]+$/, "")
+    .trim();
+
+  if (!base) return "";
+  if (/english/i.test(base)) return "English";
+  if (/pgmp/i.test(base)) return "PgMP";
+  if (/russian/i.test(base)) return "Russian";
+  if (/general/i.test(base)) return DEFAULT_DECK_NAME;
+  return "";
+};
+
+const resolveDeck = (candidate, category, sourceFile = "") => {
+  const explicitDeck = normalizeDeck(candidate, "");
+  if (explicitDeck) return explicitDeck;
+
+  const categoryDeck = normalizeDeck(category, "");
+  if (DEFAULT_DECKS.some((deck) => deck.toLowerCase() === categoryDeck.toLowerCase())) return categoryDeck;
+
+  const fileDeck = inferDeckFromFile(sourceFile);
+  return normalizeDeck(fileDeck, DEFAULT_DECK_NAME);
+};
 
 const filterQuestionsByTags = (questions, activeTags, userTagMap = {}) => {
   const filters = normalizeTags(activeTags).map((tag) => tag.toLowerCase());
@@ -391,6 +424,20 @@ const saveSupabaseSettings = (settings) => {
   } catch {}
 };
 
+const loadUiSettings = () => {
+  try {
+    return JSON.parse(localStorage.getItem(UI_SETTINGS_KEY) || "{}");
+  } catch {
+    return {};
+  }
+};
+
+const saveUiSettings = (settings) => {
+  try {
+    localStorage.setItem(UI_SETTINGS_KEY, JSON.stringify(settings));
+  } catch {}
+};
+
 const loadAuthSession = () => {
   try {
     return JSON.parse(localStorage.getItem(AUTH_SESSION_KEY) || "null");
@@ -423,6 +470,7 @@ const rowToQ = (row, i) => ({
   options: { A: row.option_a, B: row.option_b, C: row.option_c, D: row.option_d },
   correct: row.correct_answer || null,
   explanation: row.explanation || "Brak wyjaśnienia.",
+  deck: resolveDeck(row.deck || row.deck_name || row.deck_title || row.collection_name, row.category, row.source_file),
   category: row.category || "General",
   tags: normalizeTags(row.tags || row.tag_list || row.tag || []),
   difficulty: normDiff(row.difficulty || "medium"),
@@ -452,6 +500,7 @@ function parseRows(rows, sourceFile = null) {
         },
         correct: optionKeys.includes(correct) ? correct : null,
         explanation: String(row.explanation ?? "Brak wyjaśnienia.").trim(),
+        deck: resolveDeck(row.deck ?? row.Deck ?? row.deck_name ?? row.deckName ?? row.collection ?? row.Collection, row.category, sourceFile),
         category: String(row.category ?? "General").trim(),
         tags: normalizeTags(row.tags ?? row.Tags ?? row.tag ?? row.Tag ?? row.labels ?? row.Labels ?? []),
         difficulty: normDiff(row.difficulty ?? "medium"),
@@ -482,6 +531,7 @@ function parseTxt(text, sourceFile = "import.txt") {
         },
         correct: null,
         explanation: "Brak odpowiedzi w pliku.",
+        deck: resolveDeck("", "", sourceFile),
         category: "Import",
         tags: [],
         difficulty: "medium",
@@ -765,6 +815,7 @@ const SAMPLES = [
     options: { A: "Risk Register", B: "Project Charter", C: "Lessons Learned", D: "Issue Log" },
     correct: "B",
     explanation: "Project Charter formalnie autoryzuje projekt i określa jego ramy.",
+    deck: "PgMP",
     category: "PgMP",
     tags: ["pgmp::scope", "foundations", "charter"],
     difficulty: "medium",
@@ -782,6 +833,7 @@ const SAMPLES = [
     },
     correct: "B",
     explanation: "Program budget jest wejściem, nie wyjściem procesu Direct and Manage.",
+    deck: "PgMP",
     category: "PgMP",
     tags: ["pgmp::execution", "outputs", "tricky"],
     difficulty: "medium",
@@ -799,8 +851,45 @@ const SAMPLES = [
     },
     correct: "A",
     explanation: "VAT to podatek od wartości dodanej.",
+    deck: "General knowledge",
     category: "Finance",
     tags: ["finance::tax", "definitions", "easy-win"],
+    difficulty: "easy",
+    sourceType: "sample",
+  },
+  {
+    id: 4,
+    questionNo: 4,
+    question: "Choose the correct English sentence.",
+    options: {
+      A: "She go to school every day.",
+      B: "She goes to school every day.",
+      C: "She going to school every day.",
+      D: "She gone to school every day.",
+    },
+    correct: "B",
+    explanation: "W Present Simple dla `she` używamy formy `goes`.",
+    deck: "English",
+    category: "Grammar",
+    tags: ["english::grammar", "present-simple", "basics"],
+    difficulty: "easy",
+    sourceType: "sample",
+  },
+  {
+    id: 5,
+    questionNo: 5,
+    question: "What is the Russian word for `book`?",
+    options: {
+      A: "книга",
+      B: "машина",
+      C: "окно",
+      D: "яблоко",
+    },
+    correct: "A",
+    explanation: "`книга` oznacza `book`.",
+    deck: "Russian",
+    category: "Vocabulary",
+    tags: ["russian::vocabulary", "basics", "reading"],
     difficulty: "easy",
     sourceType: "sample",
   },
@@ -1157,6 +1246,7 @@ function QuizAbcdApp() {
   const initialCloud = loadCloudSettings();
   const initialSupabase = loadSupabaseSettings();
   const initialAuthSession = loadAuthSession();
+  const initialUi = loadUiSettings();
 
   const [questionPool, setQuestionPool] = useState(SAMPLES);
   const [quizLength, setQuizLength] = useState(10);
@@ -1172,6 +1262,9 @@ function QuizAbcdApp() {
   const [history, setHistory] = useState(() => loadLocal());
   const [importMsg, setImportMsg] = useState(null);
   const [activeTab, setActiveTab] = useState("quiz");
+  const [selectedDeck, setSelectedDeck] = useState(() =>
+    normalizeDeck(initialUi.selectedDeck || import.meta.env.VITE_SUPABASE_DEFAULT_DECK || ALL_DECKS_LABEL, ALL_DECKS_LABEL)
+  );
 
   const [calMonth, setCalMonth] = useState(() => som(new Date()));
   const [selectedCalDay, setSelectedCalDay] = useState(() => dayKey(Date.now()));
@@ -1225,6 +1318,10 @@ function QuizAbcdApp() {
   }, [authSession]);
 
   useEffect(() => {
+    saveUiSettings({ selectedDeck });
+  }, [selectedDeck]);
+
+  useEffect(() => {
     setSupabaseCheck({ status: "idle", message: "Nie sprawdzono połączenia." });
   }, [supabaseUrl, supabaseAnonKey]);
 
@@ -1242,21 +1339,37 @@ function QuizAbcdApp() {
   const sbEnabled = useMemo(() => hasSupabaseConfig(supabaseConfig), [supabaseConfig]);
   const manualCloudApiKey = looksLikeAnthropicKey(cloudApiKeyDraft) ? cloudApiKeyDraft.trim() : "";
   const authAccessToken = String(authSession?.access_token || "").trim();
+  const availableDecks = useMemo(() => {
+    const list = [...DEFAULT_DECKS, ...questionPool.map((question) => normalizeDeck(question.deck))];
+    return [ALL_DECKS_LABEL, ...new Map(list.map((deck) => [deck.toLowerCase(), deck])).values()];
+  }, [questionPool]);
+  const deckQuestionPool = useMemo(
+    () =>
+      selectedDeck === ALL_DECKS_LABEL
+        ? questionPool
+        : questionPool.filter((question) => normalizeDeck(question.deck) === selectedDeck),
+    [questionPool, selectedDeck]
+  );
   const availableTags = useMemo(
     () =>
       mergeTags(
-        questionPool.flatMap((question) => question.tags || []),
+        deckQuestionPool.flatMap((question) => question.tags || []),
         Object.values(userTagMap).flat()
       ).sort((a, b) => a.localeCompare(b, "pl")),
-    [questionPool, userTagMap]
+    [deckQuestionPool, userTagMap]
   );
   const filteredQuestionPool = useMemo(
-    () => filterQuestionsByTags(questionPool, selectedTagFilters, userTagMap),
-    [questionPool, selectedTagFilters, userTagMap]
+    () => filterQuestionsByTags(deckQuestionPool, selectedTagFilters, userTagMap),
+    [deckQuestionPool, selectedTagFilters, userTagMap]
   );
+
+  useEffect(() => {
+    if (!availableDecks.includes(selectedDeck)) setSelectedDeck(ALL_DECKS_LABEL);
+  }, [availableDecks, selectedDeck]);
 
   const total = questions.length;
   const current = questions[idx] || SAMPLES[0];
+  const currentDeck = normalizeDeck(current?.deck, selectedDeck === ALL_DECKS_LABEL ? DEFAULT_DECK_NAME : selectedDeck);
   const currentQuestionTags = useMemo(() => getQuestionTags(current, userTagMap), [current, userTagMap]);
   const currentUserTags = useMemo(() => normalizeTags(userTagMap[String(current?.id)] || []), [current, userTagMap]);
   const answeredCount = Object.keys(answers).length;
@@ -2293,6 +2406,18 @@ function QuizAbcdApp() {
                 color: C.tagText,
               }}
             >
+              {currentDeck}
+            </span>
+            <span
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                padding: "5px 10px",
+                borderRadius: 999,
+                background: C.tagBg,
+                color: C.tagText,
+              }}
+            >
               {current.category}
             </span>
             {currentQuestionTags.map((tag) => {
@@ -3237,6 +3362,17 @@ function QuizAbcdApp() {
 
           <div className="settings-section-grid">
             <div>
+              <label style={s.label}>Deck / talia</label>
+              <select value={selectedDeck} onChange={(e) => setSelectedDeck(e.target.value)} style={s.input}>
+                {availableDecks.map((deck) => (
+                  <option key={deck} value={deck}>
+                    {deck}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
               <label style={s.label}>Liczba pytań</label>
               <select
                 value={quizLength}
@@ -3259,6 +3395,12 @@ function QuizAbcdApp() {
                 </span>
               </div>
             </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+            <span className="soft-chip">Deck: {selectedDeck}</span>
+            <span className="soft-chip">W decku: {deckQuestionPool.length}</span>
+            <span className="soft-chip">Po tagach: {filteredQuestionPool.length}</span>
           </div>
         </div>
 
@@ -3419,6 +3561,9 @@ function QuizAbcdApp() {
             </div>
             <div className="field-help">
               Klucz zaczynający się od `eyJ...` to zwykle Supabase anon JWT, nie klucz Cloud API.
+            </div>
+            <div className="field-help">
+              To pole zapisuje siÄ™ lokalnie w przeglÄ…darce. JeĹ›li chcesz mieÄ‡ je na staĹ‚e bez rÄ™cznego wpisywania, ustaw `VITE_SUPABASE_URL` i `VITE_SUPABASE_PUBLISHABLE_KEY` w `.env.local`.
             </div>
           </div>
 

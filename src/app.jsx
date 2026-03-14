@@ -46,6 +46,7 @@ const STORAGE_KEY = "quiz_abcd_attempts_v6";
 const REVIEW_STATE_KEY = "quiz_abcd_review_states_v1";
 const LOCAL_USAGE_KEY = "quiz_abcd_usage_v1";
 const LOCAL_PLAN_KEY = "quiz_abcd_plan_v1";
+const DECK_GOALS_KEY = "quiz_abcd_deck_goals_v1";
 const CLOUD_SETTINGS_KEY = "quiz_abcd_cloud_settings_v2";
 const SUPABASE_SETTINGS_KEY = "quiz_abcd_supabase_settings_v1";
 const AUTH_SESSION_KEY = "quiz_abcd_auth_session_v1";
@@ -104,6 +105,8 @@ const PAID_BILLING_STATUSES = new Set(["active", "paid"]);
 const REVIEW_LEARNING_STEPS_MINUTES = [10, 1440];
 const REVIEW_GRADUATING_INTERVAL_DAYS = 3;
 const AI_USAGE_KEY = "ai_questions_generated";
+const DEFAULT_EXAM_TARGET_SCORE = Math.max(Number.parseInt(import.meta.env.VITE_DEFAULT_EXAM_TARGET_SCORE || "80", 10) || 80, 50);
+const EXAM_HEATMAP_DAYS = 28;
 const CLOUD_FUNCTION_NAME = "claude-summary";
 const CLOUD_BROWSER_NOTICE =
   "Ta aplikacja działa wyłącznie w przeglądarce, więc Claude jest wołany przez Supabase Edge Function, a nie bezpośrednio z frontendu.";
@@ -342,6 +345,21 @@ const setsEqual = (left, right) => {
 
 const questionTypeLabel = (type) => QUESTION_TYPES.find((item) => item.id === normalizeQuestionType(type))?.label || "Jednokrotny wybor";
 
+const sessionModeLabel = (mode) =>
+  ({
+    mixed: "Mieszane",
+    filtered: "Filtr tagow",
+    custom: "Wlasny zestaw",
+    deck: "Pelny deck",
+    category: "Kategoria",
+    mistakes: "Bledy",
+    due: "Due cards",
+    hard: "Trudne pytania",
+    new: "Nowe karty",
+    tag: "Wybrany tag",
+    generated: "Generator",
+  }[String(mode || "").trim().toLowerCase()] || "Sesja");
+
 const formatAnswerKeys = (keys = [], question) => {
   const list = parseAnswerKeys(keys);
   if (!list.length) return "Brak klucza";
@@ -463,6 +481,167 @@ const questionToSupabaseRow = (question) => ({
   source_type: question.sourceType || "editor",
   is_active: question.isActive !== false,
 });
+
+const sanitizeFilenamePart = (value, fallback = "deck") =>
+  String(value || "")
+    .trim()
+    .replace(/[<>:"/\\|?*\x00-\x1F]+/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "") || fallback;
+
+const triggerBlobDownload = (blob, filename) => {
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+
+const escapeHtml = (value = "") =>
+  String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
+const buildDeckExportRows = (questions = [], userTagMap = {}) =>
+  (questions || []).map((question) => ({
+    questionNo: Number(question.questionNo || 0) || "",
+    deck: normalizeDeck(question.deck),
+    category: String(question.category || "").trim(),
+    questionType: normalizeQuestionType(question.questionType),
+    difficulty: normDiff(question.difficulty),
+    tags: normalizeTags(question.tags || []).join(" "),
+    userTags: normalizeTags(userTagMap?.[String(question.id)] || []).join(" "),
+    question: getQuestionDisplayText(question),
+    optionA: String(question.options?.A || "").trim(),
+    optionB: String(question.options?.B || "").trim(),
+    optionC: String(question.options?.C || "").trim(),
+    optionD: String(question.options?.D || "").trim(),
+    correct: question.correct || "",
+    correctAnswers: formatQuestionAnswer(question, question.correctAnswers || question.correct),
+    answerBack: String(question.answerBack || "").trim(),
+    explanation: String(question.explanation || "").trim(),
+    imageUrl: String(question.imageUrl || "").trim(),
+    audioUrl: String(question.audioUrl || "").trim(),
+    sourceType: String(question.sourceType || "").trim(),
+  }));
+
+const buildAnkiExportRows = (questions = [], userTagMap = {}) =>
+  (questions || []).map((question) => {
+    const type = normalizeQuestionType(question.questionType);
+    const front = getQuestionDisplayText(question);
+    const answerLabel =
+      type === "flashcard"
+        ? String(question.answerBack || question.explanation || "").trim()
+        : type === "type_answer"
+        ? formatQuestionAnswer(question, question.correctAnswers || [])
+        : type === "cloze_deletion"
+        ? revealClozeText(question.question || "")
+        : formatQuestionAnswer(question, question.correctAnswers || question.correct);
+    const explanation = String(question.explanation || "").trim();
+    const back = [answerLabel, explanation && explanation !== answerLabel ? explanation : ""].filter(Boolean).join("\n\n");
+
+    return {
+      deck: normalizeDeck(question.deck),
+      front,
+      back,
+      tags: mergeTags(question.tags || [], userTagMap?.[String(question.id)] || []).join(" "),
+      questionType: type,
+      category: String(question.category || "").trim(),
+      difficulty: normDiff(question.difficulty),
+    };
+  });
+
+const exportRowsToCsv = (rows = [], filename = "export.csv") => {
+  const worksheet = XLSX.utils.json_to_sheet(rows);
+  const csv = XLSX.utils.sheet_to_csv(worksheet);
+  triggerBlobDownload(new Blob([csv], { type: "text/csv;charset=utf-8" }), filename);
+};
+
+const exportRowsToXlsx = (rows = [], filename = "export.xlsx", sheetName = "Questions") => {
+  const workbook = XLSX.utils.book_new();
+  const worksheet = XLSX.utils.json_to_sheet(rows);
+  XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+  XLSX.writeFile(workbook, filename, { compression: true });
+};
+
+const exportRowsToTsv = (rows = [], filename = "anki-export.tsv") => {
+  const header = ["deck", "front", "back", "tags", "questionType", "category", "difficulty"];
+  const lines = [header.join("\t")].concat(
+    rows.map((row) =>
+      header
+        .map((field) => String(row?.[field] || "").replace(/\r?\n/g, "<br>").replace(/\t/g, " "))
+        .join("\t")
+    )
+  );
+  triggerBlobDownload(new Blob([lines.join("\n")], { type: "text/tab-separated-values;charset=utf-8" }), filename);
+};
+
+const openFlashcardsPrintView = (questions = [], deckName = DEFAULT_DECK_NAME) => {
+  if (typeof window === "undefined") return;
+  const safeDeck = escapeHtml(deckName);
+  const cards = (questions || [])
+    .map((question, index) => {
+      const tags = mergeTags(question.tags || []).join(" ");
+      const answer =
+        normalizeQuestionType(question.questionType) === "flashcard"
+          ? String(question.answerBack || question.explanation || "").trim()
+          : formatQuestionAnswer(question, question.correctAnswers || question.correct);
+
+      return `
+        <article class="card">
+          <div class="meta">#${question.questionNo || index + 1} • ${escapeHtml(questionTypeLabel(question.questionType))} • ${escapeHtml(
+            String(question.category || "General")
+          )}</div>
+          <h2>${escapeHtml(getQuestionDisplayText(question))}</h2>
+          <div class="answer"><strong>Odpowiedz:</strong> ${escapeHtml(answer || "Brak odpowiedzi")}</div>
+          <div class="copy">${escapeHtml(String(question.explanation || "").trim() || String(question.answerBack || "").trim())}</div>
+          <div class="tags">${escapeHtml(tags || normalizeDeck(question.deck))}</div>
+        </article>
+      `;
+    })
+    .join("");
+
+  const html = `<!doctype html>
+  <html lang="pl">
+    <head>
+      <meta charset="utf-8" />
+      <title>Zen Quiz flashcards - ${safeDeck}</title>
+      <style>
+        body { font-family: Georgia, serif; margin: 24px; background: #f7f2ea; color: #1d2433; }
+        .head { margin-bottom: 18px; }
+        .head h1 { margin: 0 0 6px; font-size: 28px; }
+        .head p { margin: 0; color: #5d6470; line-height: 1.6; }
+        .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+        .card { break-inside: avoid; background: white; border: 1px solid #ddd2c2; border-radius: 18px; padding: 18px; box-shadow: 0 12px 24px rgba(32, 40, 60, .06); }
+        .meta, .tags { font-size: 12px; color: #6f7680; margin-bottom: 10px; }
+        h2 { margin: 0 0 12px; font-size: 20px; line-height: 1.35; }
+        .answer, .copy { font-size: 14px; line-height: 1.65; margin-top: 10px; white-space: pre-wrap; }
+        @media print { body { background: white; margin: 12mm; } .card { box-shadow: none; } }
+      </style>
+    </head>
+    <body>
+      <div class="head">
+        <h1>${safeDeck}</h1>
+        <p>Widok do zapisu jako PDF. Uzyj drukowania przegladarki, aby zapisac fiszki jako PDF.</p>
+      </div>
+      <section class="grid">${cards}</section>
+      <script>setTimeout(() => window.print(), 250);</script>
+    </body>
+  </html>`;
+
+  const printWindow = window.open("", "_blank", "noopener,noreferrer");
+  if (!printWindow) throw new Error("Przegladarka zablokowala okno do wydruku PDF.");
+  printWindow.document.open();
+  printWindow.document.write(html);
+  printWindow.document.close();
+};
 
 const QuestionMediaBlock = ({ imageUrl, audioUrl, compact = false }) => {
   const safeImageUrl = String(imageUrl || "").trim();
@@ -1601,6 +1780,95 @@ const saveQuestionLibrary = (list) => {
   } catch {}
 };
 
+const clampNumber = (value, min = 0, max = 100) => Math.min(max, Math.max(min, Number(value || 0) || 0));
+
+const normalizeDeckGoalRow = (row = {}) => ({
+  userId: String(row.user_id || row.userId || "").trim(),
+  deck: normalizeDeck(row.deck || row.deck_name || row.deckName, DEFAULT_DECK_NAME),
+  examName: String(row.exam_name || row.examName || "").trim(),
+  examDescription: String(row.exam_description || row.examDescription || row.description || "").trim(),
+  targetDate: String(row.target_date || row.targetDate || "").trim(),
+  sourceNotes: String(row.source_notes || row.sourceNotes || "").trim(),
+  targetScore: clampNumber(row.target_score ?? row.targetScore ?? DEFAULT_EXAM_TARGET_SCORE, 50, 100),
+  metadata: row.metadata && typeof row.metadata === "object" ? row.metadata : {},
+  createdAt: toIsoOrEmpty(row.created_at || row.createdAt || Date.now()) || new Date().toISOString(),
+  updatedAt: toIsoOrEmpty(row.updated_at || row.updatedAt || Date.now()) || new Date().toISOString(),
+});
+
+const deckGoalDraftFromRow = (row = {}, fallbackDeck = DEFAULT_DECK_NAME) => {
+  const normalized = normalizeDeckGoalRow({ ...row, deck: row?.deck || fallbackDeck });
+  return {
+    deck: normalized.deck,
+    examName: normalized.examName,
+    examDescription: normalized.examDescription,
+    targetDate: normalized.targetDate,
+    sourceNotes: normalized.sourceNotes,
+    targetScore: normalized.targetScore,
+  };
+};
+
+const hasDeckGoalContent = (goal) => {
+  const normalized = normalizeDeckGoalRow(goal);
+  return Boolean(normalized.examName || normalized.examDescription || normalized.sourceNotes || normalized.targetDate);
+};
+
+const createDeckGoalMap = (rows = []) =>
+  (rows || []).reduce((acc, row) => {
+    const normalized = normalizeDeckGoalRow(row);
+    if (!normalized.deck) return acc;
+    acc[normalized.deck] = normalized;
+    return acc;
+  }, {});
+
+const mergeDeckGoalMaps = (...maps) => {
+  const merged = {};
+
+  maps.filter(Boolean).forEach((map) => {
+    Object.values(map).forEach((row) => {
+      const normalized = normalizeDeckGoalRow(row);
+      if (!normalized.deck) return;
+      const existing = merged[normalized.deck];
+      if (!existing || new Date(normalized.updatedAt || 0).getTime() >= new Date(existing.updatedAt || 0).getTime()) {
+        merged[normalized.deck] = normalized;
+      }
+    });
+  });
+
+  return merged;
+};
+
+const loadLocalDeckGoalMap = () => {
+  try {
+    return createDeckGoalMap(Object.values(JSON.parse(localStorage.getItem(DECK_GOALS_KEY) || "{}") || {}));
+  } catch {
+    return {};
+  }
+};
+
+const saveLocalDeckGoalMap = (goalMap) => {
+  try {
+    localStorage.setItem(DECK_GOALS_KEY, JSON.stringify(goalMap || {}));
+  } catch {}
+};
+
+const getDeckGoalReport = (goal) => {
+  const metadata = normalizeDeckGoalRow(goal).metadata || {};
+  return metadata?.lastReport && typeof metadata.lastReport === "object" ? metadata.lastReport : null;
+};
+
+const withDeckGoalReport = (goal, report) => {
+  const normalized = normalizeDeckGoalRow(goal);
+  return normalizeDeckGoalRow({
+    ...normalized,
+    metadata: {
+      ...normalized.metadata,
+      lastReport: report || null,
+      lastAnalyzedAt: new Date().toISOString(),
+    },
+    updatedAt: new Date().toISOString(),
+  });
+};
+
 const loadCloudSettings = () => {
   try {
     return JSON.parse(localStorage.getItem(CLOUD_SETTINGS_KEY) || "{}");
@@ -2424,6 +2692,283 @@ function buildAdaptivePlan({ history, weakCat, statsByCat = [], questionPool = [
   };
 }
 
+function summarizeQuestionReadiness(question, reviewStateMap = {}, nowTs = Date.now()) {
+  const questionId = String(question?.id || "").trim();
+  const state = questionId && reviewStateMap?.[questionId] ? normalizeReviewStateRow(reviewStateMap[questionId]) : null;
+  const dueAtMs = state ? new Date(state.dueAt || "").getTime() : Number.NaN;
+  const isDue = Boolean(state && state.queue !== "new" && (!Number.isFinite(dueAtMs) || dueAtMs <= nowTs));
+  const baseAccuracy = state?.totalReviews
+    ? Math.round((state.correctReviews / Math.max(state.totalReviews, 1)) * 100)
+    : question?.difficulty === "easy"
+    ? 62
+    : question?.difficulty === "hard"
+    ? 38
+    : 48;
+  const queueBase = !state ? 28 : state.queue === "review" ? 82 : state.queue === "learning" ? 58 : 34;
+  const duePenalty = isDue ? 12 : 0;
+  const lapsePenalty = Math.min(Number(state?.lapses || 0), 5) * 5;
+  const newPenalty = !state || state.queue === "new" ? 8 : 0;
+  const difficultyPenalty = question?.difficulty === "hard" ? 4 : question?.difficulty === "medium" ? 2 : 0;
+  const readiness = clampNumber(Math.round(queueBase * 0.4 + baseAccuracy * 0.6 - duePenalty - lapsePenalty - newPenalty - difficultyPenalty), 5, 100);
+
+  return {
+    questionId,
+    queue: state?.queue || "new",
+    isDue,
+    isNew: !state || state.queue === "new",
+    accuracy: clampNumber(baseAccuracy, 0, 100),
+    readiness,
+    lapses: Number(state?.lapses || 0) || 0,
+    totalReviews: Number(state?.totalReviews || 0) || 0,
+    correctReviews: Number(state?.correctReviews || 0) || 0,
+    dueAt: state?.dueAt || "",
+  };
+}
+
+function buildCategoryReadiness({ questionPool = [], reviewStateMap = {}, deckGoal = null }) {
+  const grouped = {};
+
+  (questionPool || [])
+    .filter((question) => question.isActive !== false)
+    .forEach((question) => {
+      const category = String(question.category || "General").trim() || "General";
+      if (!grouped[category]) {
+        grouped[category] = {
+          category,
+          total: 0,
+          dueCount: 0,
+          newCount: 0,
+          learningCount: 0,
+          reviewCount: 0,
+          hardCount: 0,
+          lapses: 0,
+          readinessSum: 0,
+          accuracySum: 0,
+          reviewedCards: 0,
+        };
+      }
+
+      const metrics = summarizeQuestionReadiness(question, reviewStateMap);
+      const bucket = grouped[category];
+      bucket.total += 1;
+      bucket.readinessSum += metrics.readiness;
+      bucket.accuracySum += metrics.accuracy;
+      bucket.lapses += metrics.lapses;
+      if (metrics.isDue) bucket.dueCount += 1;
+      if (metrics.isNew) bucket.newCount += 1;
+      if (metrics.queue === "learning") bucket.learningCount += 1;
+      if (metrics.queue === "review") bucket.reviewCount += 1;
+      if (question.difficulty === "hard") bucket.hardCount += 1;
+      if (metrics.totalReviews > 0) bucket.reviewedCards += 1;
+    });
+
+  const targetScore = normalizeDeckGoalRow(deckGoal).targetScore;
+
+  return Object.values(grouped)
+    .map((item) => {
+      const readiness = clampNumber(Math.round(item.readinessSum / Math.max(item.total, 1)), 0, 100);
+      const accuracy = clampNumber(Math.round(item.accuracySum / Math.max(item.total, 1)), 0, 100);
+      const gap = Math.max(targetScore - readiness, 0);
+      const priority =
+        readiness < 60 || item.dueCount >= 3 ? "Wysoki" : readiness < 78 || item.learningCount > 0 || item.newCount >= 3 ? "Sredni" : "Niski";
+
+      return {
+        category: item.category,
+        readiness,
+        accuracy,
+        gap,
+        total: item.total,
+        dueCount: item.dueCount,
+        newCount: item.newCount,
+        learningCount: item.learningCount,
+        reviewCount: item.reviewCount,
+        hardCount: item.hardCount,
+        lapses: item.lapses,
+        priority,
+      };
+    })
+    .sort((a, b) => a.readiness - b.readiness || b.dueCount - a.dueCount || b.total - a.total);
+}
+
+function buildRecentHeatmap(history = [], totalDays = EXAM_HEATMAP_DAYS) {
+  const countsByDay = {};
+  (history || []).forEach((attempt) => {
+    const key = dayKey(attempt.finishedAt);
+    countsByDay[key] = (countsByDay[key] || 0) + 1;
+  });
+
+  return Array.from({ length: totalDays }, (_, index) => {
+    const date = addDays(new Date(), -(totalDays - index - 1));
+    const key = dayKey(date.getTime());
+    return {
+      key,
+      label: shortDay(key),
+      count: countsByDay[key] || 0,
+    };
+  });
+}
+
+function buildDeckAnalytics({
+  deckQuestions = [],
+  reviewStateMap = {},
+  reviewSnapshot = null,
+  history = [],
+  deckName = DEFAULT_DECK_NAME,
+  deckGoal = null,
+}) {
+  const safeQuestions = (deckQuestions || []).filter((question) => question.isActive !== false);
+  const safeSnapshot = reviewSnapshot || {};
+  const scopedHistory = (history || []).filter((attempt) => !attempt?.deckName || normalizeDeck(attempt.deckName, deckName) === normalizeDeck(deckName));
+  const categoryReadiness = buildCategoryReadiness({
+    questionPool: safeQuestions,
+    reviewStateMap,
+    deckGoal,
+  });
+  const recentAttempts = [...scopedHistory].sort((a, b) => b.finishedAt - a.finishedAt).slice(0, 10);
+  const targetScore = normalizeDeckGoalRow(deckGoal).targetScore;
+  const managedCards = safeQuestions.filter((question) => reviewStateMap?.[String(question.id)]).length;
+  const coverageScore = safeQuestions.length
+    ? clampNumber(Math.round((managedCards / Math.max(safeQuestions.length, 1)) * 100 - Number(safeSnapshot.newCount || 0)), 0, 100)
+    : 0;
+  const avgCategoryReadiness = categoryReadiness.length
+    ? Math.round(categoryReadiness.reduce((sum, item) => sum + item.readiness, 0) / categoryReadiness.length)
+    : 0;
+  const avgReviewAccuracy = categoryReadiness.length
+    ? Math.round(categoryReadiness.reduce((sum, item) => sum + item.accuracy, 0) / categoryReadiness.length)
+    : 0;
+  const recentAvgPercent = recentAttempts.length
+    ? Math.round(recentAttempts.reduce((sum, attempt) => sum + Number(attempt.percent || 0), 0) / recentAttempts.length)
+    : 0;
+  const recentAvgMastery = recentAttempts.length
+    ? Math.round(recentAttempts.reduce((sum, attempt) => sum + Number(attempt.mastery || 0), 0) / recentAttempts.length)
+    : avgCategoryReadiness;
+  const duePenalty = Math.min(Number(safeSnapshot.dueCount || 0) * 2, 24);
+  const retentionScore = clampNumber(Math.round(avgReviewAccuracy * 0.55 + avgCategoryReadiness * 0.25 + recentAvgPercent * 0.2 - duePenalty), 0, 100);
+  const readyForExamScore = clampNumber(
+    Math.round(avgCategoryReadiness * 0.45 + retentionScore * 0.35 + recentAvgMastery * 0.2 - Number(safeSnapshot.newCount || 0) * 0.8),
+    0,
+    100
+  );
+  const gapToTarget = Math.max(targetScore - readyForExamScore, 0);
+  const last14Days = scopedHistory.filter((attempt) => attempt.finishedAt >= Date.now() - 14 * 86400000);
+  const weeklyQuestions = Math.round(last14Days.reduce((sum, attempt) => sum + Number(attempt.totalQuestions || 0), 0) / 2);
+  const weeklyMinutes = Math.round(last14Days.reduce((sum, attempt) => sum + Number(attempt.totalTimeMs || 0), 0) / 60000 / 2);
+  const questionsPerDay = last14Days.reduce((sum, attempt) => sum + Number(attempt.totalQuestions || 0), 0) / 14;
+  const remainingLoad =
+    Number(safeSnapshot.dueCount || 0) * 1.1 +
+    Number(safeSnapshot.learningCount || 0) * 1.35 +
+    Number(safeSnapshot.newCount || 0) * 1.8 +
+    gapToTarget * 0.45;
+  const daysToMastery = questionsPerDay > 0 ? Math.max(1, Math.ceil(remainingLoad / questionsPerDay)) : null;
+  const targetDate = normalizeDeckGoalRow(deckGoal).targetDate;
+  const daysToTarget = targetDate ? diffDaysBetweenKeys(dayKey(Date.now()), targetDate) : null;
+  const masteredCards = safeQuestions.filter((question) => summarizeQuestionReadiness(question, reviewStateMap).readiness >= 85).length;
+  const paceLabel =
+    weeklyQuestions >= 120
+      ? "Wysokie"
+      : weeklyQuestions >= 60
+      ? "Stabilne"
+      : weeklyQuestions >= 25
+      ? "Rosnace"
+      : weeklyQuestions > 0
+      ? "Niskie"
+      : "Brak rytmu";
+
+  return {
+    targetScore,
+    recentAvgPercent,
+    recentAvgMastery,
+    retentionScore,
+    readyForExamScore,
+    coverageScore,
+    gapToTarget,
+    weeklyQuestions,
+    weeklyMinutes,
+    questionsPerDay,
+    paceLabel,
+    daysToMastery,
+    daysToTarget,
+    onTrack: daysToTarget === null ? readyForExamScore >= targetScore : daysToMastery !== null && daysToMastery <= Math.max(daysToTarget, 0),
+    masteredCards,
+    managedCards,
+    categoryReadiness,
+    heatmap: buildRecentHeatmap(scopedHistory),
+  };
+}
+
+function buildLocalExamReadiness({ deckGoal = null, analytics = null, deckName = DEFAULT_DECK_NAME }) {
+  const goal = normalizeDeckGoalRow(deckGoal);
+  const safeAnalytics = analytics || {
+    targetScore: goal.targetScore,
+    readyForExamScore: 0,
+    coverageScore: 0,
+    retentionScore: 0,
+    gapToTarget: goal.targetScore,
+    daysToMastery: null,
+    daysToTarget: goal.targetDate ? diffDaysBetweenKeys(dayKey(Date.now()), goal.targetDate) : null,
+    paceLabel: "Brak rytmu",
+    categoryReadiness: [],
+  };
+  const weakest = safeAnalytics.categoryReadiness.slice(0, 4);
+  const strongest = [...safeAnalytics.categoryReadiness].sort((a, b) => b.readiness - a.readiness).slice(0, 3);
+  const confidence =
+    safeAnalytics.readyForExamScore >= goal.targetScore
+      ? "Wysoka"
+      : safeAnalytics.readyForExamScore >= Math.max(goal.targetScore - 10, 55)
+      ? "Srednia"
+      : "Niska";
+  const targetDateText = goal.targetDate ? ` Egzamin jest ustawiony na ${goal.targetDate}.` : "";
+  const paceText =
+    safeAnalytics.daysToMastery && safeAnalytics.daysToTarget !== null
+      ? safeAnalytics.daysToMastery <= safeAnalytics.daysToTarget
+        ? ` Przy obecnym tempie powinienes domknac material przed celem.`
+        : ` Przy obecnym tempie zabraknie okolo ${safeAnalytics.daysToMastery - safeAnalytics.daysToTarget} dni.`
+      : safeAnalytics.daysToMastery
+      ? ` Przy obecnym tempie potrzeba jeszcze okolo ${safeAnalytics.daysToMastery} dni na domkniecie decku.`
+      : " Zwieksz liczbe sesji, aby system mogl lepiej prognozowac domkniecie materialu.";
+
+  return {
+    source: "local",
+    readyScore: safeAnalytics.readyForExamScore,
+    coverageScore: safeAnalytics.coverageScore,
+    confidence,
+    summary: `${goal.examName ? `${goal.examName}: ` : ""}deck ${deckName} jest obecnie na poziomie ${safeAnalytics.readyForExamScore}% gotowosci wobec celu ${goal.targetScore}%. Retencja wynosi ${safeAnalytics.retentionScore}%, a pokrycie harmonogramem ${safeAnalytics.coverageScore}%.${targetDateText}${paceText}`,
+    strengths: strongest.length
+      ? strongest.map((item) => `${item.category}: ${item.readiness}% gotowosci, stabilny obszar do utrwalenia.`)
+      : ["Najpierw zrob kilka sesji review, aby system mogl wskazac mocne obszary."],
+    knowledgeGaps: weakest.length
+      ? weakest.map((item) => `${item.category}: ${item.readiness}% gotowosci, luka ${item.gap} pp, due ${item.dueCount}, nowe ${item.newCount}.`)
+      : ["Brak wystarczajacych danych o kategoriach. Zrob pierwsza sesje decku."],
+    nextMilestones: [
+      `Domknij target ${goal.targetScore}%: brakuje ${safeAnalytics.gapToTarget} pp.`,
+      safeAnalytics.daysToMastery
+        ? `Prognoza do opanowania decku: okolo ${safeAnalytics.daysToMastery} dni przy obecnym tempie (${safeAnalytics.paceLabel.toLowerCase()}).`
+        : "Dodaj wiecej regularnych sesji, aby uruchomic prognoze opanowania decku.",
+      weakest[0]
+        ? `Najpierw skup blok na ${weakest[0].category}, potem sprawdz go szybkim quizem adaptacyjnym.`
+        : "Po pierwszych wynikach system zaproponuje konkretne kamienie milowe.",
+    ],
+    categoryReadiness: safeAnalytics.categoryReadiness.slice(0, 6).map((item) => ({
+      category: item.category,
+      readiness: item.readiness,
+      gap: item.gap,
+      priority: item.priority,
+      verdict:
+        item.readiness >= goal.targetScore
+          ? "Obszar juz wyglada na egzaminacyjnie stabilny."
+          : item.readiness >= Math.max(goal.targetScore - 10, 55)
+          ? "Obszar jest blisko celu, ale wymaga jeszcze utrwalenia."
+          : "To luka merytoryczna, ktora trzeba domknac przed egzaminem.",
+      missing:
+        item.dueCount > 0
+          ? `Najpierw zamknij ${item.dueCount} kart due i odswiez schematy decyzyjne.`
+          : item.newCount > 0
+          ? `W kolejce jest jeszcze ${item.newCount} nowych kart bez utrwalenia.`
+          : `Zwieksz dokladnosc i utrwal definicje w tej kategorii.`,
+    })),
+  };
+}
+
 function buildStudyPlanCalendarEvent(item, index = 0, fallbackDeck = DEFAULT_DECK_NAME) {
   const rawDate = String(item?.date || item?.dueDate || "").trim();
   const start = rawDate ? new Date(`${rawDate}T09:00:00`) : addDays(new Date(), index);
@@ -2543,6 +3088,41 @@ function normalizeStudyPlanResponse(data) {
     focusAreas,
     reviewQueue,
     weeklyPlan,
+  };
+}
+
+function normalizeExamReadinessResponse(data) {
+  const summary = String(data?.summary || data?.readinessSummary || "").trim();
+  const categoryReadiness = Array.isArray(data?.categoryReadiness)
+    ? data.categoryReadiness
+        .map((item) => ({
+          category: String(item?.category || "").trim(),
+          readiness: clampNumber(item?.readiness ?? item?.score ?? 0, 0, 100),
+          gap: Math.max(0, Number(item?.gap ?? 0) || 0),
+          priority: String(item?.priority || "Sredni").trim() || "Sredni",
+          verdict: String(item?.verdict || "").trim(),
+          missing: String(item?.missing || item?.gapText || "").trim(),
+        }))
+        .filter((item) => item.category)
+        .slice(0, 8)
+    : [];
+
+  if (!summary) throw new Error("Cloud function returned invalid exam readiness report");
+
+  return {
+    source: "cloud",
+    readyScore: clampNumber(data?.readyScore ?? data?.score ?? 0, 0, 100),
+    coverageScore: clampNumber(data?.coverageScore ?? 0, 0, 100),
+    confidence: String(data?.confidence || "").trim() || "Srednia",
+    summary,
+    strengths: Array.isArray(data?.strengths) ? data.strengths.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 5) : [],
+    knowledgeGaps: Array.isArray(data?.knowledgeGaps)
+      ? data.knowledgeGaps.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 6)
+      : [],
+    nextMilestones: Array.isArray(data?.nextMilestones)
+      ? data.nextMilestones.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 5)
+      : [],
+    categoryReadiness,
   };
 }
 
@@ -2751,6 +3331,71 @@ async function fetchCloudStudyPlan({
   });
 
   return normalizeStudyPlanResponse(data);
+}
+
+async function fetchCloudExamReadiness({
+  supabaseConfig,
+  model,
+  cloudApiKey,
+  activeDeckName,
+  deckGoal,
+  analytics,
+  reviewSnapshot,
+  history,
+}) {
+  const recentAttempts = [...(history || [])]
+    .sort((a, b) => b.finishedAt - a.finishedAt)
+    .slice(0, 8)
+    .map((attempt) => ({
+      finishedAt: new Date(attempt.finishedAt).toISOString(),
+      deckName: String(attempt.deckName || "").trim(),
+      percent: Number(attempt.percent || 0),
+      mastery: Number(attempt.mastery || 0),
+      totalQuestions: Number(attempt.totalQuestions || 0),
+      sessionMode: String(attempt.sessionMode || "").trim(),
+    }));
+
+  const data = await invokeCloudFunction({
+    supabaseConfig,
+    body: {
+      action: "exam_readiness",
+      model: model || DEFAULT_MODEL,
+      apiKey: cloudApiKey?.trim() || undefined,
+      payload: {
+        deckName: activeDeckName || DEFAULT_DECK_NAME,
+        deckGoal: normalizeDeckGoalRow(deckGoal),
+        analytics: {
+          targetScore: analytics?.targetScore || DEFAULT_EXAM_TARGET_SCORE,
+          readyForExamScore: analytics?.readyForExamScore || 0,
+          retentionScore: analytics?.retentionScore || 0,
+          coverageScore: analytics?.coverageScore || 0,
+          gapToTarget: analytics?.gapToTarget || 0,
+          weeklyQuestions: analytics?.weeklyQuestions || 0,
+          weeklyMinutes: analytics?.weeklyMinutes || 0,
+          paceLabel: analytics?.paceLabel || "",
+          daysToMastery: analytics?.daysToMastery || null,
+          daysToTarget: analytics?.daysToTarget ?? null,
+          onTrack: Boolean(analytics?.onTrack),
+        },
+        reviewSnapshot: reviewSnapshot || null,
+        categoryReadiness: (analytics?.categoryReadiness || []).map((item) => ({
+          category: item.category,
+          readiness: item.readiness,
+          gap: item.gap,
+          accuracy: item.accuracy,
+          dueCount: item.dueCount,
+          newCount: item.newCount,
+          learningCount: item.learningCount,
+          reviewCount: item.reviewCount,
+          lapses: item.lapses,
+          priority: item.priority,
+        })),
+        recentAttempts,
+      },
+    },
+  });
+
+  return normalizeExamReadinessResponse(data);
 }
 
 async function fetchCloudGeneratedQuestions({
@@ -3286,6 +3931,12 @@ function QuizAbcdApp() {
   const [selectedDeck, setSelectedDeck] = useState(() =>
     normalizeDeck(initialUi.selectedDeck || import.meta.env.VITE_SUPABASE_DEFAULT_DECK || ALL_DECKS_LABEL, ALL_DECKS_LABEL)
   );
+  const [sessionMeta, setSessionMeta] = useState(() => ({
+    mode: "mixed",
+    deckName: normalizeDeck(initialUi.selectedDeck || DEFAULT_DECK_NAME, DEFAULT_DECK_NAME),
+    label: "Sesja mieszana",
+    filters: {},
+  }));
   const [expandedDecks, setExpandedDecks] = useState(() => ({ PgMP: true }));
   const [openDeckMenu, setOpenDeckMenu] = useState(null);
 
@@ -3331,9 +3982,22 @@ function QuizAbcdApp() {
   const [trainingSummaryStatus, setTrainingSummaryStatus] = useState("idle");
   const [studyPlan, setStudyPlan] = useState(null);
   const [studyPlanStatus, setStudyPlanStatus] = useState("idle");
+  const [deckGoalMap, setDeckGoalMap] = useState(() => loadLocalDeckGoalMap());
+  const [deckGoalDraft, setDeckGoalDraft] = useState(() => deckGoalDraftFromRow({}, DEFAULT_DECK_NAME));
+  const [deckGoalStatus, setDeckGoalStatus] = useState({
+    status: "idle",
+    message: "Ustaw dla decku cel egzaminacyjny, target procentowy i zrodla, aby mierzyc gotowosc merytoryczna.",
+  });
+  const [deckExportStatus, setDeckExportStatus] = useState({
+    status: "idle",
+    message: "Eksporty decku sa gotowe: CSV, XLSX, Anki TSV, PDF fiszek i backup JSON.",
+  });
+  const [examReadinessReport, setExamReadinessReport] = useState(null);
+  const [examReadinessStatus, setExamReadinessStatus] = useState("idle");
   const [userProfile, setUserProfile] = useState(null);
   const [userTagMap, setUserTagMap] = useState({});
   const [selectedTagFilters, setSelectedTagFilters] = useState([]);
+  const [adaptiveSessionTag, setAdaptiveSessionTag] = useState("");
   const [questionTagDraft, setQuestionTagDraft] = useState("");
   const [editorSearch, setEditorSearch] = useState("");
   const [editorDeckFilter, setEditorDeckFilter] = useState("all");
@@ -3389,6 +4053,10 @@ function QuizAbcdApp() {
   useEffect(() => {
     saveQuestionLibrary(questionPool);
   }, [questionPool]);
+
+  useEffect(() => {
+    saveLocalDeckGoalMap(deckGoalMap);
+  }, [deckGoalMap]);
 
   useEffect(() => {
     saveLocalReviewState(reviewStateMap);
@@ -3748,7 +4416,7 @@ function QuizAbcdApp() {
 
     const loadAccountData = async () => {
       try {
-        const [profileRows, tagRows, billingRows, usageRows, cardStateRows] = await Promise.all([
+        const [profileRows, tagRows, billingRows, usageRows, cardStateRows, deckGoalRows] = await Promise.all([
           sbSelect(supabaseConfig, "profiles", `select=id,email,display_name,created_at,updated_at&id=eq.${authUser.id}&limit=1`, authAccessToken),
           sbSelect(supabaseConfig, "user_question_tags", `select=question_id,tags&user_id=eq.${authUser.id}&limit=5000`, authAccessToken),
           sbSelect(
@@ -3767,6 +4435,12 @@ function QuizAbcdApp() {
             supabaseConfig,
             "user_card_states",
             `select=question_id,queue,ease_factor,interval_days,repetitions,lapses,learning_step,due_at,last_reviewed_at,last_result,last_response_ms,total_reviews,correct_reviews,created_at,updated_at&user_id=eq.${authUser.id}&limit=5000`,
+            authAccessToken
+          ),
+          sbSelect(
+            supabaseConfig,
+            "user_deck_goals",
+            `select=deck,exam_name,exam_description,target_date,source_notes,target_score,metadata,created_at,updated_at&user_id=eq.${authUser.id}&limit=500`,
             authAccessToken
           ),
         ]);
@@ -3788,6 +4462,7 @@ function QuizAbcdApp() {
         if (cancelled) return;
         const remoteUsageState = toUsageStateMap(usageRows || []);
         const remoteReviewStates = createReviewStateMap(cardStateRows || []);
+        const remoteDeckGoalMap = createDeckGoalMap(deckGoalRows || []);
         const nextAccess = getAccessSummary({
           billingAccount: billingRow,
           aiUsageCount: getUsageCount(remoteUsageState, AI_USAGE_KEY, currentUsagePeriod),
@@ -3796,6 +4471,7 @@ function QuizAbcdApp() {
 
         setUsageState((prev) => mergeUsageStateMaps(prev, remoteUsageState));
         setReviewStateMap((prev) => mergeReviewStateMaps(prev, remoteReviewStates));
+        setDeckGoalMap((prev) => mergeDeckGoalMaps(prev, remoteDeckGoalMap));
         setBillingAccount(billingRow);
         if (billingRow) setBillingRedirectState("");
         setBillingStatus(
@@ -3823,7 +4499,7 @@ function QuizAbcdApp() {
 
         setAuthStatus({
           status: "error",
-          message: `Nie udało się załadować profilu albo tagów z bazy. Uruchom migrację SQL i sprawdź RLS. ${getErrorText(error)}`,
+          message: `Nie udało się załadować profilu, tagów albo celów decku z bazy. Uruchom migrację SQL i sprawdź RLS. ${getErrorText(error)}`,
         });
       }
     };
@@ -3844,7 +4520,7 @@ function QuizAbcdApp() {
   ]);
 
   const startQuiz = useCallback(
-    (customPool, customLength) => {
+    (customPool, customLength, customMeta = {}) => {
       const pool = customPool || filteredQuestionPool;
       if (!pool.length) {
         setTagSaveState({
@@ -3867,6 +4543,12 @@ function QuizAbcdApp() {
       setStartedAt(Date.now());
       setQStartedAt(Date.now());
       setFinishedAt(null);
+      setSessionMeta({
+        mode: String(customMeta?.mode || (selectedTagFilters.length ? "filtered" : customPool ? "custom" : "mixed")).trim() || "mixed",
+        deckName: normalizeDeck(customMeta?.deckName || nextQuestions[0]?.deck, DEFAULT_DECK_NAME),
+        label: String(customMeta?.label || "Sesja").trim() || "Sesja",
+        filters: customMeta?.filters && typeof customMeta.filters === "object" ? customMeta.filters : {},
+      });
       setActiveTab("quiz");
       setChatStatus("idle");
       setChatRes("");
@@ -3878,7 +4560,7 @@ function QuizAbcdApp() {
           : prev
       );
     },
-    [filteredQuestionPool, quizLength, buildSelectionState, reviewStateMap]
+    [filteredQuestionPool, quizLength, buildSelectionState, reviewStateMap, selectedTagFilters]
   );
 
   const getDeckPool = useCallback(
@@ -3927,6 +4609,9 @@ function QuizAbcdApp() {
         totalTimeMs: r.total_time_ms,
         strongestCategory: r.strongest_category,
         weakestCategory: r.weakest_category,
+        deckName: String(r.deck_name || "").trim() || null,
+        sessionMode: String(r.session_mode || "").trim() || "mixed",
+        sessionFilters: r.session_filters && typeof r.session_filters === "object" ? r.session_filters : {},
         source: "supabase",
       }));
       setHistory((prev) => {
@@ -4760,9 +5445,13 @@ function QuizAbcdApp() {
       totalTimeMs: Math.round(stats.totalTimeMs),
       strongestCategory: stats.strongest?.category || null,
       weakestCategory: stats.weakest?.category || null,
+      deckName: normalizeDeck(sessionMeta?.deckName || questions[0]?.deck, DEFAULT_DECK_NAME),
+      sessionMode: String(sessionMeta?.mode || "mixed").trim() || "mixed",
+      sessionLabel: String(sessionMeta?.label || "").trim(),
+      sessionFilters: sessionMeta?.filters && typeof sessionMeta.filters === "object" ? sessionMeta.filters : {},
       source: "local",
     };
-  }, [showResult, finishedAt, total, score, stats]);
+  }, [showResult, finishedAt, total, score, stats, sessionMeta, questions]);
 
   useEffect(() => {
     if (!attemptDraft) return;
@@ -4801,6 +5490,9 @@ function QuizAbcdApp() {
           total_time_ms: attemptDraft.totalTimeMs,
           strongest_category: attemptDraft.strongestCategory,
           weakest_category: attemptDraft.weakestCategory,
+          deck_name: attemptDraft.deckName || null,
+          session_mode: attemptDraft.sessionMode || "mixed",
+          session_filters: attemptDraft.sessionFilters || {},
         },
         authAccessToken
       )
@@ -4925,7 +5617,12 @@ function QuizAbcdApp() {
         }
 
         setQuestionPool(parsed);
-        startQuiz(parsed, quizLength);
+        startQuiz(parsed, quizLength, {
+          mode: "custom",
+          deckName: normalizeDeck(parsed[0]?.deck, DEFAULT_DECK_NAME),
+          label: file.name,
+          filters: { source: "import" },
+        });
         setImportMsg(`✓ Zaimportowano ${parsed.length} pytań z "${file.name}"`);
       } catch (err) {
         setImportMsg(`✗ Błąd: ${err.message}`);
@@ -5548,6 +6245,14 @@ function QuizAbcdApp() {
     if (selectedDeck !== ALL_DECKS_LABEL) return selectedDeck;
     return activeQuestionPool.find((question) => normalizeDeck(question.deck))?.deck || DEFAULT_DECKS[0];
   }, [selectedDeck, activeQuestionPool]);
+  const activeDeckQuestionPool = useMemo(
+    () => activeQuestionPool.filter((question) => normalizeDeck(question.deck) === activeDeckName),
+    [activeQuestionPool, activeDeckName]
+  );
+  const activeDeckFilteredQuestionPool = useMemo(
+    () => filterQuestionsByTags(activeDeckQuestionPool, selectedTagFilters, userTagMap),
+    [activeDeckQuestionPool, selectedTagFilters, userTagMap]
+  );
   const reviewSnapshot = useMemo(
     () =>
       buildReviewSnapshot({
@@ -5556,6 +6261,91 @@ function QuizAbcdApp() {
         activeDeckName,
       }),
     [activeQuestionPool, deckQuestionPool, reviewStateMap, activeDeckName, selectedDeck]
+  );
+  const activeDeckReviewSnapshot = useMemo(
+    () =>
+      buildReviewSnapshot({
+        questionPool: activeDeckQuestionPool,
+        reviewStateMap,
+        activeDeckName,
+      }),
+    [activeDeckQuestionPool, reviewStateMap, activeDeckName]
+  );
+  const currentDeckGoal = useMemo(
+    () => normalizeDeckGoalRow(deckGoalMap?.[activeDeckName] || { deck: activeDeckName }),
+    [deckGoalMap, activeDeckName]
+  );
+  const currentDeckGoalReport = useMemo(() => getDeckGoalReport(currentDeckGoal), [currentDeckGoal]);
+  const activeDeckDueQuestionPool = useMemo(
+    () =>
+      activeDeckFilteredQuestionPool.filter((question) => {
+        const state = reviewStateMap?.[String(question?.id)];
+        if (!state) return false;
+        const normalized = normalizeReviewStateRow(state);
+        if (normalized.queue === "new") return false;
+        const dueAtMs = new Date(normalized.dueAt || "").getTime();
+        return !Number.isFinite(dueAtMs) || dueAtMs <= Date.now();
+      }),
+    [activeDeckFilteredQuestionPool, reviewStateMap]
+  );
+  const activeDeckWrongQuestionPool = useMemo(
+    () =>
+      activeDeckFilteredQuestionPool.filter((question) => {
+        const state = reviewStateMap?.[String(question?.id)];
+        if (!state) return false;
+        const normalized = normalizeReviewStateRow(state);
+        return normalized.lastResult === "incorrect" || normalized.lapses > 0;
+      }),
+    [activeDeckFilteredQuestionPool, reviewStateMap]
+  );
+  const activeDeckHardQuestionPool = useMemo(
+    () =>
+      activeDeckFilteredQuestionPool.filter((question) => {
+        const normalized = reviewStateMap?.[String(question?.id)] ? normalizeReviewStateRow(reviewStateMap[String(question.id)]) : null;
+        const accuracy = normalized?.totalReviews
+          ? Math.round((normalized.correctReviews / Math.max(normalized.totalReviews, 1)) * 100)
+          : question.difficulty === "hard"
+          ? 55
+          : 100;
+        return question.difficulty === "hard" || (normalized?.lapses || 0) >= 2 || accuracy < 70;
+      }),
+    [activeDeckFilteredQuestionPool, reviewStateMap]
+  );
+  const activeDeckNewQuestionPool = useMemo(
+    () =>
+      activeDeckFilteredQuestionPool.filter((question) => {
+        const state = reviewStateMap?.[String(question?.id)];
+        if (!state) return true;
+        return normalizeReviewStateRow(state).queue === "new";
+      }),
+    [activeDeckFilteredQuestionPool, reviewStateMap]
+  );
+  const adaptiveTagQuestionPool = useMemo(
+    () =>
+      adaptiveSessionTag
+        ? filterQuestionsByTags(activeDeckQuestionPool, [adaptiveSessionTag], userTagMap)
+        : [],
+    [adaptiveSessionTag, activeDeckQuestionPool, userTagMap]
+  );
+  const activeDeckAvailableTags = useMemo(
+    () =>
+      mergeTags(
+        activeDeckQuestionPool.flatMap((question) => question.tags || []),
+        activeDeckQuestionPool.flatMap((question) => userTagMap?.[String(question.id)] || [])
+      ).sort((a, b) => a.localeCompare(b, "pl")),
+    [activeDeckQuestionPool, userTagMap]
+  );
+  const deckAnalytics = useMemo(
+    () =>
+      buildDeckAnalytics({
+        deckQuestions: activeDeckQuestionPool,
+        reviewStateMap,
+        reviewSnapshot: activeDeckReviewSnapshot,
+        history: uniq,
+        deckName: activeDeckName,
+        deckGoal: currentDeckGoal,
+      }),
+    [activeDeckQuestionPool, reviewStateMap, activeDeckReviewSnapshot, uniq, currentDeckGoal]
   );
 
   const localPlan = useMemo(
@@ -5573,6 +6363,23 @@ function QuizAbcdApp() {
       }),
     [uniq, stats.weakest, stats.byCat, questionPool, deckQuestionPool, activeDeckName, reviewSnapshot, selectedDeck]
   );
+
+  useEffect(() => {
+    setDeckGoalDraft(deckGoalDraftFromRow(currentDeckGoal, activeDeckName));
+    setExamReadinessStatus("idle");
+  }, [activeDeckName, currentDeckGoal.updatedAt]);
+
+  useEffect(() => {
+    setAdaptiveSessionTag((prev) => {
+      if (!prev) return "";
+      return activeDeckAvailableTags.some((tag) => tag.toLowerCase() === prev.toLowerCase()) ? prev : "";
+    });
+  }, [activeDeckAvailableTags]);
+
+  useEffect(() => {
+    setExamReadinessReport(currentDeckGoalReport || buildLocalExamReadiness({ deckGoal: currentDeckGoal, analytics: deckAnalytics, deckName: activeDeckName }));
+  }, [currentDeckGoalReport, currentDeckGoal, deckAnalytics, activeDeckName]);
+
   const calDays = useMemo(() => buildCalDays(calMonth), [calMonth]);
 
   const selectedDayAttempts = attemptsByDay[selectedCalDay] || [];
@@ -6003,9 +6810,14 @@ function QuizAbcdApp() {
       setOpenDeckMenu(null);
       const pool = getDeckPool(deckName);
       setSelectedDeck(deckName);
-      startQuiz(pool, quizLength);
+      startQuiz(pool, quizLength, {
+        mode: "deck",
+        deckName,
+        label: `Deck: ${deckName}`,
+        filters: selectedTagFilters.length ? { tags: selectedTagFilters } : {},
+      });
     },
-    [getDeckPool, startQuiz, quizLength]
+    [getDeckPool, startQuiz, quizLength, selectedTagFilters]
   );
 
   const startDeckCategorySession = useCallback(
@@ -6014,9 +6826,17 @@ function QuizAbcdApp() {
       const pool = getDeckPool(deckName, categoryName);
       setSelectedDeck(deckName);
       setExpandedDecks((prev) => ({ ...prev, [deckName]: true }));
-      startQuiz(pool, quizLength);
+      startQuiz(pool, quizLength, {
+        mode: "category",
+        deckName,
+        label: `${deckName} / ${categoryName}`,
+        filters: {
+          category: categoryName,
+          ...(selectedTagFilters.length ? { tags: selectedTagFilters } : {}),
+        },
+      });
     },
-    [getDeckPool, startQuiz, quizLength]
+    [getDeckPool, startQuiz, quizLength, selectedTagFilters]
   );
 
   const syncDeckActiveState = useCallback(
@@ -6122,6 +6942,323 @@ function QuizAbcdApp() {
       }
     },
     [questionPool, selectedDeck, sbEnabled, syncDeckActiveState]
+  );
+
+  const updateDeckGoalField = useCallback(
+    (field, value) => {
+      setDeckGoalDraft((prev) => ({
+        ...prev,
+        deck: activeDeckName,
+        [field]: field === "targetScore" ? clampNumber(value, 50, 100) : value,
+      }));
+    },
+    [activeDeckName]
+  );
+
+  const saveDeckGoal = useCallback(async () => {
+    const nextGoal = normalizeDeckGoalRow({
+      ...currentDeckGoal,
+      ...deckGoalDraft,
+      deck: activeDeckName,
+      metadata: currentDeckGoal.metadata,
+      updatedAt: new Date().toISOString(),
+    });
+
+    setDeckGoalStatus({
+      status: "loading",
+      message: hasDeckGoalContent(nextGoal) ? `Zapisuje cel decku ${activeDeckName}...` : `Czyszcze cel decku ${activeDeckName}...`,
+    });
+
+    setDeckGoalMap((prev) => mergeDeckGoalMaps(prev, { [activeDeckName]: nextGoal }));
+
+    if (!sbEnabled || !authUser?.id || !authAccessToken) {
+      setDeckGoalStatus({
+        status: "success",
+        message: hasDeckGoalContent(nextGoal)
+          ? `Cel decku ${activeDeckName} zapisany lokalnie.`
+          : `Cel decku ${activeDeckName} zostal wyczyszczony lokalnie.`,
+      });
+      return;
+    }
+
+    try {
+      await sbUpsert(
+        supabaseConfig,
+        "user_deck_goals",
+        {
+          user_id: authUser.id,
+          deck: nextGoal.deck,
+          exam_name: nextGoal.examName,
+          exam_description: nextGoal.examDescription,
+          target_date: nextGoal.targetDate || null,
+          source_notes: nextGoal.sourceNotes,
+          target_score: nextGoal.targetScore,
+          metadata: nextGoal.metadata,
+          updated_at: nextGoal.updatedAt,
+        },
+        authAccessToken,
+        "user_id,deck"
+      );
+
+      setDeckGoalStatus({
+        status: "success",
+        message: hasDeckGoalContent(nextGoal)
+          ? `Cel decku ${activeDeckName} zapisany lokalnie i w Supabase.`
+          : `Cel decku ${activeDeckName} zostal wyczyszczony i zsynchronizowany.`,
+      });
+    } catch (error) {
+      setDeckGoalStatus({
+        status: "error",
+        message: `Cel decku zapisano lokalnie, ale synchronizacja nie udala sie: ${getErrorText(error)}`,
+      });
+    }
+  }, [activeDeckName, authAccessToken, authUser?.id, currentDeckGoal, deckGoalDraft, sbEnabled, supabaseConfig]);
+
+  const runDeckExamReadiness = useCallback(async () => {
+    const goalPayload = normalizeDeckGoalRow({
+      ...currentDeckGoal,
+      ...deckGoalDraft,
+      deck: activeDeckName,
+      metadata: currentDeckGoal.metadata,
+      updatedAt: new Date().toISOString(),
+    });
+    const localReport = buildLocalExamReadiness({
+      deckGoal: goalPayload,
+      analytics: deckAnalytics,
+      deckName: activeDeckName,
+    });
+    const persistReport = async (report) => {
+      const nextGoal = withDeckGoalReport(goalPayload, report);
+      setDeckGoalMap((prev) => mergeDeckGoalMaps(prev, { [activeDeckName]: nextGoal }));
+      if (!sbEnabled || !authUser?.id || !authAccessToken) return;
+
+      try {
+        await sbUpsert(
+          supabaseConfig,
+          "user_deck_goals",
+          {
+            user_id: authUser.id,
+            deck: nextGoal.deck,
+            exam_name: nextGoal.examName,
+            exam_description: nextGoal.examDescription,
+            target_date: nextGoal.targetDate || null,
+            source_notes: nextGoal.sourceNotes,
+            target_score: nextGoal.targetScore,
+            metadata: nextGoal.metadata,
+            updated_at: nextGoal.updatedAt,
+          },
+          authAccessToken,
+          "user_id,deck"
+        );
+      } catch {}
+    };
+
+    setExamReadinessStatus("loading");
+    setExamReadinessReport(localReport);
+
+    if (!cloudApiEnabled || !sbEnabled) {
+      await persistReport(localReport);
+      setExamReadinessStatus("done");
+      setDeckGoalStatus({
+        status: "success",
+        message: "Pokazuje lokalna analize gotowosci. Aby dostac komentarz AI, wlacz Cloud AI i polaczenie z Supabase.",
+      });
+      return;
+    }
+
+    try {
+      const cloudReport = await fetchCloudExamReadiness({
+        supabaseConfig,
+        model: cloudModel.trim() || DEFAULT_MODEL,
+        cloudApiKey: manualCloudApiKey,
+        activeDeckName,
+        deckGoal: goalPayload,
+        analytics: deckAnalytics,
+        reviewSnapshot: activeDeckReviewSnapshot,
+        history: uniq,
+      });
+      await persistReport(cloudReport);
+      setExamReadinessReport(cloudReport);
+      setExamReadinessStatus("done");
+      setDeckGoalStatus({
+        status: "success",
+        message: `AI przeliczylo gotowosc decku ${activeDeckName}.`,
+      });
+    } catch (error) {
+      await persistReport(localReport);
+      setExamReadinessReport({
+        ...localReport,
+        summary: `${localReport.summary}\n\nCloud AI nie odpowiedzialo, wiec pokazuje fallback lokalny. ${getErrorText(error)}`,
+      });
+      setExamReadinessStatus("done");
+      setDeckGoalStatus({
+        status: "error",
+        message: `Cloud AI nie odpowiedzialo, ale lokalny raport jest gotowy. ${getErrorText(error)}`,
+      });
+    }
+  }, [
+    activeDeckName,
+    activeDeckReviewSnapshot,
+    authAccessToken,
+    authUser?.id,
+    cloudApiEnabled,
+    cloudModel,
+    currentDeckGoal,
+    deckAnalytics,
+    deckGoalDraft,
+    manualCloudApiKey,
+    sbEnabled,
+    supabaseConfig,
+    uniq,
+  ]);
+
+  const exportDeckAsset = useCallback(
+    (kind) => {
+      if (!activeDeckQuestionPool.length && kind !== "library_backup") {
+        setDeckExportStatus({
+          status: "error",
+          message: `Deck ${activeDeckName} nie ma jeszcze pytan do eksportu.`,
+        });
+        return;
+      }
+
+      const stamp = dayKey(Date.now());
+      const deckSlug = sanitizeFilenamePart(activeDeckName, "deck");
+      const baseName = `zen-quiz-${deckSlug}-${stamp}`;
+      const goalPayload = normalizeDeckGoalRow({
+        ...currentDeckGoal,
+        ...deckGoalDraft,
+        deck: activeDeckName,
+      });
+      const exportRows = buildDeckExportRows(activeDeckQuestionPool, userTagMap);
+      const ankiRows = buildAnkiExportRows(activeDeckQuestionPool, userTagMap);
+      const deckBackup = {
+        version: "2026-03-14",
+        exportedAt: new Date().toISOString(),
+        deck: activeDeckName,
+        goal: goalPayload,
+        analytics: deckAnalytics,
+        questions: activeDeckQuestionPool,
+        reviewStates: activeDeckQuestionPool
+          .map((question) => reviewStateMap?.[String(question.id)] || null)
+          .filter(Boolean),
+        userTags: activeDeckQuestionPool.reduce((acc, question) => {
+          const tags = normalizeTags(userTagMap?.[String(question.id)] || []);
+          if (tags.length) acc[String(question.id)] = tags;
+          return acc;
+        }, {}),
+        attempts: uniq.filter((attempt) => !attempt.deckName || attempt.deckName === activeDeckName).slice(0, 100),
+      };
+      const libraryBackup = {
+        version: "2026-03-14",
+        exportedAt: new Date().toISOString(),
+        questions: questionPool,
+        deckGoals: deckGoalMap,
+        reviewStates: Object.values(reviewStateMap || {}),
+        userTags: userTagMap,
+        attempts: uniq,
+      };
+
+      try {
+        if (kind === "csv") exportRowsToCsv(exportRows, `${baseName}.csv`);
+        if (kind === "xlsx") exportRowsToXlsx(exportRows, `${baseName}.xlsx`, sanitizeFilenamePart(activeDeckName, "Questions"));
+        if (kind === "anki") exportRowsToTsv(ankiRows, `${baseName}-anki.tsv`);
+        if (kind === "pdf") openFlashcardsPrintView(activeDeckQuestionPool, activeDeckName);
+        if (kind === "deck_backup") {
+          triggerBlobDownload(new Blob([JSON.stringify(deckBackup, null, 2)], { type: "application/json;charset=utf-8" }), `${baseName}-backup.json`);
+        }
+        if (kind === "library_backup") {
+          triggerBlobDownload(
+            new Blob([JSON.stringify(libraryBackup, null, 2)], { type: "application/json;charset=utf-8" }),
+            `zen-quiz-library-${stamp}.json`
+          );
+        }
+
+        setDeckExportStatus({
+          status: "success",
+          message:
+            kind === "pdf"
+              ? "Otwarto widok do zapisania fiszek jako PDF z okna drukowania."
+              : kind === "library_backup"
+              ? "Backup calej biblioteki jest gotowy."
+              : `Eksport ${activeDeckName} (${kind}) jest gotowy.`,
+        });
+      } catch (error) {
+        setDeckExportStatus({
+          status: "error",
+          message: `Eksport nie udal sie: ${getErrorText(error)}`,
+        });
+      }
+    },
+    [activeDeckName, activeDeckQuestionPool, currentDeckGoal, deckAnalytics, deckGoalDraft, deckGoalMap, questionPool, reviewStateMap, uniq, userTagMap]
+  );
+
+  const startAdaptiveDeckSession = useCallback(
+    (mode) => {
+      const presetMap = {
+        mistakes: {
+          pool: activeDeckWrongQuestionPool,
+          label: `Bledy: ${activeDeckName}`,
+          mode: "mistakes",
+        },
+        due: {
+          pool: activeDeckDueQuestionPool,
+          label: `Due: ${activeDeckName}`,
+          mode: "due",
+        },
+        hard: {
+          pool: activeDeckHardQuestionPool,
+          label: `Hard: ${activeDeckName}`,
+          mode: "hard",
+        },
+        new: {
+          pool: activeDeckNewQuestionPool,
+          label: `Nowe: ${activeDeckName}`,
+          mode: "new",
+        },
+        tag: {
+          pool: adaptiveTagQuestionPool,
+          label: adaptiveSessionTag ? `Tag ${adaptiveSessionTag}: ${activeDeckName}` : `Tag: ${activeDeckName}`,
+          mode: "tag",
+          filters: adaptiveSessionTag ? { tag: adaptiveSessionTag } : {},
+        },
+      };
+
+      const preset = presetMap[mode];
+      if (!preset?.pool?.length) {
+        setDeckLibraryStatus({
+          status: "error",
+          message:
+            mode === "tag"
+              ? `Brak pytan dla tagu ${adaptiveSessionTag || "wybranego"} w decku ${activeDeckName}.`
+              : `Brak pytan dla trybu ${mode} w decku ${activeDeckName}.`,
+        });
+        return;
+      }
+
+      setSelectedDeck(activeDeckName);
+      startQuiz(preset.pool, quizLength, {
+        mode: preset.mode,
+        deckName: activeDeckName,
+        label: preset.label,
+        filters: preset.filters || {},
+      });
+      setDeckLibraryStatus({
+        status: "success",
+        message: `Startuje sesje adaptacyjna: ${preset.label}.`,
+      });
+    },
+    [
+      activeDeckDueQuestionPool,
+      activeDeckHardQuestionPool,
+      activeDeckName,
+      activeDeckNewQuestionPool,
+      activeDeckWrongQuestionPool,
+      adaptiveSessionTag,
+      adaptiveTagQuestionPool,
+      quizLength,
+      startQuiz,
+    ]
   );
 
   function getCloudGenerationErrorMessage(cloudError = "") {
@@ -6900,7 +8037,7 @@ function QuizAbcdApp() {
     );
   };
 
-  const ResultsView = () => (
+  const ResultsViewLegacy = () => (
     <div style={{ display: "grid", gap: 16 }}>
       <div style={{ ...s.card, padding: 22 }}>
         <div className="tinyLabel" style={{ marginBottom: 10 }}>
@@ -6991,6 +8128,307 @@ function QuizAbcdApp() {
       </div>
     </div>
   );
+
+  const ResultsView = () => {
+    const readinessTone = toneForPercent(deckAnalytics.readyForExamScore);
+    const readinessReport = examReadinessReport || buildLocalExamReadiness({ deckGoal: currentDeckGoal, analytics: deckAnalytics, deckName: activeDeckName });
+
+    return (
+      <div style={{ display: "grid", gap: 16 }}>
+        <div style={{ ...s.card, padding: 22 }}>
+          <div className="tinyLabel" style={{ marginBottom: 10 }}>
+            Podsumowanie sesji i gotowosci
+          </div>
+          <div style={{ fontSize: 30, fontWeight: 700, color: C.textStrong, marginBottom: 8 }}>
+            {attemptDraft ? `${attemptDraft.percent}% poprawnych` : "Brak zakonczonej sesji"}
+          </div>
+          <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.65 }}>
+            Wynik ostatniej sesji, tempo nauki oraz sygnal jak blisko jestes celu egzaminacyjnego dla decku {activeDeckName}.
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14 }}>
+            <span className="soft-chip">{activeDeckName}</span>
+            <span className="soft-chip">{sessionModeLabel(sessionMeta?.mode)}</span>
+            {currentDeckGoal.examName ? <span className="soft-chip">Cel: {currentDeckGoal.examName}</span> : <span className="soft-chip">Bez nazwy egzaminu</span>}
+            {currentDeckGoal.targetDate ? <span className="soft-chip">Termin: {currentDeckGoal.targetDate}</span> : null}
+          </div>
+
+          <div className="quiz-inline-stats" style={{ marginTop: 20 }}>
+            {[
+              ["Wynik", attemptDraft ? `${attemptDraft.score}/${attemptDraft.totalQuestions}` : "—"],
+              ["Mastery", attemptDraft ? `${attemptDraft.mastery}%` : "—"],
+              ["Sr. czas", attemptDraft ? fmt(attemptDraft.avgResponseMs) : "—"],
+              ["Laczny czas", attemptDraft ? fmt(attemptDraft.totalTimeMs) : "—"],
+            ].map(([label, value]) => (
+              <div key={label} style={{ ...s.metric, background: C.cardAlt }}>
+                <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>{label}</div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: C.textStrong }}>{value}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
+          {[
+            ["Ready for exam", `${deckAnalytics.readyForExamScore}%`, readinessTone],
+            ["Retencja", `${deckAnalytics.retentionScore}%`, toneForPercent(deckAnalytics.retentionScore)],
+            ["Pokrycie", `${deckAnalytics.coverageScore}%`, toneForPercent(deckAnalytics.coverageScore)],
+            ["Tempo", `${deckAnalytics.weeklyQuestions} pyt./tydz`, toneForStatus(deckAnalytics.weeklyQuestions ? "success" : "idle")],
+            ["ETA do decku", deckAnalytics.daysToMastery ? `${deckAnalytics.daysToMastery} dni` : "Za malo danych", toneForStatus(deckAnalytics.daysToMastery ? "success" : "idle")],
+            ["Target", `${currentDeckGoal.targetScore}%`, toneForPercent(currentDeckGoal.targetScore)],
+          ].map(([label, value, tone]) => (
+            <div
+              key={label}
+              style={{
+                ...s.metric,
+                background: tone?.bg || C.cardAlt,
+                color: tone?.color || C.textStrong,
+                border: `1px solid ${tone?.border || C.border}`,
+              }}
+            >
+              <div style={{ fontSize: 11, color: tone?.color || C.textSub, marginBottom: 4 }}>{label}</div>
+              <div style={{ fontSize: 20, fontWeight: 700 }}>{value}</div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1.1fr .9fr", gap: 16 }}>
+          <div style={{ ...s.card, padding: 20 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Gotowosc kategorii</div>
+              <span className="soft-chip">Luka do celu: {deckAnalytics.gapToTarget} pp</span>
+            </div>
+
+            <div style={{ display: "grid", gap: 10 }}>
+              {deckAnalytics.categoryReadiness.length ? (
+                deckAnalytics.categoryReadiness.slice(0, 6).map((item) => (
+                  <div key={item.category} style={{ padding: 12, borderRadius: 14, background: C.cardAlt, border: `1px solid ${C.border}` }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+                      <div>
+                        <div style={{ fontSize: 14, fontWeight: 700, color: C.textStrong }}>{item.category}</div>
+                        <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>
+                          due {item.dueCount} • nowe {item.newCount} • lapses {item.lapses} • priorytet {item.priority.toLowerCase()}
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: C.textStrong }}>{item.readiness}%</div>
+                    </div>
+                    <div style={{ height: 7, borderRadius: 999, background: "#E9E5DA", marginTop: 10, overflow: "hidden" }}>
+                      <div
+                        style={{
+                          width: `${item.readiness}%`,
+                          height: "100%",
+                          borderRadius: 999,
+                          background: item.readiness >= currentDeckGoal.targetScore ? "linear-gradient(90deg, #2E8B57, #6CBF8A)" : "linear-gradient(90deg, #4B5EAA, #8294C4)",
+                        }}
+                      />
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div style={{ fontSize: 14, color: C.textSub }}>Zacznij prace z deckiem, aby wyliczyc gotowosc per kategoria.</div>
+              )}
+            </div>
+          </div>
+
+          <div style={{ ...s.card, padding: 20 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+              <IcoTarget size={16} />
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Ready for exam score</div>
+            </div>
+
+            {examReadinessStatus === "loading" && <div style={{ fontSize: 14, color: C.textSub }}>AI analizuje poziom merytoryczny decku...</div>}
+
+            {readinessReport && (
+              <div style={{ display: "grid", gap: 12 }}>
+                <div
+                  style={{
+                    padding: 14,
+                    borderRadius: 16,
+                    background: readinessTone.bg,
+                    color: readinessTone.color,
+                    border: `1px solid ${readinessTone.border}`,
+                  }}
+                >
+                  <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.85 }}>Gotowosc</div>
+                  <div style={{ fontSize: 28, fontWeight: 700, marginTop: 4 }}>{readinessReport.readyScore}%</div>
+                  <div style={{ fontSize: 13, marginTop: 6 }}>Pewnosc: {readinessReport.confidence}</div>
+                </div>
+
+                <div
+                  style={{
+                    whiteSpace: "pre-wrap",
+                    fontSize: 14,
+                    color: C.textSub,
+                    lineHeight: 1.75,
+                    background: C.cardAlt,
+                    border: `1px solid ${C.border}`,
+                    padding: 14,
+                    borderRadius: 14,
+                  }}
+                >
+                  {readinessReport.summary}
+                </div>
+
+                {(readinessReport.knowledgeGaps || []).length ? (
+                  <div style={{ display: "grid", gap: 8 }}>
+                    {(readinessReport.knowledgeGaps || []).slice(0, 3).map((item, index) => (
+                      <div key={`${item}-${index}`} style={{ fontSize: 13, color: C.textSub, lineHeight: 1.65 }}>
+                        • {item}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16 }}>
+          <div style={{ ...s.card, padding: 20 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+              <IcoCalendar size={16} />
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Heatmapa powtorek</div>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: 8 }}>
+              {deckAnalytics.heatmap.map((day) => {
+                const ratio = Math.min(day.count / 4, 1);
+                const bg = day.count ? `rgba(75,94,170,${0.18 + ratio * 0.42})` : "rgba(233,229,218,.55)";
+                return (
+                  <div
+                    key={day.key}
+                    title={`${day.label}: ${day.count} sesji`}
+                    style={{
+                      minHeight: 46,
+                      borderRadius: 12,
+                      background: bg,
+                      border: `1px solid ${day.count ? "rgba(75,94,170,.28)" : C.border}`,
+                      padding: 8,
+                      display: "flex",
+                      flexDirection: "column",
+                      justifyContent: "space-between",
+                    }}
+                  >
+                    <div style={{ fontSize: 11, color: C.textSub }}>{day.label}</div>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: C.textStrong }}>{day.count || "—"}</div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="field-help" style={{ marginTop: 12 }}>
+              Ostatnie {deckAnalytics.heatmap.length} dni. Im ciemniejsze pole, tym wiecej zakonczonych sesji.
+            </div>
+          </div>
+
+          <div style={{ ...s.card, padding: 20 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+              <IcoBolt size={16} />
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>
+                {trainingSummary?.title || "Analiza treningu"}
+              </div>
+            </div>
+
+            {trainingSummaryStatus === "loading" && <div style={{ fontSize: 14, color: C.textSub }}>Przygotowuje analize sesji...</div>}
+
+            {trainingSummaryStatus !== "loading" && trainingSummary && (
+              <div
+                style={{
+                  whiteSpace: "pre-wrap",
+                  fontSize: 14,
+                  color: C.textSub,
+                  lineHeight: 1.75,
+                  background: C.cardAlt,
+                  border: `1px solid ${C.border}`,
+                  padding: 14,
+                  borderRadius: 14,
+                }}
+              >
+                {trainingSummary.text}
+              </div>
+            )}
+
+            {trainingSummaryStatus !== "loading" && !trainingSummary && (
+              <div style={{ fontSize: 14, color: C.textSub }}>Zakoncz quiz, aby otrzymac podsumowanie treningu.</div>
+            )}
+
+            <div style={{ display: "grid", gap: 8, marginTop: 14 }}>
+              {(readinessReport?.nextMilestones || []).slice(0, 3).map((item, index) => (
+                <div key={`${item}-${index}`} style={{ fontSize: 13, color: C.textSub, lineHeight: 1.65 }}>
+                  • {item}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+          <div style={{ ...s.card, padding: 20 }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong, marginBottom: 12 }}>Kategorie z ostatniej sesji</div>
+            <div style={{ display: "grid", gap: 10 }}>
+              {stats.byCat.length ? (
+                stats.byCat.map((x) => (
+                  <div key={x.category} style={{ padding: 12, borderRadius: 14, background: C.cardAlt, border: `1px solid ${C.border}` }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: C.textStrong }}>{x.category}</div>
+                      <div style={{ fontSize: 13, color: C.textSub }}>{x.percent}%</div>
+                    </div>
+                    <div style={{ height: 7, borderRadius: 999, background: "#E9E5DA", marginTop: 10, overflow: "hidden" }}>
+                      <div
+                        style={{
+                          width: `${x.percent}%`,
+                          height: "100%",
+                          borderRadius: 999,
+                          background: "linear-gradient(90deg, #4B5EAA, #8294C4)",
+                        }}
+                      />
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div style={{ fontSize: 14, color: C.textSub }}>Zakoncz quiz, aby zobaczyc statystyki kategorii z biezacej sesji.</div>
+              )}
+            </div>
+          </div>
+
+          <div style={{ ...s.card, padding: 20 }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong, marginBottom: 12 }}>Tempo i prognoza</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0,1fr))", gap: 10 }}>
+              {[
+                ["Pytania / tydzien", deckAnalytics.weeklyQuestions],
+                ["Minuty / tydzien", deckAnalytics.weeklyMinutes],
+                ["Managed cards", deckAnalytics.managedCards],
+                ["Mastered cards", deckAnalytics.masteredCards],
+              ].map(([label, value]) => (
+                <div key={label} style={{ ...s.metric, background: C.cardAlt, padding: "12px 14px" }}>
+                  <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>{label}</div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: C.textStrong }}>{value}</div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ display: "grid", gap: 8, marginTop: 14 }}>
+              <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.65 }}>
+                Tempo nauki: <strong style={{ color: C.textStrong }}>{deckAnalytics.paceLabel}</strong>.
+              </div>
+              <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.65 }}>
+                {deckAnalytics.daysToMastery
+                  ? `Prognoza opanowania decku: okolo ${deckAnalytics.daysToMastery} dni.`
+                  : "Za malo danych do prognozy opanowania decku."}
+              </div>
+              <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.65 }}>
+                {deckAnalytics.daysToTarget !== null
+                  ? deckAnalytics.onTrack
+                    ? `Jestes na dobrej sciezce do terminu ${currentDeckGoal.targetDate}.`
+                    : `Przy tym tempie cel ${currentDeckGoal.targetDate} jest zagrozony.`
+                  : "Dodaj date egzaminu w decku, aby ocenic czy plan jest realistyczny."}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   const CalendarViewLegacy = () => (
     <div style={{ display: "grid", gridTemplateColumns: "1.2fr .8fr", gap: 16 }}>
@@ -7970,6 +9408,7 @@ function QuizAbcdApp() {
   const DecksView = () => {
     const activeDeck = deckGroups.find((deck) => deck.name === activeDeckName) || deckGroups[0] || null;
     const deckCanStart = Boolean(activeDeck?.count);
+    const readinessReport = examReadinessReport || buildLocalExamReadiness({ deckGoal: currentDeckGoal, analytics: deckAnalytics, deckName: activeDeckName });
 
     return (
       <div className="deck-view">
@@ -8008,6 +9447,232 @@ function QuizAbcdApp() {
               Aktywne tagi zawezaja liczbe kart przy starcie sesji. Lista deckow pokazuje pelna zawartosc, a przycisk start respektuje biezace filtry.
             </div>
           )}
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+          <div style={{ display: "grid", gap: 16 }}>
+            <div style={{ ...s.card, padding: 18 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
+                <div>
+                  <div className="tinyLabel" style={{ marginBottom: 8 }}>
+                    Sesje adaptacyjne
+                  </div>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: C.textStrong }}>Start z konkretnej kolejki</div>
+                </div>
+                <span className="soft-chip">{activeDeckName}</span>
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0,1fr))", gap: 10, marginBottom: 14 }}>
+                {[
+                  ["Due", activeDeckDueQuestionPool.length, () => startAdaptiveDeckSession("due")],
+                  ["Bledy", activeDeckWrongQuestionPool.length, () => startAdaptiveDeckSession("mistakes")],
+                  ["Trudne", activeDeckHardQuestionPool.length, () => startAdaptiveDeckSession("hard")],
+                  ["Nowe", activeDeckNewQuestionPool.length, () => startAdaptiveDeckSession("new")],
+                ].map(([label, count, action]) => (
+                  <button
+                    key={label}
+                    type="button"
+                    onClick={action}
+                    disabled={!count}
+                    style={{
+                      ...s.btn(count ? "soft" : "ghost"),
+                      justifyContent: "space-between",
+                      width: "100%",
+                      opacity: count ? 1 : 0.55,
+                    }}
+                  >
+                    <span>{label}</span>
+                    <strong>{count}</strong>
+                  </button>
+                ))}
+              </div>
+
+              <div style={{ marginBottom: 12 }}>
+                <label style={s.label}>Wybrany tag</label>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <select value={adaptiveSessionTag} onChange={(e) => setAdaptiveSessionTag(e.target.value)} style={{ ...s.input, flex: 1, minWidth: 180 }}>
+                    <option value="">Wybierz tag</option>
+                    {activeDeckAvailableTags.map((tag) => (
+                      <option key={tag} value={tag}>
+                        {tag}
+                      </option>
+                    ))}
+                  </select>
+                  <button type="button" onClick={() => startAdaptiveDeckSession("tag")} style={s.btn("ghost")} disabled={!adaptiveSessionTag || !adaptiveTagQuestionPool.length}>
+                    <IcoTag size={14} /> Start tag
+                  </button>
+                </div>
+                <div className="field-help">
+                  Tag session ma teraz {adaptiveTagQuestionPool.length || 0} kart. Dziala niezaleznie od bledow, due i nowych.
+                </div>
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0,1fr))", gap: 10 }}>
+                {[
+                  ["Due", activeDeckReviewSnapshot.dueCount],
+                  ["Learning", activeDeckReviewSnapshot.learningCount],
+                  ["Review", activeDeckReviewSnapshot.reviewCount],
+                  ["Nowe", activeDeckReviewSnapshot.newCount],
+                ].map(([label, value]) => (
+                  <div key={label} style={{ ...s.metric, background: C.cardAlt, padding: "12px 14px" }}>
+                    <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>{label}</div>
+                    <div style={{ fontSize: 18, fontWeight: 700, color: C.textStrong }}>{value}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ ...s.card, padding: 18 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
+                <div>
+                  <div className="tinyLabel" style={{ marginBottom: 8 }}>
+                    Eksport i interoperacyjnosc
+                  </div>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: C.textStrong }}>Wyprowadz deck na zewnatrz</div>
+                </div>
+                <span className="soft-chip">{activeDeckQuestionPool.length} kart</span>
+              </div>
+
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <button type="button" onClick={() => exportDeckAsset("anki")} style={s.btn("soft")}>
+                  <IcoLayers size={14} /> Anki TSV
+                </button>
+                <button type="button" onClick={() => exportDeckAsset("csv")} style={s.btn("ghost")}>
+                  <IcoFileText size={14} /> CSV
+                </button>
+                <button type="button" onClick={() => exportDeckAsset("xlsx")} style={s.btn("ghost")}>
+                  <IcoFileText size={14} /> XLSX
+                </button>
+                <button type="button" onClick={() => exportDeckAsset("pdf")} style={s.btn("ghost")}>
+                  <IcoBook size={14} /> PDF fiszki
+                </button>
+                <button type="button" onClick={() => exportDeckAsset("deck_backup")} style={s.btn("ghost")}>
+                  <IcoUpload size={14} /> Backup decku
+                </button>
+                <button type="button" onClick={() => exportDeckAsset("library_backup")} style={s.btn("ghost")}>
+                  <IcoCloud size={14} /> Backup biblioteki
+                </button>
+              </div>
+
+              <div
+                style={{
+                  marginTop: 14,
+                  padding: 12,
+                  borderRadius: 14,
+                  background: toneForStatus(deckExportStatus.status).bg,
+                  color: toneForStatus(deckExportStatus.status).color,
+                  border: `1px solid ${toneForStatus(deckExportStatus.status).border}`,
+                  fontSize: 13,
+                  lineHeight: 1.6,
+                }}
+              >
+                {deckExportStatus.message}
+              </div>
+
+              <div className="field-help" style={{ marginTop: 12 }}>
+                Anki dostaje front/back/tags, PDF otwiera widok do druku, a backup JSON zapisuje pytania, goal, review states i ostatnie proby.
+              </div>
+            </div>
+          </div>
+
+          <div style={{ ...s.card, padding: 18 }}>
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
+              <div>
+                <div className="tinyLabel" style={{ marginBottom: 8 }}>
+                  Cel decku
+                </div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: C.textStrong }}>Ready for exam plan</div>
+              </div>
+              <span className="soft-chip">Ready score: {deckAnalytics.readyForExamScore}%</span>
+            </div>
+
+            <div style={{ display: "grid", gap: 12 }}>
+              <div>
+                <label style={s.label}>Nazwa egzaminu</label>
+                <input value={deckGoalDraft.examName} onChange={(e) => updateDeckGoalField("examName", e.target.value)} placeholder="np. PgMP" style={s.input} />
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 140px", gap: 12 }}>
+                <div>
+                  <label style={s.label}>Data celu</label>
+                  <input type="date" value={deckGoalDraft.targetDate} onChange={(e) => updateDeckGoalField("targetDate", e.target.value)} style={s.input} />
+                </div>
+                <div>
+                  <label style={s.label}>Target %</label>
+                  <input
+                    type="number"
+                    min={50}
+                    max={100}
+                    value={deckGoalDraft.targetScore}
+                    onChange={(e) => updateDeckGoalField("targetScore", Number(e.target.value || DEFAULT_EXAM_TARGET_SCORE))}
+                    style={s.input}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label style={s.label}>Opis wymagan</label>
+                <textarea
+                  value={deckGoalDraft.examDescription}
+                  onChange={(e) => updateDeckGoalField("examDescription", e.target.value)}
+                  rows={5}
+                  placeholder="Opisz co oznacza zdanie egzaminu, jakie kompetencje maja byc sprawdzone i jakie obszary sa krytyczne."
+                  style={{ ...s.input, resize: "vertical" }}
+                />
+              </div>
+
+              <div>
+                <label style={s.label}>Zrodla / syllabus / linki</label>
+                <textarea
+                  value={deckGoalDraft.sourceNotes}
+                  onChange={(e) => updateDeckGoalField("sourceNotes", e.target.value)}
+                  rows={5}
+                  placeholder="Wklej outline, bibliografie, linki, notatki od klienta albo opis domen, ktore deck ma pokrywac."
+                  style={{ ...s.input, resize: "vertical" }}
+                />
+              </div>
+
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <button type="button" onClick={saveDeckGoal} style={s.btn("soft")}>
+                  <IcoCheck size={14} /> Zapisz cel
+                </button>
+                <button type="button" onClick={runDeckExamReadiness} style={s.btn("primary")} disabled={examReadinessStatus === "loading"}>
+                  <IcoCloud size={14} /> {examReadinessStatus === "loading" ? "Licze gotowosc..." : "Analiza AI"}
+                </button>
+              </div>
+
+              <div
+                style={{
+                  padding: 12,
+                  borderRadius: 14,
+                  background: toneForStatus(deckGoalStatus.status).bg,
+                  color: toneForStatus(deckGoalStatus.status).color,
+                  border: `1px solid ${toneForStatus(deckGoalStatus.status).border}`,
+                  fontSize: 13,
+                  lineHeight: 1.6,
+                }}
+              >
+                {deckGoalStatus.message}
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0,1fr))", gap: 10 }}>
+                {[
+                  ["Ready score", `${readinessReport?.readyScore || deckAnalytics.readyForExamScore}%`],
+                  ["Retencja", `${deckAnalytics.retentionScore}%`],
+                  ["ETA", deckAnalytics.daysToMastery ? `${deckAnalytics.daysToMastery} dni` : "—"],
+                ].map(([label, value]) => (
+                  <div key={label} style={{ ...s.metric, background: C.cardAlt, padding: "12px 14px" }}>
+                    <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>{label}</div>
+                    <div style={{ fontSize: 18, fontWeight: 700, color: C.textStrong }}>{value}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ fontSize: 13, color: C.textSub, lineHeight: 1.7 }}>
+                {readinessReport?.summary}
+              </div>
+            </div>
+          </div>
         </div>
 
         <div className="deck-board" style={{ ...s.card, padding: 14 }}>
@@ -8317,7 +9982,17 @@ function QuizAbcdApp() {
           </div>
 
           {generatorQuestions.length > 0 && (
-            <button onClick={() => startQuiz(generatorQuestions, generatorQuestions.length)} style={s.btn("ghost")}>
+            <button
+              onClick={() =>
+                startQuiz(generatorQuestions, generatorQuestions.length, {
+                  mode: "generated",
+                  deckName: normalizeDeck(generatorQuestions[0]?.deck || generatorDeckName, DEFAULT_DECK_NAME),
+                  label: `Generator: ${normalizeDeck(generatorQuestions[0]?.deck || generatorDeckName, DEFAULT_DECK_NAME)}`,
+                  filters: { source: "generator" },
+                })
+              }
+              style={s.btn("ghost")}
+            >
               <IcoRight size={14} /> Start generated deck
             </button>
           )}
@@ -8994,7 +10669,14 @@ function QuizAbcdApp() {
             </div>
 
             <button
-              onClick={() => startQuiz(dueQuestionPool, dueQuestionPool.length)}
+              onClick={() =>
+                startQuiz(dueQuestionPool, dueQuestionPool.length, {
+                  mode: "due",
+                  deckName: normalizeDeck(dueQuestionPool[0]?.deck, DEFAULT_DECK_NAME),
+                  label: "Due cards",
+                  filters: selectedTagFilters.length ? { tags: selectedTagFilters } : {},
+                })
+              }
               style={s.btn("soft")}
               disabled={!dueQuestionPool.length}
             >

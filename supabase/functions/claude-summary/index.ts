@@ -105,6 +105,27 @@ function buildStudyPlanPrompt(payload: Record<string, unknown>) {
   ].join("\n");
 }
 
+function buildExamReadinessPrompt(payload: Record<string, unknown>) {
+  return [
+    "Jestes ekspertem przygotowujacym do egzaminu zawodowego i masz ocenic realna gotowosc decku.",
+    "Masz porownac cel egzaminacyjny, opis wymagan, zrodla oraz metryki decku.",
+    "Zwroc tylko poprawny JSON bez markdown i bez dodatkowego komentarza.",
+    'Wymagany format: {"readyScore":68,"coverageScore":71,"confidence":"Wysoka|Srednia|Niska","summary":"...","strengths":["..."],"knowledgeGaps":["..."],"nextMilestones":["..."],"categoryReadiness":[{"category":"...","readiness":62,"gap":18,"priority":"Wysoki|Sredni|Niski","verdict":"...","missing":"..."}]}',
+    "Zasady:",
+    "- readyScore i coverageScore maja byc liczbami 0-100",
+    "- summary: jeden zwiezly akapit po polsku, konkretny i biznesowy",
+    "- strengths: 2 do 4 najwazniejsze mocne strony",
+    "- knowledgeGaps: 3 do 5 najwazniejszych luk merytorycznych",
+    "- nextMilestones: 3 do 5 konkretnych krokow na najblizsze dni",
+    "- categoryReadiness: 3 do 8 kategorii, uporzadkuj od najslabszej",
+    "- verdict ma opisywac czy obszar jest gotowy, blisko celu albo daleko od celu",
+    "- missing ma mowic czego merytorycznie brakuje lub jaki blok powtorek zamknac",
+    "- nie zmyslaj faktow spoza payload; jesli brakuje danych, zaznacz to praktycznie",
+    "Dane wejsciowe:",
+    JSON.stringify(payload, null, 2),
+  ].join("\n");
+}
+
 function buildQuestionGenerationPrompt(payload: Record<string, unknown>) {
   return [
     "Jestes systemem generujacym pytania do nauki z dostarczonego materialu.",
@@ -278,6 +299,41 @@ function normalizeStudyPlan(data: any) {
   };
 }
 
+function normalizeExamReadiness(data: any) {
+  const summary = String(data?.summary || "").trim();
+  const categoryReadiness = Array.isArray(data?.categoryReadiness)
+    ? data.categoryReadiness
+        .map((item: any) => ({
+          category: String(item?.category || "").trim(),
+          readiness: Math.max(0, Math.min(100, Number(item?.readiness || 0) || 0)),
+          gap: Math.max(0, Number(item?.gap || 0) || 0),
+          priority: String(item?.priority || "Sredni").trim() || "Sredni",
+          verdict: String(item?.verdict || "").trim(),
+          missing: String(item?.missing || "").trim(),
+        }))
+        .filter((item: any) => item.category)
+        .slice(0, 8)
+    : [];
+
+  if (!summary) throw new Error("Cloud returned invalid exam readiness report");
+
+  return {
+    ok: true,
+    readyScore: Math.max(0, Math.min(100, Number(data?.readyScore || 0) || 0)),
+    coverageScore: Math.max(0, Math.min(100, Number(data?.coverageScore || 0) || 0)),
+    confidence: String(data?.confidence || "Srednia").trim() || "Srednia",
+    summary,
+    strengths: Array.isArray(data?.strengths) ? data.strengths.map((item: any) => String(item || "").trim()).filter(Boolean).slice(0, 5) : [],
+    knowledgeGaps: Array.isArray(data?.knowledgeGaps)
+      ? data.knowledgeGaps.map((item: any) => String(item || "").trim()).filter(Boolean).slice(0, 6)
+      : [],
+    nextMilestones: Array.isArray(data?.nextMilestones)
+      ? data.nextMilestones.map((item: any) => String(item || "").trim()).filter(Boolean).slice(0, 5)
+      : [],
+    categoryReadiness,
+  };
+}
+
 function normalizeKeyPoints(data: any) {
   const keyPoints = Array.isArray(data?.keyPoints)
     ? data.keyPoints
@@ -375,6 +431,18 @@ Deno.serve(async (req) => {
       });
 
       return json(normalizeStudyPlan(extractJsonObject(text)));
+    }
+
+    if (action === "exam_readiness") {
+      const prompt = buildExamReadinessPrompt((body?.payload as Record<string, unknown>) || {});
+      const text = await callAnthropic({
+        apiKey: anthropicApiKey,
+        model,
+        prompt,
+        maxTokens: 900,
+      });
+
+      return json(normalizeExamReadiness(extractJsonObject(text)));
     }
 
     if (action === "generate_questions") {

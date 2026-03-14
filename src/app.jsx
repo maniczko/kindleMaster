@@ -3229,6 +3229,84 @@ function buildLocalTrainingSummary({ attempt, stats, questions, answers }) {
   };
 }
 
+function buildQuestionExplanationPayload(question, answerState = null) {
+  const type = normalizeQuestionType(question?.questionType);
+  const options = optionKeys.reduce((acc, key) => {
+    const text = String(question?.options?.[key] || "").trim();
+    if (text) acc[key] = text;
+    return acc;
+  }, {});
+
+  return {
+    questionId: String(question?.id || "").trim(),
+    questionType: type,
+    question: getQuestionDisplayText(question),
+    rawQuestion: String(question?.question || "").trim(),
+    deck: normalizeDeck(question?.deck, DEFAULT_DECK_NAME),
+    category: String(question?.category || "General").trim() || "General",
+    difficulty: String(question?.difficulty || "medium").trim() || "medium",
+    tags: normalizeTags(question?.tags || []),
+    options,
+    correctAnswer: formatQuestionAnswer(question, question?.correctAnswers || question?.correct),
+    referenceAnswer: String(question?.answerBack || "").trim(),
+    referenceExplanation: String(question?.explanation || "").trim(),
+    userAnswer: answerState ? formatQuestionAnswer(question, answerState.selected) : "",
+    isCorrect: Boolean(answerState?.isCorrect),
+    selfAssessment:
+      type === "flashcard" && answerState
+        ? answerState.isCorrect
+          ? "Uzytkownik oznaczyl fiszke jako umiem."
+          : "Uzytkownik oznaczyl fiszke jako do poprawy."
+        : "",
+    fullAnswerText: type === "cloze_deletion" ? String(question?.answerBack || revealClozeText(question?.question || "")).trim() : "",
+  };
+}
+
+function buildLocalQuestionExplanation({ question, answerState }) {
+  const payload = buildQuestionExplanationPayload(question, answerState);
+  const referenceParts = [...new Set([payload.referenceAnswer, payload.referenceExplanation].map((item) => String(item || "").trim()).filter(Boolean))];
+  const referenceText = referenceParts.join(" ");
+  const correctText = String(payload.correctAnswer || payload.referenceAnswer || "Brak pelnego klucza.").trim();
+  const userText = String(payload.userAnswer || "").trim();
+  const verdict = payload.isCorrect
+    ? payload.questionType === "flashcard"
+      ? "Fiszka zostala oceniona jako opanowana. To znaczy, ze wzorzec odpowiedzi byl dla Ciebie dostepny z pamieci."
+      : "Twoja odpowiedz zgadza sie z kluczem. Warto jednak rozumiec, dlaczego ten wzorzec jest poprawny, zeby odtworzyc go pod presja."
+    : payload.questionType === "flashcard"
+    ? "Ta fiszka wraca do kolejki, bo pojawila sie luka w odtworzeniu odpowiedzi z pamieci."
+    : "Tutaj odpowiedz rozjechala sie z kluczem. Najwazniejsze jest uchwycenie roznicy miedzy Twoim tokiem myslenia a poprawnym wzorcem.";
+  const reasoning = payload.isCorrect
+    ? userText
+      ? `Podales lub zaznaczyles: ${userText}. To jest zgodne z poprawnym wzorcem: ${correctText}.`
+      : `Poprawny wzorzec to: ${correctText}.`
+    : userText
+    ? `Twoja odpowiedz: ${userText}. Poprawny wzorzec: ${correctText}.`
+    : `Poprawny wzorzec to: ${correctText}.`;
+  const watchOut =
+    payload.questionType === "multi_select"
+      ? "Sprawdzaj kazda opcje osobno. W pytaniach wielokrotnego wyboru czesc odpowiedzi moze byc prawdziwa, ale nie kompletna."
+      : payload.questionType === "flashcard"
+      ? "Przed odkryciem rewersu sproboj wypowiedziec odpowiedz pelnym zdaniem. To szybciej pokazuje, czego jeszcze brakuje."
+      : payload.questionType === "type_answer"
+      ? "Pilnuj slow-kluczy i zakresu odpowiedzi. Dobra intuicja nie zawsze domyka wszystkie wymagane elementy."
+      : payload.questionType === "cloze_deletion"
+      ? "Czytaj cale zdanie i zaleznosc miedzy fragmentami. W cloze najlatwiej zgubic sens, kiedy patrzy sie tylko na jedna luke."
+      : "Szukaj tej cechy odpowiedzi, ktora naprawde rozstrzyga pytanie, a nie tylko brzmi znajomo.";
+  const recapLines = [
+    correctText ? `- Poprawny wzorzec: ${correctText}` : "",
+    referenceText && referenceText !== correctText ? `- Warto zapamietac: ${referenceText}` : "",
+    payload.category ? `- Kategoria: ${payload.category}${payload.difficulty ? ` (${payload.difficulty})` : ""}` : "",
+  ].filter(Boolean);
+
+  return [
+    `Werdykt: ${verdict}`,
+    `Dlaczego tak: ${referenceText || `Poprawny wzorzec to: ${correctText}.`}`,
+    `Twoj tok myslenia: ${reasoning}`,
+    `Na co uwazac: ${watchOut}`,
+    `Mini powtorka:\n${recapLines.join("\n")}`,
+  ].join("\n\n");
+}
+
 async function invokeEdgeFunction({ supabaseConfig, functionName, body, accessToken = "", connectionErrorMessage = "" }) {
   const headers = {
     "Content-Type": "application/json",
@@ -3311,6 +3389,26 @@ async function fetchCloudTrainingSummary({ supabaseConfig, model, cloudApiKey, a
   if (!data?.text) throw new Error("Cloud function returned empty summary");
 
   return { source: "cloud", title: data.title || "Podsumowanie AI", text: data.text };
+}
+
+async function fetchCloudQuestionExplanation({ supabaseConfig, model, cloudApiKey, question, answerState }) {
+  const data = await invokeCloudFunction({
+    supabaseConfig,
+    body: {
+      action: "question_explanation",
+      model: model || DEFAULT_MODEL,
+      apiKey: cloudApiKey?.trim() || undefined,
+      payload: buildQuestionExplanationPayload(question, answerState),
+    },
+  });
+
+  if (!data?.text) throw new Error("Cloud function returned empty explanation");
+
+  return {
+    source: "cloud",
+    title: data.title || "Wyjasnienie AI",
+    text: String(data.text || "").trim(),
+  };
 }
 
 async function fetchCloudStudyPlan({
@@ -4090,6 +4188,7 @@ function QuizAbcdApp() {
   const fileRef = useRef(null);
   const generatorFileRef = useRef(null);
   const landingAuthCardRef = useRef(null);
+  const latestQuestionIdRef = useRef("");
   const lastProcessedAttemptRef = useRef("");
 
   useEffect(() => {
@@ -4286,6 +4385,10 @@ function QuizAbcdApp() {
   const currentPromptText = useMemo(() => getQuestionDisplayText(current), [current]);
   const answeredCount = Object.keys(answers).length;
   const score = useMemo(() => Object.values(answers).filter((a) => a.isCorrect).length, [answers]);
+
+  useEffect(() => {
+    latestQuestionIdRef.current = String(current?.id || "");
+  }, [current?.id]);
 
   const buildSelectionState = useCallback((question, answer = null) => {
     const type = normalizeQuestionType(question?.questionType);
@@ -5676,31 +5779,40 @@ function QuizAbcdApp() {
     };
   }, [attemptDraft, cloudApiEnabled, cloudModel, cloudApiKeyDraft, manualCloudApiKey, stats, questions, answers, sbEnabled, supabaseConfig]);
 
-  const askAI = useCallback(async () => {
-    if (chatStatus === "loading") return;
-    setChatStatus("loading");
-
-    setTimeout(() => {
-      setChatRes(
-        `Kategoria: "${current.category}". Najpierw porównaj pojęcia kluczowe w odpowiedziach, potem wyklucz zbyt ogólne lub zbyt wąskie opcje. W tym pytaniu odpowiedź ${current.correct} najlepiej pasuje do standardowej definicji.`
-      );
-      setChatStatus("loaded");
-    }, 700);
-  }, [chatStatus, current]);
-
   const askAIEnhanced = useCallback(async () => {
-    if (chatStatus === "loading") return;
+    if (chatStatus === "loading" || !currentAnswer) return;
     setChatStatus("loading");
+    const requestedQuestionId = String(current?.id || "");
+    const localText = buildLocalQuestionExplanation({ question: current, answerState: currentAnswer });
 
-    setTimeout(() => {
-      setChatRes(
-        currentQuestionType === "flashcard"
-          ? `Kategoria: "${current.category}". Najpierw odpowiedz z pamieci, a potem porownaj swoja odpowiedz z wzorcem: ${current.answerBack || current.explanation}.`
-          : `Kategoria: "${current.category}". Najpierw porownaj pojecia kluczowe w odpowiedziach, potem odrzuc zbyt ogolne lub zbyt waskie opcje. Poprawny wzorzec to ${formatQuestionAnswer(current, current.correctAnswers || current.correct)}.`
-      );
-      setChatStatus("loaded");
-    }, 700);
-  }, [chatStatus, current, currentQuestionType]);
+    if (!cloudApiEnabled || !sbEnabled) {
+      if (latestQuestionIdRef.current === requestedQuestionId) {
+        setChatRes(localText);
+        setChatStatus("loaded");
+      }
+      return;
+    }
+
+    try {
+      const cloud = await fetchCloudQuestionExplanation({
+        supabaseConfig,
+        model: cloudModel.trim() || DEFAULT_MODEL,
+        cloudApiKey: manualCloudApiKey,
+        question: current,
+        answerState: currentAnswer,
+      });
+
+      if (latestQuestionIdRef.current === requestedQuestionId) {
+        setChatRes(cloud.text);
+        setChatStatus("loaded");
+      }
+    } catch (error) {
+      if (latestQuestionIdRef.current === requestedQuestionId) {
+        setChatRes(`${localText}\n\nCloud AI nie odpowiedzialo, wiec pokazuje lokalne wyjasnienie. ${getErrorText(error)}`);
+        setChatStatus("loaded");
+      }
+    }
+  }, [chatStatus, current, currentAnswer, cloudApiEnabled, sbEnabled, supabaseConfig, cloudModel, manualCloudApiKey]);
 
   const handleImport = useCallback(
     async (e) => {
@@ -7917,6 +8029,7 @@ function QuizAbcdApp() {
                   background: "#fff",
                   borderRadius: 14,
                   border: `1px solid ${C.border}`,
+                  whiteSpace: "pre-wrap",
                   lineHeight: 1.65,
                 }}
               >
@@ -7961,6 +8074,7 @@ function QuizAbcdApp() {
                   background: "#fff",
                   borderRadius: 14,
                   border: `1px solid ${C.border}`,
+                  whiteSpace: "pre-wrap",
                   lineHeight: 1.65,
                 }}
               >
@@ -8015,6 +8129,7 @@ function QuizAbcdApp() {
                   background: "#fff",
                   borderRadius: 14,
                   border: `1px solid ${C.border}`,
+                  whiteSpace: "pre-wrap",
                   lineHeight: 1.65,
                 }}
               >
@@ -8052,6 +8167,32 @@ function QuizAbcdApp() {
             )}
 
             <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.7 }}>{current.explanation}</div>
+
+            {chatStatus === "idle" && (
+              <button onClick={askAIEnhanced} style={{ ...s.btn("soft"), marginTop: 12, fontSize: 12, padding: "8px 14px" }}>
+                <IcoChat size={13} /> Wyjasnij szerzej
+              </button>
+            )}
+
+            {chatStatus === "loading" && <div style={{ fontSize: 12, color: C.accent, marginTop: 10 }}>Analiza odpowiedzi...</div>}
+
+            {chatStatus === "loaded" && (
+              <div
+                style={{
+                  fontSize: 13,
+                  color: C.text,
+                  marginTop: 12,
+                  padding: "13px 14px",
+                  background: "#fff",
+                  borderRadius: 14,
+                  border: `1px solid ${C.border}`,
+                  whiteSpace: "pre-wrap",
+                  lineHeight: 1.65,
+                }}
+              >
+                {chatRes}
+              </div>
+            )}
           </div>
         )}
 
@@ -8074,6 +8215,32 @@ function QuizAbcdApp() {
             </div>
 
             <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.7 }}>{current.explanation}</div>
+
+            {chatStatus === "idle" && (
+              <button onClick={askAIEnhanced} style={{ ...s.btn("soft"), marginTop: 12, fontSize: 12, padding: "8px 14px" }}>
+                <IcoChat size={13} /> Wyjasnij szerzej
+              </button>
+            )}
+
+            {chatStatus === "loading" && <div style={{ fontSize: 12, color: C.accent, marginTop: 10 }}>Analiza odpowiedzi...</div>}
+
+            {chatStatus === "loaded" && (
+              <div
+                style={{
+                  fontSize: 13,
+                  color: C.text,
+                  marginTop: 12,
+                  padding: "13px 14px",
+                  background: "#fff",
+                  borderRadius: 14,
+                  border: `1px solid ${C.border}`,
+                  whiteSpace: "pre-wrap",
+                  lineHeight: 1.65,
+                }}
+              >
+                {chatRes}
+              </div>
+            )}
           </div>
         )}
 

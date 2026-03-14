@@ -67,6 +67,26 @@ function buildTrainingPrompt(payload: Record<string, unknown>) {
   ].join("\n");
 }
 
+function buildQuestionExplanationPrompt(payload: Record<string, unknown>) {
+  return [
+    "Jestes cierpliwym tutorem wyjasniajacym pojedyncza odpowiedz w quizie.",
+    "Masz wyjasnic szerzej, ale konkretnie i praktycznie.",
+    "Zwroc zwykly tekst po polsku, bez JSON, bez markdown i bez tabel.",
+    "Struktura odpowiedzi:",
+    "1. Werdykt: 1 lub 2 zdania o tym, czy odpowiedz byla trafna i co to znaczy merytorycznie.",
+    "2. Dlaczego poprawna odpowiedz jest poprawna: 2 do 4 zdan, jasno i rzeczowo.",
+    "3. Gdzie rozumowanie uzytkownika bylo dobre albo gdzie sie rozjechalo: 2 do 4 zdan.",
+    "4. Na co uwazac w podobnych pytaniach: 2 lub 3 konkretne wskazowki.",
+    "5. Mini powtorka: 2 lub 3 krotkie punkty na koniec.",
+    "Jesli pytanie jest typu flashcard, type_answer albo cloze_deletion, dopasuj komentarz do tego typu odpowiedzi.",
+    "Jesli odpowiedz byla poprawna, nadal wyjasnij merytoryke zamiast ograniczac sie do pochwal.",
+    "Nie zmyslaj faktow spoza payload. Opieraj sie tylko na tresci pytania, odpowiedziach i dostarczonym wyjasnieniu referencyjnym.",
+    "Cel: 180 do 320 slow.",
+    "Dane wejsciowe:",
+    JSON.stringify(payload, null, 2),
+  ].join("\n");
+}
+
 function buildStudyPlanPrompt(payload: Record<string, unknown>) {
   return [
     "Jestes trenerem przygotowujacym szczegolowy plan nauki po polsku.",
@@ -417,6 +437,22 @@ Deno.serve(async (req) => {
       return json({
         ok: true,
         title: "Podsumowanie AI",
+        text,
+      });
+    }
+
+    if (action === "question_explanation") {
+      const prompt = buildQuestionExplanationPrompt((body?.payload as Record<string, unknown>) || {});
+      const text = await callAnthropic({
+        apiKey: anthropicApiKey,
+        model,
+        prompt,
+        maxTokens: 800,
+      });
+
+      return json({
+        ok: true,
+        title: "Wyjasnienie AI",
         text,
       });
     }

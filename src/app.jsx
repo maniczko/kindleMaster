@@ -100,6 +100,11 @@ const DEFAULT_FREE_AI_QUESTIONS_LIMIT = Math.max(Number.parseInt(import.meta.env
 const DEFAULT_FREE_CUSTOM_DECK_LIMIT = Math.max(Number.parseInt(import.meta.env.VITE_FREE_CUSTOM_DECK_LIMIT || "2", 10) || 2, 1);
 const DEFAULT_BILLING_PLAN_NAME = (import.meta.env.VITE_BILLING_PLAN_NAME || "Zen Quiz Pro").trim();
 const DEFAULT_BILLING_PRICE_LABEL = (import.meta.env.VITE_BILLING_PRICE_LABEL || "Ustaw cene w Stripe").trim();
+const DEFAULT_BILLING_MONTHLY_PRICE_LABEL = (import.meta.env.VITE_BILLING_MONTHLY_PRICE_LABEL || DEFAULT_BILLING_PRICE_LABEL || "29 zl").trim();
+const DEFAULT_BILLING_YEARLY_PRICE_LABEL = (import.meta.env.VITE_BILLING_YEARLY_PRICE_LABEL || "15 zl").trim();
+const DEFAULT_BILLING_MONTHLY_NOTE = (import.meta.env.VITE_BILLING_MONTHLY_NOTE || "rozliczane miesiecznie").trim();
+const DEFAULT_BILLING_YEARLY_NOTE = (import.meta.env.VITE_BILLING_YEARLY_NOTE || "rozliczane rocznie").trim();
+const DEFAULT_BILLING_YEARLY_DISCOUNT = (import.meta.env.VITE_BILLING_YEARLY_DISCOUNT || "50% off").trim();
 const ACTIVE_BILLING_STATUSES = new Set(["active", "trialing", "paid"]);
 const PAID_BILLING_STATUSES = new Set(["active", "paid"]);
 const REVIEW_LEARNING_STEPS_MINUTES = [10, 1440];
@@ -108,6 +113,57 @@ const AI_USAGE_KEY = "ai_questions_generated";
 const DEFAULT_EXAM_TARGET_SCORE = Math.max(Number.parseInt(import.meta.env.VITE_DEFAULT_EXAM_TARGET_SCORE || "80", 10) || 80, 50);
 const EXAM_HEATMAP_DAYS = 28;
 const CLOUD_FUNCTION_NAME = "claude-summary";
+const PRICING_INTERVALS = [
+  { id: "yearly", label: "Yearly", badge: DEFAULT_BILLING_YEARLY_DISCOUNT },
+  { id: "monthly", label: "Monthly", badge: "" },
+];
+const FREE_PLAN_SECTIONS = [
+  {
+    title: "generate...",
+    items: [
+      `do ${DEFAULT_FREE_AI_QUESTIONS_LIMIT} pytan AI / miesiac`,
+      "import PDF, TXT, CSV i XLSX",
+      `${DEFAULT_FREE_CUSTOM_DECK_LIMIT} wlasne decki`,
+      "sesje due, new i po tagach",
+    ],
+  },
+  {
+    title: "while reviewing...",
+    items: [
+      "spaced repetition per karta",
+      "podstawowe statystyki i kalendarz nauki",
+      `${DEFAULT_TRIAL_DAYS} dni trialu pelnego dostepu na start`,
+    ],
+  },
+];
+const PRO_PLAN_SECTIONS = [
+  {
+    title: "generate...",
+    items: [
+      "nielimitowane pytania AI i importy",
+      "nielimitowane decki, kategorie i tagi",
+      "generator z plikow, linkow i materialow do egzaminu",
+      "paczki pytan pod konkretne cele certyfikacyjne",
+    ],
+  },
+  {
+    title: "while reviewing...",
+    items: [
+      "AI explanations i rozmowa z dokumentem",
+      "ready for exam score i analiza brakow merytorycznych",
+      "pelna analityka: retencja, heatmapa, tempo i ETA",
+      "sesje adaptacyjne: bledy, due, trudne, nowe i po tagu",
+    ],
+  },
+  {
+    title: "also...",
+    items: [
+      "eksport do Anki, PDF, CSV i XLSX",
+      "backup deckow i biblioteki",
+      "Google Calendar i portal subskrypcji Stripe",
+    ],
+  },
+];
 const CLOUD_BROWSER_NOTICE =
   "Ta aplikacja działa wyłącznie w przeglądarce, więc Claude jest wołany przez Supabase Edge Function, a nie bezpośrednio z frontendu.";
 
@@ -3974,6 +4030,7 @@ function QuizAbcdApp() {
     status: "idle",
     message: "Skonfiguruj Stripe Checkout, aby przyjmowac platnosci kartami za usluge.",
   });
+  const [pricingBillingInterval, setPricingBillingInterval] = useState("yearly");
   const [billingBusyAction, setBillingBusyAction] = useState("");
   const [billingRedirectState, setBillingRedirectState] = useState(() =>
     parseBillingRedirect(typeof window !== "undefined" ? window.location.href : "")
@@ -4032,6 +4089,7 @@ function QuizAbcdApp() {
 
   const fileRef = useRef(null);
   const generatorFileRef = useRef(null);
+  const landingAuthCardRef = useRef(null);
   const lastProcessedAttemptRef = useRef("");
 
   useEffect(() => {
@@ -4091,6 +4149,22 @@ function QuizAbcdApp() {
   const googleCalendarConnected = Boolean(googleCalendarToken);
   const billingPlanName = DEFAULT_BILLING_PLAN_NAME;
   const billingPriceLabel = DEFAULT_BILLING_PRICE_LABEL;
+  const pricingConfig = useMemo(
+    () => ({
+      monthly: {
+        priceLabel: DEFAULT_BILLING_MONTHLY_PRICE_LABEL,
+        note: DEFAULT_BILLING_MONTHLY_NOTE,
+        suffix: "per month",
+      },
+      yearly: {
+        priceLabel: DEFAULT_BILLING_YEARLY_PRICE_LABEL,
+        note: DEFAULT_BILLING_YEARLY_NOTE,
+        suffix: "per month",
+      },
+    }),
+    []
+  );
+  const activePricingConfig = pricingConfig[pricingBillingInterval] || pricingConfig.monthly;
   const currentUsagePeriod = monthPeriodStart();
   const customDeckNames = useMemo(() => getCustomDeckNames(questionPool), [questionPool]);
   const aiUsageCount = useMemo(() => getUsageCount(usageState, AI_USAGE_KEY, currentUsagePeriod), [usageState, currentUsagePeriod]);
@@ -5087,7 +5161,7 @@ function QuizAbcdApp() {
     [usageState, currentUsagePeriod, sbEnabled, authUser?.id, authAccessToken, supabaseConfig]
   );
 
-  const handleStartCheckout = useCallback(async () => {
+  const handleStartCheckout = useCallback(async (options = {}) => {
     if (!sbEnabled || !authUser?.id || !authAccessToken) {
       setBillingStatus({
         status: "error",
@@ -5096,10 +5170,13 @@ function QuizAbcdApp() {
       return;
     }
 
+    const billingInterval = String(options?.billingInterval || pricingBillingInterval || "monthly").trim().toLowerCase();
+    const returnPath = String(options?.returnPath || (typeof window !== "undefined" ? `${window.location.pathname}?tab=settings` : "/?tab=settings")).trim();
+
     setBillingBusyAction("checkout");
     setBillingStatus({
       status: "loading",
-      message: "Tworze sesje Stripe Checkout dla platnosci karta...",
+      message: `Tworze sesje Stripe Checkout dla planu ${billingInterval === "yearly" ? "rocznego" : "miesiecznego"}...`,
     });
 
     try {
@@ -5108,7 +5185,8 @@ function QuizAbcdApp() {
         functionName: "create-checkout-session",
         accessToken: authAccessToken,
         body: {
-          returnPath: typeof window !== "undefined" ? `${window.location.pathname}?tab=settings` : "/?tab=settings",
+          returnPath,
+          billingInterval,
         },
       });
 
@@ -5121,7 +5199,40 @@ function QuizAbcdApp() {
       setBillingStatus({ status: "error", message: getErrorText(error) });
       setBillingBusyAction("");
     }
-  }, [authAccessToken, authUser?.id, sbEnabled, supabaseConfig]);
+  }, [authAccessToken, authUser?.id, pricingBillingInterval, sbEnabled, supabaseConfig]);
+
+  const handlePricingUpgrade = useCallback(
+    async (billingInterval, source = "landing") => {
+      const normalizedInterval = String(billingInterval || pricingBillingInterval || "yearly").trim().toLowerCase();
+
+      if (!authUser?.id) {
+        setAuthMode("register");
+        setAuthStatus({
+          status: "idle",
+          message:
+            normalizedInterval === "yearly"
+              ? "Zaloz konto albo zaloguj sie, a potem uruchomimy roczny plan w Stripe Checkout."
+              : "Zaloz konto albo zaloguj sie, a potem uruchomimy miesieczny plan w Stripe Checkout.",
+        });
+
+        if (landingAuthCardRef.current?.scrollIntoView) {
+          landingAuthCardRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+        return;
+      }
+
+      await handleStartCheckout({
+        billingInterval: normalizedInterval,
+        returnPath:
+          typeof window !== "undefined"
+            ? `${window.location.pathname}?tab=${source === "settings" ? "settings" : "quiz"}`
+            : source === "settings"
+            ? "/?tab=settings"
+            : "/?tab=quiz",
+      });
+    },
+    [authUser?.id, handleStartCheckout, pricingBillingInterval]
+  );
 
   const handleOpenBillingPortal = useCallback(async () => {
     if (!sbEnabled || !authUser?.id || !authAccessToken) {
@@ -10371,6 +10482,132 @@ function QuizAbcdApp() {
     </div>
   );
 
+  const PricingSection = ({ context = "landing" }) => {
+    const isLanding = context === "landing";
+    const isSettings = context === "settings";
+    const proActive = accessSummary.planTier === "pro";
+    const selectedIntervalConfig = activePricingConfig;
+    const planTone = proActive ? toneForStatus("success") : toneForStatus("idle");
+    const upgradeLabel = proActive ? "Plan aktywny" : billingBusyAction === "checkout" ? "Przekierowuje..." : "Upgrade";
+
+    return (
+      <section className={`pricing-shell ${isLanding ? "landing" : "embedded"}`}>
+        <div className="pricing-head">
+          <div className="pricing-kicker">{isLanding ? "don't leave exam season to chance" : "Pricing"}</div>
+          <div className="pricing-copy">
+            {isLanding
+              ? "Wybierz plan, ktory pasuje do rytmu przygotowan. Free zostawia podstawy, a plan premium doklada generator bez limitow, exam readiness AI i eksporty."
+              : "Ta sama oferta, ale od razu podpieta pod Stripe Checkout i portal klienta."}
+          </div>
+        </div>
+
+        <div className="pricing-toggle" role="tablist" aria-label="Billing interval">
+          {PRICING_INTERVALS.map((item) => {
+            const active = pricingBillingInterval === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                className={`pricing-toggle-btn ${active ? "active" : ""}`}
+                onClick={() => setPricingBillingInterval(item.id)}
+              >
+                <span>{item.label}</span>
+                {item.badge ? <span className="pricing-toggle-badge">{item.badge}</span> : null}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="pricing-grid">
+          <article className="pricing-card pricing-card-free">
+            <div className="pricing-plan-label">Free</div>
+            <div className="pricing-plan-price">Free</div>
+            <div className="pricing-plan-subtitle">dla startu, testow i lekkiej pracy z deckami</div>
+
+            <div className="pricing-divider" />
+
+            <div className="pricing-section-list">
+              {FREE_PLAN_SECTIONS.map((section) => (
+                <div key={section.title} className="pricing-feature-group">
+                  <div className="pricing-feature-title">{section.title}</div>
+                  {section.items.map((item) => (
+                    <div key={item} className="pricing-feature-item">
+                      <span className="pricing-feature-icon pricing-feature-icon-muted">
+                        <IcoCheck size={13} />
+                      </span>
+                      <span>{item}</span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </article>
+
+          <article className="pricing-card pricing-card-pro">
+            <div className="pricing-plan-label">{billingPlanName}</div>
+            <div className="pricing-price-row">
+              <span className="pricing-price-currency">{selectedIntervalConfig.priceLabel}</span>
+              <span className="pricing-price-suffix">{selectedIntervalConfig.suffix}</span>
+            </div>
+            <div className="pricing-plan-subtitle">{selectedIntervalConfig.note}</div>
+
+            {(proActive || isSettings) && (
+              <div
+                className="pricing-status-chip"
+                style={{
+                  background: planTone.bg,
+                  color: planTone.color,
+                  border: `1px solid ${planTone.border}`,
+                }}
+              >
+                {proActive ? "Masz juz aktywny plan premium" : accessSummary.planTier === "trial" ? "Trial jest jeszcze aktywny" : "Mozesz upgrade'owac w kazdej chwili"}
+              </div>
+            )}
+
+            <div className="pricing-divider pricing-divider-pro" />
+
+            <div className="pricing-section-list">
+              {PRO_PLAN_SECTIONS.map((section) => (
+                <div key={section.title} className="pricing-feature-group">
+                  <div className="pricing-feature-title">{section.title}</div>
+                  {section.items.map((item) => (
+                    <div key={item} className="pricing-feature-item">
+                      <span className="pricing-feature-icon">
+                        <IcoCheck size={13} />
+                      </span>
+                      <span>{item}</span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => handlePricingUpgrade(pricingBillingInterval, isSettings ? "settings" : "landing")}
+              style={{
+                ...s.btn("primary"),
+                width: "100%",
+                justifyContent: "center",
+                marginTop: "auto",
+                background: "#38A34F",
+              }}
+              disabled={billingBusyAction === "checkout" || proActive}
+            >
+              <IcoKey size={14} /> {upgradeLabel}
+            </button>
+
+            <div className="pricing-footnote">
+              {isLanding
+                ? "Najpierw zaloz konto albo zaloguj sie, potem checkout otworzy sie juz z wybranym wariantem."
+                : "Checkout otworzy Stripe z wybranym wariantem monthly / yearly."}
+            </div>
+          </article>
+        </div>
+      </section>
+    );
+  };
+
   const SettingsView = () => (
     <div className="settings-grid">
       <div className="settings-main-card" style={{ ...s.card, padding: 16 }}>
@@ -10660,6 +10897,8 @@ function QuizAbcdApp() {
             </div>
           </div>
         </div>
+
+        <PricingSection context="settings" />
 
         <div style={{ ...s.card, padding: 14, minHeight: 0 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
@@ -11028,7 +11267,7 @@ function QuizAbcdApp() {
           </div>
         </section>
 
-        <aside className="landing-auth-card">
+        <aside ref={landingAuthCardRef} className="landing-auth-card">
           <div>
             <div className="tinyLabel" style={{ marginBottom: 8 }}>
               {authMode === "register" ? "Create Account" : "Welcome Back"}
@@ -11134,6 +11373,10 @@ function QuizAbcdApp() {
             </div>
           </div>}
         </aside>
+      </div>
+
+      <div className="landing-pricing-wrap">
+        <PricingSection context="landing" />
       </div>
     </div>
   );

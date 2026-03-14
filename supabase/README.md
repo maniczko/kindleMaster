@@ -49,7 +49,10 @@ Do platnosci kartami aplikacja korzysta ze Stripe Checkout i Stripe Customer Por
 supabase secrets set STRIPE_SECRET_KEY=sk_live_...
 supabase secrets set STRIPE_WEBHOOK_SECRET=whsec_...
 supabase secrets set STRIPE_PRICE_ID=price_...
+supabase secrets set STRIPE_MONTHLY_PRICE_ID=price_...
+supabase secrets set STRIPE_YEARLY_PRICE_ID=price_...
 supabase secrets set STRIPE_CHECKOUT_MODE=subscription
+supabase secrets set DEFAULT_BILLING_INTERVAL=yearly
 supabase secrets set APP_BASE_URL=https://twoj-frontend.vercel.app
 supabase secrets set BILLING_PLAN_NAME="Zen Quiz Pro"
 supabase secrets set SUPABASE_SERVICE_ROLE_KEY=twoj_service_role_key
@@ -58,6 +61,8 @@ supabase secrets set SUPABASE_SERVICE_ROLE_KEY=twoj_service_role_key
 Uwagi:
 
 - `STRIPE_CHECKOUT_MODE` ustaw na `subscription` albo `payment`, zaleznie od typu `price` w Stripe.
+- `STRIPE_MONTHLY_PRICE_ID` i `STRIPE_YEARLY_PRICE_ID` sa opcjonalne, ale potrzebne jesli frontend ma przelaczac wariant monthly / yearly.
+- `DEFAULT_BILLING_INTERVAL` moze byc ustawione na `monthly` albo `yearly`.
 - `APP_BASE_URL` powinien wskazywac publiczny adres frontendu, do ktorego Stripe ma wrocic po checkoutcie.
 - `SUPABASE_SERVICE_ROLE_KEY` jest potrzebny webhookowi do aktualizacji tabeli `billing_accounts`.
 

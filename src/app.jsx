@@ -4319,6 +4319,11 @@ function QuizAbcdApp() {
     setSelectedCalDay(fallback);
   }, [activeDayKeys, calMonth, selectedCalDay]);
 
+  const activeDeckName = useMemo(() => {
+    if (selectedDeck !== ALL_DECKS_LABEL) return selectedDeck;
+    return activeQuestionPool.find((question) => normalizeDeck(question.deck))?.deck || DEFAULT_DECKS[0];
+  }, [selectedDeck, activeQuestionPool]);
+
   const localPlan = useMemo(
     () =>
       ({
@@ -4432,11 +4437,6 @@ function QuizAbcdApp() {
         totalTimeMs: list.reduce((s0, a) => s0 + a.totalTimeMs, 0),
       }));
   }, [monthAttempts]);
-
-  const activeDeckName = useMemo(() => {
-    if (selectedDeck !== ALL_DECKS_LABEL) return selectedDeck;
-    return activeQuestionPool.find((question) => normalizeDeck(question.deck))?.deck || DEFAULT_DECKS[0];
-  }, [selectedDeck, activeQuestionPool]);
 
   const openStudyPlanCalendarFallback = useCallback(
     (item, index = 0) => {

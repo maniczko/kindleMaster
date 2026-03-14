@@ -43,6 +43,9 @@ GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", i
 
 // ── Config & Helpers ──────────────────────────────────────────────────────────
 const STORAGE_KEY = "quiz_abcd_attempts_v6";
+const REVIEW_STATE_KEY = "quiz_abcd_review_states_v1";
+const LOCAL_USAGE_KEY = "quiz_abcd_usage_v1";
+const LOCAL_PLAN_KEY = "quiz_abcd_plan_v1";
 const CLOUD_SETTINGS_KEY = "quiz_abcd_cloud_settings_v2";
 const SUPABASE_SETTINGS_KEY = "quiz_abcd_supabase_settings_v1";
 const AUTH_SESSION_KEY = "quiz_abcd_auth_session_v1";
@@ -91,9 +94,16 @@ const GOOGLE_CALENDAR_AUTH_QUERY = {
   prompt: "consent",
   include_granted_scopes: "true",
 };
+const DEFAULT_TRIAL_DAYS = Math.max(Number.parseInt(import.meta.env.VITE_TRIAL_DAYS || "7", 10) || 7, 1);
+const DEFAULT_FREE_AI_QUESTIONS_LIMIT = Math.max(Number.parseInt(import.meta.env.VITE_FREE_AI_QUESTIONS_LIMIT || "20", 10) || 20, 1);
+const DEFAULT_FREE_CUSTOM_DECK_LIMIT = Math.max(Number.parseInt(import.meta.env.VITE_FREE_CUSTOM_DECK_LIMIT || "2", 10) || 2, 1);
 const DEFAULT_BILLING_PLAN_NAME = (import.meta.env.VITE_BILLING_PLAN_NAME || "Zen Quiz Pro").trim();
 const DEFAULT_BILLING_PRICE_LABEL = (import.meta.env.VITE_BILLING_PRICE_LABEL || "Ustaw cene w Stripe").trim();
 const ACTIVE_BILLING_STATUSES = new Set(["active", "trialing", "paid"]);
+const PAID_BILLING_STATUSES = new Set(["active", "paid"]);
+const REVIEW_LEARNING_STEPS_MINUTES = [10, 1440];
+const REVIEW_GRADUATING_INTERVAL_DAYS = 3;
+const AI_USAGE_KEY = "ai_questions_generated";
 const CLOUD_FUNCTION_NAME = "claude-summary";
 const CLOUD_BROWSER_NOTICE =
   "Ta aplikacja działa wyłącznie w przeglądarce, więc Claude jest wołany przez Supabase Edge Function, a nie bezpośrednio z frontendu.";
@@ -896,6 +906,155 @@ const getErrorText = (error) => {
   return message.length > 180 ? `${message.slice(0, 177)}...` : message;
 };
 
+const toIsoOrEmpty = (value) => {
+  if (!value) return "";
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
+};
+
+const addMinutesToDate = (value, minutes) => {
+  const base = value instanceof Date ? new Date(value) : new Date(value || Date.now());
+  return new Date(base.getTime() + minutes * 60 * 1000);
+};
+
+const addDaysToDate = (value, days) => {
+  const base = value instanceof Date ? new Date(value) : new Date(value || Date.now());
+  return new Date(base.getTime() + days * 86400000);
+};
+
+const monthPeriodStart = (value = new Date()) => {
+  const date = value instanceof Date ? new Date(value) : new Date(value);
+  date.setUTCDate(1);
+  date.setUTCHours(0, 0, 0, 0);
+  return date.toISOString().slice(0, 10);
+};
+
+const isDefaultDeckName = (deckName) => DEFAULT_DECKS.some((item) => item.toLowerCase() === normalizeDeck(deckName).toLowerCase());
+
+const getCustomDeckNames = (questions = []) =>
+  [
+    ...new Map(
+      (questions || [])
+        .map((question) => normalizeDeck(question?.deck))
+        .filter((deck) => deck && !isDefaultDeckName(deck))
+        .map((deck) => [deck.toLowerCase(), deck])
+    ).values(),
+  ].sort((a, b) => a.localeCompare(b, "pl"));
+
+const buildTrialWindow = (startDate = new Date(), trialDays = DEFAULT_TRIAL_DAYS) => {
+  const trialStartedAt = toIsoOrEmpty(startDate) || new Date().toISOString();
+  const trialEndsAt = toIsoOrEmpty(addDaysToDate(trialStartedAt, trialDays)) || new Date().toISOString();
+  return { trialStartedAt, trialEndsAt };
+};
+
+const normalizeUsageRow = (row = {}) => ({
+  usageKey: String(row.usage_key || row.usageKey || "").trim(),
+  periodStart: String(row.period_start || row.periodStart || "").trim(),
+  usageCount: Math.max(0, Number(row.usage_count ?? row.usageCount ?? 0) || 0),
+  updatedAt: String(row.updated_at || row.updatedAt || "").trim() || new Date().toISOString(),
+});
+
+const toUsageStateMap = (rows = []) =>
+  (rows || []).reduce((acc, row) => {
+    const normalized = normalizeUsageRow(row);
+    if (!normalized.usageKey || !normalized.periodStart) return acc;
+    acc[`${normalized.usageKey}:${normalized.periodStart}`] = normalized;
+    return acc;
+  }, {});
+
+const getUsageCount = (usageState = {}, usageKey = AI_USAGE_KEY, periodStart = monthPeriodStart()) =>
+  Math.max(0, Number(usageState?.[`${usageKey}:${periodStart}`]?.usageCount || 0) || 0);
+
+const mergeUsageStateMaps = (...maps) => {
+  const merged = {};
+  maps.filter(Boolean).forEach((map) => {
+    Object.values(map).forEach((row) => {
+      const normalized = normalizeUsageRow(row);
+      if (!normalized.usageKey || !normalized.periodStart) return;
+      const key = `${normalized.usageKey}:${normalized.periodStart}`;
+      const existing = merged[key];
+      if (!existing || new Date(normalized.updatedAt || 0).getTime() >= new Date(existing.updatedAt || 0).getTime()) {
+        merged[key] = normalized;
+      }
+    });
+  });
+  return merged;
+};
+
+const loadLocalUsageState = () => {
+  try {
+    return toUsageStateMap(Object.values(JSON.parse(localStorage.getItem(LOCAL_USAGE_KEY) || "{}") || {}));
+  } catch {
+    return {};
+  }
+};
+
+const saveLocalUsageState = (usageState) => {
+  try {
+    localStorage.setItem(LOCAL_USAGE_KEY, JSON.stringify(usageState || {}));
+  } catch {}
+};
+
+const normalizeReviewQueue = (value) => {
+  const queue = String(value || "").trim().toLowerCase();
+  return ["new", "learning", "review"].includes(queue) ? queue : "new";
+};
+
+const normalizeReviewStateRow = (row = {}) => ({
+  questionId: String(row.question_id || row.questionId || "").trim(),
+  queue: normalizeReviewQueue(row.queue),
+  easeFactor: Math.max(1.3, Number(row.ease_factor ?? row.easeFactor ?? 2.5) || 2.5),
+  intervalDays: Math.max(0, Math.round(Number(row.interval_days ?? row.intervalDays ?? 0) || 0)),
+  repetitions: Math.max(0, Math.round(Number(row.repetitions ?? 0) || 0)),
+  lapses: Math.max(0, Math.round(Number(row.lapses ?? 0) || 0)),
+  learningStep: Math.max(0, Math.round(Number(row.learning_step ?? row.learningStep ?? 0) || 0)),
+  dueAt: toIsoOrEmpty(row.due_at || row.dueAt || Date.now()) || new Date().toISOString(),
+  lastReviewedAt: toIsoOrEmpty(row.last_reviewed_at || row.lastReviewedAt || "") || "",
+  lastResult: String(row.last_result || row.lastResult || "").trim().toLowerCase(),
+  lastResponseMs: Math.max(0, Number(row.last_response_ms ?? row.lastResponseMs ?? 0) || 0),
+  totalReviews: Math.max(0, Math.round(Number(row.total_reviews ?? row.totalReviews ?? 0) || 0)),
+  correctReviews: Math.max(0, Math.round(Number(row.correct_reviews ?? row.correctReviews ?? 0) || 0)),
+  updatedAt: toIsoOrEmpty(row.updated_at || row.updatedAt || Date.now()) || new Date().toISOString(),
+  createdAt: toIsoOrEmpty(row.created_at || row.createdAt || Date.now()) || new Date().toISOString(),
+});
+
+const createReviewStateMap = (rows = []) =>
+  (rows || []).reduce((acc, row) => {
+    const normalized = normalizeReviewStateRow(row);
+    if (!normalized.questionId) return acc;
+    acc[normalized.questionId] = normalized;
+    return acc;
+  }, {});
+
+const mergeReviewStateMaps = (...maps) => {
+  const merged = {};
+  maps.filter(Boolean).forEach((map) => {
+    Object.values(map).forEach((row) => {
+      const normalized = normalizeReviewStateRow(row);
+      if (!normalized.questionId) return;
+      const existing = merged[normalized.questionId];
+      if (!existing || new Date(normalized.updatedAt || 0).getTime() >= new Date(existing.updatedAt || 0).getTime()) {
+        merged[normalized.questionId] = normalized;
+      }
+    });
+  });
+  return merged;
+};
+
+const loadLocalReviewState = () => {
+  try {
+    return createReviewStateMap(JSON.parse(localStorage.getItem(REVIEW_STATE_KEY) || "[]") || []);
+  } catch {
+    return {};
+  }
+};
+
+const saveLocalReviewState = (reviewStateMap) => {
+  try {
+    localStorage.setItem(REVIEW_STATE_KEY, JSON.stringify(Object.values(reviewStateMap || {})));
+  } catch {}
+};
+
 const normalizeBillingAccountRow = (row = {}) => ({
   userId: String(row.user_id || "").trim(),
   email: String(row.email || "").trim(),
@@ -909,6 +1068,8 @@ const normalizeBillingAccountRow = (row = {}) => ({
   currency: String(row.currency || "").trim().toUpperCase(),
   amountTotal: Number(row.amount_total || 0) || 0,
   currentPeriodEnd: String(row.current_period_end || "").trim(),
+  trialStartedAt: String(row.trial_started_at || row.trialStartedAt || "").trim(),
+  trialEndsAt: String(row.trial_ends_at || row.trialEndsAt || "").trim(),
   lastEventType: String(row.last_event_type || "").trim(),
   metadata: row.metadata && typeof row.metadata === "object" ? row.metadata : {},
 });
@@ -927,6 +1088,490 @@ const billingStatusLabel = (billingAccount) => {
 };
 
 const hasPaidBillingAccess = (billingAccount) => ACTIVE_BILLING_STATUSES.has(String(billingAccount?.billingStatus || "").trim().toLowerCase());
+
+const loadLocalBillingAccount = () => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(LOCAL_PLAN_KEY) || "{}") || {};
+    const trialWindow =
+      parsed?.trialStartedAt || parsed?.trialEndsAt
+        ? {
+            trialStartedAt: String(parsed.trialStartedAt || "").trim(),
+            trialEndsAt: String(parsed.trialEndsAt || "").trim(),
+          }
+        : buildTrialWindow();
+    const trialEndsAtMs = new Date(trialWindow.trialEndsAt || "").getTime();
+    return normalizeBillingAccountRow({
+      user_id: "local",
+      billing_status: Number.isFinite(trialEndsAtMs) && trialEndsAtMs > Date.now() ? "trialing" : "inactive",
+      trial_started_at: trialWindow.trialStartedAt,
+      trial_ends_at: trialWindow.trialEndsAt,
+      metadata: { source: "local" },
+    });
+  } catch {
+    const trialWindow = buildTrialWindow();
+    return normalizeBillingAccountRow({
+      user_id: "local",
+      billing_status: "trialing",
+      trial_started_at: trialWindow.trialStartedAt,
+      trial_ends_at: trialWindow.trialEndsAt,
+      metadata: { source: "local" },
+    });
+  }
+};
+
+const saveLocalBillingAccount = (billingAccount) => {
+  try {
+    const normalized = normalizeBillingAccountRow(billingAccount);
+    const existing =
+      (typeof localStorage !== "undefined" && JSON.parse(localStorage.getItem(LOCAL_PLAN_KEY) || "{}")) || {};
+    localStorage.setItem(
+      LOCAL_PLAN_KEY,
+      JSON.stringify({
+        trialStartedAt: normalized.trialStartedAt || existing?.trialStartedAt || "",
+        trialEndsAt: normalized.trialEndsAt || existing?.trialEndsAt || "",
+        billingStatus: normalized.billingStatus,
+      })
+    );
+  } catch {}
+};
+
+const getAccessSummary = ({ billingAccount, aiUsageCount = 0, customDeckCount = 0 }) => {
+  const normalized = normalizeBillingAccountRow(billingAccount || {});
+  const status = normalized.billingStatus;
+  const paidPlanActive = PAID_BILLING_STATUSES.has(status);
+  const trialEndsAtMs = new Date(normalized.trialEndsAt || "").getTime();
+  const trialActive =
+    !paidPlanActive &&
+    ((status === "trialing" && !normalized.trialEndsAt) || (Number.isFinite(trialEndsAtMs) && trialEndsAtMs > Date.now()));
+  const hasPremiumAccess = paidPlanActive || trialActive;
+  const planTier = paidPlanActive ? "pro" : trialActive ? "trial" : "free";
+  const aiQuestionLimit = hasPremiumAccess ? null : DEFAULT_FREE_AI_QUESTIONS_LIMIT;
+  const customDeckLimit = hasPremiumAccess ? null : DEFAULT_FREE_CUSTOM_DECK_LIMIT;
+
+  return {
+    planTier,
+    hasPremiumAccess,
+    paidPlanActive,
+    trialActive,
+    trialEndsAt: normalized.trialEndsAt,
+    trialStartedAt: normalized.trialStartedAt,
+    aiQuestionLimit,
+    aiQuestionsUsed: aiUsageCount,
+    aiQuestionsRemaining: aiQuestionLimit === null ? null : Math.max(aiQuestionLimit - aiUsageCount, 0),
+    customDeckLimit,
+    customDeckCount,
+    customDeckRemaining: customDeckLimit === null ? null : Math.max(customDeckLimit - customDeckCount, 0),
+  };
+};
+
+const ensureBillingAccountTrial = async (config, accessToken, user, existingRow = null) => {
+  if (!config?.url || !accessToken || !user?.id) return existingRow ? normalizeBillingAccountRow(existingRow) : null;
+
+  const normalized = existingRow ? normalizeBillingAccountRow(existingRow) : null;
+  const nowIso = new Date().toISOString();
+  const fallbackTrial = buildTrialWindow();
+  let nextRow = null;
+
+  if (!normalized) {
+    nextRow = {
+      user_id: user.id,
+      email: user.email || "",
+      billing_status: "trialing",
+      trial_started_at: fallbackTrial.trialStartedAt,
+      trial_ends_at: fallbackTrial.trialEndsAt,
+      updated_at: nowIso,
+    };
+  } else if (
+    (!normalized.trialStartedAt || !normalized.trialEndsAt) &&
+    !normalized.stripeCustomerId &&
+    ["", "inactive", "trialing", "checkout_started", "checkout_completed", "payment_failed", "canceled"].includes(normalized.billingStatus)
+  ) {
+    nextRow = {
+      user_id: user.id,
+      email: user.email || normalized.email || "",
+      trial_started_at: normalized.trialStartedAt || fallbackTrial.trialStartedAt,
+      trial_ends_at: normalized.trialEndsAt || fallbackTrial.trialEndsAt,
+      updated_at: nowIso,
+    };
+    if (!normalized.billingStatus || normalized.billingStatus === "inactive") nextRow.billing_status = "trialing";
+  } else if (normalized.billingStatus === "trialing" && normalized.trialEndsAt && new Date(normalized.trialEndsAt).getTime() <= Date.now()) {
+    nextRow = {
+      user_id: user.id,
+      email: user.email || normalized.email || "",
+      billing_status: "inactive",
+      trial_started_at: normalized.trialStartedAt || fallbackTrial.trialStartedAt,
+      trial_ends_at: normalized.trialEndsAt,
+      updated_at: nowIso,
+    };
+  }
+
+  if (!nextRow) return normalized;
+
+  const result = await sbUpsert(config, "billing_accounts", nextRow, accessToken, "user_id");
+  const raw = Array.isArray(result) ? result[0] : result;
+  return normalizeBillingAccountRow(raw || nextRow);
+};
+
+const shuffleList = (list = []) => [...list].sort(() => 0.5 - Math.random());
+
+const prioritizeQuestionsForSession = (pool = [], reviewStateMap = {}, nowTs = Date.now()) => {
+  const dueLearning = [];
+  const dueReview = [];
+  const newCards = [];
+  const scheduled = [];
+
+  (pool || []).forEach((question) => {
+    const state = reviewStateMap?.[String(question?.id)] ? normalizeReviewStateRow(reviewStateMap[String(question.id)]) : null;
+    if (!state || state.queue === "new") {
+      newCards.push(question);
+      return;
+    }
+
+    const dueAtMs = new Date(state.dueAt || "").getTime();
+    const isDue = !Number.isFinite(dueAtMs) || dueAtMs <= nowTs;
+
+    if (state.queue === "learning" && isDue) {
+      dueLearning.push(question);
+      return;
+    }
+
+    if (state.queue === "review" && isDue) {
+      dueReview.push(question);
+      return;
+    }
+
+    scheduled.push({ question, dueAtMs });
+  });
+
+  return [
+    ...shuffleList(dueLearning),
+    ...shuffleList(dueReview),
+    ...shuffleList(newCards),
+    ...scheduled.sort((a, b) => a.dueAtMs - b.dueAtMs).map((item) => item.question),
+  ];
+};
+
+const buildNextReviewState = ({ questionId, previousState, answer, reviewedAt = new Date() }) => {
+  const reviewedAtIso = toIsoOrEmpty(answer?.answeredAt || reviewedAt) || new Date().toISOString();
+  const base = previousState
+    ? normalizeReviewStateRow(previousState)
+    : normalizeReviewStateRow({
+        questionId,
+        queue: "new",
+        dueAt: reviewedAtIso,
+        createdAt: reviewedAtIso,
+        updatedAt: reviewedAtIso,
+      });
+  const isCorrect = Boolean(answer?.isCorrect);
+  const responseTimeMs = Math.max(0, Number(answer?.responseTimeMs || 0) || 0);
+  const totalReviews = base.totalReviews + 1;
+  const correctReviews = base.correctReviews + (isCorrect ? 1 : 0);
+
+  if (!isCorrect) {
+    return normalizeReviewStateRow({
+      ...base,
+      questionId,
+      queue: "learning",
+      easeFactor: base.queue === "review" ? Math.max(1.3, base.easeFactor - 0.2) : base.easeFactor,
+      intervalDays: 0,
+      repetitions: 0,
+      lapses: base.lapses + 1,
+      learningStep: 0,
+      dueAt: addMinutesToDate(reviewedAtIso, REVIEW_LEARNING_STEPS_MINUTES[0]).toISOString(),
+      lastReviewedAt: reviewedAtIso,
+      lastResult: "incorrect",
+      lastResponseMs: responseTimeMs,
+      totalReviews,
+      correctReviews,
+      updatedAt: reviewedAtIso,
+      createdAt: base.createdAt || reviewedAtIso,
+    });
+  }
+
+  if (base.queue === "review") {
+    const nextEase = Math.min(3, base.easeFactor + 0.15);
+    const nextRepetitions = Math.max(1, base.repetitions + 1);
+    const previousInterval = Math.max(1, base.intervalDays || REVIEW_GRADUATING_INTERVAL_DAYS);
+    const nextInterval =
+      nextRepetitions === 1 ? REVIEW_GRADUATING_INTERVAL_DAYS : nextRepetitions === 2 ? 7 : Math.max(previousInterval + 1, Math.round(previousInterval * nextEase));
+
+    return normalizeReviewStateRow({
+      ...base,
+      questionId,
+      queue: "review",
+      easeFactor: nextEase,
+      intervalDays: nextInterval,
+      repetitions: nextRepetitions,
+      dueAt: addDaysToDate(reviewedAtIso, nextInterval).toISOString(),
+      lastReviewedAt: reviewedAtIso,
+      lastResult: "correct",
+      lastResponseMs: responseTimeMs,
+      totalReviews,
+      correctReviews,
+      updatedAt: reviewedAtIso,
+      createdAt: base.createdAt || reviewedAtIso,
+    });
+  }
+
+  const nextLearningStep = base.queue === "learning" ? base.learningStep + 1 : 0;
+  if (nextLearningStep < REVIEW_LEARNING_STEPS_MINUTES.length) {
+    return normalizeReviewStateRow({
+      ...base,
+      questionId,
+      queue: "learning",
+      learningStep: nextLearningStep,
+      dueAt: addMinutesToDate(reviewedAtIso, REVIEW_LEARNING_STEPS_MINUTES[nextLearningStep]).toISOString(),
+      lastReviewedAt: reviewedAtIso,
+      lastResult: "correct",
+      lastResponseMs: responseTimeMs,
+      totalReviews,
+      correctReviews,
+      updatedAt: reviewedAtIso,
+      createdAt: base.createdAt || reviewedAtIso,
+    });
+  }
+
+  return normalizeReviewStateRow({
+    ...base,
+    questionId,
+    queue: "review",
+    easeFactor: Math.min(3, base.easeFactor + 0.1),
+    intervalDays: Math.max(REVIEW_GRADUATING_INTERVAL_DAYS, base.intervalDays || REVIEW_GRADUATING_INTERVAL_DAYS),
+    repetitions: Math.max(1, base.repetitions + 1),
+    learningStep: REVIEW_LEARNING_STEPS_MINUTES.length,
+    dueAt: addDaysToDate(reviewedAtIso, Math.max(REVIEW_GRADUATING_INTERVAL_DAYS, base.intervalDays || REVIEW_GRADUATING_INTERVAL_DAYS)).toISOString(),
+    lastReviewedAt: reviewedAtIso,
+    lastResult: "correct",
+    lastResponseMs: responseTimeMs,
+    totalReviews,
+    correctReviews,
+    updatedAt: reviewedAtIso,
+    createdAt: base.createdAt || reviewedAtIso,
+  });
+};
+
+const buildUpdatedReviewStateMap = ({ questions = [], answers = {}, reviewStateMap = {}, reviewedAt = new Date() }) => {
+  const nextMap = { ...(reviewStateMap || {}) };
+  const updatedStates = [];
+
+  (questions || []).forEach((question) => {
+    const questionId = String(question?.id || "").trim();
+    const answer = answers?.[questionId];
+    if (!questionId || !answer) return;
+    const nextState = buildNextReviewState({
+      questionId,
+      previousState: nextMap[questionId],
+      answer,
+      reviewedAt,
+    });
+    nextMap[questionId] = nextState;
+    updatedStates.push(nextState);
+  });
+
+  return { reviewStateMap: nextMap, updatedStates };
+};
+
+const reviewStateToSupabaseRow = (userId, state) => {
+  const normalized = normalizeReviewStateRow(state);
+  return {
+    user_id: userId,
+    question_id: normalized.questionId,
+    queue: normalized.queue,
+    ease_factor: Number(normalized.easeFactor.toFixed(2)),
+    interval_days: normalized.intervalDays,
+    repetitions: normalized.repetitions,
+    lapses: normalized.lapses,
+    learning_step: normalized.learningStep,
+    due_at: normalized.dueAt,
+    last_reviewed_at: normalized.lastReviewedAt || null,
+    last_result: normalized.lastResult || null,
+    last_response_ms: normalized.lastResponseMs || null,
+    total_reviews: normalized.totalReviews,
+    correct_reviews: normalized.correctReviews,
+    updated_at: normalized.updatedAt,
+  };
+};
+
+const buildReviewSnapshot = ({ questionPool = [], reviewStateMap = {}, activeDeckName = DEFAULT_DECK_NAME }) => {
+  const activeQuestions = (questionPool || []).filter((question) => question.isActive !== false);
+  const nowTs = Date.now();
+  const todayKey = dayKey(nowTs);
+  const scheduledEntries = [];
+  const focusMap = {};
+  let newCount = 0;
+  let learningCount = 0;
+  let reviewCount = 0;
+  let dueLearningCount = 0;
+  let dueReviewCount = 0;
+
+  activeQuestions.forEach((question) => {
+    const questionId = String(question?.id || "").trim();
+    const category = String(question?.category || "General").trim() || "General";
+    const deck = normalizeDeck(question?.deck, activeDeckName);
+    const state = reviewStateMap?.[questionId] ? normalizeReviewStateRow(reviewStateMap[questionId]) : null;
+
+    if (!state) {
+      newCount += 1;
+      return;
+    }
+
+    const dueAtMs = new Date(state.dueAt || "").getTime();
+    const dueDate = dayKey(Number.isFinite(dueAtMs) ? dueAtMs : nowTs);
+    const isDue = state.queue !== "new" && (!Number.isFinite(dueAtMs) || dueAtMs <= nowTs);
+    const accuracy = state.totalReviews ? Math.round((state.correctReviews / Math.max(state.totalReviews, 1)) * 100) : state.queue === "learning" ? 60 : 82;
+    const priorityScore = (isDue ? 24 : 0) + (state.queue === "learning" ? 18 : 0) + state.lapses * 8 + Math.max(0, 100 - accuracy) / 5;
+    const priority = priorityScore >= 28 ? "Wysoki" : priorityScore >= 14 ? "Sredni" : "Niski";
+
+    if (state.queue === "learning") {
+      learningCount += 1;
+      if (isDue) dueLearningCount += 1;
+    } else if (state.queue === "review") {
+      reviewCount += 1;
+      if (isDue) dueReviewCount += 1;
+    } else {
+      newCount += 1;
+    }
+
+    if (state.queue !== "new") {
+      scheduledEntries.push({
+        questionId,
+        dueAt: state.dueAt,
+        dueAtMs: Number.isFinite(dueAtMs) ? dueAtMs : nowTs,
+        dueDate,
+        dueLabel: shortDay(dueDate),
+        category,
+        deck,
+        queue: state.queue,
+        isDue,
+        priority,
+        intervalDays: state.intervalDays,
+        easeFactor: Number(state.easeFactor.toFixed(2)),
+        lapses: state.lapses,
+        accuracy,
+      });
+    }
+
+    const focusKey = `${category}::${deck}`;
+    if (!focusMap[focusKey]) {
+      focusMap[focusKey] = {
+        category,
+        deck,
+        accuracyTotal: 0,
+        accuracyCount: 0,
+        reviewCount: 0,
+        dueCount: 0,
+        learningCount: 0,
+        lapses: 0,
+      };
+    }
+
+    focusMap[focusKey].accuracyTotal += accuracy;
+    focusMap[focusKey].accuracyCount += 1;
+    focusMap[focusKey].reviewCount += 1;
+    focusMap[focusKey].dueCount += isDue ? 1 : 0;
+    focusMap[focusKey].learningCount += state.queue === "learning" ? 1 : 0;
+    focusMap[focusKey].lapses += state.lapses;
+  });
+
+  const groupedQueue = {};
+  scheduledEntries
+    .sort((a, b) => a.dueAtMs - b.dueAtMs || a.category.localeCompare(b.category, "pl"))
+    .forEach((entry) => {
+      const key = `${entry.dueDate}:${entry.category}:${entry.deck}:${entry.queue}`;
+      if (!groupedQueue[key]) {
+        groupedQueue[key] = {
+          dueDate: entry.dueDate,
+          dueLabel: entry.dueLabel,
+          category: entry.category,
+          deck: entry.deck,
+          queue: entry.queue,
+          priority: entry.priority,
+          dueAtMs: entry.dueAtMs,
+          count: 0,
+          lapses: 0,
+          isDue: false,
+        };
+      }
+      groupedQueue[key].count += 1;
+      groupedQueue[key].lapses += entry.lapses;
+      groupedQueue[key].isDue = groupedQueue[key].isDue || entry.isDue;
+      if (entry.priority === "Wysoki") groupedQueue[key].priority = "Wysoki";
+      else if (entry.priority === "Sredni" && groupedQueue[key].priority === "Niski") groupedQueue[key].priority = "Sredni";
+    });
+
+  const reviewQueue = Object.values(groupedQueue)
+    .sort((a, b) => a.dueAtMs - b.dueAtMs || b.count - a.count)
+    .slice(0, 8)
+    .map((item) => {
+      const label =
+        item.dueDate === todayKey
+          ? "Dzisiaj"
+          : item.dueAtMs <= nowTs
+          ? "Do nadrobienia"
+          : diffDaysBetweenKeys(todayKey, item.dueDate) === 1
+          ? "Jutro"
+          : `Za ${Math.max(diffDaysBetweenKeys(todayKey, item.dueDate), 0)} dni`;
+
+      return {
+        label,
+        dueDate: item.dueDate,
+        dueLabel: item.dueLabel,
+        category: item.category,
+        priority: item.priority,
+        deck: item.deck,
+        duration: item.queue === "learning" || item.count >= 6 ? "25m" : item.count >= 3 ? "20m" : "15m",
+        reason:
+          item.queue === "learning"
+            ? `${item.count} kart jest w kolejce learning${item.lapses ? `, z ${item.lapses} lapse` : ""}.`
+            : `${item.count} kart review wpada do kolejki${item.isDue ? " na teraz" : ""}.`,
+        task: item.queue === "learning" ? `Powtorka learning: ${item.category}` : `Sesja review: ${item.category}`,
+      };
+    });
+
+  const focusAreas = Object.values(focusMap)
+    .map((item) => {
+      const accuracy = item.accuracyCount ? Math.round(item.accuracyTotal / item.accuracyCount) : 0;
+      const priorityScore = item.dueCount * 12 + item.learningCount * 8 + item.lapses * 4 + Math.max(0, 100 - accuracy) / 5;
+      const priority = priorityScore >= 26 ? "Wysoki" : priorityScore >= 12 ? "Sredni" : "Niski";
+      return {
+        category: item.category,
+        priority,
+        accuracy,
+        reviewCount: item.reviewCount,
+        weakHits: item.lapses,
+        deck: item.deck,
+        reason:
+          item.dueCount > 0
+            ? `${item.dueCount} kart jest due w tej kategorii.`
+            : item.learningCount > 0
+            ? `${item.learningCount} kart jest jeszcze w nauce.`
+            : `Kategoria ma ${item.reviewCount} kart w harmonogramie.`,
+        suggestion:
+          priority === "Wysoki"
+            ? "Zacznij od kart due i dopnij je krotkim blokiem review."
+            : priority === "Sredni"
+            ? "Zrob jedna spokojna sesje utrwalajaca i sprawdz, czy learning przechodzi do review."
+            : "Wystarczy lekka sesja kontrolna i utrzymanie rytmu.",
+      };
+    })
+    .sort((a, b) => {
+      const order = ["Wysoki", "Sredni", "Niski"];
+      return order.indexOf(a.priority) - order.indexOf(b.priority) || b.weakHits - a.weakHits || a.accuracy - b.accuracy;
+    })
+    .slice(0, 4);
+
+  return {
+    totalManaged: learningCount + reviewCount,
+    newCount,
+    learningCount,
+    reviewCount,
+    dueLearningCount,
+    dueReviewCount,
+    dueCount: dueLearningCount + dueReviewCount,
+    reviewQueue,
+    focusAreas,
+  };
+};
 
 const loadLocal = () => {
   try {
@@ -1699,8 +2344,15 @@ function buildWeeklyReviewPlan(focusAreas = [], reviewQueue = [], startDate = ne
   });
 }
 
-function buildAdaptivePlan({ history, weakCat, statsByCat = [], questionPool = [], activeDeckName = DEFAULT_DECK_NAME }) {
-  if (!history.length) {
+function buildAdaptivePlan({ history, weakCat, statsByCat = [], questionPool = [], activeDeckName = DEFAULT_DECK_NAME, reviewSnapshot = null }) {
+  const snapshot = reviewSnapshot && typeof reviewSnapshot === "object" ? reviewSnapshot : null;
+  const hasSnapshot =
+    Boolean(snapshot?.focusAreas?.length) ||
+    Boolean(snapshot?.reviewQueue?.length) ||
+    Number(snapshot?.dueCount || 0) > 0 ||
+    Number(snapshot?.totalManaged || 0) > 0;
+
+  if (!history.length && !hasSnapshot) {
     return {
       recommendation: "Ukoncz kilka prob quizu, a system przygotuje lepszy plan powtorek.",
       improvements: [],
@@ -1711,24 +2363,60 @@ function buildAdaptivePlan({ history, weakCat, statsByCat = [], questionPool = [
   }
 
   const recent = history.slice(0, 6);
-  const avgAcc = Math.round(recent.reduce((sum, attempt) => sum + attempt.percent, 0) / recent.length);
-  const focusAreas = buildReviewFocusAreas({ history, statsByCat, questionPool, weakCat, activeDeckName });
-  const reviewQueue = buildReviewQueue(focusAreas);
+  const avgAcc = recent.length ? Math.round(recent.reduce((sum, attempt) => sum + attempt.percent, 0) / recent.length) : 0;
+  const focusAreas = snapshot?.focusAreas?.length ? snapshot.focusAreas : buildReviewFocusAreas({ history, statsByCat, questionPool, weakCat, activeDeckName });
+  const reviewQueue = snapshot?.reviewQueue?.length ? snapshot.reviewQueue : buildReviewQueue(focusAreas);
   const weeklyPlan = buildWeeklyReviewPlan(focusAreas, reviewQueue);
   const topArea = focusAreas[0]?.category || weakCat?.category || "Mieszane powtorki";
+  const dueCount = Number(snapshot?.dueCount || 0);
+  const learningCount = Number(snapshot?.learningCount || 0);
+  const reviewCount = Number(snapshot?.reviewCount || 0);
+  const newCount = Number(snapshot?.newCount || 0);
+  const readiness =
+    dueCount >= 12
+      ? "Domknij zalegle powtorki"
+      : dueCount > 0
+      ? "Kolejka jest aktywna"
+      : hasSnapshot && reviewCount + learningCount > 0
+      ? "Kolejka pod kontrola"
+      : avgAcc >= 85
+      ? "Utrwalaj i przesuwaj limit"
+      : avgAcc >= 65
+      ? "Stabilizuj kluczowe obszary"
+      : "Buduj fundamenty";
+  const recommendation = hasSnapshot
+    ? dueCount > 0
+      ? `Masz teraz ${dueCount} kart due${learningCount ? ` i ${learningCount} w kolejce learning` : ""}. Najwiekszy zwrot daje domkniecie ich przed dodawaniem nowych materialow.`
+      : reviewCount > 0
+      ? "Harmonogram pracuje juz per karta. Trzymaj rytm: krotkie, regularne sesje review beda skuteczniejsze niz dlugi maraton raz na kilka dni."
+      : newCount > 0
+      ? `Masz ${newCount} nowych kart bez historii. Dodawaj je stopniowo i pozwol schedulerowi przeprowadzic je przez learning do review.`
+      : "Kolejka jest czysta. To dobry moment na lekki blok nowych kart albo probny quiz mieszany."
+    : avgAcc >= 85
+    ? "Masz dobra baze. Pracuj jak w Anki: krotsze, regularne powtorki, a trudniejsze kategorie wrzucaj w osobne bloki kontrolne."
+    : avgAcc >= 65
+    ? "Najwiekszy zysk da teraz regularna kolejka powtorek na najslabszych kategoriach i szybkie testy mieszane po kazdym bloku."
+    : "Skup sie na najwazniejszych kategoriach, powtarzaj je czesciej niz reszte i nie dokladaj nowych materialow, dopoki poprawa nie stanie sie stabilna.";
 
   return {
-    readiness: avgAcc >= 85 ? "Utrwalaj i przesuwaj limit" : avgAcc >= 65 ? "Stabilizuj kluczowe obszary" : "Buduj fundamenty",
-    recommendation:
-      avgAcc >= 85
-        ? "Masz dobra baze. Pracuj jak w Anki: krotsze, regularne powtorki, a trudniejsze kategorie wrzucaj w osobne bloki kontrolne."
-        : avgAcc >= 65
-        ? "Najwiekszy zysk da teraz regularna kolejka powtorek na najslabszych kategoriach i szybkie testy mieszane po kazdym bloku."
-        : "Skup sie na najwazniejszych kategoriach, powtarzaj je czesciej niz reszte i nie dokladaj nowych materialow, dopoki poprawa nie stanie sie stabilna.",
+    readiness,
+    recommendation,
     improvements: [
       focusAreas[0] ? `Najwyzszy priorytet ma teraz ${focusAreas[0].category} (${focusAreas[0].priority.toLowerCase()} priorytet).` : `Najczesciej wracajacy obszar do poprawy: ${topArea}.`,
-      avgAcc < 70 ? "Najpierw dokladnosc, potem tempo. Powtorki zaczynaj od bledow z ostatnich sesji." : "Utrzymuj dokladnosc i zamykaj kazdy blok jednym szybkim quizem kontrolnym.",
-      focusAreas[1] ? `Drugi obszar do dogrania: ${focusAreas[1].category}.` : `Najczesciej wracajacy obszar do poprawy: ${topArea}.`,
+      hasSnapshot
+        ? dueCount > 0
+          ? `Na teraz czeka ${dueCount} kart due${learningCount ? `, w tym ${learningCount} w kolejce learning` : ""}.`
+          : reviewCount > 0
+          ? `Aktywne review obejmuje ${reviewCount} kart, a nowych kart do spokojnego wprowadzenia jest ${newCount}.`
+          : `Brak zaleglych powtorek. Mozesz bezpiecznie dodac nowy material partiami.`
+        : avgAcc < 70
+        ? "Najpierw dokladnosc, potem tempo. Powtorki zaczynaj od bledow z ostatnich sesji."
+        : "Utrzymuj dokladnosc i zamykaj kazdy blok jednym szybkim quizem kontrolnym.",
+      focusAreas[1]
+        ? `Drugi obszar do dogrania: ${focusAreas[1].category}.`
+        : hasSnapshot && newCount > 0
+        ? `Czeka jeszcze ${newCount} nowych kart, ktore nie weszly do harmonogramu review.`
+        : `Najczesciej wracajacy obszar do poprawy: ${topArea}.`,
     ],
     focusAreas,
     reviewQueue,
@@ -2591,6 +3279,8 @@ function QuizAbcdApp() {
   const [finishedAt, setFinishedAt] = useState(null);
 
   const [history, setHistory] = useState(() => loadLocal());
+  const [reviewStateMap, setReviewStateMap] = useState(() => loadLocalReviewState());
+  const [usageState, setUsageState] = useState(() => loadLocalUsageState());
   const [importMsg, setImportMsg] = useState(null);
   const [activeTab, setActiveTab] = useState("quiz");
   const [selectedDeck, setSelectedDeck] = useState(() =>
@@ -2628,7 +3318,7 @@ function QuizAbcdApp() {
     message: "Polacz Google Calendar, aby dodawac bloki nauki bezposrednio z planu.",
   });
   const [googleCalendarBusyKey, setGoogleCalendarBusyKey] = useState("");
-  const [billingAccount, setBillingAccount] = useState(null);
+  const [billingAccount, setBillingAccount] = useState(() => loadLocalBillingAccount());
   const [billingStatus, setBillingStatus] = useState({
     status: "idle",
     message: "Skonfiguruj Stripe Checkout, aby przyjmowac platnosci kartami za usluge.",
@@ -2678,6 +3368,7 @@ function QuizAbcdApp() {
 
   const fileRef = useRef(null);
   const generatorFileRef = useRef(null);
+  const lastProcessedAttemptRef = useRef("");
 
   useEffect(() => {
     saveCloudSettings({ cloudApiEnabled, cloudModel });
@@ -2700,6 +3391,18 @@ function QuizAbcdApp() {
   }, [questionPool]);
 
   useEffect(() => {
+    saveLocalReviewState(reviewStateMap);
+  }, [reviewStateMap]);
+
+  useEffect(() => {
+    saveLocalUsageState(usageState);
+  }, [usageState]);
+
+  useEffect(() => {
+    saveLocalBillingAccount(billingAccount);
+  }, [billingAccount]);
+
+  useEffect(() => {
     setSupabaseCheck({ status: "idle", message: "Nie sprawdzono połączenia." });
   }, [supabaseUrl, supabaseAnonKey]);
 
@@ -2720,7 +3423,18 @@ function QuizAbcdApp() {
   const googleCalendarConnected = Boolean(googleCalendarToken);
   const billingPlanName = DEFAULT_BILLING_PLAN_NAME;
   const billingPriceLabel = DEFAULT_BILLING_PRICE_LABEL;
-  const billingHasAccess = useMemo(() => hasPaidBillingAccess(billingAccount), [billingAccount]);
+  const currentUsagePeriod = monthPeriodStart();
+  const customDeckNames = useMemo(() => getCustomDeckNames(questionPool), [questionPool]);
+  const aiUsageCount = useMemo(() => getUsageCount(usageState, AI_USAGE_KEY, currentUsagePeriod), [usageState, currentUsagePeriod]);
+  const accessSummary = useMemo(
+    () =>
+      getAccessSummary({
+        billingAccount,
+        aiUsageCount,
+        customDeckCount: customDeckNames.length,
+      }),
+    [billingAccount, aiUsageCount, customDeckNames.length]
+  );
   const generatorQuestionCount = useMemo(() => estimateQuestionCount(generatorDensity), [generatorDensity]);
   const generatorMaterialText = useMemo(() => {
     if (!generatorPageTexts.length) return String(generatorSourceText || "").trim();
@@ -2728,6 +3442,27 @@ function QuizAbcdApp() {
     const safeEnd = Math.max(safeStart, Math.min(generatorPageEnd, generatorPageTexts.length));
     return generatorPageTexts.slice(safeStart - 1, safeEnd).join("\n\n").trim();
   }, [generatorPageEnd, generatorPageStart, generatorPageTexts, generatorSourceText]);
+
+  useEffect(() => {
+    if (authUser?.id) return;
+    setBillingStatus((prev) => {
+      if (prev.status === "loading") return prev;
+      return {
+        status: accessSummary.hasPremiumAccess ? "success" : "idle",
+        message: accessSummary.trialActive
+          ? `Trial lokalny jest aktywny do ${new Date(accessSummary.trialEndsAt).toLocaleDateString("pl-PL")}.`
+          : `Plan darmowy jest aktywny. Zostalo ${accessSummary.aiQuestionsRemaining || 0} pytan AI i ${accessSummary.customDeckRemaining || 0} sloty na wlasne decki.`,
+      };
+    });
+  }, [
+    authUser?.id,
+    accessSummary.hasPremiumAccess,
+    accessSummary.trialActive,
+    accessSummary.trialEndsAt,
+    accessSummary.aiQuestionsRemaining,
+    accessSummary.customDeckRemaining,
+  ]);
+
   useEffect(() => {
     const requestedTab = parseRequestedTab(typeof window !== "undefined" ? window.location.href : "");
     if (requestedTab && ["settings", "plan", "calendar", "quiz", "decks", "generator", "editor", "results"].includes(requestedTab)) {
@@ -2779,6 +3514,18 @@ function QuizAbcdApp() {
   const filteredQuestionPool = useMemo(
     () => filterQuestionsByTags(deckQuestionPool, selectedTagFilters, userTagMap),
     [deckQuestionPool, selectedTagFilters, userTagMap]
+  );
+  const dueQuestionPool = useMemo(
+    () =>
+      filteredQuestionPool.filter((question) => {
+        const state = reviewStateMap?.[String(question?.id)];
+        if (!state) return false;
+        const normalized = normalizeReviewStateRow(state);
+        if (normalized.queue === "new") return false;
+        const dueAtMs = new Date(normalized.dueAt || "").getTime();
+        return !Number.isFinite(dueAtMs) || dueAtMs <= Date.now();
+      }),
+    [filteredQuestionPool, reviewStateMap]
   );
 
   useEffect(() => {
@@ -3001,13 +3748,25 @@ function QuizAbcdApp() {
 
     const loadAccountData = async () => {
       try {
-        const [profileRows, tagRows, billingRows] = await Promise.all([
+        const [profileRows, tagRows, billingRows, usageRows, cardStateRows] = await Promise.all([
           sbSelect(supabaseConfig, "profiles", `select=id,email,display_name,created_at,updated_at&id=eq.${authUser.id}&limit=1`, authAccessToken),
           sbSelect(supabaseConfig, "user_question_tags", `select=question_id,tags&user_id=eq.${authUser.id}&limit=5000`, authAccessToken),
           sbSelect(
             supabaseConfig,
             "billing_accounts",
-            `select=user_id,email,stripe_customer_id,stripe_checkout_session_id,stripe_subscription_id,checkout_mode,billing_status,payment_status,price_id,currency,amount_total,current_period_end,last_event_type,metadata&user_id=eq.${authUser.id}&limit=1`,
+            `select=user_id,email,stripe_customer_id,stripe_checkout_session_id,stripe_subscription_id,checkout_mode,billing_status,payment_status,price_id,currency,amount_total,current_period_end,trial_started_at,trial_ends_at,last_event_type,metadata&user_id=eq.${authUser.id}&limit=1`,
+            authAccessToken
+          ),
+          sbSelect(
+            supabaseConfig,
+            "user_usage_monthly",
+            `select=usage_key,period_start,usage_count,updated_at&user_id=eq.${authUser.id}&usage_key=eq.${AI_USAGE_KEY}&period_start=eq.${currentUsagePeriod}&limit=10`,
+            authAccessToken
+          ),
+          sbSelect(
+            supabaseConfig,
+            "user_card_states",
+            `select=question_id,queue,ease_factor,interval_days,repetitions,lapses,learning_step,due_at,last_reviewed_at,last_result,last_response_ms,total_reviews,correct_reviews,created_at,updated_at&user_id=eq.${authUser.id}&limit=5000`,
             authAccessToken
           ),
         ]);
@@ -3025,15 +3784,28 @@ function QuizAbcdApp() {
         });
         setUserTagMap(nextTagMap);
 
-        const billingRow = billingRows?.[0] ? normalizeBillingAccountRow(billingRows[0]) : null;
+        const billingRow = await ensureBillingAccountTrial(supabaseConfig, authAccessToken, authUser, billingRows?.[0] || null);
+        if (cancelled) return;
+        const remoteUsageState = toUsageStateMap(usageRows || []);
+        const remoteReviewStates = createReviewStateMap(cardStateRows || []);
+        const nextAccess = getAccessSummary({
+          billingAccount: billingRow,
+          aiUsageCount: getUsageCount(remoteUsageState, AI_USAGE_KEY, currentUsagePeriod),
+          customDeckCount: customDeckNames.length,
+        });
+
+        setUsageState((prev) => mergeUsageStateMaps(prev, remoteUsageState));
+        setReviewStateMap((prev) => mergeReviewStateMaps(prev, remoteReviewStates));
         setBillingAccount(billingRow);
         if (billingRow) setBillingRedirectState("");
         setBillingStatus(
           billingRow
             ? {
-                status: hasPaidBillingAccess(billingRow) ? "success" : "idle",
-                message: hasPaidBillingAccess(billingRow)
+                status: nextAccess.hasPremiumAccess ? "success" : "idle",
+                message: nextAccess.paidPlanActive
                   ? `Plan ${billingPlanName} jest aktywny.`
+                  : nextAccess.trialActive
+                  ? `Trial jest aktywny do ${new Date(nextAccess.trialEndsAt).toLocaleDateString("pl-PL")}.`
                   : billingRow.stripeCustomerId
                   ? `Konto Stripe jest polaczone. Aktualny status: ${billingStatusLabel(billingRow)}.`
                   : "Skonfiguruj Stripe Checkout, aby przyjmowac platnosci kartami za usluge.",
@@ -3060,7 +3832,16 @@ function QuizAbcdApp() {
     return () => {
       cancelled = true;
     };
-  }, [sbEnabled, authUser?.id, authAccessToken, supabaseConfig, upsertUserProfile, billingPlanName, billingRedirectState]);
+  }, [
+    sbEnabled,
+    authUser?.id,
+    authAccessToken,
+    supabaseConfig,
+    upsertUserProfile,
+    billingPlanName,
+    billingRedirectState,
+    currentUsagePeriod,
+  ]);
 
   const startQuiz = useCallback(
     (customPool, customLength) => {
@@ -3074,9 +3855,9 @@ function QuizAbcdApp() {
       }
 
       const len = customLength !== undefined ? customLength : quizLength;
-      const shuffled = [...pool].sort(() => 0.5 - Math.random());
-      const selectedQuestions = len === "all" ? shuffled : shuffled.slice(0, len);
-      const nextQuestions = selectedQuestions.length ? selectedQuestions : pool;
+      const prioritizedPool = prioritizeQuestionsForSession(pool, reviewStateMap);
+      const selectedQuestions = len === "all" ? prioritizedPool : prioritizedPool.slice(0, len);
+      const nextQuestions = selectedQuestions.length ? selectedQuestions : prioritizedPool;
 
       setQuestions(nextQuestions);
       setIdx(0);
@@ -3097,7 +3878,7 @@ function QuizAbcdApp() {
           : prev
       );
     },
-    [filteredQuestionPool, quizLength, buildSelectionState]
+    [filteredQuestionPool, quizLength, buildSelectionState, reviewStateMap]
   );
 
   const getDeckPool = useCallback(
@@ -3492,11 +4273,19 @@ function QuizAbcdApp() {
   const refreshBillingAccount = useCallback(
     async ({ silent = false } = {}) => {
       if (!sbEnabled || !authUser?.id || !authAccessToken) {
-        setBillingAccount(null);
+        const localBillingAccount = loadLocalBillingAccount();
+        setBillingAccount(localBillingAccount);
         if (!silent) {
+          const localAccess = getAccessSummary({
+            billingAccount: localBillingAccount,
+            aiUsageCount,
+            customDeckCount: customDeckNames.length,
+          });
           setBillingStatus({
-            status: "error",
-            message: "Zaloguj sie i polacz Supabase, aby odczytac status platnosci.",
+            status: localAccess.hasPremiumAccess ? "success" : "idle",
+            message: localAccess.trialActive
+              ? `Trial lokalny jest aktywny do ${new Date(localAccess.trialEndsAt).toLocaleDateString("pl-PL")}.`
+              : "Zaloguj sie i polacz Supabase, aby odczytac status platnosci.",
           });
         }
         return null;
@@ -3513,11 +4302,16 @@ function QuizAbcdApp() {
         const rows = await sbSelect(
           supabaseConfig,
           "billing_accounts",
-          `select=user_id,email,stripe_customer_id,stripe_checkout_session_id,stripe_subscription_id,checkout_mode,billing_status,payment_status,price_id,currency,amount_total,current_period_end,last_event_type,metadata&user_id=eq.${authUser.id}&limit=1`,
+          `select=user_id,email,stripe_customer_id,stripe_checkout_session_id,stripe_subscription_id,checkout_mode,billing_status,payment_status,price_id,currency,amount_total,current_period_end,trial_started_at,trial_ends_at,last_event_type,metadata&user_id=eq.${authUser.id}&limit=1`,
           authAccessToken
         );
 
-        const nextBillingAccount = rows?.[0] ? normalizeBillingAccountRow(rows[0]) : null;
+        const nextBillingAccount = await ensureBillingAccountTrial(supabaseConfig, authAccessToken, authUser, rows?.[0] || null);
+        const nextAccess = getAccessSummary({
+          billingAccount: nextBillingAccount,
+          aiUsageCount,
+          customDeckCount: customDeckNames.length,
+        });
         setBillingAccount(nextBillingAccount);
         if (nextBillingAccount) setBillingRedirectState("");
 
@@ -3525,9 +4319,11 @@ function QuizAbcdApp() {
           setBillingStatus(
             nextBillingAccount
               ? {
-                  status: hasPaidBillingAccess(nextBillingAccount) ? "success" : "idle",
-                  message: hasPaidBillingAccess(nextBillingAccount)
+                  status: nextAccess.hasPremiumAccess ? "success" : "idle",
+                  message: nextAccess.paidPlanActive
                     ? `Plan ${billingPlanName} jest aktywny.`
+                    : nextAccess.trialActive
+                    ? `Trial jest aktywny do ${new Date(nextAccess.trialEndsAt).toLocaleDateString("pl-PL")}.`
                     : nextBillingAccount.stripeCustomerId
                     ? `Stripe jest polaczony. Aktualny status: ${billingStatusLabel(nextBillingAccount)}.`
                     : "Checkout jeszcze nie utworzyl konta billingowego.",
@@ -3547,7 +4343,63 @@ function QuizAbcdApp() {
         return null;
       }
     },
-    [authAccessToken, authUser?.id, billingPlanName, sbEnabled, supabaseConfig]
+    [authAccessToken, authUser?.id, authUser, billingPlanName, sbEnabled, supabaseConfig, aiUsageCount, customDeckNames.length]
+  );
+
+  const validateDeckLimit = useCallback(
+    (nextPool, sourceLabel = "bibliotece") => {
+      const nextCustomDecks = getCustomDeckNames(nextPool);
+      if (accessSummary.customDeckLimit === null || nextCustomDecks.length <= accessSummary.customDeckLimit) {
+        return { ok: true, customDecks: nextCustomDecks };
+      }
+
+      return {
+        ok: false,
+        customDecks: nextCustomDecks,
+        message: `Plan darmowy pozwala na ${accessSummary.customDeckLimit} wlasne decki. W ${sourceLabel} probujesz miec ${nextCustomDecks.length}: ${nextCustomDecks.join(", ")}.`,
+      };
+    },
+    [accessSummary.customDeckLimit]
+  );
+
+  const incrementAiUsage = useCallback(
+    async (amount) => {
+      const safeAmount = Math.max(0, Math.round(Number(amount || 0) || 0));
+      if (!safeAmount) return;
+
+      const nextCount = getUsageCount(usageState, AI_USAGE_KEY, currentUsagePeriod) + safeAmount;
+      const nextRow = {
+        usageKey: AI_USAGE_KEY,
+        periodStart: currentUsagePeriod,
+        usageCount: nextCount,
+        updatedAt: new Date().toISOString(),
+      };
+
+      setUsageState((prev) =>
+        mergeUsageStateMaps(prev, {
+          [`${AI_USAGE_KEY}:${currentUsagePeriod}`]: nextRow,
+        })
+      );
+
+      if (sbEnabled && authUser?.id && authAccessToken) {
+        try {
+          await sbUpsert(
+            supabaseConfig,
+            "user_usage_monthly",
+            {
+              user_id: authUser.id,
+              usage_key: AI_USAGE_KEY,
+              period_start: currentUsagePeriod,
+              usage_count: nextCount,
+              updated_at: nextRow.updatedAt,
+            },
+            authAccessToken,
+            "user_id,usage_key,period_start"
+          );
+        } catch {}
+      }
+    },
+    [usageState, currentUsagePeriod, sbEnabled, authUser?.id, authAccessToken, supabaseConfig]
   );
 
   const handleStartCheckout = useCallback(async () => {
@@ -3660,10 +4512,18 @@ function QuizAbcdApp() {
     setAuthUser(null);
     setUserProfile(null);
     setUserTagMap({});
-    setBillingAccount(null);
+    const localBillingAccount = loadLocalBillingAccount();
+    const localAccess = getAccessSummary({
+      billingAccount: localBillingAccount,
+      aiUsageCount: getUsageCount(usageState, AI_USAGE_KEY, currentUsagePeriod),
+      customDeckCount: getCustomDeckNames(questionPool).length,
+    });
+    setBillingAccount(localBillingAccount);
     setBillingStatus({
-      status: "idle",
-      message: "Skonfiguruj Stripe Checkout, aby przyjmowac platnosci kartami za usluge.",
+      status: localAccess.hasPremiumAccess ? "success" : "idle",
+      message: localAccess.trialActive
+        ? `Wrociles do lokalnego trialu, aktywnego do ${new Date(localAccess.trialEndsAt).toLocaleDateString("pl-PL")}.`
+        : "Skonfiguruj Stripe Checkout, aby przyjmowac platnosci kartami za usluge.",
     });
     setBillingBusyAction("");
     setBillingRedirectState("");
@@ -3674,7 +4534,7 @@ function QuizAbcdApp() {
       message: "Polacz Google Calendar, aby dodawac bloki nauki bezposrednio z planu.",
     });
     setGoogleCalendarBusyKey("");
-  }, [sbEnabled, authAccessToken, supabaseConfig]);
+  }, [sbEnabled, authAccessToken, supabaseConfig, usageState, currentUsagePeriod, questionPool]);
 
   const toggleTagFilter = useCallback((tag) => {
     const normalized = normalizeTagValue(tag);
@@ -3736,6 +4596,7 @@ function QuizAbcdApp() {
           correctAnswers: current.correctAnswers || [],
           isCorrect,
           responseTimeMs: Date.now() - qStartedAt,
+          answeredAt: new Date().toISOString(),
           category: current.category || "General",
           difficulty: current.difficulty || "medium",
           questionType: currentQuestionType,
@@ -3905,6 +4766,17 @@ function QuizAbcdApp() {
 
   useEffect(() => {
     if (!attemptDraft) return;
+    if (lastProcessedAttemptRef.current === String(attemptDraft.finishedAt)) return;
+    lastProcessedAttemptRef.current = String(attemptDraft.finishedAt);
+
+    const { reviewStateMap: nextReviewStateMap, updatedStates } = buildUpdatedReviewStateMap({
+      questions,
+      answers,
+      reviewStateMap,
+      reviewedAt: attemptDraft.finishedAt,
+    });
+
+    setReviewStateMap(nextReviewStateMap);
 
     setHistory((prev) => {
       if (prev.some((a) => a.finishedAt === attemptDraft.finishedAt)) return prev;
@@ -3934,8 +4806,18 @@ function QuizAbcdApp() {
       )
         .then(() => loadAttempts())
         .catch(() => {});
+
+      if (updatedStates.length) {
+        sbUpsert(
+          supabaseConfig,
+          "user_card_states",
+          updatedStates.map((state) => reviewStateToSupabaseRow(authUser.id, state)),
+          authAccessToken,
+          "user_id,question_id"
+        ).catch(() => {});
+      }
     }
-  }, [attemptDraft, loadAttempts, sbEnabled, supabaseConfig, authUser?.id, authAccessToken]);
+  }, [attemptDraft, loadAttempts, sbEnabled, supabaseConfig, authUser?.id, authAccessToken, questions, answers, reviewStateMap]);
 
   useEffect(() => {
     if (!attemptDraft) return;
@@ -4036,6 +4918,12 @@ function QuizAbcdApp() {
           return;
         }
 
+        const deckLimitCheck = validateDeckLimit(parsed, "imporcie");
+        if (!deckLimitCheck.ok) {
+          setImportMsg(deckLimitCheck.message);
+          return;
+        }
+
         setQuestionPool(parsed);
         startQuiz(parsed, quizLength);
         setImportMsg(`✓ Zaimportowano ${parsed.length} pytań z "${file.name}"`);
@@ -4045,7 +4933,7 @@ function QuizAbcdApp() {
         e.target.value = "";
       }
     },
-    [quizLength, startQuiz]
+    [quizLength, startQuiz, validateDeckLimit]
   );
 
   const toggleGeneratorQuestionType = useCallback((type) => {
@@ -4111,6 +4999,7 @@ function QuizAbcdApp() {
     const requestedQuestionTypes = normalizeRequestedQuestionTypes(generatorQuestionTypes);
     const localSupportedTypes = ["cloze_deletion", "type_answer", "flashcard"];
     const canUseLocalFallback = requestedQuestionTypes.length > 0 && requestedQuestionTypes.every((type) => localSupportedTypes.includes(type));
+    const allowedQuestionCount = accessSummary.aiQuestionLimit === null ? generatorQuestionCount : Math.min(generatorQuestionCount, accessSummary.aiQuestionsRemaining);
 
     if (!materialText) {
       setGeneratorStatus({
@@ -4128,12 +5017,20 @@ function QuizAbcdApp() {
       return;
     }
 
+    if (allowedQuestionCount <= 0) {
+      setGeneratorStatus({
+        status: "error",
+        message: `Limit darmowego planu zostal wykorzystany. W tym miesiacu mozesz wygenerowac ${DEFAULT_FREE_AI_QUESTIONS_LIMIT} pytan AI.`,
+      });
+      return;
+    }
+
     setGeneratorStatus({
       status: "loading",
       message:
         cloudApiEnabled && sbEnabled
-          ? "Cloud analizuje material, wybiera najwazniejsze tresci i przygotowuje pytania..."
-          : "Generuje pytania z materialu...",
+          ? `Cloud analizuje material i przygotowuje do ${allowedQuestionCount} pytan...`
+          : `Generuje do ${allowedQuestionCount} pytan z materialu...`,
     });
 
     let generated = [];
@@ -4150,7 +5047,7 @@ function QuizAbcdApp() {
           sourceName,
           materialText,
           questionTypes: requestedQuestionTypes,
-          questionCount: generatorQuestionCount,
+          questionCount: allowedQuestionCount,
           language: generatorLanguage,
           deck,
           startQuestionNo,
@@ -4167,7 +5064,7 @@ function QuizAbcdApp() {
       generated = buildLocalGeneratedQuestions({
         materialText,
         questionTypes: requestedQuestionTypes,
-        questionCount: generatorQuestionCount,
+        questionCount: allowedQuestionCount,
         deck,
         sourceName,
         startQuestionNo,
@@ -4185,17 +5082,31 @@ function QuizAbcdApp() {
       return;
     }
 
-    setGeneratorQuestions(generated);
-    setQuestionPool((prev) => mergeQuestionLibraries(prev, generated));
+    const limitedGenerated = generated.slice(0, allowedQuestionCount);
+    const nextQuestionPool = mergeQuestionLibraries(questionPool, limitedGenerated);
+    const deckLimitCheck = validateDeckLimit(nextQuestionPool, "generatorze");
+    if (!deckLimitCheck.ok) {
+      setGeneratorStatus({
+        status: "error",
+        message: deckLimitCheck.message,
+      });
+      return;
+    }
+
+    setGeneratorQuestions(limitedGenerated);
+    setQuestionPool(nextQuestionPool);
+    await incrementAiUsage(limitedGenerated.length);
     setGeneratorStatus({
       status: "success",
       message: !usedFallback
-        ? `Cloud przeanalizowal material, wybral najwazniejsze tresci i przygotowal ${generated.length} pytan.`
+        ? `Cloud przeanalizowal material, wybral najwazniejsze tresci i przygotowal ${limitedGenerated.length} pytan.`
         : attemptedCloud
-          ? `Cloud nie zwrocil kompletnego zestawu (${cloudError || "brak odpowiedzi"}). Wygenerowano lokalnie ${generated.length} pytan bez pelnej weryfikacji merytorycznej.`
-          : `Wygenerowano lokalnie ${generated.length} pytan. Bez Cloud walidacja merytoryczna jest ograniczona.`,
+          ? `Cloud nie zwrocil kompletnego zestawu (${cloudError || "brak odpowiedzi"}). Wygenerowano lokalnie ${limitedGenerated.length} pytan bez pelnej weryfikacji merytorycznej.`
+          : `Wygenerowano lokalnie ${limitedGenerated.length} pytan. Bez Cloud walidacja merytoryczna jest ograniczona.`,
     });
   }, [
+    accessSummary.aiQuestionLimit,
+    accessSummary.aiQuestionsRemaining,
     cloudApiEnabled,
     cloudModel,
     generatorDeckName,
@@ -4209,9 +5120,11 @@ function QuizAbcdApp() {
     generatorPageTexts,
     generatorSourceName,
     manualCloudApiKey,
+    incrementAiUsage,
     questionPool,
     sbEnabled,
     supabaseConfig,
+    validateDeckLimit,
   ]);
 
   useEffect(() => {
@@ -4465,6 +5378,16 @@ function QuizAbcdApp() {
     }
 
     const previousId = editorSelectedId || normalized.id;
+    const nextQuestionPool = mergeQuestionLibraries(
+      questionPool.filter((question) => String(question.id) !== String(previousId)),
+      [normalized]
+    );
+    const deckLimitCheck = validateDeckLimit(nextQuestionPool, "edytorze");
+    if (!deckLimitCheck.ok) {
+      setEditorStatus({ status: "error", message: deckLimitCheck.message });
+      return;
+    }
+
     let savedQuestion = normalized;
     let statusMessage = "Pytanie zapisane lokalnie.";
 
@@ -4500,7 +5423,7 @@ function QuizAbcdApp() {
     }
 
     setEditorStatus({ status: "success", message: statusMessage });
-  }, [authAccessToken, createEditorDraft, editorDraft, editorSelectedId, sbEnabled, supabaseConfig, upsertQuestionInState]);
+  }, [authAccessToken, createEditorDraft, editorDraft, editorSelectedId, sbEnabled, supabaseConfig, upsertQuestionInState, questionPool, validateDeckLimit]);
 
   const deleteEditorQuestion = useCallback(async () => {
     const question = selectedEditorQuestion;
@@ -4625,6 +5548,15 @@ function QuizAbcdApp() {
     if (selectedDeck !== ALL_DECKS_LABEL) return selectedDeck;
     return activeQuestionPool.find((question) => normalizeDeck(question.deck))?.deck || DEFAULT_DECKS[0];
   }, [selectedDeck, activeQuestionPool]);
+  const reviewSnapshot = useMemo(
+    () =>
+      buildReviewSnapshot({
+        questionPool: selectedDeck === ALL_DECKS_LABEL ? activeQuestionPool : deckQuestionPool,
+        reviewStateMap,
+        activeDeckName,
+      }),
+    [activeQuestionPool, deckQuestionPool, reviewStateMap, activeDeckName, selectedDeck]
+  );
 
   const localPlan = useMemo(
     () =>
@@ -4634,11 +5566,12 @@ function QuizAbcdApp() {
           history: uniq,
           weakCat: stats.weakest,
           statsByCat: stats.byCat,
-          questionPool,
+          questionPool: selectedDeck === ALL_DECKS_LABEL ? questionPool : deckQuestionPool,
           activeDeckName,
+          reviewSnapshot,
         }),
       }),
-    [uniq, stats.weakest, stats.byCat, questionPool, activeDeckName]
+    [uniq, stats.weakest, stats.byCat, questionPool, deckQuestionPool, activeDeckName, reviewSnapshot, selectedDeck]
   );
   const calDays = useMemo(() => buildCalDays(calMonth), [calMonth]);
 
@@ -6613,6 +7546,20 @@ function QuizAbcdApp() {
           </div>
           <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.75 }}>{activePlan?.recommendation}</div>
 
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginTop: 16 }}>
+            {[
+              ["Due teraz", reviewSnapshot.dueCount],
+              ["Learning", reviewSnapshot.learningCount],
+              ["Review", reviewSnapshot.reviewCount],
+              ["Nowe", reviewSnapshot.newCount],
+            ].map(([label, value]) => (
+              <div key={label} style={{ ...s.metric, background: C.cardAlt }}>
+                <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>{label}</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: C.textStrong }}>{value}</div>
+              </div>
+            ))}
+          </div>
+
           {studyPlanStatus === "loading" && (
             <div style={{ marginTop: 12, fontSize: 13, color: C.textSub }}>
               Cloud AI analizuje historie wynikow, slabiej utrwalone kategorie i buduje kolejne powtorki.
@@ -7962,7 +8909,7 @@ function QuizAbcdApp() {
 
             <span className="soft-chip">
               <IcoCheck size={12} />
-              {billingHasAccess ? "plan aktywny" : "platnosci kartami"}
+              {accessSummary.planTier === "pro" ? "plan aktywny" : accessSummary.planTier === "trial" ? "trial aktywny" : "plan darmowy"}
             </span>
           </div>
 
@@ -7971,13 +8918,27 @@ function QuizAbcdApp() {
               <div style={{ fontSize: 12, color: C.textSub, marginBottom: 6 }}>Plan</div>
               <div style={{ fontSize: 18, fontWeight: 700, color: C.textStrong }}>{billingPlanName}</div>
               <div style={{ fontSize: 13, color: C.textSub, lineHeight: 1.6, marginTop: 6 }}>
-                {billingPriceLabel}. Checkout i customer portal dzialaja przez Stripe, a status planu synchronizuje webhook do Supabase.
+                {billingPriceLabel}. Darmowy plan ma limit {DEFAULT_FREE_AI_QUESTIONS_LIMIT} pytan AI / miesiac i {DEFAULT_FREE_CUSTOM_DECK_LIMIT} wlasnych deckow, a trial otwiera pelny dostep na {DEFAULT_TRIAL_DAYS} dni.
               </div>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 }}>
               {[
+                ["Dostep", accessSummary.planTier === "pro" ? billingPlanName : accessSummary.planTier === "trial" ? "Trial" : "Free"],
                 ["Status", billingStatusLabel(billingAccount)],
+                ["Trial do", accessSummary.trialActive && accessSummary.trialEndsAt ? new Date(accessSummary.trialEndsAt).toLocaleDateString("pl-PL") : "â€”"],
+                [
+                  "AI / miesiac",
+                  accessSummary.aiQuestionLimit === null
+                    ? `${accessSummary.aiQuestionsUsed} wyg., bez limitu`
+                    : `${accessSummary.aiQuestionsUsed}/${accessSummary.aiQuestionLimit}`,
+                ],
+                [
+                  "Wlasne decki",
+                  accessSummary.customDeckLimit === null
+                    ? `${accessSummary.customDeckCount}, bez limitu`
+                    : `${accessSummary.customDeckCount}/${accessSummary.customDeckLimit}`,
+                ],
                 ["Tryb", billingAccount?.checkoutMode === "payment" ? "Jednorazowa platnosc" : "Subskrypcja"],
                 ["Odnowienie", billingAccount?.currentPeriodEnd ? new Date(billingAccount.currentPeriodEnd).toLocaleDateString("pl-PL") : "—"],
                 ["Stripe", billingAccount?.stripeCustomerId ? "Polaczony" : "Niepolaczony"],
@@ -8026,6 +8987,41 @@ function QuizAbcdApp() {
         </div>
 
         <div style={{ ...s.card, padding: 14, minHeight: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <IcoTarget size={16} />
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Spaced repetition</div>
+            </div>
+
+            <button
+              onClick={() => startQuiz(dueQuestionPool, dueQuestionPool.length)}
+              style={s.btn("soft")}
+              disabled={!dueQuestionPool.length}
+            >
+              <IcoRight size={14} /> {dueQuestionPool.length ? `Start due (${dueQuestionPool.length})` : "Brak due"}
+            </button>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12 }}>
+            {[
+              ["Due teraz", reviewSnapshot.dueCount],
+              ["Learning", reviewSnapshot.learningCount],
+              ["Review", reviewSnapshot.reviewCount],
+              ["Nowe", reviewSnapshot.newCount],
+            ].map(([label, value]) => (
+              <div key={label} style={{ ...s.metric, background: C.cardAlt }}>
+                <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>{label}</div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>{value}</div>
+              </div>
+            ))}
+          </div>
+
+          <div className="field-help" style={{ marginTop: 12 }}>
+            Scheduler pracuje teraz per karta: zapisuje queue `new / learning / review`, `ease`, `interval`, `due_at` i `lapses` po kazdej zakonczonej sesji.
+          </div>
+        </div>
+
+        <div style={{ ...s.card, padding: 14, minHeight: 0 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <IcoCloud size={16} />
@@ -8064,6 +9060,12 @@ function QuizAbcdApp() {
           <div style={{ marginBottom: 12 }}>
             <label style={s.label}>Model</label>
             <input value={cloudModel} onChange={(e) => setCloudModel(e.target.value)} placeholder={DEFAULT_MODEL} style={s.input} />
+          </div>
+
+          <div className="field-help">
+            {accessSummary.aiQuestionLimit === null
+              ? `Aktualny plan nie ma limitu AI. W tym miesiacu wygenerowano ${accessSummary.aiQuestionsUsed} pytan.`
+              : `Free plan: ${accessSummary.aiQuestionsUsed}/${accessSummary.aiQuestionLimit} pytan AI w tym miesiacu, zostalo ${accessSummary.aiQuestionsRemaining}.`}
           </div>
 
           <div className="field-help">

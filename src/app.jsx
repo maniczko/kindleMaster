@@ -85,6 +85,12 @@ const DEFAULT_SUPABASE_ANON_KEY = (
   import.meta.env.VITE_SUPABASE_ANON_KEY ||
   ""
 ).trim();
+const GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events";
+const GOOGLE_CALENDAR_AUTH_QUERY = {
+  access_type: "offline",
+  prompt: "consent",
+  include_granted_scopes: "true",
+};
 const CLOUD_FUNCTION_NAME = "claude-summary";
 const CLOUD_BROWSER_NOTICE =
   "Ta aplikacja działa wyłącznie w przeglądarce, więc Claude jest wołany przez Supabase Edge Function, a nie bezpośrednio z frontendu.";
@@ -491,6 +497,8 @@ const buildAuthSession = (data) => {
   if (!data?.access_token) return null;
   const expiresIn = Number(data.expires_in || 0);
   const expiresAt = Number(data.expires_at || 0) || (expiresIn ? Math.floor(Date.now() / 1000) + expiresIn : 0);
+  const providerToken = String(data.provider_token || "").trim();
+  const providerRefreshToken = String(data.provider_refresh_token || "").trim();
 
   return {
     access_token: data.access_token,
@@ -498,8 +506,25 @@ const buildAuthSession = (data) => {
     token_type: data.token_type || "bearer",
     expires_in: expiresIn,
     expires_at: expiresAt,
+    provider_token: providerToken,
+    provider_refresh_token: providerRefreshToken,
+    provider_token_obtained_at: providerToken ? Number(data.provider_token_obtained_at || Date.now()) || Date.now() : 0,
     user: data.user || null,
   };
+};
+
+const mergeAuthSessionProviderData = (nextSession, previousSession = null) => {
+  if (!nextSession) return null;
+
+  const merged = { ...nextSession };
+  if (!merged.provider_token && previousSession?.provider_token) merged.provider_token = previousSession.provider_token;
+  if (!merged.provider_refresh_token && previousSession?.provider_refresh_token) {
+    merged.provider_refresh_token = previousSession.provider_refresh_token;
+  }
+  if (!merged.provider_token_obtained_at && previousSession?.provider_token_obtained_at) {
+    merged.provider_token_obtained_at = previousSession.provider_token_obtained_at;
+  }
+  return merged;
 };
 
 const sbH = (apiKey, prefer = "return=representation", accessToken = "") => {
@@ -659,22 +684,25 @@ const parseOAuthCallback = (href = "") => {
   const url = new URL(source);
   const hashParams = new URLSearchParams(String(url.hash || "").replace(/^#/, ""));
   const searchParams = url.searchParams;
+  const getParam = (key) => hashParams.get(key) || searchParams.get(key) || "";
   const error = hashParams.get("error_description") || hashParams.get("error") || searchParams.get("error_description") || searchParams.get("error") || "";
 
   if (error) {
     return { session: null, error: decodeURIComponent(error) };
   }
 
-  const accessToken = hashParams.get("access_token");
+  const accessToken = getParam("access_token");
   if (!accessToken) return { session: null, error: "" };
 
   return {
     session: buildAuthSession({
       access_token: accessToken,
-      refresh_token: hashParams.get("refresh_token") || "",
-      token_type: hashParams.get("token_type") || "bearer",
-      expires_in: Number(hashParams.get("expires_in") || 0),
-      expires_at: Number(hashParams.get("expires_at") || 0),
+      refresh_token: getParam("refresh_token"),
+      token_type: getParam("token_type") || "bearer",
+      expires_in: Number(getParam("expires_in") || 0),
+      expires_at: Number(getParam("expires_at") || 0),
+      provider_token: getParam("provider_token"),
+      provider_refresh_token: getParam("provider_refresh_token"),
     }),
     error: "",
   };
@@ -684,13 +712,36 @@ const clearOAuthCallbackUrl = () => {
   if (typeof window === "undefined") return;
   const url = new URL(window.location.href);
   url.hash = "";
-  ["code", "error", "error_description", "error_code", "state"].forEach((key) => url.searchParams.delete(key));
+  [
+    "code",
+    "error",
+    "error_description",
+    "error_code",
+    "state",
+    "access_token",
+    "refresh_token",
+    "provider_token",
+    "provider_refresh_token",
+    "token_type",
+    "expires_in",
+    "expires_at",
+  ].forEach((key) => url.searchParams.delete(key));
   window.history.replaceState({}, document.title, `${url.pathname}${url.search}`);
 };
 
-const buildOAuthAuthorizeUrl = (config, provider = "google") => {
+const buildOAuthAuthorizeUrl = (config, provider = "google", options = {}) => {
   const redirectTo = getOAuthRedirectUrl();
-  return `${config.url}/auth/v1/authorize?provider=${encodeURIComponent(provider)}&redirect_to=${encodeURIComponent(redirectTo)}`;
+  const url = new URL(`${config.url}/auth/v1/authorize`);
+  url.searchParams.set("provider", provider);
+  url.searchParams.set("redirect_to", redirectTo);
+  if (options?.scopes) url.searchParams.set("scopes", options.scopes);
+
+  Object.entries(options?.queryParams || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    url.searchParams.set(key, String(value));
+  });
+
+  return url.toString();
 };
 
 const normDiff = (v) => {
@@ -1394,6 +1445,66 @@ function buildGoogleCalendarUrl(event) {
   return url.toString();
 }
 
+async function googleCalendarRequest(accessToken, path, { method = "GET", body } = {}) {
+  if (!accessToken) {
+    throw new Error("Brak tokenu Google. Polacz Google Calendar i sprobuj ponownie.");
+  }
+
+  let response;
+
+  try {
+    response = await fetch(`https://www.googleapis.com/calendar/v3${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch {
+    throw new Error("Nie udalo sie polaczyc z Google Calendar API. Sprawdz polaczenie sieciowe.");
+  }
+
+  const text = await response.text();
+  let data = null;
+
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {}
+
+  if (!response.ok) {
+    const baseMessage = data?.error?.message || data?.error_description || text || `HTTP ${response.status}`;
+    const scopeHint =
+      response.status === 401
+        ? " Polacz Google Calendar ponownie, bo token wygasl albo nie zostal zwrocony przez Supabase."
+        : response.status === 403
+        ? " Google zalogowal uzytkownika, ale bez wymaganych uprawnien do tworzenia wydarzen. Kliknij 'Polacz Google Calendar' i zaakceptuj dostep."
+        : "";
+    throw new Error(`${baseMessage}${scopeHint}`);
+  }
+
+  return data || {};
+}
+
+async function createGoogleCalendarEvent(accessToken, event) {
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  return googleCalendarRequest(accessToken, "/calendars/primary/events", {
+    method: "POST",
+    body: {
+      summary: event.title,
+      description: event.details || undefined,
+      start: {
+        dateTime: new Date(event.start).toISOString(),
+        timeZone,
+      },
+      end: {
+        dateTime: new Date(event.end).toISOString(),
+        timeZone,
+      },
+    },
+  });
+}
+
 function buildReviewFocusAreas({ history, statsByCat = [], questionPool = [], weakCat, activeDeckName = DEFAULT_DECK_NAME }) {
   const activeQuestions = (questionPool || []).filter((question) => question.isActive !== false);
   const questionCountByCategory = {};
@@ -1558,7 +1669,7 @@ function buildAdaptivePlan({ history, weakCat, statsByCat = [], questionPool = [
   };
 }
 
-function buildStudyPlanCalendarLink(item, index = 0, fallbackDeck = DEFAULT_DECK_NAME) {
+function buildStudyPlanCalendarEvent(item, index = 0, fallbackDeck = DEFAULT_DECK_NAME) {
   const rawDate = String(item?.date || item?.dueDate || "").trim();
   const start = rawDate ? new Date(`${rawDate}T09:00:00`) : addDays(new Date(), index);
   if (!rawDate) start.setHours(9, 0, 0, 0);
@@ -1577,12 +1688,16 @@ function buildStudyPlanCalendarLink(item, index = 0, fallbackDeck = DEFAULT_DECK
     .filter(Boolean)
     .join("\n");
 
-  return buildGoogleCalendarUrl({
+  return {
     title: `Zen Quiz: ${focusArea}`,
     start,
     end,
     details,
-  });
+  };
+}
+
+function buildStudyPlanCalendarLink(item, index = 0, fallbackDeck = DEFAULT_DECK_NAME) {
+  return buildGoogleCalendarUrl(buildStudyPlanCalendarEvent(item, index, fallbackDeck));
 }
 
 function DeckProgressRing({ progress, size = 28, stroke = 3.5 }) {
@@ -2430,6 +2545,11 @@ function QuizAbcdApp() {
   const [supabaseCheck, setSupabaseCheck] = useState({ status: "idle", message: "Nie sprawdzono połączenia." });
   const [cloudCheck, setCloudCheck] = useState({ status: "idle", message: "Nie sprawdzono połączenia." });
 
+  const [googleCalendarStatus, setGoogleCalendarStatus] = useState({
+    status: "idle",
+    message: "Polacz Google Calendar, aby dodawac bloki nauki bezposrednio z planu.",
+  });
+  const [googleCalendarBusyKey, setGoogleCalendarBusyKey] = useState("");
   const [trainingSummary, setTrainingSummary] = useState(null);
   const [trainingSummaryStatus, setTrainingSummaryStatus] = useState("idle");
   const [studyPlan, setStudyPlan] = useState(null);
@@ -2509,6 +2629,8 @@ function QuizAbcdApp() {
   );
   const sbEnabled = useMemo(() => hasSupabaseConfig(supabaseConfig), [supabaseConfig]);
   const manualCloudApiKey = looksLikeAnthropicKey(cloudApiKeyDraft) ? cloudApiKeyDraft.trim() : "";
+  const googleCalendarToken = String(authSession?.provider_token || "").trim();
+  const googleCalendarConnected = Boolean(googleCalendarToken);
   const generatorQuestionCount = useMemo(() => estimateQuestionCount(generatorDensity), [generatorDensity]);
   const generatorMaterialText = useMemo(() => {
     if (!generatorPageTexts.length) return String(generatorSourceText || "").trim();
@@ -2694,6 +2816,7 @@ function QuizAbcdApp() {
       setAuthUser(null);
       setUserProfile(null);
       setUserTagMap({});
+      setGoogleCalendarBusyKey("");
       return;
     }
 
@@ -2707,7 +2830,10 @@ function QuizAbcdApp() {
         const now = Math.floor(Date.now() / 1000);
 
         if (authSession?.refresh_token && authSession?.expires_at && authSession.expires_at <= now + 60) {
-          const refreshed = buildAuthSession(await refreshAuthSession(supabaseConfig, authSession.refresh_token));
+          const refreshed = mergeAuthSessionProviderData(
+            buildAuthSession(await refreshAuthSession(supabaseConfig, authSession.refresh_token)),
+            authSession
+          );
           if (refreshed) {
             nextSession = refreshed;
             if (!cancelled) {
@@ -2956,20 +3082,30 @@ function QuizAbcdApp() {
     }
   }, [cloudApiEnabled, sbEnabled, supabaseConfig, cloudModel, cloudApiKeyDraft, manualCloudApiKey]);
 
-  const handleGoogleAuth = useCallback(() => {
-    if (!sbEnabled) {
-      setAuthStatus({
-        status: "error",
-        message: "Najpierw ustaw poprawny Supabase URL i publishable / anon key.",
-      });
-      return;
-    }
+  const startGoogleOAuth = useCallback(
+    async ({ connectCalendar = true, source = "login" } = {}) => {
+      if (!sbEnabled) {
+        const message = "Najpierw ustaw poprawny Supabase URL i publishable / anon key.";
+        setAuthStatus({
+          status: "error",
+          message,
+        });
+        if (source === "calendar") {
+          setGoogleCalendarStatus({ status: "error", message });
+        }
+        return;
+      }
 
-    const run = async () => {
       setAuthStatus({
         status: "loading",
         message: "Sprawdzam konfiguracje Google w Supabase...",
       });
+      if (source === "calendar") {
+        setGoogleCalendarStatus({
+          status: "loading",
+          message: "Sprawdzam uprawnienia Google Calendar...",
+        });
+      }
 
       try {
         const settings = await fetchAuthSettings(supabaseConfig);
@@ -2980,27 +3116,61 @@ function QuizAbcdApp() {
         );
 
         if (!googleEnabled) {
+          const message =
+            "Google provider nie jest wlaczony w Supabase. Wejdz w Authentication -> Providers -> Google, wlacz go i uzupelnij Google Client ID oraz Client Secret.";
           setAuthStatus({
             status: "error",
-            message:
-              "Google provider nie jest wlaczony w Supabase. Wejdz w Authentication -> Providers -> Google, wlacz go i uzupelnij Google Client ID oraz Client Secret.",
+            message,
           });
+          if (source === "calendar") {
+            setGoogleCalendarStatus({ status: "error", message });
+          }
           return;
         }
 
+        const authorizeUrl = buildOAuthAuthorizeUrl(
+          supabaseConfig,
+          "google",
+          connectCalendar
+            ? {
+                scopes: GOOGLE_CALENDAR_SCOPE,
+                queryParams: GOOGLE_CALENDAR_AUTH_QUERY,
+              }
+            : {}
+        );
+
         setAuthStatus({
           status: "loading",
-          message: "Przekierowuje do logowania Google przez Supabase...",
+          message: connectCalendar
+            ? "Przekierowuje do Google przez Supabase i prosze o dostep do Google Calendar..."
+            : "Przekierowuje do logowania Google przez Supabase...",
         });
+        if (source === "calendar") {
+          setGoogleCalendarStatus({
+            status: "loading",
+            message: "Przekierowuje do Google, aby polaczyc kalendarz...",
+          });
+        }
 
-        window.location.assign(buildOAuthAuthorizeUrl(supabaseConfig, "google"));
+        window.location.assign(authorizeUrl);
       } catch (error) {
-        setAuthStatus({ status: "error", message: getErrorText(error) });
+        const message = getErrorText(error);
+        setAuthStatus({ status: "error", message });
+        if (source === "calendar") {
+          setGoogleCalendarStatus({ status: "error", message });
+        }
       }
-    };
+    },
+    [sbEnabled, supabaseConfig]
+  );
 
-    run();
-  }, [sbEnabled, supabaseConfig]);
+  const handleGoogleAuth = useCallback(() => {
+    startGoogleOAuth({ connectCalendar: true, source: "login" });
+  }, [startGoogleOAuth]);
+
+  const handleGoogleCalendarConnect = useCallback(() => {
+    startGoogleOAuth({ connectCalendar: true, source: "calendar" });
+  }, [startGoogleOAuth]);
 
   useEffect(() => {
     const { session, error } = parseOAuthCallback(typeof window !== "undefined" ? window.location.href : "");
@@ -3012,7 +3182,9 @@ function QuizAbcdApp() {
       if (error) {
         clearOAuthCallbackUrl();
         if (!cancelled) {
-          setAuthStatus({ status: "error", message: `Google login nie powiodl sie: ${error}` });
+          const message = `Google login nie powiodl sie: ${error}`;
+          setAuthStatus({ status: "error", message });
+          setGoogleCalendarStatus({ status: "error", message });
         }
         return;
       }
@@ -3025,10 +3197,13 @@ function QuizAbcdApp() {
       if (!sbEnabled) {
         clearOAuthCallbackUrl();
         if (!cancelled) {
+          const message =
+            "Google zwrocilo sesje, ale aplikacja nie ma poprawnego polaczenia z Supabase. Sprawdz URL projektu i publishable / anon key.";
           setAuthStatus({
             status: "error",
-            message: "Google zwrocilo sesje, ale aplikacja nie ma poprawnego polaczenia z Supabase. Sprawdz URL projektu i publishable / anon key.",
+            message,
           });
+          setGoogleCalendarStatus({ status: "error", message });
         }
         return;
       }
@@ -3042,10 +3217,10 @@ function QuizAbcdApp() {
 
       try {
         const user = await fetchAuthUser(supabaseConfig, session.access_token);
-        const nextSession = {
+        const nextSession = mergeAuthSessionProviderData({
           ...session,
           user,
-        };
+        }, authSession);
         const displayName = String(user?.user_metadata?.full_name || user?.user_metadata?.name || user?.user_metadata?.display_name || user?.email?.split("@")[0] || "").trim();
         const profile = await upsertProfileRecord(supabaseConfig, session.access_token, user, displayName);
 
@@ -3061,12 +3236,27 @@ function QuizAbcdApp() {
         setAuthMode("login");
         setAuthStatus({
           status: "success",
-          message: "Zalogowano przez Google. Profil i sesja zostaly zapisane.",
+          message: nextSession?.provider_token
+            ? "Zalogowano przez Google. Profil zapisany, a Google Calendar jest gotowy do tworzenia wydarzen."
+            : "Zalogowano przez Google. Profil i sesja zostaly zapisane.",
         });
+        setGoogleCalendarStatus(
+          nextSession?.provider_token
+            ? {
+                status: "success",
+                message: "Google Calendar polaczony. Mozesz dodawac wydarzenia bezposrednio z planu nauki.",
+              }
+            : {
+                status: "idle",
+                message: "Logowanie Google dziala, ale Supabase nie zwrocilo provider tokenu do Google Calendar.",
+              }
+        );
       } catch (oauthError) {
         clearOAuthCallbackUrl();
         if (!cancelled) {
-          setAuthStatus({ status: "error", message: getErrorText(oauthError) });
+          const message = getErrorText(oauthError);
+          setAuthStatus({ status: "error", message });
+          setGoogleCalendarStatus({ status: "error", message });
         }
       }
     };
@@ -3076,7 +3266,7 @@ function QuizAbcdApp() {
     return () => {
       cancelled = true;
     };
-  }, [sbEnabled, supabaseConfig]);
+  }, [authSession, sbEnabled, supabaseConfig]);
 
   const handleAuthSubmit = useCallback(async () => {
     if (!sbEnabled) {
@@ -3177,6 +3367,11 @@ function QuizAbcdApp() {
     setUserTagMap({});
     setAuthPassword("");
     setAuthStatus({ status: "success", message: "Wylogowano z aplikacji." });
+    setGoogleCalendarStatus({
+      status: "idle",
+      message: "Polacz Google Calendar, aby dodawac bloki nauki bezposrednio z planu.",
+    });
+    setGoogleCalendarBusyKey("");
   }, [sbEnabled, authAccessToken, supabaseConfig]);
 
   const toggleTagFilter = useCallback((tag) => {
@@ -4242,6 +4437,116 @@ function QuizAbcdApp() {
     if (selectedDeck !== ALL_DECKS_LABEL) return selectedDeck;
     return activeQuestionPool.find((question) => normalizeDeck(question.deck))?.deck || DEFAULT_DECKS[0];
   }, [selectedDeck, activeQuestionPool]);
+
+  const openStudyPlanCalendarFallback = useCallback(
+    (item, index = 0) => {
+      const url = buildStudyPlanCalendarLink(item, index, activeDeckName);
+      if (url && typeof window !== "undefined") {
+        window.open(url, "_blank", "noopener,noreferrer");
+      }
+    },
+    [activeDeckName]
+  );
+
+  const handleAddItemToGoogleCalendar = useCallback(
+    async (item, index = 0, options = {}) => {
+      const event = buildStudyPlanCalendarEvent(item, index, activeDeckName);
+      const fallbackUrl = buildGoogleCalendarUrl(event);
+      const busyKey = String(options.busyKey || `calendar-item-${index}`);
+      const label = String(options.label || item?.task || item?.label || event?.title || "blok nauki").trim();
+
+      if (!event?.title || !event?.start || !event?.end) return;
+
+      if (!googleCalendarToken) {
+        setGoogleCalendarStatus({
+          status: "idle",
+          message: "Google Calendar nie jest jeszcze polaczony. Otwieram awaryjny link do wydarzenia.",
+        });
+        if (fallbackUrl && typeof window !== "undefined") {
+          window.open(fallbackUrl, "_blank", "noopener,noreferrer");
+        }
+        return;
+      }
+
+      setGoogleCalendarBusyKey(busyKey);
+      setGoogleCalendarStatus({
+        status: "loading",
+        message: `Dodaje do Google Calendar: ${label}...`,
+      });
+
+      try {
+        const createdEvent = await createGoogleCalendarEvent(googleCalendarToken, event);
+        setGoogleCalendarStatus({
+          status: "success",
+          message: `Dodano do Google Calendar: ${label}.`,
+        });
+
+        if (options.openAfterCreate !== false && createdEvent?.htmlLink && typeof window !== "undefined") {
+          window.open(createdEvent.htmlLink, "_blank", "noopener,noreferrer");
+        }
+      } catch (error) {
+        setGoogleCalendarStatus({
+          status: "error",
+          message: `Nie udalo sie dodac wydarzenia. ${getErrorText(error)}`,
+        });
+
+        if (options.fallbackToLink !== false && fallbackUrl && typeof window !== "undefined") {
+          window.open(fallbackUrl, "_blank", "noopener,noreferrer");
+        }
+      } finally {
+        setGoogleCalendarBusyKey((prev) => (prev === busyKey ? "" : prev));
+      }
+    },
+    [activeDeckName, googleCalendarToken]
+  );
+
+  const handleAddItemsToGoogleCalendar = useCallback(
+    async (items = [], options = {}) => {
+      const safeItems = (items || []).filter(Boolean);
+      if (!safeItems.length) return;
+
+      if (!googleCalendarToken) {
+        setGoogleCalendarStatus({
+          status: "idle",
+          message: "Najpierw polacz Google Calendar, aby zapisac caly plan jednym kliknieciem.",
+        });
+        return;
+      }
+
+      const busyKey = String(options.busyKey || "calendar-batch");
+      const label = String(options.label || "plan").trim();
+
+      setGoogleCalendarBusyKey(busyKey);
+      setGoogleCalendarStatus({
+        status: "loading",
+        message: `Dodaje do Google Calendar caly ${label}...`,
+      });
+
+      try {
+        for (let index = 0; index < safeItems.length; index += 1) {
+          const event = buildStudyPlanCalendarEvent(safeItems[index], index, activeDeckName);
+          await createGoogleCalendarEvent(googleCalendarToken, event);
+        }
+
+        setGoogleCalendarStatus({
+          status: "success",
+          message: `Dodano ${safeItems.length} wydarzen do Google Calendar.`,
+        });
+
+        if (options.openCalendarAfterSync !== false && typeof window !== "undefined") {
+          window.open("https://calendar.google.com/calendar/u/0/r", "_blank", "noopener,noreferrer");
+        }
+      } catch (error) {
+        setGoogleCalendarStatus({
+          status: "error",
+          message: `Nie udalo sie zsynchronizowac planu. ${getErrorText(error)}`,
+        });
+      } finally {
+        setGoogleCalendarBusyKey((prev) => (prev === busyKey ? "" : prev));
+      }
+    },
+    [activeDeckName, googleCalendarToken]
+  );
 
   const deckGroups = useMemo(() => {
     const order = new Map(DEFAULT_DECKS.map((deck, index) => [deck, index]));
@@ -5619,6 +5924,41 @@ function QuizAbcdApp() {
           </div>
         </div>
 
+        <div style={{ ...s.card, padding: 18 }}>
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+            <div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Google Calendar integration</div>
+              <div style={{ fontSize: 13, color: C.textSub, lineHeight: 1.65, marginTop: 6, maxWidth: 760 }}>
+                Zakladka planu potrafi juz tworzyc wydarzenia bezposrednio w Google Calendar. Tutaj widzisz status polaczenia i mozesz je odswiezyc.
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <span className="soft-chip">
+                <IcoCalendar size={12} />
+                {googleCalendarConnected ? "Polaczony" : "Niepolaczony"}
+              </span>
+              <button type="button" onClick={handleGoogleCalendarConnect} style={s.btn("ghost")} disabled={googleCalendarStatus.status === "loading"}>
+                <IcoUser size={14} /> {googleCalendarConnected ? "Polacz ponownie" : "Polacz Google Calendar"}
+              </button>
+            </div>
+          </div>
+
+          <div
+            style={{
+              padding: 12,
+              borderRadius: 14,
+              background: toneForStatus(googleCalendarStatus.status).bg,
+              color: toneForStatus(googleCalendarStatus.status).color,
+              border: `1px solid ${toneForStatus(googleCalendarStatus.status).border}`,
+              fontSize: 13,
+              lineHeight: 1.6,
+            }}
+          >
+            {googleCalendarStatus.message}
+          </div>
+        </div>
+
         <div className="calendar-layout">
           <div style={{ ...s.card, padding: 20 }}>
             <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
@@ -5999,6 +6339,56 @@ function QuizAbcdApp() {
           )}
         </div>
 
+        <div style={{ ...s.card, padding: 18 }}>
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+            <div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Google Calendar</div>
+              <div style={{ fontSize: 13, color: C.textSub, lineHeight: 1.65, marginTop: 6, maxWidth: 760 }}>
+                Dodawaj bloki z planu bezposrednio do swojego kalendarza. Jesli Google nie jest jeszcze polaczone, nadal mozesz otworzyc awaryjny link do wydarzenia.
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <span className="soft-chip">
+                <IcoCalendar size={12} />
+                {googleCalendarConnected ? "Google Calendar polaczony" : "Tryb linku awaryjnego"}
+              </span>
+              <button type="button" onClick={handleGoogleCalendarConnect} style={s.btn("ghost")} disabled={googleCalendarStatus.status === "loading"}>
+                <IcoUser size={14} /> {googleCalendarConnected ? "Polacz ponownie" : "Polacz Google Calendar"}
+              </button>
+              {weeklyPlan.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleAddItemsToGoogleCalendar(weeklyPlan, {
+                      busyKey: "calendar-week-sync",
+                      label: "tydzien nauki",
+                    })
+                  }
+                  style={s.btn("soft")}
+                  disabled={!googleCalendarConnected || googleCalendarBusyKey === "calendar-week-sync"}
+                >
+                  <IcoCalendar size={14} /> {googleCalendarBusyKey === "calendar-week-sync" ? "Dodaje tydzien..." : "Dodaj caly tydzien"}
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div
+            style={{
+              padding: 12,
+              borderRadius: 14,
+              background: toneForStatus(googleCalendarStatus.status).bg,
+              color: toneForStatus(googleCalendarStatus.status).color,
+              border: `1px solid ${toneForStatus(googleCalendarStatus.status).border}`,
+              fontSize: 13,
+              lineHeight: 1.6,
+            }}
+          >
+            {googleCalendarStatus.message}
+          </div>
+        </div>
+
         <div style={{ display: "grid", gridTemplateColumns: "1.1fr .9fr", gap: 16 }}>
           <div style={{ ...s.card, padding: 20 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
@@ -6082,7 +6472,7 @@ function QuizAbcdApp() {
               {reviewQueue.length ? (
                 reviewQueue.map((item, index) => {
                   const tone = getPriorityTone(item.priority);
-                  const calendarUrl = buildStudyPlanCalendarLink(item, index, activeDeckName);
+                  const busyKey = `review-calendar-${index}`;
                   return (
                     <div
                       key={`${item.label}-${item.category}-${index}`}
@@ -6123,14 +6513,26 @@ function QuizAbcdApp() {
                           <IcoClock size={12} />
                           {item.duration || "25m"}
                         </span>
-                        <a
-                          href={calendarUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          style={{ ...s.btn("ghost"), padding: "9px 12px", textDecoration: "none" }}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            googleCalendarConnected
+                              ? handleAddItemToGoogleCalendar(item, index, {
+                                  busyKey,
+                                  label: item.label || item.task || "powtorka",
+                                })
+                              : openStudyPlanCalendarFallback(item, index)
+                          }
+                          disabled={googleCalendarBusyKey === busyKey}
+                          style={{ ...s.btn("ghost"), padding: "9px 12px" }}
                         >
-                          <IcoCalendar size={14} /> Google Calendar
-                        </a>
+                          <IcoCalendar size={14} />
+                          {googleCalendarBusyKey === busyKey
+                            ? "Dodaje..."
+                            : googleCalendarConnected
+                            ? "Dodaj do Google"
+                            : "Otworz w Google"}
+                        </button>
                       </div>
                     </div>
                   );
@@ -6148,14 +6550,23 @@ function QuizAbcdApp() {
               <IcoCalendar size={16} />
               <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Tydzien nauki i Google Calendar</div>
             </div>
-            <div style={{ fontSize: 12, color: C.textSub }}>Kliknij Dodaj, aby wstawic blok do swojego kalendarza.</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <div style={{ fontSize: 12, color: C.textSub }}>
+                {googleCalendarConnected ? "Kliknij Dodaj, aby utworzyc wydarzenie bezposrednio w Google Calendar." : "Bez polaczenia otworzymy awaryjny link do wydarzenia."}
+              </div>
+              {weeklyPlan.length > 0 && !googleCalendarConnected && (
+                <button type="button" onClick={handleGoogleCalendarConnect} style={s.btn("ghost")} disabled={googleCalendarStatus.status === "loading"}>
+                  <IcoUser size={14} /> Polacz Google Calendar
+                </button>
+              )}
+            </div>
           </div>
 
           <div style={{ display: "grid", gap: 10 }}>
             {weeklyPlan.length ? (
               weeklyPlan.map((item, index) => {
                 const tone = getPriorityTone(item.priority);
-                const calendarUrl = buildStudyPlanCalendarLink(item, index, activeDeckName);
+                const busyKey = `weekly-calendar-${index}`;
                 return (
                   <div
                     key={`${item.day}-${item.date || index}`}
@@ -6202,14 +6613,22 @@ function QuizAbcdApp() {
                       {item.note && <div style={{ fontSize: 12, color: C.textSub, lineHeight: 1.55 }}>{item.note}</div>}
                     </div>
 
-                    <a
-                      href={calendarUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      style={{ ...s.btn("ghost"), padding: "9px 12px", textDecoration: "none", whiteSpace: "nowrap" }}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        googleCalendarConnected
+                          ? handleAddItemToGoogleCalendar(item, index, {
+                              busyKey,
+                              label: item.task || `${item.day} ${item.dateLabel || ""}`.trim(),
+                            })
+                          : openStudyPlanCalendarFallback(item, index)
+                      }
+                      disabled={googleCalendarBusyKey === busyKey}
+                      style={{ ...s.btn("ghost"), padding: "9px 12px", whiteSpace: "nowrap" }}
                     >
-                      <IcoCalendar size={14} /> Dodaj
-                    </a>
+                      <IcoCalendar size={14} />
+                      {googleCalendarBusyKey === busyKey ? "Dodaje..." : googleCalendarConnected ? "Dodaj do Google" : "Otworz w Google"}
+                    </button>
                   </div>
                 );
               })
@@ -7130,6 +7549,9 @@ function QuizAbcdApp() {
                 <button onClick={handleProfileSave} style={s.btn("soft")}>
                   <IcoUser size={14} /> Zapisz profil
                 </button>
+                <button onClick={handleGoogleCalendarConnect} style={s.btn("ghost")} disabled={googleCalendarStatus.status === "loading"}>
+                  <IcoCalendar size={14} /> {googleCalendarConnected ? "Google Calendar polaczony" : "Polacz Google Calendar"}
+                </button>
                 <button onClick={handleSignOut} style={s.btn("ghost")}>
                   <IcoLogout size={14} /> Wyloguj
                 </button>
@@ -7137,6 +7559,21 @@ function QuizAbcdApp() {
 
               <div className="field-help">
                 Profil zapisuje się w tabeli `profiles`, a wyniki i tagi są powiązane z tym kontem.
+              </div>
+
+              <div
+                style={{
+                  marginTop: 12,
+                  padding: 12,
+                  borderRadius: 14,
+                  background: toneForStatus(googleCalendarStatus.status).bg,
+                  color: toneForStatus(googleCalendarStatus.status).color,
+                  border: `1px solid ${toneForStatus(googleCalendarStatus.status).border}`,
+                  fontSize: 13,
+                  lineHeight: 1.6,
+                }}
+              >
+                {googleCalendarStatus.message}
               </div>
             </>
           ) : (

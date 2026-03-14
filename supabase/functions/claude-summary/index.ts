@@ -87,6 +87,28 @@ function buildQuestionExplanationPrompt(payload: Record<string, unknown>) {
   ].join("\n");
 }
 
+function buildQuestionPracticalUsePrompt(payload: Record<string, unknown>) {
+  return [
+    "Jestes tutorem, ktory przeklada pojedyncze pytanie z quizu na realna praktyke.",
+    "Masz pokazac, jak wykorzystac te wiedze poza samym zapamietaniem definicji.",
+    "Zwroc tylko poprawny JSON bez markdown i bez dodatkowego komentarza.",
+    'Wymagany format: {"mode":"vocabulary|technical_rule|exam_application|general_concept","title":"...","usageSummary":"...","realWorldApplications":["..."],"examples":["...","..."],"examApplication":"...","practiceTask":"..."}',
+    "Zasady:",
+    "- mode dobierz na podstawie payload",
+    "- usageSummary: 2 do 4 zdan, konkretnie i praktycznie",
+    "- realWorldApplications: 2 do 4 realnych zastosowan, a nie ogolnikow",
+    "- examples: dokladnie 2 elementy",
+    "- jesli to slowko, fraza albo termin jezykowy, examples musza byc 2 naturalnymi zdaniami z uzyciem tego slowa lub frazy",
+    "- jesli to regula techniczna, realWorldApplications maja pokazac konkretne systemy, decyzje, zadania lub momenty pracy, gdzie to stosujesz",
+    "- jesli to temat egzaminacyjny lub procesowy, examApplication ma pokazac realny scenariusz z pracy, projektu, programu albo decyzji managerskiej",
+    "- practiceTask: 1 krotkie cwiczenie do wykonania od razu po odpowiedzi",
+    "- nie zmyslaj faktow spoza payload; opieraj sie tylko na dostarczonej tresci i najbardziej wiarygodnym praktycznym przełozeniu z tych danych",
+    "- odpowiedz ma byc po polsku, ale examples moga zawierac slowo obcojezyczne jesli takie jest w materiale",
+    "Dane wejsciowe:",
+    JSON.stringify(payload, null, 2),
+  ].join("\n");
+}
+
 function buildStudyPlanPrompt(payload: Record<string, unknown>) {
   return [
     "Jestes trenerem przygotowujacym szczegolowy plan nauki po polsku.",
@@ -354,6 +376,26 @@ function normalizeExamReadiness(data: any) {
   };
 }
 
+function normalizeQuestionPracticalUse(data: any) {
+  const usageSummary = String(data?.usageSummary || "").trim();
+  if (!usageSummary) throw new Error("Cloud returned invalid practical guidance");
+
+  return {
+    ok: true,
+    mode: String(data?.mode || "general_concept").trim() || "general_concept",
+    title: String(data?.title || "Praktyczne wykorzystanie").trim() || "Praktyczne wykorzystanie",
+    usageSummary,
+    realWorldApplications: Array.isArray(data?.realWorldApplications)
+      ? data.realWorldApplications.map((item: any) => String(item || "").trim()).filter(Boolean).slice(0, 4)
+      : [],
+    examples: Array.isArray(data?.examples)
+      ? data.examples.map((item: any) => String(item || "").trim()).filter(Boolean).slice(0, 2)
+      : [],
+    examApplication: String(data?.examApplication || "").trim(),
+    practiceTask: String(data?.practiceTask || "").trim(),
+  };
+}
+
 function normalizeKeyPoints(data: any) {
   const keyPoints = Array.isArray(data?.keyPoints)
     ? data.keyPoints
@@ -455,6 +497,18 @@ Deno.serve(async (req) => {
         title: "Wyjasnienie AI",
         text,
       });
+    }
+
+    if (action === "question_practical_use") {
+      const prompt = buildQuestionPracticalUsePrompt((body?.payload as Record<string, unknown>) || {});
+      const text = await callAnthropic({
+        apiKey: anthropicApiKey,
+        model,
+        prompt,
+        maxTokens: 850,
+      });
+
+      return json(normalizeQuestionPracticalUse(extractJsonObject(text)));
     }
 
     if (action === "study_plan") {

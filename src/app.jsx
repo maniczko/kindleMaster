@@ -3307,6 +3307,162 @@ function buildLocalQuestionExplanation({ question, answerState }) {
   ].join("\n\n");
 }
 
+function buildQuestionPracticalPayload(question, answerState = null, deckGoal = null) {
+  const base = buildQuestionExplanationPayload(question, answerState);
+  const goal = normalizeDeckGoalRow(deckGoal || { deck: base.deck });
+  return {
+    ...base,
+    deckGoal: {
+      examName: String(goal.examName || "").trim(),
+      examDescription: String(goal.examDescription || "").trim(),
+      targetDate: String(goal.targetDate || "").trim(),
+      targetScore: Number(goal.targetScore || DEFAULT_EXAM_TARGET_SCORE) || DEFAULT_EXAM_TARGET_SCORE,
+      sourceNotes: String(goal.sourceNotes || "").trim(),
+    },
+  };
+}
+
+function inferPracticalInsightMode(payload) {
+  const term = String(payload?.referenceAnswer || payload?.correctAnswer || "").trim();
+  const haystack = [
+    payload?.question,
+    payload?.rawQuestion,
+    payload?.referenceExplanation,
+    payload?.referenceAnswer,
+    payload?.category,
+    payload?.deck,
+    ...(payload?.tags || []),
+    payload?.deckGoal?.examName,
+    payload?.deckGoal?.examDescription,
+    payload?.deckGoal?.sourceNotes,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  const shortTerm = term && term.split(/\s+/).filter(Boolean).length <= 4 && term.length <= 36 && !/[.!?;:]/.test(term);
+  const looksLanguage = /(language|jezyk|angielski|english|polski|polish|niemiecki|german|hiszpanski|spanish|francuski|french|rosyjski|russian|slownictwo|vocab|grammar|gramatyka)/i.test(
+    haystack
+  );
+  const looksTechnical = /(api|http|sql|oauth|token|schema|database|docker|react|typescript|javascript|frontend|backend|supabase|stripe|calendar|webhook|cache|security|test|migration|pipeline|ci\/cd|deployment|architektur|algorytm|regula techniczna)/i.test(
+    haystack
+  );
+  const looksExam = Boolean(String(payload?.deckGoal?.examName || "").trim()) || /(exam|cert|certyfik|pgmp|pmp|project|program|scope|schedule|risk|benefit|governance|stakeholder|budget|roadmap|compliance|audit)/i.test(haystack);
+
+  if (shortTerm && (looksLanguage || ["flashcard", "type_answer", "cloze_deletion"].includes(String(payload?.questionType || "")))) {
+    return "vocabulary";
+  }
+  if (looksTechnical) return "technical_rule";
+  if (looksExam) return "exam_application";
+  return "general_concept";
+}
+
+function normalizePracticalInsightResponse(data) {
+  const usageSummary = String(data?.usageSummary || "").trim();
+  if (!usageSummary) throw new Error("Cloud function returned invalid practical guidance");
+
+  return {
+    source: "cloud",
+    mode: String(data?.mode || "general_concept").trim() || "general_concept",
+    title: String(data?.title || "Praktyczne wykorzystanie").trim() || "Praktyczne wykorzystanie",
+    usageSummary,
+    realWorldApplications: Array.isArray(data?.realWorldApplications)
+      ? data.realWorldApplications.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 4)
+      : [],
+    examples: Array.isArray(data?.examples) ? data.examples.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 2) : [],
+    examApplication: String(data?.examApplication || "").trim(),
+    practiceTask: String(data?.practiceTask || "").trim(),
+    note: String(data?.note || "").trim(),
+  };
+}
+
+function buildLocalPracticalInsight({ question, answerState, deckGoal = null }) {
+  const payload = buildQuestionPracticalPayload(question, answerState, deckGoal);
+  const mode = inferPracticalInsightMode(payload);
+  const term = String(payload.referenceAnswer || payload.correctAnswer || payload.userAnswer || payload.question || "to pojecie").trim();
+  const goalName = String(payload.deckGoal?.examName || "").trim();
+  const baseDeck = String(payload.deck || DEFAULT_DECK_NAME).trim() || DEFAULT_DECK_NAME;
+
+  if (mode === "vocabulary") {
+    return {
+      source: "local",
+      mode,
+      title: "Praktyczne uzycie slowa",
+      usageSummary: `Nie zostawiaj "${term}" jako samego hasla. Najlepiej od razu przenies je do prostego zdania, pytania albo krotkiej wypowiedzi, zeby wejsc w aktywne uzycie, a nie tylko rozpoznanie.`,
+      realWorldApplications: [
+        `Uzyj "${term}" w krotkiej wypowiedzi o swojej pracy, planie dnia albo nauce.`,
+        `Powiedz to slowo na glos i dodaj do niego kontekst czasu, miejsca albo celu.`,
+      ],
+      examples: [
+        `Uloz jedno proste zdanie z "${term}" w kontekscie codziennej sytuacji.`,
+        `Uloz drugie zdanie z "${term}" jako pytanie albo krotka odpowiedz.`,
+      ],
+      examApplication: "Na egzaminie lub w rozmowie slowko ma wracac naturalnie, a nie tylko jako samotne tlumaczenie.",
+      practiceTask: `Przez 60 sekund uzyj "${term}" dwa razy: raz w zdaniu twierdzacym i raz w pytaniu.`,
+      note: "Cloud AI moze dopisac dwa bardziej naturalne zdania i konkretny kontekst uzycia.",
+    };
+  }
+
+  if (mode === "technical_rule") {
+    return {
+      source: "local",
+      mode,
+      title: "Gdzie uzyjesz tej reguly",
+      usageSummary: "Traktuj te zasade jak filtr decyzyjny. Najwieksza wartosc daje wtedy, gdy wracasz do niej przy projektowaniu, wdrozeniu, debugowaniu albo review zamiast probowac pamietac ja w oderwaniu od pracy.",
+      realWorldApplications: [
+        "Wroc do tej reguly, gdy wybierasz rozwiazanie, oceniasz ryzyko albo tlumaczysz decyzje techniczna zespolowi.",
+        "Uzyj jej podczas code review, testowania, wdrozen albo analizy incydentu, gdy trzeba odroznic poprawne rozwiazanie od pozornie podobnego.",
+      ],
+      examples: [
+        "Scenariusz: przed wdrozeniem sprawdzasz, czy rozwiazanie nadal trzyma sie tej zasady, a nie tylko dziala przypadkiem w jednym przypadku.",
+        "Sygnał praktyczny: jesli pojawia sie kilka podobnych opcji, ta regula pomaga szybciej odrzucic te, ktore brzmia dobrze, ale lamia wazne ograniczenie.",
+      ],
+      examApplication: "Na egzaminie to zwykle nie jest pytanie o definicje, tylko o najlepsza decyzje w konkretnej sytuacji.",
+      practiceTask: "Wez ostatni problem techniczny z pracy albo projektu i dopisz jednym zdaniem, jak ta regula pomoglaby wybrac lepsze rozwiazanie.",
+      note: "Cloud AI moze podmienic to na bardziej konkretne systemy, narzedzia i sytuacje z tego materialu.",
+    };
+  }
+
+  if (mode === "exam_application") {
+    return {
+      source: "local",
+      mode,
+      title: "Scenariusz praktyczny",
+      usageSummary: goalName
+        ? `W kontekscie ${goalName} potraktuj ten temat jak decyzje albo dzialanie w realnej pracy, a nie jak sucha definicje. To zwykle wlasnie taka praktyczna zmiana perspektywy rozstrzyga pytania sytuacyjne.`
+        : "Potraktuj ten temat jak decyzje albo dzialanie w realnej sytuacji zawodowej. W pytaniach egzaminacyjnych najczesciej chodzi o to, co zrobisz, w jakiej kolejnosci i dlaczego.",
+      realWorldApplications: [
+        "Uzyj tej wiedzy, gdy musisz wybrac kolejne dzialanie, ustalic priorytet albo ocenic ryzyko w projekcie, programie lub procesie.",
+        "Wroc do niej wtedy, gdy trzeba wytlumaczyc, kto powinien podjac decyzje, jaki artefakt jest potrzebny albo kiedy przejsc do nastepnego kroku.",
+      ],
+      examples: [
+        "Scenariusz: masz kilka mozliwych ruchow i musisz wybrac ten, ktory najlepiej domyka cel, ryzyko albo odpowiedzialnosc.",
+        "W praktyce oznacza to, ze nie pytasz tylko o definicje, ale o najlepsze nastepne dzialanie w danej sytuacji.",
+      ],
+      examApplication: "Na egzaminie szukaj momentu, w ktorym ta wiedza zmienia decyzje, kolejnosc krokow albo interpretacje odpowiedzialnosci.",
+      practiceTask: "Wez jedno bledne pytanie i opisz w 2 zdaniach, co zrobilbys w realnej sytuacji zawodowej, korzystajac z tej zasady.",
+      note: "Cloud AI moze dopasowac ten scenariusz do konkretnego egzaminu i tresci Twojego decku.",
+    };
+  }
+
+  return {
+    source: "local",
+    mode,
+    title: "Jak wykorzystac to w praktyce",
+    usageSummary: "Nie zatrzymuj sie na samym rozpoznaniu poprawnej odpowiedzi. Najlepiej od razu sprawdz, w jakiej sytuacji ta wiedza pomaga cos zrobic, wyjasnic albo lepiej ocenic decyzje.",
+    realWorldApplications: [
+      "Wroc do tego pojecia, gdy trzeba cos komus wytlumaczyc prostymi slowami albo podjac mala decyzje na podstawie tej wiedzy.",
+      "Powiaz ten element z jednym realnym przypadkiem z pracy, nauki albo codziennej sytuacji, zeby szybciej go odtworzyc.",
+    ],
+    examples: [
+      "Scenariusz: wyjasniasz ten temat komus, kto zna ogolny kontekst, ale nie pamieta kluczowej roznicy lub zasady.",
+      "Praktyczny sygnal: jesli widzisz podobny problem albo pytanie, to pojecie powinno pomoc zawezic poprawne rozwiazanie.",
+    ],
+    examApplication: "Na sprawdzeniu wiedzy najczesciej pomaga pytanie: co ta informacja zmienia w praktyce albo jaka decyzje rozstrzyga?",
+    practiceTask: "Zamknij karte jednym zdaniem: gdzie konkretnie moglbys uzyc tej wiedzy jeszcze dzisiaj.",
+    note: "Cloud AI moze doprecyzowac to do bardziej realnych sytuacji z materialu i decku.",
+  };
+}
+
 async function invokeEdgeFunction({ supabaseConfig, functionName, body, accessToken = "", connectionErrorMessage = "" }) {
   const headers = {
     "Content-Type": "application/json",
@@ -3409,6 +3565,20 @@ async function fetchCloudQuestionExplanation({ supabaseConfig, model, cloudApiKe
     title: data.title || "Wyjasnienie AI",
     text: String(data.text || "").trim(),
   };
+}
+
+async function fetchCloudPracticalInsight({ supabaseConfig, model, cloudApiKey, question, answerState, deckGoal }) {
+  const data = await invokeCloudFunction({
+    supabaseConfig,
+    body: {
+      action: "question_practical_use",
+      model: model || DEFAULT_MODEL,
+      apiKey: cloudApiKey?.trim() || undefined,
+      payload: buildQuestionPracticalPayload(question, answerState, deckGoal),
+    },
+  });
+
+  return normalizePracticalInsightResponse(data);
 }
 
 async function fetchCloudStudyPlan({
@@ -4099,6 +4269,8 @@ function QuizAbcdApp() {
 
   const [chatStatus, setChatStatus] = useState("idle");
   const [chatRes, setChatRes] = useState("");
+  const [practicalInsightMap, setPracticalInsightMap] = useState({});
+  const [practicalInsightStatusMap, setPracticalInsightStatusMap] = useState({});
 
   const [cloudApiEnabled, setCloudApiEnabled] = useState(Boolean(initialCloud.cloudApiEnabled));
   const [cloudModel, setCloudModel] = useState(initialCloud.cloudModel || DEFAULT_MODEL);
@@ -4383,12 +4555,86 @@ function QuizAbcdApp() {
   const currentQuestionTags = useMemo(() => getQuestionTags(current, userTagMap), [current, userTagMap]);
   const currentUserTags = useMemo(() => normalizeTags(userTagMap[String(current?.id)] || []), [current, userTagMap]);
   const currentPromptText = useMemo(() => getQuestionDisplayText(current), [current]);
+  const currentQuestionId = String(current?.id || "");
+  const currentQuestionDeckGoal = useMemo(
+    () => normalizeDeckGoalRow(deckGoalMap?.[currentDeck] || { deck: currentDeck }),
+    [deckGoalMap, currentDeck]
+  );
+  const currentPracticalInsight = currentQuestionId ? practicalInsightMap[currentQuestionId] || null : null;
+  const currentPracticalStatus = currentQuestionId ? practicalInsightStatusMap[currentQuestionId] || "idle" : "idle";
+  const resolvedPracticalInsight = useMemo(
+    () => (currentAnswer ? currentPracticalInsight || buildLocalPracticalInsight({ question: current, answerState: currentAnswer, deckGoal: currentQuestionDeckGoal }) : null),
+    [current, currentAnswer, currentPracticalInsight, currentQuestionDeckGoal]
+  );
   const answeredCount = Object.keys(answers).length;
   const score = useMemo(() => Object.values(answers).filter((a) => a.isCorrect).length, [answers]);
 
   useEffect(() => {
     latestQuestionIdRef.current = String(current?.id || "");
   }, [current?.id]);
+
+  useEffect(() => {
+    if (!currentQuestionId || !currentAnswer) return;
+
+    const localInsight = buildLocalPracticalInsight({
+      question: current,
+      answerState: currentAnswer,
+      deckGoal: currentQuestionDeckGoal,
+    });
+
+    setPracticalInsightMap((prev) => (prev[currentQuestionId] ? prev : { ...prev, [currentQuestionId]: localInsight }));
+
+    if (!cloudApiEnabled || !sbEnabled) {
+      setPracticalInsightStatusMap((prev) => (prev[currentQuestionId] === "done" ? prev : { ...prev, [currentQuestionId]: "done" }));
+      return;
+    }
+
+    if (currentPracticalInsight?.source === "cloud" || currentPracticalStatus === "loading" || currentPracticalStatus === "error") return;
+
+    let cancelled = false;
+    setPracticalInsightStatusMap((prev) => ({ ...prev, [currentQuestionId]: "loading" }));
+
+    fetchCloudPracticalInsight({
+      supabaseConfig,
+      model: cloudModel.trim() || DEFAULT_MODEL,
+      cloudApiKey: manualCloudApiKey,
+      question: current,
+      answerState: currentAnswer,
+      deckGoal: currentQuestionDeckGoal,
+    })
+      .then((cloudInsight) => {
+        if (cancelled) return;
+        setPracticalInsightMap((prev) => ({ ...prev, [currentQuestionId]: cloudInsight }));
+        setPracticalInsightStatusMap((prev) => ({ ...prev, [currentQuestionId]: "done" }));
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setPracticalInsightMap((prev) => ({
+          ...prev,
+          [currentQuestionId]: {
+            ...(prev[currentQuestionId] || localInsight),
+            note: `Cloud AI nie odpowiedzialo, wiec pokazuje praktyczne wskazowki lokalne. ${getErrorText(error)}`,
+          },
+        }));
+        setPracticalInsightStatusMap((prev) => ({ ...prev, [currentQuestionId]: "error" }));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    current,
+    currentAnswer,
+    currentPracticalInsight,
+    currentPracticalStatus,
+    currentQuestionDeckGoal,
+    currentQuestionId,
+    cloudApiEnabled,
+    cloudModel,
+    manualCloudApiKey,
+    sbEnabled,
+    supabaseConfig,
+  ]);
 
   const buildSelectionState = useCallback((question, answer = null) => {
     const type = normalizeQuestionType(question?.questionType);
@@ -5813,6 +6059,87 @@ function QuizAbcdApp() {
       }
     }
   }, [chatStatus, current, currentAnswer, cloudApiEnabled, sbEnabled, supabaseConfig, cloudModel, manualCloudApiKey]);
+
+  const renderPracticalInsightCard = useCallback(() => {
+    if (!currentAnswer || !resolvedPracticalInsight) return null;
+
+    const insight = resolvedPracticalInsight;
+    const modeLabel =
+      insight.mode === "vocabulary"
+        ? "2 zdania w uzyciu"
+        : insight.mode === "technical_rule"
+        ? "gdzie tego uzyjesz"
+        : insight.mode === "exam_application"
+        ? "scenariusz praktyczny"
+        : "przelozenie na praktyke";
+
+    return (
+      <div
+        style={{
+          marginTop: 12,
+          padding: 14,
+          borderRadius: 16,
+          background: "#fff",
+          border: `1px solid ${C.border}`,
+          display: "grid",
+          gap: 10,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <IcoTarget size={14} />
+            <div style={{ fontSize: 14, fontWeight: 700, color: C.textStrong }}>{insight.title || "Praktyczne wykorzystanie"}</div>
+          </div>
+          <span className="soft-chip">{modeLabel}</span>
+        </div>
+
+        <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.7 }}>{insight.usageSummary}</div>
+
+        {(insight.realWorldApplications || []).length > 0 && (
+          <div style={{ display: "grid", gap: 8 }}>
+            {(insight.realWorldApplications || []).map((item, index) => (
+              <div key={`${item}-${index}`} style={{ fontSize: 13, color: C.textSub, lineHeight: 1.65 }}>
+                • {item}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {(insight.examples || []).length > 0 && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
+            {(insight.examples || []).map((item, index) => (
+              <div key={`${item}-${index}`} style={{ padding: "12px 13px", borderRadius: 14, background: C.cardAlt, border: `1px solid ${C.border}` }}>
+                <div style={{ fontSize: 11, color: C.textSub, marginBottom: 6 }}>
+                  {insight.mode === "vocabulary" ? `Zdanie ${index + 1}` : `Przyklad ${index + 1}`}
+                </div>
+                <div style={{ fontSize: 13, color: C.textStrong, lineHeight: 1.65 }}>{item}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {insight.examApplication && (
+          <div style={{ padding: "12px 13px", borderRadius: 14, background: C.cardAlt, border: `1px solid ${C.border}` }}>
+            <div style={{ fontSize: 11, color: C.textSub, marginBottom: 6 }}>Jak to rozpoznac w praktyce lub na egzaminie</div>
+            <div style={{ fontSize: 13, color: C.textStrong, lineHeight: 1.65 }}>{insight.examApplication}</div>
+          </div>
+        )}
+
+        {insight.practiceTask && (
+          <div style={{ padding: "12px 13px", borderRadius: 14, background: "rgba(75,94,170,.08)", border: "1px solid rgba(75,94,170,.18)" }}>
+            <div style={{ fontSize: 11, color: C.textSub, marginBottom: 6 }}>Zrob to od razu</div>
+            <div style={{ fontSize: 13, color: C.textStrong, lineHeight: 1.65 }}>{insight.practiceTask}</div>
+          </div>
+        )}
+
+        {currentPracticalStatus === "loading" && (
+          <div className="field-help">AI doprecyzowuje jeszcze praktyczne przyklady, scenariusze i miejsca uzycia.</div>
+        )}
+
+        {insight.note && currentPracticalStatus !== "loading" && <div className="field-help">{insight.note}</div>}
+      </div>
+    );
+  }, [currentAnswer, resolvedPracticalInsight, currentPracticalStatus]);
 
   const handleImport = useCallback(
     async (e) => {
@@ -8010,6 +8337,7 @@ function QuizAbcdApp() {
             </div>
 
             <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.7 }}>{current.explanation}</div>
+            {renderPracticalInsightCard()}
 
             {chatStatus === "idle" && (
               <button onClick={askAIEnhanced} style={{ ...s.btn("soft"), marginTop: 12, fontSize: 12, padding: "8px 14px" }}>
@@ -8055,6 +8383,7 @@ function QuizAbcdApp() {
             </div>
 
             <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.7 }}>{current.explanation}</div>
+            {renderPracticalInsightCard()}
 
             {chatStatus === "idle" && (
               <button onClick={askAIEnhanced} style={{ ...s.btn("soft"), marginTop: 12, fontSize: 12, padding: "8px 14px" }}>
@@ -8110,6 +8439,7 @@ function QuizAbcdApp() {
             </div>
 
             <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.7 }}>{current.explanation}</div>
+            {renderPracticalInsightCard()}
 
             {chatStatus === "idle" && (
               <button onClick={askAIEnhanced} style={{ ...s.btn("soft"), marginTop: 12, fontSize: 12, padding: "8px 14px" }}>
@@ -8167,6 +8497,7 @@ function QuizAbcdApp() {
             )}
 
             <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.7 }}>{current.explanation}</div>
+            {renderPracticalInsightCard()}
 
             {chatStatus === "idle" && (
               <button onClick={askAIEnhanced} style={{ ...s.btn("soft"), marginTop: 12, fontSize: 12, padding: "8px 14px" }}>
@@ -8215,6 +8546,7 @@ function QuizAbcdApp() {
             </div>
 
             <div style={{ fontSize: 14, color: C.textSub, lineHeight: 1.7 }}>{current.explanation}</div>
+            {renderPracticalInsightCard()}
 
             {chatStatus === "idle" && (
               <button onClick={askAIEnhanced} style={{ ...s.btn("soft"), marginTop: 12, fontSize: 12, padding: "8px 14px" }}>

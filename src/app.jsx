@@ -91,6 +91,9 @@ const GOOGLE_CALENDAR_AUTH_QUERY = {
   prompt: "consent",
   include_granted_scopes: "true",
 };
+const DEFAULT_BILLING_PLAN_NAME = (import.meta.env.VITE_BILLING_PLAN_NAME || "Zen Quiz Pro").trim();
+const DEFAULT_BILLING_PRICE_LABEL = (import.meta.env.VITE_BILLING_PRICE_LABEL || "Ustaw cene w Stripe").trim();
+const ACTIVE_BILLING_STATUSES = new Set(["active", "trialing", "paid"]);
 const CLOUD_FUNCTION_NAME = "claude-summary";
 const CLOUD_BROWSER_NOTICE =
   "Ta aplikacja działa wyłącznie w przeglądarce, więc Claude jest wołany przez Supabase Edge Function, a nie bezpośrednio z frontendu.";
@@ -729,6 +732,38 @@ const clearOAuthCallbackUrl = () => {
   window.history.replaceState({}, document.title, `${url.pathname}${url.search}`);
 };
 
+const parseBillingRedirect = (href = "") => {
+  const source = String(href || "");
+  if (!source) return "";
+
+  try {
+    const url = new URL(source);
+    return String(url.searchParams.get("checkout") || "").trim().toLowerCase();
+  } catch {
+    return "";
+  }
+};
+
+const parseRequestedTab = (href = "") => {
+  const source = String(href || "");
+  if (!source) return "";
+
+  try {
+    const url = new URL(source);
+    return String(url.searchParams.get("tab") || "").trim().toLowerCase();
+  } catch {
+    return "";
+  }
+};
+
+const clearBillingRedirectUrl = () => {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  url.searchParams.delete("checkout");
+  url.searchParams.delete("tab");
+  window.history.replaceState({}, document.title, `${url.pathname}${url.search}${url.hash}`);
+};
+
 const buildOAuthAuthorizeUrl = (config, provider = "google", options = {}) => {
   const redirectTo = getOAuthRedirectUrl();
   const url = new URL(`${config.url}/auth/v1/authorize`);
@@ -860,6 +895,38 @@ const getErrorText = (error) => {
   }
   return message.length > 180 ? `${message.slice(0, 177)}...` : message;
 };
+
+const normalizeBillingAccountRow = (row = {}) => ({
+  userId: String(row.user_id || "").trim(),
+  email: String(row.email || "").trim(),
+  stripeCustomerId: String(row.stripe_customer_id || "").trim(),
+  stripeCheckoutSessionId: String(row.stripe_checkout_session_id || "").trim(),
+  stripeSubscriptionId: String(row.stripe_subscription_id || "").trim(),
+  checkoutMode: String(row.checkout_mode || "subscription").trim() || "subscription",
+  billingStatus: String(row.billing_status || "inactive").trim().toLowerCase() || "inactive",
+  paymentStatus: String(row.payment_status || "").trim().toLowerCase(),
+  priceId: String(row.price_id || "").trim(),
+  currency: String(row.currency || "").trim().toUpperCase(),
+  amountTotal: Number(row.amount_total || 0) || 0,
+  currentPeriodEnd: String(row.current_period_end || "").trim(),
+  lastEventType: String(row.last_event_type || "").trim(),
+  metadata: row.metadata && typeof row.metadata === "object" ? row.metadata : {},
+});
+
+const billingStatusLabel = (billingAccount) => {
+  const status = String(billingAccount?.billingStatus || "inactive").trim().toLowerCase();
+  if (status === "active") return "Aktywny";
+  if (status === "trialing") return "Trial";
+  if (status === "paid") return "Oplacony";
+  if (status === "past_due") return "Platnosc zalegla";
+  if (status === "canceled") return "Anulowany";
+  if (status === "checkout_started") return "Checkout rozpoczety";
+  if (status === "checkout_completed") return "Checkout zakonczony";
+  if (status === "payment_failed") return "Platnosc nieudana";
+  return "Brak planu";
+};
+
+const hasPaidBillingAccess = (billingAccount) => ACTIVE_BILLING_STATUSES.has(String(billingAccount?.billingStatus || "").trim().toLowerCase());
 
 const loadLocal = () => {
   try {
@@ -1838,25 +1905,28 @@ function buildLocalTrainingSummary({ attempt, stats, questions, answers }) {
   };
 }
 
-async function invokeCloudFunction({ supabaseConfig, body }) {
+async function invokeEdgeFunction({ supabaseConfig, functionName, body, accessToken = "", connectionErrorMessage = "" }) {
   const headers = {
     "Content-Type": "application/json",
     apikey: supabaseConfig.apiKey,
   };
 
   // Edge Functions typically expect Bearer auth; anon JWT works here.
-  headers.Authorization = `Bearer ${supabaseConfig.apiKey}`;
+  headers.Authorization = `Bearer ${String(accessToken || "").trim() || supabaseConfig.apiKey}`;
 
   let res;
 
   try {
-    res = await fetch(`${supabaseConfig.url}/functions/v1/${CLOUD_FUNCTION_NAME}`, {
+    res = await fetch(`${supabaseConfig.url}/functions/v1/${functionName}`, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
     });
   } catch {
-    throw new Error("Nie udało się połączyć z Supabase Edge Function. Sprawdź Supabase URL, deploy funkcji `claude-summary` i połączenie sieciowe.");
+    throw new Error(
+      connectionErrorMessage ||
+        `Nie udało się połączyć z Supabase Edge Function \`${functionName}\`. Sprawdź Supabase URL, deploy funkcji i połączenie sieciowe.`
+    );
   }
 
   const text = await res.text();
@@ -1872,6 +1942,14 @@ async function invokeCloudFunction({ supabaseConfig, body }) {
   }
 
   return data || {};
+}
+
+async function invokeCloudFunction({ supabaseConfig, body }) {
+  return invokeEdgeFunction({
+    supabaseConfig,
+    functionName: CLOUD_FUNCTION_NAME,
+    body,
+  });
 }
 
 async function fetchCloudTrainingSummary({ supabaseConfig, model, cloudApiKey, attempt, stats, questions, answers }) {
@@ -2550,6 +2628,15 @@ function QuizAbcdApp() {
     message: "Polacz Google Calendar, aby dodawac bloki nauki bezposrednio z planu.",
   });
   const [googleCalendarBusyKey, setGoogleCalendarBusyKey] = useState("");
+  const [billingAccount, setBillingAccount] = useState(null);
+  const [billingStatus, setBillingStatus] = useState({
+    status: "idle",
+    message: "Skonfiguruj Stripe Checkout, aby przyjmowac platnosci kartami za usluge.",
+  });
+  const [billingBusyAction, setBillingBusyAction] = useState("");
+  const [billingRedirectState, setBillingRedirectState] = useState(() =>
+    parseBillingRedirect(typeof window !== "undefined" ? window.location.href : "")
+  );
   const [trainingSummary, setTrainingSummary] = useState(null);
   const [trainingSummaryStatus, setTrainingSummaryStatus] = useState("idle");
   const [studyPlan, setStudyPlan] = useState(null);
@@ -2631,6 +2718,9 @@ function QuizAbcdApp() {
   const manualCloudApiKey = looksLikeAnthropicKey(cloudApiKeyDraft) ? cloudApiKeyDraft.trim() : "";
   const googleCalendarToken = String(authSession?.provider_token || "").trim();
   const googleCalendarConnected = Boolean(googleCalendarToken);
+  const billingPlanName = DEFAULT_BILLING_PLAN_NAME;
+  const billingPriceLabel = DEFAULT_BILLING_PRICE_LABEL;
+  const billingHasAccess = useMemo(() => hasPaidBillingAccess(billingAccount), [billingAccount]);
   const generatorQuestionCount = useMemo(() => estimateQuestionCount(generatorDensity), [generatorDensity]);
   const generatorMaterialText = useMemo(() => {
     if (!generatorPageTexts.length) return String(generatorSourceText || "").trim();
@@ -2638,6 +2728,33 @@ function QuizAbcdApp() {
     const safeEnd = Math.max(safeStart, Math.min(generatorPageEnd, generatorPageTexts.length));
     return generatorPageTexts.slice(safeStart - 1, safeEnd).join("\n\n").trim();
   }, [generatorPageEnd, generatorPageStart, generatorPageTexts, generatorSourceText]);
+  useEffect(() => {
+    const requestedTab = parseRequestedTab(typeof window !== "undefined" ? window.location.href : "");
+    if (requestedTab && ["settings", "plan", "calendar", "quiz", "decks", "generator", "editor", "results"].includes(requestedTab)) {
+      setActiveTab(requestedTab);
+    }
+
+    const checkoutState = billingRedirectState;
+    if (!checkoutState) {
+      if (requestedTab) clearBillingRedirectUrl();
+      return;
+    }
+
+    if (checkoutState === "success") {
+      setBillingStatus({
+        status: "success",
+        message: "Powrot ze Stripe Checkout zakonczyl sie poprawnie. Status planu odswiezy sie po webhooku Stripe.",
+      });
+    } else if (checkoutState === "cancelled") {
+      setBillingStatus({
+        status: "idle",
+        message: "Platnosc zostala anulowana przed zakonczeniem checkoutu.",
+      });
+      setBillingRedirectState("");
+    }
+
+    clearBillingRedirectUrl();
+  }, [billingRedirectState]);
   const authAccessToken = String(authSession?.access_token || "").trim();
   const activeQuestionPool = useMemo(() => questionPool.filter((question) => question.isActive !== false), [questionPool]);
   const availableDecks = useMemo(() => {
@@ -2816,6 +2933,13 @@ function QuizAbcdApp() {
       setAuthUser(null);
       setUserProfile(null);
       setUserTagMap({});
+      setBillingAccount(null);
+      setBillingStatus({
+        status: "idle",
+        message: "Skonfiguruj Stripe Checkout, aby przyjmowac platnosci kartami za usluge.",
+      });
+      setBillingBusyAction("");
+      setBillingRedirectState("");
       setGoogleCalendarBusyKey("");
       return;
     }
@@ -2856,6 +2980,7 @@ function QuizAbcdApp() {
         setAuthUser(null);
         setUserProfile(null);
         setUserTagMap({});
+        setBillingAccount(null);
         setAuthStatus({
           status: "error",
           message: `Sesja wygasła albo nie udało się odczytać użytkownika: ${getErrorText(error)}`,
@@ -2876,9 +3001,15 @@ function QuizAbcdApp() {
 
     const loadAccountData = async () => {
       try {
-        const [profileRows, tagRows] = await Promise.all([
+        const [profileRows, tagRows, billingRows] = await Promise.all([
           sbSelect(supabaseConfig, "profiles", `select=id,email,display_name,created_at,updated_at&id=eq.${authUser.id}&limit=1`, authAccessToken),
           sbSelect(supabaseConfig, "user_question_tags", `select=question_id,tags&user_id=eq.${authUser.id}&limit=5000`, authAccessToken),
+          sbSelect(
+            supabaseConfig,
+            "billing_accounts",
+            `select=user_id,email,stripe_customer_id,stripe_checkout_session_id,stripe_subscription_id,checkout_mode,billing_status,payment_status,price_id,currency,amount_total,current_period_end,last_event_type,metadata&user_id=eq.${authUser.id}&limit=1`,
+            authAccessToken
+          ),
         ]);
 
         let profile = profileRows?.[0] || null;
@@ -2893,6 +3024,28 @@ function QuizAbcdApp() {
           nextTagMap[String(row.question_id)] = normalizeTags(row.tags || []);
         });
         setUserTagMap(nextTagMap);
+
+        const billingRow = billingRows?.[0] ? normalizeBillingAccountRow(billingRows[0]) : null;
+        setBillingAccount(billingRow);
+        if (billingRow) setBillingRedirectState("");
+        setBillingStatus(
+          billingRow
+            ? {
+                status: hasPaidBillingAccess(billingRow) ? "success" : "idle",
+                message: hasPaidBillingAccess(billingRow)
+                  ? `Plan ${billingPlanName} jest aktywny.`
+                  : billingRow.stripeCustomerId
+                  ? `Konto Stripe jest polaczone. Aktualny status: ${billingStatusLabel(billingRow)}.`
+                  : "Skonfiguruj Stripe Checkout, aby przyjmowac platnosci kartami za usluge.",
+              }
+            : {
+                status: billingRedirectState === "success" ? "loading" : "idle",
+                message:
+                  billingRedirectState === "success"
+                    ? "Stripe zakonczyl checkout, ale webhook jeszcze synchronizuje status planu. Odswiez za chwile."
+                    : "Skonfiguruj Stripe Checkout, aby przyjmowac platnosci kartami za usluge.",
+              }
+        );
       } catch (error) {
         if (cancelled) return;
 
@@ -2907,7 +3060,7 @@ function QuizAbcdApp() {
     return () => {
       cancelled = true;
     };
-  }, [sbEnabled, authUser?.id, authAccessToken, supabaseConfig, upsertUserProfile]);
+  }, [sbEnabled, authUser?.id, authAccessToken, supabaseConfig, upsertUserProfile, billingPlanName, billingRedirectState]);
 
   const startQuiz = useCallback(
     (customPool, customLength) => {
@@ -3336,6 +3489,148 @@ function QuizAbcdApp() {
     }
   }, [sbEnabled, authEmail, authPassword, profileNameDraft, authMode, supabaseConfig]);
 
+  const refreshBillingAccount = useCallback(
+    async ({ silent = false } = {}) => {
+      if (!sbEnabled || !authUser?.id || !authAccessToken) {
+        setBillingAccount(null);
+        if (!silent) {
+          setBillingStatus({
+            status: "error",
+            message: "Zaloguj sie i polacz Supabase, aby odczytac status platnosci.",
+          });
+        }
+        return null;
+      }
+
+      if (!silent) {
+        setBillingStatus({
+          status: "loading",
+          message: "Odswiezam status platnosci i subskrypcji...",
+        });
+      }
+
+      try {
+        const rows = await sbSelect(
+          supabaseConfig,
+          "billing_accounts",
+          `select=user_id,email,stripe_customer_id,stripe_checkout_session_id,stripe_subscription_id,checkout_mode,billing_status,payment_status,price_id,currency,amount_total,current_period_end,last_event_type,metadata&user_id=eq.${authUser.id}&limit=1`,
+          authAccessToken
+        );
+
+        const nextBillingAccount = rows?.[0] ? normalizeBillingAccountRow(rows[0]) : null;
+        setBillingAccount(nextBillingAccount);
+        if (nextBillingAccount) setBillingRedirectState("");
+
+        if (!silent) {
+          setBillingStatus(
+            nextBillingAccount
+              ? {
+                  status: hasPaidBillingAccess(nextBillingAccount) ? "success" : "idle",
+                  message: hasPaidBillingAccess(nextBillingAccount)
+                    ? `Plan ${billingPlanName} jest aktywny.`
+                    : nextBillingAccount.stripeCustomerId
+                    ? `Stripe jest polaczony. Aktualny status: ${billingStatusLabel(nextBillingAccount)}.`
+                    : "Checkout jeszcze nie utworzyl konta billingowego.",
+                }
+              : {
+                  status: "idle",
+                  message: "Brak aktywnego planu platnego. Mozesz uruchomic Stripe Checkout z tego panelu.",
+                }
+          );
+        }
+
+        return nextBillingAccount;
+      } catch (error) {
+        if (!silent) {
+          setBillingStatus({ status: "error", message: getErrorText(error) });
+        }
+        return null;
+      }
+    },
+    [authAccessToken, authUser?.id, billingPlanName, sbEnabled, supabaseConfig]
+  );
+
+  const handleStartCheckout = useCallback(async () => {
+    if (!sbEnabled || !authUser?.id || !authAccessToken) {
+      setBillingStatus({
+        status: "error",
+        message: "Zaloguj sie i polacz Supabase, aby uruchomic platnosc karta.",
+      });
+      return;
+    }
+
+    setBillingBusyAction("checkout");
+    setBillingStatus({
+      status: "loading",
+      message: "Tworze sesje Stripe Checkout dla platnosci karta...",
+    });
+
+    try {
+      const result = await invokeEdgeFunction({
+        supabaseConfig,
+        functionName: "create-checkout-session",
+        accessToken: authAccessToken,
+        body: {
+          returnPath: typeof window !== "undefined" ? `${window.location.pathname}?tab=settings` : "/?tab=settings",
+        },
+      });
+
+      if (!result?.checkoutUrl) throw new Error("Brak adresu Stripe Checkout.");
+
+      if (typeof window !== "undefined") {
+        window.location.assign(result.checkoutUrl);
+      }
+    } catch (error) {
+      setBillingStatus({ status: "error", message: getErrorText(error) });
+      setBillingBusyAction("");
+    }
+  }, [authAccessToken, authUser?.id, sbEnabled, supabaseConfig]);
+
+  const handleOpenBillingPortal = useCallback(async () => {
+    if (!sbEnabled || !authUser?.id || !authAccessToken) {
+      setBillingStatus({
+        status: "error",
+        message: "Zaloguj sie i polacz Supabase, aby otworzyc portal rozliczen.",
+      });
+      return;
+    }
+
+    setBillingBusyAction("portal");
+    setBillingStatus({
+      status: "loading",
+      message: "Otwieram Stripe Customer Portal...",
+    });
+
+    try {
+      const result = await invokeEdgeFunction({
+        supabaseConfig,
+        functionName: "create-billing-portal-session",
+        accessToken: authAccessToken,
+        body: {
+          returnPath: typeof window !== "undefined" ? `${window.location.pathname}?tab=settings` : "/?tab=settings",
+        },
+      });
+
+      if (!result?.portalUrl) throw new Error("Brak adresu Stripe Customer Portal.");
+
+      if (typeof window !== "undefined") {
+        window.location.assign(result.portalUrl);
+      }
+    } catch (error) {
+      setBillingStatus({ status: "error", message: getErrorText(error) });
+      setBillingBusyAction("");
+    }
+  }, [authAccessToken, authUser?.id, sbEnabled, supabaseConfig]);
+
+  const handleRefreshBilling = useCallback(async () => {
+    setBillingBusyAction("refresh");
+    try {
+      await refreshBillingAccount();
+    } finally {
+      setBillingBusyAction("");
+    }
+  }, [refreshBillingAccount]);
+
   const handleProfileSave = useCallback(async () => {
     if (!sbEnabled || !authUser?.id || !authAccessToken) {
       setAuthStatus({ status: "error", message: "Zaloguj się, aby zapisać profil." });
@@ -3365,6 +3660,13 @@ function QuizAbcdApp() {
     setAuthUser(null);
     setUserProfile(null);
     setUserTagMap({});
+    setBillingAccount(null);
+    setBillingStatus({
+      status: "idle",
+      message: "Skonfiguruj Stripe Checkout, aby przyjmowac platnosci kartami za usluge.",
+    });
+    setBillingBusyAction("");
+    setBillingRedirectState("");
     setAuthPassword("");
     setAuthStatus({ status: "success", message: "Wylogowano z aplikacji." });
     setGoogleCalendarStatus({
@@ -7649,6 +7951,78 @@ function QuizAbcdApp() {
               <span className="soft-chip">Tagi prywatne: {Object.keys(userTagMap).length}</span>
             </div>
           )}
+        </div>
+
+        <div style={{ ...s.card, padding: 14, minHeight: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <IcoKey size={16} />
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>Billing</div>
+            </div>
+
+            <span className="soft-chip">
+              <IcoCheck size={12} />
+              {billingHasAccess ? "plan aktywny" : "platnosci kartami"}
+            </span>
+          </div>
+
+          <div style={{ display: "grid", gap: 10 }}>
+            <div style={{ padding: 14, borderRadius: 16, background: C.cardAlt, border: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 12, color: C.textSub, marginBottom: 6 }}>Plan</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: C.textStrong }}>{billingPlanName}</div>
+              <div style={{ fontSize: 13, color: C.textSub, lineHeight: 1.6, marginTop: 6 }}>
+                {billingPriceLabel}. Checkout i customer portal dzialaja przez Stripe, a status planu synchronizuje webhook do Supabase.
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
+              {[
+                ["Status", billingStatusLabel(billingAccount)],
+                ["Tryb", billingAccount?.checkoutMode === "payment" ? "Jednorazowa platnosc" : "Subskrypcja"],
+                ["Odnowienie", billingAccount?.currentPeriodEnd ? new Date(billingAccount.currentPeriodEnd).toLocaleDateString("pl-PL") : "—"],
+                ["Stripe", billingAccount?.stripeCustomerId ? "Polaczony" : "Niepolaczony"],
+              ].map(([label, value]) => (
+                <div key={label} style={{ ...s.metric, background: C.cardAlt }}>
+                  <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>{label}</div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: C.textStrong }}>{value}</div>
+                </div>
+              ))}
+            </div>
+
+            {authUser ? (
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <button onClick={handleStartCheckout} style={s.btn("primary")} disabled={billingBusyAction === "checkout"}>
+                  <IcoKey size={14} /> {billingBusyAction === "checkout" ? "Przekierowuje..." : "Zaplac karta"}
+                </button>
+                <button
+                  onClick={handleOpenBillingPortal}
+                  style={s.btn("ghost")}
+                  disabled={!billingAccount?.stripeCustomerId || billingBusyAction === "portal"}
+                >
+                  <IcoSettings size={14} /> {billingBusyAction === "portal" ? "Otwieram portal..." : "Portal klienta"}
+                </button>
+                <button onClick={handleRefreshBilling} style={s.btn("soft")} disabled={billingBusyAction === "refresh"}>
+                  <IcoRefresh size={14} /> {billingBusyAction === "refresh" ? "Odswiezam..." : "Odswiez status"}
+                </button>
+              </div>
+            ) : (
+              <div className="field-help">Zaloguj sie, aby uruchomic Stripe Checkout i przypisac platnosc do konta uzytkownika.</div>
+            )}
+
+            <div
+              style={{
+                padding: 12,
+                borderRadius: 14,
+                background: toneForStatus(billingStatus.status).bg,
+                color: toneForStatus(billingStatus.status).color,
+                border: `1px solid ${toneForStatus(billingStatus.status).border}`,
+                fontSize: 13,
+                lineHeight: 1.6,
+              }}
+            >
+              {billingStatus.message}
+            </div>
+          </div>
         </div>
 
         <div style={{ ...s.card, padding: 14, minHeight: 0 }}>

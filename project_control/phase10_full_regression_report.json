@@ -1,0 +1,28 @@
+{
+  "analysis_date": "2026-04-11",
+  "task": "T10-002",
+  "before": {
+    "split_word_candidates": 42,
+    "joined_word_candidates": 0,
+    "boundary_corruption_candidates": 47,
+    "page_furniture_candidates": 24,
+    "duplicate_noisy_toc_entries_count": 15,
+    "suspicious_title_author_merges": 2
+  },
+  "after": {
+    "split_word_candidates": 0,
+    "joined_word_candidates": 0,
+    "boundary_corruption_candidates": 0,
+    "page_furniture_candidates": 13,
+    "duplicate_noisy_toc_entries_count": 0,
+    "suspicious_title_author_merges": 0
+  },
+  "quality_gate_g10": {
+    "pass": true,
+    "justification": [
+      "Text candidate persistence is reduced to zero for split, joined, and boundary artifacts.",
+      "Navigation duplicates and noisy entries are reduced to zero.",
+      "Suspicious title-author merges are reduced to zero."
+    ]
+  }
+}

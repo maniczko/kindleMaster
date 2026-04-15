@@ -1,0 +1,100 @@
+name: Bug report
+description: Capture a reproducible defect with clear ownership and exit criteria.
+title: "[BUG] BUG-"
+labels: ["type:bug"]
+body:
+  - type: input
+    id: register_id
+    attributes:
+      label: Issue register ID
+      description: Use a stable local ID such as BUG-001 if one already exists.
+      placeholder: BUG-001
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - repo
+        - frontend
+        - data
+        - integrations
+        - docs
+        - qa
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - P0
+        - P1
+        - P2
+        - P3
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Problem
+      description: What is broken?
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: Who or what is blocked?
+    validations:
+      required: true
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: Expected behavior
+      description: What should happen instead?
+    validations:
+      required: true
+  - type: input
+    id: owner_role
+    attributes:
+      label: Owner role
+      placeholder: QA Owner
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Exact steps, inputs, and environment details.
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: Related tasks, systems, releases, or external blockers.
+    validations:
+      required: true
+  - type: textarea
+    id: outputs
+    attributes:
+      label: Expected outputs
+      description: What evidence or remediation output is expected after this issue is resolved?
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Exit criteria
+      description: What must be true for this issue to be considered resolved?
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Expected evidence
+      description: What proof should appear in the PR?
+    validations:
+      required: true

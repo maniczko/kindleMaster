@@ -1,0 +1,533 @@
+version: 4
+issues:
+  - issue_id: ISSUE-001
+    date: 2026-04-11
+    area: analysis
+    issue_type: coverage_risk
+    description: The repo-local corpus previously lacked a document-like fixture, but a real cover-letter style PDF is now registered under samples/pdf/cover-letter-iwo-2026.pdf and exercised through the end-to-end pipeline.
+    impact: Mandatory scenario coverage now includes a real document-like profile instead of a hard blocker.
+    severity: high
+    confidence: high
+    related_task: T12-007
+    remediation_task: FX-014
+    status: RESOLVED
+    fixed_in_iteration: ITER-23
+    regression_flag: false
+
+  - issue_id: ISSUE-002
+    date: 2026-04-11
+    area: governance
+    issue_type: external_enforcement_gap
+    description: Remote GitHub protections and enforcement remain outside the local repository control plane.
+    impact: Local governance is strong, but shared enforcement is still weaker than the intended operating model.
+    severity: low
+    confidence: high
+    related_task: T-1-001
+    remediation_task: null
+    status: OPEN
+    fixed_in_iteration: null
+    regression_flag: false
+
+  - issue_id: ISSUE-003
+    date: 2026-04-11
+    area: intake
+    issue_type: resolved_epub_input_blocker
+    description: The original EPUB-input blocker was resolved by providing three valid repo-local EPUB fixtures in samples/epub.
+    impact: EPUB intake remains usable for EPUB-first testing and historical remediation evidence.
+    severity: high
+    confidence: high
+    related_task: T0-001
+    remediation_task: FX-002
+    status: RESOLVED
+    fixed_in_iteration: ITER-03
+    regression_flag: false
+
+  - issue_id: ISSUE-004
+    date: 2026-04-11
+    area: image_layout
+    issue_type: high_risk_layout_density
+    description: Mixed-layout image-backed and page-like sections are now audited generically across the manifest-backed corpus, and executable guards prove they do not leak into TOC targets or dominate reading flow on the current supported-profile set.
+    impact: The repository now has generic image-layout protection for the supported profile corpus instead of leaving mixed-layout safety as a documented-but-unenforced risk.
+    severity: high
+    confidence: high
+    related_task: T8-003
+    remediation_task: FX-003
+    status: RESOLVED
+    fixed_in_iteration: ITER-36
+    regression_flag: false
+
+  - issue_id: ISSUE-005
+    date: 2026-04-11
+    area: semantics
+    issue_type: metadata_and_heading_anomaly
+    description: The current EPUB corpus contains opaque metadata and elevated suspicious-title patterns that can trigger heading reconstruction risk.
+    impact: Semantic reconstruction must stay conservative to avoid editorial regressions.
+    severity: medium
+    confidence: high
+    related_task: T6-001
+    remediation_task: null
+    status: OPEN
+    fixed_in_iteration: null
+    regression_flag: false
+
+  - issue_id: ISSUE-006
+    date: 2026-04-11
+    area: navigation
+    issue_type: toc_noise_baseline
+    description: Historical EPUB-only baseline evidence showed noisy or duplicate TOC pressure before remediation.
+    impact: TOC cleanup remains a required measured phase in the full end-to-end backlog.
+    severity: medium
+    confidence: high
+    related_task: T7-005
+    remediation_task: null
+    status: RESOLVED
+    fixed_in_iteration: ITER-10
+    regression_flag: false
+
+  - issue_id: ISSUE-007
+    date: 2026-04-11
+    area: text_cleanup
+    issue_type: split_word_defects
+    description: Historical EPUB-only cleanup evidence removed the measured high-confidence split-word subset from the current corpus.
+    impact: This remains useful historical evidence, but it does not satisfy the new PDF-first end-to-end path by itself.
+    severity: medium
+    confidence: high
+    related_task: T5-001
+    remediation_task: null
+    status: RESOLVED
+    fixed_in_iteration: ITER-10
+    regression_flag: false
+
+  - issue_id: ISSUE-008
+    date: 2026-04-11
+    area: text_cleanup
+    issue_type: boundary_corruption_candidates
+    description: Historical anomaly detection found paragraph and sentence boundary candidates, especially in notation-heavy mixed-layout content.
+    impact: Boundary cleanup must keep distinguishing genuine prose corruption from structured notation.
+    severity: medium
+    confidence: medium
+    related_task: T4-003
+    remediation_task: null
+    status: RESOLVED
+    fixed_in_iteration: ITER-10
+    regression_flag: false
+
+  - issue_id: ISSUE-009
+    date: 2026-04-11
+    area: semantics
+    issue_type: furniture_residue_candidates
+    description: Front-matter, TOC, and furniture-like residue handling is now enforced generically across the manifest-backed document, report, magazine, book, and mixed-layout corpus via explicit semantic profiles, fallback boundary detection, and zero front-matter TOC-target guards.
+    impact: Furniture-like residue is now covered by executable cross-corpus guards for the current supported-profile set instead of only by tracked-sample evidence.
+    severity: medium
+    confidence: medium
+    related_task: T6-003
+    remediation_task: null
+    status: RESOLVED
+    fixed_in_iteration: ITER-36
+    regression_flag: false
+
+  - issue_id: ISSUE-010
+    date: 2026-04-11
+    area: text_cleanup
+    issue_type: joined_word_review_candidates
+    description: Historical EPUB-only cleanup preserved ambiguous uppercase glued tokens instead of forcing unsafe automatic changes.
+    impact: Medium-confidence cleanup policy remains conservative, which is correct for current no-paraphrase rules.
+    severity: low
+    confidence: medium
+    related_task: T5-002
+    remediation_task: null
+    status: RESOLVED
+    fixed_in_iteration: ITER-10
+    regression_flag: false
+
+  - issue_id: ISSUE-011
+    date: 2026-04-11
+    area: text_cleanup
+    issue_type: medium_confidence_cleanup_ambiguity
+    description: Medium-confidence cleanup was closed historically by refusing unsafe rewriting and routing ambiguity forward rather than guessing.
+    impact: The policy remains acceptable, but it is still historical EPUB-only evidence until the new full path is re-executed.
+    severity: medium
+    confidence: high
+    related_task: T5-002
+    remediation_task: null
+    status: RESOLVED
+    fixed_in_iteration: ITER-10
+    regression_flag: false
+
+  - issue_id: ISSUE-012
+    date: 2026-04-11
+    area: qa
+    issue_type: external_validation_gap
+    description: The repository now has explicit Phase 13 regression, measurable-improvement, premium-audit, release-evidence, quality-gate, readiness-verdict, and continuation-plan artifacts backed by 51 passing pytest checks under the hardened release gates.
+    impact: Release evidence is now explicit and repository-visible; readiness remains blocked only by the still-open architectural blocker rather than by missing Phase 13 proof.
+    severity: medium
+    confidence: high
+    related_task: T12-010
+    remediation_task: null
+    status: RESOLVED
+    fixed_in_iteration: ITER-36
+    regression_flag: false
+
+  - issue_id: ISSUE-013
+    date: 2026-04-11
+    area: governance
+    issue_type: cross_project_boundary_risk
+    description: Kindle Master and foreign frontend/runtime have now been physically split so the current repository no longer contains the foreign frontend product root; remaining scope limits are about reverse-side visibility into the extracted foreign frontend/runtime repository rather than active coupling inside Kindle Master.
+    impact: Kindle Master can now enforce repository-local runtime, output, CI, and build boundaries, but post-split isolation tests must remain in place and reverse-side scope limits must stay documented.
+    severity: high
+    confidence: high
+    related_task: T-2-010
+    remediation_task: FX-004
+    status: RESOLVED
+    fixed_in_iteration: ITER-20
+    regression_flag: false
+
+  - issue_id: ISSUE-014
+    date: 2026-04-11
+    area: governance
+    issue_type: shared_root_automation_coupling
+    description: Kindle Master previously shared root runtime and automation assumptions with foreign frontend/runtime, but dedicated Kindle Master runtime paths, output paths, and a separate Python workflow are now in place.
+    impact: Operational coupling has been reduced enough to run Kindle Master independently from foreign frontend/runtime runtime behavior.
+    severity: high
+    confidence: high
+    related_task: T-2-004
+    remediation_task: FX-004
+    status: RESOLVED
+    fixed_in_iteration: ITER-13
+    regression_flag: true
+
+  - issue_id: ISSUE-015
+    date: 2026-04-11
+    area: intake
+    issue_type: missing_pdf_input
+    description: Repo-local PDF fixtures now exist in samples/pdf and the end-to-end path has been executed on strefa-pmi-52-2026.pdf.
+    impact: Phase 1 is no longer blocked on missing PDF input.
+    severity: high
+    confidence: high
+    related_task: T1-001
+    remediation_task: FX-005
+    status: RESOLVED
+    fixed_in_iteration: ITER-13
+    regression_flag: false
+
+  - issue_id: ISSUE-016
+    date: 2026-04-11
+    area: conversion
+    issue_type: missing_pdf_to_epub_toolchain
+    description: Kindle Master now has a validated local PDF-to-EPUB toolchain based on PyMuPDF plus baseline EPUB packaging and final remediation execution.
+    impact: The baseline conversion phase is now locally testable and no longer blocked on toolchain absence.
+    severity: high
+    confidence: high
+    related_task: T1-001
+    remediation_task: FX-006
+    status: RESOLVED
+    fixed_in_iteration: ITER-13
+    regression_flag: false
+
+  - issue_id: ISSUE-017
+    date: 2026-04-11
+    area: product_runtime
+    issue_type: legacy_feature_regression
+    description: The current repository temporarily lacked the richer Kindle Master localhost toolkit behavior that the user expected, especially the A4 crop workflow, per-page crop state, crop preview, crop-to-A4 export, and visible conversion artifacts after EPUB generation.
+    impact: The current repo once again provides the expected localhost PDF toolkit surface for day-to-day Kindle Master testing, so the previously reported functional regression has been remediated in the isolated repo runtime.
+    severity: high
+    confidence: high
+    related_task: FX-007
+    remediation_task: FX-007
+    status: RESOLVED
+    fixed_in_iteration: ITER-15
+    regression_flag: true
+
+  - issue_id: ISSUE-018
+    date: 2026-04-12
+    area: navigation
+    issue_type: final_navigation_path_regression
+    description: The earlier final EPUB dropped the xhtml directory prefix in nav.xhtml and toc.ncx, but the recovery pass now preserves valid package-relative xhtml paths and clears the dead-link regression.
+    impact: Final navigation targets are now technically valid in the active recovery sample.
+    severity: high
+    confidence: high
+    related_task: R0-004
+    remediation_task: FX-008
+    status: RESOLVED
+    fixed_in_iteration: ITER-17
+    regression_flag: true
+
+  - issue_id: ISSUE-019
+    date: 2026-04-12
+    area: css
+    issue_type: final_stylesheet_path_mismatch
+    description: Final XHTML, nav.xhtml, and title.xhtml previously referenced a non-packaged stylesheet path, but the recovery pass now keeps stylesheet references aligned with the packaged CSS asset.
+    impact: The active recovery sample now ships a consistent final stylesheet lifecycle.
+    severity: high
+    confidence: high
+    related_task: R0-002
+    remediation_task: FX-009
+    status: RESOLVED
+    fixed_in_iteration: ITER-17
+    regression_flag: true
+
+  - issue_id: ISSUE-020
+    date: 2026-04-12
+    area: semantics
+    issue_type: heading_overpromotion_and_title_loss
+    description: Semantic recovery is now guarded generically across the manifest-backed document, report, magazine, book, and mixed-layout corpus, and executable quality gates no longer rely on publication-specific labels or content fragments to prove representative headings or front-matter routing.
+    impact: Semantic quality claims for the current supported-profile corpus are now backed by generic executable guards instead of sample-specific assertions.
+    severity: high
+    confidence: high
+    related_task: R2-003
+    remediation_task: FX-010
+    status: RESOLVED
+    fixed_in_iteration: ITER-36
+    regression_flag: true
+
+  - issue_id: ISSUE-021
+    date: 2026-04-12
+    area: text_cleanup
+    issue_type: cleanup_not_material_in_final_output
+    description: Before-and-after recovery evidence now proves visible text-flow improvement on the tracked active, magazine, book, and document-like guards. Boundary candidates dropped from `43 -> 0`, `98 -> 0`, `4161 -> 0`, and `1 -> 0` across the tracked baseline-to-final comparisons while final text scores reached `10.0`, `10.0`, `10.0`, and `10.0` or remained premium-grade where already clean.
+    impact: The repository now has an evidence-based verdict that medium-confidence handling improved visible reading quality rather than only reducing audit noise on the tracked guard set.
+    severity: medium
+    confidence: high
+    related_task: R3-001
+    remediation_task: null
+    status: RESOLVED
+    fixed_in_iteration: ITER-33
+    regression_flag: true
+
+  - issue_id: ISSUE-022
+    date: 2026-04-12
+    area: pipeline
+    issue_type: destructive_finalizer_stage
+    description: The finalizer now runs through a reusable stage pipeline with explicit dependencies and per-stage acceptance boundaries for extract, CSS, semantic planning, semantic apply, navigation, metadata, and packaging. Stages are independently executable outside the legacy one-shot entrypoint, persisted manifests now record acceptance status alongside proofs, and the end-to-end report surfaces `acceptance_boundaries_ok` in addition to stage sequence and navigation integrity.
+    impact: Destructive final-stage risk is now controlled by executable stage boundaries rather than a single opaque module-level pass, so release no longer depends on trusting one unchecked orchestration path.
+    severity: high
+    confidence: high
+    related_task: R0-003
+    remediation_task: FX-011
+    status: RESOLVED
+    fixed_in_iteration: ITER-37
+    regression_flag: true
+
+  - issue_id: ISSUE-023
+    date: 2026-04-12
+    area: semantics
+    issue_type: page_level_article_continuity_gap
+    description: The tracked magazine-like guard sample now uses continuation-aware opening recovery, which restores true article starts from page-split XHTML while suppressing interview-question and pull-quote false positives.
+    impact: The specific magazine page-split continuity defect is resolved for the tracked guard publication and no longer blocks release as a separate issue.
+    severity: high
+    confidence: medium
+    related_task: R2-002
+    remediation_task: FX-012
+    status: RESOLVED
+    fixed_in_iteration: ITER-24
+    regression_flag: true
+
+  - issue_id: ISSUE-024
+    date: 2026-04-12
+    area: metadata
+    issue_type: release_blocking_metadata_failure
+    description: The active release-eligible sample previously exposed slug-like metadata and creator Unknown, but manifest-backed release metadata now survives into the final release-mode EPUB and passes both smoke and pytest checks.
+    impact: This release-blocking metadata defect is resolved for the active release-eligible sample; broader publication coverage still depends on additional fixtures and metadata curation.
+    severity: high
+    confidence: high
+    related_task: T12-011
+    remediation_task: FX-013
+    status: RESOLVED
+    fixed_in_iteration: ITER-20
+    regression_flag: true
+
+  - issue_id: ISSUE-025
+    date: 2026-04-12
+    area: qa
+    issue_type: scenario_test_coverage_blocker
+    description: The hardened Phase 12 test matrix previously lacked a real document-like fixture, but coverage now includes the repo-local cover-letter sample and the scenario suite executes against it.
+    impact: The document-like scenario-coverage blocker is resolved; remaining release blockers are now about output quality and release evidence rather than missing profile coverage.
+    severity: high
+    confidence: high
+    related_task: T12-007
+    remediation_task: FX-014
+    status: RESOLVED
+    fixed_in_iteration: ITER-23
+    regression_flag: false
+
+  - issue_id: ISSUE-027
+    date: 2026-04-12
+    area: pipeline
+    issue_type: non_atomic_artifact_write_risk
+    description: Shared baseline and final EPUB artifact paths could briefly expose partially written files during concurrent verification or repeated local runs, producing intermittent zip corruption symptoms.
+    impact: The accepted build and direct end-to-end validation could become flaky under overlapping writes unless artifact replacement is atomic.
+    severity: high
+    confidence: high
+    related_task: FX-011
+    remediation_task: FX-011
+    status: RESOLVED
+    fixed_in_iteration: ITER-23
+    regression_flag: true
+
+  - issue_id: ISSUE-028
+    date: 2026-04-12
+    area: metadata
+    issue_type: implicit_cli_override_bug
+    description: The CLI default language value of pl silently overrode manifest-backed language metadata for non-Polish documents unless the user explicitly passed --language.
+    impact: Manifest-backed metadata could become inaccurate for exploratory or scenario-validation runs even when a trusted manifest entry existed.
+    severity: medium
+    confidence: high
+    related_task: T-1-013
+    remediation_task: null
+    status: RESOLVED
+    fixed_in_iteration: ITER-23
+    regression_flag: true
+
+  - issue_id: ISSUE-029
+    date: 2026-04-13
+    area: qa
+    issue_type: shared_artifact_test_runtime_collision
+    description: The pytest active release fixture reused shared baseline and final EPUB output paths, which caused Windows `PermissionError` collisions during `os.replace(...)` when local runtime artifacts were already in use.
+    impact: Phase 12 and release-gate verification could fail for environmental reasons unrelated to EPUB quality until the tests were isolated from shared runtime output.
+    severity: medium
+    confidence: high
+    related_task: FX-011
+    remediation_task: null
+    status: RESOLVED
+    fixed_in_iteration: ITER-25
+    regression_flag: true
+
+  - issue_id: ISSUE-030
+    date: 2026-04-13
+    area: conversion
+    issue_type: silent_profile_ocr_and_sample_reference_ambiguity
+    description: The localhost conversion flow exposed `profile`, `publication_id`, and `Wymus OCR` controls, but the runtime did not previously prove which options were applied, auto-suggested sample-linked publication IDs from filenames, and did not surface page-coverage evidence for the current run.
+    impact: Users could reasonably conclude that the conversion was too fast, partial, or silently tied to example publications because the UI did not prove full-page preservation or distinguish current-run state from repository benchmark state.
+    severity: high
+    confidence: high
+    related_task: FX-015
+    remediation_task: FX-015
+    status: RESOLVED
+    fixed_in_iteration: ITER-26
+    regression_flag: true
+
+  - issue_id: ISSUE-031
+    date: 2026-04-13
+    area: semantics
+    issue_type: special_section_heading_regression_during_coverage_hardening
+    description: While hardening page-coverage proof, the active release sample temporarily re-promoted `Strefa PMI w liczbach` to `h1`, which reintroduced a special-section-as-article regression.
+    impact: Release smoke and regression tests caught the regression immediately; the special-section term model was extended in the same iteration so the defect did not remain in accepted output.
+    severity: medium
+    confidence: high
+    related_task: FX-011
+    remediation_task: FX-011
+    status: RESOLVED
+    fixed_in_iteration: ITER-26
+    regression_flag: true
+
+  - issue_id: ISSUE-032
+    date: 2026-04-13
+    area: navigation
+    issue_type: truncated_or_nonrepresentative_bookmark_labels
+    description: The final EPUB navigation could still contain bookmarks that were too abbreviated or structurally incomplete, such as `Na casting do` or chess records with unclosed parenthetical metadata, because the nav layer accepted weak heading candidates and did not score truncated labels as a regression.
+    impact: User-facing Kindle bookmarks looked cheap and misleading even when the underlying EPUB was technically valid, and the quality evaluator could still over-score outputs that had visibly bad navigation labels.
+    severity: high
+    confidence: high
+    related_task: FX-016
+    remediation_task: FX-016
+    status: RESOLVED
+    fixed_in_iteration: ITER-27
+    regression_flag: true
+
+  - issue_id: ISSUE-026
+    date: 2026-04-12
+    area: tooling
+    issue_type: local_bootstrap_dependency_gap
+    description: Installing the full Kindle Master requirements on the local Python 3.14 interpreter attempted to downgrade lxml to <6 and failed to build native wheels, which temporarily blocked local pytest bootstrap.
+    impact: The pipeline itself remained runnable, but local test-runner setup was unnecessarily fragile on the active interpreter version.
+    severity: medium
+    confidence: high
+    related_task: T12-001
+    remediation_task: null
+    status: RESOLVED
+    fixed_in_iteration: ITER-20
+    regression_flag: false
+
+  - issue_id: ISSUE-033
+    date: 2026-04-13
+    area: conversion
+    issue_type: flattened_inline_ordered_list_loss
+    description: PDF baseline conversion could flatten inline ordered sequences such as `A. ... B. ... C. ...` or `1. ... 2. ... 3. ...` into one paragraph because block joining happened before any list-aware structure recovery.
+    impact: Question sets, answer choices, and compact enumerations looked cheap and less readable on Kindle even when whole-page coverage was technically correct.
+    severity: high
+    confidence: high
+    related_task: FX-017
+    remediation_task: FX-017
+    status: RESOLVED
+    fixed_in_iteration: ITER-29
+    regression_flag: true
+
+  - issue_id: ISSUE-034
+    date: 2026-04-13
+    area: qa
+    issue_type: missing_per_run_premium_assessment_visibility
+    description: A conversion could finish with a downloadable EPUB and raw JSON report, but the runtime did not previously guarantee a human-readable `1-10` premium assessment, clear strengths and weaknesses, or user-visible `x.y` version clarity for the currently running build.
+    impact: Users could not reliably tell whether a new run was actually premium, what remained weak, or whether localhost was serving the intended app version.
+    severity: medium
+    confidence: high
+    related_task: FX-018
+    remediation_task: FX-018
+    status: RESOLVED
+    fixed_in_iteration: ITER-29
+    regression_flag: true
+
+  - issue_id: ISSUE-035
+    date: 2026-04-13
+    area: qa
+    issue_type: publication_specific_guard_overfit
+    description: Some executable scenario guards still asserted concrete publication labels and fragments, which could mask generic regressions by proving sample memorization rather than cross-corpus quality behavior.
+    impact: Premium claims could look stronger than the actual generic pipeline because guard coverage was partially coupled to known sample wording.
+    severity: high
+    confidence: high
+    related_task: FX-019
+    remediation_task: FX-019
+    status: RESOLVED
+    fixed_in_iteration: ITER-36
+    regression_flag: true
+
+  - issue_id: ISSUE-036
+    date: 2026-04-14
+    area: release_gate
+    issue_type: single_publication_premium_overclaim
+    description: The historical READY control-plane state could overstate premium confidence because it relied on a single-publication release gate and did not surface corpus-wide text-first truth or unjustified page-image fallback counts as first-class evidence.
+    impact: The repository could appear stronger than its visible proof surface, especially when the UI and status files still reflected older maintenance-only truth.
+    severity: high
+    confidence: high
+    related_task: P14-001
+    remediation_task: P14-003
+    status: RESOLVED
+    fixed_in_iteration: ITER-39
+    regression_flag: true
+
+  - issue_id: ISSUE-037
+    date: 2026-04-14
+    area: control_plane
+    issue_type: stale_quality_loop_and_dashboard_truth
+    description: "`project_control/quality_loop_state.json` still pointed to archived work and localhost quality-state only exposed accepted single-publication truth, which made the control plane inconsistent with the active backlog and corpus-wide quality-first evidence."
+    impact: Users could not rely on the quality dashboard or loop state to understand the current next task, corpus-wide verdict, or whether the repository was still showing archived assumptions.
+    severity: high
+    confidence: high
+    related_task: P14-002
+    remediation_task: P14-002
+    status: RESOLVED
+    fixed_in_iteration: ITER-39
+    regression_flag: true
+
+  - issue_id: ISSUE-038
+    date: 2026-04-14
+    area: fixtures
+    issue_type: insufficient_ocr_and_document_breadth
+    description: The current manifest-backed corpus passes the hardened text-first gates, but it still lacks an OCR-stressed/scanned fixture and a stronger multi-page document-like fixture for broader premium validation.
+    impact: The repository proves premium quality on the current supported fixture bank, but broader scan-heavy and richer document-like stress behavior is still under-evidenced.
+    severity: medium
+    confidence: high
+    related_task: P14-004
+    remediation_task: null
+    status: OPEN
+    fixed_in_iteration: null
+    regression_flag: false

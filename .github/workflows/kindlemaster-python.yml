@@ -1,0 +1,73 @@
+name: Kindle Master Python
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "kindle_semantic_cleanup.py"
+      - "kindlemaster_*.py"
+      - "samples/pdf/**"
+      - "samples/epub/**"
+      - "project_control/**"
+      - "reports/**"
+      - "requirements-kindle-cleanup.txt"
+      - ".github/workflows/kindlemaster-python.yml"
+  pull_request:
+    paths:
+      - "kindle_semantic_cleanup.py"
+      - "kindlemaster_*.py"
+      - "samples/pdf/**"
+      - "samples/epub/**"
+      - "project_control/**"
+      - "reports/**"
+      - "requirements-kindle-cleanup.txt"
+      - ".github/workflows/kindlemaster-python.yml"
+
+jobs:
+  kindle-master-smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Kindle Master dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-kindle-cleanup.txt
+
+      - name: Compile Kindle Master scripts
+        run: |
+          python -m py_compile kindle_semantic_cleanup.py kindlemaster_manifest.py kindlemaster_release_gate.py kindlemaster_text_audit.py kindlemaster_pdf_to_epub.py kindlemaster_end_to_end.py kindlemaster_local_server.py
+
+      - name: Validate control-plane files
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import yaml
+          root = Path(".")
+          yaml.safe_load((root / "project_control" / "backlog.yaml").read_text(encoding="utf-8"))
+          yaml.safe_load((root / "project_control" / "input_registry.yaml").read_text(encoding="utf-8"))
+          yaml.safe_load((root / "project_control" / "publication_manifest.yaml").read_text(encoding="utf-8"))
+          yaml.safe_load((root / "project_control" / "issue_register.yaml").read_text(encoding="utf-8"))
+          yaml.safe_load((root / "project_control" / "low_confidence_review_queue.yaml").read_text(encoding="utf-8"))
+          json.loads((root / "project_control" / "metrics.json").read_text(encoding="utf-8"))
+          PY
+
+      - name: Run sample end-to-end smoke if PDF fixture exists
+        run: |
+          if [ -f "samples/pdf/strefa-pmi-52-2026.pdf" ]; then
+            python kindlemaster_end_to_end.py --pdf "samples/pdf/strefa-pmi-52-2026.pdf" --publication-id "strefa-pmi-52-2026" --release-mode
+          else
+            echo "No sample PDF fixture available; skipping PDF smoke."
+          fi
+
+      - name: Run Kindle Master pytest release suites
+        run: |
+          python -m pytest tests/test_release_metadata.py tests/test_isolation_boundaries.py tests/test_scenario_manifest.py tests/test_text_quality_thresholds.py tests/test_navigation_quality.py

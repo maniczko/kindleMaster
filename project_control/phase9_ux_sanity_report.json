@@ -1,0 +1,41 @@
+{
+  "analysis_date": "2026-04-11",
+  "task": "T9-004",
+  "files": [
+    {
+      "file_name": "9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411 (3).epub",
+      "chapters_checked": 51,
+      "figure_caption_pairs": 0,
+      "problem_solution_links": 0,
+      "image_heavy_chapters": 0
+    },
+    {
+      "file_name": "strefa-pmi-52-2026.epub",
+      "chapters_checked": 30,
+      "figure_caption_pairs": 0,
+      "problem_solution_links": 0,
+      "image_heavy_chapters": 0
+    },
+    {
+      "file_name": "tactits (2).epub",
+      "chapters_checked": 20,
+      "figure_caption_pairs": 5334,
+      "problem_solution_links": 0,
+      "image_heavy_chapters": 6
+    }
+  ],
+  "totals": {
+    "chapters_checked": 101,
+    "figure_caption_pairs": 5334,
+    "problem_solution_links": 0,
+    "image_heavy_chapters": 6
+  },
+  "quality_gate_g9": {
+    "pass": true,
+    "justification": [
+      "Chapters checked for reading-flow sanity: 101.",
+      "Figure-caption pairs preserved: 5334.",
+      "Problem-solution links preserved: 0."
+    ]
+  }
+}

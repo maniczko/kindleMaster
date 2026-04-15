@@ -1,0 +1,115 @@
+{
+  "analysis_date": "2026-04-11",
+  "task_completed": "T3-001",
+  "inputs_path": "C:\\Users\\user\\Desktop\\quiz\\quiz\\samples\\epub",
+  "files": [
+    {
+      "file_name": "9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411 (3).epub",
+      "metadata": {
+        "title": "Czasem",
+        "author": "Unknown",
+        "language": "pl"
+      },
+      "high_confidence_split_candidates_before": 4,
+      "high_confidence_split_candidates_after": 0,
+      "estimated_repairs_applied": 4,
+      "before_examples": [
+        {
+          "href": "EPUB/chapter_005.xhtml",
+          "match": "ra- zem",
+          "context": " a oni oboje są frankofilami. Następnym ra- zem Jacek siedział przy kawie z piękną kobi"
+        },
+        {
+          "href": "EPUB/chapter_022.xhtml",
+          "match": "regio- nu",
+          "context": " Lokalne produkty są najlepsze do dań z regio- nu, w którym wyrosły czy zostały wyhodowan"
+        },
+        {
+          "href": "EPUB/chapter_024.xhtml",
+          "match": "zosta- ła",
+          "context": " pustkę, miałem wrażenie, że część mnie zosta- ła na planie, brakowało mi adrenaliny, ene"
+        },
+        {
+          "href": "EPUB/chapter_035.xhtml",
+          "match": "sko- rupki",
+          "context": "bsza. Kucharze polecają przepiłowywanie sko- rupki nożem z ząbkami albo wywiercenie w niej"
+        }
+      ],
+      "after_examples": []
+    },
+    {
+      "file_name": "strefa-pmi-52-2026.epub",
+      "metadata": {
+        "title": "cf94c8a45045454cbd544be959d7c4dd",
+        "author": "Adobe InDesign 21.2 (Windows)",
+        "language": "pl"
+      },
+      "high_confidence_split_candidates_before": 0,
+      "high_confidence_split_candidates_after": 0,
+      "estimated_repairs_applied": 0,
+      "before_examples": [],
+      "after_examples": []
+    },
+    {
+      "file_name": "tactits (2).epub",
+      "metadata": {
+        "title": "Chess: 5334 Problems, Combinations and Games",
+        "author": "dvips(k) 5.98 Copyright 2009 Radical Eye Software",
+        "language": "pl"
+      },
+      "high_confidence_split_candidates_before": 12,
+      "high_confidence_split_candidates_after": 0,
+      "estimated_repairs_applied": 12,
+      "before_examples": [
+        {
+          "href": "EPUB/chapter_002.xhtml",
+          "match": "abun- dance",
+          "context": " that L´aszl´o Polgar’s Chess offers an abun- dance of instruction and pleasure and pro-vid"
+        },
+        {
+          "href": "EPUB/chapter_018.xhtml",
+          "match": "un- known",
+          "context": "3 Nf4+ 18.KXg3 Qh4m 0–1 NN – Mau (Place un- known - Date unknown) 4713 1.e4 e5 2.Nf3 Nc6 "
+        },
+        {
+          "href": "EPUB/chapter_018.xhtml",
+          "match": "un- known",
+          "context": "25.Kh1 Qg2m) 0–1 N. N – Hartlaub (Place un- known - 1889) 4722 1.e4 e5 2.Nf3 Nc6 3.Bc4 Nf"
+        },
+        {
+          "href": "EPUB/chapter_018.xhtml",
+          "match": "un- known",
+          "context": "! +–) 1–0 Hesse – N.N (Bethlehem - Date un- known) 4730 1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 4.BXc6"
+        },
+        {
+          "href": "EPUB/chapter_018.xhtml",
+          "match": "un- known",
+          "context": "g4 –+ 0–1 Brach– Horak(1911-1912 - Date un- known) 4738 1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 4.Ba4 "
+        }
+      ],
+      "after_examples": []
+    }
+  ],
+  "totals": {
+    "high_confidence_split_candidates_before": 16,
+    "high_confidence_split_candidates_after": 0,
+    "estimated_repairs_applied": 16,
+    "joined_word_auto_fixes": 0,
+    "epubs_processed": 3
+  },
+  "quality_gate_g3": {
+    "pass": true,
+    "justification": [
+      "Processed 3 EPUB packages from samples/epub.",
+      "High-confidence split-word candidates dropped from 16 to 0.",
+      "Estimated deterministic repairs applied: 16.",
+      "No deterministic joined-word auto-fixes were attempted because none passed the Phase 2 confidence threshold.",
+      "The cleanup rule excludes uppercase labels, title-cased names, and notation-heavy fragments from automatic rewriting."
+    ]
+  },
+  "notes": [
+    "This report covers deterministic high-confidence text cleanup only.",
+    "Uppercase labels, title-cased names, and notation-heavy chess fragments remain out of automatic cleanup.",
+    "Joined-word auto-fixes remain at zero because Phase 2 found no deterministic high-confidence joined-word cases."
+  ]
+}

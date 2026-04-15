@@ -1,0 +1,1343 @@
+{
+  "inputs_path": "C:\\Users\\user\\Desktop\\quiz\\quiz\\samples\\epub",
+  "analysis_date": "2026-04-11",
+  "tasks_completed": [
+    "T2-001",
+    "T2-002",
+    "T2-003",
+    "T2-004",
+    "T2-005"
+  ],
+  "files": [
+    {
+      "file_name": "9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411 (3).epub",
+      "title": "Czasem",
+      "split_word_candidates": [
+        {
+          "file_name": "9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411 (3).epub",
+          "href": "chapter_005.xhtml",
+          "category": "hyphen_split",
+          "match": "ra- zem",
+          "confidence": "high",
+          "context": "e to jego \u017cona, a oni oboje s\u0105 frankofilami. Nast\u0119pnym ra- zem Jacek siedzia\u0142 przy kawie z pi\u0119kn\u0105 kobiet\u0105 o niesamowi",
+          "note": null
+        },
+        {
+          "file_name": "9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411 (3).epub",
+          "href": "chapter_022.xhtml",
+          "category": "hyphen_split",
+          "match": "regio- nu",
+          "confidence": "high",
+          "context": " czy marchewce. Lokalne produkty s\u0105 najlepsze do da\u0144 z regio- nu, w kt\u00f3rym wyros\u0142y czy zosta\u0142y wyhodowane. Nie ma chyba",
+          "note": null
+        },
+        {
+          "file_name": "9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411 (3).epub",
+          "href": "chapter_032.xhtml",
+          "category": "hyphen_split",
+          "match": "jednowy- ZOBACZWSIECI",
+          "confidence": "high",
+          "context": "lsk\u0105. Jej zdaniem wi\u0119kszo\u015b\u0107 lokali przedstawia Polsk\u0119 \"jednowy- ZOBACZWSIECI: Pierogi Social Club Berlin: www.instagram.com/pierogi",
+          "note": null
+        },
+        {
+          "file_name": "9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411 (3).epub",
+          "href": "chapter_035.xhtml",
+          "category": "hyphen_split",
+          "match": "sko- rupki",
+          "confidence": "high",
+          "context": " 10-krotnie grubsza. Kucharze polecaj\u0105 przepi\u0142owywanie sko- rupki no\u017cem z z\u0105bkami albo wywiercenie w niej dziury d\u0142utem.",
+          "note": null
+        },
+        {
+          "file_name": "9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411 (3).epub",
+          "href": "chapter_035.xhtml",
+          "category": "hyphen_split",
+          "match": "przygo- PIEKARNIA",
+          "confidence": "high",
+          "context": "oraz selenu. W kuchni azjatyckiej s\u0105 cz\u0119sto u\u017cywane do przygo- PIEKARNIA RANO przy ulicy Stalowej na warszawskiej Pradze-P\u00f3\u0142noc",
+          "note": null
+        }
+      ],
+      "joined_word_candidates": [],
+      "boundary_corruption_candidates": [
+        {
+          "file_name": "9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411 (3).epub",
+          "href": "chapter_022.xhtml",
+          "category": "boundary_join",
+          "match": "0.?",
+          "confidence": "medium",
+          "context": "czony, kiedy przyjecha\u0142 do Warszawy na pocz\u0105tku lat 2000.? \u2013 Wtedy trudno by\u0142o nawet por\u00f3wna\u0107 polsk\u0105 i francusk\u0105 ",
+          "note": null
+        },
+        {
+          "file_name": "9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411 (3).epub",
+          "href": "chapter_029.xhtml",
+          "category": "boundary_join",
+          "match": "r.?",
+          "confidence": "medium",
+          "context": "\u0119 nasz drugi syn Beniamin. Jak wygl\u0105da\u0142a Polska w 1993 r.? \u2013 By\u0142a zupe\u0142nie inna ni\u017c dzi\u015b. Towaru by\u0142o ma\u0142o, o oli",
+          "note": null
+        }
+      ],
+      "page_furniture_candidates": [
+        {
+          "file_name": "9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411 (3).epub",
+          "href": "chapter_002.xhtml",
+          "category": "possible_furniture_label",
+          "match": "PRENUMERATY: Sylwia Kowalska () PR KORPORACYJNY: Karolina Sznajder KSI\u0118GOWO\u015a\u0106: Miros\u0142aw Mikos (dyrektor) KOLPORTA\u017b: Rafa\u0142 Kami\u0144ski (dyrektor) PRODUKCJA: Mariusz Gajda (dyrektor), Jaros\u0142aw Soko\u0142owski DRUK: P/mint SPRZEDA\u017b INTERNETOWA WYDA\u0143 POJEDYNCZYCH I ARCHIWALNYCH: literia. pl, zak\u0142adka PRASA Kontakt: https: //literia. pl/kontakt e-mail: Redakcja nie zwraca ma te ria \u0142\u00f3w niezam\u00f3wionych, zastrzega sobie prawo redagowania nades\u0142anych tekst\u00f3w, nie odpowiada za tre\u015b\u0107 zamieszczonych reklam i og\u0142osze\u0144 Zabroniona jest bezumowna sprzeda\u017c czasopisma po cenie ni\u017cszej od ceny detalicznej ustalonej przez wydawc\u0119.",
+          "confidence": "low",
+          "context": "PRENUMERATY: Sylwia Kowalska () PR KORPORACYJNY: Karolina Sznajder KSI\u0118GOWO\u015a\u0106: Miros\u0142aw Mikos (dyrektor) KOLPORTA\u017b: Rafa\u0142 Kami\u0144ski (dyrektor) PRODUKCJA: Mariusz Gajda (dyrektor), Jaros\u0142aw Soko\u0142owski DRUK: P/mint SPRZEDA\u017b INTERNETOWA WYDA\u0143 POJEDYNCZYCH I ARCHIWALNYCH: literia. pl, zak\u0142adka PRASA Kontakt: https: //literia. pl/kontakt e-mail: Redakcja nie zwraca ma te ria \u0142\u00f3w niezam\u00f3wionych, zastrzega sobie prawo redagowania nades\u0142anych tekst\u00f3w, nie odpowiada za tre\u015b\u0107 zamieszczonych reklam i og\u0142osze\u0144 Zabroniona jest bezumowna sprzeda\u017c czasopisma po cenie ni\u017cszej od ceny detalicznej ustalonej przez wydawc\u0119.",
+          "note": "May be legitimate section content; keep for review."
+        }
+      ],
+      "low_confidence_cases": [
+        {
+          "file_name": "9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411 (3).epub",
+          "href": "chapter_002.xhtml",
+          "category": "furniture_review",
+          "match": "PRENUMERATY: Sylwia Kowalska () PR KORPORACYJNY: Karolina Sznajder KSI\u0118GOWO\u015a\u0106: Miros\u0142aw Mikos (dyrektor) KOLPORTA\u017b: Rafa\u0142 Kami\u0144ski (dyrektor) PRODUKCJA: Mariusz Gajda (dyrektor), Jaros\u0142aw Soko\u0142owski DRUK: P/mint SPRZEDA\u017b INTERNETOWA WYDA\u0143 POJEDYNCZYCH I ARCHIWALNYCH: literia. pl, zak\u0142adka PRASA Kontakt: https: //literia. pl/kontakt e-mail: Redakcja nie zwraca ma te ria \u0142\u00f3w niezam\u00f3wionych, zastrzega sobie prawo redagowania nades\u0142anych tekst\u00f3w, nie odpowiada za tre\u015b\u0107 zamieszczonych reklam i og\u0142osze\u0144 Zabroniona jest bezumowna sprzeda\u017c czasopisma po cenie ni\u017cszej od ceny detalicznej ustalonej przez wydawc\u0119.",
+          "confidence": "low",
+          "context": "PRENUMERATY: Sylwia Kowalska () PR KORPORACYJNY: Karolina Sznajder KSI\u0118GOWO\u015a\u0106: Miros\u0142aw Mikos (dyrektor) KOLPORTA\u017b: Rafa\u0142 Kami\u0144ski (dyrektor) PRODUKCJA: Mariusz Gajda (dyrektor), Jaros\u0142aw Soko\u0142owski DRUK: P/mint SPRZEDA\u017b INTERNETOWA WYDA\u0143 POJEDYNCZYCH I ARCHIWALNYCH: literia. pl, zak\u0142adka PRASA Kontakt: https: //literia. pl/kontakt e-mail: Redakcja nie zwraca ma te ria \u0142\u00f3w niezam\u00f3wionych, zastrzega sobie prawo redagowania nades\u0142anych tekst\u00f3w, nie odpowiada za tre\u015b\u0107 zamieszczonych reklam i og\u0142osze\u0144 Zabroniona jest bezumowna sprzeda\u017c czasopisma po cenie ni\u017cszej od ceny detalicznej ustalonej przez wydawc\u0119.",
+          "note": "Potential masthead or publisher residue; review before removal."
+        },
+        {
+          "file_name": "9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411 (3).epub",
+          "href": "chapter_032.xhtml",
+          "category": "joined_word_review",
+          "match": "ZOBACZWSIECI",
+          "confidence": "medium",
+          "context": " zdaniem wi\u0119kszo\u015b\u0107 lokali przedstawia Polsk\u0119 \"jednowy- ZOBACZWSIECI: Pierogi Social Club Berlin: www.instagram.com/pierogi",
+          "note": "Suspicious glued token kept for review-only handling."
+        }
+      ],
+      "counts": {
+        "split_word_candidates": 5,
+        "joined_word_candidates": 0,
+        "boundary_corruption_candidates": 2,
+        "page_furniture_candidates": 1,
+        "low_confidence_cases": 2
+      }
+    },
+    {
+      "file_name": "strefa-pmi-52-2026.epub",
+      "title": "cf94c8a45045454cbd544be959d7c4dd",
+      "split_word_candidates": [
+        {
+          "file_name": "strefa-pmi-52-2026.epub",
+          "href": "chapter_002.xhtml",
+          "category": "hyphen_split",
+          "match": "Kostrzewa- Demczuk",
+          "confidence": "high",
+          "context": " STREFA RECENZJI Julia Janiszewska Anna Swatek Paulina Kostrzewa- Demczuk Redaktorka Dzia\u0142u STREFA WYWIADU BUSINESS ACUMEN Marek",
+          "note": null
+        },
+        {
+          "file_name": "strefa-pmi-52-2026.epub",
+          "href": "chapter_014.xhtml",
+          "category": "hyphen_split",
+          "match": "Sylwester- Kanofocka",
+          "confidence": "high",
+          "context": "uduje wsp\u00f3l not\u0119 i celebruje drobne sukcesy Aleksandra Sylwester- Kanofocka Zamyka etap z pozytywn\u0105 refleksj\u0105, buduje pozytywne sc",
+          "note": null
+        }
+      ],
+      "joined_word_candidates": [],
+      "boundary_corruption_candidates": [],
+      "page_furniture_candidates": [
+        {
+          "file_name": "strefa-pmi-52-2026.epub",
+          "href": "chapter_003.xhtml",
+          "category": "possible_furniture_label",
+          "match": "Oddajemy w Wasze r\u0119ce marcowe, 52. wydanie Strefy PMI. To numer szczeg\u00f3lny \u2013 nie tylko dlatego, \u017ce w centrum sta wiamy temat sztucznej inteligencji w zarz\u0105dzaniu projektami, ale tak\u017ce dlatego, \u017ce wprowadzamy dwie wa\u017cne zmiany w strukturze naszego kwartalnika.",
+          "confidence": "low",
+          "context": "Oddajemy w Wasze r\u0119ce marcowe, 52. wydanie Strefy PMI. To numer szczeg\u00f3lny \u2013 nie tylko dlatego, \u017ce w centrum sta wiamy temat sztucznej inteligencji w zarz\u0105dzaniu projektami, ale tak\u017ce dlatego, \u017ce wprowadzamy dwie wa\u017cne zmiany w strukturze naszego kwartalnika.",
+          "note": "May be legitimate section content; keep for review."
+        },
+        {
+          "file_name": "strefa-pmi-52-2026.epub",
+          "href": "chapter_015.xhtml",
+          "category": "possible_furniture_label",
+          "match": "Kiedy w po\u0142owie lat dziewi\u0119\u0107dziesi\u0105 tych PMI wydawa\u0142 pierwsze wydanie PMBOK Guide, nikt nie wyobra\u017ca\u0142 sobie, \u017ce dwie dekady p\u00f3\u017aniej project mana gerowie b\u0119d\u0105 musieli orientowa\u0107 si\u0119 w unijnych rozporz\u0105dzeniach o sztucz nej inteligencji. A jednak \u2013 regulacje dojrzewaj\u0105 szybciej ni\u017c niejeden har monogram projektu. legislacja etapowa, roz\u0142o\u017cona na kilka lat. Pierwsza faza \u2013 obowi\u0105zuj\u0105ca od 2 lutego 2025 roku \u2013 obj\u0119\u0142a zakazy o\u015bmiu kategorii praktyk uznanych za niedopuszczalne: m. in. systemy oceny spo\u0142ecznej (social scoring), rozpoznawanie emocji w miej scu pracy i plac\u00f3wkach o\u015bwiatowych, biometryczna kategoryzacja os\u00f3b w celu wnioskowania o ich przekonaniach Coraz wi\u0119cej organizacji si\u0119ga po narz\u0119 dzia AI: asystenci automatyzuj\u0105 raporty, algorytmy wspieraj\u0105 rekrutacj\u0119 do zespo \u0142\u00f3w projektowych, modele predykcyjne szacuj\u0105 ryzyka. W tle tego technologicz nego entuzjazmu tworzy si\u0119 jednak cichy, lecz niezwykle istotny krajobraz prawny. Nieznajomo\u015b\u0107 tych regulacji \u2013 podobnie jak nieznajomo\u015b\u0107 prawa w og\u00f3le \u2013 nie zwalnia z odpowiedzialno\u015bci.",
+          "confidence": "low",
+          "context": "Kiedy w po\u0142owie lat dziewi\u0119\u0107dziesi\u0105 tych PMI wydawa\u0142 pierwsze wydanie PMBOK Guide, nikt nie wyobra\u017ca\u0142 sobie, \u017ce dwie dekady p\u00f3\u017aniej project mana gerowie b\u0119d\u0105 musieli orientowa\u0107 si\u0119 w unijnych rozporz\u0105dzeniach o sztucz nej inteligencji. A jednak \u2013 regulacje dojrzewaj\u0105 szybciej ni\u017c niejeden har monogram projektu. legislacja etapowa, roz\u0142o\u017cona na kilka lat. Pierwsza faza \u2013 obowi\u0105zuj\u0105ca od 2 lutego 2025 roku \u2013 obj\u0119\u0142a zakazy o\u015bmiu kategorii praktyk uznanych za niedopuszczalne: m. in. systemy oceny spo\u0142ecznej (social scoring), rozpoznawanie emocji w miej scu pracy i plac\u00f3wkach o\u015bwiatowych, biometryczna kategoryzacja os\u00f3b w celu wnioskowania o ich przekonaniach Coraz wi\u0119cej organizacji si\u0119ga po narz\u0119 dzia AI: asystenci automatyzuj\u0105 raporty, algorytmy wspieraj\u0105 rekrutacj\u0119 do zespo \u0142\u00f3w projektowych, modele predykcyjne szacuj\u0105 ryzyka. W tle tego technologicz nego entuzjazmu tworzy si\u0119 jednak cichy, lecz niezwykle istotny krajobraz prawny. Nieznajomo\u015b\u0107 tych regulacji \u2013 podobnie jak nieznajomo\u015b\u0107 prawa w og\u00f3le \u2013 nie zwalnia z odpowiedzialno\u015bci.",
+          "note": "May be legitimate section content; keep for review."
+        },
+        {
+          "file_name": "strefa-pmi-52-2026.epub",
+          "href": "chapter_023.xhtml",
+          "category": "possible_furniture_label",
+          "match": "1. Grucza B., Zarz\u0105dzanie interesariuszami projektu, Polskie Wydawnictwo Ekono miczne, Warszawa 2019, s. 69 2. AA1000 AccountAbility Principles, Acco untability, 2018, s. 3 3. AA1000 Guidance On Applying The AA1000AS v3 for Assurance Providers, Accountability, 2020, s. 6 4. AA1000 Stakeholder Engagement Stan dard, 2015, Accountability, s. 9 5. AccountAbility, Podr\u0119cznik Anga\u017cowania Interesariuszy, Tom 2: Praktyczny Poradnik Anga\u017cowania Interesariuszy, Program \u015aro dowiskowy ONZ i Stakeholder Research Associates, 2012, Redakcja i adaptacja polskiej wersji podr\u0119cznika: Bartosz Gru cza, s. 7-17 6. National Communications Branch of Dzia\u0142anie wed\u0142ug tego standardu za czyna si\u0119 od strategicznego podej\u015bcia do organizacji, co oznacza okre\u015blenie cel\u00f3w i ich zwi\u0105zk\u00f3w z otoczeniem, kt\u00f3re the Department of Immigration and Ci tizenship, 2008 wydanie polskie pod red. Grucza B., Zaanga\u017cowanie Interesariuszy, Podr\u0119cznik u\u017cytkownika, Bizarre, Warsza wa 2012, s. 5",
+          "confidence": "low",
+          "context": "1. Grucza B., Zarz\u0105dzanie interesariuszami projektu, Polskie Wydawnictwo Ekono miczne, Warszawa 2019, s. 69 2. AA1000 AccountAbility Principles, Acco untability, 2018, s. 3 3. AA1000 Guidance On Applying The AA1000AS v3 for Assurance Providers, Accountability, 2020, s. 6 4. AA1000 Stakeholder Engagement Stan dard, 2015, Accountability, s. 9 5. AccountAbility, Podr\u0119cznik Anga\u017cowania Interesariuszy, Tom 2: Praktyczny Poradnik Anga\u017cowania Interesariuszy, Program \u015aro dowiskowy ONZ i Stakeholder Research Associates, 2012, Redakcja i adaptacja polskiej wersji podr\u0119cznika: Bartosz Gru cza, s. 7-17 6. National Communications Branch of Dzia\u0142anie wed\u0142ug tego standardu za czyna si\u0119 od strategicznego podej\u015bcia do organizacji, co oznacza okre\u015blenie cel\u00f3w i ich zwi\u0105zk\u00f3w z otoczeniem, kt\u00f3re the Department of Immigration and Ci tizenship, 2008 wydanie polskie pod red. Grucza B., Zaanga\u017cowanie Interesariuszy, Podr\u0119cznik u\u017cytkownika, Bizarre, Warsza wa 2012, s. 5",
+          "note": "May be legitimate section content; keep for review."
+        }
+      ],
+      "low_confidence_cases": [
+        {
+          "file_name": "strefa-pmi-52-2026.epub",
+          "href": "chapter_003.xhtml",
+          "category": "furniture_review",
+          "match": "Oddajemy w Wasze r\u0119ce marcowe, 52. wydanie Strefy PMI. To numer szczeg\u00f3lny \u2013 nie tylko dlatego, \u017ce w centrum sta wiamy temat sztucznej inteligencji w zarz\u0105dzaniu projektami, ale tak\u017ce dlatego, \u017ce wprowadzamy dwie wa\u017cne zmiany w strukturze naszego kwartalnika.",
+          "confidence": "low",
+          "context": "Oddajemy w Wasze r\u0119ce marcowe, 52. wydanie Strefy PMI. To numer szczeg\u00f3lny \u2013 nie tylko dlatego, \u017ce w centrum sta wiamy temat sztucznej inteligencji w zarz\u0105dzaniu projektami, ale tak\u017ce dlatego, \u017ce wprowadzamy dwie wa\u017cne zmiany w strukturze naszego kwartalnika.",
+          "note": "Potential masthead or publisher residue; review before removal."
+        },
+        {
+          "file_name": "strefa-pmi-52-2026.epub",
+          "href": "chapter_015.xhtml",
+          "category": "furniture_review",
+          "match": "Kiedy w po\u0142owie lat dziewi\u0119\u0107dziesi\u0105 tych PMI wydawa\u0142 pierwsze wydanie PMBOK Guide, nikt nie wyobra\u017ca\u0142 sobie, \u017ce dwie dekady p\u00f3\u017aniej project mana gerowie b\u0119d\u0105 musieli orientowa\u0107 si\u0119 w unijnych rozporz\u0105dzeniach o sztucz nej inteligencji. A jednak \u2013 regulacje dojrzewaj\u0105 szybciej ni\u017c niejeden har monogram projektu. legislacja etapowa, roz\u0142o\u017cona na kilka lat. Pierwsza faza \u2013 obowi\u0105zuj\u0105ca od 2 lutego 2025 roku \u2013 obj\u0119\u0142a zakazy o\u015bmiu kategorii praktyk uznanych za niedopuszczalne: m. in. systemy oceny spo\u0142ecznej (social scoring), rozpoznawanie emocji w miej scu pracy i plac\u00f3wkach o\u015bwiatowych, biometryczna kategoryzacja os\u00f3b w celu wnioskowania o ich przekonaniach Coraz wi\u0119cej organizacji si\u0119ga po narz\u0119 dzia AI: asystenci automatyzuj\u0105 raporty, algorytmy wspieraj\u0105 rekrutacj\u0119 do zespo \u0142\u00f3w projektowych, modele predykcyjne szacuj\u0105 ryzyka. W tle tego technologicz nego entuzjazmu tworzy si\u0119 jednak cichy, lecz niezwykle istotny krajobraz prawny. Nieznajomo\u015b\u0107 tych regulacji \u2013 podobnie jak nieznajomo\u015b\u0107 prawa w og\u00f3le \u2013 nie zwalnia z odpowiedzialno\u015bci.",
+          "confidence": "low",
+          "context": "Kiedy w po\u0142owie lat dziewi\u0119\u0107dziesi\u0105 tych PMI wydawa\u0142 pierwsze wydanie PMBOK Guide, nikt nie wyobra\u017ca\u0142 sobie, \u017ce dwie dekady p\u00f3\u017aniej project mana gerowie b\u0119d\u0105 musieli orientowa\u0107 si\u0119 w unijnych rozporz\u0105dzeniach o sztucz nej inteligencji. A jednak \u2013 regulacje dojrzewaj\u0105 szybciej ni\u017c niejeden har monogram projektu. legislacja etapowa, roz\u0142o\u017cona na kilka lat. Pierwsza faza \u2013 obowi\u0105zuj\u0105ca od 2 lutego 2025 roku \u2013 obj\u0119\u0142a zakazy o\u015bmiu kategorii praktyk uznanych za niedopuszczalne: m. in. systemy oceny spo\u0142ecznej (social scoring), rozpoznawanie emocji w miej scu pracy i plac\u00f3wkach o\u015bwiatowych, biometryczna kategoryzacja os\u00f3b w celu wnioskowania o ich przekonaniach Coraz wi\u0119cej organizacji si\u0119ga po narz\u0119 dzia AI: asystenci automatyzuj\u0105 raporty, algorytmy wspieraj\u0105 rekrutacj\u0119 do zespo \u0142\u00f3w projektowych, modele predykcyjne szacuj\u0105 ryzyka. W tle tego technologicz nego entuzjazmu tworzy si\u0119 jednak cichy, lecz niezwykle istotny krajobraz prawny. Nieznajomo\u015b\u0107 tych regulacji \u2013 podobnie jak nieznajomo\u015b\u0107 prawa w og\u00f3le \u2013 nie zwalnia z odpowiedzialno\u015bci.",
+          "note": "Potential masthead or publisher residue; review before removal."
+        },
+        {
+          "file_name": "strefa-pmi-52-2026.epub",
+          "href": "chapter_019.xhtml",
+          "category": "joined_word_review",
+          "match": "ORGANIZATION-RELATED",
+          "confidence": "medium",
+          "context": " do problem\u00f3w, co blokuje pro\u015bby o pomoc. Trzeci\u0105 jest ORGANIZATION-RELATED. Wiele firm szuka szybkich sztuczek za miast g\u0142\u0119bokiej",
+          "note": "Suspicious glued token kept for review-only handling."
+        },
+        {
+          "file_name": "strefa-pmi-52-2026.epub",
+          "href": "chapter_023.xhtml",
+          "category": "furniture_review",
+          "match": "1. Grucza B., Zarz\u0105dzanie interesariuszami projektu, Polskie Wydawnictwo Ekono miczne, Warszawa 2019, s. 69 2. AA1000 AccountAbility Principles, Acco untability, 2018, s. 3 3. AA1000 Guidance On Applying The AA1000AS v3 for Assurance Providers, Accountability, 2020, s. 6 4. AA1000 Stakeholder Engagement Stan dard, 2015, Accountability, s. 9 5. AccountAbility, Podr\u0119cznik Anga\u017cowania Interesariuszy, Tom 2: Praktyczny Poradnik Anga\u017cowania Interesariuszy, Program \u015aro dowiskowy ONZ i Stakeholder Research Associates, 2012, Redakcja i adaptacja polskiej wersji podr\u0119cznika: Bartosz Gru cza, s. 7-17 6. National Communications Branch of Dzia\u0142anie wed\u0142ug tego standardu za czyna si\u0119 od strategicznego podej\u015bcia do organizacji, co oznacza okre\u015blenie cel\u00f3w i ich zwi\u0105zk\u00f3w z otoczeniem, kt\u00f3re the Department of Immigration and Ci tizenship, 2008 wydanie polskie pod red. Grucza B., Zaanga\u017cowanie Interesariuszy, Podr\u0119cznik u\u017cytkownika, Bizarre, Warsza wa 2012, s. 5",
+          "confidence": "low",
+          "context": "1. Grucza B., Zarz\u0105dzanie interesariuszami projektu, Polskie Wydawnictwo Ekono miczne, Warszawa 2019, s. 69 2. AA1000 AccountAbility Principles, Acco untability, 2018, s. 3 3. AA1000 Guidance On Applying The AA1000AS v3 for Assurance Providers, Accountability, 2020, s. 6 4. AA1000 Stakeholder Engagement Stan dard, 2015, Accountability, s. 9 5. AccountAbility, Podr\u0119cznik Anga\u017cowania Interesariuszy, Tom 2: Praktyczny Poradnik Anga\u017cowania Interesariuszy, Program \u015aro dowiskowy ONZ i Stakeholder Research Associates, 2012, Redakcja i adaptacja polskiej wersji podr\u0119cznika: Bartosz Gru cza, s. 7-17 6. National Communications Branch of Dzia\u0142anie wed\u0142ug tego standardu za czyna si\u0119 od strategicznego podej\u015bcia do organizacji, co oznacza okre\u015blenie cel\u00f3w i ich zwi\u0105zk\u00f3w z otoczeniem, kt\u00f3re the Department of Immigration and Ci tizenship, 2008 wydanie polskie pod red. Grucza B., Zaanga\u017cowanie Interesariuszy, Podr\u0119cznik u\u017cytkownika, Bizarre, Warsza wa 2012, s. 5",
+          "note": "Potential masthead or publisher residue; review before removal."
+        }
+      ],
+      "counts": {
+        "split_word_candidates": 2,
+        "joined_word_candidates": 0,
+        "boundary_corruption_candidates": 0,
+        "page_furniture_candidates": 3,
+        "low_confidence_cases": 4
+      }
+    },
+    {
+      "file_name": "tactits (2).epub",
+      "title": "Chess: 5334 Problems, Combinations and Games",
+      "split_word_candidates": [
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_002.xhtml",
+          "category": "hyphen_split",
+          "match": "abun- dance",
+          "confidence": "high",
+          "context": "st, you\u2019ll find that L\u00b4aszl\u00b4o Polgar\u2019s Chess offers an abun- dance of instruction and pleasure and pro-vides a superb fou",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "O- Om",
+          "confidence": "low",
+          "context": "Bh6m 301 1.NXc7m 302 1.Qc6m 303 1.f7m 304 1.Nc5m 305 1.O- Om 306 1.a Xb6m 307 1.Kc3 [threatening Qa7m] 1...Ka2 (1..",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "O- Om",
+          "confidence": "low",
+          "context": "1.Qa2 2122 1.Qg3 2123 1.Rg1 Kh5 2.g4m 2124 1.Qh6 Kf3 2.O- Om 2125 1.Qe3 2126 1.Kd4 2127 1.Bc4 2128 1.h4 2129 1.Rd2 ",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "O- Om",
+          "confidence": "low",
+          "context": "1.Bf6 f Xg6 2.Qh3m 2409 1.Qe5KXf3 ( 1...KXh1 2.Qh2m) 2.O- Om 1.Qc3 Kf8 (1...Kh6 2.Rd6m) (1...Kg6 2.Rd6m) (1...Kf6 2",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "O- Om",
+          "confidence": "low",
+          "context": "m 3440 1.Qe5 Kf3 (1...KXh1 2.Kf2m) (1...KXh3 2.Qg3m) 2.O- Om 3441 1.Kb2 [threatening Dc3m] 1...Ka5+ (1...Qa5 2.Qc3m",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "O- Om",
+          "confidence": "low",
+          "context": "4m 3805 1.Qf5+ Kh4 2.Rh1m 3806 1.Qe2+ Kc2 2.d3+ KXc1 3.O- Om 3807 1.Qd8+ RXd8 2.RXd8+ NXd8 3.Re8m 3808 1.Ng5+ RXg5 ",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "Di- agram",
+          "confidence": "low",
+          "context": "5 2.Bb2 f6 3.e4 BXb4 4.Bc4 Nc6 5.f4 e Xf4 6.Nh3 Nge7 ( Di- agram) 8.BXf6! Rf8 (8...g Xf6 (8...NXc4 9.BXg7 Rg8 10.Qh5+ N",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "Ger- many",
+          "confidence": "high",
+          "context": "Nf6!KXf6 18.Nh5+! g Xh5 19.Qg5m Ternplemeier \u2013 Muller (Ger- many - 1950) 4474 1.e4 c5 2.Nf3 Nf6 3.e5 Nd5 4.d4 e6 5.c4 N",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "Tim- man",
+          "confidence": "high",
+          "context": "5 ((19.Ng5)) 18...Rg8 19.QXf7+ +\u2013) 1\u20130 Kaplan, Julio \u2013 Tim- man, Jan H (Jerusalem - 1967) 4498 1.e4 e5 2.d4 e Xd4 3.c3",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "Mac- Donnel",
+          "confidence": "high",
+          "context": "ite resigns) (24...NXd4 25.Qd3 Rg6+ 26.QXg6 NXf3m) 0\u20131 Mac- Donnel \u2013 Boden (London - 1865) 1.e4 e5 2.Bc4 Nf6 3.d4 e Xd4 4",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "An- geles",
+          "confidence": "low",
+          "context": "14.g Xf3BXf3 (White resigns) 0\u20131 Grabiel\u2013 Mugridge(Los An- geles - 1932) 4529 1.Nf3 Nc6 2.e4 e5 3.Bc4 Bc5 4.d4 BXd4 5.N",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "Bring- man",
+          "confidence": "high",
+          "context": "21.Kg1 Qg5+ \u2013+) 20...Ng5+ 21.Kg1 NXf3+ 22.Kg2Qh3m) 0\u20131 Bring- man \u2013 Andrzejewski (Toledo - 1976) 4550 1.e4 e5 2.Nf3 Nc6 ",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "Liver- pool",
+          "confidence": "high",
+          "context": "5.Kg1 NXd4 16.Qd1 Re1+! 17.QXe1 NXf3m N. N \u2013 Abrahams (Liver- pool - 1929) 4562 1.Nf3 Nf6 2.d4 d5 3.c4 e6 4.Nc3 Be7 5.Bg5",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "Ceyn- hausen",
+          "confidence": "high",
+          "context": "e5 RXf2 23.QXh7+ NXh7 24.BXh7m 1\u20130 Koch \u2013 Nowarra (Bad Ceyn- hausen - 1938) 4596 1.e4 e6 2.d4 d5 3.Bd3 Nf6 4.e5 Nfd7 5.Nf3",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "Peters- burg",
+          "confidence": "high",
+          "context": "15.h Xg3 h Xg3+ 16.BXh5 Qh4m Bardeleben \u2013 Lebedev (St. Peters- burg - 1902) 4626 1.e4 e5 2.Nf3 Nc6 3.Bb5 Nf6 4.O- O NXe4 5",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "Di- agram",
+          "confidence": "low",
+          "context": " a6 13.Rad1 b5 14.f5 NXe5 15.d Xe5 Nd7 16.f Xg6 f Xg6 (Di- agram) 17.BXg6! h Xg6 18.Qe6+ Kh8 19.Rf3Nf8 20.Rh3+ Bh6 21.Q",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "Folke- stone",
+          "confidence": "high",
+          "context": ".QXe8+ KXe8 22.f3Bd3 23.a Xb5+\u2013 Aljechin \u2013 Apscheneek (Folke- stone - 1933) 4643 1.d4 d5 2.c4 e6 3.Nc3 Nf6 4.c Xd5 e Xd5 5",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "Ham- burg",
+          "confidence": "high",
+          "context": ") (15.Bd2 Rh3+! 16.g Xh3 Qh2m ) 0\u20131 Wilke \u2013 Priwonitz (Ham- burg - 1833) 4682 1.e4 e6 2.d4 d5 3.e Xd5 e Xd5 4.Nf3 Nf6 5",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "Di- agram",
+          "confidence": "low",
+          "context": "5 Ne6 15.NXf7 Qb6+ 16.Kh1 O- O 17.BXd3 Qd4 18.Qc2 Qh4 (Di- agram) 19.Bh6! +\u2013 (19.Bh6 g Xh6 20.BXh7+ Kg7 21.Qg6m) (19.Bh",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "Yu- goslavia",
+          "confidence": "low",
+          "context": "QXh7+ KXh7 23.NXg5+ +\u2013) 1\u20130 Ivanovic, B \u2013 Osterman, R (Yu- goslavia - 1979) 4698 1.e4 e5 2.f4 Bc5 3.Nf3 d6 4.c3 Qe7 5.d4 e",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "Gif- ford",
+          "confidence": "high",
+          "context": " 19.g3+ Kh3 20. Nd Xf4m 1\u20130 Blackburne, Joseph Henry \u2013 Gif- ford (Place unknown - 1874) 4709 1.e4 e5 2.Nf3 Nc6 3.d4 e X",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "un- known",
+          "confidence": "low",
+          "context": "..BXh3+! 17.KXh3 Nf4+ 18.KXg3 Qh4m 0\u20131 NN \u2013 Mau (Place un- known - Date unknown) 4713 1.e4 e5 2.Nf3 Nc6 3.Nc3 Nf6 4.Bb5",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "Pills- bury",
+          "confidence": "high",
+          "context": "am) 9...BXh3 10.g Xh3 Qg3+ 11.Kh1 QXh3+ 12.Kg1 Ng4 0\u20131 Pills- bury, H N \u2013 Dickson, H (Place unknown - 1900) 4714 1.e4 e5 ",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "Teich- mann",
+          "confidence": "high",
+          "context": " Ng4 16.Nf3 Qg3+ 17.Kh1 BXf2 0\u20131 Von Scheve, Theodor \u2013 Teich- mann, Richard (Berlin - 1907) 4720 1.e4 e5 2.Nf3Nc6 3.Bc4Bc",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "un- known",
+          "confidence": "low",
+          "context": "4+ 24.Kg1 Qg3+ 25.Kh1 Qg2m) 0\u20131 N. N \u2013 Hartlaub (Place un- known - 1889) 4722 1.e4 e5 2.Nf3 Nc6 3.Bc4 Nf6 4.Ng5 d5 5.e ",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "Di- agram",
+          "confidence": "low",
+          "context": "h5 d3 13.c Xd3 Be5 14.Rf3 Qd4+ 15. Be3 QXb2 16.Rh3 h6 (Di- agram) 17.BXh6! Bd4+ (17...g Xh6 18.QXh6Rd8 19.Qh7+ Kf8 20.Q",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "Can- deray",
+          "confidence": "high",
+          "context": ".RXh3! \u2013+ 21.g Xh3 Qg3+ 22.Kh1 QXh3+ 23.Kg1Ng4 \u2013+) 0\u20131 Can- deray \u2013 Bonzanigo (Place unknown - 1980) 4727 1.e4 e5 2.Nf3 ",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "un- known",
+          "confidence": "low",
+          "context": "Qh6+ Kg8 20.Ne6! +\u2013) 1\u20130 Hesse \u2013 N.N (Bethlehem - Date un- known) 4730 1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 4.BXc6 d Xc6 5.O- O B",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "un- known",
+          "confidence": "low",
+          "context": "f1 Qg3 24.Rf2 Ng4 \u2013+ 0\u20131 Brach\u2013 Horak(1911-1912 - Date un- known) 4738 1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 4.Ba4 Nf6 5.O- O NXe4",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "Capa- blanca",
+          "confidence": "high",
+          "context": "f6 18.Ne5 c5 (Diagram) 19.BXh6+! KXh6 20.NXf7+! +\u2013 1\u20130 Capa- blanca \u2013 Jaffe (New York - 1910) 4752 1.c4 Nf6 2.Nc3 e6 3.d4 ",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "Ko- rchnoy",
+          "confidence": "low",
+          "context": "e6+ Kf8 23.Qc6Ra7 24.Ne6+ +\u2013 ) 21.NXa8+\u2013 1\u20130 Petrosian\u2013Ko- rchnoy (Curacao - 1962.06.16) 4769 1.Nf3 Nf6 2.c4 c5 3.Nc3 d5",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "un- known",
+          "confidence": "low",
+          "context": "14. QXe6+ KXe6 15.Ng5m 1\u20130 Gerschenkron\u2013 Fischer(Place un- known - 1935) 4781 1.e4 c6 2.d4 d5 3.e Xd5 c Xd5 4.c4 d Xc4 ",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "Di- agram",
+          "confidence": "low",
+          "context": "6 6.Bc4 Be7 7.Qh5 O- O 8. Ne2 g6 9.Qf3 Nd7 10.Bh6 Re8 (Di- agram) 11.BXf7+ KXf7 12.Qb3m 1\u20130 Zhulkov \u2013 Gavemann (Place u",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "Som- bor",
+          "confidence": "high",
+          "context": " 19.Nf5+! +\u2013 BXf5 20.Rh4+ +\u2013 1\u20130 Kupreichik \u2013 Planinc (Som- bor - 1970) 4826 1.e4 e5 2.Nf3 Nc6 3.Bb5 Nd4 4.NXd4 e Xd4 ",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "hyphen_split",
+          "match": "Bo- den",
+          "confidence": "low",
+          "context": " 17.KXf1 Qf6+ 18.Qf3 QXf3+ 19.g Xf3Bh3+ 20.Ke2Re8+ 0\u20131 Bo- den, Samuel \u2013 Bird, Henry (Place unknown - 1873) 4827 1.e4",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        }
+      ],
+      "joined_word_candidates": [],
+      "boundary_corruption_candidates": [
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.Q",
+          "confidence": "low",
+          "context": "Solutions 1 1.QXg7m 2 1.QXh7m 3 1.Qg7m 4 1.Rh3m 5 1.Rh8m 6 1.Rg1m 7 1.",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.Q",
+          "confidence": "low",
+          "context": "Solutions 1 1.QXg7m 2 1.QXh7m 3 1.Qg7m 4 1.Rh3m 5 1.Rh8m 6 1.Rg1m 7 1.Rh1m 8 1.R",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.Q",
+          "confidence": "low",
+          "context": "Solutions 1 1.QXg7m 2 1.QXh7m 3 1.Qg7m 4 1.Rh3m 5 1.Rh8m 6 1.Rg1m 7 1.Rh1m 8 1.Rh1m 9 1.Rg",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.R",
+          "confidence": "low",
+          "context": "Solutions 1 1.QXg7m 2 1.QXh7m 3 1.Qg7m 4 1.Rh3m 5 1.Rh8m 6 1.Rg1m 7 1.Rh1m 8 1.Rh1m 9 1.Rg1m 10 1.B",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.R",
+          "confidence": "low",
+          "context": "Solutions 1 1.QXg7m 2 1.QXh7m 3 1.Qg7m 4 1.Rh3m 5 1.Rh8m 6 1.Rg1m 7 1.Rh1m 8 1.Rh1m 9 1.Rg1m 10 1.Ba6m 11 1.",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.R",
+          "confidence": "low",
+          "context": "tions 1 1.QXg7m 2 1.QXh7m 3 1.Qg7m 4 1.Rh3m 5 1.Rh8m 6 1.Rg1m 7 1.Rh1m 8 1.Rh1m 9 1.Rg1m 10 1.Ba6m 11 1.Rd8m 12 1",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.R",
+          "confidence": "low",
+          "context": ".QXg7m 2 1.QXh7m 3 1.Qg7m 4 1.Rh3m 5 1.Rh8m 6 1.Rg1m 7 1.Rh1m 8 1.Rh1m 9 1.Rg1m 10 1.Ba6m 11 1.Rd8m 12 1.BXh7m 13",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.R",
+          "confidence": "low",
+          "context": "1.QXh7m 3 1.Qg7m 4 1.Rh3m 5 1.Rh8m 6 1.Rg1m 7 1.Rh1m 8 1.Rh1m 9 1.Rg1m 10 1.Ba6m 11 1.Rd8m 12 1.BXh7m 13 1.QXf7m ",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.R",
+          "confidence": "low",
+          "context": " 1.Qg7m 4 1.Rh3m 5 1.Rh8m 6 1.Rg1m 7 1.Rh1m 8 1.Rh1m 9 1.Rg1m 10 1.Ba6m 11 1.Rd8m 12 1.BXh7m 13 1.QXf7m 14 1.Qh5m",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.B",
+          "confidence": "low",
+          "context": "1.Rh3m 5 1.Rh8m 6 1.Rg1m 7 1.Rh1m 8 1.Rh1m 9 1.Rg1m 10 1.Ba6m 11 1.Rd8m 12 1.BXh7m 13 1.QXf7m 14 1.Qh5m 15 1.Re8m",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.R",
+          "confidence": "low",
+          "context": ".Rh8m 6 1.Rg1m 7 1.Rh1m 8 1.Rh1m 9 1.Rg1m 10 1.Ba6m 11 1.Rd8m 12 1.BXh7m 13 1.QXf7m 14 1.Qh5m 15 1.Re8m 16 1.QXh7",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.B",
+          "confidence": "low",
+          "context": "Rg1m 7 1.Rh1m 8 1.Rh1m 9 1.Rg1m 10 1.Ba6m 11 1.Rd8m 12 1.BXh7m 13 1.QXf7m 14 1.Qh5m 15 1.Re8m 16 1.QXh7m 17 1.Rd8",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.Q",
+          "confidence": "low",
+          "context": "1m 8 1.Rh1m 9 1.Rg1m 10 1.Ba6m 11 1.Rd8m 12 1.BXh7m 13 1.QXf7m 14 1.Qh5m 15 1.Re8m 16 1.QXh7m 17 1.Rd8m 18 1.Ng6m",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.Q",
+          "confidence": "low",
+          "context": " 9 1.Rg1m 10 1.Ba6m 11 1.Rd8m 12 1.BXh7m 13 1.QXf7m 14 1.Qh5m 15 1.Re8m 16 1.QXh7m 17 1.Rd8m 18 1.Ng6m 19 1.f Xg8",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.R",
+          "confidence": "low",
+          "context": "10 1.Ba6m 11 1.Rd8m 12 1.BXh7m 13 1.QXf7m 14 1.Qh5m 15 1.Re8m 16 1.QXh7m 17 1.Rd8m 18 1.Ng6m 19 1.f Xg8Nm 20 1.f8",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.Q",
+          "confidence": "low",
+          "context": "11 1.Rd8m 12 1.BXh7m 13 1.QXf7m 14 1.Qh5m 15 1.Re8m 16 1.QXh7m 17 1.Rd8m 18 1.Ng6m 19 1.f Xg8Nm 20 1.f8Qm 21 1.d ",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.R",
+          "confidence": "low",
+          "context": "2 1.BXh7m 13 1.QXf7m 14 1.Qh5m 15 1.Re8m 16 1.QXh7m 17 1.Rd8m 18 1.Ng6m 19 1.f Xg8Nm 20 1.f8Qm 21 1.d Xe8Nm 22 1.",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.N",
+          "confidence": "low",
+          "context": "13 1.QXf7m 14 1.Qh5m 15 1.Re8m 16 1.QXh7m 17 1.Rd8m 18 1.Ng6m 19 1.f Xg8Nm 20 1.f8Qm 21 1.d Xe8Nm 22 1.Ba6m 23 1.",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.B",
+          "confidence": "low",
+          "context": ".Rd8m 18 1.Ng6m 19 1.f Xg8Nm 20 1.f8Qm 21 1.d Xe8Nm 22 1.Ba6m 23 1.Qc6m 24 1.Nd7m 25 1.Nf5m 26 1.Qh7m 27 1.NXe6m ",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.Q",
+          "confidence": "low",
+          "context": ".Ng6m 19 1.f Xg8Nm 20 1.f8Qm 21 1.d Xe8Nm 22 1.Ba6m 23 1.Qc6m 24 1.Nd7m 25 1.Nf5m 26 1.Qh7m 27 1.NXe6m 28 1.Nf7m ",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.N",
+          "confidence": "low",
+          "context": ".f Xg8Nm 20 1.f8Qm 21 1.d Xe8Nm 22 1.Ba6m 23 1.Qc6m 24 1.Nd7m 25 1.Nf5m 26 1.Qh7m 27 1.NXe6m 28 1.Nf7m 29 1.Bf7m ",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.N",
+          "confidence": "low",
+          "context": "0 1.f8Qm 21 1.d Xe8Nm 22 1.Ba6m 23 1.Qc6m 24 1.Nd7m 25 1.Nf5m 26 1.Qh7m 27 1.NXe6m 28 1.Nf7m 29 1.Bf7m 30 1.h7m 3",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.Q",
+          "confidence": "low",
+          "context": "1 1.d Xe8Nm 22 1.Ba6m 23 1.Qc6m 24 1.Nd7m 25 1.Nf5m 26 1.Qh7m 27 1.NXe6m 28 1.Nf7m 29 1.Bf7m 30 1.h7m 31 1.QXg7m ",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.N",
+          "confidence": "low",
+          "context": "m 22 1.Ba6m 23 1.Qc6m 24 1.Nd7m 25 1.Nf5m 26 1.Qh7m 27 1.NXe6m 28 1.Nf7m 29 1.Bf7m 30 1.h7m 31 1.QXg7m 32 1.d7m 3",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.N",
+          "confidence": "low",
+          "context": " 23 1.Qc6m 24 1.Nd7m 25 1.Nf5m 26 1.Qh7m 27 1.NXe6m 28 1.Nf7m 29 1.Bf7m 30 1.h7m 31 1.QXg7m 32 1.d7m 33 1.Qb7m 34",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.B",
+          "confidence": "low",
+          "context": " 24 1.Nd7m 25 1.Nf5m 26 1.Qh7m 27 1.NXe6m 28 1.Nf7m 29 1.Bf7m 30 1.h7m 31 1.QXg7m 32 1.d7m 33 1.Qb7m 34 1.RXc7m 3",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.Q",
+          "confidence": "low",
+          "context": "m 26 1.Qh7m 27 1.NXe6m 28 1.Nf7m 29 1.Bf7m 30 1.h7m 31 1.QXg7m 32 1.d7m 33 1.Qb7m 34 1.RXc7m 35 1.RXh7m 36 1.Rh6m",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.Q",
+          "confidence": "low",
+          "context": "6m 28 1.Nf7m 29 1.Bf7m 30 1.h7m 31 1.QXg7m 32 1.d7m 33 1.Qb7m 34 1.RXc7m 35 1.RXh7m 36 1.Rh6m 37 1.QXd7m 38 1.Ng7",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.R",
+          "confidence": "low",
+          "context": "7m 29 1.Bf7m 30 1.h7m 31 1.QXg7m 32 1.d7m 33 1.Qb7m 34 1.RXc7m 35 1.RXh7m 36 1.Rh6m 37 1.QXd7m 38 1.Ng7m 39 1.Qc7",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.R",
+          "confidence": "low",
+          "context": "m 30 1.h7m 31 1.QXg7m 32 1.d7m 33 1.Qb7m 34 1.RXc7m 35 1.RXh7m 36 1.Rh6m 37 1.QXd7m 38 1.Ng7m 39 1.Qc7m 40 1.Rg8m",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.R",
+          "confidence": "low",
+          "context": "31 1.QXg7m 32 1.d7m 33 1.Qb7m 34 1.RXc7m 35 1.RXh7m 36 1.Rh6m 37 1.QXd7m 38 1.Ng7m 39 1.Qc7m 40 1.Rg8m 41 1.Rh7m ",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.Q",
+          "confidence": "low",
+          "context": " 32 1.d7m 33 1.Qb7m 34 1.RXc7m 35 1.RXh7m 36 1.Rh6m 37 1.QXd7m 38 1.Ng7m 39 1.Qc7m 40 1.Rg8m 41 1.Rh7m 42 1.Nd6m ",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.N",
+          "confidence": "low",
+          "context": "3 1.Qb7m 34 1.RXc7m 35 1.RXh7m 36 1.Rh6m 37 1.QXd7m 38 1.Ng7m 39 1.Qc7m 40 1.Rg8m 41 1.Rh7m 42 1.Nd6m 43 1.Re5m 4",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.Q",
+          "confidence": "low",
+          "context": "4 1.RXc7m 35 1.RXh7m 36 1.Rh6m 37 1.QXd7m 38 1.Ng7m 39 1.Qc7m 40 1.Rg8m 41 1.Rh7m 42 1.Nd6m 43 1.Re5m 44 1.f3m 45",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.R",
+          "confidence": "low",
+          "context": "35 1.RXh7m 36 1.Rh6m 37 1.QXd7m 38 1.Ng7m 39 1.Qc7m 40 1.Rg8m 41 1.Rh7m 42 1.Nd6m 43 1.Re5m 44 1.f3m 45 1.Qd6m 46",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.R",
+          "confidence": "low",
+          "context": " 36 1.Rh6m 37 1.QXd7m 38 1.Ng7m 39 1.Qc7m 40 1.Rg8m 41 1.Rh7m 42 1.Nd6m 43 1.Re5m 44 1.f3m 45 1.Qd6m 46 1.f4m 47 ",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.N",
+          "confidence": "low",
+          "context": " 37 1.QXd7m 38 1.Ng7m 39 1.Qc7m 40 1.Rg8m 41 1.Rh7m 42 1.Nd6m 43 1.Re5m 44 1.f3m 45 1.Qd6m 46 1.f4m 47 1.Qe5m 48 ",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.R",
+          "confidence": "low",
+          "context": "m 38 1.Ng7m 39 1.Qc7m 40 1.Rg8m 41 1.Rh7m 42 1.Nd6m 43 1.Re5m 44 1.f3m 45 1.Qd6m 46 1.f4m 47 1.Qe5m 48 1.f8Qm 49 ",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.Q",
+          "confidence": "low",
+          "context": "7m 40 1.Rg8m 41 1.Rh7m 42 1.Nd6m 43 1.Re5m 44 1.f3m 45 1.Qd6m 46 1.f4m 47 1.Qe5m 48 1.f8Qm 49 1.Qg6m 50 1.Qb7m 51",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.Q",
+          "confidence": "low",
+          "context": "h7m 42 1.Nd6m 43 1.Re5m 44 1.f3m 45 1.Qd6m 46 1.f4m 47 1.Qe5m 48 1.f8Qm 49 1.Qg6m 50 1.Qb7m 51 1.Qg2m 52 1.Nf6m 5",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.Q",
+          "confidence": "low",
+          "context": "e5m 44 1.f3m 45 1.Qd6m 46 1.f4m 47 1.Qe5m 48 1.f8Qm 49 1.Qg6m 50 1.Qb7m 51 1.Qg2m 52 1.Nf6m 53 1.g8Nm 54 1.Qh7m 5",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.Q",
+          "confidence": "low",
+          "context": "3m 45 1.Qd6m 46 1.f4m 47 1.Qe5m 48 1.f8Qm 49 1.Qg6m 50 1.Qb7m 51 1.Qg2m 52 1.Nf6m 53 1.g8Nm 54 1.Qh7m 55 1.d7m 56",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.Q",
+          "confidence": "low",
+          "context": "6m 46 1.f4m 47 1.Qe5m 48 1.f8Qm 49 1.Qg6m 50 1.Qb7m 51 1.Qg2m 52 1.Nf6m 53 1.g8Nm 54 1.Qh7m 55 1.d7m 56 1.b7m 57 ",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.N",
+          "confidence": "low",
+          "context": "m 47 1.Qe5m 48 1.f8Qm 49 1.Qg6m 50 1.Qb7m 51 1.Qg2m 52 1.Nf6m 53 1.g8Nm 54 1.Qh7m 55 1.d7m 56 1.b7m 57 1.Qe4m 58 ",
+          "note": "Notation-heavy file may inflate this signal."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "boundary_join",
+          "match": "1.Q",
+          "confidence": "low",
+          "context": "m 49 1.Qg6m 50 1.Qb7m 51 1.Qg2m 52 1.Nf6m 53 1.g8Nm 54 1.Qh7m 55 1.d7m 56 1.b7m 57 1.Qe4m 58 1.Qg8m 59 1.Qe5m 60 ",
+          "note": "Notation-heavy file may inflate this signal."
+        }
+      ],
+      "page_furniture_candidates": [
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_005.xhtml",
+          "category": "standalone_page_number",
+          "match": "7",
+          "confidence": "medium",
+          "context": "7",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_005.xhtml",
+          "category": "standalone_page_number",
+          "match": "6",
+          "confidence": "medium",
+          "context": "6",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_005.xhtml",
+          "category": "standalone_page_number",
+          "match": "5",
+          "confidence": "medium",
+          "context": "5",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_005.xhtml",
+          "category": "standalone_page_number",
+          "match": "4",
+          "confidence": "medium",
+          "context": "4",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_005.xhtml",
+          "category": "standalone_page_number",
+          "match": "3",
+          "confidence": "medium",
+          "context": "3",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_005.xhtml",
+          "category": "standalone_page_number",
+          "match": "2",
+          "confidence": "medium",
+          "context": "2",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_005.xhtml",
+          "category": "standalone_page_number",
+          "match": "7",
+          "confidence": "medium",
+          "context": "7",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_005.xhtml",
+          "category": "standalone_page_number",
+          "match": "6",
+          "confidence": "medium",
+          "context": "6",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_005.xhtml",
+          "category": "standalone_page_number",
+          "match": "5",
+          "confidence": "medium",
+          "context": "5",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_005.xhtml",
+          "category": "standalone_page_number",
+          "match": "4",
+          "confidence": "medium",
+          "context": "4",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_005.xhtml",
+          "category": "standalone_page_number",
+          "match": "3",
+          "confidence": "medium",
+          "context": "3",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_005.xhtml",
+          "category": "standalone_page_number",
+          "match": "2",
+          "confidence": "medium",
+          "context": "2",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_005.xhtml",
+          "category": "standalone_page_number",
+          "match": "7",
+          "confidence": "medium",
+          "context": "7",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_005.xhtml",
+          "category": "standalone_page_number",
+          "match": "6",
+          "confidence": "medium",
+          "context": "6",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_005.xhtml",
+          "category": "standalone_page_number",
+          "match": "5",
+          "confidence": "medium",
+          "context": "5",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_005.xhtml",
+          "category": "standalone_page_number",
+          "match": "4",
+          "confidence": "medium",
+          "context": "4",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_005.xhtml",
+          "category": "standalone_page_number",
+          "match": "3",
+          "confidence": "medium",
+          "context": "3",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_005.xhtml",
+          "category": "standalone_page_number",
+          "match": "2",
+          "confidence": "medium",
+          "context": "2",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_005.xhtml",
+          "category": "standalone_page_number",
+          "match": "7",
+          "confidence": "medium",
+          "context": "7",
+          "note": null
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_005.xhtml",
+          "category": "standalone_page_number",
+          "match": "6",
+          "confidence": "medium",
+          "context": "6",
+          "note": null
+        }
+      ],
+      "low_confidence_cases": [
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "split_word_review",
+          "match": "O- Om",
+          "confidence": "low",
+          "context": "Bh6m 301 1.NXc7m 302 1.Qc6m 303 1.f7m 304 1.Nc5m 305 1.O- Om 306 1.a Xb6m 307 1.Kc3 [threatening Qa7m] 1...Ka2 (1..",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "split_word_review",
+          "match": "O- Om",
+          "confidence": "low",
+          "context": "1.Qa2 2122 1.Qg3 2123 1.Rg1 Kh5 2.g4m 2124 1.Qh6 Kf3 2.O- Om 2125 1.Qe3 2126 1.Kd4 2127 1.Bc4 2128 1.h4 2129 1.Rd2 ",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "split_word_review",
+          "match": "O- Om",
+          "confidence": "low",
+          "context": "1.Bf6 f Xg6 2.Qh3m 2409 1.Qe5KXf3 ( 1...KXh1 2.Qh2m) 2.O- Om 1.Qc3 Kf8 (1...Kh6 2.Rd6m) (1...Kg6 2.Rd6m) (1...Kf6 2",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "split_word_review",
+          "match": "O- Om",
+          "confidence": "low",
+          "context": "m 3440 1.Qe5 Kf3 (1...KXh1 2.Kf2m) (1...KXh3 2.Qg3m) 2.O- Om 3441 1.Kb2 [threatening Dc3m] 1...Ka5+ (1...Qa5 2.Qc3m",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "split_word_review",
+          "match": "O- Om",
+          "confidence": "low",
+          "context": "4m 3805 1.Qf5+ Kh4 2.Rh1m 3806 1.Qe2+ Kc2 2.d3+ KXc1 3.O- Om 3807 1.Qd8+ RXd8 2.RXd8+ NXd8 3.Re8m 3808 1.Ng5+ RXg5 ",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "split_word_review",
+          "match": "Di- agram",
+          "confidence": "low",
+          "context": "5 2.Bb2 f6 3.e4 BXb4 4.Bc4 Nc6 5.f4 e Xf4 6.Nh3 Nge7 ( Di- agram) 8.BXf6! Rf8 (8...g Xf6 (8...NXc4 9.BXg7 Rg8 10.Qh5+ N",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "split_word_review",
+          "match": "An- geles",
+          "confidence": "low",
+          "context": "14.g Xf3BXf3 (White resigns) 0\u20131 Grabiel\u2013 Mugridge(Los An- geles - 1932) 4529 1.Nf3 Nc6 2.e4 e5 3.Bc4 Bc5 4.d4 BXd4 5.N",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "split_word_review",
+          "match": "Di- agram",
+          "confidence": "low",
+          "context": " a6 13.Rad1 b5 14.f5 NXe5 15.d Xe5 Nd7 16.f Xg6 f Xg6 (Di- agram) 17.BXg6! h Xg6 18.Qe6+ Kh8 19.Rf3Nf8 20.Rh3+ Bh6 21.Q",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "split_word_review",
+          "match": "Di- agram",
+          "confidence": "low",
+          "context": "5 Ne6 15.NXf7 Qb6+ 16.Kh1 O- O 17.BXd3 Qd4 18.Qc2 Qh4 (Di- agram) 19.Bh6! +\u2013 (19.Bh6 g Xh6 20.BXh7+ Kg7 21.Qg6m) (19.Bh",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "split_word_review",
+          "match": "Yu- goslavia",
+          "confidence": "low",
+          "context": "QXh7+ KXh7 23.NXg5+ +\u2013) 1\u20130 Ivanovic, B \u2013 Osterman, R (Yu- goslavia - 1979) 4698 1.e4 e5 2.f4 Bc5 3.Nf3 d6 4.c3 Qe7 5.d4 e",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "split_word_review",
+          "match": "un- known",
+          "confidence": "low",
+          "context": "..BXh3+! 17.KXh3 Nf4+ 18.KXg3 Qh4m 0\u20131 NN \u2013 Mau (Place un- known - Date unknown) 4713 1.e4 e5 2.Nf3 Nc6 3.Nc3 Nf6 4.Bb5",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "split_word_review",
+          "match": "un- known",
+          "confidence": "low",
+          "context": "4+ 24.Kg1 Qg3+ 25.Kh1 Qg2m) 0\u20131 N. N \u2013 Hartlaub (Place un- known - 1889) 4722 1.e4 e5 2.Nf3 Nc6 3.Bc4 Nf6 4.Ng5 d5 5.e ",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "split_word_review",
+          "match": "Di- agram",
+          "confidence": "low",
+          "context": "h5 d3 13.c Xd3 Be5 14.Rf3 Qd4+ 15. Be3 QXb2 16.Rh3 h6 (Di- agram) 17.BXh6! Bd4+ (17...g Xh6 18.QXh6Rd8 19.Qh7+ Kf8 20.Q",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "split_word_review",
+          "match": "un- known",
+          "confidence": "low",
+          "context": "Qh6+ Kg8 20.Ne6! +\u2013) 1\u20130 Hesse \u2013 N.N (Bethlehem - Date un- known) 4730 1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 4.BXc6 d Xc6 5.O- O B",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "split_word_review",
+          "match": "un- known",
+          "confidence": "low",
+          "context": "f1 Qg3 24.Rf2 Ng4 \u2013+ 0\u20131 Brach\u2013 Horak(1911-1912 - Date un- known) 4738 1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 4.Ba4 Nf6 5.O- O NXe4",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "split_word_review",
+          "match": "Ko- rchnoy",
+          "confidence": "low",
+          "context": "e6+ Kf8 23.Qc6Ra7 24.Ne6+ +\u2013 ) 21.NXa8+\u2013 1\u20130 Petrosian\u2013Ko- rchnoy (Curacao - 1962.06.16) 4769 1.Nf3 Nf6 2.c4 c5 3.Nc3 d5",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "split_word_review",
+          "match": "un- known",
+          "confidence": "low",
+          "context": "14. QXe6+ KXe6 15.Ng5m 1\u20130 Gerschenkron\u2013 Fischer(Place un- known - 1935) 4781 1.e4 c6 2.d4 d5 3.e Xd5 c Xd5 4.c4 d Xc4 ",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "split_word_review",
+          "match": "Di- agram",
+          "confidence": "low",
+          "context": "6 6.Bc4 Be7 7.Qh5 O- O 8. Ne2 g6 9.Qf3 Nd7 10.Bh6 Re8 (Di- agram) 11.BXf7+ KXf7 12.Qb3m 1\u20130 Zhulkov \u2013 Gavemann (Place u",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "split_word_review",
+          "match": "Bo- den",
+          "confidence": "low",
+          "context": " 17.KXf1 Qf6+ 18.Qf3 QXf3+ 19.g Xf3Bh3+ 20.Ke2Re8+ 0\u20131 Bo- den, Samuel \u2013 Bird, Henry (Place unknown - 1873) 4827 1.e4",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        },
+        {
+          "file_name": "tactits (2).epub",
+          "href": "chapter_018.xhtml",
+          "category": "split_word_review",
+          "match": "un- known",
+          "confidence": "low",
+          "context": "QXe6 19.g Xh8Q+ 1\u20130 Davies, Nigel \u2013 Berg, Klaus (Place un- known - 1981) 4841 1.d4 d5 2.Nf3 Nf6 3.Nbd2 e6 4.a3 c5 5.d X",
+          "note": "Likely chess notation or page-like signal; do not auto-fix."
+        }
+      ],
+      "counts": {
+        "split_word_candidates": 35,
+        "joined_word_candidates": 0,
+        "boundary_corruption_candidates": 45,
+        "page_furniture_candidates": 20,
+        "low_confidence_cases": 20
+      }
+    }
+  ],
+  "totals": {
+    "split_word_candidates": 42,
+    "joined_word_candidates": 0,
+    "boundary_corruption_candidates": 47,
+    "page_furniture_candidates": 24,
+    "low_confidence_cases": 26
+  },
+  "notes": [
+    "Detection is heuristic and tuned for traceable candidate discovery, not automatic rewriting.",
+    "Notation-heavy or page-like corpora can inflate boundary and layout-adjacent signals.",
+    "No high-confidence joined-word cases were found by the deterministic pass; only review-only candidates were retained."
+  ],
+  "quality_gate_g2": {
+    "pass": true,
+    "justification": [
+      "Anomaly detection outputs are stored in project_control/phase2_text_anomalies.json.",
+      "Uncertain cases are routed into the low-confidence review queue instead of guessed.",
+      "Detection results are traceable by file and href."
+    ]
+  }
+}

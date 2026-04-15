@@ -1,0 +1,184 @@
+{
+  "project": "kindle-master",
+  "last_updated": "2026-04-15",
+  "build": {
+    "version": "1.2",
+    "commit": "8b7bcc2",
+    "build_label": "v1.2+8b7bcc2"
+  },
+  "execution_verdict": "The repository remains READY and now proves premium Kindle quality under the strengthened text-first corpus-wide gates. Corpus-wide quality-first enforcement passes, unjustified page-image fallback count is zero on the tracked corpus, and localhost/control-plane truth is synchronized with the active backlog instead of archived maintenance-only state.",
+  "release_readiness_status": "READY",
+  "current_phase": "PHASE_14_PREMIUM_HARDENING",
+  "current_task": "NONE",
+  "next_task": "P14-004",
+  "execution_mode": "PDF_AND_EPUB",
+  "end_to_end_status": "READY_TEXT_FIRST_CORPUS_GATE_PASS",
+  "isolation_status": "PHYSICALLY_SPLIT_KINDLE_ROOT_VERIFIED",
+  "operational": {
+    "tasks_total": 8,
+    "tasks_done": 4,
+    "tasks_todo": 4,
+    "tasks_in_progress": 0,
+    "tasks_review": 0,
+    "tasks_blocked": 0,
+    "tasks_deferred": 0,
+    "open_issues": 3,
+    "open_low_confidence_items": 5,
+    "open_fx_tasks": 0,
+    "last_completed_task": "P14-003",
+    "last_blocked_task": null,
+    "last_gate_passed": "G13_AND_CORPUS_QUALITY_FIRST",
+    "last_gate_failed": null
+  },
+  "validated_capabilities": {
+    "repo_local_pdf_fixtures": true,
+    "pdf_to_epub_toolchain": true,
+    "sample_pdf_to_final_epub_path": true,
+    "physical_repo_split_verified": true,
+    "manifest_backed_release_metadata": true,
+    "phase12_extended_release_suites": true,
+    "corpus_quality_first_gate": true,
+    "localhost_quality_state_surface": true,
+    "text_first_fallback_classification": true,
+    "generic_image_layout_guardrails": true,
+    "generic_inline_ordered_list_recovery": true,
+    "representative_nav_label_quality_gating": true,
+    "front_matter_toc_pollution_gate": true,
+    "independent_finalizer_stage_pipeline": true,
+    "immutable_release_candidate_created": true,
+    "quality_loop_state_sync": true,
+    "genericity_guards": true,
+    "per_run_premium_report": true,
+    "user_visible_major_minor_versioning": true
+  },
+  "remaining_release_risks": [],
+  "current_hardening_risks": [
+    {
+      "issue_id": "ISSUE-038",
+      "severity": "medium",
+      "note": "fixture bank still lacks OCR-stressed and stronger multi-page document-like breadth"
+    }
+  ],
+  "sample_end_to_end": {
+    "publication_id": "strefa-pmi-52-2026",
+    "source_pdf": "samples/pdf/strefa-pmi-52-2026.pdf",
+    "baseline_epub": "kindlemaster_runtime/output/baseline_epub/strefa-pmi-52-2026.epub",
+    "final_epub": "kindlemaster_runtime/output/final_epub/strefa-pmi-52-2026.epub",
+    "release_candidate_epub": "kindlemaster_runtime/output/release_candidate/strefa-pmi-52-2026--v1.2-8b7bcc2.epub",
+    "baseline_validation_pass": true,
+    "final_validation_pass": true,
+    "release_mode_manifest_backed": true,
+    "pages_total": 84,
+    "text_first_pages": 81,
+    "hybrid_illustrated_pages": 0,
+    "justified_fallback_pages": 3,
+    "unjustified_fallback_pages": 0,
+    "coverage_pass": true,
+    "coverage_ratio": 1.0,
+    "quality_score": 10.0,
+    "premium_target": 8.8
+  },
+  "corpus_quality_first_gate": {
+    "verdict": "PASS",
+    "quality_first": true,
+    "publications_total": 4,
+    "release_eligible_total": 1,
+    "text_first_pass_total": 4,
+    "unjustified_fallback_total": 0,
+    "publications": {
+      "cover-letter-iwo-2026": {
+        "profile": "document_like",
+        "quality_score": 9.75,
+        "release_eligible": false,
+        "fallback_count": 0,
+        "unjustified_fallback_count": 0
+      },
+      "strefa-pmi-52-2026": {
+        "profile": "report_like",
+        "quality_score": 10.0,
+        "release_eligible": true,
+        "fallback_count": 3,
+        "unjustified_fallback_count": 0
+      },
+      "newsweek-food-living-2026-01": {
+        "profile": "magazine_like",
+        "quality_score": 10.0,
+        "release_eligible": false,
+        "fallback_count": 13,
+        "unjustified_fallback_count": 0
+      },
+      "chess-5334-problems-combinations-and-games": {
+        "profile": "book_like",
+        "quality_score": 10.0,
+        "release_eligible": false,
+        "fallback_count": 10,
+        "unjustified_fallback_count": 0
+      }
+    }
+  },
+  "phase12_pytest": {
+    "tests_run": 57,
+    "tests_passed": 57,
+    "tests_failed": 0,
+    "suites": [
+      "tests/test_release_metadata.py",
+      "tests/test_conversion_traceability.py",
+      "tests/test_pdf_list_normalization.py",
+      "tests/test_text_quality_thresholds.py",
+      "tests/test_navigation_quality.py",
+      "tests/test_finalizer_stage_proofs.py",
+      "tests/test_front_matter_quality.py",
+      "tests/test_typography_ux.py",
+      "tests/test_image_layout_quality.py",
+      "tests/test_regressions.py",
+      "tests/test_release_candidate_immutability.py",
+      "tests/test_isolation_boundaries.py",
+      "tests/test_scenario_manifest.py",
+      "tests/test_corpus_quality_state.py",
+      "tests/test_genericity_guards.py"
+    ]
+  },
+  "phase12_enforcement": {
+    "single_publication_verdict": "PASS",
+    "corpus_verdict": "PASS",
+    "blockers": [],
+    "tests_passed": 57,
+    "tests_failed": 0,
+    "quality_score": 10.0,
+    "premium_target": 8.8
+  },
+  "quality_loop": {
+    "latest_iteration_id": "QL-20260414-text-first-sync",
+    "state_kind": "recovery_idle",
+    "selected_issue_or_task": null,
+    "promotion_decision": "idle",
+    "tests_passed": 57,
+    "tests_failed": 0,
+    "pytest_suite_count": 15,
+    "next_task": "P14-004"
+  },
+  "artifacts": {
+    "backlog": "project_control/backlog.yaml",
+    "backlog_archive": "project_control/backlog_archive.yaml",
+    "issue_register": "project_control/issue_register.yaml",
+    "review_queue": "project_control/low_confidence_review_queue.yaml",
+    "status_board": "project_control/status_board.md",
+    "manifest": "project_control/publication_manifest.yaml",
+    "quality_loop_state": "project_control/quality_loop_state.json",
+    "single_release_gate_report": "project_control/phase12_release_gate_enforcement.json",
+    "single_release_gate_markdown": "project_control/phase12_release_gate_enforcement.md",
+    "corpus_release_gate_report": "project_control/phase12_corpus_release_gate_enforcement.json",
+    "corpus_release_gate_markdown": "project_control/phase12_corpus_release_gate_enforcement.md",
+    "release_candidate_epub": "kindlemaster_runtime/output/release_candidate/strefa-pmi-52-2026--v1.2-8b7bcc2.epub",
+    "release_candidate_evidence": "kindlemaster_runtime/output/release_candidate/strefa-pmi-52-2026--v1.2-8b7bcc2.json"
+  },
+  "archived_operational": {
+    "tasks_total": 144,
+    "tasks_done": 106,
+    "tasks_todo": 38,
+    "tasks_in_progress": 0,
+    "tasks_blocked": 0,
+    "tasks_deferred": 0,
+    "archive_path": "project_control/backlog_archive.yaml"
+  }
+}

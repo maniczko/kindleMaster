@@ -1,0 +1,108 @@
+{
+  "date": "2026-04-12",
+  "epub": "kindlemaster_runtime/output/final_epub/strefa-pmi-52-2026.epub",
+  "scan_scope": "all_final_xhtml_content_token_level",
+  "files_scanned": 85,
+  "matches_total": 9,
+  "matches": [
+    {
+      "file": "EPUB/xhtml/page-0033.xhtml",
+      "tag": "p",
+      "snippet": "Bibliografia: 1. Emmons, R. A., McCullough, M. E. (2003).",
+      "match": "McCullough",
+      "left": "Mc",
+      "right": "Cullough",
+      "confidence": "medium",
+      "decision": "review_only",
+      "reason": "lower_to_upper_token_boundary"
+    },
+    {
+      "file": "EPUB/xhtml/page-0033.xhtml",
+      "tag": "p",
+      "snippet": "Z perspektywy neuropsychologii wdzięcz ność to nie tylko „miły gest”, to bioche miczny mechanizm wpływający na zachowanie i relacje. Badania wskazują, że wyraża",
+      "match": "McCullough",
+      "left": "Mc",
+      "right": "Cullough",
+      "confidence": "medium",
+      "decision": "review_only",
+      "reason": "lower_to_upper_token_boundary"
+    },
+    {
+      "file": "EPUB/xhtml/page-0054.xhtml",
+      "tag": "p",
+      "snippet": "Najbardziej oczywisty wniosek dotyczy obserwowanych trendów technologicz nych. Bardzo silnie widoczny jest rozwój Istotnym wnioskiem z Barcelony jest również po",
+      "match": "ArchiMate",
+      "left": "Archi",
+      "right": "Mate",
+      "confidence": "medium",
+      "decision": "review_only",
+      "reason": "lower_to_upper_token_boundary"
+    },
+    {
+      "file": "EPUB/xhtml/page-0057.xhtml",
+      "tag": "p",
+      "snippet": "Oto 9 kroków, które warto wykonać, wdrażając AI: Katarzyna Lalik i Edyta Kania z Ban ku Spółdzielczego, Paweł Sławiński z ATAS, Adam Mitura InPlus Media, Michał",
+      "match": "InPlus",
+      "left": "In",
+      "right": "Plus",
+      "confidence": "medium",
+      "decision": "review_only",
+      "reason": "lower_to_upper_token_boundary"
+    },
+    {
+      "file": "EPUB/xhtml/page-0059.xhtml",
+      "tag": "p",
+      "snippet": "Paweł Dudek Ekspert w zakresie zarządzania zmianą i roz woju biznesu, konsultant w firmach dorad czych: Silfra Consuling, Thoriana oraz Gekko AdvisoryNow. Od 20",
+      "match": "AdvisoryNow",
+      "left": "Advisory",
+      "right": "Now",
+      "confidence": "medium",
+      "decision": "review_only",
+      "reason": "lower_to_upper_token_boundary"
+    },
+    {
+      "file": "EPUB/xhtml/page-0071.xhtml",
+      "tag": "p",
+      "snippet": "Australijski model zaangażowania – praktyczne podejście do współpracy 1. Grucza B., Zarządzanie interesariuszami projektu, Polskie Wydawnictwo Ekono miczne, War",
+      "match": "AccountAbility",
+      "left": "Account",
+      "right": "Ability",
+      "confidence": "medium",
+      "decision": "review_only",
+      "reason": "lower_to_upper_token_boundary"
+    },
+    {
+      "file": "EPUB/xhtml/page-0071.xhtml",
+      "tag": "h3",
+      "snippet": "dard, 2015, Accountability, s. 9 5. AccountAbility, Podręcznik Angażowania",
+      "match": "AccountAbility",
+      "left": "Account",
+      "right": "Ability",
+      "confidence": "medium",
+      "decision": "review_only",
+      "reason": "lower_to_upper_token_boundary"
+    },
+    {
+      "file": "EPUB/xhtml/page-0071.xhtml",
+      "tag": "p",
+      "snippet": "Działanie według tego standardu za czyna się od strategicznego podejścia do organizacji, co oznacza określenie celów i ich związków z otoczeniem, które Ostatnim",
+      "match": "untAbility",
+      "left": "unt",
+      "right": "Ability",
+      "confidence": "high",
+      "decision": "auto_fix",
+      "reason": "embedded_titlecase_join"
+    },
+    {
+      "file": "EPUB/xhtml/page-0073.xhtml",
+      "tag": "p",
+      "snippet": "Czy książka jest rewolucyjna? Nie. I bar dzo dobrze. W świecie, w którym co druga prezentacja obiecuje „Agile 2.0”, rozsądek bywa świeższy niż rebranding. To pu",
+      "match": "LinkedInie",
+      "left": "Linked",
+      "right": "Inie",
+      "confidence": "medium",
+      "decision": "review_only",
+      "reason": "lower_to_upper_token_boundary"
+    }
+  ]
+}

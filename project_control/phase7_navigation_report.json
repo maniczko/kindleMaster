@@ -1,0 +1,42 @@
+{
+  "analysis_date": "2026-04-11",
+  "task": "T7",
+  "files": [
+    {
+      "file_name": "9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411 (3).epub",
+      "nav_entries": 19,
+      "duplicate_labels": 0,
+      "dead_anchors": 0,
+      "noisy_entries": 0
+    },
+    {
+      "file_name": "strefa-pmi-52-2026.epub",
+      "nav_entries": 54,
+      "duplicate_labels": 0,
+      "dead_anchors": 0,
+      "noisy_entries": 0
+    },
+    {
+      "file_name": "tactits (2).epub",
+      "nav_entries": 77,
+      "duplicate_labels": 0,
+      "dead_anchors": 0,
+      "noisy_entries": 0
+    }
+  ],
+  "totals": {
+    "nav_entries": 150,
+    "duplicate_labels": 0,
+    "dead_anchors": 0,
+    "noisy_entries": 0
+  },
+  "quality_gate_g7": {
+    "pass": true,
+    "justification": [
+      "Generated navigation contains 150 entries.",
+      "Duplicate labels after rebuild: 0.",
+      "Dead anchors after rebuild: 0.",
+      "Noisy entries after rebuild: 0."
+    ]
+  }
+}

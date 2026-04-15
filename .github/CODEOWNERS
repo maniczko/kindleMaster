@@ -1,0 +1,7 @@
+# Kindle Master ownership map
+/project_control/ @your-org/kindle-master-maintainers
+/docs/ @your-org/kindle-master-maintainers
+/tests/ @your-org/kindle-master-maintainers
+/kindlemaster_*.py @your-org/kindle-master-maintainers
+/kindle_semantic_cleanup.py @your-org/kindle-master-maintainers
+/samples/ @your-org/kindle-master-maintainers

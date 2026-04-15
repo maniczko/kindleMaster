@@ -1,0 +1,30 @@
+{
+  "iteration_id": "QL-20260414-text-first-sync",
+  "iteration_number": 9,
+  "publication_id": "strefa-pmi-52-2026",
+  "state_kind": "recovery_idle",
+  "selected_issue_or_task": null,
+  "mutation_lane": "QUALITY_LOOP_IDLE",
+  "promotion_decision": "idle",
+  "blockers": [],
+  "pytest_suite_count": 15,
+  "candidate": {
+    "build_label": "v1.2+8b7bcc2",
+    "status": "idle",
+    "publication_id": "strefa-pmi-52-2026",
+    "final_epub": null,
+    "report_json": null,
+    "score": null,
+    "premium_gap": null
+  },
+  "accepted": {
+    "build_label": "v1.2+8b7bcc2",
+    "publication_id": "strefa-pmi-52-2026",
+    "final_epub": "kindlemaster_runtime/output/final_epub/strefa-pmi-52-2026.epub",
+    "score": 10.0,
+    "premium_gap": 0.0
+  },
+  "next_task": "P14-004",
+  "report_path": "kindlemaster_runtime/output/reports/strefa-pmi-52-2026-quality-loop.json",
+  "updated_at": "2026-04-14T21:56:00"
+}

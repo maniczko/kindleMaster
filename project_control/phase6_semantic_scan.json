@@ -1,0 +1,57 @@
+{
+  "analysis_date": "2026-04-11",
+  "task": "T6",
+  "files": [
+    {
+      "file_name": "9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411 (3).epub",
+      "titles": 22,
+      "section_headings": 21,
+      "organizational_headings": 0,
+      "organizational_lines": 1,
+      "figures": 77,
+      "captions": 0,
+      "body_paragraphs": 1240,
+      "suspicious_title_author_merges": []
+    },
+    {
+      "file_name": "strefa-pmi-52-2026.epub",
+      "titles": 26,
+      "section_headings": 72,
+      "organizational_headings": 2,
+      "organizational_lines": 1,
+      "figures": 82,
+      "captions": 0,
+      "body_paragraphs": 496,
+      "suspicious_title_author_merges": []
+    },
+    {
+      "file_name": "tactits (2).epub",
+      "titles": 16,
+      "section_headings": 1263,
+      "organizational_headings": 0,
+      "organizational_lines": 0,
+      "figures": 5350,
+      "captions": 5334,
+      "body_paragraphs": 2247,
+      "suspicious_title_author_merges": []
+    }
+  ],
+  "totals": {
+    "titles": 64,
+    "section_headings": 1356,
+    "organizational_headings": 2,
+    "organizational_lines": 2,
+    "figures": 5509,
+    "captions": 5334,
+    "body_paragraphs": 3983,
+    "suspicious_title_author_merges": 0
+  },
+  "quality_gate_g6": {
+    "pass": true,
+    "justification": [
+      "Semantic block scan found title, section-heading, organizational-line, figure, and caption structures in processed outputs.",
+      "No suspicious title-author merge remained in the current corpus after the latest role-line rule.",
+      "Organizational lines now stay as paragraphs instead of being promoted to headings."
+    ]
+  }
+}

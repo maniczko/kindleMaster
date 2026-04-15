@@ -1,0 +1,166 @@
+version: 2
+entries:
+  - review_id: LC-001
+    date: 2026-04-11
+    area: analysis
+    description: Publication-type coverage previously lacked a real document-like fixture, but the repo now includes cover-letter-iwo-2026 as a real document-like sample with a generated final EPUB.
+    why_uncertain: The uncertainty was resolved by adding a real repo-local document-like PDF and wiring it into the scenario suite.
+    confidence: medium
+    related_task: T3-003
+    status: RESOLVED
+    decision_needed_from: Lead / Orchestrator
+    next_action: Document-like coverage is now present; keep future uncertainty focused on quality breadth rather than missing profile existence.
+
+  - review_id: LC-002
+    date: 2026-04-11
+    area: semantics
+    description: Semantic taxonomy is now exercised on a real document-like fixture instead of only book-like, report-like, magazine-like, and mixed-layout samples.
+    why_uncertain: The original uncertainty was tied to missing fixture coverage rather than a confirmed semantic failure on the document-like profile.
+    confidence: medium
+    related_task: T6-001
+    status: RESOLVED
+    decision_needed_from: Structure & Semantics
+    next_action: Keep semantic review focused on mixed-layout continuation handling rather than missing document-like evidence.
+
+  - review_id: LC-003
+    date: 2026-04-11
+    area: metrics
+    description: Suspicious paragraph-join counts are likely inflated for the chess corpus because notation-heavy text and compressed move formatting resemble boundary corruption.
+    why_uncertain: The baseline metric is still useful comparatively, but its absolute value should not be interpreted as a literal editorial defect count.
+    confidence: medium
+    related_task: T3-004
+    status: OPEN
+    decision_needed_from: QA / Regression
+    next_action: Preserve the metric for before/after comparison and keep its interpretation caveated in release scoring until broader fixtures are added.
+
+  - review_id: LC-004
+    date: 2026-04-11
+    area: text_cleanup
+    description: Joined-word cleanup has review-only candidates such as ZOBACZWSIECI and ORGANIZATION-RELATED, but no deterministic high-confidence joined-word fixes yet.
+    why_uncertain: Ambiguous uppercase labels can be real branding, navigation labels, or glued tokens; silent cleanup would be risky.
+    confidence: medium
+    related_task: T5-002
+    status: RESOLVED
+    decision_needed_from: Text Cleanup
+    next_action: Joined-word review cases were handled conservatively and no unresolved joined-word persistence remains in processed outputs.
+
+  - review_id: LC-005
+    date: 2026-04-11
+    area: text_cleanup
+    description: The chess corpus inflates split-word and boundary signals because notation such as castling and move numbering resembles PDF corruption.
+    why_uncertain: Many low-confidence matches in the mixed-layout corpus are likely notation rather than cleanup defects.
+    confidence: medium
+    related_task: T5-002
+    status: RESOLVED
+    decision_needed_from: QA / Regression
+    next_action: Notation-heavy findings were kept out of unsafe automatic rewrites and no tracked split or boundary persistence remains after regression checks.
+
+  - review_id: LC-006
+    date: 2026-04-11
+    area: text_cleanup
+    description: Masthead and publisher-like blocks were carried through semantics as explicit special sections, but broader generic evidence is still needed before treating all such structures as safely resolved.
+    why_uncertain: The current corpus shows safe routing into semantic handling, yet the same patterns may behave differently in missing publication types.
+    confidence: medium
+    related_task: T6-003
+    status: OPEN
+    decision_needed_from: Structure & Semantics
+    next_action: Keep these blocks visible as special-section evidence and re-check them when broader fixture coverage is available.
+
+  - review_id: LC-007
+    date: 2026-04-11
+    area: text_cleanup
+    description: Phase 5 no longer blocks on medium-confidence cleanup because the remaining ambiguous cases were not forced through automatic rewriting and were instead handled conservatively or routed forward.
+    why_uncertain: A broader reusable policy is still incomplete, but the current corpus can proceed without violating the no-paraphrase rule.
+    confidence: high
+    related_task: T5-002
+    status: RESOLVED
+    decision_needed_from: Lead / Orchestrator
+    next_action: Keep the broader policy gap visible in continuation planning instead of blocking the completed Phase 5 task.
+
+  - review_id: LC-008
+    date: 2026-04-11
+    area: governance
+    description: Reverse-coupling visibility into foreign frontend/runtime is limited to the extracted external repository path and cannot be fully proven from the current Kindle Master workspace alone.
+    why_uncertain: The physical split is complete on the Kindle Master side, but a full reverse audit of the extracted foreign frontend/runtime repository still cannot be completed from this workspace without explicitly switching scope.
+    confidence: medium
+    related_task: T-2-003
+    status: OPEN
+    decision_needed_from: Lead / Orchestrator
+    next_action: Keep the scope limit explicit in the boundary audit and do not claim stronger reverse-side isolation proof than the current workspace supports.
+
+  - review_id: LC-009
+    date: 2026-04-11
+    area: conversion
+    description: The PDF-first path is validated on one report-like sample, but not yet across the full PDF fixture set.
+    why_uncertain: strefa-pmi-52-2026.pdf passed the full local path, but mixed-layout and long-publication PDFs still need dedicated end-to-end reruns.
+    confidence: medium
+    related_task: T2-002
+    status: RESOLVED
+    decision_needed_from: Baseline Conversion Strategy
+    next_action: Remaining tracked PDF fixtures were rerun through the hardened path, so future low-confidence review can focus on quality breadth rather than missing end-to-end coverage.
+
+  - review_id: LC-010
+    date: 2026-04-12
+    area: semantics
+    description: Recovery R1 removed the most destructive heading regressions, but title extraction is still uncertain on front matter, figure-adjacent pages, and mixed-layout article openings.
+    why_uncertain: The active sample now preserves title.xhtml and avoids the worst TOC/path failures, yet several remaining TOC labels are still not strong enough to treat as premium article titles without another semantic pass.
+    confidence: medium
+    related_task: R2-001
+    status: OPEN
+    decision_needed_from: Structure & Semantics
+    next_action: Continue R2 with stronger title discrimination and article-opening recovery before treating semantic recovery as complete.
+
+  - review_id: LC-011
+    date: 2026-04-12
+    area: semantics
+    description: The tracked magazine-like guard sample now recovers true article openings from page-split XHTML without promoting interview questions or quote pull-lines to `h1`.
+    why_uncertain: The original ambiguity was resolved on the tracked magazine fixture by adding continuation-aware opening recovery and stricter false-title filters.
+    confidence: medium
+    related_task: R2-002
+    status: RESOLVED
+    decision_needed_from: Structure & Semantics
+    next_action: Keep future low-confidence review focused on mixed-layout and image-heavy profiles rather than the recovered magazine guard path.
+
+  - review_id: LC-012
+    date: 2026-04-12
+    area: text_cleanup
+    description: The full split-word scan found `Sylwester- Kanofocka`, which may be a true hyphenated surname with broken spacing rather than a generic word-split artifact.
+    why_uncertain: The correct recovery may be to keep the hyphen and remove only the whitespace, but proper-name handling should remain conservative until the medium-confidence cleanup stage.
+    confidence: medium
+    related_task: R3-001
+    status: RESOLVED
+    decision_needed_from: Text Cleanup
+    next_action: Tracked split-word uncertainty no longer remains in the processed guard outputs; future proper-name ambiguities should still route to review rather than forcing unsafe automatic rewrites.
+
+  - review_id: LC-013
+    date: 2026-04-12
+    area: text_cleanup
+    description: The joined-word audit previously left a review-only set dominated by names and brand-like tokens such as `McCullough`, `ArchiMate`, `InPlus`, `AdvisoryNow`, `AccountAbility`, and `LinkedInie`, but the current pass now suppresses the tracked false-positive subset deterministically instead of treating it as residual cleanup debt.
+    why_uncertain: The original ambiguity came from naive lower-to-upper token boundaries that resembled glued words; the current policy now treats the tracked brand/proper-name subset as false positives rather than unresolved editorial fixes.
+    confidence: medium
+    related_task: R3-002
+    status: RESOLVED
+    decision_needed_from: Text Cleanup
+    next_action: Keep extending deterministic false-positive suppression carefully and route any newly discovered ambiguous CamelCase tokens into review instead of forcing unsafe automatic cleanup.
+
+  - review_id: LC-014
+    date: 2026-04-12
+    area: text_cleanup
+    description: The refined boundary scan still finds a small set of lowercase-continuation candidates concentrated in front matter, TOC-like pages, and organizational sections.
+    why_uncertain: These candidates may reflect page-based conversion and dense masthead layouts rather than true broken sentence or paragraph joins, so automatic merges would be risky without stronger section-aware logic.
+    confidence: medium
+    related_task: R3-003
+    status: RESOLVED
+    decision_needed_from: Structure & Semantics
+    next_action: Front-matter semantics and special-section TOC protection now absorb the tracked boundary ambiguity on the guard set, so future review should focus on newly discovered unseen-profile cases only.
+
+  - review_id: LC-015
+    date: 2026-04-14
+    area: fixtures
+    description: The current text-first premium corpus has no OCR-stressed scanned fixture and only a minimal single-page document-like sample, so broader scan-heavy behavior is still less proven than the current guard corpus.
+    why_uncertain: The pipeline now passes stricter corpus-wide text-first gates, but that evidence still comes from a relatively clean and finite fixture bank rather than from a wider OCR-stressed corpus.
+    confidence: medium
+    related_task: P14-004
+    status: OPEN
+    decision_needed_from: Input & Intake Agent
+    next_action: Add a repo-local OCR-stressed sample and a stronger multi-page document fixture, then re-run corpus-wide quality-first gates.

@@ -1,0 +1,45 @@
+{
+  "analysis_date": "2026-04-11",
+  "task": "T8",
+  "files": [
+    {
+      "file_name": "9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411 (3).epub",
+      "figures": 77,
+      "captions": 0,
+      "chess_problem_figures": 0,
+      "generic_figures": 77,
+      "image_heavy_chapters": 0
+    },
+    {
+      "file_name": "strefa-pmi-52-2026.epub",
+      "figures": 82,
+      "captions": 0,
+      "chess_problem_figures": 0,
+      "generic_figures": 82,
+      "image_heavy_chapters": 0
+    },
+    {
+      "file_name": "tactits (2).epub",
+      "figures": 5350,
+      "captions": 5334,
+      "chess_problem_figures": 5341,
+      "generic_figures": 9,
+      "image_heavy_chapters": 6
+    }
+  ],
+  "totals": {
+    "figures": 5509,
+    "captions": 5334,
+    "chess_problem_figures": 5341,
+    "generic_figures": 168,
+    "image_heavy_chapters": 6
+  },
+  "quality_gate_g8": {
+    "pass": true,
+    "justification": [
+      "Processed outputs classify figures explicitly.",
+      "Chess-problem figures: 5341.",
+      "Image-heavy chapters surfaced for later risk handling: 6."
+    ]
+  }
+}

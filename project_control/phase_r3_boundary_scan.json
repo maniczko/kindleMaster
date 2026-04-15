@@ -1,0 +1,79 @@
+{
+  "date": "2026-04-12",
+  "epub": "kindlemaster_runtime/output/final_epub/strefa-pmi-52-2026.epub",
+  "scan_scope": "adjacent_block_context",
+  "files_scanned": 85,
+  "matches_total": 7,
+  "matches": [
+    {
+      "file": "EPUB/xhtml/page-0001.xhtml",
+      "previous_tag": "p",
+      "current_tag": "p",
+      "previous_text": "ISSN 2353-3137 KWARTALNIK PROJECT MANAGEMENT INSTITUTE POLAND CHAPTER | WWW.STREFAPMI.PL | MARZEC 2026 NR 52",
+      "current_text": "TEMAT NUMERU: AI CYFROWA TRANSFORMACJA Hybrydowy zespół 2.0: gdy do stołu siada AI Nie plan, lecz pętla: jak Kata i AI zmieniają sposób realizacji projektów Jul",
+      "confidence": "medium",
+      "decision": "review_only",
+      "reason": "lowercase_continuation"
+    },
+    {
+      "file": "EPUB/xhtml/page-0002.xhtml",
+      "previous_tag": "p",
+      "current_tag": "p",
+      "previous_text": "POWER SKILLS WAYS OF WORKING",
+      "current_text": "STREFA RECENZJI Marcin Wilczak Julia Janiszewska Anna Swatek",
+      "confidence": "medium",
+      "decision": "review_only",
+      "reason": "lowercase_continuation"
+    },
+    {
+      "file": "EPUB/xhtml/page-0002.xhtml",
+      "previous_tag": "p",
+      "current_tag": "p",
+      "previous_text": "Redaktor Działu Redaktorka Działu Paulina Kostrzewa-Redaktorka Działu",
+      "current_text": "STREFA WYWIADU BUSINESS ACUMEN Michał Barcik Marek Wąsowicz Malwina Szopa Redaktor Działu Redaktorka Działu",
+      "confidence": "medium",
+      "decision": "review_only",
+      "reason": "lowercase_continuation"
+    },
+    {
+      "file": "EPUB/xhtml/page-0003.xhtml",
+      "previous_tag": "p",
+      "current_tag": "p",
+      "previous_text": "KONTAKT: e-mail: tel: 665 257 979 www.strefapmi.pl arch. Paweł Schmidt, mat. własne Kamili Kierzek-Mechło oraz Radosława Mechło, mat. własne Beaty Mosór oraz Ag",
+      "current_text": "PROJEKT I SKŁAD: slideshare.net/StrefaPMI Anna Bar – www.cyklopia.pl",
+      "confidence": "medium",
+      "decision": "review_only",
+      "reason": "lowercase_continuation"
+    },
+    {
+      "file": "EPUB/xhtml/page-0004.xhtml",
+      "previous_tag": "p",
+      "current_tag": "p",
+      "previous_text": "Spis Treści 6 Nie plan, lecz pętla: jak Kata i AI zmieniają sposób realizacji projektów Bartosz Misiurek 8 Hybrydowy zespół 2.0: gdy do stołu siada AI Julia Jan",
+      "current_text": "STREFA PMI PC 64 C.O.N.G.R.E.S.S. Decoded: Eight Letters That Shaped My First PMI Experience Marcin Wilczak",
+      "confidence": "medium",
+      "decision": "review_only",
+      "reason": "lowercase_continuation"
+    },
+    {
+      "file": "EPUB/xhtml/page-0004.xhtml",
+      "previous_tag": "p",
+      "current_tag": "p",
+      "previous_text": "STREFA PMI PC 64 C.O.N.G.R.E.S.S. Decoded: Eight Letters That Shaped My First PMI Experience Marcin Wilczak",
+      "current_text": "STREFA STUDENTA 66 Czy rozwiązania no-code/low-code zastąpią kierowników projektów? Gabriela Łuczak 68 Video-podcast, sztuczna inteligencja i zespół bez planu –",
+      "confidence": "medium",
+      "decision": "review_only",
+      "reason": "lowercase_continuation"
+    },
+    {
+      "file": "EPUB/xhtml/page-0004.xhtml",
+      "previous_tag": "p",
+      "current_tag": "p",
+      "previous_text": "STREFA STUDENTA 66 Czy rozwiązania no-code/low-code zastąpią kierowników projektów? Gabriela Łuczak 68 Video-podcast, sztuczna inteligencja i zespół bez planu –",
+      "current_text": "STREFA RECENZJI 14 AI as a Mentor: Emerging Evidence on Human AI Collaboration in Project Management Archana Choudhary 17 Synergia różnorodności – neuroatypowi ",
+      "confidence": "medium",
+      "decision": "review_only",
+      "reason": "lowercase_continuation"
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "analysis_date": "2026-04-11",
+  "task": "T9",
+  "files": [
+    {
+      "file_name": "9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411 (3).epub",
+      "css_rule_matches": 5
+    },
+    {
+      "file_name": "strefa-pmi-52-2026.epub",
+      "css_rule_matches": 5
+    },
+    {
+      "file_name": "tactits (2).epub",
+      "css_rule_matches": 5
+    }
+  ],
+  "totals": {
+    "css_files_checked": 3,
+    "css_rule_matches": 15,
+    "expected_rules": 15
+  },
+  "quality_gate_g9": {
+    "pass": true,
+    "justification": [
+      "All processed packages contain the normalized Kindle CSS baseline.",
+      "Expected Kindle-safe CSS rules are present in every checked package."
+    ]
+  }
+}

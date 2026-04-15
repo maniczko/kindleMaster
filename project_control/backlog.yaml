@@ -1,0 +1,195 @@
+version: 11
+project: kindle-master
+source_of_truth:
+  - project_control/orchestration.md
+  - project_control/input_registry.yaml
+  - project_control/issue_register.yaml
+  - project_control/repo_boundary.md
+  - AGENTS.md
+normalized_from_brief_date: 2026-04-14
+current_execution_mode: PDF_AND_EPUB
+current_end_to_end_status: READY_TEXT_FIRST_CORPUS_GATE_PASS
+current_isolation_status: PHYSICALLY_SPLIT_KINDLE_ROOT_VERIFIED
+current_recovery_status: QUALITY_FIRST_HARDENING_ACTIVE
+archive:
+  historical_backlog: project_control/backlog_archive.yaml
+  archived_at: 2026-04-13
+  reason: Full pre-release execution history remains preserved separately while the active backlog tracks post-release text-first hardening.
+statuses:
+  - TODO
+  - IN_PROGRESS
+  - DONE
+  - REVIEW
+  - BLOCKED
+  - DEFERRED
+normalization_rules:
+  - "`project_control/backlog.yaml` tracks active post-release premium hardening and maintenance work."
+  - "`project_control/backlog_archive.yaml` preserves the full pre-release execution history and evidence chain."
+  - "READY remains valid only while both single-publication and corpus-wide text-first gates continue to pass."
+  - "New quality-affecting work must remain generic and may not encode publication-specific or word-specific exceptions."
+tasks:
+  - id: A-001
+    phase: MAINTENANCE
+    execution_mode: any
+    title: Archive the pre-release execution backlog and switch the control plane into READY maintenance mode
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: []
+    status: DONE
+    output:
+      - project_control/backlog_archive.yaml
+      - project_control/backlog.yaml
+      - project_control/status_board.md
+      - project_control/metrics.json
+      - reports/iteration_38_post_release_backlog_archive.md
+    quality_gate: G-1
+    definition_of_done:
+      - historical execution backlog is preserved in an archive file
+      - active backlog contains only current work
+      - READY state remains visible in the control plane
+    regression_risk: low
+    related_issues: [ISSUE-012]
+
+  - id: P14-001
+    phase: PHASE 14
+    execution_mode: PDF_AND_EPUB
+    title: Reopen governance under text-first corpus-wide truth and harden the control model against stale READY claims
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: []
+    status: DONE
+    output:
+      - AGENTS.md
+      - docs/definition_of_done.md
+      - docs/quality_gates.md
+      - docs/workflow.md
+      - docs/release_criteria.md
+      - docs/project_overview.md
+      - project_control/backlog.yaml
+      - project_control/status_board.md
+      - project_control/metrics.json
+      - reports/iteration_39_text_first_corpus_truth_sync.md
+    quality_gate: G-1
+    definition_of_done:
+      - governance explicitly enforces text-first rules and anti-specialization
+      - control plane reflects corpus-wide quality-first truth instead of stale maintenance-only truth
+      - READY status is backed by current text-first evidence rather than archived assumptions
+    regression_risk: medium
+    related_issues: [ISSUE-036]
+
+  - id: P14-002
+    phase: PHASE 14
+    execution_mode: PDF_AND_EPUB
+    title: Synchronize localhost quality state, corpus-wide release reports, and quality-loop state with text-first premium evidence
+    owner: Quality Guardian / Release Gate
+    priority: P0
+    depends_on: [P14-001]
+    status: DONE
+    output:
+      - kindlemaster_webapp.py
+      - kindlemaster_release_gate_enforcer.py
+      - kindlemaster_quality_loop.py
+      - project_control/quality_loop_state.json
+      - project_control/phase12_corpus_release_gate_enforcement.json
+      - project_control/phase12_corpus_release_gate_enforcement.md
+    quality_gate: G12
+    definition_of_done:
+      - "`/quality-state` exposes accepted, corpus-wide, and loop-state truth"
+      - corpus release reports include score, good/bad notes, and fallback counts
+      - quality-loop state no longer points at archived tasks
+    regression_risk: medium
+    related_issues: [ISSUE-037]
+
+  - id: P14-003
+    phase: PHASE 14
+    execution_mode: PDF_AND_EPUB
+    title: Enforce generic text-first screenshot-fallback recovery and block publication-specific overfit in runtime code
+    owner: QA / Regression
+    priority: P0
+    depends_on: [P14-001]
+    status: DONE
+    output:
+      - tests/test_corpus_quality_state.py
+      - tests/test_genericity_guards.py
+      - tests/test_image_layout_quality.py
+    quality_gate: G12
+    definition_of_done:
+      - unjustified screenshot/page-image fallback is corpus-visible and release-blocking
+      - production remediation modules are guarded against fixture-specific tokens
+      - quality-state and corpus reports are test-covered
+    regression_risk: medium
+    related_issues: [ISSUE-036, ISSUE-037]
+
+  - id: P14-004
+    phase: PHASE 14
+    execution_mode: PDF_AND_EPUB
+    title: Expand the fixture bank with OCR-stressed and stronger multi-page document-like samples for broader premium validation
+    owner: Input & Intake Agent
+    priority: P1
+    depends_on: [P14-001]
+    status: TODO
+    output:
+      - additional repo-local PDF fixtures
+      - updated publication manifest
+      - scenario coverage evidence
+    quality_gate: G12
+    definition_of_done:
+      - at least one OCR-stressed or scanned fixture exists repo-locally
+      - document-like coverage is broader than a single-page letter
+      - new fixtures are wired into corpus-wide quality-first reporting
+    regression_risk: medium
+    related_issues: [ISSUE-038]
+
+  - id: P14-005
+    phase: PHASE 14
+    execution_mode: PDF_AND_EPUB
+    title: Promote release breadth beyond the single current release-eligible publication using trusted repo-local metadata evidence
+    owner: Release Readiness Agent
+    priority: P2
+    depends_on: [P14-004]
+    status: TODO
+    output:
+      - expanded release-eligible manifest entries
+      - updated corpus-wide release evidence
+    quality_gate: G13
+    definition_of_done:
+      - additional supported profiles are either release-eligible or explicitly blocked with evidence
+      - no creator metadata is guessed
+      - release breadth claims are evidence-backed
+    regression_risk: medium
+    related_issues: [ISSUE-038]
+
+  - id: M-001
+    phase: MAINTENANCE
+    execution_mode: any
+    title: Formalize optional remote GitHub enforcement so local READY governance has an external counterpart
+    owner: Lead / Orchestrator
+    priority: P3
+    depends_on: []
+    status: TODO
+    output:
+      - docs/github_setup.md
+      - optional remote enforcement checklist
+    quality_gate: G-1
+    definition_of_done:
+      - the remaining external governance gap is either reduced or explicitly accepted as out of local scope
+    regression_risk: low
+    related_issues: [ISSUE-002]
+
+  - id: M-002
+    phase: MAINTENANCE
+    execution_mode: any
+    title: Extend conservative semantic anomaly coverage beyond the current release corpus without weakening no-paraphrase guarantees
+    owner: Structure & Semantics
+    priority: P2
+    depends_on: []
+    status: TODO
+    output:
+      - widened semantic anomaly audit coverage
+      - updated regression evidence if corpus changes
+    quality_gate: G6
+    definition_of_done:
+      - additional suspicious-title or metadata-anomaly patterns are covered generically
+      - existing premium release outputs do not regress
+    regression_risk: medium
+    related_issues: [ISSUE-005]

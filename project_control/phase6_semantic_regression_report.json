@@ -1,0 +1,14 @@
+{
+  "analysis_date": "2026-04-11",
+  "task": "T6-005",
+  "before_suspicious_title_author_merges": 2,
+  "after_suspicious_title_author_merges": 0,
+  "organizationally_repaired_chapters": 2,
+  "quality_gate_g6": {
+    "pass": true,
+    "justification": [
+      "Suspicious title-author merges dropped from 2 to 0.",
+      "Organizational role lines now stay outside title headings."
+    ]
+  }
+}

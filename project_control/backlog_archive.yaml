@@ -1,0 +1,2556 @@
+version: 9
+project: kindle-master
+source_of_truth:
+  - project_control/orchestration.md
+  - project_control/input_registry.yaml
+  - project_control/issue_register.yaml
+  - project_control/repo_boundary.md
+  - AGENTS.md
+normalized_from_brief_date: 2026-04-12
+current_execution_mode: PDF_AND_EPUB
+current_end_to_end_status: RELEASE_SMOKE_QUALITY_LOOP_PAGE_COVERAGE_NAV_LABEL_QUALITY_STAGE_PROOFS_INLINE_LIST_RECOVERY_FRONT_MATTER_BOUNDARY_RECOVERY_AND_PER_RUN_PREMIUM_REPORTING_PROVEN_ACROSS_TRACKED_GUARDS
+current_isolation_status: PHYSICALLY_SPLIT_KINDLE_ROOT_VERIFIED
+current_recovery_status: ACTIVE_SAMPLE_MAGAZINE_GUARD_AND_BOOK_GUARD_PREMIUM_WITH_TEXT_RECOVERY_PROOF_R5_KINDLE_UX_PROOF_GENERIC_FRONT_MATTER_BOUNDARY_RECOVERY_EXPLICIT_FRONT_MATTER_SEMANTIC_PROFILES_SPECIAL_SECTION_TOC_PROTECTION_SEMANTIC_PLAN_APPLY_SPLIT_PERSISTED_STAGE_ARTIFACT_MANIFESTS_MAJOR_MINOR_VERSIONING_AND_PER_RUN_PREMIUM_REPORTING
+statuses:
+  - TODO
+  - IN_PROGRESS
+  - DONE
+  - REVIEW
+  - BLOCKED
+  - DEFERRED
+normalization_rules:
+  - This backlog supersedes the earlier EPUB-only execution model.
+  - Earlier EPUB-only reports remain valid historical evidence, but they do not satisfy the current end-to-end PDF-first brief unless the new task explicitly matches and was re-executed under this brief.
+  - KINDLE MASTER and foreign frontend/runtime must be treated as separate projects; any overlap is a tracked defect and release blocker.
+  - PDF-first support must not be assumed until a repo-local PDF fixture and a validated PDF-to-EPUB toolchain both exist.
+  - Recovery work must prove what improved, what failed, and what regressed before any premium tuning continues.
+  - Recovery phases R1 to R6 must not start until Phase R0 root cause is explicit.
+  - No READY is allowed unless all mandatory test classes exist, all required scenario profiles are covered or explicitly release-blocked, and release gates pass on the final EPUB.
+  - Phase 12 test-matrix and release-gate evidence are authoritative release controls, not optional documentation.
+  - Release-authoritative metadata must come from manifest-backed publication records or explicit runtime overrides; source-file heuristics alone are exploratory evidence only.
+  - If the project is NOT READY, continuation tasks must be created and execution continues automatically.
+tasks:
+  - id: R0-001
+    phase: PHASE R0
+    execution_mode: pdf_and_epub
+    title: Compare the last EPUB iterations side by side
+    owner: QA / Regression
+    priority: P0
+    depends_on: []
+    status: DONE
+    output:
+      - project_control/phase_r0_iteration_comparison.md
+    quality_gate: GR0
+    definition_of_done:
+      - comparison covers h1, h2, paragraph count, TOC count, noisy TOC, duplicate TOC, page labels, split words, joined words, suspicious paragraph joins, and metadata quality
+      - changes are classified as real improvement, no material change, or regression
+    regression_risk: low
+    related_issues: [ISSUE-018, ISSUE-020, ISSUE-021]
+
+  - id: R0-002
+    phase: PHASE R0
+    execution_mode: pdf_and_epub
+    title: Verify whether improvements were applied to final output or only to intermediate artifacts
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [R0-001]
+    status: DONE
+    output:
+      - project_control/phase_r0_artifact_flow_audit.md
+    quality_gate: GR0
+    definition_of_done:
+      - baseline, intermediate, and final artifacts are explicit
+      - the audit states whether final EPUB includes intended changes
+    regression_risk: medium
+    related_issues: [ISSUE-022]
+
+  - id: R0-003
+    phase: PHASE R0
+    execution_mode: pdf_and_epub
+    title: Verify whether later steps overwrite earlier remediation improvements
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [R0-002]
+    status: DONE
+    output:
+      - project_control/phase_r0_overwrite_audit.md
+    quality_gate: GR0
+    definition_of_done:
+      - the audit explicitly states whether later stages recreate broken XHTML, TOC, CSS, or metadata after cleanup
+    regression_risk: high
+    related_issues: [ISSUE-022]
+
+  - id: R0-004
+    phase: PHASE R0
+    execution_mode: pdf_and_epub
+    title: Audit TOC technical correctness and path validity
+    owner: TOC & Navigation
+    priority: P0
+    depends_on: [R0-001]
+    status: DONE
+    output:
+      - project_control/phase_r0_toc_technical_audit.md
+    quality_gate: GR0
+    definition_of_done:
+      - nav.xhtml and toc.ncx are checked for broken paths, dead anchors, wrong targets, and noisy entries
+    regression_risk: high
+    related_issues: [ISSUE-018]
+
+  - id: R0-005
+    phase: PHASE R0
+    execution_mode: pdf_and_epub
+    title: Audit semantic structure quality of current EPUB
+    owner: Structure & Semantics
+    priority: P0
+    depends_on: [R0-001]
+    status: DONE
+    output:
+      - project_control/phase_r0_semantic_audit.md
+    quality_gate: GR0
+    definition_of_done:
+      - missing h1, misuse of h2, title as paragraph, author as heading, lead merged into title, page leakage, and special-section pollution are identified
+    regression_risk: high
+    related_issues: [ISSUE-020]
+
+  - id: R0-006
+    phase: PHASE R0
+    execution_mode: pdf_and_epub
+    title: Audit text cleanup effectiveness and remaining PDF artifacts
+    owner: Text Cleanup
+    priority: P0
+    depends_on: [R0-001]
+    status: DONE
+    output:
+      - project_control/phase_r0_text_cleanup_audit.md
+    quality_gate: GR0
+    definition_of_done:
+      - remaining split words, joined words, broken boundaries, cleanup scope, and post-cleanup rescanning status are explicit
+    regression_risk: medium
+    related_issues: [ISSUE-021]
+
+  - id: R0-007
+    phase: PHASE R0
+    execution_mode: pdf_and_epub
+    title: Produce root-cause report for lack of visible improvement
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [R0-003, R0-004, R0-005, R0-006]
+    status: DONE
+    output:
+      - project_control/phase_r0_root_cause_report.md
+      - reports/iteration_16_recovery_r0_audit.md
+    quality_gate: GR0
+    definition_of_done:
+      - the report explains why recent changes did not improve user-visible quality
+      - destructive and ineffective stages are identified
+      - next fixes required before tuning are explicit
+    regression_risk: low
+    related_issues: [ISSUE-018, ISSUE-019, ISSUE-020, ISSUE-021, ISSUE-022]
+
+  - id: R1-001
+    phase: PHASE R1
+    execution_mode: pdf_and_epub
+    title: Define explicit artifact lifecycle for baseline, intermediate, and final EPUB outputs
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [R0-007]
+    status: DONE
+    output:
+      - project_control/phase_r1_artifact_lifecycle.md
+    quality_gate: GR1
+    definition_of_done:
+      - every stage has explicit input and output
+      - final EPUB cannot be silently overwritten by earlier-generation stages
+    regression_risk: high
+    related_issues: [ISSUE-022]
+
+  - id: R1-002
+    phase: PHASE R1
+    execution_mode: pdf_and_epub
+    title: Enforce non-overwrite rules in workflow and governance
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [R1-001]
+    status: DONE
+    output:
+      - docs/workflow.md
+      - project_control/orchestration.md
+    quality_gate: GR1
+    definition_of_done:
+      - overwrite prevention is encoded in repo rules and execution flow
+    regression_risk: medium
+    related_issues: [ISSUE-022]
+
+  - id: R1-003
+    phase: PHASE R1
+    execution_mode: pdf_and_epub
+    title: Create remediation tasks for destructive or duplicate stages
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [R1-002]
+    status: DONE
+    output:
+      - project_control/phase_r1_integrity_validation.md
+      - reports/iteration_17_recovery_r1_integrity.md
+    quality_gate: GR1
+    definition_of_done:
+      - every destructive or ambiguous stage has a remediation task or explicit removal plan
+    regression_risk: medium
+    related_issues: [ISSUE-018, ISSUE-019, ISSUE-020, ISSUE-022]
+
+  - id: R2-001
+    phase: PHASE R2
+    execution_mode: pdf_and_epub
+    title: Rebuild title detection model for true article titles
+    owner: Structure & Semantics
+    priority: P0
+    depends_on: [R1-003]
+    status: DONE
+    output:
+      - improved title-detection logic and mapping
+      - project_control/phase_r2_semantic_recovery_pass1.md
+      - reports/iteration_18_recovery_r2_semantic_pass.md
+    quality_gate: GR2
+    definition_of_done:
+      - title extraction no longer merges title with author, lead, page number, or masthead residue
+    regression_risk: high
+    related_issues: [ISSUE-020]
+
+  - id: R2-002
+    phase: PHASE R2
+    execution_mode: pdf_and_epub
+    title: Reconstruct valid article opening structure
+    owner: Structure & Semantics
+    priority: P0
+    depends_on: [R2-001]
+    status: DONE
+    output:
+      - corrected article openings
+      - project_control/phase_r2_semantic_recovery_pass2.md
+      - reports/iteration_19_master_brief_hardening_and_r2_pass2.md
+    quality_gate: GR2
+    definition_of_done:
+      - each standard article has clean h1 title, separated subtitle or lead, separated author, and clean body start
+    regression_risk: high
+    related_issues: [ISSUE-020, ISSUE-023]
+
+  - id: R2-003
+    phase: PHASE R2
+    execution_mode: pdf_and_epub
+    title: Re-segment articles versus special sections
+    owner: Structure & Semantics
+    priority: P0
+    depends_on: [R2-002]
+    status: DONE
+    output:
+      - corrected segmentation map
+      - project_control/phase_r2_semantic_recovery_pass2.md
+      - reports/iteration_19_master_brief_hardening_and_r2_pass2.md
+    quality_gate: GR2
+    definition_of_done:
+      - galleries, credits, mastheads, staff pages, organizational sections, and ads are not treated as ordinary articles
+    regression_risk: high
+    related_issues: [ISSUE-020, ISSUE-023]
+
+  - id: R2-004
+    phase: PHASE R2
+    execution_mode: pdf_and_epub
+    title: Rebuild TOC from final semantic structure only
+    owner: TOC & Navigation
+    priority: P0
+    depends_on: [R2-003]
+    status: DONE
+    output:
+      - rebuilt candidate TOC
+      - project_control/phase_r2_navigation_recovery.md
+      - reports/iteration_19_master_brief_hardening_and_r2_pass2.md
+    quality_gate: GR2
+    definition_of_done:
+      - TOC candidates come only from valid final semantic titles and meaningful top-level sections
+    regression_risk: high
+    related_issues: [ISSUE-018, ISSUE-020]
+
+  - id: R2-005
+    phase: PHASE R2
+    execution_mode: pdf_and_epub
+    title: Remove noisy, low-value, duplicate, and broken TOC entries
+    owner: TOC & Navigation
+    priority: P0
+    depends_on: [R2-004]
+    status: DONE
+    output:
+      - cleaned TOC
+      - project_control/phase_r2_navigation_recovery.md
+      - reports/iteration_19_master_brief_hardening_and_r2_pass2.md
+    quality_gate: GR2
+    definition_of_done:
+      - page labels, credits, roles, author-only entries, gallery noise, and broken duplicates are removed unless justified
+    regression_risk: high
+    related_issues: [ISSUE-018]
+
+  - id: R2-006
+    phase: PHASE R2
+    execution_mode: pdf_and_epub
+    title: Validate and repair all TOC paths and anchors
+    owner: TOC & Navigation
+    priority: P0
+    depends_on: [R2-005]
+    status: DONE
+    output:
+      - validated navigation structure
+      - project_control/phase_r2_navigation_recovery.md
+      - reports/iteration_19_master_brief_hardening_and_r2_pass2.md
+    quality_gate: GR2
+    definition_of_done:
+      - nav.xhtml and toc.ncx contain correct paths and working anchors
+      - no dead links remain
+    regression_risk: medium
+    related_issues: [ISSUE-018]
+
+  - id: R3-001
+    phase: PHASE R3
+    execution_mode: pdf_and_epub
+    title: Re-scan all XHTML content for unresolved split-word artifacts
+    owner: Text Cleanup
+    priority: P0
+    depends_on: [R1-003]
+    status: DONE
+    output:
+      - full split-word scan report
+      - project_control/phase_r3_split_word_scan.json
+      - reports/iteration_19_master_brief_hardening_and_r2_pass2.md
+    quality_gate: GR3
+    definition_of_done:
+      - scan covers all relevant XHTML files in final remediation input
+    regression_risk: medium
+    related_issues: [ISSUE-021]
+
+  - id: R3-002
+    phase: PHASE R3
+    execution_mode: pdf_and_epub
+    title: Re-scan all XHTML content for unresolved joined-word artifacts
+    owner: Text Cleanup
+    priority: P0
+    depends_on: [R1-003]
+    status: DONE
+    output:
+      - full joined-word scan report
+      - project_control/phase_r3_joined_word_scan.json
+    quality_gate: GR3
+    definition_of_done:
+      - scan covers all relevant XHTML files in final remediation input
+    regression_risk: medium
+    related_issues: [ISSUE-021]
+
+  - id: R3-003
+    phase: PHASE R3
+    execution_mode: pdf_and_epub
+    title: Re-scan for broken sentence and paragraph boundaries
+    owner: Text Cleanup
+    priority: P0
+    depends_on: [R1-003]
+    status: DONE
+    output:
+      - boundary corruption scan report
+      - project_control/phase_r3_boundary_scan.json
+    quality_gate: GR3
+    definition_of_done:
+      - suspicious joins are listed with confidence
+    regression_risk: medium
+    related_issues: [ISSUE-021]
+
+  - id: R3-004
+    phase: PHASE R3
+    execution_mode: pdf_and_epub
+    title: Apply global high-confidence cleanup to final remediation input
+    owner: Text Cleanup
+    priority: P0
+    depends_on: [R3-001, R3-002, R3-003]
+    status: DONE
+    output:
+      - cleaned text pass recovery-v1
+      - project_control/phase_r3_high_confidence_cleanup.md
+    quality_gate: GR3
+    definition_of_done:
+      - cleanup is applied globally to the actual final remediation input
+      - obvious artifacts are reduced materially
+    regression_risk: high
+    related_issues: [ISSUE-021]
+
+  - id: R3-005
+    phase: PHASE R3
+    execution_mode: pdf_and_epub
+    title: Apply controlled AI-assisted cleanup for medium-confidence cases
+    owner: Text Cleanup
+    priority: P1
+    depends_on: [R3-004]
+    status: DONE
+    output:
+      - cleaned text pass recovery-v2
+      - medium-confidence change log
+      - project_control/phase_r3_medium_confidence_false_positive_suppression.md
+      - tests/test_text_quality_thresholds.py
+      - reports/iteration_28_fx011_stage_proofs_and_r3_false_positive_suppression.md
+      - project_control/phase_r3_text_recovery_metrics.md
+      - project_control/phase_r3_text_recovery_metrics.json
+      - reports/iteration_33_text_recovery_and_typography.md
+    quality_gate: GR3
+    definition_of_done:
+      - medium-confidence cases improve without paraphrase or meaning change
+    regression_risk: high
+    related_issues: [ISSUE-021]
+
+  - id: R3-006
+    phase: PHASE R3
+    execution_mode: pdf_and_epub
+    title: Recompute text metrics and verify visible improvement
+    owner: QA / Regression
+    priority: P0
+    depends_on: [R3-004, R3-005]
+    status: DONE
+    output:
+      - text recovery metrics report
+      - project_control/phase_r3_text_recovery_metrics.md
+      - project_control/phase_r3_text_recovery_metrics.json
+      - reports/iteration_33_text_recovery_and_typography.md
+    quality_gate: GR3
+    definition_of_done:
+      - before/after evidence shows whether cleanup now produces user-visible improvement
+    regression_risk: medium
+    related_issues: [ISSUE-021]
+
+  - id: R4-001
+    phase: PHASE R4
+    execution_mode: pdf_and_epub
+    title: Audit front matter and organizational sections for Kindle reading flow
+    owner: Structure & Semantics
+    priority: P1
+    depends_on: [R2-003]
+    status: DONE
+    output:
+      - front matter audit report
+      - project_control/phase_r4_front_matter_boundary_recovery.md
+      - reports/iteration_30_front_matter_boundary_and_stage_artifacts.md
+    quality_gate: GR4
+    definition_of_done:
+      - staff pages, editorial matter, mastheads, credits, and internal pages are identified and classified
+    regression_risk: medium
+    related_issues: [ISSUE-009, ISSUE-020]
+
+  - id: R4-002
+    phase: PHASE R4
+    execution_mode: pdf_and_epub
+    title: Rebuild front matter semantics for clean linear reading
+    owner: Structure & Semantics
+    priority: P1
+    depends_on: [R4-001]
+    status: DONE
+    output:
+      - repaired front matter structure
+      - project_control/phase_r4_front_matter_semantic_profiles.md
+      - reports/iteration_31_front_matter_semantic_profiles_and_toc_protection.md
+    quality_gate: GR4
+    definition_of_done:
+      - front matter is readable, semantically distinct, and does not pollute article navigation
+    regression_risk: medium
+    related_issues: [ISSUE-009, ISSUE-020]
+
+  - id: R4-003
+    phase: PHASE R4
+    execution_mode: pdf_and_epub
+    title: Ensure special sections do not degrade TOC and article flow
+    owner: TOC & Navigation
+    priority: P1
+    depends_on: [R4-002]
+    status: DONE
+    output:
+      - special-section TOC protection report
+      - project_control/phase_r4_special_section_toc_protection.md
+      - reports/iteration_31_front_matter_semantic_profiles_and_toc_protection.md
+    quality_gate: GR4
+    definition_of_done:
+      - special sections do not reintroduce TOC noise or article-structure pollution
+    regression_risk: medium
+    related_issues: [ISSUE-018, ISSUE-020]
+
+  - id: R5-001
+    phase: PHASE R5
+    execution_mode: pdf_and_epub
+    title: Tune CSS typography for Kindle reading comfort
+    owner: CSS / Kindle UX
+    priority: P1
+    depends_on: [R2-006, R3-006, R4-003]
+    status: DONE
+    output:
+      - improved Kindle typography layer
+      - project_control/phase_r5_typography_and_reading_flow.md
+      - project_control/phase_r5_typography_and_reading_flow.json
+      - reports/iteration_33_text_recovery_and_typography.md
+    quality_gate: GR5
+    definition_of_done:
+      - typography improves reading comfort materially
+      - title, author, lead, and caption distinctions are visually cleaner
+    regression_risk: medium
+    related_issues: [ISSUE-019]
+
+  - id: R5-002
+    phase: PHASE R5
+    execution_mode: pdf_and_epub
+    title: Remove or suppress page-label dominance in reading flow
+    owner: CSS / Kindle UX
+    priority: P1
+    depends_on: [R5-001]
+    status: DONE
+    output:
+      - reduced page-label noise
+      - project_control/phase_r5_typography_and_reading_flow.md
+      - project_control/phase_r5_typography_and_reading_flow.json
+      - reports/iteration_33_text_recovery_and_typography.md
+    quality_gate: GR5
+    definition_of_done:
+      - page markers no longer dominate the reading flow unless explicitly required
+    regression_risk: medium
+    related_issues: [ISSUE-020]
+
+  - id: R5-003
+    phase: PHASE R5
+    execution_mode: pdf_and_epub
+    title: Tune article entry rhythm and first-screen impression
+    owner: CSS / Kindle UX
+    priority: P1
+    depends_on: [R5-002]
+    status: DONE
+    output:
+      - improved article entry presentation
+      - project_control/phase_r5_typography_and_reading_flow.md
+      - project_control/phase_r5_typography_and_reading_flow.json
+      - reports/iteration_33_text_recovery_and_typography.md
+    quality_gate: GR5
+    definition_of_done:
+      - article openings feel cleaner, calmer, and more premium on Kindle-sized reading flow
+    regression_risk: medium
+    related_issues: [ISSUE-019, ISSUE-020]
+
+  - id: R6-001
+    phase: PHASE R6
+    execution_mode: pdf_and_epub
+    title: Run full recovery regression comparison
+    owner: QA / Regression
+    priority: P0
+    depends_on: [R5-003]
+    status: DONE
+    output:
+      - full recovery regression report
+      - project_control/phase_r6_full_recovery_regression.md
+      - reports/iteration_34_recovery_verdict_and_phase13_handoff.md
+    quality_gate: GR6
+    definition_of_done:
+      - report explicitly compares pre-recovery, post-recovery, fixes, remaining issues, and regressions
+    regression_risk: low
+    related_issues: [ISSUE-018, ISSUE-019, ISSUE-020, ISSUE-021, ISSUE-022]
+
+  - id: R6-002
+    phase: PHASE R6
+    execution_mode: pdf_and_epub
+    title: Score current EPUB against Kindle premium target
+    owner: QA / Regression
+    priority: P0
+    depends_on: [R6-001]
+    status: DONE
+    output:
+      - recovery score report
+      - project_control/phase_r6_recovery_score.md
+      - reports/iteration_34_recovery_verdict_and_phase13_handoff.md
+    quality_gate: GR6
+    definition_of_done:
+      - score is evidence-based and justified
+    regression_risk: low
+    related_issues: [ISSUE-012]
+
+  - id: R6-003
+    phase: PHASE R6
+    execution_mode: pdf_and_epub
+    title: Produce recovery verdict and continuation plan
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [R6-002]
+    status: DONE
+    output:
+      - recovery verdict
+      - continuation plan if target not reached
+      - project_control/phase_r6_recovery_verdict.md
+      - reports/iteration_34_recovery_verdict_and_phase13_handoff.md
+    quality_gate: GR6
+    definition_of_done:
+      - explicit verdict exists: RECOVERED AND IMPROVING, PARTIALLY RECOVERED, or STILL STRUCTURALLY BLOCKED
+      - next iteration plan exists if needed
+    regression_risk: low
+    related_issues: [ISSUE-012, ISSUE-022]
+
+  - id: T-2-001
+    phase: PHASE -2
+    execution_mode: any
+    title: Audit whether Kindle Master and foreign frontend/runtime are physically and logically separate repositories
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: []
+    status: DONE
+    output:
+      - repository boundary audit report
+    quality_gate: G-2
+    definition_of_done:
+      - repository roots are identified
+      - project boundaries are explicit
+      - any overlap is documented
+    regression_risk: low
+    related_issues: [ISSUE-013, ISSUE-014]
+
+  - id: T-2-002
+    phase: PHASE -2
+    execution_mode: any
+    title: Detect any direct references to foreign frontend/runtime inside Kindle Master
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [T-2-001]
+    status: DONE
+    output:
+      - reference scan report
+    quality_gate: G-2
+    definition_of_done:
+      - all references to foreign frontend/runtime names, paths, scripts, configs, env vars, package or workspace references, CI jobs, output dirs, caches, and shared docs are identified
+    regression_risk: medium
+    related_issues: [ISSUE-013, ISSUE-014]
+
+  - id: T-2-003
+    phase: PHASE -2
+    execution_mode: any
+    title: Detect any direct references to Kindle Master inside foreign frontend/runtime assumptions or mirrored config patterns if visible
+    owner: Lead / Orchestrator
+    priority: P1
+    depends_on: [T-2-001]
+    status: DONE
+    output:
+      - reverse coupling report
+    quality_gate: G-2
+    definition_of_done:
+      - any known reverse coupling is documented
+      - if repo visibility is limited, scope limits are documented clearly
+    regression_risk: medium
+    related_issues: [ISSUE-013]
+
+  - id: T-2-004
+    phase: PHASE -2
+    execution_mode: any
+    title: Detect shared build, workspace, dependency, environment, output, or automation boundaries
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [T-2-002, T-2-003]
+    status: DONE
+    output:
+      - shared-boundary findings
+    quality_gate: G-2
+    definition_of_done:
+      - package and workspace config checked
+      - scripts checked
+      - env usage checked
+      - output folders and caches checked
+      - CI or CD config checked
+      - Git hooks, shared docs, branch assumptions, and release assumptions checked
+    regression_risk: high
+    related_issues: [ISSUE-013, ISSUE-014]
+
+  - id: T-2-005
+    phase: PHASE -2
+    execution_mode: any
+    title: Create isolation remediation plan if any Kindle Master to foreign frontend/runtime coupling exists
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [T-2-004]
+    status: DONE
+    output:
+      - isolation remediation plan
+    quality_gate: G-2
+    definition_of_done:
+      - every coupling has a remediation path
+      - blockers are explicit
+    regression_risk: high
+    related_issues: [ISSUE-013, ISSUE-014]
+
+  - id: T-2-006
+    phase: PHASE -2
+    execution_mode: any
+    title: Enforce Kindle Master project isolation rules in governance documents
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [T-2-005]
+    status: DONE
+    output:
+      - updated AGENTS.md
+      - updated docs/agent_rules.md
+      - updated docs/workflow.md
+    quality_gate: G-2
+    definition_of_done:
+      - project isolation is documented as a hard rule
+      - future cross-project leakage is explicitly forbidden
+    regression_risk: medium
+    related_issues: [ISSUE-013, ISSUE-014]
+
+  - id: T-2-007
+    phase: PHASE -2
+    execution_mode: any
+    title: Add isolation checks to backlog, issue model, and release criteria
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [T-2-006]
+    status: DONE
+    output:
+      - updated backlog and control docs
+      - updated release criteria
+    quality_gate: G-2
+    definition_of_done:
+      - isolation violations are treated as tracked issues and release blockers
+    regression_risk: medium
+    related_issues: [ISSUE-013, ISSUE-014]
+
+  - id: T-2-008
+    phase: PHASE -2
+    execution_mode: any
+    title: If coupling is found, create FX-* remediation tasks and resolve them before end-to-end execution
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [T-2-007]
+    status: DONE
+    output:
+      - FX-* tasks for isolation
+    quality_gate: G-2
+    definition_of_done:
+      - all high-severity coupling defects create remediation tasks
+    regression_risk: high
+    related_issues: [ISSUE-013, ISSUE-014]
+
+  - id: T-2-009
+    phase: PHASE -2
+    execution_mode: any
+    title: Physically extract foreign frontend/runtime product assets out of the Kindle Master repository root
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [T-2-008]
+    status: DONE
+    output:
+      - an external repository path outside this workspace
+      - project_control/phase_minus2_boundary_audit.md
+    quality_gate: G-2
+    definition_of_done:
+      - current Kindle Master root no longer contains protected foreign frontend/runtime product files such as src, supabase, index.html, root package metadata, or foreign frontend CI workflow
+      - extracted foreign frontend/runtime path is explicit and boundary documentation is updated
+    regression_risk: high
+    related_issues: [ISSUE-013]
+
+  - id: T-2-010
+    phase: PHASE -2
+    execution_mode: any
+    title: Verify post-split Kindle Master root has no shared runtime, output, cache, CI, or workspace assumptions
+    owner: Cross-Project Boundary
+    priority: P0
+    depends_on: [T-2-009]
+    status: DONE
+    output:
+      - project_control/phase_minus2_reference_scan.md
+      - project_control/repo_boundary.md
+    quality_gate: G-2
+    definition_of_done:
+      - Kindle Master root no longer depends on shared frontend build or runtime files
+      - remaining reverse-side scope limits are documented explicitly
+    regression_risk: high
+    related_issues: [ISSUE-013]
+
+  - id: T-1-001
+    phase: PHASE -1
+    execution_mode: any
+    title: Re-audit and align repository governance for PDF-first and EPUB remediation workflow
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [T-2-008]
+    status: DONE
+    output:
+      - updated governance report
+    quality_gate: G-1
+    definition_of_done:
+      - governance docs reflect end-to-end workflow and project isolation
+    regression_risk: low
+    related_issues: [ISSUE-013, ISSUE-016]
+
+  - id: T-1-002
+    phase: PHASE -1
+    execution_mode: any
+    title: Normalize this backlog expansion into project_control files
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [T-1-001]
+    status: DONE
+    output:
+      - updated backlog and control files
+    quality_gate: G-1
+    definition_of_done:
+      - all tasks from this brief are represented in backlog
+    regression_risk: low
+    related_issues: []
+
+  - id: T-1-003
+    phase: PHASE -1
+    execution_mode: any
+    title: Update orchestration for end-to-end flow and cross-project isolation
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [T-1-002]
+    status: DONE
+    output:
+      - updated orchestration
+      - updated handoffs
+      - updated stop conditions
+    quality_gate: G-1
+    definition_of_done:
+      - orchestration covers PDF-first and EPUB-first modes
+      - isolation checks are part of release path
+    regression_risk: low
+    related_issues: [ISSUE-013, ISSUE-016]
+
+  - id: T-1-004
+    phase: PHASE -1
+    execution_mode: any
+    title: Update progress tracking to include end-to-end and isolation status
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [T-1-003]
+    status: DONE
+    output:
+      - updated status board and reporting model
+    quality_gate: G-1
+    definition_of_done:
+      - progress visibility includes current phase, input mode, isolation status, next task, and blockers
+    regression_risk: low
+    related_issues: [ISSUE-013, ISSUE-015, ISSUE-016]
+
+  - id: T0-001
+    phase: PHASE 0
+    execution_mode: any
+    title: Detect available PDF and EPUB inputs inside Kindle Master repository
+    owner: Input & Intake
+    priority: P0
+    depends_on: [T-1-004]
+    status: DONE
+    output:
+      - input registry populated
+    quality_gate: G0
+    definition_of_done:
+      - repo search covers PDF, EPUB, and unpacked EPUB structures
+      - assets are registered by path
+    regression_risk: low
+    related_issues: [ISSUE-015]
+
+  - id: T0-002
+    phase: PHASE 0
+    execution_mode: any
+    title: Determine execution mode PDF_ONLY, EPUB_ONLY, PDF_AND_EPUB, or BLOCKED
+    owner: Input & Intake
+    priority: P0
+    depends_on: [T0-001]
+    status: DONE
+    output:
+      - explicit execution mode
+    quality_gate: G0
+    definition_of_done:
+      - execution mode is recorded
+      - blockers are logged if inputs are missing
+    regression_risk: low
+    related_issues: [ISSUE-015]
+
+  - id: T0-003
+    phase: PHASE 0
+    execution_mode: any
+    title: Validate end-to-end minimum input requirements
+    owner: Input & Intake
+    priority: P0
+    depends_on: [T0-002]
+    status: DONE
+    output:
+      - validated input readiness for end-to-end test
+    quality_gate: G0
+    definition_of_done:
+      - at least one valid PDF path for end-to-end exists or blocker is logged
+    regression_risk: low
+    related_issues: [ISSUE-015, ISSUE-016]
+
+  - id: T0-004
+    phase: PHASE 0
+    execution_mode: any
+    title: Create input remediation tasks if required artifacts are missing
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [T0-003]
+    status: DONE
+    output:
+      - FX-* tasks for missing input
+    quality_gate: G0
+    definition_of_done:
+      - missing inputs produce explicit remediation tasks
+    regression_risk: low
+    related_issues: [ISSUE-015, ISSUE-016]
+
+  - id: T1-001
+    phase: PHASE 1
+    execution_mode: any
+    title: Inventory source PDF files and metadata
+    owner: PDF Analysis
+    priority: P0
+    depends_on: [T0-004]
+    status: DONE
+    output:
+      - PDF inventory
+    quality_gate: G1
+    definition_of_done:
+      - PDFs are mapped with basic metadata and locations
+    regression_risk: low
+    related_issues: [ISSUE-015, ISSUE-016]
+
+  - id: T1-002
+    phase: PHASE 1
+    execution_mode: any
+    title: Classify PDF complexity and layout profile
+    owner: PDF Analysis
+    priority: P0
+    depends_on: [T1-001]
+    status: DONE
+    output:
+      - PDF profile classification
+    quality_gate: G1
+    definition_of_done:
+      - source PDF classified as text-heavy, image-heavy, mixed-layout, OCR-risky, or similar
+    regression_risk: low
+    related_issues: [ISSUE-016]
+
+  - id: T1-003
+    phase: PHASE 1
+    execution_mode: any
+    title: Detect PDF-specific conversion risks
+    owner: PDF Analysis
+    priority: P0
+    depends_on: [T1-002]
+    status: DONE
+    output:
+      - PDF conversion risk report
+    quality_gate: G1
+    definition_of_done:
+      - risks logged for text loss, diagrams, page furniture, TOC loss, OCR risk, and special sections
+    regression_risk: low
+    related_issues: [ISSUE-016]
+
+  - id: T1-004
+    phase: PHASE 1
+    execution_mode: any
+    title: Choose baseline conversion strategy for this publication profile
+    owner: Baseline Conversion Strategy
+    priority: P0
+    depends_on: [T1-003]
+    status: DONE
+    output:
+      - baseline conversion strategy
+    quality_gate: G1
+    definition_of_done:
+      - conversion path is explicit
+      - fallback path exists
+    regression_risk: medium
+    related_issues: [ISSUE-016]
+
+  - id: T1-005
+    phase: PHASE 1
+    execution_mode: any
+    title: Define baseline handling rules for diagrams, galleries, ads, staff pages, and complex layouts
+    owner: Baseline Conversion Strategy
+    priority: P1
+    depends_on: [T1-004]
+    status: DONE
+    output:
+      - content handling rules
+    quality_gate: G1
+    definition_of_done:
+      - difficult structures have documented treatment rules
+    regression_risk: medium
+    related_issues: [ISSUE-004, ISSUE-016]
+
+  - id: T2-001
+    phase: PHASE 2
+    execution_mode: any
+    title: Prepare baseline PDF to EPUB execution plan
+    owner: Baseline Conversion Strategy
+    priority: P0
+    depends_on: [T1-005]
+    status: DONE
+    output:
+      - step-by-step baseline conversion plan
+    quality_gate: G2
+    definition_of_done:
+      - conversion execution path is explicit and testable
+    regression_risk: medium
+    related_issues: [ISSUE-016]
+
+  - id: T2-002
+    phase: PHASE 2
+    execution_mode: any
+    title: Execute baseline PDF to EPUB conversion for at least one test publication
+    owner: Baseline Conversion Strategy
+    priority: P0
+    depends_on: [T2-001]
+    status: DONE
+    output:
+      - baseline EPUB artifact
+    quality_gate: G2
+    definition_of_done:
+      - baseline EPUB exists inside repo and is registered
+    regression_risk: high
+    related_issues: [ISSUE-016]
+
+  - id: T2-003
+    phase: PHASE 2
+    execution_mode: any
+    title: Register baseline EPUB in input registry and output tracking
+    owner: Input & Intake
+    priority: P0
+    depends_on: [T2-002]
+    status: DONE
+    output:
+      - updated input and output registry
+    quality_gate: G2
+    definition_of_done:
+      - produced EPUB is traceable and available for remediation
+    regression_risk: low
+    related_issues: [ISSUE-016]
+
+  - id: T2-004
+    phase: PHASE 2
+    execution_mode: any
+    title: If baseline conversion fails, create FX-* remediation tasks and fallback path
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [T2-002]
+    status: DONE
+    output:
+      - remediation and fallback tasks
+    quality_gate: G2
+    definition_of_done:
+      - failed conversion does not disappear silently
+    regression_risk: medium
+    related_issues: [ISSUE-016]
+
+  - id: T3-001
+    phase: PHASE 3
+    execution_mode: any
+    title: Inventory EPUB package and assets
+    owner: EPUB Analysis
+    priority: P0
+    depends_on: [T2-003]
+    status: TODO
+    output:
+      - EPUB inventory
+    quality_gate: G3
+    definition_of_done:
+      - OPF, nav, XHTML, CSS, and images are mapped
+    regression_risk: low
+    related_issues: []
+
+  - id: T3-002
+    phase: PHASE 3
+    execution_mode: any
+    title: Build publication model from EPUB
+    owner: EPUB Analysis
+    priority: P0
+    depends_on: [T3-001]
+    status: TODO
+    output:
+      - publication model
+    quality_gate: G3
+    definition_of_done:
+      - chapters, sections, blocks, anchors, and assets are addressable
+    regression_risk: low
+    related_issues: []
+
+  - id: T3-003
+    phase: PHASE 3
+    execution_mode: any
+    title: Classify publication type from EPUB structure
+    owner: EPUB Analysis
+    priority: P1
+    depends_on: [T3-002]
+    status: TODO
+    output:
+      - publication type classification
+    quality_gate: G3
+    definition_of_done:
+      - profile recorded and usable downstream
+    regression_risk: low
+    related_issues: [ISSUE-001]
+
+  - id: T3-004
+    phase: PHASE 3
+    execution_mode: any
+    title: Compute BEFORE remediation metrics
+    owner: EPUB Analysis
+    priority: P0
+    depends_on: [T3-002, T3-003]
+    status: TODO
+    output:
+      - metrics.json BEFORE values
+    quality_gate: G3
+    definition_of_done:
+      - BEFORE metrics cover text, structure, TOC, image risk, and UX risk
+    regression_risk: low
+    related_issues: [ISSUE-001]
+
+  - id: T3-005
+    phase: PHASE 3
+    execution_mode: any
+    title: Log initial EPUB defects and quality risks
+    owner: EPUB Analysis
+    priority: P0
+    depends_on: [T3-004]
+    status: TODO
+    output:
+      - initial issue register population for EPUB
+    quality_gate: G3
+    definition_of_done:
+      - visible defects logged and prioritized
+    regression_risk: low
+    related_issues: [ISSUE-004, ISSUE-005, ISSUE-012]
+
+  - id: T4-001
+    phase: PHASE 4
+    execution_mode: any
+    title: Detect split-word artifacts
+    owner: Text Cleanup
+    priority: P0
+    depends_on: [T3-005]
+    status: TODO
+    output:
+      - split-word findings
+    quality_gate: G4
+    definition_of_done:
+      - findings include locations and confidence
+    regression_risk: medium
+    related_issues: []
+
+  - id: T4-002
+    phase: PHASE 4
+    execution_mode: any
+    title: Detect joined-word artifacts and missing spaces
+    owner: Text Cleanup
+    priority: P0
+    depends_on: [T3-005]
+    status: TODO
+    output:
+      - joined-word findings
+    quality_gate: G4
+    definition_of_done:
+      - findings include locations and confidence
+    regression_risk: medium
+    related_issues: []
+
+  - id: T4-003
+    phase: PHASE 4
+    execution_mode: any
+    title: Detect suspicious sentence and paragraph boundary corruption
+    owner: Text Cleanup
+    priority: P0
+    depends_on: [T3-005]
+    status: TODO
+    output:
+      - boundary corruption findings
+    quality_gate: G4
+    definition_of_done:
+      - suspicious joins are identified
+    regression_risk: medium
+    related_issues: []
+
+  - id: T4-004
+    phase: PHASE 4
+    execution_mode: any
+    title: Detect page furniture leakage into content
+    owner: Text Cleanup
+    priority: P1
+    depends_on: [T3-005]
+    status: TODO
+    output:
+      - page-furniture leakage findings
+    quality_gate: G4
+    definition_of_done:
+      - obvious layout residue identified
+    regression_risk: medium
+    related_issues: [ISSUE-009]
+
+  - id: T4-005
+    phase: PHASE 4
+    execution_mode: any
+    title: Route uncertain text cases into low-confidence queue
+    owner: Text Cleanup
+    priority: P0
+    depends_on: [T4-001, T4-002, T4-003, T4-004]
+    status: TODO
+    output:
+      - updated low-confidence queue
+    quality_gate: G4
+    definition_of_done:
+      - uncertain cases are recorded instead of guessed
+    regression_risk: low
+    related_issues: []
+
+  - id: T5-001
+    phase: PHASE 5
+    execution_mode: any
+    title: Apply rule-based high-confidence text cleanup
+    owner: Text Cleanup
+    priority: P0
+    depends_on: [T4-005]
+    status: TODO
+    output:
+      - cleaned text pass v1
+    quality_gate: G5
+    definition_of_done:
+      - obvious artifacts fixed without new obvious damage
+    regression_risk: high
+    related_issues: []
+
+  - id: T5-002
+    phase: PHASE 5
+    execution_mode: any
+    title: Apply AI-assisted medium-confidence cleanup under no-paraphrase policy
+    owner: Text Cleanup
+    priority: P1
+    depends_on: [T5-001]
+    status: TODO
+    output:
+      - cleaned text pass v2
+      - AI-assisted change log
+    quality_gate: G5
+    definition_of_done:
+      - medium-confidence cases improved without meaning drift
+    regression_risk: high
+    related_issues: []
+
+  - id: T5-003
+    phase: PHASE 5
+    execution_mode: any
+    title: Recompute text metrics and detect cleanup regressions
+    owner: QA / Regression
+    priority: P0
+    depends_on: [T5-001, T5-002]
+    status: TODO
+    output:
+      - text cleanup regression report
+    quality_gate: G5
+    definition_of_done:
+      - before and after text quality comparison stored
+    regression_risk: medium
+    related_issues: [ISSUE-012]
+
+  - id: T6-001
+    phase: PHASE 6
+    execution_mode: any
+    title: Classify content blocks into semantic types
+    owner: Structure & Semantics
+    priority: P0
+    depends_on: [T5-003]
+    status: TODO
+    output:
+      - semantic block map
+    quality_gate: G6
+    definition_of_done:
+      - title, subtitle, author, lead, body, caption, and related semantic blocks classified
+    regression_risk: high
+    related_issues: [ISSUE-005]
+
+  - id: T6-002
+    phase: PHASE 6
+    execution_mode: any
+    title: Reconstruct clean article structure
+    owner: Structure & Semantics
+    priority: P0
+    depends_on: [T6-001]
+    status: TODO
+    output:
+      - clean article openings
+    quality_gate: G6
+    definition_of_done:
+      - title is not merged with author, lead, or page number
+    regression_risk: high
+    related_issues: [ISSUE-005]
+
+  - id: T6-003
+    phase: PHASE 6
+    execution_mode: any
+    title: Segment articles versus special sections
+    owner: Structure & Semantics
+    priority: P0
+    depends_on: [T6-001]
+    status: TODO
+    output:
+      - segmentation map
+    quality_gate: G6
+    definition_of_done:
+      - special sections do not masquerade as normal articles
+    regression_risk: high
+    related_issues: [ISSUE-009]
+
+  - id: T6-004
+    phase: PHASE 6
+    execution_mode: any
+    title: Repair editorial, staff, and organizational sections for linear Kindle reading
+    owner: Structure & Semantics
+    priority: P1
+    depends_on: [T6-003]
+    status: TODO
+    output:
+      - repaired special sections
+    quality_gate: G6
+    definition_of_done:
+      - special sections are readable and semantically distinct
+    regression_risk: medium
+    related_issues: [ISSUE-009]
+
+  - id: T6-005
+    phase: PHASE 6
+    execution_mode: any
+    title: Detect semantic regressions
+    owner: QA / Regression
+    priority: P0
+    depends_on: [T6-002, T6-003, T6-004]
+    status: TODO
+    output:
+      - semantic regression report
+    quality_gate: G6
+    definition_of_done:
+      - semantic quality compared before and after
+    regression_risk: medium
+    related_issues: [ISSUE-012]
+
+  - id: T7-001
+    phase: PHASE 7
+    execution_mode: any
+    title: Generate TOC candidates from semantic model
+    owner: TOC & Navigation
+    priority: P0
+    depends_on: [T6-005]
+    status: TODO
+    output:
+      - candidate TOC list
+    quality_gate: G7
+    definition_of_done:
+      - candidates derived from true titles and meaningful top-level sections
+    regression_risk: medium
+    related_issues: []
+
+  - id: T7-002
+    phase: PHASE 7
+    execution_mode: any
+    title: Filter noisy, duplicate, and misleading TOC entries
+    owner: TOC & Navigation
+    priority: P0
+    depends_on: [T7-001]
+    status: TODO
+    output:
+      - cleaned TOC draft
+    quality_gate: G7
+    definition_of_done:
+      - ads, galleries, mastheads, credits, low-value duplicates, and merged strings removed unless justified
+    regression_risk: high
+    related_issues: [ISSUE-012]
+
+  - id: T7-003
+    phase: PHASE 7
+    execution_mode: any
+    title: Validate anchors and navigation targets
+    owner: TOC & Navigation
+    priority: P0
+    depends_on: [T7-002]
+    status: TODO
+    output:
+      - validated anchor map
+    quality_gate: G7
+    definition_of_done:
+      - no dead links
+    regression_risk: medium
+    related_issues: [ISSUE-012]
+
+  - id: T7-004
+    phase: PHASE 7
+    execution_mode: any
+    title: Rebuild nav.xhtml and finalize navigation
+    owner: TOC & Navigation
+    priority: P0
+    depends_on: [T7-003]
+    status: TODO
+    output:
+      - final TOC and navigation output
+    quality_gate: G7
+    definition_of_done:
+      - nav.xhtml rebuilt consistently with final structure
+    regression_risk: medium
+    related_issues: [ISSUE-012]
+
+  - id: T7-005
+    phase: PHASE 7
+    execution_mode: any
+    title: Measure TOC quality and detect navigation regressions
+    owner: QA / Regression
+    priority: P0
+    depends_on: [T7-004]
+    status: TODO
+    output:
+      - TOC regression report
+    quality_gate: G7
+    definition_of_done:
+      - TOC quality measured before and after
+    regression_risk: medium
+    related_issues: [ISSUE-012]
+
+  - id: T8-001
+    phase: PHASE 8
+    execution_mode: any
+    title: Classify image-based and layout-heavy elements
+    owner: Image & Layout
+    priority: P1
+    depends_on: [T6-003]
+    status: TODO
+    output:
+      - image and layout classification report
+    quality_gate: G8
+    definition_of_done:
+      - illustrations, diagrams, ads, galleries, and page-like layouts classified
+    regression_risk: medium
+    related_issues: [ISSUE-004]
+
+  - id: T8-002
+    phase: PHASE 8
+    execution_mode: any
+    title: Decide image vs reflow vs page-like handling
+    owner: Image & Layout
+    priority: P1
+    depends_on: [T8-001]
+    status: TODO
+    output:
+      - handling decision map
+    quality_gate: G8
+    definition_of_done:
+      - difficult elements have explicit handling strategy
+    regression_risk: medium
+    related_issues: [ISSUE-004]
+
+  - id: T8-003
+    phase: PHASE 8
+    execution_mode: any
+    title: Detect Kindle readability risks in images and layout-heavy sections
+    owner: Image & Layout
+    priority: P1
+    depends_on: [T8-002]
+    status: TODO
+    output:
+      - Kindle image and layout risk report
+    quality_gate: G8
+    definition_of_done:
+      - risks logged in issue register and metrics
+    regression_risk: medium
+    related_issues: [ISSUE-004]
+
+  - id: T9-001
+    phase: PHASE 9
+    execution_mode: any
+    title: Normalize CSS for stable Kindle reading
+    owner: CSS / Kindle UX
+    priority: P1
+    depends_on: [T6-005, T8-003]
+    status: TODO
+    output:
+      - normalized CSS baseline
+    quality_gate: G9
+    definition_of_done:
+      - CSS supports readable flow without aggressive redesign
+    regression_risk: medium
+    related_issues: []
+
+  - id: T9-002
+    phase: PHASE 9
+    execution_mode: any
+    title: Apply semantic styling for title, subtitle, author, lead, caption, quote, and figure
+    owner: CSS / Kindle UX
+    priority: P1
+    depends_on: [T9-001]
+    status: TODO
+    output:
+      - semantic styling layer
+    quality_gate: G9
+    definition_of_done:
+      - semantic blocks are visually differentiated in a Kindle-safe way
+    regression_risk: medium
+    related_issues: []
+
+  - id: T9-003
+    phase: PHASE 9
+    execution_mode: any
+    title: Apply Kindle-safe break and layout rules
+    owner: CSS / Kindle UX
+    priority: P1
+    depends_on: [T9-002]
+    status: TODO
+    output:
+      - layout safety rules
+    quality_gate: G9
+    definition_of_done:
+      - headings, captions, figures, and blocks behave safely under reflow
+    regression_risk: medium
+    related_issues: []
+
+  - id: T9-004
+    phase: PHASE 9
+    execution_mode: any
+    title: Perform Kindle UX sanity assessment
+    owner: QA / Regression
+    priority: P1
+    depends_on: [T9-003]
+    status: TODO
+    output:
+      - Kindle UX sanity report
+    quality_gate: G9
+    definition_of_done:
+      - reading flow checked under realistic conditions
+    regression_risk: medium
+    related_issues: [ISSUE-012]
+
+  - id: T10-001
+    phase: PHASE 10
+    execution_mode: any
+    title: Verify full end-to-end path from PDF input to final EPUB artifact
+    owner: QA / Regression
+    priority: P0
+    depends_on: [T2-003, T7-004, T9-003]
+    status: TODO
+    output:
+      - end-to-end validation report
+    quality_gate: G10
+    definition_of_done:
+      - path PDF to baseline EPUB to remediated EPUB to final output is traceable and repeatable
+    regression_risk: low
+    related_issues: [ISSUE-015, ISSUE-016]
+
+  - id: T10-002
+    phase: PHASE 10
+    execution_mode: any
+    title: Verify that final EPUB is distinct from baseline EPUB and improvements are measurable
+    owner: QA / Regression
+    priority: P0
+    depends_on: [T10-001]
+    status: TODO
+    output:
+      - measurable-improvement report
+    quality_gate: G10
+    definition_of_done:
+      - final EPUB is stored separately
+      - deltas are measurable
+    regression_risk: low
+    related_issues: [ISSUE-012]
+
+  - id: T10-003
+    phase: PHASE 10
+    execution_mode: any
+    title: Verify that end-to-end workflow does not depend on foreign frontend/runtime or any external project coupling
+    owner: QA / Regression
+    priority: P0
+    depends_on: [T10-001, T-2-008]
+    status: TODO
+    output:
+      - cross-project isolation validation report
+    quality_gate: G10
+    definition_of_done:
+      - end-to-end workflow proves no dependency on foreign frontend/runtime
+    regression_risk: high
+    related_issues: [ISSUE-013, ISSUE-014]
+
+  - id: T11-001
+    phase: PHASE 11
+    execution_mode: any
+    title: Run technical EPUB validation on final output
+    owner: QA / Regression
+    priority: P0
+    depends_on: [T10-003]
+    status: TODO
+    output:
+      - technical EPUB validation report
+    quality_gate: G11
+    definition_of_done:
+      - technical output status recorded
+    regression_risk: low
+    related_issues: [ISSUE-012]
+
+  - id: T11-002
+    phase: PHASE 11
+    execution_mode: any
+    title: Run full before and after regression comparison
+    owner: QA / Regression
+    priority: P0
+    depends_on: [T11-001]
+    status: TODO
+    output:
+      - full regression report
+    quality_gate: G11
+    definition_of_done:
+      - text, structure, TOC, image risk, and UX compared before and after
+    regression_risk: low
+    related_issues: [ISSUE-012]
+
+  - id: T11-003
+    phase: PHASE 11
+    execution_mode: any
+    title: Compute final score against premium Kindle standard
+    owner: QA / Regression
+    priority: P0
+    depends_on: [T11-002]
+    status: TODO
+    output:
+      - final score
+    quality_gate: G11
+    definition_of_done:
+      - score evidence stored in metrics and report
+    regression_risk: low
+    related_issues: [ISSUE-012]
+
+  - id: T11-004
+    phase: PHASE 11
+    execution_mode: any
+    title: Evaluate release readiness
+    owner: Release Readiness
+    priority: P0
+    depends_on: [T11-003]
+    status: TODO
+    output:
+      - READY or NOT READY verdict
+    quality_gate: G11
+    definition_of_done:
+      - verdict explicit and justified
+    regression_risk: low
+    related_issues: [ISSUE-013, ISSUE-014, ISSUE-015, ISSUE-016]
+
+  - id: T11-005
+    phase: PHASE 11
+    execution_mode: any
+    title: If NOT READY, generate prioritized continuation plan until premium Kindle standard is reached
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [T11-004]
+    status: TODO
+    output:
+      - continuation plan
+    quality_gate: G11
+    definition_of_done:
+      - next steps exist and are linked to backlog
+    regression_risk: low
+    related_issues: [ISSUE-013, ISSUE-014, ISSUE-015, ISSUE-016]
+
+  - id: T-1-005
+    phase: PHASE -1
+    execution_mode: any
+    title: Strengthen AGENTS.md with artifact lifecycle, isolation, and release-blocking rules
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [T-1-004]
+    status: DONE
+    output:
+      - AGENTS.md
+    quality_gate: G-1
+    definition_of_done:
+      - AGENTS.md explicitly defines project purpose, content safety, artifact lifecycle, isolation, release blocking, autonomous loop, and interruption recovery rules
+    regression_risk: low
+    related_issues: [ISSUE-002, ISSUE-013]
+
+  - id: T-1-006
+    phase: PHASE -1
+    execution_mode: any
+    title: Strengthen definition of done for evidence-backed quality work
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [T-1-005]
+    status: DONE
+    output:
+      - docs/definition_of_done.md
+    quality_gate: G-1
+    definition_of_done:
+      - global and per-class definition of done prevent evidence-free closure of quality-affecting work
+    regression_risk: low
+    related_issues: [ISSUE-002]
+
+  - id: T-1-007
+    phase: PHASE -1
+    execution_mode: any
+    title: Strengthen quality gates with hard release-blocking evidence requirements
+    owner: Quality Guardian / Release Gate
+    priority: P0
+    depends_on: [T-1-006]
+    status: DONE
+    output:
+      - docs/quality_gates.md
+    quality_gate: G-1
+    definition_of_done:
+      - gates define required evidence, pass and fail conditions, issue and FX behavior, and release-blocking impact
+    regression_risk: low
+    related_issues: [ISSUE-002, ISSUE-012, ISSUE-013]
+
+  - id: T-1-008
+    phase: PHASE -1
+    execution_mode: any
+    title: Strengthen workflow with explicit state machine and no-hidden-reset rules
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [T-1-007]
+    status: DONE
+    output:
+      - docs/workflow.md
+    quality_gate: G-1
+    definition_of_done:
+      - workflow encodes task and issue lifecycle, mandatory update order, stop and continue conditions, and overwrite prevention
+    regression_risk: low
+    related_issues: [ISSUE-002, ISSUE-022]
+
+  - id: T-1-009
+    phase: PHASE -1
+    execution_mode: any
+    title: Strengthen release criteria so READY requires passing evidence
+    owner: Release Readiness
+    priority: P0
+    depends_on: [T-1-008]
+    status: DONE
+    output:
+      - docs/release_criteria.md
+    quality_gate: G-1
+    definition_of_done:
+      - release criteria explicitly deny release unless tests exist, pass, premium audit passes, and no unresolved high or critical blockers remain
+    regression_risk: low
+    related_issues: [ISSUE-012, ISSUE-013]
+
+  - id: T-1-010
+    phase: PHASE -1
+    execution_mode: any
+    title: Normalize orchestration and agent authority model
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [T-1-009]
+    status: DONE
+    output:
+      - project_control/orchestration.md
+      - project_control/agents.yaml
+    quality_gate: G-1
+    definition_of_done:
+      - orchestration covers the full phase model, mandatory update order, authority boundaries, and stop conditions
+    regression_risk: low
+    related_issues: [ISSUE-002, ISSUE-013]
+
+  - id: T-1-011
+    phase: PHASE -1
+    execution_mode: any
+    title: Normalize progress tracking and interruption recovery discipline
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [T-1-010]
+    status: DONE
+    output:
+      - project_control/status_board.md
+      - project_control/iteration_report_template.md
+    quality_gate: G-1
+    definition_of_done:
+      - progress monitoring locations are explicit and an interrupted run can resume from repository control files without ambiguity
+    regression_risk: low
+    related_issues: [ISSUE-002]
+
+  - id: T-1-012
+    phase: PHASE -1
+    execution_mode: any
+    title: Normalize manifest-driven publication model and authoritative release metadata source
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [T-1-011]
+    status: DONE
+    output:
+      - project_control/publication_manifest.yaml
+      - project_control/publication_profiles.yaml
+      - project_control/input_registry.yaml
+    quality_gate: G-1
+    definition_of_done:
+      - publication_id, profile, release metadata, fixture quality, and release eligibility are tracked in a repository-local manifest
+      - document-like coverage gap is explicit rather than implicit
+    regression_risk: medium
+    related_issues: [ISSUE-024, ISSUE-025]
+
+  - id: T-1-013
+    phase: PHASE -1
+    execution_mode: any
+    title: Wire publication_id and release-mode metadata precedence into runtime and localhost tester
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [T-1-012]
+    status: DONE
+    output:
+      - kindlemaster_manifest.py
+      - kindlemaster_end_to_end.py
+      - kindlemaster_webapp.py
+      - kindlemaster_templates/index.html
+    quality_gate: G-1
+    definition_of_done:
+      - release mode requires publication_id plus manifest-backed metadata unless explicit overrides are provided
+      - localhost UI exposes publication_id and release-mode state
+    regression_risk: medium
+    related_issues: [ISSUE-024]
+
+  - id: T12-001
+    phase: PHASE 12
+    execution_mode: any
+    title: Establish release-blocking test matrix and smoke harness
+    owner: Quality Guardian / Release Gate
+    priority: P0
+    depends_on: [T-1-011]
+    status: DONE
+    output:
+      - project_control/test_matrix.yaml
+      - tests/kindlemaster_release_checks.py
+    quality_gate: G12
+    definition_of_done:
+      - the repository has a tracked test matrix and a runnable release-gate smoke checker against final EPUB artifacts
+    regression_risk: low
+    related_issues: [ISSUE-012]
+
+  - id: T12-002
+    phase: PHASE 12
+    execution_mode: any
+    title: Run structural and metadata release smoke checks on the current final EPUB
+    owner: Quality Guardian / Release Gate
+    priority: P0
+    depends_on: [T12-001]
+    status: DONE
+    output:
+      - project_control/phase12_release_gate_smoke.json
+      - project_control/phase12_release_gate_smoke.md
+    quality_gate: G12
+    definition_of_done:
+      - structural, metadata, nav, ncx, anchor, TOC-noise, and stylesheet smoke evidence exists for the active final EPUB
+    regression_risk: medium
+    related_issues: [ISSUE-012, ISSUE-013]
+
+  - id: T12-003
+    phase: PHASE 12
+    execution_mode: any
+    title: Add text artifact threshold tests
+    owner: QA / Regression
+    priority: P0
+    depends_on: [T12-001]
+    status: DONE
+    output:
+      - text artifact threshold tests
+      - tests/test_text_quality_thresholds.py
+    quality_gate: G12
+    definition_of_done:
+      - release-blocking thresholds exist for split words, joined words, broken boundaries, and furniture leakage
+    regression_risk: medium
+    related_issues: [ISSUE-021]
+
+  - id: T12-004
+    phase: PHASE 12
+    execution_mode: any
+    title: Add TOC and anchor release tests
+    owner: Quality Guardian / Release Gate
+    priority: P0
+    depends_on: [T12-002]
+    status: DONE
+    output:
+      - TOC and anchor release tests
+      - tests/test_navigation_quality.py
+    quality_gate: G12
+    definition_of_done:
+      - release-blocking tests cover dead links, duplicate low-value entries, page-label dominance, and author-only TOC noise
+    regression_risk: medium
+    related_issues: [ISSUE-018]
+
+  - id: T12-005
+    phase: PHASE 12
+    execution_mode: any
+    title: Add front matter and special-section release tests
+    owner: QA / Regression
+    priority: P0
+    depends_on: [T12-001]
+    status: DONE
+    output:
+      - front matter and special-section release tests
+      - tests/test_front_matter_quality.py
+    quality_gate: G12
+    definition_of_done:
+      - release-blocking tests cover front matter readability, TOC pollution, and organizational-section distinctness
+    regression_risk: medium
+    related_issues: [ISSUE-009, ISSUE-020, ISSUE-023]
+
+  - id: T12-006
+    phase: PHASE 12
+    execution_mode: any
+    title: Add typography and UX baseline tests
+    owner: QA / Regression
+    priority: P0
+    depends_on: [T12-001]
+    status: DONE
+    output:
+      - typography and UX baseline tests
+      - tests/test_typography_ux.py
+    quality_gate: G12
+    definition_of_done:
+      - line-height, title-author-lead distinction, first-screen entry quality, page-label noise, caption/figure sanity, and reading-flow checks exist
+    regression_risk: medium
+    related_issues: [ISSUE-012]
+
+  - id: T12-007
+    phase: PHASE 12
+    execution_mode: any
+    title: Add scenario tests for all supported publication profiles
+    owner: Quality Guardian / Release Gate
+    priority: P0
+    depends_on: [T12-001]
+    status: DONE
+    output:
+      - scenario test suite for document-like, book-like, report-like, magazine-like, and mixed-layout profiles
+      - tests/test_scenario_manifest.py
+    quality_gate: G12
+    definition_of_done:
+      - every supported publication profile has a scenario test or an explicit logged fixture blocker
+    regression_risk: high
+    related_issues: [ISSUE-001]
+
+  - id: T12-008
+    phase: PHASE 12
+    execution_mode: any
+    title: Add regression tests for known failure patterns
+    owner: QA / Regression
+    priority: P0
+    depends_on: [T12-001]
+    status: DONE
+    output:
+      - regression test suite
+      - tests/test_regressions.py
+    quality_gate: G12
+    definition_of_done:
+      - the known failures list is covered by executable regression checks
+    regression_risk: high
+    related_issues: [ISSUE-018, ISSUE-019, ISSUE-020, ISSUE-022, ISSUE-023]
+
+  - id: T12-009
+    phase: PHASE 12
+    execution_mode: any
+    title: Add cross-project isolation tests for Kindle Master versus foreign frontend/runtime boundaries
+    owner: Cross-Project Boundary
+    priority: P0
+    depends_on: [T12-001]
+    status: DONE
+    output:
+      - isolation test evidence
+      - tests/test_isolation_boundaries.py
+    quality_gate: G12
+    definition_of_done:
+      - Kindle Master-side checks exist for direct foreign frontend/runtime references, shared output paths, shared workspace linkage, and shared CI or build assumptions
+    regression_risk: high
+    related_issues: [ISSUE-013]
+
+  - id: T12-010
+    phase: PHASE 12
+    execution_mode: any
+    title: Enforce release-blocking test execution inside the pipeline
+    owner: Quality Guardian / Release Gate
+    priority: P0
+    depends_on: [T12-002, T12-003, T12-004, T12-005, T12-006, T12-007, T12-008, T12-009, T12-011, T12-012]
+    status: DONE
+    output:
+      - enforced release gate workflow
+      - kindlemaster_release_gate_enforcer.py
+      - project_control/phase12_release_gate_enforcement.json
+      - project_control/phase12_release_gate_enforcement.md
+    quality_gate: G12
+    definition_of_done:
+      - the pipeline cannot claim READY unless required test classes execute and pass or an explicit blocker is logged
+    regression_risk: high
+    related_issues: [ISSUE-012, ISSUE-013]
+
+  - id: T12-011
+    phase: PHASE 12
+    execution_mode: any
+    title: Add manifest-backed metadata release tests
+    owner: Quality Guardian / Release Gate
+    priority: P0
+    depends_on: [T12-001, T-1-013]
+    status: DONE
+    output:
+      - manifest-backed metadata tests
+      - tests/test_release_metadata.py
+    quality_gate: G12
+    definition_of_done:
+      - release-blocking tests assert that release-mode output uses manifest-backed or explicit override metadata instead of slug-like fallback metadata
+      - release smoke fails if creator remains Unknown or a technical slug leaks into human-facing title for a release-eligible publication
+    regression_risk: high
+    related_issues: [ISSUE-024]
+
+  - id: T12-012
+    phase: PHASE 12
+    execution_mode: any
+    title: Add release-candidate immutability and copy-up enforcement
+    owner: Quality Guardian / Release Gate
+    priority: P0
+    depends_on: [T12-001, T-1-013]
+    status: DONE
+    output:
+      - release-candidate immutability tests
+      - copy-up enforcement checks
+      - kindlemaster_release_candidate.py
+      - tests/test_release_candidate_immutability.py
+      - project_control/quality_loop_state.json
+    quality_gate: G12
+    definition_of_done:
+      - no stage can silently write release-candidate artifacts before gates pass
+      - release candidate creation is explicit, traceable, and distinct from baseline and working final output
+    regression_risk: medium
+    related_issues: [ISSUE-022]
+
+  - id: T12-013
+    phase: PHASE 12
+    execution_mode: any
+    title: Implement autonomous quality-loop driver and dual-baseline candidate evaluation
+    owner: Quality Guardian / Release Gate
+    priority: P0
+    depends_on: [T12-002, T12-003, T12-004, T12-005, T12-006, T12-008, T12-011]
+    status: DONE
+    output:
+      - kindlemaster_quality_loop.py
+      - project_control/quality_loop_state.json
+      - kindlemaster_runtime/output/reports/strefa-pmi-52-2026-quality-loop.json
+    quality_gate: G12
+    definition_of_done:
+      - the repo can build isolated candidate EPUB artifacts
+      - dual-baseline quality comparison is recorded before promotion
+      - candidates are rejected when there is no measurable improvement or tests fail
+    regression_risk: high
+    related_issues: [ISSUE-012, ISSUE-022]
+
+  - id: T12-014
+    phase: PHASE 12
+    execution_mode: any
+    title: Surface accepted-versus-candidate quality state in localhost tester
+    owner: Lead / Orchestrator
+    priority: P1
+    depends_on: [T12-013]
+    status: DONE
+    output:
+      - kindlemaster_webapp.py
+      - kindlemaster_templates/index.html
+    quality_gate: G12
+    definition_of_done:
+      - localhost UI shows accepted final score, premium gap, release blockers, and latest candidate-loop state
+      - candidate rejection or promotion is visible without opening raw JSON reports
+    regression_risk: medium
+    related_issues: [ISSUE-012]
+
+  - id: T13-001
+    phase: PHASE 13
+    execution_mode: any
+    title: Run full before and after regression comparison under hardened release gates
+    owner: QA / Regression
+    priority: P0
+    depends_on: [T12-010, R6-001]
+    status: DONE
+    output:
+      - project_control/phase13_full_regression_report.md
+      - reports/iteration_35_phase13_not_ready_and_continuation.md
+    quality_gate: G13
+    definition_of_done:
+      - a full regression report exists for text, structure, navigation, front matter, image risk, and UX
+    regression_risk: low
+    related_issues: [ISSUE-012, ISSUE-020, ISSUE-021, ISSUE-022, ISSUE-023]
+
+  - id: T13-002
+    phase: PHASE 13
+    execution_mode: any
+    title: Prove measurable improvement of the final EPUB over the baseline EPUB
+    owner: QA / Regression
+    priority: P0
+    depends_on: [T13-001]
+    status: DONE
+    output:
+      - project_control/phase13_measurable_improvement.md
+      - reports/iteration_35_phase13_not_ready_and_continuation.md
+    quality_gate: G13
+    definition_of_done:
+      - the final EPUB is distinct from baseline and its improvements and regressions are explicit
+    regression_risk: low
+    related_issues: [ISSUE-012, ISSUE-021]
+
+  - id: T13-003
+    phase: PHASE 13
+    execution_mode: any
+    title: Run premium Kindle audit
+    owner: Quality Guardian / Release Gate
+    priority: P0
+    depends_on: [T13-002]
+    status: DONE
+    output:
+      - project_control/phase13_premium_audit.md
+      - reports/iteration_35_phase13_not_ready_and_continuation.md
+    quality_gate: G13
+    definition_of_done:
+      - premium readability evidence exists for supported profiles in scope and failures are explicit
+    regression_risk: low
+    related_issues: [ISSUE-012, ISSUE-020, ISSUE-021, ISSUE-023]
+
+  - id: T13-004
+    phase: PHASE 13
+    execution_mode: any
+    title: Compute final score and release evidence package
+    owner: QA / Regression
+    priority: P0
+    depends_on: [T13-003]
+    status: DONE
+    output:
+      - project_control/phase13_release_evidence.md
+      - reports/iteration_35_phase13_not_ready_and_continuation.md
+    quality_gate: G13
+    definition_of_done:
+      - score is evidence-backed and release evidence is stored in repository artifacts
+    regression_risk: low
+    related_issues: [ISSUE-012]
+
+  - id: T13-005
+    phase: PHASE 13
+    execution_mode: any
+    title: Issue Quality Guardian release gate verdict
+    owner: Quality Guardian / Release Gate
+    priority: P0
+    depends_on: [T13-004]
+    status: DONE
+    output:
+      - project_control/phase13_quality_gate_verdict.md
+      - reports/iteration_35_phase13_not_ready_and_continuation.md
+      - reports/iteration_37_fx011_release_ready.md
+    quality_gate: G13
+    definition_of_done:
+      - quality guardian explicitly approves or blocks release based on evidence
+    regression_risk: low
+    related_issues: [ISSUE-012, ISSUE-013]
+
+  - id: T13-008
+    phase: PHASE 13
+    execution_mode: any
+    title: Create immutable release candidate from the approved final EPUB
+    owner: Quality Guardian / Release Gate
+    priority: P0
+    depends_on: [T13-005]
+    status: DONE
+    output:
+      - kindlemaster_runtime/output/release_candidate/
+      - release-candidate evidence record
+      - reports/iteration_37_fx011_release_ready.md
+    quality_gate: G13
+    definition_of_done:
+      - release candidate is copied from the approved final artifact only after the release gate passes
+      - release candidate path is immutable and traceable against baseline and final working output
+    regression_risk: medium
+    related_issues: [ISSUE-022]
+
+  - id: T13-006
+    phase: PHASE 13
+    execution_mode: any
+    title: Issue final release readiness verdict
+    owner: Release Readiness
+    priority: P0
+    depends_on: [T13-005]
+    status: DONE
+    output:
+      - project_control/phase13_release_readiness_verdict.md
+      - reports/iteration_35_phase13_not_ready_and_continuation.md
+      - reports/iteration_37_fx011_release_ready.md
+    quality_gate: G13
+    definition_of_done:
+      - release readiness verdict is explicit and justified
+    regression_risk: low
+    related_issues: [ISSUE-012, ISSUE-013]
+
+  - id: T13-007
+    phase: PHASE 13
+    execution_mode: any
+    title: If NOT READY, generate continuation tasks and continue automatically
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [T13-006]
+    status: DONE
+    output:
+      - project_control/phase13_continuation_plan.md
+      - backlog-linked continuation tasks
+      - reports/iteration_35_phase13_not_ready_and_continuation.md
+    quality_gate: G13
+    definition_of_done:
+      - if the project is not ready, continuation work exists in backlog and the autonomous loop can continue without ambiguity
+    regression_risk: low
+    related_issues: [ISSUE-012, ISSUE-013]
+
+  - id: FX-003
+    phase: REMEDIATION
+    execution_mode: any
+    title: Implement generic handling for image-heavy page-like sections in mixed-layout publications
+    owner: Image & Layout
+    priority: P1
+    depends_on: [T8-003]
+    status: DONE
+    output:
+      - kindlemaster_image_layout_audit.py
+      - tests/test_image_layout_quality.py
+      - tests/test_scenario_manifest.py
+      - project_control/phase_fx003_mixed_layout_image_guardrails.md
+      - reports/iteration_36_phase13_sync_and_generic_guardrails.md
+    quality_gate: G8
+    definition_of_done:
+      - page-like sections have a reusable handling strategy that reduces Kindle risk without breaking semantics
+    regression_risk: high
+    related_issues: [ISSUE-004]
+
+  - id: FX-004
+    phase: REMEDIATION
+    execution_mode: any
+    title: Physically or operationally isolate Kindle Master from foreign frontend/runtime root-level runtime and automation assumptions
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [T-2-008]
+    status: DONE
+    output:
+      - isolation remediation path
+    quality_gate: G-2
+    definition_of_done:
+      - Kindle Master execution can proceed without shared runtime, output, CI, cache, or automation assumptions from foreign frontend/runtime
+    regression_risk: high
+    related_issues: [ISSUE-013, ISSUE-014]
+
+  - id: FX-005
+    phase: REMEDIATION
+    execution_mode: any
+    title: Add at least one repo-local PDF fixture for end-to-end validation
+    owner: Input & Intake
+    priority: P0
+    depends_on: [T0-004]
+    status: DONE
+    output:
+      - repo-local PDF input fixture
+    quality_gate: G0
+    definition_of_done:
+      - at least one valid PDF exists in a registered Kindle Master path
+    regression_risk: low
+    related_issues: [ISSUE-015]
+
+  - id: FX-006
+    phase: REMEDIATION
+    execution_mode: any
+    title: Validate an isolated PDF to EPUB conversion toolchain for Kindle Master
+    owner: Baseline Conversion Strategy
+    priority: P0
+    depends_on: [T0-004]
+    status: DONE
+    output:
+      - validated PDF to EPUB toolchain
+    quality_gate: G2
+    definition_of_done:
+      - at least one repeatable Kindle Master-specific PDF to EPUB path is installed, documented, and locally validated
+    regression_risk: high
+    related_issues: [ISSUE-016]
+
+  - id: FX-007
+    phase: REMEDIATION
+    execution_mode: any
+    title: Restore missing legacy PDF toolkit capabilities into the current isolated Kindle Master repo
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: []
+    status: DONE
+    output:
+      - feature-parity audit and restoration plan
+      - explicit decision on which legacy mechanisms must be migrated from C:\Users\user\Desktop\kindleMaster
+      - restored or intentionally replaced A4 crop and PDF toolkit behaviors in the current repo
+    quality_gate: G10
+    definition_of_done:
+      - the current repo explicitly supports or intentionally replaces the legacy A4 crop workflow
+      - localhost testing shows visible output paths and downloadable artifacts after conversion
+      - the source of truth for Kindle Master runtime lives in the current repo rather than in an external legacy folder
+    regression_risk: high
+    related_issues: [ISSUE-017]
+
+  - id: FX-008
+    phase: REMEDIATION
+    execution_mode: pdf_and_epub
+    title: Repair final navigation generation so nav.xhtml and toc.ncx use valid package-relative paths
+    owner: TOC & Navigation
+    priority: P0
+    depends_on: [R1-003]
+    status: DONE
+    output:
+      - kindlemaster_runtime/output/final_epub/strefa-pmi-52-2026.epub
+      - project_control/phase_r1_integrity_validation.md
+    quality_gate: GR2
+    definition_of_done:
+      - final navigation uses spine-valid relative paths
+      - dead links caused by dropped xhtml prefixes are removed
+    regression_risk: high
+    related_issues: [ISSUE-018]
+
+  - id: FX-009
+    phase: REMEDIATION
+    execution_mode: pdf_and_epub
+    title: Repair final stylesheet lifecycle so packaged CSS matches referenced hrefs
+    owner: CSS / Kindle UX
+    priority: P0
+    depends_on: [R1-003]
+    status: DONE
+    output:
+      - kindlemaster_runtime/output/final_epub/strefa-pmi-52-2026.epub
+      - kindlemaster_runtime/output/reports/strefa-pmi-52-2026-end-to-end.json
+    quality_gate: GR1
+    definition_of_done:
+      - final XHTML, title, and nav reference an existing packaged stylesheet
+      - final Kindle CSS is no longer silently skipped
+    regression_risk: high
+    related_issues: [ISSUE-019]
+
+  - id: FX-010
+    phase: REMEDIATION
+    execution_mode: pdf_and_epub
+    title: Constrain heading promotion and preserve title plus front-matter semantics during final cleanup
+    owner: Structure & Semantics
+    priority: P0
+    depends_on: [R1-003]
+    status: DONE
+    output:
+      - safer semantic promotion rules
+      - preserved title and front-matter handling
+      - project_control/phase_r2_semantic_recovery_pass1.md
+      - kindlemaster_runtime/output/final_epub/strefa-pmi-52-2026.epub
+    quality_gate: GR2
+    definition_of_done:
+      - page labels, names, and organizational residues are no longer promoted as article headings by default
+      - title.xhtml and special sections are preserved or handled by dedicated logic
+    regression_risk: high
+    related_issues: [ISSUE-020]
+
+  - id: FX-011
+    phase: REMEDIATION
+    execution_mode: pdf_and_epub
+    title: Split destructive finalizer responsibilities and add a final-output proof gate
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [R1-003]
+    status: DONE
+    output:
+      - safer final-stage execution design
+      - explicit final-output proof gate
+      - kindlemaster_quality_loop.py
+      - project_control/quality_loop_state.json
+      - kindlemaster_runtime/output/reports/strefa-pmi-52-2026-quality-loop.json
+      - project_control/phase_fx011_stage_decomposition_pass1.md
+      - project_control/phase_fx011_stage_decomposition_pass2.md
+      - project_control/phase_fx011_stage_artifact_manifest.md
+      - project_control/phase_fx011_stage_decomposition_pass3.md
+      - project_control/phase_fx011_stage_decomposition_pass4.md
+      - tests/test_finalizer_stage_proofs.py
+      - reports/iteration_25_fx011_stage_runners_and_test_isolation.md
+      - reports/iteration_28_fx011_stage_proofs_and_r3_false_positive_suppression.md
+      - reports/iteration_30_front_matter_boundary_and_stage_artifacts.md
+      - reports/iteration_32_fx011_semantic_plan_apply_split.md
+      - reports/iteration_37_fx011_release_ready.md
+    quality_gate: GR1
+    definition_of_done:
+      - cleanup, semantic promotion, navigation rebuild, and packaging are no longer one unchecked destructive bundle
+      - final artifact quality is proven before acceptance
+    regression_risk: high
+    related_issues: [ISSUE-022]
+
+  - id: FX-012
+    phase: REMEDIATION
+    execution_mode: pdf_and_epub
+    title: Add continuation-aware article-opening recovery for page-split magazine XHTML
+    owner: Structure & Semantics
+    priority: P0
+    depends_on: [R2-002]
+    status: DONE
+    output:
+      - continuation-aware article opening rules
+      - reduced under-selection of true article starts
+      - project_control/phase_fx012_magazine_opening_recovery.md
+      - reports/iteration_24_magazine_guard_recovery.md
+    quality_gate: GR2
+    definition_of_done:
+      - continued pages no longer masquerade as fresh article openings
+      - true article starts split across page-based XHTML are recovered more reliably
+    regression_risk: high
+    related_issues: [ISSUE-023]
+
+  - id: FX-013
+    phase: REMEDIATION
+    execution_mode: pdf_and_epub
+    title: Replace opaque slug title and Unknown creator in final output metadata with manifest-backed publication metadata
+    owner: EPUB Analysis
+    priority: P0
+    depends_on: [T12-002]
+    status: DONE
+    output:
+      - manifest-backed release metadata path
+      - final EPUB with non-slug human title and non-Unknown creator when evidence exists
+      - project_control/phase12_release_gate_smoke.json
+    quality_gate: G13
+    definition_of_done:
+      - release smoke no longer fails on opaque title or Unknown creator for the active release-eligible publication
+      - metadata sourcing is manifest-backed, documented, and traceable
+    regression_risk: high
+    related_issues: [ISSUE-024]
+
+  - id: FX-014
+    phase: REMEDIATION
+    execution_mode: any
+    title: Add missing document-like fixture so required scenario tests can exist for every supported profile
+    owner: Input & Intake
+    priority: P0
+    depends_on: [T12-007]
+    status: DONE
+    output:
+      - samples/pdf/cover-letter-iwo-2026.pdf
+      - kindlemaster_runtime/output/final_epub/cover-letter-iwo-2026.epub
+      - expanded scenario coverage in publication manifest and input registry
+    quality_gate: G12
+    definition_of_done:
+      - the repo contains a real document-like fixture or an explicit human blocker is logged
+    regression_risk: medium
+    related_issues: [ISSUE-001, ISSUE-025]
+
+  - id: FX-015
+    phase: REMEDIATION
+    execution_mode: pdf_and_epub
+    title: Make conversion coverage, profile intent, and manifest linkage explicit in runtime outputs and remove silent sample references
+    owner: Lead / Orchestrator
+    priority: P0
+    depends_on: [T-1-013]
+    status: DONE
+    output:
+      - kindlemaster_pdf_to_epub.py
+      - kindlemaster_end_to_end.py
+      - kindlemaster_webapp.py
+      - kindlemaster_templates/index.html
+      - tests/test_conversion_traceability.py
+      - project_control/phase_fx015_conversion_coverage_and_manifest_clarity.md
+      - reports/iteration_26_conversion_coverage_and_manifest_clarity.md
+    quality_gate: G10
+    definition_of_done:
+      - current conversion output proves source, baseline, and final page coverage
+      - requested and applied profile or OCR intent are explicit in runtime reports
+      - no sample publication_id is silently auto-applied on upload
+      - repository benchmark state is clearly separated from the current run in localhost UI
+    regression_risk: high
+    related_issues: [ISSUE-030]
+
+  - id: FX-016
+    phase: REMEDIATION
+    execution_mode: pdf_and_epub
+    title: Recover representative bookmark and TOC labels so final nav entries reflect real section titles instead of truncated fragments
+    owner: TOC & Navigation
+    priority: P0
+    depends_on: [FX-011, FX-012]
+    status: DONE
+    output:
+      - kindle_semantic_cleanup.py
+      - kindlemaster_release_gate.py
+      - kindlemaster_quality_score.py
+      - tests/test_navigation_quality.py
+      - tests/test_scenario_manifest.py
+      - project_control/phase_fx016_nav_label_quality_recovery.md
+      - reports/iteration_27_nav_label_quality_recovery.md
+    quality_gate: G7
+    definition_of_done:
+      - nav.xhtml and toc.ncx no longer contain truncated or dangling bookmark labels on tracked guard publications
+      - representative article labels survive for magazine-like openings and book-like record headings
+      - release smoke and pytest explicitly block reintroduction of suspicious nav labels
+    regression_risk: high
+    related_issues: [ISSUE-032]
+
+  - id: FX-017
+    phase: REMEDIATION
+    execution_mode: pdf_and_epub
+    title: Recover generic inline ordered lists from PDF blocks and block flattened answer-choice paragraphs in quality gates
+    owner: Baseline Conversion Strategy
+    priority: P0
+    depends_on: [FX-015]
+    status: DONE
+    output:
+      - kindlemaster_structured_lists.py
+      - kindlemaster_pdf_to_epub.py
+      - kindlemaster_release_gate.py
+      - tests/test_pdf_list_normalization.py
+      - tests/test_regressions.py
+      - project_control/phase_fx017_inline_lists_and_premium_reporting.md
+      - reports/iteration_29_inline_lists_premium_reporting_and_versioning.md
+    quality_gate: G10
+    definition_of_done:
+      - generic sequential inline lists such as `A. ... B. ... C. ...` and `1. ... 2. ... 3. ...` are rendered as distinct ordered items in baseline XHTML
+      - release smoke measures flattened inline ordered list residue and pytest blocks regressions
+      - no publication-specific token or word exceptions are required
+    regression_risk: high
+    related_issues: [ISSUE-033]
+
+  - id: FX-018
+    phase: REMEDIATION
+    execution_mode: pdf_and_epub
+    title: Surface per-run premium assessment and major-minor version visibility for every conversion
+    owner: Quality Guardian / Release Gate
+    priority: P0
+    depends_on: [FX-017, T12-013]
+    status: DONE
+    output:
+      - kindlemaster_quality_score.py
+      - kindlemaster_end_to_end.py
+      - kindlemaster_webapp.py
+      - kindlemaster_templates/index.html
+      - kindlemaster_versioning.py
+      - VERSION
+      - tests/test_conversion_traceability.py
+      - kindlemaster_release_gate_enforcer.py
+      - kindlemaster_quality_loop.py
+      - kindlemaster_release_candidate.py
+      - project_control/phase_fx017_inline_lists_and_premium_reporting.md
+      - reports/iteration_29_inline_lists_premium_reporting_and_versioning.md
+    quality_gate: G12
+    definition_of_done:
+      - every end-to-end run records a machine-readable and human-readable premium assessment with score 1-10 plus strengths and weaknesses
+      - localhost surfaces the same premium assessment for the current run and accepted final state
+      - visible application versioning is normalized to `x.y`
+    regression_risk: medium
+    related_issues: [ISSUE-034]
+
+  - id: FX-019
+    phase: REMEDIATION
+    execution_mode: any
+    title: Remove publication-specific quality-guard overfit and replace it with generic navigation and image-layout gates across the manifest corpus
+    owner: Quality Guardian / Release Gate
+    priority: P0
+    depends_on: [FX-016, FX-003, T12-008]
+    status: DONE
+    output:
+      - kindlemaster_image_layout_audit.py
+      - kindlemaster_release_gate.py
+      - kindlemaster_quality_score.py
+      - tests/test_scenario_manifest.py
+      - tests/test_image_layout_quality.py
+      - project_control/phase_fx019_generic_guard_derisking.md
+      - reports/iteration_36_phase13_sync_and_generic_guardrails.md
+    quality_gate: G13
+    definition_of_done:
+      - executable quality guards no longer rely on publication-specific words or labels
+      - nav quality and page-like image-layout protection are enforced generically across the manifest-backed corpus
+      - premium claims are backed by generic gates rather than sample memorization
+    regression_risk: high
+    related_issues: [ISSUE-004, ISSUE-020, ISSUE-035]
+

@@ -1,0 +1,108 @@
+version: 1
+last_updated: 2026-04-12
+project: kindle-master
+release_blocking: true
+test_classes:
+  - id: T12-STRUCT
+    class: structural
+    status: exists_partial
+    evidence:
+      - tests/kindlemaster_release_checks.py
+      - project_control/phase12_release_gate_smoke.json
+    required_checks:
+      - no_opaque_or_slug_human_title
+      - creator_not_unknown_for_release
+      - valid_h1_presence_where_applicable
+      - no_title_author_lead_page_merge
+      - special_sections_not_articles
+      - valid_nav_paths
+      - valid_ncx_paths
+      - valid_anchors
+  - id: T12-TEXT
+    class: text_quality
+    status: missing_full_suite
+    required_checks:
+      - split_word_threshold
+      - joined_word_threshold
+      - broken_boundary_threshold
+      - furniture_leak_threshold
+  - id: T12-TOC
+    class: toc
+    status: exists_partial
+    evidence:
+      - tests/kindlemaster_release_checks.py
+      - project_control/phase12_release_gate_smoke.json
+    required_checks:
+      - no_dead_links
+      - no_duplicate_low_value_entries
+      - no_page_label_dominance
+      - no_author_only_noise
+  - id: T12-FM
+    class: front_matter_special_sections
+    status: missing_full_suite
+    required_checks:
+      - front_matter_readability_threshold
+      - no_pollution_of_article_flow
+      - organizational_sections_semantically_distinct
+  - id: T12-META
+    class: metadata
+    status: exists_partial
+    evidence:
+      - tests/kindlemaster_release_checks.py
+      - project_control/phase12_release_gate_smoke.json
+    required_checks:
+      - no_hash_or_slug_title
+      - creator_not_unknown
+  - id: T12-UX
+    class: typography_ux
+    status: missing_full_suite
+    required_checks:
+      - line_height_baseline
+      - title_author_lead_distinction
+      - first_screen_article_entry_quality
+      - page_label_noise_threshold
+      - caption_figure_relation_sanity
+      - kindle_reading_flow_sanity
+  - id: T12-SCENARIO
+    class: scenario
+    status: blocked_missing_fixtures
+    required_profiles:
+      - document_like
+      - book_like
+      - report_like
+      - magazine_like
+      - mixed_layout
+    current_coverage:
+      - report_like
+      - mixed_layout
+  - id: T12-REGRESSION
+    class: regression
+    status: missing_full_suite
+    required_checks:
+      - missing_h1
+      - destructive_heading_promotion
+      - title_author_lead_merge
+      - broken_nav_relative_paths
+      - broken_ncx_relative_paths
+      - non_packaged_stylesheet_reference
+      - metadata_hash_exposure
+      - unknown_creator
+      - front_matter_toc_pollution
+      - overwritten_fixes
+      - finalizer_monolith
+      - article_opening_loss_across_page_split_xhtml
+  - id: T12-ISO
+    class: isolation
+    status: missing_full_suite
+    required_checks:
+      - no_direct_foreign_frontend_reference
+      - no_shared_output_path
+      - no_shared_workspace_package_linkage
+      - no_shared_ci_or_build_assumption
+  - id: T12-ENFORCEMENT
+    class: release_gate_enforcement
+    status: exists_partial
+    evidence:
+      - docs/quality_gates.md
+      - docs/release_criteria.md
+      - AGENTS.md

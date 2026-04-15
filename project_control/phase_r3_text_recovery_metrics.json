@@ -1,0 +1,98 @@
+[
+  {
+    "publication_id": "cover-letter-iwo-2026",
+    "profile": "document_like",
+    "baseline_weighted_score": 8.65,
+    "final_weighted_score": 9.7,
+    "weighted_delta": 1.05,
+    "baseline_text_score": 10.0,
+    "final_text_score": 10.0,
+    "text_delta": 0.0,
+    "baseline_split": 0,
+    "final_split": 0,
+    "baseline_joined": 0,
+    "final_joined": 0,
+    "baseline_boundary": 1,
+    "final_boundary": 0,
+    "baseline_failed_checks": [
+      "creator_not_unknown_for_release",
+      "no_page_label_dominance"
+    ],
+    "final_failed_checks": [
+      "creator_not_unknown_for_release"
+    ],
+    "visible_improvement_pass": true
+  },
+  {
+    "publication_id": "strefa-pmi-52-2026",
+    "profile": "report_like",
+    "baseline_weighted_score": 7.254,
+    "final_weighted_score": 10.0,
+    "weighted_delta": 2.746,
+    "baseline_text_score": 8.02,
+    "final_text_score": 10.0,
+    "text_delta": 1.98,
+    "baseline_split": 0,
+    "final_split": 0,
+    "baseline_joined": 0,
+    "final_joined": 0,
+    "baseline_boundary": 43,
+    "final_boundary": 0,
+    "baseline_failed_checks": [
+      "special_sections_not_articles",
+      "no_page_label_dominance"
+    ],
+    "final_failed_checks": [],
+    "visible_improvement_pass": true
+  },
+  {
+    "publication_id": "newsweek-food-living-2026-01",
+    "profile": "magazine_like",
+    "baseline_weighted_score": 7.45,
+    "final_weighted_score": 10.0,
+    "weighted_delta": 2.55,
+    "baseline_text_score": 7.0,
+    "final_text_score": 10.0,
+    "text_delta": 3.0,
+    "baseline_split": 0,
+    "final_split": 0,
+    "baseline_joined": 0,
+    "final_joined": 0,
+    "baseline_boundary": 98,
+    "final_boundary": 0,
+    "baseline_failed_checks": [
+      "creator_not_unknown_for_release",
+      "special_sections_not_articles",
+      "no_page_label_dominance"
+    ],
+    "final_failed_checks": [
+      "creator_not_unknown_for_release"
+    ],
+    "visible_improvement_pass": true
+  },
+  {
+    "publication_id": "chess-5334-problems-combinations-and-games",
+    "profile": "book_like",
+    "baseline_weighted_score": 7.05,
+    "final_weighted_score": 10.0,
+    "weighted_delta": 2.95,
+    "baseline_text_score": 7.0,
+    "final_text_score": 10.0,
+    "text_delta": 3.0,
+    "baseline_split": 0,
+    "final_split": 0,
+    "baseline_joined": 0,
+    "final_joined": 0,
+    "baseline_boundary": 4161,
+    "final_boundary": 0,
+    "baseline_failed_checks": [
+      "creator_not_unknown_for_release",
+      "special_sections_not_articles",
+      "no_page_label_dominance"
+    ],
+    "final_failed_checks": [
+      "creator_not_unknown_for_release"
+    ],
+    "visible_improvement_pass": true
+  }
+]

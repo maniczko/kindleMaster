@@ -1,0 +1,101 @@
+name: FX remediation task
+description: Create a remediation task with an FX-* identifier for a defined corrective action.
+title: "[FX] FX-"
+labels: ["type:task", "track:fx"]
+body:
+  - type: input
+    id: fx_id
+    attributes:
+      label: FX ID
+      placeholder: FX-001
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - repo
+        - frontend
+        - data
+        - integrations
+        - docs
+        - qa
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - P0
+        - P1
+        - P2
+        - P3
+    validations:
+      required: true
+  - type: input
+    id: owner_role
+    attributes:
+      label: Owner role
+      placeholder: Repo Maintainer
+    validations:
+      required: true
+  - type: dropdown
+    id: milestone
+    attributes:
+      label: Proposed milestone
+      options:
+        - M1 GitHub Operating Model
+        - M2 Verification Foundation
+        - M3 Beta Readiness
+        - M4 Release Candidate
+    validations:
+      required: true
+  - type: textarea
+    id: source_links
+    attributes:
+      label: Source links
+      description: Link the source bug, register item, backlog task, queue entry, or gap report finding.
+      placeholder: BUG-001, SETUP-018, LC-002
+    validations:
+      required: true
+  - type: textarea
+    id: remediation_statement
+    attributes:
+      label: Remediation statement
+      description: State the corrective action precisely.
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+    validations:
+      required: true
+  - type: textarea
+    id: outputs
+    attributes:
+      label: Expected outputs
+      description: Name the exact files, settings, or records that should exist when this remediation is complete.
+    validations:
+      required: true
+  - type: textarea
+    id: quality_gates
+    attributes:
+      label: Quality gates
+      placeholder: QG-01, QG-02, QG-03, QG-06
+    validations:
+      required: true
+  - type: textarea
+    id: definition_of_done
+    attributes:
+      label: Definition of done
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Expected evidence
+    validations:
+      required: true

@@ -1,0 +1,2066 @@
+{
+  "corpus": {
+    "inputs_path": "C:\\Users\\user\\Desktop\\quiz\\quiz\\samples\\epub",
+    "analysis_date": "2026-04-11",
+    "files": [
+      {
+        "file_name": "9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411 (3).epub",
+        "title": "Czasem",
+        "publication_type": "report_like"
+      },
+      {
+        "file_name": "strefa-pmi-52-2026.epub",
+        "title": "cf94c8a45045454cbd544be959d7c4dd",
+        "publication_type": "report_like"
+      },
+      {
+        "file_name": "tactits (2).epub",
+        "title": "Chess: 5334 Problems, Combinations and Games",
+        "publication_type": "mixed_layout"
+      }
+    ],
+    "totals": {
+      "epub_files": 3,
+      "xhtml_files": 107,
+      "css_files": 3,
+      "images": 5509,
+      "split_words_count": 57,
+      "joined_words_count": 0,
+      "suspicious_paragraph_joins_count": 16820,
+      "h1_count": 54,
+      "suspicious_titles_count": 13,
+      "toc_entries_count": 79,
+      "duplicate_noisy_toc_entries_count": 15,
+      "risky_images_count": 5441
+    },
+    "publication_types": {
+      "report_like": 2,
+      "mixed_layout": 1
+    },
+    "notes": [
+      "baseline metrics are heuristic and intended for before/after comparison, not absolute editorial truth",
+      "notation-heavy or page-like corpora can inflate suspicious paragraph and layout risk counts"
+    ]
+  },
+  "models": [
+    {
+      "file_name": "9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411 (3).epub",
+      "input_path": "C:\\Users\\user\\Desktop\\quiz\\quiz\\samples\\epub\\9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411 (3).epub",
+      "title": "Czasem",
+      "creators": [
+        "Unknown"
+      ],
+      "language": "pl",
+      "package_document": "EPUB/content.opf",
+      "nav_document": "EPUB/nav.xhtml",
+      "ncx_document": "EPUB/toc.ncx",
+      "manifest_count": 134,
+      "spine_count": 53,
+      "content_doc_count": 53,
+      "css_count": 1,
+      "image_asset_count": 79,
+      "toc_entry_count": 39,
+      "publication_type": "report_like",
+      "publication_type_justification": "structured multi-section document with balanced text and navigation",
+      "spine_order": [
+        "chapter_51",
+        "chapter_0",
+        "chapter_1",
+        "chapter_2",
+        "chapter_3",
+        "chapter_4",
+        "chapter_5",
+        "chapter_6",
+        "chapter_7",
+        "chapter_8",
+        "chapter_9",
+        "chapter_10",
+        "chapter_11",
+        "chapter_12",
+        "chapter_13",
+        "chapter_14",
+        "chapter_15",
+        "chapter_16",
+        "chapter_17",
+        "chapter_18",
+        "chapter_19",
+        "chapter_20",
+        "chapter_21",
+        "chapter_22",
+        "chapter_23",
+        "chapter_24",
+        "chapter_25",
+        "chapter_26",
+        "chapter_27",
+        "chapter_28",
+        "chapter_29",
+        "chapter_30",
+        "chapter_31",
+        "chapter_32",
+        "chapter_33",
+        "chapter_34",
+        "chapter_35",
+        "chapter_36",
+        "chapter_37",
+        "chapter_38",
+        "chapter_39",
+        "chapter_40",
+        "chapter_41",
+        "chapter_42",
+        "chapter_43",
+        "chapter_44",
+        "chapter_45",
+        "chapter_46",
+        "chapter_47",
+        "chapter_48",
+        "chapter_49",
+        "chapter_50",
+        "nav"
+      ],
+      "top_level_toc_entries": [
+        "Piek\u0142o, Raj I Polska",
+        "Galeria",
+        "Nie t\u0119skni za Francj\u0105 Kr\u00f3wki z walizki babci",
+        "z a k o c h a n i w p o l s c e",
+        "Nie T\u0119skni Za Francj\u0105",
+        "Polskie Serce Kurta",
+        "Galeria",
+        "Jak opowiada\u0107 o jedzeniu \u0141\u0105cz\u0105 nas g\u0142o\u015bne rozmowy",
+        "z a k o c h a n i w p o l s c e",
+        "Galeria",
+        "Wi\u0119cej ni\u017c praca Gotowanie to moje \u017cycie",
+        "z a k o c h a n i w p o l s c e",
+        "Galeria",
+        "z a k o c h a n i w p o l s c e",
+        "Na popraw\u0119 nastroju Wszyscy t\u0119sknimy za domowymi smakami"
+      ],
+      "content_documents": [
+        {
+          "href": "cover.xhtml",
+          "anchor_count": 0,
+          "h1_count": 0,
+          "image_references": 1,
+          "text_length": 0,
+          "sample_headings": []
+        },
+        {
+          "href": "chapter_001.xhtml",
+          "anchor_count": 9,
+          "h1_count": 1,
+          "image_references": 6,
+          "text_length": 3454,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Piek\u0142o, Raj I Polska"
+            },
+            {
+              "tag": "h3",
+              "text": "WIOSENNE PRZEBUDZENIE"
+            },
+            {
+              "tag": "h3",
+              "text": "ZWYCI\u0118ZCA | Najlepszy Hotel Wellness w Polsce"
+            },
+            {
+              "tag": "h3",
+              "text": "Jacek Tomczuk"
+            },
+            {
+              "tag": "h2",
+              "text": "JACEK TOMCZUK REDAKTOR PROWADZ\u0104CY"
+            }
+          ]
+        },
+        {
+          "href": "chapter_002.xhtml",
+          "anchor_count": 2,
+          "h1_count": 1,
+          "image_references": 3,
+          "text_length": 2702,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Material sponsorowany - Joanna Skolimowska 64 MI\u0118SO"
+            }
+          ]
+        },
+        {
+          "href": "chapter_003.xhtml",
+          "anchor_count": 2,
+          "h1_count": 1,
+          "image_references": 1,
+          "text_length": 7,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Galeria"
+            }
+          ]
+        },
+        {
+          "href": "chapter_004.xhtml",
+          "anchor_count": 4,
+          "h1_count": 1,
+          "image_references": 1,
+          "text_length": 1219,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Zakochani W Polsce 6 Michel Moran. Ka\u017cdy Kucharz Lubi Brawa. Ja Te\u017c 12 Pascal Brodnicki. Kr\u00f3wki Z Walizki Babci 18 Kurt Scheller. Czasem Ojciec, Czasem Dra\u0144 24 Matteo Brunetti. \u0141\u0105cz\u0105 Nas G\u0142o\u015bne Rozmowy 28 Martin Gimenez Castro. Gotowanie To Moje \u017bycie 34 Andrea Camastra. Polska Zupami Stoi 38 Mateusz Gessler. Wszyscy T\u0119sknimy Za Domowymi Smakami 42 Chef Lorek. Dam Si\u0119 Pokroi\u0107 Za Krem\u00f3wk\u0119 46 Kevin Aiston. Kucharz Nigdy Nie Jest G\u0142odny 50 Isabel Balderas. Wi\u0119cej Ni\u017c Sombrero 54 Theofilos Vafidis. Ouzo Z Widokiem Na Morze! 58 Pongthep Aroonsang. Polacy Lubi\u0105 \u0141agodnie 60 Pierogi. Wi\u0119cej Ni\u017c Ciasto 64 Mi\u0119so"
+            }
+          ]
+        },
+        {
+          "href": "chapter_005.xhtml",
+          "anchor_count": 6,
+          "h1_count": 1,
+          "image_references": 3,
+          "text_length": 3595,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Material sponsorowany - 2001"
+            }
+          ]
+        },
+        {
+          "href": "chapter_006.xhtml",
+          "anchor_count": 3,
+          "h1_count": 1,
+          "image_references": 0,
+          "text_length": 4127,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Material sponsorowany - 2001 \u2014 ci\u0105g dalszy"
+            }
+          ]
+        },
+        {
+          "href": "chapter_007.xhtml",
+          "anchor_count": 4,
+          "h1_count": 1,
+          "image_references": 1,
+          "text_length": 453,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Nie t\u0119skni za Francj\u0105 Kr\u00f3wki z walizki babci"
+            }
+          ]
+        },
+        {
+          "href": "chapter_008.xhtml",
+          "anchor_count": 3,
+          "h1_count": 1,
+          "image_references": 0,
+          "text_length": 5038,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "z a k o c h a n i w p o l s c e"
+            }
+          ]
+        },
+        {
+          "href": "chapter_009.xhtml",
+          "anchor_count": 12,
+          "h1_count": 1,
+          "image_references": 4,
+          "text_length": 17920,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Nie T\u0119skni Za Francj\u0105"
+            },
+            {
+              "tag": "h3",
+              "text": "SK\u0141ADNIKI"
+            },
+            {
+              "tag": "h3",
+              "text": "REKLAMA"
+            },
+            {
+              "tag": "h3",
+              "text": "TEKST AGNIESZKA \u017b\u0104D\u0141O"
+            }
+          ]
+        },
+        {
+          "href": "chapter_010.xhtml",
+          "anchor_count": 5,
+          "h1_count": 1,
+          "image_references": 1,
+          "text_length": 2967,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Polskie Serce Kurta"
+            },
+            {
+              "tag": "h3",
+              "text": "KARMEL:"
+            },
+            {
+              "tag": "h3",
+              "text": "SPOS\u00d3BPRZYGOTOWANIA"
+            }
+          ]
+        },
+        {
+          "href": "chapter_011.xhtml",
+          "anchor_count": 2,
+          "h1_count": 1,
+          "image_references": 1,
+          "text_length": 7,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Galeria"
+            }
+          ]
+        },
+        {
+          "href": "chapter_012.xhtml",
+          "anchor_count": 3,
+          "h1_count": 1,
+          "image_references": 0,
+          "text_length": 2678,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Jak opowiada\u0107 o jedzeniu \u0141\u0105cz\u0105 nas g\u0142o\u015bne rozmowy"
+            }
+          ]
+        },
+        {
+          "href": "chapter_013.xhtml",
+          "anchor_count": 4,
+          "h1_count": 1,
+          "image_references": 0,
+          "text_length": 9159,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "z a k o c h a n i w p o l s c e"
+            }
+          ]
+        },
+        {
+          "href": "chapter_014.xhtml",
+          "anchor_count": 2,
+          "h1_count": 1,
+          "image_references": 1,
+          "text_length": 7,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Galeria"
+            }
+          ]
+        },
+        {
+          "href": "chapter_015.xhtml",
+          "anchor_count": 3,
+          "h1_count": 1,
+          "image_references": 0,
+          "text_length": 2924,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Wi\u0119cej ni\u017c praca Gotowanie to moje \u017cycie"
+            }
+          ]
+        },
+        {
+          "href": "chapter_016.xhtml",
+          "anchor_count": 6,
+          "h1_count": 1,
+          "image_references": 1,
+          "text_length": 10674,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "z a k o c h a n i w p o l s c e"
+            },
+            {
+              "tag": "h3",
+              "text": "SK\u0141ADNIKI"
+            }
+          ]
+        },
+        {
+          "href": "chapter_017.xhtml",
+          "anchor_count": 2,
+          "h1_count": 1,
+          "image_references": 1,
+          "text_length": 7,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Galeria"
+            }
+          ]
+        },
+        {
+          "href": "chapter_018.xhtml",
+          "anchor_count": 2,
+          "h1_count": 1,
+          "image_references": 0,
+          "text_length": 45,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "z a k o c h a n i w p o l s c e \u2014 ci\u0105g dalszy"
+            }
+          ]
+        },
+        {
+          "href": "chapter_019.xhtml",
+          "anchor_count": 4,
+          "h1_count": 1,
+          "image_references": 0,
+          "text_length": 398,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Material sponsorowany - Nawet 15"
+            },
+            {
+              "tag": "h3",
+              "text": "ROZMAWIA KATARZYNA JARACZEWSKA"
+            }
+          ]
+        },
+        {
+          "href": "chapter_020.xhtml",
+          "anchor_count": 4,
+          "h1_count": 1,
+          "image_references": 0,
+          "text_length": 8960,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "z a k o c h a n i w p o l s c e"
+            }
+          ]
+        },
+        {
+          "href": "chapter_021.xhtml",
+          "anchor_count": 4,
+          "h1_count": 1,
+          "image_references": 2,
+          "text_length": 181,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Na popraw\u0119 nastroju Wszyscy t\u0119sknimy za domowymi smakami"
+            }
+          ]
+        },
+        {
+          "href": "chapter_022.xhtml",
+          "anchor_count": 4,
+          "h1_count": 1,
+          "image_references": 0,
+          "text_length": 9751,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "z a k o c h a n i w p o l s c e"
+            }
+          ]
+        },
+        {
+          "href": "chapter_023.xhtml",
+          "anchor_count": 4,
+          "h1_count": 1,
+          "image_references": 2,
+          "text_length": 238,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Dam si\u0119 pokroi\u0107 za krem\u00f3wk\u0119"
+            }
+          ]
+        },
+        {
+          "href": "chapter_024.xhtml",
+          "anchor_count": 6,
+          "h1_count": 1,
+          "image_references": 1,
+          "text_length": 12574,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Szokiem by\u0142 polski obiad: mi\u0119so, sur\u00f3wki, ziemniaki, a ja zapyta\u0142em: \"A gdzie jest chleb? \". Bo w Rumunii musi by\u0107 do wszystkiego"
+            }
+          ]
+        },
+        {
+          "href": "chapter_025.xhtml",
+          "anchor_count": 3,
+          "h1_count": 1,
+          "image_references": 0,
+          "text_length": 4271,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "z a k o c h a n i w p o l s c e"
+            }
+          ]
+        },
+        {
+          "href": "chapter_026.xhtml",
+          "anchor_count": 5,
+          "h1_count": 1,
+          "image_references": 1,
+          "text_length": 3514,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Dumny Polak"
+            },
+            {
+              "tag": "h3",
+              "text": "SK\u0141ADNIKINA 6 SZTUK"
+            }
+          ]
+        },
+        {
+          "href": "chapter_027.xhtml",
+          "anchor_count": 3,
+          "h1_count": 1,
+          "image_references": 0,
+          "text_length": 381,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Material sponsorowany - 28-latka"
+            }
+          ]
+        },
+        {
+          "href": "chapter_028.xhtml",
+          "anchor_count": 4,
+          "h1_count": 1,
+          "image_references": 0,
+          "text_length": 9215,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "z a k o c h a n i w p o l s c e"
+            }
+          ]
+        },
+        {
+          "href": "chapter_029.xhtml",
+          "anchor_count": 5,
+          "h1_count": 1,
+          "image_references": 0,
+          "text_length": 4273,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Material sponsorowany - Niemczech 10"
+            },
+            {
+              "tag": "h3",
+              "text": "ROZMAWIA ANNA R\u0104CZKOWSKA"
+            }
+          ]
+        },
+        {
+          "href": "chapter_030.xhtml",
+          "anchor_count": 4,
+          "h1_count": 1,
+          "image_references": 1,
+          "text_length": 6657,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "z a k o c h a n i w p o l s c e"
+            }
+          ]
+        },
+        {
+          "href": "chapter_031.xhtml",
+          "anchor_count": 10,
+          "h1_count": 1,
+          "image_references": 2,
+          "text_length": 6989,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "z a k o c h a n i w p o l s c e \u2014 ci\u0105g dalszy"
+            },
+            {
+              "tag": "h3",
+              "text": "SK\u0141ADNIKI"
+            },
+            {
+              "tag": "h3",
+              "text": "SOS:"
+            },
+            {
+              "tag": "h3",
+              "text": "TEKST TOMASZ KURIANOWICZ, BERLIN"
+            }
+          ]
+        },
+        {
+          "href": "chapter_032.xhtml",
+          "anchor_count": 8,
+          "h1_count": 1,
+          "image_references": 13,
+          "text_length": 5916,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "z a k o c h a n i w p o l s c e \u2014 ci\u0105g dalszy \u2014 ci\u0105g dalszy"
+            },
+            {
+              "tag": "h3",
+              "text": "ZOBACZWSIECI:"
+            },
+            {
+              "tag": "h3",
+              "text": "TEKST LUDWIKA W\u0141ODEK"
+            }
+          ]
+        },
+        {
+          "href": "chapter_033.xhtml",
+          "anchor_count": 2,
+          "h1_count": 1,
+          "image_references": 1,
+          "text_length": 7,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Galeria"
+            }
+          ]
+        },
+        {
+          "href": "chapter_034.xhtml",
+          "anchor_count": 3,
+          "h1_count": 1,
+          "image_references": 1,
+          "text_length": 10,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Reklama 69"
+            }
+          ]
+        },
+        {
+          "href": "chapter_035.xhtml",
+          "anchor_count": 8,
+          "h1_count": 1,
+          "image_references": 3,
+          "text_length": 1267,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Material sponsorowany - Oko\u0142o 500"
+            },
+            {
+              "tag": "h3",
+              "text": "TEKST KATARZYNA BURDA"
+            }
+          ]
+        },
+        {
+          "href": "chapter_036.xhtml",
+          "anchor_count": 6,
+          "h1_count": 1,
+          "image_references": 1,
+          "text_length": 6606,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Chleb i s\u0142odko\u015bci"
+            },
+            {
+              "tag": "h3",
+              "text": "TEKST MAGDALENA GORLAS"
+            },
+            {
+              "tag": "h2",
+              "text": "MONIKA WALECKA, w\u0142a\u015bcicielka piekarni Ca\u0142a w M\u0105ce"
+            }
+          ]
+        },
+        {
+          "href": "chapter_037.xhtml",
+          "anchor_count": 2,
+          "h1_count": 1,
+          "image_references": 1,
+          "text_length": 7,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Galeria"
+            }
+          ]
+        },
+        {
+          "href": "chapter_038.xhtml",
+          "anchor_count": 6,
+          "h1_count": 1,
+          "image_references": 1,
+          "text_length": 10072,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Zielono mi"
+            },
+            {
+              "tag": "h3",
+              "text": "ROZMAWIA KATARZYNA BURDA"
+            }
+          ]
+        },
+        {
+          "href": "chapter_039.xhtml",
+          "anchor_count": 4,
+          "h1_count": 1,
+          "image_references": 1,
+          "text_length": 155,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Co wsypa\u0107 do ekspres\u00f3w"
+            },
+            {
+              "tag": "h3",
+              "text": "TEKST MIKO\u0141AJ MIGACZ"
+            }
+          ]
+        },
+        {
+          "href": "chapter_040.xhtml",
+          "anchor_count": 3,
+          "h1_count": 1,
+          "image_references": 1,
+          "text_length": 10,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Galeria 83"
+            }
+          ]
+        },
+        {
+          "href": "chapter_041.xhtml",
+          "anchor_count": 3,
+          "h1_count": 1,
+          "image_references": 1,
+          "text_length": 1528,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Material sponsorowany - Piotr Wilczewski"
+            }
+          ]
+        },
+        {
+          "href": "chapter_042.xhtml",
+          "anchor_count": 2,
+          "h1_count": 1,
+          "image_references": 1,
+          "text_length": 1970,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Nowa generacja efektywno\u015bci Nespresso Professional wprowadza na rynek nowy ekspres"
+            }
+          ]
+        },
+        {
+          "href": "chapter_043.xhtml",
+          "anchor_count": 10,
+          "h1_count": 1,
+          "image_references": 6,
+          "text_length": 7886,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Gad\u017cety kulinarne Trawienie na zielonej trawce"
+            },
+            {
+              "tag": "h3",
+              "text": "TEKST DARIUSZ \u0106WIKLAK"
+            },
+            {
+              "tag": "h2",
+              "text": "SK\u0141ADANY ST\u00d3\u0141"
+            },
+            {
+              "tag": "h3",
+              "text": "TEKST ANTHONY BOURDAIN"
+            }
+          ]
+        },
+        {
+          "href": "chapter_044.xhtml",
+          "anchor_count": 2,
+          "h1_count": 1,
+          "image_references": 1,
+          "text_length": 7,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Galeria"
+            }
+          ]
+        },
+        {
+          "href": "chapter_045.xhtml",
+          "anchor_count": 3,
+          "h1_count": 1,
+          "image_references": 0,
+          "text_length": 3838,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Gad\u017cety kulinarne Trawienie na zielonej trawce \u2014 ci\u0105g dalszy"
+            }
+          ]
+        },
+        {
+          "href": "chapter_046.xhtml",
+          "anchor_count": 2,
+          "h1_count": 1,
+          "image_references": 1,
+          "text_length": 7,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Reklama"
+            }
+          ]
+        },
+        {
+          "href": "chapter_047.xhtml",
+          "anchor_count": 7,
+          "h1_count": 1,
+          "image_references": 1,
+          "text_length": 9874,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Hotele na maj\u00f3wk\u0119 Wi\u0119cej ni\u017c \u0142\u00f3\u017cko i \u015bniadanie"
+            },
+            {
+              "tag": "h2",
+              "text": "Jacek Krawczyk \""
+            }
+          ]
+        },
+        {
+          "href": "chapter_048.xhtml",
+          "anchor_count": 8,
+          "h1_count": 1,
+          "image_references": 8,
+          "text_length": 11706,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Hotele na maj\u00f3wk\u0119 Tutaj odpoczniesz"
+            },
+            {
+              "tag": "h2",
+              "text": "PROWADZ\u0104CY gal\u0119 Karol Okrasa, Kurt Scheller (Le Grand Chef) i Robert Sowa"
+            },
+            {
+              "tag": "h3",
+              "text": "ADRIANA W\u00d3JCIKOWSKA z krakowskiej restauracji Vamos \u2013 Young Talent of the Year"
+            }
+          ]
+        },
+        {
+          "href": "chapter_049.xhtml",
+          "anchor_count": 4,
+          "h1_count": 1,
+          "image_references": 0,
+          "text_length": 2043,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Kuchnia \u0141\u0105czy"
+            },
+            {
+              "tag": "h3",
+              "text": "JACEK KRAWCZYK GAULT & MILLAU POLAND"
+            }
+          ]
+        },
+        {
+          "href": "chapter_050.xhtml",
+          "anchor_count": 2,
+          "h1_count": 1,
+          "image_references": 1,
+          "text_length": 7,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Galeria"
+            }
+          ]
+        },
+        {
+          "href": "chapter_051.xhtml",
+          "anchor_count": 2,
+          "h1_count": 1,
+          "image_references": 1,
+          "text_length": 7,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Galeria"
+            }
+          ]
+        },
+        {
+          "href": "nav.xhtml",
+          "anchor_count": 2,
+          "h1_count": 1,
+          "image_references": 0,
+          "text_length": 1096,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Czasem"
+            },
+            {
+              "tag": "h2",
+              "text": "Landmarks"
+            }
+          ]
+        }
+      ],
+      "metrics_before": {
+        "split_words_count": 5,
+        "joined_words_count": 0,
+        "suspicious_paragraph_joins_count": 0,
+        "h1_count": 52,
+        "suspicious_titles_count": 11,
+        "toc_entries_count": 39,
+        "duplicate_noisy_toc_entries_count": 15,
+        "risky_images_count": 7
+      }
+    },
+    {
+      "file_name": "strefa-pmi-52-2026.epub",
+      "input_path": "C:\\Users\\user\\Desktop\\quiz\\quiz\\samples\\epub\\strefa-pmi-52-2026.epub",
+      "title": "cf94c8a45045454cbd544be959d7c4dd",
+      "creators": [
+        "Adobe InDesign 21.2 (Windows)"
+      ],
+      "language": "pl",
+      "package_document": "EPUB/content.opf",
+      "nav_document": "EPUB/nav.xhtml",
+      "ncx_document": "EPUB/toc.ncx",
+      "manifest_count": 118,
+      "spine_count": 32,
+      "content_doc_count": 32,
+      "css_count": 1,
+      "image_asset_count": 84,
+      "toc_entry_count": 26,
+      "publication_type": "report_like",
+      "publication_type_justification": "structured multi-section document with balanced text and navigation",
+      "spine_order": [
+        "nav",
+        "chapter_30",
+        "chapter_0",
+        "chapter_1",
+        "chapter_2",
+        "chapter_3",
+        "chapter_4",
+        "chapter_5",
+        "chapter_6",
+        "chapter_7",
+        "chapter_8",
+        "chapter_9",
+        "chapter_10",
+        "chapter_11",
+        "chapter_12",
+        "chapter_13",
+        "chapter_14",
+        "chapter_15",
+        "chapter_16",
+        "chapter_17",
+        "chapter_18",
+        "chapter_19",
+        "chapter_20",
+        "chapter_21",
+        "chapter_22",
+        "chapter_23",
+        "chapter_24",
+        "chapter_25",
+        "chapter_26",
+        "chapter_27",
+        "chapter_28",
+        "chapter_29"
+      ],
+      "top_level_toc_entries": [
+        "Ok\u0142adka",
+        "Poznaj nasz zesp\u00f3\u0142",
+        "\u201eArtificial intelligence is the new electricity. \u201d",
+        "Nie plan, lecz p\u0119tla: jak Kata i AI zmieniaj\u0105 spos\u00f3b realizacji projekt\u00f3w \u2014",
+        "Hybrydowy zesp\u00f3\u0142 2. 0: gdy do sto\u0142u siada AI \u2014",
+        "Projekt dowieziony. System zawi\u00f3d\u0142. O czym naprawd\u0119 jest Project Delivery Excellence \u2014",
+        "Od NIE do TAK, czyli jak przeprowadzi\u0107 zesp\u00f3\u0142 przez zmian\u0119 \u2014",
+        "AI as a Mentor: Emerging Evidence on Human AI Collaboration in Project Management \u2014",
+        "Synergia r\u00f3\u017cnorodno\u015bci \u2013 neuroatypowi jako niewidzialny fundament innowacji w organizacjach technologicznych \u2014",
+        "Paradoks kontroli i empowermentu \u2014",
+        "Kiedy projekt nie rusza do przodu \u2013 5 barier, kt\u00f3re blokuj\u0105 zmiany \u2014 Jaros\u0142aw Rubin,",
+        "Problem Solving na papierze, gaszenie po\u017car\u00f3w w praktyce \u2014",
+        "Transparentno\u015b\u0107 w zarz\u0105dzaniu zespo\u0142ami projektowymi \u2014",
+        "Lider Wdzi\u0119czno\u015bci: kiedy \u201edzi\u0119kuj\u0119\u201d staje si\u0119 narz\u0119dziem przyw\u00f3dztwa \u2014 Aleksandra Sylwester-Kanofocka",
+        "Praca w dobrym rytmie, cz. 1. Uwa\u017cno\u015b\u0107, kt\u00f3ra dowozi wyniki \u2013 jak MBSR wspiera skuteczno\u015b\u0107 mened\u017cera \u2014 Ada Grzenkowicz Wyzwania teraz i kiedy\u015b"
+      ],
+      "content_documents": [
+        {
+          "href": "nav.xhtml",
+          "anchor_count": 1,
+          "h1_count": 1,
+          "image_references": 0,
+          "text_length": 1858,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "cf94c8a45045454cbd544be959d7c4dd"
+            }
+          ]
+        },
+        {
+          "href": "cover.xhtml",
+          "anchor_count": 0,
+          "h1_count": 0,
+          "image_references": 1,
+          "text_length": 0,
+          "sample_headings": []
+        },
+        {
+          "href": "chapter_001.xhtml",
+          "anchor_count": 10,
+          "h1_count": 0,
+          "image_references": 4,
+          "text_length": 408,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "Ok\u0142adka"
+            },
+            {
+              "tag": "h3",
+              "text": "S. 6"
+            },
+            {
+              "tag": "h3",
+              "text": "Wywiad Malwiny Szopy z Beat\u0105 Mos\u00f3r"
+            },
+            {
+              "tag": "h3",
+              "text": "AI as a Mentor: Emerging"
+            },
+            {
+              "tag": "h2",
+              "text": "Evidence on Human AI Collaboration in Project"
+            }
+          ]
+        },
+        {
+          "href": "chapter_002.xhtml",
+          "anchor_count": 30,
+          "h1_count": 0,
+          "image_references": 0,
+          "text_length": 610,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "Mateusz Szymborski"
+            },
+            {
+              "tag": "h2",
+              "text": "Redaktor Naczelna"
+            },
+            {
+              "tag": "h2",
+              "text": "Z-ca Redaktor Naczelnej"
+            },
+            {
+              "tag": "h2",
+              "text": "POWER SKILLS WAYS OF WORKING"
+            },
+            {
+              "tag": "h2",
+              "text": "Redaktor Dzia\u0142u"
+            }
+          ]
+        },
+        {
+          "href": "chapter_003.xhtml",
+          "anchor_count": 17,
+          "h1_count": 0,
+          "image_references": 0,
+          "text_length": 6739,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "Drodzy Czytelnicy!"
+            },
+            {
+              "tag": "h3",
+              "text": "FOTOGRAFIE:"
+            },
+            {
+              "tag": "h3",
+              "text": "PROJEKT I SK\u0141AD:"
+            },
+            {
+              "tag": "h2",
+              "text": "MATEUSZ SZYMBORSKI ZAST\u0118PCA REDAKTOR NACZELNEJ KAMILA CZERNIAK REDAKTOR NACZELNA"
+            },
+            {
+              "tag": "h3",
+              "text": "KONTAKT:"
+            }
+          ]
+        },
+        {
+          "href": "chapter_004.xhtml",
+          "anchor_count": 3,
+          "h1_count": 0,
+          "image_references": 4,
+          "text_length": 4074,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "Bartosz Misiurek"
+            }
+          ]
+        },
+        {
+          "href": "chapter_005.xhtml",
+          "anchor_count": 3,
+          "h1_count": 0,
+          "image_references": 1,
+          "text_length": 4665,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "Julia Janiszewska"
+            }
+          ]
+        },
+        {
+          "href": "chapter_006.xhtml",
+          "anchor_count": 3,
+          "h1_count": 0,
+          "image_references": 1,
+          "text_length": 5559,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "Judyta Wolak"
+            }
+          ]
+        },
+        {
+          "href": "chapter_007.xhtml",
+          "anchor_count": 3,
+          "h1_count": 0,
+          "image_references": 2,
+          "text_length": 5594,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "Marta Ciak"
+            }
+          ]
+        },
+        {
+          "href": "chapter_008.xhtml",
+          "anchor_count": 6,
+          "h1_count": 0,
+          "image_references": 3,
+          "text_length": 7902,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "AI as a Mentor: Emerging Evidence on Human AI Collaboration in Project Management \u2014"
+            },
+            {
+              "tag": "h3",
+              "text": "Archana Choudhary"
+            },
+            {
+              "tag": "h3",
+              "text": "AI Boundaries: What AI"
+            }
+          ]
+        },
+        {
+          "href": "chapter_009.xhtml",
+          "anchor_count": 3,
+          "h1_count": 0,
+          "image_references": 1,
+          "text_length": 9252,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "Jakub Bacia"
+            }
+          ]
+        },
+        {
+          "href": "chapter_010.xhtml",
+          "anchor_count": 3,
+          "h1_count": 0,
+          "image_references": 1,
+          "text_length": 6171,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "Irena Maszko"
+            }
+          ]
+        },
+        {
+          "href": "chapter_011.xhtml",
+          "anchor_count": 5,
+          "h1_count": 0,
+          "image_references": 1,
+          "text_length": 5708,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "Marek Naumiuk"
+            },
+            {
+              "tag": "h3",
+              "text": "Rys. 1. Bariery projektowe \u0179r\u00f3d\u0142o. Opracowanie w\u0142asne"
+            },
+            {
+              "tag": "h3",
+              "text": "Marek Naumiuk"
+            }
+          ]
+        },
+        {
+          "href": "chapter_012.xhtml",
+          "anchor_count": 6,
+          "h1_count": 0,
+          "image_references": 12,
+          "text_length": 14694,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "Ilona Nowicka"
+            },
+            {
+              "tag": "h3",
+              "text": "\u2014 Justyna G\u00f3rak"
+            }
+          ]
+        },
+        {
+          "href": "chapter_013.xhtml",
+          "anchor_count": 4,
+          "h1_count": 0,
+          "image_references": 1,
+          "text_length": 5385,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "Grzegorz Cyganek"
+            },
+            {
+              "tag": "h3",
+              "text": "Grzegorz Cyganek"
+            }
+          ]
+        },
+        {
+          "href": "chapter_014.xhtml",
+          "anchor_count": 5,
+          "h1_count": 0,
+          "image_references": 1,
+          "text_length": 7013,
+          "sample_headings": [
+            {
+              "tag": "h3",
+              "text": "2. Pokolenia \u2022 Pokolenie Z ceni natychmiastowo\u015b\u0107 i autentyczno\u015b\u0107 \u2013 komunikaty w stylu Slacka, GIF-y, reakcje emoji."
+            },
+            {
+              "tag": "h2",
+              "text": "Narz\u0119dzie Forma Kiedy stosowa\u0107 Dla kogo Ryzyka Korzy\u015bci"
+            },
+            {
+              "tag": "h3",
+              "text": "Aleksandra Sylwester- Kanofocka"
+            }
+          ]
+        },
+        {
+          "href": "chapter_015.xhtml",
+          "anchor_count": 6,
+          "h1_count": 0,
+          "image_references": 6,
+          "text_length": 14369,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "\u2014 Karolina Wilamowska"
+            }
+          ]
+        },
+        {
+          "href": "chapter_016.xhtml",
+          "anchor_count": 5,
+          "h1_count": 0,
+          "image_references": 6,
+          "text_length": 11682,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "Katarzyna Wojnar"
+            },
+            {
+              "tag": "h3",
+              "text": "\u2014 Remigiusz Orzechowski"
+            }
+          ]
+        },
+        {
+          "href": "chapter_017.xhtml",
+          "anchor_count": 3,
+          "h1_count": 0,
+          "image_references": 5,
+          "text_length": 4151,
+          "sample_headings": [
+            {
+              "tag": "h3",
+              "text": "\u0179r\u00f3d\u0142o: oprogramowanie Hadrone PPM."
+            }
+          ]
+        },
+        {
+          "href": "chapter_018.xhtml",
+          "anchor_count": 4,
+          "h1_count": 0,
+          "image_references": 1,
+          "text_length": 5202,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "Volha Mandryk"
+            },
+            {
+              "tag": "h3",
+              "text": "Organization Governance and Capabilities"
+            }
+          ]
+        },
+        {
+          "href": "chapter_019.xhtml",
+          "anchor_count": 11,
+          "h1_count": 0,
+          "image_references": 15,
+          "text_length": 38184,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "Malwina Szopa"
+            },
+            {
+              "tag": "h3",
+              "text": "Pawe\u0142 Schmidt"
+            },
+            {
+              "tag": "h3",
+              "text": "ORAZ RADOS\u0141AWA MECH\u0141O FOT. MATERIA\u0141Y W\u0141ASNE: KAMILI KIERZEK-MECH\u0141O"
+            }
+          ]
+        },
+        {
+          "href": "chapter_020.xhtml",
+          "anchor_count": 8,
+          "h1_count": 0,
+          "image_references": 1,
+          "text_length": 5020,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "C. O. N. G. R. E. S. S. Decoded: Eight Letters That Shaped My First PMI Experience \u2014"
+            },
+            {
+              "tag": "h3",
+              "text": "Clike Communication"
+            },
+            {
+              "tag": "h3",
+              "text": "Pic. 1 Gleicher Formula"
+            },
+            {
+              "tag": "h3",
+              "text": "Slike Success"
+            },
+            {
+              "tag": "h2",
+              "text": "Rlike Risks"
+            }
+          ]
+        },
+        {
+          "href": "chapter_021.xhtml",
+          "anchor_count": 2,
+          "h1_count": 0,
+          "image_references": 2,
+          "text_length": 4709,
+          "sample_headings": []
+        },
+        {
+          "href": "chapter_022.xhtml",
+          "anchor_count": 3,
+          "h1_count": 0,
+          "image_references": 2,
+          "text_length": 4907,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "Marta Lotka"
+            }
+          ]
+        },
+        {
+          "href": "chapter_023.xhtml",
+          "anchor_count": 5,
+          "h1_count": 0,
+          "image_references": 2,
+          "text_length": 9529,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "Mateusz Wolf"
+            },
+            {
+              "tag": "h3",
+              "text": "Ekonomiczne, Warszawa 2025."
+            }
+          ]
+        },
+        {
+          "href": "chapter_024.xhtml",
+          "anchor_count": 4,
+          "h1_count": 0,
+          "image_references": 2,
+          "text_length": 5166,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "FOTOGRAFIA W\u0141ASNA"
+            },
+            {
+              "tag": "h3",
+              "text": "Malwina Szopa"
+            }
+          ]
+        },
+        {
+          "href": "chapter_025.xhtml",
+          "anchor_count": 4,
+          "h1_count": 0,
+          "image_references": 4,
+          "text_length": 3641,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "Listening to Quiet, Learning When to Speak \u2014"
+            },
+            {
+              "tag": "h3",
+              "text": "Adrianna Moszy\u0144ska"
+            }
+          ]
+        },
+        {
+          "href": "chapter_026.xhtml",
+          "anchor_count": 4,
+          "h1_count": 0,
+          "image_references": 1,
+          "text_length": 2350,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "PROJEKT: MANAGER"
+            },
+            {
+              "tag": "h3",
+              "text": "Kinga Matysiak"
+            }
+          ]
+        },
+        {
+          "href": "chapter_027.xhtml",
+          "anchor_count": 7,
+          "h1_count": 0,
+          "image_references": 0,
+          "text_length": 1063,
+          "sample_headings": [
+            {
+              "tag": "h3",
+              "text": "1. Inspiruj\u0105ce artyku\u0142y \u2013 Co miesi\u0105c dostarczamy now\u0105 porcj\u0119 tre\u015bci, kt\u00f3re pomog\u0105 Ci rozwija\u0107 umiej\u0119tno\u015bci w zarz\u0105dzaniu projektami."
+            },
+            {
+              "tag": "h3",
+              "text": "2. Praktyczna wiedza i narz\u0119dzia \u2013 Ka\u017cdy numer to praktyczne porady, wskaz\u00f3wki i nowinki, kt\u00f3re mo\u017cesz od razu wdro\u017cy\u0107 w swoje codzienne projekty."
+            },
+            {
+              "tag": "h3",
+              "text": "3. Aktualno\u015bci ze \u015bwiata \u2013 B\u0105d\u017a na bie\u017c\u0105co z najnowszymi wydarzeniami, inicjatywami i programami organizowanymi, zar\u00f3wno w Polsce, jak i globalnie."
+            },
+            {
+              "tag": "h3",
+              "text": "4. Specjalne zni\u017cki \u2013 Newsletter daje Ci dost\u0119p do ekskluzywnych rabat\u00f3w"
+            },
+            {
+              "tag": "h3",
+              "text": "5. Konkursy i nagrody \u2013 Zyskaj szans\u0119 na wygranie atrakcyjnych nagr\u00f3d, bior\u0105c udzia\u0142 w organizowanych przez nas konkursach."
+            }
+          ]
+        },
+        {
+          "href": "chapter_028.xhtml",
+          "anchor_count": 4,
+          "h1_count": 0,
+          "image_references": 3,
+          "text_length": 3925,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "Projektowe S\u0142owa Roku 2025 \u2013 subiektywny ranking Strefy PMI \u2014"
+            },
+            {
+              "tag": "h3",
+              "text": "SOR: SUBIEKTYWNYM OKIEM REDAKCJI"
+            }
+          ]
+        },
+        {
+          "href": "chapter_029.xhtml",
+          "anchor_count": 4,
+          "h1_count": 0,
+          "image_references": 0,
+          "text_length": 1424,
+          "sample_headings": [
+            {
+              "tag": "h3",
+              "text": "ROZW\u00d3J"
+            },
+            {
+              "tag": "h3",
+              "text": "MENTORING"
+            },
+            {
+              "tag": "h3",
+              "text": "WYMIANA DO\u015aWIADCZE\u0143"
+            }
+          ]
+        },
+        {
+          "href": "chapter_030.xhtml",
+          "anchor_count": 1,
+          "h1_count": 0,
+          "image_references": 0,
+          "text_length": 1377,
+          "sample_headings": []
+        }
+      ],
+      "metrics_before": {
+        "split_words_count": 2,
+        "joined_words_count": 0,
+        "suspicious_paragraph_joins_count": 0,
+        "h1_count": 1,
+        "suspicious_titles_count": 1,
+        "toc_entries_count": 26,
+        "duplicate_noisy_toc_entries_count": 0,
+        "risky_images_count": 83
+      }
+    },
+    {
+      "file_name": "tactits (2).epub",
+      "input_path": "C:\\Users\\user\\Desktop\\quiz\\quiz\\samples\\epub\\tactits (2).epub",
+      "title": "Chess: 5334 Problems, Combinations and Games",
+      "creators": [
+        "dvips(k) 5.98 Copyright 2009 Radical Eye Software"
+      ],
+      "language": "pl",
+      "package_document": "EPUB/content.opf",
+      "nav_document": "EPUB/nav.xhtml",
+      "ncx_document": "EPUB/toc.ncx",
+      "manifest_count": 5370,
+      "spine_count": 22,
+      "content_doc_count": 22,
+      "css_count": 1,
+      "image_asset_count": 5346,
+      "toc_entry_count": 14,
+      "publication_type": "mixed_layout",
+      "publication_type_justification": "extremely image-heavy package suggests page-like or mixed-layout content",
+      "spine_order": [
+        "nav",
+        "chapter_20",
+        "chapter_0",
+        "chapter_1",
+        "chapter_2",
+        "chapter_3",
+        "chapter_4",
+        "chapter_5",
+        "chapter_6",
+        "chapter_7",
+        "chapter_8",
+        "chapter_9",
+        "chapter_10",
+        "chapter_11",
+        "chapter_12",
+        "chapter_13",
+        "chapter_14",
+        "chapter_15",
+        "chapter_16",
+        "chapter_17",
+        "chapter_18",
+        "chapter_19"
+      ],
+      "top_level_toc_entries": [
+        "Foreword",
+        "Introduction",
+        "Chapter 1 - Mates",
+        "Chapter 2 - Mate in Two",
+        "Chapter 3 - Mate in three",
+        "Chapter 4 - 600 Miniature games",
+        "4.1 f3 (f6) combinations - (4463-4562)",
+        "4.2 g3 (g6) combinations (4563-4662)",
+        "4.5 g2 (g7) combinations (4863-4962)",
+        "4.6 h2 (h7) combinations (4963-5062)",
+        "Chapter 8 - Solutions",
+        "8.1 Solutions",
+        "Chapter 9 - Biography of L\u00b4aszl\u00b4o Polg\u00b4ar",
+        "Chapter 10 - Bibliography"
+      ],
+      "content_documents": [
+        {
+          "href": "nav.xhtml",
+          "anchor_count": 1,
+          "h1_count": 1,
+          "image_references": 0,
+          "text_length": 420,
+          "sample_headings": [
+            {
+              "tag": "h1",
+              "text": "Chess: 5334 Problems, Combinations and Games"
+            }
+          ]
+        },
+        {
+          "href": "cover.xhtml",
+          "anchor_count": 0,
+          "h1_count": 0,
+          "image_references": 1,
+          "text_length": 0,
+          "sample_headings": []
+        },
+        {
+          "href": "chapter_001.xhtml",
+          "anchor_count": 6,
+          "h1_count": 0,
+          "image_references": 0,
+          "text_length": 3430,
+          "sample_headings": [
+            {
+              "tag": "h3",
+              "text": "I wish to thank K\u00a8onemann Verlag for"
+            },
+            {
+              "tag": "h3",
+              "text": "Kulturtrade"
+            },
+            {
+              "tag": "h2",
+              "text": "Budapest, 1994"
+            },
+            {
+              "tag": "h3",
+              "text": "L\u00b4aszl\u00b4o Polg\u00b4ar"
+            }
+          ]
+        },
+        {
+          "href": "chapter_002.xhtml",
+          "anchor_count": 4,
+          "h1_count": 0,
+          "image_references": 0,
+          "text_length": 4622,
+          "sample_headings": [
+            {
+              "tag": "h3",
+              "text": "Or"
+            },
+            {
+              "tag": "h3",
+              "text": "L\u00b4aszl\u00b4o Polgar\u2019s Chess offers an abun-"
+            }
+          ]
+        },
+        {
+          "href": "chapter_003.xhtml",
+          "anchor_count": 1,
+          "h1_count": 0,
+          "image_references": 5,
+          "text_length": 0,
+          "sample_headings": []
+        },
+        {
+          "href": "chapter_004.xhtml",
+          "anchor_count": 4,
+          "h1_count": 0,
+          "image_references": 0,
+          "text_length": 33,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "Chapter 1 - Mates"
+            },
+            {
+              "tag": "h2",
+              "text": "Chapter 1"
+            },
+            {
+              "tag": "h3",
+              "text": "Mates"
+            }
+          ]
+        },
+        {
+          "href": "chapter_005.xhtml",
+          "anchor_count": 1838,
+          "h1_count": 0,
+          "image_references": 307,
+          "text_length": 8077,
+          "sample_headings": []
+        },
+        {
+          "href": "chapter_006.xhtml",
+          "anchor_count": 6,
+          "h1_count": 0,
+          "image_references": 0,
+          "text_length": 38,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "Chapter 2"
+            },
+            {
+              "tag": "h3",
+              "text": "Mate in Two"
+            },
+            {
+              "tag": "h3",
+              "text": "White"
+            },
+            {
+              "tag": "h3",
+              "text": "Move #2"
+            }
+          ]
+        },
+        {
+          "href": "chapter_007.xhtml",
+          "anchor_count": 3414,
+          "h1_count": 0,
+          "image_references": 3413,
+          "text_length": 65245,
+          "sample_headings": []
+        },
+        {
+          "href": "chapter_008.xhtml",
+          "anchor_count": 4,
+          "h1_count": 0,
+          "image_references": 745,
+          "text_length": 11340,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "Chapter 3"
+            },
+            {
+              "tag": "h3",
+              "text": "Combinations"
+            }
+          ]
+        },
+        {
+          "href": "chapter_009.xhtml",
+          "anchor_count": 3,
+          "h1_count": 0,
+          "image_references": 0,
+          "text_length": 57,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "Chapter 4 - 600 Miniature games"
+            },
+            {
+              "tag": "h3",
+              "text": "Chapter 4"
+            }
+          ]
+        },
+        {
+          "href": "chapter_010.xhtml",
+          "anchor_count": 153,
+          "h1_count": 0,
+          "image_references": 0,
+          "text_length": 15869,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "O 14 Rae1 Ne5 15 Nd2 Rfd8 16 f4"
+            },
+            {
+              "tag": "h2",
+              "text": "NXd3 17 QXd3 BXf4 18 Nd5 BXd2"
+            },
+            {
+              "tag": "h3",
+              "text": "19 QXd2 e Xd5"
+            },
+            {
+              "tag": "h3",
+              "text": "5 Bd3 d6 6 Nf3 Be7 7 e5 d Xe5 8"
+            },
+            {
+              "tag": "h3",
+              "text": "16 Bc4+ Kf8 17 Bg5 Nf6 18 Rf1"
+            }
+          ]
+        },
+        {
+          "href": "chapter_011.xhtml",
+          "anchor_count": 520,
+          "h1_count": 0,
+          "image_references": 0,
+          "text_length": 47102,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "8 O- O O- O 9 Nc3 Bf5 10 f3 e Xf3"
+            },
+            {
+              "tag": "h2",
+              "text": "11 QXf5 f Xg2 12 KXg2 d4 13 Ne4"
+            },
+            {
+              "tag": "h3",
+              "text": "NXe4 14 QXe4 Qd7 15 b3 Rae8 16"
+            },
+            {
+              "tag": "h3",
+              "text": "19 e4 Rh6 20 Kg1"
+            },
+            {
+              "tag": "h3",
+              "text": "5 Bg2 Bb7 6 d5 e Xd5 7 Nh4 g6 8"
+            }
+          ]
+        },
+        {
+          "href": "chapter_012.xhtml",
+          "anchor_count": 211,
+          "h1_count": 0,
+          "image_references": 0,
+          "text_length": 19143,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "14 f4 NXe5 15 f Xe5 Be7 16 Qe2 h6"
+            },
+            {
+              "tag": "h3",
+              "text": "17 Qh5 Rf8 18 BXh6! g Xh6"
+            },
+            {
+              "tag": "h2",
+              "text": "5 Nbd2 b5 6 c Xb5 BXb5 7 Bg2 d5"
+            },
+            {
+              "tag": "h3",
+              "text": "8 O- O c5 9 d Xc5 BXc5 10 b4 Bd6"
+            },
+            {
+              "tag": "h3",
+              "text": "14 e4 d Xe4 15 Ng5 Nd5 16 Nd Xe4"
+            }
+          ]
+        },
+        {
+          "href": "chapter_013.xhtml",
+          "anchor_count": 148,
+          "h1_count": 0,
+          "image_references": 601,
+          "text_length": 24526,
+          "sample_headings": [
+            {
+              "tag": "h3",
+              "text": "NXd3 17 QXd3 Ra6 18 Qe3 Ne8"
+            },
+            {
+              "tag": "h2",
+              "text": "O- O Nbd7 9 Ne2 c5 10 Ng3 Qc7"
+            },
+            {
+              "tag": "h3",
+              "text": "11 Ne5 NXe5 12 BXe5 Qc6 13 Qe2"
+            },
+            {
+              "tag": "h2",
+              "text": "11 Rf3 Nce7 12 Nc3 a6 13 Raf1 b5"
+            },
+            {
+              "tag": "h2",
+              "text": "14 Nd1 Bb7 15 Nf2 c4 16 Ng4 f5"
+            }
+          ]
+        },
+        {
+          "href": "chapter_014.xhtml",
+          "anchor_count": 2,
+          "h1_count": 0,
+          "image_references": 145,
+          "text_length": 2408,
+          "sample_headings": []
+        },
+        {
+          "href": "chapter_015.xhtml",
+          "anchor_count": 2,
+          "h1_count": 0,
+          "image_references": 128,
+          "text_length": 2340,
+          "sample_headings": []
+        },
+        {
+          "href": "chapter_016.xhtml",
+          "anchor_count": 2,
+          "h1_count": 0,
+          "image_references": 2,
+          "text_length": 33,
+          "sample_headings": []
+        },
+        {
+          "href": "chapter_017.xhtml",
+          "anchor_count": 4,
+          "h1_count": 0,
+          "image_references": 0,
+          "text_length": 41,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "Chapter 8 - Solutions"
+            },
+            {
+              "tag": "h2",
+              "text": "Chapter 8"
+            },
+            {
+              "tag": "h3",
+              "text": "Solutions"
+            }
+          ]
+        },
+        {
+          "href": "chapter_018.xhtml",
+          "anchor_count": 1074,
+          "h1_count": 0,
+          "image_references": 0,
+          "text_length": 299568,
+          "sample_headings": [
+            {
+              "tag": "h3",
+              "text": "Qg4m]"
+            },
+            {
+              "tag": "h3",
+              "text": "Rd1m]"
+            },
+            {
+              "tag": "h3",
+              "text": "Qb2m]"
+            },
+            {
+              "tag": "h3",
+              "text": "Ba3m]"
+            },
+            {
+              "tag": "h3",
+              "text": "Qh5m]"
+            }
+          ]
+        },
+        {
+          "href": "chapter_019.xhtml",
+          "anchor_count": 3,
+          "h1_count": 0,
+          "image_references": 0,
+          "text_length": 811,
+          "sample_headings": [
+            {
+              "tag": "h3",
+              "text": "L\u00b4aszl\u00b4o Polg\u00b4ar was born in 1946 in Hun-"
+            },
+            {
+              "tag": "h3",
+              "text": "Renaissance du Livre, 1991)."
+            }
+          ]
+        },
+        {
+          "href": "chapter_020.xhtml",
+          "anchor_count": 4,
+          "h1_count": 0,
+          "image_references": 4,
+          "text_length": 49,
+          "sample_headings": [
+            {
+              "tag": "h2",
+              "text": "Chapter 10 - Bibliography"
+            },
+            {
+              "tag": "h2",
+              "text": "Chapter 10"
+            },
+            {
+              "tag": "h3",
+              "text": "Bibliography"
+            }
+          ]
+        }
+      ],
+      "metrics_before": {
+        "split_words_count": 50,
+        "joined_words_count": 0,
+        "suspicious_paragraph_joins_count": 16820,
+        "h1_count": 1,
+        "suspicious_titles_count": 1,
+        "toc_entries_count": 14,
+        "duplicate_noisy_toc_entries_count": 0,
+        "risky_images_count": 5351
+      }
+    }
+  ]
+}

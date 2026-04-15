@@ -1,0 +1,84 @@
+name: Feature request
+description: Propose a scoped outcome with dependencies and acceptance criteria.
+title: "[FEATURE] "
+labels: ["type:story"]
+body:
+  - type: input
+    id: backlog_id
+    attributes:
+      label: Backlog ID
+      placeholder: STORY-001 or SETUP-016
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - frontend
+        - data
+        - integrations
+        - repo
+        - docs
+        - qa
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - P0
+        - P1
+        - P2
+        - P3
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: What user or business outcome are we trying to create?
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope boundaries
+      description: What is explicitly in and out of scope?
+    validations:
+      required: true
+  - type: input
+    id: owner_role
+    attributes:
+      label: Owner role
+      placeholder: Product Owner
+    validations:
+      required: true
+  - type: textarea
+    id: outputs
+    attributes:
+      label: Expected outputs
+      description: What concrete artifacts, issues, or deliverables should exist if this request is accepted?
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: Other issues, decisions, or systems this work depends on.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+    validations:
+      required: true
+  - type: textarea
+    id: definition_of_done
+    attributes:
+      label: Definition of done
+      description: What must be true before the resulting work can be closed?
+    validations:
+      required: true

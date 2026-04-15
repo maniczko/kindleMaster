@@ -1,0 +1,58 @@
+{
+  "test_date": "2026-04-11",
+  "mode": "local_pipeline_smoke",
+  "inputs_root": "C:\\Users\\user\\Desktop\\quiz\\quiz\\samples\\epub",
+  "outputs_root": "C:\\Users\\user\\Desktop\\quiz\\quiz\\.codex\\kindlemaster-test-output",
+  "packages_tested": 3,
+  "packages_passed": 3,
+  "results": [
+    {
+      "file": "9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411 (3).epub",
+      "output_path": ".codex\\kindlemaster-test-output\\9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411 (3).epub",
+      "bytes": 6314452,
+      "has_mimetype": true,
+      "has_container": true,
+      "nav_files": [
+        "EPUB/nav.xhtml"
+      ],
+      "toc_files": [
+        "EPUB/toc.ncx"
+      ],
+      "missing_nav": [],
+      "missing_toc": [],
+      "pass": true
+    },
+    {
+      "file": "strefa-pmi-52-2026.epub",
+      "output_path": ".codex\\kindlemaster-test-output\\strefa-pmi-52-2026.epub",
+      "bytes": 5852373,
+      "has_mimetype": true,
+      "has_container": true,
+      "nav_files": [
+        "EPUB/nav.xhtml"
+      ],
+      "toc_files": [
+        "EPUB/toc.ncx"
+      ],
+      "missing_nav": [],
+      "missing_toc": [],
+      "pass": true
+    },
+    {
+      "file": "tactits (2).epub",
+      "output_path": ".codex\\kindlemaster-test-output\\tactits (2).epub",
+      "bytes": 56495731,
+      "has_mimetype": true,
+      "has_container": true,
+      "nav_files": [
+        "EPUB/nav.xhtml"
+      ],
+      "toc_files": [
+        "EPUB/toc.ncx"
+      ],
+      "missing_nav": [],
+      "missing_toc": [],
+      "pass": true
+    }
+  ]
+}

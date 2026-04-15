@@ -1,0 +1,47 @@
+{
+  "pdf_dir": "C:\\Users\\user\\Desktop\\quiz\\quiz\\samples\\pdf",
+  "pdf_count": 3,
+  "items": [
+    {
+      "file": "9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411.pdf",
+      "path": "C:\\Users\\user\\Desktop\\quiz\\quiz\\samples\\pdf\\9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411.pdf",
+      "page_count": 108,
+      "pages_with_text": 95,
+      "text_ratio": 0.8796,
+      "avg_chars_per_page": 2573.16,
+      "profile": "text-heavy",
+      "title": "9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411",
+      "author": "Unknown",
+      "risks": [
+        "possible_text_loss_or_nontext_pages",
+        "long_publication_navigation_risk"
+      ]
+    },
+    {
+      "file": "strefa-pmi-52-2026.pdf",
+      "path": "C:\\Users\\user\\Desktop\\quiz\\quiz\\samples\\pdf\\strefa-pmi-52-2026.pdf",
+      "page_count": 84,
+      "pages_with_text": 81,
+      "text_ratio": 0.9643,
+      "avg_chars_per_page": 3596.19,
+      "profile": "text-heavy",
+      "title": "strefa-pmi-52-2026",
+      "author": "Unknown",
+      "risks": []
+    },
+    {
+      "file": "tactits.pdf",
+      "path": "C:\\Users\\user\\Desktop\\quiz\\quiz\\samples\\pdf\\tactits.pdf",
+      "page_count": 1184,
+      "pages_with_text": 1163,
+      "text_ratio": 0.9823,
+      "avg_chars_per_page": 859.85,
+      "profile": "text-heavy",
+      "title": "Chess: 5334 Problems, Combinations and Games",
+      "author": "Unknown",
+      "risks": [
+        "long_publication_navigation_risk"
+      ]
+    }
+  ]
+}

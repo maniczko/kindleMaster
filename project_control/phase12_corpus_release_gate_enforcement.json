@@ -1,0 +1,303 @@
+{
+  "generated_at": "2026-04-15T06:15:17",
+  "quality_first": true,
+  "publications_total": 4,
+  "release_eligible_total": 1,
+  "text_first_pass_total": 4,
+  "unjustified_fallback_total": 0,
+  "publications": [
+    {
+      "publication_id": "cover-letter-iwo-2026",
+      "profile": "document_like",
+      "release_eligible": false,
+      "quality_score": 9.75,
+      "quality_target": 8.8,
+      "premium_gap": 0.0,
+      "premium_report": {
+        "score_1_10": 9.75,
+        "premium_target": 8.8,
+        "premium_gap": 0.0,
+        "verdict": "PREMIUM_STRONG",
+        "what_is_good": [
+          "Nawigacja i anchory są technicznie poprawne.",
+          "Zakładki reprezentują realne sekcje i nie są zaśmiecone niskowartościowymi wpisami.",
+          "Listy punktowane i numerowane nie pozostają spłaszczone w akapitach.",
+          "Artefakty PDF w tekście są w granicach premium.",
+          "Struktura nagłówków i otwarć sekcji jest czytelniczo spójna.",
+          "Front matter jest odseparowany od głównego przepływu czytania.",
+          "Typografia i hierarchia wizualna wspierają komfort czytania na Kindle.",
+          "Metadane są czytelne dla użytkownika i nie eksponują technicznych slugów.",
+          "Publikacja jest w pelni text-first i nie uzywa page-image fallbacku."
+        ],
+        "what_is_bad": [
+          "Brak istotnych słabych punktów w tym przebiegu."
+        ],
+        "top_strengths": [
+          "Nawigacja i anchory są technicznie poprawne.",
+          "Zakładki reprezentują realne sekcje i nie są zaśmiecone niskowartościowymi wpisami.",
+          "Listy punktowane i numerowane nie pozostają spłaszczone w akapitach."
+        ],
+        "top_risks": [
+          "Brak istotnych słabych punktów w tym przebiegu."
+        ],
+        "summary": "Publikacja spełnia wymagania premium Kindle."
+      },
+      "what_is_good": [
+        "Nawigacja i anchory są technicznie poprawne.",
+        "Zakładki reprezentują realne sekcje i nie są zaśmiecone niskowartościowymi wpisami.",
+        "Listy punktowane i numerowane nie pozostają spłaszczone w akapitach.",
+        "Artefakty PDF w tekście są w granicach premium.",
+        "Struktura nagłówków i otwarć sekcji jest czytelniczo spójna.",
+        "Front matter jest odseparowany od głównego przepływu czytania.",
+        "Typografia i hierarchia wizualna wspierają komfort czytania na Kindle.",
+        "Metadane są czytelne dla użytkownika i nie eksponują technicznych slugów.",
+        "Publikacja jest w pelni text-first i nie uzywa page-image fallbacku."
+      ],
+      "what_is_bad": [
+        "Brak istotnych słabych punktów w tym przebiegu."
+      ],
+      "effective_failed_checks": [],
+      "failed_checks": [
+        "creator_not_unknown_for_release"
+      ],
+      "text_first_pass": true,
+      "coverage_pass": true,
+      "coverage_ratio": 1.0,
+      "text_first_pages": 1,
+      "hybrid_illustrated_pages": 0,
+      "fallback_count": 0,
+      "justified_fallback_count": 0,
+      "unjustified_fallback_count": 0,
+      "report_json_relative": "kindlemaster_runtime/output/release_gate/corpus/cover-letter-iwo-2026/reports/cover-letter-iwo-2026-end-to-end.json",
+      "verdict": "PASS",
+      "blockers": []
+    },
+    {
+      "publication_id": "strefa-pmi-52-2026",
+      "profile": "report_like",
+      "release_eligible": true,
+      "quality_score": 10.0,
+      "quality_target": 9.0,
+      "premium_gap": 0.0,
+      "premium_report": {
+        "score_1_10": 10.0,
+        "premium_target": 8.8,
+        "premium_gap": 0.0,
+        "verdict": "PREMIUM_STRONG",
+        "what_is_good": [
+          "Nawigacja i anchory są technicznie poprawne.",
+          "Zakładki reprezentują realne sekcje i nie są zaśmiecone niskowartościowymi wpisami.",
+          "Listy punktowane i numerowane nie pozostają spłaszczone w akapitach.",
+          "Artefakty PDF w tekście są w granicach premium.",
+          "Struktura nagłówków i otwarć sekcji jest czytelniczo spójna.",
+          "Front matter jest odseparowany od głównego przepływu czytania.",
+          "Typografia i hierarchia wizualna wspierają komfort czytania na Kindle.",
+          "Metadane są czytelne dla użytkownika i nie eksponują technicznych slugów.",
+          "Fallback obrazkowy pozostaje ograniczony do uzasadnionych sekcji i nie przecieka do zwyklych stron artykulowych (3 plikow)."
+        ],
+        "what_is_bad": [
+          "Brak istotnych słabych punktów w tym przebiegu."
+        ],
+        "top_strengths": [
+          "Nawigacja i anchory są technicznie poprawne.",
+          "Zakładki reprezentują realne sekcje i nie są zaśmiecone niskowartościowymi wpisami.",
+          "Listy punktowane i numerowane nie pozostają spłaszczone w akapitach."
+        ],
+        "top_risks": [
+          "Brak istotnych słabych punktów w tym przebiegu."
+        ],
+        "summary": "Publikacja spełnia wymagania premium Kindle."
+      },
+      "what_is_good": [
+        "Nawigacja i anchory są technicznie poprawne.",
+        "Zakładki reprezentują realne sekcje i nie są zaśmiecone niskowartościowymi wpisami.",
+        "Listy punktowane i numerowane nie pozostają spłaszczone w akapitach.",
+        "Artefakty PDF w tekście są w granicach premium.",
+        "Struktura nagłówków i otwarć sekcji jest czytelniczo spójna.",
+        "Front matter jest odseparowany od głównego przepływu czytania.",
+        "Typografia i hierarchia wizualna wspierają komfort czytania na Kindle.",
+        "Metadane są czytelne dla użytkownika i nie eksponują technicznych slugów.",
+        "Fallback obrazkowy pozostaje ograniczony do uzasadnionych sekcji i nie przecieka do zwyklych stron artykulowych (3 plikow)."
+      ],
+      "what_is_bad": [
+        "Brak istotnych słabych punktów w tym przebiegu."
+      ],
+      "effective_failed_checks": [],
+      "failed_checks": [],
+      "text_first_pass": true,
+      "coverage_pass": true,
+      "coverage_ratio": 1.0,
+      "text_first_pages": 81,
+      "hybrid_illustrated_pages": 0,
+      "fallback_count": 3,
+      "justified_fallback_count": 3,
+      "unjustified_fallback_count": 0,
+      "report_json_relative": "kindlemaster_runtime/output/release_gate/corpus/strefa-pmi-52-2026/reports/strefa-pmi-52-2026-end-to-end.json",
+      "verdict": "PASS",
+      "blockers": []
+    },
+    {
+      "publication_id": "newsweek-food-living-2026-01",
+      "profile": "magazine_like",
+      "release_eligible": false,
+      "quality_score": 10.0,
+      "quality_target": 8.8,
+      "premium_gap": 0.0,
+      "premium_report": {
+        "score_1_10": 10.0,
+        "premium_target": 8.8,
+        "premium_gap": 0.0,
+        "verdict": "PREMIUM_STRONG",
+        "what_is_good": [
+          "Nawigacja i anchory są technicznie poprawne.",
+          "Zakładki reprezentują realne sekcje i nie są zaśmiecone niskowartościowymi wpisami.",
+          "Listy punktowane i numerowane nie pozostają spłaszczone w akapitach.",
+          "Artefakty PDF w tekście są w granicach premium.",
+          "Struktura nagłówków i otwarć sekcji jest czytelniczo spójna.",
+          "Front matter jest odseparowany od głównego przepływu czytania.",
+          "Typografia i hierarchia wizualna wspierają komfort czytania na Kindle.",
+          "Metadane są czytelne dla użytkownika i nie eksponują technicznych slugów.",
+          "Fallback obrazkowy pozostaje ograniczony do uzasadnionych sekcji i nie przecieka do zwyklych stron artykulowych (13 plikow)."
+        ],
+        "what_is_bad": [
+          "Brak istotnych słabych punktów w tym przebiegu."
+        ],
+        "top_strengths": [
+          "Nawigacja i anchory są technicznie poprawne.",
+          "Zakładki reprezentują realne sekcje i nie są zaśmiecone niskowartościowymi wpisami.",
+          "Listy punktowane i numerowane nie pozostają spłaszczone w akapitach."
+        ],
+        "top_risks": [
+          "Brak istotnych słabych punktów w tym przebiegu."
+        ],
+        "summary": "Publikacja spełnia wymagania premium Kindle."
+      },
+      "what_is_good": [
+        "Nawigacja i anchory są technicznie poprawne.",
+        "Zakładki reprezentują realne sekcje i nie są zaśmiecone niskowartościowymi wpisami.",
+        "Listy punktowane i numerowane nie pozostają spłaszczone w akapitach.",
+        "Artefakty PDF w tekście są w granicach premium.",
+        "Struktura nagłówków i otwarć sekcji jest czytelniczo spójna.",
+        "Front matter jest odseparowany od głównego przepływu czytania.",
+        "Typografia i hierarchia wizualna wspierają komfort czytania na Kindle.",
+        "Metadane są czytelne dla użytkownika i nie eksponują technicznych slugów.",
+        "Fallback obrazkowy pozostaje ograniczony do uzasadnionych sekcji i nie przecieka do zwyklych stron artykulowych (13 plikow)."
+      ],
+      "what_is_bad": [
+        "Brak istotnych słabych punktów w tym przebiegu."
+      ],
+      "effective_failed_checks": [],
+      "failed_checks": [
+        "creator_not_unknown_for_release"
+      ],
+      "text_first_pass": true,
+      "coverage_pass": true,
+      "coverage_ratio": 1.0,
+      "text_first_pages": 95,
+      "hybrid_illustrated_pages": 0,
+      "fallback_count": 13,
+      "justified_fallback_count": 13,
+      "unjustified_fallback_count": 0,
+      "report_json_relative": "kindlemaster_runtime/output/release_gate/corpus/newsweek-food-living-2026-01/reports/9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411-end-to-end.json",
+      "verdict": "PASS",
+      "blockers": []
+    },
+    {
+      "publication_id": "chess-5334-problems-combinations-and-games",
+      "profile": "book_like",
+      "release_eligible": false,
+      "quality_score": 10.0,
+      "quality_target": 8.8,
+      "premium_gap": 0.0,
+      "premium_report": {
+        "score_1_10": 10.0,
+        "premium_target": 8.8,
+        "premium_gap": 0.0,
+        "verdict": "PREMIUM_STRONG",
+        "what_is_good": [
+          "Nawigacja i anchory są technicznie poprawne.",
+          "Zakładki reprezentują realne sekcje i nie są zaśmiecone niskowartościowymi wpisami.",
+          "Listy punktowane i numerowane nie pozostają spłaszczone w akapitach.",
+          "Artefakty PDF w tekście są w granicach premium.",
+          "Struktura nagłówków i otwarć sekcji jest czytelniczo spójna.",
+          "Front matter jest odseparowany od głównego przepływu czytania.",
+          "Typografia i hierarchia wizualna wspierają komfort czytania na Kindle.",
+          "Metadane są czytelne dla użytkownika i nie eksponują technicznych slugów.",
+          "Fallback obrazkowy pozostaje ograniczony do uzasadnionych sekcji i nie przecieka do zwyklych stron artykulowych (10 plikow)."
+        ],
+        "what_is_bad": [
+          "Brak istotnych słabych punktów w tym przebiegu."
+        ],
+        "top_strengths": [
+          "Nawigacja i anchory są technicznie poprawne.",
+          "Zakładki reprezentują realne sekcje i nie są zaśmiecone niskowartościowymi wpisami.",
+          "Listy punktowane i numerowane nie pozostają spłaszczone w akapitach."
+        ],
+        "top_risks": [
+          "Brak istotnych słabych punktów w tym przebiegu."
+        ],
+        "summary": "Publikacja spełnia wymagania premium Kindle."
+      },
+      "what_is_good": [
+        "Nawigacja i anchory są technicznie poprawne.",
+        "Zakładki reprezentują realne sekcje i nie są zaśmiecone niskowartościowymi wpisami.",
+        "Listy punktowane i numerowane nie pozostają spłaszczone w akapitach.",
+        "Artefakty PDF w tekście są w granicach premium.",
+        "Struktura nagłówków i otwarć sekcji jest czytelniczo spójna.",
+        "Front matter jest odseparowany od głównego przepływu czytania.",
+        "Typografia i hierarchia wizualna wspierają komfort czytania na Kindle.",
+        "Metadane są czytelne dla użytkownika i nie eksponują technicznych slugów.",
+        "Fallback obrazkowy pozostaje ograniczony do uzasadnionych sekcji i nie przecieka do zwyklych stron artykulowych (10 plikow)."
+      ],
+      "what_is_bad": [
+        "Brak istotnych słabych punktów w tym przebiegu."
+      ],
+      "effective_failed_checks": [],
+      "failed_checks": [
+        "creator_not_unknown_for_release"
+      ],
+      "text_first_pass": true,
+      "coverage_pass": true,
+      "coverage_ratio": 1.0,
+      "text_first_pages": 1174,
+      "hybrid_illustrated_pages": 0,
+      "fallback_count": 10,
+      "justified_fallback_count": 10,
+      "unjustified_fallback_count": 0,
+      "report_json_relative": "kindlemaster_runtime/output/release_gate/corpus/chess-5334-problems-combinations-and-games/reports/tactits-end-to-end.json",
+      "verdict": "PASS",
+      "blockers": []
+    }
+  ],
+  "pytest": {
+    "command": [
+      "python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_release_metadata.py",
+      "tests/test_conversion_traceability.py",
+      "tests/test_pdf_list_normalization.py",
+      "tests/test_text_quality_thresholds.py",
+      "tests/test_navigation_quality.py",
+      "tests/test_finalizer_stage_proofs.py",
+      "tests/test_front_matter_quality.py",
+      "tests/test_typography_ux.py",
+      "tests/test_image_layout_quality.py",
+      "tests/test_regressions.py",
+      "tests/test_release_candidate_immutability.py",
+      "tests/test_isolation_boundaries.py",
+      "tests/test_scenario_manifest.py",
+      "tests/test_corpus_quality_state.py",
+      "tests/test_genericity_guards.py"
+    ],
+    "exit_code": 0,
+    "tests_passed": 57,
+    "tests_failed": 0,
+    "failed_cases": [],
+    "stdout_tail": ".........................................................                [100%]\n57 passed in 66.66s (0:01:06)"
+  },
+  "release_blocking_issues": [],
+  "blockers": [],
+  "verdict": "PASS"
+}

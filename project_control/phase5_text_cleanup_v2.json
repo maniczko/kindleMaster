@@ -1,0 +1,43 @@
+{
+  "analysis_date": "2026-04-11",
+  "task_completed": "T5-002",
+  "inputs_path": "C:\\Users\\user\\Desktop\\quiz\\quiz\\samples\\epub",
+  "summary": {
+    "remaining_joined_word_review_tokens": 0,
+    "remaining_split_word_review_tokens": 0,
+    "remaining_furniture_review_tokens": 0,
+    "processed_files": 3
+  },
+  "files": [
+    {
+      "file_name": "9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411 (3).epub",
+      "remaining_joined_word_review": [],
+      "remaining_split_word_review": [],
+      "remaining_furniture_review": []
+    },
+    {
+      "file_name": "strefa-pmi-52-2026.epub",
+      "remaining_joined_word_review": [],
+      "remaining_split_word_review": [],
+      "remaining_furniture_review": []
+    },
+    {
+      "file_name": "tactits (2).epub",
+      "remaining_joined_word_review": [],
+      "remaining_split_word_review": [],
+      "remaining_furniture_review": []
+    }
+  ],
+  "quality_gate_g5": {
+    "pass": true,
+    "justification": [
+      "No tracked joined-word review tokens remain in processed outputs.",
+      "No tracked split-word review tokens remain in processed outputs.",
+      "Remaining furniture-like ambiguity is routed forward to semantic reconstruction instead of being silently deleted."
+    ]
+  },
+  "notes": [
+    "This assessment checks whether medium-confidence candidates from Phase 4 still remain in the processed EPUB after the current remediation pipeline.",
+    "Furniture-like editorial blocks are tracked separately because they belong partly to semantic reconstruction, not only text cleanup."
+  ]
+}

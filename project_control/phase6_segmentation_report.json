@@ -1,0 +1,41 @@
+{
+  "analysis_date": "2026-04-11",
+  "task": "T6-003",
+  "files": [
+    {
+      "file_name": "9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411 (3).epub",
+      "standard_article_chapters": 50,
+      "special_section_chapters": 1,
+      "page_like_chapters": 0,
+      "organizationally_repaired_chapters": 1
+    },
+    {
+      "file_name": "strefa-pmi-52-2026.epub",
+      "standard_article_chapters": 2,
+      "special_section_chapters": 28,
+      "page_like_chapters": 0,
+      "organizationally_repaired_chapters": 1
+    },
+    {
+      "file_name": "tactits (2).epub",
+      "standard_article_chapters": 14,
+      "special_section_chapters": 0,
+      "page_like_chapters": 6,
+      "organizationally_repaired_chapters": 0
+    }
+  ],
+  "totals": {
+    "special_section_chapters": 29,
+    "organizationally_repaired_chapters": 2,
+    "standard_article_chapters": 66,
+    "page_like_chapters": 6
+  },
+  "quality_gate_g6": {
+    "pass": true,
+    "justification": [
+      "Segmentation report distinguishes standard articles, special sections, and page-like chapters.",
+      "Organizational blocks are visible as repairable special sections instead of normal article titles.",
+      "Mixed-layout page-like chapters are explicitly surfaced for later layout handling."
+    ]
+  }
+}

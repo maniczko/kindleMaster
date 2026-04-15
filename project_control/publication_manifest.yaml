@@ -1,0 +1,79 @@
+version: 1
+last_updated: 2026-04-12
+project: kindle-master
+authoritative_for_release_metadata: true
+metadata_precedence:
+  - cli_override
+  - publication_manifest
+  - source_metadata_for_non_release_only
+publications:
+  - publication_id: cover-letter-iwo-2026
+    profile: document_like
+    scenario_profiles:
+      - document_like
+    inputs:
+      pdf_path: samples/pdf/cover-letter-iwo-2026.pdf
+    release_metadata:
+      title: "Application: Finance Process & Automation Lead"
+      creator: ""
+      language: en
+    status:
+      fixture_quality: real_repo_local
+      release_eligible: false
+    notes:
+      - Single-page cover letter fixture used to satisfy document-like scenario coverage with a real repo-local PDF.
+      - Title is taken from the visible first line of the source page.
+      - Creator remains intentionally unresolved, so this fixture is scenario-valid but not release-eligible.
+  - publication_id: strefa-pmi-52-2026
+    profile: report_like
+    scenario_profiles:
+      - report_like
+    inputs:
+      pdf_path: samples/pdf/strefa-pmi-52-2026.pdf
+      epub_path: samples/epub/strefa-pmi-52-2026.epub
+    release_metadata:
+      title: Strefa PMI nr 52 (marzec 2026)
+      creator: Project Management Institute Poland Chapter
+      language: pl
+    status:
+      fixture_quality: real_repo_local
+      release_eligible: true
+    notes:
+      - Release metadata is sourced from visible repo-local cover and masthead evidence on page 1 of the source PDF.
+  - publication_id: newsweek-food-living-2026-01
+    profile: magazine_like
+    scenario_profiles:
+      - magazine_like
+    inputs:
+      pdf_path: samples/pdf/9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411.pdf
+      epub_path: samples/epub/9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411 (3).epub
+    release_metadata:
+      title: Newsweek Food & Living 1/2026
+      creator: ""
+      language: pl
+    status:
+      fixture_quality: real_repo_local
+      release_eligible: false
+    notes:
+      - Title is visible on the cover.
+      - Creator is still not trusted from repo-local evidence, so this fixture remains non-release until explicit metadata is sourced.
+  - publication_id: chess-5334-problems-combinations-and-games
+    profile: book_like
+    scenario_profiles:
+      - book_like
+      - mixed_layout
+    inputs:
+      pdf_path: samples/pdf/tactits.pdf
+      epub_path: samples/epub/tactits (2).epub
+    release_metadata:
+      title: "Chess: 5334 Problems, Combinations and Games"
+      creator: ""
+      language: en
+    status:
+      fixture_quality: real_repo_local
+      release_eligible: false
+    notes:
+      - Title is available from source metadata and existing EPUB evidence.
+      - Creator remains unresolved and must not be promoted to release-ready metadata without trusted evidence.
+      - This fixture is intentionally counted for both book-like and mixed-layout scenario coverage because the reading flow is book-oriented while the page structure remains heavily notation- and layout-driven.
+coverage_gaps: []

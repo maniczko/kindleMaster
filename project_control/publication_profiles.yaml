@@ -1,0 +1,46 @@
+version: 1
+supported_profiles:
+  - document_like
+  - book_like
+  - report_like
+  - magazine_like
+  - mixed_layout
+profiles:
+  - id: document_like
+    description: pragmatic document flow such as letters, memos, whitepapers, or short business documents with low editorial complexity
+    risks:
+      - metadata trust
+      - page furniture leakage
+      - weak title-page packaging
+  - id: book_like
+    description: mostly linear reading flow with limited layout interruption
+    risks:
+      - chapter-title quality
+      - split and joined word cleanup
+      - heading consistency
+  - id: report_like
+    description: article or report style content with editorial sections and possible masthead residue
+    risks:
+      - title and subtitle separation
+      - furniture leakage
+      - low-value TOC entries
+  - id: magazine_like
+    description: highly sectional content with credits, ads, and frequent short features
+    risks:
+      - article segmentation
+      - TOC noise
+      - special-section handling
+  - id: mixed_layout
+    description: image-heavy or layout-heavy content where some sections may remain page-like
+    risks:
+      - image overload
+      - page-like handling
+      - false positives from notation-heavy or structured layouts
+current_corpus:
+  detected_profiles:
+    - document_like
+    - book_like
+    - magazine_like
+    - report_like
+    - mixed_layout
+  missing_profiles: []

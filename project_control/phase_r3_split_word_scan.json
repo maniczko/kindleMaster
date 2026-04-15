@@ -1,0 +1,20 @@
+{
+  "date": "2026-04-12",
+  "epub": "kindlemaster_runtime/output/final_epub/strefa-pmi-52-2026.epub",
+  "scan_scope": "all_final_xhtml_content",
+  "files_scanned": 85,
+  "matches_total": 1,
+  "matches": [
+    {
+      "file": "EPUB/xhtml/page-0033.xhtml",
+      "tag": "p",
+      "snippet": "Tablica uznania (online/offline) Publiczna Zespoły rozproszo ne lub hybrydowe Osoby lubiące widoczność i współdzielenie Buduje wspól notę i celebruje drobne suk",
+      "match": "Sylwester- Kanofocka",
+      "left": "Sylwester",
+      "right": "Kanofocka",
+      "confidence": "medium",
+      "decision": "review_only",
+      "reason": "proper_name_or_ambiguous_hyphen_split"
+    }
+  ]
+}

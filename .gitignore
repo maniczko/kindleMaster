@@ -4,3 +4,15 @@ dist/
 .env.local
 .env.*.local
 !.env.example
+.codex/*
+!.codex/config.toml
+.claude/
+.qwen/
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+coverage/
+*.pyc
+kindlemaster_runtime/output/
+kindlemaster_runtime/uploads/

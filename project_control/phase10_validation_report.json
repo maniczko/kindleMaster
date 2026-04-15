@@ -1,0 +1,46 @@
+{
+  "analysis_date": "2026-04-11",
+  "task": "T10-001",
+  "files": [
+    {
+      "file_name": "9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411 (3).epub",
+      "manifest_missing_targets": 0,
+      "spine_missing_targets": 0,
+      "nav_missing": 0,
+      "toc_missing": 0,
+      "xml_declaration_duplicates": 0
+    },
+    {
+      "file_name": "strefa-pmi-52-2026.epub",
+      "manifest_missing_targets": 0,
+      "spine_missing_targets": 0,
+      "nav_missing": 0,
+      "toc_missing": 0,
+      "xml_declaration_duplicates": 0
+    },
+    {
+      "file_name": "tactits (2).epub",
+      "manifest_missing_targets": 0,
+      "spine_missing_targets": 0,
+      "nav_missing": 0,
+      "toc_missing": 0,
+      "xml_declaration_duplicates": 0
+    }
+  ],
+  "totals": {
+    "packages_valid": 3,
+    "manifest_missing_targets": 0,
+    "spine_missing_targets": 0,
+    "nav_missing": 0,
+    "toc_missing": 0,
+    "xml_declaration_duplicates": 0
+  },
+  "quality_gate_g10": {
+    "pass": true,
+    "justification": [
+      "All processed packages contain manifest targets, spine targets, nav.xhtml, and toc.ncx.",
+      "No duplicate XML declarations remain in processed XHTML files.",
+      "The lightweight structural validation found no broken package references."
+    ]
+  }
+}

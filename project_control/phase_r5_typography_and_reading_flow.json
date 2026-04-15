@@ -1,0 +1,78 @@
+[
+  {
+    "publication_id": "cover-letter-iwo-2026",
+    "profile": "document_like",
+    "body_line_height": 1.4,
+    "heading_hierarchy_pass": true,
+    "title_author_lead_distinction_pass": true,
+    "page_marker_hidden": true,
+    "ux_pass": true,
+    "class_instances": {
+      "byline": 1,
+      "lead": 1,
+      "organizational-line": 0,
+      "section-banner": 0
+    },
+    "premium_score": 9.7,
+    "premium_verdict": "PREMIUM_STRONG",
+    "page_label_count": 0,
+    "page_label_toc_count": 0
+  },
+  {
+    "publication_id": "strefa-pmi-52-2026",
+    "profile": "report_like",
+    "body_line_height": 1.4,
+    "heading_hierarchy_pass": true,
+    "title_author_lead_distinction_pass": true,
+    "page_marker_hidden": true,
+    "ux_pass": true,
+    "class_instances": {
+      "byline": 44,
+      "lead": 24,
+      "organizational-line": 42,
+      "section-banner": 70
+    },
+    "premium_score": 10.0,
+    "premium_verdict": "PREMIUM_STRONG",
+    "page_label_count": 0,
+    "page_label_toc_count": 0
+  },
+  {
+    "publication_id": "newsweek-food-living-2026-01",
+    "profile": "magazine_like",
+    "body_line_height": 1.4,
+    "heading_hierarchy_pass": true,
+    "title_author_lead_distinction_pass": true,
+    "page_marker_hidden": true,
+    "ux_pass": true,
+    "class_instances": {
+      "byline": 1,
+      "lead": 16,
+      "organizational-line": 49,
+      "section-banner": 19
+    },
+    "premium_score": 10.0,
+    "premium_verdict": "PREMIUM_STRONG",
+    "page_label_count": 0,
+    "page_label_toc_count": 0
+  },
+  {
+    "publication_id": "chess-5334-problems-combinations-and-games",
+    "profile": "book_like",
+    "body_line_height": 1.4,
+    "heading_hierarchy_pass": true,
+    "title_author_lead_distinction_pass": true,
+    "page_marker_hidden": true,
+    "ux_pass": true,
+    "class_instances": {
+      "byline": 60,
+      "lead": 1,
+      "organizational-line": 3,
+      "section-banner": 5
+    },
+    "premium_score": 10.0,
+    "premium_verdict": "PREMIUM_STRONG",
+    "page_label_count": 0,
+    "page_label_toc_count": 0
+  }
+]

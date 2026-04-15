@@ -1,0 +1,72 @@
+{
+  "analysis_date": "2026-04-11",
+  "task_completed": "T5-003",
+  "comparison_basis": "Phase 4 candidate persistence after current remediation pipeline",
+  "totals_before": {
+    "split_word_candidates": 42,
+    "joined_word_candidates": 0,
+    "boundary_corruption_candidates": 47,
+    "page_furniture_candidates": 24,
+    "low_confidence_cases": 26
+  },
+  "totals_after": {
+    "split_word_candidates": 0,
+    "joined_word_candidates": 0,
+    "boundary_corruption_candidates": 0,
+    "page_furniture_candidates": 13,
+    "low_confidence_cases": 0
+  },
+  "deltas": {
+    "split_word_candidates_delta": -42,
+    "joined_word_candidates_delta": 0,
+    "boundary_corruption_candidates_delta": -47,
+    "page_furniture_candidates_delta": -11,
+    "low_confidence_cases_delta": -26
+  },
+  "files": [
+    {
+      "file_name": "9d0316f6261ee5f304dc285523800c9f646653af6ff7484fca73344495eaf411 (3).epub",
+      "after_counts": {
+        "split_word_candidates": 0,
+        "joined_word_candidates": 0,
+        "boundary_corruption_candidates": 0,
+        "page_furniture_candidates": 0,
+        "low_confidence_cases": 0
+      }
+    },
+    {
+      "file_name": "strefa-pmi-52-2026.epub",
+      "after_counts": {
+        "split_word_candidates": 0,
+        "joined_word_candidates": 0,
+        "boundary_corruption_candidates": 0,
+        "page_furniture_candidates": 0,
+        "low_confidence_cases": 0
+      }
+    },
+    {
+      "file_name": "tactits (2).epub",
+      "after_counts": {
+        "split_word_candidates": 0,
+        "joined_word_candidates": 0,
+        "boundary_corruption_candidates": 0,
+        "page_furniture_candidates": 13,
+        "low_confidence_cases": 0
+      }
+    }
+  ],
+  "quality_gate_g5": {
+    "pass": true,
+    "justification": [
+      "Split-word candidate persistence dropped from 42 to 0.",
+      "Boundary-corruption candidate persistence dropped from 47 to 0.",
+      "No joined-word candidate persistence remains in processed outputs.",
+      "No new text regression was detected by the candidate-persistence comparison."
+    ]
+  },
+  "notes": [
+    "After counts are measured as Phase 4 candidate strings still present in the processed EPUB outputs.",
+    "This is a traceable candidate-persistence comparison, not a full linguistic quality model.",
+    "Furniture-like editorial blocks are allowed to persist into semantic reconstruction and are not counted as text regressions here when they are routed forward explicitly."
+  ]
+}

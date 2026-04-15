@@ -1,0 +1,63 @@
+[project]
+name = "kindlemaster"
+control_plane = "project_control"
+reports_dir = "reports"
+
+[tracking]
+backlog = "project_control/backlog.yaml"
+status_board = "project_control/status_board.md"
+issue_register = "project_control/issue_register.yaml"
+review_queue = "project_control/low_confidence_review_queue.yaml"
+metrics = "project_control/metrics.json"
+input_registry = "project_control/input_registry.yaml"
+
+[execution]
+allowed_task_statuses = ["TODO", "IN_PROGRESS", "DONE", "REVIEW", "BLOCKED", "DEFERRED"]
+allowed_issue_statuses = ["OPEN", "IN_FIX", "RESOLVED", "WONT_FIX", "NEEDS_REVIEW", "REGRESSION"]
+preferred_start_mode = "AUTO_DETECT"
+stop_on_editorial_ambiguity = true
+traceability_required = true
+project_isolation_required = true
+
+[artifact_lifecycle]
+baseline_root = "kindlemaster_runtime/output/baseline_epub"
+final_root = "kindlemaster_runtime/output/final_epub"
+release_candidate_root = "kindlemaster_runtime/output/release_candidate"
+proof_root = "kindlemaster_runtime/output/reports"
+overwrite_prevention_required = true
+finalizer_monolith_is_release_risk = true
+release_candidate_immutable = true
+
+[version]
+source = "VERSION"
+
+[quality]
+evidence_required_for_done = true
+metrics_required_for_quality_tasks = true
+gate_pass_required_for_done = true
+regression_check_required_for_quality_tasks = true
+premium_audit_required_for_ready = true
+
+[release]
+ready_requires_all_tests = true
+ready_requires_all_release_blocking_gates = true
+ready_requires_isolation_pass = true
+ready_requires_distinct_final_artifact = true
+ready_requires_release_candidate = true
+
+[automation]
+mandatory_post_task_update_order = [
+  "project_control/backlog.yaml",
+  "project_control/issue_register.yaml",
+  "project_control/metrics.json",
+  "project_control/low_confidence_review_queue.yaml",
+  "project_control/status_board.md",
+  "reports/current_iteration.md"
+]
+continue_after_not_ready = true
+
+[isolation]
+quizzen_coupling_is_release_blocker = true
+shared_output_paths_forbidden = true
+shared_runtime_assumptions_forbidden = true
+shared_ci_forbidden = true

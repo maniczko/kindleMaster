@@ -1,0 +1,147 @@
+version: 4
+agents:
+  - id: LEAD-001
+    backlog_owner: Lead / Orchestrator
+    name: Lead / Orchestrator Agent
+    authority:
+      - maintain backlog and orchestration
+      - choose next eligible task
+      - create FX-* remediation tasks
+      - cannot override failed quality gates
+      - cannot declare READY
+    responsibilities:
+      - normalize project tasks
+      - manage dependencies and handoffs
+      - update status board and iteration reports
+      - enforce autonomous continuation after NOT READY
+
+  - id: BOUNDARY-001
+    backlog_owner: Cross-Project Boundary
+    name: Cross-Project Boundary Agent
+    authority:
+      - inspect Kindle Master-side coupling
+      - mark coupling as release-relevant
+    responsibilities:
+      - audit foreign frontend/runtime isolation from the Kindle Master side
+      - log coupling defects
+      - maintain boundary evidence
+
+  - id: INTAKE-001
+    backlog_owner: Input & Intake
+    name: Input & Intake Agent
+    responsibilities:
+      - detect repo-local inputs
+      - validate execution mode
+      - update input registry
+      - block clearly when required inputs are missing
+
+  - id: PDF-001
+    backlog_owner: PDF Analysis
+    name: PDF Analysis Agent
+    responsibilities:
+      - inventory source PDFs
+      - classify complexity and risk
+      - expose OCR/layout/conversion risks
+
+  - id: CONVERT-001
+    backlog_owner: Baseline Conversion Strategy
+    name: Baseline Conversion Strategy Agent
+    responsibilities:
+      - define baseline conversion strategy
+      - define fallback strategy
+      - define image vs reflow rules
+      - execute baseline conversion when in scope
+
+  - id: EPUB-001
+    backlog_owner: EPUB Analysis
+    name: EPUB Analysis Agent
+    responsibilities:
+      - inventory EPUB package
+      - build publication model
+      - classify publication type
+      - compute BEFORE metrics
+      - log initial EPUB defects
+
+  - id: TEXT-001
+    backlog_owner: Text Cleanup
+    name: Text Cleanup Agent
+    hard_constraints:
+      - no paraphrase
+      - no meaning change
+      - no silent guessing
+    responsibilities:
+      - detect split and joined words
+      - detect broken boundaries
+      - detect furniture leakage
+      - apply safe cleanup
+      - route uncertainty
+
+  - id: SEM-001
+    backlog_owner: Structure & Semantics
+    name: Structure & Semantics Agent
+    responsibilities:
+      - classify semantic blocks
+      - reconstruct article openings
+      - segment special sections
+      - protect title/author/lead boundaries
+
+  - id: NAV-001
+    backlog_owner: TOC & Navigation
+    name: TOC & Navigation Agent
+    responsibilities:
+      - derive TOC from final semantics
+      - filter noise and duplicates
+      - validate anchors and paths
+      - rebuild nav.xhtml and toc.ncx
+
+  - id: IMG-001
+    backlog_owner: Image & Layout
+    name: Image & Layout Agent
+    responsibilities:
+      - classify layout-heavy sections
+      - define image/reflow/page-like handling
+      - log Kindle readability risks
+
+  - id: CSS-001
+    backlog_owner: CSS / Kindle UX
+    name: CSS / Kindle UX Agent
+    responsibilities:
+      - normalize CSS
+      - improve typography and first-screen rhythm
+      - suppress page-label dominance
+      - assess Kindle reading flow
+
+  - id: GATE-001
+    backlog_owner: Quality Guardian / Release Gate
+    name: Quality Guardian / Release Gate Agent
+    authority:
+      - define release-blocking tests
+      - fail weak outputs
+      - force NOT READY
+      - cannot be bypassed
+    responsibilities:
+      - maintain required test classes
+      - enforce release-blocking gates
+      - reject incomplete quality claims
+
+  - id: QA-001
+    backlog_owner: QA / Regression
+    name: QA / Regression Agent
+    authority:
+      - prove or disprove improvement
+      - cannot close quality tasks without evidence
+    responsibilities:
+      - run technical validation
+      - run regression comparisons
+      - measure before/after improvement
+      - maintain scoring evidence
+
+  - id: RELEASE-001
+    backlog_owner: Release Readiness
+    name: Release Readiness Agent
+    authority:
+      - issue final READY / NOT READY
+    responsibilities:
+      - evaluate release readiness
+      - list unresolved blockers
+      - require continuation plan when NOT READY

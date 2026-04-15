@@ -1,0 +1,48 @@
+{
+  "epub": "C:\\Users\\user\\Desktop\\quiz\\quiz\\kindlemaster_runtime\\output\\final_epub\\strefa-pmi-52-2026.epub",
+  "metadata": {
+    "title": "Strefa PMI nr 52 (marzec 2026)",
+    "creator": "Project Management Institute Poland Chapter",
+    "language": "pl"
+  },
+  "counts": {
+    "h1_count": 27,
+    "toc_entry_count": 6,
+    "duplicate_low_value_entries": 0,
+    "page_label_toc_count": 0,
+    "author_only_noise_count": 0,
+    "special_section_toc_count": 0,
+    "special_heading_count": 0,
+    "split_word_count": 0,
+    "joined_word_boundary_count": 0,
+    "page_label_count": 0,
+    "title_merge_count": 0
+  },
+  "checks": {
+    "no_opaque_or_slug_human_title": true,
+    "creator_not_unknown_for_release": true,
+    "valid_h1_presence_where_applicable": true,
+    "no_title_author_lead_page_merge": true,
+    "special_sections_not_articles": true,
+    "valid_nav_paths": true,
+    "valid_ncx_paths": true,
+    "valid_anchors": true,
+    "no_duplicate_low_value_entries": true,
+    "no_page_label_dominance": true,
+    "no_author_only_noise": true,
+    "no_front_matter_toc_pollution": true,
+    "no_nonpackaged_stylesheet_reference": true
+  },
+  "failed_checks": [],
+  "nav_dead_targets": [],
+  "ncx_dead_targets": [],
+  "missing_stylesheets": [],
+  "toc_items": [
+    "Nie plan, lecz pętla: jak Kata i AI zmieniają sposób realizacji projektów",
+    "Projekt dowieziony. System zawiódł. O czym naprawdę jest Project Delivery Excellence",
+    "AI as a Mentor: Emerging Evidence on Human AI Collaboration in Project Management",
+    "Jak wybrać najlepsze projekty i mieć zbilansowany portfel projektów?",
+    "C.O.N.G.R.E.S.S. Decoded: Eight Letters That Shaped My First PMI Experience",
+    "Projektowe Słowa Roku 2025 – subiektywny ranking Strefy PMI"
+  ]
+}

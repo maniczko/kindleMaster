@@ -1,6 +1,66 @@
-node_modules/
-dist/
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Agent/editor state
+.claude/
+
+# Local environments
 .env
 .env.local
 .env.*.local
-!.env.example
+
+# Build artifacts and generated EPUB/PDF outputs
+*.epub
+*.pdf
+assessment_output*/
+final_magazine_output/
+final_premium_output*/
+analysis_magazine_epub/
+epub_contents/
+inspect_*/
+temp_epub_preview*/
+tmp_*/
+
+# Logs and debug dumps
+*.log
+*.err.log
+*.out.log
+verify_result.txt
+detection_result.txt
+pdf_analysis.txt
+live_test_headers.txt
+*_report.json
+*.audit.json
+epub_validation_summary.json
+test_result.txt
+
+# Generated runtime artifacts
+reports/
+output/
+.playwright-cli/
+live_test_v9_unzipped/
+
+# Binary/tool downloads kept locally
+node_modules/
+dist/
+tools/
+tesseract-setup.exe
+extracted_img_*.jpeg
+rendered_page.png
+single_diagram_test.png
+
+# Misc local reports / scratch files
+*_REPORT.md
+RUNDA_1_REPORT.md
+DEEP_ANALYSIS.md
+DIAGNOSTIC_REPORT.md
+FINAL_REPORT.md
+FINAL_COMPARISON_REPORT.md
+FINAL_IMPROVEMENT_REPORT.md
+FINAL_OPTIMIZATION_REPORT.md
+SIZE_OPTIMIZATION_REPORT.md
+TECHNICAL_ANALYSIS.md
+CHESS_DIAGRAM_REPORT.md
+CHESS_DIAGRAM_FIX_REPORT.md

@@ -1,0 +1,227 @@
+{
+  "file_info": {
+    "path": "c:\\Users\\user\\Desktop\\Wycieczka do Krzywego Lasu.pdf",
+    "size_bytes": 344213,
+    "page_count": 1,
+    "is_pdf": true,
+    "is_encrypted": false,
+    "needs_pass": 0,
+    "metadata": {
+      "format": "PDF 1.7",
+      "title": "",
+      "author": "Iwo Czajka",
+      "subject": "",
+      "keywords": "",
+      "creator": "Microsoft® Word dla Microsoft 365",
+      "producer": "Microsoft® Word dla Microsoft 365",
+      "creationDate": "D:20251122152816+01'00'",
+      "modDate": "D:20251122152816+01'00'",
+      "trapped": "",
+      "encryption": null
+    }
+  },
+  "pages": [
+    {
+      "page_num": 1,
+      "dimensions": {
+        "width_pt": 595.3200073242188,
+        "height_pt": 841.9199829101562,
+        "width_mm": 210.0288985839844,
+        "height_mm": 297.0293699707031
+      },
+      "mediabox": [
+        0.0,
+        0.0,
+        595.3200073242188,
+        841.9199829101562
+      ],
+      "cropbox": [
+        0.0,
+        0.0,
+        595.3200073242188,
+        841.9199829101562
+      ],
+      "bleedbox": [
+        0.0,
+        0.0,
+        595.3200073242188,
+        841.9199829101562
+      ],
+      "trimbox": [
+        0.0,
+        0.0,
+        595.3200073242188,
+        841.9199829101562
+      ],
+      "artbox": [
+        0.0,
+        0.0,
+        595.3200073242188,
+        841.9199829101562
+      ],
+      "text_analysis": {
+        "total_chars": 26,
+        "text_length": 34,
+        "unique_colors": 1,
+        "color_samples": [
+          2187162
+        ]
+      },
+      "fonts": {
+        "Aptos Display_36.0": {
+          "font": "Aptos Display",
+          "size": 36.0,
+          "count": 1,
+          "is_bold": false,
+          "is_italic": false,
+          "is_serif": false,
+          "color": 2187162
+        }
+      },
+      "images": [
+        {
+          "xref": 16,
+          "name": "",
+          "width_px": 1176,
+          "height_px": 780,
+          "format": "jpeg",
+          "colorspace": "RGB",
+          "colorspace_num": 3,
+          "smask": 0,
+          "image_bytes": 230451,
+          "display_rects": [
+            {
+              "x0": 91.17500305175781,
+              "y0": 168.719970703125,
+              "x1": 504.125,
+              "y1": 442.6099853515625,
+              "width": 412.9499969482422,
+              "height": 273.8900146484375
+            }
+          ],
+          "estimated_dpi_w": 205.0,
+          "estimated_dpi_h": 205.0,
+          "bits_per_component": 8,
+          "compression": ""
+        },
+        {
+          "xref": 17,
+          "name": "",
+          "width_px": 1197,
+          "height_px": 476,
+          "format": "jpeg",
+          "colorspace": "RGB",
+          "colorspace_num": 3,
+          "smask": 0,
+          "image_bytes": 81238,
+          "display_rects": [
+            {
+              "x0": 70.8499984741211,
+              "y0": 453.5400085449219,
+              "x1": 524.4500122070312,
+              "y1": 633.8900146484375,
+              "width": 453.60001373291016,
+              "height": 180.35000610351562
+            }
+          ],
+          "estimated_dpi_w": 190.0,
+          "estimated_dpi_h": 190.0,
+          "bits_per_component": 8,
+          "compression": ""
+        }
+      ],
+      "image_count": 2
+    }
+  ],
+  "global_fonts": {
+    "Aptos Display_36.0": {
+      "font": "Aptos Display",
+      "size": 36.0,
+      "count": 1,
+      "is_bold": false,
+      "is_italic": false,
+      "is_serif": false,
+      "color": 2187162
+    }
+  },
+  "all_images": [
+    {
+      "xref": 16,
+      "name": "",
+      "width_px": 1176,
+      "height_px": 780,
+      "format": "jpeg",
+      "colorspace": "RGB",
+      "colorspace_num": 3,
+      "smask": 0,
+      "image_bytes": 230451,
+      "display_rects": [
+        {
+          "x0": 91.17500305175781,
+          "y0": 168.719970703125,
+          "x1": 504.125,
+          "y1": 442.6099853515625,
+          "width": 412.9499969482422,
+          "height": 273.8900146484375
+        }
+      ],
+      "estimated_dpi_w": 205.0,
+      "estimated_dpi_h": 205.0,
+      "bits_per_component": 8,
+      "compression": "",
+      "page": 1
+    },
+    {
+      "xref": 17,
+      "name": "",
+      "width_px": 1197,
+      "height_px": 476,
+      "format": "jpeg",
+      "colorspace": "RGB",
+      "colorspace_num": 3,
+      "smask": 0,
+      "image_bytes": 81238,
+      "display_rects": [
+        {
+          "x0": 70.8499984741211,
+          "y0": 453.5400085449219,
+          "x1": 524.4500122070312,
+          "y1": 633.8900146484375,
+          "width": 453.60001373291016,
+          "height": 180.35000610351562
+        }
+      ],
+      "estimated_dpi_w": 190.0,
+      "estimated_dpi_h": 190.0,
+      "bits_per_component": 8,
+      "compression": "",
+      "page": 1
+    }
+  ],
+  "total_images": 2,
+  "color_spaces_used": [
+    "RGB"
+  ],
+  "has_vector_graphics": false,
+  "has_annotations": false,
+  "has_links": false,
+  "toc": [],
+  "has_bookmarks": false,
+  "icc_profiles": [],
+  "chess_diagram_candidates": [],
+  "text_samples": [
+    {
+      "text": "Wycieczka do Krzywego Lasu",
+      "font": "Aptos Display",
+      "size": 36.0,
+      "color": 2187162,
+      "page": 1,
+      "bbox": [
+        85.94400024414062,
+        88.85597229003906,
+        516.3280029296875,
+        132.81198120117188
+      ]
+    }
+  ]
+}

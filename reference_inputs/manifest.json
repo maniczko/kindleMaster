@@ -1,0 +1,123 @@
+{
+  "version": 2,
+  "root_dir": ".",
+  "cases": [
+    {
+      "id": "ocr_probe_pdf",
+      "document_class": "ocr_probe",
+      "input_type": "pdf",
+      "language": "pl",
+      "quick_smoke": true,
+      "source": "example/ocr_runtime_probe.pdf",
+      "target": "reference_inputs/pdf/ocr_probe.pdf",
+      "notes": "Tiny OCR probe for the fastest conversion smoke.",
+      "source_path": "example/ocr_runtime_probe.pdf",
+      "target_path": "reference_inputs/pdf/ocr_probe.pdf",
+      "size_bytes": 859
+    },
+    {
+      "id": "dense_business_guide_pdf",
+      "document_class": "dense_business_guide",
+      "input_type": "pdf",
+      "language": "en",
+      "quick_smoke": false,
+      "source": "example/BABOK_Guide_v3_Member.pdf",
+      "target": "reference_inputs/pdf/dense_business_guide.pdf",
+      "notes": "Dense handbook fixture for heading, TOC, and text-cleanup regression.",
+      "source_path": "example/BABOK_Guide_v3_Member.pdf",
+      "target_path": "reference_inputs/pdf/dense_business_guide.pdf",
+      "size_bytes": 4432970
+    },
+    {
+      "id": "diagram_training_book_pdf",
+      "document_class": "diagram_training_book",
+      "input_type": "pdf",
+      "language": "en",
+      "quick_smoke": false,
+      "source": "example/tactits_sample_80pages.pdf",
+      "target": "reference_inputs/pdf/diagram_training_book.pdf",
+      "notes": "Training/diagram-heavy PDF for layout-sensitive smoke runs.",
+      "source_path": "example/tactits_sample_80pages.pdf",
+      "target_path": "reference_inputs/pdf/diagram_training_book.pdf",
+      "size_bytes": 1092189
+    },
+    {
+      "id": "magazine_layout_pdf",
+      "document_class": "magazine_layout",
+      "input_type": "pdf",
+      "language": "pl",
+      "quick_smoke": false,
+      "source": "example/02695ab2e05aab728b4b995caa682f947e8be2c3291ff490579797c5a3cc5e26.pdf",
+      "target": "reference_inputs/pdf/magazine_layout.pdf",
+      "notes": "Magazine/business-report style PDF with layout-heavy structures.",
+      "source_path": "example/02695ab2e05aab728b4b995caa682f947e8be2c3291ff490579797c5a3cc5e26.pdf",
+      "target_path": "reference_inputs/pdf/magazine_layout.pdf",
+      "size_bytes": 10790479
+    },
+    {
+      "id": "scan_probe_epub",
+      "document_class": "scan_probe",
+      "input_type": "epub",
+      "language": "pl",
+      "quick_smoke": true,
+      "source": "example/scan_probe_premium.epub",
+      "target": "reference_inputs/epub/scan_probe.epub",
+      "notes": "Small EPUB for fast validator and repair smoke.",
+      "source_path": "example/scan_probe_premium.epub",
+      "target_path": "reference_inputs/epub/scan_probe.epub",
+      "size_bytes": 16687
+    },
+    {
+      "id": "dense_business_guide_epub",
+      "document_class": "dense_business_guide",
+      "input_type": "epub",
+      "language": "en",
+      "quick_smoke": false,
+      "source": "example/BABOK_current_output.epub",
+      "target": "reference_inputs/epub/dense_business_guide.epub",
+      "notes": "Representative generated EPUB for release-audit and validator smoke.",
+      "source_path": "example/BABOK_current_output.epub",
+      "target_path": "reference_inputs/epub/dense_business_guide.epub",
+      "size_bytes": 691647
+    },
+    {
+      "id": "simple_report_docx",
+      "document_class": "docx_structured_report",
+      "input_type": "docx",
+      "language": "pl",
+      "quick_smoke": true,
+      "target": "reference_inputs/docx/simple_report.docx",
+      "notes": "Small heading-driven DOCX fixture for quick conversion smoke.",
+      "generator": "simple_report",
+      "source_path": "<generated:simple_report>",
+      "target_path": "reference_inputs/docx/simple_report.docx",
+      "size_bytes": 35615
+    },
+    {
+      "id": "list_table_image_docx",
+      "document_class": "docx_rich_content",
+      "input_type": "docx",
+      "language": "en",
+      "quick_smoke": false,
+      "target": "reference_inputs/docx/list_table_image.docx",
+      "notes": "DOCX fixture with lists, tables, links, and inline imagery.",
+      "generator": "list_table_image",
+      "source_path": "<generated:list_table_image>",
+      "target_path": "reference_inputs/docx/list_table_image.docx",
+      "size_bytes": 38820
+    },
+    {
+      "id": "no_heading_document_docx",
+      "document_class": "docx_no_h1",
+      "input_type": "docx",
+      "language": "pl",
+      "quick_smoke": false,
+      "target": "reference_inputs/docx/no_heading_document.docx",
+      "notes": "DOCX without Heading 1 styles to test deterministic fallback sectioning.",
+      "generator": "no_heading_document",
+      "source_path": "<generated:no_heading_document>",
+      "target_path": "reference_inputs/docx/no_heading_document.docx",
+      "size_bytes": 35563
+    }
+  ]
+}

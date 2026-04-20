@@ -1,0 +1,40 @@
+# KindleMaster project-local Codex configuration.
+# This file complements ~/.codex/config.toml with repo-specific defaults.
+#
+# Standard repo commands:
+# - bootstrap: python kindlemaster.py bootstrap
+# - serve: python kindlemaster.py serve
+# - quick tests: python kindlemaster.py test --suite quick
+# - release tests: python kindlemaster.py test --suite release
+# - full tests: python kindlemaster.py test --suite full
+# - quick smoke: python kindlemaster.py smoke --mode quick
+# - full smoke: python kindlemaster.py smoke --mode full
+# - validate EPUB: python kindlemaster.py validate path\to\file.epub
+# - release audit: python kindlemaster.py audit path\to\file.epub
+#
+# Repo restrictions:
+# - no publication-specific runtime hacks
+# - no silent changes to manifest, spine, nav, anchors, or IDs
+# - no claiming localhost is fresh without restart checks from AGENTS.md
+# - no skipping validators, smoke, or release gates after runtime changes
+# - prefer the standard kindlemaster.py entrypoint over ad-hoc scripts
+
+model = "gpt-5.4"
+model_reasoning_effort = "xhigh"
+approval_policy = "never"
+
+[features]
+multi_agent = true
+
+[mcp_servers.playwright]
+command = "npx"
+args = ["@playwright/mcp@latest"]
+
+[plugins."github@openai-curated"]
+enabled = true
+
+[plugins."linear@openai-curated"]
+enabled = true
+
+[plugins."build-web-apps@openai-curated"]
+enabled = true

@@ -1,0 +1,29 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!DOCTYPE html>
+<html epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<head>
+<title>Preconditions</title>
+<link href="style/default.css" rel="stylesheet" type="text/css"/>
+</head>
+<body><section id="section-chapter_368">
+<p>10.47.4 Usage Considerations</p>
+<p>Use Cases and Scenarios against the use of systems or events as actors.</p>
+<p>A use case is started by an actor, referred to as the primary actor for that use case.</p>
+<p>Other actors who participate in the use case in a supporting role are called secondary actors.</p>
+<h3 id="preconditions">Preconditions</h3>
+<p>A precondition is any fact that must be true before the use case can begin. The precondition is not tested in the use case but acts as a constraint on its execution.</p>
+<h3 id="trigger">Trigger</h3>
+<p>A trigger is an event that initiates the flow of events for a use case. The most common trigger is an action taken by the primary actor.</p>
+<p>A temporal event (for example, time) can initiate a use case. This is commonly used to trigger a use case that must be executed based on the time of day or a specific calendar date, such as an end-of-day routine or an end-of-month reconciliation of a system.</p>
+<h3 id="flow-of-events">Flow of Events</h3>
+<p>The flow of events is the set of steps performed by the actor and the solution during the execution of the use case. Most use case descriptions separate out a basic, primary, or main success flow that represents the shortest or simplest successful path that accomplishes the goal of the actor.</p>
+<p>Use cases may also include alternative and exception flows. Alternative flows describe other paths that may be followed to allow the actor to successfully achieve the goal of the use case. Exception flows describe the desired response by the solution when the goal is unachievable and the use case cannot be successfully completed.</p>
+<h3 id="post-conditions-or-guarantees">Post-conditions or Guarantees</h3>
+<p>A post-condition is any fact that must be true when the use case is complete. The post-conditions must be true for all possible flows through the use case, including both the primary and alternative flows. The use case may describe separate post-conditions that are true for successful and unsuccessful executions of the use case. These can be called guarantees; the success guarantee describes the post-conditions for success. Minimal guarantees describe the conditions that are required to be true, even if the actor’s goal is not achieved, and may address concerns such as security requirements or data integrity.</p>
+<p><strong>10.47.4</strong></p>
+<h2 id="usage-considerations">Usage Considerations</h2>
+<h3 id="1-strengths">.1 Strengths</h3>
+<p>• Use case diagrams can clarify scope and provide a high-level understanding of requirements.</p>
+<p class="exercise-marker" id="exercise-358">358</p>
+</section></body>
+</html>

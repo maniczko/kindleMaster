@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+  <head>
+    <meta name="dtb:uid" content="kindlemaster-cleanup"/>
+    <meta name="dtb:depth" content="2"/>
+    <meta name="dtb:totalPageCount" content="0"/>
+    <meta name="dtb:maxPageNumber" content="0"/>
+  </head>
+  <docTitle><text>BABOK Guide v3</text></docTitle>
+  <navMap>
+    <navPoint id="navPoint-1" playOrder="1">
+      <navLabel><text>Chapter 1: Introduction</text></navLabel>
+      <content src="chapter_005.xhtml#chapter-1-introduction"/>
+    </navPoint>
+    <navPoint id="navPoint-2" playOrder="2">
+      <navLabel><text>Chapter 5: Requirements Life Cycle Management</text></navLabel>
+      <content src="chapter_006.xhtml#chapter-5-requirements-life-cycle-management"/>
+    </navPoint>
+    <navPoint id="navPoint-3" playOrder="3">
+      <navLabel><text>Chapter 10: Techniques</text></navLabel>
+      <content src="chapter_007.xhtml#chapter-10-techniques"/>
+    </navPoint>
+    <navPoint id="navPoint-4" playOrder="4">
+      <navLabel><text>Chapter 11: Perspectives</text></navLabel>
+      <content src="chapter_008.xhtml#chapter-11-perspectives"/>
+    </navPoint>
+    <navPoint id="navPoint-5" playOrder="5">
+      <navLabel><text>Appendix B: Techniques to Task Mapping 457</text></navLabel>
+      <content src="chapter_008.xhtml#appendix-b-techniques-to-task-mapping-457"/>
+    </navPoint>
+    <navPoint id="navPoint-6" playOrder="6">
+      <navLabel><text>Resources</text></navLabel>
+      <content src="chapter_242.xhtml#resources"/>
+    </navPoint>
+  </navMap>
+</ncx>

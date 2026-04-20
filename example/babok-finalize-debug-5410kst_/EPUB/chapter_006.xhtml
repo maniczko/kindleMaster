@@ -1,0 +1,390 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="pl" xml:lang="pl">
+  <head>
+    <title>Requirements Life Cycle Management</title>
+    <link href="style/default.css" rel="stylesheet" type="text/css"/>
+  </head>
+  <body><section id="section-chapter_006">
+<h1 id="requirements-life-cycle-management">Requirements Life Cycle Management</h1>
+<span class="page-marker" id="book-page-85"/>
+<p>The knowledge area describes the tasks that business analysts perform in order to manage and maintain requirements and design information from inception to retirement.</p>
+<p>These tasks describe establishing meaningful relationships between related requirements and designs, assessing changes to requirements and designs when changes are proposed, and analyzing and gaining consensus on changes.</p>
+<p>The purpose of requirements life cycle management is to ensure that business, stakeholder, and solution requirements and designs are aligned to one another and that the solution implements them.</p>
+<p>It involves a level of control over requirements and over how requirements will be implemented in the actual solution to be constructed and delivered.</p>
+<p>It also helps to ensure that business analysis information is available for future use. The requirements life cycle:</p>
+<ul>
+<li class="list-item">begins with the representation of a business need as a requirement,</li>
+<li class="list-item">continues through the development of a solution, and</li>
+<li class="list-item">ends when a solution and the requirements that represent it are retired. The management of requirements does not end once a solution is implemented. Throughout the life of a solution, requirements continue to provide value when they are managed appropriately. Within the Requirements Life Cycle Management knowledge area, the concept of a life cycle is separate from a methodology or process used to govern business analysis work. Life cycle refers to the existence of various phases or states that requirements pass through as part of any change. Requirements may be in multiple states at one time.</li>
+</ul>
+<figure class="figure technical-figure"><img alt="Figure 5.0.1: Requirements Life Cycle Management" class="figure-image" src="images/figure_region_p86_27.png"/><figcaption class="figure-caption">Figure 5.0.1: Requirements Life Cycle Management</figcaption></figure>
+<h3 id="the-core-concept-model-in-requirements-life-cycle-management">The Core Concept Model in Requirements Life Cycle Management</h3>
+<p>The<em> Business Analysis Core Concept Model™</em> (<em>BACCM™</em>) describes the relationships among the six core concepts. The following table describes the usage and application of each of the core concepts within the context of.</p>
+<figure class="figure technical-figure"><img alt="Table 5.0.1: The Core Concept Model in Requirements Life Cycle Management" class="figure-image" src="images/figure_region_p87_29.png"/><figcaption class="figure-caption">Table 5.0.1: The Core Concept Model in Requirements Life Cycle Management</figcaption></figure>
+<figure class="figure technical-figure"><img alt="Figure 5.0.1: Requirements Life Cycle Management Input/Output Diagram" class="figure-image" src="images/figure_region_p88_30.png"/><figcaption class="figure-caption">Figure 5.0.1: Requirements Life Cycle Management Input/Output Diagram</figcaption></figure>
+<p>5.1.1</p>
+<h3 id="purpose">Purpose</h3>
+<p>The purpose of Trace Requirements is to ensure that requirements and designs at different levels are aligned to one another, and to manage the effects of change to one level on related requirements.</p>
+<h3 id="description">Description</h3>
+<p>Requirements traceability identifies and documents the lineage of each requirement, including its backward traceability, its forward traceability, and its relationship to other requirements.</p>
+<p>Traceability is used to help ensure that the solution conforms to requirements and to assist in scope, change, risk, time, cost, and communication management.</p>
+<p>It is also used to detect missing functionality or to identify if there is implemented functionality that is not supported by any requirement. Traceability enables:</p>
+<ul>
+<li class="list-item">faster and simpler impact analysis,</li>
+<li class="list-item">more reliable discovery of inconsistencies and gaps in requirements,</li>
+<li class="list-item">deeper insights into the scope and complexity of a change, and</li>
+<li class="list-item">reliable assessment of which requirements have been addressed and which have not. It is often difficult to accurately represent needs and solutions without taking into account the relationships that exist between them. While traceability is valuable, the business analyst balances the number of relationship types with the benefit gained by representing them. Traceability also supports both requirements allocation and release planning by providing a direct line of sight from requirement to expressed need. The following images show examples of visual representations of traceability for a process and for software requirements. Figure 5.1.1: Process Traceability</li>
+</ul>
+<h2 id="value-chain">Value Chain</h2>
+<h2 id="business-process">Business Process</h2>
+<h2 id="sub-process">Sub-process</h2>
+<h2 id="activity">Activity</h2>
+<h3 id="task">Task</h3>
+<figure class="figure technical-figure"><img alt="Figure 5.1.2: Software Requirements Traceability" class="figure-image" src="images/figure_region_p90_31.png"/><figcaption class="figure-caption">Figure 5.1.2: Software Requirements Traceability</figcaption></figure>
+<h3 id="inputs">Inputs</h3>
+<ul>
+<li class="list-item">Requirements: may be traced to other requirements (including goals, objectives, business requirements, stakeholder requirements, solution requirements, and transition requirements), solution components, visuals, business rules, and other work products.</li>
+<li class="list-item">Designs: may be traced to other requirements, solution components, and other work products.</li>
+</ul>
+<figure class="figure technical-figure"><img alt="Figure 5.1.3: Trace Requirements Input/Output Diagram" class="figure-image" src="images/figure_region_p91_32.png"/><figcaption class="figure-caption">Figure 5.1.3: Trace Requirements Input/Output Diagram</figcaption></figure>
+<h2 id="elements">Elements</h2>
+<h3 id="1-level-of-formality">.1 Level of Formality</h3>
+<p>When tracing requirements, business analysts consider the value that each link is supposed to deliver, as well as the nature and use of the specific relationships that are being created. The effort to trace requirements grows significantly when the number of requirements or level of formality increases.</p>
+<h3 id="2-relationships">.2 Relationships</h3>
+<p>There are several types of relationships that the business analyst considers when defining the traceability approach:</p>
+<ul>
+<li class="list-item">Derive: relationship between two requirements, used when a requirement is derived from another requirement. This type of relationship is appropriate to link the requirements on different levels of abstraction. For example, a solution requirement derived from a business or a stakeholder requirement.</li>
+<li class="list-item">Depends: relationship between two requirements, used when a requirement depends on another requirement. Types of dependency relationships include:</li>
+<li class="list-item">Necessity: when it only makes sense to implement a particular requirement if a related requirement is also implemented.</li>
+<li class="list-item">Effort: when a requirement is easier to implement if a related requirement is also implemented.</li>
+<li class="list-item">Satisfy: relationship between an implementation element and the requirements it is satisfying. For example, the relationship between a functional requirement and a solution component that is implementing it.</li>
+<li class="list-item">Validate: relationship between a requirement and a test case or other element that can determine whether a solution fulfills the requirement.</li>
+</ul>
+<h3 id="3-traceability-repository">.3 Traceability Repository</h3>
+<p>Requirements traceability is documented and maintained in accordance with the methods identified by the business analysis approach. Requirements management tools can provide significant benefits when there is a need to trace a large number of requirements that may be deemed unmanageable with manual approaches.</p>
+<h3 id="guidelines-and-tools">Guidelines and Tools</h3>
+<ul>
+<li class="list-item">Domain Knowledge: knowledge of and expertise in the business domain needed to support traceability.</li>
+<li class="list-item">Information Management Approach: provides decisions from planning activities concerning the traceability approach.</li>
+<li class="list-item">Legal/Regulatory Information: describes legislative rules or regulations that must be followed. These may need to be considered when defining traceability rules.</li>
+<li class="list-item">Requirements Management Tools/Repository: used to store and manage business analysis information. The tool may be as simple as a text document or as complex as a dedicated requirements management tool.</li>
+</ul>
+<h3 id="techniques">Techniques</h3>
+<ul>
+<li class="list-item">Business Rules Analysis: used to trace business rules to requirements that they support, or rules that support requirements.</li>
+<li class="list-item">Functional Decomposition: used to break down solution scope into smaller components for allocation, as well as to trace high-level concepts to low-level concepts.</li>
+<li class="list-item">Process Modelling: used to visually show the future state process, as well as tracing requirements to the future state process.</li>
+<li class="list-item">Scope Modelling: used to visually depict scope, as well as trace requirements to the area of scope the requirement supports.</li>
+</ul>
+<h3 id="stakeholders">Stakeholders</h3>
+<ul>
+<li class="list-item">Customers: are affected by how and when requirements are implemented, and may have to be consulted about, or agree to, the traceability relationships.</li>
+<li class="list-item">Domain Subject Matter Expert: may have recommendations regarding the set of requirements to be linked to a solution component or to a release.</li>
+<li class="list-item">End User: may require specific dependency relationships that allow certain requirements to be implemented at the same time or in a specific sequence.</li>
+<li class="list-item">Implementation Subject Matter Expert: traceability ensures that the solution being developed meets the business need and brings awareness of dependencies between solution components during implementation.</li>
+<li class="list-item">Operational Support: traceability documentation provides another reference source for help desk support.</li>
+<li class="list-item">Project Manager: traceability supports project change and scope management.</li>
+<li class="list-item">Sponsor: is required to approve the various relationships.</li>
+<li class="list-item">Suppliers: are affected by how and when requirements are implemented.</li>
+<li class="list-item">Tester: needs to understand how and where requirements are implemented when creating test plans and test cases, and may trace test cases to requirements.</li>
+</ul>
+<h3 id="outputs">Outputs</h3>
+<ul>
+<li class="list-item">Requirements (traced): have clearly defined relationships to other requirements, solution components, or releases, phases, or iterations, within a solution scope, such that coverage and the effects of change are clearly identifiable.</li>
+<li class="list-item">Designs (traced): clearly defined relationships to other requirements, solution components, or releases, phases, or iterations, within a solution scope, such that coverage and the effects of change are clearly identifiable.</li>
+</ul>
+<h3 id="maintain-requirements">Maintain Requirements</h3>
+<h3 id="purpose-2">Purpose</h3>
+<p>The purpose of is to retain requirement accuracy and consistency throughout and beyond the change during the entire requirements life cycle, and to support reuse of requirements in other solutions.</p>
+<h3 id="description-2">Description</h3>
+<p>A requirement that represents an ongoing need must be maintained to ensure that it remains valid over time.</p>
+<p>In order to maximize the benefits of maintaining and reusing requirements, the requirements should be:</p>
+<ul>
+<li class="list-item">consistently represented,</li>
+<li class="list-item">reviewed and approved for maintenance using a standardized process that defines proper access rights and ensures quality, and</li>
+<li class="list-item">easily accessible and understandable.</li>
+</ul>
+<h3 id="inputs-2">Inputs</h3>
+<ul>
+<li class="list-item">Requirements: include goals, objectives, business requirements, stakeholder requirements, solution requirements, and transition requirements. These should be maintained throughout their life cycle.</li>
+<li class="list-item">Designs: can be maintained throughout their life cycle, as needed.</li>
+</ul>
+<figure class="figure technical-figure"><img alt="Figure 5.2.1: Maintain Requirements Input/Output Diagram" class="figure-image" src="images/figure_region_p94_33.png"/><figcaption class="figure-caption">Figure 5.2.1: Maintain Requirements Input/Output Diagram</figcaption></figure>
+<h2 id="elements-2">Elements</h2>
+<h3 id="1-maintain-requirements">.1 Maintain Requirements</h3>
+<p>Requirements are maintained so that they remain correct and current after an approved change.</p>
+<p>Business analysts are responsible for conducting maintenance to ensure this level of accuracy is retained.</p>
+<p>For requirements to be properly maintained they must be clearly named and defined, and easily available to stakeholders.</p>
+<p>Business analysts also maintain the relationships among requirements, sets of requirements, and associated business analysis information to ensure the context and original intent of the requirement is preserved.</p>
+<p>Repositories with accepted taxonomies assist in establishing and maintaining links between maintained requirements, and facilitate requirements and designs traceability.</p>
+<h3 id="2-maintain-attributes">.2 Maintain Attributes</h3>
+<p>While eliciting requirements, business analysts elicit requirement attributes.</p>
+<p>Information such as the requirement&#x27;s source, priority, and complexity aid in managing each requirement throughout the life cycle.</p>
+<p>Some attributes change as the business analyst uncovers more information and conducts further analysis. An attribute may change even though the requirement does not.</p>
+<h3 id="3-reusing-requirements">.3 Reusing Requirements</h3>
+<p>There are situations in which requirements can be reused. Requirements that are candidates for long-term use by the organization are identified, clearly named, defined, and stored in a manner that makes them easily retrievable by other stakeholders. Depending on the level of abstraction and intended need being addressed, requirements can be reused:</p>
+<ul>
+<li class="list-item">within the current initiative,</li>
+<li class="list-item">within similar initiatives,</li>
+<li class="list-item">within similar departments, and</li>
+<li class="list-item">throughout the entire organization. Requirements at high levels of abstraction may be written with limited reference to specific solutions. Requirements that are represented in a general manner, without direct ties to a particular tool or organizational structure, tend to be more reusable. These requirements are also less subject to revision during a change. As requirements are expressed in more detail, they become more tightly associated with a specific solution or solution option. Specific references to applications or departments limit the reuse of requirements and designs across an organization. Requirements that are intended for reuse reflect the current state of the organization. Stakeholders validate the proposed requirements for reuse before they can be accepted into a change.</li>
+</ul>
+<h3 id="guidelines-and-tools-2">Guidelines and Tools</h3>
+<ul>
+<li class="list-item">Information Management Approach: indicates how requirements will be managed for reuse.</li>
+</ul>
+<h3 id="techniques-2">Techniques</h3>
+<ul>
+<li class="list-item">Business Rules Analysis: used to identify business rules that may be similar across the enterprise in order to facilitate reuse.</li>
+<li class="list-item">Data Flow Diagrams: used to identify information flow that may be similar across the enterprise in order to facilitate reuse.</li>
+<li class="list-item">Data Modelling: used to identify data structure that may be similar across the enterprise in order to facilitate reuse.</li>
+<li class="list-item">Document Analysis: used to analyze existing documentation about an enterprise that can serve as the basis for maintaining and reusing requirements.</li>
+<li class="list-item">Functional Decomposition: used to identify requirements associated with the components and available for reuse.</li>
+<li class="list-item">Process Modelling: used to identify requirements associated with the processes that may be available for reuse.</li>
+<li class="list-item">Use Cases and Scenarios: used to identify a solution component that may be utilized by more than one solution.</li>
+<li class="list-item">User Stories: used to identify requirements associated with the story that may be available for reuse.</li>
+</ul>
+<h3 id="stakeholders-2">Stakeholders</h3>
+<ul>
+<li class="list-item">Domain Subject Matter Expert: references maintained requirements on a regular basis to ensure they are accurately reflecting stated needs.</li>
+<li class="list-item">Implementation Subject Matter Expert: utilizes maintained requirements when developing regression tests and conducting impact analysis for an enhancement.</li>
+<li class="list-item">Operational Support: maintained requirements are likely to be referenced to confirm the current state.</li>
+<li class="list-item">Regulator: maintained requirements are likely to be referenced to confirm compliance to standards.</li>
+<li class="list-item">Tester: maintained requirements are used by testers to aid in test plan and test case creation.</li>
+</ul>
+<h3 id="outputs-2">Outputs</h3>
+<ul>
+<li class="list-item">Requirements (maintained): defined once and available for long-term usage by the organization. They may become organizational process assets or be used in future initiatives. In some cases, a requirement that was not approved or implemented may be maintained for a possible future initiative.</li>
+<li class="list-item">Designs (maintained): may be reusable once defined. For example, as a selfcontained component that can be made available for possible future use.</li>
+</ul>
+<h3 id="prioritize-requirements">Prioritize Requirements</h3>
+<h3 id="purpose-3">Purpose</h3>
+<p>The purpose of is to rank requirements in the order of relative importance.</p>
+<h3 id="description-3">Description</h3>
+<p>Prioritization is the act of ranking requirements to determine their relative importance to stakeholders. When a requirement is prioritized, it is given greater or lesser priority.</p>
+<p>Priority can refer to the relative value of a requirement, or to the sequence in which it will be implemented.</p>
+<p>Prioritization is an ongoing process, with priorities changing as the context changes. Inter-dependencies between requirements are identified and may be used as the basis for prioritization.</p>
+<p>Prioritization is a critical exercise that seeks to ensure the maximum value is achieved.</p>
+<h3 id="inputs-3">Inputs</h3>
+<ul>
+<li class="list-item">Requirements: any requirements in the form of text, matrices, or diagrams that are ready to prioritize.</li>
+<li class="list-item">Designs: any designs in the form of text, prototypes, or diagrams that are ready to prioritize.</li>
+</ul>
+<figure class="figure technical-figure"><img alt="Figure 5.3.1: Prioritize Requirements Input/Output Diagram" class="figure-image" src="images/figure_region_p97_34.png"/><figcaption class="figure-caption">Figure 5.3.1: Prioritize Requirements Input/Output Diagram</figcaption></figure>
+<h2 id="elements-3">Elements</h2>
+<h3 id="1-basis-for-prioritization">.1 Basis for Prioritization</h3>
+<p>The basis on which requirements are prioritized is agreed upon by relevant stakeholders as defined in the Business Analysis Planning and Monitoring knowledge area. Typical factors that influence prioritization include:</p>
+<ul>
+<li class="list-item">Benefit: the advantage that accrues to stakeholders as a result of requirement implementation, as measured against the goals and objectives for the change. The benefit provided can refer to a specific functionality, desired quality, or strategic goal or business objective. If there are multiple stakeholders, each group may perceive benefits differently. Conflict resolution and negotiation may be employed to come to consensus on overall benefit.</li>
+<li class="list-item">Penalty: the consequences that result from not implementing a given requirement. This includes prioritizing requirements in order to meet regulatory or policy demands imposed on the organization, which may take precedence over other stakeholder interests. Penalty may also refer to the negative consequence of not implementing a requirement that improves the experience of a customer.</li>
+<li class="list-item">Cost: the effort and resources needed to implement the requirement. Information about cost typically comes from the implementation team or the vendor. Customers may change the priority of a requirement after learning the cost. Cost is often used in conjunction with other criteria, such as cost-benefit analysis.</li>
+<li class="list-item">Risk: the chance that the requirement cannot deliver the potential value, or cannot be met at all. This may include many factors such as the difficulty of implementing a requirement, or the chance that stakeholders will not accept a solution component. If there is a risk that the solution is not technically feasible, the requirement that is most difficult to implement may be prioritized to the top of the list in order to minimize the resources that are spent before learning that a proposed solution cannot be delivered. A proof of concept may be developed to establish that high risk options are possible.</li>
+<li class="list-item">Dependencies: relationships between requirements where one requirement cannot be fulfilled unless the other requirement is fulfilled. In some situations, it may be possible to achieve efficiencies by implementing related requirements at the same time. Dependencies may also be external to the initiative, including but not limited to other teams' decisions, funding commitments, and resource availability. Dependencies are identified as part of the task Trace Requirements (p. 79).</li>
+<li class="list-item">Time Sensitivity: the 'best before' date of the requirement, after which the implementation of the requirement loses significant value. This includes time-to-market scenarios, in which the benefit derived will be exponentially greater if the functionality is delivered ahead of the competition. It can also refer to seasonal functionality that only has value at a specific time of year.</li>
+<li class="list-item">Stability: the likelihood that the requirement will change, either because it requires further analysis or because stakeholders have not reached a consensus about it. If a requirement is not stable, it may have a lower priority in order to minimize unanticipated rework and wasted effort.</li>
+<li class="list-item">Regulatory or Policy Compliance: requirements that must be implemented in order to meet regulatory or policy demands imposed on the organization, which may take precedence over other stakeholder interests.</li>
+</ul>
+<h3 id="2-challenges-of-prioritization">.2 Challenges of Prioritization</h3>
+<p>Prioritization is an assessment of relative value. Each stakeholder may value something different.</p>
+<p>When this occurs, there may be conflict amongst stakeholders. may also have difficulty characterizing any requirement as a lower priority, and this may impact the ability to make necessary trade-offs.</p>
+<p>In addition, stakeholders may (intentionally or unintentionally) indicate priority to influence the result to their desired outcome.</p>
+<p>Different types of requirements may not all respond to the criteria in the same way and may appear to conflict. There may be a need for stakeholders to make trade-offs in prioritization.</p>
+<h3 id="3-continual-prioritization">.3 Continual Prioritization</h3>
+<p>Priorities may shift as the context evolves and as more information becomes available. Initially, prioritization is done at a higher level of abstraction.</p>
+<p>As the requirements are further refined, prioritization is done at a more granular level and will incorporate additional bases for prioritization as they become appropriate.</p>
+<p>The basis for prioritization may be different at various stages of the change. For example, stakeholders may initially prioritize based on benefits.</p>
+<p>The implementation team may then re-prioritize the requirements based on the sequence in which they must be implemented due to technical constraints.</p>
+<p>Once the implementation team has provided the cost of each requirement, the stakeholders may re-prioritize yet again.</p>
+<h3 id="guidelines-and-tools-3">Guidelines and Tools</h3>
+<ul>
+<li class="list-item">Business Constraints: regulatory statutes, contractual obligations and business policies that may define priorities.</li>
+<li class="list-item">Change Strategy: provides information on costs, timelines, and value realization which are used to determine priority of requirements.</li>
+<li class="list-item">Domain Knowledge: knowledge and expertise of the business domain needed to support prioritization.</li>
+<li class="list-item">Governance Approach: outlines the approach for prioritizing requirements.</li>
+<li class="list-item">Requirements Architecture: utilized to understand the relationship with other requirements and work products.</li>
+<li class="list-item">Requirements Management Tools/Repository: including a requirements attribute for prioritization can help the business analyst to sort and access requirements by priority.</li>
+<li class="list-item">Solution Scope: considered when prioritizing requirements to ensure scope is managed.</li>
+</ul>
+<h3 id="techniques-3">Techniques</h3>
+<ul>
+<li class="list-item">Backlog Management: used to compare requirements to be prioritized. The backlog can be the location where the prioritization is maintained.</li>
+<li class="list-item">Business Cases: used to assess requirements against identified business goals and objectives to determine importance.</li>
+<li class="list-item">Decision Analysis: used to identify high-value requirements.</li>
+<li class="list-item">Estimation: used to produce estimates for the basis of prioritization.</li>
+<li class="list-item">Financial Analysis: used to assess the financial value of a set of requirements and how the timing of delivery will affect that value.</li>
+<li class="list-item">Interviews: used to gain an understanding of a single or small group of stakeholders' basis of prioritization or priorities.</li>
+<li class="list-item">Item Tracking: used to track issues raised by stakeholders during prioritization.</li>
+<li class="list-item">Prioritization: used to facilitate the process of prioritization.</li>
+<li class="list-item">Risk Analysis and Management: used to understand the risks for the basis of prioritization.</li>
+<li class="list-item">Workshops: used to gain an understanding of stakeholders' basis of prioritization or priorities in a facilitated group setting.</li>
+</ul>
+<h3 id="stakeholders-3">Stakeholders</h3>
+<ul>
+<li class="list-item">Customer: verifies that the prioritized requirements will deliver value from a customer or end-user perspective. The customer can also negotiate to have the prioritization changed based on relative value.</li>
+<li class="list-item">End User: verifies that the prioritized requirements will deliver value from a customer or end-user perspective.</li>
+<li class="list-item">Implementation Subject Matter Expert: provides input relating to technical dependencies and can negotiate to have the prioritization changed based on technical constraints.</li>
+<li class="list-item">Project Manager: uses the prioritization as input into the project plan and into the allocation of requirements to releases.</li>
+<li class="list-item">Regulator: can verify that the prioritization is consistent with legal and regulatory constraints.</li>
+<li class="list-item">Sponsor: verifies that the prioritized requirements will deliver value from an organizational perspective.</li>
+</ul>
+<h3 id="outputs-3">Outputs</h3>
+<ul>
+<li class="list-item">Requirements (prioritized): prioritized or ranked requirements are available for additional work, ensuring that the highest valued requirements are addressed first.</li>
+<li class="list-item">Designs (prioritized): prioritized or ranked designs are available for additional work, ensuring that the highest valued designs are addressed first.</li>
+</ul>
+<h3 id="assess-requirements-changes">Assess Requirements Changes</h3>
+<h3 id="purpose-4">Purpose</h3>
+<p>The purpose of is to evaluate the implications of proposed changes to requirements and designs.</p>
+<h3 id="description-4">Description</h3>
+<p>The task is performed as new needs or possible solutions are identified. These may or may not align to the change strategy and/ or solution scope.</p>
+<p>Assessment must be performed to determine whether a proposed change will increase the value of the solution, and if so, what action should be taken.</p>
+<p>Business analysts assess the potential effect of the change to solution value, and whether proposed changes introduce conflicts with other requirements or increase the level of risk.</p>
+<p>Business analysts also ensure each proposed change can be traced back to a need. When assessing changes, business analysts consider if each proposed change:</p>
+<ul>
+<li class="list-item">aligns with the overall strategy,</li>
+<li class="list-item">affects value delivered to the business or stakeholder groups,</li>
+<li class="list-item">impacts the time to deliver or the resources required to deliver the value, and</li>
+<li class="list-item">alters any risks, opportunities, or constraints associated with the overall initiative. The results of the assessment must support the decision making and change control approaches defined by the task Plan Business Analysis Governance (p. 37).</li>
+</ul>
+<h3 id="inputs-4">Inputs</h3>
+<ul>
+<li class="list-item">Proposed Change: can be identified at any time and impact any aspect of business analysis work or deliverables completed to date. There are many triggers for a proposed change including business strategy changes, stakeholders, legal requirements, or regulatory changes.</li>
+<li class="list-item">Requirements: may need to be assessed to identify the impact of a proposed modification.</li>
+<li class="list-item">Designs: may need to be assessed to identify the impact of a proposed modification.</li>
+</ul>
+<figure class="figure technical-figure"><img alt="Figure 5.4.1: Assess Requirements Changes Input/Output Diagram" class="figure-image" src="images/figure_region_p102_35.png"/><figcaption class="figure-caption">Figure 5.4.1: Assess Requirements Changes Input/Output Diagram</figcaption></figure>
+<h2 id="elements-4">Elements</h2>
+<h3 id="1-assessment-formality">.1 Assessment Formality</h3>
+<p>Business analysts will determine the formality of the assessment process based on the information available, the apparent importance of the change, and the governance process.</p>
+<p>Many proposed changes may be withdrawn from consideration or declined before any formal approval is required. A predictive approach may indicate a more formal assessment of proposed changes.</p>
+<p>In predictive approaches, the impact of each change can be disruptive; the change can potentially generate a substantial reworking of tasks and activities completed in previous activities.</p>
+<p>An adaptive approach may require less formality in the assessment of proposed changes.</p>
+<p>While there may be reworking needed as a result of each change, adaptive approaches try to minimize the impact of changes by utilizing iterative and incremental implementation techniques.</p>
+<p>This idea of continuous evolution may reduce the need for formal impact assessment.</p>
+<h3 id="2-impact-analysis">.2 Impact Analysis</h3>
+<p>Impact analysis is performed to assess or evaluate the effect of a change. Traceability is a useful tool for performing impact analysis.</p>
+<p>When a requirement changes, its relationships to other requirements or solution components can be reviewed.</p>
+<p>Each related requirement or component may also require a change to support the new requirement.</p>
+<p>When considering changes or additions to existing requirements, business analysts assess the impact of the proposed change by considering:</p>
+<ul>
+<li class="list-item">Benefit: the benefit that will be gained by accepting the change.</li>
+<li class="list-item">Cost: the total cost to implement the change including the cost to make the change, the cost of associated rework, and the opportunity costs such as the number of other features that may need to be sacrificed or deferred if the change is approved.</li>
+<li class="list-item">Impact: the number of customers or business processes affected if the change is accepted.</li>
+<li class="list-item">Schedule: the impact to the existing delivery commitments if the change is approved.</li>
+<li class="list-item">Urgency: the level of importance including the factors which drive necessity such as regulator or safety issues.</li>
+</ul>
+<h3 id="3-impact-resolution">.3 Impact Resolution</h3>
+<p>Depending on the planned approach, various stakeholders (including the business analyst) may be authorized to approve, deny, or defer the proposed change.</p>
+<p>All impacts and resolutions resulting from the change analysis are to be documented and communicated to all stakeholders.</p>
+<p>How decisions and changes will be made and communicated across an initiative is determined by the task Plan Business Analysis Governance (p. 37).</p>
+<h3 id="guidelines-and-tools-4">Guidelines and Tools</h3>
+<ul>
+<li class="list-item">Change Strategy: describes the purpose and direction for changes, establishes the context for the change, and identifies the critical components for change.</li>
+<li class="list-item">Domain Knowledge: knowledge of and expertise in the business domain is needed to assess proposed requirements changes.</li>
+<li class="list-item">Governance Approach: provides guidance regarding the change control and decision-making processes, as well as the roles of stakeholders within this process.</li>
+<li class="list-item">Legal/Regulatory Information: describes legislative rules or regulations that must be followed. These may impact requirements and must be considered when making changes.</li>
+<li class="list-item">Requirements Architecture: requirements may be related to each other, therefore the business analyst examines and analyzes the requirement relationships to determine which requirements will be impacted by a requested requirements change.</li>
+<li class="list-item">Solution Scope: must be considered when assessing changes to fully understand the impact of a proposed change.</li>
+</ul>
+<h3 id="techniques-4">Techniques</h3>
+<ul>
+<li class="list-item">Business Cases: used to justify a proposed change.</li>
+<li class="list-item">Business Rules Analysis: used to assess changes to business policies and business rules, and develop revised guidance.</li>
+<li class="list-item">Decision Analysis: used to facilitate the change assessment process.</li>
+<li class="list-item">Document Analysis: used to analyze any existing documents that facilitate an understanding of the impact of the change.</li>
+<li class="list-item">Estimation: used to determine the size of the change.</li>
+<li class="list-item">Financial Analysis: used to estimate the financial consequences of a proposed change.</li>
+<li class="list-item">Interface Analysis: used to help business analysts identify interfaces that can be affected by the change.</li>
+<li class="list-item">Interviews: used to gain an understanding of the impact on the organization or its assets from a single or small group of stakeholders.</li>
+<li class="list-item">Item Tracking: used to track any issues or conflicts discovered during impact analysis.</li>
+<li class="list-item">Risk Analysis and Management: used to determine the level of risk associated with the change.</li>
+<li class="list-item">Workshops: used to gain an understanding of the impact or to resolve changes in a group setting.</li>
+</ul>
+<h3 id="stakeholders-4">Stakeholders</h3>
+<ul>
+<li class="list-item">Customer: provides feedback concerning the impact the change will have on value.</li>
+<li class="list-item">Domain Subject Matter Expert: has expertise in some aspect of the situation and can provide insight into how the change will impact the organization and value.</li>
+<li class="list-item">End User: uses the solution or is a component of the solution, and can offer information about the impact of the change on their activities.</li>
+<li class="list-item">Operational Support: provides information on both their ability to support the operation of the solution and their need to understand the nature of the change in the solution in order to be able to support it.</li>
+<li class="list-item">Project Manager: reviews the requirements change assessment to determine if additional project work is required for a successful implementation of the solution.</li>
+<li class="list-item">Regulator: changes are likely to be referenced by auditors to confirm compliance to standards.</li>
+<li class="list-item">Sponsor: accountable for the solution scope and can provide insight to be utilized when assessing change.</li>
+<li class="list-item">Tester: consulted for establishing impact of the proposed changes.</li>
+</ul>
+<h3 id="outputs-4">Outputs</h3>
+<ul>
+<li class="list-item">Requirements Change Assessment: the recommendation to approve, modify, or deny a proposed change to requirements.</li>
+<li class="list-item">Designs Change Assessment: the recommendation to approve, modify, or deny a proposed change to one or more design components.</li>
+</ul>
+<h3 id="approve-requirements">Approve Requirements</h3>
+<h3 id="purpose-5">Purpose</h3>
+<p>The purpose of is to obtain agreement on and approval of requirements and designs for business analysis work to continue and/or solution construction to proceed.</p>
+<h3 id="description-5">Description</h3>
+<p>Business analysts are responsible for ensuring clear communication of requirements, designs, and other business analysis information to the key stakeholders responsible for approving that information.</p>
+<p>Approval of requirements and designs may be formal or informal. Predictive approaches typically perform approvals at the end of the phase or during planned change control meetings.</p>
+<p>Adaptive approaches typically approve requirements only when construction and implementation of a solution meeting the requirement can begin.</p>
+<p>Business analysts work with key stakeholders to gain consensus on new and changed requirements, communicate the outcome of discussions, and track and manage the approval.</p>
+<h3 id="inputs-5">Inputs</h3>
+<ul>
+<li class="list-item">Requirements (verified): a set of requirements that have been verified to be of sufficient quality to be used as a reliable body of work for further specification and development.</li>
+<li class="list-item">Designs: a set of designs that have been determined as ready to be used for further specification and development.</li>
+</ul>
+<figure class="figure technical-figure"><img alt="Figure 5.5.1: Approve Requirements Input/Output Diagram" class="figure-image" src="images/figure_region_p106_36.png"/><figcaption class="figure-caption">Figure 5.5.1: Approve Requirements Input/Output Diagram</figcaption></figure>
+<h2 id="elements-5">Elements</h2>
+<h3 id="1-understand-stakeholder-roles">.1 Understand Stakeholder Roles</h3>
+<p>The approval process is defined by the task Plan Business Analysis Governance (p. 37). Part of defining the approval process is understanding stakeholder roles and authority levels.</p>
+<p>Business analysts are responsible for obtaining stakeholder approvals and are required to understand who holds decision-making responsibility and who possesses authority for sign-off across the initiative.</p>
+<p>Business analysts also consider any influential stakeholders who should be consulted or informed about the requirements.</p>
+<p>Few stakeholders may have the authority to approve or deny changes, but many stakeholders may be able to influence these decisions.</p>
+<h3 id="2-conflict-and-issue-management">.2 Conflict and Issue Management</h3>
+<p>To maintain stakeholder support for the solution, consensus among stakeholders is usually sought prior to requesting approval of requirements.</p>
+<p>The approach for determining how to secure decisions and resolve conflicts across an initiative is planned for in the task Plan Business Analysis Governance (p. 37).</p>
+<p>Stakeholder groups frequently have varying points of view and conflicting priorities.</p>
+<p>A conflict may arise among stakeholders as a result of different interpretations of requirements or designs and conflicting values placed on them.</p>
+<p>The business analyst facilitates communication between stakeholders in areas of conflict so that each group has an improved appreciation for the needs of the others.</p>
+<p>Conflict resolution and issue management may occur quite often, as the business analyst is reviewing requirements and designs, and aiming to secure sign-off.</p>
+<h3 id="3-gain-consensus">.3 Gain Consensus</h3>
+<p>Business analysts are responsible for ensuring that the stakeholders with approval authority understand and accept the requirements.</p>
+<p>Approval may confirm that stakeholders believe that sufficient value will be created for the organization to justify investment in a solution.</p>
+<p>Business analysts obtain approval by reviewing the requirements or changes to requirements with the accountable individuals or groups and requesting that they approve, indicating their agreement with the solution or designs described.</p>
+<p>Using the methods and means established in the tasks Plan Business Analysis Governance (p. 37) and Communicate Business Analysis Information (p.</p>
+<p>67) business analysts present the requirements to stakeholders for approval.</p>
+<p>Business analysts facilitate this approval process by addressing any questions or providing additional information when requested.</p>
+<p>Complete agreement may not be necessary for a successful change, but if there is a lack of agreement, the associated risks are to be identified and managed accordingly.</p>
+<h3 id="4-track-and-communicate-approval">.4 Track and Communicate Approval</h3>
+<p>The business analyst records approval decisions, possibly in requirements maintenance and tracking tools. In order to communicate the status of requirements, it is necessary to keep accurate records of current approval status. must be able to determine what requirements and designs are currently approved and in line for implementation. There may be value in maintaining an audit history of changes to requirements: what was changed, who made the change, the reason for the change, and when it was made.</p>
+<h3 id="guidelines-and-tools-5">Guidelines and Tools</h3>
+<ul>
+<li class="list-item">Change Strategy: provides information which assists in managing stakeholder consensus regarding the needs of all stakeholders.</li>
+<li class="list-item">Governance Approach: identifies the stakeholders who have the authority and responsibility to approve business analysis information, and explains when such approvals will take place and how they will align to organizational policies.</li>
+<li class="list-item">Legal/Regulatory Information: describes legislative rules or regulations that must be followed. They may impact the requirements and designs approval process.</li>
+<li class="list-item">Requirement Management Tools/Repository: tool to record requirements approvals.</li>
+<li class="list-item">Solution Scope: must be considered when approving requirements to accurately assess alignment and completeness.</li>
+</ul>
+<h3 id="techniques-5">Techniques</h3>
+<ul>
+<li class="list-item">Acceptance and Evaluation Criteria: used to define approval criteria.</li>
+<li class="list-item">Decision Analysis: used to resolve issues and gain agreement.</li>
+<li class="list-item">Item Tracking: used to track issues identified during the agreement process.</li>
+<li class="list-item">Reviews: used to evaluate requirements.</li>
+<li class="list-item">Workshops: used to facilitate obtaining approval.</li>
+</ul>
+<h3 id="stakeholders-5">Stakeholders</h3>
+<ul>
+<li class="list-item">Customer: may play an active role in reviewing and approving requirements and designs to ensure needs are met.</li>
+<li class="list-item">Domain Subject Matter Expert: may be involved in the review and approval of requirements and designs as defined by stakeholder roles and responsibilities designation.</li>
+<li class="list-item">End User: people who use the solution, or who are a solution component, and may be involved in the review, validation, and prioritization of requirements and designs as defined by the stakeholder roles and responsibilities designation.</li>
+<li class="list-item">Operational Support: responsible for ensuring that requirements and designs are supportable within the constraints imposed by technology standards and organizational capability plans. Operational support personnel may have a role in reviewing and approving requirements.</li>
+<li class="list-item">Project Manager: responsible for identifying and managing risks associated with solution design, development, delivery, implementation, operation and sustainment. The project manager may manage the project plan activities pertaining to review and/or approval.</li>
+<li class="list-item">Regulator: external or internal party who is responsible for providing opinions on the relationship between stated requirements and specific regulations, either formally in an audit, or informally as inputs to requirements life cycle management tasks.</li>
+<li class="list-item">Sponsor: responsible to review and approve the business case, solution or product scope, and all requirements and designs.</li>
+<li class="list-item">Tester: responsible for ensuring quality assurance standards are feasible within the business analysis information. For example, requirements have the testable characteristic.</li>
+</ul>
+<h3 id="outputs-5">Outputs</h3>
+<ul>
+<li class="list-item">Requirements (approved): requirements which are agreed to by stakeholders and are ready for use in subsequent business analysis efforts.</li>
+<li class="list-item">Designs (approved): designs which are agreed to by stakeholders and are ready for use in subsequent business analysis or solution development efforts.</li>
+</ul>
+</section></body>
+</html>

@@ -1,0 +1,491 @@
+/* ========================================================================
+   PREMIUM KINDLE REFLOW STYLESHEET
+   Designed to match a high-end purchased e-book:
+   - generous vertical rhythm
+   - true first-line indents, no gaps between paragraphs
+   - smart heading hierarchy with tight top spacing after page break
+   - serif body with carefully chosen widows/orphans and hyphenation
+   ======================================================================== */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-size: 100%;
+  line-height: 1.45;
+}
+
+body {
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua",
+               Georgia, "Times New Roman", serif;
+  font-size: 1em;
+  line-height: 1.5;
+  color: #111;
+  background: transparent;
+  margin: 0;
+  text-align: justify;
+  -webkit-hyphens: auto;
+  hyphens: auto;
+  orphans: 3;
+  widows: 3;
+  font-feature-settings: "kern", "liga", "onum";
+  -webkit-font-feature-settings: "kern", "liga", "onum";
+}
+
+/* === TYPOGRAPHY === */
+h1, h2, h3, h4, h5, h6 {
+  font-family: "Iowan Old Style", "Palatino Linotype", Georgia,
+               "Times New Roman", serif;
+  font-weight: 700;
+  line-height: 1.2;
+  color: #0a0a0a;
+  text-align: left;
+  -webkit-hyphens: none;
+  hyphens: none;
+  page-break-after: avoid;
+  page-break-inside: avoid;
+  break-after: avoid;
+  break-inside: avoid;
+}
+
+h1 {
+  font-size: 1.8em;
+  margin: 2.2em 0 0.9em;
+  letter-spacing: -0.005em;
+  page-break-before: always;
+  break-before: page;
+}
+
+/* A chapter opens a new page; the very first H1 should not leave an
+   empty trailing page above it. */
+section > h1:first-child,
+body > h1:first-child {
+  page-break-before: avoid;
+  break-before: auto;
+  margin-top: 1.1em;
+}
+
+h2 {
+  font-size: 1.35em;
+  margin: 1.6em 0 0.55em;
+}
+
+h3 {
+  font-size: 1.12em;
+  margin: 1.25em 0 0.45em;
+}
+
+h4 {
+  font-size: 1.02em;
+  margin: 1.1em 0 0.4em;
+}
+
+h5 {
+  font-size: 0.98em;
+  font-style: italic;
+  margin: 1em 0 0.35em;
+}
+
+h6 {
+  font-size: 0.92em;
+  font-style: italic;
+  color: #444;
+  margin: 1em 0 0.35em;
+}
+
+p {
+  margin: 0;
+  text-indent: 1.3em;
+  text-align: justify;
+  text-justify: inter-word;
+}
+
+p.no-indent,
+p.lead,
+p.byline,
+p.kicker,
+p.toc-entry,
+p.aside {
+  text-indent: 0;
+}
+
+/* First paragraph after heading - no indent */
+h1 + p, h2 + p, h3 + p, h4 + p, h5 + p, h6 + p,
+h1 + div + p, h2 + div + p, h3 + div + p,
+.figure + p,
+figure + p,
+blockquote + p,
+ul + p,
+ol + p {
+  text-indent: 0;
+}
+
+/* === EMPHASIS === */
+em, .italic {
+  font-style: italic;
+}
+
+strong, .bold {
+  font-weight: bold;
+}
+
+strong em, em strong, .bold-italic {
+  font-weight: bold;
+  font-style: italic;
+}
+
+small {
+  font-size: 0.85em;
+}
+
+large {
+  font-size: 1.15em;
+}
+
+/* === LISTS === */
+ul, ol {
+  margin: 0.8em 0;
+  padding-left: 2em;
+}
+
+li {
+  margin: 0.3em 0;
+  line-height: 1.7;
+}
+
+ul ul, ol ol, ul ol, ol ul {
+  margin: 0.3em 0;
+}
+
+/* === BLOCKQUOTES === */
+blockquote {
+  margin: 1em 1.5em;
+  padding: 0.8em 1em;
+  border-left: 3px solid #ccc;
+  font-style: italic;
+  color: #444;
+  background: #f9f9f9;
+}
+
+blockquote p {
+  text-indent: 0;
+  margin: 0.3em 0;
+}
+
+/* === IMAGES === */
+img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 1em auto;
+  page-break-inside: avoid;
+}
+
+.figure {
+  text-align: center;
+  margin: 1.5em 0;
+  page-break-inside: avoid;
+}
+
+.figure img {
+  margin: 0.5em auto;
+  border-radius: 0.35rem;
+}
+
+.magazine-figure img {
+  border-radius: 0.45rem;
+}
+
+.chess-diagram-container {
+  margin: 0.35em auto 1.25em;
+  text-align: center;
+  page-break-inside: avoid;
+  break-inside: avoid;
+}
+
+.chess-problem {
+  margin: 1.2em 0 1.55em;
+  page-break-inside: avoid;
+  break-inside: avoid;
+}
+
+.chess-diagram {
+  display: block;
+  width: 100%;
+  max-width: 19rem;
+  height: auto;
+  margin: 0 auto;
+  page-break-inside: avoid;
+  break-inside: avoid;
+  image-rendering: -webkit-optimize-contrast;
+  image-rendering: crisp-edges;
+}
+
+.diagram-caption {
+  margin: 0 0 0.45em;
+  text-indent: 0;
+  text-align: center;
+  font-weight: 600;
+  line-height: 1.35;
+  hyphens: none;
+  white-space: normal;
+}
+
+.exercise-number {
+  color: #666;
+  font-weight: 700;
+  margin-right: 0.18em;
+}
+
+.diagram-tail {
+  text-indent: 0;
+  margin-top: 0.7em;
+}
+
+.diagram-tail a {
+  color: inherit;
+  text-decoration: underline;
+}
+
+.solution-backlink {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 0.12em;
+}
+
+p.kicker,
+p.byline {
+  text-indent: 0;
+  text-align: left;
+  font-size: 0.92em;
+  margin: 0.55em 0;
+  color: #555;
+}
+
+p.kicker {
+  text-transform: uppercase;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+p.lead {
+  text-indent: 0;
+  margin: 0.35em 0 0.85em;
+  font-size: 1.06em;
+  line-height: 1.45;
+}
+
+p.aside {
+  text-indent: 0;
+  margin: 0.75em 1em;
+  font-size: 0.92em;
+  line-height: 1.4;
+  color: #555;
+  font-style: italic;
+}
+
+p.toc-entry {
+  text-indent: 0;
+  margin: 0.2em 0;
+  line-height: 1.45;
+}
+
+.page-marker {
+  display: block;
+  height: 0;
+  overflow: hidden;
+}
+
+/* === TABLES === */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.2em 0;
+  font-size: 0.95em;
+  page-break-inside: avoid;
+}
+
+th, td {
+  padding: 0.6em 0.8em;
+  border: 1px solid #ddd;
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  font-weight: bold;
+  background: #f5f5f5;
+  border-bottom: 2px solid #999;
+}
+
+thead th {
+  background: #e8e8e8;
+}
+
+tr:nth-child(even) td {
+  background: #fafafa;
+}
+
+/* === CODE === */
+code, pre {
+  font-family: "Courier New", Courier, monospace;
+  font-size: 0.9em;
+  background: #f5f5f5;
+  border: 1px solid #e0e0e0;
+  border-radius: 3px;
+}
+
+code {
+  padding: 0.2em 0.4em;
+}
+
+pre {
+  padding: 1em;
+  margin: 1em 0;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+pre code {
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+/* === LINKS === */
+a {
+  color: #2a6496;
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+/* === PAGE BREAKS === */
+.page-break {
+  page-break-after: always;
+}
+
+.no-break {
+  page-break-inside: avoid;
+}
+
+/* === SPECIAL ELEMENTS === */
+.ornament {
+  text-align: center;
+  font-size: 1.5em;
+  color: #999;
+  margin: 2em 0;
+}
+
+.divider {
+  text-align: center;
+  margin: 2em 0;
+}
+
+.divider::before {
+  content: "• • •";
+  color: #999;
+}
+
+/* === COVER PAGE === */
+.cover-page {
+  text-align: center;
+  margin: 0;
+  padding: 0;
+}
+
+.cover-page img {
+  max-width: 100%;
+  max-height: 100vh;
+  margin: 0 auto;
+}
+
+/* === TITLE PAGE === */
+.title-page {
+  text-align: center;
+  margin-top: 3em;
+}
+
+.title-page h1 {
+  font-size: 2.2em;
+  margin: 1em 0 0.5em;
+}
+
+.title-page h2 {
+  font-size: 1.5em;
+  font-weight: normal;
+  color: #666;
+  margin: 0.5em 0;
+}
+
+.title-page .author {
+  font-size: 1.3em;
+  margin: 2em 0 1em;
+  font-style: italic;
+}
+
+.title-page .publisher {
+  font-size: 1em;
+  color: #888;
+  margin-top: 3em;
+}
+
+/* === TOC === */
+.toc-entry {
+  margin: 0.5em 0;
+  padding-left: 0;
+}
+
+.toc-level-1 {
+  font-weight: bold;
+  font-size: 1.1em;
+}
+
+.toc-level-2 {
+  padding-left: 1.5em;
+}
+
+.toc-level-3 {
+  padding-left: 3em;
+  font-size: 0.95em;
+  color: #666;
+}
+
+/* === FOOTNOTES === */
+.footnote {
+  font-size: 0.85em;
+  line-height: 1.5;
+  margin: 0.3em 0;
+}
+
+.footnote-ref {
+  font-size: 0.75em;
+  vertical-align: super;
+  color: #2a6496;
+}
+
+/* === CALLOUTS === */
+.callout {
+  margin: 1.5em;
+  padding: 1em;
+  border: 1px solid #ddd;
+  border-left: 4px solid #4B5EAA;
+  background: #f9f9ff;
+  border-radius: 4px;
+}
+
+.callout-title {
+  font-weight: bold;
+  margin-bottom: 0.5em;
+  color: #4B5EAA;
+}
+
+.callout p {
+  text-indent: 0;
+  margin: 0.3em 0;
+}

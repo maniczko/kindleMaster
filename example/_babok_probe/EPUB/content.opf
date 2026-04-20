@@ -1,0 +1,171 @@
+<?xml version='1.0' encoding='utf-8'?>
+<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="id" version="3.0" prefix="rendition: http://www.idpf.org/vocab/rendition/#">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
+    <meta property="dcterms:modified">2026-04-10T12:14:10Z</meta>
+    <meta name="generator" content="Ebook-lib 0.20.0"/>
+    <dc:identifier id="id">506d2fc567394d2eaf6fee719312a873</dc:identifier>
+    <dc:title>BABOK Guide v3</dc:title>
+    <dc:language>pl</dc:language>
+    <dc:creator id="creator">IIBA</dc:creator>
+    <meta name="cover" content="cover-image"></meta>
+  </metadata>
+  <manifest>
+    <item href="style/default.css" id="style" media-type="text/css"/>
+    <item href="images/diagram_p12_1.png" id="image_diagram_p12_1.png" media-type="image/png"/>
+    <item href="images/diagram_p15_2.png" id="image_diagram_p15_2.png" media-type="image/png"/>
+    <item href="images/diagram_p22_3.png" id="image_diagram_p22_3.png" media-type="image/png"/>
+    <item href="images/diagram_p24_4.png" id="image_diagram_p24_4.png" media-type="image/png"/>
+    <item href="images/diagram_p29_5.png" id="image_diagram_p29_5.png" media-type="image/png"/>
+    <item href="images/diagram_p30_6.png" id="image_diagram_p30_6.png" media-type="image/png"/>
+    <item href="images/diagram_p33_7.png" id="image_diagram_p33_7.png" media-type="image/png"/>
+    <item href="images/diagram_p35_8.png" id="image_diagram_p35_8.png" media-type="image/png"/>
+    <item href="images/diagram_p37_9.png" id="image_diagram_p37_9.png" media-type="image/png"/>
+    <item href="images/diagram_p42_10.png" id="image_diagram_p42_10.png" media-type="image/png"/>
+    <item href="images/diagram_p48_11.png" id="image_diagram_p48_11.png" media-type="image/png"/>
+    <item href="images/diagram_p53_12.png" id="image_diagram_p53_12.png" media-type="image/png"/>
+    <item href="images/diagram_p58_13.png" id="image_diagram_p58_13.png" media-type="image/png"/>
+    <item href="images/diagram_p66_14.png" id="image_diagram_p66_14.png" media-type="image/png"/>
+    <item href="images/diagram_p67_15.png" id="image_diagram_p67_15.png" media-type="image/png"/>
+    <item href="images/diagram_p72_16.png" id="image_diagram_p72_16.png" media-type="image/png"/>
+    <item href="images/diagram_p76_17.png" id="image_diagram_p76_17.png" media-type="image/png"/>
+    <item href="images/diagram_p78_18.png" id="image_diagram_p78_18.png" media-type="image/png"/>
+    <item href="images/diagram_p82_19.png" id="image_diagram_p82_19.png" media-type="image/png"/>
+    <item href="images/diagram_p86_21.png" id="image_diagram_p86_21.png" media-type="image/png"/>
+    <item href="images/figure_p86_20.png" id="image_figure_p86_20.png" media-type="image/png"/>
+    <item href="images/diagram_p88_22.png" id="image_diagram_p88_22.png" media-type="image/png"/>
+    <item href="images/diagram_p90_23.png" id="image_diagram_p90_23.png" media-type="image/png"/>
+    <item href="images/diagram_p90_24.png" id="image_diagram_p90_24.png" media-type="image/png"/>
+    <item href="images/diagram_p91_25.png" id="image_diagram_p91_25.png" media-type="image/png"/>
+    <item href="images/diagram_p94_26.png" id="image_diagram_p94_26.png" media-type="image/png"/>
+    <item href="images/diagram_p97_27.png" id="image_diagram_p97_27.png" media-type="image/png"/>
+    <item href="images/diagram_p102_28.png" id="image_diagram_p102_28.png" media-type="image/png"/>
+    <item href="images/diagram_p106_29.png" id="image_diagram_p106_29.png" media-type="image/png"/>
+    <item href="images/diagram_p110_30.png" id="image_diagram_p110_30.png" media-type="image/png"/>
+    <item href="images/diagram_p112_31.png" id="image_diagram_p112_31.png" media-type="image/png"/>
+    <item href="images/diagram_p114_32.png" id="image_diagram_p114_32.png" media-type="image/png"/>
+    <item href="images/diagram_p122_33.png" id="image_diagram_p122_33.png" media-type="image/png"/>
+    <item href="images/diagram_p131_34.png" id="image_diagram_p131_34.png" media-type="image/png"/>
+    <item href="images/diagram_p136_35.png" id="image_diagram_p136_35.png" media-type="image/png"/>
+    <item href="images/diagram_p144_36.png" id="image_diagram_p144_36.png" media-type="image/png"/>
+    <item href="images/diagram_p146_37.png" id="image_diagram_p146_37.png" media-type="image/png"/>
+    <item href="images/diagram_p147_38.png" id="image_diagram_p147_38.png" media-type="image/png"/>
+    <item href="images/diagram_p152_39.png" id="image_diagram_p152_39.png" media-type="image/png"/>
+    <item href="images/diagram_p155_40.png" id="image_diagram_p155_40.png" media-type="image/png"/>
+    <item href="images/diagram_p159_41.png" id="image_diagram_p159_41.png" media-type="image/png"/>
+    <item href="images/diagram_p163_42.png" id="image_diagram_p163_42.png" media-type="image/png"/>
+    <item href="images/diagram_p168_43.png" id="image_diagram_p168_43.png" media-type="image/png"/>
+    <item href="images/diagram_p174_44.png" id="image_diagram_p174_44.png" media-type="image/png"/>
+    <item href="images/diagram_p176_45.png" id="image_diagram_p176_45.png" media-type="image/png"/>
+    <item href="images/diagram_p177_46.png" id="image_diagram_p177_46.png" media-type="image/png"/>
+    <item href="images/diagram_p181_47.png" id="image_diagram_p181_47.png" media-type="image/png"/>
+    <item href="images/diagram_p184_48.png" id="image_diagram_p184_48.png" media-type="image/png"/>
+    <item href="images/diagram_p188_49.png" id="image_diagram_p188_49.png" media-type="image/png"/>
+    <item href="images/diagram_p193_50.png" id="image_diagram_p193_50.png" media-type="image/png"/>
+    <item href="images/diagram_p229_53.png" id="image_diagram_p229_53.png" media-type="image/png"/>
+    <item href="images/figure_p229_51.png" id="image_figure_p229_51.png" media-type="image/png"/>
+    <item href="images/figure_p229_52.png" id="image_figure_p229_52.png" media-type="image/png"/>
+    <item href="images/diagram_p234_55.png" id="image_diagram_p234_55.png" media-type="image/png"/>
+    <item href="images/figure_p234_54.png" id="image_figure_p234_54.png" media-type="image/png"/>
+    <item href="images/diagram_p238_56.png" id="image_diagram_p238_56.png" media-type="image/png"/>
+    <item href="images/diagram_p241_58.png" id="image_diagram_p241_58.png" media-type="image/png"/>
+    <item href="images/figure_p241_57.png" id="image_figure_p241_57.png" media-type="image/png"/>
+    <item href="images/diagram_p242_59.png" id="image_diagram_p242_59.png" media-type="image/png"/>
+    <item href="images/diagram_p243_60.png" id="image_diagram_p243_60.png" media-type="image/png"/>
+    <item href="images/diagram_p247_61.png" id="image_diagram_p247_61.png" media-type="image/png"/>
+    <item href="images/diagram_p258_62.png" id="image_diagram_p258_62.png" media-type="image/png"/>
+    <item href="images/diagram_p260_63.png" id="image_diagram_p260_63.png" media-type="image/png"/>
+    <item href="images/diagram_p261_64.png" id="image_diagram_p261_64.png" media-type="image/png"/>
+    <item href="images/diagram_p262_65.png" id="image_diagram_p262_65.png" media-type="image/png"/>
+    <item href="images/diagram_p262_66.png" id="image_diagram_p262_66.png" media-type="image/png"/>
+    <item href="images/diagram_p269_67.png" id="image_diagram_p269_67.png" media-type="image/png"/>
+    <item href="images/diagram_p270_68.png" id="image_diagram_p270_68.png" media-type="image/png"/>
+    <item href="images/diagram_p273_69.png" id="image_diagram_p273_69.png" media-type="image/png"/>
+    <item href="images/diagram_p273_70.png" id="image_diagram_p273_70.png" media-type="image/png"/>
+    <item href="images/diagram_p276_71.png" id="image_diagram_p276_71.png" media-type="image/png"/>
+    <item href="images/diagram_p277_72.png" id="image_diagram_p277_72.png" media-type="image/png"/>
+    <item href="images/diagram_p278_73.png" id="image_diagram_p278_73.png" media-type="image/png"/>
+    <item href="images/diagram_p293_74.png" id="image_diagram_p293_74.png" media-type="image/png"/>
+    <item href="images/diagram_p298_75.png" id="image_diagram_p298_75.png" media-type="image/png"/>
+    <item href="images/diagram_p310_85.png" id="image_diagram_p310_85.png" media-type="image/png"/>
+    <item href="images/figure_p310_82.png" id="image_figure_p310_82.png" media-type="image/png"/>
+    <item href="images/figure_p310_79.png" id="image_figure_p310_79.png" media-type="image/png"/>
+    <item href="images/figure_p310_80.png" id="image_figure_p310_80.png" media-type="image/png"/>
+    <item href="images/figure_p310_83.png" id="image_figure_p310_83.png" media-type="image/png"/>
+    <item href="images/figure_p310_81.png" id="image_figure_p310_81.png" media-type="image/png"/>
+    <item href="images/figure_p310_77.png" id="image_figure_p310_77.png" media-type="image/png"/>
+    <item href="images/figure_p310_84.png" id="image_figure_p310_84.png" media-type="image/png"/>
+    <item href="images/figure_p310_78.png" id="image_figure_p310_78.png" media-type="image/png"/>
+    <item href="images/figure_p310_76.png" id="image_figure_p310_76.png" media-type="image/png"/>
+    <item href="images/diagram_p319_86.png" id="image_diagram_p319_86.png" media-type="image/png"/>
+    <item href="images/diagram_p319_87.png" id="image_diagram_p319_87.png" media-type="image/png"/>
+    <item href="images/diagram_p320_88.png" id="image_diagram_p320_88.png" media-type="image/png"/>
+    <item href="images/diagram_p322_89.png" id="image_diagram_p322_89.png" media-type="image/png"/>
+    <item href="images/diagram_p326_91.png" id="image_diagram_p326_91.png" media-type="image/png"/>
+    <item href="images/figure_p326_90.png" id="image_figure_p326_90.png" media-type="image/png"/>
+    <item href="images/diagram_p327_92.png" id="image_diagram_p327_92.png" media-type="image/png"/>
+    <item href="images/diagram_p330_93.png" id="image_diagram_p330_93.png" media-type="image/png"/>
+    <item href="images/diagram_p331_94.png" id="image_diagram_p331_94.png" media-type="image/png"/>
+    <item href="images/diagram_p332_95.png" id="image_diagram_p332_95.png" media-type="image/png"/>
+    <item href="images/diagram_p338_96.png" id="image_diagram_p338_96.png" media-type="image/png"/>
+    <item href="images/diagram_p340_97.png" id="image_diagram_p340_97.png" media-type="image/png"/>
+    <item href="images/diagram_p341_98.png" id="image_diagram_p341_98.png" media-type="image/png"/>
+    <item href="images/diagram_p343_99.png" id="image_diagram_p343_99.png" media-type="image/png"/>
+    <item href="images/diagram_p346_100.png" id="image_diagram_p346_100.png" media-type="image/png"/>
+    <item href="images/diagram_p352_101.png" id="image_diagram_p352_101.png" media-type="image/png"/>
+    <item href="images/diagram_p353_102.png" id="image_diagram_p353_102.png" media-type="image/png"/>
+    <item href="images/diagram_p355_103.png" id="image_diagram_p355_103.png" media-type="image/png"/>
+    <item href="images/diagram_p356_104.png" id="image_diagram_p356_104.png" media-type="image/png"/>
+    <item href="images/diagram_p357_105.png" id="image_diagram_p357_105.png" media-type="image/png"/>
+    <item href="images/diagram_p359_106.png" id="image_diagram_p359_106.png" media-type="image/png"/>
+    <item href="images/diagram_p365_108.png" id="image_diagram_p365_108.png" media-type="image/png"/>
+    <item href="images/figure_p365_107.png" id="image_figure_p365_107.png" media-type="image/png"/>
+    <item href="images/diagram_p367_109.png" id="image_diagram_p367_109.png" media-type="image/png"/>
+    <item href="images/diagram_p383_110.png" id="image_diagram_p383_110.png" media-type="image/png"/>
+    <item href="images/diagram_p384_111.png" id="image_diagram_p384_111.png" media-type="image/png"/>
+    <item href="images/diagram_p391_113.png" id="image_diagram_p391_113.png" media-type="image/png"/>
+    <item href="images/figure_p391_112.png" id="image_figure_p391_112.png" media-type="image/png"/>
+    <item href="images/diagram_p439_114.png" id="image_diagram_p439_114.png" media-type="image/png"/>
+    <item href="chapter_001.xhtml" id="chapter_0" media-type="application/xhtml+xml"/>
+    <item href="chapter_002.xhtml" id="chapter_1" media-type="application/xhtml+xml"/>
+    <item href="chapter_003.xhtml" id="chapter_2" media-type="application/xhtml+xml"/>
+    <item href="chapter_004.xhtml" id="chapter_3" media-type="application/xhtml+xml"/>
+    <item href="chapter_005.xhtml" id="chapter_4" media-type="application/xhtml+xml"/>
+    <item href="chapter_006.xhtml" id="chapter_5" media-type="application/xhtml+xml"/>
+    <item href="chapter_007.xhtml" id="chapter_6" media-type="application/xhtml+xml"/>
+    <item href="chapter_008.xhtml" id="chapter_7" media-type="application/xhtml+xml"/>
+    <item href="chapter_009.xhtml" id="chapter_8" media-type="application/xhtml+xml"/>
+    <item href="chapter_010.xhtml" id="chapter_9" media-type="application/xhtml+xml"/>
+    <item href="chapter_011.xhtml" id="chapter_10" media-type="application/xhtml+xml"/>
+    <item href="chapter_012.xhtml" id="chapter_11" media-type="application/xhtml+xml"/>
+    <item href="chapter_013.xhtml" id="chapter_12" media-type="application/xhtml+xml"/>
+    <item href="chapter_014.xhtml" id="chapter_13" media-type="application/xhtml+xml"/>
+    <item href="chapter_015.xhtml" id="chapter_14" media-type="application/xhtml+xml"/>
+    <item href="chapter_016.xhtml" id="chapter_15" media-type="application/xhtml+xml"/>
+    <item href="chapter_017.xhtml" id="chapter_16" media-type="application/xhtml+xml"/>
+    <item href="images/cover.png" id="cover-image" media-type="image/png"/>
+    <item href="cover.xhtml" id="chapter_17" media-type="application/xhtml+xml"/>
+    <item href="toc.ncx" id="ncx" media-type="application/x-dtbncx+xml"/>
+    <item href="nav.xhtml" id="nav" media-type="application/xhtml+xml" properties="nav"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="nav"/>
+    <itemref idref="chapter_17"/>
+    <itemref idref="chapter_0"/>
+    <itemref idref="chapter_1"/>
+    <itemref idref="chapter_2"/>
+    <itemref idref="chapter_3"/>
+    <itemref idref="chapter_4"/>
+    <itemref idref="chapter_5"/>
+    <itemref idref="chapter_6"/>
+    <itemref idref="chapter_7"/>
+    <itemref idref="chapter_8"/>
+    <itemref idref="chapter_9"/>
+    <itemref idref="chapter_10"/>
+    <itemref idref="chapter_11"/>
+    <itemref idref="chapter_12"/>
+    <itemref idref="chapter_13"/>
+    <itemref idref="chapter_14"/>
+    <itemref idref="chapter_15"/>
+    <itemref idref="chapter_16"/>
+  </spine>
+</package>

@@ -1,0 +1,1799 @@
+[
+  {
+    "page": 3,
+    "blocks": [
+      {
+        "bbox": [
+          230.5,
+          4.4,
+          350.5,
+          15.7
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "iwo.czajka@gmail.com"
+      },
+      {
+        "bbox": [
+          206.0,
+          53.0,
+          374.5,
+          65.3
+        ],
+        "avg_font": 9.0,
+        "max_font": 9.0,
+        "text": "2 - 8 . 0 9 . 2 0 2 4   /   N U M E R  3 6"
+      },
+      {
+        "bbox": [
+          28.3,
+          111.5,
+          114.6,
+          122.7
+        ],
+        "avg_font": 8.5,
+        "max_font": 8.5,
+        "text": "TEMAT Z OKŁADKI"
+      },
+      {
+        "bbox": [
+          426.0,
+          111.5,
+          511.3,
+          122.7
+        ],
+        "avg_font": 8.5,
+        "max_font": 8.5,
+        "text": "NAUKA I ZDROWIE"
+      },
+      {
+        "bbox": [
+          28.3,
+          124.9,
+          134.7,
+          154.6
+        ],
+        "avg_font": 7.6,
+        "max_font": 7.8,
+        "text": "8  /  Czy PiS przetrwa | W partii szykują się mała rewolucja | i wielkie oszczędności"
+      },
+      {
+        "bbox": [
+          426.0,
+          124.9,
+          530.3,
+          154.6
+        ],
+        "avg_font": 7.6,
+        "max_font": 7.8,
+        "text": "74  /  Jak ratować mózg | Naukowcy bliżej opracowania leku | na alzheimera"
+      },
+      {
+        "bbox": [
+          426.0,
+          157.7,
+          478.5,
+          177.4
+        ],
+        "avg_font": 7.68,
+        "max_font": 7.8,
+        "text": "78  /  Z bliska | Krab pająkowy"
+      },
+      {
+        "bbox": [
+          28.3,
+          171.4,
+          76.8,
+          182.5
+        ],
+        "avg_font": 8.5,
+        "max_font": 8.5,
+        "text": "POLITYKA"
+      },
+      {
+        "bbox": [
+          426.0,
+          180.5,
+          525.7,
+          210.3
+        ],
+        "avg_font": 7.6,
+        "max_font": 7.8,
+        "text": "80  /  Zapaść NFZ | Kasa systemu opieki zdrowotnej | świeci pustkami"
+      },
+      {
+        "bbox": [
+          28.3,
+          184.7,
+          139.8,
+          234.4
+        ],
+        "avg_font": 7.52,
+        "max_font": 7.8,
+        "text": "14  /  Powrót państwa prawa | Przywracanie praworządności ma | swoich hamulcowych – mówi | prof. Ewa Łętowska, była rzecznik | praw obywatelskich"
+      },
+      {
+        "bbox": [
+          426.0,
+          222.9,
+          468.2,
+          234.0
+        ],
+        "avg_font": 8.5,
+        "max_font": 8.5,
+        "text": "KULTURA"
+      },
+      {
+        "bbox": [
+          426.0,
+          236.2,
+          535.2,
+          265.9
+        ],
+        "avg_font": 7.6,
+        "max_font": 7.8,
+        "text": "84  /  Beatlesi lat 90. | Boysband Take That w październiku | po raz pierwszy wystąpi w Polsce"
+      },
+      {
+        "bbox": [
+          28.3,
+          237.5,
+          140.1,
+          257.3
+        ],
+        "avg_font": 7.68,
+        "max_font": 7.8,
+        "text": "22  /  Młodzi chcą konkretów | Rozczarowani rządzącą koalicją"
+      },
+      {
+        "bbox": [
+          28.3,
+          274.0,
+          110.8,
+          285.2
+        ],
+        "avg_font": 8.5,
+        "max_font": 8.5,
+        "text": "SPOŁECZEŃSTWO"
+      },
+      {
+        "bbox": [
+          426.0,
+          279.9,
+          477.0,
+          291.0
+        ],
+        "avg_font": 8.5,
+        "max_font": 8.5,
+        "text": "FELIETONY"
+      },
+      {
+        "bbox": [
+          28.3,
+          287.4,
+          140.3,
+          317.1
+        ],
+        "avg_font": 7.6,
+        "max_font": 7.8,
+        "text": "28  /  Rodzinne finanse | Ile kosztuje twoje dziecko. I dlaczego | tak dużo"
+      },
+      {
+        "bbox": [
+          426.0,
+          293.2,
+          507.4,
+          312.9
+        ],
+        "avg_font": 7.68,
+        "max_font": 7.8,
+        "text": "6  /  Dariusz Ćwiklak | Baca na gałęzi"
+      },
+      {
+        "bbox": [
+          173.7,
+          308.1,
+          396.0,
+          367.2
+        ],
+        "avg_font": 17.93,
+        "max_font": 39.0,
+        "text": "38 | SPOŁECZEŃSTWO | TRAMWAJ NIEMOCY"
+      },
+      {
+        "bbox": [
+          426.0,
+          316.0,
+          525.5,
+          335.8
+        ],
+        "avg_font": 7.68,
+        "max_font": 7.8,
+        "text": "19  /  Andrzej Stankiewicz | Czarnek, czyli brakujący element"
+      },
+      {
+        "bbox": [
+          28.3,
+          320.2,
+          139.8,
+          349.9
+        ],
+        "avg_font": 7.6,
+        "max_font": 7.8,
+        "text": "34  /  Ofiary nękania w sieci | Kobiety są 27 razy bardziej narażone | na cyberprzemoc niż mężczyźni"
+      },
+      {
+        "bbox": [
+          426.0,
+          338.9,
+          519.2,
+          358.6
+        ],
+        "avg_font": 7.68,
+        "max_font": 7.8,
+        "text": "26  /  Krzysztof Varga | Mentzen z Drużyny Pierścienia"
+      },
+      {
+        "bbox": [
+          28.3,
+          353.0,
+          146.0,
+          382.8
+        ],
+        "avg_font": 7.6,
+        "max_font": 7.8,
+        "text": "38  / Tramwajem do Wilanowa | Dziewięć miesięcy opóźnienia, chaos, | paraliż komunikacyjny w Warszawie"
+      },
+      {
+        "bbox": [
+          426.0,
+          361.7,
+          512.1,
+          381.4
+        ],
+        "avg_font": 7.68,
+        "max_font": 7.8,
+        "text": "37  /  Katarzyna Kasia | Takie kwiatki"
+      },
+      {
+        "bbox": [
+          174.5,
+          367.6,
+          397.1,
+          423.7
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "Czy chaos i katastrofalne opóźnienia na budowie | tramwaju do warszawskiego Wilanowa mogą | zaszkodzić Rafałowi Trzaskowskiemu w wyścigu | prezydenckim?"
+      },
+      {
+        "bbox": [
+          426.0,
+          384.5,
+          506.6,
+          404.3
+        ],
+        "avg_font": 7.68,
+        "max_font": 7.8,
+        "text": "72  /  Mikołaj Kunica | Zero euro, zero złotych"
+      }
+    ]
+  },
+  {
+    "page": 6,
+    "blocks": [
+      {
+        "bbox": [
+          230.5,
+          4.4,
+          350.5,
+          15.7
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "iwo.czajka@gmail.com"
+      },
+      {
+        "bbox": [
+          483.1,
+          36.1,
+          524.7,
+          46.5
+        ],
+        "avg_font": 8.0,
+        "max_font": 8.0,
+        "text": "Newsweek"
+      },
+      {
+        "bbox": [
+          230.4,
+          56.1,
+          537.1,
+          91.8
+        ],
+        "avg_font": 18.0,
+        "max_font": 26.0,
+        "text": "Michał Szadkowski | P.o. redaktor naczelny"
+      },
+      {
+        "bbox": [
+          39.1,
+          114.7,
+          153.2,
+          126.9
+        ],
+        "avg_font": 9.0,
+        "max_font": 9.0,
+        "text": "WYMIJAJĄCO WPROST"
+      },
+      {
+        "bbox": [
+          38.1,
+          123.9,
+          168.8,
+          171.0
+        ],
+        "avg_font": 31.0,
+        "max_font": 31.0,
+        "text": "Final girl"
+      },
+      {
+        "bbox": [
+          44.0,
+          187.6,
+          69.5,
+          225.5
+        ],
+        "avg_font": 25.6,
+        "max_font": 25.6,
+        "text": "M"
+      },
+      {
+        "bbox": [
+          39.7,
+          192.0,
+          276.8,
+          715.7
+        ],
+        "avg_font": 9.3,
+        "max_font": 9.3,
+        "text": "ało co mnie tak fascynuje jak trwający w głowie | prezesa proces wyboru kandydata na kandyda- | ta na prezydenta z PiS. A wszystko z powodu | kobiet. | Za współtwórcę tego filmowego toposu uznaje się Alfre- | da Hitchcocka, lecz najbardziej eksploatowany był w brutal- | nych i schematycznych horrora"
+      },
+      {
+        "bbox": [
+          301.9,
+          192.0,
+          539.0,
+          427.1
+        ],
+        "avg_font": 9.3,
+        "max_font": 9.3,
+        "text": "Serio, był moment, gdy Szydło w rankingach zaufania prze- | grywała tylko z Dudą. | Ambicje sięgające dużego pałacu miała – przez kilka lat | druga osoba w państwie – Elżbieta Witek. To również postać | dla tzw. Zjednoczonej Prawicy zasłużona, jako marszałkini | Sejmu na każde życzenie reasumpowała "
+      },
+      {
+        "bbox": [
+          288.8,
+          445.4,
+          539.6,
+          523.9
+        ],
+        "avg_font": 13.0,
+        "max_font": 13.0,
+        "text": "Obawiam się, że w filmie o PiS w ostatniej | scenie za „final girl” robiłby Mariusz | Błaszczak. Żadna kobieta nie przetrwałaby | bowiem czystek, humorów i dziwactw | głównego bohatera"
+      },
+      {
+        "bbox": [
+          301.9,
+          547.2,
+          539.0,
+          715.7
+        ],
+        "avg_font": 9.11,
+        "max_font": 9.3,
+        "text": "nald Tusk uznał, że nie interesuje go doglądanie żyrandola, | polityczki z PO miałyby cień szansy na nominację. Różnica | polega na tym, że PO ma oczywistego kandydata i nie rzuca | eliminowania kobiet na sztandar. | Tak czy inaczej, wciąż tkwimy w jakichś patriarchalnych | gusłach, prawdopodobnie n"
+      },
+      {
+        "bbox": [
+          560.3,
+          641.8,
+          566.4,
+          713.2
+        ],
+        "avg_font": 5.0,
+        "max_font": 5.0,
+        "text": "FOT. MAREK SZCZEPAŃSKI"
+      },
+      {
+        "bbox": [
+          32.6,
+          728.8,
+          98.0,
+          741.3
+        ],
+        "avg_font": 7.0,
+        "max_font": 9.0,
+        "text": "4 | 2-8.09.2024"
+      },
+      {
+        "bbox": [
+          230.5,
+          745.0,
+          350.5,
+          756.3
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "iwo.czajka@gmail.com"
+      }
+    ]
+  },
+  {
+    "page": 7,
+    "blocks": [
+      {
+        "bbox": [
+          230.5,
+          4.4,
+          350.5,
+          15.7
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "iwo.czajka@gmail.com"
+      },
+      {
+        "bbox": [
+          61.5,
+          556.7,
+          232.6,
+          585.9
+        ],
+        "avg_font": 18.0,
+        "max_font": 18.0,
+        "text": "Prenumerata roczna:"
+      },
+      {
+        "bbox": [
+          61.5,
+          590.8,
+          375.5,
+          606.8
+        ],
+        "avg_font": 11.5,
+        "max_font": 13.0,
+        "text": "■Nowe wydanie prasowe co tydzień w Twoim domu."
+      },
+      {
+        "bbox": [
+          61.5,
+          609.7,
+          389.4,
+          625.6
+        ],
+        "avg_font": 11.5,
+        "max_font": 13.0,
+        "text": "■Plecak           dostępny w trzech modelach do wyboru"
+      },
+      {
+        "bbox": [
+          61.5,
+          628.5,
+          275.0,
+          644.5
+        ],
+        "avg_font": 11.5,
+        "max_font": 13.0,
+        "text": "■W prezencie subskrypcja cyfrowa"
+      },
+      {
+        "bbox": [
+          132.2,
+          667.0,
+          297.5,
+          697.2
+        ],
+        "avg_font": 11.0,
+        "max_font": 11.0,
+        "text": "Zamów za 464 zł | z bezpłatną dostawą na Literia.pl"
+      },
+      {
+        "bbox": [
+          300.3,
+          727.8,
+          422.3,
+          742.5
+        ],
+        "avg_font": 12.0,
+        "max_font": 12.0,
+        "text": "Prenumerata do potęgi"
+      },
+      {
+        "bbox": [
+          230.5,
+          745.0,
+          350.5,
+          756.3
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "iwo.czajka@gmail.com"
+      }
+    ]
+  },
+  {
+    "page": 8,
+    "blocks": [
+      {
+        "bbox": [
+          230.5,
+          4.4,
+          350.5,
+          15.7
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "iwo.czajka@gmail.com"
+      },
+      {
+        "bbox": [
+          377.4,
+          42.6,
+          412.4,
+          75.4
+        ],
+        "avg_font": 14.0,
+        "max_font": 14.0,
+        "text": "KARTKA | Z..."
+      },
+      {
+        "bbox": [
+          451.6,
+          47.8,
+          516.4,
+          79.8
+        ],
+        "avg_font": 14.0,
+        "max_font": 14.0,
+        "text": "3 WIADOMOŚCI | ZE ŚWIATA"
+      },
+      {
+        "bbox": [
+          45.8,
+          51.0,
+          105.5,
+          63.3
+        ],
+        "avg_font": 9.0,
+        "max_font": 9.0,
+        "text": "TYDZIEŃ Z..."
+      },
+      {
+        "bbox": [
+          45.8,
+          61.3,
+          195.4,
+          91.5
+        ],
+        "avg_font": 21.0,
+        "max_font": 21.0,
+        "text": "Dariusz Ćwiklak"
+      },
+      {
+        "bbox": [
+          451.6,
+          80.3,
+          542.7,
+          106.3
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "... których nie wolno | przegapić"
+      },
+      {
+        "bbox": [
+          45.8,
+          86.8,
+          134.3,
+          144.2
+        ],
+        "avg_font": 22.0,
+        "max_font": 22.0,
+        "text": "Baca | na gałęzi"
+      },
+      {
+        "bbox": [
+          362.6,
+          100.3,
+          434.4,
+          235.4
+        ],
+        "avg_font": 8.48,
+        "max_font": 22.0,
+        "text": "1 WRZEŚNIA | 2004 ROKU | Czeczeński oddział | Szamila Basajewa | opanowuje szkołę | w Biesłanie w Osetii | Północnej. | Dwa dni później, | podczas szturmu | rosyjskich służb | specjalnych na szkołę, | zginęły 334 osoby, | a 700 zostało rannych"
+      },
+      {
+        "bbox": [
+          453.3,
+          116.1,
+          556.1,
+          283.3
+        ],
+        "avg_font": 9.31,
+        "max_font": 10.0,
+        "text": "STARLINER WRACA BEZ | ASTRONAUTÓW | Do lutego przedłuży się | pobyt na orbicie astronau- | tom, którzy przylecieli na | ISS w załogowej kapsule | Starliner. Z powodu | problemów technicznych, | NASA i producent statku | – Boeing – zdecydowali, | że kapsuła wróci na Ziemię | bez załogi. Astronauci | "
+      },
+      {
+        "bbox": [
+          56.4,
+          157.7,
+          74.4,
+          190.7
+        ],
+        "avg_font": 23.79,
+        "max_font": 23.79,
+        "text": "D"
+      },
+      {
+        "bbox": [
+          49.6,
+          158.9,
+          340.6,
+          705.1
+        ],
+        "avg_font": 9.24,
+        "max_font": 9.3,
+        "text": "owcip o bacy piłującym gałąź, na której siedzi, ma już brodę | dłuższą niż nos Mateusza Morawieckiego, ale nie sposób go nie | przypomnieć teraz, gdy PiS wpadło w dołek, który pracowicie ko- | pało przez dwie kadencje. Przed tworzeniem upartyjnionego państwa i jego | instytucji przestrzegali PiS i o"
+      },
+      {
+        "bbox": [
+          366.8,
+          247.9,
+          430.2,
+          256.9
+        ],
+        "avg_font": 7.0,
+        "max_font": 7.0,
+        "text": "W GÓRĘ I W DÓŁ"
+      },
+      {
+        "bbox": [
+          453.3,
+          293.7,
+          554.6,
+          494.2
+        ],
+        "avg_font": 9.25,
+        "max_font": 10.0,
+        "text": "GRUZJA BEZ OPOZYCJI? | „Kiedy uzyskamy więk- | szość konstytucyjną, | rozpoczniemy prawną pro- | cedurę, która doprowadzi | do uznania Zjednoczonego | Ruchu Narodowego oraz | jej partii satelickich | za niekonstytucyjne” | – oświadczyły władze | Gruzińskiego Marzenia, | partii rządzącej krajem. Te |"
+      },
+      {
+        "bbox": [
+          367.0,
+          333.7,
+          429.5,
+          356.3
+        ],
+        "avg_font": 11.0,
+        "max_font": 11.0,
+        "text": "LIAM I NOEL | GALLAGHEROWIE"
+      },
+      {
+        "bbox": [
+          561.0,
+          349.1,
+          573.1,
+          713.2
+        ],
+        "avg_font": 5.0,
+        "max_font": 5.0,
+        "text": "FOT. FRED TANNEAU AND TOLGA AKMEN/AFP/EAST NEWS, WOJCIECH STRÓŻYK/REPORTER, VALENTYN OGIRENKO/REUTERS/FORUM | RYS. MATEUSZ KOŁEK/FOT. MAREK SZCZEPAŃSKI"
+      },
+      {
+        "bbox": [
+          28.3,
+          351.4,
+          174.8,
+          430.2
+        ],
+        "avg_font": 13.0,
+        "max_font": 13.0,
+        "text": "Wyborcze hasło rozliczeń | staje się ciałem. | W czwartek prawo | i sprawiedliwość dopadły | samą partię PiS"
+      },
+      {
+        "bbox": [
+          362.9,
+          357.0,
+          435.6,
+          412.1
+        ],
+        "avg_font": 6.5,
+        "max_font": 6.5,
+        "text": "Po 15 latach kłótni | bracia Liam i Noel | Gallagherowie | ogłosili wspólną trasę | koncertową grupy | Oasis"
+      },
+      {
+        "bbox": [
+          362.8,
+          473.2,
+          435.3,
+          637.5
+        ],
+        "avg_font": 6.86,
+        "max_font": 11.0,
+        "text": "MICHAŁ | KUCZMIEROWSKI | były szef Rządowej | Agencji Rezerw | Strategicznych | jest ścigany listem | gończym za | nieprawidłowości | w wydawaniu setek | mln zł z budżetu | RARS. W rozmowie z | prawicowym serwisem | wPolityce.pl twierdzi, | że się nie ukrywa, a z | zagranicy „wróci, gdy | będzie mia"
+      },
+      {
+        "bbox": [
+          453.3,
+          504.6,
+          555.2,
+          716.2
+        ],
+        "avg_font": 9.29,
+        "max_font": 10.0,
+        "text": "NOWY UKRAIŃSKI DRON | Palenica to nazwa ukra- | ińskiego chleba z mąki | pszennej. Teraz też odrzu- | towego drona dalekiego | zasięgu, mającego za sobą | pierwsze udane misje, co | obwieścił prezydent Ze- | łenski podczas obchodów | Dnia Niepodległości Ukra- | iny. Zasięg drona pozostaje | tajemnic"
+      },
+      {
+        "bbox": [
+          32.6,
+          728.8,
+          98.0,
+          741.3
+        ],
+        "avg_font": 7.0,
+        "max_font": 9.0,
+        "text": "6 | 2-8.09.2024"
+      },
+      {
+        "bbox": [
+          230.5,
+          745.0,
+          350.5,
+          756.3
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "iwo.czajka@gmail.com"
+      }
+    ]
+  },
+  {
+    "page": 9,
+    "blocks": [
+      {
+        "bbox": [
+          230.5,
+          4.4,
+          350.5,
+          15.7
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "iwo.czajka@gmail.com"
+      },
+      {
+        "bbox": [
+          506.8,
+          21.6,
+          548.5,
+          32.1
+        ],
+        "avg_font": 8.0,
+        "max_font": 8.0,
+        "text": "Newsweek"
+      },
+      {
+        "bbox": [
+          506.8,
+          21.6,
+          548.5,
+          32.1
+        ],
+        "avg_font": 8.0,
+        "max_font": 8.0,
+        "text": "Newsweek"
+      },
+      {
+        "bbox": [
+          32.6,
+          67.3,
+          287.6,
+          85.6
+        ],
+        "avg_font": 16.0,
+        "max_font": 16.0,
+        "text": "HISTORIA Z OKŁADKI: WYBUCH II WOJNY ŚWIATOWEJ"
+      },
+      {
+        "bbox": [
+          378.7,
+          112.6,
+          393.7,
+          145.6
+        ],
+        "avg_font": 23.79,
+        "max_font": 23.79,
+        "text": "P"
+      },
+      {
+        "bbox": [
+          371.3,
+          114.5,
+          537.5,
+          560.8
+        ],
+        "avg_font": 9.16,
+        "max_font": 9.3,
+        "text": "anowie wojny III Rzeszy” – taki | proroczy tytuł (numer zsyłano | do druku wcześniej) miało wyda- | nie z 1 września 1939 r. Na okładce Adolfo- | wi Hitlerowi towarzyszyli generał Wilhelm | Keitel, dowódca Wehrmachtu, oraz admi- | rał Erich Raeder, szef Kriegsmarine. Krąg | wojskowych odpowiedzialny"
+      },
+      {
+        "bbox": [
+          495.0,
+          581.9,
+          537.1,
+          595.6
+        ],
+        "avg_font": 12.0,
+        "max_font": 12.0,
+        "text": "SIĘ RZEKŁO"
+      },
+      {
+        "bbox": [
+          34.9,
+          586.4,
+          98.4,
+          600.1
+        ],
+        "avg_font": 12.0,
+        "max_font": 12.0,
+        "text": "LICZBA TYGODNIA"
+      },
+      {
+        "bbox": [
+          64.8,
+          604.2,
+          100.2,
+          641.9
+        ],
+        "avg_font": 33.0,
+        "max_font": 33.0,
+        "text": "576"
+      },
+      {
+        "bbox": [
+          157.6,
+          609.3,
+          455.6,
+          690.7
+        ],
+        "avg_font": 8.95,
+        "max_font": 8.95,
+        "text": "– Jeżeli rosyjskie wojska będą się wycofywały z Ukrainy, jeżeli będzie | tak, że wojska ukraińskie będą atakowały wycofujących się, to pierwszy | wezmę za telefon i zadzwonię do prezydenta Zełenskiego i powiem: „Nie | bombardujcie ich, kiedy się wycofują. Zostawicie ich”. Mogę to obiecać | rosyjskim"
+      },
+      {
+        "bbox": [
+          32.9,
+          640.1,
+          134.0,
+          715.3
+        ],
+        "avg_font": 6.5,
+        "max_font": 6.5,
+        "text": "tyle razy w lipcu tego roku | powoływano się na publikacje | „Newsweeka Polska”. | W kategorii tygodników | opinii dało to nam pierwsze | miejsce w rankingu najbardziej | opiniotwórczych mediów, | prowadzonym przez Instytut | Monitorowania Mediów"
+      },
+      {
+        "bbox": [
+          157.6,
+          694.1,
+          453.4,
+          716.2
+        ],
+        "avg_font": 8.2,
+        "max_font": 8.2,
+        "text": "Wymiana zdań podczas wystąpienia prezydentów Andrzeja Dudy i Wołodymyra | Zełenskiego w Kijowie podczas obchodów Święta Niepodległości Ukrainy"
+      },
+      {
+        "bbox": [
+          481.5,
+          728.9,
+          548.5,
+          741.4
+        ],
+        "avg_font": 7.0,
+        "max_font": 9.0,
+        "text": "2-8.09.2024 | 7"
+      },
+      {
+        "bbox": [
+          230.5,
+          745.0,
+          350.5,
+          756.3
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "iwo.czajka@gmail.com"
+      }
+    ]
+  },
+  {
+    "page": 10,
+    "blocks": [
+      {
+        "bbox": [
+          230.5,
+          4.4,
+          350.5,
+          15.7
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "iwo.czajka@gmail.com"
+      },
+      {
+        "bbox": [
+          560.2,
+          631.4,
+          566.6,
+          713.2
+        ],
+        "avg_font": 5.0,
+        "max_font": 5.0,
+        "text": "FOT. RADEK PIETRUSZKA/PAP"
+      },
+      {
+        "bbox": [
+          32.6,
+          687.8,
+          138.5,
+          741.8
+        ],
+        "avg_font": 6.93,
+        "max_font": 7.0,
+        "text": "Prezes Jarosław Kaczyński | i Mariusz Błaszczak | na konferencji prasowej | dot. rozliczania PiS | przez rząd Donalda Tuska. | Warszawa, 10 sierpnia 2024 r."
+      },
+      {
+        "bbox": [
+          230.5,
+          745.0,
+          350.5,
+          756.3
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "iwo.czajka@gmail.com"
+      }
+    ]
+  },
+  {
+    "page": 11,
+    "blocks": [
+      {
+        "bbox": [
+          230.5,
+          4.4,
+          350.5,
+          15.7
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "iwo.czajka@gmail.com"
+      },
+      {
+        "bbox": [
+          240.4,
+          100.0,
+          353.3,
+          110.6
+        ],
+        "avg_font": 7.5,
+        "max_font": 8.0,
+        "text": "Newsweek TEMAT Z OKŁADKI"
+      },
+      {
+        "bbox": [
+          156.0,
+          137.1,
+          450.7,
+          317.7
+        ],
+        "avg_font": 56.33,
+        "max_font": 80.0,
+        "text": "P A R T I A ,  K O L A N O  I  P I E N I Ą D Z E | PiS WALCZY | O ŻYCIE"
+      },
+      {
+        "bbox": [
+          188.5,
+          317.1,
+          408.6,
+          418.2
+        ],
+        "avg_font": 17.0,
+        "max_font": 17.0,
+        "text": "Prezes jest coraz słabszy, | a PiS traci miliony złotych. | W partii szykują się | mała rewolucja i wielkie | oszczędności"
+      },
+      {
+        "bbox": [
+          260.4,
+          425.0,
+          333.4,
+          437.6
+        ],
+        "avg_font": 10.0,
+        "max_font": 11.0,
+        "text": "TEKST JACEK GĄDEK"
+      },
+      {
+        "bbox": [
+          481.5,
+          728.9,
+          548.5,
+          741.4
+        ],
+        "avg_font": 7.0,
+        "max_font": 9.0,
+        "text": "2-8.09.2024 | 9"
+      },
+      {
+        "bbox": [
+          230.5,
+          745.0,
+          350.5,
+          756.3
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "iwo.czajka@gmail.com"
+      }
+    ]
+  },
+  {
+    "page": 21,
+    "blocks": [
+      {
+        "bbox": [
+          230.5,
+          4.4,
+          350.5,
+          15.7
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "iwo.czajka@gmail.com"
+      },
+      {
+        "bbox": [
+          461.9,
+          21.6,
+          548.5,
+          32.8
+        ],
+        "avg_font": 8.0,
+        "max_font": 8.0,
+        "text": "Newsweek FELIETON"
+      },
+      {
+        "bbox": [
+          43.9,
+          53.0,
+          141.1,
+          65.3
+        ],
+        "avg_font": 9.0,
+        "max_font": 9.0,
+        "text": "POLITYCZNE ZŁOTO"
+      },
+      {
+        "bbox": [
+          43.9,
+          62.2,
+          443.6,
+          126.0
+        ],
+        "avg_font": 26.0,
+        "max_font": 27.0,
+        "text": "Czarnek, czyli brakujący element | Andrzej Stankiewicz"
+      },
+      {
+        "bbox": [
+          51.3,
+          156.1,
+          70.7,
+          193.9
+        ],
+        "avg_font": 25.6,
+        "max_font": 25.6,
+        "text": "G"
+      },
+      {
+        "bbox": [
+          43.9,
+          159.9,
+          269.7,
+          683.6
+        ],
+        "avg_font": 9.3,
+        "max_font": 9.3,
+        "text": "dy w kasie PiS hula wiatr, gdy partia nie ma | gdzie upychać swych ludzi, gdy w szefostwie | partii króluje dziaderstwo, to on staje się naj- | większą nadzieją. | Powiedzmy sobie szczerze: tak złego roku Jarosław Ka- | czyński nie miał od ponad dekady. W październiku wygrał | wybory tak, że je prze"
+      },
+      {
+        "bbox": [
+          326.0,
+          159.9,
+          551.7,
+          328.4
+        ],
+        "avg_font": 9.3,
+        "max_font": 9.3,
+        "text": "W 2019 r. przebojem wszedł do Sejmu i swoją brutalną | retoryką ujął Kaczyńskiego. Dzięki temu w 2020 r. prezes | powierzył mu resort edukacji i nauki, oczekując pisow- | skiej rewolucji w szkołach i na uczelniach. Czarnek miał | ulepić młodych Polaków na wzór i podobieństwo prezesa. | I próbował, c"
+      },
+      {
+        "bbox": [
+          285.6,
+          342.6,
+          549.0,
+          406.4
+        ],
+        "avg_font": 13.0,
+        "max_font": 13.0,
+        "text": "Czarnek jak mało kto umie uwodzić prezesa, | jednocześnie nim sterując. Czekał na moment, | by zagrać o poważne stanowisko – i to jest | ten moment"
+      },
+      {
+        "bbox": [
+          326.0,
+          415.2,
+          551.8,
+          683.6
+        ],
+        "avg_font": 9.17,
+        "max_font": 9.3,
+        "text": "Dziś jest mistrzem pisowskiego nepotyzmu. Może so- | bie na to pozwolić, bo gdy partia wraz z utratą władzy | straciła dziesiątki tysięcy posad w instytucjach publicz- | nych i spółkach skarbu państwa, on ma do dyspozycji że- | lazną rezerwę, którą może obdzielić kluczowych ludzi. To | dlatego, że w"
+      },
+      {
+        "bbox": [
+          21.0,
+          685.6,
+          27.1,
+          713.2
+        ],
+        "avg_font": 5.0,
+        "max_font": 5.0,
+        "text": "FOT. RASP"
+      },
+      {
+        "bbox": [
+          43.6,
+          705.6,
+          307.0,
+          716.1
+        ],
+        "avg_font": 6.82,
+        "max_font": 6.82,
+        "text": "Andrzej Stankiewicz jest dziennikarzem Onetu i współtwórcą podcastu „Stan wyjątkowy”"
+      },
+      {
+        "bbox": [
+          481.5,
+          728.9,
+          548.5,
+          741.4
+        ],
+        "avg_font": 7.0,
+        "max_font": 9.0,
+        "text": "2-8.09.2024 | 19"
+      },
+      {
+        "bbox": [
+          230.5,
+          745.0,
+          350.5,
+          756.3
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "iwo.czajka@gmail.com"
+      }
+    ]
+  },
+  {
+    "page": 31,
+    "blocks": [
+      {
+        "bbox": [
+          230.5,
+          4.4,
+          350.5,
+          15.7
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "iwo.czajka@gmail.com"
+      },
+      {
+        "bbox": [
+          168.6,
+          69.6,
+          248.5,
+          224.6
+        ],
+        "avg_font": 104.85,
+        "max_font": 104.85,
+        "text": "K"
+      },
+      {
+        "bbox": [
+          171.1,
+          114.3,
+          424.5,
+          238.4
+        ],
+        "avg_font": 9.3,
+        "max_font": 9.3,
+        "text": "rzysiek zawsze lubił jesień. Bo Warszawa | jest wtedy piękna. Bo pogoda się robi przy- | jaźniejsza, atmosfera lekko ponura, a Krzy- | siek zawsze był trochę ponurak. Idealna | aura na wieczorne spacery. | A teraz jest jeszcze jeden powód, Krzy- | siek, ojciec 13-letniej córki i 17-letniego | syna, "
+      },
+      {
+        "bbox": [
+          171.1,
+          244.3,
+          424.6,
+          404.9
+        ],
+        "avg_font": 9.46,
+        "max_font": 12.0,
+        "text": "I | Centrum im. Adama Smitha co roku podlicza koszt wychowa- | nia dziecka w Polsce, od narodzin do 18. roku życia. W tym roku | wyszło im 346 tys. zł. Dwójki – 579 tys. Rok temu było taniej | – odpowiednio 309 i 513 tys. Dwa lata temu – 265 i 439 tys. | Michał ma wszystko policzone. Z Majką są 21 l"
+      },
+      {
+        "bbox": [
+          481.5,
+          728.9,
+          548.5,
+          741.4
+        ],
+        "avg_font": 7.0,
+        "max_font": 9.0,
+        "text": "2-8.09.2024 | 29"
+      },
+      {
+        "bbox": [
+          230.5,
+          745.0,
+          350.5,
+          756.3
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "iwo.czajka@gmail.com"
+      }
+    ]
+  },
+  {
+    "page": 41,
+    "blocks": [
+      {
+        "bbox": [
+          230.5,
+          4.4,
+          350.5,
+          15.7
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "iwo.czajka@gmail.com"
+      },
+      {
+        "bbox": [
+          26.6,
+          84.3,
+          82.2,
+          192.2
+        ],
+        "avg_font": 73.0,
+        "max_font": 73.0,
+        "text": "K"
+      },
+      {
+        "bbox": [
+          28.3,
+          114.3,
+          189.8,
+          604.7
+        ],
+        "avg_font": 9.3,
+        "max_font": 9.3,
+        "text": "onrad Niklewicz prze- | prasza, że spóźnił się | cztery minuty. – Dla | tramwaju to wieczność | – mówi członek zarządu | Tramwajów Warszawskich. | Przekonuje, że wielkiemu opóźnie- | niu na budowie linii tramwajowej win- | ne są okoliczności, których nie da się | przewidzieć. | – Na początku 2023 r."
+      },
+      {
+        "bbox": [
+          205.0,
+          114.3,
+          366.5,
+          360.5
+        ],
+        "avg_font": 9.3,
+        "max_font": 9.3,
+        "text": "nianie okolicy to perspektywa kolejnego | roku. Roku, w którym odbędą się wybo- | ry prezydenckie, a kandydatem KO naj- | prawdopodobniej będzie rządzący stolicą | Rafał Trzaskowski. | Karolina mieszka 150 m od budowy. | – Kiedy wracałam obłocona, nie wiedząc, | jak dojść do domu, na końcu języka mi"
+      },
+      {
+        "bbox": [
+          381.7,
+          116.3,
+          543.2,
+          715.7
+        ],
+        "avg_font": 9.28,
+        "max_font": 9.3,
+        "text": "LABIRYNT | – Zaczęliśmy odbierać sygnały, że | ludzie gubią się w labiryncie – Kon- | rad Niklewicz ma na myśli przejścia | przez plac budowy, które co chwila się | zmieniają i codziennie trzeba uczyć się | ich na nowo. – Przysiedliśmy mocno | do tematu z wykonawcą i teraz często | sprawdzamy, czy p"
+      },
+      {
+        "bbox": [
+          205.0,
+          394.4,
+          361.4,
+          463.2
+        ],
+        "avg_font": 14.0,
+        "max_font": 14.0,
+        "text": "Brzęcząca syrena, | czasem od 4.50 rano | do 21-22. Świrujemy | od tego"
+      },
+      {
+        "bbox": [
+          342.6,
+          476.1,
+          364.7,
+          486.2
+        ],
+        "avg_font": 7.0,
+        "max_font": 7.0,
+        "text": "Kinga"
+      },
+      {
+        "bbox": [
+          205.0,
+          525.0,
+          366.5,
+          715.7
+        ],
+        "avg_font": 9.3,
+        "max_font": 9.3,
+        "text": "Krystyna (50 m) wini Trzaskowskiego, | bo ktoś na tak wysokim stanowisku powi- | nien znać konsekwencje swoich decyzji. | – Jeśli brakuje mu wyobraźni, powinien | otaczać się ludźmi, którzy ją mają. Gło- | sowałam na Trzaskowskiego i byłam en- | tuzjastką, a teraz oceniam, że jest bardzo | złym prez"
+      },
+      {
+        "bbox": [
+          28.3,
+          615.8,
+          189.8,
+          715.7
+        ],
+        "avg_font": 9.17,
+        "max_font": 9.3,
+        "text": "BAJZEL | Budowa linii tramwajowej z Moko- | towa do Wilanowa od dwóch lat pa- | raliżuje życie przynajmniej 50 tys. ludzi | mieszkających w sąsiedztwie prac. | Pierwszy tramwaj ma pojechać do | Wilanowa na przełomie październi- | ka i listopada, ale budowa nowej jezdni, | chodników, ścieżek rowerowy"
+      },
+      {
+        "bbox": [
+          481.5,
+          728.9,
+          548.5,
+          741.4
+        ],
+        "avg_font": 7.0,
+        "max_font": 9.0,
+        "text": "2-8.09.2024 | 39"
+      },
+      {
+        "bbox": [
+          230.5,
+          745.0,
+          350.5,
+          756.3
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "iwo.czajka@gmail.com"
+      }
+    ]
+  },
+  {
+    "page": 51,
+    "blocks": [
+      {
+        "bbox": [
+          230.5,
+          4.4,
+          350.5,
+          15.7
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "iwo.czajka@gmail.com"
+      },
+      {
+        "bbox": [
+          432.0,
+          22.5,
+          544.3,
+          33.1
+        ],
+        "avg_font": 7.5,
+        "max_font": 8.0,
+        "text": "Newsweek SPOŁECZEŃSTWO"
+      },
+      {
+        "bbox": [
+          131.1,
+          116.1,
+          464.3,
+          249.0
+        ],
+        "avg_font": 34.67,
+        "max_font": 48.0,
+        "text": "N A  T R O P I E  M AG I I | Klątwę zdejmę | lub rzucę"
+      },
+      {
+        "bbox": [
+          99.6,
+          248.9,
+          489.1,
+          301.6
+        ],
+        "avg_font": 14.0,
+        "max_font": 14.0,
+        "text": "Klątwa cmentarna kosztuje 2666 zł. W cenę wchodzą | koszty ubrania, które po obrzędzie trzeba zniszczyć, dobry | alkohol i słodycze, które należy złożyć w ofierze"
+      },
+      {
+        "bbox": [
+          197.1,
+          309.4,
+          388.9,
+          322.0
+        ],
+        "avg_font": 10.0,
+        "max_font": 11.0,
+        "text": "TEKST ELŻBIETA TURLEJ ILUSTRACJA ADAM WÓJCICKI"
+      },
+      {
+        "bbox": [
+          26.1,
+          317.4,
+          74.7,
+          425.3
+        ],
+        "avg_font": 73.0,
+        "max_font": 73.0,
+        "text": "Z"
+      },
+      {
+        "bbox": [
+          28.3,
+          347.4,
+          189.7,
+          449.3
+        ],
+        "avg_font": 9.3,
+        "max_font": 9.3,
+        "text": "ielarki, szeptuchy i wiedź- | my przekonują, że koń- | cówka sierpnia i początek | września to ostatni dzwo- | nek na klątwę. Księżyc jest | wtedy w fazie malejącej, efekty prze- | kleństwa widać jak na dłoni. A wszystko | to po wysłaniu przelewu na zamkniętych | grupach dla zwolenników magii."
+      },
+      {
+        "bbox": [
+          205.0,
+          347.4,
+          366.5,
+          715.7
+        ],
+        "avg_font": 9.3,
+        "max_font": 9.3,
+        "text": "„Była moją przełożoną – zwierza się | Jolanta. – Chciałam się na nią poskarżyć | szefostwu, ale nie znam niemieckiego. | Odeszłam z pracy razem z partnerem. | Niepotrzebnie, bo dwa tygodnie po na- | szej rezygnacji ta kobieta – właśnie z po- | wodu mobbingu – wyleciała z hukiem. | Niestety, nie mogl"
+      },
+      {
+        "bbox": [
+          381.7,
+          349.4,
+          543.2,
+          715.7
+        ],
+        "avg_font": 9.26,
+        "max_font": 9.3,
+        "text": "CEBULĄ W ZŁE DUCHY | Anonimowa użytkowniczka fb ma | szczęście. Poradę w sprawie zdjęcia | ewentualnej klątwy dostaje za darmo. | Wiedźmy radzą, żeby zainwestowała | w bransoletkę z działającego ochron- | nie turmalinu albo z kamienia księży- | cowego. Jeśli ich energia jest za słaba, | powinna prze"
+      },
+      {
+        "bbox": [
+          28.3,
+          460.4,
+          189.8,
+          715.7
+        ],
+        "avg_font": 9.25,
+        "max_font": 9.3,
+        "text": "PUDEŁKO NA ZŁE MYŚLI | Najbardziej popularna interneto- | wa grupa dla klientów wiedźm, ziela- | rek i szeptuch zrzesza kilkaset tysięcy | członków. Codziennie kilkoro z nich | dzieli się kłopotami z czarną magią. Na | przykład dziś Maria pisze, że ostatnio | ktoś wysyła jej dziwne wiadomości na | M"
+      },
+      {
+        "bbox": [
+          481.5,
+          729.5,
+          548.5,
+          742.0
+        ],
+        "avg_font": 7.0,
+        "max_font": 9.0,
+        "text": "2-8.09.2024 | 49"
+      },
+      {
+        "bbox": [
+          230.5,
+          745.0,
+          350.5,
+          756.3
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "iwo.czajka@gmail.com"
+      }
+    ]
+  },
+  {
+    "page": 61,
+    "blocks": [
+      {
+        "bbox": [
+          230.5,
+          4.4,
+          350.5,
+          15.7
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "iwo.czajka@gmail.com"
+      },
+      {
+        "bbox": [
+          477.5,
+          21.6,
+          548.5,
+          32.8
+        ],
+        "avg_font": 8.0,
+        "max_font": 8.0,
+        "text": "Newsweek ŚWIAT"
+      },
+      {
+        "bbox": [
+          28.3,
+          114.3,
+          281.8,
+          615.8
+        ],
+        "avg_font": 9.3,
+        "max_font": 9.3,
+        "text": "ogłosił, że stworzy z Ukraińcami cztery fabryki produkujące | amunicję artyleryjską, systemy obrony powietrznej oraz pojaz- | dy wojskowe. | Od niedawna życie szefa Rheinmetallu całkowicie się zmieniło. | Dwóch umundurowanych mężczyzn z pistoletami maszynowy- | mi nieustannie go pilnuje, ochroniarze"
+      },
+      {
+        "bbox": [
+          296.9,
+          114.3,
+          550.3,
+          693.5
+        ],
+        "avg_font": 9.24,
+        "max_font": 9.3,
+        "text": "nawet słownictwa na opisywanie wojny hybrydowej – tłumaczył | jeden z zachodnich doradców ds. obrony. Zachód okazał się kom- | pletnie nieprzygotowany na nowe rosyjskie wyzwanie również | z innego powodu – państwom NATO jak dotąd nie udało się wy- | pracować wspólnego podejścia do zagrożenia. USA i "
+      },
+      {
+        "bbox": [
+          233.7,
+          317.9,
+          346.4,
+          430.7
+        ],
+        "avg_font": 20.0,
+        "max_font": 20.0,
+        "text": "ZAMORDOWANIE | ARMINA | PAPPERGERA, | SZEFA FIRMY | RHEINMETALL, TO | MIAŁ BYĆ TYLKO"
+      },
+      {
+        "bbox": [
+          232.0,
+          425.9,
+          348.0,
+          502.7
+        ],
+        "avg_font": 20.0,
+        "max_font": 20.0,
+        "text": "JEDEN Z SERII | ZAMACHÓW | ZAPLANOWANYCH | PRZEZ ROSJAN"
+      },
+      {
+        "bbox": [
+          28.3,
+          622.0,
+          281.7,
+          715.7
+        ],
+        "avg_font": 10.31,
+        "max_font": 14.0,
+        "text": "ZNALEŹĆ SŁABE PUNKTY | Fatalnie przygotowana przez Moskwę inwazja na Ukrainę | sprawiła, że Zachód doszedł do wniosku, iż rosyjskie służby wy- | wiadowcze to papierowy tygrys. Szybko okazało się, że niesłusz- | nie. Służby te wyszły z kryzysu i zaczęły działać z jeszcze większą | pewnością siebie. |"
+      },
+      {
+        "bbox": [
+          435.9,
+          698.2,
+          548.5,
+          711.1
+        ],
+        "avg_font": 9.0,
+        "max_font": 9.0,
+        "text": "maciej.nowicki@newsweek.pl"
+      },
+      {
+        "bbox": [
+          481.5,
+          728.9,
+          548.5,
+          741.4
+        ],
+        "avg_font": 7.0,
+        "max_font": 9.0,
+        "text": "2-8.09.2024 | 59"
+      },
+      {
+        "bbox": [
+          230.5,
+          745.0,
+          350.5,
+          756.3
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "iwo.czajka@gmail.com"
+      }
+    ]
+  },
+  {
+    "page": 71,
+    "blocks": [
+      {
+        "bbox": [
+          230.5,
+          4.4,
+          350.5,
+          15.7
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "iwo.czajka@gmail.com"
+      },
+      {
+        "bbox": [
+          160.1,
+          513.6,
+          240.0,
+          668.6
+        ],
+        "avg_font": 104.85,
+        "max_font": 104.85,
+        "text": "K"
+      },
+      {
+        "bbox": [
+          162.6,
+          558.1,
+          416.2,
+          715.9
+        ],
+        "avg_font": 9.3,
+        "max_font": 9.3,
+        "text": "remlowscy propagandyści mają wyjąt- | kowo intensywne wakacje. Od miesią- | ca stają na głowie, żeby wytłumaczyć | Rosjanom, dlaczego ukraiński rajd pod | Kurskiem to sukces Putina. Dodatkowo | od tygodnia zajmują się sprawą Pawła | Durowa, założyciela i właściciela plat- | formy komunikacyjnej Tele"
+      },
+      {
+        "bbox": [
+          13.8,
+          565.3,
+          20.2,
+          713.2
+        ],
+        "avg_font": 5.0,
+        "max_font": 5.0,
+        "text": "FOT. VALYA EGORSHIN/NURPHOTO VIA GETTY IMAGES"
+      },
+      {
+        "bbox": [
+          481.5,
+          728.9,
+          548.5,
+          741.4
+        ],
+        "avg_font": 7.0,
+        "max_font": 9.0,
+        "text": "2-8.09.2024 | 69"
+      },
+      {
+        "bbox": [
+          230.5,
+          745.0,
+          350.5,
+          756.3
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "iwo.czajka@gmail.com"
+      }
+    ]
+  },
+  {
+    "page": 81,
+    "blocks": [
+      {
+        "bbox": [
+          230.5,
+          4.4,
+          350.5,
+          15.7
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "iwo.czajka@gmail.com"
+      },
+      {
+        "bbox": [
+          406.5,
+          369.2,
+          479.1,
+          382.7
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "NOCNE ŻYCIE"
+      },
+      {
+        "bbox": [
+          406.5,
+          392.2,
+          541.3,
+          703.8
+        ],
+        "avg_font": 8.52,
+        "max_font": 9.0,
+        "text": "Samica kraba pająkowego | pod spodem swojego odwłoka | składa jaja, które samiec | zapładnia. Dopóki z jaj nie | wyklują się młode, samiec | cały czas przebywa blisko | samicy i strzeże przyszłego | potomstwa przed innymi | samcami. Drugą ochronę | zapewniają zapłodnionym | jajom jeżowce, uzbrojone "
+      },
+      {
+        "bbox": [
+          382.2,
+          572.2,
+          388.3,
+          713.2
+        ],
+        "avg_font": 5.0,
+        "max_font": 5.0,
+        "text": "FOT. JORDI CHIAS/NATURE PICTURE LIBRARY/BE&W"
+      },
+      {
+        "bbox": [
+          13.9,
+          651.6,
+          20.0,
+          713.2
+        ],
+        "avg_font": 5.0,
+        "max_font": 5.0,
+        "text": "FOT. XXXXXXXXXXXXX"
+      },
+      {
+        "bbox": [
+          481.5,
+          728.9,
+          548.5,
+          741.4
+        ],
+        "avg_font": 7.0,
+        "max_font": 9.0,
+        "text": "2-8.09.2024 | 79"
+      },
+      {
+        "bbox": [
+          230.5,
+          745.0,
+          350.5,
+          756.3
+        ],
+        "avg_font": 10.0,
+        "max_font": 10.0,
+        "text": "iwo.czajka@gmail.com"
+      }
+    ]
+  }
+]

@@ -1,0 +1,1704 @@
+{
+  "pdf": "C:\\Users\\user\\Desktop\\kindleMaster\\example\\02695ab2e05aab728b4b995caa682f947e8be2c3291ff490579797c5a3cc5e26.pdf",
+  "analysis": {
+    "profile": "magazine_reflow",
+    "confidence": 0.669,
+    "page_count": 92,
+    "has_toc": false,
+    "has_tables": true,
+    "has_diagrams": false,
+    "has_meaningful_images": true,
+    "estimated_sections": 4,
+    "fallback_recommendation": "semantic-reflow",
+    "ui_profile": "magazine",
+    "legacy_strategy": "layout_fixed",
+    "has_text_layer": true,
+    "is_scanned": false,
+    "layout_heavy": true,
+    "text_heavy": false,
+    "scanned_pages": 15,
+    "text_pages": 84,
+    "image_pages": 72,
+    "estimated_columns": 1,
+    "heading_density": 0.053,
+    "font_consistency": 0.753,
+    "detected_features": [
+      "tables",
+      "meaningful-images",
+      "layout-heavy"
+    ],
+    "external_tools": {
+      "python_modules": {
+        "pdfplumber": true,
+        "ocrmypdf": true
+      },
+      "commands": {
+        "java": true,
+        "tesseract": true,
+        "ocrmypdf": true,
+        "qpdf": true,
+        "ghostscript": true,
+        "pdftoppm": false,
+        "surya": false,
+        "pdfbox": false
+      },
+      "java": {
+        "found": true,
+        "path": "C:\\Users\\user\\Desktop\\kindleMaster\\tools\\jdk-21.0.10+7-jre\\bin\\java.exe"
+      },
+      "tesseract": {
+        "found": true,
+        "path": "C:\\Program Files\\Tesseract-OCR\\tesseract.exe",
+        "tessdata_dir": "C:\\Users\\user\\Desktop\\kindleMaster\\tools\\tessdata",
+        "languages": [
+          "eng",
+          "osd",
+          "pol"
+        ]
+      },
+      "ocrmypdf": {
+        "found": true,
+        "path": "C:\\Users\\user\\AppData\\Local\\Python\\pythoncore-3.14-64\\Scripts\\ocrmypdf.exe",
+        "module_found": true,
+        "ready": true,
+        "notes": []
+      },
+      "ghostscript": {
+        "found": true,
+        "path": "C:\\Program Files\\gs\\gs10.06.0\\bin\\gswin64c.exe"
+      },
+      "qpdf": {
+        "found": true,
+        "path": "C:\\Program Files\\qpdf 12.3.2\\bin\\qpdf.exe"
+      },
+      "epubcheck": {
+        "jar_found": true,
+        "jar_path": "C:\\Users\\user\\Desktop\\kindleMaster\\tools\\epubcheck-5.3.0\\epubcheck.jar"
+      },
+      "pdfbox": {
+        "jar_found": true,
+        "jar_path": "C:\\Users\\user\\Desktop\\kindleMaster\\tools\\pdfbox-app-3.0.7.jar"
+      }
+    },
+    "profile_reason": "Wykryto publikację layout-heavy z warstwą tekstową, lepszą do article-first reflow niż do screenshotów."
+  },
+  "document_summary": {
+    "title": "Newsweek",
+    "author": "Unknown",
+    "profile": "magazine_reflow",
+    "layout_mode": "reflowable",
+    "section_count": 38,
+    "asset_count": 41
+  },
+  "quality_report": {
+    "section_count": 38,
+    "figure_count": 41,
+    "diagram_count": 0,
+    "table_count": 0,
+    "page_marker_count": 0,
+    "detected_figures": 41,
+    "detected_diagrams": 0,
+    "detected_tables": 0,
+    "fallback_pages": [],
+    "fallback_sections": [],
+    "fallback_regions": [],
+    "high_risk_sections": [],
+    "high_risk_pages": [],
+    "warnings": [],
+    "external_tools_used": {
+      "python_modules": {
+        "pdfplumber": true,
+        "ocrmypdf": true
+      },
+      "commands": {
+        "java": true,
+        "tesseract": true,
+        "ocrmypdf": true,
+        "qpdf": true,
+        "ghostscript": true,
+        "pdftoppm": false,
+        "surya": false,
+        "pdfbox": false
+      },
+      "java": {
+        "found": true,
+        "path": "C:\\Users\\user\\Desktop\\kindleMaster\\tools\\jdk-21.0.10+7-jre\\bin\\java.exe"
+      },
+      "tesseract": {
+        "found": true,
+        "path": "C:\\Program Files\\Tesseract-OCR\\tesseract.exe",
+        "tessdata_dir": "C:\\Users\\user\\Desktop\\kindleMaster\\tools\\tessdata",
+        "languages": [
+          "eng",
+          "osd",
+          "pol"
+        ]
+      },
+      "ocrmypdf": {
+        "found": true,
+        "path": "C:\\Users\\user\\AppData\\Local\\Python\\pythoncore-3.14-64\\Scripts\\ocrmypdf.exe",
+        "module_found": true,
+        "ready": true,
+        "notes": []
+      },
+      "ghostscript": {
+        "found": true,
+        "path": "C:\\Program Files\\gs\\gs10.06.0\\bin\\gswin64c.exe"
+      },
+      "qpdf": {
+        "found": true,
+        "path": "C:\\Program Files\\qpdf 12.3.2\\bin\\qpdf.exe"
+      },
+      "epubcheck": {
+        "jar_found": true,
+        "jar_path": "C:\\Users\\user\\Desktop\\kindleMaster\\tools\\epubcheck-5.3.0\\epubcheck.jar"
+      },
+      "pdfbox": {
+        "jar_found": true,
+        "jar_path": "C:\\Users\\user\\Desktop\\kindleMaster\\tools\\pdfbox-app-3.0.7.jar"
+      }
+    },
+    "epubcheck_status": "passed",
+    "validation_status": "passed",
+    "validation_messages": [
+      "Validating using EPUB version 3.3 rules.",
+      "No errors or warnings detected.",
+      "Messages: 0 fatals / 0 errors / 0 warnings / 0 infos",
+      "EPUBCheck completed"
+    ],
+    "validation_tool": "epubcheck"
+  },
+  "audit": {
+    "page_map": [
+      {
+        "page_index": 1,
+        "page_label": null,
+        "title": "Okładka",
+        "title_quality": "strong",
+        "content_type": "cover",
+        "risk_flags": [],
+        "risk_score": 0
+      },
+      {
+        "page_index": 2,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "gallery",
+        "risk_flags": [
+          "image-only-page"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 3,
+        "page_label": null,
+        "title": "Spis treści",
+        "title_quality": "strong",
+        "content_type": "contents",
+        "risk_flags": [],
+        "risk_score": 0
+      },
+      {
+        "page_index": 4,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "gallery",
+        "risk_flags": [
+          "image-only-page"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 5,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "advertisement",
+        "risk_flags": [],
+        "risk_score": 0
+      },
+      {
+        "page_index": 6,
+        "page_label": null,
+        "title": "Final girl",
+        "title_quality": "strong",
+        "content_type": "article",
+        "risk_flags": [],
+        "risk_score": 0
+      },
+      {
+        "page_index": 7,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "interview",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 8,
+        "page_label": null,
+        "title": "Baca na gałęzi",
+        "title_quality": "strong",
+        "content_type": "article",
+        "risk_flags": [],
+        "risk_score": 0
+      },
+      {
+        "page_index": 9,
+        "page_label": null,
+        "title": "Historia Z Okładki: Wybuch",
+        "title_quality": "strong",
+        "content_type": "interview",
+        "risk_flags": [],
+        "risk_score": 0
+      },
+      {
+        "page_index": 10,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 11,
+        "page_label": null,
+        "title": "PARTIA, KOLANOIPIENIĄDZE PiS WALCZY O ŻYCIE",
+        "title_quality": "weak",
+        "content_type": "article",
+        "risk_flags": [
+          "title-weak"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 12,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 13,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 14,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "interview",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 15,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "gallery",
+        "risk_flags": [
+          "image-only-page"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 16,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "gallery",
+        "risk_flags": [
+          "image-only-page"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 17,
+        "page_label": null,
+        "title": "To Będzie Wyszarpywanie Zmian",
+        "title_quality": "strong",
+        "content_type": "interview",
+        "risk_flags": [],
+        "risk_score": 0
+      },
+      {
+        "page_index": 18,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 19,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 20,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 21,
+        "page_label": null,
+        "title": "Czarnek, czyli brakujący element",
+        "title_quality": "strong",
+        "content_type": "article",
+        "risk_flags": [],
+        "risk_score": 0
+      },
+      {
+        "page_index": 22,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "gallery",
+        "risk_flags": [
+          "image-only-page"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 23,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "gallery",
+        "risk_flags": [
+          "image-only-page"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 24,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 25,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 26,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 27,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 28,
+        "page_label": null,
+        "title": "Mentzen z Drużyny Pierścienia",
+        "title_quality": "strong",
+        "content_type": "article",
+        "risk_flags": [],
+        "risk_score": 0
+      },
+      {
+        "page_index": 29,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 30,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 31,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 32,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 33,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 34,
+        "page_label": null,
+        "title": "Starsi i bardziej samotni",
+        "title_quality": "strong",
+        "content_type": "interview",
+        "risk_flags": [],
+        "risk_score": 0
+      },
+      {
+        "page_index": 35,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 36,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 37,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 38,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "interview",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 39,
+        "page_label": null,
+        "title": "Takie kwiatki",
+        "title_quality": "strong",
+        "content_type": "article",
+        "risk_flags": [],
+        "risk_score": 0
+      },
+      {
+        "page_index": 40,
+        "page_label": null,
+        "title": "SCENYPRZYBUD OW IETRAM WA J U Tężenie betonu",
+        "title_quality": "strong",
+        "content_type": "article",
+        "risk_flags": [],
+        "risk_score": 0
+      },
+      {
+        "page_index": 41,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 42,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 43,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 44,
+        "page_label": null,
+        "title": "9 kroków do dotacji z KPO",
+        "title_quality": "strong",
+        "content_type": "article",
+        "risk_flags": [],
+        "risk_score": 0
+      },
+      {
+        "page_index": 45,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 46,
+        "page_label": null,
+        "title": "Wielkiefermywn",
+        "title_quality": "strong",
+        "content_type": "article",
+        "risk_flags": [],
+        "risk_score": 0
+      },
+      {
+        "page_index": 47,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 48,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 49,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 50,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "gallery",
+        "risk_flags": [
+          "image-only-page"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 51,
+        "page_label": null,
+        "title": "NATROPIEM AG I I Klątwę zdejmę lub rzucę",
+        "title_quality": "strong",
+        "content_type": "article",
+        "risk_flags": [],
+        "risk_score": 0
+      },
+      {
+        "page_index": 52,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 53,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 54,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 55,
+        "page_label": null,
+        "title": "Niezwykłamatkasłynnegopremiera",
+        "title_quality": "strong",
+        "content_type": "article",
+        "risk_flags": [],
+        "risk_score": 0
+      },
+      {
+        "page_index": 56,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 57,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 58,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 59,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 60,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 61,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 62,
+        "page_label": null,
+        "title": "Ile płacą za wykolejenie pociągu",
+        "title_quality": "strong",
+        "content_type": "interview",
+        "risk_flags": [],
+        "risk_score": 0
+      },
+      {
+        "page_index": 63,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 64,
+        "page_label": null,
+        "title": "Rozmowa z Marcinem Samselem Trwa wojna hybrydowa",
+        "title_quality": "strong",
+        "content_type": "article",
+        "risk_flags": [
+          "multiple-title-blocks"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 65,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 66,
+        "page_label": null,
+        "title": "NASZENAJN OW SZESAMO LO T Y Husarz z Teksasu",
+        "title_quality": "strong",
+        "content_type": "article",
+        "risk_flags": [],
+        "risk_score": 0
+      },
+      {
+        "page_index": 67,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 68,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 69,
+        "page_label": null,
+        "title": "Polska, geopolityka i sztuczna inteligencja",
+        "title_quality": "strong",
+        "content_type": "article",
+        "risk_flags": [],
+        "risk_score": 0
+      },
+      {
+        "page_index": 70,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 71,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 72,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 73,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 74,
+        "page_label": null,
+        "title": "Zero euro, zero złotych",
+        "title_quality": "strong",
+        "content_type": "article",
+        "risk_flags": [],
+        "risk_score": 0
+      },
+      {
+        "page_index": 75,
+        "page_label": null,
+        "title": "ÿrœL·iÒcá Ęato",
+        "title_quality": "broken",
+        "content_type": "article",
+        "risk_flags": [
+          "title-broken"
+        ],
+        "risk_score": 2
+      },
+      {
+        "page_index": 76,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 77,
+        "page_label": null,
+        "title": "Z Alzheimerem",
+        "title_quality": "strong",
+        "content_type": "article",
+        "risk_flags": [],
+        "risk_score": 0
+      },
+      {
+        "page_index": 78,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 79,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 80,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 81,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 82,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 83,
+        "page_label": null,
+        "title": "Dziura w NFZ",
+        "title_quality": "strong",
+        "content_type": "article",
+        "risk_flags": [],
+        "risk_score": 0
+      },
+      {
+        "page_index": 84,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 85,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 86,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 87,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 88,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 89,
+        "page_label": null,
+        "title": "Dzieciofobia",
+        "title_quality": "strong",
+        "content_type": "article",
+        "risk_flags": [],
+        "risk_score": 0
+      },
+      {
+        "page_index": 90,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "article",
+        "risk_flags": [
+          "title-missing",
+          "article-without-title"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 91,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "gallery",
+        "risk_flags": [
+          "image-only-page"
+        ],
+        "risk_score": 1
+      },
+      {
+        "page_index": 92,
+        "page_label": null,
+        "title": null,
+        "title_quality": "missing",
+        "content_type": "sponsored",
+        "risk_flags": [],
+        "risk_score": 0
+      }
+    ],
+    "chapters": [
+      {
+        "kind": "gallery",
+        "page_range": [
+          2,
+          2
+        ],
+        "page_labels": [],
+        "page_titles": [],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Galeria"
+      },
+      {
+        "kind": "contents",
+        "page_range": [
+          3,
+          3
+        ],
+        "page_labels": [],
+        "page_titles": [
+          "Spis treści"
+        ],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Spis treści"
+      },
+      {
+        "kind": "gallery",
+        "page_range": [
+          4,
+          4
+        ],
+        "page_labels": [],
+        "page_titles": [],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Galeria"
+      },
+      {
+        "kind": "advertisement",
+        "page_range": [
+          5,
+          5
+        ],
+        "page_labels": [],
+        "page_titles": [],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Reklama"
+      },
+      {
+        "kind": "article",
+        "page_range": [
+          6,
+          6
+        ],
+        "page_labels": [],
+        "page_titles": [
+          "Final girl"
+        ],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Final girl"
+      },
+      {
+        "kind": "interview",
+        "page_range": [
+          7,
+          7
+        ],
+        "page_labels": [],
+        "page_titles": [],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Material sponsorowany - 464"
+      },
+      {
+        "kind": "article",
+        "page_range": [
+          8,
+          8
+        ],
+        "page_labels": [],
+        "page_titles": [
+          "Baca na gałęzi"
+        ],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Baca na gałęzi"
+      },
+      {
+        "kind": "interview",
+        "page_range": [
+          9,
+          10
+        ],
+        "page_labels": [],
+        "page_titles": [
+          "Historia Z Okładki: Wybuch"
+        ],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Historia Z Okładki: Wybuch"
+      },
+      {
+        "kind": "article",
+        "page_range": [
+          11,
+          13
+        ],
+        "page_labels": [],
+        "page_titles": [
+          "PARTIA, KOLANOIPIENIĄDZE PiS WALCZY O ŻYCIE"
+        ],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Czy PiS przetrwa W partii szykują się mała rewolucja i wielkie oszczędności"
+      },
+      {
+        "kind": "interview",
+        "page_range": [
+          14,
+          14
+        ],
+        "page_labels": [],
+        "page_titles": [],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Czy PiS przetrwa W partii szykują się mała rewolucja i wielkie oszczędności — ciąg dalszy"
+      },
+      {
+        "kind": "gallery",
+        "page_range": [
+          15,
+          15
+        ],
+        "page_labels": [],
+        "page_titles": [],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Galeria"
+      },
+      {
+        "kind": "gallery",
+        "page_range": [
+          16,
+          16
+        ],
+        "page_labels": [],
+        "page_titles": [],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Galeria"
+      },
+      {
+        "kind": "interview",
+        "page_range": [
+          17,
+          20
+        ],
+        "page_labels": [],
+        "page_titles": [
+          "To Będzie Wyszarpywanie Zmian"
+        ],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Powrót państwa prawa Przywracanie praworządności ma swoich hamulcowych – mówi prof. Ewa Łętowska, była rzecznik praw obywatelskich"
+      },
+      {
+        "kind": "article",
+        "page_range": [
+          21,
+          21
+        ],
+        "page_labels": [],
+        "page_titles": [
+          "Czarnek, czyli brakujący element"
+        ],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Czarnek, czyli brakujący element"
+      },
+      {
+        "kind": "gallery",
+        "page_range": [
+          22,
+          22
+        ],
+        "page_labels": [],
+        "page_titles": [],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Galeria"
+      },
+      {
+        "kind": "gallery",
+        "page_range": [
+          23,
+          23
+        ],
+        "page_labels": [],
+        "page_titles": [],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Galeria"
+      },
+      {
+        "kind": "article",
+        "page_range": [
+          24,
+          27
+        ],
+        "page_labels": [],
+        "page_titles": [],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Material sponsorowany - Campusu Polska Przyszłości"
+      },
+      {
+        "kind": "article",
+        "page_range": [
+          28,
+          33
+        ],
+        "page_labels": [],
+        "page_titles": [
+          "Mentzen z Drużyny Pierścienia"
+        ],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Mentzen z Drużyny Pierścienia"
+      },
+      {
+        "kind": "interview",
+        "page_range": [
+          34,
+          37
+        ],
+        "page_labels": [],
+        "page_titles": [
+          "Starsi i bardziej samotni"
+        ],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Starsi i bardziej samotni"
+      },
+      {
+        "kind": "interview",
+        "page_range": [
+          38,
+          38
+        ],
+        "page_labels": [],
+        "page_titles": [],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Starsi i bardziej samotni — ciąg dalszy"
+      },
+      {
+        "kind": "article",
+        "page_range": [
+          39,
+          39
+        ],
+        "page_labels": [],
+        "page_titles": [
+          "Takie kwiatki"
+        ],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Takie kwiatki"
+      },
+      {
+        "kind": "article",
+        "page_range": [
+          40,
+          43
+        ],
+        "page_labels": [],
+        "page_titles": [
+          "SCENYPRZYBUD OW IETRAM WA J U Tężenie betonu"
+        ],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Tramwajem do Wilanowa Dziewięć miesięcy opóźnienia, chaos, paraliż komunikacyjny w Warszawie"
+      },
+      {
+        "kind": "article",
+        "page_range": [
+          44,
+          45
+        ],
+        "page_labels": [],
+        "page_titles": [
+          "9 kroków do dotacji z KPO"
+        ],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "9 kroków do dotacji z KPO"
+      },
+      {
+        "kind": "article",
+        "page_range": [
+          46,
+          49
+        ],
+        "page_labels": [],
+        "page_titles": [
+          "Wielkiefermywn"
+        ],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Inwazja brojlerów Innym biznes, a nam smród – mówią mieszkańcy wsi, gdzie ma powstać gigantyczna ferma"
+      },
+      {
+        "kind": "gallery",
+        "page_range": [
+          50,
+          50
+        ],
+        "page_labels": [],
+        "page_titles": [],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Galeria"
+      },
+      {
+        "kind": "article",
+        "page_range": [
+          51,
+          54
+        ],
+        "page_labels": [],
+        "page_titles": [
+          "NATROPIEM AG I I Klątwę zdejmę lub rzucę"
+        ],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Polscy szamani Klątwa cmentarna kosztuje 2666 zł, a zdjęcie uroków 400 zł"
+      },
+      {
+        "kind": "article",
+        "page_range": [
+          55,
+          61
+        ],
+        "page_labels": [],
+        "page_titles": [
+          "Niezwykłamatkasłynnegopremiera"
+        ],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Matka Churchilla Miała trzech mężów, w tym dwóch w wieku własnego syna"
+      },
+      {
+        "kind": "interview",
+        "page_range": [
+          62,
+          63
+        ],
+        "page_labels": [],
+        "page_titles": [
+          "Ile płacą za wykolejenie pociągu"
+        ],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Ile płacą za wykolejenie pociągu"
+      },
+      {
+        "kind": "article",
+        "page_range": [
+          64,
+          65
+        ],
+        "page_labels": [],
+        "page_titles": [
+          "Rozmowa z Marcinem Samselem Trwa wojna hybrydowa"
+        ],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Rozmowa z Marcinem Samselem Trwa wojna hybrydowa"
+      },
+      {
+        "kind": "article",
+        "page_range": [
+          66,
+          68
+        ],
+        "page_labels": [],
+        "page_titles": [
+          "NASZENAJN OW SZESAMO LO T Y Husarz z Teksasu"
+        ],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Samoloty z Teksasu F-35 zwiększą nasze bezpieczeństwo"
+      },
+      {
+        "kind": "article",
+        "page_range": [
+          69,
+          73
+        ],
+        "page_labels": [],
+        "page_titles": [
+          "Polska, geopolityka i sztuczna inteligencja"
+        ],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Polska, geopolityka i sztuczna inteligencja"
+      },
+      {
+        "kind": "article",
+        "page_range": [
+          74,
+          74
+        ],
+        "page_labels": [],
+        "page_titles": [
+          "Zero euro, zero złotych"
+        ],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Zero euro, zero złotych"
+      },
+      {
+        "kind": "article",
+        "page_range": [
+          75,
+          76
+        ],
+        "page_labels": [],
+        "page_titles": [
+          "ÿrœL·iÒcá Ęato"
+        ],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Material sponsorowany - 7Days Bake Rolls"
+      },
+      {
+        "kind": "article",
+        "page_range": [
+          77,
+          82
+        ],
+        "page_labels": [],
+        "page_titles": [
+          "Z Alzheimerem"
+        ],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Z Alzheimerem"
+      },
+      {
+        "kind": "article",
+        "page_range": [
+          83,
+          88
+        ],
+        "page_labels": [],
+        "page_titles": [
+          "Dziura w NFZ"
+        ],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Dziura w NFZ"
+      },
+      {
+        "kind": "article",
+        "page_range": [
+          89,
+          90
+        ],
+        "page_labels": [],
+        "page_titles": [
+          "Dzieciofobia"
+        ],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Katarzyna Janowska Dzieciofobia"
+      },
+      {
+        "kind": "gallery",
+        "page_range": [
+          91,
+          91
+        ],
+        "page_labels": [],
+        "page_titles": [],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Galeria"
+      },
+      {
+        "kind": "sponsored",
+        "page_range": [
+          92,
+          92
+        ],
+        "page_labels": [],
+        "page_titles": [],
+        "risk_flags": [],
+        "risk_score": 0,
+        "title": "Materiał sponsorowany"
+      }
+    ],
+    "high_risk_chapters": [],
+    "high_risk_pages": []
+  }
+}

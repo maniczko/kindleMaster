@@ -1,0 +1,2650 @@
+﻿<!DOCTYPE html>
+<html lang="pl" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KindleMaster PDF Toolkit</title>
+  <link rel="icon" href="data:,">
+  <link rel="preconnect" href="https://fonts.bunny.net">
+  <link href="https://fonts.bunny.net/css?family=manrope:400,500,600,700,800|newsreader:400,500,600,700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --ink: #1f2933;
+      --muted: #5f6b76;
+      --line: rgba(97,74,48,.16);
+      --panel: rgba(255,252,247,.90);
+      --panel-strong: #fffaf2;
+      --bg-body: linear-gradient(160deg, #f8f4ec 0%, #efe7da 100%);
+      --bg-metric: #fff;
+      --bg-input: #fff;
+      --bg-dropzone: linear-gradient(180deg,rgba(255,255,255,.85),rgba(246,237,223,.95));
+      --bg-viewport: linear-gradient(180deg,rgba(255,255,255,.75),rgba(243,233,218,.75));
+      --accent: #c65d2e;
+      --accent-strong: #9d431d;
+      --accent-soft: rgba(198,93,46,.14);
+      --shadow: 0 20px 52px rgba(61,43,21,.14);
+      --shadow-sm: 0 4px 16px rgba(61,43,21,.08);
+      --success: #1d7f56;
+      --error: #b23a30;
+      --info: #235ca9;
+      --radius-sm: 12px;
+      --radius: 20px;
+      --radius-lg: 28px;
+      --radius-xl: 34px;
+      --font-sans: "Inter", -apple-system, "Segoe UI", system-ui, sans-serif;
+      --font-serif: "Newsreader", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+      --transition: 0.18s ease;
+    }
+    [data-theme="dark"] {
+      --ink: #e2ddd5;
+      --muted: #8d9299;
+      --line: rgba(255,210,160,.10);
+      --panel: rgba(24,20,16,.92);
+      --panel-strong: #1e1a15;
+      --bg-body: linear-gradient(160deg, #161210 0%, #0e0c09 100%);
+      --bg-metric: #252018;
+      --bg-input: #1e1a14;
+      --bg-dropzone: linear-gradient(180deg,rgba(40,34,24,.9),rgba(30,26,18,.95));
+      --bg-viewport: linear-gradient(180deg,rgba(20,18,14,.8),rgba(16,14,10,.8));
+      --accent: #e07842;
+      --accent-strong: #f09060;
+      --accent-soft: rgba(224,120,66,.18);
+      --shadow: 0 20px 52px rgba(0,0,0,.45);
+      --shadow-sm: 0 4px 16px rgba(0,0,0,.3);
+      --success: #4caf80;
+      --error: #e06868;
+      --info: #6090d0;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { min-height: 100%; }
+    body {
+      font-family: var(--font-sans);
+      font-size: 14.5px;
+      line-height: 1.55;
+      color: var(--ink);
+      background: var(--bg-body);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      font-feature-settings: "kern", "liga", "ss01";
+      transition: background var(--transition), color var(--transition);
+    }
+
+    /* â”€â”€ Shell â”€â”€ */
+    .shell { width: min(1520px, calc(100vw - 24px)); margin: 0 auto; display: flex; flex-direction: column; gap: 0; }
+
+    /* â”€â”€ Top bar â”€â”€ */
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 20px;
+      gap: 16px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+      backdrop-filter: blur(14px);
+      position: sticky;
+      top: 0;
+      z-index: 50;
+    }
+    .brand h1 {
+      font-family: var(--font-serif);
+      font-size: clamp(1.45rem, 2vw, 1.85rem);
+      font-weight: 600;
+      letter-spacing: -.025em;
+      line-height: 1.1;
+      font-feature-settings: "kern", "liga", "dlig";
+    }
+    .brand h1 span { color: var(--accent); }
+    .brand p { color: var(--muted); font-size: .82rem; margin-top: 2px; }
+    .topbar-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+    .stamp { padding: 6px 12px; border-radius: 8px; background: var(--panel-strong); border: 1px solid var(--line); color: var(--muted); font-size: .78rem; white-space: nowrap; }
+    .theme-toggle {
+      width: 38px; height: 38px; border: 1px solid var(--line); border-radius: var(--radius-sm);
+      background: var(--panel-strong); color: var(--ink); cursor: pointer;
+      display: grid; place-items: center; font-size: 1.1rem; flex-shrink: 0;
+      transition: background var(--transition), border-color var(--transition), transform var(--transition);
+    }
+    .theme-toggle:hover { border-color: var(--accent); transform: scale(1.08); }
+
+    /* â”€â”€ Layout â”€â”€ */
+    .layout {
+      display: grid;
+      grid-template-columns: 340px minmax(0, 1fr);
+      align-items: start;
+      min-height: calc(100vh - 70px);
+    }
+
+    /* â”€â”€ Sidebar â”€â”€ */
+    .controls {
+      border-right: 1px solid var(--line);
+      background: var(--panel);
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      position: sticky;
+      top: 70px;
+      max-height: calc(100vh - 70px);
+      overflow-y: auto;
+      overflow-x: hidden;
+      scrollbar-gutter: stable;
+      scrollbar-width: thin;
+      scrollbar-color: var(--line) transparent;
+    }
+
+    /* â”€â”€ Preview â”€â”€ */
+    .preview {
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      min-height: calc(100vh - 70px);
+    }
+
+    /* â”€â”€ Section titles â”€â”€ */
+    .section-title {
+      font-size: .72rem;
+      font-weight: 700;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+
+    /* â”€â”€ Cards â”€â”€ */
+    .card {
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      cursor: pointer;
+      user-select: none;
+    }
+    .card-header:hover .section-title { opacity: .8; }
+    .card-body { display: flex; flex-direction: column; gap: 10px; }
+    .card.collapsed .card-body { display: none; }
+    .collapse-icon {
+      font-size: .75rem; color: var(--muted); transition: transform var(--transition);
+    }
+    .card.collapsed .collapse-icon { transform: rotate(-90deg); }
+
+    /* â”€â”€ Drop zone â”€â”€ */
+    .drop-zone {
+      min-height: 120px;
+      border: 2px dashed rgba(198,93,46,.35);
+      border-radius: var(--radius);
+      background: var(--bg-dropzone);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 20px;
+      cursor: pointer;
+      transition: border-color var(--transition), transform var(--transition), box-shadow var(--transition);
+    }
+    .drop-zone:hover, .drop-zone.dragover {
+      border-color: var(--accent);
+      transform: translateY(-1px);
+      box-shadow: 0 0 0 1px var(--accent-soft), inset 0 0 24px var(--accent-soft);
+    }
+    .drop-inner strong { display: block; font-size: 1rem; margin-bottom: 4px; }
+    .drop-inner p { color: var(--muted); font-size: .82rem; line-height: 1.4; }
+
+    /* â”€â”€ File pill â”€â”€ */
+    .file-pill {
+      display: none;
+      gap: 10px;
+      align-items: center;
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 10px 14px;
+    }
+    .file-pill.visible { display: flex; }
+    .file-mark {
+      width: 38px; height: 38px; border-radius: 10px;
+      background: var(--accent-soft); color: var(--accent-strong);
+      display: grid; place-items: center; font-size: .75rem; font-weight: 700; flex-shrink: 0;
+    }
+    .file-meta strong { display: block; font-size: .88rem; word-break: break-word; }
+    .file-meta span { color: var(--muted); font-size: .80rem; }
+
+    /* â”€â”€ Metrics â”€â”€ */
+    .info-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .metric {
+      padding: 10px 12px;
+      border-radius: var(--radius-sm);
+      background: var(--bg-metric);
+      border: 1px solid var(--line);
+    }
+    .metric span { display: block; margin-bottom: 3px; font-size: .70rem; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; }
+    .metric strong { font-size: .95rem; font-weight: 700; }
+
+    /* â”€â”€ Inputs â”€â”€ */
+    .field-row { display: flex; gap: 8px; flex-wrap: wrap; }
+    .field-row label { flex: 1 1 130px; display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: .82rem; }
+    .field-row label strong { color: var(--ink); font-size: .82rem; }
+    input[type="number"], select {
+      width: 100%; padding: 9px 11px;
+      border-radius: var(--radius-sm); border: 1px solid var(--line);
+      background: var(--bg-input); color: var(--ink); font: inherit; font-size: .88rem;
+      transition: border-color var(--transition);
+    }
+    input[type="number"]:focus, select:focus { outline: none; border-color: var(--accent); }
+    .page-input-wrap {
+      display: flex; align-items: center; gap: 6px; flex: 1 1 140px;
+      padding: 8px 10px; border-radius: var(--radius-sm);
+      background: var(--bg-input); border: 1px solid var(--line);
+    }
+    .page-input-wrap span { color: var(--muted); white-space: nowrap; font-size: .88rem; }
+    .page-input-wrap input { width: 70px; padding: 4px 8px; border-radius: 7px; border: 1px solid var(--line); background: var(--panel-strong); }
+
+    /* â”€â”€ Checkbox â”€â”€ */
+    .checkbox { display: flex; gap: 10px; align-items: flex-start; }
+    .checkbox input { margin-top: 3px; accent-color: var(--accent); flex-shrink: 0; }
+    .checkbox strong { display: block; font-size: .88rem; margin-bottom: 2px; }
+    .checkbox span { color: var(--muted); font-size: .82rem; line-height: 1.4; }
+
+    /* â”€â”€ Buttons â”€â”€ */
+    button {
+      border: 0; border-radius: var(--radius-sm); padding: 10px 14px;
+      font: inherit; font-size: .88rem; font-weight: 600; cursor: pointer;
+      transition: transform var(--transition), opacity var(--transition), box-shadow var(--transition), background var(--transition);
+    }
+    button:hover:not(:disabled) { transform: translateY(-1px); }
+    button:active:not(:disabled) { transform: translateY(0); }
+    button:disabled { opacity: .42; cursor: not-allowed; transform: none !important; }
+
+    .button-row { display: flex; gap: 8px; flex-wrap: wrap; }
+    .nav-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+    .button-primary {
+      flex: 1 1 160px;
+      background: linear-gradient(135deg, var(--accent) 0%, #dd7b3d 100%);
+      color: #fffaf6;
+      box-shadow: 0 8px 24px rgba(198,93,46,.22);
+    }
+    .button-primary:hover:not(:disabled) { box-shadow: 0 12px 28px rgba(198,93,46,.32); }
+    .button-secondary {
+      background: var(--panel-strong);
+      color: var(--ink);
+      border: 1px solid var(--line);
+    }
+    .button-secondary:hover:not(:disabled) { border-color: var(--accent); }
+    .button-ghost {
+      flex: 1 1 100px;
+      background: var(--bg-metric);
+      color: var(--ink);
+      border: 1px solid var(--line);
+    }
+    .button-ghost:hover:not(:disabled) { border-color: var(--accent); }
+
+    .pager-button { min-width: 110px; border-radius: var(--radius-sm); font-weight: 600; }
+    .pager-button.pager-prev {
+      background: var(--panel-strong);
+      color: var(--accent-strong);
+      border: 1px solid rgba(198,93,46,.2);
+    }
+    .pager-button.pager-next {
+      background: linear-gradient(135deg, var(--accent) 0%, #e08548 100%);
+      color: #fffdf9;
+      box-shadow: 0 6px 20px rgba(198,93,46,.2);
+    }
+
+    .zoom-button { min-width: 42px; padding-inline: 0; font-size: 1.1rem; }
+    .zoom-status {
+      flex: 1 1 120px; display: flex; align-items: center; justify-content: center;
+      min-height: 40px; padding: 8px 12px; border-radius: var(--radius-sm);
+      background: var(--bg-input); border: 1px solid var(--line);
+      font-weight: 600; font-size: .88rem; color: var(--ink);
+    }
+    .zoom-mode-button.is-active {
+      background: linear-gradient(135deg, var(--accent) 0%, #dd7b3d 100%);
+      color: #fffaf6; border-color: transparent;
+      box-shadow: 0 6px 16px rgba(198,93,46,.2);
+    }
+
+    /* â”€â”€ Status box â”€â”€ */
+    .status-box {
+      border-radius: var(--radius);
+      padding: 12px 14px;
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
+      font-size: .88rem;
+    }
+    .status-box strong { display: block; margin-bottom: 3px; font-size: .82rem; text-transform: uppercase; letter-spacing: .06em; }
+    .status-box p { color: var(--muted); line-height: 1.45; }
+    .status-box.success { border-left: 3px solid var(--success); }
+    .status-box.success strong { color: var(--success); }
+    .status-box.error { border-left: 3px solid var(--error); }
+    .status-box.error strong { color: var(--error); }
+    .status-box.info { border-left: 3px solid var(--info); }
+    .status-box.info strong { color: var(--info); }
+
+    /* â”€â”€ Analysis box â”€â”€ */
+    .analysis-box {
+      border-radius: var(--radius-sm);
+      padding: 12px;
+      background: var(--bg-metric);
+      border: 1px solid var(--line);
+      font-size: .85rem;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .analysis-box strong { color: var(--ink); }
+    .analysis-box p { color: var(--muted); line-height: 1.45; }
+    .analysis-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+    .analysis-box.success { border-left: 3px solid var(--success); }
+    .analysis-box.success strong { color: var(--success); }
+    .analysis-box.error { border-left: 3px solid var(--error); }
+    .analysis-box.error strong { color: var(--error); }
+    .analysis-box.info { border-left: 3px solid var(--info); }
+    .analysis-box.info strong { color: var(--info); }
+    .badge {
+      display: inline-flex; align-items: center; padding: 3px 8px;
+      border-radius: 999px;
+      background: var(--accent-soft); color: var(--accent-strong);
+      font-size: .76rem; font-weight: 600;
+    }
+    .audit-panel {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--line);
+      display: grid;
+      gap: 8px;
+    }
+    .audit-group strong {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--ink);
+      font-size: .8rem;
+    }
+    .audit-list {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+    .audit-list li + li { margin-top: 4px; }
+    .audit-empty {
+      color: var(--muted);
+      font-size: .8rem;
+    }
+
+    /* â”€â”€ Crop preview â”€â”€ */
+    .crop-preview-card {
+      background: var(--panel-strong); border: 1px solid var(--line);
+      border-radius: var(--radius); padding: 14px;
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    .crop-preview-shell {
+      min-height: 140px; display: grid; place-items: center; padding: 10px;
+      border-radius: var(--radius-sm);
+      background: var(--bg-viewport);
+      overflow: hidden;
+    }
+    .crop-preview-empty { color: var(--muted); text-align: center; line-height: 1.45; font-size: .82rem; }
+    #cropPreviewCanvas { display: none; max-width: 100%; max-height: 200px; background: #fff; box-shadow: var(--shadow-sm); border-radius: var(--radius-sm); }
+    #cropPreviewCanvas.visible { display: block; }
+    .crop-coverage-note { color: var(--muted); font-size: .82rem; line-height: 1.4; }
+    .crop-coverage-note.warn { color: var(--accent-strong); font-weight: 600; }
+    .hint { color: var(--muted); font-size: .78rem; line-height: 1.45; }
+    .hint code { font-family: monospace; background: var(--bg-metric); padding: 1px 5px; border-radius: 4px; border: 1px solid var(--line); }
+    .nav-note { color: var(--muted); font-size: .78rem; line-height: 1.4; }
+
+    /* â”€â”€ Preview panel â”€â”€ */
+    .preview-header {
+      display: flex; gap: 12px; justify-content: space-between; align-items: flex-start; flex-wrap: wrap;
+    }
+    .preview-header h2 {
+      font-family: var(--font-serif);
+      font-size: 1.35rem; font-weight: 600;
+      letter-spacing: -.015em;
+    }
+    .preview-header p { color: var(--muted); font-size: .82rem; margin-top: 2px; }
+    .crop-readout { min-width: 220px; text-align: right; color: var(--muted); font-size: .82rem; line-height: 1.45; }
+    .crop-readout strong { color: var(--ink); }
+
+    .viewport-shell {
+      flex: 1 1 auto;
+      min-height: 72vh;
+      max-height: calc(100vh - 220px);
+      padding: 24px;
+      border-radius: var(--radius-xl);
+      border: 1px solid var(--line);
+      background: var(--bg-viewport);
+      overflow: auto;
+      position: relative;
+    }
+    .empty-state {
+      min-height: 100%; display: grid; place-items: center;
+      text-align: center; color: var(--muted); padding: 48px 24px;
+    }
+    .empty-state strong { display: block; font-size: 1.1rem; color: var(--ink); margin-bottom: 8px; }
+    .empty-state p { font-size: .88rem; }
+
+    .canvas-stage {
+      position: relative; margin: 0 auto; display: none;
+      touch-action: none; user-select: none;
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow: 0 0 0 1px rgba(97,74,48,.1), 0 20px 48px rgba(61,43,21,.18);
+    }
+    .canvas-stage.visible { display: block; }
+    #pdfCanvas { display: block; background: #fff; border-radius: var(--radius); }
+    .crop-overlay {
+      position: absolute; inset: 0; cursor: crosshair; touch-action: none; background: transparent;
+    }
+    .crop-selection {
+      position: absolute; display: none; pointer-events: none;
+      border: 2px solid var(--accent); background: rgba(198,93,46,.15);
+      box-shadow: 0 0 0 9999px rgba(20,15,10,.16);
+    }
+    .crop-selection.visible { display: block; }
+    .crop-selection::after {
+      content: ""; position: absolute; inset: -7px;
+      border: 1px dashed rgba(198,93,46,.45);
+    }
+
+    .preview-footer {
+      display: flex; gap: 12px; justify-content: space-between; align-items: center;
+      flex-wrap: wrap; color: var(--muted); font-size: .82rem;
+    }
+    .legend { display: flex; gap: 8px; align-items: center; }
+    .swatch { width: 16px; height: 16px; border-radius: 5px; background: rgba(198,93,46,.18); border: 2px solid var(--accent); flex-shrink: 0; }
+
+    /* â”€â”€ Loader â”€â”€ */
+    .app-loader {
+      position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+      padding: 24px; background: rgba(15,12,9,.55); backdrop-filter: blur(10px); z-index: 80;
+    }
+    .app-loader.visible { display: flex; }
+    .loader-card {
+      width: min(420px, calc(100vw - 32px)); padding: 24px; border-radius: var(--radius-lg);
+      background: var(--panel-strong); border: 1px solid var(--line);
+      box-shadow: var(--shadow); display: flex; gap: 18px; align-items: center;
+    }
+    .loader-spinner {
+      width: 48px; height: 48px; border-radius: 999px;
+      border: 3px solid var(--accent-soft); border-top-color: var(--accent); border-right-color: var(--accent-strong);
+      animation: spin .9s linear infinite; flex: 0 0 auto;
+    }
+    .loader-copy h2 {
+      font-family: var(--font-serif); font-size: 1.25rem; font-weight: 600; margin-bottom: 6px;
+    }
+    .loader-copy p { color: var(--muted); font-size: .88rem; line-height: 1.5; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* â”€â”€ Responsive â”€â”€ */
+    @media (max-width: 1100px) {
+      .layout { grid-template-columns: 1fr; }
+      .controls { position: static; max-height: none; border-right: none; border-bottom: 1px solid var(--line); }
+      .preview { min-height: auto; }
+      .crop-readout { min-width: 0; text-align: left; }
+      .viewport-shell { max-height: none; }
+    }
+    @media (max-width: 640px) {
+      .shell { width: min(100vw - 16px, 100%); }
+      .topbar { padding: 10px 14px; flex-wrap: wrap; }
+      .preview, .controls { padding: 14px; }
+      .viewport-shell { padding: 12px; min-height: 54vh; }
+      .info-grid { grid-template-columns: 1fr; }
+      .page-input-wrap { width: 100%; }
+    }
+
+    /* 2026 workspace redesign */
+    :root {
+      --ink: #201814;
+      --muted: #6f6158;
+      --line: rgba(110, 83, 54, 0.14);
+      --line-strong: rgba(110, 83, 54, 0.22);
+      --panel: rgba(255, 251, 244, 0.8);
+      --panel-strong: rgba(255, 250, 241, 0.94);
+      --bg-body: linear-gradient(180deg, #f8f2e8 0%, #f2eadf 46%, #eee6dc 100%);
+      --bg-input: rgba(255, 255, 255, 0.76);
+      --bg-metric: rgba(255, 252, 247, 0.9);
+      --bg-dropzone: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(247, 236, 221, 0.96));
+      --bg-viewport: linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(245, 236, 225, 0.78));
+      --accent: #b85f2d;
+      --accent-strong: #8f4319;
+      --accent-soft: rgba(184, 95, 45, 0.14);
+      --success: #1d7d58;
+      --error: #b33b31;
+      --info: #2d5ea9;
+      --shadow: 0 28px 72px rgba(63, 43, 22, 0.14);
+      --shadow-sm: 0 12px 34px rgba(63, 43, 22, 0.08);
+      --font-sans: "Manrope", -apple-system, "Segoe UI", system-ui, sans-serif;
+    }
+
+    [data-theme="dark"] {
+      --ink: #efe4d8;
+      --muted: #ad9c8d;
+      --line: rgba(255, 215, 176, 0.1);
+      --line-strong: rgba(255, 215, 176, 0.16);
+      --panel: rgba(28, 22, 18, 0.84);
+      --panel-strong: rgba(32, 25, 20, 0.94);
+      --bg-body: linear-gradient(180deg, #18120f 0%, #110d0a 48%, #0d0a07 100%);
+      --bg-input: rgba(34, 27, 21, 0.88);
+      --bg-metric: rgba(38, 30, 24, 0.92);
+      --bg-dropzone: linear-gradient(180deg, rgba(42, 34, 27, 0.96), rgba(28, 22, 17, 0.96));
+      --bg-viewport: linear-gradient(180deg, rgba(23, 19, 15, 0.94), rgba(14, 11, 8, 0.92));
+      --accent: #de7a42;
+      --accent-strong: #f2a072;
+      --accent-soft: rgba(222, 122, 66, 0.18);
+      --success: #53b285;
+      --error: #eb716e;
+      --info: #78a8ef;
+      --shadow: 0 28px 80px rgba(0, 0, 0, 0.4);
+      --shadow-sm: 0 12px 36px rgba(0, 0, 0, 0.26);
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg-body);
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(circle at 16% 12%, rgba(255, 255, 255, 0.34), transparent 30%),
+        radial-gradient(circle at 85% 10%, rgba(184, 95, 45, 0.08), transparent 22%),
+        radial-gradient(circle at 50% 100%, rgba(184, 95, 45, 0.06), transparent 28%);
+      pointer-events: none;
+      z-index: -1;
+    }
+
+    .shell {
+      width: min(1680px, calc(100vw - 40px));
+      padding: 18px 0 32px;
+      gap: 18px;
+    }
+
+    .topbar {
+      padding: 18px 24px;
+      gap: 20px;
+      border: 1px solid var(--line);
+      border-radius: 26px;
+      background: var(--panel);
+      box-shadow: var(--shadow-sm);
+      top: 14px;
+    }
+
+    .brand {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .brand-kicker {
+      font-size: 0.72rem;
+      font-weight: 800;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+
+    .brand h1 {
+      font-size: clamp(1.8rem, 2.5vw, 2.45rem);
+      line-height: 0.98;
+      letter-spacing: -0.03em;
+    }
+
+    .brand p {
+      max-width: 58ch;
+      font-size: 0.9rem;
+    }
+
+    .topbar-right {
+      gap: 10px;
+    }
+
+    .stamp {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: var(--panel-strong);
+    }
+
+    .stamp span {
+      font-size: 0.68rem;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+
+    .theme-toggle {
+      width: 42px;
+      height: 42px;
+      border-radius: 16px;
+    }
+
+    .hero-band {
+      position: relative;
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(360px, 0.9fr);
+      gap: 18px;
+      padding: 24px;
+      border-radius: 34px;
+      border: 1px solid var(--line);
+      background:
+        linear-gradient(135deg, rgba(255, 253, 249, 0.78), rgba(248, 238, 224, 0.78)),
+        linear-gradient(180deg, rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0));
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .hero-band::after {
+      content: "";
+      position: absolute;
+      inset: auto -6% -40% auto;
+      width: 420px;
+      height: 420px;
+      border-radius: 999px;
+      background: radial-gradient(circle, rgba(184, 95, 45, 0.12), transparent 68%);
+      pointer-events: none;
+    }
+
+    .hero-copy,
+    .hero-drop {
+      position: relative;
+      z-index: 1;
+    }
+
+    .hero-copy {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 6px 4px;
+    }
+
+    .hero-copy h2 {
+      max-width: 12ch;
+      font-family: var(--font-serif);
+      font-size: clamp(2.4rem, 5vw, 4.6rem);
+      font-weight: 600;
+      line-height: 0.94;
+      letter-spacing: -0.045em;
+    }
+
+    .hero-copy p {
+      max-width: 58ch;
+      font-size: 0.96rem;
+      line-height: 1.7;
+    }
+
+    .hero-highlights {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .highlight {
+      padding: 14px 16px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(255, 252, 247, 0.64);
+    }
+
+    .highlight strong {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 0.94rem;
+      font-weight: 700;
+    }
+
+    .highlight span {
+      color: var(--muted);
+      font-size: 0.82rem;
+      line-height: 1.45;
+    }
+
+    .hero-drop,
+    .hero-meta,
+    .setup-rail,
+    .insights-rail,
+    .preview-stage {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .drop-zone {
+      min-height: 280px;
+      padding: 28px;
+      border-width: 1.5px;
+      border-radius: 28px;
+      background: var(--bg-dropzone);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.42);
+    }
+
+    .drop-zone:hover,
+    .drop-zone.dragover {
+      transform: translateY(-2px);
+      box-shadow: 0 0 0 1px var(--accent-soft), inset 0 0 48px var(--accent-soft);
+    }
+
+    .drop-inner strong {
+      margin-bottom: 8px;
+      font-size: 1.18rem;
+    }
+
+    .drop-inner p {
+      max-width: 34ch;
+      margin: 0 auto;
+      font-size: 0.88rem;
+      line-height: 1.55;
+    }
+
+    .file-pill {
+      gap: 12px;
+      padding: 12px 14px;
+      border-radius: 22px;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .file-mark {
+      width: 42px;
+      height: 42px;
+      border-radius: 14px;
+      font-weight: 800;
+    }
+
+    .preset-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .preset-chip {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 10px 13px;
+      background: rgba(255, 252, 247, 0.86);
+      box-shadow: none;
+    }
+
+    .preset-chip.is-active {
+      border-color: transparent;
+      background: linear-gradient(135deg, var(--accent) 0%, #d37942 100%);
+      color: #fff9f4;
+      box-shadow: 0 10px 24px rgba(184, 95, 45, 0.22);
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: 300px minmax(0, 1fr) 330px;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .rail-head {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 4px 4px 2px;
+    }
+
+    .rail-head h3 {
+      font-family: var(--font-serif);
+      font-size: 1.42rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+
+    .rail-head p {
+      color: var(--muted);
+      font-size: 0.84rem;
+      line-height: 1.45;
+    }
+
+    .card,
+    .crop-preview-card,
+    .status-box {
+      border-radius: 24px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      box-shadow: var(--shadow-sm);
+    }
+
+    .card {
+      padding: 16px;
+      gap: 12px;
+    }
+
+    .card-emphasis {
+      background:
+        linear-gradient(180deg, rgba(255, 252, 248, 0.94), rgba(255, 247, 237, 0.92)),
+        var(--panel);
+    }
+
+    .card-header > div {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .card-body {
+      gap: 12px;
+    }
+
+    .collapsed .card-body {
+      display: none;
+    }
+
+    .card-note {
+      color: var(--muted);
+      font-size: 0.8rem;
+      line-height: 1.45;
+    }
+
+    .collapse-icon {
+      font-size: 0.8rem;
+      line-height: 1;
+    }
+
+    .collapsed .collapse-icon {
+      transform: rotate(-90deg);
+    }
+
+    .field-row {
+      gap: 10px;
+    }
+
+    input[type="number"],
+    select {
+      padding: 10px 12px;
+      border-radius: 14px;
+      background: var(--bg-input);
+    }
+
+    .page-input-wrap {
+      flex: 1 1 150px;
+      padding: 8px 10px;
+      border-radius: 16px;
+      background: var(--bg-input);
+    }
+
+    .page-input-wrap input {
+      width: 78px;
+      border-radius: 10px;
+    }
+
+    button {
+      border-radius: 16px;
+      padding: 11px 14px;
+      font-weight: 700;
+    }
+
+    .button-primary {
+      background: linear-gradient(135deg, var(--accent) 0%, #d37942 100%);
+      box-shadow: 0 12px 28px rgba(184, 95, 45, 0.22);
+    }
+
+    .button-primary:hover:not(:disabled) {
+      box-shadow: 0 16px 32px rgba(184, 95, 45, 0.28);
+    }
+
+    .button-secondary,
+    .button-ghost {
+      background: rgba(255, 252, 247, 0.76);
+    }
+
+    .pager-button {
+      min-width: 112px;
+      font-weight: 700;
+    }
+
+    .pager-button.pager-next {
+      background: linear-gradient(135deg, rgba(184, 95, 45, 0.16), rgba(184, 95, 45, 0.08));
+      color: var(--accent-strong);
+      border: 1px solid rgba(184, 95, 45, 0.18);
+    }
+
+    .zoom-button {
+      min-width: 44px;
+    }
+
+    .zoom-status {
+      min-height: 42px;
+      padding: 9px 12px;
+      border-radius: 16px;
+      background: var(--bg-input);
+      font-size: 0.86rem;
+      font-weight: 700;
+    }
+
+    .zoom-mode-button.is-active {
+      background: linear-gradient(135deg, var(--accent) 0%, #d37942 100%);
+      box-shadow: 0 8px 18px rgba(184, 95, 45, 0.18);
+    }
+
+    .info-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .metric {
+      padding: 12px 13px;
+      border-radius: 18px;
+      background: var(--bg-metric);
+    }
+
+    .metric span {
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+    }
+
+    .status-box {
+      padding: 16px 18px;
+      font-size: 0.88rem;
+    }
+
+    .status-box strong {
+      margin-bottom: 6px;
+      font-size: 0.74rem;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+    }
+
+    .status-box.success,
+    .analysis-box.success {
+      border-left-width: 4px;
+    }
+
+    .status-box.error,
+    .analysis-box.error {
+      border-left-width: 4px;
+    }
+
+    .status-box.info,
+    .analysis-box.info {
+      border-left-width: 4px;
+    }
+
+    .analysis-box {
+      padding: 14px;
+      border-radius: 18px;
+      background: var(--bg-metric);
+      font-size: 0.84rem;
+    }
+
+    .badge {
+      padding: 4px 8px;
+      font-size: 0.75rem;
+      font-weight: 700;
+    }
+
+    .crop-preview-card {
+      padding: 16px;
+      gap: 12px;
+    }
+
+    .crop-preview-shell {
+      min-height: 168px;
+      padding: 12px;
+      border-radius: 18px;
+    }
+
+    #cropPreviewCanvas {
+      max-height: 220px;
+      border-radius: 16px;
+    }
+
+    .crop-coverage-note,
+    .hint,
+    .nav-note {
+      font-size: 0.79rem;
+      line-height: 1.45;
+    }
+
+    .hint code {
+      border-radius: 6px;
+    }
+
+    .preview-header {
+      gap: 16px;
+      padding: 4px 4px 0;
+    }
+
+    .preview-header h2 {
+      font-size: 1.72rem;
+      letter-spacing: -0.02em;
+    }
+
+    .preview-header p {
+      font-size: 0.84rem;
+      line-height: 1.5;
+    }
+
+    .crop-readout {
+      line-height: 1.5;
+    }
+
+    .preview-toolbar {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .tool-card .card-body {
+      gap: 10px;
+    }
+
+    .viewport-shell {
+      min-height: 78vh;
+      max-height: calc(100vh - 230px);
+      padding: 28px;
+      border-radius: 34px;
+      background: var(--bg-viewport);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.42);
+    }
+
+    .empty-state {
+      padding: 56px 28px;
+    }
+
+    .empty-state strong {
+      font-size: 1.14rem;
+    }
+
+    .canvas-stage {
+      border-radius: 26px;
+      box-shadow: 0 0 0 1px rgba(110, 83, 54, 0.1), 0 20px 54px rgba(63, 43, 22, 0.18);
+    }
+
+    #pdfCanvas {
+      border-radius: 26px;
+    }
+
+    .crop-selection {
+      background: rgba(184, 95, 45, 0.15);
+      box-shadow: 0 0 0 9999px rgba(17, 13, 9, 0.18);
+    }
+
+    .crop-selection::after {
+      border: 1px dashed rgba(184, 95, 45, 0.42);
+    }
+
+    .preview-footer {
+      padding: 0 4px;
+    }
+
+    .app-loader {
+      background: rgba(15, 12, 9, 0.54);
+    }
+
+    .loader-card {
+      width: min(440px, calc(100vw - 32px));
+      border-radius: 28px;
+    }
+
+    @media (max-width: 1380px) {
+      .workspace {
+        display: flex;
+        flex-direction: column;
+      }
+
+      .preview-stage {
+        order: 1;
+      }
+
+      .setup-rail {
+        order: 2;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      }
+
+      .insights-rail {
+        order: 3;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      }
+
+      .viewport-shell {
+        max-height: none;
+        min-height: 62vh;
+      }
+    }
+
+    @media (max-width: 980px) {
+      .shell {
+        width: min(100vw - 20px, 100%);
+      }
+
+      .topbar {
+        padding: 16px 18px;
+        position: static;
+      }
+
+      .hero-band {
+        grid-template-columns: 1fr;
+        padding: 18px;
+      }
+
+      .hero-highlights,
+      .preview-toolbar {
+        grid-template-columns: 1fr;
+      }
+
+      .crop-readout {
+        min-width: 0;
+        text-align: left;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .shell {
+        width: min(100vw - 14px, 100%);
+        padding-top: 10px;
+      }
+
+      .topbar {
+        border-radius: 22px;
+      }
+
+      .topbar-right {
+        width: 100%;
+        justify-content: space-between;
+      }
+
+      .hero-band,
+      .card,
+      .crop-preview-card,
+      .status-box,
+      .loader-card {
+        border-radius: 20px;
+      }
+
+      .hero-highlights,
+      .info-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .drop-zone {
+        min-height: 220px;
+      }
+
+      .viewport-shell {
+        padding: 12px;
+        min-height: 54vh;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-kicker">Kindle-ready workspace</div>
+        <h1>Kindle<span>Master</span></h1>
+        <p>Analiza PDF i DOCX oraz EPUB export dla dokumentow, magazynow i materialow studyjnych.</p>
+      </div>
+      <div class="topbar-right">
+        <div class="stamp"><span>build</span>{{ updated_at_label }}</div>
+        <button class="theme-toggle" id="themeToggle" title="Przelacz motyw" aria-label="Przelacz dark/light mode">🌙</button>
+      </div>
+    </header>
+
+    <section class="hero-band">
+      <div class="hero-copy">
+        <div>
+          <div class="section-title">Production flow</div>
+          <h2>Uloz dokument pod Kindle, zanim klikniesz eksport.</h2>
+        </div>
+        <p>Najpierw wrzucasz dokument, potem wybierasz profil i sprawdzasz ryzyka. PDF dostaje podglad i crop, a DOCX przechodzi w tryb analizy strukturalnej przed eksportem do EPUB.</p>
+        <div class="hero-highlights">
+          <div class="highlight">
+            <strong>Book</strong>
+            <span>Czysty reflow dla tekstu, rozdzialow i klasycznych ebookow.</span>
+          </div>
+          <div class="highlight">
+            <strong>Magazine</strong>
+            <span>Lepsze decyzje dla kolumn, sekcji i bardziej zlozonego skladu.</span>
+          </div>
+          <div class="highlight">
+            <strong>Preserve</strong>
+            <span>Fallback dla dokumentow, ktore trzeba zachowac blisko oryginalu.</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="hero-drop">
+        <label class="drop-zone" id="dropZone" for="fileInput">
+          <div class="drop-inner">
+            <strong>Wybierz lub upusc plik PDF albo DOCX</strong>
+            <p>Kliknij albo przeciagnij dokument. PDF uruchomi preview i crop, a DOCX analize struktury i gotowy flow do EPUB.</p>
+          </div>
+        </label>
+        <input id="fileInput" type="file" accept="application/pdf,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx" hidden>
+
+        <div class="hero-meta">
+          <div class="file-pill" id="fileInfo">
+            <div class="file-mark" id="fileMark">PLIK</div>
+            <div class="file-meta">
+              <strong id="fileName">Brak pliku</strong>
+              <span id="fileSize">0 MB</span>
+            </div>
+          </div>
+
+          <div class="preset-strip" aria-label="Szybki wybor profilu">
+            <button class="preset-chip" type="button" data-profile="auto-premium">Auto Premium</button>
+            <button class="preset-chip" type="button" data-profile="book">Book</button>
+            <button class="preset-chip" type="button" data-profile="magazine">Magazine</button>
+            <button class="preset-chip" type="button" data-profile="technical-study">Technical/Study</button>
+            <button class="preset-chip" type="button" data-profile="preserve-layout">Preserve Layout</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="workspace">
+      <aside class="setup-rail">
+        <div class="rail-head">
+          <div class="section-title">Setup</div>
+          <h3>Konwersja</h3>
+          <p>Najwazniejsze decyzje doboru profilu i eksportu trzymamy blisko glownych akcji.</p>
+        </div>
+
+        <div class="card card-emphasis" id="cardEpub">
+          <div class="card-header" onclick="toggleCard('cardEpub')">
+            <div>
+              <div class="section-title">PDF do EPUB</div>
+              <p class="card-note">Dobierz profil, OCR i uruchom analize albo finalna konwersje.</p>
+            </div>
+            <span class="collapse-icon">▾</span>
+          </div>
+          <div class="card-body">
+            <div class="field-row">
+              <label>
+                <strong>Profil</strong>
+                <select id="profileSelect">
+                  <option value="auto-premium">Auto Premium</option>
+                  <option value="book">Book</option>
+                  <option value="magazine">Magazine</option>
+                  <option value="technical-study">Technical/Study</option>
+                  <option value="preserve-layout">Preserve Layout</option>
+                </select>
+              </label>
+              <label>
+                <strong>Jezyk OCR</strong>
+                <select id="languageSelect">
+                  <option value="pl">pl</option>
+                  <option value="en">en</option>
+                </select>
+              </label>
+            </div>
+            <label class="checkbox">
+              <input id="forceOcrCheckbox" type="checkbox">
+              <span>
+                <strong>Wymus OCR</strong>
+                Przydatne dla skanow i trudniejszych dokumentow bez dobrej warstwy tekstowej.
+              </span>
+            </label>
+            <label class="checkbox">
+              <input id="headingRepairCheckbox" type="checkbox" checked>
+              <span>
+                <strong>Napraw headingi i TOC</strong>
+                Dodatkowy post-process EPUB: usuwa fake headingi, odbudowuje H1/H2/H3 i przebudowuje nawigacje.
+              </span>
+            </label>
+            <div class="button-row">
+              <button class="button-primary" id="convertEpubButton" disabled>Konwertuj do EPUB</button>
+              <button class="button-ghost" id="analyzeButton" disabled>Analizuj</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" id="cardCrop">
+          <div class="card-header" onclick="toggleCard('cardCrop')">
+            <div>
+              <div class="section-title">Advanced crop</div>
+              <p class="card-note">Opcjonalny eksport A4 dla dokumentu lub pojedynczej strony.</p>
+            </div>
+            <span class="collapse-icon">▾</span>
+          </div>
+          <div class="card-body">
+            <label class="checkbox">
+              <input id="applyAllPages" type="checkbox">
+              <span>
+                <strong>Zastosuj do wszystkich stron</strong>
+                Uzyj cropa aktualnej strony dla calego dokumentu.
+              </span>
+            </label>
+            <div class="button-row">
+              <button class="button-primary" id="cropButton" disabled>Crop &amp; Fit to A4</button>
+              <button class="button-ghost" id="resetCropButton" disabled>Wyczysc</button>
+            </div>
+            <p class="hint">Wspolrzedne z canvasa sa mapowane do ukladu PDF i osadzane przez <code>pdf-lib embedPage + drawPage</code>.</p>
+          </div>
+        </div>
+
+        <div class="status-box info" id="statusBox">
+          <strong>Status</strong>
+          <p id="statusText">Wgraj plik PDF, aby rozpoczac.</p>
+        </div>
+      </aside>
+
+      <section class="preview-stage">
+        <header class="preview-header">
+          <div>
+            <div class="section-title">Preview</div>
+            <h2 id="previewTitle">Podglad strony PDF</h2>
+            <p id="previewSubtitle">Po wgraniu pliku mozesz przechodzic miedzy stronami i rysowac crop na dowolnej z nich.</p>
+          </div>
+          <div class="crop-readout" id="cropReadout">
+            <strong>Brak zaznaczenia</strong><br>
+            Zaznacz obszar, ktory ma trafic na strone A4.
+          </div>
+        </header>
+
+        <div class="preview-toolbar">
+          <div class="card tool-card" id="cardNav">
+            <div class="card-header" onclick="toggleCard('cardNav')">
+              <div>
+                <div class="section-title">Nawigacja</div>
+                <p class="card-note">Szybkie przechodzenie miedzy stronami i zapamietany crop per page.</p>
+              </div>
+              <span class="collapse-icon">▾</span>
+            </div>
+            <div class="card-body">
+              <div class="nav-row">
+                <button class="button-secondary pager-button pager-prev" id="prevPageButton" disabled>&larr; Poprzednia</button>
+                <div class="page-input-wrap">
+                  <input id="pageNumberInput" type="number" min="1" step="1" value="1" disabled>
+                  <span>/ <span id="pageCountInline">0</span></span>
+                </div>
+                <button class="button-secondary pager-button pager-next" id="nextPageButton" disabled>Nastepna &rarr;</button>
+              </div>
+              <div class="button-row">
+                <button class="button-ghost" id="goToPageButton" disabled>Idz do strony</button>
+              </div>
+              <p class="nav-note">Kazda strona pamieta swoje zaznaczenie i pokazuje je po powrocie.</p>
+            </div>
+          </div>
+
+          <div class="card tool-card" id="cardZoom">
+            <div class="card-header" onclick="toggleCard('cardZoom')">
+              <div>
+                <div class="section-title">Zoom</div>
+                <p class="card-note">Kontrola dopasowania bez opuszczania glownego viewportu.</p>
+              </div>
+              <span class="collapse-icon">▾</span>
+            </div>
+            <div class="card-body">
+              <div class="nav-row">
+                <button class="button-secondary zoom-button" id="zoomOutButton" disabled>−</button>
+                <div class="zoom-status" id="zoomStatusLabel">Dopasuj do okna</div>
+                <button class="button-secondary zoom-button" id="zoomInButton" disabled>+</button>
+              </div>
+              <div class="button-row">
+                <button class="button-ghost zoom-mode-button" id="fitPageButton" disabled>Okno</button>
+                <button class="button-ghost zoom-mode-button" id="fitWidthButton" disabled>Szerokosc</button>
+                <button class="button-ghost zoom-mode-button" id="zoomResetButton" disabled>100%</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="viewport-shell" id="viewportShell">
+          <div class="empty-state" id="emptyState">
+            <div>
+              <strong>Podglad pojawi sie tutaj</strong>
+              <p>Po wgraniu PDF aktualna strona zostanie wyrenderowana. Nad nia pojawi sie warstwa do rysowania crop boxa.</p>
+            </div>
+          </div>
+          <div class="canvas-stage" id="canvasStage">
+            <canvas id="pdfCanvas"></canvas>
+            <div class="crop-overlay" id="cropOverlay">
+              <div class="crop-selection" id="cropSelection"></div>
+            </div>
+          </div>
+        </div>
+
+        <footer class="preview-footer">
+          <div class="legend">
+            <span class="swatch"></span>
+            <span>Obszar ceglasty = aktywny crop box biezacej strony.</span>
+          </div>
+          <div id="exportModeLabel">Eksport: tylko aktualna strona</div>
+        </footer>
+      </section>
+
+      <aside class="insights-rail">
+        <div class="rail-head">
+          <div class="section-title">Insights</div>
+          <h3>Analiza i audit</h3>
+          <p>Dokument, rekomendacje i premium quality checks sa oddzielone od glownych akcji.</p>
+        </div>
+
+        <div class="card" id="cardDoc">
+          <div class="card-header" onclick="toggleCard('cardDoc')">
+            <div>
+              <div class="section-title">Dokument</div>
+              <p class="card-note">Podstawowe metryki strony i aktualnego widoku.</p>
+            </div>
+            <span class="collapse-icon">▾</span>
+          </div>
+          <div class="card-body">
+            <div class="info-grid">
+              <div class="metric"><span>Strony</span><strong id="pageCountValue">-</strong></div>
+              <div class="metric"><span>Aktualna</span><strong id="pageIndicatorValue">-</strong></div>
+              <div class="metric"><span>Rozmiar strony</span><strong id="pageSizeValue">-</strong></div>
+              <div class="metric"><span>Skala</span><strong id="renderScaleValue">-</strong></div>
+              <div class="metric"><span>Crop (pt)</span><strong id="cropSizeValue">-</strong></div>
+              <div class="metric"><span>Zapisane cropy</span><strong id="savedCropsValue">0</strong></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" id="cardInsights">
+          <div class="card-header" onclick="toggleCard('cardInsights')">
+            <div>
+              <div class="section-title">EPUB quality</div>
+              <p class="card-note">Analiza backendu, narzedzia i wynik ostatniej konwersji w jednym miejscu.</p>
+            </div>
+            <span class="collapse-icon">▾</span>
+          </div>
+          <div class="card-body">
+            <div class="analysis-box" id="analysisBox">
+              <strong>Analiza jeszcze nieuruchomiona</strong>
+              <p>Kliknij "Analizuj", aby zobaczyc profil, confidence i rekomendacje pod Kindle.</p>
+              <div class="analysis-meta"></div>
+            </div>
+            <div class="analysis-box info" id="conversionBox">
+              <strong>Ostatnia konwersja</strong>
+              <p>Po wygenerowaniu EPUB zobaczysz tutaj status EPUBCheck, liczbe sekcji, assetow i typ layoutu.</p>
+              <div class="analysis-meta"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="crop-preview-card" id="cardPreview">
+          <div class="card-header" onclick="toggleCard('cardPreview')">
+            <div>
+              <div class="section-title">Podglad wycinka</div>
+              <p class="card-note">Szybka kontrola tego, co rzeczywiscie trafi do eksportu A4.</p>
+            </div>
+            <span class="collapse-icon">▾</span>
+          </div>
+          <div class="card-body">
+            <div class="crop-preview-shell">
+              <div class="crop-preview-empty" id="cropPreviewEmpty">Tu pojawi sie wyciety fragment.</div>
+              <canvas id="cropPreviewCanvas"></canvas>
+            </div>
+            <p class="crop-coverage-note" id="cropCoverageNote">Zaznacz crop box, aby zobaczyc podglad.</p>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <!-- Loader overlay -->
+  <div class="app-loader" id="appLoader" aria-live="polite" aria-hidden="true">
+    <div class="loader-card">
+      <div class="loader-spinner" aria-hidden="true"></div>
+      <div class="loader-copy">
+        <div class="section-title">Przetwarzanie</div>
+        <h2 id="loaderTitle">Trwa operacja na PDF</h2>
+        <p id="loaderMessage">Przy duzych dokumentach konwersja do EPUB moze potrwac kilka minut.</p>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+  <script>
+    pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+    // â”€â”€ Dark mode â”€â”€
+    (function () {
+      var saved;
+      try { saved = localStorage.getItem("km-theme"); } catch (e) {}
+      var prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+      var theme = saved || (prefersDark ? "dark" : "light");
+      document.documentElement.setAttribute("data-theme", theme);
+    })();
+
+    var themeToggle = document.getElementById("themeToggle");
+    function applyTheme(theme) {
+      document.documentElement.setAttribute("data-theme", theme);
+      themeToggle.textContent = theme === "dark" ? "☀" : "🌙";
+      try { localStorage.setItem("km-theme", theme); } catch (e) {}
+    }
+    applyTheme(document.documentElement.getAttribute("data-theme"));
+    themeToggle.addEventListener("click", function () {
+      var current = document.documentElement.getAttribute("data-theme");
+      applyTheme(current === "dark" ? "light" : "dark");
+    });
+
+    // â”€â”€ Collapsible cards â”€â”€
+    function toggleCard(id) {
+      var card = document.getElementById(id);
+      if (card) card.classList.toggle("collapsed");
+    }
+
+    // â”€â”€ App â”€â”€
+    const A4_WIDTH = 595.28;
+    const A4_HEIGHT = 841.89;
+    const $ = (id) => document.getElementById(id);
+
+    const fileInput = $("fileInput");
+    const dropZone = $("dropZone");
+    const fileInfo = $("fileInfo");
+    const fileMark = $("fileMark");
+    const fileName = $("fileName");
+    const fileSize = $("fileSize");
+    const pageCountValue = $("pageCountValue");
+    const pageIndicatorValue = $("pageIndicatorValue");
+    const pageSizeValue = $("pageSizeValue");
+    const renderScaleValue = $("renderScaleValue");
+    const cropSizeValue = $("cropSizeValue");
+    const savedCropsValue = $("savedCropsValue");
+    const prevPageButton = $("prevPageButton");
+    const nextPageButton = $("nextPageButton");
+    const pageNumberInput = $("pageNumberInput");
+    const pageCountInline = $("pageCountInline");
+    const goToPageButton = $("goToPageButton");
+    const zoomOutButton = $("zoomOutButton");
+    const zoomInButton = $("zoomInButton");
+    const fitPageButton = $("fitPageButton");
+    const fitWidthButton = $("fitWidthButton");
+    const zoomResetButton = $("zoomResetButton");
+    const zoomStatusLabel = $("zoomStatusLabel");
+    const cropButton = $("cropButton");
+    const resetCropButton = $("resetCropButton");
+    const applyAllPages = $("applyAllPages");
+    const profileSelect = $("profileSelect");
+    const languageSelect = $("languageSelect");
+    const forceOcrCheckbox = $("forceOcrCheckbox");
+    const headingRepairCheckbox = $("headingRepairCheckbox");
+    const analyzeButton = $("analyzeButton");
+    const convertEpubButton = $("convertEpubButton");
+    const analysisBox = $("analysisBox");
+    const conversionBox = $("conversionBox");
+    const exportModeLabel = $("exportModeLabel");
+    const statusBox = $("statusBox");
+    const statusText = $("statusText");
+    const viewportShell = $("viewportShell");
+    const emptyState = $("emptyState");
+    const canvasStage = $("canvasStage");
+    const pdfCanvas = $("pdfCanvas");
+    const cropOverlay = $("cropOverlay");
+    const cropSelection = $("cropSelection");
+    const cropPreviewCanvas = $("cropPreviewCanvas");
+    const cropPreviewEmpty = $("cropPreviewEmpty");
+    const cropCoverageNote = $("cropCoverageNote");
+    const cropReadout = $("cropReadout");
+    const previewTitle = $("previewTitle");
+    const previewSubtitle = $("previewSubtitle");
+    const appLoader = $("appLoader");
+    const loaderTitle = $("loaderTitle");
+    const loaderMessage = $("loaderMessage");
+    const presetButtons = Array.from(document.querySelectorAll(".preset-chip[data-profile]"));
+
+    const canvasContext = pdfCanvas.getContext("2d", { alpha: false });
+    const cropPreviewContext = cropPreviewCanvas.getContext("2d");
+
+    let selectedFile = null;
+    let selectedSourceType = null;
+    let pdfBytes = null;
+    let pdfJsDoc = null;
+    let currentPage = null;
+    let currentPageNumber = 1;
+    let renderScale = 1;
+    let zoomMode = "fit-page";
+    let manualZoom = 1;
+    let renderTask = null;
+    let pageWidthPt = 0;
+    let pageHeightPt = 0;
+    let cropRectNormalized = null;
+    let cropRectsByPage = new Map();
+    let busyCounter = 0;
+    let isDrawing = false;
+    let dragStart = null;
+    let busyOverlayTimer = null;
+    let busyMessage = "Przetwarzam dokument.";
+
+    function formatBytes(byteCount) {
+      if (!byteCount) return "0 MB";
+      return `${(byteCount / (1024 * 1024)).toFixed(2)} MB`;
+    }
+
+    function syncProfilePreset() {
+      presetButtons.forEach((button) => {
+        button.classList.toggle("is-active", button.dataset.profile === profileSelect.value);
+      });
+    }
+
+    function setStatus(message, type = "info") {
+      statusBox.className = `status-box ${type}`;
+      statusText.textContent = message;
+      busyMessage = message;
+      loaderMessage.textContent = message;
+    }
+
+    function setBusy(isBusy) {
+      busyCounter += isBusy ? 1 : -1;
+      busyCounter = Math.max(0, busyCounter);
+      updateControlsState();
+      updateBusyOverlay();
+    }
+
+    function updateBusyOverlay() {
+      const busy = busyCounter > 0;
+      clearTimeout(busyOverlayTimer);
+      if (!busy) {
+        appLoader.classList.remove("visible");
+        appLoader.setAttribute("aria-hidden", "true");
+        return;
+      }
+      busyOverlayTimer = setTimeout(() => {
+        if (busyCounter <= 0) return;
+        loaderTitle.textContent = selectedSourceType === "docx" ? "Trwa operacja na DOCX" : "Trwa operacja na PDF";
+        loaderMessage.textContent = busyMessage;
+        appLoader.classList.add("visible");
+        appLoader.setAttribute("aria-hidden", "false");
+      }, 180);
+    }
+
+    function hasPdfLoaded() {
+      return selectedSourceType === "pdf" && Boolean(pdfBytes && pdfJsDoc);
+    }
+
+    function detectSourceType(file) {
+      const name = (file && file.name ? file.name : "").toLowerCase();
+      if (name.endsWith(".pdf") || file.type === "application/pdf") return "pdf";
+      if (
+        name.endsWith(".docx")
+        || file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      ) {
+        return "docx";
+      }
+      return "";
+    }
+
+    function resetPreviewMetrics() {
+      pageSizeValue.textContent = "-";
+      renderScaleValue.textContent = "-";
+      cropSizeValue.textContent = "-";
+      pageNumberInput.value = "1";
+      pageWidthPt = 0;
+      pageHeightPt = 0;
+    }
+
+    function showDocxPreviewState() {
+      pdfBytes = null;
+      pdfJsDoc = null;
+      currentPage = null;
+      currentPageNumber = 1;
+      cropRectsByPage = new Map();
+      cropRectNormalized = null;
+      clearSelectionVisual();
+      canvasStage.classList.remove("visible");
+      cropPreviewCanvas.classList.remove("visible");
+      cropPreviewEmpty.style.display = "block";
+      cropCoverageNote.className = "crop-coverage-note";
+      cropCoverageNote.textContent = "DOCX nie obsluguje preview/crop stron. Analiza i konwersja EPUB dzialaja normalnie.";
+      previewTitle.textContent = "Tryb DOCX";
+      previewSubtitle.textContent = "Dla DOCX pokazujemy analize struktury dokumentu zamiast podgladu stron PDF.";
+      emptyState.style.display = "block";
+      emptyState.innerHTML = `
+        <strong>Tryb DOCX</strong>
+        <p>Podglad stron i crop sa dostepne tylko dla PDF. Dla DOCX mozesz uruchomic analize struktury i od razu konwersje do EPUB.</p>
+      `;
+      cropReadout.innerHTML = "<strong>Tryb DOCX</strong><br>Crop PDF jest niedostepny dla dokumentow Word.";
+      resetPreviewMetrics();
+      updatePageSummary();
+      updateExportModeLabel();
+      updateControlsState();
+    }
+
+    function updateControlsState() {
+      const busy = busyCounter > 0;
+      const hasPdf = hasPdfLoaded();
+      const pages = pdfJsDoc ? pdfJsDoc.numPages : 0;
+      const hasCrop = Boolean(cropRectNormalized);
+
+      prevPageButton.disabled = !hasPdf || busy || currentPageNumber <= 1;
+      nextPageButton.disabled = !hasPdf || busy || currentPageNumber >= pages;
+      goToPageButton.disabled = !hasPdf || busy;
+      pageNumberInput.disabled = !hasPdf || busy;
+      zoomOutButton.disabled = !hasPdf || busy;
+      zoomInButton.disabled = !hasPdf || busy;
+      fitPageButton.disabled = !hasPdf || busy;
+      fitWidthButton.disabled = !hasPdf || busy;
+      zoomResetButton.disabled = !hasPdf || busy;
+      analyzeButton.disabled = !selectedFile || busy;
+      convertEpubButton.disabled = !selectedFile || busy;
+      cropButton.disabled = !hasPdf || !hasCrop || busy;
+      resetCropButton.disabled = !hasCrop || busy;
+      applyAllPages.disabled = !hasPdf || busy;
+      forceOcrCheckbox.disabled = selectedSourceType === "docx" || busy;
+
+      pageCountValue.textContent = hasPdf ? `${pages}` : "-";
+      pageIndicatorValue.textContent = hasPdf ? `${currentPageNumber}` : "-";
+      pageCountInline.textContent = hasPdf ? `${pages}` : "0";
+      savedCropsValue.textContent = `${cropRectsByPage.size}`;
+      updateZoomStatus();
+      fitPageButton.classList.toggle("is-active", zoomMode === "fit-page");
+      fitWidthButton.classList.toggle("is-active", zoomMode === "fit-width");
+      zoomResetButton.classList.toggle("is-active", zoomMode === "manual" && Math.abs(manualZoom - 1) < 0.01);
+    }
+
+    function clearSelectionVisual() {
+      cropSelection.classList.remove("visible");
+      cropSelection.style.left = "0px";
+      cropSelection.style.top = "0px";
+      cropSelection.style.width = "0px";
+      cropSelection.style.height = "0px";
+    }
+
+    function updateExportModeLabel() {
+      if (selectedSourceType === "docx") {
+        exportModeLabel.textContent = "Eksport PDF A4 jest dostepny tylko dla PDF";
+        return;
+      }
+      if (!hasPdfLoaded()) {
+        exportModeLabel.textContent = "Eksport: brak pliku";
+        return;
+      }
+      exportModeLabel.textContent = applyAllPages.checked
+        ? `Eksport: wszystkie strony wedlug cropa ze strony ${currentPageNumber}`
+        : `Eksport: tylko strona ${currentPageNumber}`;
+    }
+
+    function getAutoZoomScales(viewportAtOne) {
+      const availableWidth = Math.max(280, viewportShell.clientWidth - 80);
+      const availableHeight = Math.max(360, viewportShell.clientHeight - 80);
+      return {
+        fitPage: Math.max(0.25, Math.min(3, Math.min(availableWidth / viewportAtOne.width, availableHeight / viewportAtOne.height) * 0.92)),
+        fitWidth: Math.max(0.25, Math.min(3, (availableWidth / viewportAtOne.width) * 0.98)),
+      };
+    }
+
+    function updateZoomStatus() {
+      if (!hasPdfLoaded()) {
+        zoomStatusLabel.textContent = "Dopasuj do okna";
+        return;
+      }
+      const percent = `${Math.round(renderScale * 100)}%`;
+      if (zoomMode === "fit-width") { zoomStatusLabel.textContent = `Szerokosc Â· ${percent}`; return; }
+      if (zoomMode === "manual") { zoomStatusLabel.textContent = `Manualny Â· ${percent}`; return; }
+      zoomStatusLabel.textContent = `Okno Â· ${percent}`;
+    }
+
+    function normalizedToPdfBox(normalized, widthPt, heightPt) {
+      const left = normalized.left * widthPt;
+      const right = (normalized.left + normalized.width) * widthPt;
+      const top = heightPt - normalized.top * heightPt;
+      const bottom = heightPt - (normalized.top + normalized.height) * heightPt;
+      return {
+        left: Math.max(0, Math.min(left, widthPt)),
+        right: Math.max(0, Math.min(right, widthPt)),
+        bottom: Math.max(0, Math.min(bottom, heightPt)),
+        top: Math.max(0, Math.min(top, heightPt)),
+      };
+    }
+
+    function updateCropReadout() {
+      if (!cropRectNormalized || !pageWidthPt || !pageHeightPt) {
+        cropReadout.innerHTML = "<strong>Brak zaznaczenia</strong><br>Zaznacz obszar, ktory ma trafic na strone A4.";
+        cropSizeValue.textContent = "-";
+        return;
+      }
+      const box = normalizedToPdfBox(cropRectNormalized, pageWidthPt, pageHeightPt);
+      const widthPt = box.right - box.left;
+      const heightPt = box.top - box.bottom;
+      cropSizeValue.textContent = `${widthPt.toFixed(1)} x ${heightPt.toFixed(1)} pt`;
+      cropReadout.innerHTML =
+        `<strong>Crop â€“ strona ${currentPageNumber}</strong><br>` +
+        `L ${box.left.toFixed(1)}  B ${box.bottom.toFixed(1)}<br>` +
+        `R ${box.right.toFixed(1)}  T ${box.top.toFixed(1)} pt`;
+    }
+
+    function updateCropPreview() {
+      if (!cropRectNormalized || !pdfCanvas.width || !pdfCanvas.height) {
+        cropPreviewCanvas.classList.remove("visible");
+        cropPreviewEmpty.style.display = "block";
+        cropCoverageNote.className = "crop-coverage-note";
+        cropCoverageNote.textContent = "Zaznacz crop box, aby zobaczyc podglad.";
+        return;
+      }
+      const sourceX = Math.max(0, Math.round(cropRectNormalized.left * pdfCanvas.width));
+      const sourceY = Math.max(0, Math.round(cropRectNormalized.top * pdfCanvas.height));
+      const sourceW = Math.max(1, Math.round(cropRectNormalized.width * pdfCanvas.width));
+      const sourceH = Math.max(1, Math.round(cropRectNormalized.height * pdfCanvas.height));
+      const maxPreviewWidth = 280;
+      const maxPreviewHeight = 190;
+      const scale = Math.min(maxPreviewWidth / sourceW, maxPreviewHeight / sourceH, 2.2);
+      const targetWidth = Math.max(1, Math.round(sourceW * scale));
+      const targetHeight = Math.max(1, Math.round(sourceH * scale));
+
+      cropPreviewCanvas.width = targetWidth;
+      cropPreviewCanvas.height = targetHeight;
+      cropPreviewContext.setTransform(1, 0, 0, 1, 0, 0);
+      cropPreviewContext.clearRect(0, 0, targetWidth, targetHeight);
+      cropPreviewContext.drawImage(pdfCanvas, sourceX, sourceY, sourceW, sourceH, 0, 0, targetWidth, targetHeight);
+      cropPreviewCanvas.classList.add("visible");
+      cropPreviewEmpty.style.display = "none";
+
+      const coverage = cropRectNormalized.width * cropRectNormalized.height;
+      const coversMostOfPage = coverage > 0.6 || (cropRectNormalized.width > 0.8 && cropRectNormalized.height > 0.72);
+      cropCoverageNote.className = coversMostOfPage ? "crop-coverage-note warn" : "crop-coverage-note";
+      cropCoverageNote.textContent = coversMostOfPage
+        ? "Ten crop obejmuje wiekszosc strony â€“ finalny PDF bedzie podobny do oryginalu."
+        : "Podglad pokazuje realny wycinek, ktory zostanie osadzony na stronie A4.";
+    }
+
+    function updateSelectionFromNormalized() {
+      if (!cropRectNormalized) {
+        clearSelectionVisual();
+        updateCropReadout();
+        updateCropPreview();
+        updateControlsState();
+        return;
+      }
+      const width = cropOverlay.clientWidth;
+      const height = cropOverlay.clientHeight;
+      cropSelection.style.left = `${cropRectNormalized.left * width}px`;
+      cropSelection.style.top = `${cropRectNormalized.top * height}px`;
+      cropSelection.style.width = `${cropRectNormalized.width * width}px`;
+      cropSelection.style.height = `${cropRectNormalized.height * height}px`;
+      cropSelection.classList.add("visible");
+      updateCropReadout();
+      updateCropPreview();
+      updateControlsState();
+    }
+
+    function syncCurrentPageCrop() {
+      cropRectNormalized = cropRectsByPage.get(currentPageNumber) || null;
+      updateSelectionFromNormalized();
+      updateExportModeLabel();
+    }
+
+    function updatePageSummary() {
+      if (selectedSourceType === "docx") {
+        previewTitle.textContent = "Tryb DOCX";
+        previewSubtitle.textContent = "Analiza struktury i konwersja EPUB sa dostepne bez podgladu stron.";
+        return;
+      }
+      if (!hasPdfLoaded()) {
+        previewTitle.textContent = "Podglad strony PDF";
+        previewSubtitle.textContent = "Po wgraniu pliku mozesz przechodzic miedzy stronami i rysowac crop na dowolnej z nich.";
+        return;
+      }
+      const cropHint = cropRectsByPage.has(currentPageNumber) ? "Ma zapisany crop." : "Brak cropa.";
+      previewTitle.textContent = `Strona ${currentPageNumber} z ${pdfJsDoc.numPages}`;
+      previewSubtitle.textContent = `${cropHint} Wlacz eksport wszystkich stron, by uzyc cropa z tej strony dla calego dokumentu.`;
+    }
+
+    function resetAnalysisBox() {
+      analysisBox.innerHTML = `
+        <strong>Analiza jeszcze nieuruchomiona</strong>
+        <p>Kliknij "Analizuj", aby zobaczyc profil, confidence, narzedzia i rekomendacje dla EPUB.</p>
+        <div class="analysis-meta"></div>
+      `;
+      conversionBox.className = "analysis-box info";
+      conversionBox.innerHTML = `
+        <strong>Ostatnia konwersja</strong>
+        <p>Po wygenerowaniu EPUB zobaczysz tutaj status EPUBCheck, liczbe sekcji, assetow, typ layoutu i premium audit.</p>
+        <div class="analysis-meta"></div>
+      `;
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+
+    function parseJsonHeader(response, headerName) {
+      const raw = response.headers.get(headerName);
+      if (!raw) return [];
+      try {
+        return JSON.parse(decodeURIComponent(raw));
+      } catch (error) {
+        console.warn(`Nie udalo sie odczytac naglowka ${headerName}`, error);
+        return [];
+      }
+    }
+
+    function renderAuditList(title, items, formatter) {
+      if (!items || !items.length) {
+        return `
+          <div class="audit-group">
+            <strong>${escapeHtml(title)}</strong>
+            <div class="audit-empty">Brak pozycji do recznej kontroli.</div>
+          </div>
+        `;
+      }
+      return `
+        <div class="audit-group">
+          <strong>${escapeHtml(title)}</strong>
+          <ul class="audit-list">${items.map((item) => `<li>${formatter(item)}</li>`).join("")}</ul>
+        </div>
+      `;
+    }
+
+    function renderConversionReport({
+      profile,
+      validation,
+      validationTool,
+      sections,
+      assets,
+      layout,
+      warnings,
+      highRiskPages,
+      highRiskSections,
+      warningList = [],
+      highRiskPageList = [],
+      highRiskSectionList = [],
+      headingRepair = null,
+    }) {
+      const safeValidation = validation || "unavailable";
+      const type = safeValidation === "passed" ? "success" : safeValidation === "failed" ? "error" : "info";
+      const validationLabel = safeValidation === "passed"
+        ? "EPUBCheck przeszedl bez bledow"
+        : safeValidation === "failed"
+          ? "EPUBCheck wykryl problemy wymagajace poprawy"
+          : "EPUBCheck nie byl dostepny";
+      const badges = [
+        profile ? `profil: ${profile}` : null,
+        sections ? `sekcje ${sections}` : null,
+        assets ? `assety ${assets}` : null,
+        layout ? `layout: ${layout}` : null,
+        validationTool ? `narzedzie: ${validationTool}` : null,
+        Number.isFinite(warnings) ? `ostrzezenia ${warnings}` : null,
+        Number.isFinite(highRiskSections) ? `sekcje wysokiego ryzyka ${highRiskSections}` : null,
+        Number.isFinite(highRiskPages) ? `strony wysokiego ryzyka ${highRiskPages}` : null,
+        headingRepair && headingRepair.status === "applied" ? `TOC repair ${headingRepair.tocBefore || 0}→${headingRepair.tocAfter || 0}` : null,
+        headingRepair && headingRepair.status === "applied" && Number.isFinite(headingRepair.removed) ? `fake headingi ${headingRepair.removed}` : null,
+        headingRepair && headingRepair.status === "applied" && Number.isFinite(headingRepair.review) ? `review ${headingRepair.review}` : null,
+      ].filter(Boolean).map((item) => `<span class="badge">${item}</span>`).join("");
+
+      const auditHint = Number.isFinite(highRiskSections) || Number.isFinite(highRiskPages)
+        ? `<p style="margin-top:8px;font-size:.8rem;color:var(--muted);">Premium audit: ${highRiskSections || 0} sekcji i ${highRiskPages || 0} stron oznaczonych do kontroli.</p>`
+        : "";
+      const headingRepairHint = headingRepair && headingRepair.status === "applied"
+        ? `<p style="margin-top:8px;font-size:.8rem;color:var(--muted);">Heading recovery: release ${escapeHtml(headingRepair.release || "unavailable")}, EPUBCheck ${escapeHtml(headingRepair.epubcheck || "unavailable")}.</p>`
+        : headingRepair && headingRepair.status === "failed"
+          ? `<p style="margin-top:8px;font-size:.8rem;color:#b25c37;">Heading recovery nie zostal zastosowany. EPUB bazowy zostal zachowany. Powod: ${escapeHtml(headingRepair.error || "nieznany blad")}.</p>`
+        : headingRepair && headingRepair.status === "skipped"
+          ? `<p style="margin-top:8px;font-size:.8rem;color:var(--muted);">Heading recovery nie byl uruchomiony dla tej konwersji.</p>`
+          : "";
+      const auditPanel = `
+        <div class="audit-panel">
+          ${renderAuditList("Ostrzezenia", warningList, (item) => escapeHtml(item))}
+          ${renderAuditList("Strony do kontroli", highRiskPageList, (item) => {
+            const page = item.page ? `strona ${escapeHtml(item.page)}` : "strona ?";
+            const title = item.title ? ` - ${escapeHtml(item.title)}` : "";
+            const kind = item.kind ? ` (${escapeHtml(item.kind)})` : "";
+            const flags = Array.isArray(item.flags) && item.flags.length ? ` [${escapeHtml(item.flags.join(", "))}]` : "";
+            return `${page}${kind}${title}${flags}`;
+          })}
+          ${renderAuditList("Sekcje do kontroli", highRiskSectionList, (item) => {
+            const title = item.title ? escapeHtml(item.title) : "Sekcja bez tytulu";
+            const pages = Array.isArray(item.pages) && item.pages.length === 2
+              ? ` (str. ${escapeHtml(item.pages[0])}-${escapeHtml(item.pages[1])})`
+              : "";
+            const flags = Array.isArray(item.flags) && item.flags.length ? ` [${escapeHtml(item.flags.join(", "))}]` : "";
+            return `${title}${pages}${flags}`;
+          })}
+        </div>
+      `;
+
+      conversionBox.className = `analysis-box ${type}`;
+      conversionBox.innerHTML = `
+        <strong>Ostatnia konwersja</strong>
+        <p>${validationLabel}.</p>
+        <div class="analysis-meta">${badges}</div>
+        ${auditHint}
+        ${headingRepairHint}
+        ${auditPanel}
+      `;
+    }
+
+    function renderAnalysis(data) {
+      const sourceType = data.source_type || "pdf";
+      const analysis = data.analysis || {};
+      const publication = data.publication_analysis || {};
+      const recommendations = data.recommendations || {};
+      const tools = publication.external_tools || {};
+      const commandTools = tools.commands || {};
+      const javaTool = tools.java || {};
+      const tesseractTool = tools.tesseract || {};
+      const epubcheck = tools.epubcheck || {};
+      const pdfboxTool = tools.pdfbox || {};
+      const moduleTools = tools.python_modules || {};
+      const tesseractLanguages = (tesseractTool.languages || []).join(", ");
+
+      if (sourceType === "docx") {
+        const badges = [
+          `akapity ${analysis.paragraph_count ?? 0}`,
+          `H1 ${analysis.heading1_count ?? 0}`,
+          `H2 ${analysis.heading2_count ?? 0}`,
+          `H3 ${analysis.heading3_count ?? 0}`,
+          `listy ${analysis.list_count ?? 0}`,
+          `tabele ${analysis.table_count ?? 0}`,
+          `obrazy ${analysis.image_count ?? 0}`,
+          `linki ${analysis.hyperlink_count ?? 0}`,
+        ];
+        if (publication.profile) badges.push(`profil: ${publication.profile}`);
+        if (publication.confidence) badges.push(`${Math.round(publication.confidence * 100)}% conf`);
+        if (publication.has_toc) badges.push("toc");
+        const badgeHtml = badges.map((b) => `<span class="badge">${b}</span>`).join("");
+        const toolBadges = [
+          commandTools.java ? "java ✓" : "java ✕",
+          epubcheck.jar_found && commandTools.java ? "epubcheck ✓" : "epubcheck ✕",
+          moduleTools.pdfplumber ? "pdfplumber ✓" : "pdfplumber ✕",
+        ].map((b) => `<span class="badge">${b}</span>`).join("");
+
+        analysisBox.innerHTML = `
+          <strong>Profil: ${publication.profile || "docx_reflow"}</strong>
+          <p>${publication.profile_reason || "DOCX zostanie przetworzony do reflowable EPUB na podstawie struktury stylow i blokow."}</p>
+          <div class="analysis-meta">${badgeHtml}</div>
+          <p style="margin-top:6px;font-size:.78rem;color:var(--muted);">Narzedzia:</p>
+          <div class="analysis-meta">${toolBadges}</div>
+        `;
+
+        profileSelect.value = "book";
+        syncProfilePreset();
+        forceOcrCheckbox.checked = false;
+        renderConversionReport({
+          profile: publication.profile || "docx_reflow",
+          validation: "unavailable",
+          validationTool: epubcheck.jar_found && commandTools.java ? "epubcheck" : "niedostepny",
+          sections: analysis.estimated_sections || publication.estimated_sections || null,
+          assets: analysis.image_count ?? null,
+          layout: "reflowable",
+          warnings: 0,
+          highRiskPages: null,
+          highRiskSections: null,
+        });
+        return;
+      }
+
+      const badges = [
+        `strony ${analysis.page_count ?? "-"}`,
+        `tekst ${analysis.text_pages ?? 0}`,
+        `obrazy ${analysis.image_pages ?? 0}`,
+        `skany ${analysis.scanned_pages ?? 0}`,
+        analysis.has_text_layer ? "warstwa: tak" : "warstwa: nie",
+        analysis.has_images ? "obrazy: tak" : "obrazy: nie",
+      ];
+      if (analysis.layout_heavy) badges.push("layout heavy");
+      if (analysis.text_heavy) badges.push("text heavy");
+      if (publication.profile) badges.push(`profil: ${publication.profile}`);
+      if (publication.confidence) badges.push(`${Math.round(publication.confidence * 100)}% conf`);
+      if (publication.has_toc) badges.push("toc");
+      if (publication.has_tables) badges.push("tabele");
+      if (publication.has_diagrams) badges.push("diagramy");
+      if (publication.has_meaningful_images) badges.push("grafiki");
+      if (publication.estimated_columns) badges.push(`${publication.estimated_columns} kol`);
+      const badgeHtml = badges.map((b) => `<span class="badge">${b}</span>`).join("");
+      const extraToolBadges = [
+        javaTool.found ? "java ✓" : "java ✕",
+        pdfboxTool.jar_found ? "pdfbox ✓" : "pdfbox ✕",
+      ].map((b) => `<span class="badge">${b}</span>`).join("");
+      const toolBadges = [
+        moduleTools.pdfplumber ? "pdfplumber ✓" : "pdfplumber ✕",
+        commandTools.tesseract ? "tesseract ✓" : "tesseract ✕",
+        commandTools.ocrmypdf ? "ocrmypdf ✓" : "ocrmypdf ✕",
+        commandTools.surya ? "surya ✓" : "surya ✕",
+        epubcheck.jar_found && commandTools.java ? "epubcheck ✓" : "epubcheck ✕",
+      ].map((b) => `<span class="badge">${b}</span>`).join("");
+
+      analysisBox.innerHTML = `
+        <strong>Profil: ${publication.profile || "unknown"}</strong>
+        <p>${publication.profile_reason || ""} ${publication.fallback_recommendation ? `Fallback: ${publication.fallback_recommendation}.` : ""} ${analysis.is_scanned ? "Wykryto cechy skanu." : "Born-digital lub mieszany."}</p>
+        <div class="analysis-meta">${badgeHtml}</div>
+        <p style="margin-top:6px;font-size:.78rem;color:var(--muted);">Narzedzia:</p>
+        <div class="analysis-meta">${toolBadges}${extraToolBadges}</div>
+        <p style="margin-top:6px;font-size:.78rem;color:var(--muted);">
+          Java: ${javaTool.path || "brak"}<br>
+          Tesseract: ${tesseractTool.path || "brak"}${tesseractLanguages ? `<br>Jezyki OCR: ${tesseractLanguages}` : ""}<br>
+          PDFBox: ${pdfboxTool.jar_path || "brak"}<br>
+          EPUBCheck: ${epubcheck.jar_path || "brak"}
+        </p>
+      `;
+
+      profileSelect.value = data.recommended_profile
+        ? ({ "Book": "book", "Magazine": "magazine", "Technical/Study": "technical-study", "Preserve Layout": "preserve-layout" }[data.recommended_profile] || "auto-premium")
+        : "auto-premium";
+      if (publication.ui_profile && publication.ui_profile !== "book") {
+        profileSelect.value = publication.ui_profile;
+      }
+      syncProfilePreset();
+      if (recommendations.ocr_needed && recommendations.ocr_needed.required) {
+        forceOcrCheckbox.checked = true;
+      }
+      renderConversionReport({
+        profile: publication.profile || null,
+        validation: "unavailable",
+        validationTool: epubcheck.jar_found && commandTools.java ? "epubcheck" : "niedostepny",
+        sections: publication.estimated_sections || null,
+        assets: null,
+        layout: publication.profile === "fixed_layout_fallback" ? "fixed" : "reflowable",
+        warnings: 0,
+        highRiskPages: null,
+        highRiskSections: null,
+      });
+    }
+
+    async function renderCurrentPage() {
+      if (!pdfJsDoc) return;
+      currentPage = await pdfJsDoc.getPage(currentPageNumber);
+      const viewportAtOne = currentPage.getViewport({ scale: 1 });
+      pageWidthPt = viewportAtOne.width;
+      pageHeightPt = viewportAtOne.height;
+
+      const autoScales = getAutoZoomScales(viewportAtOne);
+      if (zoomMode === "fit-width") renderScale = autoScales.fitWidth;
+      else if (zoomMode === "manual") renderScale = Math.max(0.25, Math.min(3, manualZoom));
+      else renderScale = autoScales.fitPage;
+
+      const viewport = currentPage.getViewport({ scale: renderScale });
+      const deviceScale = window.devicePixelRatio || 1;
+
+      if (renderTask) renderTask.cancel();
+
+      pdfCanvas.width = Math.floor(viewport.width * deviceScale);
+      pdfCanvas.height = Math.floor(viewport.height * deviceScale);
+      pdfCanvas.style.width = `${viewport.width}px`;
+      pdfCanvas.style.height = `${viewport.height}px`;
+      canvasStage.style.width = `${viewport.width}px`;
+      canvasStage.style.height = `${viewport.height}px`;
+      cropOverlay.style.width = `${viewport.width}px`;
+      cropOverlay.style.height = `${viewport.height}px`;
+
+      canvasContext.setTransform(deviceScale, 0, 0, deviceScale, 0, 0);
+      renderTask = currentPage.render({ canvasContext, viewport });
+
+      try {
+        await renderTask.promise;
+      } catch (error) {
+        if (!error || error.name !== "RenderingCancelledException") throw error;
+      }
+
+      emptyState.style.display = "none";
+      canvasStage.classList.add("visible");
+      pageSizeValue.textContent = `${pageWidthPt.toFixed(1)} x ${pageHeightPt.toFixed(1)} pt`;
+      renderScaleValue.textContent = `${Math.round(renderScale * 100)}%`;
+      pageNumberInput.value = `${currentPageNumber}`;
+      updateZoomStatus();
+      updatePageSummary();
+      syncCurrentPageCrop();
+      updateControlsState();
+    }
+
+    async function loadPdf(file) {
+      setBusy(true);
+      try {
+        setStatus("Wczytuje PDF i renderuje wybrana strone...", "info");
+        selectedFile = file;
+        selectedSourceType = "pdf";
+        zoomMode = "fit-page";
+        manualZoom = 1;
+        cropRectsByPage = new Map();
+        cropRectNormalized = null;
+        clearSelectionVisual();
+        resetAnalysisBox();
+        emptyState.innerHTML = `
+          <strong>Brak aktywnego podgladu</strong>
+          <p>Po wgraniu PDF aktualna strona zostanie wyrenderowana. Nad nia pojawi sie warstwa do rysowania crop boxa.</p>
+        `;
+
+        pdfBytes = new Uint8Array(await file.arrayBuffer());
+        const previewBytes = pdfBytes.slice();
+        pdfJsDoc = await pdfjsLib.getDocument({ data: previewBytes }).promise;
+        currentPageNumber = 1;
+        fileInfo.classList.add("visible");
+        fileMark.textContent = "PDF";
+        fileName.textContent = file.name;
+        fileSize.textContent = formatBytes(file.size);
+
+        await renderCurrentPage();
+        updateExportModeLabel();
+        setStatus("PDF gotowy. Mozesz przechodzic miedzy stronami i rysowac crop box.", "success");
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function loadDocx(file) {
+      setBusy(true);
+      try {
+        setStatus("Wczytuje DOCX i przygotowuje tryb analizy strukturalnej...", "info");
+        selectedFile = file;
+        selectedSourceType = "docx";
+        zoomMode = "fit-page";
+        manualZoom = 1;
+        resetAnalysisBox();
+        fileInfo.classList.add("visible");
+        fileMark.textContent = "DOCX";
+        fileName.textContent = file.name;
+        fileSize.textContent = formatBytes(file.size);
+        showDocxPreviewState();
+        setStatus("DOCX gotowy. Preview stron jest wylaczony, ale analiza i konwersja EPUB sa dostepne.", "success");
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    function rerenderForZoom(statusMessage) {
+      if (!pdfJsDoc) return Promise.resolve();
+      setBusy(true);
+      return renderCurrentPage()
+        .then(() => { if (statusMessage) setStatus(statusMessage, "info"); })
+        .finally(() => setBusy(false));
+    }
+
+    function setZoomMode(nextMode) {
+      if (!pdfJsDoc) return;
+      zoomMode = nextMode;
+      rerenderForZoom(null).catch((error) => {
+        console.error(error);
+        setStatus(`Nie udalo sie zmienic zoomu: ${error.message}`, "error");
+      });
+    }
+
+    function stepZoom(direction) {
+      if (!pdfJsDoc) return;
+      const baseZoom = zoomMode === "manual" ? manualZoom : renderScale;
+      const multiplier = direction > 0 ? 1.18 : 1 / 1.18;
+      manualZoom = Math.max(0.25, Math.min(3, baseZoom * multiplier));
+      zoomMode = "manual";
+      rerenderForZoom(`Zoom: ${Math.round(manualZoom * 100)}%.`).catch((error) => {
+        console.error(error);
+        setStatus(`Nie udalo sie zmienic zoomu: ${error.message}`, "error");
+      });
+    }
+
+    function handleFiles(fileList) {
+      const [file] = fileList;
+      if (!file) return;
+      const sourceType = detectSourceType(file);
+      if (!sourceType) {
+        setStatus("Obslugiwane sa tylko pliki PDF i DOCX.", "error");
+        return;
+      }
+      const loader = sourceType === "pdf" ? loadPdf(file) : loadDocx(file);
+      loader.catch((error) => {
+        console.error(error);
+        setStatus(`Nie udalo sie wczytac dokumentu: ${error.message}`, "error");
+      });
+    }
+
+    async function goToPage(pageNumber) {
+      if (!pdfJsDoc) return;
+      const safePageNumber = Math.min(pdfJsDoc.numPages, Math.max(1, pageNumber));
+      if (safePageNumber === currentPageNumber && currentPage) {
+        pageNumberInput.value = `${currentPageNumber}`;
+        return;
+      }
+      setBusy(true);
+      try {
+        currentPageNumber = safePageNumber;
+        await renderCurrentPage();
+        setStatus(`Strona ${currentPageNumber}.`, "info");
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    function triggerPageJump() {
+      if (!pdfJsDoc) return;
+      const value = Number.parseInt(pageNumberInput.value, 10);
+      if (!Number.isFinite(value)) { pageNumberInput.value = `${currentPageNumber}`; return; }
+      goToPage(value).catch((error) => {
+        console.error(error);
+        setStatus(`Nie udalo sie otworzyc strony: ${error.message}`, "error");
+      });
+    }
+
+    function normalizeDragRect(start, end, width, height) {
+      const left = Math.max(0, Math.min(start.x, end.x));
+      const top = Math.max(0, Math.min(start.y, end.y));
+      const right = Math.min(width, Math.max(start.x, end.x));
+      const bottom = Math.min(height, Math.max(start.y, end.y));
+      return { left, top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) };
+    }
+
+    function getPointerPosition(event) {
+      const rect = cropOverlay.getBoundingClientRect();
+      const clientX = event.clientX ?? (event.touches && event.touches[0] && event.touches[0].clientX);
+      const clientY = event.clientY ?? (event.touches && event.touches[0] && event.touches[0].clientY);
+      return {
+        x: Math.max(0, Math.min(rect.width, clientX - rect.left)),
+        y: Math.max(0, Math.min(rect.height, clientY - rect.top)),
+      };
+    }
+
+    function startDrawing(event) {
+      if (!currentPage || busyCounter > 0) return;
+      event.preventDefault();
+      isDrawing = true;
+      dragStart = getPointerPosition(event);
+      clearSelectionVisual();
+      cropOverlay.setPointerCapture?.(event.pointerId);
+    }
+
+    function moveDrawing(event) {
+      if (!isDrawing || !dragStart) return;
+      event.preventDefault();
+      const dragCurrent = getPointerPosition(event);
+      const rect = normalizeDragRect(dragStart, dragCurrent, cropOverlay.clientWidth, cropOverlay.clientHeight);
+      cropSelection.style.left = `${rect.left}px`;
+      cropSelection.style.top = `${rect.top}px`;
+      cropSelection.style.width = `${rect.width}px`;
+      cropSelection.style.height = `${rect.height}px`;
+      cropSelection.classList.add("visible");
+    }
+
+    function finishDrawing(event) {
+      if (!isDrawing || !dragStart) return;
+      event.preventDefault();
+      const end = getPointerPosition(event);
+      const rect = normalizeDragRect(dragStart, end, cropOverlay.clientWidth, cropOverlay.clientHeight);
+      isDrawing = false;
+      dragStart = null;
+
+      if (rect.width < 8 || rect.height < 8) {
+        cropRectNormalized = null;
+        cropRectsByPage.delete(currentPageNumber);
+        clearSelectionVisual();
+        updateCropReadout();
+        updateControlsState();
+        updatePageSummary();
+        setStatus("Zaznaczenie zbyt male. Sprobuj narysowac wiekszy crop box.", "info");
+        return;
+      }
+
+      cropRectNormalized = {
+        left: rect.left / cropOverlay.clientWidth,
+        top: rect.top / cropOverlay.clientHeight,
+        width: rect.width / cropOverlay.clientWidth,
+        height: rect.height / cropOverlay.clientHeight,
+      };
+      cropRectsByPage.set(currentPageNumber, { ...cropRectNormalized });
+      updateSelectionFromNormalized();
+      updatePageSummary();
+      setStatus(`Crop box zapisany dla strony ${currentPageNumber}.`, "success");
+    }
+
+    async function cropAndExport() {
+      if (!pdfBytes || !cropRectNormalized) {
+        setStatus("Najpierw wgraj PDF i zaznacz crop box.", "error");
+        return;
+      }
+      const { PDFDocument } = PDFLib;
+      setBusy(true);
+      try {
+        setStatus("Przetwarzam PDF i osadzam crop na stronach A4...", "info");
+        const sourcePdf = await PDFDocument.load(pdfBytes);
+        const outputPdf = await PDFDocument.create();
+        const sourcePages = sourcePdf.getPages();
+        const currentCrop = cropRectsByPage.get(currentPageNumber);
+        if (!currentCrop) throw new Error(`Brak cropa dla strony ${currentPageNumber}.`);
+
+        const pageIndexes = applyAllPages.checked ? sourcePages.map((_, i) => i) : [currentPageNumber - 1];
+        for (const pageIndex of pageIndexes) {
+          const sourcePage = sourcePages[pageIndex];
+          const pageSize = sourcePage.getSize();
+          const cropBox = normalizedToPdfBox(currentCrop, pageSize.width, pageSize.height);
+          const cropWidth = cropBox.right - cropBox.left;
+          const cropHeight = cropBox.top - cropBox.bottom;
+          if (cropWidth <= 0 || cropHeight <= 0) throw new Error(`Nieprawidlowy crop box dla strony ${pageIndex + 1}.`);
+          const embeddedPage = await outputPdf.embedPage(sourcePage, cropBox);
+          const targetPage = outputPdf.addPage([A4_WIDTH, A4_HEIGHT]);
+          const scale = Math.min(A4_WIDTH / cropWidth, A4_HEIGHT / cropHeight);
+          const fittedWidth = cropWidth * scale;
+          const fittedHeight = cropHeight * scale;
+          targetPage.drawPage(embeddedPage, { x: (A4_WIDTH - fittedWidth) / 2, y: (A4_HEIGHT - fittedHeight) / 2, xScale: scale, yScale: scale });
+        }
+
+        const outputBytes = await outputPdf.save();
+        const blob = new Blob([outputBytes], { type: "application/pdf" });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        const suffix = applyAllPages.checked
+          ? `-cropped-a4-all-from-page-${currentPageNumber}.pdf`
+          : `-cropped-a4-page-${currentPageNumber}.pdf`;
+        anchor.href = url;
+        anchor.download = `${fileName.textContent.replace(/\.pdf$/i, "")}${suffix}`;
+        anchor.click();
+        URL.revokeObjectURL(url);
+        setStatus("Gotowe. Nowy PDF A4 zostal wygenerowany i pobrany.", "success");
+      } catch (error) {
+        console.error(error);
+        setStatus(`Eksport nie powiodl sie: ${error.message}`, "error");
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function analyzePdfForEpub() {
+      if (!selectedFile) { setStatus("Najpierw wgraj dokument.", "error"); return; }
+      setBusy(true);
+      try {
+        const sourceLabel = selectedSourceType === "docx" ? "DOCX" : "PDF";
+        setStatus(`Analizuje ${sourceLabel} pod katem EPUB...`, "info");
+        const formData = new FormData();
+        formData.append("file", selectedFile, selectedFile.name);
+        const response = await fetch("/analyze", { method: "POST", body: formData });
+        const data = await response.json();
+        if (!response.ok || !data.success) throw new Error(data.error || "Analiza nie powiodla sie.");
+        renderAnalysis(data);
+        setStatus(`Analiza zakonczona. Profil: ${(data.publication_analysis && data.publication_analysis.profile) || data.analysis.recommended_strategy}.`, "success");
+      } catch (error) {
+        console.error(error);
+        setStatus(`Analiza nie powiodla sie: ${error.message}`, "error");
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    function downloadBlob(blob, filename) {
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function delay(ms) {
+      return new Promise((resolve) => window.setTimeout(resolve, ms));
+    }
+
+    function downloadFromUrl(url) {
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.style.display = "none";
+      document.body.appendChild(anchor);
+      anchor.click();
+      window.setTimeout(() => anchor.remove(), 0);
+    }
+
+    function applyConversionOutcome(conversion, selectedName) {
+      const sourceType = conversion.source_type || selectedSourceType || "pdf";
+      const strategy = conversion.strategy || null;
+      const profile = conversion.profile || null;
+      const validation = conversion.validation || "unavailable";
+      const validationTool = conversion.validation_tool || "unknown";
+      const headingRepair = conversion.heading_repair || { status: "skipped" };
+      const tocBefore = Number.isFinite(headingRepair.toc_before) ? headingRepair.toc_before : null;
+      const tocAfter = Number.isFinite(headingRepair.toc_after) ? headingRepair.toc_after : null;
+      renderConversionReport({
+        profile,
+        validation,
+        validationTool,
+        sections: Number.isFinite(conversion.sections) ? conversion.sections : null,
+        assets: Number.isFinite(conversion.assets) ? conversion.assets : null,
+        layout: conversion.layout || null,
+        warnings: Number.isFinite(conversion.warnings) ? conversion.warnings : 0,
+        highRiskPages: Number.isFinite(conversion.high_risk_pages) ? conversion.high_risk_pages : 0,
+        highRiskSections: Number.isFinite(conversion.high_risk_sections) ? conversion.high_risk_sections : 0,
+        warningList: Array.isArray(conversion.warning_list) ? conversion.warning_list : [],
+        highRiskPageList: Array.isArray(conversion.high_risk_page_list) ? conversion.high_risk_page_list : [],
+        highRiskSectionList: Array.isArray(conversion.high_risk_section_list) ? conversion.high_risk_section_list : [],
+        headingRepair: {
+          status: headingRepair.status || "skipped",
+          release: headingRepair.release || "unavailable",
+          tocBefore,
+          tocAfter,
+          removed: Number.isFinite(headingRepair.removed) ? headingRepair.removed : null,
+          review: Number.isFinite(headingRepair.review) ? headingRepair.review : null,
+          epubcheck: headingRepair.epubcheck || "unavailable",
+          error: headingRepair.error || "",
+        },
+      });
+      const headingRepairStatusText = headingRepair.status === "applied"
+        ? ` TOC repair: ${tocBefore ?? 0}→${tocAfter ?? 0}.`
+        : headingRepair.status === "failed"
+          ? " Heading repair nie powiodl sie, ale zachowano bazowy EPUB."
+          : "";
+      setStatus(
+        `EPUB wygenerowany i pobrany z ${sourceType.toUpperCase()}.${profile ? ` Profil: ${profile}.` : ""}${strategy ? ` Strategia: ${strategy}.` : ""}${validation ? ` Walidacja: ${validation}.` : ""}${headingRepairStatusText}`,
+        "success",
+      );
+    }
+
+    async function startConversionJob(formData) {
+      const response = await fetch("/convert/start", { method: "POST", body: formData });
+      const contentType = response.headers.get("content-type") || "";
+      const data = contentType.includes("application/json") ? await response.json() : {};
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || `Nie udalo sie uruchomic konwersji (HTTP ${response.status}).`);
+      }
+      return data;
+    }
+
+    async function pollConversionJob(jobId, sourceLabel) {
+      const startedAt = Date.now();
+      while (true) {
+        await delay(1500);
+        const response = await fetch(`/convert/status/${encodeURIComponent(jobId)}`, {
+          method: "GET",
+          cache: "no-store",
+        });
+        const data = await response.json();
+        if (!response.ok || !data.success) {
+          throw new Error(data.error || "Nie udalo sie sprawdzic statusu konwersji.");
+        }
+        if (data.message) {
+          setStatus(data.message, "info");
+        } else {
+          const elapsedSeconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+          setStatus(`Konwertuje ${sourceLabel} do EPUB... (${elapsedSeconds}s)`, "info");
+        }
+        if (data.status === "ready") return data;
+        if (data.status === "failed") {
+          throw new Error(data.error || "Konwersja nie powiodla sie.");
+        }
+      }
+    }
+
+    async function convertPdfToEpub() {
+      if (!selectedFile) { setStatus("Najpierw wgraj dokument.", "error"); return; }
+      setBusy(true);
+      try {
+        const isPdf = selectedSourceType === "pdf";
+        const longRunHint = isPdf && pdfJsDoc && pdfJsDoc.numPages > 250 ? " Duzy dokument - moze potrwac kilka minut." : "";
+        setStatus(`Konwertuje ${isPdf ? "PDF" : "DOCX"} do EPUB...${longRunHint}`, "info");
+        const formData = new FormData();
+        formData.append("file", selectedFile, selectedFile.name);
+        formData.append("profile", profileSelect.value);
+        formData.append("ocr", forceOcrCheckbox.checked ? "true" : "false");
+        formData.append("language", languageSelect.value);
+        formData.append("heading_repair", headingRepairCheckbox.checked ? "true" : "false");
+        const startPayload = await startConversionJob(formData);
+        setStatus(startPayload.message || `Konwersja ${isPdf ? "PDF" : "DOCX"} ruszyla. Czekam na gotowy EPUB...`, "info");
+        const jobPayload = await pollConversionJob(startPayload.job_id, isPdf ? "PDF" : "DOCX");
+        if (!jobPayload.download_url || !jobPayload.conversion) {
+          throw new Error("Serwer zakonczyl konwersje, ale nie zwrocil danych do pobrania EPUB.");
+        }
+        downloadFromUrl(jobPayload.download_url);
+        applyConversionOutcome(jobPayload.conversion, selectedFile.name);
+      } catch (error) {
+        console.error(error);
+        const message = error && error.message ? error.message : "Nieznany blad sieci lub backendu.";
+        setStatus(`Konwersja nie powiodla sie: ${message}`, "error");
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    // â”€â”€ Event listeners â”€â”€
+    dropZone.addEventListener("dragover", (e) => { e.preventDefault(); dropZone.classList.add("dragover"); });
+    dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragover"));
+    dropZone.addEventListener("drop", (e) => { e.preventDefault(); dropZone.classList.remove("dragover"); handleFiles(e.dataTransfer.files); });
+    fileInput.addEventListener("change", (e) => { handleFiles(e.target.files); e.target.value = ""; });
+    prevPageButton.addEventListener("click", () => goToPage(currentPageNumber - 1).catch((e) => setStatus(`Blad: ${e.message}`, "error")));
+    nextPageButton.addEventListener("click", () => goToPage(currentPageNumber + 1).catch((e) => setStatus(`Blad: ${e.message}`, "error")));
+    goToPageButton.addEventListener("click", triggerPageJump);
+    zoomOutButton.addEventListener("click", () => stepZoom(-1));
+    zoomInButton.addEventListener("click", () => stepZoom(1));
+    fitPageButton.addEventListener("click", () => setZoomMode("fit-page"));
+    fitWidthButton.addEventListener("click", () => setZoomMode("fit-width"));
+    zoomResetButton.addEventListener("click", () => { manualZoom = 1; setZoomMode("manual"); });
+    pageNumberInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); triggerPageJump(); } });
+    cropOverlay.addEventListener("pointerdown", startDrawing);
+    cropOverlay.addEventListener("pointermove", moveDrawing);
+    cropOverlay.addEventListener("pointerup", finishDrawing);
+    cropOverlay.addEventListener("pointercancel", finishDrawing);
+    cropOverlay.addEventListener("pointerleave", (e) => { if (isDrawing && e.buttons === 0) finishDrawing(e); });
+    resetCropButton.addEventListener("click", () => {
+      cropRectNormalized = null;
+      cropRectsByPage.delete(currentPageNumber);
+      clearSelectionVisual();
+      updateCropReadout();
+      updateControlsState();
+      updatePageSummary();
+      setStatus(`Crop strony ${currentPageNumber} wyczyszczony.`, "info");
+    });
+    applyAllPages.addEventListener("change", updateExportModeLabel);
+    profileSelect.addEventListener("change", syncProfilePreset);
+    presetButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        profileSelect.value = button.dataset.profile;
+        syncProfilePreset();
+      });
+    });
+    analyzeButton.addEventListener("click", analyzePdfForEpub);
+    convertEpubButton.addEventListener("click", convertPdfToEpub);
+    cropButton.addEventListener("click", cropAndExport);
+    window.addEventListener("resize", () => {
+      if (!currentPage) return;
+      clearTimeout(window.__renderResizeTimer);
+      window.__renderResizeTimer = setTimeout(() => {
+        renderCurrentPage().catch((e) => setStatus(`Nie udalo sie odswiezyc: ${e.message}`, "error"));
+      }, 120);
+    });
+
+    syncProfilePreset();
+    updateControlsState();
+    updateExportModeLabel();
+    updatePageSummary();
+    resetAnalysisBox();
+  </script>
+</body>
+</html>
+

@@ -1,0 +1,117 @@
+import io
+import unittest
+import zipfile
+
+from premium_corpus_smoke import (
+    _build_case_blockers,
+    _build_case_warnings,
+    _derive_case_grade,
+    inspect_epub,
+)
+
+
+class PremiumCorpusSmokeTests(unittest.TestCase):
+    def _build_epub_bytes(self, files: dict[str, str]) -> bytes:
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w") as archive:
+            for archive_path, content in files.items():
+                compress_type = zipfile.ZIP_STORED if archive_path == "mimetype" else zipfile.ZIP_DEFLATED
+                archive.writestr(archive_path, content.encode("utf-8"), compress_type=compress_type)
+        return output.getvalue()
+
+    def test_inspect_epub_extracts_metadata_nav_and_junk(self):
+        epub_bytes = self._build_epub_bytes(
+            {
+                "mimetype": "application/epub+zip",
+                "META-INF/container.xml": """<?xml version="1.0" encoding="utf-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="EPUB/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>
+""",
+                "EPUB/content.opf": """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Executive summary</dc:title>
+    <dc:creator>Unknown</dc:creator>
+    <dc:language>pl</dc:language>
+  </metadata>
+</package>
+""",
+                "EPUB/nav.xhtml": """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+  <body>
+    <nav epub:type="toc">
+      <ol>
+        <li><a href="chapter_001.xhtml#intro">Intro</a>
+          <ol><li><a href="chapter_001.xhtml#details">Details</a></li></ol>
+        </li>
+      </ol>
+    </nav>
+  </body>
+</html>
+""",
+                "EPUB/chapter_001.xhtml": """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <body>
+    <h1 id="intro">Intro</h1>
+    <p>Link requires manual review. Broken source https://the and more text.</p>
+    <a href="#missing-anchor">broken</a>
+  </body>
+</html>
+""",
+            }
+        )
+
+        stats = inspect_epub(epub_bytes)
+
+        self.assertEqual(stats["package_title"], "Executive summary")
+        self.assertEqual(stats["package_creator"], "Unknown")
+        self.assertTrue(stats["metadata_placeholder_title"])
+        self.assertTrue(stats["metadata_placeholder_creator"])
+        self.assertEqual(stats["nav_entries"], 2)
+        self.assertEqual(stats["nav_depth"], 2)
+        self.assertEqual(stats["visible_junk_counts"]["manual_review_label"], 1)
+        self.assertEqual(stats["visible_junk_counts"]["half_url_https_the"], 1)
+        self.assertEqual(stats["broken_internal_anchors"], 1)
+
+    def test_case_gate_marks_blockers_and_review(self):
+        blockers = _build_case_blockers(
+            quality={"validation_status": "failed"},
+            inspect={
+                "visible_junk_counts": {"manual_review_label": 1},
+                "broken_href_counts": {"half_url_https_the": 1},
+                "broken_internal_anchors": 1,
+                "metadata_placeholder_title": True,
+                "package_title": "Executive summary",
+                "metadata_placeholder_creator": True,
+                "package_creator": "Unknown",
+            },
+            heading_summary={"epubcheck_status": "failed"},
+        )
+        warnings = _build_case_warnings(
+            summary={"section_count": 10},
+            quality={"text_cleanup": {"review_needed_count": 250, "blocked_count": 700}},
+            inspect={"nav_entries": 2, "package_language": "de"},
+            heading_summary={"release_status": "pass_with_review", "manual_review_count": 5},
+        )
+
+        blocker_codes = {item["code"] for item in blockers}
+        warning_codes = {item["code"] for item in warnings}
+
+        self.assertIn("epubcheck_failed", blocker_codes)
+        self.assertIn("visible_reference_or_url_junk", blocker_codes)
+        self.assertIn("broken_href_patterns", blocker_codes)
+        self.assertIn("placeholder_title", blocker_codes)
+        self.assertIn("placeholder_creator", blocker_codes)
+        self.assertIn("heading_repair_epubcheck_failed", blocker_codes)
+
+        self.assertIn("high_review_noise", warning_codes)
+        self.assertIn("high_blocked_noise", warning_codes)
+        self.assertIn("shallow_toc", warning_codes)
+        self.assertIn("heading_manual_review", warning_codes)
+        self.assertIn("unexpected_language", warning_codes)
+        self.assertEqual(_derive_case_grade(blockers, warnings), "fail")
+
+
+if __name__ == "__main__":
+    unittest.main()

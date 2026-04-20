@@ -1,0 +1,361 @@
+{
+  "magazine": {
+    "summary": {
+      "title": "Newsweek",
+      "author": "Unknown",
+      "profile": "magazine_reflow",
+      "layout_mode": "reflowable",
+      "section_count": 38,
+      "asset_count": 41
+    },
+    "quality": {
+      "section_count": 38,
+      "figure_count": 41,
+      "diagram_count": 0,
+      "table_count": 0,
+      "page_marker_count": 0,
+      "detected_figures": 41,
+      "detected_diagrams": 0,
+      "detected_tables": 0,
+      "fallback_pages": [],
+      "fallback_sections": [],
+      "fallback_regions": [],
+      "high_risk_sections": [],
+      "high_risk_pages": [
+        {
+          "page_index": 7,
+          "page_label": null,
+          "title": null,
+          "title_quality": "missing",
+          "content_type": "interview",
+          "risk_flags": [
+            "title-missing",
+            "article-without-title"
+          ],
+          "risk_score": 4
+        },
+        {
+          "page_index": 14,
+          "page_label": null,
+          "title": null,
+          "title_quality": "missing",
+          "content_type": "interview",
+          "risk_flags": [
+            "title-missing",
+            "article-without-title"
+          ],
+          "risk_score": 4
+        },
+        {
+          "page_index": 38,
+          "page_label": null,
+          "title": null,
+          "title_quality": "missing",
+          "content_type": "interview",
+          "risk_flags": [
+            "title-missing",
+            "article-without-title"
+          ],
+          "risk_score": 4
+        },
+        {
+          "page_index": 76,
+          "page_label": null,
+          "title": null,
+          "title_quality": "missing",
+          "content_type": "article",
+          "risk_flags": [
+            "title-missing",
+            "article-without-title"
+          ],
+          "risk_score": 4
+        }
+      ],
+      "warnings": [
+        "Wykryto 1 rozdziałów wysokiego ryzyka wymagających kontroli.",
+        "Wykryto 4 stron wysokiego ryzyka wymagających kontroli.",
+        "Wykryto 1 sekcji ze słabym lub technicznym tytułem."
+      ],
+      "external_tools_used": {
+        "python_modules": {
+          "pdfplumber": true,
+          "ocrmypdf": true
+        },
+        "commands": {
+          "java": true,
+          "tesseract": true,
+          "ocrmypdf": true,
+          "qpdf": true,
+          "ghostscript": true,
+          "pdftoppm": false,
+          "surya": false,
+          "pdfbox": false
+        },
+        "java": {
+          "found": true,
+          "path": "C:\\Users\\user\\Desktop\\kindleMaster\\tools\\jdk-21.0.10+7-jre\\bin\\java.exe"
+        },
+        "tesseract": {
+          "found": true,
+          "path": "C:\\Program Files\\Tesseract-OCR\\tesseract.exe",
+          "tessdata_dir": "C:\\Users\\user\\Desktop\\kindleMaster\\tools\\tessdata",
+          "languages": [
+            "eng",
+            "osd",
+            "pol"
+          ]
+        },
+        "ocrmypdf": {
+          "found": true,
+          "path": "C:\\Users\\user\\AppData\\Local\\Python\\pythoncore-3.14-64\\Scripts\\ocrmypdf.exe",
+          "module_found": true,
+          "ready": true,
+          "notes": []
+        },
+        "ghostscript": {
+          "found": true,
+          "path": "C:\\Program Files\\gs\\gs10.06.0\\bin\\gswin64c.exe"
+        },
+        "qpdf": {
+          "found": true,
+          "path": "C:\\Program Files\\qpdf 12.3.2\\bin\\qpdf.exe"
+        },
+        "epubcheck": {
+          "jar_found": true,
+          "jar_path": "C:\\Users\\user\\Desktop\\kindleMaster\\tools\\epubcheck-5.3.0\\epubcheck.jar"
+        },
+        "pdfbox": {
+          "jar_found": true,
+          "jar_path": "C:\\Users\\user\\Desktop\\kindleMaster\\tools\\pdfbox-app-3.0.7.jar"
+        }
+      },
+      "epubcheck_status": "passed",
+      "validation_status": "passed",
+      "validation_messages": [
+        "Validating using EPUB version 3.3 rules.",
+        "No errors or warnings detected.",
+        "Messages: 0 fatals / 0 errors / 0 warnings / 0 infos",
+        "EPUBCheck completed"
+      ],
+      "validation_tool": "epubcheck"
+    },
+    "report_stdout_tail": []
+  },
+  "chess_sample": {
+    "summary": {
+      "title": "tactits_sample_80pages",
+      "author": "Unknown",
+      "profile": "diagram_book_reflow",
+      "layout_mode": "reflowable",
+      "section_count": 7,
+      "asset_count": 385
+    },
+    "quality": {
+      "section_count": 7,
+      "figure_count": 7,
+      "diagram_count": 378,
+      "table_count": 0,
+      "page_marker_count": 0,
+      "detected_figures": 7,
+      "detected_diagrams": 378,
+      "detected_tables": 0,
+      "fallback_pages": [],
+      "fallback_sections": [],
+      "fallback_regions": [],
+      "high_risk_sections": [],
+      "high_risk_pages": [],
+      "warnings": [],
+      "external_tools_used": {
+        "python_modules": {
+          "pdfplumber": true,
+          "ocrmypdf": true
+        },
+        "commands": {
+          "java": true,
+          "tesseract": true,
+          "ocrmypdf": true,
+          "qpdf": true,
+          "ghostscript": true,
+          "pdftoppm": false,
+          "surya": false,
+          "pdfbox": false
+        },
+        "java": {
+          "found": true,
+          "path": "C:\\Users\\user\\Desktop\\kindleMaster\\tools\\jdk-21.0.10+7-jre\\bin\\java.exe"
+        },
+        "tesseract": {
+          "found": true,
+          "path": "C:\\Program Files\\Tesseract-OCR\\tesseract.exe",
+          "tessdata_dir": "C:\\Users\\user\\Desktop\\kindleMaster\\tools\\tessdata",
+          "languages": [
+            "eng",
+            "osd",
+            "pol"
+          ]
+        },
+        "ocrmypdf": {
+          "found": true,
+          "path": "C:\\Users\\user\\AppData\\Local\\Python\\pythoncore-3.14-64\\Scripts\\ocrmypdf.exe",
+          "module_found": true,
+          "ready": true,
+          "notes": []
+        },
+        "ghostscript": {
+          "found": true,
+          "path": "C:\\Program Files\\gs\\gs10.06.0\\bin\\gswin64c.exe"
+        },
+        "qpdf": {
+          "found": true,
+          "path": "C:\\Program Files\\qpdf 12.3.2\\bin\\qpdf.exe"
+        },
+        "epubcheck": {
+          "jar_found": true,
+          "jar_path": "C:\\Users\\user\\Desktop\\kindleMaster\\tools\\epubcheck-5.3.0\\epubcheck.jar"
+        },
+        "pdfbox": {
+          "jar_found": true,
+          "jar_path": "C:\\Users\\user\\Desktop\\kindleMaster\\tools\\pdfbox-app-3.0.7.jar"
+        }
+      },
+      "epubcheck_status": "passed",
+      "validation_status": "passed",
+      "validation_messages": [
+        "Validating using EPUB version 3.3 rules.",
+        "No errors or warnings detected.",
+        "Messages: 0 fatals / 0 errors / 0 warnings / 0 infos",
+        "EPUBCheck completed"
+      ],
+      "validation_tool": "epubcheck"
+    },
+    "report_stdout_tail": [
+      "    Page 69: Found 6 chess diagram(s)",
+      "    Page 70: Found 6 chess diagram(s)",
+      "    Page 71: Found 6 chess diagram(s)",
+      "    Page 72: Found 6 chess diagram(s)",
+      "    Page 73: Found 6 chess diagram(s)",
+      "    Page 74: Found 6 chess diagram(s)",
+      "    Page 75: Found 6 chess diagram(s)",
+      "    Page 76: Found 6 chess diagram(s)",
+      "    Page 77: Found 6 chess diagram(s)",
+      "    Page 78: Found 6 chess diagram(s)",
+      "    Page 79: Found 6 chess diagram(s)",
+      "    Page 80: Found 6 chess diagram(s)"
+    ],
+    "inspection": {
+      "EPUB/chapter_001.xhtml": {
+        "headings": [
+          "Foreword",
+          "I wish to thank K¨onemann Verlag for",
+          "L´aszl´o Polg´ar"
+        ],
+        "has_budapest_heading": false,
+        "has_kulturtrade_heading": false,
+        "has_author_signature_heading": true,
+        "signature_paragraphs": [
+          "Kulturtrade",
+          "Budapest, 1994"
+        ]
+      },
+      "EPUB/chapter_002.xhtml": {
+        "headings": [
+          "Introduction",
+          "L´aszl´o Polgar's Chess offers an abun-"
+        ],
+        "has_budapest_heading": false,
+        "has_kulturtrade_heading": false,
+        "has_author_signature_heading": true,
+        "signature_paragraphs": []
+      }
+    }
+  },
+  "scan": {
+    "summary": {
+      "title": "scan_probe",
+      "author": "Unknown",
+      "profile": "scanned_reflow",
+      "layout_mode": "reflowable",
+      "section_count": 1,
+      "asset_count": 1
+    },
+    "quality": {
+      "section_count": 1,
+      "figure_count": 1,
+      "diagram_count": 0,
+      "table_count": 0,
+      "page_marker_count": 0,
+      "detected_figures": 1,
+      "detected_diagrams": 0,
+      "detected_tables": 0,
+      "fallback_pages": [],
+      "fallback_sections": [],
+      "fallback_regions": [],
+      "high_risk_sections": [],
+      "high_risk_pages": [],
+      "warnings": [],
+      "external_tools_used": {
+        "python_modules": {
+          "pdfplumber": true,
+          "ocrmypdf": true
+        },
+        "commands": {
+          "java": true,
+          "tesseract": true,
+          "ocrmypdf": true,
+          "qpdf": true,
+          "ghostscript": true,
+          "pdftoppm": false,
+          "surya": false,
+          "pdfbox": false
+        },
+        "java": {
+          "found": true,
+          "path": "C:\\Users\\user\\Desktop\\kindleMaster\\tools\\jdk-21.0.10+7-jre\\bin\\java.exe"
+        },
+        "tesseract": {
+          "found": true,
+          "path": "C:\\Program Files\\Tesseract-OCR\\tesseract.exe",
+          "tessdata_dir": "C:\\Users\\user\\Desktop\\kindleMaster\\tools\\tessdata",
+          "languages": [
+            "eng",
+            "osd",
+            "pol"
+          ]
+        },
+        "ocrmypdf": {
+          "found": true,
+          "path": "C:\\Users\\user\\AppData\\Local\\Python\\pythoncore-3.14-64\\Scripts\\ocrmypdf.exe",
+          "module_found": true,
+          "ready": true,
+          "notes": []
+        },
+        "ghostscript": {
+          "found": true,
+          "path": "C:\\Program Files\\gs\\gs10.06.0\\bin\\gswin64c.exe"
+        },
+        "qpdf": {
+          "found": true,
+          "path": "C:\\Program Files\\qpdf 12.3.2\\bin\\qpdf.exe"
+        },
+        "epubcheck": {
+          "jar_found": true,
+          "jar_path": "C:\\Users\\user\\Desktop\\kindleMaster\\tools\\epubcheck-5.3.0\\epubcheck.jar"
+        },
+        "pdfbox": {
+          "jar_found": true,
+          "jar_path": "C:\\Users\\user\\Desktop\\kindleMaster\\tools\\pdfbox-app-3.0.7.jar"
+        }
+      },
+      "epubcheck_status": "passed",
+      "validation_status": "passed",
+      "validation_messages": [
+        "Validating using EPUB version 3.3 rules.",
+        "No errors or warnings detected.",
+        "Messages: 0 fatals / 0 errors / 0 warnings / 0 infos",
+        "EPUBCheck completed"
+      ],
+      "validation_tool": "epubcheck"
+    },
+    "report_stdout_tail": []
+  }
+}

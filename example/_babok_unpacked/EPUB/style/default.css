@@ -1,0 +1,182 @@
+html {
+  font-size: 100%;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  color: #111;
+  background: transparent;
+  font-family: serif;
+  font-size: 1em;
+  line-height: 1.4;
+  text-align: justify;
+  -webkit-hyphens: auto;
+  hyphens: auto;
+  orphans: 2;
+  widows: 2;
+}
+
+section {
+  margin: 0;
+  padding: 0;
+}
+
+h1, h2, h3 {
+  margin: 1.1em 0 0.45em;
+  line-height: 1.22;
+  font-weight: 700;
+  page-break-after: avoid;
+  break-after: avoid;
+}
+
+h1 { font-size: 1.55em; }
+h2 { font-size: 1.28em; }
+h3 { font-size: 1.08em; }
+
+p {
+  margin: 0;
+  text-indent: 1.5em;
+}
+
+h1 + p,
+h2 + p,
+h3 + p,
+figcaption + p,
+.solution-entry + p,
+.problem-solution-link + p {
+  text-indent: 0;
+}
+
+figure {
+  margin: 1em 0 1.1em;
+  text-align: center;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+  page-break-inside: avoid;
+  break-inside: avoid;
+}
+
+figcaption {
+  margin: 0 0 0.45em;
+  text-align: center;
+  text-indent: 0;
+  line-height: 1.28;
+  font-weight: 600;
+  hyphens: none;
+}
+
+.chess-problem .problem-solution-link {
+  margin: 0 0 0.45em;
+}
+
+.chess-problem img {
+  max-width: 19rem;
+  image-rendering: -webkit-optimize-contrast;
+  image-rendering: crisp-edges;
+}
+
+.exercise-number {
+  color: #555;
+  font-weight: 700;
+}
+
+.page-marker {
+  display: block;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+.exercise-marker {
+  display: block;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  text-indent: 0;
+}
+
+.problem-solution-link,
+.problem-page-link,
+.diagram-tail {
+  margin-top: 0.35em;
+  text-indent: 0;
+  text-align: center;
+  font-size: 0.95em;
+}
+
+.solution-entry {
+  margin-top: 1.1em;
+}
+
+.kicker,
+.byline {
+  margin-top: 0.7em;
+  text-indent: 0;
+  text-align: left;
+  font-size: 0.9em;
+  letter-spacing: 0.02em;
+}
+
+.kicker {
+  text-transform: uppercase;
+  font-weight: 700;
+  color: #555;
+}
+
+.lead {
+  margin-bottom: 0.55em;
+  text-indent: 0;
+  font-size: 1.05em;
+  line-height: 1.34;
+}
+
+blockquote {
+  margin: 0.9em 1.2em;
+  text-indent: 0;
+  font-style: italic;
+}
+
+blockquote p {
+  text-indent: 0;
+}
+
+.solution-text {
+  font-size: 0.98em;
+}
+
+.notation-heavy {
+  font-family: sans-serif;
+  font-size: 0.95em;
+  line-height: 1.38;
+  text-align: left;
+  text-indent: 0;
+  -webkit-hyphens: none;
+  hyphens: none;
+}
+
+.solution-backlink,
+.problem-solution-link a,
+.problem-page-link a,
+.diagram-tail a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 0.12em;
+}
+
+.cover-page img {
+  max-width: 100%;
+  border-radius: 0.45rem;
+}
+
+figure img,
+.figure img {
+  border-radius: 0.35rem;
+}

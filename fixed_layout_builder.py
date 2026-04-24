@@ -22,6 +22,32 @@ from typing import Optional
 import fitz  # PyMuPDF
 from ebooklib import epub
 from PIL import Image
+from size_budget_policy import get_render_budget_policy, normalize_budget_key
+
+
+def _resolve_fixed_layout_render_settings(
+    page_count: int,
+    *,
+    render_budget_class: str | None = None,
+    attempt: str = "primary",
+) -> tuple[int, int, int, int]:
+    if render_budget_class:
+        policy = get_render_budget_policy(render_budget_class)
+        if policy:
+            policy_settings = policy["fallback"] if attempt == "fallback" else policy["primary"]
+            return (
+                int(policy_settings["dpi"]),
+                int(policy_settings["jpeg_quality"]),
+                int(policy_settings["cover_dpi"]),
+                int(policy_settings["cover_quality"]),
+            )
+    if page_count >= 360:
+        return 132, 74, 108, 76
+    if page_count >= 240:
+        return 150, 78, 120, 80
+    if page_count >= 120:
+        return 165, 82, 132, 84
+    return 180, 85, 150, 88
 
 
 # Fixed-layout CSS for precise positioning
@@ -110,7 +136,7 @@ class PositionedImage:
     bbox: tuple
 
 
-def render_page_to_image(page: fitz.Page, dpi: int = 200) -> tuple[bytes, int, int]:
+def render_page_to_image(page: fitz.Page, dpi: int = 200, jpeg_quality: int = 85) -> tuple[bytes, int, int]:
     """
     Render a PDF page to JPEG image bytes.
     Returns (image_data, width, height).
@@ -127,7 +153,7 @@ def render_page_to_image(page: fitz.Page, dpi: int = 200) -> tuple[bytes, int, i
     if img.mode in ("RGBA", "LA", "P"):
         img = img.convert("RGB")
     jpeg_bytes = io.BytesIO()
-    img.save(jpeg_bytes, format="JPEG", quality=92)
+    img.save(jpeg_bytes, format="JPEG", quality=jpeg_quality, optimize=True, progressive=True)
     jpeg_bytes.seek(0)
     
     return jpeg_bytes.read(), pix.width, pix.height
@@ -377,6 +403,11 @@ def build_fixed_layout_epub(
     
     chapters = []
     page_items_for_toc = []
+    render_dpi, jpeg_quality, cover_dpi, cover_quality = _resolve_fixed_layout_render_settings(
+        len(doc),
+        render_budget_class=normalize_budget_key(getattr(config, "render_budget_class", "") or ""),
+        attempt=str(getattr(config, "render_budget_attempt", "primary") or "primary"),
+    )
     
     # Process each page
     for page_num in range(len(doc)):
@@ -385,7 +416,7 @@ def build_fixed_layout_epub(
         page_height = page.rect.height
         
         # Render page to image
-        page_image_data, img_width, img_height = render_page_to_image(page, dpi=200)
+        page_image_data, img_width, img_height = render_page_to_image(page, dpi=render_dpi, jpeg_quality=jpeg_quality)
         
         # Add page image to EPUB
         page_img_item = epub.EpubItem(
@@ -449,8 +480,8 @@ def build_fixed_layout_epub(
         # Try to get first page image
         try:
             doc2 = fitz.open(pdf_path)
-            pix = doc2[0].get_pixmap(dpi=150)
-            first_page_img = pix.tobytes("jpeg", quality=90)
+            pix = doc2[0].get_pixmap(dpi=cover_dpi)
+            first_page_img = pix.tobytes("jpeg", quality=cover_quality)
             doc2.close()
         except Exception:
             pass

@@ -10,6 +10,9 @@ from tempfile import TemporaryDirectory
 from lxml import etree
 
 from kindle_semantic_cleanup import (
+    _build_curated_toc_entries,
+    _detect_cleanup_scope,
+    _dominant_publication_heading,
     _extract_reference_entries_from_block,
     _build_nav_xhtml,
     _build_toc_ncx,
@@ -17,6 +20,7 @@ from kindle_semantic_cleanup import (
     _expand_semantic_blocks,
     _inject_problem_solution_links,
     _looks_like_training_book,
+    _manual_review_from_heading_decisions,
     _normalize_text_light,
     _process_chapter,
     _rebuild_toc_entries_from_final_chapters,
@@ -860,6 +864,325 @@ class SemanticEpubCleanupTests(unittest.TestCase):
             self.assertIn('src="images/cover.jpeg"', cover_xhtml)
             self.assertIn('content="1"', toc_ncx)
             self.assertIn('src="chapter_001.xhtml#forest-walk"', toc_ncx)
+
+    def test_finalize_epub_for_kindle_dedupes_cover_spine_and_toc_entries(self):
+        opf_source = """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
+    <dc:identifier id="bookid"></dc:identifier>
+    <dc:title>Legacy Cover</dc:title>
+    <dc:language>en</dc:language>
+    <dc:creator id="creator">Legacy Tool</dc:creator>
+  </metadata>
+  <manifest>
+    <item id="style" href="style/default.css" media-type="text/css"/>
+    <item id="cover-image" href="images/cover.png" media-type="image/png"/>
+    <item id="cover" href="cover.xhtml" media-type="application/xhtml+xml"/>
+    <item id="chapter_0" href="chapter_001.xhtml" media-type="application/xhtml+xml"/>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="cover"/>
+    <itemref idref="cover"/>
+    <itemref idref="chapter_0"/>
+    <itemref idref="nav"/>
+  </spine>
+</package>
+"""
+        cover_source = """<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Cover</title></head>
+  <body><img src="images/cover.png" alt=""/></body>
+</html>
+"""
+        chapter_source = """<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Easy Exercises</title></head>
+  <body>
+    <section>
+      <h1>Easy Exercises</h1>
+      <p class="author">Chess Author</p>
+      <p>Exercise text.</p>
+    </section>
+  </body>
+</html>
+"""
+        nav_source = """<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+  <head><title>Navigation</title></head>
+  <body>
+    <nav epub:type="toc">
+      <ol>
+        <li><a href="cover.xhtml">Cover</a></li>
+        <li><a href="cover.xhtml">Cover Again</a></li>
+        <li><a href="chapter_001.xhtml">Easy Exercises</a></li>
+      </ol>
+    </nav>
+  </body>
+</html>
+"""
+        toc_source = """<?xml version="1.0" encoding="utf-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+  <head><meta name="dtb:uid" content="legacy-id"/></head>
+  <docTitle><text>Legacy</text></docTitle>
+  <navMap>
+    <navPoint id="cover-1" playOrder="1"><navLabel><text>Cover</text></navLabel><content src="cover.xhtml"/></navPoint>
+    <navPoint id="cover-2" playOrder="2"><navLabel><text>Cover Again</text></navLabel><content src="cover.xhtml"/></navPoint>
+  </navMap>
+</ncx>
+"""
+        container_source = """<?xml version="1.0" encoding="utf-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="EPUB/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>
+"""
+
+        epub_bytes = self._build_epub_bytes(
+            {
+                "mimetype": "application/epub+zip",
+                "META-INF/container.xml": container_source,
+                "EPUB/content.opf": opf_source,
+                "EPUB/cover.xhtml": cover_source,
+                "EPUB/chapter_001.xhtml": chapter_source,
+                "EPUB/nav.xhtml": nav_source,
+                "EPUB/toc.ncx": toc_source,
+                "EPUB/style/default.css": "body { font-family: serif; }",
+                "EPUB/images/cover.png": b"\xff\xd8\xff\xe0synthetic-jpeg-cover",
+            }
+        )
+
+        cleaned_epub = finalize_epub_for_kindle(
+            epub_bytes,
+            title="Legacy Cover",
+            author="Legacy Tool",
+            language="en",
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            with zipfile.ZipFile(io.BytesIO(cleaned_epub), "r") as archive:
+                archive.extractall(temp_dir)
+
+            opf_tree = etree.parse(str(Path(temp_dir) / "EPUB" / "content.opf"))
+            nav_tree = etree.parse(str(Path(temp_dir) / "EPUB" / "nav.xhtml"))
+            ns = {
+                "opf": "http://www.idpf.org/2007/opf",
+                "x": "http://www.w3.org/1999/xhtml",
+                "epub": "http://www.idpf.org/2007/ops",
+            }
+
+            spine_ids = [
+                item.get("idref")
+                for item in opf_tree.findall(".//opf:spine/opf:itemref", namespaces=ns)
+            ]
+            self.assertEqual(spine_ids.count("cover"), 1)
+
+            cover_links = nav_tree.xpath(
+                "count(//x:a[@href='cover.xhtml'])",
+                namespaces=ns,
+            )
+            self.assertLessEqual(int(cover_links), 1)
+
+    def test_training_book_detection_uses_curated_toc_groups_for_exercise_books(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            chapter_specs = [
+                ("chapter_001.xhtml", "Key to Symbols Used"),
+                ("chapter_002.xhtml", "Easy Exercises"),
+                ("chapter_003.xhtml", "Solutions to Easy Exercises"),
+                ("chapter_004.xhtml", "Name Index"),
+            ]
+            chapter_paths: list[Path] = []
+            for file_name, heading in chapter_specs:
+                chapter_path = root / file_name
+                chapter_path.write_text(
+                    f"""<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>{heading}</title></head>
+  <body><section><h1 id="{heading.lower().replace(' ', '-')}">{heading}</h1></section></body>
+</html>
+""",
+                    encoding="utf-8",
+                )
+                chapter_paths.append(chapter_path)
+
+            scope = _detect_cleanup_scope(
+                chapter_paths,
+                title="The Woodpecker Method",
+                publication_profile="diagram_book_reflow",
+            )
+            toc_entries = _build_curated_toc_entries(chapter_paths, language="en")
+
+        self.assertEqual(scope, "training-book")
+        level_one = [entry["text"] for entry in toc_entries if entry["level"] == 1]
+        level_two = [entry["text"] for entry in toc_entries if entry["level"] == 2]
+        self.assertEqual(level_one[:4], ["Cover", "Front Matter", "Exercises", "Solutions"])
+        self.assertIn("Easy Exercises", level_two)
+        self.assertIn("Solutions: Easy Exercises", level_two)
+
+    def test_dominant_publication_heading_prefers_title_page_candidate_over_front_cover(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            chapter_001 = root / "chapter_001.xhtml"
+            chapter_002 = root / "chapter_002.xhtml"
+            chapter_001.write_text(
+                """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body><section><h1>Front Cover</h1></section></body></html>
+""",
+                encoding="utf-8",
+            )
+            chapter_002.write_text(
+                """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Title</title></head>
+  <body>
+    <section>
+      <h1>Title</h1>
+      <h2>The Woodpecker Method By Axel Smith &amp; Hans Tikkanen Quality Chess</h2>
+      <p class="author">By Axel Smith &amp; Hans Tikkanen</p>
+      <p>www.qualitychess.co.uk</p>
+    </section>
+  </body>
+</html>
+""",
+                encoding="utf-8",
+            )
+
+            dominant = _dominant_publication_heading([chapter_001, chapter_002])
+
+        self.assertEqual(dominant, "The Woodpecker Method By Axel Smith & Hans Tikkanen Quality Chess")
+
+    def test_dominant_publication_heading_returns_empty_when_only_front_matter_precedes_body_sections(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            chapter_specs = [
+                ("chapter_001.xhtml", "Front Cover"),
+                ("chapter_002.xhtml", "Title"),
+                ("chapter_003.xhtml", "Copyright"),
+                ("chapter_004.xhtml", "Contents"),
+                ("chapter_005.xhtml", "General Introduction"),
+            ]
+            chapter_paths: list[Path] = []
+            for file_name, heading in chapter_specs:
+                chapter_path = root / file_name
+                chapter_path.write_text(
+                    f"""<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body><section><h1>{heading}</h1></section></body></html>
+""",
+                    encoding="utf-8",
+                )
+                chapter_paths.append(chapter_path)
+
+            dominant = _dominant_publication_heading(chapter_paths)
+
+        self.assertEqual(dominant, "")
+
+    def test_rebuild_toc_entries_omits_front_matter_descendants_from_contents_page(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            chapter_004 = root / "chapter_004.xhtml"
+            chapter_009 = root / "chapter_009.xhtml"
+            chapter_010 = root / "chapter_010.xhtml"
+            chapter_004.write_text(
+                """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <body>
+    <section>
+      <h1 id="contents">Contents</h1>
+      <h3 id="general-introduction">General Introduction</h3>
+      <h3 id="summary-of-tactical-motifs">Summary of Tactical Motifs</h3>
+    </section>
+  </body>
+</html>
+""",
+                encoding="utf-8",
+            )
+            chapter_009.write_text(
+                """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body><section><h1 id="general-introduction-body">General Introduction</h1></section></body></html>
+""",
+                encoding="utf-8",
+            )
+            chapter_010.write_text(
+                """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body><section><h1 id="summary-body">Summary of Tactical Motifs</h1></section></body></html>
+""",
+                encoding="utf-8",
+            )
+
+            toc_entries = _rebuild_toc_entries_from_final_chapters([chapter_004, chapter_009, chapter_010])
+
+        texts = [entry["text"] for entry in toc_entries]
+        self.assertEqual(texts.count("Contents"), 1)
+        self.assertEqual(texts.count("General Introduction"), 1)
+        self.assertEqual(texts.count("Summary of Tactical Motifs"), 1)
+
+    def test_rebuild_toc_entries_dedupes_repeated_subsection_labels_across_chapters(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            chapter_007 = root / "chapter_007.xhtml"
+            chapter_010 = root / "chapter_010.xhtml"
+            chapter_007.write_text(
+                """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <body><section><h1 id="woodpecker-history">Woodpecker History</h1><h2 id="the-woodpecker-method-a">The Woodpecker Method</h2></section></body>
+</html>
+""",
+                encoding="utf-8",
+            )
+            chapter_010.write_text(
+                """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <body><section><h1 id="summary-of-tactical-motifs">Summary of Tactical Motifs</h1><h2 id="the-woodpecker-method-b">The Woodpecker Method</h2></section></body>
+</html>
+""",
+                encoding="utf-8",
+            )
+
+            toc_entries = _rebuild_toc_entries_from_final_chapters([chapter_007, chapter_010])
+
+        texts = [entry["text"] for entry in toc_entries]
+        self.assertEqual(texts.count("The Woodpecker Method"), 1)
+
+    def test_manual_review_suppresses_safe_training_book_heading_cleanup(self):
+        decisions = [
+            {
+                "file": "chapter_015.xhtml",
+                "status": "removed",
+                "reason": "ambiguous-heading-removed",
+                "confidence": 0.62,
+                "element": "h2",
+                "before": {"text": "Chapter 4"},
+                "after": {"text": ""},
+            },
+            {
+                "file": "chapter_016.xhtml",
+                "status": "added",
+                "reason": "reconstructed-heading",
+                "confidence": 0.72,
+                "element": "h3",
+                "before": {"text": ""},
+                "after": {"text": "770. Judit Polgar – Anatoly Karpov, Monte Carlo (rapid) 1996"},
+            },
+            {
+                "file": "chapter_018.xhtml",
+                "status": "removed",
+                "reason": "ambiguous-heading-removed",
+                "confidence": 0.62,
+                "element": "h1",
+                "before": {"text": "Name Index"},
+                "after": {"text": ""},
+            },
+        ]
+
+        review = _manual_review_from_heading_decisions(decisions)
+
+        self.assertEqual(review, [])
 
     def test_finalize_epub_for_kindle_localizes_polish_metadata_navigation_and_diagrams(self):
         opf_source = """<?xml version="1.0" encoding="utf-8"?>

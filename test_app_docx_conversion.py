@@ -55,6 +55,41 @@ class AppDocxConversionTests(unittest.TestCase):
         self.assertEqual(payload["source_type"], "docx")
         self.assertEqual(payload["analysis"]["heading1_count"], 1)
 
+    def test_analyze_accepts_uppercase_docx_extension(self) -> None:
+        client = app.test_client()
+        fake_analysis = {
+            "source_type": "docx",
+            "profile": "docx_reflow",
+            "paragraph_count": 4,
+            "heading1_count": 1,
+            "heading2_count": 0,
+            "heading3_count": 0,
+            "list_count": 0,
+            "table_count": 0,
+            "image_count": 0,
+            "hyperlink_count": 0,
+            "estimated_sections": 1,
+            "publication_analysis": {
+                "profile": "docx_reflow",
+                "confidence": 0.93,
+                "has_toc": False,
+                "external_tools": {},
+                "profile_reason": "DOCX structure detected.",
+            },
+        }
+
+        with patch("app.analyze_docx", return_value=fake_analysis):
+            response = client.post(
+                "/analyze",
+                data={"file": (io.BytesIO(_docx_bytes()), "SAMPLE.DOCX")},
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["source_type"], "docx")
+
     def test_convert_accepts_docx_and_sets_source_header(self) -> None:
         client = app.test_client()
         fake_result = {

@@ -5,8 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>KindleMaster PDF Toolkit</title>
   <link rel="icon" href="data:,">
-  <link rel="preconnect" href="https://fonts.bunny.net">
-  <link href="https://fonts.bunny.net/css?family=manrope:400,500,600,700,800|newsreader:400,500,600,700&display=swap" rel="stylesheet">
   <style>
     :root {
       --ink: #1f2933;
@@ -96,6 +94,15 @@
     }
     .brand h1 span { color: var(--accent); }
     .brand p { color: var(--muted); font-size: .82rem; margin-top: 2px; }
+    .brand code {
+      font-family: ui-monospace, "SFMono-Regular", "Cascadia Code", Consolas, monospace;
+      font-size: .76rem;
+      padding: 2px 6px;
+      border-radius: 999px;
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
+      color: var(--ink);
+    }
     .topbar-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
     .stamp { padding: 6px 12px; border-radius: 8px; background: var(--panel-strong); border: 1px solid var(--line); color: var(--muted); font-size: .78rem; white-space: nowrap; }
     .theme-toggle {
@@ -1192,7 +1199,7 @@
       <div class="brand">
         <div class="brand-kicker">Kindle-ready workspace</div>
         <h1>Kindle<span>Master</span></h1>
-        <p>Analiza PDF i DOCX oraz EPUB export dla dokumentow, magazynow i materialow studyjnych.</p>
+        <p>Analiza PDF i DOCX oraz EPUB export dla dokumentow, magazynow i materialow studyjnych. Panel lokalny: <code>{{ local_app_url }}</code>.</p>
       </div>
       <div class="topbar-right">
         <div class="stamp"><span>build</span>{{ updated_at_label }}</div>
@@ -1505,10 +1512,65 @@
     </div>
   </div>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
   <script>
-    pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+    const PDF_JS_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+    const PDF_JS_WORKER_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+    const PDF_LIB_URL = "https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js";
+    let pdfPreviewLibrariesPromise = null;
+
+    function loadExternalScript(src) {
+      return new Promise((resolve, reject) => {
+        const existing = document.querySelector(`script[data-runtime-src="${src}"]`);
+        if (existing && existing.dataset.loaded === "true") {
+          resolve();
+          return;
+        }
+        if (existing) {
+          existing.addEventListener("load", () => resolve(), { once: true });
+          existing.addEventListener("error", () => reject(new Error(`Nie udalo sie zaladowac skryptu: ${src}`)), { once: true });
+          return;
+        }
+        const script = document.createElement("script");
+        script.src = src;
+        script.async = true;
+        script.crossOrigin = "anonymous";
+        script.dataset.runtimeSrc = src;
+        script.addEventListener("load", () => {
+          script.dataset.loaded = "true";
+          resolve();
+        }, { once: true });
+        script.addEventListener("error", () => reject(new Error(`Nie udalo sie zaladowac skryptu: ${src}`)), { once: true });
+        document.head.appendChild(script);
+      });
+    }
+
+    async function ensurePdfPreviewLibraries() {
+      if (window.pdfjsLib && window.PDFLib) {
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDF_JS_WORKER_URL;
+        return { pdfjsLib: window.pdfjsLib, PDFLib: window.PDFLib };
+      }
+      if (!pdfPreviewLibrariesPromise) {
+        pdfPreviewLibrariesPromise = (async () => {
+          if (!window.pdfjsLib) {
+            await loadExternalScript(PDF_JS_URL);
+          }
+          if (window.pdfjsLib) {
+            window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDF_JS_WORKER_URL;
+          }
+          if (!window.PDFLib) {
+            await loadExternalScript(PDF_LIB_URL);
+          }
+          if (!window.pdfjsLib || !window.PDFLib) {
+            throw new Error("Brakuje bibliotek PDF preview/export.");
+          }
+          return { pdfjsLib: window.pdfjsLib, PDFLib: window.PDFLib };
+        })().catch((error) => {
+          pdfPreviewLibrariesPromise = null;
+          throw error;
+        });
+      }
+      return pdfPreviewLibrariesPromise;
+    }
 
     // â”€â”€ Dark mode â”€â”€
     (function () {
@@ -1618,10 +1680,19 @@
     let dragStart = null;
     let busyOverlayTimer = null;
     let busyMessage = "Przetwarzam dokument.";
+    const BASE_CONVERSION_POLL_INTERVAL_MS = 1500;
+    const MAX_CONVERSION_POLL_INTERVAL_MS = 5000;
+    const CONVERSION_REQUEST_TIMEOUT_MS = 15000;
+    const CONVERSION_START_TIMEOUT_MS = 30000;
+    const MAX_CONVERSION_POLL_ERRORS = 3;
+    const MAX_CONVERSION_WAIT_MS = 20 * 60 * 1000;
 
     function formatBytes(byteCount) {
-      if (!byteCount) return "0 MB";
-      return `${(byteCount / (1024 * 1024)).toFixed(2)} MB`;
+      const bytes = Number(byteCount) || 0;
+      if (bytes <= 0) return "0 B";
+      if (bytes < 1024) return `${bytes} B`;
+      if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
+      return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 2 : 1)} MB`;
     }
 
     function syncProfilePreset() {
@@ -1950,6 +2021,7 @@
       sections,
       assets,
       layout,
+      outputSizeBytes = null,
       warnings,
       highRiskPages,
       highRiskSections,
@@ -1957,28 +2029,59 @@
       highRiskPageList = [],
       highRiskSectionList = [],
       headingRepair = null,
+      qualityAvailable = null,
+      severity = "",
+      alerts = [],
+      sizeBudget = null,
+      renderBudget = null,
     }) {
       const safeValidation = validation || "unavailable";
-      const type = safeValidation === "passed" ? "success" : safeValidation === "failed" ? "error" : "info";
+      const derivedType = safeValidation === "passed" ? "success" : safeValidation === "failed" ? "error" : "info";
+      const type = severity === "success" ? "success" : severity === "error" ? "error" : derivedType;
       const validationLabel = safeValidation === "passed"
         ? "EPUBCheck przeszedl bez bledow"
         : safeValidation === "failed"
           ? "EPUBCheck wykryl problemy wymagajace poprawy"
           : "EPUBCheck nie byl dostepny";
+      const budgetDiagnostics = [];
+      if (sizeBudget && sizeBudget.status && sizeBudget.status !== "unavailable") {
+        budgetDiagnostics.push(`status ${sizeBudget.status}`);
+      }
+      if (renderBudget && renderBudget.budgetClass) {
+        budgetDiagnostics.push(`klasa ${renderBudget.budgetClass}`);
+      }
+      if (renderBudget && renderBudget.attempt) {
+        budgetDiagnostics.push(`attempt ${renderBudget.attempt}`);
+      }
+      if (renderBudget && Number.isFinite(renderBudget.targetWarnBytes) && renderBudget.targetWarnBytes > 0) {
+        budgetDiagnostics.push(`warn ${formatBytes(renderBudget.targetWarnBytes)}`);
+      }
+      if (renderBudget && Number.isFinite(renderBudget.targetHardBytes) && renderBudget.targetHardBytes > 0) {
+        budgetDiagnostics.push(`hard ${formatBytes(renderBudget.targetHardBytes)}`);
+      }
+      if (sizeBudget && sizeBudget.message) {
+        budgetDiagnostics.push(sizeBudget.message);
+      }
       const badges = [
         profile ? `profil: ${profile}` : null,
         sections ? `sekcje ${sections}` : null,
         assets ? `assety ${assets}` : null,
         layout ? `layout: ${layout}` : null,
         validationTool ? `narzedzie: ${validationTool}` : null,
+        Number.isFinite(outputSizeBytes) && outputSizeBytes > 0 ? `rozmiar ${formatBytes(outputSizeBytes)}` : null,
         Number.isFinite(warnings) ? `ostrzezenia ${warnings}` : null,
         Number.isFinite(highRiskSections) ? `sekcje wysokiego ryzyka ${highRiskSections}` : null,
         Number.isFinite(highRiskPages) ? `strony wysokiego ryzyka ${highRiskPages}` : null,
+        sizeBudget && sizeBudget.status && sizeBudget.status !== "unavailable" ? `size gate: ${sizeBudget.status}` : null,
+        renderBudget && renderBudget.budgetClass ? `budget: ${renderBudget.budgetClass}` : null,
         headingRepair && headingRepair.status === "applied" ? `TOC repair ${headingRepair.tocBefore || 0}→${headingRepair.tocAfter || 0}` : null,
         headingRepair && headingRepair.status === "applied" && Number.isFinite(headingRepair.removed) ? `fake headingi ${headingRepair.removed}` : null,
         headingRepair && headingRepair.status === "applied" && Number.isFinite(headingRepair.review) ? `review ${headingRepair.review}` : null,
       ].filter(Boolean).map((item) => `<span class="badge">${item}</span>`).join("");
 
+      const contractHint = qualityAvailable === false
+        ? `<p style="margin-top:8px;font-size:.8rem;color:var(--muted);">Quality state nie byl kompletny, wiec UI pokazuje fallback metadata z odpowiedzi konwersji.</p>`
+        : "";
       const auditHint = Number.isFinite(highRiskSections) || Number.isFinite(highRiskPages)
         ? `<p style="margin-top:8px;font-size:.8rem;color:var(--muted);">Premium audit: ${highRiskSections || 0} sekcji i ${highRiskPages || 0} stron oznaczonych do kontroli.</p>`
         : "";
@@ -1986,11 +2089,27 @@
         ? `<p style="margin-top:8px;font-size:.8rem;color:var(--muted);">Heading recovery: release ${escapeHtml(headingRepair.release || "unavailable")}, EPUBCheck ${escapeHtml(headingRepair.epubcheck || "unavailable")}.</p>`
         : headingRepair && headingRepair.status === "failed"
           ? `<p style="margin-top:8px;font-size:.8rem;color:#b25c37;">Heading recovery nie zostal zastosowany. EPUB bazowy zostal zachowany. Powod: ${escapeHtml(headingRepair.error || "nieznany blad")}.</p>`
-        : headingRepair && headingRepair.status === "skipped"
-          ? `<p style="margin-top:8px;font-size:.8rem;color:var(--muted);">Heading recovery nie byl uruchomiony dla tej konwersji.</p>`
+          : headingRepair && headingRepair.status === "skipped"
+          ? `<p style="margin-top:8px;font-size:.8rem;color:var(--muted);">Heading recovery nie byl uruchomiony dla tej konwersji.${headingRepair.error ? ` Powod: ${escapeHtml(headingRepair.error)}.` : ""}</p>`
           : "";
+      const budgetHint = budgetDiagnostics.length
+        ? `<p style="margin-top:8px;font-size:.8rem;color:var(--muted);">Size budget: ${escapeHtml(budgetDiagnostics.join(" | "))}.</p>`
+        : "";
+      const alertsPanel = Array.isArray(alerts) && alerts.length
+        ? `
+          <div class="audit-group">
+            <strong>Alerty operacyjne</strong>
+            <ul class="audit-list">${alerts.map((item) => {
+              const level = item && item.level ? `${item.level}: ` : "";
+              const message = item && item.message ? item.message : "";
+              return `<li>${escapeHtml(level)}${escapeHtml(message)}</li>`;
+            }).join("")}</ul>
+          </div>
+        `
+        : "";
       const auditPanel = `
         <div class="audit-panel">
+          ${alertsPanel}
           ${renderAuditList("Ostrzezenia", warningList, (item) => escapeHtml(item))}
           ${renderAuditList("Strony do kontroli", highRiskPageList, (item) => {
             const page = item.page ? `strona ${escapeHtml(item.page)}` : "strona ?";
@@ -2015,8 +2134,10 @@
         <strong>Ostatnia konwersja</strong>
         <p>${validationLabel}.</p>
         <div class="analysis-meta">${badges}</div>
+        ${contractHint}
         ${auditHint}
         ${headingRepairHint}
+        ${budgetHint}
         ${auditPanel}
       `;
     }
@@ -2195,57 +2316,51 @@
     }
 
     async function loadPdf(file) {
-      setBusy(true);
-      try {
-        setStatus("Wczytuje PDF i renderuje wybrana strone...", "info");
-        selectedFile = file;
-        selectedSourceType = "pdf";
-        zoomMode = "fit-page";
-        manualZoom = 1;
-        cropRectsByPage = new Map();
-        cropRectNormalized = null;
-        clearSelectionVisual();
-        resetAnalysisBox();
-        emptyState.innerHTML = `
-          <strong>Brak aktywnego podgladu</strong>
-          <p>Po wgraniu PDF aktualna strona zostanie wyrenderowana. Nad nia pojawi sie warstwa do rysowania crop boxa.</p>
-        `;
+      setStatus("Wczytuje PDF i renderuje wybrana strone...", "info");
+      selectedFile = file;
+      selectedSourceType = "pdf";
+      zoomMode = "fit-page";
+      manualZoom = 1;
+      cropRectsByPage = new Map();
+      cropRectNormalized = null;
+      clearSelectionVisual();
+      resetAnalysisBox();
+      fileInfo.classList.add("visible");
+      fileMark.textContent = "PDF";
+      fileName.textContent = file.name;
+      fileSize.textContent = formatBytes(file.size);
+      emptyState.innerHTML = `
+        <strong>Brak aktywnego podgladu</strong>
+        <p>Po wgraniu PDF aktualna strona zostanie wyrenderowana. Nad nia pojawi sie warstwa do rysowania crop boxa.</p>
+      `;
+      updatePageSummary();
+      updateExportModeLabel();
+      updateControlsState();
 
-        pdfBytes = new Uint8Array(await file.arrayBuffer());
-        const previewBytes = pdfBytes.slice();
-        pdfJsDoc = await pdfjsLib.getDocument({ data: previewBytes }).promise;
-        currentPageNumber = 1;
-        fileInfo.classList.add("visible");
-        fileMark.textContent = "PDF";
-        fileName.textContent = file.name;
-        fileSize.textContent = formatBytes(file.size);
+      const { pdfjsLib } = await ensurePdfPreviewLibraries();
+      pdfBytes = new Uint8Array(await file.arrayBuffer());
+      const previewBytes = pdfBytes.slice();
+      pdfJsDoc = await pdfjsLib.getDocument({ data: previewBytes }).promise;
+      currentPageNumber = 1;
 
-        await renderCurrentPage();
-        updateExportModeLabel();
-        setStatus("PDF gotowy. Mozesz przechodzic miedzy stronami i rysowac crop box.", "success");
-      } finally {
-        setBusy(false);
-      }
+      await renderCurrentPage();
+      updateExportModeLabel();
+      setStatus("PDF gotowy. Mozesz przechodzic miedzy stronami i rysowac crop box.", "success");
     }
 
     async function loadDocx(file) {
-      setBusy(true);
-      try {
-        setStatus("Wczytuje DOCX i przygotowuje tryb analizy strukturalnej...", "info");
-        selectedFile = file;
-        selectedSourceType = "docx";
-        zoomMode = "fit-page";
-        manualZoom = 1;
-        resetAnalysisBox();
-        fileInfo.classList.add("visible");
-        fileMark.textContent = "DOCX";
-        fileName.textContent = file.name;
-        fileSize.textContent = formatBytes(file.size);
-        showDocxPreviewState();
-        setStatus("DOCX gotowy. Preview stron jest wylaczony, ale analiza i konwersja EPUB sa dostepne.", "success");
-      } finally {
-        setBusy(false);
-      }
+      setStatus("Wczytuje DOCX i przygotowuje tryb analizy strukturalnej...", "info");
+      selectedFile = file;
+      selectedSourceType = "docx";
+      zoomMode = "fit-page";
+      manualZoom = 1;
+      resetAnalysisBox();
+      fileInfo.classList.add("visible");
+      fileMark.textContent = "DOCX";
+      fileName.textContent = file.name;
+      fileSize.textContent = formatBytes(file.size);
+      showDocxPreviewState();
+      setStatus("DOCX gotowy. Preview stron jest wylaczony, ale analiza i konwersja EPUB sa dostepne.", "success");
     }
 
     function rerenderForZoom(statusMessage) {
@@ -2394,9 +2509,10 @@
         setStatus("Najpierw wgraj PDF i zaznacz crop box.", "error");
         return;
       }
-      const { PDFDocument } = PDFLib;
       setBusy(true);
       try {
+        const { PDFLib } = await ensurePdfPreviewLibraries();
+        const { PDFDocument } = PDFLib;
         setStatus("Przetwarzam PDF i osadzam crop na stronach A4...", "info");
         const sourcePdf = await PDFDocument.load(pdfBytes);
         const outputPdf = await PDFDocument.create();
@@ -2483,28 +2599,103 @@
       window.setTimeout(() => anchor.remove(), 0);
     }
 
-    function applyConversionOutcome(conversion, selectedName) {
-      const sourceType = conversion.source_type || selectedSourceType || "pdf";
-      const strategy = conversion.strategy || null;
-      const profile = conversion.profile || null;
-      const validation = conversion.validation || "unavailable";
-      const validationTool = conversion.validation_tool || "unknown";
-      const headingRepair = conversion.heading_repair || { status: "skipped" };
-      const tocBefore = Number.isFinite(headingRepair.toc_before) ? headingRepair.toc_before : null;
-      const tocAfter = Number.isFinite(headingRepair.toc_after) ? headingRepair.toc_after : null;
+    function coerceFiniteNumber(value) {
+      const numericValue = Number(value);
+      return Number.isFinite(numericValue) ? numericValue : null;
+    }
+
+    function normalizePostConversionPayload(jobPayload) {
+      const payload = jobPayload && typeof jobPayload === "object" ? jobPayload : {};
+      const qualityState = payload.quality_state && typeof payload.quality_state === "object" ? payload.quality_state : null;
+      const conversion = payload.conversion && typeof payload.conversion === "object" ? payload.conversion : null;
+      const summary = qualityState && qualityState.summary && typeof qualityState.summary === "object" ? qualityState.summary : {};
+      const validationState = qualityState && qualityState.validation && typeof qualityState.validation === "object" ? qualityState.validation : {};
+      const auditState = qualityState && qualityState.audit && typeof qualityState.audit === "object" ? qualityState.audit : {};
+      const headingRepairState = qualityState && qualityState.heading_repair && typeof qualityState.heading_repair === "object" ? qualityState.heading_repair : {};
+      const renderBudgetState = qualityState && qualityState.render_budget && typeof qualityState.render_budget === "object" ? qualityState.render_budget : {};
+      const sizeBudgetState = qualityState && qualityState.size_budget && typeof qualityState.size_budget === "object" ? qualityState.size_budget : {};
+      const conversionHeadingRepair = conversion && conversion.heading_repair && typeof conversion.heading_repair === "object" ? conversion.heading_repair : {};
+
+      return {
+        sourceType: qualityState && qualityState.source_type
+          ? qualityState.source_type
+          : payload.source_type || (conversion && conversion.source_type) || selectedSourceType || "pdf",
+        strategy: summary.strategy || (conversion && conversion.strategy) || null,
+        profile: (summary.profile && summary.profile !== "unknown") ? summary.profile : ((conversion && conversion.profile) || null),
+        validation: validationState.status || (conversion && conversion.validation) || "unavailable",
+        validationTool: validationState.tool || (conversion && conversion.validation_tool) || "unknown",
+        outputSizeBytes: coerceFiniteNumber(summary.output_size_bytes ?? payload.output_size_bytes ?? (conversion && conversion.output_size_bytes)),
+        sections: coerceFiniteNumber(summary.sections ?? (conversion && conversion.sections)),
+        assets: coerceFiniteNumber(summary.assets ?? (conversion && conversion.assets)),
+        layout: summary.layout || (conversion && conversion.layout) || null,
+        warnings: coerceFiniteNumber(auditState.warning_count ?? (conversion && conversion.warnings)) ?? 0,
+        highRiskPages: coerceFiniteNumber(auditState.high_risk_pages ?? (conversion && conversion.high_risk_pages)) ?? 0,
+        highRiskSections: coerceFiniteNumber(auditState.high_risk_sections ?? (conversion && conversion.high_risk_sections)) ?? 0,
+        warningList: Array.isArray(auditState.warnings)
+          ? auditState.warnings
+          : Array.isArray(conversion && conversion.warning_list) ? conversion.warning_list : [],
+        highRiskPageList: Array.isArray(auditState.high_risk_page_list)
+          ? auditState.high_risk_page_list
+          : Array.isArray(conversion && conversion.high_risk_page_list) ? conversion.high_risk_page_list : [],
+        highRiskSectionList: Array.isArray(auditState.high_risk_section_list)
+          ? auditState.high_risk_section_list
+          : Array.isArray(conversion && conversion.high_risk_section_list) ? conversion.high_risk_section_list : [],
+        alerts: Array.isArray(qualityState && qualityState.alerts) ? qualityState.alerts : [],
+        severity: qualityState && qualityState.overall_severity ? qualityState.overall_severity : "",
+        qualityAvailable: qualityState ? Boolean(qualityState.quality_available) : null,
+        sizeBudget: {
+          status: sizeBudgetState.status || (conversion && conversion.size_budget_status) || "unavailable",
+          message: sizeBudgetState.message || (conversion && conversion.size_budget_message) || "",
+        },
+        renderBudget: {
+          budgetClass: renderBudgetState.budget_class || (conversion && conversion.render_budget_class) || "",
+          attempt: renderBudgetState.attempt || (conversion && conversion.render_budget_attempt) || "",
+          targetWarnBytes: coerceFiniteNumber(renderBudgetState.target_warn_bytes ?? (conversion && conversion.target_warn_bytes)) ?? 0,
+          targetHardBytes: coerceFiniteNumber(renderBudgetState.target_hard_bytes ?? (conversion && conversion.target_hard_bytes)) ?? 0,
+        },
+        headingRepair: {
+          status: headingRepairState.status || conversionHeadingRepair.status || "skipped",
+          release: headingRepairState.release || conversionHeadingRepair.release || "unavailable",
+          tocBefore: coerceFiniteNumber(headingRepairState.toc_before ?? conversionHeadingRepair.toc_before),
+          tocAfter: coerceFiniteNumber(headingRepairState.toc_after ?? conversionHeadingRepair.toc_after),
+          removed: coerceFiniteNumber(headingRepairState.removed ?? conversionHeadingRepair.removed),
+          review: coerceFiniteNumber(headingRepairState.review ?? conversionHeadingRepair.review),
+          epubcheck: headingRepairState.epubcheck || conversionHeadingRepair.epubcheck || "unavailable",
+          error: headingRepairState.error || conversionHeadingRepair.error || "",
+        },
+      };
+    }
+
+    function applyConversionOutcome(jobPayload, selectedName) {
+      const normalized = normalizePostConversionPayload(jobPayload);
+      const sourceType = normalized.sourceType || selectedSourceType || "pdf";
+      const strategy = normalized.strategy || null;
+      const profile = normalized.profile || null;
+      const validation = normalized.validation || "unavailable";
+      const validationTool = normalized.validationTool || "unknown";
+      const outputSize = Number.isFinite(normalized.outputSizeBytes) ? formatBytes(normalized.outputSizeBytes) : "";
+      const headingRepair = normalized.headingRepair || { status: "skipped" };
+      const tocBefore = Number.isFinite(headingRepair.tocBefore) ? headingRepair.tocBefore : null;
+      const tocAfter = Number.isFinite(headingRepair.tocAfter) ? headingRepair.tocAfter : null;
       renderConversionReport({
         profile,
         validation,
         validationTool,
-        sections: Number.isFinite(conversion.sections) ? conversion.sections : null,
-        assets: Number.isFinite(conversion.assets) ? conversion.assets : null,
-        layout: conversion.layout || null,
-        warnings: Number.isFinite(conversion.warnings) ? conversion.warnings : 0,
-        highRiskPages: Number.isFinite(conversion.high_risk_pages) ? conversion.high_risk_pages : 0,
-        highRiskSections: Number.isFinite(conversion.high_risk_sections) ? conversion.high_risk_sections : 0,
-        warningList: Array.isArray(conversion.warning_list) ? conversion.warning_list : [],
-        highRiskPageList: Array.isArray(conversion.high_risk_page_list) ? conversion.high_risk_page_list : [],
-        highRiskSectionList: Array.isArray(conversion.high_risk_section_list) ? conversion.high_risk_section_list : [],
+        sections: Number.isFinite(normalized.sections) ? normalized.sections : null,
+        assets: Number.isFinite(normalized.assets) ? normalized.assets : null,
+        layout: normalized.layout || null,
+        outputSizeBytes: normalized.outputSizeBytes,
+        warnings: Number.isFinite(normalized.warnings) ? normalized.warnings : 0,
+        highRiskPages: Number.isFinite(normalized.highRiskPages) ? normalized.highRiskPages : 0,
+        highRiskSections: Number.isFinite(normalized.highRiskSections) ? normalized.highRiskSections : 0,
+        warningList: Array.isArray(normalized.warningList) ? normalized.warningList : [],
+        highRiskPageList: Array.isArray(normalized.highRiskPageList) ? normalized.highRiskPageList : [],
+        highRiskSectionList: Array.isArray(normalized.highRiskSectionList) ? normalized.highRiskSectionList : [],
+        alerts: Array.isArray(normalized.alerts) ? normalized.alerts : [],
+        severity: normalized.severity || "",
+        qualityAvailable: normalized.qualityAvailable,
+        sizeBudget: normalized.sizeBudget,
+        renderBudget: normalized.renderBudget,
         headingRepair: {
           status: headingRepair.status || "skipped",
           release: headingRepair.release || "unavailable",
@@ -2520,44 +2711,123 @@
         ? ` TOC repair: ${tocBefore ?? 0}→${tocAfter ?? 0}.`
         : headingRepair.status === "failed"
           ? " Heading repair nie powiodl sie, ale zachowano bazowy EPUB."
+          : headingRepair.status === "skipped" && headingRepair.error
+            ? ` ${headingRepair.error}.`
           : "";
       setStatus(
-        `EPUB wygenerowany i pobrany z ${sourceType.toUpperCase()}.${profile ? ` Profil: ${profile}.` : ""}${strategy ? ` Strategia: ${strategy}.` : ""}${validation ? ` Walidacja: ${validation}.` : ""}${headingRepairStatusText}`,
+        `EPUB wygenerowany i pobrany z ${sourceType.toUpperCase()}.${outputSize ? ` Rozmiar: ${outputSize}.` : ""}${profile ? ` Profil: ${profile}.` : ""}${strategy ? ` Strategia: ${strategy}.` : ""}${validation ? ` Walidacja: ${validation}.` : ""}${headingRepairStatusText}`,
         "success",
       );
     }
 
+    function isTransientConversionNetworkError(error) {
+      if (!error) return false;
+      if (error.name === "AbortError") return true;
+      const message = `${error.message || error}`.toLowerCase();
+      return (
+        message.includes("failed to fetch")
+        || message.includes("networkerror")
+        || message.includes("load failed")
+        || message.includes("timed out")
+        || message.includes("limit czasu")
+        || message.includes("status chwilowo nie odpowiada")
+      );
+    }
+
+    function nextPollDelay(currentDelay, suggestedDelay = null) {
+      const numericSuggested = Number.isFinite(Number(suggestedDelay)) ? Number(suggestedDelay) : 0;
+      const nextDelay = numericSuggested > 0 ? numericSuggested : Math.round(currentDelay * 1.2);
+      return Math.max(
+        BASE_CONVERSION_POLL_INTERVAL_MS,
+        Math.min(MAX_CONVERSION_POLL_INTERVAL_MS, nextDelay),
+      );
+    }
+
+    async function fetchJsonWithTimeout(url, options = {}, timeoutMs = CONVERSION_REQUEST_TIMEOUT_MS) {
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetch(url, {
+          ...options,
+          signal: controller.signal,
+          headers: {
+            Accept: "application/json",
+            ...(options.headers || {}),
+          },
+        });
+        const contentType = response.headers.get("content-type") || "";
+        const data = contentType.includes("application/json") ? await response.json() : null;
+        const text = data === null ? await response.text() : "";
+        return { response, data, text };
+      } catch (error) {
+        if (error && error.name === "AbortError") {
+          throw new Error("Przekroczono limit czasu odpowiedzi lokalnego serwera.");
+        }
+        throw error;
+      } finally {
+        window.clearTimeout(timeoutId);
+      }
+    }
+
     async function startConversionJob(formData) {
-      const response = await fetch("/convert/start", { method: "POST", body: formData });
-      const contentType = response.headers.get("content-type") || "";
-      const data = contentType.includes("application/json") ? await response.json() : {};
-      if (!response.ok || !data.success) {
-        throw new Error(data.error || `Nie udalo sie uruchomic konwersji (HTTP ${response.status}).`);
+      const { response, data, text } = await fetchJsonWithTimeout(
+        "/convert/start",
+        { method: "POST", body: formData },
+        CONVERSION_START_TIMEOUT_MS,
+      );
+      if (!response.ok || !data || !data.success) {
+        throw new Error((data && data.error) || text || `Nie udalo sie uruchomic konwersji (HTTP ${response.status}).`);
       }
       return data;
     }
 
     async function pollConversionJob(jobId, sourceLabel) {
       const startedAt = Date.now();
+      let pollDelay = BASE_CONVERSION_POLL_INTERVAL_MS;
+      let transientErrorCount = 0;
       while (true) {
-        await delay(1500);
-        const response = await fetch(`/convert/status/${encodeURIComponent(jobId)}`, {
-          method: "GET",
-          cache: "no-store",
-        });
-        const data = await response.json();
-        if (!response.ok || !data.success) {
-          throw new Error(data.error || "Nie udalo sie sprawdzic statusu konwersji.");
+        if (Date.now() - startedAt > MAX_CONVERSION_WAIT_MS) {
+          throw new Error("Konwersja trwa zbyt dlugo. Sprobuj ponownie za chwile.");
         }
-        if (data.message) {
-          setStatus(data.message, "info");
-        } else {
-          const elapsedSeconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
-          setStatus(`Konwertuje ${sourceLabel} do EPUB... (${elapsedSeconds}s)`, "info");
-        }
-        if (data.status === "ready") return data;
-        if (data.status === "failed") {
-          throw new Error(data.error || "Konwersja nie powiodla sie.");
+        await delay(pollDelay);
+        try {
+          const { response, data, text } = await fetchJsonWithTimeout(
+            `/convert/status/${encodeURIComponent(jobId)}`,
+            {
+              method: "GET",
+              cache: "no-store",
+            },
+          );
+          if (!response.ok || !data || !data.success) {
+            throw new Error((data && data.error) || text || "Nie udalo sie sprawdzic statusu konwersji.");
+          }
+          transientErrorCount = 0;
+          if (data.message) {
+            setStatus(data.message, "info");
+          } else {
+            const elapsedSeconds = Number.isFinite(data.elapsed_seconds)
+              ? data.elapsed_seconds
+              : Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+            setStatus(`Konwertuje ${sourceLabel} do EPUB... (${elapsedSeconds}s)`, "info");
+          }
+          if (data.status === "ready") return data;
+          if (data.status === "failed") {
+            throw new Error(data.error || "Konwersja nie powiodla sie.");
+          }
+          pollDelay = nextPollDelay(pollDelay, data.poll_after_ms);
+        } catch (error) {
+          if (!isTransientConversionNetworkError(error)) {
+            throw error;
+          }
+          transientErrorCount += 1;
+          if (transientErrorCount >= MAX_CONVERSION_POLL_ERRORS) {
+            throw new Error("Polaczenie z lokalnym serwerem konwersji zostalo przerwane. Sprobuj ponownie za chwile.");
+          }
+          pollDelay = nextPollDelay(pollDelay + transientErrorCount * 800);
+          setStatus(
+            `Lokalny status konwersji chwilowo nie odpowiada. Ponawiam probe (${transientErrorCount}/${MAX_CONVERSION_POLL_ERRORS})...`,
+            "info",
+          );
         }
       }
     }
@@ -2578,13 +2848,15 @@
         const startPayload = await startConversionJob(formData);
         setStatus(startPayload.message || `Konwersja ${isPdf ? "PDF" : "DOCX"} ruszyla. Czekam na gotowy EPUB...`, "info");
         const jobPayload = await pollConversionJob(startPayload.job_id, isPdf ? "PDF" : "DOCX");
-        if (!jobPayload.download_url || !jobPayload.conversion) {
+        if (!jobPayload.download_url || (!jobPayload.quality_state && !jobPayload.conversion)) {
           throw new Error("Serwer zakonczyl konwersje, ale nie zwrocil danych do pobrania EPUB.");
         }
         downloadFromUrl(jobPayload.download_url);
-        applyConversionOutcome(jobPayload.conversion, selectedFile.name);
+        applyConversionOutcome(jobPayload, selectedFile.name);
       } catch (error) {
-        console.error(error);
+        if (!isTransientConversionNetworkError(error)) {
+          console.error(error);
+        }
         const message = error && error.message ? error.message : "Nieznany blad sieci lub backendu.";
         setStatus(`Konwersja nie powiodla sie: ${message}`, "error");
       } finally {

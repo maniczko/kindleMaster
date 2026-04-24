@@ -1,0 +1,87 @@
+name: READY Enforcement
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ready-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ready-quick:
+    name: ready-quick
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Bootstrap runtime profile
+        run: python kindlemaster.py bootstrap --runtime-only
+
+      - name: Prepare reference inputs
+        run: python kindlemaster.py prepare-reference-inputs
+
+      - name: Run quick READY lane
+        run: python kindlemaster.py test --suite quick
+
+  ready-release:
+    name: ready-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Bootstrap developer profile
+        run: python kindlemaster.py bootstrap
+
+      - name: Install Playwright Chromium
+        run: python -m playwright install chromium
+
+      - name: Prepare reference inputs
+        run: python kindlemaster.py prepare-reference-inputs
+
+      - name: Run release READY lane
+        run: python kindlemaster.py test --suite release
+
+  ready-gate:
+    name: ready-gate
+    runs-on: ubuntu-latest
+    needs:
+      - ready-quick
+      - ready-release
+    if: ${{ always() }}
+    steps:
+      - name: Enforce READY aggregate gate
+        shell: bash
+        run: |
+          if [[ "${{ needs.ready-quick.result }}" != "success" || "${{ needs.ready-release.result }}" != "success" ]]; then
+            echo "READY enforcement failed: quick=${{ needs.ready-quick.result }}, release=${{ needs.ready-release.result }}"
+            exit 1
+          fi
+          echo "READY enforcement passed."

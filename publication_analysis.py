@@ -128,6 +128,14 @@ def analyze_publication(pdf_path: str, preferred_profile: str = "auto-premium") 
         if has_meaningful_images and text_page_ratio > 0.5
         else "text_reflowable"
     )
+    render_budget_class = _choose_render_budget_class(
+        total_pages=total_pages,
+        scanned_page_ratio=scanned_page_ratio,
+        has_diagrams=has_diagrams,
+        has_meaningful_images=has_meaningful_images,
+        layout_heavy=layout_heavy,
+        estimated_columns=estimated_columns,
+    )
 
     profile, ui_profile, profile_reason = _choose_profile(
         preferred_profile=preferred_profile,
@@ -173,6 +181,7 @@ def analyze_publication(pdf_path: str, preferred_profile: str = "auto-premium") 
         profile=profile,
         confidence=confidence,
         page_count=total_pages,
+        render_budget_class=render_budget_class,
         has_toc=has_toc,
         has_tables=has_tables,
         has_diagrams=has_diagrams,
@@ -195,6 +204,26 @@ def analyze_publication(pdf_path: str, preferred_profile: str = "auto-premium") 
         external_tools=detect_toolchain(),
         profile_reason=profile_reason,
     )
+
+
+def _choose_render_budget_class(
+    *,
+    total_pages: int,
+    scanned_page_ratio: float,
+    has_diagrams: bool,
+    has_meaningful_images: bool,
+    layout_heavy: bool,
+    estimated_columns: int,
+) -> str:
+    if total_pages >= 360 or scanned_page_ratio >= 0.65:
+        return "fixed_layout_extreme"
+    if total_pages >= 240 or (layout_heavy and total_pages >= 120):
+        return "fixed_layout_aggressive"
+    if total_pages >= 120 or has_diagrams or (layout_heavy and estimated_columns >= 2):
+        return "fixed_layout_dense"
+    if total_pages >= 60 or has_meaningful_images or layout_heavy:
+        return "fixed_layout_balanced"
+    return "fixed_layout_safe"
 
 
 def _estimate_columns_from_centers(x_centers: list[float], page_width: float) -> int:

@@ -1,8 +1,11 @@
 import io
 import unittest
 import zipfile
+from pathlib import Path
 
 from premium_corpus_smoke import (
+    CorpusCase,
+    _apply_release_strictness,
     _build_case_blockers,
     _build_case_warnings,
     _derive_case_grade,
@@ -111,6 +114,32 @@ class PremiumCorpusSmokeTests(unittest.TestCase):
         self.assertIn("heading_manual_review", warning_codes)
         self.assertIn("unexpected_language", warning_codes)
         self.assertEqual(_derive_case_grade(blockers, warnings), "fail")
+
+    def test_non_release_strict_probe_relaxes_placeholder_metadata_and_heading_review(self) -> None:
+        case = CorpusCase(path=Path("reference_inputs/pdf/ocr_probe.pdf"), document_class="ocr_probe", release_strict=False)
+        blockers = [
+            {"code": "placeholder_creator", "detail": "Unknown"},
+            {"code": "broken_internal_anchors", "detail": "1"},
+        ]
+        warnings = [
+            {"code": "heading_manual_review", "detail": "manual_review_count=4"},
+            {"code": "unexpected_language", "detail": "de"},
+        ]
+
+        relaxed_blockers, relaxed_warnings = _apply_release_strictness(
+            case,
+            blockers=blockers,
+            warnings=warnings,
+        )
+
+        self.assertEqual(
+            [item["code"] for item in relaxed_blockers],
+            ["broken_internal_anchors"],
+        )
+        self.assertEqual(
+            [item["code"] for item in relaxed_warnings],
+            ["unexpected_language"],
+        )
 
 
 if __name__ == "__main__":

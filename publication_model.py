@@ -67,6 +67,7 @@ class PublicationAnalysis:
     profile: str
     confidence: float
     page_count: int
+    render_budget_class: str
     has_toc: bool
     has_tables: bool
     has_diagrams: bool
@@ -94,6 +95,7 @@ class PublicationAnalysis:
             "profile": self.profile,
             "confidence": round(self.confidence, 3),
             "page_count": self.page_count,
+            "render_budget_class": self.render_budget_class,
             "has_toc": self.has_toc,
             "has_tables": self.has_tables,
             "has_diagrams": self.has_diagrams,
@@ -140,7 +142,7 @@ class PublicationQualityReport:
     validation_tool: str = "none"
     text_cleanup: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, Any]:
+    def content_metrics_dict(self) -> dict[str, Any]:
         return {
             "section_count": self.section_count,
             "figure_count": self.figure_count,
@@ -157,11 +159,26 @@ class PublicationQualityReport:
             "high_risk_pages": self.high_risk_pages,
             "warnings": self.warnings,
             "external_tools_used": self.external_tools_used,
+            "text_cleanup": self.text_cleanup,
+        }
+
+    def validation_payload(self) -> dict[str, Any]:
+        return {
             "epubcheck_status": self.validation_status,
             "validation_status": self.validation_status,
             "validation_messages": self.validation_messages,
             "validation_tool": self.validation_tool,
-            "text_cleanup": self.text_cleanup,
+        }
+
+    def set_validation_result(self, validation: dict[str, Any]) -> None:
+        self.validation_status = validation["status"]
+        self.validation_messages = validation["messages"]
+        self.validation_tool = validation["tool"]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            **self.content_metrics_dict(),
+            **self.validation_payload(),
         }
 
 

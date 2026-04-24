@@ -8,12 +8,26 @@
       "input_type": "pdf",
       "language": "pl",
       "quick_smoke": true,
+      "release_strict": false,
       "source": "example/ocr_runtime_probe.pdf",
       "target": "reference_inputs/pdf/ocr_probe.pdf",
       "notes": "Tiny OCR probe for the fastest conversion smoke.",
       "source_path": "example/ocr_runtime_probe.pdf",
       "target_path": "reference_inputs/pdf/ocr_probe.pdf",
       "size_bytes": 859
+    },
+    {
+      "id": "ocr_stress_scan_pdf",
+      "document_class": "ocr_stress_scan",
+      "input_type": "pdf",
+      "language": "pl",
+      "quick_smoke": false,
+      "generator": "ocr_stress_scan",
+      "target": "reference_inputs/pdf/ocr_stress_scan.pdf",
+      "notes": "Deterministic scanned PDF with OCR-stressed image-only pages and noisy text blocks.",
+      "source_path": "<generated:ocr_stress_scan>",
+      "target_path": "reference_inputs/pdf/ocr_stress_scan.pdf",
+      "size_bytes": 1019552
     },
     {
       "id": "dense_business_guide_pdf",
@@ -53,6 +67,19 @@
       "source_path": "example/02695ab2e05aab728b4b995caa682f947e8be2c3291ff490579797c5a3cc5e26.pdf",
       "target_path": "reference_inputs/pdf/magazine_layout.pdf",
       "size_bytes": 10790479
+    },
+    {
+      "id": "document_like_report_pdf",
+      "document_class": "document-like-report",
+      "input_type": "pdf",
+      "language": "en",
+      "quick_smoke": false,
+      "target": "reference_inputs/pdf/document_like_report.pdf",
+      "notes": "Generated multi-page document-like PDF fixture for manifest-backed corpus reporting.",
+      "generator": "document_like_report",
+      "source_path": "<generated:document_like_report>",
+      "target_path": "reference_inputs/pdf/document_like_report.pdf",
+      "size_bytes": 12106
     },
     {
       "id": "scan_probe_epub",

@@ -10,11 +10,21 @@ from typing import Any, Sequence
 QUICK_TESTS = [
     "test_skill_contracts.py",
     "test_skill_guardrails.py",
+    "test_github_ready_enforcement.py",
+    "test_project_status.py",
     "test_pdf_runtime_flow.py",
     "test_kindlemaster_entrypoint.py",
+    "test_app_async_convert.py",
+    "test_app_runtime_services.py",
     "test_docx_conversion.py",
     "test_app_docx_conversion.py",
     "test_epub_validation.py",
+    "test_fixed_layout_render_budget.py",
+    "test_converter_fixed_layout_budget_enforcement.py",
+    "test_conversion_cleanup_ttl_contract.py",
+    "test_vat_fixture_contracts.py",
+    "test_prepare_reference_inputs_ocr_fixture.py",
+    "test_reference_inputs_document_like_fixture.py",
     "test_text_normalization.py",
     "test_converter_text_cleanup.py",
     "test_semantic_epub_cleanup.py",
@@ -31,20 +41,43 @@ RELEASE_TESTS = QUICK_TESTS + [
     "test_app_heading_repair.py",
 ]
 
+CORPUS_TESTS = [
+    "test_premium_corpus_smoke.py",
+    "test_premium_corpus_smoke_batches.py",
+    "test_corpus_gate.py",
+]
+
+BROWSER_TESTS = [
+    "test_browser_polling_runtime_harness.py",
+]
+
+RUNTIME_TESTS = [
+    "test_runtime_waitress_smoke.py",
+    "test_browser_polling_e2e.py",
+    "test_browser_privacy_diagnostics.py",
+]
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Standard operational entrypoint for KindleMaster.")
     subparsers = parser.add_subparsers(dest="command")
 
-    bootstrap_parser = subparsers.add_parser("bootstrap", help="Install runtime and dev/test dependencies.")
+    bootstrap_parser = subparsers.add_parser(
+        "bootstrap",
+        help="Install the supported Python bootstrap profile (runtime-only or developer).",
+    )
     bootstrap_parser.add_argument("--runtime-only", action="store_true")
 
-    subparsers.add_parser("doctor", help="Print detected toolchain and validator availability.")
+    subparsers.add_parser(
+        "doctor",
+        help="Print the supported-vs-optional local toolchain matrix and detected availability.",
+    )
     subparsers.add_parser("prepare-reference-inputs", help="Copy curated reference fixtures into reference_inputs/.")
 
     serve_parser = subparsers.add_parser("serve", help="Run the local KindleMaster web app.")
     serve_parser.add_argument("--port", type=int, default=None)
     serve_parser.add_argument("--debug", action="store_true")
+    serve_parser.add_argument("--runtime", choices=("flask", "waitress"), default="flask")
 
     convert_parser = subparsers.add_parser("convert", help="Convert a PDF or DOCX file to EPUB.")
     convert_parser.add_argument("input_path")
@@ -65,8 +98,22 @@ def main() -> int:
     smoke_parser.add_argument("--reports-dir", default="reports/smoke")
     smoke_parser.add_argument("--case", action="append", default=[])
 
+    corpus_parser = subparsers.add_parser("corpus", help="Run the standard corpus-wide proof gate.")
+    corpus_parser.add_argument("--manifest", default="reference_inputs/manifest.json")
+    corpus_parser.add_argument("--output-root", default="output/corpus")
+    corpus_parser.add_argument("--reports-root", default="reports/corpus")
+    corpus_parser.add_argument("--proof-profile", choices=("standard", "full"), default="standard")
+    corpus_parser.add_argument("--smoke-case", action="append", default=[])
+    corpus_parser.add_argument("--premium-case", action="append", default=[])
+
+    status_parser = subparsers.add_parser("status", help="Generate a derived project status from existing evidence artifacts.")
+    status_parser.add_argument("--repo-root", default=".")
+    status_parser.add_argument("--reports-root", default="reports")
+    status_parser.add_argument("--output-json", default="reports/project_status.json")
+    status_parser.add_argument("--output-md", default="reports/project_status.md")
+
     test_parser = subparsers.add_parser("test", help="Run standard KindleMaster test suites.")
-    test_parser.add_argument("--suite", choices=("quick", "release", "full"), default="quick")
+    test_parser.add_argument("--suite", choices=("quick", "release", "full", "browser", "runtime", "corpus"), default="quick")
 
     audit_parser = subparsers.add_parser("audit", help="Run release audit on an EPUB.")
     audit_parser.add_argument("epub_path")
@@ -106,15 +153,15 @@ def main() -> int:
     if args.command == "doctor":
         from premium_tools import detect_toolchain
 
-        print(json.dumps(detect_toolchain(), ensure_ascii=False, indent=2))
+        _print_json(detect_toolchain())
         return 0
     if args.command == "prepare-reference-inputs":
         from scripts.prepare_reference_inputs import prepare_reference_inputs
 
-        print(json.dumps(prepare_reference_inputs(), ensure_ascii=False, indent=2))
+        _print_json(prepare_reference_inputs())
         return 0
     if args.command == "serve":
-        return _run_serve(port=args.port, debug=args.debug)
+        return _run_serve(port=args.port, debug=args.debug, runtime=args.runtime)
     if args.command == "convert":
         return _run_convert(
             input_path=args.input_path,
@@ -128,7 +175,7 @@ def main() -> int:
         from scripts.run_epub_validators import run_epub_validators
 
         payload = run_epub_validators(args.epub_paths, reports_dir=args.reports_dir)
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        _print_json(payload)
         return 0 if payload["overall_status"] != "failed" else 1
     if args.command == "smoke":
         from scripts.run_smoke_tests import run_smoke_tests
@@ -140,8 +187,32 @@ def main() -> int:
             reports_dir=args.reports_dir,
             case_filters=args.case,
         )
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        _print_json(payload)
         return 0 if payload["summary"]["overall_status"] != "failed" else 1
+    if args.command == "corpus":
+        from scripts.run_corpus_gate import run_corpus_gate
+
+        payload = run_corpus_gate(
+            manifest_path=args.manifest,
+            output_root=args.output_root,
+            reports_root=args.reports_root,
+            proof_profile=args.proof_profile,
+            smoke_case_filters=args.smoke_case,
+            premium_case_filters=args.premium_case,
+        )
+        _print_json(payload)
+        return 0 if payload.get("overall_status") != "failed" else 1
+    if args.command == "status":
+        from scripts.generate_project_status import generate_project_status
+
+        payload = generate_project_status(
+            repo_root=args.repo_root,
+            reports_root=args.reports_root,
+            output_json=args.output_json,
+            output_md=args.output_md,
+        )
+        _print_json(payload)
+        return 0 if payload.get("overall_status") != "failed" else 1
     if args.command == "test":
         return _run_tests(args.suite)
     if args.command == "audit":
@@ -175,7 +246,7 @@ def main() -> int:
                 reports_root=args.reports_root,
                 output_root=args.output_root,
             )
-            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            _print_json(payload)
             return 0
         if args.workflow_command == "verify":
             payload = run_workflow_verify(
@@ -184,7 +255,7 @@ def main() -> int:
                 reports_root=args.reports_root,
                 output_root=args.output_root,
             )
-            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            _print_json(payload)
             return 0 if payload.get("status") in {"passed", "passed_with_warnings"} else 1
         workflow_parser.print_help()
         return 1
@@ -205,28 +276,154 @@ def _run_bootstrap(*, runtime_only: bool) -> int:
             return completed.returncode
     from premium_tools import detect_toolchain
 
-    print(json.dumps(detect_toolchain(), ensure_ascii=False, indent=2))
+    payload = detect_toolchain()
+    payload["bootstrap_run"] = {
+        "requested_profile": "runtime_only" if runtime_only else "developer",
+        "installed_requirements_files": ["requirements.txt"] if runtime_only else ["requirements.txt", "requirements-dev.txt"],
+        "notes": [
+            "Use `python kindlemaster.py doctor` to re-check the local toolchain later without reinstalling packages.",
+        ],
+    }
+    _print_json(payload)
     return 0
 
 
-def _run_serve(*, port: int | None, debug: bool) -> int:
-    from app import LOCALHOST, _resolve_debug_mode, _resolve_server_port, app
+def _run_serve(*, port: int | None, debug: bool, runtime: str) -> int:
+    from app import app
+    from app_runtime_services import (
+        LOCALHOST,
+        build_local_app_url,
+        resolve_debug_mode,
+        resolve_server_port,
+        serve_http_app,
+    )
 
-    effective_port = port if port is not None else _resolve_server_port()
-    effective_debug = debug or _resolve_debug_mode()
-    print(f"Starting KindleMaster on http://{LOCALHOST}:{effective_port} (debug={effective_debug})", flush=True)
-    app.run(debug=effective_debug, host=LOCALHOST, port=effective_port)
-    return 0
+    effective_port = port if port is not None else resolve_server_port()
+    effective_debug = debug or resolve_debug_mode()
+    if runtime == "waitress":
+        print(
+            (
+                f"Starting KindleMaster on {build_local_app_url(effective_port)} "
+                f"(bind={LOCALHOST}, runtime=waitress, debug={effective_debug})"
+            ),
+            flush=True,
+        )
+        return serve_http_app(app, host=LOCALHOST, port=effective_port, debug=effective_debug, runtime=runtime)
+
+    print(
+        (
+            f"Starting KindleMaster on {build_local_app_url(effective_port)} "
+            f"(bind={LOCALHOST}, runtime=flask, debug={effective_debug})"
+        ),
+        flush=True,
+    )
+    return serve_http_app(app, host=LOCALHOST, port=effective_port, debug=effective_debug, runtime=runtime)
 
 
 def _run_tests(suite: str) -> int:
+    repo_root = Path(__file__).resolve().parent
+    verification_surfaces: dict[str, Any] = {}
+    if suite in {"browser", "runtime", "release"}:
+        from premium_tools import detect_toolchain
+
+        verification_surfaces = detect_toolchain().get("verification_surfaces", {})
+
+    if suite == "browser":
+        surface = verification_surfaces.get("browser", {})
+        if surface.get("status") != "supported":
+            _print_json(
+                {
+                    "suite": "browser",
+                    "status": "unavailable",
+                    "missing_requirements": surface.get("missing_requirements", []),
+                    "notes": surface.get("notes", []),
+                }
+            )
+            return 1
+        return subprocess.run(
+            [sys.executable, "-m", "unittest", *BROWSER_TESTS],
+            check=False,
+            cwd=repo_root,
+        ).returncode
+    if suite == "runtime":
+        surface = verification_surfaces.get("runtime", {})
+        if surface.get("status") != "supported":
+            _print_json(
+                {
+                    "suite": "runtime",
+                    "status": "unavailable",
+                    "missing_requirements": surface.get("missing_requirements", []),
+                    "notes": surface.get("notes", []),
+                }
+            )
+            return 1
+        return subprocess.run(
+            [sys.executable, "-m", "unittest", *RUNTIME_TESTS],
+            check=False,
+            cwd=repo_root,
+        ).returncode
+    if suite == "corpus":
+        commands: list[Sequence[str]] = [
+            [sys.executable, "-m", "unittest", *CORPUS_TESTS],
+            [sys.executable, "kindlemaster.py", "corpus"],
+        ]
+        for command in commands:
+            completed = subprocess.run(command, check=False, cwd=repo_root)
+            if completed.returncode != 0:
+                return completed.returncode
+        return 0
+    if suite == "release":
+        release_surface = verification_surfaces.get("release", {})
+        if release_surface.get("status") == "unsupported":
+            _print_json(
+                {
+                    "suite": "release",
+                    "status": "unavailable",
+                    "missing_requirements": release_surface.get("missing_requirements", []),
+                    "notes": release_surface.get("notes", []),
+                }
+            )
+            return 1
+        commands: list[Sequence[str]] = [
+            [sys.executable, "-m", "unittest", *RELEASE_TESTS],
+            [sys.executable, "kindlemaster.py", "smoke", "--mode", "quick"],
+            [sys.executable, "kindlemaster.py", "test", "--suite", "corpus"],
+        ]
+        optional_followups = release_surface.get("optional_followups", [])
+        for followup in optional_followups:
+            surface_name = followup.get("surface")
+            status = followup.get("status")
+            if surface_name == "browser" and status == "supported":
+                commands.append([sys.executable, "-m", "unittest", *BROWSER_TESTS])
+            if surface_name == "runtime" and status == "supported":
+                commands.append([sys.executable, "-m", "unittest", *RUNTIME_TESTS])
+        skipped_followups = [
+            {
+                "surface": followup.get("surface"),
+                "missing_requirements": followup.get("missing_requirements", []),
+            }
+            for followup in optional_followups
+            if followup.get("status") != "supported"
+        ]
+        if skipped_followups:
+            _print_json(
+                {
+                    "suite": "release",
+                    "status": "degraded",
+                    "notes": release_surface.get("notes", []),
+                    "skipped_optional_surfaces": skipped_followups,
+                }
+            )
+        for command in commands:
+            completed = subprocess.run(command, check=False, cwd=repo_root)
+            if completed.returncode != 0:
+                return completed.returncode
+        return 0
     if suite == "full":
         command: Sequence[str] = [sys.executable, "-m", "unittest", "discover", "-p", "test*.py"]
-    elif suite == "release":
-        command = [sys.executable, "-m", "unittest", *RELEASE_TESTS]
     else:
         command = [sys.executable, "-m", "unittest", *QUICK_TESTS]
-    return subprocess.run(command, check=False).returncode
+    return subprocess.run(command, check=False, cwd=repo_root).returncode
 
 
 def _json_safe(value: Any) -> Any:
@@ -243,6 +440,20 @@ def _json_safe(value: Any) -> Any:
     return str(value)
 
 
+def _json_text(value: Any) -> str:
+    return json.dumps(_json_safe(value), ensure_ascii=False, indent=2)
+
+
+def _print_json(value: Any) -> None:
+    rendered = _json_text(value)
+    stream = getattr(sys.stdout, "buffer", None)
+    if stream is not None:
+        stream.write((rendered + "\n").encode("utf-8", errors="replace"))
+        stream.flush()
+        return
+    print(rendered)
+
+
 def _run_convert(
     *,
     input_path: str,
@@ -252,77 +463,47 @@ def _run_convert(
     heading_repair: bool,
     report_json: str,
 ) -> int:
-    from converter import ConversionConfig, convert_document_to_epub_with_report
+    from app_runtime_services import ConversionRequest, run_document_conversion
+    from converter import convert_document_to_epub_with_report
     from epub_heading_repair import repair_epub_headings_and_toc
 
     resolved_input = Path(input_path).resolve()
     if not resolved_input.exists():
-        print(json.dumps({"error": f"Input not found: {resolved_input}"}, ensure_ascii=False, indent=2))
+        _print_json({"error": f"Input not found: {resolved_input}"})
         return 1
 
     resolved_output = Path(output_path).resolve()
     resolved_output.parent.mkdir(parents=True, exist_ok=True)
 
-    result = convert_document_to_epub_with_report(
-        str(resolved_input),
-        config=ConversionConfig(profile=profile, language=language, prefer_fixed_layout=profile == "preserve-layout"),
-        original_filename=resolved_input.name,
+    source_suffix = resolved_input.suffix.lower()
+    source_type = source_suffix.lstrip(".") if source_suffix in {".pdf", ".docx"} else None
+    outcome = run_document_conversion(
+        ConversionRequest(
+            source_path=str(resolved_input),
+            source_type=source_type,
+            original_filename=resolved_input.name,
+            profile=profile,
+            language=language,
+            heading_repair_enabled=heading_repair,
+        ),
+        convert_impl=convert_document_to_epub_with_report,
+        heading_repair_impl=repair_epub_headings_and_toc,
     )
-    epub_bytes = result["epub_bytes"]
-    heading_repair_report = {
-        "status": "skipped",
-        "release_status": "unavailable",
-        "toc_entries_before": 0,
-        "toc_entries_after": 0,
-        "headings_removed": 0,
-        "manual_review_count": 0,
-        "epubcheck_status": "unavailable",
-        "error": "",
-    }
 
-    if heading_repair:
-        try:
-            heading_repair_result = repair_epub_headings_and_toc(
-                epub_bytes,
-                title_hint=str((result.get("document_summary", {}) or {}).get("title", "") or ""),
-                author_hint=str((result.get("document_summary", {}) or {}).get("author", "") or ""),
-                language_hint=language,
-                publication_profile=profile,
-            )
-            heading_repair_report = {
-                "status": "applied",
-                "release_status": heading_repair_result.summary.get("release_status", "unavailable"),
-                "toc_entries_before": heading_repair_result.summary.get("toc_entries_before", 0),
-                "toc_entries_after": heading_repair_result.summary.get("toc_entries_after", 0),
-                "headings_removed": heading_repair_result.summary.get("headings_removed", 0),
-                "manual_review_count": heading_repair_result.summary.get("manual_review_count", 0),
-                "epubcheck_status": heading_repair_result.summary.get("epubcheck_status", "unavailable"),
-                "error": "",
-            }
-            if heading_repair_result.epubcheck.get("status") == "failed":
-                messages = heading_repair_result.epubcheck.get("messages", []) or []
-                heading_repair_report["status"] = "failed"
-                heading_repair_report["error"] = next((str(message) for message in messages if str(message).strip()), "Heading/TOC repair failed.")
-            else:
-                epub_bytes = heading_repair_result.epub_bytes
-        except Exception as exc:
-            heading_repair_report["status"] = "failed"
-            heading_repair_report["error"] = str(exc)
-
-    resolved_output.write_bytes(epub_bytes)
+    resolved_output.write_bytes(outcome.epub_bytes)
 
     payload = {
-        **result,
+        **outcome.result,
         "output_path": str(resolved_output),
-        "heading_repair": heading_repair_report,
+        "heading_repair": outcome.heading_repair_report,
     }
-    payload["epub_bytes"] = f"<{len(epub_bytes)} bytes>"
+    payload["epub_bytes"] = f"<{len(outcome.epub_bytes)} bytes>"
     payload = _json_safe(payload)
     if report_json:
         report_path = Path(report_json).resolve()
         report_path.parent.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+        report_path.write_text(_json_text(payload), encoding="utf-8")
+    _print_json(payload)
     return 0
 
 

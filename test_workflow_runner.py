@@ -8,6 +8,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from app_runtime_services import ConversionOutcome, build_conversion_metadata
 from workflow_runner import _detect_input_type, _load_targeted_tests_from_agents, run_workflow_baseline, run_workflow_verify
 
 
@@ -171,6 +172,172 @@ class WorkflowRunnerTests(unittest.TestCase):
 
     def test_detect_input_type_accepts_docx(self) -> None:
         self.assertEqual(_detect_input_type(Path("sample.docx")), "docx")
+
+    @patch("workflow_runner.run_epub_publishing_quality_recovery", return_value={"decision": "pass", "gates": {"C": {"status": "pass"}, "D": {"status": "pass"}}})
+    @patch("workflow_runner.validate_epub_bytes", return_value={"summary": {"status": "passed", "error_count": 0, "warning_count": 0}, "epubcheck": {"status": "passed"}, "internal_links": {"errors": []}, "external_links": {"errors": []}, "package": {"errors": []}})
+    @patch("workflow_runner.run_document_conversion")
+    def test_baseline_for_pdf_forwards_expected_title_author_language_to_audit(
+        self,
+        mock_run_document_conversion,
+        _mock_validate,
+        mock_audit,
+    ) -> None:
+        result = {
+            "epub_bytes": _minimal_epub_bytes(),
+            "source_type": "pdf",
+            "analysis": {"profile": "diagram_book_reflow", "confidence": 0.82},
+            "quality_report": {"validation_status": "passed", "validation_tool": "epubcheck", "warnings": []},
+            "document": {
+                "title": "The Woodpecker Method",
+                "author": "Unknown",
+                "language": "pl",
+                "profile": "diagram_book_reflow",
+            },
+            "document_summary": {
+                "title": "The Woodpecker Method",
+                "author": "Unknown",
+                "language": "pl",
+                "profile": "diagram_book_reflow",
+                "layout_mode": "reflowable",
+                "section_count": 20,
+                "asset_count": 1164,
+            },
+        }
+        metadata = build_conversion_metadata(
+            result=result,
+            detected_source_type="pdf",
+            heading_repair_enabled=False,
+            heading_repair_report={"status": "skipped"},
+        )
+        mock_run_document_conversion.return_value = ConversionOutcome(
+            result=result,
+            epub_bytes=result["epub_bytes"],
+            heading_repair_report={"status": "skipped"},
+            detected_source_type="pdf",
+            download_name="The Woodpecker Method.epub",
+            metadata=metadata,
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            pdf_path = root / "woodpecker.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4 woodpecker probe")
+
+            payload = run_workflow_baseline(
+                pdf_path,
+                change_area="pipeline",
+                reports_root=root / "reports",
+                output_root=root / "output",
+            )
+
+        audit_kwargs = mock_audit.call_args.kwargs
+        self.assertEqual(audit_kwargs["expected_title"], "The Woodpecker Method")
+        self.assertEqual(audit_kwargs["expected_author"], "")
+        self.assertEqual(audit_kwargs["expected_language"], "en")
+        self.assertEqual(audit_kwargs["publication_profile"], "diagram_book_reflow")
+        self.assertEqual(payload["snapshot"]["audit_expectations"]["expected_language"], "en")
+
+    @patch("workflow_runner.run_epub_publishing_quality_recovery", return_value={"decision": "pass", "gates": {"C": {"status": "pass"}, "D": {"status": "pass"}}})
+    @patch("workflow_runner.validate_epub_bytes", return_value={"summary": {"status": "passed", "error_count": 0, "warning_count": 0}, "epubcheck": {"status": "passed"}, "internal_links": {"errors": []}, "external_links": {"errors": []}, "package": {"errors": []}})
+    @patch("workflow_runner.convert_document_to_epub_with_report")
+    def test_baseline_preserves_conversion_quality_metadata_for_runtime_parity(self, mock_convert, _mock_validate, _mock_audit) -> None:
+        conversion_result = {
+            "epub_bytes": _minimal_epub_bytes(),
+            "source_type": "pdf",
+            "analysis": {
+                "profile": "diagram_book_reflow",
+                "confidence": 0.88,
+                "legacy_strategy": "image-first-reflow",
+                "render_budget_class": "fixed_layout_balanced",
+            },
+            "quality_report": {
+                "validation_status": "passed",
+                "validation_tool": "epubcheck",
+                "warnings": [],
+                "high_risk_pages": [],
+                "high_risk_sections": [],
+                "render_budget_class": "fixed_layout_balanced",
+                "render_budget_attempt": "primary",
+                "size_budget_status": "passed_with_warnings",
+                "size_budget_message": "Dense image book is near the warn threshold.",
+                "target_warn_bytes": 8192,
+                "target_hard_bytes": 12288,
+                "final_output_size_bytes": 9216,
+            },
+            "document_summary": {
+                "title": "The Woodpecker Method",
+                "author": "Unknown",
+                "language": "en",
+                "layout_mode": "reflowable",
+                "section_count": 16,
+                "asset_count": 240,
+            },
+        }
+        mock_convert.return_value = conversion_result
+        runtime_metadata = build_conversion_metadata(
+            result=conversion_result,
+            detected_source_type="pdf",
+            heading_repair_enabled=True,
+            heading_repair_report={
+                "status": "skipped",
+                "release_status": "skipped",
+                "toc_entries_before": 0,
+                "toc_entries_after": 0,
+                "headings_removed": 0,
+                "manual_review_count": 0,
+                "epubcheck_status": "skipped",
+                "error": "Skipped for diagram-heavy training book to avoid noisy TOC churn.",
+            },
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            pdf_path = root / "woodpecker.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4 workflow probe")
+
+            payload = run_workflow_baseline(
+                pdf_path,
+                change_area="semantic",
+                reports_root=root / "reports",
+                output_root=root / "output",
+            )
+
+        conversion_summary = payload["snapshot"]["conversion"]
+        self.assertEqual(conversion_summary["analysis"]["profile"], runtime_metadata["profile"])
+        self.assertEqual(conversion_summary["analysis"]["legacy_strategy"], runtime_metadata["strategy"])
+        self.assertEqual(
+            conversion_summary["quality_report"]["render_budget_class"],
+            runtime_metadata["render_budget_class"],
+        )
+        self.assertEqual(
+            conversion_summary["quality_report"]["size_budget_status"],
+            runtime_metadata["size_budget_status"],
+        )
+        self.assertEqual(
+            conversion_summary["document_summary"]["asset_count"],
+            runtime_metadata["assets"],
+        )
+        self.assertEqual(conversion_summary["document_summary"]["language"], "en")
+        self.assertEqual(
+            conversion_summary["quality_state"]["summary"]["profile"],
+            runtime_metadata["profile"],
+        )
+        self.assertEqual(
+            conversion_summary["quality_state"]["validation"]["status"],
+            runtime_metadata["validation"],
+        )
+        self.assertEqual(
+            conversion_summary["quality_state"]["render_budget"]["budget_class"],
+            runtime_metadata["render_budget_class"],
+        )
+        self.assertEqual(
+            conversion_summary["quality_state"]["size_budget"]["status"],
+            runtime_metadata["size_budget_status"],
+        )
+        self.assertEqual(
+            conversion_summary["quality_state"]["heading_repair"]["status"],
+            runtime_metadata["heading_repair"]["status"],
+        )
 
     @patch("workflow_runner.subprocess.run")
     @patch("workflow_runner.run_smoke_tests")

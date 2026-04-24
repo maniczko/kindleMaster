@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from lxml import etree
 
-from epub_heading_repair import repair_epub_headings_and_toc, run_heading_repair_pipeline
+from epub_heading_repair import _build_toc_entries_from_scan, repair_epub_headings_and_toc, run_heading_repair_pipeline
 
 
 class EpubHeadingRepairTests(unittest.TestCase):
@@ -121,6 +121,7 @@ class EpubHeadingRepairTests(unittest.TestCase):
         self.assertNotIn("<h1>Material sponsorowany - R4</h1>", chapter)
         self.assertIn("Raport platnosci", nav)
         self.assertNotIn("Material sponsorowany - R4", nav)
+        self.assertEqual(result.qa["gates"]["C"]["status"], "pass")
 
     def test_run_heading_repair_pipeline_writes_reports_and_preserves_clean_structure(self):
         chapter_source = """<?xml version="1.0" encoding="utf-8"?>
@@ -230,6 +231,155 @@ class EpubHeadingRepairTests(unittest.TestCase):
         self.assertNotIn("Co to jest", toc_labels)
         self.assertNotIn("Jak dziala", toc_labels)
         self.assertNotIn("Implikacje biznesowe", toc_labels)
+
+    def test_build_toc_entries_from_scan_skips_front_matter_descendants_and_repeated_subsection_labels(self):
+        after_scan = {
+            "chapter_004.xhtml": [
+                {"level": 1, "text": "Contents", "id": "contents"},
+                {"level": 3, "text": "Summary of Tactical Motifs", "id": "summary-of-tactical-motifs"},
+            ],
+            "chapter_010.xhtml": [
+                {"level": 1, "text": "Summary of Tactical Motifs", "id": "summary-body"},
+                {"level": 2, "text": "The Woodpecker Method", "id": "woodpecker-method-a"},
+            ],
+            "chapter_011.xhtml": [
+                {"level": 1, "text": "Instructions", "id": "instructions"},
+                {"level": 2, "text": "The Woodpecker Method", "id": "woodpecker-method-b"},
+            ],
+        }
+
+        toc_entries = _build_toc_entries_from_scan(after_scan)
+        labels = [entry["text"] for entry in toc_entries]
+
+        self.assertEqual(labels.count("Contents"), 1)
+        self.assertEqual(labels.count("Summary of Tactical Motifs"), 1)
+        self.assertEqual(labels.count("The Woodpecker Method"), 1)
+
+    def test_repair_epub_headings_and_toc_demotes_page_markers_and_promotes_first_real_heading(self):
+        chapter_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>OCR stress scan</title></head>
+  <body>
+    <section>
+      <h1>Strona 2</h1>
+      <h2>OCR stress scan 2/3</h2>
+      <p>Image-only fixture chapter with the real section title immediately after the page marker.</p>
+    </section>
+  </body>
+</html>
+"""
+        epub_bytes = self._minimal_epub(
+            chapter_source,
+            nav_label="Strona 2",
+            nav_href="chapter_001.xhtml#strona-2",
+        )
+
+        with patch(
+            "epub_heading_repair.run_epubcheck",
+            return_value={"status": "passed", "tool": "epubcheck", "messages": []},
+        ):
+            result = repair_epub_headings_and_toc(epub_bytes, language_hint="pl")
+
+        toc_labels = [item["label"] for item in result.toc_mapping]
+        self.assertNotIn("Strona 2", toc_labels)
+        self.assertEqual(result.qa["gates"]["C"]["status"], "pass")
+
+        with zipfile.ZipFile(io.BytesIO(result.epub_bytes), "r") as archive:
+            chapter = archive.read("EPUB/chapter_001.xhtml").decode("utf-8")
+
+        self.assertIn('<h1 id="ocr-stress-scan">OCR stress scan</h1>', chapter)
+        self.assertNotIn("Strona 2", chapter)
+        self.assertNotIn("<h1>Strona 2</h1>", chapter)
+
+    def test_repair_epub_headings_and_toc_skips_empty_reference_sections_in_toc(self):
+        epub_bytes = self._build_epub_bytes(
+            {
+                "mimetype": "application/epub+zip",
+                "META-INF/container.xml": """<?xml version="1.0" encoding="utf-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="EPUB/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>
+""",
+                "EPUB/content.opf": """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">heading-repair</dc:identifier>
+    <dc:title>python-docx</dc:title>
+    <dc:language>pl</dc:language>
+    <dc:creator>Technical Converter</dc:creator>
+  </metadata>
+  <manifest>
+    <item id="chapter-1" href="chapter_001.xhtml" media-type="application/xhtml+xml"/>
+    <item id="chapter-2" href="chapter_002.xhtml" media-type="application/xhtml+xml"/>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="css" href="style/default.css" media-type="text/css"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="chapter-1"/>
+    <itemref idref="chapter-2"/>
+  </spine>
+</package>
+""",
+                "EPUB/chapter_001.xhtml": """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Raport platnosci</title></head>
+  <body>
+    <section>
+      <h1>Raport platnosci</h1>
+      <p>To jest wlasciwa tresc raportu.</p>
+    </section>
+  </body>
+</html>
+""",
+                "EPUB/chapter_002.xhtml": """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Referencje</title></head>
+  <body>
+    <section>
+      <h1>15. Referencje publiczne</h1>
+    </section>
+  </body>
+</html>
+""",
+                "EPUB/nav.xhtml": """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+  <head><title>Navigation</title></head>
+  <body>
+    <nav epub:type="toc">
+      <ol>
+        <li><a href="chapter_001.xhtml#raport-platnosci">Raport platnosci</a></li>
+        <li><a href="chapter_002.xhtml#referencje">15. Referencje publiczne</a></li>
+      </ol>
+    </nav>
+  </body>
+</html>
+""",
+                "EPUB/toc.ncx": """<?xml version="1.0" encoding="utf-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+  <head><meta name="dtb:uid" content="heading-repair"/></head>
+  <docTitle><text>Legacy</text></docTitle>
+  <navMap>
+    <navPoint id="main" playOrder="1"><navLabel><text>Raport platnosci</text></navLabel><content src="chapter_001.xhtml#raport-platnosci"/></navPoint>
+    <navPoint id="refs" playOrder="2"><navLabel><text>15. Referencje publiczne</text></navLabel><content src="chapter_002.xhtml#referencje"/></navPoint>
+  </navMap>
+</ncx>
+""",
+                "EPUB/style/default.css": "body { font-family: serif; }",
+            }
+        )
+
+        with patch(
+            "epub_heading_repair.run_epubcheck",
+            return_value={"status": "passed", "tool": "epubcheck", "messages": []},
+        ):
+            result = repair_epub_headings_and_toc(epub_bytes, language_hint="pl")
+
+        toc_labels = [item["label"] for item in result.toc_mapping]
+        self.assertIn("Raport platnosci", toc_labels)
+        self.assertNotIn("15. Referencje publiczne", toc_labels)
 
     def test_repair_epub_headings_and_toc_excludes_table_header_like_entries_from_toc(self):
         chapter_source = """<?xml version="1.0" encoding="utf-8"?>

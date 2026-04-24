@@ -7,7 +7,7 @@ import re
 import tempfile
 import zipfile
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +17,7 @@ from lxml import etree
 from converter import ConversionConfig, convert_pdf_to_epub_with_report
 from epub_heading_repair import repair_epub_headings_and_toc
 from publication_analysis import analyze_publication
+from size_budget_policy import evaluate_size_budget, get_document_size_budget, inspect_epub_archive, load_size_budget_policy
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,36 @@ class CorpusCase:
     document_class: str
     notes: str = ""
     analysis_only: bool = False
+    release_strict: bool = True
+
+
+@dataclass(frozen=True)
+class CorpusBatchSelection:
+    total_cases: int
+    matching_cases: int
+    selected_cases: int
+    skipped_cases: int
+    coverage_status: str
+    filters: tuple[str, ...]
+    shard_count: int | None
+    shard_index: int | None
+    limit: int | None
+    selected_case_labels: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CorpusSourceSummary:
+    source_mode: str
+    manifest_path: str | None
+    manifest_case_count: int
+    eligible_manifest_cases: int
+    skipped_manifest_cases: int
+    skipped_case_labels: tuple[str, ...]
+    fallback_used: bool
+    fallback_reason: str
+
+
+DEFAULT_MANIFEST_PATH = Path("reference_inputs/manifest.json")
 
 
 CORPUS: list[CorpusCase] = [
@@ -32,6 +63,16 @@ CORPUS: list[CorpusCase] = [
         Path("example/02695ab2e05aab728b4b995caa682f947e8be2c3291ff490579797c5a3cc5e26.pdf"),
         document_class="magazine-layout",
         notes="Layout-heavy editorial PDF with tables and image-led pages.",
+    ),
+    CorpusCase(
+        Path("reference_inputs/pdf/ocr_stress_scan.pdf"),
+        document_class="ocr-stress-scan",
+        notes="Deterministic OCR-stressed scanned PDF generated from the reference-input bootstrap.",
+    ),
+    CorpusCase(
+        Path("reference_inputs/pdf/document_like_report.pdf"),
+        document_class="document-like-report",
+        notes="Deterministic multi-page report-style PDF generated from the reference-input bootstrap.",
     ),
     CorpusCase(
         Path("example/BABOK_Guide_v3_Member.pdf"),
@@ -208,6 +249,28 @@ def _build_case_blockers(
     return blockers
 
 
+def _apply_release_strictness(
+    case: CorpusCase,
+    *,
+    blockers: list[dict[str, str]],
+    warnings: list[dict[str, str]],
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    if case.release_strict:
+        return blockers, warnings
+
+    relaxed_blockers = [
+        item
+        for item in blockers
+        if item.get("code") not in {"placeholder_title", "placeholder_creator"}
+    ]
+    relaxed_warnings = [
+        item
+        for item in warnings
+        if item.get("code") not in {"heading_manual_review"}
+    ]
+    return relaxed_blockers, relaxed_warnings
+
+
 def _build_case_warnings(
     *,
     summary: dict[str, Any],
@@ -242,6 +305,170 @@ def _derive_case_grade(blockers: list[dict[str, str]], warnings: list[dict[str, 
     return "pass"
 
 
+def _normalize_case_filters(case_filters: list[str] | None) -> list[str]:
+    return [token.strip().lower() for token in (case_filters or []) if token.strip()]
+
+
+def _resolve_manifest_root(manifest_payload: dict[str, Any]) -> Path:
+    root_dir = Path(str(manifest_payload.get("root_dir", ".")))
+    if root_dir.is_absolute():
+        return root_dir
+    return root_dir.resolve()
+
+
+def _resolve_manifest_target_path(raw_path: str, *, manifest_root: Path) -> Path:
+    candidate = Path(raw_path)
+    if candidate.is_absolute():
+        return candidate
+    return (manifest_root / candidate).resolve()
+
+
+def _load_manifest_conversion_cases(
+    *,
+    manifest_path: str | Path | None = DEFAULT_MANIFEST_PATH,
+) -> tuple[list[CorpusCase], CorpusSourceSummary]:
+    if manifest_path is None:
+        return list(CORPUS), CorpusSourceSummary(
+            source_mode="legacy-static",
+            manifest_path=None,
+            manifest_case_count=0,
+            eligible_manifest_cases=0,
+            skipped_manifest_cases=0,
+            skipped_case_labels=(),
+            fallback_used=True,
+            fallback_reason="manifest_disabled",
+        )
+
+    resolved_manifest = Path(manifest_path).resolve()
+    if not resolved_manifest.exists():
+        return list(CORPUS), CorpusSourceSummary(
+            source_mode="legacy-static-fallback",
+            manifest_path=str(resolved_manifest),
+            manifest_case_count=0,
+            eligible_manifest_cases=0,
+            skipped_manifest_cases=0,
+            skipped_case_labels=(),
+            fallback_used=True,
+            fallback_reason="manifest_missing",
+        )
+
+    try:
+        manifest_payload = json.loads(resolved_manifest.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return list(CORPUS), CorpusSourceSummary(
+            source_mode="legacy-static-fallback",
+            manifest_path=str(resolved_manifest),
+            manifest_case_count=0,
+            eligible_manifest_cases=0,
+            skipped_manifest_cases=0,
+            skipped_case_labels=(),
+            fallback_used=True,
+            fallback_reason=f"manifest_unreadable:{exc.__class__.__name__}",
+        )
+
+    manifest_root = _resolve_manifest_root(manifest_payload)
+    manifest_cases = manifest_payload.get("cases", [])
+    eligible_cases: list[CorpusCase] = []
+    skipped_labels: list[str] = []
+    for case in manifest_cases:
+        input_type = str(case.get("input_type", "")).lower()
+        case_id = str(case.get("id", "unknown"))
+        if input_type != "pdf":
+            skipped_labels.append(f"{case_id} ({input_type or 'unknown'})")
+            continue
+        target_path = str(case.get("target_path") or case.get("target") or "").strip()
+        if not target_path:
+            skipped_labels.append(f"{case_id} (missing-target)")
+            continue
+        eligible_cases.append(
+            CorpusCase(
+                _resolve_manifest_target_path(target_path, manifest_root=manifest_root),
+                document_class=str(case.get("document_class", "unknown")),
+                notes=str(case.get("notes", "")),
+                release_strict=bool(case.get("release_strict", True)),
+            )
+        )
+
+    return eligible_cases, CorpusSourceSummary(
+        source_mode="manifest-backed",
+        manifest_path=str(resolved_manifest),
+        manifest_case_count=len(manifest_cases),
+        eligible_manifest_cases=len(eligible_cases),
+        skipped_manifest_cases=len(skipped_labels),
+        skipped_case_labels=tuple(skipped_labels),
+        fallback_used=False,
+        fallback_reason="",
+    )
+
+
+def _build_case_pool(
+    *,
+    manifest_path: str | Path | None = DEFAULT_MANIFEST_PATH,
+) -> list[tuple[str, CorpusCase]]:
+    pool: list[tuple[str, CorpusCase]] = []
+    for case in ANALYSIS_ONLY:
+        pool.append(("analysis-only", case))
+    conversion_cases, _ = _load_manifest_conversion_cases(manifest_path=manifest_path)
+    for case in conversion_cases:
+        pool.append(("convert-and-audit", case))
+    return pool
+
+
+def _select_corpus_batch(
+    *,
+    case_filters: list[str] | None,
+    manifest_path: str | Path | None = DEFAULT_MANIFEST_PATH,
+    shard_count: int | None = None,
+    shard_index: int | None = None,
+    limit: int | None = None,
+) -> tuple[list[tuple[str, CorpusCase]], CorpusBatchSelection]:
+    normalized_filters = _normalize_case_filters(case_filters)
+    cases = _build_case_pool(manifest_path=manifest_path)
+    matching_cases = [
+        case_entry
+        for case_entry in cases
+        if _case_matches_filters(case_entry[1], normalized_filters)
+    ]
+
+    selected_cases = list(matching_cases)
+    if shard_count is not None or shard_index is not None:
+        if shard_count is None or shard_index is None:
+            raise ValueError("Shard selection requires both shard_count and shard_index.")
+        if shard_count < 1:
+            raise ValueError("shard_count must be at least 1.")
+        if shard_index < 1 or shard_index > shard_count:
+            raise ValueError("shard_index must be within the shard_count range.")
+        selected_cases = [
+            case_entry
+            for index, case_entry in enumerate(matching_cases)
+            if index % shard_count == shard_index - 1
+        ]
+
+    if limit is not None:
+        if limit < 1:
+            raise ValueError("limit must be at least 1.")
+        selected_cases = selected_cases[:limit]
+
+    coverage_status = (
+        "complete"
+        if len(selected_cases) == len(cases) and not normalized_filters and shard_count in {None, 1} and shard_index in {None, 1} and limit is None
+        else "partial"
+    )
+    selection = CorpusBatchSelection(
+        total_cases=len(cases),
+        matching_cases=len(matching_cases),
+        selected_cases=len(selected_cases),
+        skipped_cases=max(0, len(matching_cases) - len(selected_cases)),
+        coverage_status=coverage_status,
+        filters=tuple(normalized_filters),
+        shard_count=shard_count,
+        shard_index=shard_index,
+        limit=limit,
+        selected_case_labels=tuple(f"{case.path.name} ({case.document_class})" for _, case in selected_cases),
+    )
+    return selected_cases, selection
+
+
 def _run_analysis_only_case(case: CorpusCase) -> dict[str, Any]:
     if not case.path.exists():
         return {"file": str(case.path), "document_class": case.document_class, "status": "missing"}
@@ -269,6 +496,14 @@ def _run_conversion_case(case: CorpusCase, *, run_heading_repair: bool) -> dict[
     quality = result.get("quality_report", {})
     converted_epub_bytes = result["epub_bytes"]
     inspect = inspect_epub(converted_epub_bytes)
+    policy = load_size_budget_policy()
+    size_gate = evaluate_size_budget(
+        budget_key=case.document_class,
+        budget=get_document_size_budget(case.document_class, policy=policy),
+        epub_size_bytes=len(converted_epub_bytes),
+        inspection=inspect_epub_archive(converted_epub_bytes),
+        label="klasy dokumentu",
+    )
 
     heading_summary: dict[str, Any] = {
         "status": "skipped",
@@ -310,6 +545,15 @@ def _run_conversion_case(case: CorpusCase, *, run_heading_repair: bool) -> dict[
         inspect=repaired_inspect,
         heading_summary=heading_summary,
     )
+    blockers, warnings = _apply_release_strictness(
+        case,
+        blockers=blockers,
+        warnings=warnings,
+    )
+    if size_gate["status"] == "failed":
+        blockers.append({"code": "size_budget_failed", "detail": size_gate["message"]})
+    elif size_gate["status"] == "passed_with_warnings":
+        warnings.append({"code": "size_budget_warning", "detail": size_gate["message"]})
     grade = _derive_case_grade(blockers, warnings)
 
     return {
@@ -317,12 +561,14 @@ def _run_conversion_case(case: CorpusCase, *, run_heading_repair: bool) -> dict[
         "document_class": case.document_class,
         "mode": "convert-and-audit",
         "notes": case.notes,
+        "release_strict": case.release_strict,
         "analysis": analysis.to_dict() if hasattr(analysis, "to_dict") else analysis,
         "summary": summary,
         "quality": quality,
         "epub_stats": inspect,
         "heading_repair": heading_summary,
         "post_heading_epub_stats": repaired_inspect,
+        "size_gate": size_gate,
         "grade": grade,
         "blockers": blockers,
         "warnings": warnings,
@@ -330,7 +576,12 @@ def _run_conversion_case(case: CorpusCase, *, run_heading_repair: bool) -> dict[
     }
 
 
-def _build_overall_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _build_overall_summary(
+    rows: list[dict[str, Any]],
+    *,
+    batch_selection: CorpusBatchSelection | None = None,
+    source_summary: CorpusSourceSummary | None = None,
+) -> dict[str, Any]:
     converted = [row for row in rows if row.get("mode") == "convert-and-audit"]
     grade_counts = Counter(row.get("grade", "unknown") for row in converted)
     blocker_counts = Counter(blocker["code"] for row in converted for blocker in row.get("blockers", []))
@@ -339,6 +590,14 @@ def _build_overall_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         row["document_class"]: row.get("grade", "unknown")
         for row in converted
     }
+    proof_scope = batch_selection.coverage_status if batch_selection is not None else "complete"
+    overall_status = "passed"
+    if grade_counts.get("fail", 0) or not converted:
+        overall_status = "failed"
+    elif grade_counts.get("pass_with_review", 0) or proof_scope == "partial" or (
+        source_summary is not None and source_summary.fallback_used
+    ):
+        overall_status = "passed_with_warnings"
     return {
         "converted_case_count": len(converted),
         "analysis_only_case_count": len([row for row in rows if row.get("mode") == "analysis-only"]),
@@ -346,15 +605,62 @@ def _build_overall_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "blocker_counts": dict(blocker_counts),
         "warning_counts": dict(warning_counts),
         "class_grade": class_grade,
+        "overall_status": overall_status,
+        "proof_scope": proof_scope,
+        "source_mode": source_summary.source_mode if source_summary is not None else "legacy-static",
     }
 
 
-def _build_markdown_report(rows: list[dict[str, Any]], overall: dict[str, Any]) -> str:
+def _build_markdown_report(
+    rows: list[dict[str, Any]],
+    overall: dict[str, Any],
+    *,
+    batch_selection: CorpusBatchSelection | None = None,
+    source_summary: CorpusSourceSummary | None = None,
+) -> str:
     lines = [
         "# Premium Corpus Smoke",
         "",
+    ]
+    if batch_selection is not None:
+        selection_label = "complete" if batch_selection.coverage_status == "complete" else "partial"
+        lines.extend(
+            [
+                "## Run scope",
+                "",
+                f"- Coverage: `{selection_label}`",
+                f"- Total cases: `{batch_selection.total_cases}`",
+                f"- Matching cases: `{batch_selection.matching_cases}`",
+                f"- Selected cases: `{batch_selection.selected_cases}`",
+                f"- Skipped cases: `{batch_selection.skipped_cases}`",
+                f"- Filters: `{', '.join(batch_selection.filters) if batch_selection.filters else 'none'}`",
+                (
+                    f"- Shard: `{batch_selection.shard_index}/{batch_selection.shard_count}`"
+                    if batch_selection.shard_count and batch_selection.shard_index
+                    else "- Shard: `none`"
+                ),
+                f"- Limit: `{batch_selection.limit}`" if batch_selection.limit is not None else "- Limit: `none`",
+            ]
+        )
+        if batch_selection.selected_case_labels:
+            lines.append(f"- Selected batch: `{', '.join(batch_selection.selected_case_labels)}`")
+        if source_summary is not None:
+            lines.append(f"- Corpus source: `{source_summary.source_mode}`")
+            if source_summary.manifest_path:
+                lines.append(f"- Manifest: `{source_summary.manifest_path}`")
+            lines.append(f"- Eligible manifest PDF cases: `{source_summary.eligible_manifest_cases}`")
+            lines.append(f"- Skipped manifest cases: `{source_summary.skipped_manifest_cases}`")
+            if source_summary.skipped_case_labels:
+                lines.append(f"- Skipped inputs: `{', '.join(source_summary.skipped_case_labels)}`")
+            if source_summary.fallback_used:
+                lines.append(f"- Fallback reason: `{source_summary.fallback_reason}`")
+        lines.append("")
+    lines.extend(
+        [
         "## Summary",
         "",
+        f"- Overall status: `{overall['overall_status']}`",
+        f"- Proof scope: `{overall.get('proof_scope', 'complete')}`",
         f"- Converted cases: {overall['converted_case_count']}",
         f"- Analysis-only cases: {overall['analysis_only_case_count']}",
         f"- Grade counts: `{json.dumps(overall['grade_counts'], ensure_ascii=False)}`",
@@ -363,7 +669,8 @@ def _build_markdown_report(rows: list[dict[str, Any]], overall: dict[str, Any]) 
         "",
         "## Cases",
         "",
-    ]
+        ]
+    )
     for row in rows:
         lines.extend(
             [
@@ -401,6 +708,12 @@ def _build_markdown_report(rows: list[dict[str, Any]], overall: dict[str, Any]) 
                 f"- Heading repair: release=`{heading_repair.get('release_status', 'skipped')}` toc `{heading_repair.get('toc_entries_before', 0)} -> {heading_repair.get('toc_entries_after', 0)}` removed=`{heading_repair.get('headings_removed', 0)}` review=`{heading_repair.get('manual_review_count', 0)}`",
             ]
         )
+        size_gate = row.get("size_gate") or {}
+        if size_gate:
+            lines.append(f"- Size gate: `{size_gate.get('status', 'unknown')}`")
+            lines.append(
+                f"- Size budget: `{size_gate.get('epub_size_bytes', 0)}` B against warn `{size_gate.get('warn_bytes')}` / hard `{size_gate.get('hard_bytes')}`"
+            )
         if row.get("blockers"):
             lines.append("- Blockers:")
             for blocker in row["blockers"]:
@@ -413,13 +726,91 @@ def _build_markdown_report(rows: list[dict[str, Any]], overall: dict[str, Any]) 
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _persist_reports(*, rows: list[dict[str, Any]], json_path: Path, md_path: Path) -> None:
-    overall = _build_overall_summary(rows)
-    payload = {"overall": overall, "cases": rows}
+def _persist_reports(
+    *,
+    rows: list[dict[str, Any]],
+    json_path: Path,
+    md_path: Path,
+    batch_selection: CorpusBatchSelection | None = None,
+    source_summary: CorpusSourceSummary | None = None,
+) -> None:
+    overall = _build_overall_summary(rows, batch_selection=batch_selection, source_summary=source_summary)
+    payload = {
+        "overall_status": overall["overall_status"],
+        "overall": overall,
+        "cases": rows,
+    }
+    if batch_selection is not None:
+        payload["run_scope"] = asdict(batch_selection)
+    if source_summary is not None:
+        payload["corpus_source"] = asdict(source_summary)
     json_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     md_path.parent.mkdir(parents=True, exist_ok=True)
-    md_path.write_text(_build_markdown_report(rows, overall), encoding="utf-8")
+    md_path.write_text(
+        _build_markdown_report(rows, overall, batch_selection=batch_selection, source_summary=source_summary),
+        encoding="utf-8",
+    )
+
+
+def run_premium_corpus_smoke(
+    *,
+    manifest_path: str | Path | None = DEFAULT_MANIFEST_PATH,
+    output_json: str | Path = "reports/premium_corpus_smoke_report.json",
+    output_md: str | Path = "reports/premium_corpus_smoke_report.md",
+    skip_heading_repair: bool = False,
+    case_filters: list[str] | None = None,
+    limit: int | None = None,
+    shard_count: int | None = None,
+    shard_index: int | None = None,
+    progress: bool = False,
+) -> dict[str, Any]:
+    normalized_filters = _normalize_case_filters(case_filters)
+    selected_cases, batch_selection = _select_corpus_batch(
+        case_filters=normalized_filters,
+        manifest_path=manifest_path,
+        shard_count=shard_count,
+        shard_index=shard_index,
+        limit=limit,
+    )
+    source_summary = _load_manifest_conversion_cases(manifest_path=manifest_path)[1]
+    json_path = Path(output_json)
+    md_path = Path(output_md)
+
+    if progress and batch_selection.coverage_status == "partial":
+        selection_bits = [f"{batch_selection.selected_cases}/{batch_selection.matching_cases} cases"]
+        if batch_selection.filters:
+            selection_bits.append(f"filters={', '.join(batch_selection.filters)}")
+        if batch_selection.shard_count and batch_selection.shard_index:
+            selection_bits.append(f"shard={batch_selection.shard_index}/{batch_selection.shard_count}")
+        if batch_selection.limit is not None:
+            selection_bits.append(f"limit={batch_selection.limit}")
+        print(f"[batch] partial corpus run: {', '.join(selection_bits)}")
+
+    rows: list[dict[str, Any]] = []
+    for mode, case in selected_cases:
+        if progress:
+            print(f"[{mode}] {case.path.name} ({case.document_class})")
+        if mode == "analysis-only":
+            rows.append(_run_analysis_only_case(case))
+        else:
+            rows.append(_run_conversion_case(case, run_heading_repair=not skip_heading_repair))
+        _persist_reports(
+            rows=rows,
+            json_path=json_path,
+            md_path=md_path,
+            batch_selection=batch_selection,
+            source_summary=source_summary,
+        )
+
+    overall = _build_overall_summary(rows, batch_selection=batch_selection, source_summary=source_summary)
+    return {
+        "overall_status": overall["overall_status"],
+        "overall": overall,
+        "cases": rows,
+        "run_scope": asdict(batch_selection),
+        "corpus_source": asdict(source_summary),
+    }
 
 
 def _case_matches_filters(case: CorpusCase, filters: list[str]) -> bool:
@@ -429,35 +820,35 @@ def _case_matches_filters(case: CorpusCase, filters: list[str]) -> bool:
     return any(any(token in haystack for haystack in haystacks) for token in filters)
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser(description="Run premium KindleMaster corpus smoke across mixed document classes.")
+    parser.add_argument("--manifest", default=str(DEFAULT_MANIFEST_PATH))
     parser.add_argument("--output-json", default="reports/premium_corpus_smoke_report.json")
     parser.add_argument("--output-md", default="reports/premium_corpus_smoke_report.md")
     parser.add_argument("--skip-heading-repair", action="store_true")
     parser.add_argument("--case", action="append", default=[], help="Run only matching cases by filename or document class.")
+    parser.add_argument("--limit", type=int, default=None, help="Cap the number of selected cases after filters and sharding.")
+    parser.add_argument("--shard-count", type=int, default=None, help="Split the matched corpus into this many deterministic shards.")
+    parser.add_argument("--shard-index", type=int, default=None, help="1-based shard index to execute when sharding is enabled.")
     args = parser.parse_args()
 
-    case_filters = [token.strip().lower() for token in args.case if token.strip()]
-    json_path = Path(args.output_json)
-    md_path = Path(args.output_md)
-    rows: list[dict[str, Any]] = []
-    for case in ANALYSIS_ONLY:
-        if not _case_matches_filters(case, case_filters):
-            continue
-        print(f"[analysis-only] {case.path.name} ({case.document_class})")
-        rows.append(_run_analysis_only_case(case))
-        _persist_reports(rows=rows, json_path=json_path, md_path=md_path)
-    for case in CORPUS:
-        if not _case_matches_filters(case, case_filters):
-            continue
-        print(f"[convert] {case.path.name} ({case.document_class})")
-        rows.append(_run_conversion_case(case, run_heading_repair=not args.skip_heading_repair))
-        _persist_reports(rows=rows, json_path=json_path, md_path=md_path)
-
-    overall = _build_overall_summary(rows)
-    payload = {"overall": overall, "cases": rows}
+    try:
+        payload = run_premium_corpus_smoke(
+            manifest_path=args.manifest,
+            output_json=args.output_json,
+            output_md=args.output_md,
+            skip_heading_repair=args.skip_heading_repair,
+            case_filters=args.case,
+            limit=args.limit,
+            shard_count=args.shard_count,
+            shard_index=args.shard_index,
+            progress=True,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 1 if payload["overall"].get("overall_status") == "failed" else 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

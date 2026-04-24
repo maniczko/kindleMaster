@@ -1,16 +1,32 @@
 # KindleMaster project-local Codex configuration.
 # This file complements ~/.codex/config.toml with repo-specific defaults.
 #
-# Standard repo commands:
+# Control-plane authority map:
+# - executable CLI surface: kindlemaster.py
+# - canonical human-readable command/workflow policy: AGENTS.md
+# - supported local toolchains for test lanes: docs/toolchain-matrix.md
+# - repo-local Codex settings: this file
+# If comments here drift from AGENTS.md or kindlemaster.py, fix the mirrors there and here together.
+#
+# Convenience command mirror:
 # - bootstrap: python kindlemaster.py bootstrap
+# - doctor: python kindlemaster.py doctor
+# - prepare reference inputs: python kindlemaster.py prepare-reference-inputs
 # - serve: python kindlemaster.py serve
+# - convert: python kindlemaster.py convert path\to\input.docx --output output\result.epub
 # - quick tests: python kindlemaster.py test --suite quick
+# - corpus tests: python kindlemaster.py test --suite corpus
+# - derived project status: python kindlemaster.py status
+# - browser tests: python kindlemaster.py test --suite browser
+# - runtime tests: python kindlemaster.py test --suite runtime
 # - release tests: python kindlemaster.py test --suite release
 # - full tests: python kindlemaster.py test --suite full
 # - quick smoke: python kindlemaster.py smoke --mode quick
 # - full smoke: python kindlemaster.py smoke --mode full
 # - validate EPUB: python kindlemaster.py validate path\to\file.epub
 # - release audit: python kindlemaster.py audit path\to\file.epub
+# - workflow baseline: python kindlemaster.py workflow baseline path\to\input.pdf --change-area reference
+# - workflow verify: python kindlemaster.py workflow verify path\to\input.pdf --run-id <run_id>
 #
 # Repo restrictions:
 # - no publication-specific runtime hacks
@@ -18,6 +34,7 @@
 # - no claiming localhost is fresh without restart checks from AGENTS.md
 # - no skipping validators, smoke, or release gates after runtime changes
 # - prefer the standard kindlemaster.py entrypoint over ad-hoc scripts
+# - generated output/ and reports/ artifacts are derived evidence, not policy authority
 
 model = "gpt-5.4"
 model_reasoning_effort = "xhigh"

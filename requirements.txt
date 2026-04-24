@@ -1,3 +1,7 @@
+# Python runtime bootstrap installed by:
+#   python kindlemaster.py bootstrap --runtime-only
+# External validators/OCR tools remain optional local installs and are reported by:
+#   python kindlemaster.py doctor
 flask==3.1.1
 PyMuPDF==1.25.5
 ebooklib==0.20

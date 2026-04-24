@@ -21,18 +21,28 @@ Pipeline:
 import os
 import re
 import uuid
+import hashlib
 import shutil
 import tempfile
 import subprocess
 import html as html_module
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional
 
 import fitz  # PyMuPDF
 from ebooklib import epub
 from bs4 import BeautifulSoup
 from PIL import Image
+from size_budget_policy import (
+    SizeBudgetExceededError,
+    evaluate_size_budget,
+    get_budget_attempt_settings,
+    get_render_budget_policy,
+    inspect_epub_archive,
+    normalize_budget_key,
+    resolve_publication_size_budget,
+)
 
 # OCR module import (optional - graceful fallback if not available)
 try:
@@ -168,6 +178,7 @@ def finalize_epub_bytes(
     """Run final Kindle-friendly cleanup on reflowable EPUB output."""
     title = (pdf_metadata or {}).get("title") or Path(original_filename).stem
     author = (pdf_metadata or {}).get("author") or "Unknown"
+    profile_key = (publication_profile or "").strip().lower()
     text_cleanup_summary = {
         "auto_fix_count": 0,
         "review_needed_count": 0,
@@ -179,38 +190,50 @@ def finalize_epub_bytes(
         "status": "unavailable",
     }
 
-    try:
-        from text_normalization import TextCleanupConfig, clean_epub_text_package
-
-        cleanup_result = clean_epub_text_package(
-            epub_bytes,
-            config=TextCleanupConfig(
-                language_hint=config.language,
-                domain_dictionary_path=config.text_cleanup_domain_dictionary_path,
-                safe_threshold=config.text_cleanup_safe_threshold,
-                review_threshold=config.text_cleanup_review_threshold,
-                enable_pyphen=config.enable_pyphen_cleanup,
-                emit_text_diff=config.text_cleanup_emit_diff,
-                release_gate="soft",
-            ),
-            publication_profile=publication_profile,
-        )
-        epub_bytes = cleanup_result.epub_bytes
-        text_cleanup_summary = {
-            **cleanup_result.summary,
-            "status": cleanup_result.summary.get("epubcheck_status", "unavailable"),
-            "epubcheck": cleanup_result.epubcheck,
-            "unknown_terms": cleanup_result.unknown_terms[:25],
-            "report_available": bool(cleanup_result.markdown_report),
-            "chapter_diff_count": len(cleanup_result.chapter_diffs),
-        }
-    except Exception as exc:
-        print(f"Warning: EPUB text normalization failed: {exc}")
+    if profile_key == "diagram_book_reflow":
         text_cleanup_summary = {
             **text_cleanup_summary,
-            "status": "failed",
-            "warnings": [f"Text cleanup failed: {exc}"],
+            "status": "skipped",
+            "package_blocked": True,
+            "profile_skip": True,
+            "skip_reason": (
+                "Skipped notation-sensitive text cleanup for diagram-heavy training books "
+                "to avoid long-running false positives."
+            ),
         }
+    else:
+        try:
+            from text_normalization import TextCleanupConfig, clean_epub_text_package
+
+            cleanup_result = clean_epub_text_package(
+                epub_bytes,
+                config=TextCleanupConfig(
+                    language_hint=config.language,
+                    domain_dictionary_path=config.text_cleanup_domain_dictionary_path,
+                    safe_threshold=config.text_cleanup_safe_threshold,
+                    review_threshold=config.text_cleanup_review_threshold,
+                    enable_pyphen=config.enable_pyphen_cleanup,
+                    emit_text_diff=config.text_cleanup_emit_diff,
+                    release_gate="soft",
+                ),
+                publication_profile=publication_profile,
+            )
+            epub_bytes = cleanup_result.epub_bytes
+            text_cleanup_summary = {
+                **cleanup_result.summary,
+                "status": cleanup_result.summary.get("epubcheck_status", "unavailable"),
+                "epubcheck": cleanup_result.epubcheck,
+                "unknown_terms": cleanup_result.unknown_terms[:25],
+                "report_available": bool(cleanup_result.markdown_report),
+                "chapter_diff_count": len(cleanup_result.chapter_diffs),
+            }
+        except Exception as exc:
+            print(f"Warning: EPUB text normalization failed: {exc}")
+            text_cleanup_summary = {
+                **text_cleanup_summary,
+                "status": "failed",
+                "warnings": [f"Text cleanup failed: {exc}"],
+            }
 
     try:
         from kindle_semantic_cleanup import finalize_epub_for_kindle
@@ -233,6 +256,7 @@ def finalize_epub_bytes(
         reference_repair_result = repair_epub_reference_sections(
             epub_bytes,
             language_hint=config.language,
+            source_pdf_path=(pdf_metadata or {}).get("source_pdf_path"),
         )
         epub_bytes = reference_repair_result.epub_bytes
         reference_cleanup_summary = {
@@ -275,6 +299,12 @@ class ConversionConfig:
     image_max_height: int = 1200
     chess_diagram_dpi: int = 140  # Balanced for crisp boards with smaller EPUB size
     compress_images: bool = True  # Enable image compression
+    diagram_image_long_edge: int = 720
+    diagram_palette_colors: int = 32
+    diagram_raster_long_edge: int = 1400
+    diagram_raster_jpeg_quality: int = 82
+    diagram_budget_key: str = ""
+    diagram_budget_attempt: str = "primary"
     
     # Typography
     body_font_family: str = "Georgia, serif"
@@ -300,11 +330,278 @@ class ConversionConfig:
     # Metadata
     language: str = "pl"
     creator: str = "KindleMaster"
+    render_budget_class: str = ""
+    render_budget_attempt: str = "primary"
+    size_budget_warn_bytes: int = 0
+    size_budget_hard_bytes: int = 0
     text_cleanup_domain_dictionary_path: str | None = None
     text_cleanup_safe_threshold: float = 0.85
     text_cleanup_review_threshold: float = 0.65
     text_cleanup_emit_diff: bool = False
     enable_pyphen_cleanup: bool = True
+
+
+def _clone_fixed_layout_config(
+    config: ConversionConfig,
+    *,
+    render_budget_class: str,
+    render_budget_attempt: str,
+    warn_bytes: int,
+    hard_bytes: int,
+) -> ConversionConfig:
+    return replace(
+        config,
+        prefer_fixed_layout=True,
+        render_budget_class=render_budget_class,
+        render_budget_attempt=render_budget_attempt,
+        size_budget_warn_bytes=int(warn_bytes),
+        size_budget_hard_bytes=int(hard_bytes),
+    )
+
+
+def _build_fixed_layout_epub_once(
+    pdf_path: str,
+    config: ConversionConfig,
+    pdf_metadata: dict,
+) -> tuple[bytes, str]:
+    try:
+        from fixed_layout_builder_v2 import build_fixed_layout_epub_v2
+
+        return build_fixed_layout_epub_v2(pdf_path, config, pdf_metadata), "fixed_layout_v2"
+    except Exception as primary_error:
+        print(f"Fixed-layout v2 build failed ({primary_error}), falling back to v1...")
+        from fixed_layout_builder import build_fixed_layout_epub
+
+        return build_fixed_layout_epub(pdf_path, config, pdf_metadata), "fixed_layout_v1"
+
+
+def _build_fixed_layout_epub_with_budget(
+    pdf_path: str,
+    *,
+    config: ConversionConfig,
+    pdf_metadata: dict,
+    original_filename: str,
+    render_budget_class: str,
+) -> tuple[bytes, dict]:
+    normalized_class = normalize_budget_key(render_budget_class or config.render_budget_class or "fixed_layout_balanced")
+    policy = get_render_budget_policy(normalized_class)
+    if not policy:
+        raise RuntimeError(f"Brak polityki render budget dla klasy {normalized_class}.")
+
+    last_size_gate: dict | None = None
+    last_builder: str | None = None
+    last_output_size_bytes = 0
+    attempts = ("primary", "fallback")
+    for attempt in attempts:
+        attempt_config = _clone_fixed_layout_config(
+            config,
+            render_budget_class=normalized_class,
+            render_budget_attempt=attempt,
+            warn_bytes=int(policy["warn_bytes"]),
+            hard_bytes=int(policy["hard_bytes"]),
+        )
+        raw_epub_bytes, builder_name = _build_fixed_layout_epub_once(pdf_path, attempt_config, pdf_metadata)
+        finalized_epub_bytes = finalize_epub_bytes(raw_epub_bytes, attempt_config, pdf_metadata, original_filename)
+        inspection = inspect_epub_archive(finalized_epub_bytes)
+        size_gate = evaluate_size_budget(
+            budget_key=normalized_class,
+            budget=policy,
+            epub_size_bytes=len(finalized_epub_bytes),
+            inspection=inspection,
+            label="klasy render budget",
+        )
+        last_size_gate = size_gate
+        last_builder = builder_name
+        last_output_size_bytes = len(finalized_epub_bytes)
+        if size_gate["status"] != "failed":
+            return finalized_epub_bytes, {
+                "builder": builder_name,
+                "render_budget_class": normalized_class,
+                "render_budget_attempt": attempt,
+                "size_budget_status": size_gate["status"],
+                "size_budget_message": size_gate["message"],
+                "target_warn_bytes": int(policy["warn_bytes"]),
+                "target_hard_bytes": int(policy["hard_bytes"]),
+                "final_output_size_bytes": len(finalized_epub_bytes),
+                "size_gate": size_gate,
+            }
+
+    payload = {
+        "builder": last_builder,
+        "render_budget_class": normalized_class,
+        "render_budget_attempt": "fallback",
+        "size_budget_status": "failed",
+        "size_budget_message": (last_size_gate or {}).get(
+            "message",
+            f"Przekroczono hard gate dla klasy render budget {normalized_class}.",
+        ),
+        "target_warn_bytes": int(policy["warn_bytes"]),
+        "target_hard_bytes": int(policy["hard_bytes"]),
+        "final_output_size_bytes": int(last_output_size_bytes),
+        "size_gate": last_size_gate or {},
+        "error_code": "size_budget_exceeded",
+    }
+    raise SizeBudgetExceededError(
+        f"size_budget_exceeded: {payload['size_budget_message']}",
+        payload=payload,
+    )
+
+
+def _clone_publication_budget_config(
+    config: ConversionConfig,
+    *,
+    budget_key: str,
+    budget: dict,
+    attempt: str,
+) -> ConversionConfig:
+    attempt_settings = get_budget_attempt_settings(budget, attempt)
+    return replace(
+        config,
+        chess_diagram_dpi=int(attempt_settings.get("diagram_target_dpi", config.chess_diagram_dpi)),
+        diagram_image_long_edge=int(attempt_settings.get("diagram_long_edge", config.diagram_image_long_edge)),
+        diagram_palette_colors=int(attempt_settings.get("diagram_palette_colors", config.diagram_palette_colors)),
+        diagram_raster_long_edge=int(attempt_settings.get("raster_long_edge", config.diagram_raster_long_edge)),
+        diagram_raster_jpeg_quality=int(
+            attempt_settings.get("raster_jpeg_quality", config.diagram_raster_jpeg_quality)
+        ),
+        size_budget_warn_bytes=int(budget.get("warn_bytes", 0) or 0),
+        size_budget_hard_bytes=int(budget.get("hard_bytes", 0) or 0),
+        diagram_budget_key=budget_key,
+        diagram_budget_attempt=attempt,
+    )
+
+
+def _apply_size_budget_metadata(
+    quality_report: dict,
+    *,
+    size_gate: dict,
+    final_output_size_bytes: int,
+    render_budget_attempt: str,
+) -> dict:
+    updated_report = dict(quality_report or {})
+    warnings = list(updated_report.get("warnings", []) or [])
+    size_message = str(size_gate.get("message", "") or "")
+    if size_gate.get("status") in {"passed_with_warnings", "failed"} and size_message and size_message not in warnings:
+        warnings.append(size_message)
+
+    inspection = size_gate.get("inspection") or {}
+    updated_report.update(
+        {
+            "warnings": warnings,
+            "size_budget_status": str(size_gate.get("status", "unavailable")),
+            "size_budget_message": size_message,
+            "size_budget_key": str(size_gate.get("budget_key", "")),
+            "target_warn_bytes": int(size_gate.get("warn_bytes", 0) or 0),
+            "target_hard_bytes": int(size_gate.get("hard_bytes", 0) or 0),
+            "final_output_size_bytes": int(final_output_size_bytes),
+            "render_budget_attempt": str(render_budget_attempt),
+            "size_budget_inspection": inspection,
+            "largest_assets": list(inspection.get("largest_assets", []) or []),
+            "archive_entry_count": int(inspection.get("entry_count", 0) or 0),
+            "archive_image_count": int(inspection.get("image_count", 0) or 0),
+        }
+    )
+    return updated_report
+
+
+def _evaluate_publication_size_budget(
+    epub_bytes: bytes,
+    *,
+    budget_key: str,
+    budget: dict,
+    label: str,
+) -> dict:
+    inspection = inspect_epub_archive(epub_bytes)
+    return evaluate_size_budget(
+        budget_key=budget_key,
+        budget=budget,
+        epub_size_bytes=len(epub_bytes),
+        inspection=inspection,
+        label=label,
+    )
+
+
+def _size_gate_rank(status: str) -> int:
+    normalized = str(status or "").strip().lower()
+    if normalized == "passed":
+        return 3
+    if normalized == "passed_with_warnings":
+        return 2
+    if normalized == "unavailable":
+        return 1
+    return 0
+
+
+def _publication_budget_attempt_order(analysis, budget_key: str) -> tuple[str, ...]:
+    normalized_budget_key = normalize_budget_key(budget_key)
+    profile_name = normalize_budget_key(getattr(analysis, "profile", "") if not isinstance(analysis, dict) else analysis.get("profile", ""))
+    page_count = getattr(analysis, "page_count", 0) if not isinstance(analysis, dict) else analysis.get("page_count", 0)
+    try:
+        normalized_page_count = int(page_count or 0)
+    except (TypeError, ValueError):
+        normalized_page_count = 0
+
+    if profile_name == "diagram_book_reflow" and normalized_budget_key == "diagram_book_reflow_balanced" and normalized_page_count >= 250:
+        return ("fallback", "primary")
+    return ("primary", "fallback")
+
+
+def _build_publication_pipeline_result(
+    pdf_path: str,
+    *,
+    config: ConversionConfig,
+    analysis,
+    pdf_metadata: dict,
+    original_filename: str,
+    build_publication_document,
+    publication_to_content,
+    finalize_publication_epub,
+) -> dict:
+    document = build_publication_document(pdf_path, config, analysis)
+    content = publication_to_content(document)
+    final_metadata = {
+        **pdf_metadata,
+        "title": document.title,
+        "author": document.author,
+        "source_pdf_path": pdf_path,
+    }
+    epub_bytes = build_epub(content, config, original_filename, final_metadata)
+    epub_bytes, text_cleanup_summary = finalize_epub_bytes(
+        epub_bytes,
+        config,
+        final_metadata,
+        original_filename,
+        publication_profile=analysis.profile,
+        return_details=True,
+    )
+
+    document.quality_report.text_cleanup = text_cleanup_summary
+    quality_report = finalize_publication_epub(document, epub_bytes).to_dict()
+    return {
+        "epub_bytes": epub_bytes,
+        "quality_report": quality_report,
+        "document": document.to_dict(),
+        "document_summary": {
+            "title": document.title,
+            "author": document.author,
+            "language": document.language,
+            "profile": document.profile,
+            "layout_mode": document.metadata.get("layout_mode", "reflowable"),
+            "section_count": len(document.sections),
+            "asset_count": len(document.assets),
+        },
+    }
+
+
+def _publication_response_payload(*, result: dict, analysis) -> dict:
+    return {
+        "epub_bytes": result["epub_bytes"],
+        "source_type": "pdf",
+        "analysis": analysis,
+        "quality_report": result["quality_report"],
+        "document": result["document"],
+        "document_summary": result["document_summary"],
+    }
 
 
 # ============================================================================
@@ -1415,19 +1712,26 @@ def build_epub(content: dict, config: ConversionConfig, original_filename: str, 
     
     # Add images
     image_items = []
+    image_items_by_filename = {}
+    image_uids_by_filename = {}
+    image_filename_by_digest = {}
     added_image_filenames = set()
     for img_info in content.get("images", []):
         if img_info["filename"] in added_image_filenames:
             continue
         try:
+            image_uid = f"image_{img_info['filename']}"
             img_item = epub.EpubItem(
-                uid=f"image_{img_info['filename']}",
+                uid=image_uid,
                 file_name=f"images/{img_info['filename']}",
                 media_type=f"image/{img_info['extension']}",
                 content=img_info["data"],
             )
             book.add_item(img_item)
             image_items.append(img_item)
+            image_items_by_filename[img_info["filename"]] = img_item
+            image_uids_by_filename[img_info["filename"]] = image_uid
+            image_filename_by_digest.setdefault(_digest_bytes(img_info["data"]), img_info["filename"])
             added_image_filenames.add(img_info["filename"])
         except Exception as e:
             print(f"Warning: Could not add image {img_info['filename']}: {e}")
@@ -1450,6 +1754,10 @@ def build_epub(content: dict, config: ConversionConfig, original_filename: str, 
                     content=chess_img["data"],
                 )
                 book.add_item(chess_item)
+                image_items.append(chess_item)
+                image_items_by_filename[chess_img["filename"]] = chess_item
+                image_uids_by_filename[chess_img["filename"]] = f"chess_{chess_img['filename']}"
+                image_filename_by_digest.setdefault(_digest_bytes(chess_img["data"]), chess_img["filename"])
                 added_image_filenames.add(chess_img["filename"])
             except Exception as e:
                 print(f"Warning: Could not add chess diagram {chess_img['filename']}: {e}")
@@ -1578,21 +1886,37 @@ def build_epub(content: dict, config: ConversionConfig, original_filename: str, 
             cover_extension = (first_image.get("extension") or "jpeg").lower()
             if cover_extension == "jpg":
                 cover_extension = "jpeg"
-            cover_filename = f"cover.{cover_extension}"
-            cover_img = epub.EpubItem(
-                uid="cover-image",
-                file_name=f"images/{cover_filename}",
-                media_type=f"image/{cover_extension}",
-                content=first_image["data"],
-            )
-            book.add_item(cover_img)
-            book.add_metadata(None, "meta", "", {"name": "cover", "content": "cover-image"})
-            cover_item = cover_img
+            cover_digest = _digest_bytes(first_image["data"])
+            existing_cover_filename = ""
+            if first_image.get("filename") in image_items_by_filename:
+                existing_cover_filename = str(first_image.get("filename"))
+            if not existing_cover_filename:
+                existing_cover_filename = image_filename_by_digest.get(cover_digest)
+            cover_uid = "cover-image"
+            cover_src = ""
+
+            if existing_cover_filename:
+                cover_item = image_items_by_filename.get(existing_cover_filename)
+                cover_uid = image_uids_by_filename.get(existing_cover_filename, cover_uid)
+                cover_src = f"images/{existing_cover_filename}"
+            else:
+                cover_filename = f"cover.{cover_extension}"
+                cover_img = epub.EpubItem(
+                    uid=cover_uid,
+                    file_name=f"images/{cover_filename}",
+                    media_type=f"image/{cover_extension}",
+                    content=first_image["data"],
+                )
+                book.add_item(cover_img)
+                cover_item = cover_img
+                cover_src = f"images/{cover_filename}"
+
+            book.add_metadata(None, "meta", "", {"name": "cover", "content": cover_uid})
 
             cover_page = epub.EpubHtml(title="Okładka", file_name="cover.xhtml", lang=config.language)
             cover_page.content = (
                 '<html><body class="cover-page">'
-                f'<img src="images/{cover_filename}" alt="{html_module.escape(title)}"/>'
+                f'<img src="{cover_src}" alt="{html_module.escape(title)}"/>'
                 "</body></html>"
             )
             book.add_item(cover_page)
@@ -1658,6 +1982,10 @@ def _detect_image_ext(data: bytes) -> str:
 def _strip_tags(html_str: str) -> str:
     """Remove HTML tags for plain text."""
     return re.sub(r"<[^>]+>", "", html_str).strip()
+
+
+def _digest_bytes(data: bytes) -> str:
+    return hashlib.sha1(data).hexdigest()
 
 
 def optimize_image_data(image_data: bytes, config: ConversionConfig) -> bytes:
@@ -1742,7 +2070,7 @@ def _legacy_convert_pdf_to_epub(pdf_path: str, config: Optional[ConversionConfig
 
     # Step 3: Extract content
     content = None
-    pdf_metadata = _extract_pdf_metadata(pdf_path)
+    pdf_metadata = {**_extract_pdf_metadata(pdf_path), "source_pdf_path": pdf_path}
 
     is_layout_heavy = pdf_type.get("layout_heavy", False)
     is_text_heavy = pdf_type.get("text_heavy", False)
@@ -1776,19 +2104,37 @@ def _legacy_convert_pdf_to_epub(pdf_path: str, config: Optional[ConversionConfig
     if content is None and should_use_fixed_layout:
         try:
             print("Building fixed-layout EPUB v2 (layout-heavy or scanned document)...")
-            from fixed_layout_builder_v2 import build_fixed_layout_epub_v2
-            epub_bytes = build_fixed_layout_epub_v2(pdf_path, config, pdf_metadata)
-            print(f"Generated fixed-layout EPUB v2: {len(epub_bytes)} bytes")
-            return finalize_epub_bytes(epub_bytes, config, pdf_metadata, original_filename)
+            render_budget_class = normalize_budget_key(config.render_budget_class or "")
+            if not render_budget_class:
+                page_count = int(pdf_type.get("page_count", 0) or 0)
+                scanned_page_ratio = float(pdf_type.get("scanned_page_ratio", 0.0) or 0.0)
+                if page_count >= 360 or scanned_page_ratio >= 0.65:
+                    render_budget_class = "fixed_layout_extreme"
+                elif page_count >= 240 or (is_layout_heavy and page_count >= 120):
+                    render_budget_class = "fixed_layout_aggressive"
+                elif page_count >= 120 or is_layout_heavy:
+                    render_budget_class = "fixed_layout_dense"
+                elif page_count >= 60 or has_images:
+                    render_budget_class = "fixed_layout_balanced"
+                else:
+                    render_budget_class = "fixed_layout_safe"
+            epub_bytes, fixed_layout_details = _build_fixed_layout_epub_with_budget(
+                pdf_path,
+                config=config,
+                pdf_metadata=pdf_metadata,
+                original_filename=original_filename,
+                render_budget_class=render_budget_class,
+            )
+            print(
+                "Generated fixed-layout EPUB: "
+                f"{fixed_layout_details['final_output_size_bytes']} bytes "
+                f"({fixed_layout_details['builder']}, {fixed_layout_details['render_budget_attempt']})"
+            )
+            return epub_bytes
+        except SizeBudgetExceededError:
+            raise
         except Exception as e:
-            print(f"Fixed-layout v2 build failed ({e}), falling back to v1...")
-            try:
-                from fixed_layout_builder import build_fixed_layout_epub
-                epub_bytes = build_fixed_layout_epub(pdf_path, config, pdf_metadata)
-                print(f"Generated fixed-layout EPUB v1: {len(epub_bytes)} bytes")
-                return finalize_epub_bytes(epub_bytes, config, pdf_metadata, original_filename)
-            except Exception as e2:
-                print(f"Fixed-layout v1 also failed ({e2}), continuing with alternate extraction...")
+            print(f"Fixed-layout build failed ({e}), continuing with alternate extraction...")
 
         if pdf_type["is_scanned"] and OCR_AVAILABLE and config.force_ocr:
             try:
@@ -1874,7 +2220,7 @@ def convert_pdf_to_epub_with_report(
     if config is None:
         config = ConversionConfig()
 
-    pdf_metadata = _extract_pdf_metadata(pdf_path)
+    pdf_metadata = {**_extract_pdf_metadata(pdf_path), "source_pdf_path": pdf_path}
 
     try:
         from publication_analysis import analyze_publication
@@ -1888,20 +2234,34 @@ def convert_pdf_to_epub_with_report(
         preserve_layout = config.profile == "preserve-layout" or analysis.profile == "fixed_layout_fallback"
 
         if preserve_layout:
-            epub_bytes = _legacy_convert_pdf_to_epub(
+            fixed_layout_config = replace(
+                config,
+                prefer_fixed_layout=True,
+                render_budget_class=analysis.render_budget_class,
+            )
+            epub_bytes, fixed_layout_details = _build_fixed_layout_epub_with_budget(
                 pdf_path,
-                config=ConversionConfig(
-                    **{
-                        **config.__dict__,
-                        "prefer_fixed_layout": True,
-                    }
-                ),
+                config=fixed_layout_config,
+                pdf_metadata=pdf_metadata,
                 original_filename=original_filename,
+                render_budget_class=analysis.render_budget_class,
             )
             validation_report = {
                 "validation_status": "unavailable",
                 "validation_messages": ["Build wykonany sciezka fallback preserve-layout."],
                 "validation_tool": "legacy",
+                "render_budget_class": fixed_layout_details["render_budget_class"],
+                "render_budget_attempt": fixed_layout_details["render_budget_attempt"],
+                "size_budget_status": fixed_layout_details["size_budget_status"],
+                "size_budget_message": fixed_layout_details["size_budget_message"],
+                "target_warn_bytes": fixed_layout_details["target_warn_bytes"],
+                "target_hard_bytes": fixed_layout_details["target_hard_bytes"],
+                "final_output_size_bytes": fixed_layout_details["final_output_size_bytes"],
+                "warnings": (
+                    [fixed_layout_details["size_budget_message"]]
+                    if fixed_layout_details["size_budget_status"] == "passed_with_warnings"
+                    else []
+                ),
                 "text_cleanup": {
                     "status": "blocked",
                     "package_blocked": True,
@@ -1920,6 +2280,7 @@ def convert_pdf_to_epub_with_report(
                 "document_summary": {
                     "title": pdf_metadata.get("title") or Path(original_filename).stem,
                     "author": pdf_metadata.get("author") or "Unknown",
+                    "language": config.language,
                     "profile": analysis.profile,
                     "layout_mode": "fixed-layout",
                     "section_count": 0,
@@ -1927,36 +2288,70 @@ def convert_pdf_to_epub_with_report(
                 },
             }
 
-        document = build_publication_document(pdf_path, config, analysis)
-        content = publication_to_content(document)
-        final_metadata = {**pdf_metadata, "title": document.title, "author": document.author}
-        epub_bytes = build_epub(content, config, original_filename, final_metadata)
-        epub_bytes, text_cleanup_summary = finalize_epub_bytes(
-            epub_bytes,
-            config,
-            final_metadata,
-            original_filename,
-            publication_profile=analysis.profile,
-            return_details=True,
-        )
+        budget_key, publication_budget = resolve_publication_size_budget(analysis.profile)
+        if budget_key and publication_budget:
+            best_result = None
+            best_gate = None
+            for attempt in _publication_budget_attempt_order(analysis, budget_key):
+                attempt_config = _clone_publication_budget_config(
+                    config,
+                    budget_key=budget_key,
+                    budget=publication_budget,
+                    attempt=attempt,
+                )
+                attempt_result = _build_publication_pipeline_result(
+                    pdf_path,
+                    config=attempt_config,
+                    analysis=analysis,
+                    pdf_metadata=pdf_metadata,
+                    original_filename=original_filename,
+                    build_publication_document=build_publication_document,
+                    publication_to_content=publication_to_content,
+                    finalize_publication_epub=finalize_publication_epub,
+                )
+                size_gate = _evaluate_publication_size_budget(
+                    attempt_result["epub_bytes"],
+                    budget_key=budget_key,
+                    budget=publication_budget,
+                    label="profilu publikacji",
+                )
+                attempt_result["quality_report"] = _apply_size_budget_metadata(
+                    attempt_result["quality_report"],
+                    size_gate=size_gate,
+                    final_output_size_bytes=len(attempt_result["epub_bytes"]),
+                    render_budget_attempt=attempt,
+                )
+                if best_result is None:
+                    best_result = attempt_result
+                    best_gate = size_gate
+                else:
+                    current_rank = _size_gate_rank(size_gate.get("status"))
+                    best_rank = _size_gate_rank((best_gate or {}).get("status"))
+                    current_size = len(attempt_result["epub_bytes"])
+                    best_size = len(best_result["epub_bytes"])
+                    if current_rank > best_rank or (current_rank == best_rank and current_size < best_size):
+                        best_result = attempt_result
+                        best_gate = size_gate
 
-        document.quality_report.text_cleanup = text_cleanup_summary
-        quality_report = finalize_publication_epub(document, epub_bytes)
-        return {
-            "epub_bytes": epub_bytes,
-            "source_type": "pdf",
-            "analysis": analysis,
-            "quality_report": quality_report.to_dict(),
-            "document": document.to_dict(),
-            "document_summary": {
-                "title": document.title,
-                "author": document.author,
-                "profile": document.profile,
-                "layout_mode": document.metadata.get("layout_mode", "reflowable"),
-                "section_count": len(document.sections),
-                "asset_count": len(document.assets),
-            },
-        }
+                if size_gate["status"] == "passed":
+                    return _publication_response_payload(result=attempt_result, analysis=analysis)
+
+            return _publication_response_payload(result=best_result, analysis=analysis)
+
+        publication_result = _build_publication_pipeline_result(
+            pdf_path,
+            config=config,
+            analysis=analysis,
+            pdf_metadata=pdf_metadata,
+            original_filename=original_filename,
+            build_publication_document=build_publication_document,
+            publication_to_content=publication_to_content,
+            finalize_publication_epub=finalize_publication_epub,
+        )
+        publication_result["quality_report"]["final_output_size_bytes"] = len(publication_result["epub_bytes"])
+        return _publication_response_payload(result=publication_result, analysis=analysis)
+    except SizeBudgetExceededError:
+        raise
     except Exception as exc:
         print(f"Premium pipeline failed ({exc}), falling back to legacy conversion...")
         epub_bytes = _legacy_convert_pdf_to_epub(pdf_path, config=config, original_filename=original_filename)
@@ -1984,6 +2379,7 @@ def convert_pdf_to_epub_with_report(
             "document_summary": {
                 "title": pdf_metadata.get("title") or Path(original_filename).stem,
                 "author": pdf_metadata.get("author") or "Unknown",
+                "language": config.language,
                 "profile": "legacy-fallback",
                 "layout_mode": "reflowable",
                 "section_count": 0,
@@ -2035,6 +2431,7 @@ def convert_docx_to_epub_with_report(
         "document_summary": {
             "title": document.title,
             "author": document.author,
+            "language": document.language,
             "profile": document.profile,
             "layout_mode": document.metadata.get("layout_mode", "reflowable"),
             "section_count": len(document.sections),

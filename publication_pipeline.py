@@ -54,6 +54,29 @@ OCR_HEADING_REJECT_RE = re.compile(
 OCR_VALUE_LINE_RE = re.compile(
     r"(?i)(?:\b\d+[.,]\s+\d+%|\b\d+[.,]?\d*\s*(?:%|PLN|USD|EUR|GBP|zł|kg|g|mg|km|m|cm|mm|MB|GB|TB|ms|s|h|pkt)\b)"
 )
+WEAK_SECTION_TITLE_RE = re.compile(r"(?i)^(?:strona|page|sekcja|section)\s+\d+[A-Za-z\-]*$")
+TRAINING_BOOK_SECTION_LABELS = {
+    "front cover": "Front Cover",
+    "title": "Title",
+    "copyright": "Copyright",
+    "contents": "Contents",
+    "key to symbols used": "Key to Symbols Used",
+    "quick start guide": "Quick Start Guide",
+    "a final session": "A Final Session",
+    "general introduction": "General Introduction",
+    "summary of tactical motifs": "Summary of Tactical Motifs",
+    "instructions": "Instructions",
+    "easy exercises": "Easy Exercises",
+    "intermediate exercises": "Intermediate Exercises",
+    "advanced exercises": "Advanced Exercises",
+    "solutions to easy exercises": "Solutions to Easy Exercises",
+    "solutions to intermediate exercises": "Solutions to Intermediate Exercises",
+    "solutions to advanced exercises": "Solutions to Advanced Exercises",
+    "name index": "Name Index",
+    "sample record sheet": "Sample Record Sheet",
+    "sample record sheets": "Sample Record Sheets",
+    "back cover": "Back Cover",
+}
 
 
 def build_publication_document(pdf_path: str, config, analysis: PublicationAnalysis) -> PublicationDocument:
@@ -174,14 +197,15 @@ def publication_from_content(
     fallback_regions: list[dict] = []
 
     for index, chapter in enumerate(content.get("chapters", []), start=1):
-        section_title = chapter.get("title") or f"Sekcja {index}"
+        section_title = _resolve_section_title(chapter, index=index, profile=analysis.profile)
+        training_role = _training_book_section_role(section_title) if analysis.profile == "diagram_book_reflow" else ""
         page_start = int(chapter.get("_page_start", chapter.get("page_num", index - 1)))
         page_end = int(chapter.get("_page_end", page_start))
         section = PublicationSection(
             section_id=f"section-{index:03d}",
             title=section_title,
             level=1,
-            kind=chapter.get("_kind") or _infer_section_kind(section_title, index=index),
+            kind=chapter.get("_kind") or _infer_section_kind(section_title, index=index, profile=analysis.profile),
             confidence=analysis.confidence,
             page_start=page_start,
             page_end=page_end,
@@ -190,6 +214,7 @@ def publication_from_content(
                 "source_page_label": chapter.get("_source_page_label"),
                 "page_count": (page_end - page_start + 1),
                 "fallback_mode": chapter.get("_fallback_mode", ""),
+                "training_book_role": training_role or chapter.get("_training_book_role", ""),
                 "audit": chapter.get("_audit", {}),
             },
         )
@@ -197,7 +222,9 @@ def publication_from_content(
         for fragment in chapter.get("html_parts", []):
             section.blocks.extend(_fragment_to_blocks(fragment, page_index=page_start))
 
-        if not section.blocks:
+        has_structural_assets = analysis.profile == "diagram_book_reflow" and bool(section.assets)
+        is_intentionally_sparse = _is_intentionally_sparse_training_section(section, profile=analysis.profile)
+        if not section.blocks and not has_structural_assets and not is_intentionally_sparse:
             fallback_pages.append(index)
             fallback_regions.append(
                 {
@@ -302,9 +329,7 @@ def publication_to_content(document: PublicationDocument) -> dict:
 
 def finalize_publication_epub(document: PublicationDocument, epub_bytes: bytes) -> PublicationQualityReport:
     validation = run_epubcheck(epub_bytes)
-    document.quality_report.validation_status = validation["status"]
-    document.quality_report.validation_messages = validation["messages"]
-    document.quality_report.validation_tool = validation["tool"]
+    document.quality_report.set_validation_result(validation)
     if validation["status"] != "passed":
         if validation["status"] == "unavailable":
             document.quality_report.warnings.append("Formalna walidacja EPUBCheck nie mogla zostac wykonana.")
@@ -400,6 +425,103 @@ def _chapter_plain_text(chapter: dict) -> str:
         return ""
     soup = BeautifulSoup("".join(html_parts), "xml")
     return soup.get_text(" ", strip=True)
+
+
+def _canonical_section_title_key(text: str) -> str:
+    normalized = _normalize_text_title(text)
+    if not normalized:
+        return ""
+    normalized = re.sub(
+        r"(?i)^(?:chapter|part|appendix|section|rozdziaĹ‚|sekcja)\s+\d+[A-Za-z\-]*\s*(?:[:\-–—]\s*)?",
+        "",
+        normalized,
+    )
+    normalized = re.sub(r"^\d+(?:\.\d+)*\s*(?:[:\-–—]\s*)?", "", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip(" -:;,.")
+    return normalized.lower()
+
+
+def _training_book_section_role(text: str) -> str:
+    key = _canonical_section_title_key(text)
+    if not key:
+        return ""
+
+    normalized_key = re.sub(r"\bsolutions?\s+for\b", "solutions to", key)
+    normalized_key = re.sub(r"\bkey to symbols\b$", "key to symbols used", normalized_key)
+    normalized_key = re.sub(r"^introduction$", "general introduction", normalized_key)
+    normalized_key = re.sub(r"^index$", "name index", normalized_key)
+    if normalized_key in TRAINING_BOOK_SECTION_LABELS:
+        return normalized_key
+    return ""
+
+
+def _normalize_training_book_section_title(text: str) -> str:
+    role = _training_book_section_role(text)
+    if role:
+        return TRAINING_BOOK_SECTION_LABELS[role]
+    return _normalize_section_title_candidate(text)
+
+
+def _looks_like_weak_section_title(text: str) -> bool:
+    normalized = _normalize_text_title(text)
+    if not normalized:
+        return True
+    if _looks_like_noise_title(normalized):
+        return True
+    return bool(WEAK_SECTION_TITLE_RE.fullmatch(normalized))
+
+
+def _looks_like_promotable_section_title(text: str) -> bool:
+    normalized = _normalize_section_title_candidate(text)
+    if not normalized or _looks_like_weak_section_title(normalized):
+        return False
+    if len(normalized) > 120:
+        return False
+    if len(normalized.split()) > 12:
+        return False
+    if re.search(r"[.!?;:]$", normalized):
+        return False
+    return True
+
+
+def _extract_section_title_from_html_parts(html_parts: list[str]) -> str:
+    if not html_parts:
+        return ""
+
+    soup = BeautifulSoup("".join(html_parts[:12]), "xml")
+    fallback_candidates: list[str] = []
+    for tag in soup.find_all(["h1", "h2", "h3", "p"], limit=12):
+        text = _normalize_section_title_candidate(tag.get_text(" ", strip=True))
+        if not text:
+            continue
+        role = _training_book_section_role(text)
+        if role:
+            return TRAINING_BOOK_SECTION_LABELS[role]
+        if tag.name in {"h1", "h2"} and _looks_like_promotable_section_title(text):
+            return text
+        if _looks_like_promotable_section_title(text):
+            fallback_candidates.append(text)
+    return fallback_candidates[0] if fallback_candidates else ""
+
+
+def _resolve_section_title(chapter: dict, *, index: int, profile: str) -> str:
+    raw_title = _normalize_section_title_candidate(chapter.get("title") or "")
+    if profile != "diagram_book_reflow":
+        return raw_title or f"Sekcja {index}"
+
+    raw_role = _training_book_section_role(raw_title)
+    if raw_role:
+        return TRAINING_BOOK_SECTION_LABELS[raw_role]
+
+    inferred_title = _extract_section_title_from_html_parts(chapter.get("html_parts", []))
+    inferred_role = _training_book_section_role(inferred_title)
+    if inferred_role:
+        return TRAINING_BOOK_SECTION_LABELS[inferred_role]
+    if raw_title and not _looks_like_weak_section_title(raw_title):
+        return raw_title
+    if inferred_title:
+        return inferred_title
+    return raw_title or f"Sekcja {index}"
 
 
 def _legacy_ocr_text_to_html_parts(text: str) -> list[str]:
@@ -582,7 +704,34 @@ def _node_to_block(node, page_index: int) -> PublicationBlock:
     )
 
 
-def _infer_section_kind(section_title: str, *, index: int) -> str:
+def _infer_section_kind(section_title: str, *, index: int, profile: str | None = None) -> str:
+    if profile == "diagram_book_reflow":
+        role = _training_book_section_role(section_title)
+        if role == "front cover":
+            return "cover"
+        if role in {"general introduction", "quick start guide", "a final session", "summary of tactical motifs", "instructions"}:
+            return "introduction"
+        if role == "easy exercises":
+            return "easy-exercises"
+        if role == "intermediate exercises":
+            return "intermediate-exercises"
+        if role == "advanced exercises":
+            return "advanced-exercises"
+        if role == "solutions to easy exercises":
+            return "solutions-easy"
+        if role == "solutions to intermediate exercises":
+            return "solutions-intermediate"
+        if role == "solutions to advanced exercises":
+            return "solutions-advanced"
+        if role == "key to symbols used":
+            return "key-symbols"
+        if role == "name index":
+            return "index"
+        if role == "contents":
+            return "reference"
+        if role in {"back cover", "sample record sheet", "sample record sheets"}:
+            return "appendix"
+
     normalized = (section_title or "").strip().lower()
     if index == 1 and normalized in {"okładka", "okladka", "cover", "front matter"}:
         return "cover"
@@ -593,6 +742,22 @@ def _infer_section_kind(section_title: str, *, index: int) -> str:
     if normalized in {"glossary", "table of contents", "spis treści", "spis tresci"}:
         return "reference"
     return "section"
+
+
+def _is_intentionally_sparse_training_section(section: PublicationSection, *, profile: str | None = None) -> bool:
+    if profile != "diagram_book_reflow":
+        return False
+
+    role = _training_book_section_role(section.title) or _training_book_section_role(
+        str(section.metadata.get("training_book_role", ""))
+    )
+    if role in {"front cover", "back cover", "sample record sheet", "sample record sheets"}:
+        return True
+    return section.kind in {"cover", "appendix"} and role in {
+        "back cover",
+        "sample record sheet",
+        "sample record sheets",
+    }
 
 
 def _build_document_warnings(*, analysis: PublicationAnalysis, sections: list[PublicationSection], content: dict, fallback_pages: list[int]) -> list[str]:
@@ -716,14 +881,16 @@ def _coalesce_page_chapters_by_toc(content: dict, pdf_path: str) -> dict:
             html_parts.extend(chapter.get("html_parts", []))
             images.extend(chapter.get("images", []))
 
+        normalized_title = _normalize_training_book_section_title(entry["title"]) or entry["title"]
         grouped.append(
             {
-                "title": entry["title"],
+                "title": normalized_title,
                 "html_parts": html_parts,
                 "images": images,
                 "_source_page_label": source_page_label,
                 "_page_start": start,
                 "_page_end": end,
+                "_training_book_role": _training_book_section_role(normalized_title),
             }
         )
 
@@ -734,7 +901,10 @@ def _coalesce_page_chapters_by_toc(content: dict, pdf_path: str) -> dict:
         **content,
         "chapters": grouped,
         "method": f"{content.get('method', 'unknown')}-toc-grouped",
-        "toc": [(entry["level"], entry["title"], entry["page"] + 1) for entry in outline_entries],
+        "toc": [
+            (entry["level"], _normalize_training_book_section_title(entry["title"]) or entry["title"], entry["page"] + 1)
+            for entry in outline_entries
+        ],
     }
 
 
@@ -772,6 +942,7 @@ def _detect_section_entries_from_pages(pdf_path: str, *, profile: str) -> list[d
             title = _normalize_section_title_candidate(title)
             if not title:
                 continue
+            title = _normalize_training_book_section_title(title) or title
             if entries and title == entries[-1]["title"]:
                 continue
             if profile == "diagram_book_reflow" and not _looks_like_diagram_section_title(title):
@@ -831,7 +1002,10 @@ def _detect_title_page_heading(page: fitz.Page) -> str:
         lines.append(clean)
         if len(lines) == 3:
             break
-    return " - ".join(lines[:2]) if lines else ""
+    if not lines:
+        return ""
+    title = " - ".join(lines[:2])
+    return _normalize_training_book_section_title(title) or title
 
 
 def _detect_running_header_heading(page: fitz.Page) -> str:
@@ -864,6 +1038,10 @@ def _detect_running_header_heading(page: fitz.Page) -> str:
     if not header:
         return ""
 
+    training_title = _normalize_training_book_section_title(header)
+    if _training_book_section_role(training_title):
+        return training_title
+
     match = re.search(r"((?:chapter|part|appendix)\s+\d+[A-Za-z\-]*)", header, re.IGNORECASE)
     if match:
         return match.group(1)
@@ -895,7 +1073,7 @@ def _normalize_section_title_candidate(text: str) -> str:
     if not normalized:
         return ""
     normalized = re.sub(r"^5334 Problems, Combinations & Games\s*", "", normalized, flags=re.IGNORECASE)
-    normalized = re.sub(r"^contents\s*", "", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"^contents\b(?:\s*[:\-–—]\s*|\s+)", "", normalized, flags=re.IGNORECASE)
     normalized = re.sub(r"\b([a-z]{2,})\s*-\s+([a-z]{2,})\b", r"\1\2", normalized)
     normalized = re.sub(r"\s+", " ", normalized).strip(" -")
     if _looks_like_noise_title(normalized):
@@ -904,6 +1082,8 @@ def _normalize_section_title_candidate(text: str) -> str:
 
 
 def _looks_like_diagram_section_title(text: str) -> bool:
+    if _training_book_section_role(text):
+        return True
     lower = text.lower()
     return bool(
         re.search(r"\bchapter\b", lower)
@@ -932,14 +1112,16 @@ def _group_page_chapters(chapters: list[dict], entries: list[dict]) -> list[dict
             html_parts.extend(chapter.get("html_parts", []))
             images.extend(chapter.get("images", []))
 
+        normalized_title = _normalize_training_book_section_title(entry["title"]) or entry["title"]
         grouped.append(
             {
-                "title": entry["title"],
+                "title": normalized_title,
                 "html_parts": html_parts,
                 "images": images,
                 "_source_page_label": source_page_label,
                 "_page_start": start,
                 "_page_end": end,
+                "_training_book_role": _training_book_section_role(normalized_title),
             }
         )
 

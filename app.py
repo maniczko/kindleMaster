@@ -10,12 +10,27 @@ import os
 import threading
 import uuid
 import tempfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
+from app_runtime_services import (
+    DEFAULT_DEBUG,
+    DEFAULT_PORT,
+    LOCALHOST,
+    ConversionRequest,
+    build_conversion_job_record,
+    build_conversion_quality_state,
+    enrich_conversion_metadata_with_output_size,
+    build_local_app_url,
+    detect_supported_source_type,
+    resolve_debug_mode as runtime_resolve_debug_mode,
+    resolve_server_port as runtime_resolve_server_port,
+    run_document_conversion,
+    serve_http_app,
+)
 from flask import Flask, request, jsonify, render_template, send_file
-from converter import ConversionConfig, convert_document_to_epub_with_report, detect_pdf_type
+from converter import convert_document_to_epub_with_report, detect_pdf_type
 from docx_conversion import analyze_docx
 from epub_heading_repair import repair_epub_headings_and_toc
 from publication_analysis import analyze_publication
@@ -26,11 +41,16 @@ app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 MB
 UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "kindlemaster")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-LOCALHOST = "127.0.0.1"
-DEFAULT_PORT = 5001
-DEFAULT_DEBUG = False
+DEFAULT_CONVERSION_POLL_INTERVAL_MS = 1500
+MAX_CONVERSION_POLL_INTERVAL_MS = 5000
+OVERSIZED_EPUB_WARNING_BYTES = 25 * 1024 * 1024
+CONVERSION_JOB_RETENTION_SECONDS = 6 * 60 * 60
+CONVERSION_TEMP_FILE_RETENTION_SECONDS = 12 * 60 * 60
+CONVERSION_CLEANUP_MIN_INTERVAL_SECONDS = 60
+ACTIVE_CONVERSION_JOB_STATUSES = {"queued", "running", "repairing_headings"}
 _CONVERSION_JOBS: dict[str, dict] = {}
 _CONVERSION_JOBS_LOCK = threading.Lock()
+_LAST_CONVERSION_CLEANUP_AT: datetime | None = None
 
 
 def _encode_header_payload(payload, *, limit: int = 20) -> str:
@@ -40,115 +60,11 @@ def _encode_header_payload(payload, *, limit: int = 20) -> str:
 
 
 def _resolve_server_port() -> int:
-    port_raw = os.environ.get("PORT", "").strip()
-    if not port_raw:
-        return DEFAULT_PORT
-
-    try:
-        port = int(port_raw)
-    except ValueError:
-        return DEFAULT_PORT
-
-    if 1 <= port <= 65535:
-        return port
-    return DEFAULT_PORT
+    return runtime_resolve_server_port()
 
 
 def _resolve_debug_mode() -> bool:
-    debug_raw = os.environ.get("FLASK_DEBUG", os.environ.get("DEBUG", "")).strip().lower()
-    if not debug_raw:
-        return DEFAULT_DEBUG
-    return debug_raw in {"1", "true", "yes", "on"}
-
-
-def _pick_epubcheck_error(messages) -> str:
-    cleaned = [str(message).strip() for message in (messages or []) if str(message).strip()]
-    for message in cleaned:
-        upper = message.upper()
-        if "ERROR(" in upper or upper.startswith("ERROR") or "FATAL(" in upper or upper.startswith("FATAL"):
-            return message
-    return cleaned[0] if cleaned else "Heading/TOC repair failed."
-
-
-def _build_conversion_config(profile: str, force_ocr: bool, language: str) -> ConversionConfig:
-    return ConversionConfig(
-        prefer_fixed_layout=profile == "preserve-layout",
-        profile=profile,
-        force_ocr=force_ocr,
-        language=language,
-    )
-
-
-def _build_conversion_metadata(
-    result: dict,
-    *,
-    source_type: str,
-    detected_source_type: str,
-    heading_repair_enabled: bool,
-    heading_repair_report: dict,
-) -> dict:
-    analysis = result.get("analysis", {}) or {}
-    quality_report = result.get("quality_report", {}) or {}
-    document_summary = result.get("document_summary", {}) or {}
-    profile_name = (
-        analysis.get("profile")
-        if isinstance(analysis, dict)
-        else getattr(analysis, "profile", "unknown")
-    )
-    confidence = (
-        analysis.get("confidence")
-        if isinstance(analysis, dict)
-        else getattr(analysis, "confidence", 0)
-    )
-    warning_list = (quality_report.get("warnings", []) or [])[:12]
-    high_risk_page_list = [
-        {
-            "page": item.get("page_index"),
-            "title": item.get("title"),
-            "kind": item.get("content_type"),
-            "flags": item.get("risk_flags", [])[:4],
-        }
-        for item in (quality_report.get("high_risk_pages", []) or [])
-    ][:20]
-    high_risk_section_list = [
-        {
-            "title": item.get("title"),
-            "pages": item.get("page_range"),
-            "flags": item.get("risk_flags", [])[:4],
-        }
-        for item in (quality_report.get("high_risk_sections", []) or [])
-    ][:20]
-    return {
-        "source_type": detected_source_type,
-        "profile": str(profile_name),
-        "confidence": float(confidence) if confidence is not None else 0.0,
-        "validation": str(quality_report.get("validation_status", "unavailable")),
-        "validation_tool": str(quality_report.get("validation_tool", "unknown")),
-        "strategy": (
-            str(analysis.get("legacy_strategy", "premium"))
-            if detected_source_type == "pdf" and isinstance(analysis, dict)
-            else None
-        ),
-        "sections": int(document_summary.get("section_count", 0) or 0),
-        "assets": int(document_summary.get("asset_count", 0) or 0),
-        "layout": str(document_summary.get("layout_mode", "reflowable")),
-        "warnings": len(quality_report.get("warnings", []) or []),
-        "warning_list": warning_list,
-        "high_risk_pages": len(quality_report.get("high_risk_pages", []) or []),
-        "high_risk_page_list": high_risk_page_list,
-        "high_risk_sections": len(quality_report.get("high_risk_sections", []) or []),
-        "high_risk_section_list": high_risk_section_list,
-        "heading_repair": {
-            "status": str(heading_repair_report.get("status", "skipped" if not heading_repair_enabled else "failed")),
-            "release": str(heading_repair_report.get("release_status", "unavailable")),
-            "toc_before": int(heading_repair_report.get("toc_entries_before", 0) or 0),
-            "toc_after": int(heading_repair_report.get("toc_entries_after", 0) or 0),
-            "removed": int(heading_repair_report.get("headings_removed", 0) or 0),
-            "review": int(heading_repair_report.get("manual_review_count", 0) or 0),
-            "epubcheck": str(heading_repair_report.get("epubcheck_status", "unavailable")),
-            "error": str(heading_repair_report.get("error", "")),
-        },
-    }
+    return runtime_resolve_debug_mode()
 
 
 def _apply_conversion_headers(response, metadata: dict) -> None:
@@ -175,6 +91,16 @@ def _apply_conversion_headers(response, metadata: dict) -> None:
         metadata.get("high_risk_section_list", []) or [],
         limit=20,
     )
+    if metadata.get("render_budget_class"):
+        response.headers["X-Render-Budget-Class"] = str(metadata.get("render_budget_class", ""))
+    if metadata.get("render_budget_attempt"):
+        response.headers["X-Render-Budget-Attempt"] = str(metadata.get("render_budget_attempt", ""))
+    if metadata.get("size_budget_status"):
+        response.headers["X-Render-Budget-Status"] = str(metadata.get("size_budget_status", ""))
+    if metadata.get("target_warn_bytes"):
+        response.headers["X-Render-Budget-Warn"] = str(metadata.get("target_warn_bytes", 0))
+    if metadata.get("target_hard_bytes"):
+        response.headers["X-Render-Budget-Hard"] = str(metadata.get("target_hard_bytes", 0))
     heading_repair = metadata.get("heading_repair", {}) or {}
     response.headers["X-Heading-Repair-Status"] = str(heading_repair.get("status", "skipped"))
     if heading_repair.get("status") != "skipped":
@@ -185,6 +111,32 @@ def _apply_conversion_headers(response, metadata: dict) -> None:
         response.headers["X-Heading-Repair-Review"] = str(heading_repair.get("review", 0))
         response.headers["X-Heading-Repair-EPUBCheck"] = str(heading_repair.get("epubcheck", "unavailable"))
         response.headers["X-Heading-Repair-Error"] = quote(str(heading_repair.get("error", "")))
+
+
+def _job_download_url(job_id: str, job: dict) -> str | None:
+    if job.get("status") == "ready":
+        return f"/convert/download/{job_id}"
+    return None
+
+
+def _build_job_quality_state(job_id: str, job: dict) -> dict:
+    payload = dict(job)
+    output_size_bytes = _read_output_size_bytes(job)
+    if output_size_bytes is not None:
+        payload["output_size_bytes"] = output_size_bytes
+    return build_conversion_quality_state(
+        payload,
+        download_url=_job_download_url(job_id, job),
+    )
+
+
+def _resolve_request_port_label(host_header: str | None, fallback_port: int) -> str:
+    host_value = str(host_header or "").strip()
+    if not host_value:
+        return str(fallback_port)
+    if ":" not in host_value:
+        return str(fallback_port)
+    return host_value.rsplit(":", 1)[-1]
 
 
 def _set_conversion_job(job_id: str, **fields) -> dict | None:
@@ -203,6 +155,152 @@ def _get_conversion_job(job_id: str) -> dict | None:
         return dict(job) if job else None
 
 
+def _parse_job_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _compute_job_elapsed_seconds(job: dict) -> int | None:
+    created_at = _parse_job_timestamp(job.get("created_at"))
+    if not created_at:
+        return None
+    return max(0, int((datetime.now(UTC) - created_at).total_seconds()))
+
+
+def _recommended_poll_interval_ms(job: dict) -> int:
+    status = str(job.get("status", "queued") or "queued")
+    if status in {"ready", "failed"}:
+        return 0
+
+    elapsed_seconds = _compute_job_elapsed_seconds(job) or 0
+    if status == "queued":
+        return 1200
+    if status == "running":
+        return MAX_CONVERSION_POLL_INTERVAL_MS
+    if elapsed_seconds >= 240:
+        return MAX_CONVERSION_POLL_INTERVAL_MS
+    if elapsed_seconds >= 120:
+        return 3500
+    if elapsed_seconds >= 45 or status == "repairing_headings":
+        return 2500
+    return DEFAULT_CONVERSION_POLL_INTERVAL_MS
+
+
+def _read_output_size_bytes(job: dict) -> int | None:
+    output_size = job.get("output_size_bytes")
+    output_path = str(job.get("output_path", "") or "")
+    if output_path and os.path.exists(output_path):
+        return os.path.getsize(output_path)
+    if isinstance(output_size, (int, float)):
+        return max(0, int(output_size))
+    return None
+
+
+def _attach_output_size_metadata(metadata: dict, output_size_bytes: int) -> dict:
+    return enrich_conversion_metadata_with_output_size(
+        metadata,
+        output_size_bytes,
+        oversized_warning_bytes=OVERSIZED_EPUB_WARNING_BYTES,
+    )
+
+
+def _normalize_temp_artifact_path(path_value: str | None) -> str:
+    if not path_value:
+        return ""
+    try:
+        return str(Path(path_value).resolve())
+    except OSError:
+        return str(path_value)
+
+
+def _cleanup_expired_conversion_jobs(*, now: datetime | None = None, force: bool = False) -> dict:
+    global _LAST_CONVERSION_CLEANUP_AT
+
+    current_time = now or datetime.now(UTC)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=UTC)
+    if (
+        not force
+        and _LAST_CONVERSION_CLEANUP_AT is not None
+        and (current_time - _LAST_CONVERSION_CLEANUP_AT).total_seconds() < CONVERSION_CLEANUP_MIN_INTERVAL_SECONDS
+    ):
+        return {
+            "ran": False,
+            "removed_jobs": 0,
+            "removed_files": 0,
+            "skipped_recently": True,
+        }
+
+    job_cutoff = current_time - timedelta(seconds=CONVERSION_JOB_RETENTION_SECONDS)
+    file_cutoff = current_time - timedelta(seconds=CONVERSION_TEMP_FILE_RETENTION_SECONDS)
+    active_paths: set[str] = set()
+    expired_source_paths: list[str] = []
+    expired_output_paths: list[str] = []
+    removed_job_ids: list[str] = []
+    removed_files = 0
+
+    with _CONVERSION_JOBS_LOCK:
+        for job_id, job in list(_CONVERSION_JOBS.items()):
+            status = str(job.get("status", "queued") or "queued")
+            updated_at = _parse_job_timestamp(job.get("updated_at")) or _parse_job_timestamp(job.get("created_at"))
+            source_path = _normalize_temp_artifact_path(job.get("source_path", ""))
+            output_path = _normalize_temp_artifact_path(job.get("output_path", ""))
+
+            if status in ACTIVE_CONVERSION_JOB_STATUSES or not updated_at or updated_at >= job_cutoff:
+                if source_path:
+                    active_paths.add(source_path)
+                if output_path:
+                    active_paths.add(output_path)
+                continue
+
+            if source_path:
+                expired_source_paths.append(source_path)
+            if output_path:
+                expired_output_paths.append(output_path)
+            removed_job_ids.append(job_id)
+            _CONVERSION_JOBS.pop(job_id, None)
+
+        _LAST_CONVERSION_CLEANUP_AT = current_time
+
+    for expired_path in [*expired_source_paths, *expired_output_paths]:
+        if expired_path and expired_path not in active_paths and os.path.exists(expired_path):
+            try:
+                os.remove(expired_path)
+                removed_files += 1
+            except OSError:
+                pass
+
+    upload_root = Path(UPLOAD_DIR)
+    if upload_root.exists():
+        for candidate in upload_root.iterdir():
+            if not candidate.is_file():
+                continue
+            resolved_path = _normalize_temp_artifact_path(str(candidate))
+            if resolved_path in active_paths:
+                continue
+            if candidate.suffix.lower() not in {".pdf", ".docx", ".epub"}:
+                continue
+            modified_at = datetime.fromtimestamp(candidate.stat().st_mtime, tz=UTC)
+            if modified_at >= file_cutoff:
+                continue
+            try:
+                candidate.unlink()
+                removed_files += 1
+            except OSError:
+                pass
+
+    return {
+        "ran": True,
+        "removed_jobs": len(removed_job_ids),
+        "removed_files": removed_files,
+        "skipped_recently": False,
+    }
+
+
 def _run_conversion_pipeline(
     *,
     source_path: str,
@@ -214,70 +312,24 @@ def _run_conversion_pipeline(
     heading_repair_enabled: bool,
     status_callback=None,
 ) -> dict:
-    if status_callback:
-        status_callback("running", f"Konwertuje {source_type.upper()} do EPUB...")
-    config = _build_conversion_config(profile, force_ocr, language)
-    result = convert_document_to_epub_with_report(
-        source_path,
-        config=config,
-        original_filename=original_filename,
-        source_type=source_type,
-    )
-    epub_bytes = result["epub_bytes"]
-    heading_repair_report = {
-        "status": "skipped",
-        "release_status": "unavailable",
-        "toc_entries_before": 0,
-        "toc_entries_after": 0,
-        "headings_removed": 0,
-        "manual_review_count": 0,
-        "epubcheck_status": "unavailable",
-        "error": "",
-    }
-    if heading_repair_enabled:
-        if status_callback:
-            status_callback("repairing_headings", "Naprawiam headingi i TOC w EPUB...")
-        try:
-            heading_repair_result = repair_epub_headings_and_toc(
-                epub_bytes,
-                title_hint=str((result.get("document_summary", {}) or {}).get("title", "") or ""),
-                author_hint=str((result.get("document_summary", {}) or {}).get("author", "") or ""),
-                language_hint=language,
-                publication_profile=profile,
-            )
-            heading_repair_report = {
-                "status": "applied",
-                "release_status": heading_repair_result.summary.get("release_status", "unavailable"),
-                "toc_entries_before": heading_repair_result.summary.get("toc_entries_before", 0),
-                "toc_entries_after": heading_repair_result.summary.get("toc_entries_after", 0),
-                "headings_removed": heading_repair_result.summary.get("headings_removed", 0),
-                "manual_review_count": heading_repair_result.summary.get("manual_review_count", 0),
-                "epubcheck_status": heading_repair_result.summary.get("epubcheck_status", "unavailable"),
-                "error": "",
-            }
-            if heading_repair_result.epubcheck.get("status") == "failed":
-                heading_repair_report["status"] = "failed"
-                heading_repair_report["error"] = _pick_epubcheck_error(
-                    heading_repair_result.epubcheck.get("messages", []) or []
-                )
-            else:
-                epub_bytes = heading_repair_result.epub_bytes
-        except Exception as heading_repair_error:
-            heading_repair_report["status"] = "failed"
-            heading_repair_report["error"] = str(heading_repair_error)
-
-    detected_source_type = str(result.get("source_type", source_type) or source_type)
-    metadata = _build_conversion_metadata(
-        result,
-        source_type=source_type,
-        detected_source_type=detected_source_type,
-        heading_repair_enabled=heading_repair_enabled,
-        heading_repair_report=heading_repair_report,
+    outcome = run_document_conversion(
+        ConversionRequest(
+            source_path=source_path,
+            source_type=source_type,
+            original_filename=original_filename,
+            profile=profile,
+            force_ocr=force_ocr,
+            language=language,
+            heading_repair_enabled=heading_repair_enabled,
+        ),
+        convert_impl=convert_document_to_epub_with_report,
+        heading_repair_impl=repair_epub_headings_and_toc,
+        status_callback=status_callback,
     )
     return {
-        "epub_bytes": epub_bytes,
-        "download_name": original_filename.rsplit(".", 1)[0] + ".epub",
-        "metadata": metadata,
+        "epub_bytes": outcome.epub_bytes,
+        "download_name": outcome.download_name,
+        "metadata": outcome.metadata,
     }
 
 
@@ -311,13 +363,16 @@ def _spawn_conversion_job(
             )
             with open(output_path, "wb") as handle:
                 handle.write(payload["epub_bytes"])
+            output_size_bytes = os.path.getsize(output_path)
+            metadata = _attach_output_size_metadata(payload["metadata"], output_size_bytes)
             _set_conversion_job(
                 job_id,
                 status="ready",
                 message="EPUB gotowy do pobrania.",
                 output_path=output_path,
                 download_name=payload["download_name"],
-                metadata=payload["metadata"],
+                metadata=metadata,
+                output_size_bytes=output_size_bytes,
                 error="",
             )
         except Exception as error:
@@ -325,11 +380,13 @@ def _spawn_conversion_job(
                 job_id,
                 status="failed",
                 message="Konwersja nie powiodla sie.",
+                output_size_bytes=0,
                 error=str(error),
             )
         finally:
             if os.path.exists(source_path):
                 os.remove(source_path)
+            _set_conversion_job(job_id, source_path="")
 
     thread = threading.Thread(target=_worker, daemon=True, name=f"kindlemaster-convert-{job_id}")
     thread.start()
@@ -339,6 +396,9 @@ def _spawn_conversion_job(
 def index():
     template_path = Path(app.root_path) / "templates" / "index.html"
     updated_at = datetime.fromtimestamp(template_path.stat().st_mtime)
+    local_app_url = build_local_app_url(
+        _resolve_request_port_label(request.host, _resolve_server_port())
+    )
     months_pl = [
         "sty", "lut", "mar", "kwi", "maj", "cze",
         "lip", "sie", "wrz", "paz", "lis", "gru",
@@ -347,20 +407,25 @@ def index():
         f"{updated_at.day} {months_pl[updated_at.month - 1]} "
         f"{updated_at.year}, {updated_at:%H:%M:%S}"
     )
-    return render_template("index.html", updated_at_label=updated_at_label)
+    return render_template(
+        "index.html",
+        local_app_url=local_app_url,
+        updated_at_label=updated_at_label,
+    )
 
 
 @app.route("/convert", methods=["POST"])
 def convert():
     """Convert uploaded PDF or DOCX to EPUB."""
+    _cleanup_expired_conversion_jobs()
     file = request.files.get("file") or request.files.get("pdf")
     if not file or not file.filename:
         return jsonify({"error": "Przeslij plik PDF albo DOCX."}), 400
 
-    source_suffix = Path(file.filename).suffix.lower()
-    if source_suffix not in {".pdf", ".docx"}:
+    source_type = detect_supported_source_type(file.filename)
+    if not source_type:
         return jsonify({"error": "Obslugiwane sa tylko pliki PDF i DOCX."}), 400
-    source_type = source_suffix.lstrip(".")
+    source_suffix = f".{source_type}"
 
     # Get conversion preferences from form
     profile = request.form.get("profile", "auto-premium")
@@ -404,38 +469,32 @@ def convert():
 
 @app.route("/convert/start", methods=["POST"])
 def convert_start():
+    _cleanup_expired_conversion_jobs()
     file = request.files.get("file") or request.files.get("pdf")
     if not file or not file.filename:
         return jsonify({"error": "Przeslij plik PDF albo DOCX."}), 400
 
-    source_suffix = Path(file.filename).suffix.lower()
-    if source_suffix not in {".pdf", ".docx"}:
+    source_type = detect_supported_source_type(file.filename)
+    if not source_type:
         return jsonify({"error": "Obslugiwane sa tylko pliki PDF i DOCX."}), 400
+    source_suffix = f".{source_type}"
 
     profile = request.form.get("profile", "auto-premium")
     force_ocr = request.form.get("ocr", "false") == "true"
     language = request.form.get("language", "pl")
     heading_repair_enabled = request.form.get("heading_repair", "false") == "true"
-    source_type = source_suffix.lstrip(".")
-
     job_id = uuid.uuid4().hex
     source_path = os.path.join(UPLOAD_DIR, f"{job_id}{source_suffix}")
     file.save(source_path)
     created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     with _CONVERSION_JOBS_LOCK:
-        _CONVERSION_JOBS[job_id] = {
-            "job_id": job_id,
-            "status": "queued",
-            "message": "Plik odebrany. Konwersja zaraz sie rozpocznie.",
-            "source_type": source_type,
-            "filename": file.filename,
-            "created_at": created_at,
-            "updated_at": created_at,
-            "output_path": "",
-            "download_name": file.filename.rsplit(".", 1)[0] + ".epub",
-            "metadata": {},
-            "error": "",
-        }
+        _CONVERSION_JOBS[job_id] = build_conversion_job_record(
+            job_id=job_id,
+            source_path=source_path,
+            source_type=source_type,
+            filename=file.filename,
+            created_at=created_at,
+        )
 
     _spawn_conversion_job(
         job_id=job_id,
@@ -448,23 +507,36 @@ def convert_start():
         heading_repair_enabled=heading_repair_enabled,
     )
 
-    return jsonify(
+    response = jsonify(
         {
             "success": True,
             "job_id": job_id,
             "status": "queued",
             "source_type": source_type,
             "message": "Konwersja wystartowala. Trwa przygotowanie EPUB.",
+            "poll_after_ms": DEFAULT_CONVERSION_POLL_INTERVAL_MS,
         }
-    ), 202
+    )
+    response.status_code = 202
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
 
 
 @app.route("/convert/status/<job_id>", methods=["GET"])
 def convert_status(job_id: str):
+    _cleanup_expired_conversion_jobs()
     job = _get_conversion_job(job_id)
     if not job:
         return jsonify({"error": "Nie znaleziono zadania konwersji."}), 404
-    return jsonify(
+    download_url = _job_download_url(job_id, job)
+    conversion_payload = None
+    if job.get("status") == "ready":
+        conversion_payload = dict(job.get("metadata", {}) or {})
+        output_size_bytes = _read_output_size_bytes(job)
+        if output_size_bytes is not None and "output_size_bytes" not in conversion_payload:
+            conversion_payload["output_size_bytes"] = output_size_bytes
+    response = jsonify(
         {
             "success": True,
             "job_id": job["job_id"],
@@ -473,14 +545,42 @@ def convert_status(job_id: str):
             "source_type": job.get("source_type", "pdf"),
             "filename": job.get("filename", ""),
             "error": job.get("error", ""),
-            "conversion": job.get("metadata", {}) if job.get("status") == "ready" else None,
-            "download_url": f"/convert/download/{job_id}" if job.get("status") == "ready" else None,
+            "conversion": conversion_payload,
+            "download_url": download_url,
+            "poll_after_ms": _recommended_poll_interval_ms(job),
+            "elapsed_seconds": _compute_job_elapsed_seconds(job),
+            "output_size_bytes": _read_output_size_bytes(job) if job.get("status") == "ready" else None,
+            "quality_state": _build_job_quality_state(job_id, job),
+            "quality_state_url": f"/convert/quality/{job_id}",
         }
     )
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+
+@app.route("/convert/quality/<job_id>", methods=["GET"])
+def convert_quality(job_id: str):
+    _cleanup_expired_conversion_jobs()
+    job = _get_conversion_job(job_id)
+    if not job:
+        return jsonify({"error": "Nie znaleziono zadania konwersji."}), 404
+
+    response = jsonify(
+        {
+            "success": True,
+            "job_id": job["job_id"],
+            "quality_state": _build_job_quality_state(job_id, job),
+        }
+    )
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
 
 
 @app.route("/convert/download/<job_id>", methods=["GET"])
 def convert_download(job_id: str):
+    _cleanup_expired_conversion_jobs()
     job = _get_conversion_job(job_id)
     if not job:
         return jsonify({"error": "Nie znaleziono zadania konwersji."}), 404
@@ -505,20 +605,22 @@ def convert_download(job_id: str):
 @app.route("/analyze", methods=["POST"])
 def analyze_document():
     """Analyze PDF or DOCX and return detailed information."""
+    _cleanup_expired_conversion_jobs()
     file = request.files.get("file") or request.files.get("pdf")
     if not file or not file.filename:
         return jsonify({"error": "Przeslij plik PDF albo DOCX."}), 400
 
-    source_suffix = Path(file.filename).suffix.lower()
-    if source_suffix not in {".pdf", ".docx"}:
+    source_type = detect_supported_source_type(file.filename)
+    if not source_type:
         return jsonify({"error": "Obslugiwane sa tylko pliki PDF i DOCX."}), 400
+    source_suffix = f".{source_type}"
 
     job_id = uuid.uuid4().hex
     source_path = os.path.join(UPLOAD_DIR, f"{job_id}{source_suffix}")
     file.save(source_path)
 
     try:
-        if source_suffix == ".docx":
+        if source_type == "docx":
             analysis = analyze_docx(source_path)
             publication_analysis = analysis.get("publication_analysis", {})
             return jsonify(
@@ -612,5 +714,8 @@ if __name__ == "__main__":
     host = LOCALHOST
     port = _resolve_server_port()
     debug = _resolve_debug_mode()
-    print(f"Starting KindleMaster on http://{host}:{port} (debug={debug})", flush=True)
-    app.run(debug=debug, host=host, port=port)
+    print(
+        f"Starting KindleMaster on {build_local_app_url(port)} (bind={host}, debug={debug})",
+        flush=True,
+    )
+    serve_http_app(app, host=host, port=port, debug=debug, runtime="flask")

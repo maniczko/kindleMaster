@@ -8,9 +8,30 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from converter import ConversionConfig, convert_document_to_epub_with_report
+from app_runtime_services import (
+    ConversionRequest,
+    build_conversion_summary,
+    run_document_conversion,
+)
+from converter import convert_document_to_epub_with_report
 from epub_quality_recovery import run_epub_publishing_quality_recovery
 from epub_validation import build_validation_markdown, validate_epub_bytes, validate_epub_path
+from kindle_semantic_cleanup import _is_placeholder_author, _resolve_publication_language
+from quality_report_markdown import (
+    build_regression_markdown,
+    build_smoke_markdown,
+    build_workflow_baseline_markdown,
+    build_workflow_before_after_markdown,
+    build_workflow_verification_markdown,
+)
+from quality_reporting import (
+    build_before_after_report,
+    collect_workflow_symptoms,
+    derive_workflow_snapshot_status,
+    extract_workflow_quality_signals,
+    merge_statuses,
+    normalize_status,
+)
 from scripts.run_smoke_tests import run_smoke_tests
 
 
@@ -91,6 +112,10 @@ _PROTECTED_INVARIANTS = {
         "cross-class regressions are visible before release claims",
     ],
 }
+
+
+def _workflow_heading_repair_passthrough(*_args: Any, **_kwargs: Any) -> Any:
+    raise RuntimeError("Workflow heading repair passthrough should not run when heading_repair_enabled is false.")
 
 
 def run_workflow_baseline(
@@ -283,22 +308,40 @@ def _capture_snapshot(
 
     try:
         conversion_result: dict[str, Any] | None = None
+        workflow_quality_report: dict[str, Any] | None = None
         conversion_summary: dict[str, Any] | None = None
+        audit_expectations: dict[str, Any] = {}
         if input_type in {"pdf", "docx"}:
-            conversion_result = convert_document_to_epub_with_report(
-                str(input_path),
-                config=ConversionConfig(profile="auto-premium"),
-                original_filename=input_path.name,
-                source_type=input_type,
+            requested_language = "pl"
+            conversion_outcome = run_document_conversion(
+                ConversionRequest(
+                    source_path=str(input_path),
+                    source_type=input_type,
+                    original_filename=input_path.name,
+                    profile="auto-premium",
+                    language=requested_language,
+                    heading_repair_enabled=False,
+                ),
+                convert_impl=convert_document_to_epub_with_report,
+                heading_repair_impl=_workflow_heading_repair_passthrough,
             )
-            epub_bytes = conversion_result["epub_bytes"]
-            conversion_summary = {
-                key: value
-                for key, value in conversion_result.items()
-                if key != "epub_bytes"
-            }
+            epub_bytes = conversion_outcome.epub_bytes
             epub_output_path = output_dir / ("before.epub" if phase == "baseline" else "after.epub")
             epub_output_path.write_bytes(epub_bytes)
+            output_size_bytes = epub_output_path.stat().st_size
+            conversion_summary = build_conversion_summary(
+                conversion_outcome,
+                filename=input_path.name,
+                output_size_bytes=output_size_bytes,
+                job_status="ready",
+                message="EPUB gotowy do pobrania.",
+            )
+            conversion_result = conversion_summary
+            workflow_quality_report = conversion_outcome.result.get("quality_report")
+            audit_expectations = _build_workflow_audit_expectations(
+                conversion_summary,
+                requested_language=requested_language,
+            )
             validation = validate_epub_bytes(epub_bytes, label=str(epub_output_path))
             _write_json(conversion_result_path, conversion_summary)
             snapshot["artifacts"]["epub_output"] = str(epub_output_path)
@@ -317,6 +360,10 @@ def _capture_snapshot(
             audit_target,
             output_dir=audit_output_dir,
             reports_dir=audit_reports_dir,
+            expected_title=str(audit_expectations.get("expected_title", "") or ""),
+            expected_author=str(audit_expectations.get("expected_author", "") or ""),
+            expected_language=str(audit_expectations.get("expected_language", "") or ""),
+            publication_profile=audit_expectations.get("publication_profile") or None,
         )
         _write_json(audit_result_path, audit)
 
@@ -324,20 +371,21 @@ def _capture_snapshot(
         snapshot["audit"] = audit
         if conversion_summary is not None:
             snapshot["conversion"] = conversion_summary
+            snapshot["audit_expectations"] = audit_expectations
         snapshot["signals"] = _extract_quality_signals(
             validation=validation,
             audit=audit,
-            quality_report=(conversion_result or {}).get("quality_report"),
+            quality_report=workflow_quality_report,
         )
         snapshot["symptoms"] = _collect_symptoms(
             validation=validation,
             audit=audit,
-            quality_report=(conversion_result or {}).get("quality_report"),
+            quality_report=workflow_quality_report,
         )
         snapshot["status"] = _derive_snapshot_status(
             validation=validation,
             audit=audit,
-            quality_report=(conversion_result or {}).get("quality_report"),
+            quality_report=workflow_quality_report,
         )
         snapshot["artifacts"].update(
             {
@@ -353,6 +401,66 @@ def _capture_snapshot(
         snapshot["error"] = str(exc)
         snapshot["symptoms"] = [f"snapshot failed: {exc}"]
         return snapshot
+
+
+def _build_workflow_audit_expectations(
+    conversion_summary: dict[str, Any] | None,
+    *,
+    requested_language: str = "",
+) -> dict[str, Any]:
+    payload = conversion_summary if isinstance(conversion_summary, dict) else {}
+    document_summary = payload.get("document_summary")
+    document_summary = document_summary if isinstance(document_summary, dict) else {}
+    document = payload.get("document")
+    document = document if isinstance(document, dict) else {}
+    analysis = payload.get("analysis")
+    analysis = analysis if isinstance(analysis, dict) else {}
+    quality_state = payload.get("quality_state")
+    quality_state = quality_state if isinstance(quality_state, dict) else {}
+    quality_state_summary = quality_state.get("summary")
+    quality_state_summary = quality_state_summary if isinstance(quality_state_summary, dict) else {}
+
+    expected_title = _first_workflow_text(
+        document_summary.get("title"),
+        document.get("title"),
+    )
+    raw_expected_author = _first_workflow_text(
+        document_summary.get("author"),
+        document.get("author"),
+    )
+    expected_author = ""
+    if raw_expected_author and not _is_placeholder_author(raw_expected_author):
+        expected_author = raw_expected_author
+
+    resolved_language = _resolve_publication_language(
+        _first_workflow_text(
+            document_summary.get("language"),
+            document.get("language"),
+            requested_language,
+            default="pl",
+        ),
+        samples=[expected_title] if expected_title else [],
+    )
+    publication_profile = _first_workflow_text(
+        document_summary.get("profile"),
+        quality_state_summary.get("profile"),
+        analysis.get("profile"),
+        document.get("profile"),
+    )
+    return {
+        "expected_title": expected_title,
+        "expected_author": expected_author,
+        "expected_language": resolved_language,
+        "publication_profile": publication_profile,
+    }
+
+
+def _first_workflow_text(*values: Any, default: str = "") -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return default
 
 
 def _detect_input_type(input_path: Path) -> str:
@@ -497,44 +605,12 @@ def _build_before_after_report(
     regression: dict[str, Any],
     smoke: dict[str, Any],
 ) -> dict[str, Any]:
-    before_snapshot = baseline_payload.get("snapshot", {})
-    before_signals = before_snapshot.get("signals", {})
-    after_signals = verification_snapshot.get("signals", {})
-    delta = {
-        key: after_signals.get(key) - before_signals.get(key)
-        for key in _numeric_signal_keys(before_signals, after_signals)
-    }
-    remaining_risks = list(dict.fromkeys((verification_snapshot.get("symptoms") or [])[:10]))
-    status = _merge_statuses(
-        [
-            verification_snapshot.get("status", "failed"),
-            regression.get("status", "failed"),
-            smoke.get("status", "failed"),
-        ]
+    return build_before_after_report(
+        baseline_payload=baseline_payload,
+        verification_snapshot=verification_snapshot,
+        regression=regression,
+        smoke=smoke,
     )
-    if regression.get("status") == "failed" or smoke.get("status") == "failed":
-        status = "failed"
-
-    return {
-        "run_id": baseline_payload["run_id"],
-        "status": status,
-        "report_complete": True,
-        "before": {
-            "status": before_snapshot.get("status", "failed"),
-            "signals": before_signals,
-            "artifacts": before_snapshot.get("artifacts", {}),
-        },
-        "after": {
-            "status": verification_snapshot.get("status", "failed"),
-            "signals": after_signals,
-            "artifacts": verification_snapshot.get("artifacts", {}),
-        },
-        "delta": delta,
-        "regression_pack_status": regression.get("status", "failed"),
-        "smoke_status": smoke.get("status", "failed"),
-        "remaining_risks": remaining_risks,
-        "unresolved_warnings": remaining_risks,
-    }
 
 
 def _derive_snapshot_status(
@@ -543,38 +619,19 @@ def _derive_snapshot_status(
     audit: dict[str, Any],
     quality_report: dict[str, Any] | None,
 ) -> str:
-    statuses = [
-        _normalize_status((validation.get("summary") or {}).get("status", "failed")),
-        _normalize_status(audit.get("decision", "failed")),
-    ]
-    if quality_report:
-        statuses.append(_normalize_status(quality_report.get("validation_status", "passed")))
-        warnings = quality_report.get("warnings") or []
-        if warnings and statuses[-1] == "passed":
-            statuses[-1] = "passed_with_warnings"
-    return _merge_statuses(statuses)
+    return derive_workflow_snapshot_status(
+        validation=validation,
+        audit=audit,
+        quality_report=quality_report,
+    )
 
 
 def _normalize_status(raw_status: str) -> str:
-    normalized = (raw_status or "").strip().lower()
-    if normalized in {"pass", "passed"}:
-        return "passed"
-    if normalized in {"pass_with_review", "passed_with_warnings", "warning", "warnings"}:
-        return "passed_with_warnings"
-    if normalized in {"fail", "failed", "error"}:
-        return "failed"
-    if normalized == "unavailable":
-        return "passed_with_warnings"
-    return "failed"
+    return normalize_status(raw_status)
 
 
 def _merge_statuses(statuses: list[str]) -> str:
-    normalized = [_normalize_status(status) for status in statuses]
-    if any(status == "failed" for status in normalized):
-        return "failed"
-    if any(status == "passed_with_warnings" for status in normalized):
-        return "passed_with_warnings"
-    return "passed"
+    return merge_statuses(statuses)
 
 
 def _extract_quality_signals(
@@ -583,29 +640,11 @@ def _extract_quality_signals(
     audit: dict[str, Any],
     quality_report: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    internal_errors = (validation.get("internal_links") or {}).get("errors", [])
-    external_errors = (validation.get("external_links") or {}).get("errors", [])
-    package_errors = (validation.get("package") or {}).get("errors", [])
-    text_cleanup = ((quality_report or {}).get("text_cleanup") or {}) if quality_report else {}
-    reference_cleanup = text_cleanup.get("reference_cleanup") or {}
-    gates = audit.get("gates") or {}
-
-    return {
-        "validation_status": _normalize_status((validation.get("summary") or {}).get("status", "failed")),
-        "epubcheck_status": _normalize_status((validation.get("epubcheck") or {}).get("status", "failed")),
-        "error_count": int((validation.get("summary") or {}).get("error_count", 0)),
-        "warning_count": int((validation.get("summary") or {}).get("warning_count", 0)),
-        "internal_link_error_count": len(internal_errors),
-        "external_link_error_count": len(external_errors),
-        "broken_href_error_count": _count_broken_href_errors(internal_errors + external_errors + package_errors),
-        "duplicate_id_error_count": sum(1 for error in internal_errors if "duplicate id" in error.lower()),
-        "reference_cleanup_status": _normalize_status(reference_cleanup.get("quality_gate_status", "unavailable")) if reference_cleanup else "passed_with_warnings",
-        "reference_visible_junk_detected": int(reference_cleanup.get("visible_junk_detected", 0)) if reference_cleanup else 0,
-        "heading_gate_status": _normalize_status(((gates.get("C") or {}).get("status", "unavailable"))),
-        "toc_gate_status": _normalize_status(((gates.get("D") or {}).get("status", "unavailable"))),
-        "text_cleanup_review_needed_count": int(text_cleanup.get("review_needed_count", 0)) if text_cleanup else 0,
-        "text_cleanup_blocked_count": int(text_cleanup.get("blocked_count", 0)) if text_cleanup else 0,
-    }
+    return extract_workflow_quality_signals(
+        validation=validation,
+        audit=audit,
+        quality_report=quality_report,
+    )
 
 
 def _count_broken_href_errors(errors: list[str]) -> int:
@@ -623,149 +662,31 @@ def _collect_symptoms(
     audit: dict[str, Any],
     quality_report: dict[str, Any] | None,
 ) -> list[str]:
-    symptoms: list[str] = []
-    summary = validation.get("summary") or {}
-    if summary.get("status") == "failed":
-        symptoms.append(f"validation failed with {summary.get('error_count', 0)} errors")
-    internal_errors = (validation.get("internal_links") or {}).get("errors", [])
-    if internal_errors:
-        symptoms.append(internal_errors[0])
-    external_errors = (validation.get("external_links") or {}).get("errors", [])
-    if external_errors:
-        symptoms.append(external_errors[0])
-    audit_gates = audit.get("gates") or {}
-    for gate_name in ("A", "B", "C", "D", "E", "F"):
-        gate = audit_gates.get(gate_name) or {}
-        if gate.get("status") in {"fail", "passed_with_warnings", "pass_with_review"}:
-            gate_message = gate.get("message") or gate.get("reason") or gate.get("summary") or ""
-            if gate_message:
-                symptoms.append(f"gate {gate_name}: {gate_message}")
-    if quality_report:
-        warnings = quality_report.get("warnings") or []
-        symptoms.extend(warnings[:3])
-        text_cleanup = quality_report.get("text_cleanup") or {}
-        if text_cleanup.get("review_needed_count"):
-            symptoms.append(f"text cleanup review_needed={text_cleanup['review_needed_count']}")
-        reference_cleanup = text_cleanup.get("reference_cleanup") or {}
-        if reference_cleanup.get("visible_junk_detected"):
-            symptoms.append(f"reference visible_junk_detected={reference_cleanup['visible_junk_detected']}")
-    return list(dict.fromkeys(symptoms))
-
-
-def _numeric_signal_keys(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
-    keys: list[str] = []
-    for key in sorted(set(before) | set(after)):
-        if isinstance(before.get(key, 0), int) and isinstance(after.get(key, 0), int):
-            keys.append(key)
-    return keys
+    return collect_workflow_symptoms(
+        validation=validation,
+        audit=audit,
+        quality_report=quality_report,
+    )
 
 
 def _build_baseline_markdown(payload: dict[str, Any], isolation: dict[str, Any]) -> str:
-    snapshot = payload.get("snapshot", {})
-    lines = [
-        "# KindleMaster Workflow Baseline",
-        "",
-        f"- Run ID: `{payload['run_id']}`",
-        f"- Input: `{payload['input_path']}`",
-        f"- Input type: `{payload['input_type']}`",
-        f"- Change area: `{payload['change_area']}`",
-        f"- Baseline status: `{snapshot.get('status', 'failed')}`",
-        "",
-        "## Isolation",
-        "",
-        f"- Suspected owner layers: `{', '.join(isolation.get('suspected_owner_layers', []))}`",
-        f"- Recommended tests: `{', '.join(isolation.get('recommended_tests', []))}`",
-        "",
-    ]
-    for item in isolation.get("recommended_smoke", []):
-        lines.append(f"- Smoke: `{item.get('type')}` :: {item.get('description', '')}")
-    if snapshot.get("symptoms"):
-        lines.extend(["", "## Symptoms", ""])
-        lines.extend(f"- {symptom}" for symptom in snapshot["symptoms"])
-    return "\n".join(lines).rstrip() + "\n"
+    return build_workflow_baseline_markdown(payload, isolation)
 
 
 def _build_verification_markdown(payload: dict[str, Any]) -> str:
-    verification = payload.get("verification_snapshot", {})
-    before_after = payload.get("before_after", {})
-    lines = [
-        "# KindleMaster Workflow Verification",
-        "",
-        f"- Run ID: `{payload['run_id']}`",
-        f"- Final status: `{payload.get('status', 'failed')}`",
-        f"- Baseline status: `{payload.get('baseline_status', 'failed')}`",
-        f"- Verify status: `{verification.get('status', 'failed')}`",
-        f"- Regression pack: `{(payload.get('regression_pack') or {}).get('status', 'failed')}`",
-        f"- Smoke pack: `{(payload.get('smoke_pack') or {}).get('status', 'failed')}`",
-        "",
-        "## Before vs After",
-        "",
-        f"- Before: `{(before_after.get('before') or {}).get('status', 'failed')}`",
-        f"- After: `{(before_after.get('after') or {}).get('status', 'failed')}`",
-        "",
-    ]
-    for key, value in (before_after.get("delta") or {}).items():
-        lines.append(f"- Delta `{key}`: `{value}`")
-    if before_after.get("remaining_risks"):
-        lines.extend(["", "## Remaining Risks", ""])
-        lines.extend(f"- {risk}" for risk in before_after["remaining_risks"])
-    return "\n".join(lines).rstrip() + "\n"
+    return build_workflow_verification_markdown(payload)
 
 
 def _build_before_after_markdown(payload: dict[str, Any]) -> str:
-    lines = [
-        "# KindleMaster Before/After Comparison",
-        "",
-        f"- Run ID: `{payload.get('run_id', '')}`",
-        f"- Status: `{payload.get('status', 'failed')}`",
-        f"- Regression pack: `{payload.get('regression_pack_status', 'failed')}`",
-        f"- Smoke: `{payload.get('smoke_status', 'failed')}`",
-        "",
-        "## Delta Metrics",
-        "",
-    ]
-    for key, value in (payload.get("delta") or {}).items():
-        lines.append(f"- `{key}`: `{value}`")
-    if payload.get("remaining_risks"):
-        lines.extend(["", "## Remaining Risks", ""])
-        lines.extend(f"- {risk}" for risk in payload["remaining_risks"])
-    return "\n".join(lines).rstrip() + "\n"
+    return build_workflow_before_after_markdown(payload)
 
 
 def _build_regression_markdown(payload: dict[str, Any]) -> str:
-    lines = [
-        "# KindleMaster Regression Pack",
-        "",
-        f"- Status: `{payload.get('status', 'failed')}`",
-        f"- Return code: `{payload.get('returncode', 1)}`",
-        f"- Tests: `{', '.join(payload.get('tests', []))}`",
-        "",
-    ]
-    if payload.get("stdout_tail"):
-        lines.extend(["## stdout tail", "", "```text", payload["stdout_tail"], "```", ""])
-    if payload.get("stderr_tail"):
-        lines.extend(["## stderr tail", "", "```text", payload["stderr_tail"], "```", ""])
-    return "\n".join(lines).rstrip() + "\n"
+    return build_regression_markdown(payload)
 
 
 def _build_smoke_markdown(payload: dict[str, Any]) -> str:
-    lines = [
-        "# KindleMaster Smoke Pack",
-        "",
-        f"- Status: `{payload.get('status', 'failed')}`",
-        "",
-    ]
-    for item in payload.get("executed", []):
-        lines.extend(
-            [
-                f"## {item.get('mode', 'quick')}",
-                "",
-                f"- Status: `{item.get('status', 'failed')}`",
-                f"- Case filters: `{', '.join(item.get('case_filters', [])) or 'all'}`",
-                "",
-            ]
-        )
-    return "\n".join(lines).rstrip() + "\n"
+    return build_smoke_markdown(payload)
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:

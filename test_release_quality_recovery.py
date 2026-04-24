@@ -40,6 +40,7 @@ class ReleaseQualityRecoveryTests(unittest.TestCase):
             profile="book_reflow",
             confidence=0.93,
             page_count=12,
+            render_budget_class="fixed_layout_safe",
             has_toc=True,
             has_tables=False,
             has_diagrams=False,

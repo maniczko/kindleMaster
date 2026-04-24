@@ -15,6 +15,7 @@ from bs4 import BeautifulSoup, Tag
 from kindle_semantic_cleanup import (
     REFERENCE_ENTRY_ID_RE,
     REFERENCE_INLINE_ID_RE,
+    REFERENCE_URL_START_RE,
     _collect_reference_link_candidates,
     _dedupe_dom_ids,
     _extract_epub,
@@ -25,6 +26,7 @@ from kindle_semantic_cleanup import (
     _looks_like_invalid_reference_title,
     _looks_like_reference_section_title,
     _normalize_text,
+    _normalize_reference_href,
     _pack_epub,
     _reference_display_id_from_number,
     _reference_numeric_value,
@@ -222,6 +224,7 @@ def repair_epub_reference_sections(
     epub_bytes: bytes,
     *,
     language_hint: str | None = None,
+    source_pdf_path: str | None = None,
 ) -> ReferenceRepairResult:
     if not epub_bytes:
         return ReferenceRepairResult(
@@ -265,6 +268,7 @@ def repair_epub_reference_sections(
         opf_path = _locate_opf(root_dir)
         chapter_paths = _get_spine_xhtml_paths(opf_path)
         citation_scan = _collect_citation_usage(chapter_paths, root_dir=root_dir)
+        source_record_map = _extract_source_pdf_reference_records(source_pdf_path)
 
         records: list[ReferenceRepairRecord] = []
         sections: list[dict[str, Any]] = []
@@ -277,6 +281,7 @@ def repair_epub_reference_sections(
                 root_dir=root_dir,
                 language_hint=language_hint,
                 citation_order_map=citation_scan["citation_order_map"],
+                source_record_map=source_record_map,
             )
             if repair.modified:
                 modified_documents += 1
@@ -315,11 +320,16 @@ def run_reference_repair_pipeline(
     output_dir: Path,
     reports_dir: Path,
     language_hint: str | None = None,
+    source_pdf_path: str | None = None,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     reports_dir.mkdir(parents=True, exist_ok=True)
 
-    result = repair_epub_reference_sections(source_epub.read_bytes(), language_hint=language_hint)
+    result = repair_epub_reference_sections(
+        source_epub.read_bytes(),
+        language_hint=language_hint,
+        source_pdf_path=source_pdf_path,
+    )
 
     repaired_path = output_dir / "repaired.epub"
     repaired_path.write_bytes(result.epub_bytes)
@@ -344,6 +354,7 @@ def _repair_reference_document(
     root_dir: Path,
     language_hint: str | None,
     citation_order_map: dict[str, int],
+    source_record_map: dict[str, ReferenceRepairRecord],
 ) -> _DocumentReferenceRepair:
     original = chapter_path.read_text(encoding="utf-8")
     soup = BeautifulSoup(original, "xml")
@@ -381,6 +392,7 @@ def _repair_reference_document(
             section_title=section_title,
             language_hint=language_hint,
             citation_order_map=citation_order_map,
+            source_record_map=source_record_map,
         )
         if detail_records:
             records.extend(detail_records)
@@ -433,6 +445,332 @@ def _repair_reference_document(
     )
 
 
+def _extract_source_pdf_reference_records(source_pdf_path: str | None) -> dict[str, ReferenceRepairRecord]:
+    if not source_pdf_path:
+        return {}
+
+    resolved_path = Path(source_pdf_path).resolve()
+    if not resolved_path.exists() or resolved_path.suffix.lower() != ".pdf":
+        return {}
+
+    try:
+        import pdfplumber  # type: ignore
+    except Exception:
+        return {}
+
+    source_records: dict[str, ReferenceRepairRecord] = {}
+    try:
+        with pdfplumber.open(str(resolved_path)) as pdf:
+            for page_number, page in enumerate(pdf.pages, start=1):
+                page_rows = _extract_source_pdf_reference_rows_from_page(page)
+                if not page_rows:
+                    continue
+                records = _build_source_pdf_reference_records_from_rows(
+                    page_rows,
+                    document_path=f"source-pdf:page-{page_number}",
+                    section_id=f"source-pdf-page-{page_number}",
+                )
+                for record in records:
+                    canonical_ref_id = _canonical_reference_id(record.display_ref_id or record.ref_id)
+                    if not canonical_ref_id or not record.links or not record.source_title:
+                        continue
+                    existing = source_records.get(canonical_ref_id)
+                    if existing is None or _reference_record_priority(record) > _reference_record_priority(existing):
+                        source_records[canonical_ref_id] = record
+    except Exception:
+        return {}
+    return source_records
+
+
+def _extract_source_pdf_reference_rows_from_page(page: Any) -> list[dict[str, Any]]:
+    try:
+        words = page.extract_words(use_text_flow=True, keep_blank_chars=False)
+    except Exception:
+        return []
+    if not words:
+        return []
+
+    grouped_rows: dict[int, list[dict[str, Any]]] = {}
+    for word in words:
+        try:
+            top_value = float(word.get("top", 0.0) or 0.0)
+        except Exception:
+            continue
+        if top_value < 40 or top_value > 790:
+            continue
+        row_key = int(round(top_value / 3.0) * 3)
+        grouped_rows.setdefault(row_key, []).append(word)
+
+    if not grouped_rows:
+        return []
+
+    sorted_rows = [(row_key, sorted(row_words, key=lambda item: float(item.get("x0", 0.0) or 0.0))) for row_key, row_words in sorted(grouped_rows.items())]
+    header_info = _find_source_pdf_reference_table_header(sorted_rows)
+    if header_info is None:
+        return []
+
+    header_index, id_boundary, source_boundary = header_info
+    page_rows: list[dict[str, Any]] = []
+    seen_reference_id = False
+    for row_key, row_words in sorted_rows[header_index + 1 :]:
+        row = _row_from_pdf_words(row_words, row_key=row_key, id_boundary=id_boundary, source_boundary=source_boundary)
+        row_text = " ".join(part for part in [row["id"], row["src"], row["url"]] if part)
+        normalized_text = _normalize_text(row_text)
+        if not normalized_text:
+            continue
+        if "opracowanie szkoleniowe" in normalized_text.lower():
+            break
+        if seen_reference_id and not row["id"] and not row["url"] and not row["src"]:
+            continue
+        if _looks_like_reference_header_row(normalized_text):
+            continue
+        if row["src"].startswith("Ostatnia uwaga") or row["id"].startswith("Ostatnia uwaga"):
+            break
+        if row["id"] or row["src"] or row["url"]:
+            page_rows.append(row)
+            if row["id"]:
+                seen_reference_id = True
+    return page_rows if sum(1 for row in page_rows if row["id"]) >= 2 else []
+
+
+def _find_source_pdf_reference_table_header(
+    sorted_rows: list[tuple[int, list[dict[str, Any]]]]
+) -> tuple[int, float, float] | None:
+    for index, (_row_key, row_words) in enumerate(sorted_rows):
+        id_anchor = None
+        source_anchor = None
+        url_anchor = None
+        for word in row_words:
+            text = _normalize_text(str(word.get("text", "") or ""))
+            lowered = text.lower()
+            if id_anchor is None and lowered in {"id", "lp", "nr", "no"}:
+                id_anchor = float(word.get("x0", 0.0) or 0.0)
+            elif source_anchor is None and lowered in {"źródło", "zrodlo", "source", "title"}:
+                source_anchor = float(word.get("x0", 0.0) or 0.0)
+            elif url_anchor is None and lowered in {"adres", "url", "link"}:
+                url_anchor = float(word.get("x0", 0.0) or 0.0)
+        if id_anchor is None or source_anchor is None or url_anchor is None:
+            continue
+        id_boundary = (id_anchor + source_anchor) / 2.0
+        source_boundary = (source_anchor + url_anchor) / 2.0
+        if id_boundary >= source_boundary:
+            continue
+        return index, id_boundary, source_boundary
+    return None
+
+
+def _row_from_pdf_words(
+    row_words: list[dict[str, Any]],
+    *,
+    row_key: int,
+    id_boundary: float,
+    source_boundary: float,
+) -> dict[str, Any]:
+    id_parts: list[str] = []
+    source_parts: list[str] = []
+    url_parts: list[str] = []
+    for word in row_words:
+        text = _normalize_text(str(word.get("text", "") or ""))
+        if not text:
+            continue
+        x0 = float(word.get("x0", 0.0) or 0.0)
+        if x0 < id_boundary:
+            id_parts.append(text)
+        elif x0 < source_boundary:
+            source_parts.append(text)
+        else:
+            url_parts.append(text)
+    id_match = re.search(r"\[R\d+\]", " ".join(id_parts))
+    return {
+        "id": id_match.group(0) if id_match else "",
+        "src": _normalize_text(" ".join(source_parts)),
+        "url": _normalize_text(" ".join(url_parts)),
+        "row": row_key,
+    }
+
+
+def _build_source_pdf_reference_records_from_rows(
+    rows: list[dict[str, Any]],
+    *,
+    document_path: str,
+    section_id: str,
+) -> list[ReferenceRepairRecord]:
+    id_rows = [row for row in rows if row.get("id")]
+    if not id_rows:
+        return []
+
+    centers = [int(row.get("row", 0) or 0) for row in id_rows]
+    boundaries: list[float] = [float("-inf")]
+    for start, end in zip(centers, centers[1:]):
+        boundaries.append((start + end) / 2.0)
+    boundaries.append(float("inf"))
+
+    records: list[ReferenceRepairRecord] = []
+    for index, row in enumerate(id_rows):
+        bucket = [
+            candidate
+            for candidate in rows
+            if boundaries[index] < float(candidate.get("row", 0) or 0) <= boundaries[index + 1]
+        ]
+        record = _build_source_pdf_reference_record(
+            row.get("id", ""),
+            bucket,
+            document_path=document_path,
+            section_id=section_id,
+        )
+        if record is not None:
+            records.append(record)
+    return records
+
+
+def _build_source_pdf_reference_record(
+    ref_id: str,
+    rows: list[dict[str, Any]],
+    *,
+    document_path: str,
+    section_id: str,
+) -> ReferenceRepairRecord | None:
+    display_ref_id = _display_reference_id(ref_id)
+    if not display_ref_id:
+        return None
+
+    source_lines = [_normalize_text(str(row.get("src", "") or "")) for row in rows if _normalize_text(str(row.get("src", "") or ""))]
+    source_text = _normalize_text(" ".join(source_lines))
+    if not source_text:
+        return None
+
+    descriptor = _build_descriptor_candidate(f"{display_ref_id} {source_text}", position=0)
+    descriptor.source_id = display_ref_id
+    descriptor.display_source_id = display_ref_id
+
+    url_candidates = _build_source_pdf_url_candidates(rows)
+    record = _record_from_descriptor(
+        descriptor,
+        url_candidates,
+        document_path=document_path,
+        section_id=section_id,
+        force_review=not bool(url_candidates),
+    )
+    if url_candidates:
+        record.confidence = max(record.confidence, 0.97)
+        record.review_flag = False
+        record.link_status = _classify_link_status(record.links[0] if record.links else "")
+    return record
+
+
+def _build_source_pdf_url_candidates(rows: list[dict[str, Any]]) -> list[_ReferenceUrlCandidate]:
+    fragments = [_normalize_text(str(row.get("url", "") or "")) for row in rows if _normalize_text(str(row.get("url", "") or ""))]
+    if not fragments:
+        return []
+
+    groups: list[list[str]] = []
+    current_group: list[str] = []
+    for fragment in fragments:
+        if REFERENCE_URL_START_RE.search(fragment):
+            if current_group:
+                groups.append(current_group)
+            current_group = [fragment]
+        elif current_group:
+            current_group.append(fragment)
+    if current_group:
+        groups.append(current_group)
+
+    candidates: list[_ReferenceUrlCandidate] = []
+    seen: set[str] = set()
+    for position, group in enumerate(groups):
+        raw = "".join(part.replace(" ", "") for part in group)
+        normalized = _normalize_reference_href(raw)
+        if not normalized or not normalized.lower().startswith(("http://", "https://")) or normalized in seen:
+            continue
+        seen.add(normalized)
+        candidates.append(_ReferenceUrlCandidate(raw=raw, normalized=normalized, position=position))
+    return candidates
+
+
+def _augment_scope_records_from_source_pdf(
+    records: list[ReferenceRepairRecord],
+    rendered_records: list[ReferenceRepairRecord],
+    *,
+    core_units: list[_ReferenceScopeUnit],
+    source_record_map: dict[str, ReferenceRepairRecord],
+    document_path: str,
+    section_id: str,
+) -> tuple[list[ReferenceRepairRecord], list[ReferenceRepairRecord]]:
+    if not source_record_map:
+        return records, rendered_records
+
+    scope_ids = _scope_source_ids(core_units)
+    if not scope_ids:
+        return records, rendered_records
+
+    existing_by_id: dict[str, ReferenceRepairRecord] = {}
+    for record in records:
+        canonical_ref_id = _canonical_reference_id(record.display_ref_id or record.ref_id)
+        if not canonical_ref_id or canonical_ref_id not in scope_ids:
+            continue
+        previous = existing_by_id.get(canonical_ref_id)
+        if previous is None or _reference_record_priority(record) > _reference_record_priority(previous):
+            existing_by_id[canonical_ref_id] = record
+
+    merged_records: list[ReferenceRepairRecord] = []
+    merged_rendered: list[ReferenceRepairRecord] = []
+    for canonical_ref_id in scope_ids:
+        source_record = source_record_map.get(canonical_ref_id)
+        chosen = _clone_reference_record(source_record, document_path=document_path, section_id=section_id) if source_record else existing_by_id.get(canonical_ref_id)
+        if chosen is None:
+            continue
+        merged_records.append(chosen)
+        if _should_render_record(chosen):
+            merged_rendered.append(chosen)
+    return merged_records or records, merged_rendered or rendered_records
+
+
+def _scope_source_ids(core_units: list[_ReferenceScopeUnit]) -> list[str]:
+    ordered_ids: list[str] = []
+    seen: set[str] = set()
+    for unit in core_units:
+        for raw_id in unit.source_ids:
+            canonical_ref_id = _canonical_reference_id(raw_id)
+            if not canonical_ref_id or canonical_ref_id in seen:
+                continue
+            seen.add(canonical_ref_id)
+            ordered_ids.append(canonical_ref_id)
+    return ordered_ids
+
+
+def _clone_reference_record(
+    record: ReferenceRepairRecord,
+    *,
+    document_path: str,
+    section_id: str,
+) -> ReferenceRepairRecord:
+    return ReferenceRepairRecord(
+        document_path=document_path,
+        section_id=section_id,
+        ref_id=record.ref_id,
+        display_ref_id=record.display_ref_id,
+        source_name=record.source_name,
+        source_title=record.source_title,
+        description=record.description,
+        url=record.url,
+        links=list(record.links),
+        confidence=float(record.confidence or 0.0),
+        review_flag=bool(record.review_flag),
+        numbering_repaired=bool(record.numbering_repaired),
+        link_status=record.link_status,
+        original_fragments=list(record.original_fragments),
+        unresolved_fragments=list(record.unresolved_fragments),
+    )
+
+
+def _reference_record_priority(record: ReferenceRepairRecord) -> tuple[int, float, int]:
+    return (
+        1 if _should_render_record(record) else 0,
+        float(record.confidence or 0.0),
+        len(record.links),
+    )
+
+
 def _resolve_reference_container(body: Tag) -> Tag:
     top_level = [node for node in body.children if isinstance(node, Tag)]
     if len(top_level) == 1 and top_level[0].name in {"section", "article"}:
@@ -464,8 +802,6 @@ def _find_reference_scopes(nodes: list[Tag], *, chapter_title: str) -> list[tupl
     if _looks_like_implicit_reference_scope(nodes):
         return [(0, len(nodes), "implicit")]
     return []
-
-
 def _looks_like_reference_scope_title(text: str) -> bool:
     normalized = _normalize_text(text)
     if _looks_like_reference_section_title(normalized):
@@ -790,6 +1126,7 @@ def _repair_reference_scope(
     section_title: str,
     language_hint: str | None,
     citation_order_map: dict[str, int],
+    source_record_map: dict[str, ReferenceRepairRecord],
 ) -> tuple[str, list[ReferenceRepairRecord], dict[str, Any]]:
     units = _build_scope_units(scope_nodes)
     if not units:
@@ -858,6 +1195,14 @@ def _repair_reference_scope(
             continue
         cluster_units.append(unit)
     flush_cluster()
+    records, rendered_records = _augment_scope_records_from_source_pdf(
+        records,
+        rendered_records,
+        core_units=core_units,
+        source_record_map=source_record_map,
+        document_path=document_path,
+        section_id=section_id,
+    )
 
     rendered_records = _sort_records_by_citation_order(rendered_records, citation_order_map=citation_order_map)
     numbering_issues_fixed = _apply_conservative_numbering(rendered_records)
@@ -982,8 +1327,6 @@ def _strip_reference_header_row_prefix(text: str) -> tuple[str, bool]:
 
 def _looks_like_reference_header_row(text: str) -> bool:
     return bool(REFERENCE_HEADER_ROW_RE.match(_cleanup_reference_descriptor_text(text)))
-
-
 def _extract_inline_reference_ids(text: str) -> list[str]:
     normalized = _cleanup_reference_descriptor_text(text)
     ids: list[str] = []

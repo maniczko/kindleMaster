@@ -2,45 +2,56 @@
 
 KindleMaster is a local-first PDF-to-EPUB and DOCX-to-EPUB conversion toolkit focused on high-quality Kindle reading output.
 
-## What it does
-
-- detects source type and publication type before conversion
-- supports separate flows for books, magazines, and chess/training books
-- supports reflowable DOCX input driven by document structure and styles
-- rebuilds EPUB structure, navigation, and reading order for better reflow
-- runs semantic cleanup for headings, TOC, notation, and PDF artifact reduction
-- serves a local Flask UI for upload and conversion
-
-## Main files
-
-- `app.py` – local Flask server and upload API
-- `converter.py` – main conversion pipeline
-- `docx_conversion.py` – DOCX structural parsing and publication-model mapping
-- `publication_analysis.py` – PDF profiling and route selection
-- `publication_pipeline.py` – publication-aware EPUB assembly helpers
-- `premium_reflow.py` – book/chess-oriented reflow logic
-- `magazine_kindle_reflow.py` – magazine-oriented reflow logic
-- `kindle_semantic_cleanup.py` – final EPUB cleanup and Kindle normalization
-- `pymupdf_chess_extractor.py` – chess diagram extraction and packaging
-- `scripts/verify_magazine_epub_quality.py` – quality checks for magazine EPUB output
-
-## Local setup
+## Quick Start
 
 ```powershell
 python kindlemaster.py bootstrap
+python kindlemaster.py test --suite quick
+python kindlemaster.py test --suite corpus
+python kindlemaster.py status
+python kindlemaster.py test --suite browser
+python kindlemaster.py test --suite runtime
+python kindlemaster.py test --suite release
+```
+
+The supported toolchain matrix lives in [docs/toolchain-matrix.md](docs/toolchain-matrix.md).
+
+## Authority Map
+
+- `kindlemaster.py` is the executable source of truth for the CLI command surface, including subcommands, flags, defaults, and exit behavior.
+- `AGENTS.md` is the canonical human-readable authority map for standard command policy, workflow artifacts, and which docs are authoritative versus derived.
+- `docs/toolchain-matrix.md` is authoritative for supported local toolchains and `test --suite` lane expectations.
+- `.codex/config.toml` is authoritative only for active repo-local Codex settings; its comments are convenience mirrors, not an independent policy source.
+- Generated files under `reports/` and `output/` are derived artifacts, not governance authority.
+
+## Local Setup
+
+The preferred local UI runs on `http://kindlemaster.localhost:5001/`.
+
+The server still binds safely to loopback on `127.0.0.1:5001`, so `http://127.0.0.1:5001/` remains the fallback address for tools that do not resolve the branded hostname.
+
+If you only need the app server:
+
+```powershell
 python kindlemaster.py serve
 ```
 
-The local app runs on `http://127.0.0.1:5001/` by default. You can override the port with `PORT`.
+If you need browser coverage or the live runtime gate, install the Python browser stack as described in the toolchain matrix.
 
-The web UI accepts both PDF and DOCX. PDF keeps page preview and crop tools; DOCX uses structure analysis mode without page preview.
+The async HTTP flow keeps the existing `/convert/start -> /convert/status/<job_id> -> /convert/download/<job_id>` contract and now also exposes normalized quality state at `GET /convert/quality/<job_id>`. `GET /convert/status/<job_id>` includes the same payload under `quality_state` plus a `quality_state_url`.
 
-## Standard commands
+## Core Commands
+
+The supported first-class command set is `bootstrap`, `doctor`, `prepare-reference-inputs`, `serve`, `convert`, `validate`, `smoke`, `corpus`, `status`, `test`, `audit`, and `workflow`.
 
 ```powershell
-python kindlemaster.py test --suite quick
+python kindlemaster.py doctor
+python kindlemaster.py prepare-reference-inputs
 python kindlemaster.py convert path\to\input.docx --output output\result.epub
 python kindlemaster.py smoke --mode quick
+python kindlemaster.py corpus
+python kindlemaster.py status
+python kindlemaster.py test --suite corpus
 python kindlemaster.py validate path\to\file.epub
 python kindlemaster.py audit path\to\file.epub
 python kindlemaster.py workflow baseline path\to\input.pdf --change-area reference
@@ -50,24 +61,27 @@ python kindlemaster.py workflow verify path\to\input.pdf --run-id <run_id>
 Use `workflow baseline/verify` when you are fixing a real defect and need the standard engineering loop:
 `reproduce -> isolate -> fix -> validate -> compare before/after`.
 
-Use raw `test`, `smoke`, `validate`, and `audit` when you only need one slice of verification rather than the full tracked workflow.
+Workflow artifacts are written under `reports/workflows/<run_id>/` and `output/workflows/<run_id>/`; `AGENTS.md` defines the required filenames and contract.
 
-For DOCX work, use the same standard entrypoints:
-- `python kindlemaster.py convert path\to\input.docx --output output\result.epub`
-- `python kindlemaster.py workflow baseline path\to\input.docx --change-area converter`
-- `python kindlemaster.py workflow verify path\to\input.docx --run-id <run_id>`
+The corpus-wide proof lane writes derived reports under `reports/corpus/` and `output/corpus/`, including:
+- `reports/corpus/corpus_gate.json`
+- `reports/corpus/corpus_gate.md`
+- `reports/corpus/premium_corpus_smoke_report.json`
+- `reports/corpus/premium_corpus_smoke_report.md`
 
-## Codex project config
+The derived project status lane reads existing evidence and writes:
+- `reports/project_status.json`
+- `reports/project_status.md`
 
-Repo-local Codex defaults live in `.codex/config.toml`.
+## Troubleshooting
 
-Use that file for KindleMaster-specific defaults such as:
-- preferred model and reasoning level,
-- approval policy,
-- repo-specific integrations,
-- standard operational commands and restrictions.
-
-Keep personal machine-wide preferences in `~/.codex/config.toml` and repo-specific behavior in `.codex/config.toml`.
+- `quick` should remain Python-only. If it starts failing on browser dependencies, check that `kindlemaster.py` still excludes browser suites from `QUICK_TESTS`.
+- `corpus` is the standard rerunnable proof lane for the expanded fixture bank; it runs full smoke plus premium corpus reporting and writes derived status under `reports/corpus/`.
+- `status` reads existing evidence under `reports/` and generates one derived project status instead of another hand-maintained summary.
+- `browser` requires Python Playwright and Chromium, but it does not need the live Waitress gate.
+- `runtime` requires Playwright plus Waitress because it exercises the live HTTP flow before browser smoke.
+- If Chromium is missing, run `python -m playwright install chromium`.
+- If Waitress is missing, reinstall dev dependencies with `python kindlemaster.py bootstrap` or `python -m pip install -r requirements-dev.txt`.
 
 ## Notes
 

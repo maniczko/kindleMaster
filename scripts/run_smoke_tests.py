@@ -13,6 +13,7 @@ if str(ROOT_DIR) not in sys.path:
 from converter import ConversionConfig, convert_document_to_epub_with_report
 from epub_quality_recovery import run_epub_publishing_quality_recovery
 from epub_validation import validate_epub_bytes, validate_epub_path
+from size_budget_policy import evaluate_size_budget, get_document_size_budget, inspect_epub_archive, load_size_budget_policy
 
 
 def run_smoke_tests(
@@ -26,6 +27,7 @@ def run_smoke_tests(
     resolved_manifest = Path(manifest_path).resolve()
     if not resolved_manifest.exists():
         raise FileNotFoundError(f"Reference input manifest not found: {resolved_manifest}")
+    policy = load_size_budget_policy()
 
     resolved_output_dir = Path(output_dir).resolve()
     resolved_reports_dir = Path(reports_dir).resolve()
@@ -48,6 +50,7 @@ def run_smoke_tests(
             "input_type": case["input_type"],
             "path": str(path),
         }
+        artifact_bytes: bytes | None = None
         if case["input_type"] in {"pdf", "docx"}:
             result = convert_document_to_epub_with_report(
                 str(path),
@@ -58,6 +61,7 @@ def run_smoke_tests(
             epub_path = resolved_output_dir / f"{case['id']}.epub"
             epub_path.write_bytes(result["epub_bytes"])
             validation = validate_epub_bytes(result["epub_bytes"], label=str(epub_path))
+            artifact_bytes = result["epub_bytes"]
             row.update(
                 {
                     "analysis": _json_safe(result.get("analysis", {})),
@@ -69,6 +73,7 @@ def run_smoke_tests(
         else:
             validation = validate_epub_path(path)
             row["validation"] = validation
+            artifact_bytes = path.read_bytes()
             if mode == "full":
                 release_dir = resolved_output_dir / case["id"]
                 audit_result = run_epub_publishing_quality_recovery(
@@ -78,6 +83,16 @@ def run_smoke_tests(
                     expected_language=case.get("language", ""),
                 )
                 row["release_audit"] = audit_result
+        if artifact_bytes is not None:
+            row["epub_size_bytes"] = len(artifact_bytes)
+            document_class = str(case.get("document_class", ""))
+            row["size_gate"] = evaluate_size_budget(
+                budget_key=document_class,
+                budget=get_document_size_budget(document_class, policy=policy),
+                epub_size_bytes=len(artifact_bytes),
+                inspection=inspect_epub_archive(artifact_bytes),
+                label="klasy dokumentu",
+            )
         rows.append(row)
 
     summary = _build_smoke_summary(rows)
@@ -111,19 +126,34 @@ def _case_matches(case: dict[str, Any], filters: list[str]) -> bool:
 def _build_smoke_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     failures = 0
     warnings = 0
+    size_failures = 0
+    size_warnings = 0
     for row in rows:
-        status = ((row.get("validation") or {}).get("summary") or {}).get("status", "failed")
+        validation_status = ((row.get("validation") or {}).get("summary") or {}).get("status", "failed")
+        size_status = (row.get("size_gate") or {}).get("status", "passed")
+        status = _merge_statuses(validation_status, size_status)
         if status == "failed":
             failures += 1
         elif status == "passed_with_warnings":
             warnings += 1
+        if size_status == "failed":
+            size_failures += 1
+        elif size_status == "passed_with_warnings":
+            size_warnings += 1
     overall = "failed" if failures else ("passed_with_warnings" if warnings else "passed")
     return {
         "cases_run": len(rows),
         "failed_cases": failures,
         "warning_cases": warnings,
+        "size_failed_cases": size_failures,
+        "size_warning_cases": size_warnings,
         "overall_status": overall,
     }
+
+
+def _merge_statuses(validation_status: str, size_status: str) -> str:
+    priority = {"passed": 0, "passed_with_warnings": 1, "failed": 2}
+    return validation_status if priority.get(validation_status, 2) >= priority.get(size_status, 2) else size_status
 
 
 def _json_safe(value: Any) -> Any:
@@ -160,6 +190,19 @@ def _build_smoke_markdown(payload: dict[str, Any]) -> str:
                 f"- Validation: `{(validation.get('summary') or {}).get('status', 'unknown')}`",
             ]
         )
+        if row.get("size_gate"):
+            size_gate = row["size_gate"]
+            lines.append(f"- Size gate: `{size_gate.get('status', 'unknown')}`")
+            lines.append(f"- EPUB size: `{size_gate.get('epub_size_bytes', 0)}` B")
+            if size_gate.get("warn_bytes") is not None:
+                lines.append(
+                    f"- Size budget: warn `{size_gate['warn_bytes']}` B / hard `{size_gate['hard_bytes']}` B"
+                )
+            largest_assets = ((size_gate.get("inspection") or {}).get("largest_assets") or [])[:3]
+            if largest_assets:
+                lines.append("- Largest assets:")
+                for asset in largest_assets:
+                    lines.append(f"  - `{asset['name']}` -> `{asset['size_bytes']}` B")
         if row.get("release_audit"):
             lines.append(f"- Release audit: `{row['release_audit'].get('decision', 'unknown')}`")
         lines.append("")

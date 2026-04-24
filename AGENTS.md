@@ -28,7 +28,7 @@ The project exists to:
 Use this mental model before changing anything:
 
 1. `app.py`
-   Local Flask UI and HTTP API. Handles `/`, `/analyze`, `/convert` and sets response headers used by the browser UI.
+   Local Flask UI and HTTP API. Handles `/`, `/analyze`, `/convert`, async `/convert/start|status|quality|download`, and sets response headers used by the browser UI.
 
 2. `converter.py`
    Main runtime orchestrator for PDF/DOCX→EPUB conversion. This is the highest-risk integration point.
@@ -152,8 +152,10 @@ python kindlemaster.py serve
 Default URL:
 
 ```text
-http://127.0.0.1:5001/
+http://kindlemaster.localhost:5001/
 ```
+
+Loopback bind safety remains on `127.0.0.1:5001`; use that fallback address if a local tool does not resolve the branded hostname.
 
 The port may be overridden via `PORT`, but `5001` is the default and should be treated as the main local verification target.
 
@@ -191,7 +193,7 @@ python kindlemaster.py validate reference_inputs\epub\scan_probe.epub
 
 ## 8. Local Server Freshness
 
-After changing any backend conversion code or server code, always restart the local app server before claiming the change is available at `http://127.0.0.1:5001/`.
+After changing any backend conversion code or server code, always restart the local app server before claiming the change is available at `http://kindlemaster.localhost:5001/`.
 
 Treat at least these files as restart-sensitive:
 - `app.py`
@@ -789,6 +791,16 @@ python kindlemaster.py smoke --mode quick
 
 DOCX smoke is part of the standard corpus. At minimum keep one quick DOCX fixture and one richer DOCX fixture with tables/lists/images.
 
+Standard corpus-wide proof command:
+
+```powershell
+python kindlemaster.py test --suite corpus
+```
+
+This lane must persist derived corpus reports under:
+- `reports/corpus/`
+- `output/corpus/`
+
 ## 30. Standard Project Entrypoint
 
 The standard operational entrypoint for this repo is:
@@ -802,12 +814,35 @@ Supported first-class commands:
 - `doctor`
 - `prepare-reference-inputs`
 - `serve`
+- `convert`
 - `validate`
 - `smoke`
+- `corpus`
+- `status`
 - `test`
 - `audit`
+- `workflow` with `baseline` and `verify` subcommands
 
 Do not create new parallel top-level entrypoints for routine project operation unless there is a strong architectural reason.
+
+## 30A. Control-Plane Source-of-Truth Matrix
+
+This section is the canonical authority map for KindleMaster control-plane artifacts. If two docs disagree, follow the authoritative source listed here first, then update the derived mirrors in the same change.
+
+| Artifact or question | Authoritative source | Derived or mirror sources | Notes |
+| --- | --- | --- | --- |
+| Available CLI commands, subcommands, flags, defaults, and exit behavior | `kindlemaster.py` parser and helpers | `AGENTS.md`, `README.md`, `.codex/config.toml` comments, `.codex/README.md`, `test_kindlemaster_entrypoint.py` | Treat the executable parser as runtime truth. Human-facing docs must mirror it, not redefine it. |
+| Standard first-class commands that collaborators should use by default | `AGENTS.md` Section 30 | `README.md`, `.codex/config.toml`, `.codex/README.md` | Keep this list synchronized with `kindlemaster.py`. |
+| Supported local toolchains and lane expectations for `python kindlemaster.py test --suite ...` | `docs/toolchain-matrix.md` | `README.md`, `.codex/config.toml` comments | This owns toolchain support expectations only, not the full command contract. |
+| Workflow artifact paths, required filenames, and report-completeness contract | `AGENTS.md` Sections 31 and 35, implemented by `workflow_runner.py` | `README.md`, generated workflow reports under `reports/workflows/<run_id>/` and `output/workflows/<run_id>/` | Generated JSON and Markdown outputs are evidence and runtime artifacts, not the normative contract. |
+| Derived project status summary | `scripts/generate_project_status.py` invoked through `python kindlemaster.py status` | `README.md`, generated `reports/project_status.json` and `reports/project_status.md` | This is a derived view over existing evidence artifacts and must not become a hand-maintained status surface. |
+| Repo-local Codex settings | `.codex/config.toml` | `.codex/README.md`, `AGENTS.md` Section 34 | Only active TOML keys in `.codex/config.toml` control Codex behavior. Comments there are convenience mirrors. |
+| Generated EPUBs, reports, smoke outputs, temporary files, and manual notes | Runtime outputs under `output/`, `reports/`, and local temp paths | README references and ad hoc inspection notes | These are always derived artifacts and must never become the source of truth for command or governance policy. |
+
+When changing control-plane behavior:
+- update the authoritative source first,
+- update every derived mirror named in this matrix in the same change when it is affected,
+- add or update a command-surface or governance-alignment test when drift is plausible.
 
 ## 31. Artifact Retention and Naming Policy
 
@@ -815,6 +850,8 @@ Use these locations consistently:
 - `output/` for generated EPUB artifacts,
 - `reports/` for JSON and Markdown audit outputs,
 - `output/smoke/` and `reports/smoke/` for smoke runs,
+- `output/corpus/` and `reports/corpus/` for derived corpus-wide proof runs,
+- `reports/project_status.json` and `reports/project_status.md` for the derived project status view,
 - `reports/validators/` for validator output,
 - `reference_inputs/` for curated source fixtures.
 
@@ -822,6 +859,7 @@ Rules:
 - do not mix canonical reference inputs with generated output,
 - keep machine-readable and human-readable reports together,
 - use deterministic names where possible,
+- generated artifacts in these locations are derived evidence, not normative definitions of workflow behavior,
 - if a report is part of a standard workflow, document its path in this file or the owning script.
 
 ## 32. Workflow Ownership and Approval Matrix
@@ -911,6 +949,7 @@ Rules:
 - `change_area` is chosen once at baseline and reused during verify,
 - verify must execute the mapped regression pack, not an ad hoc subset,
 - do not report success without generated before/after artifacts,
+- if artifact names or locations change, update `workflow_runner.py`, this file, and the derived command-surface docs in the same change,
 - if baseline, verify, regression, smoke, or compare is missing, the workflow is not complete.
 
 Required workflow artifacts live under:

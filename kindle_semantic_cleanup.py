@@ -1579,14 +1579,101 @@ def _build_inventory_conflicts(
 
 def _dominant_publication_heading(chapter_paths) -> str:
     candidates: list[str] = []
+    front_matter_seen = False
     for chapter_path in chapter_paths[:6]:
         if chapter_path.name == "cover.xhtml":
             continue
+        title_page_candidate = _extract_front_matter_title_candidate(chapter_path)
+        if title_page_candidate:
+            return title_page_candidate
         heading_text, _ = _resolve_heading_target(chapter_path)
         normalized = _normalize_text(heading_text)
-        if normalized and not _looks_technical_title(normalized, reference_stem=chapter_path.stem.replace("_", " ")):
+        heading_key = _training_book_key(normalized)
+        if _is_front_matter_heading_key(heading_key):
+            front_matter_seen = True
+            continue
+        if (
+            normalized
+            and not _looks_technical_title(normalized, reference_stem=chapter_path.stem.replace("_", " "))
+        ):
             candidates.append(normalized)
+    if front_matter_seen:
+        return ""
     return candidates[0] if candidates else ""
+
+
+def _is_front_matter_heading_key(key: str) -> bool:
+    return key in {
+        "front cover",
+        "title",
+        "copyright",
+        "contents",
+        "table of contents",
+        "key to symbols used",
+        "quick start guide",
+        "sample record sheet",
+        "sample record sheets",
+        "back cover",
+    }
+
+
+def _extract_front_matter_title_candidate(chapter_path: Path) -> str:
+    try:
+        soup = BeautifulSoup(chapter_path.read_text(encoding="utf-8"), "xml")
+    except Exception:
+        return ""
+
+    primary_heading = soup.find("h1")
+    primary_key = _training_book_key(primary_heading.get_text(" ", strip=True)) if primary_heading is not None else ""
+    title_node = soup.find("title")
+    title_key = _training_book_key(title_node.get_text(" ", strip=True)) if title_node is not None else ""
+    if "title" not in {primary_key, title_key}:
+        return ""
+
+    candidates: list[str] = []
+    for node in soup.find_all(["h2", "h1", "p", "div", "span"]):
+        candidate = _normalize_text(node.get_text(" ", strip=True))
+        if not candidate:
+            continue
+        candidate_key = _training_book_key(candidate)
+        if not candidate_key or _is_front_matter_heading_key(candidate_key):
+            continue
+        if candidate_key in {"by", "author"}:
+            continue
+        if "www." in candidate.lower() or "://" in candidate or "@" in candidate:
+            continue
+        if _looks_technical_title(candidate, reference_stem=chapter_path.stem.replace("_", " ")):
+            continue
+        if AUTHOR_LINE_RE.match(candidate):
+            continue
+        if _looks_like_reference_entry_text(candidate):
+            continue
+        if not _looks_like_publication_title_candidate(candidate):
+            continue
+        classes = {_normalize_key(class_name) for class_name in _class_list(node)}
+        if {"author", "byline"} & classes:
+            continue
+        candidates.append(candidate)
+
+    if not candidates:
+        return ""
+    return max(candidates, key=lambda value: (len(value.split()), len(value)))
+
+
+def _looks_like_publication_title_candidate(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    if normalized.endswith("."):
+        return False
+    lowered = normalized.lower()
+    if any(marker in lowered for marker in BAD_HEADING_TERMS):
+        return False
+    words = LETTER_TOKEN_RE.findall(normalized)
+    if len(words) < 2 or len(words) > 12:
+        return False
+    capitalized = sum(1 for word in words if word[:1].isupper())
+    return capitalized * 2 >= len(words)
 
 
 def _inventory_navigation_document(opf_path: Path) -> dict[str, object]:
@@ -1898,6 +1985,8 @@ def _manual_review_from_heading_decisions(decisions: list[dict[str, object]]) ->
     for decision in decisions:
         if float(decision.get("confidence") or 0.0) >= 0.75:
             continue
+        if _should_suppress_heading_review_item(decision):
+            continue
         items.append(
             _manual_review_item(
                 phase="heading_recovery",
@@ -1910,6 +1999,28 @@ def _manual_review_from_heading_decisions(decisions: list[dict[str, object]]) ->
             )
         )
     return items
+
+
+def _should_suppress_heading_review_item(decision: dict[str, object]) -> bool:
+    reason = str(decision.get("reason", "") or "")
+    before_text = _normalize_text(str(((decision.get("before") or {}) or {}).get("text", "") or ""))
+    after_text = _normalize_text(str(((decision.get("after") or {}) or {}).get("text", "") or ""))
+
+    if reason == "ambiguous-heading-removed":
+        if _looks_like_synthetic_section_label(before_text):
+            return True
+        if _looks_like_reference_section_title(before_text):
+            return True
+        if any(pattern.match(before_text) for pattern in TOC_HEADING_PATTERNS):
+            return True
+
+    if reason == "reconstructed-heading":
+        if _looks_like_game_caption(after_text):
+            return True
+        if re.match(r"^\d+\.\s+[A-Z][^,]{3,},\s+.+\b\d{4}\b", after_text):
+            return True
+
+    return False
 
 
 def _manual_review_item(
@@ -6743,6 +6854,48 @@ def _looks_like_training_book(chapter_paths, *, title: str) -> bool:
     return heading_signals >= 2 or solution_entries >= 8 or exercise_markers >= 8
 
 
+def _looks_like_training_book_outline(chapter_paths, *, toc_entries: list[dict] | None = None) -> bool:
+    front_keys = {
+        "title",
+        "copyright",
+        "contents",
+        "key to symbols used",
+        "quick start guide",
+        "a final session",
+        "general introduction",
+        "summary of tactical motifs",
+        "instructions",
+    }
+    exercise_keys = {"easy exercises", "intermediate exercises", "advanced exercises"}
+    solution_keys = {
+        "solutions to easy exercises",
+        "solutions to intermediate exercises",
+        "solutions to advanced exercises",
+    }
+    back_keys = {"name index", "sample record sheet", "sample record sheets", "back cover"}
+
+    groups: set[str] = set()
+
+    def absorb_key(key: str) -> None:
+        if key in front_keys:
+            groups.add("front")
+        elif key in exercise_keys:
+            groups.add("exercises")
+        elif key in solution_keys:
+            groups.add("solutions")
+        elif key in back_keys:
+            groups.add("back")
+
+    for chapter_path in chapter_paths:
+        heading_text, _ = _resolve_heading_target(chapter_path)
+        absorb_key(_training_book_key(heading_text))
+
+    for entry in toc_entries or []:
+        absorb_key(_training_book_key(str(entry.get("text", ""))))
+
+    return len(groups) >= 2 or {"exercises", "solutions"} <= groups or ("exercises" in groups and "front" in groups)
+
+
 def _repair_generic_package(
     chapter_paths,
     *,
@@ -6765,11 +6918,14 @@ def _repair_generic_package(
             _ensure_primary_heading(chapter_path, fallback_title=heading_text)
     resolved_toc_entries = toc_entries if _toc_entries_look_useful(toc_entries) and _toc_entries_align_with_chapters(toc_entries, chapter_paths) else []
     if not resolved_toc_entries:
-        resolved_toc_entries = _build_generic_toc_entries(
-            chapter_paths,
-            cleanup_scope=cleanup_scope,
-            language=resolved_language,
-        )
+        if _looks_like_training_book_outline(chapter_paths, toc_entries=toc_entries):
+            resolved_toc_entries = _build_curated_toc_entries(chapter_paths, language=resolved_language)
+        if not resolved_toc_entries:
+            resolved_toc_entries = _build_generic_toc_entries(
+                chapter_paths,
+                cleanup_scope=cleanup_scope,
+                language=resolved_language,
+            )
     return {
         "title": resolved_title,
         "author": resolved_author,
@@ -8223,6 +8379,7 @@ def _build_curated_toc_entries(chapter_paths, *, language: str = "en") -> list[d
 
     keyed = {entry["key"]: entry for entry in chapter_info}
     localized = _canonicalize_language(language) == "pl"
+    matched_files: set[str] = set()
     toc_entries = [{"file_name": "cover.xhtml", "id": "", "text": "Okładka" if localized else "Cover", "level": 1}]
 
     def append_group(group_name: str, keys: list[str]) -> None:
@@ -8239,6 +8396,7 @@ def _build_curated_toc_entries(chapter_paths, *, language: str = "en") -> list[d
             }
         )
         for entry in group_entries:
+            matched_files.add(entry["file_name"])
             toc_entries.append(
                 {
                     "file_name": entry["file_name"],
@@ -8252,6 +8410,30 @@ def _build_curated_toc_entries(chapter_paths, *, language: str = "en") -> list[d
     append_group("Ćwiczenia" if localized else "Exercises", exercise_order)
     append_group("Rozwiązania" if localized else "Solutions", solution_order)
     append_group("Dodatki" if localized else "Back Matter", back_order)
+    unmatched_entries = [entry for entry in chapter_info if entry["file_name"] not in matched_files]
+    if unmatched_entries:
+        if len(toc_entries) > 1:
+            first = unmatched_entries[0]
+            toc_entries.append(
+                {
+                    "file_name": first["file_name"],
+                    "id": first["id"],
+                    "text": "Dodatkowe sekcje" if localized else "Additional Sections",
+                    "level": 1,
+                }
+            )
+            unmatched_level = 2
+        else:
+            unmatched_level = 1
+        for entry in unmatched_entries:
+            toc_entries.append(
+                {
+                    "file_name": entry["file_name"],
+                    "id": entry["id"],
+                    "text": _normalize_toc_label(entry["title"]),
+                    "level": unmatched_level,
+                }
+            )
     return toc_entries
 
 
@@ -9697,6 +9879,8 @@ def _collect_nav_entries_from_heading_candidates(
     nav_targets_seen: set[str] = set()
     nav_text_keys_seen: set[str] = set()
     subsection_nav_count = 0
+    chapter_primary_key = _training_book_key(str((candidates[0] if candidates else {}).get("text", "") or ""))
+    front_matter_primary = _is_front_matter_heading_key(chapter_primary_key)
 
     for candidate in candidates:
         level = max(1, min(int(candidate.get("level") or 1), 3))
@@ -9705,6 +9889,8 @@ def _collect_nav_entries_from_heading_candidates(
         if not text or not anchor_id:
             continue
         if not _should_include_in_toc(text, level):
+            continue
+        if front_matter_primary and level > 1:
             continue
         if level == 3 and subsection_nav_count >= MAX_SUBSECTION_NAV_PER_CHAPTER:
             continue
@@ -9749,8 +9935,23 @@ def _rebuild_toc_entries_from_final_chapters(
             )
         )
     if rebuilt:
-        return rebuilt
+        return _dedupe_repeated_subsection_toc_labels(rebuilt)
     return list(fallback_entries or [])
+
+
+def _dedupe_repeated_subsection_toc_labels(entries: list[dict[str, object]]) -> list[dict[str, object]]:
+    deduped: list[dict[str, object]] = []
+    seen_text_keys: set[str] = set()
+    for entry in entries:
+        text = _normalize_text(str(entry.get("text", "") or ""))
+        text_key = _normalize_key(text)
+        level = int(entry.get("level") or 1)
+        if level > 1 and text_key and text_key in seen_text_keys:
+            continue
+        if text_key:
+            seen_text_keys.add(text_key)
+        deduped.append(entry)
+    return deduped
 
 
 def _normalize_key(text: str) -> str:

@@ -176,6 +176,102 @@ def _expand_chess_region_for_auxiliary_labels(
     return expanded_bbox, suppressed_indices
 
 
+def _resize_image_to_long_edge(image: Image.Image, max_long_edge: int) -> Image.Image:
+    target_long_edge = max(1, int(max_long_edge or 0))
+    if target_long_edge <= 0:
+        return image
+    current_long_edge = max(image.size)
+    if current_long_edge <= target_long_edge:
+        return image
+    scale = target_long_edge / float(current_long_edge)
+    resized = image.resize(
+        (
+            max(1, int(round(image.width * scale))),
+            max(1, int(round(image.height * scale))),
+        ),
+        Image.LANCZOS,
+    )
+    return resized
+
+
+def _optimize_chess_diagram_export(
+    png_data: bytes,
+    config: ConversionConfig,
+) -> tuple[bytes, int, int]:
+    image = Image.open(io.BytesIO(png_data)).convert("L")
+    image = _resize_image_to_long_edge(image, config.diagram_image_long_edge)
+    target_palette_size = max(4, min(int(config.diagram_palette_colors or 0), 64))
+    quantized = image.quantize(
+        colors=target_palette_size,
+        method=Image.Quantize.MEDIANCUT,
+        dither=Image.Dither.NONE,
+    )
+    used_colors = quantized.getcolors(maxcolors=target_palette_size)
+    used_color_count = len(used_colors) if used_colors else target_palette_size
+    png_bits = 8
+    if used_color_count <= 2:
+        png_bits = 1
+    elif used_color_count <= 4:
+        png_bits = 2
+    elif used_color_count <= 16:
+        png_bits = 4
+    output = io.BytesIO()
+    quantized.save(
+        output,
+        format="PNG",
+        optimize=True,
+        compress_level=9,
+        bits=png_bits,
+    )
+    optimized = output.getvalue()
+    return optimized, quantized.width, quantized.height
+
+
+def _normalize_image_extension(raw_extension: str) -> str:
+    normalized = str(raw_extension or "png").strip().lower()
+    if normalized == "jpg":
+        return "jpeg"
+    return normalized or "png"
+
+
+def _optimize_embedded_raster_image(
+    image_bytes: bytes,
+    extension: str,
+    config: ConversionConfig,
+) -> tuple[bytes, str]:
+    normalized_ext = _normalize_image_extension(extension)
+    try:
+        image = Image.open(io.BytesIO(image_bytes))
+        has_alpha = "A" in image.getbands()
+        image = _resize_image_to_long_edge(image, config.diagram_raster_long_edge)
+        palette_candidate = image.convert("RGBA" if has_alpha else "RGB")
+        colors = palette_candidate.getcolors(maxcolors=128)
+
+        if has_alpha or (normalized_ext == "png" and colors and len(colors) <= 64):
+            png_image = palette_candidate
+            if has_alpha:
+                png_image = png_image.quantize(colors=128)
+            else:
+                png_image = png_image.convert("P", palette=Image.ADAPTIVE, colors=min(64, len(colors)))
+            output = io.BytesIO()
+            png_image.save(output, format="PNG", optimize=True, compress_level=9)
+            return output.getvalue(), "png"
+
+        jpeg_image = palette_candidate.convert("RGB")
+        output = io.BytesIO()
+        jpeg_image.save(
+            output,
+            format="JPEG",
+            quality=max(60, min(int(config.diagram_raster_jpeg_quality or 0), 90)),
+            optimize=True,
+            progressive=True,
+        )
+        return output.getvalue(), "jpeg"
+    except Exception as exc:
+        print(f"    Warning: Could not optimize embedded raster image: {exc}")
+        return image_bytes, normalized_ext
+
+
 def _normalize_text_for_epub(text: str, font_name: str) -> str:
     """Replace Wingdings-only markers with readable Unicode."""
     normalized = text or ""
@@ -741,8 +837,9 @@ def extract_pdf_with_chess_support(
 
                     try:
                         png_data, png_width, png_height = render_chess_diagram_to_png(
-                            page, region, dpi=max(config.chess_diagram_dpi, 140)
+                            page, region, dpi=max(config.chess_diagram_dpi, 96)
                         )
+                        png_data, png_width, png_height = _optimize_chess_diagram_export(png_data, config)
 
                         filename = f"chess_p{page_num}_{region_idx}.png"
                         chess_img = {
@@ -841,18 +938,23 @@ def extract_pdf_with_chess_support(
                 continue
             
             image_count += 1
-            img_filename = f"img_p{page_num}_{image_count}.{base_image['ext']}"
+            optimized_image, optimized_extension = _optimize_embedded_raster_image(
+                base_image["image"],
+                base_image.get("ext", "png"),
+                config,
+            )
+            img_filename = f"img_p{page_num}_{image_count}.{optimized_extension}"
             
             page_images.append({
                 'filename': img_filename,
-                'data': base_image["image"],
-                'extension': base_image["ext"],
+                'data': optimized_image,
+                'extension': optimized_extension,
                 'page': page_num,
             })
             all_images.append({
                 'filename': img_filename,
-                'data': base_image["image"],
-                'extension': base_image["ext"],
+                'data': optimized_image,
+                'extension': optimized_extension,
                 'page': page_num,
             })
         

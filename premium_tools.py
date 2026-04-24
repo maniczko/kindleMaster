@@ -8,6 +8,30 @@ import sys
 import sysconfig
 import tempfile
 from pathlib import Path
+from typing import Any
+
+
+RUNTIME_REQUIREMENT_MODULES: tuple[tuple[str, str, str], ...] = (
+    ("flask", "flask", "Flask"),
+    ("PyMuPDF", "fitz", "PyMuPDF"),
+    ("ebooklib", "ebooklib", "EbookLib"),
+    ("Pillow", "PIL", "Pillow"),
+    ("beautifulsoup4", "bs4", "BeautifulSoup4"),
+    ("lxml", "lxml", "lxml"),
+    ("python-docx", "docx", "python-docx"),
+    ("pdfplumber", "pdfplumber", "pdfplumber"),
+    ("wordfreq", "wordfreq", "wordfreq"),
+    ("pyphen", "pyphen", "pyphen"),
+    ("rfc3986", "rfc3986", "rfc3986"),
+    ("tldextract", "tldextract", "tldextract"),
+)
+
+DEV_REQUIREMENT_MODULES: tuple[tuple[str, str, str], ...] = (
+    ("pytest", "pytest", "pytest"),
+    ("coverage[toml]", "coverage", "coverage"),
+    ("playwright", "playwright", "Playwright"),
+    ("waitress", "waitress", "Waitress"),
+)
 
 
 def _module_available(name: str) -> bool:
@@ -23,6 +47,85 @@ def _first_existing(candidates: list[Path]) -> Path | None:
         if candidate.exists():
             return candidate
     return None
+
+
+def _detect_requirement_group(requirements: tuple[tuple[str, str, str], ...]) -> dict[str, Any]:
+    packages: dict[str, dict[str, Any]] = {}
+    missing: list[str] = []
+    for package_name, module_name, display_name in requirements:
+        installed = _module_available(module_name)
+        packages[package_name] = {
+            "module": module_name,
+            "display_name": display_name,
+            "installed": installed,
+        }
+        if not installed:
+            missing.append(display_name)
+    return {
+        "packages": packages,
+        "missing_modules": missing,
+        "ready": not missing,
+    }
+
+
+def _surface_payload(
+    *,
+    support_level: str,
+    status: str,
+    command: str,
+    description: str,
+    missing_requirements: list[str],
+    notes: list[str] | None = None,
+    optional_followups: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    payload = {
+        "support_level": support_level,
+        "status": status,
+        "command": command,
+        "description": description,
+        "missing_requirements": missing_requirements,
+        "notes": notes or [],
+    }
+    if optional_followups:
+        payload["optional_followups"] = optional_followups
+    return payload
+
+
+def _capability_payload(
+    *,
+    support_level: str,
+    status: str,
+    description: str,
+    missing_requirements: list[str],
+    notes: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "support_level": support_level,
+        "status": status,
+        "description": description,
+        "missing_requirements": missing_requirements,
+        "notes": notes or [],
+    }
+
+
+def find_playwright_chromium_executable() -> Path | None:
+    if not _module_available("playwright"):
+        return None
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:
+        return None
+
+    try:
+        with sync_playwright() as playwright:
+            executable_path = getattr(playwright.chromium, "executable_path", "") or ""
+    except Exception:
+        return None
+
+    if not executable_path:
+        return None
+    candidate = Path(executable_path)
+    return candidate if candidate.exists() else None
 
 
 def find_java_executable() -> Path | None:
@@ -192,6 +295,8 @@ def list_tesseract_languages(tesseract_path: Path | None = None, tessdata_dir: P
 
 
 def detect_toolchain() -> dict:
+    runtime_requirements = _detect_requirement_group(RUNTIME_REQUIREMENT_MODULES)
+    developer_requirements = _detect_requirement_group(DEV_REQUIREMENT_MODULES)
     java_path = find_java_executable()
     tesseract_path = find_tesseract_executable()
     ocrmypdf_path = find_ocrmypdf_executable()
@@ -201,10 +306,170 @@ def detect_toolchain() -> dict:
     tesseract_languages = list_tesseract_languages(tesseract_path, tessdata_dir)
     epubcheck_jar = find_epubcheck_jar()
     pdfbox_jar = find_pdfbox_jar()
+    playwright_chromium_path = find_playwright_chromium_executable()
+    playwright_module_found = developer_requirements["packages"]["playwright"]["installed"]
+    waitress_module_found = developer_requirements["packages"]["waitress"]["installed"]
     ocrmypdf_ready = bool(ocrmypdf_path and tesseract_path and ghostscript_path and qpdf_path)
+    browser_missing: list[str] = []
+    if not playwright_module_found:
+        browser_missing.append("Playwright Python package")
+    if not playwright_chromium_path:
+        browser_missing.append("Chromium browser")
+
+    runtime_surface_missing = list(browser_missing)
+    if not waitress_module_found:
+        runtime_surface_missing.append("Waitress Python package")
+
+    quick_surface = _surface_payload(
+        support_level="core",
+        status="supported" if runtime_requirements["ready"] else "unsupported",
+        command="python kindlemaster.py test --suite quick",
+        description="Fast Python-only unit and integration checks.",
+        missing_requirements=list(runtime_requirements["missing_modules"]),
+        notes=["No Playwright, Chromium, or Waitress requirement."],
+    )
+
+    browser_surface = _surface_payload(
+        support_level="optional",
+        status="supported" if not browser_missing else "unsupported",
+        command="python kindlemaster.py test --suite browser",
+        description="Browser polling harness coverage.",
+        missing_requirements=browser_missing,
+        notes=["Bootstrap installs the Playwright Python package, but Chromium remains a separate local install."],
+    )
+
+    runtime_surface = _surface_payload(
+        support_level="optional",
+        status="supported" if not runtime_surface_missing else "unsupported",
+        command="python kindlemaster.py test --suite runtime",
+        description="Live HTTP gate plus browser runtime smoke checks.",
+        missing_requirements=runtime_surface_missing,
+        notes=["Requires the developer bootstrap profile plus a local Chromium install."],
+    )
+
+    corpus_surface = _surface_payload(
+        support_level="core",
+        status="supported" if runtime_requirements["ready"] else "unsupported",
+        command="python kindlemaster.py test --suite corpus",
+        description="Corpus-wide smoke plus premium release-proof reports across the expanded fixture bank.",
+        missing_requirements=list(runtime_requirements["missing_modules"]),
+        notes=["Persists derived corpus gate reports under reports/corpus/ and output/corpus/."],
+    )
+
+    release_optional_followups = [
+        {
+            "surface": "browser",
+            "status": browser_surface["status"],
+            "missing_requirements": list(browser_surface["missing_requirements"]),
+        },
+        {
+            "surface": "runtime",
+            "status": runtime_surface["status"],
+            "missing_requirements": list(runtime_surface["missing_requirements"]),
+        },
+    ]
+    release_status = "unsupported"
+    release_notes = [
+        "Runs the Python release pack, quick smoke, and the corpus-wide gate.",
+        "Browser and runtime follow-up suites are optional add-ons and run only when their local toolchains are available.",
+    ]
+    if runtime_requirements["ready"]:
+        release_status = "supported"
+        if any(item["status"] != "supported" for item in release_optional_followups):
+            release_status = "degraded"
+
+    verification_surfaces = {
+        "quick": quick_surface,
+        "corpus": corpus_surface,
+        "browser": browser_surface,
+        "runtime": runtime_surface,
+        "release": _surface_payload(
+            support_level="core",
+            status=release_status,
+            command="python kindlemaster.py test --suite release",
+            description="Broad Python release suite with optional browser/runtime follow-up checks.",
+            missing_requirements=list(runtime_requirements["missing_modules"]),
+            notes=release_notes,
+            optional_followups=release_optional_followups,
+        ),
+    }
+
+    epubcheck_missing: list[str] = []
+    if not java_path:
+        epubcheck_missing.append("Java runtime")
+    if not epubcheck_jar:
+        epubcheck_missing.append("epubcheck.jar")
+
+    pdfbox_missing: list[str] = []
+    if not java_path:
+        pdfbox_missing.append("Java runtime")
+    if not pdfbox_jar:
+        pdfbox_missing.append("pdfbox-app.jar")
+
+    ocr_missing: list[str] = []
+    if not tesseract_path:
+        ocr_missing.append("Tesseract OCR executable")
+    if not ocrmypdf_path:
+        ocr_missing.append("OCRmyPDF executable")
+    if not ghostscript_path:
+        ocr_missing.append("Ghostscript executable")
+    if not qpdf_path:
+        ocr_missing.append("qpdf executable")
+
+    ocr_status = "supported" if ocrmypdf_ready else "degraded" if tesseract_path else "unavailable"
+    ocr_notes = []
+    if ocr_status == "degraded":
+        ocr_notes.append("The pipeline can fall back to direct Tesseract OCR when OCRmyPDF system dependencies are incomplete.")
+    if ocr_status == "unavailable":
+        ocr_notes.append("OCR-heavy scanned PDFs will not have the optional OCRmyPDF enhancement path.")
+
+    conversion_capabilities = {
+        "core_conversion": _capability_payload(
+            support_level="core",
+            status="supported" if runtime_requirements["ready"] else "unsupported",
+            description="Python conversion/runtime dependencies installed from requirements.txt.",
+            missing_requirements=list(runtime_requirements["missing_modules"]),
+        ),
+        "ocr_pipeline": _capability_payload(
+            support_level="optional",
+            status=ocr_status,
+            description="Optional OCRmyPDF/Tesseract enhancement path for OCR-heavy PDFs.",
+            missing_requirements=ocr_missing,
+            notes=ocr_notes,
+        ),
+        "epubcheck_validation": _capability_payload(
+            support_level="optional",
+            status="supported" if not epubcheck_missing else "unavailable",
+            description="External EPUBCheck validation executed through Java + epubcheck.jar.",
+            missing_requirements=epubcheck_missing,
+            notes=["KindleMaster still runs internal validators even when EPUBCheck is unavailable."],
+        ),
+        "pdfbox_extraction": _capability_payload(
+            support_level="optional",
+            status="supported" if not pdfbox_missing else "unavailable",
+            description="Optional PDFBox extraction and diagnostics helpers.",
+            missing_requirements=pdfbox_missing,
+        ),
+    }
+
     return {
         "python_modules": {
+            "flask": runtime_requirements["packages"]["flask"]["installed"],
+            "fitz": runtime_requirements["packages"]["PyMuPDF"]["installed"],
+            "ebooklib": runtime_requirements["packages"]["ebooklib"]["installed"],
+            "PIL": runtime_requirements["packages"]["Pillow"]["installed"],
+            "bs4": runtime_requirements["packages"]["beautifulsoup4"]["installed"],
+            "lxml": runtime_requirements["packages"]["lxml"]["installed"],
+            "docx": runtime_requirements["packages"]["python-docx"]["installed"],
             "pdfplumber": _module_available("pdfplumber"),
+            "wordfreq": runtime_requirements["packages"]["wordfreq"]["installed"],
+            "pyphen": runtime_requirements["packages"]["pyphen"]["installed"],
+            "rfc3986": runtime_requirements["packages"]["rfc3986"]["installed"],
+            "tldextract": runtime_requirements["packages"]["tldextract"]["installed"],
+            "pytest": developer_requirements["packages"]["pytest"]["installed"],
+            "coverage": developer_requirements["packages"]["coverage[toml]"]["installed"],
+            "playwright": playwright_module_found,
+            "waitress": waitress_module_found,
             "ocrmypdf": _module_available("ocrmypdf"),
         },
         "commands": {
@@ -216,6 +481,7 @@ def detect_toolchain() -> dict:
             "pdftoppm": _command_available("pdftoppm"),
             "surya": _command_available("surya"),
             "pdfbox": _command_available("pdfbox"),
+            "chromium": bool(playwright_chromium_path),
         },
         "java": {
             "found": bool(java_path),
@@ -242,6 +508,14 @@ def detect_toolchain() -> dict:
             "found": bool(qpdf_path),
             "path": str(qpdf_path) if qpdf_path else None,
         },
+        "playwright": {
+            "module_found": playwright_module_found,
+            "chromium_found": bool(playwright_chromium_path),
+            "chromium_path": str(playwright_chromium_path) if playwright_chromium_path else None,
+        },
+        "waitress": {
+            "module_found": waitress_module_found,
+        },
         "epubcheck": {
             "jar_found": bool(epubcheck_jar),
             "jar_path": str(epubcheck_jar) if epubcheck_jar else None,
@@ -250,6 +524,40 @@ def detect_toolchain() -> dict:
             "jar_found": bool(pdfbox_jar),
             "jar_path": str(pdfbox_jar) if pdfbox_jar else None,
         },
+        "bootstrap": {
+            "entrypoint": "python kindlemaster.py bootstrap",
+            "runtime_only_entrypoint": "python kindlemaster.py bootstrap --runtime-only",
+            "requirements_files": {
+                "runtime": "requirements.txt",
+                "developer": "requirements-dev.txt",
+            },
+            "profiles": {
+                "runtime_only": {
+                    "support_level": "core",
+                    "status": "supported" if runtime_requirements["ready"] else "unsupported",
+                    "missing_modules": list(runtime_requirements["missing_modules"]),
+                    "notes": [
+                        "Installs the Python runtime used by conversion, validation, smoke, and Flask serving.",
+                    ],
+                },
+                "developer": {
+                    "support_level": "optional",
+                    "status": "supported" if developer_requirements["ready"] else "unsupported",
+                    "missing_modules": list(developer_requirements["missing_modules"]),
+                    "manual_steps": ["python -m playwright install chromium"],
+                    "notes": [
+                        "Adds pytest, coverage, Playwright, and Waitress for local verification lanes.",
+                        "Chromium remains a separate local install even after requirements-dev.txt is installed.",
+                    ],
+                },
+            },
+            "notes": [
+                "Bootstrap manages Python packages only.",
+                "Java, EPUBCheck, Tesseract, Ghostscript, qpdf, PDFBox, and Chromium remain separately managed local tools.",
+            ],
+        },
+        "verification_surfaces": verification_surfaces,
+        "conversion_capabilities": conversion_capabilities,
     }
 
 

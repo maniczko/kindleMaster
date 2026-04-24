@@ -276,6 +276,7 @@ def build_docx_publication_document(
         profile="docx_reflow",
         confidence=publication_payload["confidence"],
         page_count=0,
+        render_budget_class="fixed_layout_safe",
         has_toc=publication_payload["has_toc"],
         has_tables=publication_payload["has_tables"],
         has_diagrams=False,

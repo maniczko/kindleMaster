@@ -28,6 +28,7 @@ import fitz  # PyMuPDF
 from ebooklib import epub
 from PIL import Image, ImageCms, ImageDraw
 import numpy as np
+from size_budget_policy import get_render_budget_policy, normalize_budget_key
 
 # Chess diagram detection and rendering
 try:
@@ -53,6 +54,47 @@ FIXED_LAYOUT_RENDER_DPI = 180
 FIXED_LAYOUT_JPEG_QUALITY = 85
 FIXED_LAYOUT_JPEG_SUBSAMPLING = 1
 EMAIL_MASK_PADDING_PX = 6
+
+
+@dataclass(frozen=True)
+class FixedLayoutRenderSettings:
+    dpi: int
+    jpeg_quality: int
+    jpeg_subsampling: int
+    cover_dpi: int
+    cover_quality: int
+
+
+def resolve_fixed_layout_render_settings(
+    page_count: int,
+    *,
+    render_budget_class: str | None = None,
+    attempt: str = "primary",
+) -> FixedLayoutRenderSettings:
+    if render_budget_class:
+        policy = get_render_budget_policy(render_budget_class)
+        if policy:
+            policy_settings = policy["fallback"] if attempt == "fallback" else policy["primary"]
+            return FixedLayoutRenderSettings(
+                dpi=int(policy_settings["dpi"]),
+                jpeg_quality=int(policy_settings["jpeg_quality"]),
+                jpeg_subsampling=int(policy_settings["jpeg_subsampling"]),
+                cover_dpi=int(policy_settings["cover_dpi"]),
+                cover_quality=int(policy_settings["cover_quality"]),
+            )
+    if page_count >= 360:
+        return FixedLayoutRenderSettings(dpi=132, jpeg_quality=74, jpeg_subsampling=2, cover_dpi=108, cover_quality=76)
+    if page_count >= 240:
+        return FixedLayoutRenderSettings(dpi=150, jpeg_quality=78, jpeg_subsampling=2, cover_dpi=120, cover_quality=80)
+    if page_count >= 120:
+        return FixedLayoutRenderSettings(dpi=165, jpeg_quality=82, jpeg_subsampling=1, cover_dpi=132, cover_quality=84)
+    return FixedLayoutRenderSettings(
+        dpi=FIXED_LAYOUT_RENDER_DPI,
+        jpeg_quality=FIXED_LAYOUT_JPEG_QUALITY,
+        jpeg_subsampling=FIXED_LAYOUT_JPEG_SUBSAMPLING,
+        cover_dpi=150,
+        cover_quality=88,
+    )
 
 
 # ============================================================================
@@ -365,6 +407,8 @@ def render_page_to_image(
     dpi: int = FIXED_LAYOUT_RENDER_DPI,
     *,
     mask_rects: Optional[list[tuple[float, float, float, float]]] = None,
+    jpeg_quality: int = FIXED_LAYOUT_JPEG_QUALITY,
+    jpeg_subsampling: int = FIXED_LAYOUT_JPEG_SUBSAMPLING,
 ) -> tuple[bytes, int, int]:
     """
     Render a PDF page to JPEG at higher fidelity for fixed-layout output.
@@ -398,9 +442,10 @@ def render_page_to_image(
     img.save(
         jpeg_bytes,
         format="JPEG",
-        quality=FIXED_LAYOUT_JPEG_QUALITY,
-        subsampling=FIXED_LAYOUT_JPEG_SUBSAMPLING,
+        quality=jpeg_quality,
+        subsampling=jpeg_subsampling,
         optimize=True,
+        progressive=True,
     )
     jpeg_bytes.seek(0)
     
@@ -798,6 +843,11 @@ def build_fixed_layout_epub_v2(
     
     chapters = []
     page_viewports = {}
+    render_settings = resolve_fixed_layout_render_settings(
+        len(doc),
+        render_budget_class=normalize_budget_key(getattr(config, "render_budget_class", "") or ""),
+        attempt=str(getattr(config, "render_budget_attempt", "primary") or "primary"),
+    )
 
     # Process each page
     for page_num in range(len(doc)):
@@ -812,7 +862,10 @@ def build_fixed_layout_epub_v2(
         # Render the entire page as the visual source of truth.
         page_image_data, img_width, img_height = render_page_to_image(
             page,
+            dpi=render_settings.dpi,
             mask_rects=email_rects,
+            jpeg_quality=render_settings.jpeg_quality,
+            jpeg_subsampling=render_settings.jpeg_subsampling,
         )
 
         # Add page image to EPUB
@@ -859,8 +912,8 @@ def build_fixed_layout_epub_v2(
     if chapters:
         try:
             doc2 = fitz.open(pdf_path)
-            pix = doc2[0].get_pixmap(dpi=150)
-            cover_img_data = pix.tobytes("jpeg", quality=95)
+            pix = doc2[0].get_pixmap(dpi=render_settings.cover_dpi)
+            cover_img_data = pix.tobytes("jpeg", quality=render_settings.cover_quality)
             doc2.close()
             
             cover_img = epub.EpubItem(

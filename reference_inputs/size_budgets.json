@@ -1,0 +1,227 @@
+{
+  "version": 1,
+  "updated_at": "2026-04-22",
+  "document_classes": {
+    "ocr_probe": {
+      "warn_bytes": 65536,
+      "hard_bytes": 131072,
+      "baseline_cases": ["ocr_probe_pdf"],
+      "notes": "Tiny OCR probe should stay comfortably below 128 KB.",
+      "updated_at": "2026-04-21"
+    },
+    "scan_probe": {
+      "warn_bytes": 65536,
+      "hard_bytes": 131072,
+      "baseline_cases": ["scan_probe_epub"],
+      "notes": "Small scan-derived EPUB fixture used for validator and repair smoke.",
+      "updated_at": "2026-04-21"
+    },
+    "ocr_probe_scan": {
+      "warn_bytes": 131072,
+      "hard_bytes": 262144,
+      "baseline_cases": ["example/scan_probe.pdf"],
+      "notes": "Tiny scanned PDF corpus probe should remain lightweight after conversion.",
+      "updated_at": "2026-04-21"
+    },
+    "ocr_stress_scan": {
+      "warn_bytes": 1245184,
+      "hard_bytes": 1449984,
+      "baseline_cases": ["ocr_stress_scan_pdf"],
+      "notes": "Deterministic OCR-stressed scanned PDF fixture used to keep scan handling honest.",
+      "updated_at": "2026-04-22"
+    },
+    "dense_business_guide": {
+      "warn_bytes": 25165824,
+      "hard_bytes": 31457280,
+      "baseline_cases": ["dense_business_guide_pdf", "dense_business_guide_epub"],
+      "notes": "Long handbook with deep semantics and moderate imagery.",
+      "updated_at": "2026-04-21"
+    },
+    "diagram_training_book": {
+      "warn_bytes": 10485760,
+      "hard_bytes": 12582912,
+      "baseline_cases": ["diagram_training_book_pdf"],
+      "notes": "Medium-length diagram-heavy training PDF.",
+      "updated_at": "2026-04-21"
+    },
+    "training_book_diagram": {
+      "warn_bytes": 117440512,
+      "hard_bytes": 146800640,
+      "baseline_cases": ["example/The Woodpecker Method ( PDFDrive ).pdf"],
+      "notes": "Large training-book corpus case with historically heavy fixed-layout output.",
+      "updated_at": "2026-04-21"
+    },
+    "diagram_book_reflow_balanced": {
+      "warn_bytes": 20971520,
+      "hard_bytes": 26214400,
+      "baseline_cases": ["example/The Woodpecker Method ( PDFDrive ).pdf"],
+      "notes": "Balanced reflow gate for diagram-heavy training books with many inline boards.",
+      "primary": {
+        "diagram_long_edge": 640,
+        "diagram_palette_colors": 16,
+        "diagram_target_dpi": 128,
+        "raster_long_edge": 1280,
+        "raster_jpeg_quality": 80
+      },
+      "fallback": {
+        "diagram_long_edge": 560,
+        "diagram_palette_colors": 12,
+        "diagram_target_dpi": 112,
+        "raster_long_edge": 1180,
+        "raster_jpeg_quality": 76
+      },
+      "updated_at": "2026-04-22"
+    },
+    "diagram_heavy_book": {
+      "warn_bytes": 12582912,
+      "hard_bytes": 20971520,
+      "baseline_cases": ["example/tactits_sample_80pages.pdf"],
+      "notes": "Diagram-heavy corpus sample kept under a stricter medium-size fixed-layout gate.",
+      "updated_at": "2026-04-21"
+    },
+    "large_diagram_corpus": {
+      "warn_bytes": 157286400,
+      "hard_bytes": 188743680,
+      "baseline_cases": ["example/tactits.pdf"],
+      "notes": "Large analysis corpus tracked for future full sweep baselines.",
+      "updated_at": "2026-04-21"
+    },
+    "magazine_layout": {
+      "warn_bytes": 4194304,
+      "hard_bytes": 6291456,
+      "baseline_cases": ["magazine_layout_pdf"],
+      "notes": "Layout-heavy PDF with magazine-like structures.",
+      "updated_at": "2026-04-21"
+    },
+    "document_like_report": {
+      "warn_bytes": 131072,
+      "hard_bytes": 262144,
+      "baseline_cases": ["document_like_report_pdf"],
+      "notes": "Generated multi-page report-style PDF used for manifest-backed corpus reporting.",
+      "updated_at": "2026-04-22"
+    },
+    "docx_structured_report": {
+      "warn_bytes": 131072,
+      "hard_bytes": 262144,
+      "baseline_cases": ["simple_report_docx"],
+      "notes": "Small heading-driven DOCX output.",
+      "updated_at": "2026-04-21"
+    },
+    "docx_rich_content": {
+      "warn_bytes": 262144,
+      "hard_bytes": 524288,
+      "baseline_cases": ["list_table_image_docx"],
+      "notes": "DOCX with links, lists, tables and imagery.",
+      "updated_at": "2026-04-21"
+    },
+    "docx_no_h1": {
+      "warn_bytes": 131072,
+      "hard_bytes": 262144,
+      "baseline_cases": ["no_heading_document_docx"],
+      "notes": "Small DOCX relying on fallback sectioning.",
+      "updated_at": "2026-04-21"
+    }
+  },
+  "render_budget_classes": {
+    "fixed_layout_safe": {
+      "warn_bytes": 12582912,
+      "hard_bytes": 16777216,
+      "primary": {
+        "dpi": 180,
+        "jpeg_quality": 85,
+        "jpeg_subsampling": 1,
+        "cover_dpi": 150,
+        "cover_quality": 88
+      },
+      "fallback": {
+        "dpi": 165,
+        "jpeg_quality": 80,
+        "jpeg_subsampling": 1,
+        "cover_dpi": 132,
+        "cover_quality": 84
+      },
+      "notes": "Small fixed-layout documents where fidelity should stay high.",
+      "updated_at": "2026-04-21"
+    },
+    "fixed_layout_balanced": {
+      "warn_bytes": 20971520,
+      "hard_bytes": 31457280,
+      "primary": {
+        "dpi": 165,
+        "jpeg_quality": 82,
+        "jpeg_subsampling": 1,
+        "cover_dpi": 132,
+        "cover_quality": 84
+      },
+      "fallback": {
+        "dpi": 150,
+        "jpeg_quality": 78,
+        "jpeg_subsampling": 2,
+        "cover_dpi": 120,
+        "cover_quality": 80
+      },
+      "notes": "Medium fixed-layout documents with mixed text and imagery.",
+      "updated_at": "2026-04-21"
+    },
+    "fixed_layout_dense": {
+      "warn_bytes": 33554432,
+      "hard_bytes": 50331648,
+      "primary": {
+        "dpi": 150,
+        "jpeg_quality": 78,
+        "jpeg_subsampling": 2,
+        "cover_dpi": 120,
+        "cover_quality": 80
+      },
+      "fallback": {
+        "dpi": 142,
+        "jpeg_quality": 75,
+        "jpeg_subsampling": 2,
+        "cover_dpi": 112,
+        "cover_quality": 78
+      },
+      "notes": "Longer fixed-layout documents with heavier raster pressure.",
+      "updated_at": "2026-04-21"
+    },
+    "fixed_layout_aggressive": {
+      "warn_bytes": 50331648,
+      "hard_bytes": 75497472,
+      "primary": {
+        "dpi": 142,
+        "jpeg_quality": 75,
+        "jpeg_subsampling": 2,
+        "cover_dpi": 112,
+        "cover_quality": 78
+      },
+      "fallback": {
+        "dpi": 132,
+        "jpeg_quality": 72,
+        "jpeg_subsampling": 2,
+        "cover_dpi": 108,
+        "cover_quality": 76
+      },
+      "notes": "Very large fixed-layout documents or image-heavy sources.",
+      "updated_at": "2026-04-21"
+    },
+    "fixed_layout_extreme": {
+      "warn_bytes": 100663296,
+      "hard_bytes": 134217728,
+      "primary": {
+        "dpi": 132,
+        "jpeg_quality": 72,
+        "jpeg_subsampling": 2,
+        "cover_dpi": 108,
+        "cover_quality": 76
+      },
+      "fallback": {
+        "dpi": 118,
+        "jpeg_quality": 68,
+        "jpeg_subsampling": 2,
+        "cover_dpi": 96,
+        "cover_quality": 72
+      },
+      "notes": "Extreme fixed-layout fallback for massive visual documents.",
+      "updated_at": "2026-04-21"
+    }
+  }
+}

@@ -43,6 +43,28 @@ from kindle_semantic_cleanup import (
     _looks_technical_title,
 )
 from premium_tools import run_epubcheck
+from quality_report_markdown import (
+    build_manual_review_markdown,
+    build_recovery_release_report_markdown,
+)
+from quality_reporting import (
+    build_epubcheck_payload,
+    build_failed_gate,
+    build_gate_result,
+    build_heading_report_payload,
+    build_metadata_diff,
+    build_recovery_metadata_payload,
+    build_recovery_release_summary,
+    build_recovery_structural_payload,
+    build_recovery_toc_payload,
+    compare_heading_snapshots,
+    dedupe_review_items,
+    heading_change_reason,
+    is_suspicious_heading,
+    make_review_item,
+    summarize_heading_decisions,
+    summarize_inventory,
+)
 
 
 PLACEHOLDER_TITLE_MARKERS = {"unknown", "untitled", "executive summary", "python-docx", "emvc"}
@@ -123,29 +145,23 @@ def run_epub_publishing_quality_recovery(
         )
         manual_review.extend(gates["B"].get("manual_review", []))
 
-        if gates["B"]["status"] != "fail":
-            working_bytes, heading_report, toc_report, structural_report, final_epubcheck = _run_recovery_phases(
-                working_bytes,
-                source_path=source_path,
-                expected_title=expected_title,
-                expected_author=expected_author,
-                expected_description=expected_description,
-                expected_language=expected_language,
-                publication_profile=publication_profile,
-            )
-            final_inventory = _inventory_epub(working_bytes, label="final")
-            gates["C"] = _evaluate_gate_c(heading_report, final_inventory)
-            gates["D"] = _evaluate_gate_d(toc_report, final_inventory)
-            gates["E"] = _evaluate_gate_e(structural_report)
-            manual_review.extend(heading_report.get("manual_review", []))
-            manual_review.extend(gates["C"].get("manual_review", []))
-            manual_review.extend(gates["D"].get("manual_review", []))
-            manual_review.extend(gates["E"].get("manual_review", []))
-        else:
-            toc_report = metadata_after_inventory["toc"]
-            structural_report = metadata_after_inventory["structural_integrity"]
-            final_inventory = metadata_after_inventory
-            final_epubcheck = metadata_epubcheck
+        working_bytes, heading_report, toc_report, structural_report, final_epubcheck = _run_recovery_phases(
+            working_bytes,
+            source_path=source_path,
+            expected_title=expected_title,
+            expected_author=expected_author,
+            expected_description=expected_description,
+            expected_language=expected_language,
+            publication_profile=publication_profile,
+        )
+        final_inventory = _inventory_epub(working_bytes, label="final")
+        gates["C"] = _evaluate_gate_c(heading_report, final_inventory)
+        gates["D"] = _evaluate_gate_d(toc_report, final_inventory)
+        gates["E"] = _evaluate_gate_e(structural_report)
+        manual_review.extend(heading_report.get("manual_review", []))
+        manual_review.extend(gates["C"].get("manual_review", []))
+        manual_review.extend(gates["D"].get("manual_review", []))
+        manual_review.extend(gates["E"].get("manual_review", []))
     else:
         gates.setdefault("B", _failed_gate("B", "Inventory gate failed; metadata phase skipped."))
 
@@ -167,45 +183,41 @@ def run_epub_publishing_quality_recovery(
     working_bytes = working_bytes or original_bytes
     paths.final_epub.write_bytes(working_bytes)
 
-    metadata_payload = {
-        "before": metadata_diff.get("before", original_inventory["metadata"]),
-        "after": metadata_diff.get("after", final_inventory["metadata"]),
-        "changes": metadata_diff.get("changes", []),
-        "conflicts": metadata_diff.get("conflicts", []),
-        "gate": gates["B"],
-    }
-    toc_payload = {
-        **toc_report,
-        "gate": gates["D"],
-    }
-    structural_payload = {
-        **structural_report,
-        "gate": gates["E"],
-    }
-    epubcheck_payload = {
-        **final_epubcheck,
-        "metadata_phase": metadata_epubcheck,
-    }
-    release_summary = {
-        "source_epub": str(source_path),
-        "final_epub": str(paths.final_epub.resolve()),
-        "recommendation": recommendation,
-        "gates": gates,
-        "baseline": _summarize_inventory(original_inventory),
-        "final": _summarize_inventory(final_inventory),
-        "baseline_epubcheck_status": baseline_epubcheck.get("status", "unavailable"),
-        "manual_review_count": len(manual_review),
-        "reader_smoke": {"status": "not_run", "reason": "No reader engines available in CLI pipeline."},
-    }
+    metadata_payload = build_recovery_metadata_payload(
+        metadata_diff=metadata_diff,
+        original_metadata=original_inventory["metadata"],
+        final_metadata=final_inventory["metadata"],
+        gate=gates["B"],
+    )
+    toc_payload = build_recovery_toc_payload(toc_report=toc_report, gate=gates["D"])
+    structural_payload = build_recovery_structural_payload(structural_report=structural_report, gate=gates["E"])
+    epubcheck_payload = build_epubcheck_payload(
+        final_epubcheck=final_epubcheck,
+        metadata_phase_epubcheck=metadata_epubcheck,
+    )
+    release_summary = build_recovery_release_summary(
+        source_epub=source_path,
+        final_epub=paths.final_epub,
+        recommendation=recommendation,
+        gates=gates,
+        original_inventory=original_inventory,
+        final_inventory=final_inventory,
+        baseline_epubcheck_status=baseline_epubcheck.get("status", "unavailable"),
+        manual_review_count=len(manual_review),
+    )
 
     paths.metadata_diff.write_text(json.dumps(metadata_payload, ensure_ascii=False, indent=2), encoding="utf-8")
     paths.heading_decisions.write_text(json.dumps(heading_report, ensure_ascii=False, indent=2), encoding="utf-8")
     paths.toc_map.write_text(json.dumps(toc_payload, ensure_ascii=False, indent=2), encoding="utf-8")
     paths.structural_integrity.write_text(json.dumps(structural_payload, ensure_ascii=False, indent=2), encoding="utf-8")
     paths.epubcheck.write_text(json.dumps(epubcheck_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    paths.manual_review_queue.write_text(_build_manual_review_markdown(manual_review), encoding="utf-8")
+    paths.manual_review_queue.write_text(build_manual_review_markdown(manual_review), encoding="utf-8")
     paths.release_report.write_text(
-        _build_release_report_markdown(release_summary=release_summary, metadata_payload=metadata_payload, toc_payload=toc_payload),
+        build_recovery_release_report_markdown(
+            release_summary=release_summary,
+            metadata_payload=metadata_payload,
+            toc_payload=toc_payload,
+        ),
         encoding="utf-8",
     )
 
@@ -308,6 +320,56 @@ def _run_recovery_phases(
     expected_language: str,
     publication_profile: str | None,
 ) -> tuple[bytes, dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    try:
+        from epub_heading_repair import repair_epub_headings_and_toc
+        from text_normalization import TextCleanupConfig, clean_epub_text_package
+
+        working_bytes = epub_bytes
+        language_hint = expected_language or "en"
+        try:
+            cleanup_result = clean_epub_text_package(
+                working_bytes,
+                config=TextCleanupConfig(
+                    language_hint=language_hint,
+                    release_gate="soft",
+                ),
+                publication_profile=publication_profile,
+            )
+            working_bytes = cleanup_result.epub_bytes
+        except Exception:
+            pass
+
+        heading_result = repair_epub_headings_and_toc(
+            working_bytes,
+            title_hint=expected_title,
+            author_hint=expected_author,
+            language_hint=language_hint,
+            publication_profile=publication_profile,
+        )
+        final_bytes = heading_result.epub_bytes
+        final_inventory = _inventory_epub(final_bytes, label="final")
+        toc_report = {
+            **final_inventory["toc"],
+            "baseline_entry_count": len(_inventory_epub(epub_bytes, label="toc_baseline")["toc"].get("entries", [])),
+        }
+        heading_report = build_heading_report_payload(
+            summary={
+                **heading_result.summary,
+                "removed_count": int(heading_result.summary.get("headings_removed", 0) or 0),
+                "recovered_count": int(
+                    (heading_result.summary.get("headings_added", 0) or 0)
+                    + (heading_result.summary.get("headings_promoted", 0) or 0)
+                    + (heading_result.summary.get("headings_releveled", 0) or 0)
+                ),
+            },
+            decisions=heading_result.heading_inventory,
+            manual_review=heading_result.manual_review_queue,
+        )
+        structural_report = final_inventory["structural_integrity"]
+        return final_bytes, heading_report, toc_report, structural_report, heading_result.epubcheck
+    except Exception:
+        pass
+
     with tempfile.TemporaryDirectory() as temp_dir:
         root_dir = Path(temp_dir)
         _extract_epub(epub_bytes, root_dir)
@@ -463,11 +525,11 @@ def _run_recovery_phases(
         **final_inventory["toc"],
         "baseline_entry_count": len(_inventory_epub(epub_bytes, label="toc_baseline")["toc"].get("entries", [])),
     }
-    heading_report = {
-        "summary": _summarize_heading_decisions(heading_decisions, final_inventory),
-        "decisions": heading_decisions,
-        "manual_review": _dedupe_review_items(manual_review),
-    }
+    heading_report = build_heading_report_payload(
+        summary=_summarize_heading_decisions(heading_decisions, final_inventory),
+        decisions=heading_decisions,
+        manual_review=manual_review,
+    )
     structural_report = final_inventory["structural_integrity"]
     return final_bytes, heading_report, toc_report, structural_report, run_epubcheck(final_bytes)
 
@@ -685,71 +747,19 @@ def _compare_heading_snapshots(
     after_snapshot: list[dict[str, Any]],
     file_name: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    decisions: list[dict[str, Any]] = []
-    review: list[dict[str, Any]] = []
-    before_by_key = {(item["level"], item["text"]): item for item in before_snapshot}
-    after_by_key = {(item["level"], item["text"]): item for item in after_snapshot}
-
-    for key, before in before_by_key.items():
-        if key in after_by_key:
-            continue
-        reason, confidence = _heading_change_reason(before.get("text", ""), removed=True)
-        decision = {
-            "file": file_name,
-            "status": "removed",
-            "before": before,
-            "after": None,
-            "reason": reason,
-            "confidence": confidence,
-        }
-        decisions.append(decision)
-        if confidence < 0.65 or reason in {"short-ambiguous-heading", "uppercase-layout-candidate"}:
-            review.append(_make_review_item("heading", file_name, before.get("text", ""), reason, confidence))
-
-    for key, after in after_by_key.items():
-        if key in before_by_key:
-            continue
-        reason, confidence = _heading_change_reason(after.get("text", ""), removed=False)
-        decision = {
-            "file": file_name,
-            "status": "recovered",
-            "before": None,
-            "after": after,
-            "reason": reason,
-            "confidence": confidence,
-        }
-        decisions.append(decision)
-        if confidence < 0.65 or reason in {"short-ambiguous-heading", "uppercase-layout-candidate"}:
-            review.append(_make_review_item("heading", file_name, after.get("text", ""), reason, confidence))
-
-    return decisions, review
+    return compare_heading_snapshots(
+        before_snapshot=before_snapshot,
+        after_snapshot=after_snapshot,
+        file_name=file_name,
+    )
 
 
 def _heading_change_reason(text: str, *, removed: bool) -> tuple[str, float]:
-    normalized = " ".join((text or "").split()).strip()
-    lowered = normalized.lower()
-    if any(marker in lowered for marker in SUSPICIOUS_HEADING_MARKERS):
-        return ("layout-artifact-filtered" if removed else "recovered-section-heading"), 0.92 if removed else 0.7
-    if len(normalized) <= 4:
-        return ("short-ambiguous-heading", 0.58)
-    if normalized.isupper() and len(normalized) <= 40:
-        return ("uppercase-layout-candidate", 0.66)
-    return ("semantic-heading-normalization", 0.76 if removed else 0.74)
+    return heading_change_reason(text, removed=removed)
 
 
 def _build_metadata_diff(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
-    changes = []
-    for field in ("title", "creator", "description", "language", "identifier", "modified"):
-        before_value = before["primary"].get(field, "")
-        after_value = after["primary"].get(field, "")
-        if before_value != after_value:
-            changes.append({"field": field, "before": before_value, "after": after_value})
-    return {
-        "before": before,
-        "after": after,
-        "changes": changes,
-        "conflicts": [],
-    }
+    return build_metadata_diff(before, after)
 
 
 def _evaluate_gate_a(inventory: dict[str, Any]) -> dict[str, Any]:
@@ -801,8 +811,14 @@ def _evaluate_gate_c(heading_report: dict[str, Any], final_inventory: dict[str, 
         if file_name == "cover.xhtml":
             continue
         h1_count = sum(1 for heading in headings if heading["level"] == 1)
-        if h1_count != 1:
+        if h1_count > 1:
             blockers.append(f"{file_name} has {h1_count} H1 headings.")
+        elif h1_count == 0:
+            has_substructure = any(int(heading.get("level", 0) or 0) in {2, 3} for heading in headings)
+            if has_substructure:
+                warnings.append(f"{file_name} is a continuation file without its own H1.")
+            else:
+                blockers.append(f"{file_name} has 0 H1 headings.")
         suspicious = [heading["text"] for heading in headings if _is_suspicious_heading(heading["text"])]
         if suspicious:
             blockers.append(f"{file_name} still contains suspicious headings: {', '.join(suspicious[:3])}")
@@ -881,66 +897,24 @@ def _gate_result(
     warnings: list[str] | None = None,
     manual_review: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    blockers = blockers or []
-    warnings = warnings or []
-    manual_review = manual_review or []
-    if blockers:
-        status = "fail"
-        summary = f"Gate {gate_id} failed."
-    elif warnings or manual_review:
-        status = "pass_with_review"
-        summary = f"Gate {gate_id} passed with review."
-    else:
-        status = "pass"
-        summary = f"Gate {gate_id} passed."
-    return {
-        "gate": gate_id,
-        "status": status,
-        "summary": summary,
-        "blockers": blockers,
-        "warnings": warnings,
-        "manual_review": _dedupe_review_items(manual_review),
-    }
+    return build_gate_result(
+        gate_id,
+        blockers=blockers,
+        warnings=warnings,
+        manual_review=manual_review,
+    )
 
 
 def _failed_gate(gate_id: str, message: str) -> dict[str, Any]:
-    return {
-        "gate": gate_id,
-        "status": "fail",
-        "summary": message,
-        "blockers": [message],
-        "warnings": [],
-        "manual_review": [],
-    }
+    return build_failed_gate(gate_id, message)
 
 
 def _summarize_heading_decisions(decisions: list[dict[str, Any]], final_inventory: dict[str, Any]) -> dict[str, Any]:
-    status_counts = Counter(decision["status"] for decision in decisions)
-    suspicious_remaining = sum(
-        1
-        for headings in final_inventory["headings"].values()
-        for heading in headings
-        if _is_suspicious_heading(heading["text"])
-    )
-    return {
-        "removed_count": status_counts.get("removed", 0),
-        "recovered_count": status_counts.get("recovered", 0),
-        "chapter_count": len(final_inventory["headings"]),
-        "suspicious_heading_count": suspicious_remaining,
-    }
+    return summarize_heading_decisions(decisions, final_inventory)
 
 
 def _summarize_inventory(inventory: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "title": inventory["metadata"]["primary"].get("title", ""),
-        "author": inventory["metadata"]["primary"].get("creator", ""),
-        "language": inventory["metadata"]["primary"].get("language", ""),
-        "spine_count": len(inventory.get("spine_files", [])),
-        "toc_count": len(inventory.get("toc", {}).get("entries", [])),
-        "heading_count": sum(len(entries) for entries in inventory.get("headings", {}).values()),
-        "duplicate_id_files": len(inventory.get("structural_integrity", {}).get("duplicate_ids", [])),
-        "broken_ref_count": len(inventory.get("structural_integrity", {}).get("broken_references", [])),
-    }
+    return summarize_inventory(inventory)
 
 
 def _split_href(href: str, *, current_file: str = "") -> tuple[str, str]:
@@ -1019,51 +993,19 @@ def _looks_like_utc_modified(value: str) -> bool:
 
 
 def _is_suspicious_heading(text: str) -> bool:
-    normalized = " ".join((text or "").split()).strip()
-    lowered = normalized.lower()
-    if not normalized:
-        return True
-    if any(marker in lowered for marker in SUSPICIOUS_HEADING_MARKERS):
-        return True
-    if lowered.startswith("go to solution"):
-        return True
-    if normalized.isdigit():
-        return True
-    return False
+    return is_suspicious_heading(text)
 
 
 def _make_review_item(kind: str, file_name: str, subject: str, reason: str, confidence: float) -> dict[str, Any]:
-    return {
-        "kind": kind,
-        "file": file_name,
-        "subject": subject,
-        "reason": reason,
-        "confidence": round(confidence, 2),
-    }
+    return make_review_item(kind, file_name, subject, reason, confidence)
 
 
-def _dedupe_review_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    deduped = []
-    seen = set()
-    for item in items:
-        marker = (item.get("kind"), item.get("file"), item.get("subject"), item.get("reason"))
-        if marker in seen:
-            continue
-        seen.add(marker)
-        deduped.append(item)
-    return deduped
+def _dedupe_review_items(items: list[Any]) -> list[Any]:
+    return dedupe_review_items(items)
 
 
-def _build_manual_review_markdown(items: list[dict[str, Any]]) -> str:
-    items = _dedupe_review_items(items)
-    if not items:
-        return "# Manual Review Queue\n\n- None\n"
-    lines = ["# Manual Review Queue", ""]
-    for item in items:
-        lines.append(
-            f"- [{item.get('kind')}] {item.get('file')}: {item.get('subject')} ({item.get('reason')}, confidence {item.get('confidence')})"
-        )
-    return "\n".join(lines).strip() + "\n"
+def _build_manual_review_markdown(items: list[Any]) -> str:
+    return build_manual_review_markdown(items)
 
 
 def _build_release_report_markdown(
@@ -1072,6 +1014,11 @@ def _build_release_report_markdown(
     metadata_payload: dict[str, Any],
     toc_payload: dict[str, Any],
 ) -> str:
+    return build_recovery_release_report_markdown(
+        release_summary=release_summary,
+        metadata_payload=metadata_payload,
+        toc_payload=toc_payload,
+    )
     lines = [
         "# EPUB Publishing Quality Recovery",
         "",

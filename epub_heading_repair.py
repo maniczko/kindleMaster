@@ -14,24 +14,29 @@ from bs4 import BeautifulSoup, Tag
 from kindle_semantic_cleanup import (
     _build_toc_map,
     _collect_structural_integrity_summary,
+    _dedupe_repeated_subsection_toc_labels,
     _evaluate_structural_gate,
     _evaluate_toc_gate,
     _get_spine_xhtml_paths,
     _extract_epub,
     _heading_candidate_looks_like_layout_artifact,
     _inventory_navigation_document,
+    _looks_like_promotional_banner,
     _looks_like_table_header_heading,
     _looks_like_synthetic_section_label,
     _looks_like_truncated_heading,
     _is_generic_schema_heading_label,
     _is_pseudo_heading_candidate,
     _locate_opf,
+    _looks_like_reference_entry_text,
+    _looks_like_reference_section_title,
     _normalize_text,
     _pack_epub,
     _rewrite_navigation,
     _slugify,
     _snapshot_package_metadata,
     _should_include_in_toc,
+    _training_book_key,
     _title_fragments_match,
     finalize_epub_for_kindle,
 )
@@ -349,6 +354,7 @@ def repair_epub_headings_and_toc(
         after_scan=after_scan,
     )
     gates = dict(phase_report.get("gates") or {})
+    gates["C"] = _evaluate_heading_gate_after_rebuild(after_scan)
     gates["D"] = _evaluate_toc_gate(toc_phase)
     gates["E"] = _evaluate_structural_gate(structural_phase)
     manual_review_queue = _filter_resolved_manual_review_items(
@@ -528,10 +534,13 @@ def _normalize_headings_and_rebuild_navigation(
         chapter_paths = _get_spine_xhtml_paths(opf_path)
 
         after_scan: dict[str, list[dict[str, Any]]] = {}
+        empty_reference_files: set[str] = set()
         for chapter_path in chapter_paths:
             after_scan[chapter_path.name] = _ensure_heading_ids_and_scan(chapter_path)
+            if _chapter_is_empty_reference_section(chapter_path, after_scan[chapter_path.name]):
+                empty_reference_files.add(chapter_path.name)
 
-        toc_entries = _build_toc_entries_from_scan(after_scan)
+        toc_entries = _build_toc_entries_from_scan(after_scan, excluded_reference_files=empty_reference_files)
         metadata = _snapshot_package_metadata(opf_path)
         _rewrite_navigation(
             root_dir,
@@ -607,6 +616,7 @@ def _ensure_heading_ids_and_scan(chapter_path: Path) -> list[dict[str, Any]]:
     changed = _promote_supported_pseudo_headings(soup) or changed
     changed = _normalize_consecutive_heading_clusters(soup) or changed
     changed = _demote_heading_noise(soup) or changed
+    changed = _ensure_primary_heading(soup) or changed
     id_counts = Counter(
         _normalize_text(str(node.get("id", "") or ""))
         for node in soup.find_all(attrs={"id": True})
@@ -633,6 +643,52 @@ def _ensure_heading_ids_and_scan(chapter_path: Path) -> list[dict[str, Any]]:
     if changed:
         chapter_path.write_text(updated, encoding="utf-8")
     return _scan_heading_candidates_from_text(updated, file_name=chapter_path.name, include_pseudo=False)
+
+
+def _ensure_primary_heading(soup: BeautifulSoup) -> bool:
+    headings = list(soup.find_all(["h1", "h2", "h3"]))
+    if not headings:
+        return False
+    if any(node.name == "h1" for node in headings):
+        return False
+    headings[0].name = "h1"
+    return True
+
+
+def _chapter_is_empty_reference_section(chapter_path: Path, headings: list[dict[str, Any]]) -> bool:
+    if not any(_looks_like_reference_heading_loose(str(item.get("text", "") or "")) for item in headings):
+        return False
+    soup = BeautifulSoup(chapter_path.read_text(encoding="utf-8"), "xml")
+    body = soup.find("body")
+    if body is None:
+        return False
+
+    meaningful_blocks = 0
+    for node in body.find_all(["li", "p", "div", "span", "td"]):
+        if node.find_parent(["table", "thead", "tbody", "tfoot"]) is not None and node.name != "td":
+            continue
+        text = _normalize_text(node.get_text(" ", strip=True))
+        if not text or _looks_like_reference_heading_loose(text):
+            continue
+        if _looks_like_reference_entry_text(text):
+            return False
+        if re.search(r"(?i)\bhttps?://|www\.", text):
+            return False
+        if re.match(r"^\[?[Rr]?\d+\]?\b", text) and len(text.split()) >= 2:
+            return False
+        if len(text) >= 32:
+            meaningful_blocks += 1
+
+    return meaningful_blocks <= 1
+
+
+def _looks_like_reference_heading_loose(text: str) -> bool:
+    normalized = _normalize_text(text).lower()
+    if not normalized:
+        return False
+    if _looks_like_reference_section_title(normalized):
+        return True
+    return any(marker in normalized for marker in ("referenc", "bibliograf", "sources", "bibliograph", "zrod", "źród"))
 
 
 def _sanitize_non_epub_markup(soup: BeautifulSoup) -> bool:
@@ -830,9 +886,15 @@ def _demote_heading_noise(soup: BeautifulSoup) -> bool:
         text = _normalize_text(node.get_text(" ", strip=True))
         if not text:
             continue
+        lowered = text.lower()
         if (
             text[:1] in {"•", "·", "▪", "◦", ""}
+            or "page " in lowered
+            or "strona " in lowered
+            or _looks_like_promotional_banner(text)
             or _looks_like_figure_caption_heading(text)
+            or _looks_like_table_header_heading(text)
+            or _looks_like_synthetic_section_label(text)
             or (_looks_like_truncated_heading(text) and not _has_supporting_content(node))
         ):
             node.name = "p"
@@ -939,7 +1001,12 @@ def _unique_heading_id(text: str, claimed_ids: set[str]) -> str:
     return candidate
 
 
-def _build_toc_entries_from_scan(after_scan: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+def _build_toc_entries_from_scan(
+    after_scan: dict[str, list[dict[str, Any]]],
+    *,
+    excluded_reference_files: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    excluded_reference_files = excluded_reference_files or set()
     total_h3 = sum(1 for items in after_scan.values() for item in items if int(item.get("level") or 0) == 3)
     dense_handbook_mode = _is_dense_handbook_scan(after_scan)
     repeated_label_counts: Counter[str] = Counter()
@@ -954,14 +1021,22 @@ def _build_toc_entries_from_scan(after_scan: dict[str, list[dict[str, Any]]]) ->
     toc_entries: list[dict[str, Any]] = []
     generic_schema_counts: Counter[tuple[str, str]] = Counter()
     for file_name, items in after_scan.items():
+        skip_reference_file = file_name in excluded_reference_files
         local_h3_count = 0
         local_h2_count = 0
+        primary_heading = next((item for item in items if int(item.get("level") or 0) == 1), {})
+        chapter_primary_key = _training_book_key(str(primary_heading.get("text", "") or ""))
+        front_matter_primary = chapter_primary_key in {"front cover", "title", "copyright", "contents", "table of contents"}
         for item in items:
             level = int(item.get("level") or 0)
             if level <= 0 or level > 3:
                 continue
             text = _normalize_text(str(item.get("text", "") or ""))
             if not _should_include_in_toc(text, level):
+                continue
+            if front_matter_primary and level > 1:
+                continue
+            if skip_reference_file and _looks_like_reference_heading_loose(text):
                 continue
             if dense_handbook_mode and not _should_include_dense_handbook_heading(item, items=items, level=level):
                 continue
@@ -987,7 +1062,7 @@ def _build_toc_entries_from_scan(after_scan: dict[str, list[dict[str, Any]]]) ->
                     "level": level,
                 }
             )
-    return toc_entries
+    return _dedupe_repeated_subsection_toc_labels(toc_entries)
 
 
 def _is_dense_handbook_scan(after_scan: dict[str, list[dict[str, Any]]]) -> bool:
@@ -1427,6 +1502,71 @@ def _derive_release_status(
     return "pass"
 
 
+def _evaluate_heading_gate_after_rebuild(after_scan: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    blockers: list[str] = []
+    for file_name, items in after_scan.items():
+        if file_name == "cover.xhtml":
+            continue
+        h1_count = sum(1 for item in items if int(item.get("level") or 0) == 1)
+        if h1_count != 1:
+            blockers.append(f"{file_name} has {h1_count} H1 headings.")
+        suspicious = [
+            _normalize_text(str(item.get("text", "") or ""))
+            for item in items
+            if _is_suspicious_final_heading_text(str(item.get("text", "") or ""))
+        ]
+        if suspicious:
+            blockers.append(f"{file_name} still contains suspicious headings: {', '.join(suspicious[:3])}")
+    return _gate_result("C", blockers=blockers)
+
+
+def _is_suspicious_final_heading_text(text: str) -> bool:
+    normalized = _normalize_text(text)
+    lowered = normalized.lower()
+    if not normalized:
+        return True
+    if any(marker in lowered for marker in ("material sponsorowany", "materiaĹ‚ sponsorowany", "page ", "strona ", "www.")):
+        return True
+    if _looks_like_promotional_banner(normalized):
+        return True
+    if _looks_like_table_header_heading(normalized):
+        return True
+    if _looks_like_synthetic_section_label(normalized):
+        return True
+    if _looks_like_truncated_heading(normalized):
+        return True
+    return False
+
+
+def _gate_result(
+    gate_id: str,
+    *,
+    blockers: list[str] | None = None,
+    warnings: list[str] | None = None,
+    manual_review: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    blockers = blockers or []
+    warnings = warnings or []
+    manual_review = manual_review or []
+    if blockers:
+        status = "fail"
+        summary = f"Gate {gate_id} failed."
+    elif warnings or manual_review:
+        status = "pass_with_review"
+        summary = f"Gate {gate_id} passed with review."
+    else:
+        status = "pass"
+        summary = f"Gate {gate_id} passed."
+    return {
+        "gate": gate_id,
+        "status": status,
+        "summary": summary,
+        "blockers": blockers,
+        "warnings": warnings,
+        "manual_review": manual_review,
+    }
+
+
 def _build_summary(
     *,
     heading_inventory: list[dict[str, Any]],
@@ -1443,6 +1583,12 @@ def _build_summary(
 ) -> dict[str, Any]:
     status_counts = Counter(str(item.get("action_taken", "") or "") for item in heading_inventory)
     documents_processed = len(before_scan)
+    suspicious_final_heading_count = sum(
+        1
+        for items in after_scan.values()
+        for item in items
+        if _is_suspicious_final_heading_text(str(item.get("text", "") or ""))
+    )
     return {
         "documents_processed": documents_processed,
         "heading_candidates_detected": len(heading_inventory),
@@ -1456,7 +1602,7 @@ def _build_summary(
         "toc_entries_after": int(((toc_phase.get("summary") or {}).get("entry_count", len(toc_mapping))) or len(toc_mapping)),
         "toc_broken_target_count": int(((toc_phase.get("summary") or {}).get("broken_target_count", 0)) or 0),
         "manual_review_count": len(manual_review_queue),
-        "suspicious_final_heading_count": int(((heading_phase.get("summary") or {}).get("suspicious_final_heading_count", 0)) or 0),
+        "suspicious_final_heading_count": suspicious_final_heading_count,
         "chapters_without_h1_after": sorted(
             file_name
             for file_name, counts in _per_file_heading_counts(after_scan).items()

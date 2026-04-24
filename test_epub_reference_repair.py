@@ -7,7 +7,12 @@ from unittest.mock import patch
 
 from lxml import etree
 
-from epub_reference_repair import repair_epub_reference_sections, run_reference_repair_pipeline
+from epub_reference_repair import (
+    ReferenceRepairRecord,
+    _build_source_pdf_reference_records_from_rows,
+    repair_epub_reference_sections,
+    run_reference_repair_pipeline,
+)
 
 
 class EpubReferenceRepairTests(unittest.TestCase):
@@ -413,6 +418,136 @@ class EpubReferenceRepairTests(unittest.TestCase):
         self.assertGreaterEqual(result.summary["empty_reference_sections_detected"], 1)
         self.assertEqual(result.summary["reference_quality_gate_status"], "failed")
 
+    def test_reference_repair_uses_source_pdf_records_for_scope_ids(self):
+        body_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+  <head><title>Main Report</title></head>
+  <body>
+    <section>
+      <h1>Main Report</h1>
+      <p>The report cites [R1], [R2] and [R3].</p>
+    </section>
+  </body>
+</html>
+"""
+        reference_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+  <head><title>References</title></head>
+  <body>
+    <section>
+      <h1>References</h1>
+      <p>[R1] Placeholder.</p>
+      <p>[R2] Placeholder.</p>
+      <p>[R3] Placeholder.</p>
+    </section>
+  </body>
+</html>
+"""
+        epub_bytes = self._epub_with_chapters(
+            [
+                ("chapter_001.xhtml", body_source),
+                ("chapter_002.xhtml", reference_source),
+            ]
+        )
+        source_records = {
+            "R1": ReferenceRepairRecord(
+                document_path="source-pdf:page-19",
+                section_id="source-pdf-page-19",
+                ref_id="[R1]",
+                display_ref_id="[R1]",
+                source_name="Source One",
+                source_title="Source One",
+                description="Reference one.",
+                url="https://example.com/r1",
+                links=["https://example.com/r1"],
+                confidence=0.99,
+                review_flag=False,
+                link_status="valid",
+            ),
+            "R2": ReferenceRepairRecord(
+                document_path="source-pdf:page-19",
+                section_id="source-pdf-page-19",
+                ref_id="[R2]",
+                display_ref_id="[R2]",
+                source_name="Source Two",
+                source_title="Source Two",
+                description="Reference two.",
+                url="https://example.com/r2",
+                links=["https://example.com/r2"],
+                confidence=0.99,
+                review_flag=False,
+                link_status="valid",
+            ),
+            "R3": ReferenceRepairRecord(
+                document_path="source-pdf:page-19",
+                section_id="source-pdf-page-19",
+                ref_id="[R3]",
+                display_ref_id="[R3]",
+                source_name="Source Three",
+                source_title="Source Three",
+                description="Reference three.",
+                url="https://example.com/r3",
+                links=["https://example.com/r3"],
+                confidence=0.99,
+                review_flag=False,
+                link_status="valid",
+            ),
+        }
+
+        with patch(
+            "epub_reference_repair._extract_source_pdf_reference_records",
+            return_value=source_records,
+        ):
+            with patch(
+                "epub_reference_repair.run_epubcheck",
+                return_value={"status": "passed", "tool": "epubcheck", "messages": []},
+            ):
+                result = repair_epub_reference_sections(
+                    epub_bytes,
+                    language_hint="en",
+                    source_pdf_path="dummy.pdf",
+                )
+
+        with zipfile.ZipFile(io.BytesIO(result.epub_bytes), "r") as archive:
+            chapter = archive.read("EPUB/chapter_002.xhtml").decode("utf-8")
+
+        self.assertEqual(chapter.count('class="reference-entry"'), 3)
+        self.assertIn("https://example.com/r1", chapter)
+        self.assertIn("https://example.com/r2", chapter)
+        self.assertIn("https://example.com/r3", chapter)
+        self.assertEqual(result.summary["citations_covered"], 3)
+        self.assertEqual(result.summary["citations_missing_record"], 0)
+        self.assertEqual(result.summary["reference_quality_gate_status"], "passed")
+
+    def test_source_pdf_table_row_parser_recovers_multiline_rows(self):
+        rows = [
+            {"id": "[R11]", "src": "PSD2 consolidated text - safeguarding,", "url": "https://eur-lex.europa.eu/legal-content/", "row": 762},
+            {"id": "", "src": "refund rights, value date, authorization", "url": "EN/TXT/HTML/?uri=CELEX%3A02015L2366-", "row": 774},
+            {"id": "", "src": "rules.", "url": "20151223", "row": 786},
+            {"id": "[R12]", "src": "European Commission - payment services", "url": "https://finance.ec.europa.eu/consumer-", "row": 870},
+            {"id": "", "src": "context interchange fee regulation.", "url": "finance-and-payments/payment-services/", "row": 882},
+            {"id": "", "src": "", "url": "payment-services_en", "row": 894},
+        ]
+
+        records = _build_source_pdf_reference_records_from_rows(
+            rows,
+            document_path="source-pdf:page-19",
+            section_id="source-pdf-page-19",
+        )
+        record_map = {record.display_ref_id or record.ref_id: record for record in records}
+
+        self.assertIn("[R11]", record_map)
+        self.assertIn("[R12]", record_map)
+        self.assertEqual(
+            record_map["[R11]"].links[0],
+            "https://eur-lex.europa.eu/legal-content/EN/TXT/HTML/?uri=CELEX%3A02015L2366-20151223",
+        )
+        self.assertEqual(
+            record_map["[R12]"].links[0],
+            "https://finance.ec.europa.eu/consumer-finance-and-payments/payment-services/payment-services_en",
+        )
+        self.assertFalse(record_map["[R11]"].review_flag)
+        self.assertFalse(record_map["[R12]"].review_flag)
 
 if __name__ == "__main__":
     unittest.main()

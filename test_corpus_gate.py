@@ -29,6 +29,18 @@ class CorpusGateTests(unittest.TestCase):
                 "overall_status": "passed_with_warnings",
             }
         }
+        smoke_payload["summary"]["benchmark"] = {
+            "classes": ["ocr_probe", "docx_structured_report"],
+            "slowest_cases": [
+                {
+                    "id": "ocr_probe_pdf",
+                    "document_class": "ocr_probe",
+                    "elapsed_seconds": 0.25,
+                    "validation_status": "passed",
+                    "fallback_mode": "premium",
+                }
+            ],
+        }
 
         with tempfile.TemporaryDirectory() as temp_dir:
             reports_root = Path(temp_dir) / "reports"
@@ -50,6 +62,8 @@ class CorpusGateTests(unittest.TestCase):
             self.assertEqual(persisted["overall_status"], "passed_with_warnings")
             self.assertEqual(persisted["artifacts"]["smoke_json"], str(reports_root / "smoke" / "smoke_full.json"))
             self.assertEqual(persisted["artifacts"]["premium_json"], str(reports_root / "premium_corpus_smoke_report.json"))
+            self.assertIn("benchmark", persisted)
+            self.assertEqual(persisted["benchmark"]["class_count"], 2)
 
         smoke_mock.assert_called_once()
         premium_mock.assert_called_once()
@@ -192,6 +206,7 @@ class CorpusGateTests(unittest.TestCase):
         self.assertIn("Smoke cases run: `5`", markdown)
         self.assertIn("Premium converted cases: `4`", markdown)
         self.assertIn('Premium blockers: `{"metadata_placeholder": 1}`', markdown)
+        self.assertIn("## Benchmark", markdown)
         self.assertIn(str(reports_root / "smoke" / "smoke_full.json"), markdown)
         self.assertIn(str(reports_root / "premium_corpus_smoke_report.json"), markdown)
 

@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from lxml import etree
 
-from epub_quality_recovery import run_epub_publishing_quality_recovery
+from epub_quality_recovery import _evaluate_gate_c, run_epub_publishing_quality_recovery
 
 
 class EpubQualityRecoveryTests(unittest.TestCase):
@@ -20,6 +20,41 @@ class EpubQualityRecoveryTests(unittest.TestCase):
                 compress_type = zipfile.ZIP_STORED if archive_path == "mimetype" else zipfile.ZIP_DEFLATED
                 archive.writestr(archive_path, payload, compress_type=compress_type)
         return output.getvalue()
+
+    def test_gate_c_treats_h1_count_anomalies_as_review_not_release_blockers(self):
+        result = _evaluate_gate_c(
+            {"summary": {"removed_count": 1, "recovered_count": 1}, "manual_review": []},
+            {
+                "headings": {
+                    "chapter_001.xhtml": [],
+                    "chapter_002.xhtml": [
+                        {"level": 1, "text": "Main Section"},
+                        {"level": 1, "text": "Nested Section"},
+                    ],
+                    "cover.xhtml": [],
+                }
+            },
+        )
+
+        self.assertEqual(result["status"], "pass_with_review")
+        self.assertEqual(result["blockers"], [])
+        self.assertTrue(any("no heading elements" in warning for warning in result["warnings"]))
+        self.assertTrue(any("2 H1 headings" in warning for warning in result["warnings"]))
+
+    def test_gate_c_still_blocks_suspicious_or_missing_heading_structure(self):
+        suspicious_result = _evaluate_gate_c(
+            {"summary": {"removed_count": 1, "recovered_count": 1}, "manual_review": []},
+            {"headings": {"chapter_001.xhtml": [{"level": 1, "text": "Material sponsorowany - R4"}]}},
+        )
+        empty_result = _evaluate_gate_c(
+            {"summary": {"removed_count": 1, "recovered_count": 1}, "manual_review": []},
+            {"headings": {"chapter_001.xhtml": [], "cover.xhtml": []}},
+        )
+
+        self.assertEqual(suspicious_result["status"], "fail")
+        self.assertTrue(any("suspicious headings" in blocker for blocker in suspicious_result["blockers"]))
+        self.assertEqual(empty_result["status"], "fail")
+        self.assertIn("No heading structure detected in content documents.", empty_result["blockers"])
 
     def test_recovery_pipeline_writes_reports_and_final_epub(self):
         opf_source = """<?xml version="1.0" encoding="utf-8"?>

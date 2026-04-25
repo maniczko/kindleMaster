@@ -152,6 +152,95 @@ class EpubReferenceRepairTests(unittest.TestCase):
         self.assertGreaterEqual(result.summary["records_flagged_for_review"], 1)
         self.assertEqual(result.summary["quality_gate_status"], "passed")
 
+    def test_repair_epub_reference_sections_preserves_suffix_list_and_resyncs_navigation(self):
+        chapter_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+  <head><title>Reference Tail</title></head>
+  <body>
+    <section>
+      <h1 id="references">References</h1>
+      <p>[1] Example Source https://example.com/source-one</p>
+      <h2 id="stale-anchor">Editorial heading inside a noisy reference cluster</h2>
+      <p>[2] Second Source https://example.com/source-two</p>
+      <ul><li class="knowledge-point knowledge-how">N</li></ul>
+    </section>
+  </body>
+</html>
+"""
+        epub_bytes = self._build_epub_bytes(
+            {
+                "mimetype": "application/epub+zip",
+                "META-INF/container.xml": """<?xml version="1.0" encoding="utf-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="EPUB/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>
+""",
+                "EPUB/content.opf": """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">ref-tail-test</dc:identifier>
+    <dc:title>Reference Tail</dc:title>
+    <dc:language>en</dc:language>
+  </metadata>
+  <manifest>
+    <item id="chapter" href="chapter_001.xhtml" media-type="application/xhtml+xml"/>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="css" href="style/default.css" media-type="text/css"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="chapter"/>
+  </spine>
+</package>
+""",
+                "EPUB/chapter_001.xhtml": chapter_source,
+                "EPUB/nav.xhtml": """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+  <head><title>Navigation</title></head>
+  <body>
+    <nav epub:type="toc">
+      <ol>
+        <li><a href="chapter_001.xhtml#references">References</a></li>
+        <li><a href="chapter_001.xhtml#stale-anchor">Stale heading</a></li>
+      </ol>
+    </nav>
+  </body>
+</html>
+""",
+                "EPUB/toc.ncx": """<?xml version="1.0" encoding="utf-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+  <head><meta name="dtb:uid" content="ref-tail-test"/></head>
+  <docTitle><text>Reference Tail</text></docTitle>
+  <navMap>
+    <navPoint id="ref" playOrder="1"><navLabel><text>References</text></navLabel><content src="chapter_001.xhtml#references"/></navPoint>
+    <navPoint id="stale" playOrder="2"><navLabel><text>Stale heading</text></navLabel><content src="chapter_001.xhtml#stale-anchor"/></navPoint>
+  </navMap>
+</ncx>
+""",
+                "EPUB/style/default.css": "body { font-family: serif; }",
+            }
+        )
+
+        with patch(
+            "epub_reference_repair.run_epubcheck",
+            return_value={"status": "passed", "tool": "epubcheck", "messages": []},
+        ):
+            result = repair_epub_reference_sections(epub_bytes, language_hint="en")
+
+        with zipfile.ZipFile(io.BytesIO(result.epub_bytes), "r") as archive:
+            chapter = archive.read("EPUB/chapter_001.xhtml").decode("utf-8")
+            nav = archive.read("EPUB/nav.xhtml").decode("utf-8")
+            toc = archive.read("EPUB/toc.ncx").decode("utf-8")
+
+        etree.fromstring(chapter.encode("utf-8"))
+        self.assertIn('<ul><li class="knowledge-point knowledge-how">N</li></ul>', chapter)
+        self.assertNotIn('chapter_001.xhtml#stale-anchor', nav)
+        self.assertNotIn('chapter_001.xhtml#stale-anchor', toc)
+        self.assertNotIn('</section><li', chapter)
+        self.assertEqual(result.summary["quality_gate_status"], "passed")
+
     def test_repair_epub_reference_sections_preserves_valid_reference_links(self):
         chapter_source = """<?xml version="1.0" encoding="utf-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">

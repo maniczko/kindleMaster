@@ -11,6 +11,29 @@ from scripts.generate_project_status import generate_project_status
 
 
 class ProjectStatusTests(unittest.TestCase):
+    def test_governance_docs_for_linear_zones_exist_and_cross_link(self) -> None:
+        required_docs = {
+            "docs/conversion-pipeline.md": ["VAT-173", "python kindlemaster.py test --suite corpus"],
+            "docs/source-of-truth-matrix.md": ["VAT-131", "VAT-132", "reports/project_status.json"],
+            "docs/independent-audit-mode.md": ["VAT-134", "python kindlemaster.py audit"],
+            "docs/local-bootstrap-toolchain.md": ["VAT-126", "python kindlemaster.py doctor"],
+            "docs/linear-issue-template.md": ["VAT-174", "Affected conversion-quality area"],
+            "docs/premium-epub-release-checklist.md": ["VAT-176", "Premium EPUB release checklist"],
+        }
+
+        for relative_path, markers in required_docs.items():
+            with self.subTest(path=relative_path):
+                content = Path(relative_path).read_text(encoding="utf-8")
+                self.assertIn("# ", content)
+                for marker in markers:
+                    self.assertIn(marker, content)
+
+        readme_text = Path("README.md").read_text(encoding="utf-8")
+        self.assertIn("docs/conversion-pipeline.md", readme_text)
+        self.assertIn("docs/source-of-truth-matrix.md", readme_text)
+        self.assertIn("docs/premium-epub-release-checklist.md", readme_text)
+        self.assertIn("docs/linear-issue-template.md", readme_text)
+
     def test_generate_project_status_uses_corpus_gate_and_latest_completed_workflow(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             repo_root = Path(temp_dir)

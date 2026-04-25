@@ -109,11 +109,20 @@ class QualityStateServiceTests(unittest.TestCase):
         self.assertEqual(state.render_budget.budget_class, "fixed_layout_dense")
         self.assertEqual(state.render_budget.attempt, "fallback")
         self.assertEqual(state.size_budget.status, "passed_with_warnings")
+        self.assertEqual(state.raw_signals.warning_count, 1)
+        self.assertEqual(state.raw_signals.heading_review_count, 2)
+        self.assertEqual(state.raw_signals.output_size_bytes, 8192)
+        self.assertEqual(state.verdict.status, "passed_with_warnings")
+        self.assertEqual(state.verdict.severity, "warning")
+        self.assertTrue(state.verdict.requires_manual_review)
+        self.assertFalse(state.verdict.blocks_download)
         self.assertEqual(
             [alert.code for alert in state.alerts],
             ["size_budget_warning", "manual_review_needed", "quality_warning"],
         )
         self.assertEqual(payload["summary"]["output_size_bytes"], 8192)
+        self.assertEqual(payload["raw_signals"]["warning_count"], 1)
+        self.assertEqual(payload["verdict"]["status"], "passed_with_warnings")
         json.dumps(payload)
 
     def test_failed_state_surfaces_terminal_error_without_quality_payload(self) -> None:
@@ -132,6 +141,8 @@ class QualityStateServiceTests(unittest.TestCase):
         self.assertFalse(state.quality_available)
         self.assertFalse(state.download_ready)
         self.assertEqual(state.overall_severity, "error")
+        self.assertEqual(state.verdict.status, "failed")
+        self.assertTrue(state.verdict.blocks_download)
         self.assertEqual(state.validation.status, "unavailable")
         self.assertEqual(len(state.alerts), 1)
         self.assertEqual(state.alerts[0].code, "conversion_failed")

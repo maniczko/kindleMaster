@@ -97,6 +97,20 @@ def _build_no_h1_docx(path: Path) -> None:
     document.save(str(path))
 
 
+def _build_table_image_docx(path: Path) -> None:
+    document = Document()
+    document.core_properties.title = "Table Image Probe"
+    document.core_properties.author = "Codex QA"
+    document.add_heading("Table image chapter", level=1)
+    table = document.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Metric"
+    table.cell(0, 1).text = "Evidence"
+    table.cell(1, 0).text = "Inline media"
+    with _DemoImage() as image_path:
+        table.cell(1, 1).paragraphs[0].add_run().add_picture(str(image_path), width=Inches(1.25))
+    document.save(str(path))
+
+
 class DocxConversionTests(unittest.TestCase):
     def test_analyze_docx_reads_metadata_and_structure(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -147,6 +161,20 @@ class DocxConversionTests(unittest.TestCase):
             self.assertEqual(document.sections[0].title, "Fallback DOCX")
             self.assertEqual(document.author, "Unknown")
 
+    def test_build_docx_publication_document_preserves_table_cell_images(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            docx_path = Path(temp_dir) / "table-image.docx"
+            _build_table_image_docx(docx_path)
+
+            document = build_docx_publication_document(docx_path, language="en")
+
+            self.assertEqual(len(document.sections), 1)
+            self.assertEqual(len(document.assets), 1)
+            table_html = "\n".join(block.raw_html or "" for block in document.sections[0].blocks)
+            self.assertIn("<table>", table_html)
+            self.assertIn('src="images/docx_', table_html)
+            self.assertEqual(len(document.sections[0].assets), 1)
+
     def test_convert_docx_to_epub_with_report_returns_epub_and_generic_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             docx_path = Path(temp_dir) / "rich.docx"
@@ -165,6 +193,40 @@ class DocxConversionTests(unittest.TestCase):
             with ZipFile(BytesIO(result["epub_bytes"])) as archive:
                 self.assertIn("EPUB/content.opf", archive.namelist())
                 self.assertTrue(any(name.endswith("nav.xhtml") for name in archive.namelist()))
+                image_entries = [name for name in archive.namelist() if name.startswith("EPUB/images/docx_")]
+                self.assertEqual(len(image_entries), 1)
+                chapters = [
+                    archive.read(name).decode("utf-8")
+                    for name in archive.namelist()
+                    if name.startswith("EPUB/chapter_") and name.endswith(".xhtml")
+                ]
+                cover = archive.read("EPUB/cover.xhtml").decode("utf-8")
+
+            self.assertTrue(any("EPUB/images" not in chapter and "images/docx_" in chapter for chapter in chapters))
+            self.assertNotIn("images/docx_", cover)
+
+    def test_convert_docx_to_epub_with_report_preserves_table_cell_image_asset(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            docx_path = Path(temp_dir) / "table-image.docx"
+            _build_table_image_docx(docx_path)
+
+            result = convert_docx_to_epub_with_report(
+                str(docx_path),
+                config=ConversionConfig(language="en", profile="auto-premium"),
+                original_filename=docx_path.name,
+            )
+
+            with ZipFile(BytesIO(result["epub_bytes"])) as archive:
+                image_entries = [name for name in archive.namelist() if name.startswith("EPUB/images/docx_")]
+                self.assertEqual(len(image_entries), 1)
+                chapter_markup = "\n".join(
+                    archive.read(name).decode("utf-8")
+                    for name in archive.namelist()
+                    if name.startswith("EPUB/chapter_") and name.endswith(".xhtml")
+                )
+
+            self.assertIn("<table", chapter_markup)
+            self.assertIn("images/docx_", chapter_markup)
 
     def test_generic_dispatcher_routes_docx(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -137,17 +137,19 @@ class BrowserPollingE2ETests(unittest.TestCase):
         return self.page.locator("#statusText").text_content() or ""
 
     def _wait_for_any_status_text(self, fragments: list[str], timeout_ms: int = 10000) -> str:
-        self.page.wait_for_function(
+        matched_text = self.page.wait_for_function(
             """([selector, expectedFragments]) => {
               const element = document.querySelector(selector);
               if (!element) return false;
               const text = element.textContent || "";
-              return Array.isArray(expectedFragments) && expectedFragments.some((fragment) => text.includes(fragment));
+              return Array.isArray(expectedFragments) && expectedFragments.some((fragment) => text.includes(fragment))
+                ? text
+                : false;
             }""",
             arg=["#statusText", fragments],
             timeout=timeout_ms,
         )
-        return self.page.locator("#statusText").text_content() or ""
+        return str(matched_text.json_value() or "")
 
     def test_retry_backoff_recovers_after_transient_status_failures(self) -> None:
         status_calls = {"count": 0}

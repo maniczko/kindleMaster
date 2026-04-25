@@ -11,7 +11,82 @@ concurrency:
   group: ready-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  GOVERNANCE_COVERAGE_FAIL_UNDER: "75"
+  CORE_CONVERSION_COVERAGE_FAIL_UNDER: "45"
+
 jobs:
+  ready-governance:
+    name: ready-governance (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python-version: "3.12"
+            security_audit: false
+            core_coverage: false
+          - os: ubuntu-latest
+            python-version: "3.13"
+            security_audit: false
+            core_coverage: false
+          - os: ubuntu-latest
+            python-version: "3.14"
+            security_audit: true
+            core_coverage: true
+          - os: windows-latest
+            python-version: "3.14"
+            security_audit: false
+            core_coverage: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Bootstrap developer profile
+        run: python kindlemaster.py bootstrap
+
+      - name: Check installed dependency consistency
+        run: python -m pip check
+
+      - name: Run static-quality gate
+        run: python -m ruff check --select E9,F63,F7,F82 --output-format=github kindlemaster.py premium_tools.py scripts test_github_ready_enforcement.py test_kindlemaster_entrypoint.py test_project_status.py test_skill_contracts.py test_skill_guardrails.py
+
+      - name: Run dependency security audit
+        if: ${{ matrix.security_audit }}
+        run: python -m pip_audit -r requirements.txt -r requirements-dev.txt --progress-spinner off --timeout 60
+
+      - name: Run governance coverage threshold
+        run: |
+          python -c "from pathlib import Path; Path('reports/coverage').mkdir(parents=True, exist_ok=True)"
+          python -m coverage run -m unittest test_github_ready_enforcement.py test_kindlemaster_entrypoint.py test_project_status.py test_skill_contracts.py test_skill_guardrails.py
+          python -m coverage report --include="kindlemaster.py,scripts/generate_project_status.py" --fail-under=${{ env.GOVERNANCE_COVERAGE_FAIL_UNDER }}
+          python -m coverage xml -o reports/coverage/coverage-${{ matrix.os }}-py${{ matrix.python-version }}.xml
+
+      - name: Run core conversion coverage threshold
+        if: ${{ matrix.core_coverage }}
+        run: |
+          python -m coverage erase
+          python -m coverage run --source=converter,docx_conversion,text_cleanup_engine,text_normalization,kindle_semantic_cleanup,epub_validation -m unittest test_docx_conversion.py test_converter_text_cleanup.py test_text_normalization.py test_epub_validation.py
+          python -m coverage report --fail-under=${{ env.CORE_CONVERSION_COVERAGE_FAIL_UNDER }}
+          python -m coverage xml -o reports/coverage/core-conversion-coverage-${{ matrix.os }}-py${{ matrix.python-version }}.xml
+
+      - name: Upload governance artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: governance-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: |
+            reports/coverage/
+            .coverage
+          if-no-files-found: warn
+          retention-days: 14
+
   ready-quick:
     name: ready-quick
     runs-on: ubuntu-latest
@@ -38,6 +113,17 @@ jobs:
 
       - name: Run quick READY lane
         run: python kindlemaster.py test --suite quick
+
+      - name: Upload quick READY artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ready-quick-evidence
+          path: |
+            reports/
+            output/
+          if-no-files-found: warn
+          retention-days: 14
 
   ready-release:
     name: ready-release
@@ -69,10 +155,22 @@ jobs:
       - name: Run release READY lane
         run: python kindlemaster.py test --suite release
 
+      - name: Upload release READY artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ready-release-evidence
+          path: |
+            reports/
+            output/
+          if-no-files-found: warn
+          retention-days: 14
+
   ready-gate:
     name: ready-gate
     runs-on: ubuntu-latest
     needs:
+      - ready-governance
       - ready-quick
       - ready-release
     if: ${{ always() }}
@@ -80,8 +178,8 @@ jobs:
       - name: Enforce READY aggregate gate
         shell: bash
         run: |
-          if [[ "${{ needs.ready-quick.result }}" != "success" || "${{ needs.ready-release.result }}" != "success" ]]; then
-            echo "READY enforcement failed: quick=${{ needs.ready-quick.result }}, release=${{ needs.ready-release.result }}"
+          if [[ "${{ needs.ready-governance.result }}" != "success" || "${{ needs.ready-quick.result }}" != "success" || "${{ needs.ready-release.result }}" != "success" ]]; then
+            echo "READY enforcement failed: governance=${{ needs.ready-governance.result }}, quick=${{ needs.ready-quick.result }}, release=${{ needs.ready-release.result }}"
             exit 1
           fi
           echo "READY enforcement passed."

@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -32,14 +35,22 @@ QUICK_TESTS = [
     "test_epub_heading_repair.py",
 ]
 
-RELEASE_TESTS = QUICK_TESTS + [
+RELEASE_TESTS = [
     "test_toc_segmentation.py",
     "test_epub_quality_recovery.py",
     "test_release_quality_recovery.py",
     "test_epub_release_pipeline.py",
-    "test_premium_corpus_smoke.py",
     "test_app_heading_repair.py",
 ]
+
+RELEASE_TIMEOUT_RETURN_CODE = 124
+RELEASE_STEP_TIMEOUTS_SECONDS = {
+    "release-units": 300,
+    "corpus-units": 240,
+    "corpus-gate-standard": 720,
+    "browser-followup": 300,
+    "runtime-followup": 480,
+}
 
 CORPUS_TESTS = [
     "test_premium_corpus_smoke.py",
@@ -373,57 +384,199 @@ def _run_tests(suite: str) -> int:
                 return completed.returncode
         return 0
     if suite == "release":
-        release_surface = verification_surfaces.get("release", {})
-        if release_surface.get("status") == "unsupported":
-            _print_json(
-                {
-                    "suite": "release",
-                    "status": "unavailable",
-                    "missing_requirements": release_surface.get("missing_requirements", []),
-                    "notes": release_surface.get("notes", []),
-                }
-            )
-            return 1
-        commands: list[Sequence[str]] = [
-            [sys.executable, "-m", "unittest", *RELEASE_TESTS],
-            [sys.executable, "kindlemaster.py", "smoke", "--mode", "quick"],
-            [sys.executable, "kindlemaster.py", "test", "--suite", "corpus"],
-        ]
-        optional_followups = release_surface.get("optional_followups", [])
-        for followup in optional_followups:
-            surface_name = followup.get("surface")
-            status = followup.get("status")
-            if surface_name == "browser" and status == "supported":
-                commands.append([sys.executable, "-m", "unittest", *BROWSER_TESTS])
-            if surface_name == "runtime" and status == "supported":
-                commands.append([sys.executable, "-m", "unittest", *RUNTIME_TESTS])
-        skipped_followups = [
-            {
-                "surface": followup.get("surface"),
-                "missing_requirements": followup.get("missing_requirements", []),
-            }
-            for followup in optional_followups
-            if followup.get("status") != "supported"
-        ]
-        if skipped_followups:
-            _print_json(
-                {
-                    "suite": "release",
-                    "status": "degraded",
-                    "notes": release_surface.get("notes", []),
-                    "skipped_optional_surfaces": skipped_followups,
-                }
-            )
-        for command in commands:
-            completed = subprocess.run(command, check=False, cwd=repo_root)
-            if completed.returncode != 0:
-                return completed.returncode
-        return 0
+        return _run_release_suite(repo_root=repo_root, release_surface=verification_surfaces.get("release", {}))
     if suite == "full":
         command: Sequence[str] = [sys.executable, "-m", "unittest", "discover", "-p", "test*.py"]
     else:
         command = [sys.executable, "-m", "unittest", *QUICK_TESTS]
     return subprocess.run(command, check=False, cwd=repo_root).returncode
+
+
+def _run_release_suite(*, repo_root: Path, release_surface: dict[str, Any]) -> int:
+    release_notes = _release_suite_notes(release_surface)
+    if release_surface.get("status") == "unsupported":
+        _print_json(
+            {
+                "suite": "release",
+                "status": "unavailable",
+                "missing_requirements": release_surface.get("missing_requirements", []),
+                "notes": release_notes,
+            }
+        )
+        return 1
+
+    commands: list[tuple[str, Sequence[str]]] = [
+        ("release-units", [sys.executable, "-m", "unittest", *RELEASE_TESTS]),
+        ("corpus-units", [sys.executable, "-m", "unittest", *CORPUS_TESTS]),
+        (
+            "corpus-gate-standard",
+            [sys.executable, "kindlemaster.py", "corpus", "--proof-profile", "standard"],
+        ),
+    ]
+    optional_followups = release_surface.get("optional_followups", [])
+    for followup in optional_followups:
+        surface_name = followup.get("surface")
+        status = followup.get("status")
+        if surface_name == "browser" and status == "supported":
+            commands.append(("browser-followup", [sys.executable, "-m", "unittest", *BROWSER_TESTS]))
+        if surface_name == "runtime" and status == "supported":
+            commands.append(("runtime-followup", [sys.executable, "-m", "unittest", *RUNTIME_TESTS]))
+
+    skipped_followups = [
+        {
+            "surface": followup.get("surface"),
+            "missing_requirements": followup.get("missing_requirements", []),
+        }
+        for followup in optional_followups
+        if followup.get("status") != "supported"
+    ]
+    step_results: list[dict[str, Any]] = []
+    for label, command in commands:
+        result = _run_bounded_command(
+            command,
+            cwd=repo_root,
+            label=label,
+            timeout_seconds=RELEASE_STEP_TIMEOUTS_SECONDS.get(label, 300),
+        )
+        step_results.append(result)
+        if result["returncode"] != 0:
+            _print_json(
+                {
+                    "suite": "release",
+                    "status": "failed",
+                    "failed_step": label,
+                    "steps": step_results,
+                    "notes": release_notes,
+                    "skipped_optional_surfaces": skipped_followups,
+                }
+            )
+            return 1
+
+    corpus_summary = _load_corpus_gate_summary(repo_root / "reports" / "corpus" / "corpus_gate.json")
+    warning_reasons: list[str] = []
+    if corpus_summary.get("overall_status") == "passed_with_warnings":
+        warning_reasons.append("corpus_gate_passed_with_warnings")
+    if skipped_followups:
+        warning_reasons.append("optional_followups_skipped")
+    status = "passed_with_warnings" if warning_reasons else "passed"
+    _print_json(
+        {
+            "suite": "release",
+            "status": status,
+            "warning_reasons": warning_reasons,
+            "corpus_gate": corpus_summary,
+            "steps": step_results,
+            "notes": release_notes,
+            "skipped_optional_surfaces": skipped_followups,
+        }
+    )
+    return 0
+
+
+def _release_suite_notes(release_surface: dict[str, Any]) -> list[str]:
+    notes = [
+        "Runs bounded release-specific unit shards plus the standard corpus gate.",
+        "Does not duplicate the quick suite; run `python kindlemaster.py test --suite quick` before clean release claims.",
+    ]
+    if release_surface.get("optional_followups"):
+        notes.append("Browser and runtime follow-up suites run only when their local toolchains are supported.")
+    return notes
+
+
+def _run_bounded_command(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    label: str,
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    process = _start_process(command, cwd=cwd)
+    try:
+        returncode = process.wait(timeout=timeout_seconds)
+        status = "passed" if returncode == 0 else "failed"
+    except subprocess.TimeoutExpired:
+        _terminate_process_tree(process)
+        returncode = RELEASE_TIMEOUT_RETURN_CODE
+        status = "timed_out"
+    return {
+        "label": label,
+        "command": list(command),
+        "status": status,
+        "returncode": returncode,
+        "timeout_seconds": timeout_seconds,
+        "elapsed_seconds": round(time.perf_counter() - started, 4),
+    }
+
+
+def _start_process(command: Sequence[str], *, cwd: Path) -> subprocess.Popen[Any]:
+    kwargs: dict[str, Any] = {"cwd": cwd}
+    if os.name == "nt":
+        creation_flag = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        if creation_flag:
+            kwargs["creationflags"] = creation_flag
+    else:
+        kwargs["start_new_session"] = True
+    return subprocess.Popen(command, **kwargs)
+
+
+def _terminate_process_tree(process: subprocess.Popen[Any]) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+        return
+
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+        process.wait(timeout=5)
+    except (ProcessLookupError, subprocess.TimeoutExpired):
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def _load_corpus_gate_summary(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {
+            "available": False,
+            "overall_status": "unknown",
+            "path": str(path),
+        }
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return {
+            "available": False,
+            "overall_status": "unknown",
+            "path": str(path),
+            "error": str(exc),
+        }
+    premium = payload.get("premium_corpus") or {}
+    premium_overall = premium.get("overall") or {}
+    smoke = payload.get("smoke") or {}
+    return {
+        "available": True,
+        "path": str(path),
+        "overall_status": payload.get("overall_status", "unknown"),
+        "proof_profile": payload.get("proof_profile", "unknown"),
+        "smoke_status": (smoke.get("summary") or {}).get("overall_status", "unknown"),
+        "premium_status": premium.get("overall_status") or premium_overall.get("overall_status", "unknown"),
+        "grade_counts": premium_overall.get("grade_counts", {}),
+        "blocker_counts": premium_overall.get("blocker_counts", {}),
+        "warning_counts": premium_overall.get("warning_counts", {}),
+        "benchmark": payload.get("benchmark", {}),
+    }
 
 
 def _json_safe(value: Any) -> Any:

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 
 SUSPICIOUS_HEADING_MARKERS = (
@@ -16,6 +17,61 @@ _EPUBCHECK_UNAVAILABLE_WARNING_MARKERS = (
     "formalna walidacja epubcheck nie mogla zostac wykonana",
     "formalna walidacja epubcheck nie mogła zostać wykonana",
 )
+
+@dataclass(frozen=True)
+class RawWorkflowQualitySignals:
+    validation_status: str = "failed"
+    epubcheck_status: str = "failed"
+    error_count: int = 0
+    warning_count: int = 0
+    internal_link_error_count: int = 0
+    external_link_error_count: int = 0
+    broken_href_error_count: int = 0
+    duplicate_id_error_count: int = 0
+    reference_cleanup_status: str = "passed_with_warnings"
+    reference_visible_junk_detected: int = 0
+    heading_gate_status: str = "passed_with_warnings"
+    toc_gate_status: str = "passed_with_warnings"
+    text_cleanup_review_needed_count: int = 0
+    text_cleanup_blocked_count: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "validation_status": self.validation_status,
+            "epubcheck_status": self.epubcheck_status,
+            "error_count": self.error_count,
+            "warning_count": self.warning_count,
+            "internal_link_error_count": self.internal_link_error_count,
+            "external_link_error_count": self.external_link_error_count,
+            "broken_href_error_count": self.broken_href_error_count,
+            "duplicate_id_error_count": self.duplicate_id_error_count,
+            "reference_cleanup_status": self.reference_cleanup_status,
+            "reference_visible_junk_detected": self.reference_visible_junk_detected,
+            "heading_gate_status": self.heading_gate_status,
+            "toc_gate_status": self.toc_gate_status,
+            "text_cleanup_review_needed_count": self.text_cleanup_review_needed_count,
+            "text_cleanup_blocked_count": self.text_cleanup_blocked_count,
+        }
+
+
+@dataclass(frozen=True)
+class WorkflowQualityVerdict:
+    status: str
+    severity: str
+    blocker_count: int = 0
+    warning_count: int = 0
+    review_count: int = 0
+    reasons: tuple[str, ...] = field(default_factory=tuple)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "severity": self.severity,
+            "blocker_count": self.blocker_count,
+            "warning_count": self.warning_count,
+            "review_count": self.review_count,
+            "reasons": list(self.reasons),
+        }
 
 
 def normalize_status(raw_status: str) -> str:
@@ -40,12 +96,32 @@ def merge_statuses(statuses: Iterable[str]) -> str:
     return "passed"
 
 
+def _safe_int(value: Any, *, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def extract_workflow_quality_signals(
     *,
     validation: dict[str, Any],
     audit: dict[str, Any],
     quality_report: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    return build_raw_workflow_quality_signals(
+        validation=validation,
+        audit=audit,
+        quality_report=quality_report,
+    ).to_dict()
+
+
+def build_raw_workflow_quality_signals(
+    *,
+    validation: Mapping[str, Any],
+    audit: Mapping[str, Any],
+    quality_report: Mapping[str, Any] | None,
+) -> RawWorkflowQualitySignals:
     internal_errors = (validation.get("internal_links") or {}).get("errors", [])
     external_errors = (validation.get("external_links") or {}).get("errors", [])
     package_errors = (validation.get("package") or {}).get("errors", [])
@@ -53,26 +129,26 @@ def extract_workflow_quality_signals(
     reference_cleanup = text_cleanup.get("reference_cleanup") or {}
     gates = audit.get("gates") or {}
 
-    return {
-        "validation_status": normalize_status((validation.get("summary") or {}).get("status", "failed")),
-        "epubcheck_status": normalize_status((validation.get("epubcheck") or {}).get("status", "failed")),
-        "error_count": int((validation.get("summary") or {}).get("error_count", 0)),
-        "warning_count": int((validation.get("summary") or {}).get("warning_count", 0)),
-        "internal_link_error_count": len(internal_errors),
-        "external_link_error_count": len(external_errors),
-        "broken_href_error_count": count_broken_href_errors(internal_errors + external_errors + package_errors),
-        "duplicate_id_error_count": sum(1 for error in internal_errors if "duplicate id" in error.lower()),
-        "reference_cleanup_status": normalize_status(reference_cleanup.get("quality_gate_status", "unavailable"))
+    return RawWorkflowQualitySignals(
+        validation_status=normalize_status((validation.get("summary") or {}).get("status", "failed")),
+        epubcheck_status=normalize_status((validation.get("epubcheck") or {}).get("status", "failed")),
+        error_count=_safe_int((validation.get("summary") or {}).get("error_count", 0)),
+        warning_count=_safe_int((validation.get("summary") or {}).get("warning_count", 0)),
+        internal_link_error_count=len(internal_errors),
+        external_link_error_count=len(external_errors),
+        broken_href_error_count=count_broken_href_errors(internal_errors + external_errors + package_errors),
+        duplicate_id_error_count=sum(1 for error in internal_errors if "duplicate id" in str(error).lower()),
+        reference_cleanup_status=normalize_status(reference_cleanup.get("quality_gate_status", "unavailable"))
         if reference_cleanup
         else "passed_with_warnings",
-        "reference_visible_junk_detected": int(reference_cleanup.get("visible_junk_detected", 0))
+        reference_visible_junk_detected=_safe_int(reference_cleanup.get("visible_junk_detected", 0))
         if reference_cleanup
         else 0,
-        "heading_gate_status": normalize_status(((gates.get("C") or {}).get("status", "unavailable"))),
-        "toc_gate_status": normalize_status(((gates.get("D") or {}).get("status", "unavailable"))),
-        "text_cleanup_review_needed_count": int(text_cleanup.get("review_needed_count", 0)) if text_cleanup else 0,
-        "text_cleanup_blocked_count": int(text_cleanup.get("blocked_count", 0)) if text_cleanup else 0,
-    }
+        heading_gate_status=normalize_status(((gates.get("C") or {}).get("status", "unavailable"))),
+        toc_gate_status=normalize_status(((gates.get("D") or {}).get("status", "unavailable"))),
+        text_cleanup_review_needed_count=_safe_int(text_cleanup.get("review_needed_count", 0)) if text_cleanup else 0,
+        text_cleanup_blocked_count=_safe_int(text_cleanup.get("blocked_count", 0)) if text_cleanup else 0,
+    )
 
 
 def _is_epubcheck_unavailable_warning(message: str) -> bool:
@@ -140,25 +216,114 @@ def collect_workflow_symptoms(
     return list(dict.fromkeys(symptoms))
 
 
+def derive_workflow_quality_verdict(
+    *,
+    validation: Mapping[str, Any],
+    audit: Mapping[str, Any],
+    quality_report: Mapping[str, Any] | None,
+    raw_signals: RawWorkflowQualitySignals | None = None,
+) -> WorkflowQualityVerdict:
+    raw = raw_signals or build_raw_workflow_quality_signals(
+        validation=validation,
+        audit=audit,
+        quality_report=quality_report,
+    )
+    statuses = [
+        raw.validation_status,
+        normalize_status(audit.get("decision", "failed")),
+    ]
+    if quality_report and not _quality_report_validation_is_superseded(
+        validation=dict(validation),
+        quality_report=dict(quality_report),
+    ):
+        embedded_status = normalize_status(quality_report.get("validation_status", "passed"))
+        if quality_report.get("warnings") and embedded_status == "passed":
+            embedded_status = "passed_with_warnings"
+        statuses.append(embedded_status)
+
+    status = merge_statuses(statuses)
+    blockers: list[str] = []
+    warnings: list[str] = []
+    reviews: list[str] = []
+
+    if raw.validation_status == "failed" or raw.epubcheck_status == "failed":
+        blockers.append("validation_failed")
+    if raw.error_count:
+        blockers.append("validation_errors")
+    if raw.broken_href_error_count:
+        blockers.append("broken_href_errors")
+    if raw.duplicate_id_error_count:
+        blockers.append("duplicate_dom_ids")
+    if raw.reference_cleanup_status == "failed" or raw.reference_visible_junk_detected:
+        blockers.append("reference_cleanup_blocker")
+    if raw.text_cleanup_blocked_count:
+        blockers.append("text_cleanup_blocked")
+    if raw.heading_gate_status == "failed":
+        blockers.append("heading_gate_failed")
+    if raw.toc_gate_status == "failed":
+        blockers.append("toc_gate_failed")
+
+    if raw.warning_count:
+        warnings.append("validation_warnings")
+    if raw.reference_cleanup_status == "passed_with_warnings":
+        warnings.append("reference_cleanup_review")
+    if raw.heading_gate_status == "passed_with_warnings":
+        warnings.append("heading_gate_review")
+    if raw.toc_gate_status == "passed_with_warnings":
+        warnings.append("toc_gate_review")
+    if raw.text_cleanup_review_needed_count:
+        reviews.append("text_cleanup_review_needed")
+    if status == "passed_with_warnings" and not warnings and not reviews:
+        warnings.append("quality_warnings_present")
+
+    severity = "error" if status == "failed" else "warning" if status == "passed_with_warnings" else "success"
+    reasons = tuple(dict.fromkeys([*blockers, *warnings, *reviews]))
+    return WorkflowQualityVerdict(
+        status=status,
+        severity=severity,
+        blocker_count=len(set(blockers)),
+        warning_count=len(set(warnings)),
+        review_count=len(set(reviews)),
+        reasons=reasons,
+    )
+
+
+def build_workflow_quality_report(
+    *,
+    validation: Mapping[str, Any],
+    audit: Mapping[str, Any],
+    quality_report: Mapping[str, Any] | None,
+    symptoms: list[str] | None = None,
+) -> dict[str, Any]:
+    raw_signals = build_raw_workflow_quality_signals(
+        validation=validation,
+        audit=audit,
+        quality_report=quality_report,
+    )
+    verdict = derive_workflow_quality_verdict(
+        validation=validation,
+        audit=audit,
+        quality_report=quality_report,
+        raw_signals=raw_signals,
+    )
+    return {
+        "raw_signals": raw_signals.to_dict(),
+        "verdict": verdict.to_dict(),
+        "symptoms": list(dict.fromkeys(symptoms or [])),
+    }
+
+
 def derive_workflow_snapshot_status(
     *,
     validation: dict[str, Any],
     audit: dict[str, Any],
     quality_report: dict[str, Any] | None,
 ) -> str:
-    statuses = [
-        normalize_status((validation.get("summary") or {}).get("status", "failed")),
-        normalize_status(audit.get("decision", "failed")),
-    ]
-    if quality_report and not _quality_report_validation_is_superseded(
+    return derive_workflow_quality_verdict(
         validation=validation,
+        audit=audit,
         quality_report=quality_report,
-    ):
-        statuses.append(normalize_status(quality_report.get("validation_status", "passed")))
-        warnings = quality_report.get("warnings") or []
-        if warnings and statuses[-1] == "passed":
-            statuses[-1] = "passed_with_warnings"
-    return merge_statuses(statuses)
+    ).status
 
 
 def build_before_after_report(

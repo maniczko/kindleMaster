@@ -272,6 +272,46 @@ class SizeBudgetState:
 
 
 @dataclass(frozen=True)
+class QualityRawSignalsState:
+    warning_count: int = 0
+    high_risk_pages: int = 0
+    high_risk_sections: int = 0
+    heading_review_count: int = 0
+    output_size_bytes: int | None = None
+    target_warn_bytes: int = 0
+    target_hard_bytes: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "warning_count": self.warning_count,
+            "high_risk_pages": self.high_risk_pages,
+            "high_risk_sections": self.high_risk_sections,
+            "heading_review_count": self.heading_review_count,
+            "output_size_bytes": self.output_size_bytes,
+            "target_warn_bytes": self.target_warn_bytes,
+            "target_hard_bytes": self.target_hard_bytes,
+        }
+
+
+@dataclass(frozen=True)
+class QualityVerdictState:
+    status: str
+    severity: str
+    requires_manual_review: bool
+    blocks_download: bool
+    reasons: tuple[str, ...] = field(default_factory=tuple)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "severity": self.severity,
+            "requires_manual_review": self.requires_manual_review,
+            "blocks_download": self.blocks_download,
+            "reasons": list(self.reasons),
+        }
+
+
+@dataclass(frozen=True)
 class QualitySummaryState:
     profile: str = "unknown"
     strategy: str | None = None
@@ -343,6 +383,8 @@ class ConversionQualityState:
     audit: AuditState
     render_budget: RenderBudgetState
     size_budget: SizeBudgetState
+    raw_signals: QualityRawSignalsState
+    verdict: QualityVerdictState
     alerts: tuple[QualityStateAlert, ...] = field(default_factory=tuple)
 
     def to_dict(self) -> dict[str, Any]:
@@ -364,6 +406,8 @@ class ConversionQualityState:
             "audit": self.audit.to_dict(),
             "render_budget": self.render_budget.to_dict(),
             "size_budget": self.size_budget.to_dict(),
+            "raw_signals": self.raw_signals.to_dict(),
+            "verdict": self.verdict.to_dict(),
             "alerts": [alert.to_dict() for alert in self.alerts],
         }
 
@@ -470,6 +514,66 @@ def _build_alerts(
         push("warning", "quality_warning", warning)
 
     return tuple(alerts)
+
+
+def _build_raw_signals_state(
+    *,
+    summary: QualitySummaryState,
+    heading_repair: HeadingRepairState,
+    audit: AuditState,
+    render_budget: RenderBudgetState,
+) -> QualityRawSignalsState:
+    return QualityRawSignalsState(
+        warning_count=audit.warning_count,
+        high_risk_pages=audit.high_risk_pages,
+        high_risk_sections=audit.high_risk_sections,
+        heading_review_count=heading_repair.review,
+        output_size_bytes=summary.output_size_bytes,
+        target_warn_bytes=render_budget.target_warn_bytes,
+        target_hard_bytes=render_budget.target_hard_bytes,
+    )
+
+
+def _build_verdict_state(
+    *,
+    job_status: str,
+    overall_severity: str,
+    quality_available: bool,
+    validation: ValidationState,
+    heading_repair: HeadingRepairState,
+    audit: AuditState,
+    size_budget: SizeBudgetState,
+    alerts: tuple[QualityStateAlert, ...],
+) -> QualityVerdictState:
+    if job_status == FAILED_JOB_STATUS:
+        status = "failed"
+    elif job_status != READY_JOB_STATUS:
+        status = "pending"
+    elif overall_severity == "error":
+        status = "failed"
+    elif overall_severity == "warning":
+        status = "passed_with_warnings"
+    elif quality_available:
+        status = "passed"
+    else:
+        status = "unknown"
+
+    review_count = heading_repair.review + audit.high_risk_pages + audit.high_risk_sections
+    reason_codes = [alert.code for alert in alerts]
+    if validation.status == "failed":
+        reason_codes.append("validation_failed")
+    if size_budget.status == "failed":
+        reason_codes.append("size_budget_failed")
+    if heading_repair.status == "failed":
+        reason_codes.append("heading_repair_failed")
+
+    return QualityVerdictState(
+        status=status,
+        severity=overall_severity,
+        requires_manual_review=review_count > 0,
+        blocks_download=job_status == FAILED_JOB_STATUS or (job_status == READY_JOB_STATUS and overall_severity == "error"),
+        reasons=tuple(dict.fromkeys(reason_codes)),
+    )
 
 
 def assemble_quality_state(request: ConversionQualityStateRequest) -> ConversionQualityState:
@@ -690,6 +794,22 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
         audit=audit,
         size_budget=size_budget,
     )
+    raw_signals = _build_raw_signals_state(
+        summary=summary,
+        heading_repair=heading_repair,
+        audit=audit,
+        render_budget=render_budget,
+    )
+    verdict = _build_verdict_state(
+        job_status=job_status,
+        overall_severity=overall_severity,
+        quality_available=quality_available,
+        validation=validation,
+        heading_repair=heading_repair,
+        audit=audit,
+        size_budget=size_budget,
+        alerts=alerts,
+    )
 
     return ConversionQualityState(
         status=job_status,
@@ -709,6 +829,8 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
         audit=audit,
         render_budget=render_budget,
         size_budget=size_budget,
+        raw_signals=raw_signals,
+        verdict=verdict,
         alerts=alerts,
     )
 

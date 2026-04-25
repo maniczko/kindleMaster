@@ -894,6 +894,7 @@ def _demote_heading_noise(soup: BeautifulSoup) -> bool:
             or _looks_like_promotional_banner(text)
             or _looks_like_figure_caption_heading(text)
             or _looks_like_table_header_heading(text)
+            or _looks_like_navigation_artifact_heading(text)
             or _looks_like_synthetic_section_label(text)
             or (_looks_like_truncated_heading(text) and not _has_supporting_content(node))
         ):
@@ -938,6 +939,24 @@ def _looks_like_figure_caption_heading(text: str) -> bool:
         re.match(r"(?i)^(?:figure|table|diagram|chart|exhibit|photo)\s+[A-Za-z0-9.\-: ]{1,120}$", normalized)
         or re.match(r"(?i)^(?:rys(?:unek|\.)|tabela|diagram|wykres)\s+[A-Za-z0-9.\-: ]{1,120}$", normalized)
     )
+
+
+def _looks_like_navigation_artifact_heading(text: str) -> bool:
+    normalized = _normalize_text(text)
+    lowered = normalized.lower()
+    if not normalized:
+        return True
+    if re.search(r"(?i)\b(?:https?://|www\.)\S+", normalized):
+        return True
+    if re.match(r"(?i)^(?:doi\s*:?\s*)?10\.\d{4,9}/\S+$", normalized):
+        return True
+    if re.match(r"^\d+(?:[,.]\d+)?\s*%$", normalized):
+        return True
+    if re.match(r"(?i)^(?:page|strona)\s*\d+(?:\s*(?:of|z)\s*\d+)?$", normalized):
+        return True
+    if lowered in {"isbn", "issn", "doi"}:
+        return True
+    return False
 
 
 def _extract_inline_heading_prefix(text: str) -> tuple[str, str]:
@@ -1087,6 +1106,8 @@ def _should_include_dense_handbook_heading(
     if not text:
         return False
     if _looks_like_person_credential_heading(text):
+        return False
+    if _looks_like_navigation_artifact_heading(text):
         return False
     if level == 3 and not (_looks_like_numbered_heading(text) or len(text.split()) >= 3):
         return False
@@ -1239,8 +1260,51 @@ def _filter_resolved_manual_review_items(
             continue
         if phase == "structural_integrity" and reason and reason not in structural_issue_reasons:
             continue
+        if _metadata_title_review_resolved_by_toc(item, toc_map):
+            continue
         filtered.append(item)
     return filtered
+
+
+def _metadata_title_review_resolved_by_toc(item: dict[str, Any], toc_map: list[dict[str, Any]]) -> bool:
+    phase = _normalize_text(str(item.get("phase", "") or ""))
+    element = _normalize_text(str(item.get("element", "") or ""))
+    reason = _normalize_text(str(item.get("reason", "") or ""))
+    before = _normalize_text(str(item.get("before", "") or ""))
+    after = _normalize_text(str(item.get("after", "") or ""))
+    if phase not in {"inventory", "metadata_repair"}:
+        return False
+    if element != "dc:title":
+        return False
+    if reason not in {"metadata-heading-conflict", "title-does-not-match-dominant-heading"}:
+        return False
+    if not before or not after or _title_fragments_match(before, after):
+        return False
+
+    clean_entries = [entry for entry in toc_map if not entry.get("issues")]
+    has_title_page_entry = any(
+        _toc_entry_matches_text(entry, before) and _is_title_page_toc_entry(entry)
+        for entry in clean_entries
+    )
+    has_dominant_heading_entry = any(
+        _toc_entry_matches_text(entry, after) and not _is_title_page_toc_entry(entry)
+        for entry in clean_entries
+    )
+    return has_title_page_entry and has_dominant_heading_entry
+
+
+def _toc_entry_matches_text(entry: dict[str, Any], text: str) -> bool:
+    label = _normalize_text(str(entry.get("label", "") or ""))
+    heading_text = _normalize_text(str(entry.get("heading_text", "") or ""))
+    return _title_fragments_match(label, text) or _title_fragments_match(heading_text, text)
+
+
+def _is_title_page_toc_entry(entry: dict[str, Any]) -> bool:
+    target_file = _normalize_text(str(entry.get("target_file", "") or entry.get("file", "") or "")).lower()
+    source = _normalize_text(str(entry.get("source_of_decision", "") or "")).lower()
+    if target_file in {"cover.xhtml", "title.xhtml", "titlepage.xhtml", "title-page.xhtml"}:
+        return True
+    return source == "added" and "cover" in target_file
 
 
 def _bs4_tag_path(node: Tag) -> str:
@@ -1530,6 +1594,8 @@ def _is_suspicious_final_heading_text(text: str) -> bool:
     if _looks_like_promotional_banner(normalized):
         return True
     if _looks_like_table_header_heading(normalized):
+        return True
+    if _looks_like_navigation_artifact_heading(normalized):
         return True
     if _looks_like_synthetic_section_label(normalized):
         return True

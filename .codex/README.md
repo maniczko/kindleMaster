@@ -13,6 +13,13 @@ The project config should carry:
 - repo-specific tool and plugin defaults,
 - the standard operational commands and restrictions for this repository.
 
+Current repo-local defaults:
+- model: `gpt-5.5`
+- reasoning: `xhigh`
+- approval policy: `on-request`
+- multi-agent work: enabled
+- browser verification: Browser Use plugin plus pinned Playwright MCP `@playwright/mcp@0.0.70`
+
 ## Why this is separate from global config
 
 Global config is user-wide.
@@ -77,4 +84,5 @@ python kindlemaster.py workflow verify path\to\input.pdf --run-id <run_id>
 - Do not treat project config as a replacement for `AGENTS.md`.
 - Do not treat this README or `.codex/config.toml` comments as a second policy source.
 - Do not add unverified Codex config keys here just because they are useful conceptually.
+- Do not use floating MCP versions such as `@latest`; pin tool versions and update deliberately.
 - If a repo-standard command changes, update `.codex/config.toml`, `README.md`, and `AGENTS.md` together.

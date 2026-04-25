@@ -26,6 +26,8 @@ and writes `reference_inputs/manifest.json`.
 The per-class size thresholds used by smoke and corpus sweeps live in `reference_inputs/size_budgets.json`.
 Budget lookups normalize both underscored and hyphenated class labels, so `document_like_report` and `document-like-report` resolve to the same policy entry.
 
+Manifest cases may set `release_strict: false` when they are validator or repair probes rather than release-ready publication candidates. In that case a passing source validation plus a failing release audit is reported as `passed_with_warnings`, not as a corpus blocker.
+
 ## Current reference classes
 
 - `ocr_probe`
@@ -62,6 +64,7 @@ python kindlemaster.py smoke --mode full
 
 - Do not treat this corpus as exhaustive proof of correctness.
 - Do not add publication-specific runtime logic because one fixture fails.
+- Keep `release_strict` explicit for EPUB probes that are intentionally not release-ready.
 - If a new failure mode appears repeatedly, add a representative fixture and update the smoke manifest.
 - If a new document class is added to the manifest or corpus sweep, add its size thresholds to `reference_inputs/size_budgets.json` in the same change.
 - Use `python scripts/benchmark_size_budgets.py` to generate candidate thresholds, but review and commit the JSON manually.

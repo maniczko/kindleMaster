@@ -16,6 +16,7 @@ from kindle_semantic_cleanup import (
     REFERENCE_ENTRY_ID_RE,
     REFERENCE_INLINE_ID_RE,
     REFERENCE_URL_START_RE,
+    _canonicalize_language,
     _collect_reference_link_candidates,
     _dedupe_dom_ids,
     _extract_epub,
@@ -28,8 +29,11 @@ from kindle_semantic_cleanup import (
     _normalize_text,
     _normalize_reference_href,
     _pack_epub,
+    _rebuild_toc_entries_from_final_chapters,
     _reference_display_id_from_number,
     _reference_numeric_value,
+    _rewrite_navigation,
+    _snapshot_package_metadata,
     _split_reference_entries_from_text,
     _split_reference_title_and_description,
     _strip_reference_link_candidates,
@@ -141,6 +145,7 @@ class _ReferenceScopeUnit:
     source_ids: list[str]
     url_candidates: list[_ReferenceUrlCandidate]
     unresolved_fragments: list[str]
+    list_parent: str = ""
 
 
 REFERENCE_HEADER_ROW_RE = re.compile(
@@ -288,6 +293,14 @@ def repair_epub_reference_sections(
             records.extend(repair.records)
             sections.extend(repair.sections)
             before_after.extend(repair.before_after)
+
+        if modified_documents:
+            _synchronize_navigation_after_reference_repair(
+                root_dir=root_dir,
+                opf_path=opf_path,
+                chapter_paths=chapter_paths,
+                language_hint=language_hint,
+            )
 
         repaired_epub = _pack_epub(root_dir)
         epubcheck = run_epubcheck(repaired_epub)
@@ -443,6 +456,20 @@ def _repair_reference_document(
         sections=sections,
         before_after=before_after,
     )
+
+
+def _synchronize_navigation_after_reference_repair(
+    *,
+    root_dir: Path,
+    opf_path: Path,
+    chapter_paths: list[Path],
+    language_hint: str | None,
+) -> None:
+    metadata = _snapshot_package_metadata(opf_path)
+    title = _normalize_text(str(metadata.get("title", "") or "")) or "Untitled"
+    language = _canonicalize_language(language_hint or str(metadata.get("language", "") or ""))
+    toc_entries = _rebuild_toc_entries_from_final_chapters(chapter_paths, fallback_entries=[])
+    _rewrite_navigation(root_dir, opf_path, toc_entries=toc_entries, title=title, language=language)
 
 
 def _extract_source_pdf_reference_records(source_pdf_path: str | None) -> dict[str, ReferenceRepairRecord]:
@@ -1258,7 +1285,7 @@ def _build_scope_units(scope_nodes: list[Tag]) -> list[_ReferenceScopeUnit]:
     for node in scope_nodes:
         if node.name in {"ul", "ol"}:
             for item in node.find_all("li", recursive=False):
-                unit = _build_scope_unit(item, position=position)
+                unit = _build_scope_unit(item, position=position, list_parent=node.name)
                 if unit is not None:
                     units.append(unit)
                     position += 1
@@ -1277,7 +1304,7 @@ def _build_scope_units(scope_nodes: list[Tag]) -> list[_ReferenceScopeUnit]:
     return units
 
 
-def _build_scope_unit(node: Tag, *, position: int) -> _ReferenceScopeUnit | None:
+def _build_scope_unit(node: Tag, *, position: int, list_parent: str = "") -> _ReferenceScopeUnit | None:
     text = _node_reference_text(node)
     html_fragment = str(node)
     if not text and not html_fragment:
@@ -1294,6 +1321,7 @@ def _build_scope_unit(node: Tag, *, position: int) -> _ReferenceScopeUnit | None
         source_ids=_extract_inline_reference_ids(descriptor_text or text),
         url_candidates=url_candidates,
         unresolved_fragments=unresolved_fragments,
+        list_parent=list_parent if list_parent in {"ul", "ol"} else "",
     )
 
 
@@ -1821,21 +1849,56 @@ def _render_reference_scope_html(
         f'<section epub:type="bibliography" id="{html.escape(section_id)}" class="reference-bibliography">',
         f'<h{heading_level} id="{html.escape(f"{section_id}-heading")}">{html.escape(section_title)}</h{heading_level}>',
     ]
-    for unit in prefix_units:
-        if unit.node_name in {"h1", "h2", "h3", "h4", "h5", "h6"} and _looks_like_reference_scope_title(unit.text):
-            continue
-        parts.append(unit.html)
+    parts.extend(
+        _render_scope_units_html(
+            unit
+            for unit in prefix_units
+            if not (
+                unit.node_name in {"h1", "h2", "h3", "h4", "h5", "h6"}
+                and _looks_like_reference_scope_title(unit.text)
+            )
+        )
+    )
     parts.append("<ol>")
     for index, record in enumerate(records, start=1):
         parts.append(_render_reference_list_item(record, index=index))
     parts.append("</ol></section>")
-    for unit in suffix_units:
-        if unit.html:
-            parts.append(unit.html)
+    parts.extend(_render_scope_units_html(suffix_units))
 
     fragment_html = "".join(parts)
     visible_junk_detected = sum(len(pattern.findall(fragment_html)) for pattern in REFERENCE_BANNED_OUTPUT_PATTERNS)
     return fragment_html, visible_junk_detected
+
+
+def _render_scope_units_html(units: Any) -> list[str]:
+    parts: list[str] = []
+    open_list = ""
+
+    def close_list() -> None:
+        nonlocal open_list
+        if open_list:
+            parts.append(f"</{open_list}>")
+            open_list = ""
+
+    for unit in units:
+        if not unit.html:
+            continue
+        list_parent = ""
+        if unit.node_name == "li":
+            list_parent = unit.list_parent if unit.list_parent in {"ul", "ol"} else "ul"
+        if list_parent:
+            if open_list != list_parent:
+                close_list()
+                parts.append(f"<{list_parent}>")
+                open_list = list_parent
+            parts.append(unit.html)
+            continue
+
+        close_list()
+        parts.append(unit.html)
+
+    close_list()
+    return parts
 
 
 def _render_reference_list_item(record: ReferenceRepairRecord, *, index: int) -> str:

@@ -12,7 +12,17 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import kindlemaster
-from kindlemaster import BROWSER_TESTS, CORPUS_TESTS, QUICK_TESTS, RELEASE_TESTS, RUNTIME_TESTS, _json_text, _run_bootstrap, _run_convert, _run_tests
+from kindlemaster import (
+    BROWSER_TESTS,
+    CORPUS_TESTS,
+    QUICK_TESTS,
+    RELEASE_TESTS,
+    RUNTIME_TESTS,
+    _json_text,
+    _run_bootstrap,
+    _run_convert,
+    _run_tests,
+)
 from premium_tools import detect_toolchain
 
 
@@ -33,22 +43,38 @@ class KindleMasterEntrypointTests(unittest.TestCase):
         self.assertIn("• poprawa jakości", rendered)
 
     def test_run_convert_writes_json_report_for_pdf(self) -> None:
-        input_path = Path("reference_inputs/pdf/ocr_probe.pdf").resolve()
         with tempfile.TemporaryDirectory() as temp_dir:
+            input_path = Path(temp_dir) / "probe.pdf"
+            input_path.write_bytes(b"%PDF-1.4\n% KindleMaster test probe\n")
             output_path = Path(temp_dir) / "probe.epub"
             report_path = Path(temp_dir) / "probe.json"
-            with contextlib.redirect_stdout(io.StringIO()):
-                exit_code = _run_convert(
-                    input_path=str(input_path),
-                    output_path=str(output_path),
-                    language="pl",
-                    profile="auto-premium",
-                    heading_repair=False,
-                    report_json=str(report_path),
-                )
+            fake_outcome = SimpleNamespace(
+                epub_bytes=b"epub-bytes",
+                result={
+                    "source_type": "pdf",
+                    "quality_report": {"validation_status": "passed"},
+                    "document_summary": {"title": "Probe"},
+                },
+                heading_repair_report={"status": "skipped"},
+            )
+            with patch("app_runtime_services.run_document_conversion", return_value=fake_outcome) as conversion_mock:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    exit_code = _run_convert(
+                        input_path=str(input_path),
+                        output_path=str(output_path),
+                        language="pl",
+                        profile="auto-premium",
+                        heading_repair=False,
+                        report_json=str(report_path),
+                    )
             self.assertEqual(exit_code, 0)
             self.assertTrue(output_path.exists())
             self.assertTrue(report_path.exists())
+            self.assertEqual(output_path.read_bytes(), b"epub-bytes")
+            conversion_mock.assert_called_once()
+            request = conversion_mock.call_args.args[0]
+            self.assertEqual(request.source_type, "pdf")
+            self.assertEqual(request.language, "pl")
             payload = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["source_type"], "pdf")
             self.assertIn("quality_report", payload)
@@ -58,11 +84,14 @@ class KindleMasterEntrypointTests(unittest.TestCase):
         self.assertNotIn("test_browser_polling_e2e.py", QUICK_TESTS)
         self.assertNotIn("test_browser_privacy_diagnostics.py", QUICK_TESTS)
         self.assertNotIn("test_runtime_waitress_smoke.py", QUICK_TESTS)
+        self.assertNotIn("test_skill_contracts.py", RELEASE_TESTS)
+        self.assertNotIn("test_premium_corpus_smoke.py", RELEASE_TESTS)
         self.assertIn("test_browser_polling_runtime_harness.py", BROWSER_TESTS)
         self.assertIn("test_browser_polling_e2e.py", RUNTIME_TESTS)
         self.assertIn("test_browser_privacy_diagnostics.py", RUNTIME_TESTS)
         self.assertIn("test_runtime_waitress_smoke.py", RUNTIME_TESTS)
         self.assertIn("test_corpus_gate.py", CORPUS_TESTS)
+        self.assertIn("test_premium_corpus_smoke.py", CORPUS_TESTS)
 
     def test_browser_harness_file_does_not_import_playwright(self) -> None:
         harness_source = Path("test_browser_polling_runtime_harness.py").read_text(encoding="utf-8")
@@ -146,25 +175,40 @@ class KindleMasterEntrypointTests(unittest.TestCase):
             }
         }
 
+        bounded_results = []
+
+        def fake_run(command, *, cwd, label, timeout_seconds):
+            bounded_results.append((label, command, timeout_seconds))
+            return {
+                "label": label,
+                "command": list(command),
+                "status": "passed",
+                "returncode": 0,
+                "timeout_seconds": timeout_seconds,
+                "elapsed_seconds": 0.01,
+            }
+
         with patch("premium_tools.detect_toolchain", return_value=toolchain):
             with patch("kindlemaster._print_json") as print_json:
-                with patch("kindlemaster.subprocess.run", return_value=SimpleNamespace(returncode=0)) as run_mock:
-                    exit_code = _run_tests("release")
+                with patch("kindlemaster._run_bounded_command", side_effect=fake_run):
+                    with patch("kindlemaster._load_corpus_gate_summary", return_value={"overall_status": "passed"}):
+                        exit_code = _run_tests("release")
 
         self.assertEqual(exit_code, 0)
-        executed_commands = [call.args[0] for call in run_mock.call_args_list]
+        executed_commands = [command for _, command, _ in bounded_results]
         self.assertEqual(
             executed_commands,
             [
                 [sys.executable, "-m", "unittest", *RELEASE_TESTS],
-                [sys.executable, "kindlemaster.py", "smoke", "--mode", "quick"],
-                [sys.executable, "kindlemaster.py", "test", "--suite", "corpus"],
+                [sys.executable, "-m", "unittest", *CORPUS_TESTS],
+                [sys.executable, "kindlemaster.py", "corpus", "--proof-profile", "standard"],
             ],
         )
         print_json.assert_called_once()
         payload = print_json.call_args.args[0]
         self.assertEqual(payload["suite"], "release")
-        self.assertEqual(payload["status"], "degraded")
+        self.assertEqual(payload["status"], "passed_with_warnings")
+        self.assertEqual(payload["warning_reasons"], ["optional_followups_skipped"])
 
     def test_run_tests_corpus_executes_unittests_then_corpus_gate(self) -> None:
         with patch("kindlemaster.subprocess.run", return_value=SimpleNamespace(returncode=0)) as run_mock:
@@ -179,6 +223,183 @@ class KindleMasterEntrypointTests(unittest.TestCase):
                 [sys.executable, "kindlemaster.py", "corpus"],
             ],
         )
+
+    def test_doctor_command_routes_to_toolchain_detection(self) -> None:
+        payload = {"verification_surfaces": {"quick": {"status": "supported"}}}
+        with patch("premium_tools.detect_toolchain", return_value=payload) as doctor_mock:
+            with patch.object(kindlemaster, "_print_json") as print_mock:
+                with patch.object(sys, "argv", ["kindlemaster.py", "doctor"]):
+                    exit_code = kindlemaster.main()
+
+        self.assertEqual(exit_code, 0)
+        doctor_mock.assert_called_once()
+        print_mock.assert_called_once_with(payload)
+
+    def test_prepare_reference_inputs_command_routes_to_bootstrap_script(self) -> None:
+        payload = {"manifest": "reference_inputs/manifest.json", "case_count": 3}
+        with patch("scripts.prepare_reference_inputs.prepare_reference_inputs", return_value=payload) as prepare_mock:
+            with patch.object(kindlemaster, "_print_json") as print_mock:
+                with patch.object(sys, "argv", ["kindlemaster.py", "prepare-reference-inputs"]):
+                    exit_code = kindlemaster.main()
+
+        self.assertEqual(exit_code, 0)
+        prepare_mock.assert_called_once()
+        print_mock.assert_called_once_with(payload)
+
+    def test_smoke_command_routes_to_runner_and_preserves_filters(self) -> None:
+        payload = {"summary": {"overall_status": "passed"}}
+        with patch("scripts.run_smoke_tests.run_smoke_tests", return_value=payload) as smoke_mock:
+            with patch.object(kindlemaster, "_print_json") as print_mock:
+                with patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "kindlemaster.py",
+                        "smoke",
+                        "--mode",
+                        "full",
+                        "--manifest",
+                        "reference_inputs/manifest.json",
+                        "--output-dir",
+                        "out",
+                        "--reports-dir",
+                        "reports",
+                        "--case",
+                        "ocr",
+                    ],
+                ):
+                    exit_code = kindlemaster.main()
+
+        self.assertEqual(exit_code, 0)
+        smoke_mock.assert_called_once_with(
+            manifest_path="reference_inputs/manifest.json",
+            mode="full",
+            output_dir="out",
+            reports_dir="reports",
+            case_filters=["ocr"],
+        )
+        print_mock.assert_called_once_with(payload)
+
+    def test_validate_command_returns_failure_for_failed_validator_payload(self) -> None:
+        payload = {"overall_status": "failed", "reports": []}
+        with patch("scripts.run_epub_validators.run_epub_validators", return_value=payload) as validate_mock:
+            with patch.object(kindlemaster, "_print_json") as print_mock:
+                with patch.object(
+                    sys,
+                    "argv",
+                    ["kindlemaster.py", "validate", "a.epub", "b.epub", "--reports-dir", "reports/validators"],
+                ):
+                    exit_code = kindlemaster.main()
+
+        self.assertEqual(exit_code, 1)
+        validate_mock.assert_called_once_with(["a.epub", "b.epub"], reports_dir="reports/validators")
+        print_mock.assert_called_once_with(payload)
+
+    def test_audit_command_builds_release_audit_invocation(self) -> None:
+        with patch("kindlemaster.subprocess.run", return_value=SimpleNamespace(returncode=0)) as run_mock:
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "kindlemaster.py",
+                    "audit",
+                    "book.epub",
+                    "--output-dir",
+                    "out",
+                    "--reports-dir",
+                    "reports",
+                    "--language",
+                    "pl",
+                    "--title",
+                    "Title",
+                    "--author",
+                    "Author",
+                    "--description",
+                    "Desc",
+                    "--publication-profile",
+                    "book",
+                ],
+            ):
+                exit_code = kindlemaster.main()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            run_mock.call_args.args[0],
+            [
+                sys.executable,
+                "scripts/run_release_audit.py",
+                "book.epub",
+                "--output-dir",
+                "out",
+                "--reports-dir",
+                "reports",
+                "--language",
+                "pl",
+                "--title",
+                "Title",
+                "--author",
+                "Author",
+                "--description",
+                "Desc",
+                "--publication-profile",
+                "book",
+            ],
+        )
+
+    def test_workflow_commands_route_to_workflow_runner(self) -> None:
+        with patch("workflow_runner.run_workflow_baseline", return_value={"status": "baseline"}) as baseline_mock:
+            with patch("workflow_runner.run_workflow_verify", return_value={"status": "passed_with_warnings"}) as verify_mock:
+                with patch.object(kindlemaster, "_print_json") as print_mock:
+                    with patch.object(
+                        sys,
+                        "argv",
+                        [
+                            "kindlemaster.py",
+                            "workflow",
+                            "baseline",
+                            "input.pdf",
+                            "--change-area",
+                            "corpus",
+                            "--reports-root",
+                            "reports/workflows",
+                            "--output-root",
+                            "output/workflows",
+                        ],
+                    ):
+                        baseline_exit = kindlemaster.main()
+                    with patch.object(
+                        sys,
+                        "argv",
+                        [
+                            "kindlemaster.py",
+                            "workflow",
+                            "verify",
+                            "input.pdf",
+                            "--run-id",
+                            "run-1",
+                            "--reports-root",
+                            "reports/workflows",
+                            "--output-root",
+                            "output/workflows",
+                        ],
+                    ):
+                        verify_exit = kindlemaster.main()
+
+        self.assertEqual(baseline_exit, 0)
+        self.assertEqual(verify_exit, 0)
+        baseline_mock.assert_called_once_with(
+            "input.pdf",
+            change_area="corpus",
+            reports_root="reports/workflows",
+            output_root="output/workflows",
+        )
+        verify_mock.assert_called_once_with(
+            "input.pdf",
+            run_id="run-1",
+            reports_root="reports/workflows",
+            output_root="output/workflows",
+        )
+        self.assertEqual(print_mock.call_count, 2)
 
     def test_run_tests_browser_reports_unavailable_when_surface_missing(self) -> None:
         toolchain = {
@@ -240,22 +461,73 @@ class KindleMasterEntrypointTests(unittest.TestCase):
             }
         }
 
+        bounded_results = []
+
+        def fake_run(command, *, cwd, label, timeout_seconds):
+            bounded_results.append((label, command, timeout_seconds))
+            return {
+                "label": label,
+                "command": list(command),
+                "status": "passed",
+                "returncode": 0,
+                "timeout_seconds": timeout_seconds,
+                "elapsed_seconds": 0.01,
+            }
+
         with patch("premium_tools.detect_toolchain", return_value=toolchain):
-            with patch("kindlemaster.subprocess.run", return_value=SimpleNamespace(returncode=0)) as run_mock:
-                exit_code = _run_tests("release")
+            with patch("kindlemaster._print_json") as print_json:
+                with patch("kindlemaster._run_bounded_command", side_effect=fake_run):
+                    with patch("kindlemaster._load_corpus_gate_summary", return_value={"overall_status": "passed_with_warnings"}):
+                        exit_code = _run_tests("release")
 
         self.assertEqual(exit_code, 0)
-        executed_commands = [call.args[0] for call in run_mock.call_args_list]
+        executed_commands = [command for _, command, _ in bounded_results]
         self.assertEqual(
             executed_commands,
             [
                 [sys.executable, "-m", "unittest", *RELEASE_TESTS],
-                [sys.executable, "kindlemaster.py", "smoke", "--mode", "quick"],
-                [sys.executable, "kindlemaster.py", "test", "--suite", "corpus"],
+                [sys.executable, "-m", "unittest", *CORPUS_TESTS],
+                [sys.executable, "kindlemaster.py", "corpus", "--proof-profile", "standard"],
                 [sys.executable, "-m", "unittest", *BROWSER_TESTS],
                 [sys.executable, "-m", "unittest", *RUNTIME_TESTS],
             ],
         )
+        payload = print_json.call_args.args[0]
+        self.assertEqual(payload["status"], "passed_with_warnings")
+        self.assertEqual(payload["warning_reasons"], ["corpus_gate_passed_with_warnings"])
+
+    def test_run_tests_release_stops_on_bounded_step_timeout(self) -> None:
+        toolchain = {
+            "verification_surfaces": {
+                "release": {
+                    "status": "supported",
+                    "notes": ["bounded release"],
+                    "optional_followups": [],
+                }
+            }
+        }
+
+        def fake_run(command, *, cwd, label, timeout_seconds):
+            return {
+                "label": label,
+                "command": list(command),
+                "status": "timed_out",
+                "returncode": kindlemaster.RELEASE_TIMEOUT_RETURN_CODE,
+                "timeout_seconds": timeout_seconds,
+                "elapsed_seconds": timeout_seconds,
+            }
+
+        with patch("premium_tools.detect_toolchain", return_value=toolchain):
+            with patch("kindlemaster._print_json") as print_json:
+                with patch("kindlemaster._run_bounded_command", side_effect=fake_run):
+                    exit_code = _run_tests("release")
+
+        self.assertEqual(exit_code, 1)
+        payload = print_json.call_args.args[0]
+        self.assertEqual(payload["suite"], "release")
+        self.assertEqual(payload["status"], "failed")
+        self.assertEqual(payload["failed_step"], "release-units")
+        self.assertEqual(payload["steps"][0]["status"], "timed_out")
 
     def test_run_bootstrap_runtime_only_keeps_dev_requirements_out_of_install_plan(self) -> None:
         with patch("kindlemaster.subprocess.run", return_value=SimpleNamespace(returncode=0)) as run_mock:
@@ -325,6 +597,12 @@ class KindleMasterEntrypointTests(unittest.TestCase):
 
         self.assertIn("Control-plane authority map:", codex_config_text)
         self.assertIn("generated output/ and reports/ artifacts are derived evidence", codex_config_text)
+        self.assertIn('model = "gpt-5.5"', codex_config_text)
+        self.assertIn('model_reasoning_effort = "xhigh"', codex_config_text)
+        self.assertIn('approval_policy = "on-request"', codex_config_text)
+        self.assertIn('@playwright/mcp@0.0.70', codex_config_text)
+        self.assertIn('[plugins."browser-use@openai-bundled"]', codex_config_text)
+        self.assertNotIn("@playwright/mcp@latest", codex_config_text)
 
 
 if __name__ == "__main__":

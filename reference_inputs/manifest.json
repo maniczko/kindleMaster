@@ -87,6 +87,7 @@
       "input_type": "epub",
       "language": "pl",
       "quick_smoke": true,
+      "release_strict": false,
       "source": "example/scan_probe_premium.epub",
       "target": "reference_inputs/epub/scan_probe.epub",
       "notes": "Small EPUB for fast validator and repair smoke.",
@@ -131,7 +132,7 @@
       "generator": "list_table_image",
       "source_path": "<generated:list_table_image>",
       "target_path": "reference_inputs/docx/list_table_image.docx",
-      "size_bytes": 38820
+      "size_bytes": 38819
     },
     {
       "id": "no_heading_document_docx",

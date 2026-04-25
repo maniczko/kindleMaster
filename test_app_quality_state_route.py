@@ -109,6 +109,9 @@ class AppQualityStateRouteTests(unittest.TestCase):
         self.assertEqual(payload["quality_state"]["download_url"], "/convert/download/quality-ready")
         self.assertEqual(payload["quality_state"]["summary"]["profile"], "book_reflow")
         self.assertEqual(payload["quality_state"]["summary"]["output_size_bytes"], 8192)
+        self.assertEqual(payload["quality_state"]["raw_signals"]["warning_count"], 1)
+        self.assertEqual(payload["quality_state"]["verdict"]["status"], "passed_with_warnings")
+        self.assertFalse(payload["quality_state"]["verdict"]["blocks_download"])
         self.assertEqual(
             [alert["code"] for alert in payload["quality_state"]["alerts"]],
             ["size_budget_warning", "quality_warning"],

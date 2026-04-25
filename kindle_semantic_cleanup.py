@@ -1148,6 +1148,10 @@ def finalize_epub_for_kindle(
             if not spine_order:
                 spine_order = [path.name for path in chapter_list if path.name != "cover.xhtml"]
 
+            for chapter_path in chapter_list:
+                if chapter_path.name == "cover.xhtml":
+                    continue
+                _normalize_chapter_dom_ids(chapter_path)
             _strip_unresolved_fragment_links(processed.keys())
             _audit_diagram_presentation(opf_path.parent, language=language)
             _write_default_css(root_dir)
@@ -2785,6 +2789,9 @@ def _process_chapter(
 
         if block_type == "table":
             close_list_if_needed()
+            if block.get("html"):
+                body_parts.append(block["html"])
+                continue
             class_attr = f' class="{html.escape(block["class_name"])}"' if block.get("class_name") else ""
             table_parts = [f"<table{class_attr}>"]
             headers = block.get("headers") or []
@@ -2865,6 +2872,20 @@ def _extract_logical_blocks(
             figure_html = _normalize_figure_html(node)
             if figure_html:
                 blocks.append({"type": "figure", "html": figure_html})
+            continue
+
+        if node.name == "table":
+            table_html = _normalize_existing_table_html(node)
+            if table_html:
+                blocks.append(
+                    {
+                        "type": "table",
+                        "text": plain_text,
+                        "html": table_html,
+                        "class_name": _append_class_name(" ".join(_class_list(node)), "semantic-table"),
+                        "is_top": is_top,
+                    }
+                )
             continue
 
         if node.name in {"ul", "ol"}:
@@ -6175,6 +6196,82 @@ def _normalize_figure_html(node: Tag) -> str:
     return "".join(figure_html)
 
 
+def _normalize_existing_table_html(node: Tag) -> str:
+    fragment = BeautifulSoup(str(node), "xml")
+    table = fragment.find("table")
+    if table is None:
+        return ""
+
+    allowed_tags = {
+        "table",
+        "thead",
+        "tbody",
+        "tfoot",
+        "tr",
+        "th",
+        "td",
+        "p",
+        "br",
+        "strong",
+        "em",
+        "b",
+        "i",
+        "a",
+        "img",
+        "span",
+        "ul",
+        "ol",
+        "li",
+        "code",
+        "sup",
+        "sub",
+    }
+    attrs_by_tag = {
+        "table": {"class"},
+        "th": {"class", "colspan", "rowspan", "scope"},
+        "td": {"class", "colspan", "rowspan"},
+        "a": {"href", "title"},
+        "img": {"src", "alt", "class"},
+        "span": {"class"},
+        "ul": {"class"},
+        "ol": {"class"},
+        "li": {"class"},
+    }
+
+    for tag in list(table.find_all(True)):
+        if tag.name not in allowed_tags:
+            tag.unwrap()
+            continue
+        allowed_attrs = attrs_by_tag.get(tag.name, set())
+        next_attrs: dict[str, str | list[str]] = {}
+        for attr_name, attr_value in list(tag.attrs.items()):
+            if attr_name not in allowed_attrs:
+                continue
+            if attr_name in {"href", "src"}:
+                uri = str(attr_value or "").strip()
+                if not uri or re.match(r"(?i)^(?:javascript|data):", uri):
+                    continue
+                next_attrs[attr_name] = uri
+                continue
+            if attr_name in {"colspan", "rowspan"}:
+                numeric = str(attr_value or "").strip()
+                if numeric.isdigit():
+                    next_attrs[attr_name] = numeric
+                continue
+            if attr_name == "class":
+                classes = _normalized_classes(attr_value, fallback=[])
+                if classes:
+                    next_attrs[attr_name] = classes
+                continue
+            text_value = _normalize_text(str(attr_value or ""))
+            if text_value:
+                next_attrs[attr_name] = text_value
+        tag.attrs = next_attrs
+
+    table["class"] = _normalized_classes(table.get("class"), fallback=["semantic-table"])
+    return str(table)
+
+
 def _inject_problem_solution_links(
     xhtml: str,
     *,
@@ -8011,8 +8108,9 @@ def _ensure_primary_heading(chapter_path: Path, *, fallback_title: str) -> None:
             heading.clear()
             heading.string = desired_title
             changed = True
-        if heading.get("id", "") != desired_id:
-            heading["id"] = desired_id
+        unique_id = _unique_dom_id(desired_id, _collect_used_dom_ids(soup, skip_node=heading), fallback="section")
+        if heading.get("id", "") != unique_id:
+            heading["id"] = unique_id
             changed = True
 
     if title_node is not None:
@@ -9804,7 +9902,7 @@ def _normalize_list_item_html(node: Tag | None) -> str:
             if repaired != str(text_node):
                 text_node.replace_with(repaired)
     normalized = "".join(str(child) for child in wrapper.contents).strip()
-    return normalized or _sanitize_inline_html(fragment_html)
+    return _sanitize_inline_html(normalized or fragment_html)
 
 
 def _inner_html(node: Tag | None) -> str:
@@ -9847,6 +9945,17 @@ def _slugify(text: str) -> str:
     return slug or "section"
 
 
+def _collect_used_dom_ids(scope: Tag | BeautifulSoup, *, skip_node: Tag | None = None) -> set[str]:
+    used_ids: set[str] = set()
+    for node in scope.find_all(attrs={"id": True}):
+        if skip_node is not None and node is skip_node:
+            continue
+        node_id = node.get("id", "")
+        if node_id:
+            used_ids.add(node_id)
+    return used_ids
+
+
 def _unique_dom_id(base: str, used_ids: set[str], *, fallback: str) -> str:
     seed = _slugify(base or fallback) or _slugify(fallback)
     candidate = seed
@@ -9858,8 +9967,9 @@ def _unique_dom_id(base: str, used_ids: set[str], *, fallback: str) -> str:
     return candidate
 
 
-def _dedupe_dom_ids(scope: Tag) -> None:
+def _dedupe_dom_ids(scope: Tag) -> bool:
     used_ids: set[str] = set()
+    changed = False
     for node in scope.find_all(attrs={"id": True}):
         current_id = node.get("id", "")
         if not current_id:
@@ -9868,6 +9978,19 @@ def _dedupe_dom_ids(scope: Tag) -> None:
             used_ids.add(current_id)
             continue
         node["id"] = _unique_dom_id(current_id, used_ids, fallback="anchor")
+        changed = True
+    return changed
+
+
+def _normalize_chapter_dom_ids(chapter_path: Path) -> None:
+    xhtml = chapter_path.read_text(encoding="utf-8")
+    soup = BeautifulSoup(xhtml, "xml")
+    body = soup.find("body")
+    if body is None:
+        return
+    if not _dedupe_dom_ids(body):
+        return
+    chapter_path.write_text(_serialize_soup_document(soup), encoding="utf-8")
 
 
 def _collect_nav_entries_from_heading_candidates(

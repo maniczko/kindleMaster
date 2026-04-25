@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 import sys
+import time
 from typing import Any
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -49,6 +50,7 @@ def _resolve_case_filters(
 def _build_corpus_gate_markdown(payload: dict[str, Any]) -> str:
     smoke = payload["smoke"]
     premium = payload["premium_corpus"]
+    benchmark = payload.get("benchmark") or {}
     lines = [
         "# KindleMaster Corpus Gate",
         "",
@@ -65,6 +67,14 @@ def _build_corpus_gate_markdown(payload: dict[str, Any]) -> str:
         f"- Premium grade counts: `{json.dumps((premium.get('overall') or {}).get('grade_counts', {}), ensure_ascii=False)}`",
         f"- Premium blockers: `{json.dumps((premium.get('overall') or {}).get('blocker_counts', {}), ensure_ascii=False)}`",
         f"- Premium warnings: `{json.dumps((premium.get('overall') or {}).get('warning_counts', {}), ensure_ascii=False)}`",
+        "",
+        "## Benchmark",
+        "",
+        f"- Total elapsed: `{benchmark.get('total_elapsed_seconds', 0)}` seconds",
+        f"- Smoke elapsed: `{benchmark.get('smoke_elapsed_seconds', 0)}` seconds",
+        f"- Premium elapsed: `{benchmark.get('premium_elapsed_seconds', 0)}` seconds",
+        f"- Classes covered: `{benchmark.get('class_count', 0)}`",
+        f"- Slowest smoke cases: `{json.dumps(benchmark.get('slowest_smoke_cases', []), ensure_ascii=False)}`",
         "",
         "## Reports",
         "",
@@ -88,6 +98,7 @@ def run_corpus_gate(
     smoke_case_filters: list[str] | None = None,
     premium_case_filters: list[str] | None = None,
 ) -> dict[str, Any]:
+    gate_started = time.perf_counter()
     resolved_output_root = Path(output_root).resolve()
     resolved_reports_root = Path(reports_root).resolve()
     resolved_output_root.mkdir(parents=True, exist_ok=True)
@@ -105,6 +116,7 @@ def run_corpus_gate(
 
     smoke_output_dir = resolved_output_root / "smoke"
     smoke_reports_dir = resolved_reports_root / "smoke"
+    smoke_started = time.perf_counter()
     smoke = run_smoke_tests(
         manifest_path=manifest_path,
         mode="full",
@@ -112,9 +124,11 @@ def run_corpus_gate(
         reports_dir=smoke_reports_dir,
         case_filters=resolved_smoke_filters,
     )
+    smoke_elapsed = time.perf_counter() - smoke_started
 
     premium_json_path = Path(premium_output_json) if premium_output_json is not None else resolved_reports_root / "premium_corpus_smoke_report.json"
     premium_md_path = Path(premium_output_md) if premium_output_md is not None else resolved_reports_root / "premium_corpus_smoke_report.md"
+    premium_started = time.perf_counter()
     premium = run_premium_corpus_smoke(
         manifest_path=manifest_path,
         output_json=premium_json_path,
@@ -122,6 +136,7 @@ def run_corpus_gate(
         case_filters=resolved_premium_filters,
         progress=False,
     )
+    premium_elapsed = time.perf_counter() - premium_started
     premium_status = premium.get("overall_status")
     if not premium_status:
         premium_status = (premium.get("overall") or {}).get("overall_status", "failed")
@@ -135,6 +150,13 @@ def run_corpus_gate(
         "proof_profile": proof_profile,
         "smoke": smoke,
         "premium_corpus": premium,
+        "benchmark": _build_gate_benchmark(
+            smoke=smoke,
+            premium=premium,
+            total_elapsed_seconds=time.perf_counter() - gate_started,
+            smoke_elapsed_seconds=smoke_elapsed,
+            premium_elapsed_seconds=premium_elapsed,
+        ),
         "artifacts": {
             "smoke_json": str(smoke_reports_dir / "smoke_full.json"),
             "smoke_md": str(smoke_reports_dir / "smoke_full.md"),
@@ -151,6 +173,32 @@ def run_corpus_gate(
         encoding="utf-8",
     )
     return payload
+
+
+def _build_gate_benchmark(
+    *,
+    smoke: dict[str, Any],
+    premium: dict[str, Any],
+    total_elapsed_seconds: float,
+    smoke_elapsed_seconds: float,
+    premium_elapsed_seconds: float,
+) -> dict[str, Any]:
+    smoke_benchmark = ((smoke.get("summary") or {}).get("benchmark") or {})
+    premium_classes = {
+        str(row.get("document_class", "") or "")
+        for row in premium.get("cases", [])
+        if row.get("document_class")
+    }
+    smoke_classes = set(smoke_benchmark.get("classes") or [])
+    return {
+        "total_elapsed_seconds": round(float(total_elapsed_seconds), 4),
+        "smoke_elapsed_seconds": round(float(smoke_elapsed_seconds), 4),
+        "premium_elapsed_seconds": round(float(premium_elapsed_seconds), 4),
+        "class_count": len(smoke_classes | premium_classes),
+        "classes": sorted(smoke_classes | premium_classes),
+        "slowest_smoke_cases": list(smoke_benchmark.get("slowest_cases") or [])[:5],
+        "premium_converted_case_count": (premium.get("overall") or {}).get("converted_case_count", 0),
+    }
 
 
 def main() -> int:

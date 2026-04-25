@@ -8,6 +8,7 @@ import tempfile
 import textwrap
 from pathlib import Path
 from typing import Any
+import zipfile
 
 import fitz
 from docx import Document
@@ -86,6 +87,7 @@ REFERENCE_CASES = [
         "input_type": "epub",
         "language": "pl",
         "quick_smoke": True,
+        "release_strict": False,
         "source": "example/scan_probe_premium.epub",
         "target": "reference_inputs/epub/scan_probe.epub",
         "notes": "Small EPUB for fast validator and repair smoke.",
@@ -148,15 +150,19 @@ def prepare_reference_inputs(*, root_dir: str | Path = ".") -> dict[str, Any]:
                 _generate_pdf_fixture(generator, target)
             else:  # pragma: no cover - defensive guard
                 raise ValueError(f"Unsupported generated fixture type: {case['input_type']}")
+            source_path_label = f"<generated:{case['generator']}>"
         else:
             source = resolved_root / case["source"]
-            if not source.exists():
-                raise FileNotFoundError(source)
-            shutil.copy2(source, target)
+            if source.exists():
+                shutil.copy2(source, target)
+                source_path_label = case["source"]
+            else:
+                _generate_source_surrogate_fixture(case, target)
+                source_path_label = f"<generated-fallback:{case['id']}>"
 
         prepared_case = {
             **case,
-            "source_path": case["source"] if "source" in case else f"<generated:{case['generator']}>",
+            "source_path": source_path_label,
             "target_path": case["target"],
             "size_bytes": target.stat().st_size,
         }
@@ -197,6 +203,140 @@ def _generate_pdf_fixture(generator: str, target_path: Path) -> None:
         _build_ocr_stress_scan_pdf(target_path)
         return
     raise ValueError(f"Unknown PDF fixture generator: {generator}")
+
+
+def _generate_source_surrogate_fixture(case: dict[str, Any], target_path: Path) -> None:
+    input_type = str(case.get("input_type", "")).lower()
+    if input_type == "pdf":
+        _generate_source_surrogate_pdf(case, target_path)
+        return
+    if input_type == "epub":
+        _generate_source_surrogate_epub(case, target_path)
+        return
+    raise FileNotFoundError(case.get("source", target_path))
+
+
+def _generate_source_surrogate_pdf(case: dict[str, Any], target_path: Path) -> None:
+    document = fitz.open()
+    title = _case_title(case)
+    document.set_metadata(
+        {
+            "title": title,
+            "author": "KindleMaster CI",
+            "subject": f"Generated fallback for {case.get('id', 'reference case')}",
+            "creator": "KindleMaster prepare_reference_inputs",
+            "producer": "PyMuPDF",
+        }
+    )
+    page_count = 3 if case.get("document_class") in {"dense_business_guide", "diagram_training_book", "magazine_layout"} else 1
+    try:
+        for index in range(1, page_count + 1):
+            page = document.new_page(width=595, height=842)
+            _draw_pdf_header(page, "KindleMaster generated fallback")
+            page.insert_textbox(
+                fitz.Rect(64, 96, 531, 160),
+                title if index == 1 else f"{title} - section {index}",
+                fontsize=20,
+                fontname="helv",
+                color=(0.10, 0.12, 0.16),
+            )
+            page.insert_textbox(
+                fitz.Rect(64, 170, 531, 420),
+                _surrogate_body_text(case, index=index),
+                fontsize=11,
+                fontname="helv",
+                color=(0.15, 0.17, 0.20),
+                lineheight=1.25,
+            )
+            _draw_pdf_footer(page, index, page_count)
+        document.save(str(target_path))
+    finally:
+        document.close()
+
+
+def _generate_source_surrogate_epub(case: dict[str, Any], target_path: Path) -> None:
+    title = _case_title(case)
+    language = str(case.get("language", "en") or "en")
+    chapter = f"""<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>{_xml_escape(title)}</title></head>
+  <body>
+    <h1 id="intro">{_xml_escape(title)}</h1>
+    <p>{_xml_escape(_surrogate_body_text(case, index=1))}</p>
+  </body>
+</html>
+"""
+    nav = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+  <head><title>Navigation</title></head>
+  <body><nav epub:type="toc" id="toc"><ol><li><a href="chapter_001.xhtml#intro">Intro</a></li></ol></nav></body>
+</html>
+"""
+    opf = f"""<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book-id">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="book-id">kindlemaster-generated-{_slug(str(case.get('id', 'fixture')))}</dc:identifier>
+    <dc:title>{_xml_escape(title)}</dc:title>
+    <dc:creator>KindleMaster CI</dc:creator>
+    <dc:language>{_xml_escape(language)}</dc:language>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="chapter-001" href="chapter_001.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="chapter-001"/>
+  </spine>
+</package>
+"""
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(target_path, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        archive.writestr(
+            "META-INF/container.xml",
+            """<?xml version="1.0" encoding="utf-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="EPUB/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>
+""",
+        )
+        archive.writestr("EPUB/content.opf", opf)
+        archive.writestr("EPUB/nav.xhtml", nav)
+        archive.writestr("EPUB/chapter_001.xhtml", chapter)
+
+
+def _case_title(case: dict[str, Any]) -> str:
+    label = str(case.get("id") or case.get("document_class") or "reference input").replace("_", " ")
+    return label.title()
+
+
+def _surrogate_body_text(case: dict[str, Any], *, index: int) -> str:
+    document_class = str(case.get("document_class", "reference")).replace("_", " ")
+    notes = str(case.get("notes", "") or "Generated fixture for KindleMaster verification.")
+    return "\n".join(
+        [
+            f"This generated fallback covers the {document_class} reference class for clean CI checkouts.",
+            notes,
+            f"Section {index} includes stable prose, predictable headings, and validation-safe markup.",
+            "The full local fixture is used automatically when the original source file is present.",
+        ]
+    )
+
+
+def _slug(value: str) -> str:
+    return "".join(ch.lower() if ch.isalnum() else "-" for ch in value).strip("-") or "fixture"
+
+
+def _xml_escape(value: str) -> str:
+    return (
+        value.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&apos;")
+    )
 
 
 def _build_document_like_report_pdf() -> fitz.Document:

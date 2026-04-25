@@ -35,7 +35,7 @@ The GitHub READY workflow defines the external compatibility policy for CI:
 | `ready-release` | Ubuntu | Python 3.14 | Mirrors `python kindlemaster.py test --suite release` |
 | `ready-gate` | Ubuntu | n/a | Stable branch-protection aggregate over governance, quick, and release lanes |
 
-Governance CI runs `ruff` with correctness-only rules (`E9,F63,F7,F82`) over governance/control-plane files, `pip check`, one `pip-audit` dependency audit on Ubuntu Python 3.14, a coverage threshold of `75` for governance/control-plane tests, and a core conversion coverage threshold of `45` on Ubuntu Python 3.14. Quick and release jobs upload derived `reports/` and `output/` artifacts for review.
+Governance CI runs `ruff` with correctness-only rules (`E9,F63,F7,F82`) over governance/control-plane files, `pip check`, one `pip-audit` dependency audit on Ubuntu Python 3.14, a coverage threshold of `75` for deterministic command/status governance paths (`kindlemaster.py` and `scripts/generate_project_status.py`), and a core conversion coverage threshold of `45` on Ubuntu Python 3.14. Quick and release jobs upload derived `reports/` and `output/` artifacts for review.
 
 Install Chromium for Playwright-backed surfaces with:
 

@@ -33,6 +33,7 @@ class GithubReadyEnforcementTests(unittest.TestCase):
         self.assertIn("python -m pip check", workflow_text)
         self.assertIn("python -m pip_audit -r requirements.txt -r requirements-dev.txt --progress-spinner off --timeout 60", workflow_text)
         self.assertIn("python -m coverage run -m unittest", workflow_text)
+        self.assertIn('--include="kindlemaster.py,scripts/generate_project_status.py"', workflow_text)
         self.assertIn("--fail-under=${{ env.GOVERNANCE_COVERAGE_FAIL_UNDER }}", workflow_text)
         self.assertIn("GOVERNANCE_COVERAGE_FAIL_UNDER: \"75\"", workflow_text)
         self.assertIn("CORE_CONVERSION_COVERAGE_FAIL_UNDER: \"45\"", workflow_text)

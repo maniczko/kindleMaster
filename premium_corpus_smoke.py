@@ -232,7 +232,7 @@ def _build_case_blockers(
     heading_summary: dict[str, Any],
 ) -> list[dict[str, str]]:
     blockers: list[dict[str, str]] = []
-    if quality.get("validation_status") != "passed" and not _epubcheck_recovered_by_heading_repair(
+    if quality.get("validation_status") == "failed" and not _epubcheck_recovered_by_heading_repair(
         quality=quality,
         heading_summary=heading_summary,
     ):
@@ -337,6 +337,17 @@ def _build_case_warnings(
                 "detail": (
                     f"pre_heading={quality.get('validation_status')}; "
                     f"post_heading={heading_summary.get('epubcheck_status')}"
+                ),
+            }
+        )
+    elif quality.get("validation_status") == "passed_with_warnings":
+        warnings.append(
+            {
+                "code": "epub_validation_warning",
+                "detail": str(
+                    quality.get("validation_summary")
+                    or quality.get("validation_tool")
+                    or "validation_status=passed_with_warnings"
                 ),
             }
         )

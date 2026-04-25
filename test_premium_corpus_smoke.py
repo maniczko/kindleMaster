@@ -142,6 +142,32 @@ class PremiumCorpusSmokeTests(unittest.TestCase):
         self.assertIn("pre_heading_epubcheck_recovered", {item["code"] for item in warnings})
         self.assertEqual(_derive_case_grade(blockers, warnings), "pass_with_review")
 
+    def test_epub_validation_warning_is_review_not_blocker(self) -> None:
+        quality = {"validation_status": "passed_with_warnings", "validation_summary": "epubcheck unavailable"}
+        heading_summary = {"status": "completed", "epubcheck_status": "unavailable", "release_status": "pass"}
+
+        blockers = _build_case_blockers(
+            quality=quality,
+            inspect={
+                "visible_junk_counts": {},
+                "broken_href_counts": {},
+                "broken_internal_anchors": 0,
+                "metadata_placeholder_title": False,
+                "metadata_placeholder_creator": False,
+            },
+            heading_summary=heading_summary,
+        )
+        warnings = _build_case_warnings(
+            summary={"section_count": 3},
+            quality=quality,
+            inspect={"nav_entries": 3, "package_language": "en"},
+            heading_summary=heading_summary,
+        )
+
+        self.assertEqual(blockers, [])
+        self.assertIn("epub_validation_warning", {item["code"] for item in warnings})
+        self.assertEqual(_derive_case_grade(blockers, warnings), "pass_with_review")
+
     def test_legacy_fallback_signal_is_strictness_aware(self) -> None:
         strict_case = CorpusCase(path=Path("example/input.pdf"), document_class="book", release_strict=True)
         relaxed_case = CorpusCase(path=Path("example/input.pdf"), document_class="probe", release_strict=False)

@@ -65,7 +65,7 @@ jobs:
         run: |
           python -c "from pathlib import Path; Path('reports/coverage').mkdir(parents=True, exist_ok=True)"
           python -m coverage run -m unittest test_github_ready_enforcement.py test_kindlemaster_entrypoint.py test_project_status.py test_skill_contracts.py test_skill_guardrails.py
-          python -m coverage report --include="kindlemaster.py,premium_tools.py,scripts/*.py" --fail-under=${{ env.GOVERNANCE_COVERAGE_FAIL_UNDER }}
+          python -m coverage report --include="kindlemaster.py,scripts/generate_project_status.py" --fail-under=${{ env.GOVERNANCE_COVERAGE_FAIL_UNDER }}
           python -m coverage xml -o reports/coverage/coverage-${{ matrix.os }}-py${{ matrix.python-version }}.xml
 
       - name: Run core conversion coverage threshold

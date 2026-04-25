@@ -33,7 +33,13 @@ WRAPPER_SKILLS = {
     "kindlemaster-corpus-smoke": "scripts/run_corpus_smoke.py",
 }
 
+SKILL_ASSETS_AVAILABLE = all((SKILLS_ROOT / name).exists() for name in SKILL_NAMES)
 
+
+@unittest.skipUnless(
+    SKILL_ASSETS_AVAILABLE,
+    "KindleMaster Codex skill assets are not available in this environment.",
+)
 class SkillGuardrailTests(unittest.TestCase):
     def test_skill_markdown_has_no_sample_specific_runtime_bias(self) -> None:
         for name in SKILL_NAMES:

@@ -232,8 +232,19 @@ def _build_case_blockers(
     heading_summary: dict[str, Any],
 ) -> list[dict[str, str]]:
     blockers: list[dict[str, str]] = []
-    if quality.get("validation_status") != "passed":
-        blockers.append({"code": "epubcheck_failed", "detail": str(quality.get("validation_status"))})
+    if quality.get("validation_status") != "passed" and not _epubcheck_recovered_by_heading_repair(
+        quality=quality,
+        heading_summary=heading_summary,
+    ):
+        blockers.append(
+            {
+                "code": "epubcheck_failed",
+                "detail": (
+                    f"pre_heading={quality.get('validation_status')}; "
+                    f"post_heading={heading_summary.get('epubcheck_status', 'unavailable')}"
+                ),
+            }
+        )
     if sum(inspect.get("visible_junk_counts", {}).values()) > 0:
         blockers.append({"code": "visible_reference_or_url_junk", "detail": json.dumps(inspect.get("visible_junk_counts", {}), ensure_ascii=False)})
     if sum(inspect.get("broken_href_counts", {}).values()) > 0:
@@ -247,6 +258,46 @@ def _build_case_blockers(
     if heading_summary.get("epubcheck_status") == "failed":
         blockers.append({"code": "heading_repair_epubcheck_failed", "detail": "Heading/TOC repair broke EPUB validity."})
     return blockers
+
+
+def _epubcheck_recovered_by_heading_repair(
+    *,
+    quality: dict[str, Any],
+    heading_summary: dict[str, Any],
+) -> bool:
+    return (
+        quality.get("validation_status") != "passed"
+        and heading_summary.get("status") == "completed"
+        and heading_summary.get("epubcheck_status") == "passed"
+    )
+
+
+def _analysis_payload(analysis: Any) -> dict[str, Any]:
+    if hasattr(analysis, "to_dict") and callable(analysis.to_dict):
+        return analysis.to_dict()
+    return analysis if isinstance(analysis, dict) else {}
+
+
+def _build_release_fallback_signal(
+    *,
+    analysis: Any,
+    quality: dict[str, Any],
+    case: CorpusCase,
+) -> dict[str, Any]:
+    payload = _analysis_payload(analysis)
+    profile = str(payload.get("profile", "") or "").strip()
+    reason = str(payload.get("profile_reason", "") or quality.get("fallback_reason", "") or "").strip()
+    validation_tool = str(quality.get("validation_tool", "") or "").strip()
+    used = profile == "legacy-fallback" or validation_tool == "legacy"
+    severity = "blocker" if used and case.release_strict else ("warning" if used else "none")
+    return {
+        "used": used,
+        "mode": profile or validation_tool or "unknown",
+        "reason": reason,
+        "validation_tool": validation_tool,
+        "severity": severity,
+        "release_strict": case.release_strict,
+    }
 
 
 def _apply_release_strictness(
@@ -279,6 +330,16 @@ def _build_case_warnings(
     heading_summary: dict[str, Any],
 ) -> list[dict[str, str]]:
     warnings: list[dict[str, str]] = []
+    if _epubcheck_recovered_by_heading_repair(quality=quality, heading_summary=heading_summary):
+        warnings.append(
+            {
+                "code": "pre_heading_epubcheck_recovered",
+                "detail": (
+                    f"pre_heading={quality.get('validation_status')}; "
+                    f"post_heading={heading_summary.get('epubcheck_status')}"
+                ),
+            }
+        )
     text_cleanup = quality.get("text_cleanup") or {}
     review_needed = _safe_int(text_cleanup.get("review_needed_count", 0))
     blocked = _safe_int(text_cleanup.get("blocked_count", 0))
@@ -295,6 +356,18 @@ def _build_case_warnings(
     if inspect.get("package_language", "").lower() not in {"pl", "en"}:
         warnings.append({"code": "unexpected_language", "detail": inspect.get("package_language", "")})
     return warnings
+
+
+def _fallback_detail(signal: dict[str, Any]) -> str:
+    reason = str(signal.get("reason", "") or "").strip()
+    mode = str(signal.get("mode", "unknown") or "unknown")
+    validation_tool = str(signal.get("validation_tool", "") or "").strip()
+    detail = f"mode={mode}"
+    if validation_tool:
+        detail += f"; validation_tool={validation_tool}"
+    if reason:
+        detail += f"; reason={reason[:240]}"
+    return detail
 
 
 def _derive_case_grade(blockers: list[dict[str, str]], warnings: list[dict[str, str]]) -> str:
@@ -550,6 +623,16 @@ def _run_conversion_case(case: CorpusCase, *, run_heading_repair: bool) -> dict[
         blockers=blockers,
         warnings=warnings,
     )
+    release_fallback = _build_release_fallback_signal(
+        analysis=analysis,
+        quality=quality,
+        case=case,
+    )
+    if release_fallback["used"]:
+        if release_fallback["severity"] == "blocker":
+            blockers.append({"code": "legacy_fallback_used", "detail": _fallback_detail(release_fallback)})
+        else:
+            warnings.append({"code": "legacy_fallback_used", "detail": _fallback_detail(release_fallback)})
     if size_gate["status"] == "failed":
         blockers.append({"code": "size_budget_failed", "detail": size_gate["message"]})
     elif size_gate["status"] == "passed_with_warnings":
@@ -569,6 +652,7 @@ def _run_conversion_case(case: CorpusCase, *, run_heading_repair: bool) -> dict[
         "heading_repair": heading_summary,
         "post_heading_epub_stats": repaired_inspect,
         "size_gate": size_gate,
+        "release_fallback": release_fallback,
         "grade": grade,
         "blockers": blockers,
         "warnings": warnings,
@@ -586,6 +670,11 @@ def _build_overall_summary(
     grade_counts = Counter(row.get("grade", "unknown") for row in converted)
     blocker_counts = Counter(blocker["code"] for row in converted for blocker in row.get("blockers", []))
     warning_counts = Counter(warning["code"] for row in converted for warning in row.get("warnings", []))
+    fallback_counts = Counter(
+        (row.get("release_fallback") or {}).get("severity", "none")
+        for row in converted
+        if (row.get("release_fallback") or {}).get("used")
+    )
     class_grade = {
         row["document_class"]: row.get("grade", "unknown")
         for row in converted
@@ -604,6 +693,8 @@ def _build_overall_summary(
         "grade_counts": dict(grade_counts),
         "blocker_counts": dict(blocker_counts),
         "warning_counts": dict(warning_counts),
+        "release_fallback_counts": dict(fallback_counts),
+        "recovered_epubcheck_count": warning_counts.get("pre_heading_epubcheck_recovered", 0),
         "class_grade": class_grade,
         "overall_status": overall_status,
         "proof_scope": proof_scope,
@@ -666,6 +757,8 @@ def _build_markdown_report(
         f"- Grade counts: `{json.dumps(overall['grade_counts'], ensure_ascii=False)}`",
         f"- Repeated blockers: `{json.dumps(overall['blocker_counts'], ensure_ascii=False)}`",
         f"- Repeated warnings: `{json.dumps(overall['warning_counts'], ensure_ascii=False)}`",
+        f"- Release fallback counts: `{json.dumps(overall.get('release_fallback_counts', {}), ensure_ascii=False)}`",
+        f"- Recovered EPUBCheck cases: `{overall.get('recovered_epubcheck_count', 0)}`",
         "",
         "## Cases",
         "",
@@ -722,6 +815,9 @@ def _build_markdown_report(
             lines.append("- Warnings:")
             for warning in row["warnings"]:
                 lines.append(f"  - `{warning['code']}`: {warning['detail']}")
+        fallback_signal = row.get("release_fallback") or {}
+        if fallback_signal.get("used"):
+            lines.append(f"- Release fallback: `{fallback_signal.get('severity', 'unknown')}` ({_fallback_detail(fallback_signal)})")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 

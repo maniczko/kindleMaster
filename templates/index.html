@@ -1191,6 +1191,336 @@
         min-height: 54vh;
       }
     }
+
+    /* Flat 2.0 visible contract: low-noise panels, 1px borders, 4px rhythm. */
+    :root {
+      --ink: #202124;
+      --muted: #6f747b;
+      --line: #d9dde3;
+      --panel: #ffffff;
+      --panel-strong: #fbfbfa;
+      --bg-body: #f5f6f7;
+      --bg-metric: #ffffff;
+      --bg-input: #ffffff;
+      --bg-dropzone: #fafafa;
+      --bg-viewport: #f0f2f4;
+      --accent: #25635a;
+      --accent-strong: #164d45;
+      --accent-soft: #e6f1ee;
+      --shadow: none;
+      --shadow-sm: none;
+      --radius-sm: 4px;
+      --radius: 4px;
+      --radius-lg: 4px;
+      --radius-xl: 4px;
+    }
+
+    [data-theme="dark"] {
+      --ink: #e7e9ec;
+      --muted: #a5abb3;
+      --line: #343941;
+      --panel: #171a1f;
+      --panel-strong: #1d2127;
+      --bg-body: #101216;
+      --bg-metric: #1d2127;
+      --bg-input: #171a1f;
+      --bg-dropzone: #171a1f;
+      --bg-viewport: #12151a;
+      --accent: #69b8aa;
+      --accent-strong: #8bd5c9;
+      --accent-soft: #19302d;
+      --shadow: none;
+      --shadow-sm: none;
+    }
+
+    body {
+      background: var(--bg-body);
+    }
+
+    body::before {
+      content: none !important;
+    }
+
+    .shell {
+      width: min(1460px, calc(100vw - 24px));
+      gap: 8px;
+      padding: 8px 0 16px;
+    }
+
+    .topbar,
+    .hero-band,
+    .card,
+    .crop-preview-card,
+    .status-box,
+    .viewport-shell,
+    .loader-card,
+    .highlight,
+    .metric,
+    .analysis-box,
+    .drop-zone,
+    .file-pill,
+    .crop-preview-shell,
+    .canvas-stage,
+    #pdfCanvas {
+      border-radius: 4px !important;
+      box-shadow: none !important;
+      background: var(--panel) !important;
+      border: 1px solid var(--line) !important;
+    }
+
+    .hero-band {
+      grid-template-columns: minmax(0, 1fr) 360px;
+      padding: 16px;
+      gap: 16px;
+    }
+
+    .hero-copy,
+    .hero-drop,
+    .setup-rail,
+    .insights-rail,
+    .preview-stage {
+      gap: 8px;
+    }
+
+    .hero-highlights,
+    .preview-toolbar,
+    .info-grid {
+      gap: 8px;
+    }
+
+    .workspace {
+      grid-template-columns: 292px minmax(0, 1fr) 320px;
+      gap: 8px;
+    }
+
+    .flat-sidebar-card {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--panel);
+    }
+
+    .flat-sidebar-logo {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .flat-sidebar-logo-mark {
+      width: 32px;
+      height: 32px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--panel-strong);
+      font-weight: 800;
+      color: var(--accent-strong);
+    }
+
+    .flat-sidebar-logo strong,
+    .flat-sidebar-section strong {
+      display: block;
+      font-size: 0.78rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .flat-sidebar-logo span,
+    .flat-sidebar-section span,
+    .workspace-state-label {
+      color: var(--muted);
+      font-size: 0.78rem;
+      line-height: 1.35;
+    }
+
+    .quick-upload-button,
+    .sidebar-link,
+    .sidebar-utility {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--panel-strong);
+      color: var(--ink);
+      text-align: left;
+      box-shadow: none;
+    }
+
+    .quick-upload-button {
+      justify-content: center;
+      background: var(--accent);
+      color: #ffffff;
+      border-color: var(--accent);
+    }
+
+    .sidebar-link.is-active {
+      border-color: var(--accent);
+      color: var(--accent-strong);
+      background: var(--accent-soft);
+    }
+
+    .flat-sidebar-section,
+    .sidebar-utilities {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .recent-conversions-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      list-style: none;
+    }
+
+    .recent-conversions-list li {
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--panel-strong);
+      font-size: 0.8rem;
+    }
+
+    .recent-conversions-list b {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .recent-conversions-list small {
+      display: block;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    .button-primary,
+    .preset-chip.is-active,
+    .zoom-mode-button.is-active {
+      background: var(--accent) !important;
+      border-color: var(--accent) !important;
+      color: #ffffff !important;
+      box-shadow: none !important;
+    }
+
+    .button-secondary,
+    .button-ghost,
+    .preset-chip {
+      border-radius: 4px !important;
+      box-shadow: none !important;
+      background: var(--panel-strong) !important;
+      border: 1px solid var(--line) !important;
+    }
+
+    .drop-zone {
+      min-height: 208px;
+      border-style: dashed !important;
+    }
+
+    .drop-zone:hover,
+    .drop-zone.dragover {
+      transform: none;
+      border-color: var(--accent) !important;
+      background: var(--accent-soft) !important;
+    }
+
+    .flat2-quality-report {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .quality-verdict {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 4px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--info);
+      border-radius: 4px;
+      background: var(--panel-strong);
+    }
+
+    .quality-verdict[data-tone="ready"] { border-left-color: var(--success); }
+    .quality-verdict[data-tone="review"] { border-left-color: var(--accent); }
+    .quality-verdict[data-tone="failed"] { border-left-color: var(--error); }
+
+    .quality-verdict strong {
+      font-size: 0.92rem;
+    }
+
+    .quality-verdict span {
+      color: var(--muted);
+      font-size: 0.8rem;
+      line-height: 1.4;
+    }
+
+    .quality-matrix {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .quality-row {
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--panel);
+    }
+
+    .quality-row span {
+      display: block;
+      margin-bottom: 2px;
+      color: var(--muted);
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .quality-row strong {
+      font-size: 0.82rem;
+      line-height: 1.35;
+    }
+
+    .quality-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .quality-actions a {
+      padding: 7px 10px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--panel-strong);
+      color: var(--ink);
+      text-decoration: none;
+      font-size: 0.78rem;
+      font-weight: 700;
+    }
+
+    @media (max-width: 1380px) {
+      .workspace {
+        display: flex;
+        flex-direction: column;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .quality-matrix {
+        grid-template-columns: 1fr;
+      }
+    }
   </style>
 </head>
 <body>
@@ -1261,6 +1591,40 @@
 
     <div class="workspace">
       <aside class="setup-rail">
+        <nav class="flat-sidebar-card" aria-label="KindleMaster Flat 2.0 navigation">
+          <div class="flat-sidebar-logo">
+            <div class="flat-sidebar-logo-mark" aria-hidden="true">KM</div>
+            <div>
+              <strong>KindleMaster</strong>
+              <span>Flat 2.0 workspace</span>
+            </div>
+          </div>
+          <button class="quick-upload-button" id="quickUploadButton" type="button">Quick Upload</button>
+          <div class="workspace-state-label" id="workspaceStateLabel">No active file yet.</div>
+
+          <div class="flat-sidebar-section" aria-label="Folders">
+            <strong>Folders</strong>
+            <button class="sidebar-link is-active" type="button"><span>Workspace</span><span>1</span></button>
+            <button class="sidebar-link" type="button"><span>Ready EPUBs</span><span>0</span></button>
+            <button class="sidebar-link" type="button"><span>Needs review</span><span>0</span></button>
+          </div>
+
+          <div class="flat-sidebar-section" aria-label="Recent conversions">
+            <strong>Recent conversions</strong>
+            <ul class="recent-conversions-list" id="recentConversionsList">
+              <li id="recentConversionsEmpty">
+                <b>No conversions yet</b>
+                <small>Successful jobs will appear here for this session.</small>
+              </li>
+            </ul>
+          </div>
+
+          <div class="sidebar-utilities" aria-label="Utilities">
+            <button class="sidebar-utility" type="button"><span>Settings</span><span>Local</span></button>
+            <button class="sidebar-utility" type="button"><span>Profile</span><span>Operator</span></button>
+          </div>
+        </nav>
+
         <div class="rail-head">
           <div class="section-title">Setup</div>
           <h3>Konwersja</h3>
@@ -1656,6 +2020,9 @@
     const appLoader = $("appLoader");
     const loaderTitle = $("loaderTitle");
     const loaderMessage = $("loaderMessage");
+    const quickUploadButton = $("quickUploadButton");
+    const workspaceStateLabel = $("workspaceStateLabel");
+    const recentConversionsList = $("recentConversionsList");
     const presetButtons = Array.from(document.querySelectorAll(".preset-chip[data-profile]"));
 
     const canvasContext = pdfCanvas.getContext("2d", { alpha: false });
@@ -1680,6 +2047,7 @@
     let dragStart = null;
     let busyOverlayTimer = null;
     let busyMessage = "Przetwarzam dokument.";
+    let recentConversions = [];
     const BASE_CONVERSION_POLL_INTERVAL_MS = 1500;
     const MAX_CONVERSION_POLL_INTERVAL_MS = 5000;
     const CONVERSION_REQUEST_TIMEOUT_MS = 15000;
@@ -1986,6 +2354,123 @@
         .replaceAll("'", "&#39;");
     }
 
+    function updateCurrentFileState(file, sourceType) {
+      if (!workspaceStateLabel || !file) return;
+      workspaceStateLabel.textContent = `${sourceType.toUpperCase()} selected: ${file.name}`;
+    }
+
+    function renderRecentConversions() {
+      if (!recentConversionsList) return;
+      if (!recentConversions.length) {
+        recentConversionsList.innerHTML = `
+          <li id="recentConversionsEmpty">
+            <b>No conversions yet</b>
+            <small>Successful jobs will appear here for this session.</small>
+          </li>
+        `;
+        return;
+      }
+      recentConversionsList.innerHTML = recentConversions.map((item) => `
+        <li>
+          <b>${escapeHtml(item.filename || "Untitled")}</b>
+          <small>${escapeHtml(item.verdict || "ready")} | ${escapeHtml(item.profile || "profile unknown")} | ${escapeHtml(item.validation || "validation unknown")}</small>
+        </li>
+      `).join("");
+    }
+
+    function rememberRecentConversion(item) {
+      const payload = item && typeof item === "object" ? item : {};
+      recentConversions = [
+        {
+          filename: payload.filename || "Untitled",
+          verdict: payload.verdict || "ready",
+          profile: payload.profile || "unknown",
+          validation: payload.validation || "unavailable",
+        },
+        ...recentConversions,
+      ].slice(0, 4);
+      renderRecentConversions();
+    }
+
+    function normalizeQualityHealth(rawValue, fallbackLabel) {
+      const payload = rawValue && typeof rawValue === "object" ? rawValue : {};
+      const status = payload.status || payload.health || payload.state || "not_reported";
+      const count = coerceFiniteNumber(payload.count ?? payload.error_count ?? payload.broken_count ?? payload.warning_count);
+      const message = payload.message || payload.summary || payload.detail || "";
+      return {
+        label: fallbackLabel,
+        status,
+        count,
+        message,
+      };
+    }
+
+    function formatQualityHealth(health) {
+      const payload = health && typeof health === "object" ? health : {};
+      const status = payload.status || "not_reported";
+      const count = Number.isFinite(payload.count) ? ` (${payload.count})` : "";
+      if (status === "not_reported" || status === "unavailable") return "Not reported";
+      if (payload.message) return `${status}${count}: ${payload.message}`;
+      return `${status}${count}`;
+    }
+
+    function deriveQualityVerdict(normalized) {
+      const payload = normalized && typeof normalized === "object" ? normalized : {};
+      const severity = payload.severity || "";
+      const validation = payload.validation || "unavailable";
+      const sizeStatus = payload.sizeBudget && payload.sizeBudget.status ? payload.sizeBudget.status : "unavailable";
+      const reviewCount =
+        (Number.isFinite(payload.highRiskPages) ? payload.highRiskPages : 0)
+        + (Number.isFinite(payload.highRiskSections) ? payload.highRiskSections : 0)
+        + (payload.headingRepair && Number.isFinite(payload.headingRepair.review) ? payload.headingRepair.review : 0);
+      const warningCount = Number.isFinite(payload.warnings) ? payload.warnings : 0;
+      const hasFallback = Boolean(payload.renderBudget && payload.renderBudget.attempt && payload.renderBudget.attempt !== "primary");
+      const hasAlerts = Array.isArray(payload.alerts) && payload.alerts.length > 0;
+
+      if (severity === "error" || validation === "failed" || sizeStatus === "failed") {
+        return {
+          key: "failed_quality_gate",
+          tone: "failed",
+          label: "Failed quality gate",
+          detail: "Validation or size gate reported a blocking issue. Review before using the EPUB.",
+        };
+      }
+
+      if (
+        severity === "warning"
+        || validation === "passed_with_warnings"
+        || sizeStatus === "passed_with_warnings"
+        || reviewCount > 0
+        || warningCount > 0
+        || hasFallback
+        || hasAlerts
+        || payload.qualityAvailable === false
+      ) {
+        return {
+          key: "ready_with_review",
+          tone: "review",
+          label: "Ready with review",
+          detail: "EPUB was produced, but at least one warning, fallback, or manual review signal is present.",
+        };
+      }
+
+      if (validation === "passed") {
+        return {
+          key: "ready",
+          tone: "ready",
+          label: "Ready",
+          detail: "Validation passed and no review signal was reported by the quality payload.",
+        };
+      }
+
+      return {
+        key: "quality_pending",
+        tone: "review",
+        label: "Ready with review",
+        detail: "EPUB was produced, but quality evidence is incomplete or unavailable.",
+      };
+    }
+
     function parseJsonHeader(response, headerName) {
       const raw = response.headers.get(headerName);
       if (!raw) return [];
@@ -2034,10 +2519,28 @@
       alerts = [],
       sizeBudget = null,
       renderBudget = null,
+      verdict = null,
+      qualityStateUrl = "",
+      downloadUrl = "",
+      metadataHealth = null,
+      linkHealth = null,
+      visibleJunk = null,
     }) {
       const safeValidation = validation || "unavailable";
       const derivedType = safeValidation === "passed" ? "success" : safeValidation === "failed" ? "error" : "info";
       const type = severity === "success" ? "success" : severity === "error" ? "error" : derivedType;
+      const reportVerdict = verdict || deriveQualityVerdict({
+        severity,
+        validation,
+        warnings,
+        highRiskPages,
+        highRiskSections,
+        alerts,
+        sizeBudget,
+        renderBudget,
+        headingRepair,
+        qualityAvailable,
+      });
       const validationLabel = safeValidation === "passed"
         ? "EPUBCheck przeszedl bez bledow"
         : safeValidation === "failed"
@@ -2128,12 +2631,46 @@
           })}
         </div>
       `;
+      const fallbackLabel = renderBudget && renderBudget.attempt
+        ? `${renderBudget.attempt}${renderBudget.budgetClass ? ` / ${renderBudget.budgetClass}` : ""}`
+        : "Not reported";
+      const tocLabel = headingRepair && headingRepair.status
+        ? `${headingRepair.status}${Number.isFinite(headingRepair.review) && headingRepair.review > 0 ? ` / review ${headingRepair.review}` : ""}`
+        : "Not reported";
+      const qualityRows = [
+        ["Validation", validationTool ? `${safeValidation} / ${validationTool}` : safeValidation],
+        ["Fallback", fallbackLabel],
+        ["TOC quality", tocLabel],
+        ["Metadata", formatQualityHealth(metadataHealth)],
+        ["Links", formatQualityHealth(linkHealth)],
+        ["Visible junk", formatQualityHealth(visibleJunk)],
+      ].map(([label, value]) => `
+        <div class="quality-row">
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(value)}</strong>
+        </div>
+      `).join("");
+      const qualityLinks = [
+        qualityStateUrl ? `<a href="${escapeHtml(qualityStateUrl)}" target="_blank" rel="noreferrer">Open quality JSON</a>` : "",
+        downloadUrl ? `<a href="${escapeHtml(downloadUrl)}">Download EPUB again</a>` : "",
+      ].filter(Boolean).join("");
+      const qualityReportPanel = `
+        <div class="flat2-quality-report" data-quality-verdict="${escapeHtml(reportVerdict.key)}">
+          <div class="quality-verdict" data-tone="${escapeHtml(reportVerdict.tone)}">
+            <strong>${escapeHtml(reportVerdict.label)}</strong>
+            <span>${escapeHtml(reportVerdict.detail)}</span>
+          </div>
+          <div class="quality-matrix">${qualityRows}</div>
+          ${qualityLinks ? `<div class="quality-actions">${qualityLinks}</div>` : ""}
+        </div>
+      `;
 
       conversionBox.className = `analysis-box ${type}`;
       conversionBox.innerHTML = `
         <strong>Ostatnia konwersja</strong>
         <p>${validationLabel}.</p>
         <div class="analysis-meta">${badges}</div>
+        ${qualityReportPanel}
         ${contractHint}
         ${auditHint}
         ${headingRepairHint}
@@ -2329,6 +2866,7 @@
       fileMark.textContent = "PDF";
       fileName.textContent = file.name;
       fileSize.textContent = formatBytes(file.size);
+      updateCurrentFileState(file, "pdf");
       emptyState.innerHTML = `
         <strong>Brak aktywnego podgladu</strong>
         <p>Po wgraniu PDF aktualna strona zostanie wyrenderowana. Nad nia pojawi sie warstwa do rysowania crop boxa.</p>
@@ -2359,6 +2897,7 @@
       fileMark.textContent = "DOCX";
       fileName.textContent = file.name;
       fileSize.textContent = formatBytes(file.size);
+      updateCurrentFileState(file, "docx");
       showDocxPreviewState();
       setStatus("DOCX gotowy. Preview stron jest wylaczony, ale analiza i konwersja EPUB sa dostepne.", "success");
     }
@@ -2614,9 +3153,14 @@
       const headingRepairState = qualityState && qualityState.heading_repair && typeof qualityState.heading_repair === "object" ? qualityState.heading_repair : {};
       const renderBudgetState = qualityState && qualityState.render_budget && typeof qualityState.render_budget === "object" ? qualityState.render_budget : {};
       const sizeBudgetState = qualityState && qualityState.size_budget && typeof qualityState.size_budget === "object" ? qualityState.size_budget : {};
+      const metadataHealthState = qualityState && qualityState.metadata_health && typeof qualityState.metadata_health === "object" ? qualityState.metadata_health : null;
+      const linkHealthState = qualityState && qualityState.link_health && typeof qualityState.link_health === "object" ? qualityState.link_health : null;
+      const visibleJunkState = qualityState && qualityState.visible_junk && typeof qualityState.visible_junk === "object" ? qualityState.visible_junk : null;
       const conversionHeadingRepair = conversion && conversion.heading_repair && typeof conversion.heading_repair === "object" ? conversion.heading_repair : {};
 
       return {
+        qualityStateUrl: payload.quality_state_url || "",
+        downloadUrl: payload.download_url || (qualityState && qualityState.download_url) || "",
         sourceType: qualityState && qualityState.source_type
           ? qualityState.source_type
           : payload.source_type || (conversion && conversion.source_type) || selectedSourceType || "pdf",
@@ -2653,6 +3197,9 @@
           targetWarnBytes: coerceFiniteNumber(renderBudgetState.target_warn_bytes ?? (conversion && conversion.target_warn_bytes)) ?? 0,
           targetHardBytes: coerceFiniteNumber(renderBudgetState.target_hard_bytes ?? (conversion && conversion.target_hard_bytes)) ?? 0,
         },
+        metadataHealth: normalizeQualityHealth(metadataHealthState || (conversion && conversion.metadata_health), "Metadata"),
+        linkHealth: normalizeQualityHealth(linkHealthState || (conversion && conversion.link_health), "Links"),
+        visibleJunk: normalizeQualityHealth(visibleJunkState || (conversion && conversion.visible_junk), "Visible junk"),
         headingRepair: {
           status: headingRepairState.status || conversionHeadingRepair.status || "skipped",
           release: headingRepairState.release || conversionHeadingRepair.release || "unavailable",
@@ -2677,6 +3224,7 @@
       const headingRepair = normalized.headingRepair || { status: "skipped" };
       const tocBefore = Number.isFinite(headingRepair.tocBefore) ? headingRepair.tocBefore : null;
       const tocAfter = Number.isFinite(headingRepair.tocAfter) ? headingRepair.tocAfter : null;
+      const verdict = deriveQualityVerdict(normalized);
       renderConversionReport({
         profile,
         validation,
@@ -2696,6 +3244,12 @@
         qualityAvailable: normalized.qualityAvailable,
         sizeBudget: normalized.sizeBudget,
         renderBudget: normalized.renderBudget,
+        verdict,
+        qualityStateUrl: normalized.qualityStateUrl,
+        downloadUrl: normalized.downloadUrl,
+        metadataHealth: normalized.metadataHealth,
+        linkHealth: normalized.linkHealth,
+        visibleJunk: normalized.visibleJunk,
         headingRepair: {
           status: headingRepair.status || "skipped",
           release: headingRepair.release || "unavailable",
@@ -2706,6 +3260,12 @@
           epubcheck: headingRepair.epubcheck || "unavailable",
           error: headingRepair.error || "",
         },
+      });
+      rememberRecentConversion({
+        filename: selectedName,
+        verdict: verdict.label,
+        profile: profile || "unknown",
+        validation,
       });
       const headingRepairStatusText = headingRepair.status === "applied"
         ? ` TOC repair: ${tocBefore ?? 0}→${tocAfter ?? 0}.`
@@ -2865,6 +3425,7 @@
     }
 
     // â”€â”€ Event listeners â”€â”€
+    quickUploadButton.addEventListener("click", () => fileInput.click());
     dropZone.addEventListener("dragover", (e) => { e.preventDefault(); dropZone.classList.add("dragover"); });
     dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragover"));
     dropZone.addEventListener("drop", (e) => { e.preventDefault(); dropZone.classList.remove("dragover"); handleFiles(e.dataTransfer.files); });

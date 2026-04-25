@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from quality_report_markdown import build_manual_review_markdown
+from quality_report_markdown import build_manual_review_markdown, build_workflow_quality_report_markdown
 
 
 class QualityReportMarkdownTests(unittest.TestCase):
@@ -72,6 +72,31 @@ class QualityReportMarkdownTests(unittest.TestCase):
         markdown = build_manual_review_markdown({"summary": {"queue_size": 0}, "items": []})
 
         self.assertEqual(markdown, "# Manual Review Queue\n\n- None\n")
+
+    def test_build_workflow_quality_report_markdown_renders_verdict_and_raw_signals(self) -> None:
+        markdown = build_workflow_quality_report_markdown(
+            {
+                "raw_signals": {
+                    "validation_status": "passed",
+                    "warning_count": 1,
+                },
+                "verdict": {
+                    "status": "passed_with_warnings",
+                    "severity": "warning",
+                    "blocker_count": 0,
+                    "warning_count": 1,
+                    "review_count": 1,
+                    "reasons": ["toc_gate_review"],
+                },
+                "symptoms": ["gate D: review"],
+            }
+        )
+
+        self.assertIn("# Workflow Quality Report", markdown)
+        self.assertIn("Verdict: `passed_with_warnings`", markdown)
+        self.assertIn("`warning_count`: `1`", markdown)
+        self.assertIn("`toc_gate_review`", markdown)
+        self.assertIn("gate D: review", markdown)
 
 
 if __name__ == "__main__":

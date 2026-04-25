@@ -21,6 +21,12 @@ The supported toolchain matrix lives in [docs/toolchain-matrix.md](docs/toolchai
 - `kindlemaster.py` is the executable source of truth for the CLI command surface, including subcommands, flags, defaults, and exit behavior.
 - `AGENTS.md` is the canonical human-readable authority map for standard command policy, workflow artifacts, and which docs are authoritative versus derived.
 - `docs/toolchain-matrix.md` is authoritative for supported local toolchains and `test --suite` lane expectations.
+- `docs/local-bootstrap-toolchain.md` is the operator runbook for setup, `doctor`, and environment-versus-quality failure classification.
+- `docs/conversion-pipeline.md` maps the current PDF/DOCX to EPUB pipeline, responsible modules, fallback reporting, and stage-level tests.
+- `docs/source-of-truth-matrix.md` mirrors the control-plane authority model for status, Linear, reports, and release truth.
+- `docs/independent-audit-mode.md` explains standalone EPUB artifact audit versus full project status.
+- `docs/premium-epub-release-checklist.md` is the agent-facing release-readiness checklist for premium EPUB output.
+- `docs/linear-issue-template.md` is the reusable Linear template for future conversion-quality tasks.
 - `.codex/config.toml` is authoritative only for active repo-local Codex settings; its comments are convenience mirrors, not an independent policy source.
 - Generated files under `reports/` and `output/` are derived artifacts, not governance authority.
 
@@ -63,7 +69,7 @@ Use `workflow baseline/verify` when you are fixing a real defect and need the st
 
 Workflow artifacts are written under `reports/workflows/<run_id>/` and `output/workflows/<run_id>/`; `AGENTS.md` defines the required filenames and contract.
 
-The corpus-wide proof lane writes derived reports under `reports/corpus/` and `output/corpus/`, including:
+The corpus-wide proof lane writes derived reports under `reports/corpus/` and `output/corpus/`, including benchmark timing/class summaries for representative fixtures:
 - `reports/corpus/corpus_gate.json`
 - `reports/corpus/corpus_gate.md`
 - `reports/corpus/premium_corpus_smoke_report.json`
@@ -72,6 +78,8 @@ The corpus-wide proof lane writes derived reports under `reports/corpus/` and `o
 The derived project status lane reads existing evidence and writes:
 - `reports/project_status.json`
 - `reports/project_status.md`
+
+Use [docs/independent-audit-mode.md](docs/independent-audit-mode.md) when evaluating one EPUB artifact independently from the whole-project status surface.
 
 ## Troubleshooting
 

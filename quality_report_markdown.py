@@ -25,6 +25,33 @@ def build_manual_review_markdown(payload_or_items: dict[str, Any] | list[Any] | 
     return "\n".join(lines).strip() + "\n"
 
 
+def build_workflow_quality_report_markdown(payload: dict[str, Any]) -> str:
+    verdict = payload.get("verdict", {}) or {}
+    raw_signals = payload.get("raw_signals", {}) or {}
+    symptoms = payload.get("symptoms", []) or []
+    lines = [
+        "# Workflow Quality Report",
+        "",
+        f"- Verdict: `{verdict.get('status', 'unknown')}`",
+        f"- Severity: `{verdict.get('severity', 'unknown')}`",
+        f"- Blockers: `{verdict.get('blocker_count', 0)}`",
+        f"- Warnings: `{verdict.get('warning_count', 0)}`",
+        f"- Review items: `{verdict.get('review_count', 0)}`",
+        "",
+        "## Raw Signals",
+        "",
+    ]
+    for key in sorted(raw_signals):
+        lines.append(f"- `{key}`: `{raw_signals[key]}`")
+    if verdict.get("reasons"):
+        lines.extend(["", "## Reasons", ""])
+        lines.extend(f"- `{reason}`" for reason in verdict["reasons"])
+    if symptoms:
+        lines.extend(["", "## Symptoms", ""])
+        lines.extend(f"- {symptom}" for symptom in symptoms)
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def build_recovery_release_report_markdown(
     *,
     release_summary: dict[str, Any],

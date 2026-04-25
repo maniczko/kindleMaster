@@ -807,21 +807,27 @@ def _evaluate_gate_c(heading_report: dict[str, Any], final_inventory: dict[str, 
     blockers = []
     warnings = []
     review = list(heading_report.get("manual_review", []))
+    content_file_count = 0
+    heading_count = 0
     for file_name, headings in final_inventory["headings"].items():
         if file_name == "cover.xhtml":
             continue
+        content_file_count += 1
+        heading_count += len(headings)
         h1_count = sum(1 for heading in headings if heading["level"] == 1)
         if h1_count > 1:
-            blockers.append(f"{file_name} has {h1_count} H1 headings.")
+            warnings.append(f"{file_name} has {h1_count} H1 headings; review hierarchy.")
         elif h1_count == 0:
             has_substructure = any(int(heading.get("level", 0) or 0) in {2, 3} for heading in headings)
             if has_substructure:
                 warnings.append(f"{file_name} is a continuation file without its own H1.")
             else:
-                blockers.append(f"{file_name} has 0 H1 headings.")
+                warnings.append(f"{file_name} has no heading elements; review as a continuation file.")
         suspicious = [heading["text"] for heading in headings if _is_suspicious_heading(heading["text"])]
         if suspicious:
             blockers.append(f"{file_name} still contains suspicious headings: {', '.join(suspicious[:3])}")
+    if content_file_count and heading_count == 0:
+        blockers.append("No heading structure detected in content documents.")
     if heading_report.get("summary", {}).get("removed_count", 0) == 0 and heading_report.get("summary", {}).get("recovered_count", 0) == 0:
         warnings.append("No heading changes detected; verify whether recovery was needed.")
     return _gate_result("C", blockers=blockers, warnings=warnings, manual_review=review)

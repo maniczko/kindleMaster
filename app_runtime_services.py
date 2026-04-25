@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+import json
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, MutableMapping
 
 
 LOCALHOST = "127.0.0.1"
@@ -69,6 +71,133 @@ def build_conversion_job_record(
         "output_size_bytes": 0,
         "error": "",
     }
+
+
+class ConversionJobStore:
+    """Small persistence boundary for async conversion jobs.
+
+    The Flask app still owns process-local workers, but terminal job state is
+    durable enough for status/quality/download routes after a dev-server
+    restart. Active jobs cannot be resumed safely, so reload marks them failed
+    instead of pretending they are still running.
+    """
+
+    def __init__(
+        self,
+        jobs: MutableMapping[str, dict[str, Any]],
+        lock: Any,
+        *,
+        persistence_path: str | os.PathLike[str] | None = None,
+        active_statuses: set[str] | frozenset[str] | None = None,
+    ) -> None:
+        self._jobs = jobs
+        self._lock = lock
+        self._persistence_path = Path(persistence_path) if persistence_path else None
+        self._active_statuses = set(active_statuses or {"queued", "running", "repairing_headings"})
+
+    @property
+    def persistence_path(self) -> Path | None:
+        return self._persistence_path
+
+    def load(self) -> dict[str, Any]:
+        if not self._persistence_path or not self._persistence_path.exists():
+            return {"loaded": False, "job_count": 0, "interrupted_jobs": 0, "error": ""}
+
+        try:
+            payload = json.loads(self._persistence_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            return {"loaded": False, "job_count": 0, "interrupted_jobs": 0, "error": str(error)}
+
+        raw_jobs = payload.get("jobs", {}) if isinstance(payload, Mapping) else {}
+        if not isinstance(raw_jobs, Mapping):
+            return {"loaded": False, "job_count": 0, "interrupted_jobs": 0, "error": "Invalid job store shape."}
+
+        interrupted_jobs = 0
+        loaded_jobs: dict[str, dict[str, Any]] = {}
+        now = _utc_now_label()
+        for raw_job_id, raw_job in raw_jobs.items():
+            if not isinstance(raw_job, Mapping):
+                continue
+            job = dict(raw_job)
+            job_id = str(job.get("job_id") or raw_job_id).strip()
+            if not job_id:
+                continue
+            job["job_id"] = job_id
+            status = str(job.get("status", "") or "").strip().lower()
+            if status in self._active_statuses:
+                interrupted_jobs += 1
+                job["status"] = "failed"
+                job["message"] = "Konwersja przerwana przez restart aplikacji."
+                job["error"] = "Async conversion job was interrupted by application restart."
+                job["source_path"] = ""
+                job["updated_at"] = now
+            loaded_jobs[job_id] = job
+
+        with self._lock:
+            self._jobs.update(loaded_jobs)
+
+        if interrupted_jobs:
+            self.persist()
+
+        return {"loaded": True, "job_count": len(loaded_jobs), "interrupted_jobs": interrupted_jobs, "error": ""}
+
+    def create(self, job: Mapping[str, Any]) -> dict[str, Any]:
+        job_id = str(job.get("job_id", "") or "").strip()
+        if not job_id:
+            raise ValueError("Conversion job requires a non-empty job_id.")
+        payload = dict(job)
+        with self._lock:
+            self._jobs[job_id] = payload
+            snapshot = dict(payload)
+        self.persist()
+        return snapshot
+
+    def update(self, job_id: str, fields: Mapping[str, Any], *, updated_at: str | None = None) -> dict[str, Any] | None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return None
+            job.update(dict(fields))
+            job["updated_at"] = updated_at or _utc_now_label()
+            snapshot = dict(job)
+        self.persist()
+        return snapshot
+
+    def get(self, job_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            return dict(job) if job else None
+
+    def delete(self, job_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            job = self._jobs.pop(job_id, None)
+            snapshot = dict(job) if job else None
+        if snapshot is not None:
+            self.persist()
+        return snapshot
+
+    def snapshot(self) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            return {job_id: dict(job) for job_id, job in self._jobs.items()}
+
+    def persist(self) -> dict[str, Any]:
+        if not self._persistence_path:
+            return {"persisted": False, "job_count": 0, "error": ""}
+
+        snapshot = self.snapshot()
+        payload = {"version": 1, "updated_at": _utc_now_label(), "jobs": snapshot}
+        try:
+            self._persistence_path.parent.mkdir(parents=True, exist_ok=True)
+            temp_path = self._persistence_path.with_suffix(self._persistence_path.suffix + ".tmp")
+            temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            temp_path.replace(self._persistence_path)
+        except OSError as error:
+            return {"persisted": False, "job_count": len(snapshot), "error": str(error)}
+        return {"persisted": True, "job_count": len(snapshot), "error": ""}
+
+
+def _utc_now_label() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def build_local_app_url(port: int | str | None = None, *, path: str = "/") -> str:

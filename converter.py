@@ -1736,32 +1736,43 @@ def build_epub(content: dict, config: ConversionConfig, original_filename: str, 
         except Exception as e:
             print(f"Warning: Could not add image {img_info['filename']}: {e}")
     
-    # CRITICAL FIX: Add chess diagram images from chapters
+    # Add any chapter-scoped assets that were not already registered globally.
+    chapter_asset_count = 0
     chess_diagram_count = 0
     for chapter_data in content.get("chapters", []):
         chapter_images = chapter_data.get("images", [])
-        chess_imgs = [img for img in chapter_images if img.get("is_chess")]
-        
-        for chess_img in chess_imgs:
-            if chess_img["filename"] in added_image_filenames:
+
+        for chapter_img in chapter_images:
+            if chapter_img["filename"] in added_image_filenames:
+                continue
+            img_bytes = chapter_img.get("data")
+            if not img_bytes:
                 continue
             try:
-                chess_diagram_count += 1
-                chess_item = epub.EpubItem(
-                    uid=f"chess_{chess_img['filename']}",
-                    file_name=f"images/{chess_img['filename']}",
-                    media_type=f"image/{chess_img['extension']}",
-                    content=chess_img["data"],
+                chapter_asset_count += 1
+                if chapter_img.get("is_chess"):
+                    chess_diagram_count += 1
+                extension = (chapter_img.get("extension") or "png").lower()
+                if extension == "jpg":
+                    extension = "jpeg"
+                uid_prefix = "chess" if chapter_img.get("is_chess") else "chapterimg"
+                chapter_item = epub.EpubItem(
+                    uid=f"{uid_prefix}_{chapter_img['filename']}",
+                    file_name=f"images/{chapter_img['filename']}",
+                    media_type=f"image/{extension}",
+                    content=img_bytes,
                 )
-                book.add_item(chess_item)
-                image_items.append(chess_item)
-                image_items_by_filename[chess_img["filename"]] = chess_item
-                image_uids_by_filename[chess_img["filename"]] = f"chess_{chess_img['filename']}"
-                image_filename_by_digest.setdefault(_digest_bytes(chess_img["data"]), chess_img["filename"])
-                added_image_filenames.add(chess_img["filename"])
+                book.add_item(chapter_item)
+                image_items.append(chapter_item)
+                image_items_by_filename[chapter_img["filename"]] = chapter_item
+                image_uids_by_filename[chapter_img["filename"]] = f"{uid_prefix}_{chapter_img['filename']}"
+                image_filename_by_digest.setdefault(_digest_bytes(img_bytes), chapter_img["filename"])
+                added_image_filenames.add(chapter_img["filename"])
             except Exception as e:
-                print(f"Warning: Could not add chess diagram {chess_img['filename']}: {e}")
-    
+                print(f"Warning: Could not add chapter image {chapter_img['filename']}: {e}")
+
+    if chapter_asset_count > 0:
+        print(f"Added {chapter_asset_count} chapter-scoped images to EPUB")
     if chess_diagram_count > 0:
         print(f"Added {chess_diagram_count} chess diagram images to EPUB")
     
@@ -1880,7 +1891,7 @@ def build_epub(content: dict, config: ConversionConfig, original_filename: str, 
     # Add cover page from first page image
     cover_item = None
     cover_page_added = False
-    if content.get("images"):
+    if content.get("images") and not content.get("suppress_auto_cover"):
         first_image = content["images"][0]
         try:
             cover_extension = (first_image.get("extension") or "jpeg").lower()
@@ -2407,8 +2418,8 @@ def convert_docx_to_epub_with_report(
     analysis = analyze_docx(docx_path)
     document = build_docx_publication_document(docx_path, language=config.language)
     content = publication_to_content(document)
-    # DOCX images are chapter-scoped inline figures; suppress PDF-like auto-cover generation.
-    content["images"] = []
+    # DOCX images are valid inline assets, but they should not be promoted to an automatic cover.
+    content["suppress_auto_cover"] = True
 
     final_metadata = {"title": document.title, "author": document.author}
     epub_bytes = build_epub(content, config, original_filename, final_metadata)

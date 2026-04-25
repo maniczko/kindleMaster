@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from pathlib import Path
 import sys
 from typing import Any
@@ -24,6 +25,7 @@ def run_smoke_tests(
     reports_dir: str | Path = "reports/smoke",
     case_filters: list[str] | None = None,
 ) -> dict[str, Any]:
+    run_started = time.perf_counter()
     resolved_manifest = Path(manifest_path).resolve()
     if not resolved_manifest.exists():
         raise FileNotFoundError(f"Reference input manifest not found: {resolved_manifest}")
@@ -43,11 +45,13 @@ def run_smoke_tests(
             continue
         if filters and not _case_matches(case, filters):
             continue
+        case_started = time.perf_counter()
         path = Path(case["target_path"]).resolve()
         row = {
             "id": case["id"],
             "document_class": case["document_class"],
             "input_type": case["input_type"],
+            "release_strict": bool(case.get("release_strict", True)),
             "path": str(path),
         }
         artifact_bytes: bytes | None = None
@@ -93,9 +97,17 @@ def run_smoke_tests(
                 inspection=inspect_epub_archive(artifact_bytes),
                 label="klasy dokumentu",
             )
+        row["benchmark"] = _build_case_benchmark(
+            row=row,
+            elapsed_seconds=time.perf_counter() - case_started,
+        )
         rows.append(row)
 
     summary = _build_smoke_summary(rows)
+    summary["benchmark"] = _build_benchmark_summary(
+        rows,
+        elapsed_seconds=time.perf_counter() - run_started,
+    )
     payload = {
         "mode": mode,
         "manifest": str(resolved_manifest),
@@ -129,7 +141,7 @@ def _build_smoke_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     size_failures = 0
     size_warnings = 0
     for row in rows:
-        validation_status = ((row.get("validation") or {}).get("summary") or {}).get("status", "failed")
+        validation_status = _effective_case_validation_status(row)
         size_status = (row.get("size_gate") or {}).get("status", "passed")
         status = _merge_statuses(validation_status, size_status)
         if status == "failed":
@@ -148,6 +160,108 @@ def _build_smoke_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "size_failed_cases": size_failures,
         "size_warning_cases": size_warnings,
         "overall_status": overall,
+    }
+
+
+def _effective_case_validation_status(row: dict[str, Any]) -> str:
+    source_status = _source_validation_status(row, default="failed")
+    release_audit = row.get("release_audit") or {}
+    if not release_audit:
+        return source_status
+
+    release_status = _release_decision_to_validation_status(str(release_audit.get("decision", "") or ""))
+    if release_status == "failed":
+        if row.get("release_strict") is False and source_status != "failed":
+            return "passed_with_warnings"
+        return "failed"
+    if source_status == "failed":
+        return "passed_with_warnings"
+    return _merge_statuses(source_status, release_status)
+
+
+def _source_validation_status(row: dict[str, Any], *, default: str = "unavailable") -> str:
+    return ((row.get("validation") or {}).get("summary") or {}).get("status", default)
+
+
+def _release_decision_to_validation_status(decision: str) -> str:
+    normalized = decision.strip().lower()
+    if normalized == "pass":
+        return "passed"
+    if normalized == "pass_with_review":
+        return "passed_with_warnings"
+    if normalized == "fail":
+        return "failed"
+    return "failed"
+
+
+def _build_case_benchmark(*, row: dict[str, Any], elapsed_seconds: float) -> dict[str, Any]:
+    validation_status = _effective_case_validation_status(row)
+    source_validation_status = _source_validation_status(row)
+    release_status = ""
+    if row.get("release_audit"):
+        release_status = _release_decision_to_validation_status(str(row["release_audit"].get("decision", "") or ""))
+    quality_report = row.get("quality_report") or {}
+    analysis = row.get("analysis") or {}
+    size_gate = row.get("size_gate") or {}
+    inspection = size_gate.get("inspection") or {}
+    fallback_mode = _detect_fallback_mode(analysis=analysis, quality_report=quality_report)
+    missing_metrics: list[str] = []
+    if not inspection:
+        missing_metrics.append("archive_inspection")
+    if row.get("epub_size_bytes") is None:
+        missing_metrics.append("epub_size_bytes")
+    if fallback_mode == "unknown":
+        missing_metrics.append("fallback_mode")
+    return {
+        "elapsed_seconds": round(float(elapsed_seconds), 4),
+        "output_size_bytes": int(row.get("epub_size_bytes") or 0),
+        "image_count": int(inspection.get("image_count", 0) or 0),
+        "fallback_mode": fallback_mode,
+        "validation_status": validation_status,
+        "source_validation_status": source_validation_status,
+        "release_audit_status": release_status,
+        "metrics_missing": missing_metrics,
+    }
+
+
+def _detect_fallback_mode(*, analysis: dict[str, Any], quality_report: dict[str, Any]) -> str:
+    profile = str((analysis or {}).get("profile", "") or "").strip()
+    validation_tool = str((quality_report or {}).get("validation_tool", "") or "").strip()
+    if profile == "legacy-fallback" or validation_tool == "legacy":
+        return "legacy-fallback"
+    if profile:
+        return "premium"
+    return "unknown"
+
+
+def _build_benchmark_summary(rows: list[dict[str, Any]], *, elapsed_seconds: float) -> dict[str, Any]:
+    classes = {str(row.get("document_class", "") or "") for row in rows if row.get("document_class")}
+    slowest = sorted(
+        (
+            {
+                "id": row.get("id", "unknown"),
+                "document_class": row.get("document_class", ""),
+                "elapsed_seconds": (row.get("benchmark") or {}).get("elapsed_seconds", 0),
+                "validation_status": (row.get("benchmark") or {}).get("validation_status", "unavailable"),
+                "fallback_mode": (row.get("benchmark") or {}).get("fallback_mode", "unknown"),
+            }
+            for row in rows
+        ),
+        key=lambda item: float(item.get("elapsed_seconds") or 0),
+        reverse=True,
+    )[:5]
+    missing_metric_cases = [
+        row.get("id", "unknown")
+        for row in rows
+        if (row.get("benchmark") or {}).get("metrics_missing")
+    ]
+    return {
+        "total_elapsed_seconds": round(float(elapsed_seconds), 4),
+        "case_count": len(rows),
+        "class_count": len(classes),
+        "classes": sorted(classes),
+        "slowest_cases": slowest,
+        "missing_metric_cases": missing_metric_cases,
     }
 
 
@@ -179,8 +293,21 @@ def _build_smoke_markdown(payload: dict[str, Any]) -> str:
         f"- Overall status: `{payload.get('summary', {}).get('overall_status', 'unknown')}`",
         "",
     ]
+    benchmark = (payload.get("summary") or {}).get("benchmark") or {}
+    if benchmark:
+        lines.extend(
+            [
+                "## Benchmark",
+                "",
+                f"- Total elapsed: `{benchmark.get('total_elapsed_seconds', 0)}` seconds",
+                f"- Classes covered: `{benchmark.get('class_count', 0)}`",
+                f"- Missing metric cases: `{', '.join(benchmark.get('missing_metric_cases', [])) or 'none'}`",
+                "",
+            ]
+        )
     for row in payload.get("cases", []):
         validation = row.get("validation", {})
+        benchmark = row.get("benchmark") or {}
         lines.extend(
             [
                 f"## {row.get('id', 'unknown')}",
@@ -188,6 +315,8 @@ def _build_smoke_markdown(payload: dict[str, Any]) -> str:
                 f"- Class: `{row.get('document_class', '')}`",
                 f"- Input type: `{row.get('input_type', '')}`",
                 f"- Validation: `{(validation.get('summary') or {}).get('status', 'unknown')}`",
+                f"- Effective status: `{_effective_case_validation_status(row)}`",
+                f"- Benchmark: `{benchmark.get('elapsed_seconds', 0)}` seconds, fallback `{benchmark.get('fallback_mode', 'unknown')}`",
             ]
         )
         if row.get("size_gate"):

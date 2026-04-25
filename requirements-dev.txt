@@ -3,6 +3,8 @@
 #   python kindlemaster.py bootstrap
 pytest>=8.4.0
 coverage[toml]>=7.8.0
+ruff>=0.8.0
+pip-audit>=2.7.0
 # Optional local verification surfaces:
 # - browser: Playwright Python package plus a separate Chromium install
 # - runtime: Waitress plus the browser surface toolchain

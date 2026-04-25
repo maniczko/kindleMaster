@@ -8,7 +8,12 @@ from unittest.mock import patch
 
 from lxml import etree
 
-from epub_heading_repair import _build_toc_entries_from_scan, repair_epub_headings_and_toc, run_heading_repair_pipeline
+from epub_heading_repair import (
+    _build_toc_entries_from_scan,
+    _filter_resolved_manual_review_items,
+    repair_epub_headings_and_toc,
+    run_heading_repair_pipeline,
+)
 
 
 class EpubHeadingRepairTests(unittest.TestCase):
@@ -254,6 +259,58 @@ class EpubHeadingRepairTests(unittest.TestCase):
         self.assertEqual(labels.count("Contents"), 1)
         self.assertEqual(labels.count("Summary of Tactical Motifs"), 1)
         self.assertEqual(labels.count("The Woodpecker Method"), 1)
+
+    def test_filter_resolved_manual_review_items_drops_title_conflict_when_toc_is_clean(self):
+        queue = [
+            {
+                "phase": "inventory",
+                "file": "package.opf",
+                "element": "dc:title",
+                "before": "Document-Like Report Fixture",
+                "after": "Executive summary",
+                "reason": "metadata-heading-conflict",
+                "status": "review-needed",
+            },
+            {
+                "phase": "metadata_repair",
+                "file": "package.opf",
+                "element": "dc:title",
+                "before": "Document-Like Report Fixture",
+                "after": "Executive summary",
+                "reason": "title-does-not-match-dominant-heading",
+                "status": "review-needed",
+            },
+            {
+                "phase": "metadata_repair",
+                "file": "package.opf",
+                "element": "dc:title",
+                "before": "python-docx",
+                "after": "Executive summary",
+                "reason": "title-does-not-match-dominant-heading",
+                "status": "review-needed",
+            },
+        ]
+        toc_map = [
+            {
+                "label": "Document-Like Report Fixture",
+                "heading_text": "Document-Like Report Fixture",
+                "file": "cover.xhtml",
+                "source_of_decision": "added",
+                "issues": [],
+            },
+            {
+                "label": "Executive summary",
+                "heading_text": "Executive summary",
+                "file": "chapter_001.xhtml",
+                "source_of_decision": "kept",
+                "issues": [],
+            },
+        ]
+
+        filtered = _filter_resolved_manual_review_items(queue, toc_map=toc_map, structural_phase={})
+
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["before"], "python-docx")
 
     def test_repair_epub_headings_and_toc_demotes_page_markers_and_promotes_first_real_heading(self):
         chapter_source = """<?xml version="1.0" encoding="utf-8"?>
@@ -543,6 +600,51 @@ class EpubHeadingRepairTests(unittest.TestCase):
         self.assertNotIn("<h2>Business Analysis</h2>", chapter)
         self.assertNotIn("<h2>Planning and</h2>", chapter)
         self.assertNotIn("<h2>Requirements</h2>", chapter)
+
+    def test_repair_epub_headings_and_toc_rejects_navigation_artifacts_but_keeps_real_sections(self):
+        chapter_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Quality Report</title></head>
+  <body>
+    <section>
+      <h1>Quality Report</h1>
+      <p>Opening body content that supports the real title.</p>
+      <h2>https://example.com/noise</h2>
+      <p>URL fragments can appear as extracted layout lines and must not enter navigation.</p>
+      <h2>DOI: 10.1000/xyz123</h2>
+      <p>DOI fragments belong in references or prose, not in the Kindle TOC.</p>
+      <h2>99%</h2>
+      <p>Percent-only metric fragments are not section headings.</p>
+      <h2>Figure 4: Revenue overview</h2>
+      <p>Caption-like content is not a navigation target.</p>
+      <h2>Page 12</h2>
+      <p>Page markers are layout artifacts.</p>
+      <h2>Methods</h2>
+      <p>Methods is a valid short section with supporting prose after it.</p>
+      <h2>Results</h2>
+      <p>Results is also a valid short section with supporting prose.</p>
+    </section>
+  </body>
+</html>
+"""
+        epub_bytes = self._minimal_epub(chapter_source, nav_label="Quality Report")
+
+        with patch(
+            "epub_heading_repair.run_epubcheck",
+            return_value={"status": "passed", "tool": "epubcheck", "messages": []},
+        ):
+            result = repair_epub_headings_and_toc(epub_bytes, language_hint="en")
+
+        toc_labels = {item["label"] for item in result.toc_mapping}
+        self.assertIn("Quality Report", toc_labels)
+        self.assertIn("Methods", toc_labels)
+        self.assertIn("Results", toc_labels)
+        self.assertNotIn("https://example.com/noise", toc_labels)
+        self.assertNotIn("DOI: 10.1000/xyz123", toc_labels)
+        self.assertNotIn("99%", toc_labels)
+        self.assertNotIn("Figure 4: Revenue overview", toc_labels)
+        self.assertNotIn("Page 12", toc_labels)
+        self.assertEqual(result.qa["gates"]["C"]["status"], "pass")
 
 
 if __name__ == "__main__":

@@ -118,6 +118,39 @@ class VatFixtureContractTests(unittest.TestCase):
                     self.assertEqual(document.page_count, 4)
                     self.assertEqual(document.metadata.get("title"), "Document-Like Report Fixture")
 
+    def test_prepare_reference_inputs_generates_source_surrogates_for_clean_ci_checkout(self) -> None:
+        source_backed_case_ids = ("ocr_probe_pdf", "scan_probe_epub", "magazine_layout_pdf")
+        selected_cases = [
+            next(case for case in prepare_reference_inputs_module.REFERENCE_CASES if case["id"] == case_id)
+            for case_id in source_backed_case_ids
+        ]
+
+        with patch.object(prepare_reference_inputs_module, "REFERENCE_CASES", selected_cases):
+            with tempfile.TemporaryDirectory() as temp_dir:
+                manifest = prepare_reference_inputs_module.prepare_reference_inputs(root_dir=temp_dir)
+                case_map = {case["id"]: case for case in manifest["cases"]}
+                ocr_path = Path(temp_dir) / "reference_inputs" / "pdf" / "ocr_probe.pdf"
+                scan_path = Path(temp_dir) / "reference_inputs" / "epub" / "scan_probe.epub"
+                magazine_path = Path(temp_dir) / "reference_inputs" / "pdf" / "magazine_layout.pdf"
+
+                self.assertEqual(set(case_map), set(source_backed_case_ids))
+                for case_id in source_backed_case_ids:
+                    self.assertEqual(case_map[case_id]["source_path"], f"<generated-fallback:{case_id}>")
+                    self.assertGreater(int(case_map[case_id]["size_bytes"]), 0)
+
+                with fitz.open(ocr_path) as document:
+                    self.assertEqual(document.page_count, 1)
+                    self.assertIn("Ocr Probe Pdf", document.metadata.get("title", ""))
+
+                with fitz.open(magazine_path) as document:
+                    self.assertEqual(document.page_count, 3)
+                    self.assertIn("Magazine Layout Pdf", document.metadata.get("title", ""))
+
+                with zipfile.ZipFile(scan_path) as archive:
+                    self.assertIn("mimetype", archive.namelist())
+                    self.assertIn("EPUB/content.opf", archive.namelist())
+                    self.assertIn("EPUB/nav.xhtml", archive.namelist())
+
     def test_manifest_contains_real_vat_fixture_entries_with_required_shape(self) -> None:
         self.assertEqual(set(VAT_FIXTURE_IDS), {"ocr_stress_scan_pdf", "document_like_report_pdf"})
 
@@ -249,11 +282,16 @@ class VatFixtureContractTests(unittest.TestCase):
 
         self.assertEqual(payload["summary"]["cases_run"], 2)
         self.assertEqual(payload["summary"]["overall_status"], "passed")
+        self.assertIn("benchmark", payload["summary"])
+        self.assertEqual(payload["summary"]["benchmark"]["class_count"], 2)
         self.assertEqual([case["id"] for case in payload["cases"]], list(VAT_FIXTURE_IDS))
         for case in payload["cases"]:
             self.assertEqual(case["size_gate"]["status"], "passed")
+            self.assertIn("benchmark", case)
+            self.assertEqual(case["benchmark"]["validation_status"], "passed")
         self.assertIn("ocr_stress_scan_pdf", markdown)
         self.assertIn("document_like_report_pdf", markdown)
+        self.assertIn("## Benchmark", markdown)
 
 
 if __name__ == "__main__":

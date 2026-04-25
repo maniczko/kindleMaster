@@ -865,6 +865,80 @@ class SemanticEpubCleanupTests(unittest.TestCase):
             self.assertIn('content="1"', toc_ncx)
             self.assertIn('src="chapter_001.xhtml#forest-walk"', toc_ncx)
 
+    def test_finalize_epub_for_kindle_dedupes_chapter_dom_ids(self):
+        opf_source = """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">urn:uuid:test</dc:identifier>
+    <dc:title>DOM ID Probe</dc:title>
+    <dc:language>en</dc:language>
+    <dc:creator>Codex QA</dc:creator>
+  </metadata>
+  <manifest>
+    <item id="chapter_0" href="chapter_001.xhtml" media-type="application/xhtml+xml"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="chapter_0"/>
+  </spine>
+</package>
+"""
+        chapter_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>DOM ID Probe</title></head>
+  <body>
+    <h1 id="dom-id-probe">DOM ID Probe</h1>
+    <h2 id="shared-anchor">Overview</h2>
+    <p>First section.</p>
+    <h2 id="shared-anchor">Details</h2>
+    <p>Second section.</p>
+  </body>
+</html>
+"""
+        nav_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+  <body><nav epub:type="toc"><ol><li><a href="chapter_001.xhtml">DOM ID Probe</a></li></ol></nav></body>
+</html>
+"""
+        toc_source = """<?xml version="1.0" encoding="utf-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+  <head><meta name="dtb:uid" content="test"/></head>
+  <docTitle><text>DOM ID Probe</text></docTitle>
+  <navMap></navMap>
+</ncx>
+"""
+        container_source = """<?xml version="1.0" encoding="utf-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="EPUB/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>
+"""
+        epub_bytes = self._build_epub_bytes(
+            {
+                "mimetype": "application/epub+zip",
+                "META-INF/container.xml": container_source,
+                "EPUB/content.opf": opf_source,
+                "EPUB/chapter_001.xhtml": chapter_source,
+                "EPUB/nav.xhtml": nav_source,
+                "EPUB/toc.ncx": toc_source,
+            }
+        )
+
+        cleaned_epub = finalize_epub_for_kindle(
+            epub_bytes,
+            title="DOM ID Probe",
+            author="Codex QA",
+            language="en",
+        )
+
+        with zipfile.ZipFile(io.BytesIO(cleaned_epub), "r") as archive:
+            chapter = archive.read("EPUB/chapter_001.xhtml").decode("utf-8")
+
+        self.assertEqual(chapter.count('id="shared-anchor"'), 1)
+        self.assertIn('id="shared-anchor-2"', chapter)
+
     def test_finalize_epub_for_kindle_dedupes_cover_spine_and_toc_entries(self):
         opf_source = """<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">

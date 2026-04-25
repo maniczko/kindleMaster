@@ -160,7 +160,10 @@ def build_docx_publication_document(
         if kind == "table":
             section = ensure_section()
             flush_list()
-            table_html = _table_to_html(block)
+            table_html, table_assets = _table_to_html(block, asset_registry=asset_registry)
+            for asset in table_assets:
+                if not any(existing.get("filename") == asset["filename"] for existing in section.assets):
+                    section.assets.append(asset)
             if table_html:
                 section.blocks.append(
                     PublicationBlock(
@@ -503,38 +506,59 @@ def _extract_images_from_xml(element: Any, *, part: Any, asset_registry: dict[st
     return assets
 
 
-def _table_to_html(table: DocxTable) -> str:
+def _table_to_html(
+    table: DocxTable,
+    *,
+    asset_registry: dict[str, dict[str, Any]],
+) -> tuple[str, list[dict[str, Any]]]:
     rows_html: list[str] = []
+    extracted_assets: list[dict[str, Any]] = []
     for row in table.rows:
         cells_html: list[str] = []
         for cell in row.cells:
-            cell_html = _cell_to_html(cell)
+            cell_html, cell_assets = _cell_to_html(cell, asset_registry=asset_registry)
+            extracted_assets.extend(cell_assets)
             tag_name = "th" if not rows_html else "td"
             cells_html.append(f"<{tag_name}>{cell_html}</{tag_name}>")
         rows_html.append(f"<tr>{''.join(cells_html)}</tr>")
     if not rows_html:
-        return ""
-    return f"<table>{''.join(rows_html)}</table>"
+        return "", []
+    return f"<table>{''.join(rows_html)}</table>", _merge_assets(extracted_assets)
 
 
-def _cell_to_html(cell: _Cell) -> str:
+def _cell_to_html(
+    cell: _Cell,
+    *,
+    asset_registry: dict[str, dict[str, Any]],
+) -> tuple[str, list[dict[str, Any]]]:
     fragments: list[str] = []
+    extracted_assets: list[dict[str, Any]] = []
     for kind, block in _iter_block_items(cell):
         if kind == "table":
-            nested = _table_to_html(block)
+            nested, nested_assets = _table_to_html(block, asset_registry=asset_registry)
             if nested:
                 fragments.append(nested)
+            extracted_assets.extend(nested_assets)
             continue
-        inner_html, _assets, list_kind = _paragraph_to_html(block, asset_registry={})
-        if not inner_html:
-            inner_html = html.escape(_normalize_space(block.text))
-        if not inner_html:
+        inner_html, paragraph_assets, list_kind = _paragraph_to_html(block, asset_registry=asset_registry)
+        extracted_assets.extend(paragraph_assets)
+        inline_asset_html = "".join(
+            (
+                f'<img src="images/{html.escape(asset["filename"])}" '
+                f'alt="{html.escape(asset.get("alt", ""))}"/>'
+            )
+            for asset in paragraph_assets
+        )
+        combined_html = f"{inner_html}{inline_asset_html}".strip()
+        if not combined_html:
+            combined_html = html.escape(_normalize_space(block.text))
+        if not combined_html:
             continue
         if list_kind:
-            fragments.append(f"<{list_kind}><li>{inner_html}</li></{list_kind}>")
+            fragments.append(f"<{list_kind}><li>{combined_html}</li></{list_kind}>")
         else:
-            fragments.append(f"<p>{inner_html}</p>")
-    return "".join(fragments) or "&nbsp;"
+            fragments.append(f"<p>{combined_html}</p>")
+    return "".join(fragments) or "&nbsp;", _merge_assets(extracted_assets)
 
 
 def _build_list_html(kind: str, items: list[str]) -> str:

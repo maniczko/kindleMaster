@@ -81,6 +81,18 @@ class TestEpubValidation(unittest.TestCase):
         self.assertTrue(any("fragment #missing" in message for message in result["internal_links"]["errors"]))
 
     @patch("epub_validation.run_epubcheck", return_value={"status": "passed", "tool": "epubcheck", "messages": []})
+    def test_validate_epub_bytes_flags_duplicate_ids_as_release_blocker(self, _mock_epubcheck) -> None:
+        epub_bytes = _build_epub(
+            chapter_body='<h1 id="intro">Intro</h1><h2 id="intro">Duplicate</h2><p>Body.</p>'
+        )
+
+        result = validate_epub_bytes(epub_bytes, label="duplicate_id.epub")
+
+        self.assertEqual(result["summary"]["status"], "failed")
+        self.assertEqual(result["document_stats"]["documents_with_duplicate_ids"], 1)
+        self.assertTrue(any("duplicate id values found" in message for message in result["internal_links"]["errors"]))
+
+    @patch("epub_validation.run_epubcheck", return_value={"status": "passed", "tool": "epubcheck", "messages": []})
     def test_validate_epub_bytes_flags_unresolved_external_host(self, _mock_epubcheck) -> None:
         epub_bytes = _build_epub(
             chapter_body='<h1 id="intro">Intro</h1><p><a href="https://the">Broken URL</a></p>'

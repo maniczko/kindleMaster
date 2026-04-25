@@ -46,6 +46,8 @@ class BrowserConversionOutcomeHarnessTests(unittest.TestCase):
         template_html = TEMPLATE_PATH.read_text(encoding="utf-8")
         cls.function_sources = [
             _extract_function_source(template_html, "coerceFiniteNumber"),
+            _extract_function_source(template_html, "normalizeQualityHealth"),
+            _extract_function_source(template_html, "deriveQualityVerdict"),
             _extract_function_source(template_html, "normalizePostConversionPayload"),
             _extract_function_source(template_html, "formatBytes"),
             _extract_function_source(template_html, "applyConversionOutcome"),
@@ -59,9 +61,14 @@ const jobPayload = {json.dumps(job_payload, ensure_ascii=False)};
 let selectedSourceType = {json.dumps(selected_source_type, ensure_ascii=False)};
 const renderedReports = [];
 const statusLog = [];
+const recentConversions = [];
 
 function renderConversionReport(payload) {{
   renderedReports.push(payload);
+}}
+
+function rememberRecentConversion(payload) {{
+  recentConversions.push(payload);
 }}
 
 function setStatus(message, level) {{
@@ -75,6 +82,7 @@ for (const source of functionSources) {{
 applyConversionOutcome(jobPayload, "sample.pdf");
 process.stdout.write(JSON.stringify({{
   renderedReport: renderedReports[0] || null,
+  recentConversion: recentConversions[0] || null,
   statusLog,
 }}));
 """
@@ -125,6 +133,10 @@ process.stdout.write(JSON.stringify({{
         self.assertEqual(rendered["profile"], "diagram_book_reflow")
         self.assertEqual(rendered["assets"], 224)
         self.assertEqual(rendered["headingRepair"]["status"], "skipped")
+        self.assertEqual(rendered["verdict"]["key"], "ready_with_review")
+        self.assertEqual(rendered["qualityStateUrl"], "")
+        self.assertEqual(rendered["metadataHealth"]["status"], "not_reported")
+        self.assertEqual(payload["recentConversion"]["verdict"], "Ready with review")
         self.assertIn(
             "diagram-heavy training book",
             payload["statusLog"][-1]["message"],
@@ -163,6 +175,7 @@ process.stdout.write(JSON.stringify({{
                     "source_type": "pdf",
                     "overall_severity": "warning",
                     "quality_available": True,
+                    "download_url": "/convert/download/job-quality",
                     "summary": {
                         "profile": "diagram_book_reflow",
                         "strategy": "image-first-reflow",
@@ -206,7 +219,11 @@ process.stdout.write(JSON.stringify({{
                     "alerts": [
                         {"code": "size_budget_warning", "level": "warning", "message": "warn"},
                     ],
+                    "metadata_health": {"status": "passed", "message": "metadata normalized"},
+                    "link_health": {"status": "passed", "broken_count": 0},
+                    "visible_junk": {"status": "passed", "count": 0},
                 },
+                "quality_state_url": "/convert/quality/job-quality",
             }
         )
 
@@ -219,7 +236,42 @@ process.stdout.write(JSON.stringify({{
         self.assertEqual(rendered["renderBudget"]["budgetClass"], "fixed_layout_balanced")
         self.assertEqual(rendered["sizeBudget"]["status"], "passed_with_warnings")
         self.assertEqual(rendered["headingRepair"]["status"], "skipped")
+        self.assertEqual(rendered["verdict"]["key"], "ready_with_review")
+        self.assertEqual(rendered["qualityStateUrl"], "/convert/quality/job-quality")
+        self.assertEqual(rendered["downloadUrl"], "/convert/download/job-quality")
+        self.assertEqual(rendered["metadataHealth"]["status"], "passed")
+        self.assertEqual(rendered["linkHealth"]["status"], "passed")
+        self.assertEqual(rendered["visibleJunk"]["status"], "passed")
+        self.assertEqual(payload["recentConversion"]["profile"], "diagram_book_reflow")
         self.assertIn("diagram-heavy training book", payload["statusLog"][-1]["message"])
+
+    def test_apply_conversion_outcome_marks_failed_quality_gate_from_validation_failure(self) -> None:
+        payload = self._run_apply_conversion_outcome(
+            {
+                "source_type": "pdf",
+                "conversion": {
+                    "source_type": "pdf",
+                    "profile": "book_reflow",
+                    "strategy": "text_reflowable",
+                    "validation": "failed",
+                    "validation_tool": "epubcheck",
+                    "sections": 8,
+                    "assets": 1,
+                    "layout": "reflowable",
+                    "warnings": 0,
+                    "warning_list": [],
+                    "high_risk_pages": 0,
+                    "high_risk_sections": 0,
+                    "output_size_bytes": 8192,
+                    "heading_repair": {"status": "skipped"},
+                },
+            }
+        )
+
+        rendered = payload["renderedReport"]
+        self.assertEqual(rendered["verdict"]["key"], "failed_quality_gate")
+        self.assertEqual(rendered["verdict"]["tone"], "failed")
+        self.assertEqual(payload["recentConversion"]["verdict"], "Failed quality gate")
 
 
 if __name__ == "__main__":

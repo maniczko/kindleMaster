@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import sys
+import tempfile
+import threading
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from app_runtime_services import (
+    ConversionJobStore,
     ConversionRequest,
     build_local_app_url,
     build_conversion_job_record,
@@ -50,6 +54,59 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertEqual(payload["updated_at"], "2026-04-22T12:00:00Z")
         self.assertEqual(payload["metadata"], {})
         self.assertEqual(payload["error"], "")
+
+    def test_conversion_job_store_persists_and_reloads_terminal_jobs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store_path = Path(temp_dir) / "jobs.json"
+            jobs: dict[str, dict] = {}
+            lock = threading.Lock()
+            store = ConversionJobStore(jobs, lock, persistence_path=store_path)
+            store.create(
+                {
+                    "job_id": "job-ready",
+                    "status": "ready",
+                    "message": "EPUB gotowy do pobrania.",
+                    "created_at": "2026-04-25T10:00:00Z",
+                    "updated_at": "2026-04-25T10:00:00Z",
+                    "metadata": {"profile": "book_reflow"},
+                    "error": "",
+                }
+            )
+
+            reloaded_jobs: dict[str, dict] = {}
+            reloaded_store = ConversionJobStore(reloaded_jobs, threading.Lock(), persistence_path=store_path)
+            load_result = reloaded_store.load()
+
+        self.assertTrue(load_result["loaded"])
+        self.assertEqual(load_result["job_count"], 1)
+        self.assertEqual(reloaded_jobs["job-ready"]["status"], "ready")
+        self.assertEqual(reloaded_jobs["job-ready"]["metadata"]["profile"], "book_reflow")
+
+    def test_conversion_job_store_marks_active_jobs_failed_after_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store_path = Path(temp_dir) / "jobs.json"
+            store = ConversionJobStore({}, threading.Lock(), persistence_path=store_path)
+            store.create(
+                {
+                    "job_id": "job-running",
+                    "status": "running",
+                    "message": "Konwertuje PDF do EPUB...",
+                    "created_at": "2026-04-25T10:00:00Z",
+                    "updated_at": "2026-04-25T10:00:00Z",
+                    "source_path": "C:/temp/job-running.pdf",
+                    "metadata": {},
+                    "error": "",
+                }
+            )
+
+            reloaded_jobs: dict[str, dict] = {}
+            reloaded_store = ConversionJobStore(reloaded_jobs, threading.Lock(), persistence_path=store_path)
+            load_result = reloaded_store.load()
+
+        self.assertEqual(load_result["interrupted_jobs"], 1)
+        self.assertEqual(reloaded_jobs["job-running"]["status"], "failed")
+        self.assertIn("restart", reloaded_jobs["job-running"]["message"])
+        self.assertEqual(reloaded_jobs["job-running"]["source_path"], "")
 
     def test_resolve_server_port_and_debug_mode_use_safe_env_defaults(self) -> None:
         self.assertEqual(resolve_server_port({}), 5001)

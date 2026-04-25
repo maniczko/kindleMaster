@@ -19,6 +19,7 @@ from app_runtime_services import (
     DEFAULT_PORT,
     LOCALHOST,
     ConversionRequest,
+    ConversionJobStore,
     build_conversion_job_record,
     build_conversion_quality_state,
     enrich_conversion_metadata_with_output_size,
@@ -50,6 +51,13 @@ CONVERSION_CLEANUP_MIN_INTERVAL_SECONDS = 60
 ACTIVE_CONVERSION_JOB_STATUSES = {"queued", "running", "repairing_headings"}
 _CONVERSION_JOBS: dict[str, dict] = {}
 _CONVERSION_JOBS_LOCK = threading.Lock()
+_CONVERSION_JOB_STORE = ConversionJobStore(
+    _CONVERSION_JOBS,
+    _CONVERSION_JOBS_LOCK,
+    persistence_path=Path(UPLOAD_DIR) / "conversion_jobs.json",
+    active_statuses=ACTIVE_CONVERSION_JOB_STATUSES,
+)
+_CONVERSION_JOB_STORE.load()
 _LAST_CONVERSION_CLEANUP_AT: datetime | None = None
 
 
@@ -140,19 +148,15 @@ def _resolve_request_port_label(host_header: str | None, fallback_port: int) -> 
 
 
 def _set_conversion_job(job_id: str, **fields) -> dict | None:
-    with _CONVERSION_JOBS_LOCK:
-        job = _CONVERSION_JOBS.get(job_id)
-        if not job:
-            return None
-        job.update(fields)
-        job["updated_at"] = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-        return dict(job)
+    return _CONVERSION_JOB_STORE.update(
+        job_id,
+        fields,
+        updated_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+    )
 
 
 def _get_conversion_job(job_id: str) -> dict | None:
-    with _CONVERSION_JOBS_LOCK:
-        job = _CONVERSION_JOBS.get(job_id)
-        return dict(job) if job else None
+    return _CONVERSION_JOB_STORE.get(job_id)
 
 
 def _parse_job_timestamp(value: str | None) -> datetime | None:
@@ -265,6 +269,9 @@ def _cleanup_expired_conversion_jobs(*, now: datetime | None = None, force: bool
             _CONVERSION_JOBS.pop(job_id, None)
 
         _LAST_CONVERSION_CLEANUP_AT = current_time
+
+    if removed_job_ids:
+        _CONVERSION_JOB_STORE.persist()
 
     for expired_path in [*expired_source_paths, *expired_output_paths]:
         if expired_path and expired_path not in active_paths and os.path.exists(expired_path):
@@ -487,14 +494,15 @@ def convert_start():
     source_path = os.path.join(UPLOAD_DIR, f"{job_id}{source_suffix}")
     file.save(source_path)
     created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-    with _CONVERSION_JOBS_LOCK:
-        _CONVERSION_JOBS[job_id] = build_conversion_job_record(
+    _CONVERSION_JOB_STORE.create(
+        build_conversion_job_record(
             job_id=job_id,
             source_path=source_path,
             source_type=source_type,
             filename=file.filename,
             created_at=created_at,
         )
+    )
 
     _spawn_conversion_job(
         job_id=job_id,

@@ -919,6 +919,15 @@ At minimum, the project config should define or document:
 - standard bootstrap, test, smoke, validate, and audit commands,
 - repo-specific constraints such as localhost freshness and anti-overfitting rules.
 
+Current repo-local Codex defaults:
+- model: `gpt-5.5`
+- reasoning effort: `xhigh`
+- approval policy: `on-request`
+- multi-agent support: enabled
+- browser/runtime verification support: Browser Use plugin and pinned Playwright MCP
+
+Keep MCP and plugin entries deterministic. Do not use floating MCP versions such as `@latest`; pin versions and update them deliberately with a small verification pass.
+
 ## 35. Standard Engineering Workflow
 
 KindleMaster standardizes engineering work as:

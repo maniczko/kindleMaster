@@ -35,17 +35,20 @@
 # - no skipping validators, smoke, or release gates after runtime changes
 # - prefer the standard kindlemaster.py entrypoint over ad-hoc scripts
 # - generated output/ and reports/ artifacts are derived evidence, not policy authority
+#
+# Active settings below are intentionally small and portable. Keep speculative
+# preferences as comments unless Codex supports them as real config keys.
 
-model = "gpt-5.4"
+model = "gpt-5.5"
 model_reasoning_effort = "xhigh"
-approval_policy = "never"
+approval_policy = "on-request"
 
 [features]
 multi_agent = true
 
 [mcp_servers.playwright]
 command = "npx"
-args = ["@playwright/mcp@latest"]
+args = ["@playwright/mcp@0.0.70"]
 
 [plugins."github@openai-curated"]
 enabled = true
@@ -54,4 +57,7 @@ enabled = true
 enabled = true
 
 [plugins."build-web-apps@openai-curated"]
+enabled = true
+
+[plugins."browser-use@openai-bundled"]
 enabled = true

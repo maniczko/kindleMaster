@@ -30,6 +30,8 @@ The supported toolchain matrix lives in [docs/toolchain-matrix.md](docs/toolchai
 - `.codex/config.toml` is authoritative only for active repo-local Codex settings; its comments are convenience mirrors, not an independent policy source.
 - Generated files under `reports/` and `output/` are derived artifacts, not governance authority.
 
+Repo-local Codex defaults are `gpt-5.5` with `xhigh` reasoning, `on-request` approvals, multi-agent support, GitHub/Linear/Build Web Apps/Browser Use plugins, and pinned Playwright MCP for browser verification.
+
 ## Local Setup
 
 The preferred local UI runs on `http://kindlemaster.localhost:5001/`.

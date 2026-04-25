@@ -597,6 +597,12 @@ class KindleMasterEntrypointTests(unittest.TestCase):
 
         self.assertIn("Control-plane authority map:", codex_config_text)
         self.assertIn("generated output/ and reports/ artifacts are derived evidence", codex_config_text)
+        self.assertIn('model = "gpt-5.5"', codex_config_text)
+        self.assertIn('model_reasoning_effort = "xhigh"', codex_config_text)
+        self.assertIn('approval_policy = "on-request"', codex_config_text)
+        self.assertIn('@playwright/mcp@0.0.70', codex_config_text)
+        self.assertIn('[plugins."browser-use@openai-bundled"]', codex_config_text)
+        self.assertNotIn("@playwright/mcp@latest", codex_config_text)
 
 
 if __name__ == "__main__":

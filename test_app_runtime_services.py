@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import threading
@@ -11,6 +12,7 @@ from unittest.mock import Mock, patch
 from app_runtime_services import (
     ConversionJobStore,
     ConversionRequest,
+    build_conversion_metadata,
     build_local_app_url,
     build_conversion_job_record,
     detect_supported_source_type,
@@ -54,6 +56,7 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertEqual(payload["updated_at"], "2026-04-22T12:00:00Z")
         self.assertEqual(payload["metadata"], {})
         self.assertEqual(payload["error"], "")
+        self.assertEqual(payload["error_code"], "")
 
     def test_conversion_job_store_persists_and_reloads_terminal_jobs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -106,6 +109,8 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertEqual(load_result["interrupted_jobs"], 1)
         self.assertEqual(reloaded_jobs["job-running"]["status"], "failed")
         self.assertIn("restart", reloaded_jobs["job-running"]["message"])
+        self.assertEqual(reloaded_jobs["job-running"]["error_code"], "application_restart")
+        self.assertIn("Uruchom konwersje ponownie", reloaded_jobs["job-running"]["error"])
         self.assertEqual(reloaded_jobs["job-running"]["source_path"], "")
 
     def test_resolve_server_port_and_debug_mode_use_safe_env_defaults(self) -> None:
@@ -200,6 +205,7 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertIn("missing target", outcome.heading_repair_report["error"])
         self.assertEqual(outcome.metadata["heading_repair"]["status"], "failed")
         self.assertEqual(outcome.metadata["strategy"], "text_reflowable")
+        self.assertEqual(heading_repair_impl.call_args.kwargs["publication_profile"], "book_reflow")
         self.assertEqual(
             status_updates,
             [
@@ -207,6 +213,125 @@ class AppRuntimeServicesTests(unittest.TestCase):
                 ("repairing_headings", "Naprawiam headingi i TOC w EPUB..."),
             ],
         )
+
+    def test_build_conversion_metadata_preserves_cockpit_inputs_and_flattened_fields(self) -> None:
+        result = {
+            "analysis": {
+                "profile": "book_reflow",
+                "confidence": 0.93,
+                "page_count": 42,
+                "render_budget_class": "book_reflow_balanced",
+                "has_toc": True,
+                "has_tables": True,
+                "has_diagrams": False,
+                "has_meaningful_images": True,
+                "estimated_sections": 8,
+                "legacy_strategy": "text_reflowable",
+                "detected_features": [f"feature-{index}" for index in range(25)],
+                "external_tools": {"epubcheck": {"available": True}},
+                "profile_reason": "Dense text document with usable heading signals.",
+            },
+            "quality_report": {
+                "validation_status": "passed_with_warnings",
+                "epubcheck_status": "passed_with_warnings",
+                "validation_tool": "epubcheck",
+                "validation_messages": [f"message-{index}" for index in range(16)],
+                "warnings": ["Needs manual review."],
+                "section_count": 8,
+                "figure_count": 3,
+                "diagram_count": 0,
+                "table_count": 2,
+                "page_marker_count": 42,
+                "detected_figures": 3,
+                "detected_diagrams": 0,
+                "detected_tables": 2,
+                "fallback_pages": list(range(30)),
+                "fallback_sections": [f"Section {index}" for index in range(30)],
+                "fallback_regions": [{"page": index, "reason": "low-confidence"} for index in range(30)],
+                "high_risk_pages": [],
+                "high_risk_sections": [],
+                "archive_entry_count": 54,
+                "archive_image_count": 3,
+                "largest_assets": [{"href": f"image-{index}.jpg", "size": index} for index in range(25)],
+                "size_budget_inspection": {
+                    "entry_count": 54,
+                    "largest_assets": [{"href": f"asset-{index}.jpg"} for index in range(25)],
+                },
+                "text_cleanup": {
+                    "status": "passed_with_warnings",
+                    "auto_fix_count": 11,
+                    "review_needed_count": 2,
+                    "blocked_count": 0,
+                    "publish_blocked": False,
+                    "examples": [f"cleanup-{index}" for index in range(25)],
+                    "reference_cleanup": {
+                        "quality_gate_status": "passed_with_warnings",
+                        "visible_junk_detected": 1,
+                        "records_reconstructed": 6,
+                        "manual_review": [{"id": index} for index in range(20)],
+                    },
+                },
+                "semantic_cleanup": {
+                    "status": "failed",
+                    "message": "Paragraph structure gate failed.",
+                    "manual_review_count": 4,
+                },
+                "ocr_degradation": {
+                    "status": "degraded",
+                    "degraded_count": 2,
+                    "message": "Low confidence OCR pages.",
+                },
+                "reading_order": {
+                    "status": "passed_with_warnings",
+                    "manual_review_count": 1,
+                    "regions": [{"page": index} for index in range(20)],
+                },
+            },
+            "document_summary": {
+                "title": "Contract Probe",
+                "author": "Codex QA",
+                "language": "pl",
+                "profile": "book_reflow",
+                "layout_mode": "reflowable",
+                "section_count": 8,
+                "asset_count": 3,
+            },
+        }
+
+        metadata = build_conversion_metadata(
+            result=result,
+            detected_source_type="pdf",
+            heading_repair_enabled=False,
+            heading_repair_report={"status": "skipped", "release_status": "unavailable"},
+        )
+
+        json.dumps(metadata)
+        self.assertEqual(metadata["profile"], "book_reflow")
+        self.assertEqual(metadata["confidence"], 0.93)
+        self.assertEqual(metadata["strategy"], "text_reflowable")
+        self.assertEqual(metadata["sections"], 8)
+        self.assertEqual(metadata["assets"], 3)
+        self.assertEqual(metadata["layout"], "reflowable")
+        self.assertEqual(metadata["validation"], "passed_with_warnings")
+        self.assertEqual(metadata["validation_tool"], "epubcheck")
+
+        self.assertEqual(metadata["content_metrics"]["table_count"], 2)
+        self.assertEqual(len(metadata["content_metrics"]["fallback_pages"]), 20)
+        self.assertEqual(len(metadata["content_metrics"]["largest_assets"]), 20)
+        self.assertEqual(metadata["text_cleanup"]["review_needed_count"], 2)
+        self.assertEqual(len(metadata["text_cleanup"]["examples"]), 20)
+        self.assertEqual(metadata["reference_cleanup"]["quality_gate_status"], "passed_with_warnings")
+        self.assertEqual(metadata["reference_cleanup"]["visible_junk_detected"], 1)
+        self.assertEqual(metadata["semantic_cleanup"]["status"], "failed")
+        self.assertEqual(metadata["ocr_quality"]["degraded_count"], 2)
+        self.assertEqual(metadata["reading_order"]["manual_review_count"], 1)
+        self.assertEqual(len(metadata["reading_order"]["regions"]), 12)
+        self.assertEqual(metadata["source_analysis"]["page_count"], 42)
+        self.assertEqual(len(metadata["source_analysis"]["detected_features"]), 20)
+        self.assertEqual(metadata["document_summary"]["title"], "Contract Probe")
+        self.assertEqual(metadata["validation_details"]["epubcheck_status"], "passed_with_warnings")
+        self.assertEqual(len(metadata["validation_details"]["validation_messages"]), 12)
+        self.assertEqual(len(metadata["validation_details"]["size_budget_inspection"]["largest_assets"]), 12)
 
     def test_run_document_conversion_skips_heading_repair_for_diagram_book_profile(self) -> None:
         convert_impl = Mock(

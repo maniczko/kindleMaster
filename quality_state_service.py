@@ -1,15 +1,38 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Mapping
 
+from conversion_api_contracts import ConversionDownloadState, resolve_conversion_download_state
+from quality_cockpit_issues import build_quality_cockpit_issue_groups
+from quality_cockpit_preview import build_quality_cockpit_preview
 
-KNOWN_JOB_STATUSES = {"queued", "running", "repairing_headings", "ready", "failed"}
+
+KNOWN_JOB_STATUSES = {"queued", "running", "repairing_headings", "ready", "failed", "timed_out"}
 READY_JOB_STATUS = "ready"
 FAILED_JOB_STATUS = "failed"
+TIMED_OUT_JOB_STATUS = "timed_out"
 
 WARNING_STATUSES = {"warning", "warnings", "passed_with_warnings", "pass_with_review"}
 FAILED_STATUSES = {"failed", "fail", "error"}
+QUALITY_COMPLETENESS_SECTIONS = (
+    ("validation", "Validation"),
+    ("epubcheck", "EPUBCheck"),
+    ("toc", "TOC"),
+    ("metadata", "Metadata"),
+    ("links", "Links"),
+    ("visible_junk", "Visible junk"),
+    ("assets", "Assets"),
+    ("text_cleanup", "Text cleanup"),
+    ("reference_cleanup", "Reference cleanup"),
+    ("semantic_cleanup", "Semantic cleanup"),
+    ("ocr_quality", "OCR quality"),
+    ("reading_order", "Reading order"),
+    ("table_semantics", "Table semantics"),
+)
+QUALITY_COMPLETENESS_NOT_REPORTED_STATUSES = {"", "not_reported", "unavailable", "unknown", "skipped"}
+SEND_TO_KINDLE_EMAIL_SAFE_BYTES = 50 * 1024 * 1024
 
 
 def _coerce_text(value: Any, *, default: str = "") -> str:
@@ -49,6 +72,18 @@ def _coerce_optional_non_negative_int(value: Any) -> int | None:
     if converted < 0:
         return None
     return converted
+
+
+def _coerce_optional_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return None
 
 
 def _first_non_none(*values: int | None) -> int | None:
@@ -115,6 +150,8 @@ def _phase_for_job_status(status: str) -> str:
     if status == READY_JOB_STATUS:
         return "completed"
     if status == FAILED_JOB_STATUS:
+        return "failed"
+    if status == TIMED_OUT_JOB_STATUS:
         return "failed"
     return "unknown"
 
@@ -334,6 +371,50 @@ class QualitySummaryState:
 
 
 @dataclass(frozen=True)
+class QualityCompletenessSectionState:
+    key: str
+    label: str
+    status: str = "not_reported"
+    reported: bool = False
+    message: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "key": self.key,
+            "label": self.label,
+            "status": self.status,
+            "reported": self.reported,
+            "message": self.message,
+        }
+
+
+@dataclass(frozen=True)
+class QualityCompletenessState:
+    score: int = 0
+    status: str = "not_reported"
+    expected_sections: int = len(QUALITY_COMPLETENESS_SECTIONS)
+    reported_sections: int = 0
+    missing_count: int = len(QUALITY_COMPLETENESS_SECTIONS)
+    not_reported_count: int = len(QUALITY_COMPLETENESS_SECTIONS)
+    missing_sections: tuple[str, ...] = field(default_factory=tuple)
+    not_reported_sections: tuple[str, ...] = field(default_factory=tuple)
+    sections: tuple[QualityCompletenessSectionState, ...] = field(default_factory=tuple)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "score": self.score,
+            "status": self.status,
+            "expected_sections": self.expected_sections,
+            "reported_sections": self.reported_sections,
+            "missing_count": self.missing_count,
+            "not_reported_count": self.not_reported_count,
+            "missing_sections": list(self.missing_sections),
+            "not_reported_sections": list(self.not_reported_sections),
+            "sections": [section.to_dict() for section in self.sections],
+        }
+
+
+@dataclass(frozen=True)
 class ConversionQualityStateRequest:
     job_status: str
     source_type: str = ""
@@ -343,6 +424,8 @@ class ConversionQualityStateRequest:
     conversion_metadata: Mapping[str, Any] = field(default_factory=dict)
     output_size_bytes: int | None = None
     download_url: str = ""
+    output_path: str = ""
+    output_path_exists: bool | None = None
 
     @classmethod
     def from_job_payload(
@@ -361,6 +444,8 @@ class ConversionQualityStateRequest:
             conversion_metadata=conversion_metadata,
             output_size_bytes=_coerce_optional_non_negative_int(payload.get("output_size_bytes")),
             download_url=_coerce_text(download_url or payload.get("download_url")),
+            output_path=_coerce_text(payload.get("output_path")),
+            output_path_exists=_coerce_optional_bool(payload.get("output_path_exists")),
         )
 
 
@@ -371,6 +456,14 @@ class ConversionQualityState:
     is_terminal: bool
     quality_available: bool
     download_ready: bool
+    download_available: bool
+    download_state: ConversionDownloadState
+    reading_verdict: str
+    release_verdict: str
+    release_blocked: bool
+    quality_blockers: tuple[dict[str, Any], ...]
+    send_to_kindle_ready: bool
+    send_to_kindle_blockers: tuple[dict[str, Any], ...]
     overall_severity: str
     source_type: str
     filename: str
@@ -383,6 +476,21 @@ class ConversionQualityState:
     audit: AuditState
     render_budget: RenderBudgetState
     size_budget: SizeBudgetState
+    content_metrics: dict[str, Any]
+    text_cleanup: dict[str, Any]
+    reference_cleanup: dict[str, Any]
+    semantic_cleanup: dict[str, Any]
+    ocr_quality: dict[str, Any]
+    reading_order: dict[str, Any]
+    asset_summary: dict[str, Any]
+    toc_preview: dict[str, Any]
+    epubcheck_detail: dict[str, Any]
+    metadata_summary: dict[str, Any]
+    metadata_health: dict[str, Any]
+    link_health: dict[str, Any]
+    visible_junk: dict[str, Any]
+    issue_groups: dict[str, list[dict[str, Any]]]
+    quality_completeness: QualityCompletenessState
     raw_signals: QualityRawSignalsState
     verdict: QualityVerdictState
     alerts: tuple[QualityStateAlert, ...] = field(default_factory=tuple)
@@ -394,6 +502,14 @@ class ConversionQualityState:
             "is_terminal": self.is_terminal,
             "quality_available": self.quality_available,
             "download_ready": self.download_ready,
+            "download_available": self.download_available,
+            "download_state": self.download_state.to_dict(),
+            "reading_verdict": self.reading_verdict,
+            "release_verdict": self.release_verdict,
+            "release_blocked": self.release_blocked,
+            "quality_blockers": [dict(item) for item in self.quality_blockers],
+            "send_to_kindle_ready": self.send_to_kindle_ready,
+            "send_to_kindle_blockers": [dict(item) for item in self.send_to_kindle_blockers],
             "overall_severity": self.overall_severity,
             "source_type": self.source_type,
             "filename": self.filename,
@@ -406,6 +522,21 @@ class ConversionQualityState:
             "audit": self.audit.to_dict(),
             "render_budget": self.render_budget.to_dict(),
             "size_budget": self.size_budget.to_dict(),
+            "content_metrics": self.content_metrics,
+            "text_cleanup": self.text_cleanup,
+            "reference_cleanup": self.reference_cleanup,
+            "semantic_cleanup": self.semantic_cleanup,
+            "ocr_quality": self.ocr_quality,
+            "reading_order": self.reading_order,
+            "asset_summary": self.asset_summary,
+            "toc_preview": self.toc_preview,
+            "epubcheck_detail": self.epubcheck_detail,
+            "metadata_summary": self.metadata_summary,
+            "metadata_health": self.metadata_health,
+            "link_health": self.link_health,
+            "visible_junk": self.visible_junk,
+            "issue_groups": self.issue_groups,
+            "quality_completeness": self.quality_completeness.to_dict(),
             "raw_signals": self.raw_signals.to_dict(),
             "verdict": self.verdict.to_dict(),
             "alerts": [alert.to_dict() for alert in self.alerts],
@@ -480,6 +611,8 @@ def _build_alerts(
 
     if job_status == FAILED_JOB_STATUS:
         push("error", "conversion_failed", error or "Conversion failed before quality data was available.")
+    elif job_status == TIMED_OUT_JOB_STATUS:
+        push("error", "conversion_timeout", error or "Conversion timed out before quality data was available.")
 
     if job_status == READY_JOB_STATUS and not quality_available:
         push("warning", "quality_state_incomplete", "Ready conversion is missing normalized quality metadata.")
@@ -539,13 +672,15 @@ def _build_verdict_state(
     job_status: str,
     overall_severity: str,
     quality_available: bool,
+    download_available: bool,
     validation: ValidationState,
     heading_repair: HeadingRepairState,
     audit: AuditState,
     size_budget: SizeBudgetState,
     alerts: tuple[QualityStateAlert, ...],
+    issue_groups: Mapping[str, Any] | None = None,
 ) -> QualityVerdictState:
-    if job_status == FAILED_JOB_STATUS:
+    if job_status in {FAILED_JOB_STATUS, TIMED_OUT_JOB_STATUS}:
         status = "failed"
     elif job_status != READY_JOB_STATUS:
         status = "pending"
@@ -558,8 +693,21 @@ def _build_verdict_state(
     else:
         status = "unknown"
 
-    review_count = heading_repair.review + audit.high_risk_pages + audit.high_risk_sections
+    groups = _dict_payload(issue_groups)
+    blocker_issues = groups.get("blockers") if isinstance(groups.get("blockers"), list) else []
+    warning_issues = groups.get("warnings") if isinstance(groups.get("warnings"), list) else []
+    review_issues = groups.get("review") if isinstance(groups.get("review"), list) else []
+    if blocker_issues:
+        status = "failed"
+    final_severity = "error" if blocker_issues else "warning" if warning_issues or review_issues else overall_severity
+
+    review_count = heading_repair.review + audit.high_risk_pages + audit.high_risk_sections + len(review_issues)
     reason_codes = [alert.code for alert in alerts]
+    reason_codes.extend(
+        str(issue.get("code"))
+        for issue in [*blocker_issues, *warning_issues, *review_issues]
+        if isinstance(issue, Mapping) and issue.get("code")
+    )
     if validation.status == "failed":
         reason_codes.append("validation_failed")
     if size_budget.status == "failed":
@@ -569,11 +717,761 @@ def _build_verdict_state(
 
     return QualityVerdictState(
         status=status,
-        severity=overall_severity,
+        severity=final_severity,
         requires_manual_review=review_count > 0,
-        blocks_download=job_status == FAILED_JOB_STATUS or (job_status == READY_JOB_STATUS and overall_severity == "error"),
+        blocks_download=not download_available,
         reasons=tuple(dict.fromkeys(reason_codes)),
     )
+
+
+def _dict_payload(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _quality_issue_list(issue_groups: Mapping[str, Any] | None, key: str) -> tuple[dict[str, Any], ...]:
+    groups = _dict_payload(issue_groups)
+    raw_items = groups.get(key)
+    if not isinstance(raw_items, list):
+        return ()
+    items: list[dict[str, Any]] = []
+    for raw_item in raw_items:
+        payload = _dict_payload(raw_item)
+        if not payload:
+            continue
+        code = _coerce_text(payload.get("code"))
+        message = _coerce_text(payload.get("message"))
+        source = _coerce_text(payload.get("source"), default="quality")
+        if not code and not message:
+            continue
+        normalized = {
+            "severity": _coerce_text(payload.get("severity"), default="blocker") or "blocker",
+            "code": code or "quality_blocker",
+            "message": message or "Quality blocker reported.",
+            "source": source or "quality",
+        }
+        suggested_action = _coerce_text(payload.get("suggested_action"))
+        if suggested_action:
+            normalized["suggested_action"] = suggested_action
+        for optional_key in ("page", "section", "file"):
+            if optional_key in payload:
+                normalized[optional_key] = payload[optional_key]
+        items.append(normalized)
+    return tuple(items)
+
+
+def _build_quality_blockers(
+    *,
+    job_status: str,
+    error: str,
+    issue_groups: Mapping[str, Any] | None,
+    alerts: tuple[QualityStateAlert, ...],
+) -> tuple[dict[str, Any], ...]:
+    blockers = list(_quality_issue_list(issue_groups, "blockers"))
+    seen_codes = {_coerce_text(item.get("code")) for item in blockers}
+    if job_status == TIMED_OUT_JOB_STATUS and "conversion_timeout" not in seen_codes:
+        blockers.insert(
+            0,
+            {
+                "severity": "blocker",
+                "code": "conversion_timeout",
+                "message": error or "Conversion timed out before an EPUB was available.",
+                "source": "conversion",
+                "suggested_action": "Retry the conversion after checking the source file and local runtime.",
+            },
+        )
+    elif job_status == FAILED_JOB_STATUS and "conversion_failed" not in seen_codes:
+        conversion_error = error or next((alert.message for alert in alerts if alert.code == "conversion_failed"), "")
+        blockers.insert(
+            0,
+            {
+                "severity": "blocker",
+                "code": "conversion_failed",
+                "message": conversion_error or "Conversion failed before an EPUB was available.",
+                "source": "conversion",
+                "suggested_action": "Fix the conversion error and run the job again.",
+            },
+        )
+    return tuple(blockers)
+
+
+def _has_structural_reader_failure(
+    *,
+    validation: ValidationState,
+    epubcheck_detail: Mapping[str, Any],
+    issue_groups: Mapping[str, Any] | None,
+) -> bool:
+    if validation.status == "failed":
+        return True
+    if _normalize_cockpit_status(epubcheck_detail.get("status"), default="not_reported") == "failed":
+        return True
+    for issue in _quality_issue_list(issue_groups, "blockers"):
+        code = _coerce_text(issue.get("code"))
+        source = _coerce_text(issue.get("source"))
+        if code in {"validation_failed", "epubcheck_failed", "link_health_failed"}:
+            return True
+        if source in {"validation", "epubcheck"}:
+            return True
+    return False
+
+
+def _build_reading_verdict(
+    *,
+    job_status: str,
+    download_available: bool,
+    release_blocked: bool,
+    overall_severity: str,
+    quality_available: bool,
+    validation: ValidationState,
+    epubcheck_detail: Mapping[str, Any],
+    issue_groups: Mapping[str, Any] | None,
+) -> str:
+    if job_status != READY_JOB_STATUS or not download_available:
+        return "failed"
+    if _has_structural_reader_failure(
+        validation=validation,
+        epubcheck_detail=epubcheck_detail,
+        issue_groups=issue_groups,
+    ):
+        return "failed"
+    has_warning_or_review = bool(_quality_issue_list(issue_groups, "warnings") or _quality_issue_list(issue_groups, "review"))
+    if release_blocked or overall_severity == "warning" or has_warning_or_review or not quality_available:
+        return "ready_with_review"
+    return "ready"
+
+
+def _build_release_verdict(
+    *,
+    job_status: str,
+    download_available: bool,
+    release_blocked: bool,
+    reading_verdict: str,
+    overall_severity: str,
+    quality_available: bool,
+    issue_groups: Mapping[str, Any] | None,
+) -> str:
+    if job_status in {FAILED_JOB_STATUS, TIMED_OUT_JOB_STATUS}:
+        return "failed"
+    if job_status != READY_JOB_STATUS or not download_available:
+        return "failed"
+    if release_blocked or reading_verdict == "failed":
+        return "release_blocked"
+    has_warning_or_review = bool(_quality_issue_list(issue_groups, "warnings") or _quality_issue_list(issue_groups, "review"))
+    if reading_verdict == "ready_with_review" or overall_severity == "warning" or has_warning_or_review or not quality_available:
+        return "ready_with_review"
+    return "release_ready"
+
+
+def _build_send_to_kindle_blockers(
+    *,
+    job_status: str,
+    download_available: bool,
+    release_verdict: str,
+    validation: ValidationState,
+    epubcheck_detail: Mapping[str, Any],
+    size_budget: SizeBudgetState,
+    output_size_bytes: int | None,
+    asset_summary: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    blockers: list[dict[str, Any]] = []
+
+    def push(code: str, message: str, source: str, suggested_action: str) -> None:
+        if any(item.get("code") == code for item in blockers):
+            return
+        blockers.append(
+            {
+                "severity": "blocker",
+                "code": code,
+                "message": message,
+                "source": source,
+                "suggested_action": suggested_action,
+            }
+        )
+
+    if job_status != READY_JOB_STATUS or not download_available:
+        push(
+            "kindle_delivery_not_available",
+            "EPUB file is not available for Send-to-Kindle delivery.",
+            "download",
+            "Finish conversion successfully and verify the download link.",
+        )
+        return tuple(blockers)
+
+    if release_verdict != "release_ready":
+        push(
+            "kindle_delivery_release_not_ready",
+            "EPUB is generated, but release quality is not ready for Kindle delivery.",
+            "quality_state",
+            "Resolve release blockers or review warnings before sending the file to Kindle.",
+        )
+
+    epubcheck_status = _normalize_cockpit_status(epubcheck_detail.get("status"), default=validation.status)
+    if validation.status != "passed" or epubcheck_status != "passed":
+        push(
+            "kindle_delivery_validation_failed",
+            "EPUBCheck or structural validation is not passing.",
+            "validation",
+            "Run EPUB validation and repair package, XHTML, link, or navigation issues before Send-to-Kindle.",
+        )
+
+    if output_size_bytes is None:
+        push(
+            "kindle_delivery_not_verified",
+            "EPUB output size is not reported, so email delivery cannot be verified.",
+            "size",
+            "Report final EPUB size before marking the file as Send-to-Kindle ready.",
+        )
+    elif output_size_bytes > SEND_TO_KINDLE_EMAIL_SAFE_BYTES:
+        push(
+            "kindle_delivery_email_size_limit",
+            f"EPUB is larger than the conservative email delivery budget ({SEND_TO_KINDLE_EMAIL_SAFE_BYTES} bytes).",
+            "size",
+            "Reduce assets or use a non-email Send-to-Kindle path after manual verification.",
+        )
+
+    asset_budget_status = _normalize_cockpit_status(asset_summary.get("asset_budget_status"), default="not_reported")
+    if size_budget.status == "failed" or asset_budget_status == "failed":
+        push(
+            "kindle_delivery_size_budget_failed",
+            "EPUB failed the publication size budget for Kindle delivery.",
+            "size_budget",
+            "Reduce image/media payloads or choose a lower-size render preset before Send-to-Kindle.",
+        )
+    elif size_budget.status == "passed_with_warnings" or asset_budget_status == "passed_with_warnings":
+        push(
+            "kindle_delivery_size_budget_review",
+            "EPUB only passed the size budget with warnings.",
+            "size_budget",
+            "Review final EPUB size and asset budget warnings before Send-to-Kindle.",
+        )
+
+    image_quality = _dict_payload(asset_summary.get("image_quality"))
+    cover = _dict_payload(image_quality.get("cover")) or _dict_payload(asset_summary.get("cover"))
+    cover_status = _normalize_cockpit_status(cover.get("status"), default="not_reported")
+    cover_issues = [str(item) for item in cover.get("issues", []) if str(item).strip()] if isinstance(cover.get("issues"), list) else []
+    if cover_status in {"failed", "passed_with_warnings", "warning"} or cover_issues:
+        push(
+            "kindle_delivery_cover_image_quality",
+            "Cover image aspect ratio or pixel size is risky for Kindle delivery.",
+            "asset_summary",
+            "Regenerate or replace the cover with a portrait image that meets Kindle cover dimensions.",
+        )
+
+    progressive_jpeg_count = _coerce_first_optional_non_negative_int(
+        image_quality.get("progressive_jpeg_count"),
+        asset_summary.get("progressive_jpeg_count"),
+    )
+    if progressive_jpeg_count and progressive_jpeg_count > 0:
+        push(
+            "kindle_delivery_progressive_jpeg",
+            f"EPUB contains {progressive_jpeg_count} progressive JPEG image(s), which are risky for Kindle delivery.",
+            "asset_summary",
+            "Re-encode delivery images as baseline JPEG or PNG before Send-to-Kindle.",
+        )
+
+    low_resolution_count = _coerce_first_optional_non_negative_int(
+        image_quality.get("low_resolution_count"),
+        asset_summary.get("low_resolution_count"),
+    )
+    if low_resolution_count and low_resolution_count > 0:
+        push(
+            "kindle_delivery_low_resolution_images",
+            f"EPUB contains {low_resolution_count} low-resolution image(s).",
+            "asset_summary",
+            "Replace low-resolution images or rerender at a higher image preset before Send-to-Kindle.",
+        )
+
+    unsupported_media_count = _coerce_non_negative_int(asset_summary.get("unsupported_media_count"))
+    script_count = _coerce_non_negative_int(asset_summary.get("script_count"))
+    media_risk_count = _coerce_non_negative_int(
+        _coerce_first_optional_non_negative_int(
+            image_quality.get("media_risk_count"),
+            asset_summary.get("media_risk_count"),
+        )
+    )
+    if unsupported_media_count > 0 or script_count > 0 or media_risk_count > 0:
+        push(
+            "kindle_delivery_unsupported_assets",
+            "EPUB contains scripts or unsupported media that are risky for Kindle delivery.",
+            "asset_summary",
+            "Remove scripts, audio, video, fonts, or unsupported media from the delivery EPUB.",
+        )
+
+    return tuple(blockers)
+
+
+def _not_reported_section() -> dict[str, Any]:
+    return {"status": "not_reported"}
+
+
+def _not_reported_health(label: str) -> dict[str, Any]:
+    return {
+        "label": label,
+        "status": "not_reported",
+        "count": None,
+        "message": "",
+    }
+
+
+def _has_existing_file(path_value: str) -> bool:
+    if not path_value:
+        return False
+    try:
+        return Path(path_value).exists()
+    except OSError:
+        return False
+
+
+def _normalize_cockpit_status(value: Any, *, default: str = "not_reported") -> str:
+    normalized = _coerce_status(value, default=default)
+    if normalized in {"pass", "passed", "ok", "success"}:
+        return "passed"
+    if normalized in WARNING_STATUSES:
+        return "passed_with_warnings"
+    if normalized in FAILED_STATUSES or normalized == "blocked":
+        return "failed"
+    if normalized in {"not_reported", "unavailable", "skipped"}:
+        return normalized
+    return normalized or default
+
+
+def _normalize_optional_payload(value: Any, *, reported_status: str = "reported") -> dict[str, Any]:
+    payload = _dict_payload(value)
+    if not payload:
+        return _not_reported_section()
+    normalized = dict(payload)
+    normalized.setdefault("status", reported_status)
+    return normalized
+
+
+def _normalize_content_metrics_payload(value: Any) -> dict[str, Any]:
+    normalized = _normalize_optional_payload(value)
+    if normalized.get("status") == "not_reported":
+        return normalized
+    table_summary = _dict_payload(normalized.get("table_summary"))
+    for key in (
+        "source_table_count",
+        "xhtml_table_count",
+        "table_cell_count",
+        "table_row_count",
+        "table_page_count",
+        "multi_page_table_count",
+        "wide_table_count",
+        "low_confidence_table_count",
+        "fragment_table_count",
+    ):
+        if key not in normalized and key in table_summary:
+            normalized[key] = table_summary[key]
+    normalized.setdefault("table_cell_coverage", table_summary.get("table_cell_coverage", 1.0))
+    normalized.setdefault("table_row_count", 0)
+    normalized.setdefault("fragment_table_count", 0)
+    return normalized
+
+
+def _normalize_text_cleanup_payload(value: Any) -> dict[str, Any]:
+    payload = _dict_payload(value)
+    if not payload:
+        return _not_reported_section()
+    normalized = dict(payload)
+    if not normalized.get("status"):
+        if _truthy_value(normalized.get("publish_blocked")) or _coerce_non_negative_int(normalized.get("blocked_count")) > 0:
+            normalized["status"] = "failed"
+        elif _coerce_non_negative_int(normalized.get("review_needed_count")) > 0:
+            normalized["status"] = "passed_with_warnings"
+        else:
+            normalized["status"] = "passed"
+    return normalized
+
+
+def _normalize_reference_cleanup_payload(value: Any) -> dict[str, Any]:
+    payload = _dict_payload(value)
+    if not payload:
+        return _not_reported_section()
+    normalized = dict(payload)
+    status = _coerce_first_text(
+        normalized.get("status"),
+        normalized.get("quality_gate_status"),
+        normalized.get("reference_quality_gate_status"),
+    )
+    if status:
+        normalized["status"] = _normalize_cockpit_status(status)
+    elif _coerce_non_negative_int(normalized.get("visible_junk_detected")) > 0:
+        normalized["status"] = "failed"
+    elif (
+        _coerce_non_negative_int(normalized.get("unresolved_fragment_count")) > 0
+        or _coerce_non_negative_int(normalized.get("review_record_count")) > 0
+    ):
+        normalized["status"] = "passed_with_warnings"
+    else:
+        normalized["status"] = "passed"
+    return normalized
+
+
+def _truthy_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "blocked", "failed"}
+    return bool(value)
+
+
+def _build_preview_inputs(
+    *,
+    conversion_metadata: Mapping[str, Any],
+    content_metrics: Mapping[str, Any],
+    validation_details: Mapping[str, Any],
+    document_summary: Mapping[str, Any],
+    heading_repair: HeadingRepairState,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    preview_metadata = dict(conversion_metadata)
+    for key, value in document_summary.items():
+        preview_metadata.setdefault(key, value)
+    if "author" in document_summary and "creator" not in preview_metadata:
+        preview_metadata["creator"] = document_summary.get("author")
+    preview_metadata["heading_repair"] = heading_repair.to_dict()
+
+    preview_quality_report = {
+        **dict(content_metrics),
+        **dict(validation_details),
+    }
+    return preview_metadata, preview_quality_report
+
+
+def _has_cockpit_preview_input(
+    *,
+    conversion_metadata: Mapping[str, Any],
+    content_metrics: Mapping[str, Any],
+    validation_details: Mapping[str, Any],
+    document_summary: Mapping[str, Any],
+    output_path: str,
+) -> bool:
+    explicit_keys = {
+        "asset_summary",
+        "toc_preview",
+        "epubcheck_detail",
+        "metadata_summary",
+    }
+    return (
+        bool(content_metrics)
+        or bool(validation_details)
+        or bool(document_summary)
+        or any(key in conversion_metadata for key in explicit_keys)
+        or _has_existing_file(output_path)
+    )
+
+
+def _build_cockpit_preview_sections(
+    *,
+    conversion_metadata: Mapping[str, Any],
+    content_metrics: Mapping[str, Any],
+    validation_details: Mapping[str, Any],
+    document_summary: Mapping[str, Any],
+    heading_repair: HeadingRepairState,
+    output_path: str,
+) -> dict[str, dict[str, Any]]:
+    if not _has_cockpit_preview_input(
+        conversion_metadata=conversion_metadata,
+        content_metrics=content_metrics,
+        validation_details=validation_details,
+        document_summary=document_summary,
+        output_path=output_path,
+    ):
+        return {
+            "asset_summary": _not_reported_section(),
+            "toc_preview": _not_reported_section(),
+            "epubcheck_detail": _not_reported_section(),
+            "metadata_summary": _not_reported_section(),
+        }
+
+    preview_metadata, preview_quality_report = _build_preview_inputs(
+        conversion_metadata=conversion_metadata,
+        content_metrics=content_metrics,
+        validation_details=validation_details,
+        document_summary=document_summary,
+        heading_repair=heading_repair,
+    )
+    preview = build_quality_cockpit_preview(
+        preview_metadata,
+        quality_report=preview_quality_report,
+        epub_path=output_path if _has_existing_file(output_path) else None,
+    )
+    asset_summary = _merge_preview_section(
+        _dict_payload(preview.get("asset_summary")),
+        _dict_payload(conversion_metadata.get("asset_summary")),
+    )
+
+    return {
+        "asset_summary": asset_summary,
+        "toc_preview": _dict_payload(conversion_metadata.get("toc_preview")) or _dict_payload(preview.get("toc_preview")),
+        "epubcheck_detail": _dict_payload(conversion_metadata.get("epubcheck_detail")) or _dict_payload(preview.get("epubcheck_detail")),
+        "metadata_summary": _dict_payload(conversion_metadata.get("metadata_summary")) or _dict_payload(preview.get("metadata_summary")),
+    }
+
+
+def _merge_preview_section(preview: Mapping[str, Any], explicit: Mapping[str, Any]) -> dict[str, Any]:
+    if not preview:
+        return dict(explicit)
+    if not explicit:
+        return dict(preview)
+    merged = dict(preview)
+    for key, value in explicit.items():
+        if isinstance(value, Mapping) and isinstance(merged.get(key), Mapping):
+            nested = dict(merged[key])
+            nested.update(value)
+            merged[key] = nested
+        else:
+            merged[key] = value
+    return merged
+
+
+def _metadata_health_from_summary(metadata_summary: Mapping[str, Any]) -> dict[str, Any]:
+    if not metadata_summary or metadata_summary.get("status") == "not_reported":
+        return _not_reported_health("Metadata")
+    placeholders = [
+        str(item)
+        for item in (metadata_summary.get("placeholders_detected") or metadata_summary.get("placeholders") or [])
+        if str(item).strip()
+    ]
+    if placeholders:
+        return {
+            "label": "Metadata",
+            "status": "passed_with_warnings",
+            "count": len(placeholders),
+            "message": "Placeholder metadata fields: " + ", ".join(placeholders[:4]),
+            "placeholders": placeholders[:8],
+            "placeholder_count": len(placeholders),
+        }
+    if any(_coerce_text(metadata_summary.get(key)) for key in ("title", "creator", "author", "language")):
+        return {
+            "label": "Metadata",
+            "status": "passed",
+            "count": 0,
+            "message": "Reader-facing metadata is available.",
+        }
+    return _not_reported_health("Metadata")
+
+
+def _link_health_from_validation(validation_details: Mapping[str, Any]) -> dict[str, Any]:
+    if not validation_details:
+        return _not_reported_health("Links")
+    broken_count = sum(
+        _coerce_non_negative_int(validation_details.get(key))
+        for key in (
+            "internal_link_error_count",
+            "external_link_error_count",
+            "broken_href_error_count",
+            "duplicate_id_error_count",
+        )
+    )
+    if broken_count > 0:
+        return {
+            "label": "Links",
+            "status": "failed",
+            "count": broken_count,
+            "broken_count": broken_count,
+            "message": f"{broken_count} link or anchor issue(s) detected.",
+        }
+    return {
+        "label": "Links",
+        "status": "passed",
+        "count": 0,
+        "broken_count": 0,
+        "message": "No link or anchor issues reported.",
+    }
+
+
+def _visible_junk_from_reference_cleanup(reference_cleanup: Mapping[str, Any]) -> dict[str, Any]:
+    if not reference_cleanup or reference_cleanup.get("status") == "not_reported":
+        return _not_reported_health("Visible junk")
+    count = _coerce_non_negative_int(reference_cleanup.get("visible_junk_detected"))
+    if count > 0:
+        return {
+            "label": "Visible junk",
+            "status": "failed",
+            "count": count,
+            "message": f"{count} visible cleanup artifact(s) detected.",
+        }
+    return {
+        "label": "Visible junk",
+        "status": "passed",
+        "count": 0,
+        "message": "No visible cleanup artifacts reported.",
+    }
+
+
+def _normalize_health_payload(value: Any, *, label: str, fallback: Mapping[str, Any]) -> dict[str, Any]:
+    payload = _dict_payload(value)
+    if not payload:
+        return dict(fallback)
+    normalized = dict(payload)
+    normalized.setdefault("label", label)
+    normalized.setdefault("status", "not_reported")
+    normalized.setdefault("message", "")
+    if "count" not in normalized:
+        normalized["count"] = _coerce_first_optional_non_negative_int(
+            normalized.get("error_count"),
+            normalized.get("broken_count"),
+            normalized.get("warning_count"),
+            normalized.get("placeholder_count"),
+        )
+    return normalized
+
+
+def _quality_completeness_message(payload: Mapping[str, Any], *, reported: bool) -> str:
+    message = _coerce_first_text(
+        payload.get("message"),
+        payload.get("summary"),
+        payload.get("detail"),
+    )
+    if message:
+        return message
+    if reported:
+        return _coerce_first_text(payload.get("status"), default="Reported") or "Reported"
+    return "Not reported"
+
+
+def _quality_completeness_section(
+    key: str,
+    label: str,
+    payload: Mapping[str, Any] | None,
+    *,
+    status: Any = None,
+) -> QualityCompletenessSectionState:
+    section_payload = _dict_payload(payload)
+    raw_status = status if status is not None else section_payload.get("status")
+    normalized_status = _normalize_cockpit_status(raw_status, default="not_reported")
+    reported = normalized_status not in QUALITY_COMPLETENESS_NOT_REPORTED_STATUSES
+    message = _quality_completeness_message(section_payload, reported=reported)
+    if reported and _coerce_status(message) in QUALITY_COMPLETENESS_NOT_REPORTED_STATUSES:
+        message = normalized_status or "Reported"
+    return QualityCompletenessSectionState(
+        key=key,
+        label=label,
+        status=normalized_status or "not_reported",
+        reported=reported,
+        message=message,
+    )
+
+
+def _epubcheck_completeness_status(
+    *,
+    validation: ValidationState,
+    epubcheck_detail: Mapping[str, Any],
+) -> str:
+    status = _normalize_cockpit_status(epubcheck_detail.get("status"), default="not_reported")
+    if status not in QUALITY_COMPLETENESS_NOT_REPORTED_STATUSES:
+        return status
+    if validation.tool.lower() == "epubcheck" and validation.status not in QUALITY_COMPLETENESS_NOT_REPORTED_STATUSES:
+        return validation.status
+    return status
+
+
+def _build_quality_completeness_state(
+    *,
+    validation: ValidationState,
+    epubcheck_detail: Mapping[str, Any],
+    toc_preview: Mapping[str, Any],
+    metadata_health: Mapping[str, Any],
+    link_health: Mapping[str, Any],
+    visible_junk: Mapping[str, Any],
+    asset_summary: Mapping[str, Any],
+    text_cleanup: Mapping[str, Any],
+    reference_cleanup: Mapping[str, Any],
+    semantic_cleanup: Mapping[str, Any],
+    ocr_quality: Mapping[str, Any],
+    reading_order: Mapping[str, Any],
+    content_metrics: Mapping[str, Any],
+) -> QualityCompletenessState:
+    table_semantics = _table_semantics_completeness_payload(content_metrics)
+    section_lookup = {
+        "validation": _quality_completeness_section(
+            "validation",
+            "Validation",
+            validation.to_dict(),
+            status=validation.status,
+        ),
+        "epubcheck": _quality_completeness_section(
+            "epubcheck",
+            "EPUBCheck",
+            epubcheck_detail,
+            status=_epubcheck_completeness_status(validation=validation, epubcheck_detail=epubcheck_detail),
+        ),
+        "toc": _quality_completeness_section("toc", "TOC", toc_preview),
+        "metadata": _quality_completeness_section("metadata", "Metadata", metadata_health),
+        "links": _quality_completeness_section("links", "Links", link_health),
+        "visible_junk": _quality_completeness_section("visible_junk", "Visible junk", visible_junk),
+        "assets": _quality_completeness_section("assets", "Assets", asset_summary),
+        "text_cleanup": _quality_completeness_section("text_cleanup", "Text cleanup", text_cleanup),
+        "reference_cleanup": _quality_completeness_section(
+            "reference_cleanup",
+            "Reference cleanup",
+            reference_cleanup,
+        ),
+        "semantic_cleanup": _quality_completeness_section("semantic_cleanup", "Semantic cleanup", semantic_cleanup),
+        "ocr_quality": _quality_completeness_section("ocr_quality", "OCR quality", ocr_quality),
+        "reading_order": _quality_completeness_section("reading_order", "Reading order", reading_order),
+        "table_semantics": _quality_completeness_section("table_semantics", "Table semantics", table_semantics),
+    }
+    sections = tuple(section_lookup[key] for key, _label in QUALITY_COMPLETENESS_SECTIONS)
+    expected_count = len(sections)
+    reported_count = sum(1 for section in sections if section.reported)
+    missing_sections = tuple(section.key for section in sections if not section.reported)
+    not_reported_sections = tuple(
+        section.key for section in sections if section.status in QUALITY_COMPLETENESS_NOT_REPORTED_STATUSES
+    )
+    score = int(round((reported_count / expected_count) * 100)) if expected_count else 0
+    status = "complete" if reported_count == expected_count else "not_reported" if reported_count == 0 else "partial"
+    return QualityCompletenessState(
+        score=score,
+        status=status,
+        expected_sections=expected_count,
+        reported_sections=reported_count,
+        missing_count=expected_count - reported_count,
+        not_reported_count=len(not_reported_sections),
+        missing_sections=missing_sections,
+        not_reported_sections=not_reported_sections,
+        sections=sections,
+    )
+
+
+def _table_semantics_completeness_payload(content_metrics: Mapping[str, Any]) -> dict[str, Any]:
+    metrics = _dict_payload(content_metrics)
+    if not metrics:
+        return _not_reported_section()
+    source_count = _coerce_optional_non_negative_int(metrics.get("source_table_count"))
+    xhtml_count = _coerce_optional_non_negative_int(metrics.get("xhtml_table_count"))
+    if source_count is None and xhtml_count is None:
+        return _not_reported_section()
+    if source_count is None:
+        source_count = 0
+    if xhtml_count is None:
+        xhtml_count = 0
+    if source_count > 0 and xhtml_count <= 0:
+        status = "failed"
+        message = f"Source tables reported but no XHTML tables found ({xhtml_count}/{source_count})."
+    elif source_count > 0 and xhtml_count < source_count:
+        status = "passed_with_warnings"
+        message = f"Partial table semantics reported ({xhtml_count}/{source_count})."
+    elif source_count > 0:
+        status = "passed"
+        message = f"Table semantics preserved ({xhtml_count}/{source_count})."
+    else:
+        status = "passed"
+        message = "No source tables reported."
+    return {
+        "status": status,
+        "source_table_count": source_count,
+        "xhtml_table_count": xhtml_count,
+        "table_cell_count": _coerce_optional_non_negative_int(metrics.get("table_cell_count")) or 0,
+        "table_row_count": _coerce_optional_non_negative_int(metrics.get("table_row_count")) or 0,
+        "table_cell_coverage": metrics.get("table_cell_coverage", 1.0),
+        "table_page_count": _coerce_optional_non_negative_int(metrics.get("table_page_count")) or 0,
+        "multi_page_table_count": _coerce_optional_non_negative_int(metrics.get("multi_page_table_count")) or 0,
+        "wide_table_count": _coerce_optional_non_negative_int(metrics.get("wide_table_count")) or 0,
+        "low_confidence_table_count": _coerce_optional_non_negative_int(metrics.get("low_confidence_table_count")) or 0,
+        "fragment_table_count": _coerce_optional_non_negative_int(metrics.get("fragment_table_count")) or 0,
+        "table_summary": _dict_payload(metrics.get("table_summary")),
+        "message": message,
+    }
 
 
 def assemble_quality_state(request: ConversionQualityStateRequest) -> ConversionQualityState:
@@ -772,8 +1670,92 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
         ),
     )
 
+    content_metrics = _normalize_content_metrics_payload(
+        conversion_metadata.get("content_metrics") or quality_report,
+    )
+    validation_details = _dict_payload(conversion_metadata.get("validation_details"))
+    text_cleanup = _normalize_text_cleanup_payload(
+        conversion_metadata.get("text_cleanup") or quality_report.get("text_cleanup")
+    )
+    reference_cleanup = _normalize_reference_cleanup_payload(
+        conversion_metadata.get("reference_cleanup") or _dict_payload(text_cleanup.get("reference_cleanup"))
+    )
+    semantic_cleanup = _normalize_optional_payload(
+        conversion_metadata.get("semantic_cleanup") or quality_report.get("semantic_cleanup")
+    )
+    ocr_quality = _normalize_optional_payload(
+        conversion_metadata.get("ocr_quality")
+        or conversion_metadata.get("ocr_degradation")
+        or quality_report.get("ocr_quality")
+        or quality_report.get("ocr_degradation")
+    )
+    reading_order = _normalize_optional_payload(
+        conversion_metadata.get("reading_order") or quality_report.get("reading_order")
+    )
+    document_summary_payload = _dict_payload(conversion_metadata.get("document_summary")) or document_summary
+    preview_sections = _build_cockpit_preview_sections(
+        conversion_metadata=conversion_metadata,
+        content_metrics=content_metrics if content_metrics.get("status") != "not_reported" else {},
+        validation_details=validation_details,
+        document_summary=document_summary_payload,
+        heading_repair=heading_repair,
+        output_path=request.output_path,
+    )
+    asset_summary = _normalize_optional_payload(preview_sections.get("asset_summary"))
+    toc_preview = _normalize_optional_payload(preview_sections.get("toc_preview"))
+    epubcheck_detail = _normalize_optional_payload(preview_sections.get("epubcheck_detail"))
+    metadata_summary = _normalize_optional_payload(preview_sections.get("metadata_summary"))
+    metadata_health = _normalize_health_payload(
+        conversion_metadata.get("metadata_health"),
+        label="Metadata",
+        fallback=_metadata_health_from_summary(metadata_summary),
+    )
+    link_health = _normalize_health_payload(
+        conversion_metadata.get("link_health"),
+        label="Links",
+        fallback=_link_health_from_validation(validation_details),
+    )
+    visible_junk = _normalize_health_payload(
+        conversion_metadata.get("visible_junk"),
+        label="Visible junk",
+        fallback=_visible_junk_from_reference_cleanup(reference_cleanup),
+    )
+    issue_groups = build_quality_cockpit_issue_groups(
+        validation=validation.to_dict(),
+        heading_repair=heading_repair.to_dict(),
+        audit=audit.to_dict(),
+        size_budget=size_budget.to_dict(),
+        text_cleanup=text_cleanup,
+        reference_cleanup=reference_cleanup,
+        semantic_cleanup=semantic_cleanup,
+        ocr_quality=ocr_quality,
+        reading_order=reading_order,
+        metadata_health=metadata_health,
+        link_health=link_health,
+        visible_junk=visible_junk,
+        epubcheck_detail=epubcheck_detail,
+        content_metrics=content_metrics,
+        toc_preview=toc_preview,
+        asset_summary=asset_summary,
+    )
+    quality_completeness = _build_quality_completeness_state(
+        validation=validation,
+        epubcheck_detail=epubcheck_detail,
+        toc_preview=toc_preview,
+        metadata_health=metadata_health,
+        link_health=link_health,
+        visible_junk=visible_junk,
+        asset_summary=asset_summary,
+        text_cleanup=text_cleanup,
+        reference_cleanup=reference_cleanup,
+        semantic_cleanup=semantic_cleanup,
+        ocr_quality=ocr_quality,
+        reading_order=reading_order,
+        content_metrics=content_metrics,
+    )
+
     overall_severity = "info"
-    if job_status == FAILED_JOB_STATUS:
+    if job_status in {FAILED_JOB_STATUS, TIMED_OUT_JOB_STATUS}:
         overall_severity = "error"
     elif job_status == READY_JOB_STATUS:
         overall_severity = _severity_for_ready_state(
@@ -784,6 +1766,12 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
             review_count=heading_repair.review + audit.high_risk_pages + audit.high_risk_sections,
             size_budget_status=size_budget.status,
         )
+        if issue_groups.get("blockers"):
+            overall_severity = "error"
+        elif overall_severity != "error" and (issue_groups.get("warnings") or issue_groups.get("review")):
+            overall_severity = "warning"
+        elif overall_severity != "error" and quality_completeness.status != "complete":
+            overall_severity = "warning"
 
     alerts = _build_alerts(
         job_status=job_status,
@@ -794,6 +1782,50 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
         audit=audit,
         size_budget=size_budget,
     )
+    download_state = resolve_conversion_download_state(
+        job_status=job_status,
+        output_path=request.output_path,
+        download_url=request.download_url,
+        output_path_exists=request.output_path_exists,
+    )
+    download_available = download_state.download_available
+    quality_blockers = _build_quality_blockers(
+        job_status=job_status,
+        error=_coerce_text(request.error),
+        issue_groups=issue_groups,
+        alerts=alerts,
+    )
+    release_blocked = job_status in {FAILED_JOB_STATUS, TIMED_OUT_JOB_STATUS} or bool(quality_blockers)
+    reading_verdict = _build_reading_verdict(
+        job_status=job_status,
+        download_available=download_available,
+        release_blocked=release_blocked,
+        overall_severity=overall_severity,
+        quality_available=quality_available,
+        validation=validation,
+        epubcheck_detail=epubcheck_detail,
+        issue_groups=issue_groups,
+    )
+    release_verdict = _build_release_verdict(
+        job_status=job_status,
+        download_available=download_available,
+        release_blocked=release_blocked,
+        reading_verdict=reading_verdict,
+        overall_severity=overall_severity,
+        quality_available=quality_available,
+        issue_groups=issue_groups,
+    )
+    send_to_kindle_blockers = _build_send_to_kindle_blockers(
+        job_status=job_status,
+        download_available=download_available,
+        release_verdict=release_verdict,
+        validation=validation,
+        epubcheck_detail=epubcheck_detail,
+        size_budget=size_budget,
+        output_size_bytes=output_size_bytes,
+        asset_summary=asset_summary,
+    )
+    send_to_kindle_ready = not send_to_kindle_blockers
     raw_signals = _build_raw_signals_state(
         summary=summary,
         heading_repair=heading_repair,
@@ -804,31 +1836,56 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
         job_status=job_status,
         overall_severity=overall_severity,
         quality_available=quality_available,
+        download_available=download_available,
         validation=validation,
         heading_repair=heading_repair,
         audit=audit,
         size_budget=size_budget,
         alerts=alerts,
+        issue_groups=issue_groups,
     )
 
     return ConversionQualityState(
         status=job_status,
         phase=_phase_for_job_status(job_status),
-        is_terminal=job_status in {READY_JOB_STATUS, FAILED_JOB_STATUS},
+        is_terminal=job_status in {READY_JOB_STATUS, FAILED_JOB_STATUS, TIMED_OUT_JOB_STATUS},
         quality_available=quality_available,
-        download_ready=job_status == READY_JOB_STATUS,
+        download_ready=download_state.download_ready,
+        download_available=download_available,
+        download_state=download_state,
+        reading_verdict=reading_verdict,
+        release_verdict=release_verdict,
+        release_blocked=release_blocked,
+        quality_blockers=quality_blockers,
+        send_to_kindle_ready=send_to_kindle_ready,
+        send_to_kindle_blockers=send_to_kindle_blockers,
         overall_severity=overall_severity,
         source_type=source_type,
         filename=_coerce_text(request.filename),
         message=_coerce_text(request.message),
         error=_coerce_text(request.error),
-        download_url=_coerce_text(request.download_url),
+        download_url=_coerce_text(download_state.download_url),
         summary=summary,
         validation=validation,
         heading_repair=heading_repair,
         audit=audit,
         render_budget=render_budget,
         size_budget=size_budget,
+        content_metrics=content_metrics,
+        text_cleanup=text_cleanup,
+        reference_cleanup=reference_cleanup,
+        semantic_cleanup=semantic_cleanup,
+        ocr_quality=ocr_quality,
+        reading_order=reading_order,
+        asset_summary=asset_summary,
+        toc_preview=toc_preview,
+        epubcheck_detail=epubcheck_detail,
+        metadata_summary=metadata_summary,
+        metadata_health=metadata_health,
+        link_health=link_health,
+        visible_junk=visible_junk,
+        issue_groups=issue_groups,
+        quality_completeness=quality_completeness,
         raw_signals=raw_signals,
         verdict=verdict,
         alerts=alerts,

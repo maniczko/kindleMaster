@@ -29,6 +29,28 @@ class TextNormalizationTests(unittest.TestCase):
         self.assertIn("https://example.com/docs/intro", normalized)
         self.assertIn("doi:10.1000/xyz", normalized)
 
+    def test_normalize_text_repairs_unicode_hyphen_space_splits(self):
+        normalized = normalize_text(
+            "Role pro\u2010 jektowe i sztucz\u2010 na inteligencja wymagaja "
+            "certifica\u2010 tions oraz certifica\u00ad tions."
+        )
+
+        self.assertIn("projektowe", normalized)
+        self.assertIn("sztuczna", normalized)
+        self.assertEqual(normalized.count("certifications"), 2)
+        self.assertNotIn("pro\u2010 jektowe", normalized)
+        self.assertNotIn("certifica\u00ad tions", normalized)
+
+    def test_normalize_text_preserves_url_and_name_like_hyphen_tokens(self):
+        normalized = normalize_text(
+            "See https://exam\u2010 ple.com/path, Jean\u2010 Luc, API\u2010 KEY, and OpenAI\u2010 GPT."
+        )
+
+        self.assertIn("https://exam\u2010 ple.com/path", normalized)
+        self.assertIn("Jean\u2010 Luc", normalized)
+        self.assertIn("API\u2010 KEY", normalized)
+        self.assertIn("OpenAI\u2010 GPT", normalized)
+
     def test_ocr_text_to_html_parts_splits_merged_paragraphs(self):
         source = (
             "Pierwszy akapit jest wystarczajaco dlugi, aby wygladac jak normalna tresc i konczy sie kropka.\n"
@@ -230,6 +252,96 @@ class TextNormalizationTests(unittest.TestCase):
         self.assertIn("kart owe", chapter)
         review_decisions = [(decision.before, decision.after, decision.status) for decision in result.decisions]
         self.assertIn(("kart owe", "kartowe", "review_needed"), review_decisions)
+
+    def test_clean_epub_text_package_suppresses_split_word_noise_for_magazine_profile(self):
+        chapter_markup = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+            "<p>kart owe pozostaja do redakcyjnej kontroli.</p>"
+            "</body></html>"
+        )
+        epub_bytes = _build_test_epub(chapter_markup=chapter_markup)
+
+        with patch(
+            "text_cleanup_engine.run_epubcheck",
+            return_value={"status": "passed", "tool": "epubcheck", "messages": []},
+        ):
+            result = clean_epub_text_package(
+                epub_bytes,
+                config=TextCleanupConfig(language_hint="pl", safe_threshold=0.9, review_threshold=0.6),
+                publication_profile="magazine_reflow",
+            )
+
+        with zipfile.ZipFile(io.BytesIO(result.epub_bytes), "r") as archive:
+            chapter = archive.read("EPUB/chapter_001.xhtml").decode("utf-8")
+
+        self.assertIn("kart owe", chapter)
+        self.assertEqual(result.summary["error_class_counts"].get("split-word", 0), 0)
+        self.assertIn("split-word", result.summary["suppressed_error_classes"])
+        self.assertTrue(all(decision.error_class != "split-word" for decision in result.decisions))
+
+    def test_clean_epub_text_package_repairs_magazine_hyphen_space_splits(self):
+        chapter_markup = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+            "<p>Role pro\u2010 jektowe i sztucz\u2010 na inteligencja wymagaja "
+            "certifica\u2010 tions oraz certifica\u00ad tions.</p>"
+            "</body></html>"
+        )
+        epub_bytes = _build_test_epub(chapter_markup=chapter_markup)
+
+        with patch(
+            "text_cleanup_engine.run_epubcheck",
+            return_value={"status": "passed", "tool": "epubcheck", "messages": []},
+        ):
+            result = clean_epub_text_package(
+                epub_bytes,
+                config=TextCleanupConfig(language_hint="pl"),
+                publication_profile="magazine_reflow",
+            )
+
+        with zipfile.ZipFile(io.BytesIO(result.epub_bytes), "r") as archive:
+            chapter = archive.read("EPUB/chapter_001.xhtml").decode("utf-8")
+
+        self.assertIn("Role projektowe i sztuczna inteligencja", chapter)
+        self.assertEqual(chapter.count("certifications"), 2)
+        self.assertNotIn("pro\u2010 jektowe", chapter)
+        self.assertEqual(result.summary["error_class_counts"].get("hyphen-break"), 4)
+        self.assertIn("split-word", result.summary["suppressed_error_classes"])
+
+    def test_clean_epub_text_package_preserves_hyphen_sensitive_tokens(self):
+        chapter_markup = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+            '<p id="pro\u2010-jektowe"><a href="#pro\u2010-jektowe">certifica\u2010 tions</a> '
+            "See https://exam\u2010 ple.com/path, Jean\u2010 Luc, API\u2010 KEY, and OpenAI\u2010 GPT.</p>"
+            "<code>pro\u2010 jektowe</code>"
+            "</body></html>"
+        )
+        epub_bytes = _build_test_epub(chapter_markup=chapter_markup)
+
+        with patch(
+            "text_cleanup_engine.run_epubcheck",
+            return_value={"status": "passed", "tool": "epubcheck", "messages": []},
+        ):
+            result = clean_epub_text_package(
+                epub_bytes,
+                config=TextCleanupConfig(language_hint="en"),
+                publication_profile="magazine_reflow",
+            )
+
+        with zipfile.ZipFile(io.BytesIO(result.epub_bytes), "r") as archive:
+            chapter = archive.read("EPUB/chapter_001.xhtml").decode("utf-8")
+
+        self.assertIn('id="pro\u2010-jektowe"', chapter)
+        self.assertIn('href="#pro\u2010-jektowe"', chapter)
+        self.assertIn(">certifica\u2010 tions</a>", chapter)
+        self.assertIn("https://exam\u2010 ple.com/path", chapter)
+        self.assertIn("Jean\u2010 Luc", chapter)
+        self.assertIn("API\u2010 KEY", chapter)
+        self.assertIn("OpenAI\u2010 GPT", chapter)
+        self.assertIn("<code>pro\u2010 jektowe</code>", chapter)
+        self.assertEqual(result.summary["auto_fix_count"], 0)
 
     def test_clean_epub_text_package_repairs_inline_decimal_percent_fragments(self):
         chapter_markup = (

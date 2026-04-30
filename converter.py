@@ -238,14 +238,25 @@ def finalize_epub_bytes(
     try:
         from kindle_semantic_cleanup import finalize_epub_for_kindle
 
-        epub_bytes, semantic_reference_cleanup = finalize_epub_for_kindle(
+        epub_bytes, semantic_report = finalize_epub_for_kindle(
             epub_bytes,
             title=title,
             author=author,
             language=config.language,
             publication_profile=publication_profile,
             return_report=True,
+            report_mode="rich",
         )
+        semantic_cleanup_summary = _compact_semantic_cleanup_report(semantic_report)
+        semantic_reference_cleanup = _semantic_reference_cleanup_payload(semantic_report)
+        if semantic_cleanup_summary:
+            text_cleanup_summary = {
+                **text_cleanup_summary,
+                "semantic_cleanup": semantic_cleanup_summary,
+            }
+            reading_order = semantic_cleanup_summary.get("reading_order")
+            if isinstance(reading_order, dict) and reading_order:
+                text_cleanup_summary["reading_order"] = reading_order
     except Exception as exc:
         print(f"Warning: Kindle semantic cleanup failed: {exc}")
         semantic_reference_cleanup = {}
@@ -277,6 +288,104 @@ def finalize_epub_bytes(
     if return_details:
         return epub_bytes, text_cleanup_summary
     return epub_bytes
+
+
+def _semantic_reference_cleanup_payload(semantic_report: object) -> dict:
+    if not isinstance(semantic_report, dict):
+        return {}
+    reference_cleanup = semantic_report.get("reference_cleanup")
+    if isinstance(reference_cleanup, dict):
+        return _compact_semantic_mapping(reference_cleanup)
+    if "entries_rebuilt" in semantic_report or "quality_gate_status" in semantic_report:
+        return _compact_semantic_mapping(semantic_report)
+    return {}
+
+
+def _compact_semantic_cleanup_report(semantic_report: object) -> dict:
+    if not isinstance(semantic_report, dict):
+        return {}
+    if "gates" not in semantic_report and "phases" not in semantic_report:
+        return {}
+    gates = semantic_report.get("gates") if isinstance(semantic_report.get("gates"), dict) else {}
+    phases = semantic_report.get("phases") if isinstance(semantic_report.get("phases"), dict) else {}
+    release_gate = gates.get("F") if isinstance(gates.get("F"), dict) else {}
+    status = str(release_gate.get("status") or semantic_report.get("status") or "reported")
+    manual_review_queue = semantic_report.get("manual_review_queue")
+    summary = semantic_report.get("summary") if isinstance(semantic_report.get("summary"), dict) else {}
+    manual_review_count = summary.get("manual_review_count")
+    if manual_review_count is None and isinstance(manual_review_queue, list):
+        manual_review_count = len(manual_review_queue)
+    compact = {
+        "status": status,
+        "quality_gate_status": status,
+        "manual_review_count": _compact_int(manual_review_count),
+        "cleanup_scope": summary.get("cleanup_scope", ""),
+        "chapter_count": _compact_int(summary.get("chapter_count")),
+        "toc_entry_count_before": _compact_int(summary.get("toc_entry_count_before")),
+        "toc_entry_count_after": _compact_int(summary.get("toc_entry_count_after")),
+        "gate_statuses": {
+            str(name): str(gate.get("status", "unknown"))
+            for name, gate in gates.items()
+            if isinstance(gate, dict)
+        },
+        "metadata_repair": _phase_status_payload(phases.get("metadata_repair")),
+        "toc_rebuild": _phase_status_payload(phases.get("toc_rebuild")),
+        "structural_integrity": _phase_status_payload(phases.get("structural_integrity")),
+    }
+    blockers = release_gate.get("blockers")
+    warnings = release_gate.get("warnings")
+    if isinstance(blockers, list) and blockers:
+        compact["blocker_count"] = len(blockers)
+        compact["message"] = str(blockers[0])
+    elif isinstance(warnings, list) and warnings:
+        compact["warning_count"] = len(warnings)
+        compact["message"] = str(warnings[0])
+    if isinstance(manual_review_queue, list) and manual_review_queue:
+        compact["manual_review_sample"] = manual_review_queue[:5]
+    structural = compact.get("structural_integrity") or {}
+    compact["reading_order"] = {
+        "status": structural.get("status", status),
+        "quality_gate_status": structural.get("status", status),
+        "manual_review_count": _compact_int(structural.get("manual_review_count")),
+        "message": structural.get("message", ""),
+    }
+    return compact
+
+
+def _compact_int(value: object) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _phase_status_payload(phase: object) -> dict:
+    if not isinstance(phase, dict):
+        return {"status": "not_reported"}
+    manual_review = phase.get("manual_review")
+    status = str(phase.get("status") or "reported")
+    payload = {
+        "status": status,
+        "manual_review_count": len(manual_review) if isinstance(manual_review, list) else 0,
+    }
+    for key in ("error_count", "warning_count", "broken_anchor_count", "entry_count_before", "entry_count_after"):
+        if key in phase:
+            payload[key] = phase[key]
+    if payload["manual_review_count"]:
+        payload["message"] = f"{payload['manual_review_count']} item(s) require manual review."
+    return payload
+
+
+def _compact_semantic_mapping(payload: dict) -> dict:
+    compact: dict = {}
+    for key, value in payload.items():
+        if isinstance(value, list):
+            compact[key] = value[:12]
+        elif isinstance(value, dict):
+            compact[key] = _compact_semantic_mapping(value)
+        else:
+            compact[key] = value
+    return compact
 
 
 # ============================================================================
@@ -565,6 +674,9 @@ def _build_publication_pipeline_result(
         "author": document.author,
         "source_pdf_path": pdf_path,
     }
+    source_metadata = document.metadata.get("source_metadata") if isinstance(document.metadata, dict) else {}
+    if isinstance(source_metadata, dict) and source_metadata.get("publisher"):
+        final_metadata["publisher"] = source_metadata["publisher"]
     epub_bytes = build_epub(content, config, original_filename, final_metadata)
     epub_bytes, text_cleanup_summary = finalize_epub_bytes(
         epub_bytes,
@@ -834,8 +946,7 @@ img {
   box-sizing: border-box;
   page-break-inside: avoid;
   break-inside: avoid;
-  image-rendering: -webkit-optimize-contrast;
-  image-rendering: crisp-edges;
+  image-rendering: auto;
 }
 
 .diagram-caption {
@@ -941,6 +1052,33 @@ thead th {
 
 tr:nth-child(even) td {
   background: #fafafa;
+}
+
+table.report-table {
+  table-layout: auto;
+}
+
+table.report-table caption {
+  caption-side: top;
+  text-align: left;
+  font-weight: bold;
+  margin-bottom: 0.35em;
+}
+
+table.wide-table {
+  font-size: 0.82em;
+}
+
+td.numeric-cell {
+  text-align: right;
+  white-space: nowrap;
+}
+
+p.table-note {
+  text-indent: 0;
+  margin: -0.6em 0 1em;
+  font-size: 0.85em;
+  color: #666;
 }
 
 /* === CODE === */
@@ -1644,6 +1782,64 @@ def extract_pdf_with_pymupdf(pdf_path: str, config: ConversionConfig, pdf_metada
 # EPUB BUILDER
 # ============================================================================
 
+def _apply_content_metadata_overrides(
+    pdf_metadata: dict,
+    content: dict,
+    *,
+    original_filename: str,
+) -> dict:
+    metadata = dict(pdf_metadata or {})
+    content_metadata = content.get("metadata") or {}
+    if not isinstance(content_metadata, dict):
+        return metadata
+
+    candidate_title = (
+        str(content_metadata.get("inferred_publication_title") or "").strip()
+        or str(content_metadata.get("title") or "").strip()
+    )
+    if candidate_title and _metadata_title_is_weak(metadata.get("title"), original_filename=original_filename):
+        metadata["title"] = candidate_title
+
+    candidate_author = (
+        str(content_metadata.get("author") or "").strip()
+        or str(content_metadata.get("creator") or "").strip()
+        or str(content_metadata.get("publisher") or "").strip()
+    )
+    if candidate_author and _metadata_author_is_weak(metadata.get("author")):
+        metadata["author"] = candidate_author
+
+    candidate_publisher = str(content_metadata.get("publisher") or "").strip()
+    if candidate_publisher and not str(metadata.get("publisher") or "").strip():
+        metadata["publisher"] = candidate_publisher
+
+    return metadata
+
+
+def _metadata_title_is_weak(value: str | None, *, original_filename: str) -> bool:
+    normalized = re.sub(r"\s+", " ", (value or "").strip())
+    if not normalized:
+        return True
+    lowered = normalized.lower()
+    file_stem = Path(original_filename).stem.lower().replace("_", "-")
+    title_key = lowered.replace("_", "-")
+    if lowered in {"untitled", "document", "converted document"}:
+        return True
+    if title_key == file_stem:
+        return True
+    if re.fullmatch(r"[0-9a-f]{12,}", normalized, flags=re.IGNORECASE):
+        return True
+    return False
+
+
+def _metadata_author_is_weak(value: str | None) -> bool:
+    normalized = re.sub(r"\s+", " ", (value or "").strip())
+    if not normalized:
+        return True
+    lowered = normalized.lower()
+    if lowered in {"unknown", "author", "creator"}:
+        return True
+    return bool(re.search(r"(?i)\b(?:redaktor|z-ca|zast[ęe]pca|koordynator|editor)\b", normalized))
+
 def build_epub(content: dict, config: ConversionConfig, original_filename: str, pdf_metadata: dict = None) -> bytes:
     """
     Build EPUB3 from extracted content with maximum quality.
@@ -1662,6 +1858,9 @@ def build_epub(content: dict, config: ConversionConfig, original_filename: str, 
     book.set_title(title)
     book.set_language(config.language)
     book.add_author(author)
+    publisher = (pdf_metadata.get("publisher") or "").strip()
+    if publisher:
+        book.add_metadata("DC", "publisher", publisher)
     
     # Add CSS
     css = epub.EpubItem(
@@ -1841,9 +2040,16 @@ def build_epub(content: dict, config: ConversionConfig, original_filename: str, 
         chapter_images = chapter_data.get("images", [])
         chess_imgs = [img for img in chapter_images if img.get("is_chess")]
         
-        if chess_imgs and not chapter_data.get("inline_chess_diagrams"):
+        missing_chess_imgs = [
+            img
+            for img in chess_imgs
+            if f'images/{html_module.escape(str(img.get("filename", "")), quote=True)}' not in html_content
+            and f"images/{img.get('filename', '')}" not in html_content
+        ]
+
+        if missing_chess_imgs:
             html_content += '\n<div class="chess-diagrams-section">\n'
-            for chess_img in chess_imgs:
+            for chess_img in missing_chess_imgs:
                 x0, y0, x1, y1 = chess_img.get("bbox", (0, 0, 100, 100))
                 width = x1 - x0
                 height = y1 - y0
@@ -1877,7 +2083,8 @@ def build_epub(content: dict, config: ConversionConfig, original_filename: str, 
 
         book.add_item(chapter)
         chapters.append(chapter)
-        toc_entries.append(chapter)
+        if not chapter_data.get("toc_excluded"):
+            toc_entries.append(chapter)
     
     # If no chapters were created, add placeholder
     if not chapters:
@@ -2202,6 +2409,11 @@ def _legacy_convert_pdf_to_epub(pdf_path: str, config: Optional[ConversionConfig
     print(f"Has text content: {content.get('text_content', False)}")
 
     # Step 4: Build EPUB
+    pdf_metadata = _apply_content_metadata_overrides(
+        pdf_metadata,
+        content,
+        original_filename=original_filename,
+    )
     epub_bytes = build_epub(content, config, original_filename, pdf_metadata)
 
     print(f"Generated EPUB: {len(epub_bytes)} bytes")

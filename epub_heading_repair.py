@@ -4,6 +4,7 @@ import argparse
 import json
 import re
 import tempfile
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,14 +12,18 @@ from typing import Any
 
 from bs4 import BeautifulSoup, Tag
 
+from epub_package_ops import (
+    _extract_epub,
+    _get_spine_xhtml_paths,
+    _locate_opf,
+    _pack_epub,
+)
 from kindle_semantic_cleanup import (
     _build_toc_map,
     _collect_structural_integrity_summary,
     _dedupe_repeated_subsection_toc_labels,
     _evaluate_structural_gate,
     _evaluate_toc_gate,
-    _get_spine_xhtml_paths,
-    _extract_epub,
     _heading_candidate_looks_like_layout_artifact,
     _inventory_navigation_document,
     _looks_like_promotional_banner,
@@ -27,11 +32,9 @@ from kindle_semantic_cleanup import (
     _looks_like_truncated_heading,
     _is_generic_schema_heading_label,
     _is_pseudo_heading_candidate,
-    _locate_opf,
     _looks_like_reference_entry_text,
     _looks_like_reference_section_title,
     _normalize_text,
-    _pack_epub,
     _rewrite_navigation,
     _slugify,
     _snapshot_package_metadata,
@@ -245,6 +248,100 @@ DENSE_GENERIC_TOC_LABELS = {
     "usage considerations",
 }
 
+MAGAZINE_GENERIC_TOC_LABEL_KEYS = {
+    "business implications",
+    "co to jest",
+    "example",
+    "how it works",
+    "implikacje biznesowe",
+    "jak dziala",
+    "proces",
+    "process",
+    "przyklad",
+    "what it is",
+}
+
+MAGAZINE_GALLERY_TOC_LABEL_KEYS = {
+    "fotogaleria",
+    "galeria",
+    "gallery",
+    "image gallery",
+    "photo gallery",
+    "picture gallery",
+    "zdjecia",
+}
+
+MAGAZINE_AUXILIARY_TOC_LABEL_KEYS = {
+    "meet the team",
+    "poznaj nasz zespol",
+    "poznaj nasz zespol redakcyjny",
+    "poznaj nasza redakcje",
+    "poznaj naszą redakcję",
+    "redakcja",
+    "redakcja magazynu",
+    "stopka redakcyjna",
+    "team",
+    "wspierajacy",
+    "wspierający",
+    "zespol",
+    "zespół",
+    "zespol redakcyjny",
+    "zespół redakcyjny",
+}
+
+MAGAZINE_ROLE_FRAGMENT_KEYS = {
+    "advisor",
+    "author",
+    "byline",
+    "ceo",
+    "cfo",
+    "columnist",
+    "consultant",
+    "cto",
+    "director",
+    "dyrektor",
+    "editor",
+    "ekspert",
+    "expert",
+    "fotografie",
+    "interview",
+    "manager",
+    "partner",
+    "photo",
+    "photos",
+    "prezes",
+    "redakcja",
+    "redaktor",
+    "reporter",
+    "rozmowa",
+    "tekst",
+    "text",
+    "zdjecia",
+}
+
+POLISH_ASCII_TRANSLATION = str.maketrans(
+    {
+        "\u0105": "a",
+        "\u0107": "c",
+        "\u0119": "e",
+        "\u0142": "l",
+        "\u0144": "n",
+        "\u00f3": "o",
+        "\u015b": "s",
+        "\u017a": "z",
+        "\u017c": "z",
+        "\u0104": "A",
+        "\u0106": "C",
+        "\u0118": "E",
+        "\u0141": "L",
+        "\u0143": "N",
+        "\u00d3": "O",
+        "\u015a": "S",
+        "\u0179": "Z",
+        "\u017b": "Z",
+    }
+)
+
 
 @dataclass
 class HeadingRepairResult:
@@ -332,7 +429,8 @@ def repair_epub_headings_and_toc(
         report_mode="rich",
     )
     repaired_epub, after_scan, raw_toc_map, nav_summary, structural_phase = _normalize_headings_and_rebuild_navigation(
-        repaired_epub
+        repaired_epub,
+        publication_profile=publication_profile,
     )
     epubcheck = run_epubcheck(repaired_epub)
 
@@ -354,7 +452,7 @@ def repair_epub_headings_and_toc(
         after_scan=after_scan,
     )
     gates = dict(phase_report.get("gates") or {})
-    gates["C"] = _evaluate_heading_gate_after_rebuild(after_scan)
+    gates["C"] = _evaluate_heading_gate_after_rebuild(after_scan, publication_profile=publication_profile)
     gates["D"] = _evaluate_toc_gate(toc_phase)
     gates["E"] = _evaluate_structural_gate(structural_phase)
     manual_review_queue = _filter_resolved_manual_review_items(
@@ -388,6 +486,7 @@ def repair_epub_headings_and_toc(
         release_status=release_status,
         before_scan=before_scan,
         after_scan=after_scan,
+        publication_profile=publication_profile,
     )
     qa_payload = _build_qa_payload(
         phase_report=phase_report,
@@ -526,6 +625,8 @@ def _scan_epub_heading_candidates(epub_bytes: bytes, *, include_pseudo: bool) ->
 
 def _normalize_headings_and_rebuild_navigation(
     epub_bytes: bytes,
+    *,
+    publication_profile: str | None = None,
 ) -> tuple[bytes, dict[str, list[dict[str, Any]]], list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
     with tempfile.TemporaryDirectory() as temp_dir:
         root_dir = Path(temp_dir)
@@ -536,11 +637,18 @@ def _normalize_headings_and_rebuild_navigation(
         after_scan: dict[str, list[dict[str, Any]]] = {}
         empty_reference_files: set[str] = set()
         for chapter_path in chapter_paths:
-            after_scan[chapter_path.name] = _ensure_heading_ids_and_scan(chapter_path)
+            after_scan[chapter_path.name] = _ensure_heading_ids_and_scan(
+                chapter_path,
+                publication_profile=publication_profile,
+            )
             if _chapter_is_empty_reference_section(chapter_path, after_scan[chapter_path.name]):
                 empty_reference_files.add(chapter_path.name)
 
-        toc_entries = _build_toc_entries_from_scan(after_scan, excluded_reference_files=empty_reference_files)
+        toc_entries = _build_toc_entries_from_scan(
+            after_scan,
+            excluded_reference_files=empty_reference_files,
+            publication_profile=publication_profile,
+        )
         metadata = _snapshot_package_metadata(opf_path)
         _rewrite_navigation(
             root_dir,
@@ -608,14 +716,20 @@ def _scan_heading_candidates_from_text(
     return candidates
 
 
-def _ensure_heading_ids_and_scan(chapter_path: Path) -> list[dict[str, Any]]:
+def _ensure_heading_ids_and_scan(
+    chapter_path: Path,
+    *,
+    publication_profile: str | None = None,
+) -> list[dict[str, Any]]:
     original = chapter_path.read_text(encoding="utf-8")
     soup = BeautifulSoup(original, "xml")
     changed = _sanitize_non_epub_markup(soup)
     changed = _split_inline_heading_paragraphs(soup) or changed
     changed = _promote_supported_pseudo_headings(soup) or changed
     changed = _normalize_consecutive_heading_clusters(soup) or changed
-    changed = _demote_heading_noise(soup) or changed
+    changed = _demote_heading_noise(soup, publication_profile=publication_profile) or changed
+    if _is_magazine_publication_profile(publication_profile):
+        changed = _clean_magazine_heading_text_nodes(soup) or changed
     changed = _ensure_primary_heading(soup) or changed
     id_counts = Counter(
         _normalize_text(str(node.get("id", "") or ""))
@@ -877,11 +991,18 @@ def _merged_heading_cluster_text(cluster: list[Tag]) -> str:
     return joined
 
 
-def _demote_heading_noise(soup: BeautifulSoup) -> bool:
+def _demote_heading_noise(
+    soup: BeautifulSoup,
+    *,
+    publication_profile: str | None = None,
+) -> bool:
     body = soup.find("body")
     if body is None:
         return False
     changed = False
+    relaxed_profile = _uses_relaxed_heading_cardinality(publication_profile)
+    magazine_profile = _is_magazine_publication_profile(publication_profile)
+    changed = _demote_profile_fragment_heading_noise(soup, publication_profile=publication_profile) or changed
     for node in body.find_all(["h1", "h2", "h3", "h4", "h5", "h6"]):
         text = _normalize_text(node.get_text(" ", strip=True))
         if not text:
@@ -897,10 +1018,509 @@ def _demote_heading_noise(soup: BeautifulSoup) -> bool:
             or _looks_like_navigation_artifact_heading(text)
             or _looks_like_synthetic_section_label(text)
             or (_looks_like_truncated_heading(text) and not _has_supporting_content(node))
+            or (relaxed_profile and _looks_like_relaxed_profile_heading_noise(node, text))
+            or (magazine_profile and _looks_like_magazine_heading_noise(node, text))
         ):
             node.name = "p"
             changed = True
+    changed = _demote_profile_fragment_heading_noise(soup, publication_profile=publication_profile) or changed
     return changed
+
+
+def _demote_profile_fragment_heading_noise(
+    soup: BeautifulSoup,
+    *,
+    publication_profile: str | None = None,
+) -> bool:
+    if not _uses_relaxed_heading_cardinality(publication_profile):
+        return False
+    body = soup.find("body")
+    if body is None:
+        return False
+
+    leading_nodes: list[Tag] = []
+    for node in body.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "p", "div", "span"], recursive=True):
+        if node.find_parent(["figure", "figcaption", "table", "thead", "tbody", "tfoot", "ul", "ol", "li", "dl", "blockquote"]) is not None:
+            continue
+        text = _normalize_text(node.get_text(" ", strip=True))
+        if not text:
+            continue
+        if node.name and node.name.startswith("h"):
+            leading_nodes.append(node)
+            continue
+        if len(text) >= 80:
+            break
+        if leading_nodes and len(text.split()) <= 8:
+            leading_nodes.append(node)
+            continue
+        if leading_nodes:
+            break
+
+    heading_nodes = [node for node in leading_nodes if node.name and node.name.startswith("h")]
+    heading_texts = [_normalize_text(node.get_text(" ", strip=True)) for node in heading_nodes]
+    if len(heading_texts) < 3:
+        return False
+    has_metadata_signal = any(_looks_like_publication_metadata_heading(text) for text in heading_texts)
+    head_title = _normalize_text(soup.find("title").get_text(" ", strip=True)) if soup.find("title") else ""
+    first_heading_is_document_title = bool(head_title and _title_fragments_match(heading_texts[0], head_title))
+    demote_nodes = heading_nodes
+    demote_texts = heading_texts
+    if (
+        len(heading_nodes) >= 4
+        and first_heading_is_document_title
+        and heading_nodes[0].name == "h1"
+        and all(str(node.name)[1:].isdigit() and int(str(node.name)[1]) >= 2 for node in heading_nodes[1:])
+    ):
+        demote_nodes = heading_nodes[1:]
+        demote_texts = heading_texts[1:]
+    elif not has_metadata_signal:
+        return False
+    if not all(_looks_like_front_matter_fragment_heading(text) for text in demote_texts):
+        return False
+
+    changed = False
+    for node in demote_nodes:
+        node.name = "p"
+        changed = True
+    return changed
+
+
+def _looks_like_publication_metadata_heading(text: str) -> bool:
+    normalized = _normalize_text(text)
+    lowered = normalized.lower().strip(" .,:;")
+    if not normalized:
+        return False
+    if re.fullmatch(r"(?:18|19|20)\d{2}", normalized):
+        return True
+    if re.match(r"(?i)^(?:by|author|editor|redakcja|opracowanie|tekst|zdjecia|photo|photos)\b", normalized):
+        return True
+    if re.search(r"(?i)\b(?:press|publishing|publisher|wydawnictwo|wydawca|imprint)\b", normalized):
+        return True
+    if lowered in {"isbn", "issn", "copyright"}:
+        return True
+    return False
+
+
+def _looks_like_relaxed_profile_heading_noise(node: Tag, text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return True
+    if _looks_like_acknowledgement_fragment_heading(normalized):
+        return True
+    if _looks_like_city_year_fragment_heading(normalized):
+        return True
+    if _looks_like_generic_reflow_label_heading(normalized):
+        return True
+    if _looks_like_trailing_fragment_heading(normalized):
+        return True
+    if _looks_like_tiny_function_heading(normalized):
+        return True
+    if _looks_like_truncated_heading(normalized):
+        return True
+    if _looks_like_publication_metadata_heading(normalized):
+        return True
+    return _looks_like_frontmatter_orphan_heading(node, normalized)
+
+
+def _looks_like_magazine_heading_noise(node: Tag, text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return True
+    if _is_magazine_gallery_toc_label(normalized):
+        return True
+    if _looks_like_magazine_auxiliary_toc_label(normalized):
+        return True
+    if _looks_like_magazine_source_or_caption_fragment(normalized):
+        return True
+    if _looks_like_magazine_promotional_toc_label(normalized):
+        return True
+    if _looks_like_magazine_sentence_fragment(normalized):
+        return True
+    if _looks_like_magazine_generic_combo_heading(normalized):
+        return True
+    if _looks_like_magazine_role_fragment(normalized):
+        return True
+    if _looks_like_lone_surname_fragment(node, normalized):
+        return True
+    return False
+
+
+def _clean_magazine_heading_text_nodes(soup: BeautifulSoup) -> bool:
+    changed = False
+    for node in soup.find_all(["h1", "h2", "h3"]):
+        text = _normalize_text(node.get_text(" ", strip=True))
+        if not text:
+            continue
+        cleaned = _clean_magazine_toc_label_text(text)
+        if cleaned and cleaned != text:
+            node.clear()
+            node.string = cleaned
+            changed = True
+    return changed
+
+
+def _clean_magazine_toc_label_text(text: str) -> str:
+    cleaned = _normalize_text(text).strip(" -:;,.")
+    if not cleaned:
+        return ""
+    cleaned = re.sub(
+        r"(?i)\s+[-–—]\s*(?:co\s+to\s+jest|jak\s+dzia[łl]a|implikacje\s+biznesowe|przyk[łl]ad|proces)\s*$",
+        "",
+        cleaned,
+    ).strip(" -:;,.")
+    cleaned = re.sub(
+        r"\s+[–—]\s*(?:[^\W\d_][\w'.-]+(?:\s+[^\W\d_][\w'.-]+){0,2}),?\s*$",
+        "",
+        cleaned,
+    ).strip(" -:;,.")
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _looks_like_acknowledgement_fragment_heading(text: str) -> bool:
+    normalized = _normalize_text(text)
+    lowered = normalized.lower()
+    if not normalized or len(normalized) > 140:
+        return False
+    return bool(
+        re.match(r"(?i)^(?:i\s+(?:wish|would like)\s+to\s+thank|we\s+thank|thanks\s+to)\b", normalized)
+        or re.match(r"(?i)^(?:podziekowania|podziekowania\s+dla|podziekowania\s+za)\b", lowered)
+    )
+
+
+def _looks_like_city_year_fragment_heading(text: str) -> bool:
+    normalized = _normalize_text(text).strip(" .;:")
+    if not normalized:
+        return False
+    if re.fullmatch(r"(?:18|19|20)\d{2}", normalized):
+        return True
+    return bool(re.fullmatch(r"[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){0,3},\s*(?:18|19|20)\d{2}", normalized))
+
+
+def _looks_like_trailing_fragment_heading(text: str) -> bool:
+    normalized = _normalize_text(text).strip()
+    if len(normalized) < 8:
+        return False
+    if normalized.endswith(("-", "â€“", "â€”")):
+        return True
+    return False
+
+
+def _looks_like_tiny_function_heading(text: str) -> bool:
+    normalized = _normalize_text(text).strip(" .:;").lower()
+    if not normalized or len(normalized) > 3:
+        return False
+    return normalized in {
+        "a",
+        "an",
+        "and",
+        "as",
+        "at",
+        "do",
+        "for",
+        "in",
+        "na",
+        "of",
+        "or",
+        "the",
+        "to",
+        "w",
+        "we",
+        "z",
+    }
+
+
+def _looks_like_generic_reflow_label_heading(text: str) -> bool:
+    if _is_magazine_generic_reflow_label(text):
+        return True
+    normalized = _normalize_text(text).strip(" .:;").lower()
+    if not normalized:
+        return True
+    folded = (
+        normalized.replace("ł", "l")
+        .replace("³", "l")
+        .replace("ą", "a")
+        .replace("ć", "c")
+        .replace("ę", "e")
+        .replace("ó", "o")
+        .replace("ś", "s")
+        .replace("ź", "z")
+        .replace("ż", "z")
+    )
+    if folded in {
+        "co to jest",
+        "jak dziala",
+        "implikacje biznesowe",
+        "przyklad",
+        "proces",
+        "how it works",
+        "example",
+    }:
+        return True
+    return normalized.startswith("jak dzia")
+
+
+def _heading_text_keys(text: str) -> set[str]:
+    normalized = _normalize_text(text).strip(" .:;,-")
+    if not normalized:
+        return set()
+    candidates = {normalized, normalized.translate(POLISH_ASCII_TRANSLATION)}
+    folded = "".join(
+        char for char in unicodedata.normalize("NFKD", normalized) if not unicodedata.combining(char)
+    )
+    if folded:
+        candidates.add(folded.translate(POLISH_ASCII_TRANSLATION))
+    return {
+        re.sub(r"\s+", " ", candidate).strip(" .:;,-").lower()
+        for candidate in candidates
+        if candidate and candidate.strip(" .:;,-")
+    }
+
+
+def _is_magazine_generic_reflow_label(text: str) -> bool:
+    return bool(_heading_text_keys(text) & MAGAZINE_GENERIC_TOC_LABEL_KEYS) or _looks_like_magazine_generic_combo_heading(text)
+
+
+def _looks_like_magazine_generic_combo_heading(text: str) -> bool:
+    normalized = _normalize_text(text).strip(" .:;,-")
+    if not normalized:
+        return True
+    words = normalized.split()
+    if len(words) > 5:
+        return False
+    for normalized_key in _heading_text_keys(normalized):
+        compact = f" {normalized_key} "
+        generic_hits = sum(1 for label in MAGAZINE_GENERIC_TOC_LABEL_KEYS if f" {label} " in compact)
+        if generic_hits >= 2:
+            return True
+        if any(
+            normalized_key.startswith(f"{label} ") or normalized_key.endswith(f" {label}")
+            for label in MAGAZINE_GENERIC_TOC_LABEL_KEYS
+            if " " in label
+        ):
+            return True
+    return False
+
+
+def _is_magazine_gallery_toc_label(text: str) -> bool:
+    keys = _heading_text_keys(text)
+    if keys & MAGAZINE_GALLERY_TOC_LABEL_KEYS:
+        return True
+    return any(
+        re.fullmatch(r"(?:photo |picture |image )?gallery\s*\d*", key)
+        or re.fullmatch(r"galeria\s*\d*", key)
+        for key in keys
+    )
+
+
+def _looks_like_magazine_auxiliary_toc_label(text: str) -> bool:
+    keys = _heading_text_keys(text)
+    if keys & MAGAZINE_AUXILIARY_TOC_LABEL_KEYS:
+        return True
+    normalized = _normalize_text(text).strip(" .:;")
+    return bool(
+        re.match(
+            r"(?i)^(?:lider|lead|czlonek|członek|koordynator|opiekun|ambasador|redaktor|z-ca|zastepca|zastępca)"
+            r"\s+(?:zespolu|zespołu|redakcji|teamu)\b",
+            normalized,
+        )
+    )
+
+
+def _looks_like_magazine_source_or_caption_fragment(text: str) -> bool:
+    normalized = _normalize_text(text).strip()
+    if re.match(r"(?i)^(?:zrodlo|źródło|source|credit)\s*[:.-]", normalized):
+        return True
+    return _looks_like_figure_caption_heading(normalized)
+
+
+def _looks_like_magazine_promotional_toc_label(text: str) -> bool:
+    keys = _heading_text_keys(text)
+    compact = " ".join(sorted(keys)) if keys else _normalize_text(text).lower()
+    if _looks_like_magazine_numbered_benefit_label(text):
+        return True
+    if re.match(r"^\d+\.\s+", _normalize_text(text)) and any(
+        token in compact for token in {"newsletter", "rabat", "rabaty", "znizki", "zniżki", "subskrypcja"}
+    ):
+        return True
+    return bool(
+        re.search(
+            r"(?i)\b(?:newsletter|subskrybuj|subskrypcj|zapisz\s+sie|zapisz\s+się|"
+            r"dolacz\s+do\s+spolecznosci|dołącz\s+do\s+społeczności|specjalne\s+znizki|specjalne\s+zniżki)\b",
+            _normalize_text(text),
+        )
+    )
+
+
+def _looks_like_magazine_numbered_benefit_label(text: str) -> bool:
+    normalized = _normalize_text(text).strip()
+    if not re.match(r"^\d{1,2}\.\s+", normalized):
+        return False
+    folded = " ".join(_heading_text_keys(normalized))
+    return any(
+        token in folded
+        for token in {
+            "aktualnosci",
+            "aktualności",
+            "artykuly",
+            "artykuły",
+            "badz na biezaco",
+            "bądź na bieżąco",
+            "co miesiac",
+            "co miesiąc",
+            "e mail",
+            "konkurs",
+            "narzedzia",
+            "narzędzia",
+            "newsletter",
+            "praktyczna wiedza",
+            "rabat",
+            "regularnosc",
+            "regularność",
+            "znizki",
+            "zniżki",
+        }
+    )
+
+
+def _looks_like_magazine_sentence_fragment(text: str) -> bool:
+    normalized = _normalize_text(text).strip()
+    if not normalized:
+        return False
+    first = normalized[0]
+    if first.islower():
+        return True
+    if re.match(r"(?i)^(?:pierwsza|pierwszą|druga|drugą|trzecia|trzecią|kolejna|kolejną|ostatnia|ostatnią)\s+jest\b", normalized):
+        return True
+    return False
+
+
+def _magazine_gallery_toc_key(text: str) -> str:
+    if not _is_magazine_gallery_toc_label(text):
+        return ""
+    keys = sorted(_heading_text_keys(text))
+    normalized = keys[0] if keys else _normalize_text(text).lower()
+    normalized = re.sub(r"\b\d+\b", "", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip(" .:;,-")
+    if "galeria" in normalized or "gallery" in normalized:
+        return "gallery"
+    return normalized or "gallery"
+
+
+def _magazine_toc_label_key(text: str) -> str:
+    keys = sorted(_heading_text_keys(text))
+    if not keys:
+        return ""
+    return keys[0]
+
+
+def _looks_like_magazine_role_fragment(text: str) -> bool:
+    keys = _heading_text_keys(text)
+    if keys & MAGAZINE_ROLE_FRAGMENT_KEYS:
+        return True
+    normalized = _normalize_text(text).strip(" .:;")
+    return bool(
+        re.fullmatch(
+            r"(?i)(?:author|editor|tekst|text|photos?|photo|redakcja|redaktor|zdjecia|fotografie)"
+            r"\b\s*[:.-]?\s*(?:[A-Z][\w'.-]+(?:\s+[A-Z][\w'.-]+){0,2})?",
+            normalized,
+        )
+        and len(normalized.split()) <= 5
+    )
+
+
+def _looks_like_lone_surname_fragment(node: Tag, text: str) -> bool:
+    normalized = _normalize_text(text).strip(" .:;")
+    words = normalized.split()
+    if len(words) != 1 or not _looks_like_person_name_token(words[0]):
+        return False
+    previous_text = _neighbor_text(node, previous=True)
+    next_text = _neighbor_text(node, previous=False)
+    if _looks_like_magazine_role_fragment(previous_text) or _looks_like_magazine_role_fragment(next_text):
+        return True
+    return _nearby_heading_cluster_has_magazine_role(node)
+
+
+def _looks_like_person_name_token(token: str) -> bool:
+    if not token or not token[0].isupper():
+        return False
+    if any(char.isdigit() or char == "_" for char in token):
+        return False
+    if not all(char.isalpha() or char in {"'", "-", "."} for char in token):
+        return False
+    letters = [char for char in token if char.isalpha()]
+    return 4 <= len(letters) <= 32
+
+
+def _nearby_heading_cluster_has_magazine_role(node: Tag) -> bool:
+    inspected = 0
+    for sibling in node.next_siblings:
+        if not isinstance(sibling, Tag):
+            continue
+        text = _normalize_text(sibling.get_text(" ", strip=True))
+        if not text:
+            continue
+        if sibling.name and sibling.name.startswith("h"):
+            inspected += 1
+            if _looks_like_magazine_role_fragment(text):
+                return True
+            if inspected >= 2:
+                return False
+            continue
+        return False
+    return False
+
+
+def _looks_like_frontmatter_orphan_heading(node: Tag, text: str) -> bool:
+    tag_name = str(getattr(node, "name", "") or "").lower()
+    if not re.fullmatch(r"h[3-6]", tag_name):
+        return False
+    normalized = _normalize_text(text).strip(" .:;")
+    words = normalized.split()
+    if len(words) != 1:
+        return False
+    token = words[0]
+    if not re.fullmatch(r"[A-Z][A-Za-z.'-]{4,32}", token):
+        return False
+    frontmatter_labels = {
+        "foreword",
+        "preface",
+        "introduction",
+        "contents",
+        "acknowledgements",
+        "acknowledgments",
+        "wstep",
+        "wstęp",
+    }
+    for previous in node.find_all_previous(["h1", "h2"]):
+        previous_text = _normalize_text(previous.get_text(" ", strip=True)).strip(" .:;").lower()
+        if not previous_text:
+            continue
+        if previous_text in frontmatter_labels:
+            return True
+    return False
+
+
+def _looks_like_front_matter_fragment_heading(text: str) -> bool:
+    normalized = _normalize_text(text).strip()
+    if not normalized:
+        return False
+    if _looks_like_navigation_artifact_heading(normalized):
+        return True
+    if _looks_like_publication_metadata_heading(normalized):
+        return True
+    if _looks_like_truncated_heading(normalized):
+        return True
+    words = normalized.split()
+    if len(words) > 4:
+        return False
+    if re.search(r"[\ufffd]", normalized):
+        return True
+    if re.search(r"(?i)(?:[A-Z]|[a-z])(?:\s+(?:[A-Z]|[a-z])){2,}$", normalized):
+        return True
+    letters = re.sub(r"[^A-Za-z]", "", normalized)
+    if len(words) <= 2 and letters and (normalized.istitle() or normalized.isupper()):
+        return True
+    return False
 
 
 def _previous_meaningful_sibling_text(node: Tag) -> str:
@@ -935,9 +1555,12 @@ def _looks_like_letterspaced_heading(text: str) -> bool:
 
 def _looks_like_figure_caption_heading(text: str) -> bool:
     normalized = _normalize_text(text)
+    caption_marker = (
+        r"(?:figure|fig\.?|table|diagram|chart|exhibit|photo|pic(?:ture)?\.?|image|illustration|"
+        r"rys(?:unek|\.)?|tabela|wykres|fot(?:\.|ografia)?|zdj(?:\.|ecie)?)"
+    )
     return bool(
-        re.match(r"(?i)^(?:figure|table|diagram|chart|exhibit|photo)\s+[A-Za-z0-9.\-: ]{1,120}$", normalized)
-        or re.match(r"(?i)^(?:rys(?:unek|\.)|tabela|diagram|wykres)\s+[A-Za-z0-9.\-: ]{1,120}$", normalized)
+        re.match(rf"(?i)^{caption_marker}(?:\s*\d|\s*[.:)\-]\s*|\s*$).{{0,120}}$", normalized)
     )
 
 
@@ -1024,10 +1647,12 @@ def _build_toc_entries_from_scan(
     after_scan: dict[str, list[dict[str, Any]]],
     *,
     excluded_reference_files: set[str] | None = None,
+    publication_profile: str | None = None,
 ) -> list[dict[str, Any]]:
     excluded_reference_files = excluded_reference_files or set()
     total_h3 = sum(1 for items in after_scan.values() for item in items if int(item.get("level") or 0) == 3)
     dense_handbook_mode = _is_dense_handbook_scan(after_scan)
+    magazine_profile = _is_magazine_publication_profile(publication_profile)
     repeated_label_counts: Counter[str] = Counter()
     if dense_handbook_mode:
         for items in after_scan.values():
@@ -1037,8 +1662,21 @@ def _build_toc_entries_from_scan(
                 if level <= 0 or level > 3 or not text or not _should_include_in_toc(text, level):
                     continue
                 repeated_label_counts[_dense_heading_key(text)] += 1
+    magazine_gallery_counts: Counter[str] = Counter()
+    if magazine_profile:
+        for items in after_scan.values():
+            for item in items:
+                level = int(item.get("level") or 0)
+                text = _normalize_text(str(item.get("text", "") or ""))
+                if level <= 0 or level > 3 or not text:
+                    continue
+                gallery_key = _magazine_gallery_toc_key(text)
+                if gallery_key:
+                    magazine_gallery_counts[gallery_key] += 1
     toc_entries: list[dict[str, Any]] = []
     generic_schema_counts: Counter[tuple[str, str]] = Counter()
+    emitted_magazine_gallery_counts: Counter[str] = Counter()
+    emitted_magazine_label_keys: set[str] = set()
     for file_name, items in after_scan.items():
         skip_reference_file = file_name in excluded_reference_files
         local_h3_count = 0
@@ -1053,6 +1691,14 @@ def _build_toc_entries_from_scan(
             text = _normalize_text(str(item.get("text", "") or ""))
             if not _should_include_in_toc(text, level):
                 continue
+            if _looks_like_figure_caption_heading(text):
+                continue
+            if magazine_profile and _should_skip_magazine_toc_candidate(
+                item,
+                gallery_counts=magazine_gallery_counts,
+                emitted_gallery_counts=emitted_magazine_gallery_counts,
+            ):
+                continue
             if front_matter_primary and level > 1:
                 continue
             if skip_reference_file and _looks_like_reference_heading_loose(text):
@@ -1065,6 +1711,10 @@ def _build_toc_entries_from_scan(
                 continue
             if dense_handbook_mode and _should_skip_repetitive_dense_heading(text, level=level, repeated_count=repeated_label_counts[_dense_heading_key(text)]):
                 continue
+            if magazine_profile:
+                label_key = _magazine_toc_label_key(text)
+                if label_key and label_key in emitted_magazine_label_keys:
+                    continue
             if level == 2:
                 local_h2_count += 1
                 if dense_handbook_mode and local_h2_count > 4 and not _looks_like_numbered_heading(text):
@@ -1081,6 +1731,13 @@ def _build_toc_entries_from_scan(
                     "level": level,
                 }
             )
+            gallery_key = _magazine_gallery_toc_key(text)
+            if gallery_key:
+                emitted_magazine_gallery_counts[gallery_key] += 1
+            if magazine_profile:
+                label_key = _magazine_toc_label_key(text)
+                if label_key:
+                    emitted_magazine_label_keys.add(label_key)
     return _dedupe_repeated_subsection_toc_labels(toc_entries)
 
 
@@ -1094,6 +1751,62 @@ def _is_dense_handbook_scan(after_scan: dict[str, list[dict[str, Any]]]) -> bool
         if int(item.get("level") or 0) in {1, 2, 3}
     )
     return file_count >= 40 or candidate_count >= 220 or heading_count >= 180
+
+
+def _should_skip_magazine_toc_candidate(
+    candidate: dict[str, Any],
+    *,
+    gallery_counts: Counter[str],
+    emitted_gallery_counts: Counter[str],
+) -> bool:
+    text = _normalize_text(str(candidate.get("text", "") or ""))
+    if not text:
+        return True
+    if _is_magazine_generic_reflow_label(text):
+        return True
+    if _looks_like_magazine_auxiliary_toc_label(text):
+        return True
+    if _looks_like_magazine_source_or_caption_fragment(text):
+        return True
+    if _looks_like_magazine_promotional_toc_label(text):
+        return True
+    if _looks_like_magazine_sentence_fragment(text):
+        return True
+    if _looks_like_magazine_role_fragment(text):
+        return True
+    level = int(candidate.get("level") or 0)
+    if level >= 3:
+        return True
+    if _looks_like_magazine_single_token_noise(text):
+        return True
+    if _candidate_looks_like_lone_surname_fragment(candidate):
+        return True
+    gallery_key = _magazine_gallery_toc_key(text)
+    if gallery_key:
+        return True
+    return False
+
+
+def _looks_like_magazine_single_token_noise(text: str) -> bool:
+    normalized = _normalize_text(text).strip(" .:;")
+    words = normalized.split()
+    if len(words) != 1:
+        return False
+    token = words[0]
+    if not _looks_like_person_name_token(token):
+        return False
+    lowered = next(iter(_heading_text_keys(token)), "")
+    return lowered not in {"intro", "wstep", "wstęp"}
+
+
+def _candidate_looks_like_lone_surname_fragment(candidate: dict[str, Any]) -> bool:
+    text = _normalize_text(str(candidate.get("text", "") or ""))
+    words = text.strip(" .:;").split()
+    if len(words) != 1 or not _looks_like_person_name_token(words[0]):
+        return False
+    previous_text = _normalize_text(str(candidate.get("previous_text", "") or ""))
+    next_text = _normalize_text(str(candidate.get("next_text", "") or ""))
+    return _looks_like_magazine_role_fragment(previous_text) or _looks_like_magazine_role_fragment(next_text)
 
 
 def _should_include_dense_handbook_heading(
@@ -1566,25 +2279,61 @@ def _derive_release_status(
     return "pass"
 
 
-def _evaluate_heading_gate_after_rebuild(after_scan: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+def _evaluate_heading_gate_after_rebuild(
+    after_scan: dict[str, list[dict[str, Any]]],
+    *,
+    publication_profile: str | None = None,
+) -> dict[str, Any]:
     blockers: list[str] = []
+    warnings: list[str] = []
+    relaxed_cardinality = _uses_relaxed_heading_cardinality(publication_profile)
     for file_name, items in after_scan.items():
         if file_name == "cover.xhtml":
             continue
         h1_count = sum(1 for item in items if int(item.get("level") or 0) == 1)
         if h1_count != 1:
-            blockers.append(f"{file_name} has {h1_count} H1 headings.")
+            message = f"{file_name} has {h1_count} H1 headings."
+            if relaxed_cardinality:
+                warnings.append(message)
+            else:
+                blockers.append(message)
         suspicious = [
             _normalize_text(str(item.get("text", "") or ""))
             for item in items
-            if _is_suspicious_final_heading_text(str(item.get("text", "") or ""))
+            if _is_suspicious_final_heading_text(
+                str(item.get("text", "") or ""),
+                publication_profile=publication_profile,
+            )
         ]
         if suspicious:
             blockers.append(f"{file_name} still contains suspicious headings: {', '.join(suspicious[:3])}")
-    return _gate_result("C", blockers=blockers)
+    return _gate_result("C", blockers=blockers, warnings=warnings)
 
 
-def _is_suspicious_final_heading_text(text: str) -> bool:
+def _uses_relaxed_heading_cardinality(publication_profile: str | None) -> bool:
+    profile = (publication_profile or "").strip().lower().replace("-", "_")
+    if not profile:
+        return False
+    relaxed_profiles = {
+        "diagram_book_reflow",
+        "diagram_training_book",
+        "fixed_layout_fallback",
+        "magazine_layout",
+        "magazine_reflow",
+        "page_fragment",
+        "page_fragments",
+        "preserve_layout",
+        "scanned_reflow",
+    }
+    return profile in relaxed_profiles or "fragment" in profile
+
+
+def _is_magazine_publication_profile(publication_profile: str | None) -> bool:
+    profile = (publication_profile or "").strip().lower().replace("-", "_")
+    return bool(profile and ("magazine" in profile or profile in {"editorial_layout", "editorial_reflow"}))
+
+
+def _is_suspicious_final_heading_text(text: str, *, publication_profile: str | None = None) -> bool:
     normalized = _normalize_text(text)
     lowered = normalized.lower()
     if not normalized:
@@ -1593,11 +2342,21 @@ def _is_suspicious_final_heading_text(text: str) -> bool:
         return True
     if _looks_like_promotional_banner(normalized):
         return True
+    if _looks_like_figure_caption_heading(normalized):
+        return True
     if _looks_like_table_header_heading(normalized):
+        if _is_magazine_publication_profile(publication_profile) and len(normalized.split()) >= 5:
+            return False
         return True
     if _looks_like_navigation_artifact_heading(normalized):
         return True
     if _looks_like_synthetic_section_label(normalized):
+        return True
+    if _looks_like_acknowledgement_fragment_heading(normalized):
+        return True
+    if _looks_like_city_year_fragment_heading(normalized):
+        return True
+    if _looks_like_trailing_fragment_heading(normalized):
         return True
     if _looks_like_truncated_heading(normalized):
         return True
@@ -1646,6 +2405,7 @@ def _build_summary(
     release_status: str,
     before_scan: dict[str, list[dict[str, Any]]],
     after_scan: dict[str, list[dict[str, Any]]],
+    publication_profile: str | None = None,
 ) -> dict[str, Any]:
     status_counts = Counter(str(item.get("action_taken", "") or "") for item in heading_inventory)
     documents_processed = len(before_scan)
@@ -1653,7 +2413,10 @@ def _build_summary(
         1
         for items in after_scan.values()
         for item in items
-        if _is_suspicious_final_heading_text(str(item.get("text", "") or ""))
+        if _is_suspicious_final_heading_text(
+            str(item.get("text", "") or ""),
+            publication_profile=publication_profile,
+        )
     )
     return {
         "documents_processed": documents_processed,

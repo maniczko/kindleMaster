@@ -4,13 +4,16 @@ import unittest
 from pathlib import Path
 
 from converter import ConversionConfig, convert_document_to_epub_with_report
-from premium_tools import detect_toolchain
+import premium_tools
 from publication_analysis import analyze_publication
 
 
 class PdfRuntimeFlowTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        premium_tools.clear_toolchain_cache()
+
     def test_detect_toolchain_exposes_pdf_conversion_dependencies(self) -> None:
-        toolchain = detect_toolchain()
+        toolchain = premium_tools.detect_toolchain(refresh=True)
         self.assertIn("java", toolchain)
         self.assertIn("tesseract", toolchain)
         self.assertIn("ocrmypdf", toolchain)

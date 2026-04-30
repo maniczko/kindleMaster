@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 from typing import Any, Sequence
 
+TEST_FILE_PATTERN = "test*.py"
+
 QUICK_TESTS = [
     "test_skill_contracts.py",
     "test_skill_guardrails.py",
@@ -17,13 +19,27 @@ QUICK_TESTS = [
     "test_project_status.py",
     "test_pdf_runtime_flow.py",
     "test_kindlemaster_entrypoint.py",
+    "test_premium_tools.py",
+    "test_flat2_ui_template.py",
+    "test_browser_conversion_outcome_harness.py",
     "test_app_async_convert.py",
     "test_app_runtime_services.py",
+    "test_app_quality_state_route.py",
     "test_docx_conversion.py",
     "test_app_docx_conversion.py",
     "test_epub_validation.py",
+    "test_chess_fix.py",
+    "test_converter_publication_budget.py",
     "test_fixed_layout_render_budget.py",
     "test_converter_fixed_layout_budget_enforcement.py",
+    "test_publication_analysis.py",
+    "test_publication_pipeline.py",
+    "test_quality_state_service.py",
+    "test_quality_cockpit_issues.py",
+    "test_quality_cockpit_preview.py",
+    "test_run_smoke_tests.py",
+    "test_magazine_kindle_reflow.py",
+    "test_smoke_chess_quality.py",
     "test_conversion_cleanup_ttl_contract.py",
     "test_vat_fixture_contracts.py",
     "test_prepare_reference_inputs_ocr_fixture.py",
@@ -47,7 +63,7 @@ RELEASE_TIMEOUT_RETURN_CODE = 124
 RELEASE_STEP_TIMEOUTS_SECONDS = {
     "release-units": 300,
     "corpus-units": 240,
-    "corpus-gate-standard": 720,
+    "corpus-gate-standard": 1800,
     "browser-followup": 300,
     "runtime-followup": 480,
 }
@@ -67,6 +83,27 @@ RUNTIME_TESTS = [
     "test_browser_polling_e2e.py",
     "test_browser_privacy_diagnostics.py",
 ]
+
+DISCOVER_ONLY_TESTS = [
+    "test_conversion_api_contracts.py",
+    "test_full_magazine.py",
+    "test_integration.py",
+    "test_local_hostname_contract.py",
+    "test_magazine_conversion.py",
+    "test_premium_reflow.py",
+    "test_premium_reflow_tables.py",
+    "test_quality_report_markdown.py",
+    "test_quality_reporting.py",
+    "test_workflow_runner.py",
+]
+
+SUITE_REGISTRY: dict[str, Sequence[str]] = {
+    "quick": QUICK_TESTS,
+    "release": RELEASE_TESTS,
+    "corpus": CORPUS_TESTS,
+    "browser": BROWSER_TESTS,
+    "runtime": RUNTIME_TESTS,
+}
 
 
 def main() -> int:
@@ -103,7 +140,7 @@ def main() -> int:
     validate_parser.add_argument("--reports-dir", default="reports/validators")
 
     smoke_parser = subparsers.add_parser("smoke", help="Run curated smoke tests.")
-    smoke_parser.add_argument("--mode", choices=("quick", "full"), default="quick")
+    smoke_parser.add_argument("--mode", choices=("micro", "quick", "full"), default="quick")
     smoke_parser.add_argument("--manifest", default="reference_inputs/manifest.json")
     smoke_parser.add_argument("--output-dir", default="output/smoke")
     smoke_parser.add_argument("--reports-dir", default="reports/smoke")
@@ -352,7 +389,7 @@ def _run_tests(suite: str) -> int:
             )
             return 1
         return subprocess.run(
-            [sys.executable, "-m", "unittest", *BROWSER_TESTS],
+            [sys.executable, "-m", "unittest", *SUITE_REGISTRY["browser"]],
             check=False,
             cwd=repo_root,
         ).returncode
@@ -369,13 +406,13 @@ def _run_tests(suite: str) -> int:
             )
             return 1
         return subprocess.run(
-            [sys.executable, "-m", "unittest", *RUNTIME_TESTS],
+            [sys.executable, "-m", "unittest", *SUITE_REGISTRY["runtime"]],
             check=False,
             cwd=repo_root,
         ).returncode
     if suite == "corpus":
         commands: list[Sequence[str]] = [
-            [sys.executable, "-m", "unittest", *CORPUS_TESTS],
+            [sys.executable, "-m", "unittest", *SUITE_REGISTRY["corpus"]],
             [sys.executable, "kindlemaster.py", "corpus"],
         ]
         for command in commands:
@@ -386,9 +423,9 @@ def _run_tests(suite: str) -> int:
     if suite == "release":
         return _run_release_suite(repo_root=repo_root, release_surface=verification_surfaces.get("release", {}))
     if suite == "full":
-        command: Sequence[str] = [sys.executable, "-m", "unittest", "discover", "-p", "test*.py"]
+        command: Sequence[str] = [sys.executable, "-m", "unittest", "discover", "-p", TEST_FILE_PATTERN]
     else:
-        command = [sys.executable, "-m", "unittest", *QUICK_TESTS]
+        command = [sys.executable, "-m", "unittest", *SUITE_REGISTRY["quick"]]
     return subprocess.run(command, check=False, cwd=repo_root).returncode
 
 
@@ -406,8 +443,8 @@ def _run_release_suite(*, repo_root: Path, release_surface: dict[str, Any]) -> i
         return 1
 
     commands: list[tuple[str, Sequence[str]]] = [
-        ("release-units", [sys.executable, "-m", "unittest", *RELEASE_TESTS]),
-        ("corpus-units", [sys.executable, "-m", "unittest", *CORPUS_TESTS]),
+        ("release-units", [sys.executable, "-m", "unittest", *SUITE_REGISTRY["release"]]),
+        ("corpus-units", [sys.executable, "-m", "unittest", *SUITE_REGISTRY["corpus"]]),
         (
             "corpus-gate-standard",
             [sys.executable, "kindlemaster.py", "corpus", "--proof-profile", "standard"],
@@ -418,9 +455,9 @@ def _run_release_suite(*, repo_root: Path, release_surface: dict[str, Any]) -> i
         surface_name = followup.get("surface")
         status = followup.get("status")
         if surface_name == "browser" and status == "supported":
-            commands.append(("browser-followup", [sys.executable, "-m", "unittest", *BROWSER_TESTS]))
+            commands.append(("browser-followup", [sys.executable, "-m", "unittest", *SUITE_REGISTRY["browser"]]))
         if surface_name == "runtime" and status == "supported":
-            commands.append(("runtime-followup", [sys.executable, "-m", "unittest", *RUNTIME_TESTS]))
+            commands.append(("runtime-followup", [sys.executable, "-m", "unittest", *SUITE_REGISTRY["runtime"]]))
 
     skipped_followups = [
         {

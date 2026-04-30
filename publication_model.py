@@ -137,10 +137,25 @@ class PublicationQualityReport:
     high_risk_pages: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     external_tools_used: dict[str, Any] = field(default_factory=dict)
+    source_toc_entries: int = 0
+    source_table_count: int = 0
+    xhtml_table_count: int = 0
+    table_cell_count: int = 0
+    table_row_count: int = 0
+    table_cell_coverage: float = 1.0
+    table_page_count: int = 0
+    multi_page_table_count: int = 0
+    wide_table_count: int = 0
+    low_confidence_table_count: int = 0
+    fragment_table_count: int = 0
+    table_summary: dict[str, Any] = field(default_factory=dict)
+    tiny_tail_sections: list[dict[str, Any]] = field(default_factory=list)
+    asset_budget_status: str = ""
     validation_status: str = "unavailable"
     validation_messages: list[str] = field(default_factory=list)
     validation_tool: str = "none"
     text_cleanup: dict[str, Any] = field(default_factory=dict)
+    extractor_contract_warnings: list[dict[str, Any]] = field(default_factory=list)
 
     def content_metrics_dict(self) -> dict[str, Any]:
         return {
@@ -159,7 +174,23 @@ class PublicationQualityReport:
             "high_risk_pages": self.high_risk_pages,
             "warnings": self.warnings,
             "external_tools_used": self.external_tools_used,
+            "source_toc_entries": self.source_toc_entries,
+            "source_table_count": self.source_table_count,
+            "xhtml_table_count": self.xhtml_table_count,
+            "table_cell_count": self.table_cell_count,
+            "table_row_count": self.table_row_count,
+            "table_cell_coverage": self.table_cell_coverage,
+            "table_page_count": self.table_page_count,
+            "multi_page_table_count": self.multi_page_table_count,
+            "wide_table_count": self.wide_table_count,
+            "low_confidence_table_count": self.low_confidence_table_count,
+            "fragment_table_count": self.fragment_table_count,
+            "table_summary": self.table_summary,
+            "tiny_tail_sections": self.tiny_tail_sections,
+            "tiny_tail_section_count": len(self.tiny_tail_sections),
+            "asset_budget_status": self.asset_budget_status,
             "text_cleanup": self.text_cleanup,
+            "extractor_contract_warnings": self.extractor_contract_warnings,
         }
 
     def validation_payload(self) -> dict[str, Any]:

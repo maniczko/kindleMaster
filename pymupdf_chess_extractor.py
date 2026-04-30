@@ -11,12 +11,13 @@ those and renders them as images instead.
 import io
 import html as html_module
 import re
+import zipfile
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional
 
 import fitz  # PyMuPDF
-from PIL import Image
+from PIL import Image, ImageFilter, ImageOps, ImageStat
 
 # Import chess renderer
 try:
@@ -198,9 +199,151 @@ def _optimize_chess_diagram_export(
     png_data: bytes,
     config: ConversionConfig,
 ) -> tuple[bytes, int, int]:
-    image = Image.open(io.BytesIO(png_data)).convert("L")
-    image = _resize_image_to_long_edge(image, config.diagram_image_long_edge)
+    source_image = Image.open(io.BytesIO(png_data)).convert("L")
+    image = _resize_image_to_long_edge(source_image, config.diagram_image_long_edge)
     target_palette_size = max(4, min(int(config.diagram_palette_colors or 0), 64))
+
+    baseline = _encode_chess_diagram_png(image, target_palette_size)
+    size_ceiling = _encode_legacy_size_ceiling_png(
+        source_image,
+        target_palette_size,
+        config.diagram_image_long_edge,
+    )
+    size_ceiling_cost = _archive_cost(size_ceiling)
+
+    candidates = [size_ceiling, baseline]
+    candidates.extend(_build_chess_diagram_png_candidates(image, target_palette_size)[1:])
+
+    optimized = _select_best_chess_diagram_candidate(candidates, size_ceiling_cost)
+    with Image.open(io.BytesIO(optimized)) as optimized_image:
+        return optimized, optimized_image.width, optimized_image.height
+
+
+def _legacy_prequantized_chess_image(
+    image: Image.Image,
+    max_long_edge: int,
+) -> Image.Image:
+    prequantized = image.quantize(
+        colors=16,
+        method=Image.Quantize.MEDIANCUT,
+        dither=Image.Dither.NONE,
+    )
+    output = io.BytesIO()
+    prequantized.save(output, format="PNG", optimize=True, compress_level=9)
+    decoded = Image.open(io.BytesIO(output.getvalue())).convert("L")
+    return _resize_image_to_long_edge(decoded, max_long_edge)
+
+
+def _encode_legacy_size_ceiling_png(
+    image: Image.Image,
+    target_palette_size: int,
+    max_long_edge: int,
+) -> bytes:
+    legacy_image = _legacy_prequantized_chess_image(image, max_long_edge)
+    legacy_candidates = _build_legacy_chess_diagram_png_candidates(legacy_image, target_palette_size)
+    return _select_best_chess_diagram_candidate(
+        legacy_candidates,
+        _archive_cost(legacy_candidates[0]),
+    )
+
+
+def _build_legacy_chess_diagram_png_candidates(
+    image: Image.Image,
+    target_palette_size: int,
+) -> list[bytes]:
+    baseline = _encode_chess_diagram_png(image, target_palette_size)
+    enhanced_image = ImageOps.autocontrast(image, cutoff=1)
+    sharpened_image = enhanced_image.filter(
+        ImageFilter.UnsharpMask(radius=0.85, percent=125, threshold=3)
+    )
+    return [
+        baseline,
+        _encode_chess_diagram_png(enhanced_image, target_palette_size),
+        _encode_chess_diagram_png(sharpened_image, target_palette_size),
+    ]
+
+
+def _build_chess_diagram_png_candidates(
+    image: Image.Image,
+    target_palette_size: int,
+) -> list[bytes]:
+    baseline = _encode_chess_diagram_png(image, target_palette_size)
+    compact_hatch_palette_size = max(2, min(target_palette_size, 4))
+    contrast_sharp_image = ImageOps.autocontrast(image, cutoff=1).filter(
+        ImageFilter.UnsharpMask(radius=0.85, percent=125, threshold=3)
+    )
+    hatch_softened_image = _soften_chess_diagram_hatch_texture(image)
+    return [
+        baseline,
+        _encode_chess_diagram_png(contrast_sharp_image, target_palette_size),
+        _encode_chess_diagram_png(hatch_softened_image, compact_hatch_palette_size),
+    ]
+
+
+def _soften_chess_diagram_hatch_texture(image: Image.Image) -> Image.Image:
+    grayscale = image.convert("L")
+    smoothed = grayscale.filter(ImageFilter.MedianFilter(size=3))
+    darkened = grayscale.point(lambda pixel: max(0, pixel - 10))
+    dark_mask = grayscale.point(lambda pixel: 255 if pixel <= 88 else 0)
+    light_mask = grayscale.point(lambda pixel: 255 if pixel >= 224 else 0)
+    softened = Image.composite(darkened, smoothed, dark_mask)
+    softened = Image.composite(grayscale, softened, light_mask)
+    return ImageOps.autocontrast(softened, cutoff=1)
+
+
+def _select_best_chess_diagram_candidate(
+    candidates: list[bytes],
+    baseline_cost: tuple[int, int],
+) -> bytes:
+    best = candidates[0]
+    best_score = _chess_diagram_quality_score(best)
+    best_cost = _archive_cost(best)
+
+    for candidate in candidates[1:]:
+        candidate_cost = _archive_cost(candidate)
+        if candidate_cost[0] > baseline_cost[0] or candidate_cost[1] > baseline_cost[1]:
+            continue
+
+        candidate_score = _chess_diagram_quality_score(candidate)
+        if candidate_score > best_score + 0.5:
+            best = candidate
+            best_score = candidate_score
+            best_cost = candidate_cost
+        elif candidate_score >= best_score - 0.5 and candidate_cost < best_cost:
+            best = candidate
+            best_score = candidate_score
+            best_cost = candidate_cost
+
+    return best
+
+
+def _chess_diagram_quality_score(data: bytes) -> float:
+    with Image.open(io.BytesIO(data)) as raw_image:
+        image = raw_image.convert("L")
+        low, high = image.getextrema()
+        contrast = float(high - low)
+        edge_image = image.filter(ImageFilter.FIND_EDGES)
+        edge_mean = float(ImageStat.Stat(edge_image).mean[0])
+        histogram = image.histogram()
+        total = float(image.width * image.height) or 1.0
+        dark_ratio = sum(histogram[:96]) / total
+        light_ratio = sum(histogram[192:]) / total
+        middle_ratio = sum(histogram[96:192]) / total
+        separation = contrast * min(dark_ratio, light_ratio) * 4.0
+        fine_noise = float(ImageStat.Stat(edge_image.filter(ImageFilter.FIND_EDGES)).mean[0])
+        hatch_penalty = middle_ratio * fine_noise
+        return contrast + separation + edge_mean - hatch_penalty
+
+
+def _archive_cost(data: bytes) -> tuple[int, int]:
+    archive_buffer = io.BytesIO()
+    with zipfile.ZipFile(archive_buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("image.png", data)
+        info = archive.getinfo("image.png")
+        return int(info.compress_size), len(data)
+
+
+def _encode_chess_diagram_png(image: Image.Image, target_palette_size: int) -> bytes:
     quantized = image.quantize(
         colors=target_palette_size,
         method=Image.Quantize.MEDIANCUT,
@@ -223,8 +366,7 @@ def _optimize_chess_diagram_export(
         compress_level=9,
         bits=png_bits,
     )
-    optimized = output.getvalue()
-    return optimized, quantized.width, quantized.height
+    return output.getvalue()
 
 
 def _normalize_image_extension(raw_extension: str) -> str:
@@ -378,7 +520,7 @@ def _build_line_items(raw_lines: list[dict], skipped_indices: set[int]) -> list[
                     or piece[0].isdigit()
                     or (piece[0].isupper() and piece[0] not in "KQRBN")
                 ):
-                    if line_text[-1] not in NO_SPACE_AFTER_TOKENS and not line_text.endswith(" "):
+                    if line_text[-1] not in NO_SPACE_AFTER_TOKENS and line_text[-1] != "=" and not line_text.endswith(" "):
                         line_text += " "
                 elif _should_insert_space(line_text, piece, gap, segment["font_size"]):
                     line_text += " "
@@ -837,7 +979,10 @@ def extract_pdf_with_chess_support(
 
                     try:
                         png_data, png_width, png_height = render_chess_diagram_to_png(
-                            page, region, dpi=max(config.chess_diagram_dpi, 96)
+                            page,
+                            region,
+                            dpi=max(config.chess_diagram_dpi, 96),
+                            optimize=False,
                         )
                         png_data, png_width, png_height = _optimize_chess_diagram_export(png_data, config)
 

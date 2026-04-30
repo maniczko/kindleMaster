@@ -672,9 +672,7 @@ html, body {
   position: absolute;
   z-index: 5;
   pointer-events: auto;
-  image-rendering: -webkit-optimize-contrast;
-  image-rendering: crisp-edges;
-  image-rendering: pixelated;
+  image-rendering: auto;
 }
 
 .image-layer {

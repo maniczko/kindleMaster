@@ -1,0 +1,72 @@
+# VAT-206 Governance Dashboard
+
+This document defines the governance dashboard emitted by:
+
+```powershell
+python kindlemaster.py status
+```
+
+The dashboard is generated into `reports/project_status.json` and `reports/project_status.md`. It is derived evidence, not a hand-maintained status board.
+
+## Evidence Lanes
+
+The VAT-206 dashboard tracks the latest available evidence for these lanes:
+
+| Lane | Canonical command | Primary evidence |
+| --- | --- | --- |
+| `doctor` | `python kindlemaster.py doctor` | `reports/governance/doctor.json` |
+| `quick` | `python kindlemaster.py test --suite quick` | `reports/governance/quick.json` |
+| `corpus` | `python kindlemaster.py test --suite corpus` | `reports/corpus/corpus_gate.json` |
+| `release` | `python kindlemaster.py test --suite release` | `reports/governance/release.json` |
+| `status` | `python kindlemaster.py status` | `reports/project_status.json` |
+
+If an evidence file is missing, the dashboard reports that lane as `unavailable` and keeps the expected artifact path visible. Missing lane evidence is a dashboard warning signal; it does not rewrite the authoritative command contract.
+
+## Evidence Freshness
+
+Each evidence lane records:
+
+- `updated_at` from the selected artifact,
+- `freshness_status`,
+- `age_hours`,
+- `max_age_hours`,
+- a lane-specific freshness warning when evidence is stale.
+
+Evidence older than 168 hours is reported as `stale` and adds a warning to the generated project status. The `status` lane is refreshed by the current `python kindlemaster.py status` run.
+
+## Workflow Completeness
+
+The status report scans `reports/workflows/<run_id>/` and summarizes:
+
+- complete workflow count,
+- incomplete workflow count,
+- baseline-only workflow count,
+- latest completed workflow,
+- latest incomplete workflow.
+
+A complete workflow has baseline, isolation, verification, before/after, regression, and smoke report artifacts. A baseline-only workflow has baseline evidence but no verify evidence yet, so generated status warns that `workflow verify` is still required.
+
+## Drift Checks
+
+`python kindlemaster.py status` compares the command and governance mirrors across:
+
+- `kindlemaster.py`
+- `README.md`
+- `.codex/config.toml`
+- `.codex/README.md`
+- `AGENTS.md`
+- `docs/toolchain-matrix.md`
+
+The checks verify that first-class commands, supported test-suite lanes, and project-status evidence paths stay aligned with the executable parser and governance source-of-truth rules.
+
+## Active Session Overrides
+
+`.codex/config.toml` stores repo-local defaults for future KindleMaster sessions and collaborators. An active session can still receive stricter or different runtime policy from the Codex harness, developer instructions, or workspace permissions.
+
+When current session policy differs from `.codex/config.toml`, the current session policy wins for that run. Do not edit `.codex/config.toml` only to mirror a temporary session override. Update repo config only when the intended repo-local defaults themselves change.
+
+In practical terms:
+
+- active session permissions control what the agent may do right now,
+- `.codex/config.toml` remains the repo-local defaults contract,
+- generated status should document the distinction instead of treating it as policy drift.

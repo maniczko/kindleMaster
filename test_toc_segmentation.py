@@ -45,6 +45,18 @@ class TocSegmentationTests(unittest.TestCase):
 
         self.assertEqual(titles, ["Chapter 1", "Chapter 2"])
 
+    def test_keeps_short_real_section_titles_without_profile_noise_context(self):
+        raw_toc = [
+            (1, "Proces", 4),
+            (1, "Methods", 12),
+            (1, "Results", 24),
+        ]
+
+        outline = select_section_outline_entries(normalize_toc_entries(raw_toc))
+        titles = [entry["title"] for entry in outline]
+
+        self.assertEqual(titles, ["Proces", "Methods", "Results"])
+
 
 if __name__ == "__main__":
     unittest.main()

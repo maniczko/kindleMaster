@@ -113,7 +113,7 @@ def analyze_publication(pdf_path: str, preferred_profile: str = "auto-premium") 
     text_heavy = pages_with_text > total_pages * 0.5 and image_page_ratio <= 0.15
     has_toc = bool(toc)
     has_meaningful_images = meaningful_image_pages > 0
-    has_tables = _detect_tables(pdf_path, sample_pages)
+    has_tables = False if preferred_profile == "diagram_book_reflow" else _detect_tables(pdf_path, sample_pages)
     has_diagrams = detected_diagrams > 0 or _detect_chess_fonts(pdf_path)
     estimated_columns = round(mean(column_estimates)) if column_estimates else 1
     heading_density = mean(heading_scores) if heading_scores else 0.0
@@ -139,6 +139,7 @@ def analyze_publication(pdf_path: str, preferred_profile: str = "auto-premium") 
 
     profile, ui_profile, profile_reason = _choose_profile(
         preferred_profile=preferred_profile,
+        total_pages=total_pages,
         has_toc=has_toc,
         has_tables=has_tables,
         has_diagrams=has_diagrams,
@@ -146,6 +147,7 @@ def analyze_publication(pdf_path: str, preferred_profile: str = "auto-premium") 
         estimated_columns=estimated_columns,
         layout_heavy=layout_heavy,
         text_heavy=text_heavy,
+        text_page_ratio=text_page_ratio,
         scanned_page_ratio=scanned_page_ratio,
         legacy_strategy=legacy_strategy,
     )
@@ -176,6 +178,15 @@ def analyze_publication(pdf_path: str, preferred_profile: str = "auto-premium") 
         features.append("text-heavy")
     if estimated_columns >= 2:
         features.append(f"{estimated_columns}-column")
+    if _is_document_like_report_candidate(
+        has_toc=has_toc,
+        has_tables=has_tables,
+        estimated_columns=estimated_columns,
+        text_page_ratio=text_page_ratio,
+        scanned_page_ratio=scanned_page_ratio,
+        total_pages=total_pages,
+    ):
+        features.append("document-like-report")
 
     return PublicationAnalysis(
         profile=profile,
@@ -359,11 +370,22 @@ def _choose_profile(**kwargs) -> tuple[str, str, str]:
     has_toc = kwargs["has_toc"]
     has_meaningful_images = kwargs["has_meaningful_images"]
     legacy_strategy = kwargs["legacy_strategy"]
+    text_page_ratio = float(kwargs.get("text_page_ratio", 0.0) or 0.0)
+    total_pages = int(kwargs.get("total_pages", 0) or 0)
 
     if scanned_page_ratio > 0.55:
         return "scanned_reflow", "preserve-layout", "Duży udział stron skanowanych wymaga OCR/fallbacków."
     if has_diagrams and (has_toc or text_heavy):
         return "diagram_book_reflow", "book", "Wykryto publikację tekstową z diagramami wymagającymi image-first."
+    if _is_document_like_report_candidate(
+        has_toc=has_toc,
+        has_tables=has_tables,
+        estimated_columns=estimated_columns,
+        text_page_ratio=text_page_ratio,
+        scanned_page_ratio=scanned_page_ratio,
+        total_pages=total_pages,
+    ):
+        return "book_reflow", "technical-study", "Wykryto raport/dokument techniczny z jedną kolumną, spisem treści i tabelami."
     if layout_heavy and has_meaningful_images and scanned_page_ratio < 0.35:
         return "magazine_reflow", "magazine", "Wykryto publikację layout-heavy z warstwą tekstową, lepszą do article-first reflow niż do screenshotów."
     if has_tables and has_toc:
@@ -373,6 +395,26 @@ def _choose_profile(**kwargs) -> tuple[str, str, str]:
     if legacy_strategy == "layout_fixed":
         return "fixed_layout_fallback", "preserve-layout", "Układ dokumentu jest zbyt ciężki dla bezpiecznego reflow."
     return "book_reflow", "book", "Domyślny profil tekstowy."
+
+
+def _is_document_like_report_candidate(
+    *,
+    has_toc: bool,
+    has_tables: bool,
+    estimated_columns: int,
+    text_page_ratio: float,
+    scanned_page_ratio: float,
+    total_pages: int,
+) -> bool:
+    if not has_toc or not has_tables:
+        return False
+    if estimated_columns > 1:
+        return False
+    if scanned_page_ratio >= 0.35:
+        return False
+    if text_page_ratio < 0.65:
+        return False
+    return total_pages >= 3
 
 
 def _estimate_confidence(**kwargs) -> float:

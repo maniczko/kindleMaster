@@ -3,8 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>KindleMaster PDF Toolkit</title>
-  <link rel="icon" href="data:,">
+  <title>KindleMaster PDF/DOCX do EPUB</title>
+  <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" sizes="any">
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='favicon-32x32.png') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='favicon-192x192.png') }}">
+  <link rel="manifest" href="{{ url_for('static', filename='site.webmanifest') }}">
   <style>
     :root {
       --ink: #1f2933;
@@ -25,6 +28,7 @@
       --success: #1d7f56;
       --error: #b23a30;
       --info: #235ca9;
+      --focus-ring: #0f766e;
       --radius-sm: 12px;
       --radius: 20px;
       --radius-lg: 28px;
@@ -52,6 +56,7 @@
       --success: #4caf80;
       --error: #e06868;
       --info: #6090d0;
+      --focus-ring: #8bd5c9;
     }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { min-height: 100%; }
@@ -171,8 +176,22 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
+      width: 100%;
+      padding: 0;
+      border: 0;
+      border-radius: 4px;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      text-align: left;
       cursor: pointer;
       user-select: none;
+    }
+    button.card-header:hover:not(:disabled),
+    button.card-header:active:not(:disabled) { transform: none; }
+    .card-header:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 4px;
     }
     .card-header:hover .section-title { opacity: .8; }
     .card-body { display: flex; flex-direction: column; gap: 10px; }
@@ -200,6 +219,10 @@
       border-color: var(--accent);
       transform: translateY(-1px);
       box-shadow: 0 0 0 1px var(--accent-soft), inset 0 0 24px var(--accent-soft);
+    }
+    .drop-zone:focus-visible {
+      border-color: var(--focus-ring);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus-ring) 26%, transparent);
     }
     .drop-inner strong { display: block; font-size: 1rem; margin-bottom: 4px; }
     .drop-inner p { color: var(--muted); font-size: .82rem; line-height: 1.4; }
@@ -245,6 +268,10 @@
       transition: border-color var(--transition);
     }
     input[type="number"]:focus, select:focus { outline: none; border-color: var(--accent); }
+    :where(button, input, select, a, .drop-zone):focus-visible {
+      outline: 2px solid var(--focus-ring);
+      outline-offset: 3px;
+    }
     .page-input-wrap {
       display: flex; align-items: center; gap: 6px; flex: 1 1 140px;
       padding: 8px 10px; border-radius: var(--radius-sm);
@@ -1381,12 +1408,54 @@
       list-style: none;
     }
 
+    .library-search-controls {
+      display: grid;
+      gap: 6px;
+    }
+
+    .library-search-controls input,
+    .library-search-controls select {
+      width: 100%;
+      min-width: 0;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--panel-strong);
+      color: var(--ink);
+      font: inherit;
+      font-size: 0.78rem;
+    }
+
+    .library-search-controls button {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid var(--accent);
+      border-radius: 4px;
+      background: var(--accent-soft);
+      color: var(--accent-strong);
+      font-size: 0.78rem;
+      font-weight: 800;
+    }
+
     .recent-conversions-list li {
       padding: 8px;
       border: 1px solid var(--line);
       border-radius: 4px;
       background: var(--panel-strong);
       font-size: 0.8rem;
+    }
+
+    .recent-conversions-list li[data-job-status="ready"] {
+      border-color: rgba(31, 122, 79, 0.28);
+    }
+
+    .recent-conversions-list li[data-job-status="failed"] {
+      border-color: rgba(185, 28, 28, 0.28);
+    }
+
+    .recent-conversions-list li[data-job-status="blocked"],
+    .recent-conversions-list li[data-job-status="interrupted"] {
+      border-color: rgba(185, 28, 28, 0.28);
     }
 
     .recent-conversions-list b {
@@ -1400,6 +1469,29 @@
       display: block;
       color: var(--muted);
       margin-top: 2px;
+    }
+
+    .recent-conversion-message[data-tone="failed"] {
+      color: var(--error);
+    }
+
+    .recent-conversion-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    .recent-conversion-actions a {
+      padding: 6px 8px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--panel);
+      color: var(--ink);
+      font-size: 0.74rem;
+      font-weight: 700;
+      line-height: 1;
+      text-decoration: none;
     }
 
     .button-primary,
@@ -1435,15 +1527,16 @@
     .flat2-quality-report {
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: 12px;
       margin-top: 10px;
     }
 
     .quality-verdict {
       display: grid;
-      grid-template-columns: 1fr;
-      gap: 4px;
-      padding: 10px;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: start;
+      padding: 12px;
       border: 1px solid var(--line);
       border-left: 4px solid var(--info);
       border-radius: 4px;
@@ -1454,14 +1547,112 @@
     .quality-verdict[data-tone="review"] { border-left-color: var(--accent); }
     .quality-verdict[data-tone="failed"] { border-left-color: var(--error); }
 
+    .quality-decision-strip {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .quality-decision-option {
+      min-width: 0;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--panel);
+      color: var(--muted);
+      font-size: 0.74rem;
+      font-weight: 800;
+      line-height: 1.2;
+      text-align: center;
+      text-transform: uppercase;
+    }
+
+    .quality-decision-option.is-active {
+      color: var(--ink);
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
+
+    .quality-decision-option[data-decision="ready"].is-active {
+      border-color: var(--success);
+    }
+
+    .quality-decision-option[data-decision="blocked"].is-active {
+      border-color: var(--error);
+    }
+
     .quality-verdict strong {
       font-size: 0.92rem;
     }
 
     .quality-verdict span {
+      display: block;
+      margin-top: 3px;
       color: var(--muted);
       font-size: 0.8rem;
       line-height: 1.4;
+    }
+
+    .quality-verdict .quality-status-pill {
+      max-width: 160px;
+      padding: 5px 8px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--panel);
+      color: var(--ink);
+      font-size: 0.68rem;
+      font-weight: 800;
+      line-height: 1.2;
+      text-align: center;
+      text-transform: uppercase;
+      overflow-wrap: anywhere;
+    }
+
+    .quality-cockpit-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .quality-cockpit-panel {
+      min-width: 0;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--panel);
+      overflow-wrap: anywhere;
+    }
+
+    .quality-cockpit-panel:focus-within {
+      border-color: var(--focus-ring);
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus-ring) 18%, transparent);
+    }
+
+    .quality-cockpit-panel[data-span="wide"] {
+      grid-column: 1 / -1;
+    }
+
+    .quality-panel-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+      color: var(--ink);
+      font-size: 0.72rem;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      line-height: 1.2;
+      text-transform: uppercase;
+    }
+
+    .quality-panel-title small {
+      color: var(--muted);
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: none;
+      text-align: right;
     }
 
     .quality-matrix {
@@ -1475,6 +1666,7 @@
       border: 1px solid var(--line);
       border-radius: 4px;
       background: var(--panel);
+      min-width: 0;
     }
 
     .quality-row span {
@@ -1489,6 +1681,51 @@
 
     .quality-row strong {
       font-size: 0.82rem;
+      line-height: 1.35;
+    }
+
+    .quality-issue-board {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .quality-issue-column {
+      min-width: 0;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--panel-strong);
+    }
+
+    .quality-issue-column strong {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+    }
+
+    .quality-issue-column ul,
+    .quality-compact-list {
+      display: grid;
+      gap: 6px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .quality-issue-column li,
+    .quality-compact-list li {
+      min-width: 0;
+      color: var(--muted);
+      font-size: 0.76rem;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+
+    .quality-empty {
+      color: var(--muted);
+      font-size: 0.76rem;
       line-height: 1.35;
     }
 
@@ -1509,6 +1746,22 @@
       font-weight: 700;
     }
 
+    .quality-actions a:hover,
+    .recent-conversion-actions a:hover {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
+
+    .quality-actions[data-readonly="true"]::before {
+      content: "Tylko odczyt";
+      align-self: center;
+      color: var(--muted);
+      font-size: 0.72rem;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
     @media (max-width: 1380px) {
       .workspace {
         display: flex;
@@ -1516,55 +1769,286 @@
       }
     }
 
+    @media (min-width: 1381px) {
+      .insights-rail .quality-cockpit-grid,
+      .insights-rail .quality-matrix {
+        grid-template-columns: 1fr;
+      }
+    }
+
     @media (max-width: 720px) {
+      .quality-verdict,
+      .quality-cockpit-grid,
       .quality-matrix {
         grid-template-columns: 1fr;
+      }
+
+      .quality-issue-board {
+        grid-template-columns: 1fr;
+      }
+
+      .quality-verdict .quality-status-pill {
+        max-width: none;
+        text-align: left;
+      }
+    }
+
+    /* Premium cockpit cleanup: one primary task first, diagnostics after intent. */
+    html,
+    body {
+      overflow-x: hidden;
+    }
+
+    .brand p {
+      max-width: 62ch;
+    }
+
+    .hero-band {
+      grid-template-columns: minmax(0, 0.92fr) minmax(320px, 0.55fr);
+      align-items: stretch;
+    }
+
+    .hero-copy h2 {
+      max-width: 13ch;
+      font-size: clamp(2.35rem, 4.2vw, 3.8rem);
+      line-height: 0.98;
+    }
+
+    .hero-copy p {
+      max-width: 48ch;
+    }
+
+    .hero-drop {
+      align-self: stretch;
+      justify-content: center;
+    }
+
+    .drop-zone {
+      min-height: 184px;
+    }
+
+    .workspace {
+      grid-template-columns: minmax(250px, 280px) minmax(0, 1fr) minmax(270px, 300px);
+    }
+
+    .setup-rail > .rail-head,
+    .insights-rail > .rail-head {
+      display: none;
+    }
+
+    .flat-sidebar-card {
+      order: 4;
+      background: var(--panel-strong);
+    }
+
+    #cardEpub {
+      order: 1;
+    }
+
+    #statusBox {
+      order: 2;
+    }
+
+    #cardCrop {
+      order: 3;
+    }
+
+    @media (max-width: 1380px) {
+      .workspace {
+        display: grid;
+        grid-template-columns: minmax(280px, 0.42fr) minmax(0, 1fr);
+        align-items: start;
+      }
+
+      .setup-rail {
+        order: 1;
+      }
+
+      #cardEpub {
+        order: 1;
+      }
+
+      #cardCrop {
+        order: 2;
+      }
+
+      #statusBox {
+        order: 3;
+      }
+
+      .flat-sidebar-card {
+        order: 4;
+      }
+
+      .preview-stage {
+        order: 2;
+      }
+
+      .insights-rail {
+        order: 3;
+        grid-column: 1 / -1;
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 760px) {
+      .shell {
+        width: min(100% - 24px, 100%);
+      }
+
+      .topbar {
+        align-items: flex-start;
+      }
+
+      .brand h1 {
+        font-size: 2rem;
+      }
+
+      .brand p {
+        max-width: none;
+      }
+
+      .brand code {
+        white-space: normal;
+        overflow-wrap: anywhere;
+      }
+
+      .hero-band {
+        display: flex !important;
+        flex-direction: column;
+        padding: 18px;
+        gap: 16px;
+        overflow: visible;
+      }
+
+      .hero-copy,
+      .hero-drop {
+        width: 100%;
+      }
+
+      .hero-copy h2 {
+        max-width: none;
+        font-size: clamp(2.25rem, 15vw, 3rem);
+        line-height: 1.02;
+      }
+
+      .hero-copy p {
+        max-width: none;
+        font-size: 0.95rem;
+        line-height: 1.6;
+      }
+
+      .hero-highlights {
+        grid-template-columns: 1fr;
+      }
+
+      .drop-zone {
+        width: 100%;
+        min-height: 156px;
+        padding: 22px;
+      }
+
+      .preset-strip {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .preset-chip:first-child {
+        grid-column: 1 / -1;
+      }
+
+      .workspace,
+      .setup-rail,
+      .preview-stage,
+      .insights-rail {
+        display: flex !important;
+        flex-direction: column;
+        width: 100%;
+      }
+
+      .setup-rail {
+        order: 1;
+      }
+
+      .preview-stage {
+        order: 2;
+      }
+
+      .insights-rail {
+        order: 3;
+      }
+
+      .preview-toolbar,
+      .info-grid,
+      .button-row,
+      .nav-row {
+        grid-template-columns: 1fr;
+      }
+
+      .button-row,
+      .nav-row {
+        display: flex;
+        flex-direction: column;
+      }
+
+      .button-row button,
+      .nav-row button,
+      .page-input-wrap {
+        flex: 0 0 auto;
+        width: 100%;
+      }
+
+      .button-primary,
+      .button-ghost {
+        flex-basis: auto;
+        min-height: 44px;
       }
     }
   </style>
 </head>
 <body>
-  <div class="shell">
+  <div class="shell" data-vr-hook="vat-209-shell">
     <header class="topbar">
       <div class="brand">
-        <div class="brand-kicker">Kindle-ready workspace</div>
+        <div class="brand-kicker">Lokalny panel EPUB</div>
         <h1>Kindle<span>Master</span></h1>
-        <p>Analiza PDF i DOCX oraz EPUB export dla dokumentow, magazynow i materialow studyjnych. Panel lokalny: <code>{{ local_app_url }}</code>.</p>
+        <p>Lokalny panel do konwersji PDF/DOCX na premium EPUB. Adres: <code>{{ local_app_url }}</code>.</p>
       </div>
       <div class="topbar-right">
-        <div class="stamp"><span>build</span>{{ updated_at_label }}</div>
-        <button class="theme-toggle" id="themeToggle" title="Przelacz motyw" aria-label="Przelacz dark/light mode">🌙</button>
+        <div class="stamp"><span>wersja</span>{{ updated_at_label }}</div>
+        <button class="theme-toggle" id="themeToggle" title="Przełącz motyw" aria-label="Przełącz motyw jasny/ciemny">🌙</button>
       </div>
     </header>
 
-    <section class="hero-band">
+    <section class="hero-band" data-vr-hook="vat-209-hero">
       <div class="hero-copy">
         <div>
-          <div class="section-title">Production flow</div>
-          <h2>Uloz dokument pod Kindle, zanim klikniesz eksport.</h2>
+          <div class="section-title">Proces</div>
+          <h2>Konwertuj do Kindle EPUB bez chaosu.</h2>
         </div>
-        <p>Najpierw wrzucasz dokument, potem wybierasz profil i sprawdzasz ryzyka. PDF dostaje podglad i crop, a DOCX przechodzi w tryb analizy strukturalnej przed eksportem do EPUB.</p>
+        <p>Wrzuc PDF albo DOCX, wybierz profil i zobacz raport jakosci dopiero wtedy, gdy jest potrzebny.</p>
         <div class="hero-highlights">
           <div class="highlight">
-            <strong>Book</strong>
-            <span>Czysty reflow dla tekstu, rozdzialow i klasycznych ebookow.</span>
+            <strong>1. Wgraj</strong>
+            <span>Jedna akcja startowa dla PDF i DOCX.</span>
           </div>
           <div class="highlight">
-            <strong>Magazine</strong>
-            <span>Lepsze decyzje dla kolumn, sekcji i bardziej zlozonego skladu.</span>
+            <strong>2. Sprawdz</strong>
+            <span>Profil, OCR i kadrowanie sa blisko glownej decyzji.</span>
           </div>
           <div class="highlight">
-            <strong>Preserve</strong>
-            <span>Fallback dla dokumentow, ktore trzeba zachowac blisko oryginalu.</span>
+            <strong>3. Pobierz</strong>
+            <span>Raport jakosci pojawia sie po konwersji.</span>
           </div>
         </div>
       </div>
 
       <div class="hero-drop">
-        <label class="drop-zone" id="dropZone" for="fileInput">
+        <label class="drop-zone" id="dropZone" for="fileInput" role="button" tabindex="0" aria-describedby="dropZoneHint" data-vr-hook="vat-209-dropzone">
           <div class="drop-inner">
-            <strong>Wybierz lub upusc plik PDF albo DOCX</strong>
-            <p>Kliknij albo przeciagnij dokument. PDF uruchomi preview i crop, a DOCX analize struktury i gotowy flow do EPUB.</p>
+            <strong>Wybierz PDF albo DOCX</strong>
+            <p id="dropZoneHint">Kliknij, naciśnij Enter albo przeciagnij plik. Reszte decyzji pokazemy krok po kroku.</p>
           </div>
         </label>
         <input id="fileInput" type="file" accept="application/pdf,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx" hidden>
@@ -1580,75 +2064,86 @@
 
           <div class="preset-strip" aria-label="Szybki wybor profilu">
             <button class="preset-chip" type="button" data-profile="auto-premium">Auto Premium</button>
-            <button class="preset-chip" type="button" data-profile="book">Book</button>
-            <button class="preset-chip" type="button" data-profile="magazine">Magazine</button>
-            <button class="preset-chip" type="button" data-profile="technical-study">Technical/Study</button>
-            <button class="preset-chip" type="button" data-profile="preserve-layout">Preserve Layout</button>
+            <button class="preset-chip" type="button" data-profile="book">Książka</button>
+            <button class="preset-chip" type="button" data-profile="magazine">Magazyn</button>
+            <button class="preset-chip" type="button" data-profile="technical-study">Techniczny</button>
+            <button class="preset-chip" type="button" data-profile="preserve-layout">Zachowaj układ</button>
           </div>
         </div>
       </div>
     </section>
 
-    <div class="workspace">
-      <aside class="setup-rail">
-        <nav class="flat-sidebar-card" aria-label="KindleMaster Flat 2.0 navigation">
+    <div class="workspace" data-vr-hook="vat-209-workspace">
+      <aside class="setup-rail" data-vr-hook="vat-209-setup-rail">
+        <nav class="flat-sidebar-card" aria-label="Nawigacja KindleMaster Flat 2.0">
           <div class="flat-sidebar-logo">
             <div class="flat-sidebar-logo-mark" aria-hidden="true">KM</div>
             <div>
               <strong>KindleMaster</strong>
-              <span>Flat 2.0 workspace</span>
+              <span>Panel Flat 2.0</span>
             </div>
           </div>
-          <button class="quick-upload-button" id="quickUploadButton" type="button">Quick Upload</button>
-          <div class="workspace-state-label" id="workspaceStateLabel">No active file yet.</div>
+          <button class="quick-upload-button" id="quickUploadButton" type="button">Wgraj plik</button>
+          <div class="workspace-state-label" id="workspaceStateLabel">Brak aktywnego pliku.</div>
 
-          <div class="flat-sidebar-section" aria-label="Folders">
-            <strong>Folders</strong>
-            <button class="sidebar-link is-active" type="button"><span>Workspace</span><span>1</span></button>
-            <button class="sidebar-link" type="button"><span>Ready EPUBs</span><span>0</span></button>
-            <button class="sidebar-link" type="button"><span>Needs review</span><span>0</span></button>
+          <div class="flat-sidebar-section" aria-label="Widoki">
+            <strong>Widoki</strong>
+            <button class="sidebar-link is-active" type="button"><span>Robocze</span></button>
+            <button class="sidebar-link" type="button"><span>Gotowe EPUB-y</span></button>
+            <button class="sidebar-link" type="button"><span>Do kontroli</span></button>
           </div>
 
-          <div class="flat-sidebar-section" aria-label="Recent conversions">
-            <strong>Recent conversions</strong>
+          <div class="flat-sidebar-section" aria-label="Ostatnie konwersje">
+            <strong>Ostatnie konwersje</strong>
+            <div class="library-search-controls" aria-label="Przeszukiwalne archiwum EPUB">
+              <input id="librarySearchInput" type="search" placeholder="Szukaj w archiwum" autocomplete="off">
+              <select id="libraryVerdictFilter" aria-label="Filtr decyzji jakości">
+                <option value="">Wszystkie decyzje</option>
+                <option value="release_ready">Publikuj</option>
+                <option value="ready_with_review">Kontrola</option>
+                <option value="release_blocked">Nie publikuj</option>
+                <option value="failed">Nieudane</option>
+              </select>
+              <button id="librarySearchButton" type="button">Szukaj</button>
+            </div>
             <ul class="recent-conversions-list" id="recentConversionsList">
               <li id="recentConversionsEmpty">
-                <b>No conversions yet</b>
-                <small>Successful jobs will appear here for this session.</small>
+                <b>Brak konwersji</b>
+                <small>Historia pojawi sie po pierwszej konwersji.</small>
               </li>
             </ul>
           </div>
 
-          <div class="sidebar-utilities" aria-label="Utilities">
-            <button class="sidebar-utility" type="button"><span>Settings</span><span>Local</span></button>
-            <button class="sidebar-utility" type="button"><span>Profile</span><span>Operator</span></button>
+          <div class="sidebar-utilities" aria-label="Narzędzia">
+            <button class="sidebar-utility" type="button"><span>Ustawienia</span><span>Lokalnie</span></button>
+            <button class="sidebar-utility" type="button"><span>Profil</span><span>Operator</span></button>
           </div>
         </nav>
 
         <div class="rail-head">
-          <div class="section-title">Setup</div>
+          <div class="section-title">Start</div>
           <h3>Konwersja</h3>
           <p>Najwazniejsze decyzje doboru profilu i eksportu trzymamy blisko glownych akcji.</p>
         </div>
 
         <div class="card card-emphasis" id="cardEpub">
-          <div class="card-header" onclick="toggleCard('cardEpub')">
+          <button class="card-header" type="button" id="cardEpubHeader" onclick="toggleCard('cardEpub')" aria-expanded="true" aria-controls="cardEpubBody">
             <div>
               <div class="section-title">PDF do EPUB</div>
               <p class="card-note">Dobierz profil, OCR i uruchom analize albo finalna konwersje.</p>
             </div>
-            <span class="collapse-icon">▾</span>
-          </div>
-          <div class="card-body">
+            <span class="collapse-icon" aria-hidden="true">▾</span>
+          </button>
+          <div class="card-body" id="cardEpubBody">
             <div class="field-row">
               <label>
                 <strong>Profil</strong>
                 <select id="profileSelect">
                   <option value="auto-premium">Auto Premium</option>
-                  <option value="book">Book</option>
-                  <option value="magazine">Magazine</option>
-                  <option value="technical-study">Technical/Study</option>
-                  <option value="preserve-layout">Preserve Layout</option>
+                  <option value="book">Książka</option>
+                  <option value="magazine">Magazyn</option>
+                  <option value="technical-study">Techniczny</option>
+                  <option value="preserve-layout">Zachowaj układ</option>
                 </select>
               </label>
               <label>
@@ -1669,8 +2164,8 @@
             <label class="checkbox">
               <input id="headingRepairCheckbox" type="checkbox" checked>
               <span>
-                <strong>Napraw headingi i TOC</strong>
-                Dodatkowy post-process EPUB: usuwa fake headingi, odbudowuje H1/H2/H3 i przebudowuje nawigacje.
+                <strong>Napraw nagłówki i TOC</strong>
+                Dodatkowy post-process EPUB: usuwa fałszywe nagłówki, odbudowuje H1/H2/H3 i przebudowuje nawigacje.
               </span>
             </label>
             <div class="button-row">
@@ -1680,42 +2175,42 @@
           </div>
         </div>
 
-        <div class="card" id="cardCrop">
-          <div class="card-header" onclick="toggleCard('cardCrop')">
+        <div class="card collapsed" id="cardCrop">
+          <button class="card-header" type="button" id="cardCropHeader" onclick="toggleCard('cardCrop')" aria-expanded="false" aria-controls="cardCropBody">
             <div>
-              <div class="section-title">Advanced crop</div>
+              <div class="section-title">Przycięcie A4</div>
               <p class="card-note">Opcjonalny eksport A4 dla dokumentu lub pojedynczej strony.</p>
             </div>
-            <span class="collapse-icon">▾</span>
-          </div>
-          <div class="card-body">
+            <span class="collapse-icon" aria-hidden="true">▾</span>
+          </button>
+          <div class="card-body" id="cardCropBody">
             <label class="checkbox">
               <input id="applyAllPages" type="checkbox">
               <span>
                 <strong>Zastosuj do wszystkich stron</strong>
-                Uzyj cropa aktualnej strony dla calego dokumentu.
+                Uzyj kadru aktualnej strony dla calego dokumentu.
               </span>
             </label>
             <div class="button-row">
-              <button class="button-primary" id="cropButton" disabled>Crop &amp; Fit to A4</button>
+              <button class="button-primary" id="cropButton" disabled>Kadruj do A4</button>
               <button class="button-ghost" id="resetCropButton" disabled>Wyczysc</button>
             </div>
-            <p class="hint">Wspolrzedne z canvasa sa mapowane do ukladu PDF i osadzane przez <code>pdf-lib embedPage + drawPage</code>.</p>
+            <p class="hint">Wspolrzedne z podgladu sa mapowane do ukladu PDF i osadzane przez <code>pdf-lib embedPage + drawPage</code>.</p>
           </div>
         </div>
 
-        <div class="status-box info" id="statusBox">
+        <div class="status-box info" id="statusBox" role="status" aria-live="polite" aria-atomic="true">
           <strong>Status</strong>
           <p id="statusText">Wgraj plik PDF, aby rozpoczac.</p>
         </div>
       </aside>
 
-      <section class="preview-stage">
+      <section class="preview-stage" data-vr-hook="vat-209-preview-stage">
         <header class="preview-header">
           <div>
-            <div class="section-title">Preview</div>
-            <h2 id="previewTitle">Podglad strony PDF</h2>
-            <p id="previewSubtitle">Po wgraniu pliku mozesz przechodzic miedzy stronami i rysowac crop na dowolnej z nich.</p>
+            <div class="section-title">Podgląd</div>
+            <h2 id="previewTitle">Podgląd strony PDF</h2>
+            <p id="previewSubtitle">Po wgraniu pliku mozesz przechodzic miedzy stronami i rysowac kadr na dowolnej z nich.</p>
           </div>
           <div class="crop-readout" id="cropReadout">
             <strong>Brak zaznaczenia</strong><br>
@@ -1725,14 +2220,14 @@
 
         <div class="preview-toolbar">
           <div class="card tool-card" id="cardNav">
-            <div class="card-header" onclick="toggleCard('cardNav')">
+            <button class="card-header" type="button" id="cardNavHeader" onclick="toggleCard('cardNav')" aria-expanded="true" aria-controls="cardNavBody">
               <div>
                 <div class="section-title">Nawigacja</div>
-                <p class="card-note">Szybkie przechodzenie miedzy stronami i zapamietany crop per page.</p>
+                <p class="card-note">Szybkie przechodzenie miedzy stronami i zapamietany kadr dla kazdej strony.</p>
               </div>
-              <span class="collapse-icon">▾</span>
-            </div>
-            <div class="card-body">
+              <span class="collapse-icon" aria-hidden="true">▾</span>
+            </button>
+            <div class="card-body" id="cardNavBody">
               <div class="nav-row">
                 <button class="button-secondary pager-button pager-prev" id="prevPageButton" disabled>&larr; Poprzednia</button>
                 <div class="page-input-wrap">
@@ -1749,14 +2244,14 @@
           </div>
 
           <div class="card tool-card" id="cardZoom">
-            <div class="card-header" onclick="toggleCard('cardZoom')">
+            <button class="card-header" type="button" id="cardZoomHeader" onclick="toggleCard('cardZoom')" aria-expanded="true" aria-controls="cardZoomBody">
               <div>
                 <div class="section-title">Zoom</div>
-                <p class="card-note">Kontrola dopasowania bez opuszczania glownego viewportu.</p>
+                <p class="card-note">Kontrola dopasowania bez opuszczania glownego widoku.</p>
               </div>
-              <span class="collapse-icon">▾</span>
-            </div>
-            <div class="card-body">
+              <span class="collapse-icon" aria-hidden="true">▾</span>
+            </button>
+            <div class="card-body" id="cardZoomBody">
               <div class="nav-row">
                 <button class="button-secondary zoom-button" id="zoomOutButton" disabled>−</button>
                 <div class="zoom-status" id="zoomStatusLabel">Dopasuj do okna</div>
@@ -1775,7 +2270,7 @@
           <div class="empty-state" id="emptyState">
             <div>
               <strong>Podglad pojawi sie tutaj</strong>
-              <p>Po wgraniu PDF aktualna strona zostanie wyrenderowana. Nad nia pojawi sie warstwa do rysowania crop boxa.</p>
+              <p>Po wgraniu PDF aktualna strona zostanie wyrenderowana. Nad nia pojawi sie warstwa do rysowania kadru.</p>
             </div>
           </div>
           <div class="canvas-stage" id="canvasStage">
@@ -1789,75 +2284,75 @@
         <footer class="preview-footer">
           <div class="legend">
             <span class="swatch"></span>
-            <span>Obszar ceglasty = aktywny crop box biezacej strony.</span>
+            <span>Obszar ceglasty = aktywny kadr biezacej strony.</span>
           </div>
           <div id="exportModeLabel">Eksport: tylko aktualna strona</div>
         </footer>
       </section>
 
-      <aside class="insights-rail">
+      <aside class="insights-rail" data-vr-hook="vat-209-insights-rail">
         <div class="rail-head">
-          <div class="section-title">Insights</div>
-          <h3>Analiza i audit</h3>
-          <p>Dokument, rekomendacje i premium quality checks sa oddzielone od glownych akcji.</p>
+          <div class="section-title">Kontrola</div>
+          <h3>Analiza i audyt</h3>
+          <p>Dokument, rekomendacje i kontrole jakości sa oddzielone od glownych akcji.</p>
         </div>
 
-        <div class="card" id="cardDoc">
-          <div class="card-header" onclick="toggleCard('cardDoc')">
+        <div class="card collapsed" id="cardDoc">
+          <button class="card-header" type="button" id="cardDocHeader" onclick="toggleCard('cardDoc')" aria-expanded="false" aria-controls="cardDocBody">
             <div>
               <div class="section-title">Dokument</div>
               <p class="card-note">Podstawowe metryki strony i aktualnego widoku.</p>
             </div>
-            <span class="collapse-icon">▾</span>
-          </div>
-          <div class="card-body">
+            <span class="collapse-icon" aria-hidden="true">▾</span>
+          </button>
+          <div class="card-body" id="cardDocBody">
             <div class="info-grid">
               <div class="metric"><span>Strony</span><strong id="pageCountValue">-</strong></div>
               <div class="metric"><span>Aktualna</span><strong id="pageIndicatorValue">-</strong></div>
               <div class="metric"><span>Rozmiar strony</span><strong id="pageSizeValue">-</strong></div>
               <div class="metric"><span>Skala</span><strong id="renderScaleValue">-</strong></div>
-              <div class="metric"><span>Crop (pt)</span><strong id="cropSizeValue">-</strong></div>
-              <div class="metric"><span>Zapisane cropy</span><strong id="savedCropsValue">0</strong></div>
+              <div class="metric"><span>Kadr (pt)</span><strong id="cropSizeValue">-</strong></div>
+              <div class="metric"><span>Zapisane kadry</span><strong id="savedCropsValue">0</strong></div>
             </div>
           </div>
         </div>
 
         <div class="card" id="cardInsights">
-          <div class="card-header" onclick="toggleCard('cardInsights')">
+          <button class="card-header" type="button" id="cardInsightsHeader" onclick="toggleCard('cardInsights')" aria-expanded="true" aria-controls="cardInsightsBody">
             <div>
-              <div class="section-title">EPUB quality</div>
+              <div class="section-title">Jakość EPUB</div>
               <p class="card-note">Analiza backendu, narzedzia i wynik ostatniej konwersji w jednym miejscu.</p>
             </div>
-            <span class="collapse-icon">▾</span>
-          </div>
-          <div class="card-body">
+            <span class="collapse-icon" aria-hidden="true">▾</span>
+          </button>
+          <div class="card-body" id="cardInsightsBody">
             <div class="analysis-box" id="analysisBox">
               <strong>Analiza jeszcze nieuruchomiona</strong>
-              <p>Kliknij "Analizuj", aby zobaczyc profil, confidence i rekomendacje pod Kindle.</p>
+              <p>Kliknij "Analizuj", aby zobaczyc profil, pewność i rekomendacje pod Kindle.</p>
               <div class="analysis-meta"></div>
             </div>
-            <div class="analysis-box info" id="conversionBox">
+            <div class="analysis-box info" id="conversionBox" role="region" aria-live="polite" aria-atomic="true" aria-label="Ostatnia konwersja">
               <strong>Ostatnia konwersja</strong>
-              <p>Po wygenerowaniu EPUB zobaczysz tutaj status EPUBCheck, liczbe sekcji, assetow i typ layoutu.</p>
+              <p>Po wygenerowaniu EPUB zobaczysz tutaj status EPUBCheck, liczbe sekcji, zasoby i typ ukladu.</p>
               <div class="analysis-meta"></div>
             </div>
           </div>
         </div>
 
-        <div class="crop-preview-card" id="cardPreview">
-          <div class="card-header" onclick="toggleCard('cardPreview')">
+        <div class="crop-preview-card collapsed" id="cardPreview">
+          <button class="card-header" type="button" id="cardPreviewHeader" onclick="toggleCard('cardPreview')" aria-expanded="false" aria-controls="cardPreviewBody">
             <div>
-              <div class="section-title">Podglad wycinka</div>
+              <div class="section-title">Podgląd wycinka</div>
               <p class="card-note">Szybka kontrola tego, co rzeczywiscie trafi do eksportu A4.</p>
             </div>
-            <span class="collapse-icon">▾</span>
-          </div>
-          <div class="card-body">
+            <span class="collapse-icon" aria-hidden="true">▾</span>
+          </button>
+          <div class="card-body" id="cardPreviewBody">
             <div class="crop-preview-shell">
               <div class="crop-preview-empty" id="cropPreviewEmpty">Tu pojawi sie wyciety fragment.</div>
               <canvas id="cropPreviewCanvas"></canvas>
             </div>
-            <p class="crop-coverage-note" id="cropCoverageNote">Zaznacz crop box, aby zobaczyc podglad.</p>
+            <p class="crop-coverage-note" id="cropCoverageNote">Zaznacz kadr, aby zobaczyc podglad.</p>
           </div>
         </div>
       </aside>
@@ -1958,10 +2453,21 @@
     });
 
     // â”€â”€ Collapsible cards â”€â”€
+    function syncCardHeaderState(card) {
+      if (!card) return;
+      var header = card.querySelector(".card-header");
+      if (!header) return;
+      header.setAttribute("aria-expanded", String(!card.classList.contains("collapsed")));
+    }
+
     function toggleCard(id) {
       var card = document.getElementById(id);
-      if (card) card.classList.toggle("collapsed");
+      if (!card) return;
+      card.classList.toggle("collapsed");
+      syncCardHeaderState(card);
     }
+
+    document.querySelectorAll(".card, .crop-preview-card").forEach(syncCardHeaderState);
 
     // â”€â”€ App â”€â”€
     const A4_WIDTH = 595.28;
@@ -2023,9 +2529,12 @@
     const quickUploadButton = $("quickUploadButton");
     const workspaceStateLabel = $("workspaceStateLabel");
     const recentConversionsList = $("recentConversionsList");
+    const librarySearchInput = $("librarySearchInput");
+    const libraryVerdictFilter = $("libraryVerdictFilter");
+    const librarySearchButton = $("librarySearchButton");
     const presetButtons = Array.from(document.querySelectorAll(".preset-chip[data-profile]"));
 
-    const canvasContext = pdfCanvas.getContext("2d", { alpha: false });
+    const canvasContext = pdfCanvas.getContext("2d", { alpha: false, willReadFrequently: true });
     const cropPreviewContext = cropPreviewCanvas.getContext("2d");
 
     let selectedFile = null;
@@ -2053,7 +2562,29 @@
     const CONVERSION_REQUEST_TIMEOUT_MS = 15000;
     const CONVERSION_START_TIMEOUT_MS = 30000;
     const MAX_CONVERSION_POLL_ERRORS = 3;
-    const MAX_CONVERSION_WAIT_MS = 20 * 60 * 1000;
+    const RECENT_CONVERSIONS_LIMIT = 6;
+    const LONG_CONVERSION_NOTICE_MS = 20 * 60 * 1000;
+    const LONG_CONVERSION_NOTICE_REPEAT_MS = 60 * 1000;
+
+    const pdfRenderCanvasFactory = {
+      create(width, height) {
+        const canvas = document.createElement("canvas");
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        canvas.width = width;
+        canvas.height = height;
+        return { canvas, context };
+      },
+      reset(canvasAndContext, width, height) {
+        canvasAndContext.canvas.width = width;
+        canvasAndContext.canvas.height = height;
+      },
+      destroy(canvasAndContext) {
+        canvasAndContext.canvas.width = 0;
+        canvasAndContext.canvas.height = 0;
+        canvasAndContext.canvas = null;
+        canvasAndContext.context = null;
+      },
+    };
 
     function formatBytes(byteCount) {
       const bytes = Number(byteCount) || 0;
@@ -2137,15 +2668,15 @@
       cropPreviewCanvas.classList.remove("visible");
       cropPreviewEmpty.style.display = "block";
       cropCoverageNote.className = "crop-coverage-note";
-      cropCoverageNote.textContent = "DOCX nie obsluguje preview/crop stron. Analiza i konwersja EPUB dzialaja normalnie.";
+      cropCoverageNote.textContent = "DOCX nie obsluguje podgladu ani kadrowania stron. Analiza i konwersja EPUB dzialaja normalnie.";
       previewTitle.textContent = "Tryb DOCX";
       previewSubtitle.textContent = "Dla DOCX pokazujemy analize struktury dokumentu zamiast podgladu stron PDF.";
       emptyState.style.display = "block";
       emptyState.innerHTML = `
         <strong>Tryb DOCX</strong>
-        <p>Podglad stron i crop sa dostepne tylko dla PDF. Dla DOCX mozesz uruchomic analize struktury i od razu konwersje do EPUB.</p>
+        <p>Podglad stron i kadrowanie sa dostepne tylko dla PDF. Dla DOCX mozesz uruchomic analize struktury i od razu konwersje do EPUB.</p>
       `;
-      cropReadout.innerHTML = "<strong>Tryb DOCX</strong><br>Crop PDF jest niedostepny dla dokumentow Word.";
+      cropReadout.innerHTML = "<strong>Tryb DOCX</strong><br>Kadrowanie PDF jest niedostepne dla dokumentow Word.";
       resetPreviewMetrics();
       updatePageSummary();
       updateExportModeLabel();
@@ -2202,7 +2733,7 @@
         return;
       }
       exportModeLabel.textContent = applyAllPages.checked
-        ? `Eksport: wszystkie strony wedlug cropa ze strony ${currentPageNumber}`
+        ? `Eksport: wszystkie strony wedlug kadru ze strony ${currentPageNumber}`
         : `Eksport: tylko strona ${currentPageNumber}`;
     }
 
@@ -2221,9 +2752,9 @@
         return;
       }
       const percent = `${Math.round(renderScale * 100)}%`;
-      if (zoomMode === "fit-width") { zoomStatusLabel.textContent = `Szerokosc Â· ${percent}`; return; }
-      if (zoomMode === "manual") { zoomStatusLabel.textContent = `Manualny Â· ${percent}`; return; }
-      zoomStatusLabel.textContent = `Okno Â· ${percent}`;
+      if (zoomMode === "fit-width") { zoomStatusLabel.textContent = `Szerokosc - ${percent}`; return; }
+      if (zoomMode === "manual") { zoomStatusLabel.textContent = `Manualny - ${percent}`; return; }
+      zoomStatusLabel.textContent = `Okno - ${percent}`;
     }
 
     function normalizedToPdfBox(normalized, widthPt, heightPt) {
@@ -2250,7 +2781,7 @@
       const heightPt = box.top - box.bottom;
       cropSizeValue.textContent = `${widthPt.toFixed(1)} x ${heightPt.toFixed(1)} pt`;
       cropReadout.innerHTML =
-        `<strong>Crop â€“ strona ${currentPageNumber}</strong><br>` +
+        `<strong>Kadr - strona ${currentPageNumber}</strong><br>` +
         `L ${box.left.toFixed(1)}  B ${box.bottom.toFixed(1)}<br>` +
         `R ${box.right.toFixed(1)}  T ${box.top.toFixed(1)} pt`;
     }
@@ -2260,7 +2791,7 @@
         cropPreviewCanvas.classList.remove("visible");
         cropPreviewEmpty.style.display = "block";
         cropCoverageNote.className = "crop-coverage-note";
-        cropCoverageNote.textContent = "Zaznacz crop box, aby zobaczyc podglad.";
+      cropCoverageNote.textContent = "Zaznacz kadr, aby zobaczyc podglad.";
         return;
       }
       const sourceX = Math.max(0, Math.round(cropRectNormalized.left * pdfCanvas.width));
@@ -2285,7 +2816,7 @@
       const coversMostOfPage = coverage > 0.6 || (cropRectNormalized.width > 0.8 && cropRectNormalized.height > 0.72);
       cropCoverageNote.className = coversMostOfPage ? "crop-coverage-note warn" : "crop-coverage-note";
       cropCoverageNote.textContent = coversMostOfPage
-        ? "Ten crop obejmuje wiekszosc strony â€“ finalny PDF bedzie podobny do oryginalu."
+        ? "Ten kadr obejmuje wiekszosc strony - finalny PDF bedzie podobny do oryginalu."
         : "Podglad pokazuje realny wycinek, ktory zostanie osadzony na stronie A4.";
     }
 
@@ -2322,25 +2853,25 @@
         return;
       }
       if (!hasPdfLoaded()) {
-        previewTitle.textContent = "Podglad strony PDF";
-        previewSubtitle.textContent = "Po wgraniu pliku mozesz przechodzic miedzy stronami i rysowac crop na dowolnej z nich.";
+        previewTitle.textContent = "Podgląd strony PDF";
+        previewSubtitle.textContent = "Po wgraniu pliku mozesz przechodzic miedzy stronami i rysowac kadr na dowolnej z nich.";
         return;
       }
-      const cropHint = cropRectsByPage.has(currentPageNumber) ? "Ma zapisany crop." : "Brak cropa.";
+      const cropHint = cropRectsByPage.has(currentPageNumber) ? "Ma zapisany kadr." : "Brak kadru.";
       previewTitle.textContent = `Strona ${currentPageNumber} z ${pdfJsDoc.numPages}`;
-      previewSubtitle.textContent = `${cropHint} Wlacz eksport wszystkich stron, by uzyc cropa z tej strony dla calego dokumentu.`;
+      previewSubtitle.textContent = `${cropHint} Wlacz eksport wszystkich stron, by uzyc kadru z tej strony dla calego dokumentu.`;
     }
 
     function resetAnalysisBox() {
       analysisBox.innerHTML = `
         <strong>Analiza jeszcze nieuruchomiona</strong>
-        <p>Kliknij "Analizuj", aby zobaczyc profil, confidence, narzedzia i rekomendacje dla EPUB.</p>
+        <p>Kliknij "Analizuj", aby zobaczyc profil, pewność, narzedzia i rekomendacje dla EPUB.</p>
         <div class="analysis-meta"></div>
       `;
       conversionBox.className = "analysis-box info";
       conversionBox.innerHTML = `
         <strong>Ostatnia konwersja</strong>
-        <p>Po wygenerowaniu EPUB zobaczysz tutaj status EPUBCheck, liczbe sekcji, assetow, typ layoutu i premium audit.</p>
+        <p>Po wygenerowaniu EPUB zobaczysz tutaj status EPUBCheck, liczbe sekcji, zasoby, typ ukladu i audyt premium.</p>
         <div class="analysis-meta"></div>
       `;
     }
@@ -2356,7 +2887,7 @@
 
     function updateCurrentFileState(file, sourceType) {
       if (!workspaceStateLabel || !file) return;
-      workspaceStateLabel.textContent = `${sourceType.toUpperCase()} selected: ${file.name}`;
+      workspaceStateLabel.textContent = `${sourceType.toUpperCase()} wybrany: ${file.name}`;
     }
 
     function renderRecentConversions() {
@@ -2364,32 +2895,182 @@
       if (!recentConversions.length) {
         recentConversionsList.innerHTML = `
           <li id="recentConversionsEmpty">
-            <b>No conversions yet</b>
-            <small>Successful jobs will appear here for this session.</small>
+            <b>Brak konwersji</b>
+            <small>Historia pojawi sie po pierwszej konwersji.</small>
           </li>
         `;
         return;
       }
-      recentConversionsList.innerHTML = recentConversions.map((item) => `
-        <li>
-          <b>${escapeHtml(item.filename || "Untitled")}</b>
-          <small>${escapeHtml(item.verdict || "ready")} | ${escapeHtml(item.profile || "profile unknown")} | ${escapeHtml(item.validation || "validation unknown")}</small>
+      recentConversionsList.innerHTML = recentConversions.map(renderRecentConversionItem).join("");
+    }
+
+    function normalizeRecentConversionStatus(status) {
+      const value = String(status || "").toLowerCase();
+      if (["ready", "complete", "completed", "done", "success", "succeeded"].includes(value)) return "ready";
+      if (["running", "processing", "started", "in_progress"].includes(value)) return "running";
+      if (["queued", "pending", "waiting"].includes(value)) return "queued";
+      if (["blocked", "release_blocked", "quality_blocked"].includes(value)) return "blocked";
+      if (["interrupted", "aborted", "application_restart", "restart"].includes(value)) return "interrupted";
+      if (["failed", "error", "cancelled", "canceled"].includes(value)) return "failed";
+      return value || "unknown";
+    }
+
+    function formatRecentConversionStatus(status) {
+      const normalized = normalizeRecentConversionStatus(status);
+      if (normalized === "ready") return "Gotowe";
+      if (normalized === "running") return "W toku";
+      if (normalized === "queued") return "W kolejce";
+      if (normalized === "blocked") return "Zablokowane";
+      if (normalized === "interrupted") return "Przerwane";
+      if (normalized === "failed") return "Błąd";
+      return "Nieznany";
+    }
+
+    function formatRecentConversionElapsed(seconds) {
+      const elapsedSeconds = coerceFiniteNumber(seconds);
+      if (!Number.isFinite(elapsedSeconds) || elapsedSeconds < 0) return "";
+      if (elapsedSeconds < 60) return `${Math.round(elapsedSeconds)}s`;
+      const minutes = Math.floor(elapsedSeconds / 60);
+      const remainder = Math.round(elapsedSeconds % 60);
+      return remainder ? `${minutes}m ${remainder}s` : `${minutes}m`;
+    }
+
+    function normalizeRecentConversion(item) {
+      const payload = item && typeof item === "object" ? item : {};
+      const downloadUrl = payload.download_url || payload.downloadUrl || "";
+      const qualityStateUrl = payload.quality_state_url || payload.qualityStateUrl || "";
+      const status = normalizeRecentConversionStatus(
+        payload.status || (downloadUrl || qualityStateUrl || payload.verdict ? "ready" : ""),
+      );
+      return {
+        jobId: payload.job_id || payload.jobId || "",
+        status,
+        message: payload.message || "",
+        title: payload.title || "",
+        filename: payload.filename || "Bez nazwy",
+        sourceType: payload.source_type || payload.sourceType || "",
+        documentClass: payload.document_class || payload.documentClass || "",
+        elapsedSeconds: coerceFiniteNumber(payload.elapsed_seconds ?? payload.elapsedSeconds),
+        downloadUrl,
+        qualityStateUrl,
+        reportJsonUrl: payload.report_json_url || payload.reportJsonUrl || "",
+        reportMarkdownUrl: payload.report_markdown_url || payload.reportMarkdownUrl || "",
+        outputSizeBytes: coerceFiniteNumber(payload.output_size_bytes ?? payload.outputSizeBytes),
+        error: payload.error || "",
+        verdict: payload.release_verdict || payload.releaseVerdict || payload.verdict || "",
+        readingVerdict: payload.reading_verdict || payload.readingVerdict || "",
+        releaseBlocked: Boolean(payload.release_blocked || payload.releaseBlocked),
+        searchableTextAvailable: Boolean(payload.searchable_text_available || payload.searchableTextAvailable),
+        textExcerpt: payload.text_excerpt || payload.textExcerpt || "",
+        profile: payload.profile || "",
+        validation: payload.validation || "",
+      };
+    }
+
+    function renderRecentConversionItem(item) {
+      const payload = normalizeRecentConversion(item);
+      const status = normalizeRecentConversionStatus(payload.status);
+      const sourceType = payload.sourceType ? payload.sourceType.toUpperCase() : "";
+      const elapsed = formatRecentConversionElapsed(payload.elapsedSeconds);
+      const outputSize = Number.isFinite(payload.outputSizeBytes) ? formatBytes(payload.outputSizeBytes) : "";
+      const statusLine = [
+        formatRecentConversionStatus(status),
+        sourceType,
+        payload.verdict,
+        elapsed,
+        outputSize,
+      ].filter(Boolean).join(" | ");
+      const detail = status === "failed"
+        ? (payload.error || payload.message || "Konwersja nie powiodla sie.")
+        : (payload.textExcerpt || payload.message || payload.readingVerdict || "");
+      const downloadLabel = payload.releaseBlocked || payload.verdict === "release_blocked"
+        ? "Pobierz szkic EPUB do kontroli"
+        : "Pobierz EPUB";
+      const evidenceActions = ["ready", "failed", "blocked", "interrupted"].includes(status);
+      const actions = evidenceActions ? [
+        payload.downloadUrl ? `<a href="${escapeHtml(payload.downloadUrl)}">${downloadLabel}</a>` : "",
+        payload.qualityStateUrl ? `<a href="${escapeHtml(payload.qualityStateUrl)}" target="_blank" rel="noreferrer">JSON jakości</a>` : "",
+        payload.reportMarkdownUrl ? `<a href="${escapeHtml(payload.reportMarkdownUrl)}" target="_blank" rel="noreferrer">Raport MD</a>` : "",
+        payload.reportJsonUrl ? `<a href="${escapeHtml(payload.reportJsonUrl)}" target="_blank" rel="noreferrer">Raport JSON</a>` : "",
+      ].filter(Boolean).join("") : "";
+      return `
+        <li data-job-status="${escapeHtml(status)}" data-job-id="${escapeHtml(payload.jobId)}">
+          <b>${escapeHtml(payload.title || payload.filename || "Bez nazwy")}</b>
+          <small>${escapeHtml(statusLine || formatRecentConversionStatus(status))}</small>
+          ${payload.jobId && evidenceActions ? `<small class="recent-conversion-evidence">Zadanie: ${escapeHtml(payload.jobId)}</small>` : ""}
+          ${detail ? `<small class="recent-conversion-message" data-tone="${status === "failed" ? "failed" : "neutral"}">${escapeHtml(detail)}</small>` : ""}
+          ${actions ? `<div class="recent-conversion-actions">${actions}</div>` : ""}
         </li>
-      `).join("");
+      `;
     }
 
     function rememberRecentConversion(item) {
-      const payload = item && typeof item === "object" ? item : {};
+      const payload = normalizeRecentConversion(item);
+      const isDifferentJob = (existing) => !payload.jobId || existing.jobId !== payload.jobId;
       recentConversions = [
-        {
-          filename: payload.filename || "Untitled",
-          verdict: payload.verdict || "ready",
-          profile: payload.profile || "unknown",
-          validation: payload.validation || "unavailable",
-        },
-        ...recentConversions,
-      ].slice(0, 4);
+        payload,
+        ...recentConversions.filter(isDifferentJob),
+      ].slice(0, RECENT_CONVERSIONS_LIMIT);
       renderRecentConversions();
+    }
+
+    async function loadConversionHistory({ silent = false } = {}) {
+      try {
+        const { response, data, text } = await fetchJsonWithTimeout(
+          "/convert/jobs",
+          {
+            method: "GET",
+            cache: "no-store",
+          },
+        );
+        if (!response.ok || !data || !data.success || !Array.isArray(data.jobs)) {
+          throw new Error((data && data.error) || text || "Nie udalo sie wczytac historii konwersji.");
+        }
+        recentConversions = data.jobs
+          .map(normalizeRecentConversion)
+          .slice(0, RECENT_CONVERSIONS_LIMIT);
+        renderRecentConversions();
+      } catch (error) {
+        if (!silent) {
+          console.warn("Nie udalo sie wczytac historii konwersji.", error);
+        }
+        renderRecentConversions();
+      }
+    }
+
+    async function loadConversionLibrary({ silent = false } = {}) {
+      const query = librarySearchInput ? librarySearchInput.value.trim() : "";
+      const verdict = libraryVerdictFilter ? libraryVerdictFilter.value : "";
+      const params = new URLSearchParams({ limit: String(RECENT_CONVERSIONS_LIMIT) });
+      if (query) {
+        params.set("q", query);
+        params.set("include_text", "true");
+      }
+      if (verdict) params.set("release_verdict", verdict);
+      const endpoint = query ? "/convert/search" : "/convert/library";
+      try {
+        const { response, data, text } = await fetchJsonWithTimeout(
+          `${endpoint}?${params.toString()}`,
+          {
+            method: "GET",
+            headers: { Accept: "application/json" },
+            cache: "no-store",
+          },
+          CONVERSION_REQUEST_TIMEOUT_MS,
+        );
+        if (!response.ok || !data || data.success === false || !Array.isArray(data.items)) {
+          throw new Error((data && data.error) || text || "Nie udalo sie pobrac archiwum konwersji.");
+        }
+        recentConversions = data.items
+          .map(normalizeRecentConversion)
+          .slice(0, RECENT_CONVERSIONS_LIMIT);
+        renderRecentConversions();
+      } catch (error) {
+        if (!silent) {
+          setStatus(error.message || "Nie udalo sie pobrac archiwum konwersji.", "warn");
+        }
+        renderRecentConversions();
+      }
     }
 
     function normalizeQualityHealth(rawValue, fallbackLabel) {
@@ -2405,17 +3086,274 @@
       };
     }
 
+    function normalizeQualityCompleteness(rawValue) {
+      const payload = rawValue && typeof rawValue === "object" && !Array.isArray(rawValue) ? rawValue : null;
+      if (!payload) return null;
+      const score = coerceFiniteNumber(payload.score);
+      const expectedSections = coerceFiniteNumber(payload.expected_sections ?? payload.expectedSections ?? payload.expected);
+      const reportedSections = coerceFiniteNumber(payload.reported_sections ?? payload.reportedSections ?? payload.reported);
+      const missingCount = coerceFiniteNumber(payload.missing_count ?? payload.missingCount ?? payload.missing);
+      const notReportedCount = coerceFiniteNumber(payload.not_reported_count ?? payload.notReportedCount);
+      const sections = Array.isArray(payload.sections) ? payload.sections : [];
+      const missingSections = Array.isArray(payload.missing_sections)
+        ? payload.missing_sections
+        : Array.isArray(payload.missingSections) ? payload.missingSections : [];
+      const notReportedSections = Array.isArray(payload.not_reported_sections)
+        ? payload.not_reported_sections
+        : Array.isArray(payload.notReportedSections) ? payload.notReportedSections : [];
+      return {
+        score,
+        status: payload.status || "not_reported",
+        expectedSections,
+        reportedSections,
+        missingCount,
+        notReportedCount,
+        missingSections,
+        notReportedSections,
+        sections,
+      };
+    }
+
     function formatQualityHealth(health) {
       const payload = health && typeof health === "object" ? health : {};
       const status = payload.status || "not_reported";
       const count = Number.isFinite(payload.count) ? ` (${payload.count})` : "";
-      if (status === "not_reported" || status === "unavailable") return "Not reported";
-      if (payload.message) return `${status}${count}: ${payload.message}`;
-      return `${status}${count}`;
+      if (status === "not_reported" || status === "unavailable") return "Brak danych";
+      const displayStatus = formatStatusText(status);
+      if (payload.message) return `${displayStatus}${count}: ${payload.message}`;
+      return `${displayStatus}${count}`;
+    }
+
+    function formatCompletenessScore(completeness) {
+      if (!completeness || !Number.isFinite(completeness.score)) return "Brak danych";
+      return `${Math.max(0, Math.min(100, Math.round(completeness.score)))}%`;
+    }
+
+    function formatStatusText(value) {
+      const text = String(value ?? "");
+      const normalized = text.toLowerCase();
+      const labels = {
+        passed: "Przeszło",
+        passed_with_warnings: "Przeszło z ostrzeżeniami",
+        failed: "Błąd",
+        warning: "Ostrzeżenie",
+        warnings: "Ostrzeżenia",
+        error: "Błąd",
+        unavailable: "Niedostępne",
+        not_reported: "Brak danych",
+        reported: "Zaraportowano",
+        ready: "Gotowe",
+        ready_with_review: "Do kontroli",
+        release_ready: "Gotowe do publikacji",
+        release_blocked: "Blokada publikacji",
+        partial: "Częściowe",
+        primary: "Główna próba",
+        skipped: "Pominięto",
+        applied: "Zastosowano",
+      };
+      return labels[normalized] || text;
+    }
+
+    function notReported(value) {
+      if (value === null || value === undefined || value === "") return "Brak danych";
+      return formatStatusText(value);
+    }
+
+    function normalizeOptionalObject(value) {
+      return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+    }
+
+    function normalizeOptionalArray(value) {
+      return Array.isArray(value) ? value : [];
+    }
+
+    function formatMetricValue(value) {
+      if (value === null || value === undefined || value === "") return "Brak danych";
+      if (typeof value === "number" && Number.isFinite(value)) return String(value);
+      if (typeof value === "boolean") return value ? "Tak" : "Nie";
+      if (Array.isArray(value)) return value.length ? value.join(", ") : "Brak danych";
+      if (typeof value === "object") {
+        const status = value.status || value.health || value.state || "";
+        const count = coerceFiniteNumber(value.count ?? value.total ?? value.items ?? value.value);
+        const message = value.message || value.summary || value.detail || "";
+        if (status || Number.isFinite(count) || message) {
+          return [formatStatusText(status), Number.isFinite(count) ? String(count) : "", message].filter(Boolean).join(" / ") || "Brak danych";
+        }
+        return "Zaraportowano";
+      }
+      return formatStatusText(value);
+    }
+
+    function renderQualityRows(rows) {
+      return rows.map(([label, value]) => `
+        <div class="quality-row">
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(formatMetricValue(value))}</strong>
+        </div>
+      `).join("");
+    }
+
+    function renderCompactList(items, emptyText = "Brak danych", limit = 6) {
+      const safeItems = normalizeOptionalArray(items).filter((item) => item !== null && item !== undefined && item !== "");
+      if (!safeItems.length) return `<div class="quality-empty">${escapeHtml(emptyText)}</div>`;
+      return `
+        <ul class="quality-compact-list">
+          ${safeItems.slice(0, limit).map((item) => {
+            if (typeof item === "object") {
+              const label = item.label || item.title || item.name || item.message || item.href || item.path || JSON.stringify(item);
+              const detail = item.detail || item.status || item.level || item.page || "";
+              return `<li>${escapeHtml(detail ? `${label} (${detail})` : label)}</li>`;
+            }
+            return `<li>${escapeHtml(item)}</li>`;
+          }).join("")}
+        </ul>
+      `;
+    }
+
+    function getIssueGroupItems(issueGroups, key, fallbackItems = []) {
+      const groups = normalizeOptionalObject(issueGroups) || {};
+      const value = groups[key] || groups[`${key}_items`] || fallbackItems;
+      if (Array.isArray(value)) return value.length ? value : normalizeOptionalArray(fallbackItems);
+      if (value && typeof value === "object" && Array.isArray(value.items)) return value.items;
+      if (Number.isFinite(coerceFiniteNumber(value)) && Number(value) > 0) return [`Zgłoszono: ${value}`];
+      return [];
+    }
+
+    function summarizeIssueGroup(issueGroups, key, fallbackItems = []) {
+      const groups = normalizeOptionalObject(issueGroups) || {};
+      const value = groups[key] || groups[`${key}_items`];
+      if (Array.isArray(value)) return value.length || normalizeOptionalArray(fallbackItems).length;
+      if (value && typeof value === "object") {
+        const count = coerceFiniteNumber(value.count ?? value.total);
+        if (Number.isFinite(count)) return count;
+        if (Array.isArray(value.items)) return value.items.length;
+      }
+      return normalizeOptionalArray(fallbackItems).length;
+    }
+
+    function buildManualReviewQueue(issueGroups, qualityBlockers = [], fallbackReviewItems = []) {
+      const groups = normalizeOptionalObject(issueGroups);
+      if (!groups) return null;
+      const queueGroups = [
+        ["blockers", "Napraw przed publikacją", normalizeOptionalArray(qualityBlockers)],
+        ["review", "Kontrola ręczna", normalizeOptionalArray(fallbackReviewItems)],
+        ["warnings", "Ostrzeżenie", []],
+      ];
+      const queue = [];
+      queueGroups.forEach(([key, label, fallbackItems]) => {
+        getIssueGroupItems(groups, key, fallbackItems).forEach((item) => {
+          if (item && typeof item === "object") {
+            const message = item.message || item.title || item.name || item.code || "Zgłoszono problem jakości.";
+            const context = [item.source, item.section, item.page ? `strona ${item.page}` : "", item.file]
+              .filter(Boolean)
+              .join(" / ");
+            queue.push({
+              label,
+              message,
+              context,
+            });
+            return;
+          }
+          queue.push({
+            label,
+            message: String(item),
+            context: "",
+          });
+        });
+      });
+      return queue;
+    }
+
+    function renderManualReviewQueue(queue) {
+      if (queue === null) return `<div class="quality-empty">Brak danych</div>`;
+      if (!queue.length) return `<div class="quality-empty">Brak pozycji do recznej kontroli.</div>`;
+      return `
+        <ul class="quality-compact-list">
+          ${queue.slice(0, 8).map((item) => {
+            const context = item.context ? ` (${item.context})` : "";
+            return `<li>${escapeHtml(item.label)}: ${escapeHtml(item.message)}${escapeHtml(context)}</li>`;
+          }).join("")}
+        </ul>
+      `;
+    }
+
+    function renderIssueColumn(label, items) {
+      return `
+        <div class="quality-issue-column">
+          <strong>${escapeHtml(label)}</strong>
+          ${renderCompactList(items, "Brak danych", 5)}
+        </div>
+      `;
     }
 
     function deriveQualityVerdict(normalized) {
       const payload = normalized && typeof normalized === "object" ? normalized : {};
+      const releaseVerdict = payload.releaseVerdict || "";
+      const readingVerdict = payload.readingVerdict || "";
+      const releaseBlocked = Boolean(payload.releaseBlocked);
+      const downloadAvailable = payload.downloadAvailable;
+      const qualityBlockers = Array.isArray(payload.qualityBlockers) ? payload.qualityBlockers : [];
+      const hasReleaseBlocker = releaseVerdict === "release_blocked" || releaseBlocked || qualityBlockers.length > 0;
+      if (releaseVerdict === "failed") {
+        return {
+          key: "failed",
+          tone: "failed",
+          label: "Nie publikuj",
+          detail: downloadAvailable === false
+            ? "EPUB nie jest dostępny do pobrania dla tego zadania."
+            : "Konwersja lub strukturalna walidacja zakończyła się błędem.",
+        };
+      }
+      if (hasReleaseBlocker) {
+        return {
+          key: "release_blocked",
+          tone: "failed",
+          label: "Nie publikuj",
+          detail: "EPUB wygenerowany, ale wymaga naprawy przed publikacją.",
+        };
+      }
+      if (releaseVerdict === "ready_with_review") {
+        return {
+          key: "ready_with_review",
+          tone: "review",
+          label: "Kontrola",
+          detail: "EPUB wygenerowany, ale wymaga kontroli jakości.",
+        };
+      }
+      if (releaseVerdict === "release_ready") {
+        return {
+          key: "ready",
+          tone: "ready",
+          label: "Publikuj",
+          detail: "EPUB jest gotowy do czytania i publikacji.",
+        };
+      }
+      if (readingVerdict === "failed") {
+        return {
+          key: "failed",
+          tone: "failed",
+          label: "Nie publikuj",
+          detail: downloadAvailable === false
+            ? "EPUB nie jest dostępny do pobrania dla tego zadania."
+            : "EPUB ma strukturalny problem jakości. Sprawdź walidację przed użyciem pliku.",
+        };
+      }
+      if (readingVerdict === "ready_with_review") {
+        return {
+          key: "ready_with_review",
+          tone: "review",
+          label: "Kontrola",
+          detail: "EPUB wygenerowany, ale wymaga kontroli jakości.",
+        };
+      }
+      if (readingVerdict === "ready") {
+        return {
+          key: "ready",
+          tone: "ready",
+          label: "Publikuj",
+          detail: "EPUB jest gotowy do czytania i publikacji.",
+        };
+      }
       const severity = payload.severity || "";
       const validation = payload.validation || "unavailable";
       const sizeStatus = payload.sizeBudget && payload.sizeBudget.status ? payload.sizeBudget.status : "unavailable";
@@ -2431,8 +3369,8 @@
         return {
           key: "failed_quality_gate",
           tone: "failed",
-          label: "Failed quality gate",
-          detail: "Validation or size gate reported a blocking issue. Review before using the EPUB.",
+          label: "Nie publikuj",
+          detail: "Walidacja albo limit rozmiaru zgłosiły blokujący problem. Sprawdź EPUB przed użyciem.",
         };
       }
 
@@ -2449,8 +3387,8 @@
         return {
           key: "ready_with_review",
           tone: "review",
-          label: "Ready with review",
-          detail: "EPUB was produced, but at least one warning, fallback, or manual review signal is present.",
+          label: "Kontrola",
+          detail: "EPUB wygenerowany, ale wymaga kontroli jakości.",
         };
       }
 
@@ -2458,16 +3396,16 @@
         return {
           key: "ready",
           tone: "ready",
-          label: "Ready",
-          detail: "Validation passed and no review signal was reported by the quality payload.",
+          label: "Publikuj",
+          detail: "Walidacja przeszła i payload jakości nie zgłosił sygnału kontroli.",
         };
       }
 
       return {
         key: "quality_pending",
         tone: "review",
-        label: "Ready with review",
-        detail: "EPUB was produced, but quality evidence is incomplete or unavailable.",
+        label: "Kontrola",
+        detail: "EPUB wygenerowany, ale dowody jakości są niepełne albo niedostępne.",
       };
     }
 
@@ -2522,13 +3460,27 @@
       verdict = null,
       qualityStateUrl = "",
       downloadUrl = "",
+      downloadAvailable = null,
+      readingVerdict = "",
+      releaseVerdict = "",
+      releaseBlocked = false,
+      qualityBlockers = [],
+      sendToKindleReady = null,
+      sendToKindleBlockers = [],
+      issueGroups = null,
+      contentMetrics = null,
+      textCleanup = null,
+      referenceCleanup = null,
+      assetSummary = null,
+      tocPreview = null,
+      epubcheckDetail = null,
+      metadataSummary = null,
       metadataHealth = null,
       linkHealth = null,
       visibleJunk = null,
+      qualityCompleteness = null,
     }) {
       const safeValidation = validation || "unavailable";
-      const derivedType = safeValidation === "passed" ? "success" : safeValidation === "failed" ? "error" : "info";
-      const type = severity === "success" ? "success" : severity === "error" ? "error" : derivedType;
       const reportVerdict = verdict || deriveQualityVerdict({
         severity,
         validation,
@@ -2540,7 +3492,15 @@
         renderBudget,
         headingRepair,
         qualityAvailable,
+        downloadAvailable,
+        readingVerdict,
+        releaseVerdict,
+        releaseBlocked,
+        qualityBlockers,
       });
+      const type = reportVerdict.tone === "failed"
+        ? "error"
+        : reportVerdict.tone === "ready" ? "success" : "info";
       const validationLabel = safeValidation === "passed"
         ? "EPUBCheck przeszedl bez bledow"
         : safeValidation === "failed"
@@ -2568,35 +3528,35 @@
       const badges = [
         profile ? `profil: ${profile}` : null,
         sections ? `sekcje ${sections}` : null,
-        assets ? `assety ${assets}` : null,
-        layout ? `layout: ${layout}` : null,
+        assets ? `zasoby ${assets}` : null,
+        layout ? `układ: ${layout}` : null,
         validationTool ? `narzedzie: ${validationTool}` : null,
         Number.isFinite(outputSizeBytes) && outputSizeBytes > 0 ? `rozmiar ${formatBytes(outputSizeBytes)}` : null,
         Number.isFinite(warnings) ? `ostrzezenia ${warnings}` : null,
         Number.isFinite(highRiskSections) ? `sekcje wysokiego ryzyka ${highRiskSections}` : null,
         Number.isFinite(highRiskPages) ? `strony wysokiego ryzyka ${highRiskPages}` : null,
-        sizeBudget && sizeBudget.status && sizeBudget.status !== "unavailable" ? `size gate: ${sizeBudget.status}` : null,
-        renderBudget && renderBudget.budgetClass ? `budget: ${renderBudget.budgetClass}` : null,
-        headingRepair && headingRepair.status === "applied" ? `TOC repair ${headingRepair.tocBefore || 0}→${headingRepair.tocAfter || 0}` : null,
-        headingRepair && headingRepair.status === "applied" && Number.isFinite(headingRepair.removed) ? `fake headingi ${headingRepair.removed}` : null,
-        headingRepair && headingRepair.status === "applied" && Number.isFinite(headingRepair.review) ? `review ${headingRepair.review}` : null,
+        sizeBudget && sizeBudget.status && sizeBudget.status !== "unavailable" ? `limit rozmiaru: ${formatStatusText(sizeBudget.status)}` : null,
+        renderBudget && renderBudget.budgetClass ? `budżet: ${renderBudget.budgetClass}` : null,
+        headingRepair && headingRepair.status === "applied" ? `naprawa TOC ${headingRepair.tocBefore || 0}→${headingRepair.tocAfter || 0}` : null,
+        headingRepair && headingRepair.status === "applied" && Number.isFinite(headingRepair.removed) ? `fałszywe nagłówki ${headingRepair.removed}` : null,
+        headingRepair && headingRepair.status === "applied" && Number.isFinite(headingRepair.review) ? `kontrola ${headingRepair.review}` : null,
       ].filter(Boolean).map((item) => `<span class="badge">${item}</span>`).join("");
 
       const contractHint = qualityAvailable === false
-        ? `<p style="margin-top:8px;font-size:.8rem;color:var(--muted);">Quality state nie byl kompletny, wiec UI pokazuje fallback metadata z odpowiedzi konwersji.</p>`
+        ? `<p style="margin-top:8px;font-size:.8rem;color:var(--muted);">Stan jakości nie byl kompletny, wiec UI pokazuje zapasowe metadane z odpowiedzi konwersji.</p>`
         : "";
       const auditHint = Number.isFinite(highRiskSections) || Number.isFinite(highRiskPages)
-        ? `<p style="margin-top:8px;font-size:.8rem;color:var(--muted);">Premium audit: ${highRiskSections || 0} sekcji i ${highRiskPages || 0} stron oznaczonych do kontroli.</p>`
+        ? `<p style="margin-top:8px;font-size:.8rem;color:var(--muted);">Audyt premium: ${highRiskSections || 0} sekcji i ${highRiskPages || 0} stron oznaczonych do kontroli.</p>`
         : "";
       const headingRepairHint = headingRepair && headingRepair.status === "applied"
-        ? `<p style="margin-top:8px;font-size:.8rem;color:var(--muted);">Heading recovery: release ${escapeHtml(headingRepair.release || "unavailable")}, EPUBCheck ${escapeHtml(headingRepair.epubcheck || "unavailable")}.</p>`
+        ? `<p style="margin-top:8px;font-size:.8rem;color:var(--muted);">Naprawa nagłówków: publikacja ${escapeHtml(formatStatusText(headingRepair.release || "unavailable"))}, EPUBCheck ${escapeHtml(formatStatusText(headingRepair.epubcheck || "unavailable"))}.</p>`
         : headingRepair && headingRepair.status === "failed"
-          ? `<p style="margin-top:8px;font-size:.8rem;color:#b25c37;">Heading recovery nie zostal zastosowany. EPUB bazowy zostal zachowany. Powod: ${escapeHtml(headingRepair.error || "nieznany blad")}.</p>`
+          ? `<p style="margin-top:8px;font-size:.8rem;color:#b25c37;">Naprawa nagłówków nie zostala zastosowana. EPUB bazowy zostal zachowany. Powod: ${escapeHtml(headingRepair.error || "nieznany blad")}.</p>`
           : headingRepair && headingRepair.status === "skipped"
-          ? `<p style="margin-top:8px;font-size:.8rem;color:var(--muted);">Heading recovery nie byl uruchomiony dla tej konwersji.${headingRepair.error ? ` Powod: ${escapeHtml(headingRepair.error)}.` : ""}</p>`
+          ? `<p style="margin-top:8px;font-size:.8rem;color:var(--muted);">Naprawa nagłówków nie byla uruchomiona dla tej konwersji.${headingRepair.error ? ` Powod: ${escapeHtml(headingRepair.error)}.` : ""}</p>`
           : "";
       const budgetHint = budgetDiagnostics.length
-        ? `<p style="margin-top:8px;font-size:.8rem;color:var(--muted);">Size budget: ${escapeHtml(budgetDiagnostics.join(" | "))}.</p>`
+        ? `<p style="margin-top:8px;font-size:.8rem;color:var(--muted);">Budżet rozmiaru: ${escapeHtml(budgetDiagnostics.join(" | "))}.</p>`
         : "";
       const alertsPanel = Array.isArray(alerts) && alerts.length
         ? `
@@ -2633,35 +3593,185 @@
       `;
       const fallbackLabel = renderBudget && renderBudget.attempt
         ? `${renderBudget.attempt}${renderBudget.budgetClass ? ` / ${renderBudget.budgetClass}` : ""}`
-        : "Not reported";
+        : "Brak danych";
       const tocLabel = headingRepair && headingRepair.status
-        ? `${headingRepair.status}${Number.isFinite(headingRepair.review) && headingRepair.review > 0 ? ` / review ${headingRepair.review}` : ""}`
-        : "Not reported";
-      const qualityRows = [
-        ["Validation", validationTool ? `${safeValidation} / ${validationTool}` : safeValidation],
+        ? `${formatStatusText(headingRepair.status)}${Number.isFinite(headingRepair.review) && headingRepair.review > 0 ? ` / kontrola ${headingRepair.review}` : ""}`
+        : "Brak danych";
+      const safeIssueGroups = normalizeOptionalObject(issueGroups);
+      const safeContentMetrics = normalizeOptionalObject(contentMetrics);
+      const safeTextCleanup = normalizeOptionalObject(textCleanup);
+      const safeReferenceCleanup = normalizeOptionalObject(referenceCleanup);
+      const safeAssetSummary = normalizeOptionalObject(assetSummary);
+      const safeTocPreview = normalizeOptionalObject(tocPreview);
+      const safeEpubcheckDetail = normalizeOptionalObject(epubcheckDetail);
+      const safeMetadataSummary = normalizeOptionalObject(metadataSummary);
+      const safeQualityCompleteness = normalizeQualityCompleteness(qualityCompleteness);
+      const safeQualityBlockers = normalizeOptionalArray(qualityBlockers);
+      const safeSendToKindleBlockers = normalizeOptionalArray(sendToKindleBlockers);
+      const sendToKindleLabel = sendToKindleReady === true
+        ? "Można wysłać na Kindle"
+        : sendToKindleReady === false
+          ? "Draft do kontroli"
+          : "Brak danych";
+      const blockerItems = getIssueGroupItems(safeIssueGroups, "blockers", safeQualityBlockers);
+      const warningItems = getIssueGroupItems(safeIssueGroups, "warnings", warningList);
+      const reviewItems = getIssueGroupItems(safeIssueGroups, "review", [...highRiskPageList, ...highRiskSectionList]);
+      const manualReviewQueue = buildManualReviewQueue(
+        safeIssueGroups,
+        safeQualityBlockers,
+        [...highRiskPageList, ...highRiskSectionList],
+      );
+      const qualityRows = renderQualityRows([
+        ["Kompletność", formatCompletenessScore(safeQualityCompleteness)],
+        ["Pobranie", downloadAvailable === null ? "Brak danych" : Boolean(downloadAvailable)],
+        ["Gotowość do czytania", readingVerdict || reportVerdict.label],
+        ["Kindle / email", sendToKindleLabel],
+        ["Blokuje publikację", Boolean(releaseBlocked)],
+        ["Walidacja", validationTool ? `${safeValidation} / ${validationTool}` : safeValidation],
         ["Fallback", fallbackLabel],
-        ["TOC quality", tocLabel],
-        ["Metadata", formatQualityHealth(metadataHealth)],
-        ["Links", formatQualityHealth(linkHealth)],
-        ["Visible junk", formatQualityHealth(visibleJunk)],
-      ].map(([label, value]) => `
-        <div class="quality-row">
-          <span>${escapeHtml(label)}</span>
-          <strong>${escapeHtml(value)}</strong>
+        ["Jakość TOC", tocLabel],
+        ["Treść", safeContentMetrics ? (safeContentMetrics.summary || safeContentMetrics.status || "Zaraportowano") : "Brak danych"],
+        ["Czyszczenie tekstu", safeTextCleanup ? (safeTextCleanup.status || safeTextCleanup.summary || "Zaraportowano") : "Brak danych"],
+        ["Bibliografia", safeReferenceCleanup ? (safeReferenceCleanup.status || safeReferenceCleanup.summary || "Zaraportowano") : "Brak danych"],
+        ["Metadane", formatQualityHealth(metadataHealth)],
+        ["Linki", formatQualityHealth(linkHealth)],
+        ["Widoczne artefakty", formatQualityHealth(visibleJunk)],
+      ]);
+      const completenessRows = renderQualityRows([
+        ["Wynik", formatCompletenessScore(safeQualityCompleteness)],
+        ["Status", safeQualityCompleteness ? safeQualityCompleteness.status : "Brak danych"],
+        ["Zaraportowane", safeQualityCompleteness && Number.isFinite(safeQualityCompleteness.reportedSections) ? safeQualityCompleteness.reportedSections : "Brak danych"],
+        ["Oczekiwane", safeQualityCompleteness && Number.isFinite(safeQualityCompleteness.expectedSections) ? safeQualityCompleteness.expectedSections : "Brak danych"],
+        ["Brakujące", safeQualityCompleteness && Number.isFinite(safeQualityCompleteness.missingCount) ? safeQualityCompleteness.missingCount : "Brak danych"],
+        ["Bez danych", safeQualityCompleteness && Number.isFinite(safeQualityCompleteness.notReportedCount) ? safeQualityCompleteness.notReportedCount : "Brak danych"],
+      ]);
+      const completenessSectionItems = safeQualityCompleteness && Array.isArray(safeQualityCompleteness.sections)
+        ? safeQualityCompleteness.sections.map((section) => {
+          const label = section && (section.label || section.key) ? (section.label || section.key) : "Sekcja";
+          const status = section && section.reported ? (section.status || "reported") : "Brak danych";
+          return `${label}: ${formatStatusText(status)}`;
+        })
+        : [];
+      const issueBoard = `
+        <div class="quality-cockpit-panel" id="qualityIssueBoard" data-span="wide">
+          <div class="quality-panel-title">
+            <span>Kontrola jakości</span>
+            <small>${summarizeIssueGroup(safeIssueGroups, "blockers", safeQualityBlockers)} do naprawy / ${summarizeIssueGroup(safeIssueGroups, "warnings", warningList)} ostrzeżeń / ${summarizeIssueGroup(safeIssueGroups, "review", [...highRiskPageList, ...highRiskSectionList])} do kontroli</small>
+          </div>
+          <div class="quality-issue-board">
+            ${renderIssueColumn("Wymaga naprawy przed publikacją", blockerItems)}
+            ${renderIssueColumn("Ostrzeżenia", warningItems)}
+            ${renderIssueColumn("Do kontroli", reviewItems)}
+          </div>
         </div>
-      `).join("");
+      `;
+      const manualReviewQueuePanel = `
+        <div class="quality-cockpit-panel" id="qualityManualReviewQueuePanel" data-span="wide">
+          <div class="quality-panel-title"><span>Kolejka kontroli ręcznej</span><small>blokery / kontrola / ostrzeżenia</small></div>
+          ${renderManualReviewQueue(manualReviewQueue)}
+        </div>
+      `;
+      const epubcheckRows = renderQualityRows([
+        ["Status", safeEpubcheckDetail ? (safeEpubcheckDetail.status || safeValidation) : safeValidation],
+        ["Narzędzie", safeEpubcheckDetail ? (safeEpubcheckDetail.tool || validationTool || "Brak danych") : (validationTool || "Brak danych")],
+        ["Błędy", safeEpubcheckDetail ? (safeEpubcheckDetail.errors ?? safeEpubcheckDetail.error_count) : "Brak danych"],
+        ["Ostrzeżenia", safeEpubcheckDetail ? (safeEpubcheckDetail.warnings ?? safeEpubcheckDetail.warning_count) : "Brak danych"],
+      ]);
+      const tocItems = safeTocPreview
+        ? normalizeOptionalArray(safeTocPreview.items || safeTocPreview.entries || safeTocPreview.headings)
+        : [];
+      const metadataRows = renderQualityRows([
+        ["Tytuł", safeMetadataSummary ? safeMetadataSummary.title : "Brak danych"],
+        ["Autor", safeMetadataSummary ? safeMetadataSummary.author : "Brak danych"],
+        ["Język", safeMetadataSummary ? safeMetadataSummary.language : "Brak danych"],
+        ["Stan", formatQualityHealth(metadataHealth)],
+      ]);
+      const imageRows = renderQualityRows([
+        ["Obrazy", safeAssetSummary ? (safeAssetSummary.images ?? safeAssetSummary.image_count) : (Number.isFinite(assets) ? assets : "Brak danych")],
+        ["Diagramy", safeAssetSummary ? (safeAssetSummary.diagrams ?? safeAssetSummary.diagram_count) : "Brak danych"],
+        ["Brak alt", safeAssetSummary ? (safeAssetSummary.missing_alt ?? safeAssetSummary.missing_alt_count) : "Brak danych"],
+        ["Za duże", safeAssetSummary ? (safeAssetSummary.oversized ?? safeAssetSummary.oversized_count) : "Brak danych"],
+        ["Ryzykowne media", safeAssetSummary ? (safeAssetSummary.unsupported_media_count ?? "Brak danych") : "Brak danych"],
+      ]);
+      const kindleRows = renderQualityRows([
+        ["Status", sendToKindleLabel],
+        ["Rozmiar", Number.isFinite(outputSizeBytes) && outputSizeBytes > 0 ? formatBytes(outputSizeBytes) : "Brak danych"],
+        ["Blokery", safeSendToKindleBlockers.length],
+      ]);
+      const decisionKey = reportVerdict.key === "ready"
+        ? "ready"
+        : reportVerdict.key === "release_blocked" || reportVerdict.key === "failed" || reportVerdict.key === "failed_quality_gate"
+          ? "blocked"
+          : "review";
+      const decisionStrip = `
+        <div class="quality-decision-strip" id="qualityDecisionStrip" role="list" aria-label="Decyzja publikacji">
+          ${[
+            { key: "ready", label: "Publikuj" },
+            { key: "review", label: "Kontrola" },
+            { key: "blocked", label: "Nie publikuj" },
+          ].map((item) => `
+            <div class="quality-decision-option${decisionKey === item.key ? " is-active" : ""}" data-decision="${item.key}" role="listitem" aria-current="${decisionKey === item.key ? "true" : "false"}">
+              ${item.label}
+            </div>
+          `).join("")}
+        </div>
+      `;
+      const downloadLabel = releaseBlocked || reportVerdict.key === "release_blocked"
+        ? "Pobierz szkic EPUB do kontroli"
+        : "Pobierz EPUB";
       const qualityLinks = [
-        qualityStateUrl ? `<a href="${escapeHtml(qualityStateUrl)}" target="_blank" rel="noreferrer">Open quality JSON</a>` : "",
-        downloadUrl ? `<a href="${escapeHtml(downloadUrl)}">Download EPUB again</a>` : "",
+        qualityStateUrl ? `<a href="${escapeHtml(qualityStateUrl)}" target="_blank" rel="noreferrer">JSON jakości</a>` : "",
+        downloadUrl ? `<a href="${escapeHtml(downloadUrl)}" class="quality-download-action">${downloadLabel}</a>` : "",
       ].filter(Boolean).join("");
       const qualityReportPanel = `
-        <div class="flat2-quality-report" data-quality-verdict="${escapeHtml(reportVerdict.key)}">
-          <div class="quality-verdict" data-tone="${escapeHtml(reportVerdict.tone)}">
-            <strong>${escapeHtml(reportVerdict.label)}</strong>
-            <span>${escapeHtml(reportVerdict.detail)}</span>
+        <div class="flat2-quality-report" data-quality-verdict="${escapeHtml(reportVerdict.key)}" data-vr-hook="vat-209-quality-report">
+          ${decisionStrip}
+          <div class="quality-verdict" id="qualityVerdictHeader" data-tone="${escapeHtml(reportVerdict.tone)}">
+            <div>
+              <strong>${escapeHtml(reportVerdict.label)}</strong>
+              <span>${escapeHtml(reportVerdict.detail)}</span>
+            </div>
+            <div class="quality-status-pill" aria-label="Status walidacji">Walidacja: ${escapeHtml(formatStatusText(safeValidation || "not_reported"))}</div>
           </div>
-          <div class="quality-matrix">${qualityRows}</div>
-          ${qualityLinks ? `<div class="quality-actions">${qualityLinks}</div>` : ""}
+          <div class="quality-cockpit-grid" id="qualityCockpit">
+            ${issueBoard}
+            ${manualReviewQueuePanel}
+            <div class="quality-cockpit-panel" id="qualityMatrixPanel" data-span="wide">
+              <div class="quality-panel-title"><span>Macierz jakości</span><small>Dowody jakości</small></div>
+              <div class="quality-matrix">${qualityRows}</div>
+            </div>
+            <div class="quality-cockpit-panel" id="qualityCompletenessPanel" data-span="wide">
+              <div class="quality-panel-title"><span>Kompletność jakości</span><small>${escapeHtml(formatCompletenessScore(safeQualityCompleteness))}</small></div>
+              <div class="quality-matrix">${completenessRows}</div>
+              ${renderCompactList(completenessSectionItems, "Brak danych", 9)}
+            </div>
+            <div class="quality-cockpit-panel" id="qualityEpubcheckPanel">
+              <div class="quality-panel-title"><span>EPUBCheck</span><small>${escapeHtml(notReported(safeEpubcheckDetail && safeEpubcheckDetail.version))}</small></div>
+              <div class="quality-matrix">${epubcheckRows}</div>
+              ${safeEpubcheckDetail && safeEpubcheckDetail.message ? `<div class="quality-empty">${escapeHtml(safeEpubcheckDetail.message)}</div>` : ""}
+            </div>
+            <div class="quality-cockpit-panel" id="qualityTocPreviewPanel">
+              <div class="quality-panel-title"><span>Podgląd TOC</span><small>${escapeHtml(safeTocPreview ? notReported(safeTocPreview.status || safeTocPreview.depth) : "Brak danych")}</small></div>
+              ${renderCompactList(tocItems, "Brak danych", 8)}
+            </div>
+            <div class="quality-cockpit-panel" id="qualityMetadataPanel">
+              <div class="quality-panel-title"><span>Metadane</span><small>${escapeHtml(formatQualityHealth(metadataHealth))}</small></div>
+              <div class="quality-matrix">${metadataRows}</div>
+            </div>
+            <div class="quality-cockpit-panel" id="qualityAssetsPanel">
+              <div class="quality-panel-title"><span>Obrazy / diagramy</span><small>${escapeHtml(safeAssetSummary ? (safeAssetSummary.status || "Zaraportowano") : "Brak danych")}</small></div>
+              <div class="quality-matrix">${imageRows}</div>
+            </div>
+            <div class="quality-cockpit-panel" id="qualityKindleDeliveryPanel">
+              <div class="quality-panel-title"><span>Kindle / mail</span><small>${escapeHtml(sendToKindleLabel)}</small></div>
+              <div class="quality-matrix">${kindleRows}</div>
+              ${safeSendToKindleBlockers.length ? renderCompactList(safeSendToKindleBlockers, "Brak danych", 5) : `<div class="quality-empty">Brak blockerów wysyłki.</div>`}
+            </div>
+            <div class="quality-cockpit-panel" id="qualityReportsActionsPanel" data-span="wide">
+              <div class="quality-panel-title"><span>Raporty / akcje</span><small>Tylko odczyt</small></div>
+              ${qualityLinks ? `<div class="quality-actions" data-readonly="true">${qualityLinks}</div>` : `<div class="quality-empty">Brak danych</div>`}
+            </div>
+          </div>
         </div>
       `;
 
@@ -2705,7 +3815,7 @@
           `linki ${analysis.hyperlink_count ?? 0}`,
         ];
         if (publication.profile) badges.push(`profil: ${publication.profile}`);
-        if (publication.confidence) badges.push(`${Math.round(publication.confidence * 100)}% conf`);
+        if (publication.confidence) badges.push(`pewność ${Math.round(publication.confidence * 100)}%`);
         if (publication.has_toc) badges.push("toc");
         const badgeHtml = badges.map((b) => `<span class="badge">${b}</span>`).join("");
         const toolBadges = [
@@ -2747,11 +3857,11 @@
         analysis.has_text_layer ? "warstwa: tak" : "warstwa: nie",
         analysis.has_images ? "obrazy: tak" : "obrazy: nie",
       ];
-      if (analysis.layout_heavy) badges.push("layout heavy");
-      if (analysis.text_heavy) badges.push("text heavy");
+      if (analysis.layout_heavy) badges.push("układ złożony");
+      if (analysis.text_heavy) badges.push("tekst dominujący");
       if (publication.profile) badges.push(`profil: ${publication.profile}`);
-      if (publication.confidence) badges.push(`${Math.round(publication.confidence * 100)}% conf`);
-      if (publication.has_toc) badges.push("toc");
+      if (publication.confidence) badges.push(`pewność ${Math.round(publication.confidence * 100)}%`);
+      if (publication.has_toc) badges.push("TOC");
       if (publication.has_tables) badges.push("tabele");
       if (publication.has_diagrams) badges.push("diagramy");
       if (publication.has_meaningful_images) badges.push("grafiki");
@@ -2833,7 +3943,7 @@
       cropOverlay.style.height = `${viewport.height}px`;
 
       canvasContext.setTransform(deviceScale, 0, 0, deviceScale, 0, 0);
-      renderTask = currentPage.render({ canvasContext, viewport });
+      renderTask = currentPage.render({ canvasContext, viewport, canvasFactory: pdfRenderCanvasFactory });
 
       try {
         await renderTask.promise;
@@ -2869,7 +3979,7 @@
       updateCurrentFileState(file, "pdf");
       emptyState.innerHTML = `
         <strong>Brak aktywnego podgladu</strong>
-        <p>Po wgraniu PDF aktualna strona zostanie wyrenderowana. Nad nia pojawi sie warstwa do rysowania crop boxa.</p>
+        <p>Po wgraniu PDF aktualna strona zostanie wyrenderowana. Nad nia pojawi sie warstwa do rysowania kadru.</p>
       `;
       updatePageSummary();
       updateExportModeLabel();
@@ -2883,7 +3993,7 @@
 
       await renderCurrentPage();
       updateExportModeLabel();
-      setStatus("PDF gotowy. Mozesz przechodzic miedzy stronami i rysowac crop box.", "success");
+      setStatus("PDF gotowy. Mozesz przechodzic miedzy stronami i rysowac kadr.", "success");
     }
 
     async function loadDocx(file) {
@@ -2899,7 +4009,7 @@
       fileSize.textContent = formatBytes(file.size);
       updateCurrentFileState(file, "docx");
       showDocxPreviewState();
-      setStatus("DOCX gotowy. Preview stron jest wylaczony, ale analiza i konwersja EPUB sa dostepne.", "success");
+      setStatus("DOCX gotowy. Podglad stron jest wylaczony, ale analiza i konwersja EPUB sa dostepne.", "success");
     }
 
     function rerenderForZoom(statusMessage) {
@@ -3027,7 +4137,7 @@
         updateCropReadout();
         updateControlsState();
         updatePageSummary();
-        setStatus("Zaznaczenie zbyt male. Sprobuj narysowac wiekszy crop box.", "info");
+        setStatus("Zaznaczenie zbyt male. Sprobuj narysowac wiekszy kadr.", "info");
         return;
       }
 
@@ -3040,24 +4150,24 @@
       cropRectsByPage.set(currentPageNumber, { ...cropRectNormalized });
       updateSelectionFromNormalized();
       updatePageSummary();
-      setStatus(`Crop box zapisany dla strony ${currentPageNumber}.`, "success");
+      setStatus(`Kadr zapisany dla strony ${currentPageNumber}.`, "success");
     }
 
     async function cropAndExport() {
       if (!pdfBytes || !cropRectNormalized) {
-        setStatus("Najpierw wgraj PDF i zaznacz crop box.", "error");
+        setStatus("Najpierw wgraj PDF i zaznacz kadr.", "error");
         return;
       }
       setBusy(true);
       try {
         const { PDFLib } = await ensurePdfPreviewLibraries();
         const { PDFDocument } = PDFLib;
-        setStatus("Przetwarzam PDF i osadzam crop na stronach A4...", "info");
+        setStatus("Przetwarzam PDF i osadzam kadr na stronach A4...", "info");
         const sourcePdf = await PDFDocument.load(pdfBytes);
         const outputPdf = await PDFDocument.create();
         const sourcePages = sourcePdf.getPages();
         const currentCrop = cropRectsByPage.get(currentPageNumber);
-        if (!currentCrop) throw new Error(`Brak cropa dla strony ${currentPageNumber}.`);
+        if (!currentCrop) throw new Error(`Brak kadru dla strony ${currentPageNumber}.`);
 
         const pageIndexes = applyAllPages.checked ? sourcePages.map((_, i) => i) : [currentPageNumber - 1];
         for (const pageIndex of pageIndexes) {
@@ -3066,7 +4176,7 @@
           const cropBox = normalizedToPdfBox(currentCrop, pageSize.width, pageSize.height);
           const cropWidth = cropBox.right - cropBox.left;
           const cropHeight = cropBox.top - cropBox.bottom;
-          if (cropWidth <= 0 || cropHeight <= 0) throw new Error(`Nieprawidlowy crop box dla strony ${pageIndex + 1}.`);
+          if (cropWidth <= 0 || cropHeight <= 0) throw new Error(`Nieprawidlowy kadr dla strony ${pageIndex + 1}.`);
           const embeddedPage = await outputPdf.embedPage(sourcePage, cropBox);
           const targetPage = outputPdf.addPage([A4_WIDTH, A4_HEIGHT]);
           const scale = Math.min(A4_WIDTH / cropWidth, A4_HEIGHT / cropHeight);
@@ -3156,11 +4266,48 @@
       const metadataHealthState = qualityState && qualityState.metadata_health && typeof qualityState.metadata_health === "object" ? qualityState.metadata_health : null;
       const linkHealthState = qualityState && qualityState.link_health && typeof qualityState.link_health === "object" ? qualityState.link_health : null;
       const visibleJunkState = qualityState && qualityState.visible_junk && typeof qualityState.visible_junk === "object" ? qualityState.visible_junk : null;
+      const issueGroupsState = qualityState && qualityState.issue_groups && typeof qualityState.issue_groups === "object" ? qualityState.issue_groups : null;
+      const contentMetricsState = qualityState && qualityState.content_metrics && typeof qualityState.content_metrics === "object" ? qualityState.content_metrics : null;
+      const textCleanupState = qualityState && qualityState.text_cleanup && typeof qualityState.text_cleanup === "object" ? qualityState.text_cleanup : null;
+      const referenceCleanupState = qualityState && qualityState.reference_cleanup && typeof qualityState.reference_cleanup === "object" ? qualityState.reference_cleanup : null;
+      const assetSummaryState = qualityState && qualityState.asset_summary && typeof qualityState.asset_summary === "object" ? qualityState.asset_summary : null;
+      const tocPreviewState = qualityState && qualityState.toc_preview && typeof qualityState.toc_preview === "object" ? qualityState.toc_preview : null;
+      const epubcheckDetailState = qualityState && qualityState.epubcheck_detail && typeof qualityState.epubcheck_detail === "object" ? qualityState.epubcheck_detail : null;
+      const metadataSummaryState = qualityState && qualityState.metadata_summary && typeof qualityState.metadata_summary === "object" ? qualityState.metadata_summary : null;
+      const qualityCompletenessState = qualityState && qualityState.quality_completeness && typeof qualityState.quality_completeness === "object" ? qualityState.quality_completeness : null;
+      const issueGroupBlockers = issueGroupsState && Array.isArray(issueGroupsState.blockers)
+        ? issueGroupsState.blockers
+        : issueGroupsState && issueGroupsState.blockers && typeof issueGroupsState.blockers === "object" && Array.isArray(issueGroupsState.blockers.items)
+          ? issueGroupsState.blockers.items
+          : [];
+      const qualityBlockersState = qualityState && Array.isArray(qualityState.quality_blockers)
+        ? qualityState.quality_blockers
+        : issueGroupBlockers.length ? issueGroupBlockers : null;
       const conversionHeadingRepair = conversion && conversion.heading_repair && typeof conversion.heading_repair === "object" ? conversion.heading_repair : {};
+      const downloadAvailableState = qualityState && typeof qualityState.download_available === "boolean"
+        ? qualityState.download_available
+        : Boolean(payload.download_url || (qualityState && qualityState.download_url));
+      const releaseVerdictState = qualityState && qualityState.release_verdict ? qualityState.release_verdict : "";
+      const releaseBlockedState = qualityState && typeof qualityState.release_blocked === "boolean"
+        ? qualityState.release_blocked
+        : releaseVerdictState === "release_blocked" || Boolean(qualityBlockersState && qualityBlockersState.length);
+      const sendToKindleReadyState = qualityState && typeof qualityState.send_to_kindle_ready === "boolean"
+        ? qualityState.send_to_kindle_ready
+        : null;
+      const sendToKindleBlockersState = qualityState && Array.isArray(qualityState.send_to_kindle_blockers)
+        ? qualityState.send_to_kindle_blockers
+        : [];
 
       return {
         qualityStateUrl: payload.quality_state_url || "",
         downloadUrl: payload.download_url || (qualityState && qualityState.download_url) || "",
+        downloadAvailable: downloadAvailableState,
+        readingVerdict: qualityState && qualityState.reading_verdict ? qualityState.reading_verdict : "",
+        releaseVerdict: releaseVerdictState,
+        releaseBlocked: releaseBlockedState,
+        qualityBlockers: qualityBlockersState || [],
+        sendToKindleReady: sendToKindleReadyState,
+        sendToKindleBlockers: sendToKindleBlockersState,
         sourceType: qualityState && qualityState.source_type
           ? qualityState.source_type
           : payload.source_type || (conversion && conversion.source_type) || selectedSourceType || "pdf",
@@ -3197,9 +4344,18 @@
           targetWarnBytes: coerceFiniteNumber(renderBudgetState.target_warn_bytes ?? (conversion && conversion.target_warn_bytes)) ?? 0,
           targetHardBytes: coerceFiniteNumber(renderBudgetState.target_hard_bytes ?? (conversion && conversion.target_hard_bytes)) ?? 0,
         },
-        metadataHealth: normalizeQualityHealth(metadataHealthState || (conversion && conversion.metadata_health), "Metadata"),
-        linkHealth: normalizeQualityHealth(linkHealthState || (conversion && conversion.link_health), "Links"),
-        visibleJunk: normalizeQualityHealth(visibleJunkState || (conversion && conversion.visible_junk), "Visible junk"),
+        issueGroups: issueGroupsState || (conversion && conversion.issue_groups) || null,
+        contentMetrics: contentMetricsState || (conversion && conversion.content_metrics) || null,
+        textCleanup: textCleanupState || (conversion && conversion.text_cleanup) || null,
+        referenceCleanup: referenceCleanupState || (conversion && conversion.reference_cleanup) || null,
+        assetSummary: assetSummaryState || (conversion && conversion.asset_summary) || null,
+        tocPreview: tocPreviewState || (conversion && conversion.toc_preview) || null,
+        epubcheckDetail: epubcheckDetailState || (conversion && conversion.epubcheck_detail) || null,
+        metadataSummary: metadataSummaryState || (conversion && conversion.metadata_summary) || null,
+        metadataHealth: normalizeQualityHealth(metadataHealthState || (conversion && conversion.metadata_health), "Metadane"),
+        linkHealth: normalizeQualityHealth(linkHealthState || (conversion && conversion.link_health), "Linki"),
+        visibleJunk: normalizeQualityHealth(visibleJunkState || (conversion && conversion.visible_junk), "Widoczne artefakty"),
+        qualityCompleteness: normalizeQualityCompleteness(qualityCompletenessState || (conversion && conversion.quality_completeness)),
         headingRepair: {
           status: headingRepairState.status || conversionHeadingRepair.status || "skipped",
           release: headingRepairState.release || conversionHeadingRepair.release || "unavailable",
@@ -3247,9 +4403,25 @@
         verdict,
         qualityStateUrl: normalized.qualityStateUrl,
         downloadUrl: normalized.downloadUrl,
+        downloadAvailable: normalized.downloadAvailable,
+        readingVerdict: normalized.readingVerdict,
+        releaseVerdict: normalized.releaseVerdict,
+        releaseBlocked: normalized.releaseBlocked,
+        qualityBlockers: normalized.qualityBlockers,
+        sendToKindleReady: normalized.sendToKindleReady,
+        sendToKindleBlockers: normalized.sendToKindleBlockers,
+        issueGroups: normalized.issueGroups,
+        contentMetrics: normalized.contentMetrics,
+        textCleanup: normalized.textCleanup,
+        referenceCleanup: normalized.referenceCleanup,
+        assetSummary: normalized.assetSummary,
+        tocPreview: normalized.tocPreview,
+        epubcheckDetail: normalized.epubcheckDetail,
+        metadataSummary: normalized.metadataSummary,
         metadataHealth: normalized.metadataHealth,
         linkHealth: normalized.linkHealth,
         visibleJunk: normalized.visibleJunk,
+        qualityCompleteness: normalized.qualityCompleteness,
         headingRepair: {
           status: headingRepair.status || "skipped",
           release: headingRepair.release || "unavailable",
@@ -3262,7 +4434,15 @@
         },
       });
       rememberRecentConversion({
+        jobId: jobPayload.job_id || "",
+        status: "ready",
+        message: jobPayload.message || "",
         filename: selectedName,
+        sourceType,
+        elapsedSeconds: jobPayload.elapsed_seconds,
+        downloadUrl: normalized.downloadUrl,
+        qualityStateUrl: normalized.qualityStateUrl,
+        outputSizeBytes: normalized.outputSizeBytes,
         verdict: verdict.label,
         profile: profile || "unknown",
         validation,
@@ -3273,10 +4453,14 @@
           ? " Heading repair nie powiodl sie, ale zachowano bazowy EPUB."
           : headingRepair.status === "skipped" && headingRepair.error
             ? ` ${headingRepair.error}.`
-          : "";
+            : "";
+      const releaseStatusText = normalized.releaseBlocked
+        ? ` Wymaga naprawy przed publikacją: ${(normalized.qualityBlockers || []).map((item) => item.code || item.message).filter(Boolean).slice(0, 3).join(", ") || "quality blocker"}.`
+        : "";
+      const statusType = verdict.tone === "failed" ? "error" : verdict.tone === "ready" ? "success" : "info";
       setStatus(
-        `EPUB wygenerowany i pobrany z ${sourceType.toUpperCase()}.${outputSize ? ` Rozmiar: ${outputSize}.` : ""}${profile ? ` Profil: ${profile}.` : ""}${strategy ? ` Strategia: ${strategy}.` : ""}${validation ? ` Walidacja: ${validation}.` : ""}${headingRepairStatusText}`,
-        "success",
+        `EPUB wygenerowany i pobrany z ${sourceType.toUpperCase()}.${outputSize ? ` Rozmiar: ${outputSize}.` : ""}${profile ? ` Profil: ${profile}.` : ""}${strategy ? ` Strategia: ${strategy}.` : ""}${validation ? ` Walidacja: ${validation}.` : ""}${headingRepairStatusText}${releaseStatusText}`,
+        statusType,
       );
     }
 
@@ -3291,6 +4475,17 @@
         || message.includes("timed out")
         || message.includes("limit czasu")
         || message.includes("status chwilowo nie odpowiada")
+      );
+    }
+
+    function isApplicationRestartConversionError(error) {
+      if (!error) return false;
+      const code = `${error.code || error.error_code || ""}`.toLowerCase();
+      const message = `${error.message || error}`.toLowerCase();
+      return (
+        code === "application_restart"
+        || message.includes("restart aplikacji")
+        || message.includes("application restart")
       );
     }
 
@@ -3345,10 +4540,8 @@
       const startedAt = Date.now();
       let pollDelay = BASE_CONVERSION_POLL_INTERVAL_MS;
       let transientErrorCount = 0;
+      let lastLongConversionNoticeAt = 0;
       while (true) {
-        if (Date.now() - startedAt > MAX_CONVERSION_WAIT_MS) {
-          throw new Error("Konwersja trwa zbyt dlugo. Sprobuj ponownie za chwile.");
-        }
         await delay(pollDelay);
         try {
           const { response, data, text } = await fetchJsonWithTimeout(
@@ -3363,7 +4556,22 @@
           }
           transientErrorCount = 0;
           if (data.message) {
-            setStatus(data.message, "info");
+            const activeForMs = Date.now() - startedAt;
+            if (
+              activeForMs >= LONG_CONVERSION_NOTICE_MS
+              && Date.now() - lastLongConversionNoticeAt >= LONG_CONVERSION_NOTICE_REPEAT_MS
+              && data.status !== "ready"
+              && data.status !== "failed"
+            ) {
+              lastLongConversionNoticeAt = Date.now();
+              const elapsedMinutes = Math.max(1, Math.round(activeForMs / 60000));
+              setStatus(
+                `${data.message} Duzy dokument nadal jest przetwarzany (${elapsedMinutes} min). Nie zamykaj tej karty.`,
+                "info",
+              );
+            } else {
+              setStatus(data.message, "info");
+            }
           } else {
             const elapsedSeconds = Number.isFinite(data.elapsed_seconds)
               ? data.elapsed_seconds
@@ -3372,7 +4580,10 @@
           }
           if (data.status === "ready") return data;
           if (data.status === "failed") {
-            throw new Error(data.error || "Konwersja nie powiodla sie.");
+            const failure = new Error(data.error || "Konwersja nie powiodla sie.");
+            failure.code = data.error_code || "";
+            failure.jobStatus = data.status;
+            throw failure;
           }
           pollDelay = nextPollDelay(pollDelay, data.poll_after_ms);
         } catch (error) {
@@ -3395,6 +4606,7 @@
     async function convertPdfToEpub() {
       if (!selectedFile) { setStatus("Najpierw wgraj dokument.", "error"); return; }
       setBusy(true);
+      let conversionJobStarted = false;
       try {
         const isPdf = selectedSourceType === "pdf";
         const longRunHint = isPdf && pdfJsDoc && pdfJsDoc.numPages > 250 ? " Duzy dokument - moze potrwac kilka minut." : "";
@@ -3406,6 +4618,7 @@
         formData.append("language", languageSelect.value);
         formData.append("heading_repair", headingRepairCheckbox.checked ? "true" : "false");
         const startPayload = await startConversionJob(formData);
+        conversionJobStarted = Boolean(startPayload.job_id);
         setStatus(startPayload.message || `Konwersja ${isPdf ? "PDF" : "DOCX"} ruszyla. Czekam na gotowy EPUB...`, "info");
         const jobPayload = await pollConversionJob(startPayload.job_id, isPdf ? "PDF" : "DOCX");
         if (!jobPayload.download_url || (!jobPayload.quality_state && !jobPayload.conversion)) {
@@ -3414,18 +4627,32 @@
         downloadFromUrl(jobPayload.download_url);
         applyConversionOutcome(jobPayload, selectedFile.name);
       } catch (error) {
-        if (!isTransientConversionNetworkError(error)) {
+        const interruptedByRestart = isApplicationRestartConversionError(error);
+        if (!isTransientConversionNetworkError(error) && !interruptedByRestart) {
           console.error(error);
         }
-        const message = error && error.message ? error.message : "Nieznany blad sieci lub backendu.";
-        setStatus(`Konwersja nie powiodla sie: ${message}`, "error");
+        const message = interruptedByRestart
+          ? "Lokalna aplikacja zostala zrestartowana w trakcie pracy. Uruchom konwersje ponownie."
+          : (error && error.message ? error.message : "Nieznany blad sieci lub backendu.");
+        setStatus(
+          interruptedByRestart ? message : `Konwersja nie powiodla sie: ${message}`,
+          interruptedByRestart ? "info" : "error",
+        );
       } finally {
         setBusy(false);
+        if (conversionJobStarted) {
+          loadConversionHistory({ silent: true });
+        }
       }
     }
 
     // â”€â”€ Event listeners â”€â”€
     quickUploadButton.addEventListener("click", () => fileInput.click());
+    dropZone.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      fileInput.click();
+    });
     dropZone.addEventListener("dragover", (e) => { e.preventDefault(); dropZone.classList.add("dragover"); });
     dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragover"));
     dropZone.addEventListener("drop", (e) => { e.preventDefault(); dropZone.classList.remove("dragover"); handleFiles(e.dataTransfer.files); });
@@ -3451,7 +4678,7 @@
       updateCropReadout();
       updateControlsState();
       updatePageSummary();
-      setStatus(`Crop strony ${currentPageNumber} wyczyszczony.`, "info");
+      setStatus(`Kadr strony ${currentPageNumber} wyczyszczony.`, "info");
     });
     applyAllPages.addEventListener("change", updateExportModeLabel);
     profileSelect.addEventListener("change", syncProfilePreset);
@@ -3464,6 +4691,20 @@
     analyzeButton.addEventListener("click", analyzePdfForEpub);
     convertEpubButton.addEventListener("click", convertPdfToEpub);
     cropButton.addEventListener("click", cropAndExport);
+    if (librarySearchButton) {
+      librarySearchButton.addEventListener("click", () => loadConversionLibrary());
+    }
+    if (librarySearchInput) {
+      librarySearchInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          loadConversionLibrary();
+        }
+      });
+    }
+    if (libraryVerdictFilter) {
+      libraryVerdictFilter.addEventListener("change", () => loadConversionLibrary({ silent: true }));
+    }
     window.addEventListener("resize", () => {
       if (!currentPage) return;
       clearTimeout(window.__renderResizeTimer);
@@ -3477,6 +4718,7 @@
     updateExportModeLabel();
     updatePageSummary();
     resetAnalysisBox();
+    loadConversionHistory({ silent: true });
   </script>
 </body>
 </html>

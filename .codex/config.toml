@@ -21,6 +21,7 @@
 # - runtime tests: python kindlemaster.py test --suite runtime
 # - release tests: python kindlemaster.py test --suite release
 # - full tests: python kindlemaster.py test --suite full
+# - micro smoke: python kindlemaster.py smoke --mode micro
 # - quick smoke: python kindlemaster.py smoke --mode quick
 # - full smoke: python kindlemaster.py smoke --mode full
 # - validate EPUB: python kindlemaster.py validate path\to\file.epub

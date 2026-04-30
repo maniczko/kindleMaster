@@ -71,6 +71,7 @@ python kindlemaster.py test --suite corpus
 python kindlemaster.py status
 python kindlemaster.py test --suite browser
 python kindlemaster.py test --suite runtime
+python kindlemaster.py test --suite release
 python kindlemaster.py smoke --mode quick
 python kindlemaster.py validate path\to\file.epub
 python kindlemaster.py audit path\to\file.epub

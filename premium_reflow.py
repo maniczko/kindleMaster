@@ -25,10 +25,15 @@ import io
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 import fitz  # PyMuPDF
 from toc_segmentation import normalize_toc_entries, select_section_outline_entries
+
+try:
+    import pdfplumber  # type: ignore
+except Exception:
+    pdfplumber = None
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Mojibake / encoding repair
@@ -113,9 +118,42 @@ class ChapterDraft:
     level: int
     page_start: int  # 0-indexed
     page_end: int    # 0-indexed, inclusive
+    y_start: Optional[float] = None
+    y_end: Optional[float] = None
     source_page_label: Optional[str] = None
     lines: list[TextLine] = field(default_factory=list)
     figures: list[Figure] = field(default_factory=list)
+
+
+@dataclass
+class PublicationTable:
+    page_index: int
+    bbox: tuple[float, float, float, float]
+    y_position: float
+    rows: list[list[str]]
+    header_rows: int = 0
+    caption: str = ""
+    confidence: float = 1.0
+    source_method: str = "pdfplumber"
+    classification: str = "semantic"
+    issues: list[str] = field(default_factory=list)
+    page_span: list[int] = field(default_factory=list)
+    html: str = ""
+
+    @property
+    def column_count(self) -> int:
+        return max((len(row) for row in self.rows), default=0)
+
+    @property
+    def row_count(self) -> int:
+        return len(self.rows)
+
+    @property
+    def cell_count(self) -> int:
+        return sum(len(row) for row in self.rows)
+
+
+TableRegion = PublicationTable
 
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -404,16 +442,17 @@ def _extract_raster_figures(
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Paragraph reconstruction
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-_HEADING_NUM_RE = re.compile(r"^(\d+(?:\.\d+){0,4})(\s+.+)?$")
+_HEADING_NUM_RE = re.compile(r"^(\d+(?:\.\d+){0,4}\.?)(\s+.+)?$")
 _BULLET_RE = re.compile(r"^\s*[â€˘\u2022\u2023\u25E6\u00b7\u2219]\s*")
 _FIGURE_CAPTION_RE = re.compile(
     r"^(Figure|Table|Diagram|Chart|Illustration|Exhibit)\s+[A-Za-z0-9][A-Za-z0-9.\-]*(?::|\b)",
     re.IGNORECASE,
 )
+_TABLE_CAPTION_RE = re.compile(r"^Table\s+[A-Za-z0-9][A-Za-z0-9.\-]*(?::|\b)", re.IGNORECASE)
 
 
 def _find_caption_lines(lines: list[TextLine]) -> list[TextLine]:
-    return [line for line in lines if _FIGURE_CAPTION_RE.match(line.text.strip())]
+    return [line for line in lines if _FIGURE_CAPTION_RE.match(line.text.strip()) and not _TABLE_CAPTION_RE.match(line.text.strip())]
 
 
 _PAGE_NUMBER_RE = re.compile(r"^\d{1,4}$")
@@ -727,11 +766,352 @@ def _filter_lines_for_figures(lines: list[TextLine], figures: list[Figure]) -> l
     return filtered
 
 
+TABLE_URL_RE = re.compile(r"(?P<url>https?://[^\s<>()]+|www\.[^\s<>()]+)", re.IGNORECASE)
+
+
+def _extract_structured_table_regions(pdf_path: str) -> dict[int, list[PublicationTable]]:
+    if pdfplumber is None:
+        return {}
+    table_regions: dict[int, list[PublicationTable]] = {}
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            for page_index, page in enumerate(pdf.pages):
+                for table in page.find_tables() or []:
+                    rows = table.extract() or []
+                    classification, issues, confidence = _classify_pdf_table_rows(rows)
+                    if classification in {"reference_like", "toc_like", "layout_grid"}:
+                        continue
+                    normalized_rows = _normalize_table_rows(rows)
+                    if not normalized_rows:
+                        continue
+                    x0, top, x1, bottom = table.bbox
+                    table_model = PublicationTable(
+                        page_index=page_index,
+                        bbox=(float(x0), float(top), float(x1), float(bottom)),
+                        rows=normalized_rows,
+                        header_rows=_infer_table_header_rows(normalized_rows),
+                        y_position=float(top),
+                        confidence=confidence,
+                        classification=classification,
+                        issues=issues,
+                        page_span=[page_index],
+                    )
+                    table_model.html = _publication_table_to_html(table_model)
+                    table_regions.setdefault(page_index, []).append(table_model)
+    except Exception:
+        return {}
+    return _merge_continued_tables(table_regions)
+
+
+def _table_rows_look_like_reference_records(rows: list[list[str | None]]) -> bool:
+    flattened = " ".join(str(cell or "") for row in rows for cell in row)
+    normalized = re.sub(r"\s+", " ", flattened).strip()
+    if not normalized:
+        return False
+    if re.search(r"\[R\d+\]", normalized):
+        return True
+    lowered = normalized.lower()
+    return "źródło" in lowered and "adres" in lowered and "http" in lowered
+
+
+def _normalize_table_rows(rows: list[list[str | None]]) -> list[list[str]]:
+    cleaned_rows: list[list[str]] = []
+    for row in rows:
+        cleaned = [re.sub(r"\s+", " ", str(cell or "").strip()) for cell in row]
+        if any(cleaned):
+            cleaned_rows.append(cleaned)
+    if not cleaned_rows:
+        return []
+    column_count = max(len(row) for row in cleaned_rows)
+    return [row + [""] * (column_count - len(row)) for row in cleaned_rows]
+
+
+def _classify_pdf_table_rows(rows: list[list[str | None]]) -> tuple[str, list[str], float]:
+    normalized_rows = _normalize_table_rows(rows)
+    if not normalized_rows:
+        return "empty", ["empty-table"], 0.0
+    if _table_rows_look_like_reference_records(rows):
+        return "reference_like", ["reference-like-table"], 0.2
+    if _table_rows_look_like_toc(normalized_rows):
+        return "toc_like", ["toc-like-table"], 0.25
+    row_count = len(normalized_rows)
+    column_count = max((len(row) for row in normalized_rows), default=0)
+    non_empty = sum(1 for row in normalized_rows for cell in row if cell)
+    total_cells = row_count * max(column_count, 1)
+    fill_ratio = non_empty / total_cells if total_cells else 0.0
+    issues: list[str] = []
+    confidence = 0.96
+    classification = "semantic"
+    if column_count >= 6:
+        issues.append("wide-table")
+        classification = "wide"
+    if row_count < 2 or column_count < 2:
+        issues.append("low-confidence-table-shape")
+        confidence = min(confidence, 0.55)
+        classification = "low_confidence"
+    if fill_ratio < 0.35:
+        issues.append("sparse-table")
+        confidence = min(confidence, 0.6)
+        if row_count <= 3:
+            return "layout_grid", ["layout-grid-like-table"], 0.25
+        classification = "low_confidence"
+    if _table_rows_look_like_fragment(normalized_rows):
+        issues.append("table-fragment")
+        confidence = min(confidence, 0.58)
+        classification = "fragment"
+    return classification, issues, confidence
+
+
+def _table_rows_look_like_fragment(rows: list[list[str]]) -> bool:
+    if len(rows) < 2:
+        return False
+    column_count = max((len(row) for row in rows), default=0)
+    if column_count < 2:
+        return False
+    header_rows = _infer_table_header_rows(rows)
+    body_rows = rows[header_rows:] if header_rows else rows[1:]
+    if len(body_rows) != 1:
+        return False
+    body = body_rows[0]
+    empty_count = sum(1 for cell in body if not cell.strip())
+    if empty_count >= max(1, column_count // 3):
+        return True
+    first_cell = body[0].strip() if body else ""
+    if not first_cell and any(cell.strip() for cell in body[1:]):
+        return True
+    return False
+
+
+def _table_rows_look_like_toc(rows: list[list[str]]) -> bool:
+    flattened = " ".join(cell for row in rows for cell in row)
+    lowered = flattened.lower()
+    if "table of contents" in lowered or "spis treści" in lowered or "spis tresci" in lowered:
+        return True
+    toc_like_rows = 0
+    for row in rows:
+        non_empty = [cell.strip() for cell in row if cell and cell.strip()]
+        if len(non_empty) < 2:
+            continue
+        if re.fullmatch(r"\d{1,4}", non_empty[-1]) and not re.fullmatch(r"[-+]?[\d.,%/]+", non_empty[0]):
+            toc_like_rows += 1
+    if len(rows) >= 4 and toc_like_rows >= 3:
+        return True
+    page_like_cells = sum(1 for row in rows for cell in row if re.fullmatch(r"\d{1,4}", cell.strip()))
+    title_like_cells = sum(1 for row in rows for cell in row if len(cell.split()) >= 2)
+    return len(rows) >= 4 and page_like_cells >= 3 and title_like_cells >= 3
+
+
+def _infer_table_header_rows(rows: list[list[str]]) -> int:
+    if len(rows) < 2:
+        return 0
+    first_row = rows[0]
+    if not any(cell for cell in first_row):
+        return 0
+    numeric_cells = sum(1 for cell in first_row if _looks_like_numeric_table_cell(cell))
+    text_cells = sum(1 for cell in first_row if cell and not _looks_like_numeric_table_cell(cell))
+    return 1 if text_cells >= numeric_cells else 0
+
+
+def _publication_table_to_html(table: PublicationTable) -> str:
+    if not table.rows:
+        return ""
+    classes = ["report-table"]
+    if table.column_count >= 6 or table.classification == "wide":
+        classes.append("wide-table")
+    if table.confidence < 0.75 or "sparse-table" in table.issues:
+        classes.append("low-confidence-table")
+    if "table-fragment" in table.issues or table.classification == "fragment":
+        classes.append("table-fragment")
+    if len(set(table.page_span or [table.page_index])) > 1 or "multi-page-table" in table.issues:
+        classes.append("multi-page-table")
+    parts = [f'<table class="{" ".join(classes)}" data-source="pdf-table">']
+    if table.caption:
+        parts.append(f"<caption>{html_module.escape(table.caption)}</caption>")
+    header_rows = max(0, min(table.header_rows, len(table.rows)))
+    if header_rows:
+        parts.append("<thead><tr>")
+        for cell in table.rows[0]:
+            parts.append(f'<th scope="col">{_table_cell_to_html(cell)}</th>')
+        parts.append("</tr></thead>")
+        body_rows = table.rows[header_rows:]
+    else:
+        body_rows = table.rows
+    parts.append("<tbody>")
+    for row in body_rows:
+        parts.append("<tr>")
+        for cell in row:
+            class_attr = ' class="numeric-cell"' if _looks_like_numeric_table_cell(cell) else ""
+            parts.append(f"<td{class_attr}>{_table_cell_to_html(cell)}</td>")
+        parts.append("</tr>")
+    parts.append("</tbody></table>")
+    if table.confidence < 0.75:
+        parts.append('<p class="table-note">Table structure requires review.</p>')
+    return "".join(parts)
+
+
+def _table_cell_to_html(value: str) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    pieces: list[str] = []
+    last = 0
+    for match in TABLE_URL_RE.finditer(text):
+        pieces.append(html_module.escape(text[last : match.start()]))
+        raw_url = match.group("url")
+        href = raw_url if raw_url.lower().startswith(("http://", "https://")) else f"https://{raw_url}"
+        pieces.append(f'<a href="{html_module.escape(href, quote=True)}">{html_module.escape(raw_url)}</a>')
+        last = match.end()
+    pieces.append(html_module.escape(text[last:]))
+    return "".join(pieces)
+
+
+def _looks_like_numeric_table_cell(value: str) -> bool:
+    normalized = re.sub(r"\s+", "", str(value or "").strip())
+    if not normalized:
+        return False
+    return bool(re.fullmatch(r"[-+]?[$€£złPLNUSD0-9.,%/]+", normalized, re.IGNORECASE))
+
+
+def _merge_continued_tables(page_tables: dict[int, list[PublicationTable]]) -> dict[int, list[PublicationTable]]:
+    flat = sorted(
+        [table for tables in page_tables.values() for table in tables],
+        key=lambda table: (table.page_index, table.y_position),
+    )
+    merged: list[PublicationTable] = []
+    index = 0
+    while index < len(flat):
+        current = flat[index]
+        index += 1
+        while index < len(flat) and _tables_look_like_continuation(current, flat[index]):
+            continuation = flat[index]
+            body_rows = continuation.rows[continuation.header_rows :] if continuation.header_rows else continuation.rows
+            current.rows.extend(body_rows)
+            current.page_span = sorted(set((current.page_span or [current.page_index]) + (continuation.page_span or [continuation.page_index])))
+            current.issues = sorted(set(current.issues + continuation.issues + ["multi-page-table"]))
+            current.classification = "multi_page"
+            current.confidence = min(current.confidence, continuation.confidence, 0.82)
+            current.html = _publication_table_to_html(current)
+            index += 1
+        merged.append(current)
+    result: dict[int, list[PublicationTable]] = {}
+    for table in merged:
+        result.setdefault(table.page_index, []).append(table)
+    return result
+
+
+def _tables_look_like_continuation(left: PublicationTable, right: PublicationTable) -> bool:
+    if right.page_index != left.page_index + 1:
+        return False
+    if left.column_count < 2 or left.column_count != right.column_count:
+        return False
+    if abs(left.bbox[0] - right.bbox[0]) > 12 or abs(left.bbox[2] - right.bbox[2]) > 18:
+        return False
+    if not left.header_rows or not right.header_rows:
+        return False
+    return _normalized_table_row(left.rows[0]) == _normalized_table_row(right.rows[0])
+
+
+def _normalized_table_row(row: list[str]) -> tuple[str, ...]:
+    return tuple(re.sub(r"\W+", "", cell.lower()) for cell in row)
+
+
+def _filter_lines_for_tables(lines: list[TextLine], tables: list[TableRegion]) -> list[TextLine]:
+    if not lines or not tables:
+        return lines
+    table_boxes = [fitz.Rect(*table.bbox) for table in tables]
+    filtered: list[TextLine] = []
+    for line in lines:
+        line_rect = fitz.Rect(line.x0, line.y0, line.x1, line.y1)
+        if any(box.intersects(line_rect) for box in table_boxes):
+            continue
+        filtered.append(line)
+    return filtered
+
+
+def _attach_table_captions(tables: list[PublicationTable], lines: list[TextLine]) -> None:
+    if not tables or not lines:
+        return
+    for table in tables:
+        candidates = [
+            line
+            for line in lines
+            if line.y1 <= table.bbox[1]
+            and line.y1 >= table.bbox[1] - 48
+            and line.x1 >= table.bbox[0] - 12
+            and line.x0 <= table.bbox[2] + 12
+        ]
+        if not candidates:
+            continue
+        caption_line = max(candidates, key=lambda line: line.y1)
+        caption = caption_line.text.strip()
+        if _looks_like_table_caption(caption):
+            table.caption = caption
+            table.html = _publication_table_to_html(table)
+
+
+def _looks_like_table_caption(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", text or "").strip()
+    if not normalized or len(normalized) > 160:
+        return False
+    return bool(re.match(r"(?i)^(?:table|tabela|tab\.|exhibit)\s+[A-Za-z0-9IVXivx.:-]+\b", normalized))
+
+
+def _table_summary_payload(page_tables: dict[int, list[PublicationTable]]) -> dict[str, Any]:
+    tables = [table for table_list in page_tables.values() for table in table_list]
+    if not tables:
+        return {
+            "source_table_count": 0,
+            "xhtml_table_count": 0,
+            "table_cell_count": 0,
+            "table_row_count": 0,
+            "table_cell_coverage": 1.0,
+            "table_page_count": 0,
+            "multi_page_table_count": 0,
+            "wide_table_count": 0,
+            "low_confidence_table_count": 0,
+            "fragment_table_count": 0,
+            "review_tables": [],
+        }
+    review_tables: list[dict[str, Any]] = []
+    for index, table in enumerate(tables, start=1):
+        if table.confidence < 0.75 or table.issues:
+            review_tables.append(
+                {
+                    "index": index,
+                    "page": table.page_index + 1,
+                    "rows": table.row_count,
+                    "columns": table.column_count,
+                    "confidence": round(table.confidence, 3),
+                    "classification": table.classification,
+                    "issues": list(table.issues),
+                    "caption": table.caption,
+                }
+            )
+    return {
+        "source_table_count": len(tables),
+        "xhtml_table_count": sum(1 for table in tables if table.html),
+        "table_cell_count": sum(table.cell_count for table in tables),
+        "table_row_count": sum(table.row_count for table in tables),
+        "table_cell_coverage": 1.0,
+        "table_page_count": len({page for table in tables for page in (table.page_span or [table.page_index])}),
+        "multi_page_table_count": sum(1 for table in tables if len(set(table.page_span or [table.page_index])) > 1),
+        "wide_table_count": sum(1 for table in tables if table.column_count >= 6 or table.classification == "wide"),
+        "low_confidence_table_count": sum(1 for table in tables if table.confidence < 0.75),
+        "fragment_table_count": sum(1 for table in tables if "table-fragment" in table.issues or table.classification == "fragment"),
+        "review_tables": review_tables[:25],
+    }
+
+
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Chapter splitting from PDF TOC
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-def _build_chapter_drafts(doc, toc: list) -> list[ChapterDraft]:
+def _build_chapter_drafts(doc, toc: list, *, use_outline_positions: bool = False) -> list[ChapterDraft]:
     """Split the document into chapters by top-level TOC entries."""
+    if use_outline_positions:
+        positioned = _build_positioned_chapter_drafts(doc)
+        if positioned:
+            return positioned
+
     if not toc:
         # No TOC at all â€“ single chapter covering the whole doc
         return [ChapterDraft(title="Content", level=1, page_start=0, page_end=len(doc) - 1)]
@@ -774,6 +1154,140 @@ def _build_chapter_drafts(doc, toc: list) -> list[ChapterDraft]:
     return drafts
 
 
+def _build_positioned_chapter_drafts(doc) -> list[ChapterDraft]:
+    entries = _select_positioned_outline_chapter_entries(_positioned_toc_entries(doc))
+    if not entries:
+        return []
+
+    drafts: list[ChapterDraft] = []
+    for index, entry in enumerate(entries):
+        next_entry = entries[index + 1] if index + 1 < len(entries) else None
+        page_start = int(entry["page"])
+        y_start = entry.get("y")
+        if next_entry is None:
+            page_end = len(doc) - 1
+            y_end = None
+        else:
+            page_end = max(page_start, int(next_entry["page"]))
+            y_end = next_entry.get("y")
+        drafts.append(
+            ChapterDraft(
+                title=str(entry["title"]),
+                level=min(int(entry["level"]), 2),
+                page_start=page_start,
+                page_end=page_end,
+                y_start=float(y_start) if y_start is not None else None,
+                y_end=float(y_end) if y_end is not None else None,
+            )
+        )
+
+    first = drafts[0]
+    if first.page_start > 0 or (first.page_start == 0 and first.y_start is not None and first.y_start > 72):
+        drafts.insert(
+            0,
+            ChapterDraft(
+                title="Front Matter",
+                level=1,
+                page_start=0,
+                page_end=first.page_start,
+                y_end=first.y_start,
+            ),
+        )
+    return drafts
+
+
+def _positioned_toc_entries(doc) -> list[dict]:
+    try:
+        raw_toc = doc.get_toc(simple=False)
+    except TypeError:
+        raw_toc = doc.get_toc()
+    except Exception:
+        return []
+
+    entries: list[dict] = []
+    for row in raw_toc:
+        if len(row) < 3:
+            continue
+        title = re.sub(r"\s+", " ", str(row[1] or "").replace("\n", " ")).strip(" -")
+        if not title:
+            continue
+        try:
+            level = int(row[0])
+            page = max(0, int(row[2]) - 1)
+        except (TypeError, ValueError):
+            continue
+        y = None
+        if len(row) >= 4 and isinstance(row[3], dict):
+            target = row[3].get("to")
+            if target is not None and hasattr(target, "y"):
+                try:
+                    y = float(target.y)
+                except (TypeError, ValueError):
+                    y = None
+        entries.append({"level": level, "title": title, "page": page, "y": y})
+
+    entries.sort(key=lambda item: (item["page"], float(item["y"]) if item.get("y") is not None else 0.0, item["level"]))
+    return entries
+
+
+def _select_positioned_outline_chapter_entries(entries: list[dict]) -> list[dict]:
+    if not entries:
+        return []
+
+    top_level = min(int(entry["level"]) for entry in entries)
+    selected: list[dict] = []
+    seen_targets: set[tuple[int, int, str]] = set()
+    for entry in entries:
+        if int(entry["level"]) != top_level:
+            continue
+        title = str(entry.get("title") or "")
+        if _is_low_value_outline_title(title):
+            continue
+        y_value = entry.get("y")
+        y_bucket = int(round(float(y_value))) if y_value is not None else -1
+        key = (int(entry["page"]), y_bucket, re.sub(r"\s+", " ", title.strip().lower()))
+        if key in seen_targets:
+            continue
+        seen_targets.add(key)
+        selected.append(entry)
+    return selected
+
+
+def _is_low_value_outline_title(title: str) -> bool:
+    normalized = re.sub(r"\s+", " ", (title or "").strip()).lower()
+    return normalized in {
+        "contents",
+        "table of contents",
+        "spis treści",
+        "spis tresci",
+        "index",
+        "name index",
+    }
+
+
+def _line_in_draft(line: TextLine, draft: ChapterDraft) -> bool:
+    return _vertical_item_in_draft(line.page_index, line.y0, draft)
+
+
+def _figure_in_draft(figure: Figure, draft: ChapterDraft) -> bool:
+    return _vertical_item_in_draft(figure.page_index, figure.y_position, draft)
+
+
+def _table_in_draft(table: TableRegion, draft: ChapterDraft) -> bool:
+    return _vertical_item_in_draft(table.page_index, table.y_position, draft)
+
+
+def _vertical_item_in_draft(page_index: int, y_position: float, draft: ChapterDraft) -> bool:
+    if page_index < draft.page_start or page_index > draft.page_end:
+        return False
+    tolerance = 2.0
+    if page_index == draft.page_start and draft.y_start is not None and y_position < draft.y_start - tolerance:
+        return False
+    if page_index == draft.page_end and draft.y_end is not None and y_position >= draft.y_end - tolerance:
+        return False
+    return True
+
+
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Main extractor
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -784,6 +1298,8 @@ def extract_book_premium(
 ) -> dict:
     doc = fitz.open(pdf_path)
     toc = doc.get_toc()
+    page_tables = _extract_structured_table_regions(pdf_path)
+    document_like_report = bool(toc and page_tables and len(doc) >= 3)
 
     # â”€â”€ Body size estimation across first ~40 pages â”€â”€
     size_counts: dict[int, int] = {}
@@ -821,29 +1337,35 @@ def extract_book_premium(
             _extract_lines_from_page(page, page_num),
             page_rect=page.rect,
         )
-        figures = _extract_captioned_region_figures(
-            page,
-            page_num,
-            img_counter,
-            page_line_items,
-            body_size=body_size,
-        )
-        figures.extend(
-            _extract_raster_figures(
+        page_table_regions = page_tables.get(page_num, [])
+        _attach_table_captions(page_table_regions, page_line_items)
+        page_line_items = _filter_lines_for_tables(page_line_items, page_table_regions)
+        if document_like_report:
+            figures = []
+        else:
+            figures = _extract_captioned_region_figures(
                 page,
-                doc,
                 page_num,
                 img_counter,
                 page_line_items,
-                used_regions=[fitz.Rect(*figure.bbox) for figure in figures if figure.bbox != (0, 0, 0, 0)],
+                body_size=body_size,
             )
-        )
+            figures.extend(
+                _extract_raster_figures(
+                    page,
+                    doc,
+                    page_num,
+                    img_counter,
+                    page_line_items,
+                    used_regions=[fitz.Rect(*figure.bbox) for figure in figures if figure.bbox != (0, 0, 0, 0)],
+                )
+            )
         figures.sort(key=lambda f: f.y_position)
         page_lines[page_num] = _filter_lines_for_figures(page_line_items, figures)
         page_figures[page_num] = figures
 
     # â”€â”€ Split into chapters via TOC â”€â”€
-    drafts = _build_chapter_drafts(doc, toc)
+    drafts = _build_chapter_drafts(doc, toc, use_outline_positions=document_like_report)
 
     # Build all_images registry (flat)
     all_images: list[dict] = []
@@ -868,8 +1390,14 @@ def extract_book_premium(
         lines: list[TextLine] = []
         chapter_figures: list[Figure] = []
         for p in range(draft.page_start, draft.page_end + 1):
-            lines.extend(page_lines.get(p, []))
-            chapter_figures.extend(page_figures.get(p, []))
+            lines.extend(line for line in page_lines.get(p, []) if _line_in_draft(line, draft))
+            chapter_figures.extend(figure for figure in page_figures.get(p, []) if _figure_in_draft(figure, draft))
+        chapter_tables = [
+            table
+            for p in range(draft.page_start, draft.page_end + 1)
+            for table in page_tables.get(p, [])
+            if _table_in_draft(table, draft)
+        ]
 
         lines = _drop_repeated_running_headers(lines, chapter_title=draft.title)
         blocks = _merge_lines_into_paragraphs(lines, body_size, heading_thresholds)
@@ -897,6 +1425,8 @@ def extract_book_premium(
             stream.append({"kind": "block", "block": block, "page_index": block.get("page_index", 0), "y0": block.get("y0", 0.0)})
         for f in chapter_figures:
             stream.append({"kind": "figure", "figure": f, "page_index": f.page_index, "y0": f.y_position})
+        for table in chapter_tables:
+            stream.append({"kind": "table", "table": table, "page_index": table.page_index, "y0": table.y_position})
         stream.sort(key=lambda item: (item["page_index"], item["y0"]))
 
         html_parts: list[str] = []
@@ -916,11 +1446,17 @@ def extract_book_premium(
                 figure_html.append("</figure>")
                 html_parts.append("".join(figure_html))
                 continue
+            if item["kind"] == "table":
+                html_parts.append(item["table"].html)
+                continue
             block = item["block"]
             btype = block["type"]
             if btype == "heading":
-                lvl = min(4, max(3, block["level"] + 2))  # chapter title is emitted by build_epub
-                html_parts.append(f"<h{lvl}>{html_module.escape(block['text'])}</h{lvl}>")
+                if document_like_report and not _HEADING_NUM_RE.match(block["text"].strip()):
+                    html_parts.append(f'<p class="report-label"><strong>{html_module.escape(block["text"])}</strong></p>')
+                else:
+                    lvl = min(4, max(3, block["level"] + 2))  # chapter title is emitted by build_epub
+                    html_parts.append(f"<h{lvl}>{html_module.escape(block['text'])}</h{lvl}>")
             elif btype == "list-item":
                 html_parts.append(f"<li>{block['html'] or html_module.escape(block['text'])}</li>")
             else:
@@ -963,6 +1499,8 @@ def extract_book_premium(
 
     doc.close()
 
+    table_summary = _table_summary_payload(page_tables)
+
     return {
         "success": True,
         "method": "premium-reflow",
@@ -971,5 +1509,12 @@ def extract_book_premium(
         "chapters": chapters,
         "images": all_images,
         "toc": toc,
+        "metadata": {
+            **(pdf_metadata or {}),
+            "source_table_count": table_summary["source_table_count"],
+            "xhtml_table_count": table_summary["xhtml_table_count"],
+            "table_summary": table_summary,
+            "document_like_report": document_like_report,
+        },
     }
 

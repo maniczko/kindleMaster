@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 import fitz
 
 from premium_tools import detect_toolchain, run_epubcheck
+from publication_content_contract import adapt_extractor_content
 from publication_model import (
     PublicationAnalysis,
     PublicationBlock,
@@ -22,6 +23,8 @@ TECHNICAL_TITLE_MARKERS = (
     "emvc",
     "pdfdrive",
     "python-docx",
+    "executive summary",
+    "table of contents",
     "kindlemaster",
     "ebooklib",
     "technical converter",
@@ -39,6 +42,8 @@ TECHNICAL_AUTHOR_MARKERS = (
     "producer",
     "copyright",
     "python-docx",
+    "writer",
+    "libreoffice writer",
     "ebooklib",
     "kindlemaster",
     "technical converter",
@@ -86,6 +91,11 @@ def build_publication_document(pdf_path: str, config, analysis: PublicationAnaly
     file_stem = Path(pdf_path).stem
     title = _sanitize_publication_title(pdf_metadata.get("title") or file_stem, file_stem=file_stem) or file_stem
     author = _sanitize_publication_author(pdf_metadata.get("author") or "Unknown")
+    cover_metadata = _infer_cover_metadata(pdf_path)
+    if cover_metadata.get("title") and _is_weak_publication_title(title, file_stem=file_stem):
+        title = cover_metadata["title"]
+    if cover_metadata.get("author") and _is_weak_publication_author(author):
+        author = cover_metadata["author"]
 
     if analysis.profile == "magazine_reflow":
         from magazine_kindle_reflow import convert_magazine_to_kindle_reflow
@@ -95,7 +105,6 @@ def build_publication_document(pdf_path: str, config, analysis: PublicationAnaly
         from pymupdf_chess_extractor import extract_pdf_with_chess_support
 
         content = extract_pdf_with_chess_support(pdf_path, config, pdf_metadata)
-        content = _coalesce_page_chapters(content, pdf_path, profile=analysis.profile)
     elif analysis.profile == "scanned_reflow":
         content = _build_scanned_content(pdf_path, config, pdf_metadata)
     elif analysis.profile == "book_reflow":
@@ -104,6 +113,15 @@ def build_publication_document(pdf_path: str, config, analysis: PublicationAnaly
         content = extract_book_premium(pdf_path, config=config, pdf_metadata=pdf_metadata)
     else:
         content = extract_pdf_with_pymupdf(pdf_path, config, pdf_metadata)
+
+    content, extractor_contract_warnings = adapt_extractor_content(
+        content,
+        expect_images=analysis.has_meaningful_images,
+        expect_table_summary=analysis.has_tables,
+    )
+
+    if analysis.profile == "diagram_book_reflow":
+        content = _coalesce_page_chapters(content, pdf_path, profile=analysis.profile)
 
     content_metadata = content.get("metadata") or {}
     inferred_title = content_metadata.get("inferred_publication_title") or content_metadata.get("title")
@@ -114,8 +132,19 @@ def build_publication_document(pdf_path: str, config, analysis: PublicationAnaly
     inferred_author = _sanitize_publication_author(inferred_author)
     if inferred_author and _is_weak_publication_author(author):
         author = inferred_author
+    if cover_metadata.get("title") and _is_weak_publication_title(title, file_stem=file_stem):
+        title = cover_metadata["title"]
+    if cover_metadata.get("author") and _is_weak_publication_author(author):
+        author = cover_metadata["author"]
 
-    document = publication_from_content(content, analysis, title=title, author=author, language=config.language)
+    document = publication_from_content(
+        content,
+        analysis,
+        title=title,
+        author=author,
+        language=config.language,
+        extractor_contract_warnings=extractor_contract_warnings,
+    )
     document.metadata["source_content_method"] = content.get("method", "unknown")
     document.metadata["source_pdf_path"] = pdf_path
     document.metadata["detected_toc_entries"] = len(content.get("toc", []))
@@ -131,6 +160,8 @@ def _sanitize_publication_title(value: str | None, *, file_stem: str = "") -> st
     if not text:
         return ""
     text = re.sub(r"\s+", " ", text).strip()
+    if text.strip().lower() in {"unknown", "untitled", "untitled document", "executive summary", "summary", "contents", "table of contents", "spis tre\u015bci"}:
+        return ""
     text = re.sub(r"\(\s*PDFDrive\s*\)", "", text, flags=re.IGNORECASE).strip(" -_")
     if re.fullmatch(r"[0-9A-Fa-f]{12,}", text):
         return ""
@@ -154,6 +185,8 @@ def _looks_technical_publication_title(value: str, *, file_stem: str = "") -> bo
     if not normalized:
         return True
     lowered = normalized.lower()
+    if lowered in {"unknown", "untitled", "untitled document", "executive summary", "summary", "contents", "table of contents", "spis tre\u015bci"}:
+        return True
     if any(marker in lowered for marker in TECHNICAL_TITLE_MARKERS):
         return True
     if file_stem and lowered == re.sub(r"\s+", " ", file_stem.strip()).lower():
@@ -167,6 +200,8 @@ def _looks_technical_publication_author(value: str) -> bool:
         return True
     lowered = normalized.lower()
     if lowered in {"unknown", "author", "creator"}:
+        return True
+    if lowered in {"writer", "libreoffice writer"}:
         return True
     if any(marker in lowered for marker in TECHNICAL_AUTHOR_MARKERS):
         return True
@@ -183,6 +218,58 @@ def _is_weak_publication_author(value: str | None) -> bool:
     return not normalized or normalized == "Unknown" or _looks_technical_publication_author(normalized)
 
 
+def _infer_cover_metadata(pdf_path: str) -> dict[str, str]:
+    try:
+        doc = fitz.open(pdf_path)
+    except Exception:
+        return {}
+    try:
+        if len(doc) == 0:
+            return {}
+        lines = [
+            re.sub(r"\s+", " ", line).strip()
+            for line in (doc[0].get_text("text") or "").splitlines()
+            if re.sub(r"\s+", " ", line).strip()
+        ]
+    finally:
+        doc.close()
+
+    if not lines:
+        return {}
+
+    title = ""
+    first = _sanitize_publication_title(lines[0], file_stem=Path(pdf_path).stem)
+    second = _sanitize_publication_title(lines[1] if len(lines) > 1 else "", file_stem=Path(pdf_path).stem)
+    if first and _looks_like_cover_masthead_line(first):
+        first = ""
+    if first:
+        if second and re.search(r"(?i)\b(?:raport|report|guide|handbook|opracowanie)\b", second):
+            title = f"{first} \u2014 {second}"
+        else:
+            title = first
+
+    sample = " ".join(lines[:12]).lower()
+    author = ""
+    if any(marker in sample for marker in ("raport szkoleniowy", "materiał szkoleniowy", "material szkoleniowy", "opracowanie przygotowane")):
+        author = "Materia\u0142 szkoleniowy"
+
+    return {key: value for key, value in {"title": title, "author": author}.items() if value}
+
+
+def _looks_like_cover_masthead_line(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", (text or "").strip())
+    if not normalized:
+        return False
+    lowered = normalized.lower()
+    has_publication_marker = any(marker in lowered for marker in ("kwartalnik", "magazine", "journal", "newsletter"))
+    has_delivery_marker = "www." in lowered or "|" in normalized or re.search(r"\b(?:issn|nr)\b", lowered)
+    has_date_marker = re.search(r"\b(?:19|20)\d{2}\b", normalized) or re.search(
+        r"(?i)\b(?:stycze[nń]|luty|marzec|kwiecie[nń]|maj|czerwiec|lipiec|sierpie[nń]|wrzesie[nń]|pa[zź]dziernik|listopad|grudzie[nń]|january|february|march|april|may|june|july|august|september|october|november|december)\b",
+        normalized,
+    )
+    return bool(has_publication_marker and (has_delivery_marker or has_date_marker))
+
+
 def publication_from_content(
     content: dict,
     analysis: PublicationAnalysis,
@@ -190,7 +277,17 @@ def publication_from_content(
     title: str,
     author: str,
     language: str,
+    extractor_contract_warnings: list[dict[str, object]] | None = None,
 ) -> PublicationDocument:
+    if extractor_contract_warnings is None:
+        content, contract_warnings = adapt_extractor_content(
+            content,
+            expect_images=analysis.has_meaningful_images,
+            expect_table_summary=analysis.has_tables,
+        )
+    else:
+        contract_warnings = list(extractor_contract_warnings)
+
     global_assets = list(content.get("images", []))
     sections: list[PublicationSection] = []
     fallback_pages: list[int] = []
@@ -259,6 +356,10 @@ def publication_from_content(
     page_marker_count = sum(1 for section in sections for block in section.blocks if block.block_type == "page_marker")
     asset_figure_count = sum(1 for asset in all_assets if not asset.get("is_chess"))
     asset_diagram_count = sum(1 for asset in all_assets if asset.get("is_chess"))
+    content_metadata = content.get("metadata") or {}
+    table_summary = content_metadata.get("table_summary") or {}
+    source_table_count = int(content_metadata.get("source_table_count", 0) or table_count)
+    xhtml_table_count = int(content_metadata.get("xhtml_table_count", 0) or table_count)
     report = PublicationQualityReport(
         section_count=len(sections),
         figure_count=max(figure_count, asset_figure_count),
@@ -280,6 +381,21 @@ def publication_from_content(
             fallback_pages=fallback_pages,
         ),
         external_tools_used=analysis.external_tools,
+        source_toc_entries=int(len(content.get("toc", []) or [])),
+        source_table_count=source_table_count,
+        xhtml_table_count=xhtml_table_count,
+        table_cell_count=int(table_summary.get("table_cell_count", 0) or 0),
+        table_row_count=int(table_summary.get("table_row_count", 0) or 0),
+        table_cell_coverage=float(table_summary.get("table_cell_coverage", 1.0) or 0.0),
+        table_page_count=int(table_summary.get("table_page_count", 0) or 0),
+        multi_page_table_count=int(table_summary.get("multi_page_table_count", 0) or 0),
+        wide_table_count=int(table_summary.get("wide_table_count", 0) or 0),
+        low_confidence_table_count=int(table_summary.get("low_confidence_table_count", 0) or 0),
+        fragment_table_count=int(table_summary.get("fragment_table_count", 0) or 0),
+        table_summary=table_summary,
+        tiny_tail_sections=_detect_tiny_tail_sections(sections),
+        asset_budget_status=_asset_budget_status_for_document_like_report(analysis=analysis, assets=all_assets),
+        extractor_contract_warnings=contract_warnings,
     )
 
     return PublicationDocument(
@@ -311,6 +427,8 @@ def publication_to_content(document: PublicationDocument) -> dict:
             "html_parts": html_parts,
             "images": list(section.assets),
         }
+        if any("chess-diagram" in fragment for fragment in html_parts):
+            chapter["inline_chess_diagrams"] = True
         if section.metadata.get("source_page_label"):
             chapter["_source_page_label"] = section.metadata["source_page_label"]
         chapter["_page_start"] = section.page_start
@@ -664,6 +782,16 @@ def _node_to_block(node, page_index: int) -> PublicationBlock:
             alt_text=image.get("alt") if image else "",
             style_class=css_class,
         )
+    if name == "table":
+        return PublicationBlock(
+            block_type="table",
+            text=text,
+            raw_html=str(node),
+            page_index=page_index,
+            confidence=0.95,
+            source_type="text",
+            style_class=css_class,
+        )
     if name == "div" and "chess-problem" in (css_class or ""):
         return PublicationBlock(
             block_type="diagram",
@@ -758,6 +886,33 @@ def _is_intentionally_sparse_training_section(section: PublicationSection, *, pr
         "sample record sheet",
         "sample record sheets",
     }
+
+
+def _detect_tiny_tail_sections(sections: list[PublicationSection]) -> list[dict[str, object]]:
+    tiny: list[dict[str, object]] = []
+    for section in sections[-3:]:
+        word_count = sum(len(re.findall(r"\w+", block.text or "")) for block in section.blocks)
+        if 0 < word_count < 80:
+            tiny.append(
+                {
+                    "section": section.title,
+                    "word_count": word_count,
+                    "page_start": section.page_start + 1,
+                    "page_end": section.page_end + 1,
+                }
+            )
+    return tiny
+
+
+def _asset_budget_status_for_document_like_report(*, analysis: PublicationAnalysis, assets: list[dict]) -> str:
+    if "document-like-report" not in set(analysis.detected_features or []):
+        return "not_applicable"
+    total_bytes = sum(len(asset.get("data") or b"") for asset in assets)
+    if total_bytes > 2_500_000:
+        return "failed"
+    if total_bytes > 1_750_000:
+        return "passed_with_warnings"
+    return "passed"
 
 
 def _build_document_warnings(*, analysis: PublicationAnalysis, sections: list[PublicationSection], content: dict, fallback_pages: list[int]) -> list[str]:
@@ -1074,7 +1229,6 @@ def _normalize_section_title_candidate(text: str) -> str:
         return ""
     normalized = re.sub(r"^5334 Problems, Combinations & Games\s*", "", normalized, flags=re.IGNORECASE)
     normalized = re.sub(r"^contents\b(?:\s*[:\-–—]\s*|\s+)", "", normalized, flags=re.IGNORECASE)
-    normalized = re.sub(r"\b([a-z]{2,})\s*-\s+([a-z]{2,})\b", r"\1\2", normalized)
     normalized = re.sub(r"\s+", " ", normalized).strip(" -")
     if _looks_like_noise_title(normalized):
         return ""

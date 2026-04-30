@@ -14,6 +14,9 @@ DEFAULT_PORT = 5001
 DEFAULT_DEBUG = False
 DEFAULT_OVERSIZED_EPUB_WARNING_BYTES = 25 * 1024 * 1024
 SUPPORTED_SOURCE_SUFFIXES = frozenset({".pdf", ".docx"})
+METADATA_LIST_LIMIT = 20
+METADATA_MESSAGE_LIMIT = 12
+METADATA_DEPTH_LIMIT = 4
 
 ConvertFunction = Callable[..., dict[str, Any]]
 HeadingRepairFunction = Callable[..., Any]
@@ -70,6 +73,7 @@ def build_conversion_job_record(
         "metadata": {},
         "output_size_bytes": 0,
         "error": "",
+        "error_code": "",
     }
 
 
@@ -128,7 +132,8 @@ class ConversionJobStore:
                 interrupted_jobs += 1
                 job["status"] = "failed"
                 job["message"] = "Konwersja przerwana przez restart aplikacji."
-                job["error"] = "Async conversion job was interrupted by application restart."
+                job["error"] = "Konwersja zostala przerwana przez restart aplikacji. Uruchom konwersje ponownie."
+                job["error_code"] = "application_restart"
                 job["source_path"] = ""
                 job["updated_at"] = now
             loaded_jobs[job_id] = job
@@ -293,6 +298,22 @@ def _extract_analysis_profile(result: Mapping[str, Any]) -> str:
     return str(getattr(analysis, "profile", "") or "").strip().lower()
 
 
+def _resolved_publication_profile(
+    *,
+    request: ConversionRequest,
+    result: Mapping[str, Any],
+) -> str:
+    analysis_profile = _extract_analysis_profile(result)
+    if analysis_profile:
+        return analysis_profile
+    summary = result.get("document_summary", {}) or {}
+    if isinstance(summary, Mapping):
+        summary_profile = str(summary.get("profile", "") or "").strip()
+        if summary_profile:
+            return summary_profile
+    return request.profile
+
+
 def _should_skip_heading_repair(
     request: ConversionRequest,
     result: Mapping[str, Any],
@@ -309,6 +330,125 @@ def _should_skip_heading_repair(
     return False, ""
 
 
+def _to_mapping_payload(value: Any) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        payload = to_dict()
+        return dict(payload) if isinstance(payload, Mapping) else {}
+    return {}
+
+
+def _json_safe_metadata_value(
+    value: Any,
+    *,
+    list_limit: int = METADATA_LIST_LIMIT,
+    depth: int = METADATA_DEPTH_LIMIT,
+) -> Any:
+    if depth <= 0:
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        return str(value)
+
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+
+    if isinstance(value, Mapping):
+        return {
+            str(key): _json_safe_metadata_value(item, list_limit=list_limit, depth=depth - 1)
+            for key, item in value.items()
+        }
+
+    if isinstance(value, (list, tuple)):
+        return [
+            _json_safe_metadata_value(item, list_limit=list_limit, depth=depth - 1)
+            for item in list(value)[:list_limit]
+        ]
+
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        return _json_safe_metadata_value(to_dict(), list_limit=list_limit, depth=depth - 1)
+
+    return str(value)
+
+
+def _compact_mapping(
+    payload: Mapping[str, Any],
+    keys: tuple[str, ...],
+    *,
+    list_limit: int = METADATA_LIST_LIMIT,
+) -> dict[str, Any]:
+    compacted: dict[str, Any] = {}
+    for key in keys:
+        if key in payload:
+            compacted[key] = _json_safe_metadata_value(payload.get(key), list_limit=list_limit)
+    return compacted
+
+
+def _build_content_metrics_payload(quality_report: Mapping[str, Any]) -> dict[str, Any]:
+    return _compact_mapping(
+        quality_report,
+        (
+            "section_count",
+            "figure_count",
+            "diagram_count",
+            "table_count",
+            "page_marker_count",
+            "detected_figures",
+            "detected_diagrams",
+            "detected_tables",
+            "source_toc_entries",
+            "source_table_count",
+            "xhtml_table_count",
+            "fallback_pages",
+            "fallback_sections",
+            "fallback_regions",
+            "tiny_tail_sections",
+            "tiny_tail_section_count",
+            "asset_budget_status",
+            "archive_entry_count",
+            "archive_image_count",
+            "largest_assets",
+        ),
+    )
+
+
+def _build_validation_details_payload(quality_report: Mapping[str, Any]) -> dict[str, Any]:
+    return _compact_mapping(
+        quality_report,
+        (
+            "epubcheck_status",
+            "validation_status",
+            "validation_tool",
+            "validation_messages",
+            "error_count",
+            "warning_count",
+            "internal_link_error_count",
+            "external_link_error_count",
+            "broken_href_error_count",
+            "duplicate_id_error_count",
+            "size_budget_inspection",
+        ),
+        list_limit=METADATA_MESSAGE_LIMIT,
+    )
+
+
+def _build_document_summary_payload(document_summary: Mapping[str, Any]) -> dict[str, Any]:
+    return _compact_mapping(
+        document_summary,
+        (
+            "title",
+            "author",
+            "language",
+            "profile",
+            "layout_mode",
+            "section_count",
+            "asset_count",
+        ),
+    )
+
+
 def build_conversion_metadata(
     *,
     result: dict[str, Any],
@@ -316,19 +456,11 @@ def build_conversion_metadata(
     heading_repair_enabled: bool,
     heading_repair_report: dict[str, Any],
 ) -> dict[str, Any]:
-    analysis = result.get("analysis", {}) or {}
-    quality_report = result.get("quality_report", {}) or {}
-    document_summary = result.get("document_summary", {}) or {}
-    profile_name = (
-        analysis.get("profile")
-        if isinstance(analysis, dict)
-        else getattr(analysis, "profile", "unknown")
-    )
-    confidence = (
-        analysis.get("confidence")
-        if isinstance(analysis, dict)
-        else getattr(analysis, "confidence", 0)
-    )
+    analysis = _to_mapping_payload(result.get("analysis", {}) or {})
+    quality_report = _to_mapping_payload(result.get("quality_report", {}) or {})
+    document_summary = _to_mapping_payload(result.get("document_summary", {}) or {})
+    profile_name = analysis.get("profile", "unknown")
+    confidence = analysis.get("confidence", 0)
     warning_list = (quality_report.get("warnings", []) or [])[:12]
     high_risk_page_list = [
         {
@@ -352,12 +484,10 @@ def build_conversion_metadata(
         or quality_report.get("size_budget_key")
         or (
             analysis.get("render_budget_class")
-            if isinstance(analysis, dict)
-            else getattr(analysis, "render_budget_class", "")
         )
         or ""
     )
-    return {
+    metadata = {
         "source_type": detected_source_type,
         "profile": str(profile_name),
         "confidence": float(confidence) if confidence is not None else 0.0,
@@ -365,7 +495,7 @@ def build_conversion_metadata(
         "validation_tool": str(quality_report.get("validation_tool", "unknown")),
         "strategy": (
             str(analysis.get("legacy_strategy", "premium"))
-            if detected_source_type == "pdf" and isinstance(analysis, dict)
+            if detected_source_type == "pdf" and isinstance(analysis, Mapping)
             else None
         ),
         "sections": int(document_summary.get("section_count", 0) or 0),
@@ -400,6 +530,65 @@ def build_conversion_metadata(
             "error": str(heading_repair_report.get("error", "")),
         },
     }
+
+    content_metrics = _build_content_metrics_payload(quality_report)
+    if content_metrics:
+        metadata["content_metrics"] = content_metrics
+
+    text_cleanup = _json_safe_metadata_value(quality_report.get("text_cleanup") or {})
+    if isinstance(text_cleanup, Mapping) and text_cleanup:
+        metadata["text_cleanup"] = dict(text_cleanup)
+        reference_cleanup = text_cleanup.get("reference_cleanup")
+        if isinstance(reference_cleanup, Mapping) and reference_cleanup:
+            metadata["reference_cleanup"] = dict(
+                _json_safe_metadata_value(reference_cleanup, list_limit=METADATA_MESSAGE_LIMIT)
+            )
+
+    for metadata_key, candidates in (
+        (
+            "semantic_cleanup",
+            (
+                quality_report.get("semantic_cleanup"),
+                text_cleanup.get("semantic_cleanup") if isinstance(text_cleanup, Mapping) else None,
+            ),
+        ),
+        (
+            "ocr_quality",
+            (
+                quality_report.get("ocr_quality"),
+                quality_report.get("ocr_degradation"),
+                analysis.get("ocr_quality"),
+                analysis.get("ocr_degradation"),
+            ),
+        ),
+        (
+            "reading_order",
+            (
+                quality_report.get("reading_order"),
+                text_cleanup.get("reading_order") if isinstance(text_cleanup, Mapping) else None,
+                analysis.get("reading_order"),
+            ),
+        ),
+    ):
+        gate_payload = next((candidate for candidate in candidates if isinstance(candidate, Mapping) and candidate), None)
+        if gate_payload is not None:
+            metadata[metadata_key] = dict(
+                _json_safe_metadata_value(gate_payload, list_limit=METADATA_MESSAGE_LIMIT)
+            )
+
+    source_analysis = _json_safe_metadata_value(analysis)
+    if isinstance(source_analysis, Mapping) and source_analysis:
+        metadata["source_analysis"] = dict(source_analysis)
+
+    cockpit_document_summary = _build_document_summary_payload(document_summary)
+    if cockpit_document_summary:
+        metadata["document_summary"] = cockpit_document_summary
+
+    validation_details = _build_validation_details_payload(quality_report)
+    if validation_details:
+        metadata["validation_details"] = validation_details
+
+    return metadata
 
 
 def build_conversion_quality_state(
@@ -523,7 +712,7 @@ def run_document_conversion(
                     title_hint=str((result.get("document_summary", {}) or {}).get("title", "") or ""),
                     author_hint=str((result.get("document_summary", {}) or {}).get("author", "") or ""),
                     language_hint=request.language,
-                    publication_profile=request.profile,
+                    publication_profile=_resolved_publication_profile(request=request, result=result),
                 )
                 heading_repair_report = {
                     "status": "applied",

@@ -10,6 +10,7 @@ This document is the onboarding mirror for the control-plane source-of-truth mod
 | --- | --- | --- | --- |
 | What CLI commands, flags, defaults, and exit codes exist? | `kindlemaster.py` | `README.md`, `.codex/README.md`, `.codex/config.toml`, `AGENTS.md` | Update mirrors only after the parser changes. |
 | What should agents do by default? | `AGENTS.md` | `README.md`, `.codex/README.md`, this document | If agent workflow changes, update `AGENTS.md` first. |
+| What is the v1 product scope? | `docs/product-scope.md` | README summaries, Linear Score 9 issues, audit recommendations | Keep release-grade converter scope separate from v2 reader/knowledge workflow. |
 | Which local tools are required, optional, degraded, or unsupported? | `docs/toolchain-matrix.md` plus `premium_tools.detect_toolchain()` | `docs/local-bootstrap-toolchain.md`, `README.md` | Keep expected behavior and detected behavior aligned. |
 | How does PDF/DOCX become EPUB? | Runtime modules named in `docs/conversion-pipeline.md` | README summaries and issue descriptions | Do not document a stage that is not implemented. |
 | What is the current project status? | `python kindlemaster.py status` via `scripts/generate_project_status.py` | `reports/project_status.json`, `reports/project_status.md`, Linear comments | Generated reports are derived from corpus/workflow/governance evidence. |

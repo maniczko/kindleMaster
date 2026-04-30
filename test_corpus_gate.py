@@ -1,17 +1,54 @@
 from __future__ import annotations
 
+import io
 import json
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
 import kindlemaster
-from scripts.run_corpus_gate import run_corpus_gate
+from scripts.run_corpus_gate import STANDARD_PREMIUM_FILTERS, _build_gate_output_assertions, run_corpus_gate
 
 
 class CorpusGateTests(unittest.TestCase):
+    def _build_epub_bytes(self, *, with_image: bool = False) -> bytes:
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w") as archive:
+            archive.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+            archive.writestr(
+                "EPUB/content.opf",
+                """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Corpus fixture</dc:title>
+    <dc:creator>KindleMaster QA</dc:creator>
+    <dc:language>en</dc:language>
+  </metadata>
+</package>
+""",
+            )
+            archive.writestr(
+                "EPUB/nav.xhtml",
+                """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+  <body><nav epub:type="toc"><ol><li><a href="chapter.xhtml#intro">Intro</a></li></ol></nav></body>
+</html>
+""",
+            )
+            image_markup = '<img src="images/figure.png" alt="figure"/>' if with_image else ""
+            archive.writestr(
+                "EPUB/chapter.xhtml",
+                f"""<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body><h1 id="intro">Intro</h1><p>Fixture.</p>{image_markup}</body></html>
+""",
+            )
+            if with_image:
+                archive.writestr("EPUB/images/figure.png", b"\x89PNG\r\n\x1a\n")
+        return output.getvalue()
+
     def test_corpus_gate_merges_full_smoke_and_premium_reports(self) -> None:
         smoke_payload = {
             "summary": {
@@ -118,6 +155,110 @@ class CorpusGateTests(unittest.TestCase):
         self.assertEqual(payload["proof_profile"], "full")
         self.assertIsNone(smoke_mock.call_args.kwargs["case_filters"])
         self.assertIsNone(premium_mock.call_args.kwargs["case_filters"])
+
+    def test_standard_premium_filters_raise_the_converted_slice_beyond_one_case(self) -> None:
+        self.assertIn("document-like-report", STANDARD_PREMIUM_FILTERS)
+        self.assertIn("ocr_stress_scan", STANDARD_PREMIUM_FILTERS)
+        self.assertIn("magazine_layout", STANDARD_PREMIUM_FILTERS)
+        self.assertIn("diagram_training_book", STANDARD_PREMIUM_FILTERS)
+        self.assertNotIn("large-diagram-corpus", STANDARD_PREMIUM_FILTERS)
+        self.assertGreaterEqual(len(STANDARD_PREMIUM_FILTERS), 4)
+
+    def test_gate_output_assertions_cover_focused_routes_from_real_epub_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            docx_epub = temp_root / "docx.epub"
+            scan_epub = temp_root / "scan.epub"
+            docx_epub.write_bytes(self._build_epub_bytes())
+            scan_epub.write_bytes(self._build_epub_bytes(with_image=True))
+
+            smoke_payload = {
+                "cases": [
+                    {
+                        "id": "simple_report_docx",
+                        "document_class": "docx_structured_report",
+                        "input_type": "docx",
+                        "output_epub": str(docx_epub),
+                        "validation": {"summary": {"status": "passed"}},
+                    },
+                    {
+                        "id": "scan_probe_epub",
+                        "document_class": "scan_probe",
+                        "input_type": "epub",
+                        "path": str(scan_epub),
+                        "validation": {"summary": {"status": "passed"}},
+                    },
+                ]
+            }
+            shared_stats = {
+                "xhtml_count": 2,
+                "image_count": 1,
+                "nav_entries": 2,
+                "package_language": "en",
+                "heading_counts": {"h1": 1},
+            }
+            premium_payload = {
+                "cases": [
+                    {
+                        "case_id": "magazine_layout_pdf",
+                        "document_class": "magazine_layout",
+                        "input_type": "pdf",
+                        "mode": "convert-and-audit",
+                        "quality": {"validation_status": "passed"},
+                        "post_heading_epub_stats": shared_stats,
+                    },
+                    {
+                        "case_id": "document_like_report_pdf",
+                        "document_class": "document-like-report",
+                        "input_type": "pdf",
+                        "mode": "convert-and-audit",
+                        "quality": {"validation_status": "passed"},
+                        "post_heading_epub_stats": shared_stats,
+                    },
+                    {
+                        "case_id": "diagram_training_book_pdf",
+                        "document_class": "diagram_training_book",
+                        "input_type": "pdf",
+                        "mode": "convert-and-audit",
+                        "quality": {"validation_status": "passed"},
+                        "post_heading_epub_stats": shared_stats,
+                    },
+                ]
+            }
+
+            output_assertions = _build_gate_output_assertions(smoke=smoke_payload, premium=premium_payload)
+
+        self.assertEqual(output_assertions["failed_routes"], [])
+        self.assertEqual(output_assertions["skipped_routes"], [])
+        self.assertEqual(output_assertions["covered_route_count"], 5)
+        for route_payload in output_assertions["focus_routes"].values():
+            self.assertIn(route_payload["status"], {"covered", "covered_with_warnings"})
+
+    def test_gate_output_assertions_surface_pass_with_review_route_evidence(self) -> None:
+        premium_payload = {
+            "cases": [
+                {
+                    "case_id": "diagram_training_book_pdf",
+                    "document_class": "diagram_training_book",
+                    "input_type": "pdf",
+                    "mode": "convert-and-audit",
+                    "grade": "pass_with_review",
+                    "quality": {"validation_status": "passed"},
+                    "post_heading_epub_stats": {
+                        "xhtml_count": 3,
+                        "image_count": 4,
+                        "nav_entries": 3,
+                        "package_language": "en",
+                        "heading_counts": {"h1": 1},
+                    },
+                }
+            ]
+        }
+
+        output_assertions = _build_gate_output_assertions(smoke={"cases": []}, premium=premium_payload)
+
+        self.assertEqual(output_assertions["focus_routes"]["diagram_chess"]["status"], "covered_with_warnings")
+        self.assertEqual(output_assertions["failed_routes"], [])
 
     def test_corpus_gate_persists_stable_derived_status_evidence(self) -> None:
         smoke_payload = {

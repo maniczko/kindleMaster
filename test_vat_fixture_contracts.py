@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import fitz
 
+from premium_corpus_smoke import classify_focus_routes
 from scripts import prepare_reference_inputs as prepare_reference_inputs_module
 from scripts.run_smoke_tests import run_smoke_tests
 from size_budget_policy import evaluate_size_budget, get_document_size_budget, load_size_budget_policy
@@ -165,6 +166,18 @@ class VatFixtureContractTests(unittest.TestCase):
         self.assertEqual(self.document_like_case["target_path"], "reference_inputs/pdf/document_like_report.pdf")
         self.assertIn("Generated multi-page", self.document_like_case["notes"])
         self.assertGreater(int(self.document_like_case["size_bytes"]), 0)
+
+    def test_manifest_contains_fixtures_for_focused_output_assertion_routes(self) -> None:
+        route_to_case_ids: dict[str, list[str]] = {}
+        for case in self.case_map.values():
+            for route in classify_focus_routes(case.get("document_class", ""), case.get("input_type", "")):
+                route_to_case_ids.setdefault(route, []).append(case["id"])
+
+        self.assertIn("simple_report_docx", route_to_case_ids["docx"])
+        self.assertIn("magazine_layout_pdf", route_to_case_ids["magazine_layout_heavy"])
+        self.assertTrue({"document_like_report_pdf", "dense_business_guide_pdf"} & set(route_to_case_ids["dense_report"]))
+        self.assertTrue({"ocr_stress_scan_pdf", "scan_probe_epub"} & set(route_to_case_ids["ocr_scan"]))
+        self.assertIn("diagram_training_book_pdf", route_to_case_ids["diagram_chess"])
 
     def test_generated_fixture_files_exist_and_have_basic_shape(self) -> None:
         ocr_path = REPO_ROOT / self.ocr_case["target_path"]

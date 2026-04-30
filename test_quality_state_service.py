@@ -12,6 +12,20 @@ from quality_state_service import (
 
 
 class QualityStateServiceTests(unittest.TestCase):
+    def _request_from_job_payload(
+        self,
+        payload: dict,
+        *,
+        download_url: str,
+    ) -> ConversionQualityStateRequest:
+        enriched = dict(payload)
+        if str(enriched.get("status", "") or "").strip().lower() == "ready":
+            enriched.setdefault("output_path_exists", True)
+        return ConversionQualityStateRequest.from_job_payload(
+            enriched,
+            download_url=download_url,
+        )
+
     def test_ready_state_normalizes_current_runtime_metadata_contract(self) -> None:
         metadata = build_conversion_metadata(
             result={
@@ -67,7 +81,7 @@ class QualityStateServiceTests(unittest.TestCase):
                 "error": "",
             },
         )
-        request = ConversionQualityStateRequest.from_job_payload(
+        request = self._request_from_job_payload(
             {
                 "status": "ready",
                 "source_type": "pdf",
@@ -87,7 +101,13 @@ class QualityStateServiceTests(unittest.TestCase):
         self.assertTrue(state.is_terminal)
         self.assertTrue(state.quality_available)
         self.assertTrue(state.download_ready)
+        self.assertTrue(state.download_available)
+        self.assertEqual(state.download_state.status, "available")
         self.assertEqual(state.download_url, "/convert/download/job-1")
+        self.assertEqual(state.reading_verdict, "ready_with_review")
+        self.assertEqual(state.release_verdict, "ready_with_review")
+        self.assertFalse(state.release_blocked)
+        self.assertEqual(state.quality_blockers, ())
         self.assertEqual(state.overall_severity, "warning")
         self.assertEqual(state.summary.profile, "book_reflow")
         self.assertEqual(state.summary.strategy, "text_reflowable")
@@ -122,8 +142,442 @@ class QualityStateServiceTests(unittest.TestCase):
         )
         self.assertEqual(payload["summary"]["output_size_bytes"], 8192)
         self.assertEqual(payload["raw_signals"]["warning_count"], 1)
+        self.assertTrue(payload["download_available"])
+        self.assertEqual(payload["download_state"]["status"], "available")
+        self.assertEqual(payload["reading_verdict"], "ready_with_review")
+        self.assertEqual(payload["release_verdict"], "ready_with_review")
+        self.assertFalse(payload["release_blocked"])
+        self.assertEqual(payload["quality_blockers"], [])
+        self.assertFalse(payload["send_to_kindle_ready"])
+        self.assertEqual(payload["send_to_kindle_blockers"][0]["code"], "kindle_delivery_release_not_ready")
         self.assertEqual(payload["verdict"]["status"], "passed_with_warnings")
         json.dumps(payload)
+
+    def test_ready_state_with_missing_output_is_not_download_available(self) -> None:
+        request = ConversionQualityStateRequest.from_job_payload(
+            {
+                "status": "ready",
+                "source_type": "pdf",
+                "filename": "missing-output.pdf",
+                "message": "EPUB gotowy do pobrania.",
+                "metadata": {"profile": "book_reflow", "validation": "passed"},
+                "output_path": "missing-output.epub",
+            },
+            download_url="/convert/download/missing-output",
+        )
+
+        state = assemble_quality_state(request)
+        payload = assemble_quality_state_dict(request)
+
+        self.assertFalse(state.download_ready)
+        self.assertFalse(state.download_available)
+        self.assertEqual(state.download_state.status, "missing_output")
+        self.assertEqual(state.download_url, "")
+        self.assertFalse(payload["download_available"])
+        self.assertEqual(payload["download_state"]["status"], "missing_output")
+        self.assertIsNone(payload["download_state"]["download_url"])
+
+    def test_ready_epub_can_download_even_when_release_quality_is_blocked(self) -> None:
+        request = self._request_from_job_payload(
+            {
+                "status": "ready",
+                "source_type": "pdf",
+                "filename": "cleanup.pdf",
+                "message": "EPUB gotowy do pobrania.",
+                "metadata": {
+                    "profile": "book_reflow",
+                    "validation": "passed",
+                    "validation_tool": "epubcheck",
+                    "text_cleanup": {
+                        "status": "passed_with_warnings",
+                        "blocked_count": 1,
+                    },
+                },
+            },
+            download_url="/convert/download/cleanup-job",
+        )
+
+        state = assemble_quality_state(request)
+        payload = assemble_quality_state_dict(request)
+
+        self.assertTrue(state.download_available)
+        self.assertEqual(state.download_state.status, "available")
+        self.assertEqual(state.reading_verdict, "ready_with_review")
+        self.assertEqual(state.release_verdict, "release_blocked")
+        self.assertTrue(state.release_blocked)
+        self.assertEqual([item["code"] for item in state.quality_blockers], ["text_cleanup_blocked"])
+        self.assertEqual(state.overall_severity, "error")
+        self.assertEqual(state.verdict.status, "failed")
+        self.assertFalse(state.verdict.blocks_download)
+        self.assertTrue(payload["download_available"])
+        self.assertEqual(payload["reading_verdict"], "ready_with_review")
+        self.assertEqual(payload["release_verdict"], "release_blocked")
+        self.assertTrue(payload["release_blocked"])
+        self.assertEqual(payload["quality_blockers"][0]["source"], "text_cleanup")
+        self.assertFalse(payload["send_to_kindle_ready"])
+        self.assertEqual(
+            [item["code"] for item in payload["send_to_kindle_blockers"]],
+            [
+                "kindle_delivery_release_not_ready",
+                "kindle_delivery_validation_failed",
+                "kindle_delivery_not_verified",
+            ],
+        )
+
+    def test_semantic_ocr_and_reading_order_gates_block_release_not_download(self) -> None:
+        request = self._request_from_job_payload(
+            {
+                "status": "ready",
+                "source_type": "pdf",
+                "filename": "ocr-heavy.pdf",
+                "message": "EPUB gotowy do pobrania.",
+                "metadata": {
+                    "profile": "book_reflow",
+                    "validation": "passed",
+                    "validation_tool": "epubcheck",
+                    "semantic_cleanup": {
+                        "status": "failed",
+                        "message": "Semantic cleanup failed paragraph structure.",
+                    },
+                    "ocr_quality": {
+                        "status": "degraded",
+                        "degraded_count": 2,
+                    },
+                    "reading_order": {
+                        "status": "passed_with_warnings",
+                        "manual_review_count": 1,
+                    },
+                },
+            },
+            download_url="/convert/download/ocr-heavy-job",
+        )
+
+        state = assemble_quality_state(request)
+        payload = assemble_quality_state_dict(request)
+
+        self.assertTrue(state.download_available)
+        self.assertEqual(state.reading_verdict, "ready_with_review")
+        self.assertEqual(state.release_verdict, "release_blocked")
+        self.assertTrue(state.release_blocked)
+        self.assertEqual(
+            [item["code"] for item in state.quality_blockers],
+            ["semantic_cleanup_failed", "ocr_degradation_failed"],
+        )
+        self.assertEqual(payload["semantic_cleanup"]["status"], "failed")
+        self.assertEqual(payload["ocr_quality"]["status"], "degraded")
+        self.assertEqual(payload["reading_order"]["status"], "passed_with_warnings")
+        self.assertEqual(payload["issue_groups"]["warnings"][0]["code"], "reading_order_warning")
+
+    def test_minimal_ready_epub_gets_review_until_premium_gates_are_reported(self) -> None:
+        request = self._request_from_job_payload(
+            {
+                "status": "ready",
+                "source_type": "pdf",
+                "filename": "clean.pdf",
+                "message": "EPUB ready.",
+                "metadata": {
+                    "profile": "book_reflow",
+                    "validation": "passed",
+                    "validation_tool": "epubcheck",
+                },
+            },
+            download_url="/convert/download/clean-job",
+        )
+
+        state = assemble_quality_state(request)
+        payload = assemble_quality_state_dict(request)
+
+        self.assertTrue(state.download_available)
+        self.assertEqual(state.reading_verdict, "ready_with_review")
+        self.assertEqual(state.release_verdict, "ready_with_review")
+        self.assertFalse(state.release_blocked)
+        self.assertEqual(state.quality_blockers, ())
+        self.assertIn("semantic_cleanup", payload["quality_completeness"]["missing_sections"])
+        self.assertEqual(payload["release_verdict"], "ready_with_review")
+
+    def test_quality_completeness_counts_missing_sections_without_blocking_release(self) -> None:
+        request = self._request_from_job_payload(
+            {
+                "status": "ready",
+                "source_type": "pdf",
+                "filename": "minimal-quality.pdf",
+                "metadata": {
+                    "profile": "book_reflow",
+                    "validation": "passed",
+                    "validation_tool": "epubcheck",
+                },
+            },
+            download_url="/convert/download/minimal-quality",
+        )
+
+        state = assemble_quality_state(request)
+        payload = assemble_quality_state_dict(request)
+
+        self.assertEqual(state.release_verdict, "ready_with_review")
+        self.assertFalse(state.release_blocked)
+        self.assertEqual(state.quality_completeness.score, 15)
+        self.assertEqual(state.quality_completeness.status, "partial")
+        self.assertEqual(state.quality_completeness.expected_sections, 13)
+        self.assertEqual(state.quality_completeness.reported_sections, 2)
+        self.assertEqual(state.quality_completeness.missing_count, 11)
+        self.assertEqual(state.quality_completeness.not_reported_count, 11)
+        self.assertIn("text_cleanup", state.quality_completeness.missing_sections)
+        self.assertIn("semantic_cleanup", state.quality_completeness.missing_sections)
+        self.assertIn("ocr_quality", state.quality_completeness.missing_sections)
+        self.assertIn("reading_order", state.quality_completeness.missing_sections)
+        self.assertIn("table_semantics", state.quality_completeness.missing_sections)
+        self.assertIn("reference_cleanup", payload["quality_completeness"]["missing_sections"])
+        self.assertEqual(payload["quality_blockers"], [])
+
+    def test_quality_completeness_reports_complete_cockpit_evidence(self) -> None:
+        request = self._request_from_job_payload(
+            {
+                "status": "ready",
+                "source_type": "pdf",
+                "filename": "complete-quality.pdf",
+                "metadata": {
+                    "profile": "book_reflow",
+                    "validation": "passed",
+                    "validation_tool": "epubcheck",
+                    "epubcheck_detail": {
+                        "status": "passed",
+                        "tool": "epubcheck",
+                        "error_count": 0,
+                        "warning_count": 0,
+                    },
+                    "toc_preview": {
+                        "status": "reported",
+                        "entries": [{"label": "Start", "href": "chapter.xhtml"}],
+                    },
+                    "metadata_health": {"status": "passed", "message": "Metadata normalized."},
+                    "link_health": {"status": "passed", "broken_count": 0},
+                    "visible_junk": {"status": "passed", "count": 0},
+                    "asset_summary": {"status": "reported", "image_count": 1},
+                    "text_cleanup": {"status": "passed"},
+                    "reference_cleanup": {"status": "passed"},
+                    "semantic_cleanup": {"status": "passed"},
+                    "ocr_quality": {"status": "passed"},
+                    "reading_order": {"status": "passed"},
+                    "content_metrics": {
+                        "status": "reported",
+                        "source_table_count": 2,
+                        "xhtml_table_count": 2,
+                        "table_cell_count": 18,
+                        "table_page_count": 2,
+                        "multi_page_table_count": 1,
+                        "wide_table_count": 0,
+                        "low_confidence_table_count": 0,
+                        "table_summary": {
+                            "review_tables": [
+                                {
+                                    "index": 1,
+                                    "page": 2,
+                                    "rows": 5,
+                                    "columns": 3,
+                                    "classification": "multi_page",
+                                }
+                            ]
+                        },
+                    },
+                },
+            },
+            download_url="/convert/download/complete-quality",
+        )
+
+        payload = assemble_quality_state_dict(request)
+
+        self.assertEqual(payload["quality_completeness"]["score"], 100)
+        self.assertEqual(payload["quality_completeness"]["status"], "complete")
+        self.assertEqual(payload["quality_completeness"]["reported_sections"], 13)
+        self.assertEqual(payload["quality_completeness"]["missing_count"], 0)
+        self.assertEqual(payload["quality_completeness"]["not_reported_count"], 0)
+        self.assertEqual(payload["quality_completeness"]["missing_sections"], [])
+        self.assertEqual(payload["quality_completeness"]["sections"][0]["key"], "validation")
+        self.assertTrue(payload["quality_completeness"]["sections"][0]["reported"])
+        table_section = next(
+            section
+            for section in payload["quality_completeness"]["sections"]
+            if section["key"] == "table_semantics"
+        )
+        self.assertEqual(table_section["status"], "passed")
+        self.assertIn("2/2", table_section["message"])
+        self.assertEqual(payload["content_metrics"]["table_cell_count"], 18)
+        self.assertEqual(payload["content_metrics"]["table_page_count"], 2)
+        self.assertEqual(payload["content_metrics"]["multi_page_table_count"], 1)
+        self.assertEqual(payload["content_metrics"]["wide_table_count"], 0)
+        self.assertEqual(payload["content_metrics"]["table_row_count"], 0)
+        self.assertEqual(payload["content_metrics"]["table_cell_coverage"], 1.0)
+        self.assertEqual(payload["content_metrics"]["fragment_table_count"], 0)
+        self.assertEqual(
+            payload["content_metrics"]["table_summary"]["review_tables"][0]["classification"],
+            "multi_page",
+        )
+        self.assertEqual(payload["release_verdict"], "release_ready")
+        self.assertFalse(payload["send_to_kindle_ready"])
+        self.assertEqual(payload["send_to_kindle_blockers"][0]["code"], "kindle_delivery_not_verified")
+
+    def test_send_to_kindle_ready_requires_release_ready_validation_size_and_safe_assets(self) -> None:
+        request = self._request_from_job_payload(
+            {
+                "status": "ready",
+                "source_type": "pdf",
+                "filename": "kindle-ready.pdf",
+                "output_size_bytes": 45_646,
+                "metadata": {
+                    "profile": "book_reflow",
+                    "validation": "passed",
+                    "validation_tool": "epubcheck",
+                    "epubcheck_detail": {
+                        "status": "passed",
+                        "tool": "epubcheck",
+                        "error_count": 0,
+                        "warning_count": 0,
+                    },
+                    "toc_preview": {"status": "reported", "entries": [{"label": "Start", "href": "chapter.xhtml"}]},
+                    "metadata_health": {"status": "passed"},
+                    "link_health": {"status": "passed"},
+                    "visible_junk": {"status": "passed", "count": 0},
+                    "asset_summary": {"status": "reported", "image_count": 0, "unsupported_media_count": 0, "script_count": 0},
+                    "text_cleanup": {"status": "passed"},
+                    "reference_cleanup": {"status": "passed", "citations_detected": 16, "citations_covered": 16},
+                    "semantic_cleanup": {"status": "passed"},
+                    "ocr_quality": {"status": "passed"},
+                    "reading_order": {"status": "passed"},
+                    "content_metrics": {
+                        "status": "reported",
+                        "source_table_count": 9,
+                        "xhtml_table_count": 9,
+                        "table_cell_count": 96,
+                        "table_row_count": 32,
+                        "table_cell_coverage": 1.0,
+                        "fragment_table_count": 0,
+                    },
+                },
+            },
+            download_url="/convert/download/kindle-ready",
+        )
+
+        payload = assemble_quality_state_dict(request)
+
+        self.assertEqual(payload["release_verdict"], "release_ready")
+        self.assertTrue(payload["send_to_kindle_ready"])
+        self.assertEqual(payload["send_to_kindle_blockers"], [])
+
+    def test_send_to_kindle_gate_blocks_unsupported_media_and_oversized_email_asset(self) -> None:
+        request = self._request_from_job_payload(
+            {
+                "status": "ready",
+                "source_type": "pdf",
+                "filename": "risky.epub",
+                "output_size_bytes": 52 * 1024 * 1024,
+                "metadata": {
+                    "profile": "book_reflow",
+                    "validation": "passed",
+                    "validation_tool": "epubcheck",
+                    "epubcheck_detail": {"status": "passed"},
+                    "toc_preview": {"status": "reported", "entries": [{"label": "Start", "href": "chapter.xhtml"}]},
+                    "metadata_health": {"status": "passed"},
+                    "link_health": {"status": "passed"},
+                    "visible_junk": {"status": "passed", "count": 0},
+                    "asset_summary": {"status": "reported", "unsupported_media_count": 1, "script_count": 1},
+                    "text_cleanup": {"status": "passed"},
+                    "reference_cleanup": {"status": "passed"},
+                    "semantic_cleanup": {"status": "passed"},
+                    "ocr_quality": {"status": "passed"},
+                    "reading_order": {"status": "passed"},
+                    "content_metrics": {
+                        "status": "reported",
+                        "source_table_count": 0,
+                        "xhtml_table_count": 0,
+                        "table_cell_count": 0,
+                        "table_row_count": 0,
+                        "table_cell_coverage": 1.0,
+                        "fragment_table_count": 0,
+                    },
+                },
+            },
+            download_url="/convert/download/risky",
+        )
+
+        payload = assemble_quality_state_dict(request)
+
+        self.assertEqual(payload["release_verdict"], "release_ready")
+        self.assertFalse(payload["send_to_kindle_ready"])
+        self.assertEqual(
+            [item["code"] for item in payload["send_to_kindle_blockers"]],
+            ["kindle_delivery_email_size_limit", "kindle_delivery_unsupported_assets"],
+        )
+
+    def test_send_to_kindle_gate_blocks_reported_media_quality_risks(self) -> None:
+        request = self._request_from_job_payload(
+            {
+                "status": "ready",
+                "source_type": "pdf",
+                "filename": "media-risk.epub",
+                "output_size_bytes": 1024 * 1024,
+                "metadata": {
+                    "profile": "book_reflow",
+                    "validation": "passed",
+                    "validation_tool": "epubcheck",
+                    "size_budget_status": "failed",
+                    "size_budget_message": "Image budget exceeded.",
+                    "epubcheck_detail": {"status": "passed"},
+                    "toc_preview": {"status": "reported", "entries": [{"label": "Start", "href": "chapter.xhtml"}]},
+                    "metadata_health": {"status": "passed"},
+                    "link_health": {"status": "passed"},
+                    "visible_junk": {"status": "passed", "count": 0},
+                    "asset_summary": {
+                        "status": "reported",
+                        "asset_budget_status": "failed",
+                        "unsupported_media_count": 0,
+                        "script_count": 0,
+                        "image_quality": {
+                            "status": "failed",
+                            "cover": {
+                                "status": "failed",
+                                "path": "EPUB/images/cover.jpg",
+                                "width": 500,
+                                "height": 500,
+                                "issues": ["cover_aspect_ratio", "cover_resolution"],
+                            },
+                            "low_resolution_count": 2,
+                            "progressive_jpeg_count": 1,
+                            "media_risk_count": 1,
+                        },
+                    },
+                    "text_cleanup": {"status": "passed"},
+                    "reference_cleanup": {"status": "passed"},
+                    "semantic_cleanup": {"status": "passed"},
+                    "ocr_quality": {"status": "passed"},
+                    "reading_order": {"status": "passed"},
+                    "content_metrics": {
+                        "status": "reported",
+                        "source_table_count": 0,
+                        "xhtml_table_count": 0,
+                        "table_cell_count": 0,
+                        "table_row_count": 0,
+                        "table_cell_coverage": 1.0,
+                        "fragment_table_count": 0,
+                    },
+                },
+            },
+            download_url="/convert/download/media-risk",
+        )
+
+        payload = assemble_quality_state_dict(request)
+
+        self.assertFalse(payload["send_to_kindle_ready"])
+        self.assertEqual(
+            [item["code"] for item in payload["send_to_kindle_blockers"]],
+            [
+                "kindle_delivery_release_not_ready",
+                "kindle_delivery_size_budget_failed",
+                "kindle_delivery_cover_image_quality",
+                "kindle_delivery_progressive_jpeg",
+                "kindle_delivery_low_resolution_images",
+                "kindle_delivery_unsupported_assets",
+            ],
+        )
 
     def test_failed_state_surfaces_terminal_error_without_quality_payload(self) -> None:
         request = ConversionQualityStateRequest(
@@ -140,13 +594,40 @@ class QualityStateServiceTests(unittest.TestCase):
         self.assertTrue(state.is_terminal)
         self.assertFalse(state.quality_available)
         self.assertFalse(state.download_ready)
+        self.assertFalse(state.download_available)
+        self.assertEqual(state.download_state.status, "unavailable")
         self.assertEqual(state.overall_severity, "error")
+        self.assertEqual(state.reading_verdict, "failed")
+        self.assertEqual(state.release_verdict, "failed")
+        self.assertTrue(state.release_blocked)
+        self.assertEqual(state.quality_blockers[0]["code"], "conversion_failed")
         self.assertEqual(state.verdict.status, "failed")
         self.assertTrue(state.verdict.blocks_download)
         self.assertEqual(state.validation.status, "unavailable")
         self.assertEqual(len(state.alerts), 1)
         self.assertEqual(state.alerts[0].code, "conversion_failed")
         self.assertIn("timeout", state.alerts[0].message)
+
+    def test_timed_out_state_surfaces_timeout_blocker(self) -> None:
+        request = ConversionQualityStateRequest(
+            job_status="timed_out",
+            source_type="pdf",
+            filename="slow.pdf",
+            message="Konwersja przekroczyla limit czasu.",
+            error="conversion watchdog expired",
+        )
+
+        state = assemble_quality_state(request)
+
+        self.assertEqual(state.phase, "failed")
+        self.assertTrue(state.is_terminal)
+        self.assertFalse(state.download_available)
+        self.assertEqual(state.download_state.status, "unavailable")
+        self.assertEqual(state.reading_verdict, "failed")
+        self.assertEqual(state.release_verdict, "failed")
+        self.assertTrue(state.release_blocked)
+        self.assertEqual(state.quality_blockers[0]["code"], "conversion_timeout")
+        self.assertEqual(state.alerts[0].code, "conversion_timeout")
 
     def test_progress_state_stays_non_terminal_and_quality_safe(self) -> None:
         request = ConversionQualityStateRequest(
@@ -162,6 +643,7 @@ class QualityStateServiceTests(unittest.TestCase):
         self.assertFalse(state.is_terminal)
         self.assertFalse(state.quality_available)
         self.assertFalse(state.download_ready)
+        self.assertEqual(state.download_state.status, "pending")
         self.assertEqual(state.overall_severity, "info")
         self.assertEqual(state.heading_repair.status, "unavailable")
         self.assertEqual(state.audit.warning_count, 0)
@@ -218,7 +700,7 @@ class QualityStateServiceTests(unittest.TestCase):
         self.assertEqual([alert.code for alert in state.alerts], ["validation_failed", "size_budget_failed"])
 
     def test_raw_conversion_payload_shape_is_normalized_without_flattening(self) -> None:
-        request = ConversionQualityStateRequest.from_job_payload(
+        request = self._request_from_job_payload(
             {
                 "status": "ready",
                 "source_type": "pdf",
@@ -348,7 +830,7 @@ class QualityStateServiceTests(unittest.TestCase):
                 "error": "Skipped for diagram-heavy training book to avoid noisy TOC churn.",
             },
         )
-        request = ConversionQualityStateRequest.from_job_payload(
+        request = self._request_from_job_payload(
             {
                 "status": "ready",
                 "source_type": "pdf",
@@ -407,7 +889,7 @@ class QualityStateServiceTests(unittest.TestCase):
                 "error": "Skipped for diagram-heavy training book to avoid TOC churn.",
             },
         )
-        request = ConversionQualityStateRequest.from_job_payload(
+        request = self._request_from_job_payload(
             {
                 "status": "ready",
                 "source_type": "pdf",

@@ -10,7 +10,9 @@ from lxml import etree
 
 from epub_heading_repair import (
     _build_toc_entries_from_scan,
+    _evaluate_heading_gate_after_rebuild,
     _filter_resolved_manual_review_items,
+    _is_suspicious_final_heading_text,
     repair_epub_headings_and_toc,
     run_heading_repair_pipeline,
 )
@@ -645,6 +647,301 @@ class EpubHeadingRepairTests(unittest.TestCase):
         self.assertNotIn("Figure 4: Revenue overview", toc_labels)
         self.assertNotIn("Page 12", toc_labels)
         self.assertEqual(result.qa["gates"]["C"]["status"], "pass")
+
+    def test_heading_gate_relaxes_h1_cardinality_for_fragment_profiles_only(self):
+        after_scan = {
+            "chapter_001.xhtml": [
+                {"text": "Opening Spread", "level": 1},
+                {"text": "Side Bar", "level": 1},
+            ]
+        }
+
+        strict_gate = _evaluate_heading_gate_after_rebuild(after_scan, publication_profile="book_reflow")
+        relaxed_gate = _evaluate_heading_gate_after_rebuild(after_scan, publication_profile="magazine_reflow")
+
+        self.assertEqual(strict_gate["status"], "fail")
+        self.assertIn("chapter_001.xhtml has 2 H1 headings.", strict_gate["blockers"])
+        self.assertEqual(relaxed_gate["status"], "pass_with_review")
+        self.assertIn("chapter_001.xhtml has 2 H1 headings.", relaxed_gate["warnings"])
+        self.assertEqual(relaxed_gate["blockers"], [])
+
+    def test_repair_epub_headings_and_toc_demotes_leading_metadata_fragments_for_magazine_profile(self):
+        chapter_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Magazine Fragment</title></head>
+  <body>
+    <section>
+      <h1>Kulturtrade</h1>
+      <h1>Budapest</h1>
+      <h1>1994</h1>
+      <h1>Proces</h1>
+      <p>This leading page fragment is extracted from publication front matter and should not become the Kindle navigation structure.</p>
+      <h2>Main Article</h2>
+      <p>The real article has enough supporting prose to be retained as the first navigation target.</p>
+    </section>
+  </body>
+</html>
+"""
+        epub_bytes = self._minimal_epub(chapter_source, nav_label="Kulturtrade")
+
+        with patch(
+            "epub_heading_repair.run_epubcheck",
+            return_value={"status": "passed", "tool": "epubcheck", "messages": []},
+        ):
+            result = repair_epub_headings_and_toc(
+                epub_bytes,
+                language_hint="en",
+                publication_profile="magazine_reflow",
+            )
+
+        toc_labels = {item["label"] for item in result.toc_mapping}
+        self.assertNotIn("Kulturtrade", toc_labels)
+        self.assertNotIn("Budapest", toc_labels)
+        self.assertNotIn("1994", toc_labels)
+        self.assertNotIn("Proces", toc_labels)
+        self.assertIn("Main Article", toc_labels)
+        self.assertNotEqual(result.summary["release_status"], "fail")
+
+    def test_repair_epub_headings_and_toc_rejects_magazine_toc_noise_candidates(self):
+        chapter_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Magazine Feature</title></head>
+  <body>
+    <section>
+      <h1 id="magazine-feature">Magazine Feature</h1>
+      <p>The feature opening has enough editorial support to remain the primary navigation target.</p>
+      <h2 id="co-to-jest">Co to jest</h2>
+      <p>A repeated schema label should remain readable body text, not navigation.</p>
+      <h2 id="jak-dziala">Jak działa</h2>
+      <p>A second generic explainer label should not enter the Kindle TOC.</p>
+      <h2 id="proces-a">Proces</h2>
+      <p>Generic magazine box labels can repeat across articles.</p>
+      <h2 id="proces-b">Proces</h2>
+      <p>The duplicate label is especially low-value in navigation.</p>
+      <h2 id="proces-jak-dziala">Proces Jak działa</h2>
+      <p>Composite schema labels are still generic magazine navigation noise.</p>
+      <h2 id="implikacje-duplicate">Implikacje biznesowe Implikacje biznesowe</h2>
+      <p>Repeated schema labels are not useful navigation targets.</p>
+      <h2 id="przyklad">Przykład</h2>
+      <p>Another generic schema label.</p>
+      <h2 id="rys-caption">Rys. 4. Mapa procesu</h2>
+      <p>Caption-like headings should be demoted.</p>
+      <h2 id="pic-caption">Pic. 5: Product view</h2>
+      <p>English picture captions should be demoted too.</p>
+      <h2 id="source-caption">Źródło: oprogramowanie Hadrone PPM.</h2>
+      <p>Source captions should not become navigation.</p>
+      <h2 id="team-page">Poznaj nasz zespół</h2>
+      <p>Masthead pages stay readable without becoming main Kindle navigation.</p>
+      <h2 id="team-role">Lider Zespołu Anna Nowak</h2>
+      <p>Editorial role fragments are not article structure.</p>
+      <h2 id="continuation-fragment">na papierze, gaszenie pożarów w praktyce</h2>
+      <p>Continuation fragments should be demoted.</p>
+      <h2 id="newsletter-promo">Dołącz do społeczności Strefy PMI – zapisz się do naszego newslettera!</h2>
+      <p>House newsletter promo headings should not be Kindle navigation.</p>
+      <h2 id="newsletter-benefit">4. Specjalne zniżki – Newsletter daje Ci dostęp do rabatów</h2>
+      <p>Newsletter benefit bullets should not be navigation.</p>
+      <h2 id="surname-fragment">Kowalski</h2>
+      <h3 id="role-fragment">CEO</h3>
+      <p>Byline fragments are not article structure.</p>
+      <h2 id="generic-suffix">Jak wykorzystywac scoring projektow? - Co to jest</h2>
+      <p>Generic suffixes should be removed from otherwise real article titles.</p>
+      <h2 id="author-tail">Kiedy projekt nie rusza do przodu – 5 barier, które blokują zmiany — Jarosław Rubin,</h2>
+      <p>Author tails should not pollute the visible TOC label.</p>
+      <h2 id="market-signals">Market Signals</h2>
+      <p>The real subsection has enough content to remain useful in the TOC.</p>
+    </section>
+  </body>
+</html>
+"""
+        epub_bytes = self._minimal_epub(chapter_source, nav_label="Magazine Feature")
+
+        with patch(
+            "epub_heading_repair.run_epubcheck",
+            return_value={"status": "passed", "tool": "epubcheck", "messages": []},
+        ):
+            result = repair_epub_headings_and_toc(
+                epub_bytes,
+                language_hint="pl",
+                publication_profile="magazine_reflow",
+            )
+
+        toc_labels = [item["label"] for item in result.toc_mapping]
+        self.assertIn("Magazine Feature", toc_labels)
+        self.assertIn("Market Signals", toc_labels)
+        self.assertNotIn("Co to jest", toc_labels)
+        self.assertNotIn("Jak działa", toc_labels)
+        self.assertNotIn("Proces", toc_labels)
+        self.assertNotIn("Proces Jak działa", toc_labels)
+        self.assertNotIn("Implikacje biznesowe Implikacje biznesowe", toc_labels)
+        self.assertNotIn("Przykład", toc_labels)
+        self.assertNotIn("Rys. 4. Mapa procesu", toc_labels)
+        self.assertNotIn("Pic. 5: Product view", toc_labels)
+        self.assertNotIn("Źródło: oprogramowanie Hadrone PPM.", toc_labels)
+        self.assertNotIn("Poznaj nasz zespół", toc_labels)
+        self.assertNotIn("Lider Zespołu Anna Nowak", toc_labels)
+        self.assertNotIn("na papierze, gaszenie pożarów w praktyce", toc_labels)
+        self.assertNotIn("Dołącz do społeczności Strefy PMI – zapisz się do naszego newslettera!", toc_labels)
+        self.assertNotIn("4. Specjalne zniżki – Newsletter daje Ci dostęp do rabatów", toc_labels)
+        self.assertNotIn("Kowalski", toc_labels)
+        self.assertNotIn("CEO", toc_labels)
+        self.assertNotIn("Jak wykorzystywac scoring projektow? - Co to jest", toc_labels)
+        self.assertIn("Kiedy projekt nie rusza do przodu – 5 barier, które blokują zmiany", toc_labels)
+        self.assertNotIn("Kiedy projekt nie rusza do przodu – 5 barier, które blokują zmiany — Jarosław Rubin,", toc_labels)
+        self.assertNotEqual(result.summary["release_status"], "fail")
+
+        with zipfile.ZipFile(io.BytesIO(result.epub_bytes), "r") as archive:
+            chapter = archive.read("EPUB/chapter_001.xhtml").decode("utf-8")
+            nav = archive.read("EPUB/nav.xhtml").decode("utf-8")
+
+        self.assertIn('id="market-signals"', chapter)
+        self.assertIn('<p id="rys-caption">Rys. 4. Mapa procesu</p>', chapter)
+        self.assertNotIn("Pic. 5: Product view", nav)
+
+    def test_repair_epub_headings_and_toc_cleans_magazine_article_title_suffixes(self):
+        chapter_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Magazine Title Cleanup</title></head>
+  <body>
+    <section>
+      <h1 id="generic-suffix">Jak wykorzystywac scoring projektow? - Co to jest</h1>
+      <p>The article opening has enough editorial support to remain navigable.</p>
+      <h1 id="author-tail">Kiedy projekt nie rusza do przodu – 5 barier, które blokują zmiany — Jarosław Rubin,</h1>
+      <p>A second article keeps its title but drops an attached byline.</p>
+    </section>
+  </body>
+</html>
+"""
+        epub_bytes = self._minimal_epub(chapter_source, nav_label="Magazine Title Cleanup")
+
+        with patch(
+            "epub_heading_repair.run_epubcheck",
+            return_value={"status": "passed", "tool": "epubcheck", "messages": []},
+        ):
+            result = repair_epub_headings_and_toc(
+                epub_bytes,
+                language_hint="pl",
+                publication_profile="magazine_reflow",
+            )
+
+        toc_labels = [item["label"] for item in result.toc_mapping]
+        self.assertIn("Jak wykorzystywac scoring projektow?", toc_labels)
+        self.assertNotIn("Jak wykorzystywac scoring projektow? - Co to jest", toc_labels)
+        self.assertIn("Kiedy projekt nie rusza do przodu – 5 barier, które blokują zmiany", toc_labels)
+        self.assertNotIn("Kiedy projekt nie rusza do przodu – 5 barier, które blokują zmiany — Jarosław Rubin,", toc_labels)
+
+    def test_magazine_long_article_title_is_not_blocked_as_table_header(self):
+        title = "Listening to Quiet, Learning When to Speak"
+
+        self.assertFalse(_is_suspicious_final_heading_text(title, publication_profile="magazine_reflow"))
+        self.assertTrue(_is_suspicious_final_heading_text(title))
+
+    def test_repair_epub_headings_and_toc_excludes_magazine_gallery_entries(self):
+        chapter_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Magazine Gallery</title></head>
+  <body>
+    <section>
+      <h1 id="magazine-gallery">Magazine Gallery</h1>
+      <p>The article opening remains a valid navigation target.</p>
+      <h1 id="gallery-a">Gallery</h1>
+      <p>Gallery spreads remain readable but should not become primary navigation waypoints.</p>
+      <h1 id="gallery-b">Gallery</h1>
+      <p>The duplicate gallery spread should not create another TOC entry.</p>
+      <h1 id="field-notes">Field Notes</h1>
+      <p>A real follow-up article heading should remain in navigation.</p>
+    </section>
+  </body>
+</html>
+"""
+        epub_bytes = self._minimal_epub(chapter_source, nav_label="Magazine Gallery")
+
+        with patch(
+            "epub_heading_repair.run_epubcheck",
+            return_value={"status": "passed", "tool": "epubcheck", "messages": []},
+        ):
+            result = repair_epub_headings_and_toc(
+                epub_bytes,
+                language_hint="en",
+                publication_profile="magazine_reflow",
+            )
+
+        toc_labels = [item["label"] for item in result.toc_mapping]
+        self.assertEqual(toc_labels.count("Gallery"), 0)
+        self.assertIn("Magazine Gallery", toc_labels)
+        self.assertIn("Field Notes", toc_labels)
+        self.assertNotEqual(result.summary["release_status"], "fail")
+
+    def test_repair_epub_headings_and_toc_demotes_training_frontmatter_fragments(self):
+        chapter_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Training Fragment</title></head>
+  <body>
+    <section>
+      <h1>Foreword</h1>
+      <p>The foreword introduction should remain a readable section.</p>
+      <h2>Jak dziala</h2>
+      <p>Short extracted labels from page fragments should not become top-level navigation.</p>
+      <h3>I wish to thank Konemann Verlag for</h3>
+      <p>making publication possible; this is prose extracted with heading-like styling.</p>
+      <h3>Kulturtrade</h3>
+      <p>Budapest, 1994</p>
+      <h3>Lazslo Polgar's Chessoffers an abun-</h3>
+      <h3>to</h3>
+      <h1>Chapter 1 - Mates</h1>
+      <p>The real training chapter remains a valid navigation target.</p>
+    </section>
+  </body>
+</html>
+"""
+        epub_bytes = self._minimal_epub(chapter_source, nav_label="Foreword")
+
+        with patch(
+            "epub_heading_repair.run_epubcheck",
+            return_value={"status": "passed", "tool": "epubcheck", "messages": []},
+        ):
+            result = repair_epub_headings_and_toc(
+                epub_bytes,
+                language_hint="en",
+                publication_profile="diagram_book_reflow",
+            )
+
+        toc_labels = {item["label"] for item in result.toc_mapping}
+        self.assertIn("Foreword", toc_labels)
+        self.assertIn("Chapter 1 - Mates", toc_labels)
+        self.assertNotIn("Jak dziala", toc_labels)
+        self.assertNotIn("I wish to thank Konemann Verlag for", toc_labels)
+        self.assertNotIn("Kulturtrade", toc_labels)
+        self.assertNotIn("Budapest, 1994", toc_labels)
+        self.assertNotIn("Lazslo Polgar's Chessoffers an abun-", toc_labels)
+        self.assertNotIn("to", toc_labels)
+        self.assertNotEqual(result.summary["release_status"], "fail")
+
+    def test_repair_epub_headings_and_toc_keeps_epubcheck_failure_blocking_for_relaxed_profiles(self):
+        chapter_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Training Fragment</title></head>
+  <body>
+    <section>
+      <h1>Exercise Set</h1>
+      <p>Training content with a valid anchor should still fail release when EPUBCheck fails.</p>
+    </section>
+  </body>
+</html>
+"""
+        epub_bytes = self._minimal_epub(chapter_source, nav_label="Exercise Set")
+
+        with patch(
+            "epub_heading_repair.run_epubcheck",
+            return_value={"status": "failed", "tool": "epubcheck", "messages": ["broken anchor"]},
+        ):
+            result = repair_epub_headings_and_toc(
+                epub_bytes,
+                language_hint="en",
+                publication_profile="diagram_book_reflow",
+            )
+
+        self.assertEqual(result.summary["release_status"], "fail")
+        self.assertEqual(result.qa["gates"]["F"]["status"], "fail")
 
 
 if __name__ == "__main__":

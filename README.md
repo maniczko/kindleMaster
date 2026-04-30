@@ -21,6 +21,8 @@ The supported toolchain matrix lives in [docs/toolchain-matrix.md](docs/toolchai
 - `kindlemaster.py` is the executable source of truth for the CLI command surface, including subcommands, flags, defaults, and exit behavior.
 - `AGENTS.md` is the canonical human-readable authority map for standard command policy, workflow artifacts, and which docs are authoritative versus derived.
 - `docs/toolchain-matrix.md` is authoritative for supported local toolchains and `test --suite` lane expectations.
+- `docs/product-scope.md` is authoritative for the v1 product boundary, benchmark classification, and Score 9 product criteria.
+- `docs/v2-reader-workflow-roadmap.md` defines deferred v2 Send-to-Kindle, notes/highlights, and Obsidian/Readwise export workflows without changing the v1 release-grade converter scope.
 - `docs/local-bootstrap-toolchain.md` is the operator runbook for setup, `doctor`, and environment-versus-quality failure classification.
 - `docs/conversion-pipeline.md` maps the current PDF/DOCX to EPUB pipeline, responsible modules, fallback reporting, and stage-level tests.
 - `docs/source-of-truth-matrix.md` mirrors the control-plane authority model for status, Linear, reports, and release truth.
@@ -56,6 +58,7 @@ The supported first-class command set is `bootstrap`, `doctor`, `prepare-referen
 python kindlemaster.py doctor
 python kindlemaster.py prepare-reference-inputs
 python kindlemaster.py convert path\to\input.docx --output output\result.epub
+python kindlemaster.py smoke --mode micro
 python kindlemaster.py smoke --mode quick
 python kindlemaster.py corpus
 python kindlemaster.py status
@@ -65,6 +68,8 @@ python kindlemaster.py audit path\to\file.epub
 python kindlemaster.py workflow baseline path\to\input.pdf --change-area reference
 python kindlemaster.py workflow verify path\to\input.pdf --run-id <run_id>
 ```
+
+`python kindlemaster.py test --suite full` is a diagnostic all-discovery lane. It delegates to `unittest discover -p test*.py`, so it also runs tests intentionally kept out of the explicit `quick`, `release`, `corpus`, `browser`, and `runtime` suite registry.
 
 Use `workflow baseline/verify` when you are fixing a real defect and need the standard engineering loop:
 `reproduce -> isolate -> fix -> validate -> compare before/after`.
@@ -87,6 +92,7 @@ Use [docs/independent-audit-mode.md](docs/independent-audit-mode.md) when evalua
 
 - `quick` should remain Python-only. If it starts failing on browser dependencies, check that `kindlemaster.py` still excludes browser suites from `QUICK_TESTS`.
 - `corpus` is the standard rerunnable proof lane for the expanded fixture bank; it runs full smoke plus premium corpus reporting and writes derived status under `reports/corpus/`.
+- `full` is diagnostic all-discovery, not a bounded release gate. Prefer explicit suites for routine validation and use `full` when you need to expose hidden or discover-only test drift.
 - `status` reads existing evidence under `reports/` and generates one derived project status instead of another hand-maintained summary.
 - `browser` requires Python Playwright and Chromium, but it does not need the live Waitress gate.
 - `runtime` requires Playwright plus Waitress because it exercises the live HTTP flow before browser smoke.

@@ -789,6 +789,12 @@ Standard smoke command:
 python kindlemaster.py smoke --mode quick
 ```
 
+Fast inner-loop smoke command:
+
+```powershell
+python kindlemaster.py smoke --mode micro
+```
+
 DOCX smoke is part of the standard corpus. At minimum keep one quick DOCX fixture and one richer DOCX fixture with tables/lists/images.
 
 Standard corpus-wide proof command:

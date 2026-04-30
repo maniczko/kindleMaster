@@ -22,7 +22,7 @@ MULTISPACE_RE = re.compile(r"\s{2,}")
 PAGE_NUMBER_RE = re.compile(r"^\d{1,4}$")
 TOC_ENTRY_RE = re.compile(r"^\d{1,3}\s*/\s+.+")
 HOUSE_AD_RE = re.compile(
-    r"(?i)\b(?:subskrybuj|prenumerat|zamĂłw|zamow|kup teraz|wydanie specjalne|szukaj w salonach|w numerze m\.?\s*in\.?)\b"
+    r"(?i)\b(?:subskrybuj|subskrypcj|newsletter|prenumerat|zamĂłw|zamow|kup teraz|wydanie specjalne|szukaj w salonach|w numerze m\.?\s*in\.?)\b"
 )
 INLINE_AD_LABEL_RE = re.compile(
     r"(?i)^(?:reklama|materiaĹ‚ sponsorowany|material sponsorowany|partner wydania|partner projektu)\b"
@@ -134,7 +134,7 @@ def convert_magazine_to_kindle_reflow(pdf_path: str, config: ConversionConfig | 
     pages = [_extract_page_model(doc, page_index, config) for page_index in range(len(doc))]
     toc_entries = _build_toc_entries(pages)
     toc_title_map = {entry["page_label"]: entry["title"] for entry in toc_entries if entry.get("page_label")}
-    chapters = _group_pages_into_articles(pages, toc_title_map=toc_title_map)
+    chapters = _coalesce_fragile_chapters(_group_pages_into_articles(pages, toc_title_map=toc_title_map))
     chapter_title_map = _resolve_chapter_titles(chapters, toc_entries=toc_entries, toc_title_map=toc_title_map)
 
     cover_image = _extract_cover_image(doc, config)
@@ -159,7 +159,7 @@ def convert_magazine_to_kindle_reflow(pdf_path: str, config: ConversionConfig | 
         if all(page.is_toc for page in chapter_pages):
             chapter_title = "Spis treści"
             html_parts.extend(_render_structured_toc(toc_entries))
-        elif chapter_kind in {"advertisement", "sponsored", "gallery"}:
+        elif chapter_kind in {"advertisement", "sponsored", "gallery", "newsletter"}:
             for page in chapter_pages:
                 if page.page_label:
                     html_parts.append(
@@ -194,6 +194,7 @@ def convert_magazine_to_kindle_reflow(pdf_path: str, config: ConversionConfig | 
                     "html_parts": html_parts,
                     "images": [],
                     "_kind": chapter_kind,
+                    "toc_excluded": _chapter_should_be_toc_excluded(chapter_kind),
                     "_audit": _build_chapter_audit(chapter_pages, chapter_title, chapter_kind, toc_title_map),
                 }
             )
@@ -208,6 +209,8 @@ def convert_magazine_to_kindle_reflow(pdf_path: str, config: ConversionConfig | 
         "metadata": {
             **pdf_metadata,
             "inferred_publication_title": _infer_publication_title(pages, pdf_metadata),
+            "author": _infer_publication_creator(pages, pdf_metadata),
+            "publisher": _infer_publication_creator(pages, pdf_metadata),
         },
         "images": images,
         "chapters": content_chapters,
@@ -413,6 +416,27 @@ def _looks_like_house_ad_page(
     if image_blocks and promo_blocks >= 1 and not _has_substantial_editorial_text(text_blocks, model):
         return True
     return False
+
+
+def _looks_like_newsletter_page(page_text: str) -> bool:
+    normalized = _normalize_text(page_text).lower()
+    if "newsletter" not in normalized:
+        return False
+    promo_hits = sum(
+        1
+        for token in (
+            "zapisz",
+            "subskryb",
+            "dolacz",
+            "dołącz",
+            "rabat",
+            "znizk",
+            "zniżk",
+            "e-mail",
+        )
+        if token in normalized
+    )
+    return promo_hits >= 2
 
 
 def _assign_page_roles(model: PageModel) -> None:
@@ -719,7 +743,7 @@ def _optimize_image(raw: bytes, ext: str, config: ConversionConfig) -> tuple[byt
         if width > max_width or height > max_height:
             image.thumbnail((max_width, max_height), Image.LANCZOS)
         buffer = io.BytesIO()
-        image.save(buffer, format="JPEG", quality=max(config.image_quality, 78), optimize=True, progressive=True)
+        image.save(buffer, format="JPEG", quality=max(config.image_quality, 78), optimize=True, progressive=False)
         return buffer.getvalue(), "jpeg"
     except Exception:
         fallback_ext = "png" if ext == "png" else "jpeg"
@@ -782,6 +806,8 @@ def _coalesce_fragile_chapters(chapters: list[list[PageModel]]) -> list[list[Pag
     while index < len(chapters):
         chapter_pages = chapters[index]
         chapter_kind = _infer_chapter_kind(chapter_pages)
+        next_pages = chapters[index + 1] if index + 1 < len(chapters) else []
+        next_kind = _infer_chapter_kind(next_pages) if next_pages else ""
 
         if chapter_kind in {"article", "interview"} and _is_placeholder_chapter(chapter_pages):
             next_index = index + 1
@@ -800,6 +826,17 @@ def _coalesce_fragile_chapters(chapters: list[list[PageModel]]) -> list[list[Pag
                     merged[-1] = previous_pages + chapter_pages
                     index += 1
                     continue
+
+        if (
+            chapter_kind in {"article", "interview"}
+            and next_pages
+            and next_kind in {"article", "interview"}
+            and _chapter_tail_looks_incomplete(chapter_pages)
+            and not _has_strong_chapter_title(next_pages)
+        ):
+            chapters[index + 1] = chapter_pages + next_pages
+            index += 1
+            continue
 
         merged.append(chapter_pages)
         index += 1
@@ -829,6 +866,73 @@ def _is_placeholder_chapter(chapter_pages: list[PageModel]) -> bool:
     )
     return text_chars <= 2200
 
+
+def _has_strong_chapter_title(chapter_pages: list[PageModel]) -> bool:
+    title = _pick_chapter_title(chapter_pages, fallback="", toc_title_map={}, chapter_kind=_infer_chapter_kind(chapter_pages))
+    return _classify_title_quality(title) == "strong"
+
+
+def _chapter_tail_looks_incomplete(chapter_pages: list[PageModel]) -> bool:
+    tail = _last_editorial_text(chapter_pages)
+    if not tail:
+        return False
+    normalized = _normalize_text(tail).strip()
+    if not normalized:
+        return False
+    if normalized.endswith((".", "!", "?", ":", ";", ")", "]", "”", "\"", "'")):
+        return False
+    if normalized.endswith(("-", "‐", "‑", "–", "—")):
+        return True
+    words = normalized.split()
+    if not words:
+        return False
+    last_word = words[-1].strip(" ,")
+    if len(last_word) <= 2:
+        return True
+    return last_word.lower() in {
+        "a",
+        "aby",
+        "albo",
+        "and",
+        "because",
+        "bo",
+        "by",
+        "czy",
+        "dla",
+        "do",
+        "gdy",
+        "i",
+        "if",
+        "jak",
+        "kiedy",
+        "or",
+        "oraz",
+        "that",
+        "the",
+        "to",
+        "w",
+        "with",
+        "z",
+        "za",
+        "ze",
+        "że",
+    }
+
+
+def _last_editorial_text(chapter_pages: list[PageModel]) -> str:
+    for page in reversed(chapter_pages):
+        for block in reversed(page.blocks):
+            if block.kind != "text" or block.role in {"title", "section", "toc-entry", "byline"}:
+                continue
+            text = _normalize_text(block.text)
+            if text:
+                return text
+    return ""
+
+
+def _chapter_should_be_toc_excluded(chapter_kind: str) -> bool:
+    return chapter_kind in {"advertisement", "sponsored", "gallery", "newsletter", "contents"}
+
 def _pick_chapter_title(
     chapter_pages: list[PageModel],
     fallback: str,
@@ -846,6 +950,8 @@ def _pick_chapter_title(
         return _label_special_section("Materiał sponsorowany", chapter_pages)
     if chapter_kind == "gallery":
         return _label_special_section("Galeria", chapter_pages)
+    if chapter_kind == "newsletter":
+        return _label_special_section("Newsletter", chapter_pages)
     toc_title_map = toc_title_map or {}
     start_label = chapter_pages[0].page_label if chapter_pages else None
     mapped_title = toc_title_map.get(start_label or "")
@@ -1024,6 +1130,8 @@ def _classify_page_content(
     )
     if _looks_like_house_ad_page(text_blocks, image_blocks, model):
         return "sponsored"
+    if _looks_like_newsletter_page(page_text) and not substantial_editorial:
+        return "newsletter"
     if model.is_ad_like and not substantial_editorial:
         return "advertisement"
     if (SPONSORED_RE.search(page_text) or sponsored_hits >= 2) and not substantial_editorial:
@@ -1043,13 +1151,14 @@ def _classify_title_quality(title: str | None) -> str:
     normalized = _clean_article_title(title)
     if not normalized:
         return "missing"
-    if normalized in {"Okładka", "Spis treści", "Reklama", "Galeria"}:
+    if normalized in {"Okładka", "Spis treści", "Reklama", "Galeria", "Newsletter"}:
         return "strong"
     if (
         normalized.startswith("Reklama ")
         or normalized.startswith("Materiał sponsorowany")
         or normalized.startswith("Material sponsorowany")
         or normalized.startswith("Galeria ")
+        or normalized.startswith("Newsletter ")
     ):
         return "strong"
     if re.fullmatch(r"(?i)(artykuł|sekcja|rozdział)\s+\d+", normalized):
@@ -1081,13 +1190,13 @@ def _page_starts_new_article(
     toc_title_map: dict[str, str],
 ) -> bool:
     if not current:
-        return page.title is not None or page.page_label in toc_title_map or page.content_type in {"advertisement", "sponsored", "gallery", "interview"}
+        return page.title is not None or page.page_label in toc_title_map or page.content_type in {"advertisement", "sponsored", "gallery", "newsletter", "interview"}
     previous = current[-1]
     if page.page_label and page.page_label in toc_title_map:
         return True
-    if page.content_type != previous.content_type and page.content_type in {"advertisement", "sponsored", "gallery", "interview"}:
+    if page.content_type != previous.content_type and page.content_type in {"advertisement", "sponsored", "gallery", "newsletter", "interview"}:
         return True
-    if previous.content_type in {"advertisement", "sponsored", "gallery"}:
+    if previous.content_type in {"advertisement", "sponsored", "gallery", "newsletter"}:
         return True
     if page.title and page.title != previous.title:
         return True
@@ -1108,6 +1217,8 @@ def _infer_chapter_kind(chapter_pages: list[PageModel]) -> str:
         return "sponsored"
     if "gallery" in kinds and len(kinds) == 1:
         return "gallery"
+    if "newsletter" in kinds and len(kinds) == 1:
+        return "newsletter"
     if "interview" in kinds:
         return "interview"
     return "article"
@@ -1123,6 +1234,7 @@ def _normalize_magazine_title(text: str) -> str:
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" -–—:")
     if not cleaned:
         return ""
+    cleaned = _strip_magazine_title_suffixes(cleaned)
     tokens = cleaned.split()
     if any(len(token) == 1 for token in tokens):
         letter_tokens = [token for token in tokens if re.search(rf"[{POLISH_LETTERS}]", token)]
@@ -1140,6 +1252,21 @@ def _ascii_key(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", ascii_only.lower()).strip()
 
 
+def _strip_magazine_title_suffixes(text: str) -> str:
+    cleaned = _normalize_text(text)
+    cleaned = re.sub(
+        r"(?i)\s+[-–—]\s*(?:co\s+to\s+jest|jak\s+dzia[łl]a|implikacje\s+biznesowe|przyk[łl]ad|proces)\s*$",
+        "",
+        cleaned,
+    ).strip(" -:;,.")
+    cleaned = re.sub(
+        r"\s+[–—]\s*(?:[^\W\d_][\w'.-]+(?:\s+[^\W\d_][\w'.-]+){0,2}),?\s*$",
+        "",
+        cleaned,
+    ).strip(" -:;,.")
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
 def _clean_article_title(text: str) -> str:
     cleaned = _normalize_magazine_title(text)
     if not cleaned:
@@ -1147,6 +1274,7 @@ def _clean_article_title(text: str) -> str:
     if cleaned.lower().startswith("material sponsorowany -") or cleaned.lower().startswith("materiał sponsorowany -"):
         return re.sub(r"\s+", " ", cleaned).strip(" -–—:")
 
+    cleaned = _strip_magazine_title_suffixes(cleaned)
     split_title, _ = _split_title_and_byline(cleaned)
     cleaned = split_title
 
@@ -1312,7 +1440,7 @@ def _neighbor_resolved_title(
     steps = 0
     while 0 <= probe < len(chapters) and steps < 3:
         kind = _infer_chapter_kind(chapters[probe])
-        if kind in {"advertisement", "sponsored", "gallery", "contents", "cover"}:
+        if kind in {"advertisement", "sponsored", "gallery", "newsletter", "contents", "cover"}:
             probe += direction
             steps += 1
             continue
@@ -1334,7 +1462,7 @@ def _neighbor_candidate_title(
     steps = 0
     while 0 <= probe < len(chapters) and steps < 3:
         kind = _infer_chapter_kind(chapters[probe])
-        if kind in {"advertisement", "sponsored", "gallery", "contents", "cover"}:
+        if kind in {"advertisement", "sponsored", "gallery", "newsletter", "contents", "cover"}:
             probe += direction
             steps += 1
             continue
@@ -1445,13 +1573,16 @@ def _score_page_risk(page: PageModel, chapter_audit: dict) -> int:
         chapter_key = _ascii_key(chapter_title)
         if chapter_title_quality == "strong" or chapter_len > 1 or "ciag dalszy" in chapter_key or "wprowadzenie" in chapter_key:
             return 1
-    if page.content_type in {"gallery", "advertisement", "sponsored"} and only_continuation_flags:
+    if page.content_type in {"gallery", "advertisement", "sponsored", "newsletter"} and only_continuation_flags:
         return 1
     return score
 
 
 def _infer_publication_title(pages: list[PageModel], pdf_metadata: dict) -> str:
     metadata_title = (pdf_metadata.get("title") or "").strip()
+    slug_title = _title_from_issue_slug(metadata_title)
+    if slug_title:
+        return slug_title
     if metadata_title and not re.fullmatch(r"[0-9A-Fa-f]{12,}", metadata_title):
         return metadata_title
 
@@ -1470,6 +1601,59 @@ def _infer_publication_title(pages: list[PageModel], pdf_metadata: dict) -> str:
                 counter[match.title()] += 3
     best = counter.most_common(1)
     return best[0][0] if best else (metadata_title or "Magazyn")
+
+
+def _title_from_issue_slug(value: str) -> str:
+    normalized = _normalize_text(value or "").strip()
+    if not normalized:
+        return ""
+    slug = normalized.lower().replace("_", "-")
+    match = re.fullmatch(r"(?P<name>[a-z0-9]+(?:-[a-z0-9]+)*?)-(?P<issue>\d{1,4})-(?P<year>20\d{2})", slug)
+    if not match:
+        return ""
+    raw_name = match.group("name")
+    name = " ".join(_title_token(token) for token in raw_name.split("-") if token)
+    return f"{name} {match.group('issue')}/{match.group('year')}".strip()
+
+
+def _title_token(token: str) -> str:
+    if token.lower() in {"ai", "api", "it", "pmi", "pm", "ux", "ui"}:
+        return token.upper()
+    return token.capitalize()
+
+
+def _infer_publication_creator(pages: list[PageModel], pdf_metadata: dict) -> str:
+    explicit_author = _normalize_text(str(pdf_metadata.get("author") or ""))
+    if explicit_author and not _looks_like_weak_magazine_creator(explicit_author):
+        return explicit_author
+
+    scan_text = " ".join(
+        _normalize_text(block.text)
+        for page in pages[:4]
+        for block in page.blocks
+        if block.kind == "text"
+    )
+    match = re.search(
+        r"(?i)\b(project\s+management\s+institute\s+poland\s+chapter)\b",
+        scan_text,
+    )
+    if match:
+        return "Project Management Institute Poland Chapter"
+
+    organization_match = re.search(
+        r"\b([A-Z][A-Z& ]{8,}?(?:CHAPTER|INSTITUTE|FOUNDATION|ASSOCIATION|MAGAZINE|PRESS))\b",
+        scan_text,
+    )
+    if organization_match:
+        return organization_match.group(1).title()
+    return ""
+
+
+def _looks_like_weak_magazine_creator(value: str) -> bool:
+    normalized = _normalize_text(value or "")
+    if not normalized or normalized.lower() == "unknown":
+        return True
+    return bool(re.search(r"(?i)\b(?:redaktor|z-ca|zast[ęe]pca|koordynator|editor|adobe|indesign)\b", normalized))
 
 
 def _render_toc_page(page: PageModel) -> list[str]:
@@ -1690,6 +1874,7 @@ def _render_special_layout_page(
         "advertisement": "Reklama",
         "sponsored": "Materiał sponsorowany",
         "gallery": "Galeria",
+        "newsletter": "Newsletter",
     }.get(chapter_kind, chapter_title or "Strona specjalna")
     figure_class = "figure magazine-special"
     html_parts = [
@@ -1845,23 +2030,28 @@ def _extract_cover_image(doc: fitz.Document, config: ConversionConfig) -> dict |
     if not len(doc):
         return None
     first_page = doc[0]
-    page_dict = first_page.get_text("dict")
-    for block in page_dict.get("blocks", []):
-        if block.get("type") != 1:
-            continue
-        raw = block.get("image")
-        if not raw:
-            continue
-        data, ext = _optimize_image(raw, (block.get("ext") or "jpeg").lower(), config)
-        return {
-            "filename": f"cover_source.{ext}",
-            "extension": ext,
-            "data": data,
-        }
-    pix = first_page.get_pixmap(matrix=fitz.Matrix(1.35, 1.35), alpha=False)
-    data, ext = _optimize_image(pix.tobytes("png"), "png", config)
+    scale = max(1.35, min(2.4, 1600.0 / max(float(first_page.rect.height), 1.0)))
+    pix = first_page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+    data, ext = _optimize_cover_image(pix.tobytes("png"), config)
     return {
         "filename": f"cover_source.{ext}",
         "extension": ext,
         "data": data,
     }
+
+
+def _optimize_cover_image(raw: bytes, config: ConversionConfig) -> tuple[bytes, str]:
+    try:
+        image = Image.open(io.BytesIO(raw))
+        if image.mode not in {"RGB", "L"}:
+            image = image.convert("RGB")
+        width, height = image.size
+        max_height = max(1600, int(config.image_max_height or 0))
+        max_width = max(1000, int(config.image_max_width or 0))
+        if width > max_width or height > max_height:
+            image.thumbnail((max_width, max_height), Image.LANCZOS)
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG", quality=max(config.image_quality, 82), optimize=True, progressive=False)
+        return buffer.getvalue(), "jpeg"
+    except Exception:
+        return raw, "jpeg"

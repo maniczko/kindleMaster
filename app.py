@@ -30,7 +30,36 @@ from app_runtime_services import (
     run_document_conversion,
     serve_http_app,
 )
+from conversion_api_contracts import (
+    ConversionDownloadState,
+    ERROR_MISSING_OUTPUT,
+    ERROR_QUEUE_FAILED,
+    ERROR_UNSUPPORTED_REPORT_FORMAT,
+    ERROR_UPLOAD_FAILED,
+    apply_no_store_headers,
+    build_json_error_payload,
+    resolve_conversion_download_state,
+)
+from conversion_jobs import (
+    ACTIVE_CONVERSION_JOB_STATUSES,
+    DEFAULT_CONVERSION_QUEUE_POLICY,
+    TERMINAL_CONVERSION_JOB_STATUSES,
+    build_timed_out_job_fields,
+    compute_job_elapsed_seconds as lifecycle_compute_job_elapsed_seconds,
+    compute_job_history_elapsed_seconds as lifecycle_compute_job_history_elapsed_seconds,
+    count_active_conversion_jobs,
+    is_active_conversion_status,
+    recommended_poll_interval_ms as lifecycle_recommended_poll_interval_ms,
+    should_timeout_job,
+)
+from conversion_library import (
+    LibraryFilters,
+    build_library_index,
+    build_quality_report_payload,
+    render_quality_report_markdown,
+)
 from flask import Flask, request, jsonify, render_template, send_file
+from werkzeug.exceptions import RequestEntityTooLarge
 from converter import convert_document_to_epub_with_report, detect_pdf_type
 from docx_conversion import analyze_docx
 from epub_heading_repair import repair_epub_headings_and_toc
@@ -44,11 +73,15 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 DEFAULT_CONVERSION_POLL_INTERVAL_MS = 1500
 MAX_CONVERSION_POLL_INTERVAL_MS = 5000
+DEFAULT_CONVERSION_JOB_HISTORY_LIMIT = 25
+MAX_CONVERSION_JOB_HISTORY_LIMIT = 100
 OVERSIZED_EPUB_WARNING_BYTES = 25 * 1024 * 1024
 CONVERSION_JOB_RETENTION_SECONDS = 6 * 60 * 60
 CONVERSION_TEMP_FILE_RETENTION_SECONDS = 12 * 60 * 60
 CONVERSION_CLEANUP_MIN_INTERVAL_SECONDS = 60
-ACTIVE_CONVERSION_JOB_STATUSES = {"queued", "running", "repairing_headings"}
+MAX_ACTIVE_CONVERSION_JOBS = DEFAULT_CONVERSION_QUEUE_POLICY.max_active_jobs
+MAX_CONVERSION_JOB_RUNTIME_SECONDS = DEFAULT_CONVERSION_QUEUE_POLICY.max_runtime_seconds
+MAX_CONVERSION_JOB_STALE_SECONDS = DEFAULT_CONVERSION_QUEUE_POLICY.max_stale_seconds
 _CONVERSION_JOBS: dict[str, dict] = {}
 _CONVERSION_JOBS_LOCK = threading.Lock()
 _CONVERSION_JOB_STORE = ConversionJobStore(
@@ -59,6 +92,73 @@ _CONVERSION_JOB_STORE = ConversionJobStore(
 )
 _CONVERSION_JOB_STORE.load()
 _LAST_CONVERSION_CLEANUP_AT: datetime | None = None
+
+
+def _json_error(
+    message: str,
+    *,
+    error_code: str,
+    status_code: int,
+    phase: str,
+    job_id: str | None = None,
+    retryable: bool = False,
+):
+    payload = build_json_error_payload(
+        message,
+        error_code=error_code,
+        phase=phase,
+        job_id=job_id,
+        retryable=retryable,
+    )
+    response = jsonify(payload)
+    response.status_code = status_code
+    apply_no_store_headers(response.headers)
+    return response
+
+
+def _log_conversion_event(
+    event: str,
+    *,
+    level: str = "info",
+    job_id: str = "",
+    phase: str = "",
+    status: str = "",
+    error_code: str = "",
+    safe_message: str = "",
+    source_type: str = "",
+    elapsed_seconds: int | None = None,
+    output_size_bytes: int | None = None,
+    exception_class: str = "",
+) -> dict:
+    payload = {
+        "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "event": event,
+        "job_id": job_id,
+        "phase": phase,
+        "status": status,
+        "error_code": error_code,
+        "safe_message": safe_message,
+        "source_type": source_type,
+    }
+    if elapsed_seconds is not None:
+        payload["elapsed_seconds"] = elapsed_seconds
+    if output_size_bytes is not None:
+        payload["output_size_bytes"] = output_size_bytes
+    if exception_class:
+        payload["exception_class"] = exception_class
+    logger = getattr(app.logger, level, app.logger.info)
+    logger(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+    return payload
+
+
+@app.errorhandler(RequestEntityTooLarge)
+def _handle_oversized_upload(error):
+    return _json_error(
+        "Plik jest zbyt duzy dla lokalnego limitu uploadu.",
+        error_code=ERROR_UPLOAD_FAILED,
+        status_code=413,
+        phase="upload",
+    )
 
 
 def _encode_header_payload(payload, *, limit: int = 20) -> str:
@@ -121,10 +221,22 @@ def _apply_conversion_headers(response, metadata: dict) -> None:
         response.headers["X-Heading-Repair-Error"] = quote(str(heading_repair.get("error", "")))
 
 
-def _job_download_url(job_id: str, job: dict) -> str | None:
+def _candidate_job_download_url(job_id: str, job: dict) -> str | None:
     if job.get("status") == "ready":
         return f"/convert/download/{job_id}"
     return None
+
+
+def _build_job_download_state(job_id: str, job: dict) -> ConversionDownloadState:
+    return resolve_conversion_download_state(
+        job_status=job.get("status"),
+        output_path=job.get("output_path", ""),
+        download_url=_candidate_job_download_url(job_id, job),
+    )
+
+
+def _job_download_url(job_id: str, job: dict) -> str | None:
+    return _build_job_download_state(job_id, job).download_url
 
 
 def _build_job_quality_state(job_id: str, job: dict) -> dict:
@@ -132,9 +244,10 @@ def _build_job_quality_state(job_id: str, job: dict) -> dict:
     output_size_bytes = _read_output_size_bytes(job)
     if output_size_bytes is not None:
         payload["output_size_bytes"] = output_size_bytes
+    payload["output_path_exists"] = _build_job_download_state(job_id, job).output_path_exists
     return build_conversion_quality_state(
         payload,
-        download_url=_job_download_url(job_id, job),
+        download_url=_candidate_job_download_url(job_id, job),
     )
 
 
@@ -169,29 +282,15 @@ def _parse_job_timestamp(value: str | None) -> datetime | None:
 
 
 def _compute_job_elapsed_seconds(job: dict) -> int | None:
-    created_at = _parse_job_timestamp(job.get("created_at"))
-    if not created_at:
-        return None
-    return max(0, int((datetime.now(UTC) - created_at).total_seconds()))
+    return lifecycle_compute_job_elapsed_seconds(job)
+
+
+def _compute_job_history_elapsed_seconds(job: dict) -> int | None:
+    return lifecycle_compute_job_history_elapsed_seconds(job)
 
 
 def _recommended_poll_interval_ms(job: dict) -> int:
-    status = str(job.get("status", "queued") or "queued")
-    if status in {"ready", "failed"}:
-        return 0
-
-    elapsed_seconds = _compute_job_elapsed_seconds(job) or 0
-    if status == "queued":
-        return 1200
-    if status == "running":
-        return MAX_CONVERSION_POLL_INTERVAL_MS
-    if elapsed_seconds >= 240:
-        return MAX_CONVERSION_POLL_INTERVAL_MS
-    if elapsed_seconds >= 120:
-        return 3500
-    if elapsed_seconds >= 45 or status == "repairing_headings":
-        return 2500
-    return DEFAULT_CONVERSION_POLL_INTERVAL_MS
+    return lifecycle_recommended_poll_interval_ms(job)
 
 
 def _read_output_size_bytes(job: dict) -> int | None:
@@ -202,6 +301,134 @@ def _read_output_size_bytes(job: dict) -> int | None:
     if isinstance(output_size, (int, float)):
         return max(0, int(output_size))
     return None
+
+
+def _conversion_job_sort_timestamp(job: dict) -> datetime:
+    timestamp = _parse_job_timestamp(job.get("updated_at")) or _parse_job_timestamp(job.get("created_at"))
+    if timestamp:
+        return timestamp
+    return datetime.min.replace(tzinfo=UTC)
+
+
+def _resolve_conversion_job_history_limit() -> int:
+    raw_limit = str(request.args.get("limit", "") or "").strip()
+    if not raw_limit:
+        return DEFAULT_CONVERSION_JOB_HISTORY_LIMIT
+    try:
+        limit = int(raw_limit)
+    except ValueError:
+        return DEFAULT_CONVERSION_JOB_HISTORY_LIMIT
+    return max(1, min(limit, MAX_CONVERSION_JOB_HISTORY_LIMIT))
+
+
+def _truthy_query_flag(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_library_filters(*, default_include_text: bool = False) -> LibraryFilters:
+    raw_limit = str(request.args.get("limit", "") or "").strip()
+    try:
+        limit = int(raw_limit) if raw_limit else DEFAULT_CONVERSION_JOB_HISTORY_LIMIT
+    except ValueError:
+        limit = DEFAULT_CONVERSION_JOB_HISTORY_LIMIT
+    include_text = default_include_text or _truthy_query_flag(request.args.get("include_text"))
+    return LibraryFilters(
+        query=str(request.args.get("q", "") or request.args.get("query", "") or "").strip(),
+        status=str(request.args.get("status", "") or "").strip().lower(),
+        release_verdict=str(
+            request.args.get("release_verdict", "")
+            or request.args.get("verdict", "")
+            or ""
+        ).strip().lower(),
+        include_text=include_text,
+        limit=max(1, min(limit, MAX_CONVERSION_JOB_HISTORY_LIMIT)),
+    )
+
+
+def _build_conversion_job_history_item(job_id: str, job: dict) -> dict:
+    response_job_id = str(job.get("job_id") or job_id)
+    status = str(job.get("status", "queued") or "queued")
+    status_key = status.strip().lower()
+    download_state = _build_job_download_state(response_job_id, job)
+    item = {
+        "job_id": response_job_id,
+        "status": status,
+        "message": str(job.get("message", "") or ""),
+        "source_type": str(job.get("source_type", "pdf") or "pdf"),
+        "filename": str(job.get("filename", "") or ""),
+        "created_at": str(job.get("created_at", "") or ""),
+        "updated_at": str(job.get("updated_at", "") or ""),
+        "elapsed_seconds": _compute_job_history_elapsed_seconds(job),
+        "output_size_bytes": _read_output_size_bytes(job),
+        "download_available": download_state.download_available,
+        "download_state": download_state.to_dict(),
+        "quality_state_url": f"/convert/quality/{response_job_id}",
+    }
+    if download_state.download_url:
+        item["download_url"] = download_state.download_url
+    if status_key in {"failed", "timed_out"}:
+        item["error"] = str(job.get("error", "") or "")
+        item["error_code"] = str(job.get("error_code", "") or "")
+    return item
+
+
+def _build_library_payload(*, default_include_text: bool = False) -> dict:
+    _mark_timed_out_conversion_jobs()
+    _cleanup_expired_conversion_jobs()
+    return build_library_index(
+        _CONVERSION_JOB_STORE.snapshot(),
+        quality_state_builder=lambda job_id, job: _build_job_quality_state(job_id, dict(job)),
+        output_size_resolver=lambda job: _read_output_size_bytes(dict(job)),
+        filters=_resolve_library_filters(default_include_text=default_include_text),
+    )
+
+
+def _active_conversion_job_count() -> int:
+    with _CONVERSION_JOBS_LOCK:
+        return count_active_conversion_jobs(_CONVERSION_JOBS)
+
+
+def _mark_timed_out_conversion_jobs(*, now: datetime | None = None) -> dict:
+    current_time = now or datetime.now(UTC)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=UTC)
+    timed_out: list[str] = []
+    with _CONVERSION_JOBS_LOCK:
+        for job_id, job in list(_CONVERSION_JOBS.items()):
+            should_timeout, runtime_seconds, _stale_seconds = should_timeout_job(job, now=current_time)
+            if not should_timeout:
+                continue
+            elapsed = runtime_seconds
+            job.update(
+                build_timed_out_job_fields(
+                    now=current_time,
+                    message="Konwersja przekroczyla limit czasu.",
+                    error="Konwersja przekroczyla limit czasu. Uruchom ja ponownie po sprawdzeniu pliku zrodlowego.",
+                )
+            )
+            timed_out.append(job_id)
+            _log_conversion_event(
+                "convert.job.failed",
+                level="error",
+                job_id=job_id,
+                phase="conversion",
+                status="timed_out",
+                error_code="conversion_timeout",
+                safe_message=job["error"],
+                source_type=str(job.get("source_type", "") or ""),
+                elapsed_seconds=elapsed,
+                output_size_bytes=0,
+            )
+    if timed_out:
+        _CONVERSION_JOB_STORE.persist()
+    return {"timed_out_jobs": len(timed_out), "job_ids": timed_out}
+
+
+def _worker_can_finish_job(job_id: str) -> bool:
+    job = _get_conversion_job(job_id)
+    if not job:
+        return False
+    return is_active_conversion_status(job.get("status"))
 
 
 def _attach_output_size_metadata(metadata: dict, output_size_bytes: int) -> dict:
@@ -356,6 +583,14 @@ def _spawn_conversion_job(
 
         def _status_callback(status: str, message: str) -> None:
             _set_conversion_job(job_id, status=status, message=message)
+            _log_conversion_event(
+                "convert.job.phase",
+                job_id=job_id,
+                phase="conversion",
+                status=status,
+                safe_message=message,
+                source_type=source_type,
+            )
 
         try:
             payload = _run_conversion_pipeline(
@@ -368,6 +603,8 @@ def _spawn_conversion_job(
                 heading_repair_enabled=heading_repair_enabled,
                 status_callback=_status_callback,
             )
+            if not _worker_can_finish_job(job_id):
+                return
             with open(output_path, "wb") as handle:
                 handle.write(payload["epub_bytes"])
             output_size_bytes = os.path.getsize(output_path)
@@ -381,14 +618,39 @@ def _spawn_conversion_job(
                 metadata=metadata,
                 output_size_bytes=output_size_bytes,
                 error="",
+                error_code="",
+            )
+            _log_conversion_event(
+                "convert.job.phase",
+                job_id=job_id,
+                phase="conversion",
+                status="ready",
+                safe_message="EPUB gotowy do pobrania.",
+                source_type=source_type,
+                output_size_bytes=output_size_bytes,
             )
         except Exception as error:
+            if not _worker_can_finish_job(job_id):
+                return
             _set_conversion_job(
                 job_id,
                 status="failed",
                 message="Konwersja nie powiodla sie.",
                 output_size_bytes=0,
                 error=str(error),
+                error_code="conversion_failed",
+            )
+            _log_conversion_event(
+                "convert.job.failed",
+                level="error",
+                job_id=job_id,
+                phase="conversion",
+                status="failed",
+                error_code="conversion_failed",
+                safe_message="Konwersja nie powiodla sie.",
+                source_type=source_type,
+                output_size_bytes=0,
+                exception_class=error.__class__.__name__,
             )
         finally:
             if os.path.exists(source_path):
@@ -424,14 +686,15 @@ def index():
 @app.route("/convert", methods=["POST"])
 def convert():
     """Convert uploaded PDF or DOCX to EPUB."""
+    _mark_timed_out_conversion_jobs()
     _cleanup_expired_conversion_jobs()
     file = request.files.get("file") or request.files.get("pdf")
     if not file or not file.filename:
-        return jsonify({"error": "Przeslij plik PDF albo DOCX."}), 400
+        return _json_error("Przeslij plik PDF albo DOCX.", error_code=ERROR_UPLOAD_FAILED, status_code=400, phase="upload")
 
     source_type = detect_supported_source_type(file.filename)
     if not source_type:
-        return jsonify({"error": "Obslugiwane sa tylko pliki PDF i DOCX."}), 400
+        return _json_error("Obslugiwane sa tylko pliki PDF i DOCX.", error_code=ERROR_UPLOAD_FAILED, status_code=400, phase="upload")
     source_suffix = f".{source_type}"
 
     # Get conversion preferences from form
@@ -443,7 +706,16 @@ def convert():
     # Save uploaded file temporarily
     job_id = uuid.uuid4().hex
     source_path = os.path.join(UPLOAD_DIR, f"{job_id}{source_suffix}")
-    file.save(source_path)
+    try:
+        file.save(source_path)
+    except OSError:
+        return _json_error(
+            "Nie udalo sie zapisac przeslanego pliku.",
+            error_code=ERROR_UPLOAD_FAILED,
+            status_code=500,
+            phase="upload",
+            retryable=True,
+        )
 
     try:
         payload = _run_conversion_pipeline(
@@ -465,9 +737,12 @@ def convert():
         _apply_conversion_headers(response, payload["metadata"])
         return response
     except Exception as e:
-        return jsonify({
-            "error": f"Konwersja nie powiodla sie: {str(e)}",
-        }), 500
+        return _json_error(
+            f"Konwersja nie powiodla sie: {str(e)}",
+            error_code="conversion_failed",
+            status_code=500,
+            phase="conversion",
+        )
     finally:
         # Clean up
         if os.path.exists(source_path):
@@ -476,14 +751,23 @@ def convert():
 
 @app.route("/convert/start", methods=["POST"])
 def convert_start():
+    _mark_timed_out_conversion_jobs()
     _cleanup_expired_conversion_jobs()
+    if _active_conversion_job_count() >= MAX_ACTIVE_CONVERSION_JOBS:
+        return _json_error(
+            "Kolejka konwersji jest pelna. Sprobuj ponownie za chwile.",
+            error_code=ERROR_QUEUE_FAILED,
+            status_code=429,
+            phase="queue",
+            retryable=True,
+        )
     file = request.files.get("file") or request.files.get("pdf")
     if not file or not file.filename:
-        return jsonify({"error": "Przeslij plik PDF albo DOCX."}), 400
+        return _json_error("Przeslij plik PDF albo DOCX.", error_code=ERROR_UPLOAD_FAILED, status_code=400, phase="upload")
 
     source_type = detect_supported_source_type(file.filename)
     if not source_type:
-        return jsonify({"error": "Obslugiwane sa tylko pliki PDF i DOCX."}), 400
+        return _json_error("Obslugiwane sa tylko pliki PDF i DOCX.", error_code=ERROR_UPLOAD_FAILED, status_code=400, phase="upload")
     source_suffix = f".{source_type}"
 
     profile = request.form.get("profile", "auto-premium")
@@ -492,7 +776,16 @@ def convert_start():
     heading_repair_enabled = request.form.get("heading_repair", "false") == "true"
     job_id = uuid.uuid4().hex
     source_path = os.path.join(UPLOAD_DIR, f"{job_id}{source_suffix}")
-    file.save(source_path)
+    try:
+        file.save(source_path)
+    except OSError:
+        return _json_error(
+            "Nie udalo sie zapisac przeslanego pliku.",
+            error_code=ERROR_UPLOAD_FAILED,
+            status_code=500,
+            phase="upload",
+            retryable=True,
+        )
     created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     _CONVERSION_JOB_STORE.create(
         build_conversion_job_record(
@@ -502,6 +795,14 @@ def convert_start():
             filename=file.filename,
             created_at=created_at,
         )
+    )
+    _log_conversion_event(
+        "convert.job.created",
+        job_id=job_id,
+        phase="queue",
+        status="queued",
+        safe_message="Konwersja wystartowala. Trwa przygotowanie EPUB.",
+        source_type=source_type,
     )
 
     _spawn_conversion_job(
@@ -531,13 +832,115 @@ def convert_start():
     return response
 
 
-@app.route("/convert/status/<job_id>", methods=["GET"])
-def convert_status(job_id: str):
+@app.route("/convert/jobs", methods=["GET"])
+def convert_jobs():
+    _mark_timed_out_conversion_jobs()
+    _cleanup_expired_conversion_jobs()
+    jobs = _CONVERSION_JOB_STORE.snapshot()
+    limit = _resolve_conversion_job_history_limit()
+    recent_jobs = sorted(
+        jobs.items(),
+        key=lambda item: _conversion_job_sort_timestamp(item[1]),
+        reverse=True,
+    )[:limit]
+    response = jsonify(
+        {
+            "success": True,
+            "jobs": [
+                _build_conversion_job_history_item(job_id, job)
+                for job_id, job in recent_jobs
+            ],
+            "count": len(recent_jobs),
+            "total": len(jobs),
+        }
+    )
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+
+@app.route("/convert/library", methods=["GET"])
+def convert_library():
+    response = jsonify(_build_library_payload(default_include_text=False))
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+
+@app.route("/convert/archive", methods=["GET"])
+def convert_archive():
+    response = jsonify(_build_library_payload(default_include_text=False))
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+
+@app.route("/convert/search", methods=["GET"])
+def convert_search():
+    response = jsonify(_build_library_payload(default_include_text=True))
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+
+@app.route("/convert/report/<job_id>.<extension>", methods=["GET"])
+def convert_quality_report(job_id: str, extension: str):
+    _mark_timed_out_conversion_jobs()
     _cleanup_expired_conversion_jobs()
     job = _get_conversion_job(job_id)
     if not job:
-        return jsonify({"error": "Nie znaleziono zadania konwersji."}), 404
-    download_url = _job_download_url(job_id, job)
+        return _json_error(
+            "Nie znaleziono zadania konwersji.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="recovery",
+            job_id=job_id,
+        )
+
+    normalized_extension = str(extension or "").strip().lower()
+    if normalized_extension not in {"json", "md"}:
+        return _json_error(
+            "Nieobslugiwany format raportu.",
+            error_code=ERROR_UNSUPPORTED_REPORT_FORMAT,
+            status_code=400,
+            phase="report",
+            job_id=job_id,
+        )
+
+    payload = build_quality_report_payload(
+        job_id,
+        job,
+        quality_state=_build_job_quality_state(job_id, job),
+        output_size_bytes=_read_output_size_bytes(job),
+        include_text=True,
+    )
+    if normalized_extension == "json":
+        response = jsonify(payload)
+    else:
+        response = app.response_class(
+            render_quality_report_markdown(payload),
+            mimetype="text/markdown; charset=utf-8",
+        )
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+
+@app.route("/convert/status/<job_id>", methods=["GET"])
+def convert_status(job_id: str):
+    _mark_timed_out_conversion_jobs()
+    _cleanup_expired_conversion_jobs()
+    job = _get_conversion_job(job_id)
+    if not job:
+        return _json_error(
+            "Nie znaleziono zadania konwersji.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="recovery",
+            job_id=job_id,
+        )
+    download_state = _build_job_download_state(job_id, job)
+    download_url = download_state.download_url
     conversion_payload = None
     if job.get("status") == "ready":
         conversion_payload = dict(job.get("metadata", {}) or {})
@@ -553,8 +956,11 @@ def convert_status(job_id: str):
             "source_type": job.get("source_type", "pdf"),
             "filename": job.get("filename", ""),
             "error": job.get("error", ""),
+            "error_code": job.get("error_code", ""),
             "conversion": conversion_payload,
             "download_url": download_url,
+            "download_available": download_state.download_available,
+            "download_state": download_state.to_dict(),
             "poll_after_ms": _recommended_poll_interval_ms(job),
             "elapsed_seconds": _compute_job_elapsed_seconds(job),
             "output_size_bytes": _read_output_size_bytes(job) if job.get("status") == "ready" else None,
@@ -569,10 +975,17 @@ def convert_status(job_id: str):
 
 @app.route("/convert/quality/<job_id>", methods=["GET"])
 def convert_quality(job_id: str):
+    _mark_timed_out_conversion_jobs()
     _cleanup_expired_conversion_jobs()
     job = _get_conversion_job(job_id)
     if not job:
-        return jsonify({"error": "Nie znaleziono zadania konwersji."}), 404
+        return _json_error(
+            "Nie znaleziono zadania konwersji.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="recovery",
+            job_id=job_id,
+        )
 
     response = jsonify(
         {
@@ -588,17 +1001,56 @@ def convert_quality(job_id: str):
 
 @app.route("/convert/download/<job_id>", methods=["GET"])
 def convert_download(job_id: str):
+    _mark_timed_out_conversion_jobs()
     _cleanup_expired_conversion_jobs()
     job = _get_conversion_job(job_id)
     if not job:
-        return jsonify({"error": "Nie znaleziono zadania konwersji."}), 404
+        return _json_error(
+            "Nie znaleziono zadania konwersji.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="download",
+            job_id=job_id,
+        )
     if job.get("status") != "ready":
-        return jsonify({"error": "EPUB nie jest jeszcze gotowy do pobrania."}), 409
+        retryable = str(job.get("status", "") or "") in ACTIVE_CONVERSION_JOB_STATUSES
+        return _json_error(
+            "EPUB nie jest jeszcze gotowy do pobrania.",
+            error_code=str(job.get("error_code") or ERROR_QUEUE_FAILED),
+            status_code=409,
+            phase="download",
+            job_id=job_id,
+            retryable=retryable,
+        )
 
+    download_state = _build_job_download_state(job_id, job)
     output_path = job.get("output_path", "")
-    if not output_path or not os.path.exists(output_path):
-        _set_conversion_job(job_id, status="failed", error="Brak pliku EPUB do pobrania.")
-        return jsonify({"error": "Brak pliku EPUB do pobrania."}), 500
+    if not download_state.download_available:
+        _set_conversion_job(
+            job_id,
+            status="failed",
+            error="Brak pliku EPUB do pobrania.",
+            error_code=ERROR_MISSING_OUTPUT,
+            output_size_bytes=0,
+        )
+        _log_conversion_event(
+            "convert.job.download_missing",
+            level="error",
+            job_id=job_id,
+            phase="download",
+            status="failed",
+            error_code=ERROR_MISSING_OUTPUT,
+            safe_message="Brak pliku EPUB do pobrania.",
+            source_type=str(job.get("source_type", "") or ""),
+            output_size_bytes=0,
+        )
+        return _json_error(
+            "Brak pliku EPUB do pobrania.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=500,
+            phase="download",
+            job_id=job_id,
+        )
 
     response = send_file(
         output_path,

@@ -16,6 +16,10 @@ except Exception:
 
 WORD_RE = re.compile(r"\b[^\W\d_]{2,24}\b", re.UNICODE)
 SPLIT_WORD_RE = re.compile(r"\b([^\W\d_]{2,10})\s+([^\W\d_]{2,14})\b", re.UNICODE)
+HYPHENATED_SPLIT_WORD_RE = re.compile(
+    r"\b([^\W\d_]{2,24})([-\u00ad\u2010\u2011])(\s+)([^\W\d_]{2,24})\b",
+    re.UNICODE,
+)
 BRACKETED_REF_RE = re.compile(r"\[\s*(\d+(?:\s*,\s*\d+)*)\s*\]")
 REF_LABEL_RE = re.compile(
     r"(?i)\b(fig|figure|ref|refs|tab|table|eq|equation|sec|section|chap|chapter|pp|p)\s+\.\s*"
@@ -107,11 +111,12 @@ def normalize_text(text: str, *, preserve_edges: bool = False) -> str:
     has_trailing_space = bool(text[-1:].isspace())
 
     normalized = html_module.unescape(text)
-    normalized = normalized.replace("\u00ad", "")
     normalized = normalized.replace("\xa0", " ")
     normalized = normalized.replace("\r", " ").replace("\n", " ")
     normalized = _compact_external_references(normalized)
     protected, placeholders = _protect_non_lexical_segments(normalized)
+    protected = _repair_hyphenated_split_words(protected)
+    protected = protected.replace("\u00ad", "")
     protected = _repair_pdf_split_words(protected)
     protected = _insert_missing_sentence_spaces(protected)
     protected = _repair_glued_words(protected)
@@ -586,6 +591,44 @@ def _lexical_zipf(word: str) -> float:
         return max(_zipf_frequency(lowered, "pl"), _zipf_frequency(lowered, "en"))
     except Exception:
         return 0.0
+
+
+def _looks_like_name_or_code_hyphen_break(left: str, right: str) -> bool:
+    if not left or not right:
+        return True
+    if left.isupper() or right.isupper():
+        return True
+    if right[:1].isupper():
+        return True
+    if any(char.isupper() for char in left[1:]):
+        return True
+    if any(not char.isalpha() for char in f"{left}{right}"):
+        return True
+    return False
+
+
+def _should_join_hyphenated_split_word(left: str, right: str) -> bool:
+    left_clean = left.strip()
+    right_clean = right.strip()
+    if _looks_like_name_or_code_hyphen_break(left_clean, right_clean):
+        return False
+    combined = f"{left_clean}{right_clean}"
+    if len(combined) < 6 or len(combined) > 32:
+        return False
+    return _lexical_zipf(combined) >= 2.52
+
+
+def _repair_hyphenated_split_words(text: str) -> str:
+    if not text or not any(marker in text for marker in ("-", "\u00ad", "\u2010", "\u2011")):
+        return text
+
+    def _replace(match: re.Match) -> str:
+        left, right = match.group(1), match.group(4)
+        if _should_join_hyphenated_split_word(left, right):
+            return f"{left}{right}"
+        return match.group(0)
+
+    return HYPHENATED_SPLIT_WORD_RE.sub(_replace, text)
 
 
 def _should_join_split_word(left: str, right: str) -> bool:

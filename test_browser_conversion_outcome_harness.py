@@ -47,6 +47,7 @@ class BrowserConversionOutcomeHarnessTests(unittest.TestCase):
         cls.function_sources = [
             _extract_function_source(template_html, "coerceFiniteNumber"),
             _extract_function_source(template_html, "normalizeQualityHealth"),
+            _extract_function_source(template_html, "normalizeQualityCompleteness"),
             _extract_function_source(template_html, "deriveQualityVerdict"),
             _extract_function_source(template_html, "normalizePostConversionPayload"),
             _extract_function_source(template_html, "formatBytes"),
@@ -136,7 +137,7 @@ process.stdout.write(JSON.stringify({{
         self.assertEqual(rendered["verdict"]["key"], "ready_with_review")
         self.assertEqual(rendered["qualityStateUrl"], "")
         self.assertEqual(rendered["metadataHealth"]["status"], "not_reported")
-        self.assertEqual(payload["recentConversion"]["verdict"], "Ready with review")
+        self.assertEqual(payload["recentConversion"]["verdict"], "Kontrola")
         self.assertIn(
             "diagram-heavy training book",
             payload["statusLog"][-1]["message"],
@@ -245,6 +246,278 @@ process.stdout.write(JSON.stringify({{
         self.assertEqual(payload["recentConversion"]["profile"], "diagram_book_reflow")
         self.assertIn("diagram-heavy training book", payload["statusLog"][-1]["message"])
 
+    def test_apply_conversion_outcome_normalizes_quality_cockpit_contract_fields(self) -> None:
+        payload = self._run_apply_conversion_outcome(
+            {
+                "job_id": "job-cockpit",
+                "source_type": "pdf",
+                "quality_state_url": "/convert/quality/job-cockpit",
+                "quality_state": {
+                    "source_type": "pdf",
+                    "overall_severity": "warning",
+                    "quality_available": True,
+                    "download_url": "/convert/download/job-cockpit",
+                    "summary": {
+                        "profile": "book_reflow",
+                        "strategy": "text_reflowable",
+                        "sections": 12,
+                        "assets": 7,
+                        "layout": "reflowable",
+                        "output_size_bytes": 16384,
+                    },
+                    "validation": {"status": "passed_with_warnings", "tool": "epubcheck"},
+                    "issue_groups": {
+                        "blockers": [],
+                        "warnings": [
+                            {
+                                "severity": "warning",
+                                "code": "metadata_placeholder",
+                                "message": "Missing publisher",
+                                "source": "metadata_health",
+                                "suggested_action": "Replace placeholder metadata.",
+                            },
+                        ],
+                        "review": [],
+                    },
+                    "epubcheck_detail": {
+                        "status": "passed_with_warnings",
+                        "tool": "epubcheck",
+                        "error_count": 0,
+                        "warning_count": 2,
+                        "messages": ["OPF metadata warning"],
+                    },
+                    "toc_preview": {
+                        "status": "ready",
+                        "total": 4,
+                        "entries": [
+                            {"label": "Introduction", "href": "chapter1.xhtml"},
+                            {"label": "Methods", "href": "chapter2.xhtml"},
+                        ],
+                    },
+                    "asset_summary": {
+                        "image_count": 5,
+                        "table_count": 2,
+                        "figure_count": 3,
+                        "oversized_count": 1,
+                    },
+                    "metadata_summary": {
+                        "title": "Quality Cockpit Sample",
+                        "author": "KindleMaster QA",
+                        "language": "pl",
+                    },
+                    "metadata_health": {"status": "warning", "count": 1, "message": "Publisher missing"},
+                    "link_health": {"status": "passed", "broken_count": 0, "message": "12 links checked"},
+                    "visible_junk": {"status": "passed", "count": 0, "message": "No visible junk detected"},
+                    "quality_completeness": {
+                        "score": 78,
+                        "status": "partial",
+                        "expected_sections": 9,
+                        "reported_sections": 7,
+                        "missing_count": 2,
+                        "not_reported_count": 2,
+                        "missing_sections": ["text_cleanup", "reference_cleanup"],
+                        "sections": [
+                            {"key": "validation", "label": "Validation", "status": "passed_with_warnings", "reported": True},
+                            {"key": "text_cleanup", "label": "Text cleanup", "status": "not_reported", "reported": False},
+                        ],
+                    },
+                },
+            }
+        )
+
+        rendered = payload["renderedReport"]
+        self.assertEqual(rendered["issueGroups"]["warnings"][0]["code"], "metadata_placeholder")
+        self.assertEqual(rendered["epubcheckDetail"]["warning_count"], 2)
+        self.assertEqual(rendered["tocPreview"]["entries"][0]["label"], "Introduction")
+        self.assertEqual(rendered["assetSummary"]["table_count"], 2)
+        self.assertEqual(rendered["metadataSummary"]["title"], "Quality Cockpit Sample")
+        self.assertEqual(rendered["metadataHealth"]["status"], "warning")
+        self.assertEqual(rendered["linkHealth"]["status"], "passed")
+        self.assertEqual(rendered["visibleJunk"]["status"], "passed")
+        self.assertEqual(rendered["qualityCompleteness"]["score"], 78)
+        self.assertEqual(rendered["qualityCompleteness"]["missingCount"], 2)
+        self.assertEqual(rendered["qualityCompleteness"]["missingSections"], ["text_cleanup", "reference_cleanup"])
+        self.assertTrue(rendered["downloadAvailable"])
+        self.assertFalse(rendered["releaseBlocked"])
+
+    def test_apply_conversion_outcome_keeps_download_available_when_release_is_blocked(self) -> None:
+        payload = self._run_apply_conversion_outcome(
+            {
+                "job_id": "job-release-blocked",
+                "source_type": "pdf",
+                "download_url": "/convert/download/job-release-blocked",
+                "quality_state_url": "/convert/quality/job-release-blocked",
+                "quality_state": {
+                    "source_type": "pdf",
+                    "quality_available": True,
+                    "download_url": "/convert/download/job-release-blocked",
+                    "download_available": True,
+                    "reading_verdict": "ready_with_review",
+                    "release_blocked": True,
+                    "quality_blockers": [
+                        {
+                            "severity": "blocker",
+                            "code": "text_cleanup_blocked",
+                            "message": "Text cleanup blocked 1 unsafe change.",
+                            "source": "text_cleanup",
+                        }
+                    ],
+                    "overall_severity": "error",
+                    "summary": {
+                        "profile": "book_reflow",
+                        "strategy": "text_reflowable",
+                        "sections": 8,
+                        "assets": 1,
+                        "layout": "reflowable",
+                        "output_size_bytes": 8192,
+                    },
+                    "validation": {"status": "passed", "tool": "epubcheck"},
+                    "issue_groups": {
+                        "blockers": [
+                            {
+                                "severity": "blocker",
+                                "code": "text_cleanup_blocked",
+                                "message": "Text cleanup blocked 1 unsafe change.",
+                                "source": "text_cleanup",
+                            }
+                        ],
+                        "warnings": [],
+                        "review": [],
+                    },
+                },
+            }
+        )
+
+        rendered = payload["renderedReport"]
+        self.assertTrue(rendered["downloadAvailable"])
+        self.assertTrue(rendered["releaseBlocked"])
+        self.assertEqual(rendered["readingVerdict"], "ready_with_review")
+        self.assertEqual(rendered["qualityBlockers"][0]["code"], "text_cleanup_blocked")
+        self.assertEqual(rendered["verdict"]["key"], "release_blocked")
+        self.assertEqual(rendered["verdict"]["tone"], "failed")
+        self.assertEqual(rendered["verdict"]["label"], "Nie publikuj")
+        self.assertIn("EPUB wygenerowany, ale wymaga naprawy", rendered["verdict"]["detail"])
+        self.assertEqual(payload["recentConversion"]["verdict"], "Nie publikuj")
+        self.assertEqual(payload["statusLog"][-1]["level"], "error")
+        self.assertIn("Wymaga naprawy przed publik", payload["statusLog"][-1]["message"])
+        self.assertIn("text_cleanup_blocked", payload["statusLog"][-1]["message"])
+
+    def test_apply_conversion_outcome_infers_release_blocked_from_issue_group_blockers(self) -> None:
+        payload = self._run_apply_conversion_outcome(
+            {
+                "job_id": "job-inferred-blocker",
+                "source_type": "pdf",
+                "download_url": "/convert/download/job-inferred-blocker",
+                "quality_state": {
+                    "source_type": "pdf",
+                    "quality_available": True,
+                    "download_available": True,
+                    "download_url": "/convert/download/job-inferred-blocker",
+                    "reading_verdict": "ready",
+                    "overall_severity": "warning",
+                    "summary": {
+                        "profile": "book_reflow",
+                        "strategy": "text_reflowable",
+                        "sections": 8,
+                        "assets": 1,
+                        "layout": "reflowable",
+                        "output_size_bytes": 8192,
+                    },
+                    "validation": {"status": "passed", "tool": "epubcheck"},
+                    "issue_groups": {
+                        "blockers": [
+                            {
+                                "severity": "blocker",
+                                "code": "metadata_release_blocker",
+                                "message": "Required release metadata is missing.",
+                                "source": "metadata_health",
+                            }
+                        ],
+                        "warnings": [],
+                        "review": [],
+                    },
+                },
+            }
+        )
+
+        rendered = payload["renderedReport"]
+        self.assertTrue(rendered["downloadAvailable"])
+        self.assertTrue(rendered["releaseBlocked"])
+        self.assertEqual(rendered["qualityBlockers"][0]["code"], "metadata_release_blocker")
+        self.assertEqual(rendered["verdict"]["key"], "release_blocked")
+        self.assertEqual(rendered["verdict"]["label"], "Nie publikuj")
+        self.assertEqual(payload["statusLog"][-1]["level"], "error")
+
+    def test_apply_conversion_outcome_prefers_release_verdict_when_present(self) -> None:
+        payload = self._run_apply_conversion_outcome(
+            {
+                "job_id": "job-release-verdict",
+                "source_type": "pdf",
+                "download_url": "/convert/download/job-release-verdict",
+                "quality_state": {
+                    "source_type": "pdf",
+                    "quality_available": True,
+                    "download_url": "/convert/download/job-release-verdict",
+                    "download_available": True,
+                    "reading_verdict": "ready_with_review",
+                    "release_verdict": "release_blocked",
+                    "release_blocked": True,
+                    "quality_blockers": [
+                        {
+                            "severity": "blocker",
+                            "code": "visible_junk_detected",
+                            "message": "Visible OCR junk remains in the output.",
+                            "source": "visible_junk",
+                        }
+                    ],
+                    "overall_severity": "error",
+                    "summary": {
+                        "profile": "book_reflow",
+                        "strategy": "text_reflowable",
+                        "sections": 8,
+                        "assets": 1,
+                        "layout": "reflowable",
+                        "output_size_bytes": 8192,
+                    },
+                    "validation": {"status": "passed", "tool": "epubcheck"},
+                },
+            }
+        )
+
+        rendered = payload["renderedReport"]
+        self.assertEqual(rendered["releaseVerdict"], "release_blocked")
+        self.assertEqual(rendered["verdict"]["key"], "release_blocked")
+        self.assertEqual(rendered["verdict"]["tone"], "failed")
+        self.assertEqual(rendered["verdict"]["label"], "Nie publikuj")
+        self.assertIn("naprawy przed publik", rendered["verdict"]["detail"])
+
+    def test_template_mentions_quality_cockpit_fields_and_not_reported_fallbacks(self) -> None:
+        template_html = TEMPLATE_PATH.read_text(encoding="utf-8")
+
+        for stable_token in (
+            "issueGroups",
+            "epubcheckDetail",
+            "tocPreview",
+            "assetSummary",
+            "metadataSummary",
+            "metadataHealth",
+            "linkHealth",
+            "visibleJunk",
+            "downloadAvailable",
+            "readingVerdict",
+            "releaseVerdict",
+            "releaseBlocked",
+            "qualityBlockers",
+            "qualityCompleteness",
+            "quality_completeness",
+            "Kolejka kontroli ręcznej",
+            "Kompletność",
+            "EPUB wygenerowany, ale wymaga kontroli jakości",
+            "Wymaga naprawy przed publikacją",
+            "Brak danych",
+        ):
+            self.assertIn(stable_token, template_html)
+
     def test_apply_conversion_outcome_marks_failed_quality_gate_from_validation_failure(self) -> None:
         payload = self._run_apply_conversion_outcome(
             {
@@ -271,7 +544,59 @@ process.stdout.write(JSON.stringify({{
         rendered = payload["renderedReport"]
         self.assertEqual(rendered["verdict"]["key"], "failed_quality_gate")
         self.assertEqual(rendered["verdict"]["tone"], "failed")
-        self.assertEqual(payload["recentConversion"]["verdict"], "Failed quality gate")
+        self.assertEqual(payload["recentConversion"]["verdict"], "Nie publikuj")
+        self.assertEqual(payload["statusLog"][-1]["level"], "error")
+
+    def test_recent_conversion_item_exposes_blocked_job_evidence_links(self) -> None:
+        template_html = TEMPLATE_PATH.read_text(encoding="utf-8")
+        function_sources = [
+            _extract_function_source(template_html, "coerceFiniteNumber"),
+            _extract_function_source(template_html, "formatBytes"),
+            _extract_function_source(template_html, "escapeHtml"),
+            _extract_function_source(template_html, "normalizeRecentConversionStatus"),
+            _extract_function_source(template_html, "formatRecentConversionStatus"),
+            _extract_function_source(template_html, "formatRecentConversionElapsed"),
+            _extract_function_source(template_html, "normalizeRecentConversion"),
+            _extract_function_source(template_html, "renderRecentConversionItem"),
+        ]
+        node_script = f"""
+const vm = require("node:vm");
+const functionSources = {json.dumps(function_sources, ensure_ascii=False)};
+for (const source of functionSources) {{
+  vm.runInThisContext(source);
+}}
+const html = renderRecentConversionItem({{
+  job_id: "job-blocked-42",
+  status: "release_blocked",
+  filename: "blocked.pdf",
+  release_blocked: true,
+  release_verdict: "release_blocked",
+  message: "Quality gate blocked publication.",
+  download_url: "/convert/download/job-blocked-42",
+  quality_state_url: "/convert/quality/job-blocked-42",
+  report_json_url: "/reports/job-blocked-42.json",
+  report_markdown_url: "/reports/job-blocked-42.md",
+}});
+process.stdout.write(JSON.stringify({{ html }}));
+"""
+        completed = subprocess.run(
+            ["node", "-e", node_script],
+            cwd=Path(__file__).parent,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            self.fail(f"Node harness nie uruchomił się poprawnie:\nSTDOUT:\n{completed.stdout}\nSTDERR:\n{completed.stderr}")
+
+        rendered = json.loads(completed.stdout)["html"]
+        self.assertIn('data-job-status="blocked"', rendered)
+        self.assertIn("Zadanie: job-blocked-42", rendered)
+        self.assertIn("Pobierz szkic EPUB do kontroli", rendered)
+        self.assertIn("JSON", rendered)
+        self.assertIn("Raport MD", rendered)
+        self.assertIn("Raport JSON", rendered)
 
 
 if __name__ == "__main__":

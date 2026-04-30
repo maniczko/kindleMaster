@@ -11,18 +11,27 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from premium_corpus_smoke import run_premium_corpus_smoke
+from premium_corpus_smoke import (
+    FOCUSED_OUTPUT_ROUTES,
+    build_output_assertions,
+    classify_focus_routes,
+    inspect_epub,
+    run_premium_corpus_smoke,
+)
 from scripts.run_smoke_tests import run_smoke_tests
 
 STANDARD_SMOKE_FILTERS = [
     "ocr_probe_pdf",
     "scan_probe_epub",
     "simple_report_docx",
+    "list_table_image_docx",
 ]
 
 STANDARD_PREMIUM_FILTERS = [
     "document-like-report",
-    "large-diagram-corpus",
+    "ocr_stress_scan",
+    "magazine_layout",
+    "diagram_training_book",
 ]
 
 
@@ -30,6 +39,19 @@ def _derive_corpus_gate_status(*, smoke_status: str, premium_status: str) -> str
     if "failed" in {smoke_status, premium_status}:
         return "failed"
     if "passed_with_warnings" in {smoke_status, premium_status}:
+        return "passed_with_warnings"
+    return "passed"
+
+
+def _derive_output_assertion_status(output_assertions: dict[str, Any]) -> str:
+    if output_assertions.get("status") == "not_evaluated":
+        return "passed"
+    if output_assertions.get("failed_routes"):
+        return "failed"
+    if output_assertions.get("skipped_routes") or output_assertions.get("analysis_only_routes"):
+        return "passed_with_warnings"
+    focus_routes = output_assertions.get("focus_routes") or {}
+    if any(item.get("status") == "covered_with_warnings" for item in focus_routes.values()):
         return "passed_with_warnings"
     return "passed"
 
@@ -47,10 +69,178 @@ def _resolve_case_filters(
     return None
 
 
+def _case_validation_status(row: dict[str, Any]) -> str:
+    validation = row.get("validation") or {}
+    return (validation.get("summary") or {}).get("status", "")
+
+
+def _read_epub_stats_from_row(row: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+    candidate = str(row.get("output_epub") or "")
+    if not candidate and str(row.get("input_type", "")).lower() == "epub":
+        candidate = str(row.get("path") or "")
+    if not candidate:
+        return None, "output_artifact_missing"
+    path = Path(candidate)
+    if not path.exists():
+        return None, f"output_artifact_not_found:{candidate}"
+    try:
+        return inspect_epub(path.read_bytes()), ""
+    except Exception as exc:
+        return None, f"output_artifact_unreadable:{exc.__class__.__name__}"
+
+
+def _roll_up_assertions(assertions: list[dict[str, str]], *, validation_status: str = "") -> str:
+    if validation_status == "failed" or any(assertion.get("status") == "failed" for assertion in assertions):
+        return "failed"
+    if any(assertion.get("status") == "passed_with_warnings" for assertion in assertions):
+        return "passed_with_warnings"
+    if assertions:
+        return "passed"
+    return "skipped"
+
+
+def _build_smoke_output_evidence(row: dict[str, Any]) -> dict[str, Any]:
+    document_class = str(row.get("document_class", "") or "")
+    input_type = str(row.get("input_type", "") or "")
+    stats, skip_reason = _read_epub_stats_from_row(row)
+    validation_status = _case_validation_status(row)
+    assertions = (
+        build_output_assertions(
+            document_class=document_class,
+            input_type=input_type,
+            stats=stats,
+            validation_status=validation_status,
+        )
+        if stats is not None
+        else [
+            {
+                "id": "output_artifact_available",
+                "route": "base",
+                "route_label": "base",
+                "status": "failed",
+                "severity": "blocker",
+                "detail": skip_reason,
+            }
+        ]
+    )
+    return {
+        "source": "smoke",
+        "id": str(row.get("id", "") or row.get("path", "")),
+        "document_class": document_class,
+        "input_type": input_type,
+        "status": _roll_up_assertions(assertions, validation_status=validation_status),
+        "validation_status": validation_status,
+        "focus_routes": list(classify_focus_routes(document_class, input_type)),
+        "assertions": assertions,
+        "skip_reason": skip_reason,
+    }
+
+
+def _build_premium_output_evidence(row: dict[str, Any]) -> dict[str, Any]:
+    document_class = str(row.get("document_class", "") or "")
+    input_type = str(row.get("input_type", "") or "pdf")
+    assertions = list(row.get("output_assertions") or [])
+    if not assertions and (row.get("post_heading_epub_stats") or row.get("epub_stats")):
+        validation_status = str(((row.get("quality") or {}).get("validation_status")) or "")
+        assertions = build_output_assertions(
+            document_class=document_class,
+            input_type=input_type,
+            stats=row.get("post_heading_epub_stats") or row.get("epub_stats") or {},
+            validation_status=validation_status,
+        )
+    else:
+        validation_status = str(((row.get("quality") or {}).get("validation_status")) or "")
+    status = _roll_up_assertions(assertions, validation_status=validation_status)
+    grade = str(row.get("grade", ""))
+    if status == "passed" and grade == "pass_with_review":
+        status = "passed_with_warnings"
+    if grade == "fail":
+        status = "failed"
+    return {
+        "source": "premium_corpus",
+        "id": str(row.get("case_id", "") or row.get("file", "")),
+        "document_class": document_class,
+        "input_type": input_type,
+        "status": status,
+        "validation_status": validation_status,
+        "grade": grade,
+        "focus_routes": list(classify_focus_routes(document_class, input_type)),
+        "assertions": assertions,
+        "skip_reason": "",
+    }
+
+
+def _build_gate_output_assertions(*, smoke: dict[str, Any], premium: dict[str, Any]) -> dict[str, Any]:
+    if "cases" not in smoke and "cases" not in premium:
+        return {
+            "status": "not_evaluated",
+            "focus_routes": {},
+            "covered_route_count": 0,
+            "failed_routes": [],
+            "skipped_routes": [],
+            "analysis_only_routes": [],
+        }
+    evidence: list[dict[str, Any]] = []
+    analysis_only: list[dict[str, Any]] = []
+    for row in smoke.get("cases", []) or []:
+        routes = classify_focus_routes(str(row.get("document_class", "")), str(row.get("input_type", "")))
+        if routes:
+            evidence.append(_build_smoke_output_evidence(row))
+    for row in premium.get("cases", []) or []:
+        routes = classify_focus_routes(str(row.get("document_class", "")), str(row.get("input_type", "pdf")))
+        if not routes:
+            continue
+        if row.get("mode") == "analysis-only":
+            analysis_only.append(
+                {
+                    "id": str(row.get("case_id", "") or row.get("file", "")),
+                    "document_class": str(row.get("document_class", "")),
+                    "input_type": str(row.get("input_type", "pdf")),
+                    "reason": str(row.get("analysis_only_reason") or row.get("notes") or "analysis_only"),
+                    "focus_routes": list(routes),
+                }
+            )
+        elif row.get("mode") == "convert-and-audit":
+            evidence.append(_build_premium_output_evidence(row))
+
+    focus_routes: dict[str, Any] = {}
+    for route, label in FOCUSED_OUTPUT_ROUTES.items():
+        route_evidence = [item for item in evidence if route in item.get("focus_routes", [])]
+        route_analysis_only = [item for item in analysis_only if route in item.get("focus_routes", [])]
+        if route_evidence:
+            status = "covered"
+            if any(item.get("status") == "failed" for item in route_evidence):
+                status = "failed"
+            elif any(item.get("status") == "passed_with_warnings" for item in route_evidence):
+                status = "covered_with_warnings"
+            reason = "real output assertions evaluated"
+        elif route_analysis_only:
+            status = "analysis_only"
+            reason = "; ".join(item.get("reason", "analysis_only") for item in route_analysis_only)
+        else:
+            status = "skipped"
+            reason = "no selected fixture produced output evidence in this proof profile"
+        focus_routes[route] = {
+            "label": label,
+            "status": status,
+            "reason": reason,
+            "cases": route_evidence,
+            "analysis_only_cases": route_analysis_only,
+        }
+    return {
+        "focus_routes": focus_routes,
+        "covered_route_count": sum(1 for item in focus_routes.values() if item["status"] in {"covered", "covered_with_warnings"}),
+        "failed_routes": [route for route, item in focus_routes.items() if item["status"] == "failed"],
+        "skipped_routes": [route for route, item in focus_routes.items() if item["status"] == "skipped"],
+        "analysis_only_routes": [route for route, item in focus_routes.items() if item["status"] == "analysis_only"],
+    }
+
+
 def _build_corpus_gate_markdown(payload: dict[str, Any]) -> str:
     smoke = payload["smoke"]
     premium = payload["premium_corpus"]
     benchmark = payload.get("benchmark") or {}
+    output_assertions = payload.get("output_assertions") or {}
     lines = [
         "# KindleMaster Corpus Gate",
         "",
@@ -75,15 +265,33 @@ def _build_corpus_gate_markdown(payload: dict[str, Any]) -> str:
         f"- Premium elapsed: `{benchmark.get('premium_elapsed_seconds', 0)}` seconds",
         f"- Classes covered: `{benchmark.get('class_count', 0)}`",
         f"- Slowest smoke cases: `{json.dumps(benchmark.get('slowest_smoke_cases', []), ensure_ascii=False)}`",
+        f"- Slowest premium cases: `{json.dumps(benchmark.get('slowest_premium_cases', []), ensure_ascii=False)}`",
         "",
-        "## Reports",
+        "## Output Assertions",
         "",
-        f"- Smoke JSON: `{payload['artifacts']['smoke_json']}`",
-        f"- Smoke Markdown: `{payload['artifacts']['smoke_md']}`",
-        f"- Premium corpus JSON: `{payload['artifacts']['premium_json']}`",
-        f"- Premium corpus Markdown: `{payload['artifacts']['premium_md']}`",
+        f"- Assertion status: `{payload.get('output_assertion_status', 'unknown')}`",
+        f"- Covered focused routes: `{output_assertions.get('covered_route_count', 0)}`",
+        f"- Failed focused routes: `{', '.join(output_assertions.get('failed_routes', [])) or 'none'}`",
+        f"- Skipped focused routes: `{', '.join(output_assertions.get('skipped_routes', [])) or 'none'}`",
+        "",
+        "### Focus Routes",
         "",
     ]
+    for route, label in FOCUSED_OUTPUT_ROUTES.items():
+        route_payload = (output_assertions.get("focus_routes") or {}).get(route, {})
+        lines.append(f"- {label}: `{route_payload.get('status', 'skipped')}` - {route_payload.get('reason', '')}")
+    lines.extend(
+        [
+            "",
+            "## Reports",
+            "",
+            f"- Smoke JSON: `{payload['artifacts']['smoke_json']}`",
+            f"- Smoke Markdown: `{payload['artifacts']['smoke_md']}`",
+            f"- Premium corpus JSON: `{payload['artifacts']['premium_json']}`",
+            f"- Premium corpus Markdown: `{payload['artifacts']['premium_md']}`",
+            "",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -140,16 +348,24 @@ def run_corpus_gate(
     premium_status = premium.get("overall_status")
     if not premium_status:
         premium_status = (premium.get("overall") or {}).get("overall_status", "failed")
+    output_assertions = _build_gate_output_assertions(smoke=smoke, premium=premium)
+    output_assertion_status = _derive_output_assertion_status(output_assertions)
 
     overall_status = _derive_corpus_gate_status(
         smoke_status=(smoke.get("summary") or {}).get("overall_status", "failed"),
         premium_status=premium_status,
+    )
+    overall_status = _derive_corpus_gate_status(
+        smoke_status=overall_status,
+        premium_status=output_assertion_status,
     )
     payload = {
         "overall_status": overall_status,
         "proof_profile": proof_profile,
         "smoke": smoke,
         "premium_corpus": premium,
+        "output_assertions": output_assertions,
+        "output_assertion_status": output_assertion_status,
         "benchmark": _build_gate_benchmark(
             smoke=smoke,
             premium=premium,
@@ -197,8 +413,29 @@ def _build_gate_benchmark(
         "class_count": len(smoke_classes | premium_classes),
         "classes": sorted(smoke_classes | premium_classes),
         "slowest_smoke_cases": list(smoke_benchmark.get("slowest_cases") or [])[:5],
+        "slowest_premium_cases": _slowest_premium_cases(premium),
         "premium_converted_case_count": (premium.get("overall") or {}).get("converted_case_count", 0),
     }
+
+
+def _slowest_premium_cases(premium: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = [
+        row
+        for row in premium.get("cases", []) or []
+        if row.get("mode") == "convert-and-audit" and row.get("elapsed_seconds") is not None
+    ]
+    rows.sort(key=lambda row: float(row.get("elapsed_seconds") or 0), reverse=True)
+    return [
+        {
+            "id": str(row.get("case_id", "") or row.get("file", "")),
+            "document_class": str(row.get("document_class", "")),
+            "elapsed_seconds": row.get("elapsed_seconds"),
+            "duration_bucket": row.get("duration_bucket", "unknown"),
+            "profile_hint": row.get("profile_hint", ""),
+            "grade": row.get("grade", ""),
+        }
+        for row in rows[:5]
+    ]
 
 
 def main() -> int:

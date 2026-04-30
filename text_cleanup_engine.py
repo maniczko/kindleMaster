@@ -68,7 +68,10 @@ SYSTEM_ID_RE = re.compile(r"\b[A-Z]{2,12}[-_][A-Z0-9]{2,}\b")
 INVOICE_RE = re.compile(r"(?i)\b(?:FV|INV|PO|REF|ID)[-/:]?[A-Z0-9][A-Z0-9/_-]{3,}\b")
 WORDISH_RE = re.compile(r"\b[^\W\d_]{1,32}\b", re.UNICODE)
 PAIR_WORD_RE = re.compile(r"(?P<left>\b[^\W\d_]{1,20}\b)(?P<gap>\s+)(?P<right>\b[^\W\d_]{1,20}\b)", re.UNICODE)
-HYPHEN_BREAK_RE = re.compile(r"(?P<left>\b[^\W\d_]{2,24})[-\u00ad]\s+(?P<right>[^\W\d_]{2,24}\b)", re.UNICODE)
+HYPHEN_BREAK_RE = re.compile(
+    r"(?P<left>\b[^\W\d_]{2,24})(?P<marker>[-\u00ad\u2010\u2011])(?P<gap>\s+)(?P<right>[^\W\d_]{2,24}\b)",
+    re.UNICODE,
+)
 SPACE_BEFORE_PUNCT_RE = re.compile(r"(?P<space>\s+)(?P<punct>[,.;:!?])")
 MISSING_SENTENCE_SPACE_RE = re.compile(r"(?P<lead>[.!?;:])(?P<next>[A-ZĄĆĘŁŃÓŚŹŻ])")
 NUMBER_PERCENT_RE = re.compile(r"(?P<number>\d)\s+(?P<unit>%)")
@@ -181,6 +184,7 @@ class TextCleanupConfig:
     emit_text_diff: bool = False
     release_gate: str = "soft"
     long_document_mode: bool = False
+    suppress_split_word_detection: bool = False
 
 
 @dataclass
@@ -285,6 +289,10 @@ def clean_epub_text_package(
     publication_profile: str | None = None,
 ) -> TextCleanupResult:
     config = config or TextCleanupConfig()
+    profile_key = _normalized_publication_profile(publication_profile)
+    if _is_layout_heavy_cleanup_profile(profile_key):
+        config.long_document_mode = True
+        config.suppress_split_word_detection = True
     lexicon = _load_domain_dictionary(config.domain_dictionary_path)
     if not epub_bytes:
         return TextCleanupResult(
@@ -301,7 +309,7 @@ def clean_epub_text_package(
     unknown_counter: Counter[str] = Counter()
     chapter_diffs: dict[str, str] = {}
 
-    if _is_pre_paginated_epub(epub_bytes) or publication_profile == "preserve-layout":
+    if _is_pre_paginated_epub(epub_bytes) or profile_key == "preserve_layout":
         package_blocked = True
         decisions.append(
             CleanupDecision(
@@ -833,7 +841,16 @@ def _apply_hyphen_break_pass(text: str, *, context: _TextNodeContext, config: Te
     parts: list[str] = []
     last_index = 0
     for match in HYPHEN_BREAK_RE.finditer(text):
-        proposal = _hyphen_break_proposal(match.group("left"), match.group("right"), context=context, config=config)
+        proposal = _hyphen_break_proposal(
+            match.group("left"),
+            match.group("right"),
+            marker=match.group("marker"),
+            gap=match.group("gap"),
+            context=context,
+            config=config,
+        )
+        if proposal is None:
+            continue
         decision = _make_decision(proposal, context=context, config=config)
         decisions.append(decision)
         parts.append(text[last_index:match.start()])
@@ -855,6 +872,8 @@ def _apply_glued_word_pass(text: str, *, context: _TextNodeContext, config: Text
 
 
 def _apply_split_word_pass(text: str, *, context: _TextNodeContext, config: TextCleanupConfig, lexicon: _DomainLexicon):
+    if config.suppress_split_word_detection:
+        return text, []
     return _rewrite_pair_tokens(
         text,
         context=context,
@@ -1014,20 +1033,45 @@ def _forced_merge_proposal(left: str, gap: str, right: str, *, context: _TextNod
     )
 
 
-def _hyphen_break_proposal(left: str, right: str, *, context: _TextNodeContext, config: TextCleanupConfig) -> _Proposal:
+def _hyphen_break_proposal(
+    left: str,
+    right: str,
+    *,
+    marker: str = "-",
+    gap: str = " ",
+    context: _TextNodeContext,
+    config: TextCleanupConfig,
+) -> _Proposal | None:
+    if context.is_anchor_text or _looks_like_name_or_code_hyphen_break(left, right):
+        return None
     merged = f"{left}{right}"
-    lexical = max(_token_score(merged, context.paragraph_language), 0.55)
-    pyphen_bonus = 1.0 if _pyphen_supports_word(merged, context.paragraph_language, config=config) else 0.0
+    if len(merged) < 6 or len(merged) > 32:
+        return None
+    paragraph_score = _token_score(merged, context.paragraph_language)
+    cross_language_score = max(paragraph_score, _token_score(merged, "pl"), _token_score(merged, "en"))
+    if cross_language_score < 0.42:
+        return None
+    lexical = min(1.0, cross_language_score + 0.32)
+    language_score = max(_language_fit_score(merged, context.paragraph_language), min(0.92, cross_language_score + 0.22))
+    pyphen_bonus = (
+        1.0
+        if cross_language_score >= 0.42 and _pyphen_supports_word(merged, "mixed", config=config)
+        else 0.0
+    )
     reason_codes = ["soft-hyphen-or-line-break"]
+    if marker != "-":
+        reason_codes.append("unicode-hyphen")
+    if cross_language_score >= 0.42:
+        reason_codes.append("pl-en-lexical-merge")
     if pyphen_bonus:
         reason_codes.append("pyphen-supported")
     return _Proposal(
-        before=f"{left}-{right}",
+        before=f"{left}{marker}{gap}{right}",
         after=merged,
         error_class="hyphen-break",
         lexical_score=min(1.0, lexical),
-        context_score=0.85,
-        language_score=_language_fit_score(merged, context.paragraph_language),
+        context_score=0.95,
+        language_score=language_score,
         dom_score=1.0,
         bonus_score=pyphen_bonus,
         reason_codes=reason_codes,
@@ -1419,6 +1463,20 @@ def _looks_like_mixed_domain_term(token: str) -> bool:
     return False
 
 
+def _looks_like_name_or_code_hyphen_break(left: str, right: str) -> bool:
+    if not left or not right:
+        return True
+    if left.isupper() or right.isupper():
+        return True
+    if right[:1].isupper():
+        return True
+    if any(char.isupper() for char in left[1:]):
+        return True
+    if any(not char.isalpha() for char in f"{left}{right}"):
+        return True
+    return False
+
+
 def _zipf_to_unit(value: float) -> float:
     if value <= 0:
         return 0.0
@@ -1513,6 +1571,21 @@ def _build_summary(
         "language": (book_info or {}).get("language", config.language_hint or "mixed"),
         "spine_document_count": len((book_info or {}).get("spine_paths", [])),
         "toc_count": (book_info or {}).get("toc_count", 0),
+        "suppressed_error_classes": ["split-word"] if config.suppress_split_word_detection else [],
+    }
+
+
+def _normalized_publication_profile(publication_profile: str | None) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", (publication_profile or "").strip().lower()).strip("_")
+
+
+def _is_layout_heavy_cleanup_profile(profile_key: str) -> bool:
+    return profile_key in {
+        "magazine",
+        "magazine_reflow",
+        "magazine_layout",
+        "layout_heavy",
+        "magazine_layout_heavy",
     }
 
 

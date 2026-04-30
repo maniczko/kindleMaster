@@ -20,6 +20,7 @@ Bootstrap only manages Python packages. It does not install Java, EPUBCheck, Tes
 | `quick` | core | `python kindlemaster.py test --suite quick` | runtime bootstrap only | hard-fails if runtime Python deps are missing |
 | `corpus` | core | `python kindlemaster.py test --suite corpus` | runtime bootstrap only | hard-fails if runtime Python deps are missing; writes derived corpus gate reports and benchmark summaries under `reports/corpus/` |
 | `release` | core | `python kindlemaster.py test --suite release` | runtime bootstrap only | runs bounded release-specific unit shards plus the standard corpus gate; browser/runtime follow-ups are skipped when their optional toolchains are missing |
+| `full` | diagnostic | `python kindlemaster.py test --suite full` | runtime bootstrap plus any optional dependencies used by discovered tests | runs `unittest discover -p test*.py` across explicit and intentionally discover-only tests; use as an all-discovery diagnostic lane, not as a bounded release gate |
 | `browser` | optional | `python kindlemaster.py test --suite browser` | developer bootstrap + Chromium | returns a clear unavailable report if Playwright or Chromium is missing |
 | `runtime` | optional | `python kindlemaster.py test --suite runtime` | developer bootstrap + Chromium | returns a clear unavailable report if Waitress, Playwright, or Chromium is missing |
 
@@ -78,4 +79,5 @@ Key sections:
 3. Use `quick` for routine Python-only changes.
 4. Use `corpus` when you need the expanded fixture bank plus a derived corpus gate and benchmark report.
 5. Use `release` after `quick` when you want the bounded release-specific gate without making browser/runtime tooling mandatory; it reports `passed_with_warnings` when corpus/manual-review evidence is not fully clean.
-6. Use `browser` or `runtime` only when the change area actually touches those surfaces.
+6. Use `full` only when you need a diagnostic all-discovery sweep of every `test*.py`, including tests intentionally kept out of explicit suites.
+7. Use `browser` or `runtime` only when the change area actually touches those surfaces.

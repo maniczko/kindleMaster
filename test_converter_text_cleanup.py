@@ -130,6 +130,78 @@ class ConverterTextCleanupTests(unittest.TestCase):
         self.assertEqual(text_cleanup["reference_cleanup"]["semantic_prepass"]["entries_rebuilt"], 4)
         self.assertEqual(repair_mock.call_args.kwargs["source_pdf_path"], "example/report.pdf")
 
+    def test_finalize_epub_bytes_exposes_compact_semantic_cleanup_gates(self):
+        rich_semantic_report = {
+            "status": "pass_with_review",
+            "summary": {
+                "cleanup_scope": "semantic-reflow",
+                "chapter_count": 3,
+                "toc_entry_count_before": 2,
+                "toc_entry_count_after": 4,
+                "manual_review_count": 1,
+            },
+            "reference_cleanup": {
+                "entries_rebuilt": 2,
+                "quality_gate_status": "passed",
+            },
+            "gates": {
+                "A": {"status": "pass"},
+                "B": {"status": "pass"},
+                "C": {"status": "pass_with_review"},
+                "D": {"status": "pass"},
+                "E": {"status": "pass"},
+                "F": {"status": "pass_with_review", "warnings": ["Manual heading review remains."]},
+            },
+            "phases": {
+                "metadata_repair": {"status": "completed"},
+                "toc_rebuild": {"status": "completed", "entry_count_before": 2, "entry_count_after": 4},
+                "structural_integrity": {"status": "passed", "manual_review": []},
+            },
+            "manual_review_queue": [{"code": "heading-review", "message": "Check heading."}],
+        }
+        repair_stub = type(
+            "ReferenceRepairStub",
+            (),
+            {
+                "epub_bytes": b"repaired-epub",
+                "summary": {
+                    "entries_rebuilt": 2,
+                    "records_detected": 2,
+                    "records_reconstructed": 2,
+                    "records_flagged_for_review": 0,
+                    "unresolved_fragment_count": 0,
+                    "citations_detected": 2,
+                    "citations_covered": 2,
+                    "citations_missing_record": 0,
+                    "citations_ambiguous": 0,
+                    "reference_quality_gate_status": "passed",
+                    "quality_gate_status": "passed",
+                },
+            },
+        )()
+
+        with patch("text_normalization.clean_epub_text_package", side_effect=ImportError("skip")):
+            with patch(
+                "kindle_semantic_cleanup.finalize_epub_for_kindle",
+                return_value=(b"semantic-epub", rich_semantic_report),
+            ) as semantic_mock:
+                with patch("epub_reference_repair.repair_epub_reference_sections", return_value=repair_stub):
+                    _epub_bytes, text_cleanup = finalize_epub_bytes(
+                        b"input-epub",
+                        ConversionConfig(language="pl"),
+                        {"title": "Test", "author": "Tester"},
+                        "report.pdf",
+                        publication_profile="book_reflow",
+                        return_details=True,
+                    )
+
+        self.assertEqual(semantic_mock.call_args.kwargs["report_mode"], "rich")
+        self.assertEqual(text_cleanup["semantic_cleanup"]["status"], "pass_with_review")
+        self.assertEqual(text_cleanup["semantic_cleanup"]["manual_review_count"], 1)
+        self.assertEqual(text_cleanup["semantic_cleanup"]["gate_statuses"]["F"], "pass_with_review")
+        self.assertEqual(text_cleanup["reading_order"]["status"], "passed")
+        self.assertEqual(text_cleanup["reference_cleanup"]["semantic_prepass"]["entries_rebuilt"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

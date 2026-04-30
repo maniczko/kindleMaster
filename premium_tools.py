@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import importlib.util
+import copy
+import hashlib
 import os
 import shutil
 import subprocess
 import sys
 import sysconfig
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -294,7 +297,22 @@ def list_tesseract_languages(tesseract_path: Path | None = None, tessdata_dir: P
     return [line for line in lines[1:] if line]
 
 
-def detect_toolchain() -> dict:
+def clear_toolchain_cache() -> None:
+    _detect_toolchain_cached.cache_clear()
+
+
+def detect_toolchain(*, refresh: bool = False) -> dict:
+    if refresh:
+        clear_toolchain_cache()
+    return copy.deepcopy(_detect_toolchain_cached())
+
+
+@lru_cache(maxsize=1)
+def _detect_toolchain_cached() -> dict:
+    return _detect_toolchain_uncached()
+
+
+def _detect_toolchain_uncached() -> dict:
     runtime_requirements = _detect_requirement_group(RUNTIME_REQUIREMENT_MODULES)
     developer_requirements = _detect_requirement_group(DEV_REQUIREMENT_MODULES)
     java_path = find_java_executable()
@@ -591,16 +609,26 @@ def find_pdfbox_jar() -> Path | None:
     return None
 
 
+_EPUBCHECK_RESULT_CACHE: dict[str, dict] = {}
+
+
 def run_epubcheck(epub_bytes: bytes) -> dict:
+    digest = hashlib.sha256(epub_bytes).hexdigest()
+    cached = _EPUBCHECK_RESULT_CACHE.get(digest)
+    if cached is not None:
+        return copy.deepcopy(cached)
+
     toolchain = detect_toolchain()
     java_path = toolchain["java"]["path"]
     jar_path = toolchain["epubcheck"]["jar_path"]
     if not java_path or not jar_path:
-        return {
+        result = {
             "status": "unavailable",
             "tool": "epubcheck",
             "messages": ["Java lub plik epubcheck.jar nie jest dostepny w srodowisku."],
         }
+        _EPUBCHECK_RESULT_CACHE[digest] = copy.deepcopy(result)
+        return result
 
     with tempfile.TemporaryDirectory() as temp_dir:
         epub_path = Path(temp_dir) / "validation.epub"
@@ -614,16 +642,20 @@ def run_epubcheck(epub_bytes: bytes) -> dict:
                 check=False,
             )
         except Exception as exc:
-            return {
+            result = {
                 "status": "unavailable",
                 "tool": "epubcheck",
                 "messages": [f"Nie udalo sie uruchomic EPUBCheck: {exc}"],
             }
+            _EPUBCHECK_RESULT_CACHE[digest] = copy.deepcopy(result)
+            return result
 
     combined = "\n".join(part for part in [completed.stdout, completed.stderr] if part).strip()
     messages = [line.strip() for line in combined.splitlines() if line.strip()]
-    return {
+    result = {
         "status": "passed" if completed.returncode == 0 else "failed",
         "tool": "epubcheck",
         "messages": messages[:50],
     }
+    _EPUBCHECK_RESULT_CACHE[digest] = copy.deepcopy(result)
+    return result

@@ -8,9 +8,12 @@ from premium_corpus_smoke import (
     _apply_release_strictness,
     _build_case_blockers,
     _build_case_warnings,
+    _build_class_coverage,
     _build_release_fallback_signal,
     _derive_case_grade,
+    build_output_assertions,
     inspect_epub,
+    CorpusSourceSummary,
 )
 
 
@@ -116,6 +119,97 @@ class PremiumCorpusSmokeTests(unittest.TestCase):
         self.assertIn("unexpected_language", warning_codes)
         self.assertEqual(_derive_case_grade(blockers, warnings), "fail")
 
+    def test_reference_cleanup_gate_failures_are_release_blockers(self) -> None:
+        blockers = _build_case_blockers(
+            quality={
+                "validation_status": "passed",
+                "text_cleanup": {
+                    "reference_cleanup": {
+                        "reference_quality_gate_status": "failed",
+                        "citations_missing_record": 2,
+                        "citations_ambiguous": 1,
+                        "unresolved_fragment_count": 3,
+                        "empty_reference_sections_unresolved": 1,
+                    }
+                },
+            },
+            inspect={
+                "visible_junk_counts": {},
+                "broken_href_counts": {},
+                "broken_internal_anchors": 0,
+                "metadata_placeholder_title": False,
+                "metadata_placeholder_creator": False,
+            },
+            heading_summary={"epubcheck_status": "passed"},
+        )
+
+        blocker_codes = [item["code"] for item in blockers]
+
+        self.assertEqual(
+            blocker_codes,
+            [
+                "reference_quality_gate_failed",
+                "reference_citations_missing",
+                "reference_citations_ambiguous",
+                "reference_unresolved_fragments",
+                "reference_empty_section_unresolved",
+            ],
+        )
+        self.assertEqual(_derive_case_grade(blockers, []), "fail")
+
+    def test_reference_cleanup_review_signals_remain_review_warnings(self) -> None:
+        warnings = _build_case_warnings(
+            summary={"section_count": 3},
+            quality={
+                "validation_status": "passed",
+                "reference_cleanup": {
+                    "quality_gate_status": "passed",
+                    "records_flagged_for_review": 3,
+                    "review_entry_count": 2,
+                },
+            },
+            inspect={"nav_entries": 3, "package_language": "pl"},
+            heading_summary={"release_status": "pass", "epubcheck_status": "passed"},
+        )
+
+        self.assertEqual([item["code"] for item in warnings], ["reference_review_needed"])
+        self.assertEqual(_derive_case_grade([], warnings), "pass_with_review")
+
+    def test_empty_reference_section_without_citations_is_warning_not_blocker(self) -> None:
+        quality = {
+            "validation_status": "passed",
+            "text_cleanup": {
+                "reference_cleanup": {
+                    "reference_quality_gate_status": "passed_with_warnings",
+                    "citations_detected": 0,
+                    "empty_reference_sections_unresolved": 1,
+                }
+            },
+        }
+        inspect = {
+            "visible_junk_counts": {},
+            "broken_href_counts": {},
+            "broken_internal_anchors": 0,
+            "metadata_placeholder_title": False,
+            "metadata_placeholder_creator": False,
+        }
+
+        blockers = _build_case_blockers(
+            quality=quality,
+            inspect=inspect,
+            heading_summary={"epubcheck_status": "passed"},
+        )
+        warnings = _build_case_warnings(
+            summary={"section_count": 3},
+            quality=quality,
+            inspect={**inspect, "nav_entries": 3, "package_language": "pl"},
+            heading_summary={"release_status": "pass", "epubcheck_status": "passed"},
+        )
+
+        self.assertNotIn("reference_empty_section_unresolved", [item["code"] for item in blockers])
+        self.assertIn("reference_empty_section_review", [item["code"] for item in warnings])
+        self.assertEqual(_derive_case_grade(blockers, warnings), "pass_with_review")
+
     def test_pre_heading_epubcheck_failure_recovered_by_heading_repair_is_review_not_blocker(self) -> None:
         quality = {"validation_status": "failed"}
         heading_summary = {"status": "completed", "epubcheck_status": "passed", "release_status": "pass"}
@@ -212,6 +306,82 @@ class PremiumCorpusSmokeTests(unittest.TestCase):
             [item["code"] for item in relaxed_warnings],
             ["unexpected_language"],
         )
+
+    def test_output_assertions_are_generic_by_document_class_route(self) -> None:
+        stats = {
+            "xhtml_count": 2,
+            "image_count": 1,
+            "nav_entries": 2,
+            "package_language": "en",
+            "heading_counts": {"h1": 1},
+        }
+
+        docx_assertions = build_output_assertions(
+            document_class="docx_rich_content",
+            input_type="docx",
+            stats=stats,
+            validation_status="passed",
+        )
+        diagram_assertions = build_output_assertions(
+            document_class="diagram_training_book",
+            input_type="pdf",
+            stats={**stats, "image_count": 0},
+            validation_status="passed",
+        )
+
+        self.assertFalse([item for item in docx_assertions if item["status"] == "failed"])
+        self.assertIn("docx_sections_materialized", {item["id"] for item in docx_assertions})
+        failed_diagram = [item for item in diagram_assertions if item["status"] == "failed"]
+        self.assertEqual([item["id"] for item in failed_diagram], ["diagram_output_has_images"])
+
+    def test_class_coverage_exposes_converted_analysis_only_and_skipped_reasons(self) -> None:
+        rows = [
+            {
+                "case_id": "report_pdf",
+                "file": "report.pdf",
+                "document_class": "document-like-report",
+                "input_type": "pdf",
+                "mode": "convert-and-audit",
+                "grade": "pass",
+            },
+            {
+                "case_id": "large_diagram",
+                "file": "large.pdf",
+                "document_class": "large-diagram-corpus",
+                "input_type": "pdf",
+                "mode": "analysis-only",
+                "analysis_only_reason": "Large analysis-only stress case for profile detection.",
+            },
+        ]
+        source_summary = CorpusSourceSummary(
+            source_mode="manifest-backed",
+            manifest_path="manifest.json",
+            manifest_case_count=3,
+            eligible_manifest_cases=1,
+            skipped_manifest_cases=1,
+            skipped_case_labels=("simple_report_docx (docx)",),
+            fallback_used=False,
+            fallback_reason="",
+            skipped_case_reasons=(
+                {
+                    "id": "simple_report_docx",
+                    "document_class": "docx_structured_report",
+                    "input_type": "docx",
+                    "reason": "premium_pdf_only",
+                    "detail": "Covered by smoke.",
+                },
+            ),
+        )
+
+        coverage = _build_class_coverage(rows, source_summary=source_summary)
+
+        self.assertEqual(coverage["converted_classes"], ["document-like-report"])
+        self.assertEqual(coverage["analysis_only_classes"], ["large-diagram-corpus"])
+        self.assertEqual(coverage["skipped_classes"], ["docx_structured_report"])
+        self.assertEqual(coverage["converted_focus_routes"], ["dense_report"])
+        self.assertEqual(coverage["analysis_only_focus_routes"], ["diagram_chess"])
+        self.assertEqual(coverage["skipped_focus_routes"], ["docx"])
+        self.assertEqual(coverage["skipped_cases"][0]["reason"], "premium_pdf_only")
 
 
 if __name__ == "__main__":

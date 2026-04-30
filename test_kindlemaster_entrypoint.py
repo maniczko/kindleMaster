@@ -12,21 +12,30 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import kindlemaster
+import premium_tools
 from kindlemaster import (
     BROWSER_TESTS,
     CORPUS_TESTS,
+    DISCOVER_ONLY_TESTS,
     QUICK_TESTS,
     RELEASE_TESTS,
     RUNTIME_TESTS,
+    SUITE_REGISTRY,
+    TEST_FILE_PATTERN,
     _json_text,
     _run_bootstrap,
     _run_convert,
     _run_tests,
 )
-from premium_tools import detect_toolchain
 
 
 class KindleMasterEntrypointTests(unittest.TestCase):
+    def setUp(self) -> None:
+        premium_tools.clear_toolchain_cache()
+
+    def tearDown(self) -> None:
+        premium_tools.clear_toolchain_cache()
+
     def test_json_text_serializes_objects_and_preserves_unicode(self) -> None:
         class CustomPayload:
             def __str__(self) -> str:
@@ -93,6 +102,23 @@ class KindleMasterEntrypointTests(unittest.TestCase):
         self.assertIn("test_corpus_gate.py", CORPUS_TESTS)
         self.assertIn("test_premium_corpus_smoke.py", CORPUS_TESTS)
 
+    def test_suite_registry_accounts_for_all_root_test_files(self) -> None:
+        repo_root = Path(__file__).resolve().parent
+        discovered_tests = {path.name for path in repo_root.glob(TEST_FILE_PATTERN) if path.is_file()}
+        explicit_tests: set[str] = set()
+
+        self.assertEqual(set(SUITE_REGISTRY), {"quick", "release", "corpus", "browser", "runtime"})
+        for suite_name, suite_tests in SUITE_REGISTRY.items():
+            self.assertEqual(len(suite_tests), len(set(suite_tests)), suite_name)
+            explicit_tests.update(suite_tests)
+
+        discover_only_tests = set(DISCOVER_ONLY_TESTS)
+        accounted_tests = explicit_tests | discover_only_tests
+
+        self.assertFalse(discover_only_tests & explicit_tests)
+        self.assertEqual(discovered_tests - accounted_tests, set())
+        self.assertEqual(accounted_tests - discovered_tests, set())
+
     def test_browser_harness_file_does_not_import_playwright(self) -> None:
         harness_source = Path("test_browser_polling_runtime_harness.py").read_text(encoding="utf-8")
         self.assertNotIn("playwright.sync_api", harness_source)
@@ -121,19 +147,21 @@ class KindleMasterEntrypointTests(unittest.TestCase):
         def fake_module_available(name: str) -> bool:
             return module_presence.get(name, False)
 
-        with patch("premium_tools._module_available", side_effect=fake_module_available):
-            with patch("premium_tools._command_available", return_value=False):
-                with patch("premium_tools.find_java_executable", return_value=None):
-                    with patch("premium_tools.find_tesseract_executable", return_value=Path("C:/tools/tesseract.exe")):
-                        with patch("premium_tools.find_ocrmypdf_executable", return_value=None):
-                            with patch("premium_tools.find_qpdf_executable", return_value=None):
-                                with patch("premium_tools.find_ghostscript_executable", return_value=None):
-                                    with patch("premium_tools.find_tessdata_dir", return_value=Path("C:/tools/tessdata")):
-                                        with patch("premium_tools.list_tesseract_languages", return_value=["eng", "pol"]):
-                                            with patch("premium_tools.find_epubcheck_jar", return_value=None):
-                                                with patch("premium_tools.find_pdfbox_jar", return_value=None):
-                                                    with patch("premium_tools.find_playwright_chromium_executable", return_value=None):
-                                                        toolchain = detect_toolchain()
+        with (
+            patch("premium_tools._module_available", side_effect=fake_module_available),
+            patch("premium_tools._command_available", return_value=False),
+            patch("premium_tools.find_java_executable", return_value=None),
+            patch("premium_tools.find_tesseract_executable", return_value=Path("C:/tools/tesseract.exe")),
+            patch("premium_tools.find_ocrmypdf_executable", return_value=None),
+            patch("premium_tools.find_qpdf_executable", return_value=None),
+            patch("premium_tools.find_ghostscript_executable", return_value=None),
+            patch("premium_tools.find_tessdata_dir", return_value=Path("C:/tools/tessdata")),
+            patch("premium_tools.list_tesseract_languages", return_value=["eng", "pol"]),
+            patch("premium_tools.find_epubcheck_jar", return_value=None),
+            patch("premium_tools.find_pdfbox_jar", return_value=None),
+            patch("premium_tools.find_playwright_chromium_executable", return_value=None),
+        ):
+            toolchain = premium_tools.detect_toolchain()
 
         self.assertEqual(toolchain["bootstrap"]["profiles"]["runtime_only"]["status"], "supported")
         self.assertEqual(toolchain["bootstrap"]["profiles"]["developer"]["status"], "supported")
@@ -224,6 +252,18 @@ class KindleMasterEntrypointTests(unittest.TestCase):
             ],
         )
 
+    def test_run_tests_full_uses_unittest_discover_diagnostic_lane(self) -> None:
+        with patch("kindlemaster.subprocess.run", return_value=SimpleNamespace(returncode=0)) as run_mock:
+            exit_code = _run_tests("full")
+
+        self.assertEqual(exit_code, 0)
+        run_mock.assert_called_once()
+        self.assertEqual(
+            run_mock.call_args.args[0],
+            [sys.executable, "-m", "unittest", "discover", "-p", TEST_FILE_PATTERN],
+        )
+        self.assertEqual(run_mock.call_args.kwargs["cwd"], Path(kindlemaster.__file__).resolve().parent)
+
     def test_doctor_command_routes_to_toolchain_detection(self) -> None:
         payload = {"verification_surfaces": {"quick": {"status": "supported"}}}
         with patch("premium_tools.detect_toolchain", return_value=payload) as doctor_mock:
@@ -257,7 +297,7 @@ class KindleMasterEntrypointTests(unittest.TestCase):
                         "kindlemaster.py",
                         "smoke",
                         "--mode",
-                        "full",
+                        "micro",
                         "--manifest",
                         "reference_inputs/manifest.json",
                         "--output-dir",
@@ -273,7 +313,7 @@ class KindleMasterEntrypointTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         smoke_mock.assert_called_once_with(
             manifest_path="reference_inputs/manifest.json",
-            mode="full",
+            mode="micro",
             output_dir="out",
             reports_dir="reports",
             case_filters=["ocr"],

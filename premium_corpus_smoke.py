@@ -5,6 +5,7 @@ import io
 import json
 import re
 import tempfile
+import time
 import zipfile
 from collections import Counter
 from dataclasses import asdict, dataclass
@@ -27,6 +28,8 @@ class CorpusCase:
     notes: str = ""
     analysis_only: bool = False
     release_strict: bool = True
+    case_id: str = ""
+    input_type: str = "pdf"
 
 
 @dataclass(frozen=True)
@@ -53,6 +56,7 @@ class CorpusSourceSummary:
     skipped_case_labels: tuple[str, ...]
     fallback_used: bool
     fallback_reason: str
+    skipped_case_reasons: tuple[dict[str, str], ...] = ()
 
 
 DEFAULT_MANIFEST_PATH = Path("reference_inputs/manifest.json")
@@ -118,6 +122,13 @@ BROKEN_HREF_PATTERNS = {
     "half_url_https_the": re.compile(r"https?://the(?:\b|[./])", re.IGNORECASE),
     "orphan_percent_tail": re.compile(r"%2(?:\b|[^\da-fA-F])"),
 }
+FOCUSED_OUTPUT_ROUTES = {
+    "docx": "DOCX conversion",
+    "magazine_layout_heavy": "Magazine/layout-heavy",
+    "dense_report": "Dense/report",
+    "ocr_scan": "OCR/scan",
+    "diagram_chess": "Diagram/chess",
+}
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -125,6 +136,160 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(value)
     except Exception:
         return default
+
+
+def _normalized_class_token(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    for token in (" ", "-", "/", "\\"):
+        normalized = normalized.replace(token, "_")
+    while "__" in normalized:
+        normalized = normalized.replace("__", "_")
+    return normalized.strip("_")
+
+
+def classify_focus_routes(document_class: str, input_type: str = "") -> tuple[str, ...]:
+    normalized_class = _normalized_class_token(document_class)
+    normalized_input = _normalized_class_token(input_type)
+    routes: list[str] = []
+    if normalized_input == "docx" or normalized_class.startswith("docx"):
+        routes.append("docx")
+    if any(token in normalized_class for token in ("magazine", "layout")):
+        routes.append("magazine_layout_heavy")
+    if (
+        any(token in normalized_class for token in ("dense", "business_guide", "handbook"))
+        or ("report" in normalized_class and normalized_input != "docx" and not normalized_class.startswith("docx"))
+    ):
+        routes.append("dense_report")
+    if any(token in normalized_class for token in ("ocr", "scan")):
+        routes.append("ocr_scan")
+    if any(token in normalized_class for token in ("diagram", "chess", "training", "tactic")):
+        routes.append("diagram_chess")
+    return tuple(dict.fromkeys(routes))
+
+
+def _heading_total(stats: dict[str, Any]) -> int:
+    return sum(_safe_int(value) for value in (stats.get("heading_counts") or {}).values())
+
+
+def _output_assertion(
+    assertion_id: str,
+    *,
+    passed: bool,
+    detail: str,
+    route: str = "base",
+    severity: str = "blocker",
+) -> dict[str, str]:
+    return {
+        "id": assertion_id,
+        "route": route,
+        "route_label": FOCUSED_OUTPUT_ROUTES.get(route, route),
+        "status": "passed" if passed else ("failed" if severity == "blocker" else "passed_with_warnings"),
+        "severity": severity,
+        "detail": detail,
+    }
+
+
+def build_output_assertions(
+    *,
+    document_class: str,
+    input_type: str,
+    stats: dict[str, Any],
+    validation_status: str = "",
+) -> list[dict[str, str]]:
+    routes = classify_focus_routes(document_class, input_type)
+    xhtml_count = _safe_int(stats.get("xhtml_count", 0))
+    image_count = _safe_int(stats.get("image_count", 0))
+    nav_entries = _safe_int(stats.get("nav_entries", 0))
+    language = str(stats.get("package_language", "") or "").strip().lower()
+    heading_count = _heading_total(stats)
+
+    assertions = [
+        _output_assertion(
+            "content_xhtml_present",
+            passed=xhtml_count > 0,
+            detail=f"xhtml_count={xhtml_count}",
+        ),
+        _output_assertion(
+            "toc_entries_present",
+            passed=nav_entries > 0,
+            detail=f"nav_entries={nav_entries}",
+        ),
+        _output_assertion(
+            "package_language_supported",
+            passed=language in {"pl", "en"},
+            detail=f"package_language={language or 'missing'}",
+            severity="warning",
+        ),
+    ]
+    if validation_status:
+        assertions.append(
+            _output_assertion(
+                "validation_not_failed",
+                passed=validation_status != "failed",
+                detail=f"validation_status={validation_status}",
+            )
+        )
+
+    for route in routes:
+        if route == "docx":
+            assertions.append(
+                _output_assertion(
+                    "docx_sections_materialized",
+                    passed=xhtml_count > 0 and nav_entries > 0,
+                    detail=f"xhtml_count={xhtml_count}; nav_entries={nav_entries}",
+                    route=route,
+                )
+            )
+        elif route == "magazine_layout_heavy":
+            assertions.append(
+                _output_assertion(
+                    "layout_output_has_visual_evidence",
+                    passed=image_count > 0,
+                    detail=f"image_count={image_count}",
+                    route=route,
+                    severity="warning",
+                )
+            )
+        elif route == "dense_report":
+            assertions.append(
+                _output_assertion(
+                    "dense_report_has_headings_or_toc",
+                    passed=heading_count > 0 or nav_entries > 1,
+                    detail=f"heading_count={heading_count}; nav_entries={nav_entries}",
+                    route=route,
+                )
+            )
+        elif route == "ocr_scan":
+            assertions.append(
+                _output_assertion(
+                    "scan_output_has_visual_or_text_content",
+                    passed=image_count > 0 or xhtml_count > 0,
+                    detail=f"image_count={image_count}; xhtml_count={xhtml_count}",
+                    route=route,
+                )
+            )
+        elif route == "diagram_chess":
+            assertions.append(
+                _output_assertion(
+                    "diagram_output_has_images",
+                    passed=image_count > 0,
+                    detail=f"image_count={image_count}",
+                    route=route,
+                )
+            )
+    return assertions
+
+
+def _assertion_status_counts(assertions: list[dict[str, str]]) -> dict[str, int]:
+    return dict(Counter(assertion.get("status", "unknown") for assertion in assertions))
+
+
+def _failed_assertions(assertions: list[dict[str, str]]) -> list[dict[str, str]]:
+    return [assertion for assertion in assertions if assertion.get("status") == "failed"]
+
+
+def _warning_assertions(assertions: list[dict[str, str]]) -> list[dict[str, str]]:
+    return [assertion for assertion in assertions if assertion.get("status") == "passed_with_warnings"]
 
 
 def _resolve_opf_name(names: list[str]) -> str | None:
@@ -257,7 +422,52 @@ def _build_case_blockers(
         blockers.append({"code": "placeholder_creator", "detail": inspect.get("package_creator", "")})
     if heading_summary.get("epubcheck_status") == "failed":
         blockers.append({"code": "heading_repair_epubcheck_failed", "detail": "Heading/TOC repair broke EPUB validity."})
+    reference_cleanup = _reference_cleanup_payload(quality)
+    reference_status = str(
+        reference_cleanup.get("reference_quality_gate_status")
+        or reference_cleanup.get("quality_gate_status")
+        or reference_cleanup.get("status")
+        or ""
+    ).lower()
+    if reference_status in {"failed", "fail", "error", "blocked"}:
+        blockers.append(
+            {
+                "code": "reference_quality_gate_failed",
+                "detail": f"reference_quality_gate_status={reference_status}",
+            }
+        )
+    missing_records = _safe_int(reference_cleanup.get("citations_missing_record", 0))
+    ambiguous_records = _safe_int(reference_cleanup.get("citations_ambiguous", 0))
+    unresolved_fragments = _safe_int(reference_cleanup.get("unresolved_fragment_count", 0))
+    empty_unresolved = _safe_int(reference_cleanup.get("empty_reference_sections_unresolved", 0))
+    citations_detected = _safe_int(reference_cleanup.get("citations_detected", 0))
+    if missing_records > 0:
+        blockers.append({"code": "reference_citations_missing", "detail": f"citations_missing_record={missing_records}"})
+    if ambiguous_records > 0:
+        blockers.append({"code": "reference_citations_ambiguous", "detail": f"citations_ambiguous={ambiguous_records}"})
+    if unresolved_fragments > 0:
+        blockers.append({"code": "reference_unresolved_fragments", "detail": f"unresolved_fragment_count={unresolved_fragments}"})
+    if empty_unresolved > 0 and (citations_detected > 0 or missing_records > 0 or ambiguous_records > 0):
+        blockers.append(
+            {
+                "code": "reference_empty_section_unresolved",
+                "detail": f"empty_reference_sections_unresolved={empty_unresolved}",
+            }
+        )
     return blockers
+
+
+def _reference_cleanup_payload(quality: dict[str, Any]) -> dict[str, Any]:
+    direct = quality.get("reference_cleanup")
+    if isinstance(direct, dict):
+        return direct
+    text_cleanup = quality.get("text_cleanup")
+    if isinstance(text_cleanup, dict) and isinstance(text_cleanup.get("reference_cleanup"), dict):
+        return text_cleanup["reference_cleanup"]
+    semantic_cleanup = quality.get("semantic_cleanup")
+    if isinstance(semantic_cleanup, dict) and isinstance(semantic_cleanup.get("reference_cleanup"), dict):
+        return semantic_cleanup["reference_cleanup"]
+    return {}
 
 
 def _epubcheck_recovered_by_heading_repair(
@@ -364,9 +574,53 @@ def _build_case_warnings(
         warnings.append({"code": "heading_release_fail", "detail": "Heading/TOC repair did not reach release-ready status."})
     elif heading_summary.get("release_status") == "pass_with_review":
         warnings.append({"code": "heading_manual_review", "detail": f"manual_review_count={heading_summary.get('manual_review_count', 0)}"})
+    reference_cleanup = _reference_cleanup_payload(quality)
+    flagged_records = _safe_int(reference_cleanup.get("records_flagged_for_review", 0))
+    review_entries = _safe_int(reference_cleanup.get("review_entry_count", 0))
+    visible_junk = _safe_int(reference_cleanup.get("visible_junk_detected", 0))
+    empty_unresolved = _safe_int(reference_cleanup.get("empty_reference_sections_unresolved", 0))
+    citations_detected = _safe_int(reference_cleanup.get("citations_detected", 0))
+    if flagged_records > 0 or review_entries > 0:
+        warnings.append(
+            {
+                "code": "reference_review_needed",
+                "detail": f"records_flagged_for_review={flagged_records}; review_entry_count={review_entries}",
+            }
+        )
+    if visible_junk > 0:
+        warnings.append({"code": "reference_visible_junk", "detail": f"visible_junk_detected={visible_junk}"})
+    if empty_unresolved > 0 and citations_detected == 0:
+        warnings.append(
+            {
+                "code": "reference_empty_section_review",
+                "detail": f"empty_reference_sections_unresolved={empty_unresolved}; citations_detected=0",
+            }
+        )
     if inspect.get("package_language", "").lower() not in {"pl", "en"}:
         warnings.append({"code": "unexpected_language", "detail": inspect.get("package_language", "")})
     return warnings
+
+
+def _duration_bucket(elapsed_seconds: float) -> str:
+    if elapsed_seconds < 5:
+        return "fast"
+    if elapsed_seconds < 30:
+        return "moderate"
+    if elapsed_seconds < 120:
+        return "slow"
+    return "very_slow"
+
+
+def _case_profile_hint(*, case: CorpusCase, analysis: Any) -> str:
+    payload = _analysis_payload(analysis)
+    tokens = [f"input:{case.input_type}", f"class:{case.document_class}"]
+    profile = str(payload.get("profile", "") or "").strip()
+    fallback = str(payload.get("fallback_recommendation", "") or "").strip()
+    if profile:
+        tokens.append(f"profile:{profile}")
+    if fallback:
+        tokens.append(f"fallback:{fallback}")
+    return ", ".join(tokens)
 
 
 def _fallback_detail(signal: dict[str, Any]) -> str:
@@ -454,15 +708,34 @@ def _load_manifest_conversion_cases(
     manifest_cases = manifest_payload.get("cases", [])
     eligible_cases: list[CorpusCase] = []
     skipped_labels: list[str] = []
+    skipped_reasons: list[dict[str, str]] = []
     for case in manifest_cases:
         input_type = str(case.get("input_type", "")).lower()
         case_id = str(case.get("id", "unknown"))
         if input_type != "pdf":
             skipped_labels.append(f"{case_id} ({input_type or 'unknown'})")
+            skipped_reasons.append(
+                {
+                    "id": case_id,
+                    "document_class": str(case.get("document_class", "unknown")),
+                    "input_type": input_type or "unknown",
+                    "reason": "premium_pdf_only",
+                    "detail": "Premium corpus conversion currently audits PDF fixtures; non-PDF inputs are covered by smoke/output assertions.",
+                }
+            )
             continue
         target_path = str(case.get("target_path") or case.get("target") or "").strip()
         if not target_path:
             skipped_labels.append(f"{case_id} (missing-target)")
+            skipped_reasons.append(
+                {
+                    "id": case_id,
+                    "document_class": str(case.get("document_class", "unknown")),
+                    "input_type": input_type or "unknown",
+                    "reason": "missing_target_path",
+                    "detail": "Manifest case has no target_path or target.",
+                }
+            )
             continue
         eligible_cases.append(
             CorpusCase(
@@ -470,6 +743,8 @@ def _load_manifest_conversion_cases(
                 document_class=str(case.get("document_class", "unknown")),
                 notes=str(case.get("notes", "")),
                 release_strict=bool(case.get("release_strict", True)),
+                case_id=case_id,
+                input_type=input_type,
             )
         )
 
@@ -482,6 +757,7 @@ def _load_manifest_conversion_cases(
         skipped_case_labels=tuple(skipped_labels),
         fallback_used=False,
         fallback_reason="",
+        skipped_case_reasons=tuple(skipped_reasons),
     )
 
 
@@ -555,21 +831,44 @@ def _select_corpus_batch(
 
 def _run_analysis_only_case(case: CorpusCase) -> dict[str, Any]:
     if not case.path.exists():
-        return {"file": str(case.path), "document_class": case.document_class, "status": "missing"}
+        return {
+            "case_id": case.case_id or case.path.stem,
+            "file": str(case.path),
+            "document_class": case.document_class,
+            "input_type": case.input_type,
+            "mode": "analysis-only",
+            "status": "missing",
+            "analysis_only_reason": case.notes or "analysis_only_missing_input",
+        }
     analysis = analyze_publication(str(case.path), preferred_profile="auto-premium")
     return {
+        "case_id": case.case_id or case.path.stem,
         "file": case.path.name,
         "document_class": case.document_class,
+        "input_type": case.input_type,
         "mode": "analysis-only",
         "notes": case.notes,
+        "analysis_only_reason": case.notes or "Analysis-only profile detection case.",
+        "focus_routes": list(classify_focus_routes(case.document_class, case.input_type)),
         "analysis": analysis.to_dict() if hasattr(analysis, "to_dict") else analysis,
     }
 
 
 def _run_conversion_case(case: CorpusCase, *, run_heading_repair: bool) -> dict[str, Any]:
     if not case.path.exists():
-        return {"file": str(case.path), "document_class": case.document_class, "status": "missing"}
+        return {
+            "case_id": case.case_id or case.path.stem,
+            "file": str(case.path),
+            "document_class": case.document_class,
+            "input_type": case.input_type,
+            "mode": "convert-and-audit",
+            "status": "missing",
+            "grade": "fail",
+            "blockers": [{"code": "input_missing", "detail": str(case.path)}],
+            "warnings": [],
+        }
 
+    started = time.perf_counter()
     result = convert_pdf_to_epub_with_report(
         str(case.path),
         config=ConversionConfig(profile="auto-premium"),
@@ -639,6 +938,26 @@ def _run_conversion_case(case: CorpusCase, *, run_heading_repair: bool) -> dict[
         quality=quality,
         case=case,
     )
+    output_assertions = build_output_assertions(
+        document_class=case.document_class,
+        input_type=case.input_type,
+        stats=repaired_inspect,
+        validation_status=str(quality.get("validation_status", "") or ""),
+    )
+    for assertion in _failed_assertions(output_assertions):
+        blockers.append(
+            {
+                "code": "output_assertion_failed",
+                "detail": f"{assertion['id']}: {assertion['detail']}",
+            }
+        )
+    for assertion in _warning_assertions(output_assertions):
+        warnings.append(
+            {
+                "code": "output_assertion_warning",
+                "detail": f"{assertion['id']}: {assertion['detail']}",
+            }
+        )
     if release_fallback["used"]:
         if release_fallback["severity"] == "blocker":
             blockers.append({"code": "legacy_fallback_used", "detail": _fallback_detail(release_fallback)})
@@ -649,25 +968,90 @@ def _run_conversion_case(case: CorpusCase, *, run_heading_repair: bool) -> dict[
     elif size_gate["status"] == "passed_with_warnings":
         warnings.append({"code": "size_budget_warning", "detail": size_gate["message"]})
     grade = _derive_case_grade(blockers, warnings)
+    elapsed_seconds = round(time.perf_counter() - started, 4)
 
     return {
+        "case_id": case.case_id or case.path.stem,
         "file": case.path.name,
         "document_class": case.document_class,
+        "input_type": case.input_type,
         "mode": "convert-and-audit",
         "notes": case.notes,
         "release_strict": case.release_strict,
+        "focus_routes": list(classify_focus_routes(case.document_class, case.input_type)),
         "analysis": analysis.to_dict() if hasattr(analysis, "to_dict") else analysis,
         "summary": summary,
         "quality": quality,
         "epub_stats": inspect,
         "heading_repair": heading_summary,
         "post_heading_epub_stats": repaired_inspect,
+        "output_assertions": output_assertions,
+        "output_assertion_counts": _assertion_status_counts(output_assertions),
         "size_gate": size_gate,
         "release_fallback": release_fallback,
         "grade": grade,
         "blockers": blockers,
         "warnings": warnings,
         "size_bytes": len(converted_epub_bytes),
+        "elapsed_seconds": elapsed_seconds,
+        "duration_bucket": _duration_bucket(elapsed_seconds),
+        "profile_hint": _case_profile_hint(case=case, analysis=analysis),
+    }
+
+
+def _build_class_coverage(
+    rows: list[dict[str, Any]],
+    *,
+    source_summary: CorpusSourceSummary | None = None,
+) -> dict[str, Any]:
+    converted_rows = [row for row in rows if row.get("mode") == "convert-and-audit"]
+    analysis_rows = [row for row in rows if row.get("mode") == "analysis-only"]
+    converted_classes = sorted({str(row.get("document_class", "")) for row in converted_rows if row.get("document_class")})
+    analysis_only_classes = sorted({str(row.get("document_class", "")) for row in analysis_rows if row.get("document_class")})
+    skipped_cases = list(source_summary.skipped_case_reasons if source_summary is not None else ())
+    skipped_classes = sorted({str(item.get("document_class", "")) for item in skipped_cases if item.get("document_class")})
+    converted_focus_routes = sorted(
+        {
+            route
+            for row in converted_rows
+            for route in classify_focus_routes(str(row.get("document_class", "")), str(row.get("input_type", "")))
+        }
+    )
+    analysis_only_focus_routes = sorted(
+        {
+            route
+            for row in analysis_rows
+            for route in classify_focus_routes(str(row.get("document_class", "")), str(row.get("input_type", "")))
+        }
+    )
+    skipped_focus_routes = sorted(
+        {
+            route
+            for item in skipped_cases
+            for route in classify_focus_routes(str(item.get("document_class", "")), str(item.get("input_type", "")))
+        }
+    )
+    return {
+        "converted_class_count": len(converted_classes),
+        "converted_classes": converted_classes,
+        "analysis_only_class_count": len(analysis_only_classes),
+        "analysis_only_classes": analysis_only_classes,
+        "skipped_class_count": len(skipped_classes),
+        "skipped_classes": skipped_classes,
+        "converted_focus_routes": converted_focus_routes,
+        "analysis_only_focus_routes": analysis_only_focus_routes,
+        "skipped_focus_routes": skipped_focus_routes,
+        "analysis_only_cases": [
+            {
+                "case_id": str(row.get("case_id", "")),
+                "file": str(row.get("file", "")),
+                "document_class": str(row.get("document_class", "")),
+                "reason": str(row.get("analysis_only_reason") or row.get("notes") or "analysis_only"),
+                "focus_routes": list(classify_focus_routes(str(row.get("document_class", "")), str(row.get("input_type", "")))),
+            }
+            for row in analysis_rows
+        ],
+        "skipped_cases": skipped_cases,
     }
 
 
@@ -707,6 +1091,7 @@ def _build_overall_summary(
         "release_fallback_counts": dict(fallback_counts),
         "recovered_epubcheck_count": warning_counts.get("pre_heading_epubcheck_recovered", 0),
         "class_grade": class_grade,
+        "class_coverage": _build_class_coverage(rows, source_summary=source_summary),
         "overall_status": overall_status,
         "proof_scope": proof_scope,
         "source_mode": source_summary.source_mode if source_summary is not None else "legacy-static",
@@ -754,9 +1139,13 @@ def _build_markdown_report(
             lines.append(f"- Skipped manifest cases: `{source_summary.skipped_manifest_cases}`")
             if source_summary.skipped_case_labels:
                 lines.append(f"- Skipped inputs: `{', '.join(source_summary.skipped_case_labels)}`")
+            if source_summary.skipped_case_reasons:
+                reason_counts = Counter(item.get("reason", "unknown") for item in source_summary.skipped_case_reasons)
+                lines.append(f"- Skipped reasons: `{json.dumps(dict(reason_counts), ensure_ascii=False)}`")
             if source_summary.fallback_used:
                 lines.append(f"- Fallback reason: `{source_summary.fallback_reason}`")
         lines.append("")
+    class_coverage = overall.get("class_coverage") or {}
     lines.extend(
         [
         "## Summary",
@@ -770,6 +1159,10 @@ def _build_markdown_report(
         f"- Repeated warnings: `{json.dumps(overall['warning_counts'], ensure_ascii=False)}`",
         f"- Release fallback counts: `{json.dumps(overall.get('release_fallback_counts', {}), ensure_ascii=False)}`",
         f"- Recovered EPUBCheck cases: `{overall.get('recovered_epubcheck_count', 0)}`",
+        f"- Converted classes: `{', '.join(class_coverage.get('converted_classes', [])) or 'none'}`",
+        f"- Converted focus routes: `{', '.join(class_coverage.get('converted_focus_routes', [])) or 'none'}`",
+        f"- Analysis-only classes: `{', '.join(class_coverage.get('analysis_only_classes', [])) or 'none'}`",
+        f"- Skipped classes: `{', '.join(class_coverage.get('skipped_classes', [])) or 'none'}`",
         "",
         "## Cases",
         "",
@@ -792,6 +1185,7 @@ def _build_markdown_report(
                 [
                     f"- Detected profile: `{analysis.get('profile', 'unknown')}`",
                     f"- Reason: {analysis.get('profile_reason', '')}",
+                    f"- Analysis-only reason: {row.get('analysis_only_reason', row.get('notes', 'analysis_only'))}",
                     "",
                 ]
             )
@@ -812,6 +1206,8 @@ def _build_markdown_report(
                 f"- Heading repair: release=`{heading_repair.get('release_status', 'skipped')}` toc `{heading_repair.get('toc_entries_before', 0)} -> {heading_repair.get('toc_entries_after', 0)}` removed=`{heading_repair.get('headings_removed', 0)}` review=`{heading_repair.get('manual_review_count', 0)}`",
             ]
         )
+        if row.get("output_assertions"):
+            lines.append(f"- Output assertions: `{json.dumps(row.get('output_assertion_counts', {}), ensure_ascii=False)}`")
         size_gate = row.get("size_gate") or {}
         if size_gate:
             lines.append(f"- Size gate: `{size_gate.get('status', 'unknown')}`")
@@ -923,7 +1319,13 @@ def run_premium_corpus_smoke(
 def _case_matches_filters(case: CorpusCase, filters: list[str]) -> bool:
     if not filters:
         return True
-    haystacks = [case.path.name.lower(), case.document_class.lower(), case.notes.lower()]
+    haystacks = [
+        case.case_id.lower(),
+        case.path.name.lower(),
+        case.document_class.lower(),
+        case.input_type.lower(),
+        case.notes.lower(),
+    ]
     return any(any(token in haystack for haystack in haystacks) for token in filters)
 
 

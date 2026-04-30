@@ -9,23 +9,32 @@ from tempfile import TemporaryDirectory
 
 from lxml import etree
 
+from epub_package_ops import (
+    _get_spine_xhtml_paths as _shared_get_spine_xhtml_paths,
+    _locate_opf as _shared_locate_opf,
+)
 from kindle_semantic_cleanup import (
     _build_curated_toc_entries,
     _detect_cleanup_scope,
     _dominant_publication_heading,
+    _extract_epub,
     _extract_reference_entries_from_block,
     _build_nav_xhtml,
     _build_toc_ncx,
     _derive_package_metadata,
     _expand_semantic_blocks,
+    _get_spine_xhtml_paths,
     _inject_problem_solution_links,
+    _locate_opf,
     _looks_like_training_book,
     _manual_review_from_heading_decisions,
     _normalize_text_light,
+    _pack_epub,
     _process_chapter,
     _rebuild_toc_entries_from_final_chapters,
     _repair_exercise_chapter,
     _should_include_in_toc,
+    _snapshot_package_metadata,
     finalize_epub_for_kindle,
 )
 
@@ -39,6 +48,59 @@ class SemanticEpubCleanupTests(unittest.TestCase):
                 compress_type = zipfile.ZIP_STORED if archive_path == "mimetype" else zipfile.ZIP_DEFLATED
                 archive.writestr(archive_path, payload, compress_type=compress_type)
         return output.getvalue()
+
+    def test_package_ops_compat_exports_round_trip_package_primitives(self):
+        epub_bytes = self._build_epub_bytes(
+            {
+                "mimetype": "application/epub+zip",
+                "META-INF/container.xml": """<?xml version="1.0"?>
+<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
+  <rootfiles>
+    <rootfile full-path="EPUB/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>""",
+                "EPUB/content.opf": """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title> Sample   Title </dc:title>
+    <dc:creator>Author Name</dc:creator>
+    <dc:language>en</dc:language>
+    <dc:identifier id="bookid">urn:test:sample</dc:identifier>
+    <meta property="dcterms:modified">2024-01-01T00:00:00Z</meta>
+  </metadata>
+  <manifest>
+    <item id="chapter-1" href="chapter_001.xhtml" media-type="application/xhtml+xml"/>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+  </manifest>
+  <spine>
+    <itemref idref="chapter-1"/>
+    <itemref idref="nav"/>
+  </spine>
+</package>""",
+                "EPUB/chapter_001.xhtml": """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>One</title></head><body><h1>One</h1></body></html>""",
+                "EPUB/nav.xhtml": """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body><nav epub:type="toc"><ol><li><a href="chapter_001.xhtml">One</a></li></ol></nav></body></html>""",
+            }
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            root_dir = Path(temp_dir)
+            _extract_epub(epub_bytes, root_dir)
+            opf_path = _locate_opf(root_dir)
+            spine_paths = _get_spine_xhtml_paths(opf_path)
+            metadata = _snapshot_package_metadata(opf_path)
+            repacked = _pack_epub(root_dir)
+
+            self.assertEqual(opf_path, _shared_locate_opf(root_dir))
+            self.assertEqual(spine_paths, _shared_get_spine_xhtml_paths(opf_path))
+
+        self.assertEqual([path.name for path in spine_paths], ["chapter_001.xhtml"])
+        self.assertEqual(metadata["title"], "Sample Title")
+        self.assertEqual(metadata["identifier"], "urn:test:sample")
+        with zipfile.ZipFile(io.BytesIO(repacked), "r") as archive:
+            self.assertEqual(archive.read("mimetype"), b"application/epub+zip")
+            self.assertIn("EPUB/content.opf", archive.namelist())
 
     def test_expand_semantic_blocks_rebuilds_lists_and_structured_blocks(self):
         blocks = [

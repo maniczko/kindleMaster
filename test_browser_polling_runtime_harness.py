@@ -81,6 +81,8 @@ const BASE_CONVERSION_POLL_INTERVAL_MS = 1500;
 const MAX_CONVERSION_POLL_INTERVAL_MS = 5000;
 const MAX_CONVERSION_WAIT_MS = 15 * 60 * 1000;
 const MAX_CONVERSION_POLL_ERRORS = 3;
+const LONG_CONVERSION_NOTICE_MS = 20 * 60 * 1000;
+const LONG_CONVERSION_NOTICE_REPEAT_MS = 60 * 1000;
 
 function setStatus(message, level) {{
   statusLog.push({{ message, level }});
@@ -137,10 +139,11 @@ for (const source of functionSources) {{
       delayLog,
       fetchCalls,
     }}));
-  }} catch (error) {{
+    }} catch (error) {{
     process.stdout.write(JSON.stringify({{
       ok: false,
       error: error && error.message ? error.message : String(error),
+      code: error && error.code ? error.code : "",
       statusLog,
       delayLog,
       fetchCalls,
@@ -237,6 +240,28 @@ for (const source of functionSources) {{
             any("Ponawiam probe" in entry["message"] for entry in payload["statusLog"]),
             payload["statusLog"],
         )
+
+    def test_failed_status_preserves_application_restart_error_code(self) -> None:
+        payload = self._run_polling_scenario(
+            [
+                {
+                    "type": "response",
+                    "data": {
+                        "success": True,
+                        "status": "failed",
+                        "message": "Konwersja przerwana przez restart aplikacji.",
+                        "error": "Konwersja zostala przerwana przez restart aplikacji. Uruchom konwersje ponownie.",
+                        "error_code": "application_restart",
+                        "poll_after_ms": 0,
+                    },
+                }
+            ]
+        )
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["code"], "application_restart")
+        self.assertIn("Uruchom konwersje ponownie", payload["error"])
+        self.assertEqual(payload["fetchCalls"], 1)
 
     def test_repeated_transient_failures_exhaust_retry_budget(self) -> None:
         payload = self._run_polling_scenario(

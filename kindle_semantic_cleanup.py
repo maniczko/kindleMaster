@@ -15,12 +15,10 @@ Runs as a post-processing pass over generated EPUB files:
 from __future__ import annotations
 
 import html
-import io
 import re
 import tempfile
 import unicodedata
 import uuid
-import zipfile
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -29,6 +27,14 @@ from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup, NavigableString, Tag
 from lxml import etree
+
+from epub_package_ops import (
+    _extract_epub as _shared_extract_epub,
+    _get_spine_xhtml_paths as _shared_get_spine_xhtml_paths,
+    _locate_opf as _shared_locate_opf,
+    _pack_epub as _shared_pack_epub,
+    _snapshot_package_metadata as _shared_snapshot_package_metadata,
+)
 
 try:
     from ftfy import fix_text as _ftfy_fix_text
@@ -583,6 +589,33 @@ th {
   background: #f4f1e8;
 }
 
+table.report-table {
+  table-layout: auto;
+}
+
+table.report-table caption {
+  caption-side: top;
+  text-align: left;
+  font-weight: 700;
+  margin-bottom: 0.35em;
+}
+
+table.wide-table {
+  font-size: 0.82em;
+}
+
+td.numeric-cell {
+  text-align: right;
+  white-space: nowrap;
+}
+
+p.table-note {
+  text-indent: 0;
+  margin: -0.45em 0 0.9em;
+  font-size: 0.85em;
+  color: #666;
+}
+
 .reference-entry {
   text-indent: 0;
 }
@@ -654,8 +687,7 @@ figcaption {
   border: 0.08rem solid #d8d2c3;
   background: #fff;
   box-sizing: border-box;
-  image-rendering: -webkit-optimize-contrast;
-  image-rendering: crisp-edges;
+  image-rendering: auto;
 }
 
 .exercise-number {
@@ -1277,20 +1309,11 @@ def finalize_epub_for_kindle(
 
 
 def _extract_epub(epub_bytes: bytes, root_dir: Path) -> None:
-    with zipfile.ZipFile(io.BytesIO(epub_bytes), "r") as archive:
-        archive.extractall(root_dir)
+    _shared_extract_epub(epub_bytes, root_dir)
 
 
 def _locate_opf(root_dir: Path) -> Path:
-    container_path = root_dir / "META-INF" / "container.xml"
-    container_root = etree.parse(str(container_path)).getroot()
-    rootfile = container_root.find(".//container:rootfile", NS)
-    if rootfile is None:
-        raise RuntimeError("EPUB container.xml does not define rootfile")
-    full_path = rootfile.get("full-path")
-    if not full_path:
-        raise RuntimeError("EPUB rootfile path missing")
-    return root_dir / full_path
+    return _shared_locate_opf(root_dir)
 
 
 def _is_pre_paginated(opf_path: Path) -> bool:
@@ -1304,24 +1327,7 @@ def _is_pre_paginated(opf_path: Path) -> bool:
 
 
 def _get_spine_xhtml_paths(opf_path: Path) -> list[Path]:
-    root = etree.parse(str(opf_path)).getroot()
-    manifest_by_id = {}
-    for item in root.findall(".//opf:manifest/opf:item", NS):
-        manifest_by_id[item.get("id")] = item
-
-    ordered_paths: list[Path] = []
-    for itemref in root.findall(".//opf:spine/opf:itemref", NS):
-        manifest_item = manifest_by_id.get(itemref.get("idref"))
-        if manifest_item is None:
-            continue
-        href = manifest_item.get("href") or ""
-        media_type = manifest_item.get("media-type") or ""
-        if media_type != "application/xhtml+xml":
-            continue
-        if href.endswith("nav.xhtml"):
-            continue
-        ordered_paths.append((opf_path.parent / href).resolve())
-    return ordered_paths
+    return _shared_get_spine_xhtml_paths(opf_path)
 
 
 def _empty_reference_report() -> dict[str, int]:
@@ -1415,87 +1421,7 @@ def _safe_relative_path(path: Path, root_dir: Path) -> str:
 
 
 def _snapshot_package_metadata(opf_path: Path) -> dict[str, object]:
-    parser = etree.XMLParser(remove_blank_text=False)
-    tree = etree.parse(str(opf_path), parser)
-    root = tree.getroot()
-    metadata = root.find(".//opf:metadata", NS)
-    if metadata is None:
-        return {
-            "title": "",
-            "creator": "",
-            "description": "",
-            "language": "",
-            "identifier": "",
-            "modified": "",
-            "counts": {
-                "title": 0,
-                "creator": 0,
-                "description": 0,
-                "language": 0,
-                "identifier": 0,
-                "modified": 0,
-            },
-            "title_values": [],
-            "creator_values": [],
-            "description_values": [],
-            "language_values": [],
-            "identifier_values": [],
-        }
-
-    def values(local_name: str) -> list[str]:
-        return [
-            _normalize_text(element.text or "")
-            for element in metadata.findall(f"dc:{local_name}", NS)
-            if _normalize_text(element.text or "")
-        ]
-
-    title_values = values("title")
-    creator_values = values("creator")
-    description_values = values("description")
-    language_values = values("language")
-    identifier_values = values("identifier")
-    modified_values = [
-        _normalize_text(meta.text or "")
-        for meta in metadata.findall(f"{{{OPF_NS}}}meta")
-        if meta.get("property") == "dcterms:modified" and _normalize_text(meta.text or "")
-    ]
-
-    unique_identifier_id = root.get("unique-identifier", "")
-    resolved_identifier = ""
-    if unique_identifier_id:
-        resolved_identifier = next(
-            (
-                _normalize_text(element.text or "")
-                for element in metadata.findall("dc:identifier", NS)
-                if element.get("id") == unique_identifier_id and _normalize_text(element.text or "")
-            ),
-            "",
-        )
-    if not resolved_identifier:
-        resolved_identifier = identifier_values[0] if identifier_values else ""
-
-    return {
-        "title": title_values[0] if title_values else "",
-        "creator": creator_values[0] if creator_values else "",
-        "description": description_values[0] if description_values else "",
-        "language": language_values[0] if language_values else "",
-        "identifier": resolved_identifier,
-        "modified": modified_values[0] if modified_values else "",
-        "counts": {
-            "title": len(title_values),
-            "creator": len(creator_values),
-            "description": len(description_values),
-            "language": len(language_values),
-            "identifier": len(identifier_values),
-            "modified": len(modified_values),
-        },
-        "title_values": title_values,
-        "creator_values": creator_values,
-        "description_values": description_values,
-        "language_values": language_values,
-        "identifier_values": identifier_values,
-        "modified_values": modified_values,
-    }
+    return _shared_snapshot_package_metadata(opf_path, normalize_text=_normalize_text)
 
 
 def _metadata_diff(before: dict[str, object], after: dict[str, object]) -> list[dict[str, object]]:
@@ -3016,6 +2942,8 @@ def _extract_logical_blocks(
         class_name = ""
         if "diagram-tail" in class_names:
             class_name = "diagram-tail"
+        elif "report-label" in class_names:
+            class_name = "report-label"
         elif "author" in class_names:
             class_name = "author"
         elif "subtitle" in class_names:
@@ -3107,6 +3035,7 @@ def _promote_heading_blocks(blocks: list[dict], *, section_context: str = "body"
             or _split_inline_semicolon_list_items(block)
             or _build_definition_list_block(block)
             or _build_table_block(block)
+            or "report-label" in (block.get("class_name") or "")
         ):
             promoted.append(block)
             continue
@@ -3297,6 +3226,46 @@ def _is_generic_schema_heading_label(text: str) -> bool:
     return bool(
         _matching_text_keys(text)
         & {"co to jest", "jak dziala", "implikacje biznesowe", "przyklad"}
+    )
+
+
+def _looks_like_front_matter_chrome_heading(text: str) -> bool:
+    keys = _matching_text_keys(text)
+    if keys & {"front matter", "material przygotowany dla", "opracowanie dla"}:
+        return True
+    normalized = _normalize_text(text).lower()
+    return normalized.startswith(("front matter", "dla: ", "for: "))
+
+
+def _is_low_information_report_toc_label(text: str) -> bool:
+    return bool(
+        _matching_text_keys(text)
+        & {
+            "kategoria",
+            "wymaganie",
+            "traceability",
+            "idempotencja",
+            "latency",
+            "observability",
+            "pojecie",
+            "znaczenie",
+            "wspierajacy",
+            "acquirer",
+            "authorization",
+            "capture",
+            "chargeback",
+            "clearing",
+            "funding",
+            "issuer",
+            "par",
+            "psp",
+            "refund",
+            "reversal",
+            "sca",
+            "settlement",
+            "tokenizacja",
+            "wallet",
+        }
     )
 
 
@@ -5403,6 +5372,8 @@ def _render_knowledge_section_blocks(
 def _rebuild_knowledge_structure(blocks: list[dict], *, section_context: str = "body") -> list[dict]:
     if section_context not in {"body", "appendix", "glossary"}:
         return blocks
+    if any("report-label" in (block.get("class_name") or "") for block in blocks):
+        return blocks
 
     rebuilt: list[dict] = []
     current_heading_text = ""
@@ -5914,6 +5885,7 @@ def _should_skip_semantic_expansion(block: dict, class_name: str, text: str) -> 
         "problem-page-link",
         "diagram-tail",
         "diagram-caption",
+        "report-label",
         "byline",
         "lead",
     )
@@ -8772,21 +8744,7 @@ def _write_default_css(root_dir: Path) -> None:
 
 
 def _pack_epub(root_dir: Path) -> bytes:
-    output = io.BytesIO()
-    with zipfile.ZipFile(output, "w") as archive:
-        mimetype_path = root_dir / "mimetype"
-        if mimetype_path.exists():
-            archive.write(mimetype_path, "mimetype", compress_type=zipfile.ZIP_STORED)
-
-        for file_path in sorted(root_dir.rglob("*")):
-            if file_path.is_dir() or file_path == mimetype_path:
-                continue
-            archive.write(
-                file_path,
-                file_path.relative_to(root_dir).as_posix(),
-                compress_type=zipfile.ZIP_DEFLATED,
-            )
-    return output.getvalue()
+    return _shared_pack_epub(root_dir)
 
 
 def _set_dc_value(metadata: etree._Element, local_name: str, value: str) -> etree._Element:
@@ -9594,6 +9552,12 @@ def _should_include_in_toc(text: str, level: int) -> bool:
         return False
     if re.match(r"^\.\d+\b", normalized):
         return False
+    if re.fullmatch(r"\d+\.", normalized):
+        return False
+    if _looks_like_front_matter_chrome_heading(normalized):
+        return False
+    if level > 1 and _is_low_information_report_toc_label(normalized):
+        return False
     if _is_generic_schema_heading_label(normalized):
         return False
     if _looks_like_table_header_heading(normalized):
@@ -10065,16 +10029,29 @@ def _rebuild_toc_entries_from_final_chapters(
 def _dedupe_repeated_subsection_toc_labels(entries: list[dict[str, object]]) -> list[dict[str, object]]:
     deduped: list[dict[str, object]] = []
     seen_text_keys: set[str] = set()
+    seen_compact_keys: set[str] = set()
     for entry in entries:
         text = _normalize_text(str(entry.get("text", "") or ""))
         text_key = _normalize_key(text)
+        compact_key = _compact_toc_dedupe_key(text)
         level = int(entry.get("level") or 1)
         if level > 1 and text_key and text_key in seen_text_keys:
             continue
+        if level > 1 and compact_key and compact_key in seen_compact_keys:
+            continue
         if text_key:
             seen_text_keys.add(text_key)
+        if compact_key:
+            seen_compact_keys.add(compact_key)
         deduped.append(entry)
     return deduped
+
+
+def _compact_toc_dedupe_key(text: str) -> str:
+    canonical = _canonical_heading_text(text)
+    if not canonical:
+        canonical = _normalize_text(text).lower()
+    return "".join(char for char in canonical if char.isalnum())
 
 
 def _normalize_key(text: str) -> str:

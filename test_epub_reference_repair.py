@@ -10,6 +10,7 @@ from lxml import etree
 from epub_reference_repair import (
     ReferenceRepairRecord,
     _build_source_pdf_reference_records_from_rows,
+    _infer_source_pdf_path_for_epub,
     repair_epub_reference_sections,
     run_reference_repair_pipeline,
 )
@@ -507,6 +508,46 @@ class EpubReferenceRepairTests(unittest.TestCase):
         self.assertGreaterEqual(result.summary["empty_reference_sections_detected"], 1)
         self.assertEqual(result.summary["reference_quality_gate_status"], "failed")
 
+    def test_empty_reference_section_without_citations_is_review_not_release_blocker(self):
+        body_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+  <head><title>Training Book</title></head>
+  <body>
+    <section>
+      <h1>Training Book</h1>
+      <p>This book has no inline reference citations.</p>
+    </section>
+  </body>
+</html>
+"""
+        empty_reference_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+  <head><title>References</title></head>
+  <body>
+    <section>
+      <h1>References</h1>
+      <p> </p>
+    </section>
+  </body>
+</html>
+"""
+        epub_bytes = self._epub_with_chapters(
+            [
+                ("chapter_001.xhtml", body_source),
+                ("chapter_002.xhtml", empty_reference_source),
+            ]
+        )
+
+        with patch(
+            "epub_reference_repair.run_epubcheck",
+            return_value={"status": "passed", "tool": "epubcheck", "messages": []},
+        ):
+            result = repair_epub_reference_sections(epub_bytes, language_hint="en")
+
+        self.assertEqual(result.summary["citations_detected"], 0)
+        self.assertGreaterEqual(result.summary["empty_reference_sections_unresolved"], 1)
+        self.assertEqual(result.summary["reference_quality_gate_status"], "passed_with_warnings")
+
     def test_reference_repair_uses_source_pdf_records_for_scope_ids(self):
         body_source = """<?xml version="1.0" encoding="utf-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
@@ -608,6 +649,76 @@ class EpubReferenceRepairTests(unittest.TestCase):
         self.assertEqual(result.summary["citations_missing_record"], 0)
         self.assertEqual(result.summary["reference_quality_gate_status"], "passed")
 
+    def test_reference_repair_rebuilds_empty_section_from_source_pdf_records(self):
+        body_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+  <head><title>Main Report</title></head>
+  <body>
+    <section>
+      <h1>Main Report</h1>
+      <p>The report cites [R1], [R2] and [R3].</p>
+    </section>
+  </body>
+</html>
+"""
+        reference_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+  <head><title>Referencje publiczne</title></head>
+  <body>
+    <section>
+      <h1>Referencje publiczne</h1>
+      <p> </p>
+    </section>
+  </body>
+</html>
+"""
+        epub_bytes = self._epub_with_chapters(
+            [
+                ("chapter_001.xhtml", body_source),
+                ("chapter_002.xhtml", reference_source),
+            ]
+        )
+        source_records = {
+            f"R{index}": ReferenceRepairRecord(
+                document_path="source-pdf:page-19",
+                section_id="source-pdf-page-19",
+                ref_id=f"R{index}",
+                display_ref_id=f"[R{index}]",
+                source_name=f"Source {index}",
+                source_title=f"Source {index}",
+                description="",
+                url=f"https://example.com/r{index}",
+                links=[f"https://example.com/r{index}"],
+                confidence=0.99,
+                review_flag=False,
+                link_status="valid",
+            )
+            for index in range(1, 4)
+        }
+
+        with patch("epub_reference_repair._extract_source_pdf_reference_records", return_value=source_records):
+            with patch(
+                "epub_reference_repair.run_epubcheck",
+                return_value={"status": "passed", "tool": "epubcheck", "messages": []},
+            ):
+                result = repair_epub_reference_sections(
+                    epub_bytes,
+                    language_hint="pl",
+                    source_pdf_path="dummy.pdf",
+                )
+
+        with zipfile.ZipFile(io.BytesIO(result.epub_bytes), "r") as archive:
+            chapter = archive.read("EPUB/chapter_002.xhtml").decode("utf-8")
+
+        self.assertEqual(chapter.count('class="reference-entry"'), 3)
+        self.assertIn("[R1]", chapter)
+        self.assertIn("https://example.com/r3", chapter)
+        self.assertEqual(result.summary["records_reconstructed"], 3)
+        self.assertEqual(result.summary["citations_covered"], 3)
+        self.assertEqual(result.summary["citations_missing_record"], 0)
+        self.assertEqual(result.summary["empty_reference_sections_unresolved"], 0)
+        self.assertEqual(result.summary["reference_quality_gate_status"], "passed")
+
     def test_source_pdf_table_row_parser_recovers_multiline_rows(self):
         rows = [
             {"id": "[R11]", "src": "PSD2 consolidated text - safeguarding,", "url": "https://eur-lex.europa.eu/legal-content/", "row": 762},
@@ -637,6 +748,18 @@ class EpubReferenceRepairTests(unittest.TestCase):
         )
         self.assertFalse(record_map["[R11]"].review_flag)
         self.assertFalse(record_map["[R12]"].review_flag)
+
+    def test_cli_source_pdf_inference_handles_download_copy_suffix(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            epub_path = root / "business_report (12).epub"
+            source_pdf = root / "business_report.pdf"
+            epub_path.write_bytes(b"epub")
+            source_pdf.write_bytes(b"%PDF")
+
+            inferred = _infer_source_pdf_path_for_epub(epub_path, search_root=root)
+
+        self.assertEqual(inferred, source_pdf)
 
 if __name__ == "__main__":
     unittest.main()

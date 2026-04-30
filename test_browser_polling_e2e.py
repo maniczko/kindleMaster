@@ -241,6 +241,54 @@ class BrowserPollingE2ETests(unittest.TestCase):
         self.page.wait_for_timeout(300)
         self.assertEqual(downloads, [])
 
+    def test_application_restart_failed_status_is_guidance_not_console_error(self) -> None:
+        downloads: list[str] = []
+        console_entries: list[dict[str, str]] = []
+        self.page.on("download", lambda payload: downloads.append(payload.suggested_filename))
+        self.page.on(
+            "console",
+            lambda message: console_entries.append(
+                {
+                    "type": message.type,
+                    "text": message.text,
+                }
+            ),
+        )
+
+        self.page.route(
+            "**/convert/start",
+            lambda route: route.fulfill(
+                status=202,
+                content_type="application/json",
+                body=(
+                    '{"success":true,"job_id":"job-restarted","status":"queued","source_type":"pdf",'
+                    '"message":"Konwersja wystartowala. Trwa przygotowanie EPUB.","poll_after_ms":1500}'
+                ),
+            ),
+        )
+        self.page.route(
+            "**/convert/status/job-restarted",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=(
+                    '{"success":true,"job_id":"job-restarted","status":"failed",'
+                    '"message":"Konwersja przerwana przez restart aplikacji.","source_type":"pdf",'
+                    '"error":"Konwersja zostala przerwana przez restart aplikacji. Uruchom konwersje ponownie.",'
+                    '"error_code":"application_restart","conversion":null,"download_url":null,'
+                    '"poll_after_ms":0,"elapsed_seconds":7,"output_size_bytes":null}'
+                ),
+            ),
+        )
+
+        self._load_pdf()
+        self.page.locator("#convertEpubButton").click()
+        rendered = self._wait_for_status_text("Lokalna aplikacja zostala zrestartowana")
+        self.assertIn("Uruchom konwersje ponownie", rendered)
+        self.page.wait_for_timeout(300)
+        self.assertEqual(downloads, [])
+        self.assertFalse(any(entry["type"] == "error" for entry in console_entries), console_entries)
+
     def test_status_timeout_exhausts_retry_budget_with_controlled_error(self) -> None:
         self.page.add_init_script(
             """

@@ -446,6 +446,8 @@ def render_chess_diagram_to_png(
     page: fitz.Page,
     region: ChessDiagramRegion,
     dpi: int = 300,
+    *,
+    optimize: bool = True,
 ) -> tuple[bytes, int, int]:
     """Render a chess diagram region as a high-quality PNG."""
 
@@ -472,8 +474,13 @@ def render_chess_diagram_to_png(
         canvas.paste(img, offset)
         img = canvas
 
-    optimized = _optimize_chess_diagram_image(img)
-    return optimized, img.width, img.height
+    if optimize:
+        optimized = _optimize_chess_diagram_image(img)
+        return optimized, img.width, img.height
+
+    output = io.BytesIO()
+    img.save(output, format="PNG", optimize=True, compress_level=6)
+    return output.getvalue(), img.width, img.height
 
 
 def _optimize_chess_diagram_image(img: Image.Image) -> bytes:
@@ -647,8 +654,7 @@ def generate_chess_diagram_css() -> str:
   position: absolute;
   z-index: 5;
   pointer-events: auto;
-  image-rendering: -webkit-optimize-contrast;
-  image-rendering: crisp-edges;
+  image-rendering: auto;
 }
 
 .chess-diagram-container {

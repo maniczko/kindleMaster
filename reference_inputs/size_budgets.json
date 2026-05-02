@@ -30,6 +30,13 @@
       "notes": "Deterministic OCR-stressed scanned PDF fixture used to keep scan handling honest.",
       "updated_at": "2026-04-22"
     },
+    "mixed_scan_text": {
+      "warn_bytes": 524288,
+      "hard_bytes": 786432,
+      "baseline_cases": ["mixed_scan_text_pdf"],
+      "notes": "Hybrid benchmark fixture with one text-layer page and one image-only scan page.",
+      "updated_at": "2026-05-02"
+    },
     "dense_business_guide": {
       "warn_bytes": 25165824,
       "hard_bytes": 31457280,

@@ -74,6 +74,7 @@ class KindleMasterEntrypointTests(unittest.TestCase):
                         language="pl",
                         profile="auto-premium",
                         heading_repair=False,
+                        domain_dictionary="docs/domain-dictionary-example.json",
                         report_json=str(report_path),
                     )
             self.assertEqual(exit_code, 0)
@@ -84,6 +85,7 @@ class KindleMasterEntrypointTests(unittest.TestCase):
             request = conversion_mock.call_args.args[0]
             self.assertEqual(request.source_type, "pdf")
             self.assertEqual(request.language, "pl")
+            self.assertEqual(request.text_cleanup_domain_dictionary_path, "docs/domain-dictionary-example.json")
             payload = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["source_type"], "pdf")
             self.assertIn("quality_report", payload)

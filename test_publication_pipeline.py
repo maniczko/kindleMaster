@@ -3,7 +3,12 @@ from __future__ import annotations
 import unittest
 
 from publication_model import PublicationAnalysis
-from publication_pipeline import _looks_like_cover_masthead_line, publication_from_content
+from publication_pipeline import (
+    _looks_like_cover_masthead_line,
+    _ocr_quality_from_result,
+    _should_coalesce_page_chapters_with_pdf_outline,
+    publication_from_content,
+)
 
 
 def _analysis(**overrides) -> PublicationAnalysis:
@@ -37,6 +42,30 @@ class PublicationPipelineTests(unittest.TestCase):
             )
         )
         self.assertFalse(_looks_like_cover_masthead_line("AI jako partner, nie narzędzie"))
+
+    def test_book_reflow_with_dense_page_chapters_uses_pdf_outline_grouping(self) -> None:
+        analysis = _analysis(profile="book_reflow", has_toc=True, estimated_sections=6)
+        content = {
+            "toc": [(1, "Chapter 1", 1), (1, "Chapter 2", 8), (1, "Chapter 3", 15)],
+            "chapters": [
+                {"title": f"Page {index}", "page_num": index, "html_parts": [f"<p>Page {index}</p>"]}
+                for index in range(24)
+            ],
+        }
+
+        self.assertTrue(_should_coalesce_page_chapters_with_pdf_outline(content, analysis))
+
+    def test_book_reflow_without_page_sliced_oversegmentation_keeps_existing_chapters(self) -> None:
+        analysis = _analysis(profile="book_reflow", has_toc=True, estimated_sections=6)
+        content = {
+            "toc": [(1, "Chapter 1", 1), (1, "Chapter 2", 8), (1, "Chapter 3", 15)],
+            "chapters": [
+                {"title": f"Chapter {index}", "html_parts": [f"<p>Chapter {index}</p>"]}
+                for index in range(3)
+            ],
+        }
+
+        self.assertFalse(_should_coalesce_page_chapters_with_pdf_outline(content, analysis))
 
     def test_table_summary_is_carried_into_quality_report(self) -> None:
         analysis = PublicationAnalysis(
@@ -113,6 +142,58 @@ class PublicationPipelineTests(unittest.TestCase):
             document.quality_report.content_metrics_dict()["table_summary"]["review_tables"][0]["classification"],
             "wide",
         )
+
+    def test_ocr_quality_result_reports_reason_codes_and_review_counts(self) -> None:
+        class Page:
+            def __init__(self, text: str, confidence: float) -> None:
+                self.text = text
+                self.confidence = confidence
+
+        class Result:
+            pages = [
+                Page("Readable OCR text " * 10, 0.91),
+                Page("short", 0.44),
+            ]
+            engine_used = "tesseract"
+            total_pages = 2
+            success_rate = 0.5
+
+        payload = _ocr_quality_from_result(Result(), reason_codes=["full_document_ocr_fallback"])
+
+        self.assertEqual(payload["status"], "passed_with_warnings")
+        self.assertIn("full_document_ocr_fallback", payload["reason_codes"])
+        self.assertIn("low_ocr_confidence", payload["reason_codes"])
+        self.assertIn("empty_ocr_page", payload["reason_codes"])
+        self.assertEqual(payload["low_confidence_page_count"], 1)
+        self.assertEqual(payload["empty_ocr_page_count"], 1)
+        self.assertEqual(payload["manual_review_count"], 2)
+
+    def test_ocr_quality_is_carried_into_quality_report(self) -> None:
+        analysis = _analysis(profile="scanned_reflow", is_scanned=True, has_text_layer=False)
+        content = {
+            "chapters": [{"title": "Scan", "page_num": 0, "html_parts": ["<p>OCR text</p>"]}],
+            "metadata": {
+                "ocr_quality": {
+                    "status": "degraded",
+                    "quality_gate_status": "degraded",
+                    "reason_codes": ["ocr_unavailable", "pymupdf_fallback"],
+                    "fallback_reason": "ocr_unavailable",
+                    "manual_review_count": 1,
+                }
+            },
+        }
+
+        document = publication_from_content(
+            content,
+            analysis,
+            title="Scan",
+            author="QA",
+            language="en",
+        )
+
+        self.assertEqual(document.quality_report.ocr_quality["status"], "degraded")
+        self.assertIn("ocr_unavailable", document.quality_report.to_dict()["ocr_quality"]["reason_codes"])
+        self.assertIn("ocr_quality", document.quality_report.content_metrics_dict())
 
     def test_diagram_book_back_cover_is_not_flagged_as_empty_fallback_section(self) -> None:
         analysis = PublicationAnalysis(

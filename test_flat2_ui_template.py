@@ -96,6 +96,45 @@ class Flat2UiTemplateTests(unittest.TestCase):
         self.assertIn('dropZone.addEventListener("keydown"', html)
         self.assertIn('e.key !== "Enter" && e.key !== " "', html)
 
+    def test_conversion_setup_panel_explains_profiles_without_backend_drift(self) -> None:
+        html = TEMPLATE_PATH.read_text(encoding="utf-8")
+
+        self.assertIn('id="profileHint"', html)
+        self.assertIn("const PROFILE_DESCRIPTIONS = {", html)
+        for profile in (
+            '"auto-premium"',
+            '"book"',
+            '"magazine"',
+            '"technical-study"',
+            '"preserve-layout"',
+        ):
+            self.assertIn(profile, html)
+        self.assertIn("profileHint.textContent = PROFILE_DESCRIPTIONS[profileSelect.value]", html)
+        self.assertIn("docs/conversion-profiles.md", Path("README.md").read_text(encoding="utf-8"))
+
+    def test_document_workspace_declares_modes_and_result_summary(self) -> None:
+        html = TEMPLATE_PATH.read_text(encoding="utf-8")
+
+        self.assertIn('class="workspace-mode-bar"', html)
+        self.assertIn('data-workspace-mode-button="preview"', html)
+        self.assertIn('data-workspace-mode-button="crop"', html)
+        self.assertIn('data-workspace-mode-button="result"', html)
+        self.assertIn('id="workspaceGuidance"', html)
+        self.assertIn('id="workspaceResultSummary"', html)
+        self.assertIn("function setWorkspaceMode(mode)", html)
+        self.assertIn("setWorkspaceMode(\"result\")", html)
+        self.assertIn("workspaceResultSummary.textContent", html)
+
+    def test_send_to_kindle_handoff_is_documented_and_visible(self) -> None:
+        html = TEMPLATE_PATH.read_text(encoding="utf-8")
+        readme = Path("README.md").read_text(encoding="utf-8")
+
+        self.assertIn("Handoff: pobierz EPUB", html)
+        self.assertIn("Send to Kindle", html)
+        self.assertIn("docs/send-to-kindle-handoff.md", readme)
+        self.assertIn("docs/kindle-previewer-validation.md", readme)
+        self.assertIn("kindle_previewer.md", Path("docs/kindle-previewer-validation.md").read_text(encoding="utf-8"))
+
     def test_project_favicon_assets_are_present(self) -> None:
         for asset_name in (
             "favicon.ico",
@@ -178,23 +217,33 @@ class Flat2UiTemplateTests(unittest.TestCase):
             'id="qualityVerdictHeader"',
             'id="qualityCockpit"',
             'id="qualityIssueBoard"',
-            'id="qualityManualReviewQueuePanel"',
-            'id="qualityMatrixPanel"',
-            'id="qualityCompletenessPanel"',
-            'id="qualityEpubcheckPanel"',
-            'id="qualityTocPreviewPanel"',
-            'id="qualityMetadataPanel"',
-            'id="qualityAssetsPanel"',
-            'id="qualityKindleDeliveryPanel"',
             'id="qualityReportsActionsPanel"',
             'class="quality-cockpit-panel"',
             'class="quality-issue-board"',
             'data-readonly="true"',
         ):
             self.assertIn(hook, html)
+        for panel_id in (
+            "qualityManualReviewQueuePanel",
+            "qualityMatrixPanel",
+            "qualityCompletenessPanel",
+            "qualityEpubcheckPanel",
+            "qualityTocPreviewPanel",
+            "qualityMetadataPanel",
+            "qualityAssetsPanel",
+            "qualityKindleDeliveryPanel",
+        ):
+            self.assertTrue(
+                f'id="{panel_id}"' in html or f'id: "{panel_id}"' in html,
+                panel_id,
+            )
 
         self.assertIn("Raporty / akcje", html)
         self.assertIn("Tylko odczyt", html)
+        self.assertIn("function renderQualityDisclosurePanel", html)
+        self.assertIn("<details class=\"quality-cockpit-panel\"", html)
+        self.assertIn("<summary class=\"quality-panel-title\">", html)
+        self.assertIn("open: true", html)
         self.assertIn("Kolejka kontroli ręcznej", html)
         self.assertIn("Kompletność jakości", html)
         self.assertIn("Kompletność", html)
@@ -272,6 +321,8 @@ class Flat2UiTemplateTests(unittest.TestCase):
             "send_to_kindle_ready",
             "send_to_kindle_blockers",
             "quality_completeness",
+            "user_facing_verdict",
+            "user_facing_reasons",
         ):
             self.assertIn(field_name, html)
 
@@ -295,8 +346,27 @@ class Flat2UiTemplateTests(unittest.TestCase):
             "sendToKindleReady",
             "sendToKindleBlockers",
             "qualityCompleteness",
+            "userFacingVerdict",
+            "userFacingReasons",
         ):
             self.assertIn(normalized_name, html)
+
+    def test_quality_cockpit_renders_user_facing_verdict_and_top_reasons(self) -> None:
+        html = TEMPLATE_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("userFacingVerdict", html)
+        self.assertIn("userFacingReasons", html)
+        self.assertIn("const safeUserFacingReasons = normalizeOptionalArray(userFacingReasons);", html)
+        self.assertIn("const safeUserFacingVerdict = normalizeOptionalObject(userFacingVerdict);", html)
+        self.assertIn("const userFacingLabel = safeUserFacingVerdict && safeUserFacingVerdict.label", html)
+        self.assertIn("const userFacingDetail = safeUserFacingVerdict && safeUserFacingVerdict.detail", html)
+        self.assertIn("qualityUserFacingReasonsPanel", html)
+        self.assertIn("Najważniejsze powody", html)
+        self.assertIn("${escapeHtml(userFacingLabel)}", html)
+        self.assertIn("${escapeHtml(userFacingDetail)}", html)
+        self.assertIn('renderCompactList(safeUserFacingReasons, "Brak danych", 5)', html)
+        self.assertIn("user_facing_verdict", html)
+        self.assertIn("user_facing_reasons", html)
 
     def test_quality_cockpit_uses_polish_missing_data_fallback_for_missing_fields(self) -> None:
         html = TEMPLATE_PATH.read_text(encoding="utf-8")
@@ -320,7 +390,8 @@ class Flat2UiTemplateTests(unittest.TestCase):
         self.assertIn('downloadUrl ? `<a href="${escapeHtml(downloadUrl)}"', html)
         self.assertIn('class="quality-download-action"', html)
         self.assertIn("Pobierz szkic EPUB do kontroli", html)
-        self.assertIn('const downloadLabel = releaseBlocked || reportVerdict.key === "release_blocked"', html)
+        self.assertIn("const downloadLabel = safeUserFacingVerdict && safeUserFacingVerdict.download_label", html)
+        self.assertIn('releaseBlocked || reportVerdict.key === "release_blocked"', html)
         self.assertIn('data-readonly="true"', reports_panel)
         self.assertNotIn("<button", reports_panel)
         self.assertNotIn("fetch(", reports_panel)

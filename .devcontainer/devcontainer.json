@@ -1,0 +1,17 @@
+{
+  "name": "KindleMaster Toolchain",
+  "build": {
+    "dockerfile": "../Dockerfile.toolchain",
+    "context": ".."
+  },
+  "workspaceFolder": "/workspace",
+  "postCreateCommand": "python kindlemaster.py doctor",
+  "forwardPorts": [5001],
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python"
+      }
+    }
+  }
+}

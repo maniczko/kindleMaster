@@ -642,6 +642,26 @@
       gap: 10px;
     }
 
+    .topbar-link {
+      display: inline-flex;
+      align-items: center;
+      min-height: 38px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--panel-strong);
+      color: var(--ink);
+      font-size: 0.78rem;
+      font-weight: 800;
+      line-height: 1;
+      text-decoration: none;
+    }
+
+    .topbar-link:hover {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
+
     .stamp {
       display: inline-flex;
       align-items: center;
@@ -1512,6 +1532,48 @@
       border: 1px solid var(--line) !important;
     }
 
+    .profile-hint,
+    .workspace-guidance,
+    .workspace-result-summary {
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--panel-strong);
+      color: var(--muted);
+      font-size: 0.78rem;
+      line-height: 1.45;
+    }
+
+    .workspace-mode-bar {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .workspace-mode-button {
+      min-width: 0;
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--panel-strong);
+      color: var(--muted);
+      font-size: 0.76rem;
+      font-weight: 800;
+      line-height: 1.2;
+      text-align: center;
+      text-transform: uppercase;
+    }
+
+    .workspace-mode-button.is-active {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      color: var(--accent-strong);
+    }
+
+    .workspace-result-summary[hidden] {
+      display: none;
+    }
+
     .drop-zone {
       min-height: 208px;
       border-style: dashed !important;
@@ -1630,6 +1692,41 @@
 
     .quality-cockpit-panel[data-span="wide"] {
       grid-column: 1 / -1;
+    }
+
+    details.quality-cockpit-panel {
+      display: block;
+    }
+
+    details.quality-cockpit-panel[open] {
+      background: var(--panel);
+    }
+
+    details.quality-cockpit-panel summary {
+      list-style: none;
+      cursor: pointer;
+    }
+
+    details.quality-cockpit-panel summary::-webkit-details-marker {
+      display: none;
+    }
+
+    details.quality-cockpit-panel summary::after {
+      content: "+";
+      display: inline-grid;
+      place-items: center;
+      width: 18px;
+      height: 18px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      color: var(--muted);
+      font-size: 0.78rem;
+      line-height: 1;
+      flex: 0 0 auto;
+    }
+
+    details.quality-cockpit-panel[open] summary::after {
+      content: "-";
     }
 
     .quality-panel-title {
@@ -2016,6 +2113,9 @@
         <p>Lokalny panel do konwersji PDF/DOCX na premium EPUB. Adres: <code>{{ local_app_url }}</code>.</p>
       </div>
       <div class="topbar-right">
+        <a class="topbar-link" href="#recentConversionsList">Historia</a>
+        <a class="topbar-link" href="#cardInsights">Raporty</a>
+        <a class="topbar-link" href="#dropZoneHint">Pomoc</a>
         <div class="stamp"><span>wersja</span>{{ updated_at_label }}</div>
         <button class="theme-toggle" id="themeToggle" title="Przełącz motyw" aria-label="Przełącz motyw jasny/ciemny">🌙</button>
       </div>
@@ -2154,6 +2254,7 @@
                 </select>
               </label>
             </div>
+            <p class="profile-hint" id="profileHint">Auto Premium sam wybiera trasę konwersji i traktuje jakość EPUB jako bramkę publikacji.</p>
             <label class="checkbox">
               <input id="forceOcrCheckbox" type="checkbox">
               <span>
@@ -2217,6 +2318,14 @@
             Zaznacz obszar, ktory ma trafic na strone A4.
           </div>
         </header>
+
+        <div class="workspace-mode-bar" role="tablist" aria-label="Tryb pracy z dokumentem">
+          <button class="workspace-mode-button is-active" type="button" data-workspace-mode-button="preview" role="tab" aria-selected="true">Podgląd PDF</button>
+          <button class="workspace-mode-button" type="button" data-workspace-mode-button="crop" role="tab" aria-selected="false">Kadrowanie</button>
+          <button class="workspace-mode-button" type="button" data-workspace-mode-button="result" role="tab" aria-selected="false">Wynik EPUB</button>
+        </div>
+        <div class="workspace-guidance" id="workspaceGuidance">Tryb podglądu: sprawdź dokument, strony i czytelność przed konwersją.</div>
+        <div class="workspace-result-summary" id="workspaceResultSummary" hidden>Wynik EPUB pojawi się tutaj po konwersji.</div>
 
         <div class="preview-toolbar">
           <div class="card tool-card" id="cardNav">
@@ -2528,11 +2637,16 @@
     const loaderMessage = $("loaderMessage");
     const quickUploadButton = $("quickUploadButton");
     const workspaceStateLabel = $("workspaceStateLabel");
+    const workspaceGuidance = $("workspaceGuidance");
+    const workspaceResultSummary = $("workspaceResultSummary");
     const recentConversionsList = $("recentConversionsList");
     const librarySearchInput = $("librarySearchInput");
     const libraryVerdictFilter = $("libraryVerdictFilter");
     const librarySearchButton = $("librarySearchButton");
+    const profileHint = $("profileHint");
     const presetButtons = Array.from(document.querySelectorAll(".preset-chip[data-profile]"));
+    const workspaceModeButtons = Array.from(document.querySelectorAll("[data-workspace-mode-button]"));
+    const previewStage = document.querySelector(".preview-stage");
 
     const canvasContext = pdfCanvas.getContext("2d", { alpha: false, willReadFrequently: true });
     const cropPreviewContext = cropPreviewCanvas.getContext("2d");
@@ -2565,6 +2679,18 @@
     const RECENT_CONVERSIONS_LIMIT = 6;
     const LONG_CONVERSION_NOTICE_MS = 20 * 60 * 1000;
     const LONG_CONVERSION_NOTICE_REPEAT_MS = 60 * 1000;
+    const PROFILE_DESCRIPTIONS = {
+      "auto-premium": "Auto Premium sam wybiera trasę konwersji i traktuje jakość EPUB jako bramkę publikacji.",
+      "book": "Książka: reflowable EPUB dla tekstowych PDF/DOCX z rozdziałami, TOC i metadanymi.",
+      "magazine": "Magazyn: layout-aware flow dla artykułów, galerii i materiałów editorialowych.",
+      "technical-study": "Techniczny: raporty, tabele, referencje i dokumenty z mocną strukturą analityczną.",
+      "preserve-layout": "Zachowaj układ: ostrożny fallback, gdy reflow może uszkodzić czytelność źródła.",
+    };
+    const WORKSPACE_MODE_COPY = {
+      preview: "Tryb podglądu: sprawdź dokument, strony i czytelność przed konwersją.",
+      crop: "Tryb kadrowania: zaznacz fragment PDF albo użyj ustawienia dla wszystkich stron.",
+      result: "Tryb wyniku: po konwersji zobaczysz tu skrót EPUB, a pełna jakość zostaje w prawym cockpit.",
+    };
 
     const pdfRenderCanvasFactory = {
       create(width, height) {
@@ -2598,6 +2724,22 @@
       presetButtons.forEach((button) => {
         button.classList.toggle("is-active", button.dataset.profile === profileSelect.value);
       });
+      if (profileHint) {
+        profileHint.textContent = PROFILE_DESCRIPTIONS[profileSelect.value] || PROFILE_DESCRIPTIONS["auto-premium"];
+      }
+    }
+
+    function setWorkspaceMode(mode) {
+      const safeMode = WORKSPACE_MODE_COPY[mode] ? mode : "preview";
+      if (previewStage) previewStage.dataset.workspaceMode = safeMode;
+      workspaceModeButtons.forEach((button) => {
+        const active = button.dataset.workspaceModeButton === safeMode;
+        button.classList.toggle("is-active", active);
+        button.setAttribute("aria-selected", String(active));
+      });
+      if (workspaceGuidance) {
+        workspaceGuidance.textContent = WORKSPACE_MODE_COPY[safeMode];
+      }
     }
 
     function setStatus(message, type = "info") {
@@ -3286,6 +3428,25 @@
       `;
     }
 
+    function renderQualityDisclosurePanel({
+      id,
+      title,
+      subtitle = "",
+      body = "",
+      wide = false,
+      open = false,
+    }) {
+      return `
+        <details class="quality-cockpit-panel" id="${escapeHtml(id)}"${wide ? ' data-span="wide"' : ""}${open ? " open" : ""}>
+          <summary class="quality-panel-title">
+            <span>${escapeHtml(title)}</span>
+            <small>${escapeHtml(subtitle)}</small>
+          </summary>
+          ${body}
+        </details>
+      `;
+    }
+
     function deriveQualityVerdict(normalized) {
       const payload = normalized && typeof normalized === "object" ? normalized : {};
       const releaseVerdict = payload.releaseVerdict || "";
@@ -3479,6 +3640,8 @@
       linkHealth = null,
       visibleJunk = null,
       qualityCompleteness = null,
+      userFacingVerdict = "",
+      userFacingReasons = [],
     }) {
       const safeValidation = validation || "unavailable";
       const reportVerdict = verdict || deriveQualityVerdict({
@@ -3608,6 +3771,16 @@
       const safeQualityCompleteness = normalizeQualityCompleteness(qualityCompleteness);
       const safeQualityBlockers = normalizeOptionalArray(qualityBlockers);
       const safeSendToKindleBlockers = normalizeOptionalArray(sendToKindleBlockers);
+      const safeUserFacingReasons = normalizeOptionalArray(userFacingReasons);
+      const safeUserFacingVerdict = normalizeOptionalObject(userFacingVerdict);
+      const userFacingLabel = safeUserFacingVerdict && safeUserFacingVerdict.label
+        ? safeUserFacingVerdict.label
+        : reportVerdict.label;
+      const userFacingDetail = safeUserFacingVerdict && safeUserFacingVerdict.detail
+        ? safeUserFacingVerdict.detail
+        : typeof userFacingVerdict === "string" && userFacingVerdict
+          ? userFacingVerdict
+          : reportVerdict.detail;
       const sendToKindleLabel = sendToKindleReady === true
         ? "Można wysłać na Kindle"
         : sendToKindleReady === false
@@ -3665,11 +3838,20 @@
           </div>
         </div>
       `;
-      const manualReviewQueuePanel = `
-        <div class="quality-cockpit-panel" id="qualityManualReviewQueuePanel" data-span="wide">
-          <div class="quality-panel-title"><span>Kolejka kontroli ręcznej</span><small>blokery / kontrola / ostrzeżenia</small></div>
-          ${renderManualReviewQueue(manualReviewQueue)}
+      const userFacingReasonsPanel = `
+        <div class="quality-cockpit-panel" id="qualityUserFacingReasonsPanel" data-span="wide">
+          <div class="quality-panel-title"><span>Najważniejsze powody</span><small>Widoczne dla czytelnika</small></div>
+          ${renderCompactList(safeUserFacingReasons, "Brak danych", 5)}
         </div>
+      `;
+      const manualReviewQueuePanel = `
+        ${renderQualityDisclosurePanel({
+          id: "qualityManualReviewQueuePanel",
+          title: "Kolejka kontroli ręcznej",
+          subtitle: "blokery / kontrola / ostrzeżenia",
+          body: renderManualReviewQueue(manualReviewQueue),
+          wide: true,
+        })}
       `;
       const epubcheckRows = renderQualityRows([
         ["Status", safeEpubcheckDetail ? (safeEpubcheckDetail.status || safeValidation) : safeValidation],
@@ -3698,11 +3880,67 @@
         ["Rozmiar", Number.isFinite(outputSizeBytes) && outputSizeBytes > 0 ? formatBytes(outputSizeBytes) : "Brak danych"],
         ["Blokery", safeSendToKindleBlockers.length],
       ]);
-      const decisionKey = reportVerdict.key === "ready"
+      const qualityMatrixPanel = renderQualityDisclosurePanel({
+        id: "qualityMatrixPanel",
+        title: "Macierz jakości",
+        subtitle: "Dowody jakości",
+        body: `<div class="quality-matrix">${qualityRows}</div>`,
+        wide: true,
+        open: true,
+      });
+      const completenessPanel = renderQualityDisclosurePanel({
+        id: "qualityCompletenessPanel",
+        title: "Kompletność jakości",
+        subtitle: formatCompletenessScore(safeQualityCompleteness),
+        body: `
+          <div class="quality-matrix">${completenessRows}</div>
+          ${renderCompactList(completenessSectionItems, "Brak danych", 9)}
+        `,
+        wide: true,
+      });
+      const epubcheckPanel = renderQualityDisclosurePanel({
+        id: "qualityEpubcheckPanel",
+        title: "EPUBCheck",
+        subtitle: notReported(safeEpubcheckDetail && safeEpubcheckDetail.version),
+        body: `
+          <div class="quality-matrix">${epubcheckRows}</div>
+          ${safeEpubcheckDetail && safeEpubcheckDetail.message ? `<div class="quality-empty">${escapeHtml(safeEpubcheckDetail.message)}</div>` : ""}
+        `,
+      });
+      const tocPreviewPanel = renderQualityDisclosurePanel({
+        id: "qualityTocPreviewPanel",
+        title: "Podgląd TOC",
+        subtitle: safeTocPreview ? notReported(safeTocPreview.status || safeTocPreview.depth) : "Brak danych",
+        body: renderCompactList(tocItems, "Brak danych", 8),
+      });
+      const metadataPanel = renderQualityDisclosurePanel({
+        id: "qualityMetadataPanel",
+        title: "Metadane",
+        subtitle: formatQualityHealth(metadataHealth),
+        body: `<div class="quality-matrix">${metadataRows}</div>`,
+      });
+      const assetsPanel = renderQualityDisclosurePanel({
+        id: "qualityAssetsPanel",
+        title: "Obrazy / diagramy",
+        subtitle: safeAssetSummary ? (safeAssetSummary.status || "Zaraportowano") : "Brak danych",
+        body: `<div class="quality-matrix">${imageRows}</div>`,
+      });
+      const kindleDeliveryPanel = renderQualityDisclosurePanel({
+        id: "qualityKindleDeliveryPanel",
+        title: "Kindle / mail",
+        subtitle: sendToKindleLabel,
+        body: `
+          <div class="quality-matrix">${kindleRows}</div>
+          <div class="quality-empty">Handoff: pobierz EPUB, sprawdź verdict i wyślij przez Send to Kindle dopiero po zaakceptowaniu kontroli jakości.</div>
+          ${safeSendToKindleBlockers.length ? renderCompactList(safeSendToKindleBlockers, "Brak danych", 5) : `<div class="quality-empty">Brak blockerów wysyłki.</div>`}
+        `,
+      });
+      const userFacingDecision = safeUserFacingVerdict && safeUserFacingVerdict.decision ? safeUserFacingVerdict.decision : "";
+      const decisionKey = userFacingDecision || (reportVerdict.key === "ready"
         ? "ready"
         : reportVerdict.key === "release_blocked" || reportVerdict.key === "failed" || reportVerdict.key === "failed_quality_gate"
           ? "blocked"
-          : "review";
+          : "review");
       const decisionStrip = `
         <div class="quality-decision-strip" id="qualityDecisionStrip" role="list" aria-label="Decyzja publikacji">
           ${[
@@ -3716,7 +3954,9 @@
           `).join("")}
         </div>
       `;
-      const downloadLabel = releaseBlocked || reportVerdict.key === "release_blocked"
+      const downloadLabel = safeUserFacingVerdict && safeUserFacingVerdict.download_label
+        ? safeUserFacingVerdict.download_label
+        : releaseBlocked || reportVerdict.key === "release_blocked"
         ? "Pobierz szkic EPUB do kontroli"
         : "Pobierz EPUB";
       const qualityLinks = [
@@ -3728,45 +3968,22 @@
           ${decisionStrip}
           <div class="quality-verdict" id="qualityVerdictHeader" data-tone="${escapeHtml(reportVerdict.tone)}">
             <div>
-              <strong>${escapeHtml(reportVerdict.label)}</strong>
-              <span>${escapeHtml(reportVerdict.detail)}</span>
+              <strong>${escapeHtml(userFacingLabel)}</strong>
+              <span>${escapeHtml(userFacingDetail)}</span>
             </div>
             <div class="quality-status-pill" aria-label="Status walidacji">Walidacja: ${escapeHtml(formatStatusText(safeValidation || "not_reported"))}</div>
           </div>
           <div class="quality-cockpit-grid" id="qualityCockpit">
             ${issueBoard}
+            ${userFacingReasonsPanel}
             ${manualReviewQueuePanel}
-            <div class="quality-cockpit-panel" id="qualityMatrixPanel" data-span="wide">
-              <div class="quality-panel-title"><span>Macierz jakości</span><small>Dowody jakości</small></div>
-              <div class="quality-matrix">${qualityRows}</div>
-            </div>
-            <div class="quality-cockpit-panel" id="qualityCompletenessPanel" data-span="wide">
-              <div class="quality-panel-title"><span>Kompletność jakości</span><small>${escapeHtml(formatCompletenessScore(safeQualityCompleteness))}</small></div>
-              <div class="quality-matrix">${completenessRows}</div>
-              ${renderCompactList(completenessSectionItems, "Brak danych", 9)}
-            </div>
-            <div class="quality-cockpit-panel" id="qualityEpubcheckPanel">
-              <div class="quality-panel-title"><span>EPUBCheck</span><small>${escapeHtml(notReported(safeEpubcheckDetail && safeEpubcheckDetail.version))}</small></div>
-              <div class="quality-matrix">${epubcheckRows}</div>
-              ${safeEpubcheckDetail && safeEpubcheckDetail.message ? `<div class="quality-empty">${escapeHtml(safeEpubcheckDetail.message)}</div>` : ""}
-            </div>
-            <div class="quality-cockpit-panel" id="qualityTocPreviewPanel">
-              <div class="quality-panel-title"><span>Podgląd TOC</span><small>${escapeHtml(safeTocPreview ? notReported(safeTocPreview.status || safeTocPreview.depth) : "Brak danych")}</small></div>
-              ${renderCompactList(tocItems, "Brak danych", 8)}
-            </div>
-            <div class="quality-cockpit-panel" id="qualityMetadataPanel">
-              <div class="quality-panel-title"><span>Metadane</span><small>${escapeHtml(formatQualityHealth(metadataHealth))}</small></div>
-              <div class="quality-matrix">${metadataRows}</div>
-            </div>
-            <div class="quality-cockpit-panel" id="qualityAssetsPanel">
-              <div class="quality-panel-title"><span>Obrazy / diagramy</span><small>${escapeHtml(safeAssetSummary ? (safeAssetSummary.status || "Zaraportowano") : "Brak danych")}</small></div>
-              <div class="quality-matrix">${imageRows}</div>
-            </div>
-            <div class="quality-cockpit-panel" id="qualityKindleDeliveryPanel">
-              <div class="quality-panel-title"><span>Kindle / mail</span><small>${escapeHtml(sendToKindleLabel)}</small></div>
-              <div class="quality-matrix">${kindleRows}</div>
-              ${safeSendToKindleBlockers.length ? renderCompactList(safeSendToKindleBlockers, "Brak danych", 5) : `<div class="quality-empty">Brak blockerów wysyłki.</div>`}
-            </div>
+            ${qualityMatrixPanel}
+            ${completenessPanel}
+            ${epubcheckPanel}
+            ${tocPreviewPanel}
+            ${metadataPanel}
+            ${assetsPanel}
+            ${kindleDeliveryPanel}
             <div class="quality-cockpit-panel" id="qualityReportsActionsPanel" data-span="wide">
               <div class="quality-panel-title"><span>Raporty / akcje</span><small>Tylko odczyt</small></div>
               ${qualityLinks ? `<div class="quality-actions" data-readonly="true">${qualityLinks}</div>` : `<div class="quality-empty">Brak danych</div>`}
@@ -3966,6 +4183,8 @@
       setStatus("Wczytuje PDF i renderuje wybrana strone...", "info");
       selectedFile = file;
       selectedSourceType = "pdf";
+      setWorkspaceMode("preview");
+      if (workspaceResultSummary) workspaceResultSummary.hidden = true;
       zoomMode = "fit-page";
       manualZoom = 1;
       cropRectsByPage = new Map();
@@ -4000,6 +4219,8 @@
       setStatus("Wczytuje DOCX i przygotowuje tryb analizy strukturalnej...", "info");
       selectedFile = file;
       selectedSourceType = "docx";
+      setWorkspaceMode("preview");
+      if (workspaceResultSummary) workspaceResultSummary.hidden = true;
       zoomMode = "fit-page";
       manualZoom = 1;
       resetAnalysisBox();
@@ -4297,6 +4518,9 @@
       const sendToKindleBlockersState = qualityState && Array.isArray(qualityState.send_to_kindle_blockers)
         ? qualityState.send_to_kindle_blockers
         : [];
+      const userFacingReasonsState = qualityState && Array.isArray(qualityState.user_facing_reasons)
+        ? qualityState.user_facing_reasons
+        : conversion && Array.isArray(conversion.user_facing_reasons) ? conversion.user_facing_reasons : [];
 
       return {
         qualityStateUrl: payload.quality_state_url || "",
@@ -4308,6 +4532,10 @@
         qualityBlockers: qualityBlockersState || [],
         sendToKindleReady: sendToKindleReadyState,
         sendToKindleBlockers: sendToKindleBlockersState,
+        userFacingVerdict: qualityState && qualityState.user_facing_verdict
+          ? qualityState.user_facing_verdict
+          : (conversion && conversion.user_facing_verdict) || "",
+        userFacingReasons: userFacingReasonsState,
         sourceType: qualityState && qualityState.source_type
           ? qualityState.source_type
           : payload.source_type || (conversion && conversion.source_type) || selectedSourceType || "pdf",
@@ -4410,6 +4638,8 @@
         qualityBlockers: normalized.qualityBlockers,
         sendToKindleReady: normalized.sendToKindleReady,
         sendToKindleBlockers: normalized.sendToKindleBlockers,
+        userFacingVerdict: normalized.userFacingVerdict,
+        userFacingReasons: normalized.userFacingReasons,
         issueGroups: normalized.issueGroups,
         contentMetrics: normalized.contentMetrics,
         textCleanup: normalized.textCleanup,
@@ -4458,6 +4688,13 @@
         ? ` Wymaga naprawy przed publikacją: ${(normalized.qualityBlockers || []).map((item) => item.code || item.message).filter(Boolean).slice(0, 3).join(", ") || "quality blocker"}.`
         : "";
       const statusType = verdict.tone === "failed" ? "error" : verdict.tone === "ready" ? "success" : "info";
+      if (typeof workspaceResultSummary !== "undefined" && workspaceResultSummary) {
+        workspaceResultSummary.hidden = false;
+        workspaceResultSummary.textContent = `EPUB: ${verdict.label}. ${outputSize ? `Rozmiar: ${outputSize}. ` : ""}${validation ? `Walidacja: ${validation}. ` : ""}${normalized.releaseBlocked ? "Pobranie jest szkicem do kontroli jakości." : "Pobranie jest dostępne w panelu raportów."}`;
+      }
+      if (typeof setWorkspaceMode === "function") {
+        setWorkspaceMode("result");
+      }
       setStatus(
         `EPUB wygenerowany i pobrany z ${sourceType.toUpperCase()}.${outputSize ? ` Rozmiar: ${outputSize}.` : ""}${profile ? ` Profil: ${profile}.` : ""}${strategy ? ` Strategia: ${strategy}.` : ""}${validation ? ` Walidacja: ${validation}.` : ""}${headingRepairStatusText}${releaseStatusText}`,
         statusType,
@@ -4666,7 +4903,10 @@
     fitWidthButton.addEventListener("click", () => setZoomMode("fit-width"));
     zoomResetButton.addEventListener("click", () => { manualZoom = 1; setZoomMode("manual"); });
     pageNumberInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); triggerPageJump(); } });
-    cropOverlay.addEventListener("pointerdown", startDrawing);
+    cropOverlay.addEventListener("pointerdown", (event) => {
+      setWorkspaceMode("crop");
+      startDrawing(event);
+    });
     cropOverlay.addEventListener("pointermove", moveDrawing);
     cropOverlay.addEventListener("pointerup", finishDrawing);
     cropOverlay.addEventListener("pointercancel", finishDrawing);
@@ -4682,6 +4922,9 @@
     });
     applyAllPages.addEventListener("change", updateExportModeLabel);
     profileSelect.addEventListener("change", syncProfilePreset);
+    workspaceModeButtons.forEach((button) => {
+      button.addEventListener("click", () => setWorkspaceMode(button.dataset.workspaceModeButton));
+    });
     presetButtons.forEach((button) => {
       button.addEventListener("click", () => {
         profileSelect.value = button.dataset.profile;
@@ -4722,4 +4965,3 @@
   </script>
 </body>
 </html>
-

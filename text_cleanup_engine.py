@@ -1547,6 +1547,7 @@ def _build_summary(
 ) -> dict[str, Any]:
     status_counts = Counter(decision.status for decision in decisions)
     error_counts = Counter(decision.error_class for decision in decisions)
+    reason_counts = Counter(reason for decision in decisions for reason in decision.reason_codes)
     changed_documents = sorted({decision.document_path for decision in decisions if decision.status == "safe_auto_fix"})
     publish_blocked = False
     if epubcheck.get("status") == "failed":
@@ -1568,6 +1569,9 @@ def _build_summary(
         "chapter_diff_count": len(chapter_diffs),
         "status_counts": dict(status_counts),
         "error_class_counts": dict(error_counts),
+        "reason_code_counts": dict(reason_counts),
+        "domain_dictionary_decision_count": reason_counts.get("domain-dictionary", 0),
+        "domain_dictionary_path": config.domain_dictionary_path or "",
         "language": (book_info or {}).get("language", config.language_hint or "mixed"),
         "spine_document_count": len((book_info or {}).get("spine_paths", [])),
         "toc_count": (book_info or {}).get("toc_count", 0),

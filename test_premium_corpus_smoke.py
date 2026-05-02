@@ -6,9 +6,12 @@ from pathlib import Path
 from premium_corpus_smoke import (
     CorpusCase,
     _apply_release_strictness,
+    _build_ocr_benchmark_payload,
+    _build_overall_summary,
     _build_case_blockers,
     _build_case_warnings,
     _build_class_coverage,
+    _ocr_benchmark_findings,
     _build_release_fallback_signal,
     _derive_case_grade,
     build_output_assertions,
@@ -210,6 +213,53 @@ class PremiumCorpusSmokeTests(unittest.TestCase):
         self.assertIn("reference_empty_section_review", [item["code"] for item in warnings])
         self.assertEqual(_derive_case_grade(blockers, warnings), "pass_with_review")
 
+    def test_text_artifact_rate_failed_is_release_blocker(self) -> None:
+        quality = {
+            "validation_status": "passed",
+            "text_cleanup": {
+                "artifact_rate": {
+                    "status": "failed",
+                    "artifact_count": 9,
+                    "artifact_rate_per_1000_words": 6.25,
+                }
+            },
+        }
+
+        blockers = _build_case_blockers(
+            quality=quality,
+            inspect={
+                "visible_junk_counts": {},
+                "broken_href_counts": {},
+                "broken_internal_anchors": 0,
+                "metadata_placeholder_title": False,
+                "metadata_placeholder_creator": False,
+            },
+            heading_summary={"epubcheck_status": "passed"},
+        )
+
+        self.assertIn("text_artifact_rate_failed", [item["code"] for item in blockers])
+        self.assertEqual(_derive_case_grade(blockers, []), "fail")
+
+    def test_text_artifact_rate_warning_is_corpus_review_signal(self) -> None:
+        warnings = _build_case_warnings(
+            summary={"section_count": 3},
+            quality={
+                "validation_status": "passed",
+                "text_cleanup": {
+                    "artifact_rate": {
+                        "status": "passed_with_warnings",
+                        "artifact_count": 2,
+                        "artifact_rate_per_1000_words": 2.5,
+                    }
+                },
+            },
+            inspect={"nav_entries": 3, "package_language": "en"},
+            heading_summary={"release_status": "pass", "epubcheck_status": "passed"},
+        )
+
+        self.assertEqual([item["code"] for item in warnings], ["text_artifact_rate_review"])
+        self.assertEqual(_derive_case_grade([], warnings), "pass_with_review")
+
     def test_pre_heading_epubcheck_failure_recovered_by_heading_repair_is_review_not_blocker(self) -> None:
         quality = {"validation_status": "failed"}
         heading_summary = {"status": "completed", "epubcheck_status": "passed", "release_status": "pass"}
@@ -306,6 +356,65 @@ class PremiumCorpusSmokeTests(unittest.TestCase):
             [item["code"] for item in relaxed_warnings],
             ["unexpected_language"],
         )
+
+    def test_ocr_benchmark_payload_reports_degraded_capability_and_reason_codes(self) -> None:
+        case = CorpusCase(Path("reference_inputs/pdf/ocr_stress_scan.pdf"), document_class="ocr_stress_scan")
+        quality = {
+            "ocr_quality": {
+                "status": "degraded",
+                "reason_codes": ["ocr_unavailable", "pymupdf_fallback"],
+                "fallback_reason": "ocr_unavailable",
+                "manual_review_count": 2,
+                "low_confidence_page_count": 1,
+                "empty_ocr_page_count": 1,
+            },
+            "text_cleanup": {
+                "artifact_rate": {
+                    "artifact_rate_per_1000_words": 4.5,
+                    "artifact_count": 9,
+                }
+            },
+        }
+
+        payload = _build_ocr_benchmark_payload(
+            case=case,
+            quality=quality,
+            inspect={"xhtml_count": 2, "image_count": 1},
+        )
+        blockers, warnings = _ocr_benchmark_findings(case, payload)
+
+        self.assertEqual(payload["capability_status"], "degraded")
+        self.assertIn("ocr_unavailable", payload["reason_codes"])
+        self.assertEqual(payload["artifact_rate_per_1000_words"], 4.5)
+        self.assertEqual([item["code"] for item in blockers], ["ocr_capability_degraded", "ocr_quality_review"])
+        self.assertEqual(warnings, [])
+
+    def test_ocr_benchmark_overall_summary_counts_scan_cases(self) -> None:
+        rows = [
+            {
+                "mode": "convert-and-audit",
+                "document_class": "ocr_stress_scan",
+                "input_type": "pdf",
+                "grade": "pass_with_review",
+                "blockers": [],
+                "warnings": [{"code": "ocr_capability_degraded"}],
+                "ocr_benchmark": {"capability_status": "degraded"},
+            },
+            {
+                "mode": "convert-and-audit",
+                "document_class": "mixed_scan_text",
+                "input_type": "pdf",
+                "grade": "pass",
+                "blockers": [],
+                "warnings": [],
+                "ocr_benchmark": {"capability_status": "supported"},
+            },
+        ]
+
+        overall = _build_overall_summary(rows)
+
+        self.assertEqual(overall["ocr_benchmark"]["case_count"], 2)
+        self.assertEqual(overall["ocr_benchmark"]["capability_counts"], {"degraded": 1, "supported": 1})
 
     def test_output_assertions_are_generic_by_document_class_route(self) -> None:
         stats = {

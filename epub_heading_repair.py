@@ -9,6 +9,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 from bs4 import BeautifulSoup, Tag
 
@@ -214,6 +215,7 @@ DENSE_GENERIC_TOC_LABELS = {
     "assessment",
     "benefits",
     "business",
+    "data",
     "definition",
     "delivery",
     "description",
@@ -235,6 +237,7 @@ DENSE_GENERIC_TOC_LABELS = {
     "overview",
     "potential value",
     "process",
+    "proces",
     "project",
     "purpose",
     "rationale",
@@ -244,8 +247,16 @@ DENSE_GENERIC_TOC_LABELS = {
     "stakeholders",
     "summary",
     "tasks using this output",
+    "technique",
     "techniques",
     "usage considerations",
+}
+
+DENSE_TABLE_DIAGRAM_ARTIFACT_LABELS = {
+    "input",
+    "inputs",
+    "output",
+    "outputs",
 }
 
 MAGAZINE_GENERIC_TOC_LABEL_KEYS = {
@@ -428,9 +439,11 @@ def repair_epub_headings_and_toc(
         return_report=True,
         report_mode="rich",
     )
+    source_outline_entries = _extract_existing_toc_entries_from_epub(epub_bytes)
     repaired_epub, after_scan, raw_toc_map, nav_summary, structural_phase = _normalize_headings_and_rebuild_navigation(
         repaired_epub,
         publication_profile=publication_profile,
+        preferred_outline_entries=source_outline_entries,
     )
     epubcheck = run_epubcheck(repaired_epub)
 
@@ -606,6 +619,232 @@ def _resolve_repair_inputs(
     }
 
 
+def _extract_existing_toc_entries_from_epub(epub_bytes: bytes) -> list[dict[str, Any]]:
+    if not epub_bytes:
+        return []
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root_dir = Path(temp_dir)
+        _extract_epub(epub_bytes, root_dir)
+        opf_path = _locate_opf(root_dir)
+        chapter_paths = _get_spine_xhtml_paths(opf_path)
+        return _extract_existing_toc_entries_from_package(opf_path, chapter_paths)
+
+
+def _extract_existing_toc_entries_from_package(opf_path: Path, chapter_paths: list[Path]) -> list[dict[str, Any]]:
+    package_dir = opf_path.parent
+    entries = _extract_nav_xhtml_toc_entries(package_dir / "nav.xhtml")
+    if not entries:
+        entries = _extract_ncx_toc_entries(package_dir / "toc.ncx")
+    valid_files = {path.name for path in chapter_paths}
+    normalized_entries: list[dict[str, Any]] = []
+    for entry in entries:
+        file_name = Path(str(entry.get("file_name", "") or "")).name
+        if file_name not in valid_files:
+            continue
+        text = _normalize_text(str(entry.get("text", "") or ""))
+        if not text:
+            continue
+        try:
+            level = int(entry.get("level", 1) or 1)
+        except (TypeError, ValueError):
+            level = 1
+        normalized_entries.append(
+            {
+                "file_name": file_name,
+                "id": _normalize_text(str(entry.get("id", "") or "")),
+                "text": text,
+                "level": max(1, min(level, 3)),
+                "source": "existing-outline",
+            }
+        )
+    return _dedupe_outline_entries(normalized_entries)
+
+
+def _extract_nav_xhtml_toc_entries(nav_path: Path) -> list[dict[str, Any]]:
+    if not nav_path.exists():
+        return []
+    soup = BeautifulSoup(nav_path.read_text(encoding="utf-8"), "xml")
+    toc_nav = None
+    for nav in soup.find_all("nav"):
+        epub_type = _normalize_text(str(nav.get("epub:type", "") or nav.get("type", "") or "")).lower()
+        if "toc" in epub_type or nav.get("id") == "toc":
+            toc_nav = nav
+            break
+    if toc_nav is None:
+        return []
+    root_list = toc_nav.find("ol", recursive=False) or toc_nav.find("ol")
+    if root_list is None:
+        return []
+    entries: list[dict[str, Any]] = []
+
+    def walk_list(list_node: Tag, level: int) -> None:
+        for item in list_node.find_all("li", recursive=False):
+            link = item.find("a", recursive=False) or item.find("a")
+            if link is not None:
+                parsed = _parse_toc_href(str(link.get("href", "") or ""))
+                if parsed:
+                    entries.append(
+                        {
+                            **parsed,
+                            "text": _normalize_text(link.get_text(" ", strip=True)),
+                            "level": level,
+                        }
+                    )
+            for child_list in item.find_all("ol", recursive=False):
+                walk_list(child_list, level + 1)
+
+    walk_list(root_list, 1)
+    return entries
+
+
+def _extract_ncx_toc_entries(ncx_path: Path) -> list[dict[str, Any]]:
+    if not ncx_path.exists():
+        return []
+    soup = BeautifulSoup(ncx_path.read_text(encoding="utf-8"), "xml")
+    nav_map = soup.find("navMap")
+    if nav_map is None:
+        return []
+    entries: list[dict[str, Any]] = []
+
+    def walk_nav_points(parent: Tag, level: int) -> None:
+        for nav_point in parent.find_all("navPoint", recursive=False):
+            content = nav_point.find("content", recursive=False)
+            parsed = _parse_toc_href(str(content.get("src", "") or "")) if content is not None else None
+            label_node = nav_point.find("navLabel", recursive=False)
+            label_text = _normalize_text(label_node.get_text(" ", strip=True) if label_node is not None else "")
+            if parsed and label_text:
+                entries.append({**parsed, "text": label_text, "level": level})
+            walk_nav_points(nav_point, level + 1)
+
+    walk_nav_points(nav_map, 1)
+    return entries
+
+
+def _parse_toc_href(href: str) -> dict[str, str] | None:
+    href = unquote((href or "").strip())
+    if not href or re.match(r"^[a-z][a-z0-9+.-]*:", href, re.IGNORECASE):
+        return None
+    href = href.split("?", 1)[0]
+    file_name, _, anchor = href.partition("#")
+    file_name = Path(file_name).name
+    if not file_name:
+        return None
+    return {"file_name": file_name, "id": anchor}
+
+
+def _dedupe_outline_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for entry in entries:
+        key = (
+            str(entry.get("file_name", "") or ""),
+            str(entry.get("id", "") or ""),
+            _normalize_text(str(entry.get("text", "") or "")).lower(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(entry)
+    return deduped
+
+
+def _select_navigation_toc_entries(
+    *,
+    scan_toc_entries: list[dict[str, Any]],
+    outline_toc_entries: list[dict[str, Any]],
+    after_scan: dict[str, list[dict[str, Any]]],
+    publication_profile: str | None = None,
+) -> list[dict[str, Any]]:
+    raw_outline_artifact_count = sum(
+        1
+        for entry in outline_toc_entries
+        if _looks_like_dense_table_or_diagram_artifact_heading(str(entry.get("text", "") or ""))
+    )
+    filtered_outline = _filter_existing_outline_toc_entries(outline_toc_entries, after_scan=after_scan)
+    if _should_prefer_existing_outline_toc(
+        filtered_outline,
+        scan_toc_entries=scan_toc_entries,
+        after_scan=after_scan,
+        publication_profile=publication_profile,
+        raw_outline_artifact_count=raw_outline_artifact_count,
+    ):
+        return filtered_outline
+    return scan_toc_entries
+
+
+def _filter_existing_outline_toc_entries(
+    entries: list[dict[str, Any]],
+    *,
+    after_scan: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    heading_ids_by_file = {
+        file_name: {_normalize_text(str(item.get("id", "") or "")) for item in items if _normalize_text(str(item.get("id", "") or ""))}
+        for file_name, items in after_scan.items()
+    }
+    filtered: list[dict[str, Any]] = []
+    for entry in _dedupe_outline_entries(entries):
+        file_name = str(entry.get("file_name", "") or "")
+        if file_name not in after_scan:
+            continue
+        anchor_id = _normalize_text(str(entry.get("id", "") or ""))
+        if anchor_id and anchor_id not in heading_ids_by_file.get(file_name, set()):
+            continue
+        text = _normalize_text(str(entry.get("text", "") or ""))
+        try:
+            level = int(entry.get("level", 1) or 1)
+        except (TypeError, ValueError):
+            level = 1
+        level = max(1, min(level, 3))
+        if not _is_clean_navigation_heading_text(text, level=level):
+            continue
+        filtered.append({**entry, "file_name": file_name, "id": anchor_id, "text": text, "level": level})
+    return filtered
+
+
+def _should_prefer_existing_outline_toc(
+    outline_entries: list[dict[str, Any]],
+    *,
+    scan_toc_entries: list[dict[str, Any]],
+    after_scan: dict[str, list[dict[str, Any]]],
+    publication_profile: str | None = None,
+    raw_outline_artifact_count: int = 0,
+) -> bool:
+    if len(outline_entries) < 2:
+        return False
+    if _is_magazine_publication_profile(publication_profile):
+        return False
+    if _is_dense_handbook_scan(after_scan):
+        return True
+    if raw_outline_artifact_count:
+        return True
+    extracted_artifact_count = sum(
+        1
+        for items in after_scan.values()
+        for entry in items
+        if _looks_like_dense_table_or_diagram_artifact_heading(str(entry.get("text", "") or ""))
+    )
+    if extracted_artifact_count:
+        return True
+    return False
+
+
+def _is_clean_navigation_heading_text(text: str, *, level: int) -> bool:
+    normalized = _normalize_text(text)
+    if not _should_include_in_toc(normalized, level):
+        return False
+    if _looks_like_figure_caption_heading(normalized):
+        return False
+    if _looks_like_table_header_heading(normalized):
+        return False
+    if _looks_like_navigation_artifact_heading(normalized):
+        return False
+    if _looks_like_synthetic_section_label(normalized):
+        return False
+    if _looks_like_dense_table_or_diagram_artifact_heading(normalized):
+        return False
+    return True
+
+
 def _scan_epub_heading_candidates(epub_bytes: bytes, *, include_pseudo: bool) -> dict[str, list[dict[str, Any]]]:
     with tempfile.TemporaryDirectory() as temp_dir:
         root_dir = Path(temp_dir)
@@ -627,12 +866,14 @@ def _normalize_headings_and_rebuild_navigation(
     epub_bytes: bytes,
     *,
     publication_profile: str | None = None,
+    preferred_outline_entries: list[dict[str, Any]] | None = None,
 ) -> tuple[bytes, dict[str, list[dict[str, Any]]], list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
     with tempfile.TemporaryDirectory() as temp_dir:
         root_dir = Path(temp_dir)
         _extract_epub(epub_bytes, root_dir)
         opf_path = _locate_opf(root_dir)
         chapter_paths = _get_spine_xhtml_paths(opf_path)
+        package_outline_entries = _extract_existing_toc_entries_from_package(opf_path, chapter_paths)
 
         after_scan: dict[str, list[dict[str, Any]]] = {}
         empty_reference_files: set[str] = set()
@@ -647,6 +888,12 @@ def _normalize_headings_and_rebuild_navigation(
         toc_entries = _build_toc_entries_from_scan(
             after_scan,
             excluded_reference_files=empty_reference_files,
+            publication_profile=publication_profile,
+        )
+        toc_entries = _select_navigation_toc_entries(
+            scan_toc_entries=toc_entries,
+            outline_toc_entries=(preferred_outline_entries or package_outline_entries),
+            after_scan=after_scan,
             publication_profile=publication_profile,
         )
         metadata = _snapshot_package_metadata(opf_path)
@@ -946,6 +1193,9 @@ def _should_demote_heading_cluster(cluster: list[Tag]) -> bool:
         return True
     if any(_looks_like_figure_caption_heading(text) for text in texts):
         return len(texts) >= 3 or figure_context
+    dense_artifact_count = sum(1 for text in texts if _looks_like_dense_table_or_diagram_artifact_heading(text))
+    if len(texts) >= 3 and dense_artifact_count >= max(2, len(texts) - 1):
+        return True
     if len(texts) >= 6 and short_fragment_count >= len(texts) - 2:
         return True
     if len(texts) >= 4 and figure_context and short_fragment_count >= len(texts) - 1:
@@ -1016,6 +1266,7 @@ def _demote_heading_noise(
             or _looks_like_figure_caption_heading(text)
             or _looks_like_table_header_heading(text)
             or _looks_like_navigation_artifact_heading(text)
+            or (_looks_like_dense_table_or_diagram_artifact_heading(text) and _heading_has_dense_artifact_context(node))
             or _looks_like_synthetic_section_label(text)
             or (_looks_like_truncated_heading(text) and not _has_supporting_content(node))
             or (relaxed_profile and _looks_like_relaxed_profile_heading_noise(node, text))
@@ -1534,6 +1785,31 @@ def _previous_meaningful_sibling_text(node: Tag) -> str:
     return ""
 
 
+def _nearby_meaningful_sibling_texts(node: Tag, *, limit: int = 3) -> list[str]:
+    texts: list[str] = []
+    for direction in ("previous_sibling", "next_sibling"):
+        sibling = getattr(node, direction)
+        collected = 0
+        while sibling is not None and collected < limit:
+            if isinstance(sibling, Tag):
+                text = _normalize_text(sibling.get_text(" ", strip=True))
+                if text:
+                    texts.append(text)
+                    collected += 1
+            sibling = getattr(sibling, direction)
+    return texts
+
+
+def _heading_has_dense_artifact_context(node: Tag) -> bool:
+    if node.find_parent(["figure", "figcaption", "table", "thead", "tbody", "tfoot"]):
+        return True
+    nearby_texts = _nearby_meaningful_sibling_texts(node, limit=3)
+    if sum(1 for text in nearby_texts if _looks_like_dense_table_or_diagram_artifact_heading(text)) >= 2:
+        return True
+    context = " ".join(nearby_texts).lower()
+    return bool(re.search(r"\b(?:table|diagram|figure|object|state|rank|input|output|exhibit|matrix|model)\b", context))
+
+
 def _is_short_heading_fragment(text: str) -> bool:
     normalized = _normalize_text(text).lstrip("•·▪◦ ").strip()
     if not normalized:
@@ -1577,7 +1853,39 @@ def _looks_like_navigation_artifact_heading(text: str) -> bool:
         return True
     if re.match(r"(?i)^(?:page|strona)\s*\d+(?:\s*(?:of|z)\s*\d+)?$", normalized):
         return True
+    if len(re.findall(r"\b\d{1,4}\s+\d+(?:\.\d+)+\b", normalized)) >= 2:
+        return True
+    if _looks_like_index_page_heading(normalized):
+        return True
     if lowered in {"isbn", "issn", "doi"}:
+        return True
+    return False
+
+
+def _looks_like_index_page_heading(text: str) -> bool:
+    normalized = _normalize_text(text).strip()
+    if re.match(r"(?i)^(?:chapter|appendix|section|part|figure|table|sekcja|rozdzial|rozdział|czesc|część)\b", normalized):
+        return False
+    match = re.fullmatch(r"(?P<label>.+?)\s+(?P<page>\d{1,4})", normalized)
+    if not match:
+        return False
+    label = match.group("label").strip(" .,-")
+    if len(label) > 80 or not any(ch.isalpha() for ch in label):
+        return False
+    words = label.split()
+    return 1 <= len(words) <= 7 and not label.endswith(":")
+
+
+def _looks_like_dense_table_or_diagram_artifact_heading(text: str) -> bool:
+    normalized = _normalize_text(text).strip(" .:;")
+    lowered = normalized.lower()
+    if not normalized:
+        return False
+    if lowered in DENSE_TABLE_DIAGRAM_ARTIFACT_LABELS:
+        return True
+    if re.fullmatch(r"(?i)(?:object|state)\s+\d+[A-Za-z]?", normalized):
+        return True
+    if re.fullmatch(r"(?i)rank\s*(?:=|:)?\s*\d+(?:\s*[*x]\s*\d+)?", normalized):
         return True
     return False
 
@@ -1689,7 +1997,7 @@ def _build_toc_entries_from_scan(
             if level <= 0 or level > 3:
                 continue
             text = _normalize_text(str(item.get("text", "") or ""))
-            if not _should_include_in_toc(text, level):
+            if not _is_clean_navigation_heading_text(text, level=level):
                 continue
             if _looks_like_figure_caption_heading(text):
                 continue
@@ -1821,6 +2129,8 @@ def _should_include_dense_handbook_heading(
     if _looks_like_person_credential_heading(text):
         return False
     if _looks_like_navigation_artifact_heading(text):
+        return False
+    if _looks_like_dense_table_or_diagram_artifact_heading(text):
         return False
     if level == 3 and not (_looks_like_numbered_heading(text) or len(text.split()) >= 3):
         return False
@@ -1975,8 +2285,32 @@ def _filter_resolved_manual_review_items(
             continue
         if _metadata_title_review_resolved_by_toc(item, toc_map):
             continue
+        if _heading_recovery_review_resolved_by_toc(item, toc_map):
+            continue
         filtered.append(item)
     return filtered
+
+
+def _heading_recovery_review_resolved_by_toc(item: dict[str, Any], toc_map: list[dict[str, Any]]) -> bool:
+    phase = _normalize_text(str(item.get("phase", "") or ""))
+    reason = _normalize_text(str(item.get("reason", "") or ""))
+    if phase != "heading_recovery":
+        return False
+    if reason not in {"ambiguous-heading-removed", "reconstructed-heading"}:
+        return False
+    before = _normalize_text(str(item.get("before", "") or ""))
+    after = _normalize_text(str(item.get("after", "") or ""))
+    candidate = after or before
+    if not candidate:
+        return True
+    clean_entries = [entry for entry in toc_map if not entry.get("issues")]
+    if any(_toc_entry_matches_text(entry, candidate) for entry in clean_entries):
+        return True
+    if _looks_like_navigation_artifact_heading(candidate):
+        return True
+    if reason == "ambiguous-heading-removed" and _is_short_heading_fragment(candidate):
+        return True
+    return False
 
 
 def _metadata_title_review_resolved_by_toc(item: dict[str, Any], toc_map: list[dict[str, Any]]) -> bool:
@@ -2349,6 +2683,8 @@ def _is_suspicious_final_heading_text(text: str, *, publication_profile: str | N
             return False
         return True
     if _looks_like_navigation_artifact_heading(normalized):
+        return True
+    if _looks_like_dense_table_or_diagram_artifact_heading(normalized):
         return True
     if _looks_like_synthetic_section_label(normalized):
         return True

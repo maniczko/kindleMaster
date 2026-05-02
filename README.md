@@ -25,6 +25,11 @@ The supported toolchain matrix lives in [docs/toolchain-matrix.md](docs/toolchai
 - `docs/v2-reader-workflow-roadmap.md` defines deferred v2 Send-to-Kindle, notes/highlights, and Obsidian/Readwise export workflows without changing the v1 release-grade converter scope.
 - `docs/local-bootstrap-toolchain.md` is the operator runbook for setup, `doctor`, and environment-versus-quality failure classification.
 - `docs/conversion-pipeline.md` maps the current PDF/DOCX to EPUB pipeline, responsible modules, fallback reporting, and stage-level tests.
+- `docs/conversion-profiles.md` explains the UI conversion profiles and when to use each route.
+- `docs/send-to-kindle-handoff.md` explains the manual post-conversion handoff and when an EPUB is safe to send.
+- `docs/kindle-previewer-validation.md` defines the manual Kindle Previewer and Send to Kindle evidence checklist.
+- `docs/text-artifact-rate.md` documents reader-facing text artifact rate thresholds used by quality reports.
+- `reference_inputs/golden_epub_expectations.json` defines golden EPUB feature expectations for representative conversion classes.
 - `docs/source-of-truth-matrix.md` mirrors the control-plane authority model for status, Linear, reports, and release truth.
 - `docs/independent-audit-mode.md` explains standalone EPUB artifact audit versus full project status.
 - `docs/premium-epub-release-checklist.md` is the agent-facing release-readiness checklist for premium EPUB output.
@@ -47,6 +52,15 @@ python kindlemaster.py serve
 ```
 
 If you need browser coverage or the live runtime gate, install the Python browser stack as described in the toolchain matrix.
+
+For a repeatable release-quality environment with Java/EPUBCheck, OCRmyPDF, Tesseract, Ghostscript, qpdf, and Playwright Chromium:
+
+```powershell
+docker build -f Dockerfile.toolchain -t kindlemaster-toolchain .
+docker run --rm -it -v ${PWD}:/workspace -w /workspace kindlemaster-toolchain python kindlemaster.py doctor
+```
+
+The same image is wired through `.devcontainer/devcontainer.json`. Details live in [docs/local-bootstrap-toolchain.md](docs/local-bootstrap-toolchain.md).
 
 The async HTTP flow keeps the existing `/convert/start -> /convert/status/<job_id> -> /convert/download/<job_id>` contract and now also exposes normalized quality state at `GET /convert/quality/<job_id>`. `GET /convert/status/<job_id>` includes the same payload under `quality_state` plus a `quality_state_url`.
 
@@ -81,6 +95,16 @@ The corpus-wide proof lane writes derived reports under `reports/corpus/` and `o
 - `reports/corpus/corpus_gate.md`
 - `reports/corpus/premium_corpus_smoke_report.json`
 - `reports/corpus/premium_corpus_smoke_report.md`
+
+Golden EPUB regression checks compare structural features, not byte-identical archives:
+
+```powershell
+python scripts/run_golden_epub_regression.py --artifact-root output/corpus/smoke
+```
+
+They write:
+- `reports/golden_epub_regression/golden_epub_regression.json`
+- `reports/golden_epub_regression/golden_epub_regression.md`
 
 The derived project status lane reads existing evidence and writes:
 - `reports/project_status.json`

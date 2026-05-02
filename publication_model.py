@@ -149,6 +149,9 @@ class PublicationQualityReport:
     low_confidence_table_count: int = 0
     fragment_table_count: int = 0
     table_summary: dict[str, Any] = field(default_factory=dict)
+    figure_summary: dict[str, Any] = field(default_factory=dict)
+    reading_flow: dict[str, Any] = field(default_factory=dict)
+    ocr_quality: dict[str, Any] = field(default_factory=dict)
     tiny_tail_sections: list[dict[str, Any]] = field(default_factory=list)
     asset_budget_status: str = ""
     validation_status: str = "unavailable"
@@ -186,6 +189,9 @@ class PublicationQualityReport:
             "low_confidence_table_count": self.low_confidence_table_count,
             "fragment_table_count": self.fragment_table_count,
             "table_summary": self.table_summary,
+            "figure_summary": self.figure_summary,
+            "reading_flow": self.reading_flow,
+            "ocr_quality": self.ocr_quality,
             "tiny_tail_sections": self.tiny_tail_sections,
             "tiny_tail_section_count": len(self.tiny_tail_sections),
             "asset_budget_status": self.asset_budget_status,
@@ -210,6 +216,7 @@ class PublicationQualityReport:
         return {
             **self.content_metrics_dict(),
             **self.validation_payload(),
+            "ocr_quality": self.ocr_quality,
         }
 
 

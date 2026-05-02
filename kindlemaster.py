@@ -23,6 +23,7 @@ QUICK_TESTS = [
     "test_flat2_ui_template.py",
     "test_browser_conversion_outcome_harness.py",
     "test_app_async_convert.py",
+    "test_conversion_library.py",
     "test_app_runtime_services.py",
     "test_app_quality_state_route.py",
     "test_docx_conversion.py",
@@ -44,6 +45,7 @@ QUICK_TESTS = [
     "test_vat_fixture_contracts.py",
     "test_prepare_reference_inputs_ocr_fixture.py",
     "test_reference_inputs_document_like_fixture.py",
+    "test_epub_text_artifacts.py",
     "test_text_normalization.py",
     "test_converter_text_cleanup.py",
     "test_semantic_epub_cleanup.py",
@@ -72,6 +74,7 @@ CORPUS_TESTS = [
     "test_premium_corpus_smoke.py",
     "test_premium_corpus_smoke_batches.py",
     "test_corpus_gate.py",
+    "test_golden_epub_regression.py",
 ]
 
 BROWSER_TESTS = [
@@ -86,10 +89,12 @@ RUNTIME_TESTS = [
 
 DISCOVER_ONLY_TESTS = [
     "test_conversion_api_contracts.py",
+    "test_converter_metadata_cover.py",
     "test_full_magazine.py",
     "test_integration.py",
     "test_local_hostname_contract.py",
     "test_magazine_conversion.py",
+    "test_babok_dense_handbook_quality.py",
     "test_premium_reflow.py",
     "test_premium_reflow_tables.py",
     "test_quality_report_markdown.py",
@@ -133,6 +138,7 @@ def main() -> int:
     convert_parser.add_argument("--language", default="pl")
     convert_parser.add_argument("--profile", default="auto-premium")
     convert_parser.add_argument("--heading-repair", action="store_true")
+    convert_parser.add_argument("--domain-dictionary", default="")
     convert_parser.add_argument("--report-json", default="")
 
     validate_parser = subparsers.add_parser("validate", help="Run EPUB validators on one or more EPUB files.")
@@ -217,6 +223,7 @@ def main() -> int:
             language=args.language,
             profile=args.profile,
             heading_repair=args.heading_repair,
+            domain_dictionary=args.domain_dictionary,
             report_json=args.report_json,
         )
     if args.command == "validate":
@@ -651,7 +658,8 @@ def _run_convert(
     language: str,
     profile: str,
     heading_repair: bool,
-    report_json: str,
+    domain_dictionary: str = "",
+    report_json: str = "",
 ) -> int:
     from app_runtime_services import ConversionRequest, run_document_conversion
     from converter import convert_document_to_epub_with_report
@@ -675,6 +683,7 @@ def _run_convert(
             profile=profile,
             language=language,
             heading_repair_enabled=heading_repair,
+            text_cleanup_domain_dictionary_path=domain_dictionary or None,
         ),
         convert_impl=convert_document_to_epub_with_report,
         heading_repair_impl=repair_epub_headings_and_toc,

@@ -12,6 +12,7 @@ from epub_heading_repair import (
     _build_toc_entries_from_scan,
     _evaluate_heading_gate_after_rebuild,
     _filter_resolved_manual_review_items,
+    _is_clean_navigation_heading_text,
     _is_suspicious_final_heading_text,
     repair_epub_headings_and_toc,
     run_heading_repair_pipeline,
@@ -28,7 +29,20 @@ class EpubHeadingRepairTests(unittest.TestCase):
                 archive.writestr(archive_path, payload, compress_type=compress_type)
         return output.getvalue()
 
-    def _minimal_epub(self, chapter_source: str, *, nav_label: str = "Legacy label", nav_href: str = "chapter_001.xhtml") -> bytes:
+    def _minimal_epub(
+        self,
+        chapter_source: str,
+        *,
+        nav_label: str = "Legacy label",
+        nav_href: str = "chapter_001.xhtml",
+        nav_items: list[tuple[int, str, str]] | None = None,
+    ) -> bytes:
+        nav_items = nav_items or [(1, nav_label, nav_href)]
+        nav_list = "".join(f'<li><a href="{href}">{label}</a></li>' for _, label, href in nav_items)
+        ncx_points = "".join(
+            f'<navPoint id="legacy-{index}" playOrder="{index}"><navLabel><text>{label}</text></navLabel><content src="{href}"/></navPoint>'
+            for index, (_, label, href) in enumerate(nav_items, start=1)
+        )
         return self._build_epub_bytes(
             {
                 "mimetype": "application/epub+zip",
@@ -62,19 +76,87 @@ class EpubHeadingRepairTests(unittest.TestCase):
                 "EPUB/nav.xhtml": f"""<?xml version="1.0" encoding="utf-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
   <head><title>Navigation</title></head>
-  <body><nav epub:type="toc"><ol><li><a href="{nav_href}">{nav_label}</a></li></ol></nav></body>
+  <body><nav epub:type="toc"><ol>{nav_list}</ol></nav></body>
 </html>
 """,
                 "EPUB/toc.ncx": f"""<?xml version="1.0" encoding="utf-8"?>
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
   <head><meta name="dtb:uid" content="heading-repair"/></head>
   <docTitle><text>{nav_label}</text></docTitle>
-  <navMap><navPoint id="legacy" playOrder="1"><navLabel><text>{nav_label}</text></navLabel><content src="{nav_href}"/></navPoint></navMap>
+  <navMap>{ncx_points}</navMap>
 </ncx>
 """,
                 "EPUB/style/default.css": "body { font-family: serif; }",
             }
         )
+
+    def test_dense_handbook_navigation_filter_rejects_index_page_debris(self):
+        for label in ("Trustworthy 298", "Glossary 286", "Acceptance and Evaluation Criteria 217"):
+            self.assertFalse(_is_clean_navigation_heading_text(label, level=2), label)
+        for label in ("Input", "Output", "Object 1", "State 3", "Rank = 1*3", "Data", "Proces"):
+            self.assertFalse(_is_clean_navigation_heading_text(label, level=2), label)
+        self.assertTrue(_is_clean_navigation_heading_text("Business Analysis Key Concepts", level=1))
+
+    def test_repair_epub_headings_and_toc_rebuilds_navigation_without_source_bookmarks(self):
+        chapter_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Operational Handbook</title></head>
+  <body>
+    <section>
+      <h1>Operational Handbook</h1>
+      <p>This handbook explains the workflow and decision model.</p>
+      <h2>1. Discovery</h2>
+      <p>The discovery section has enough prose to be a real section.</p>
+      <h3>1.1 Scope</h3>
+      <p>The scope subsection describes boundaries and assumptions.</p>
+      <h2>Page 12</h2>
+      <p>A page marker must not become a navigation entry.</p>
+      <h2>https://example.com/footer</h2>
+      <p>A footer URL must not become a navigation entry.</p>
+      <h2>2. Delivery</h2>
+      <p>The delivery section describes execution and release controls.</p>
+      <h3>2.1 Acceptance Criteria</h3>
+      <p>The acceptance subsection captures the release expectations.</p>
+    </section>
+  </body>
+</html>
+"""
+        epub_bytes = self._minimal_epub(
+            chapter_source,
+            nav_label="Input",
+            nav_href="chapter_001.xhtml#missing-input",
+        )
+
+        with patch(
+            "epub_heading_repair.run_epubcheck",
+            return_value={"status": "passed", "tool": "epubcheck", "messages": []},
+        ):
+            result = repair_epub_headings_and_toc(epub_bytes, language_hint="en")
+
+        toc_labels = [item["label"] for item in result.toc_mapping]
+
+        self.assertIn("Operational Handbook", toc_labels)
+        self.assertIn("1. Discovery", toc_labels)
+        self.assertIn("1.1 Scope", toc_labels)
+        self.assertIn("2. Delivery", toc_labels)
+        self.assertIn("2.1 Acceptance Criteria", toc_labels)
+        self.assertNotIn("Input", toc_labels)
+        self.assertNotIn("Page 12", toc_labels)
+        self.assertNotIn("https://example.com/footer", toc_labels)
+        self.assertEqual(result.summary["toc_broken_target_count"], 0)
+        self.assertGreaterEqual(result.summary["toc_entries_after"], 5)
+        self.assertEqual(result.qa["gates"]["D"]["status"], "pass")
+
+        with zipfile.ZipFile(io.BytesIO(result.epub_bytes), "r") as archive:
+            nav = archive.read("EPUB/nav.xhtml").decode("utf-8")
+            ncx = archive.read("EPUB/toc.ncx").decode("utf-8")
+
+        self.assertIn("1. Discovery", nav)
+        self.assertIn("2. Delivery", nav)
+        self.assertIn("1. Discovery", ncx)
+        self.assertIn("2. Delivery", ncx)
+        self.assertNotIn("Page 12", nav)
+        self.assertNotIn("https://example.com/footer", nav)
 
     def test_repair_epub_headings_and_toc_removes_fake_heading_and_rebuilds_toc(self):
         chapter_source = """<?xml version="1.0" encoding="utf-8"?>
@@ -233,7 +315,7 @@ class EpubHeadingRepairTests(unittest.TestCase):
 
         toc_labels = [item["label"] for item in result.toc_mapping]
         self.assertIn("Raport platnosci", toc_labels)
-        self.assertIn("Proces", toc_labels)
+        self.assertNotIn("Proces", toc_labels)
         self.assertIn("Architektura", toc_labels)
         self.assertNotIn("Co to jest", toc_labels)
         self.assertNotIn("Jak dziala", toc_labels)
@@ -470,7 +552,7 @@ class EpubHeadingRepairTests(unittest.TestCase):
 
         toc_labels = {item["label"] for item in result.toc_mapping}
         self.assertIn("Raport platnosci", toc_labels)
-        self.assertIn("Proces", toc_labels)
+        self.assertNotIn("Proces", toc_labels)
         self.assertIn("Architektura", toc_labels)
         self.assertNotIn("Kategoria Wymaganie Dlaczego to ważne Przykładowy miernik / test", toc_labels)
         self.assertNotIn("KPI Definicja robocza Po co Pułapka interpretacyjna", toc_labels)
@@ -602,6 +684,83 @@ class EpubHeadingRepairTests(unittest.TestCase):
         self.assertNotIn("<h2>Business Analysis</h2>", chapter)
         self.assertNotIn("<h2>Planning and</h2>", chapter)
         self.assertNotIn("<h2>Requirements</h2>", chapter)
+
+    def test_repair_epub_headings_and_toc_prefers_clean_existing_outline_over_dense_artifacts(self):
+        chapter_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Dense Handbook</title></head>
+  <body>
+    <section>
+      <h1 id="business-analysis-planning-and-monitoring">Business Analysis Planning and Monitoring</h1>
+      <p>This chapter has enough supporting prose to remain the primary section.</p>
+      <h2 id="input">Input</h2>
+      <p>Table cell content extracted as heading text.</p>
+      <h2 id="output">Output</h2>
+      <p>Another low-value schema cell from a dense handbook table.</p>
+      <h2 id="object-1">Object 1</h2>
+      <p>Diagram label, not a real section.</p>
+      <h2 id="state-1">State 1</h2>
+      <p>Diagram label, not a real section.</p>
+      <h2 id="rank-1-3">Rank = 1*3</h2>
+      <p>Formula fragment extracted from a diagram.</p>
+      <h2 id="body-only-extracted-subheading">Body-only Extracted Subheading</h2>
+      <p>This heading is plausible but should not override the cleaner source outline.</p>
+      <h2 id="elicitation-and-collaboration">Elicitation and Collaboration</h2>
+      <p>The second outline target has enough content to remain a valid navigation entry.</p>
+    </section>
+  </body>
+</html>
+"""
+        epub_bytes = self._minimal_epub(
+            chapter_source,
+            nav_label="Dense Handbook",
+            nav_items=[
+                (
+                    1,
+                    "Dense Handbook",
+                    "chapter_001.xhtml",
+                ),
+                (
+                    2,
+                    "Elicitation and Collaboration",
+                    "chapter_001.xhtml#elicitation-and-collaboration",
+                ),
+                (2, "Input", "chapter_001.xhtml#input"),
+                (2, "Output", "chapter_001.xhtml#output"),
+                (2, "Object 1", "chapter_001.xhtml#object-1"),
+                (2, "State 1", "chapter_001.xhtml#state-1"),
+                (2, "Rank = 1*3", "chapter_001.xhtml#rank-1-3"),
+            ],
+        )
+
+        with patch(
+            "epub_heading_repair.run_epubcheck",
+            return_value={"status": "passed", "tool": "epubcheck", "messages": []},
+        ):
+            result = repair_epub_headings_and_toc(epub_bytes, language_hint="en")
+
+        toc_labels = [item["label"] for item in result.toc_mapping]
+        self.assertEqual(
+            toc_labels,
+            ["Dense Handbook", "Elicitation and Collaboration"],
+        )
+        self.assertNotIn("Input", toc_labels)
+        self.assertNotIn("Output", toc_labels)
+        self.assertNotIn("Object 1", toc_labels)
+        self.assertNotIn("State 1", toc_labels)
+        self.assertNotIn("Rank = 1*3", toc_labels)
+        self.assertNotIn("Body-only Extracted Subheading", toc_labels)
+
+        with zipfile.ZipFile(io.BytesIO(result.epub_bytes), "r") as archive:
+            nav = archive.read("EPUB/nav.xhtml").decode("utf-8")
+            ncx = archive.read("EPUB/toc.ncx").decode("utf-8")
+
+        self.assertIn("Dense Handbook", nav)
+        self.assertIn("Elicitation and Collaboration", nav)
+        self.assertIn("Dense Handbook", ncx)
+        self.assertIn("Elicitation and Collaboration", ncx)
+        self.assertNotIn(">Input<", nav)
+        self.assertNotIn(">Input<", ncx)
 
     def test_repair_epub_headings_and_toc_rejects_navigation_artifacts_but_keeps_real_sections(self):
         chapter_source = """<?xml version="1.0" encoding="utf-8"?>

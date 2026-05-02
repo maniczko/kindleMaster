@@ -34,6 +34,11 @@ import fitz  # PyMuPDF
 from ebooklib import epub
 from bs4 import BeautifulSoup
 from PIL import Image
+from pdf_metadata import (
+    _extract_pdf_metadata,
+    _metadata_author_is_weak,
+    _metadata_title_is_weak,
+)
 from size_budget_policy import (
     SizeBudgetExceededError,
     evaluate_size_budget,
@@ -201,6 +206,17 @@ def finalize_epub_bytes(
                 "to avoid long-running false positives."
             ),
         }
+    elif _should_skip_expensive_text_cleanup(pdf_metadata, publication_profile=publication_profile):
+        text_cleanup_summary = {
+            **text_cleanup_summary,
+            "status": "skipped",
+            "profile_skip": True,
+            "bounded_long_form_skip": True,
+            "skip_reason": (
+                "Skipped full text normalization for a long dense handbook. "
+                "Semantic cleanup, heading repair, reference repair, and EPUB validation still run."
+            ),
+        }
     else:
         try:
             from text_normalization import TextCleanupConfig, clean_epub_text_package
@@ -285,9 +301,54 @@ def finalize_epub_bytes(
             "reference_cleanup": semantic_reference_cleanup,
         }
 
+    try:
+        from epub_text_artifacts import analyze_epub_text_artifacts
+
+        artifact_rate = analyze_epub_text_artifacts(epub_bytes)
+        text_cleanup_summary = {
+            **text_cleanup_summary,
+            "artifact_rate": artifact_rate,
+            "artifact_rate_per_1000_words": artifact_rate.get("artifact_rate_per_1000_words", 0.0),
+            "artifact_count": artifact_rate.get("artifact_count", 0),
+        }
+    except Exception as exc:
+        text_cleanup_summary = {
+            **text_cleanup_summary,
+            "artifact_rate": {
+                "status": "unavailable",
+                "message": f"Artifact rate analysis failed: {exc.__class__.__name__}",
+            },
+        }
+
     if return_details:
         return epub_bytes, text_cleanup_summary
     return epub_bytes
+
+
+def _should_skip_expensive_text_cleanup(pdf_metadata: dict | None, *, publication_profile: str | None) -> bool:
+    profile = (publication_profile or "").strip().lower()
+    if profile not in {"book_reflow"}:
+        return False
+    metadata = pdf_metadata or {}
+    try:
+        page_count = int(
+            metadata.get("source_page_count")
+            or metadata.get("page_count")
+            or metadata.get("pages")
+            or 0
+        )
+    except (TypeError, ValueError):
+        page_count = 0
+    if page_count < 360:
+        return False
+    title = str(metadata.get("title") or "")
+    subject = str(metadata.get("subject") or metadata.get("keywords") or "")
+    profile_hint = str(metadata.get("ui_profile") or metadata.get("publication_kind") or "")
+    handbook_signal = re.search(
+        r"(?i)\b(?:guide|handbook|manual|standard|body of knowledge|technical-study|dense)\b",
+        " ".join([title, subject, profile_hint]),
+    )
+    return bool(handbook_signal)
 
 
 def _semantic_reference_cleanup_payload(semantic_report: object) -> dict:
@@ -673,10 +734,14 @@ def _build_publication_pipeline_result(
         "title": document.title,
         "author": document.author,
         "source_pdf_path": pdf_path,
+        "source_page_count": getattr(analysis, "page_count", 0),
+        "ui_profile": getattr(analysis, "ui_profile", ""),
     }
     source_metadata = document.metadata.get("source_metadata") if isinstance(document.metadata, dict) else {}
-    if isinstance(source_metadata, dict) and source_metadata.get("publisher"):
-        final_metadata["publisher"] = source_metadata["publisher"]
+    if isinstance(source_metadata, dict):
+        for field in ("publisher", "description", "subject", "date"):
+            if source_metadata.get(field) and not final_metadata.get(field):
+                final_metadata[field] = source_metadata[field]
     epub_bytes = build_epub(content, config, original_filename, final_metadata)
     epub_bytes, text_cleanup_summary = finalize_epub_bytes(
         epub_bytes,
@@ -917,70 +982,6 @@ img {
   border-radius: 0.35rem;
 }
 
-.magazine-figure img {
-  border-radius: 0.45rem;
-}
-
-.chess-diagram-container {
-  margin: 0.35em auto 1.25em;
-  text-align: center;
-  page-break-inside: avoid;
-  break-inside: avoid;
-}
-
-.chess-problem {
-  margin: 1.2em 0 1.55em;
-  page-break-inside: avoid;
-  break-inside: avoid;
-}
-
-.chess-diagram {
-  display: block;
-  width: 100%;
-  max-width: 22rem;
-  height: auto;
-  margin: 0 auto;
-  padding: 0.18rem;
-  border: 0.08rem solid #d8d2c3;
-  background: #fff;
-  box-sizing: border-box;
-  page-break-inside: avoid;
-  break-inside: avoid;
-  image-rendering: auto;
-}
-
-.diagram-caption {
-  margin: 0 0 0.45em;
-  text-indent: 0;
-  text-align: center;
-  font-weight: 600;
-  line-height: 1.35;
-  hyphens: none;
-  white-space: normal;
-}
-
-.exercise-number {
-  color: #666;
-  font-weight: 700;
-  margin-right: 0.18em;
-}
-
-.diagram-tail {
-  text-indent: 0;
-  margin-top: 0.7em;
-}
-
-.diagram-tail a {
-  color: inherit;
-  text-decoration: underline;
-}
-
-.solution-backlink {
-  color: inherit;
-  text-decoration: underline;
-  text-underline-offset: 0.12em;
-}
-
 p.kicker,
 p.byline {
   text-indent: 0;
@@ -1027,17 +1028,20 @@ p.toc-entry {
 /* === TABLES === */
 table {
   width: 100%;
+  max-width: 100%;
   border-collapse: collapse;
   margin: 1.2em 0;
-  font-size: 0.95em;
+  font-size: 0.9em;
   page-break-inside: avoid;
+  table-layout: auto;
 }
 
 th, td {
-  padding: 0.6em 0.8em;
+  padding: 0.45em 0.55em;
   border: 1px solid #ddd;
   text-align: left;
   vertical-align: top;
+  overflow-wrap: break-word;
 }
 
 th {
@@ -1160,9 +1164,6 @@ a:hover {
 
 .cover-fallback {
   min-height: 70vh;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
   padding: 3em 2em;
 }
 
@@ -1261,6 +1262,92 @@ a:hover {
   margin: 0.3em 0;
 }
 """
+
+MAGAZINE_REFLOW_CSS = """\
+.magazine-figure img {
+  border-radius: 0.45rem;
+}
+"""
+
+CHESS_REFLOW_CSS = """\
+.chess-diagram-container {
+  margin: 0.35em auto 1.25em;
+  text-align: center;
+  page-break-inside: avoid;
+  break-inside: avoid;
+}
+
+.chess-problem {
+  margin: 1.2em 0 1.55em;
+  page-break-inside: avoid;
+  break-inside: avoid;
+}
+
+.chess-diagram {
+  display: block;
+  width: 100%;
+  max-width: 22rem;
+  height: auto;
+  margin: 0 auto;
+  padding: 0.18rem;
+  border: 0.08rem solid #d8d2c3;
+  background: #fff;
+  box-sizing: border-box;
+  page-break-inside: avoid;
+  break-inside: avoid;
+  image-rendering: auto;
+}
+
+.diagram-caption {
+  margin: 0 0 0.45em;
+  text-indent: 0;
+  text-align: center;
+  font-weight: 600;
+  line-height: 1.35;
+  hyphens: none;
+  white-space: normal;
+}
+
+.exercise-number {
+  color: #666;
+  font-weight: 700;
+  margin-right: 0.18em;
+}
+
+.diagram-tail {
+  text-indent: 0;
+  margin-top: 0.7em;
+}
+
+.diagram-tail a {
+  color: inherit;
+  text-decoration: underline;
+}
+
+.solution-backlink {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 0.12em;
+}
+"""
+
+
+def _epub_css_for_content(content: dict) -> str:
+    html_seed = " ".join(
+        str(part)
+        for chapter in content.get("chapters", [])[:8]
+        for part in chapter.get("html_parts", [])[:20]
+    )
+    css_parts = [EPUB_CSS]
+    if "magazine-" in html_seed:
+        css_parts.append(MAGAZINE_REFLOW_CSS)
+    if "chess-" in html_seed or any(
+        img.get("is_chess")
+        for chapter in content.get("chapters", [])
+        for img in chapter.get("images", [])
+    ):
+        css_parts.append(CHESS_REFLOW_CSS)
+    return "\n".join(css_parts)
 
 # Fixed-layout CSS for 1:1 preservation
 FIXED_LAYOUT_CSS = """\
@@ -1498,35 +1585,6 @@ def pdf_to_html_fixed_layout(pdf_path: str, output_dir: str, config: ConversionC
 # ============================================================================
 # PDMUFDF-BASED EXTRACTION (FALLBACK/ HYBRID)
 # ============================================================================
-
-def _extract_pdf_metadata(pdf_path: str) -> dict:
-    """Extract metadata from PDF for use in EPUB metadata."""
-    try:
-        doc = fitz.open(pdf_path)
-        metadata = doc.metadata
-        doc.close()
-        
-        return {
-            "title": metadata.get("title", "") or Path(pdf_path).stem,
-            "author": metadata.get("author", "") or "Unknown",
-            "subject": metadata.get("subject", ""),
-            "creator": metadata.get("creator", ""),
-            "producer": metadata.get("producer", ""),
-            "creation_date": metadata.get("creationDate", ""),
-            "modification_date": metadata.get("modDate", ""),
-        }
-    except Exception as e:
-        print(f"Warning: Could not extract PDF metadata: {e}")
-        return {
-            "title": Path(pdf_path).stem,
-            "author": "Unknown",
-            "subject": "",
-            "creator": "",
-            "producer": "",
-            "creation_date": "",
-            "modification_date": "",
-        }
-
 
 def _build_content_from_ocr(ocr_result: OCRResult, config: ConversionConfig, pdf_metadata: dict) -> dict:
     """
@@ -1812,33 +1870,47 @@ def _apply_content_metadata_overrides(
     if candidate_publisher and not str(metadata.get("publisher") or "").strip():
         metadata["publisher"] = candidate_publisher
 
+    for field in ("description", "subject", "date"):
+        candidate = str(content_metadata.get(field) or "").strip()
+        if candidate and not str(metadata.get(field) or "").strip():
+            metadata[field] = candidate
+
     return metadata
 
 
-def _metadata_title_is_weak(value: str | None, *, original_filename: str) -> bool:
-    normalized = re.sub(r"\s+", " ", (value or "").strip())
-    if not normalized:
-        return True
-    lowered = normalized.lower()
-    file_stem = Path(original_filename).stem.lower().replace("_", "-")
-    title_key = lowered.replace("_", "-")
-    if lowered in {"untitled", "document", "converted document"}:
-        return True
-    if title_key == file_stem:
-        return True
-    if re.fullmatch(r"[0-9a-f]{12,}", normalized, flags=re.IGNORECASE):
-        return True
-    return False
+def _render_pdf_cover_image(pdf_path: str | None, *, max_dimension: int = 1800) -> dict | None:
+    if not pdf_path:
+        return None
+    try:
+        doc = fitz.open(pdf_path)
+    except Exception:
+        return None
+    try:
+        if len(doc) == 0:
+            return None
+        page = doc[0]
+        longest_edge = max(float(page.rect.width or 1), float(page.rect.height or 1))
+        scale = min(2.0, max(1.0, float(max_dimension) / longest_edge))
+        pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), colorspace=fitz.csRGB, alpha=False)
+        try:
+            data = pix.tobytes("jpeg")
+            extension = "jpeg"
+        except Exception:
+            data = pix.tobytes("png")
+            extension = "png"
+        return {
+            "filename": f"cover.{extension}",
+            "data": data,
+            "extension": extension,
+            "page": 0,
+            "rendered_from_pdf_page": True,
+        }
+    except Exception as exc:
+        print(f"Warning: Could not render PDF cover page: {exc}")
+        return None
+    finally:
+        doc.close()
 
-
-def _metadata_author_is_weak(value: str | None) -> bool:
-    normalized = re.sub(r"\s+", " ", (value or "").strip())
-    if not normalized:
-        return True
-    lowered = normalized.lower()
-    if lowered in {"unknown", "author", "creator"}:
-        return True
-    return bool(re.search(r"(?i)\b(?:redaktor|z-ca|zast[ęe]pca|koordynator|editor)\b", normalized))
 
 def build_epub(content: dict, config: ConversionConfig, original_filename: str, pdf_metadata: dict = None) -> bytes:
     """
@@ -1861,13 +1933,27 @@ def build_epub(content: dict, config: ConversionConfig, original_filename: str, 
     publisher = (pdf_metadata.get("publisher") or "").strip()
     if publisher:
         book.add_metadata("DC", "publisher", publisher)
+    description = (pdf_metadata.get("description") or "").strip()
+    if description:
+        book.add_metadata("DC", "description", description)
+    subjects = pdf_metadata.get("subjects")
+    if not isinstance(subjects, list):
+        subject_seed = (pdf_metadata.get("subject") or pdf_metadata.get("keywords") or "").strip()
+        subjects = [part.strip() for part in re.split(r"[;|]", subject_seed) if part.strip()]
+    for subject in dict.fromkeys(str(item).strip() for item in subjects if str(item).strip()):
+        book.add_metadata("DC", "subject", subject)
+    publication_date = (pdf_metadata.get("date") or "").strip()
+    if publication_date:
+        book.add_metadata("DC", "date", publication_date)
     
+    css_content = _epub_css_for_content(content)
+
     # Add CSS
     css = epub.EpubItem(
         uid="style",
         file_name="style/default.css",
         media_type="text/css",
-        content=EPUB_CSS.encode("utf-8"),
+        content=css_content.encode("utf-8"),
     )
     book.add_item(css)
     
@@ -2095,20 +2181,26 @@ def build_epub(content: dict, config: ConversionConfig, original_filename: str, 
         chapters.append(ch)
         toc_entries.append(ch)
     
-    # Add cover page from first page image
+    # Add cover page from the rendered first PDF page when available. This keeps
+    # dense handbooks from promoting an arbitrary extracted figure as the cover.
     cover_item = None
     cover_page_added = False
-    if content.get("images") and not content.get("suppress_auto_cover"):
-        first_image = content["images"][0]
+    cover_image = None
+    if not content.get("suppress_auto_cover"):
+        cover_image = content.get("cover_image") or _render_pdf_cover_image(pdf_metadata.get("source_pdf_path"))
+        if cover_image is None and content.get("images"):
+            cover_image = content["images"][0]
+
+    if cover_image is not None and not content.get("suppress_auto_cover"):
         try:
-            cover_extension = (first_image.get("extension") or "jpeg").lower()
+            cover_extension = (cover_image.get("extension") or "jpeg").lower()
             if cover_extension == "jpg":
                 cover_extension = "jpeg"
-            cover_digest = _digest_bytes(first_image["data"])
+            cover_digest = _digest_bytes(cover_image["data"])
             existing_cover_filename = ""
-            if first_image.get("filename") in image_items_by_filename:
-                existing_cover_filename = str(first_image.get("filename"))
-            if not existing_cover_filename:
+            if not cover_image.get("rendered_from_pdf_page") and cover_image.get("filename") in image_items_by_filename:
+                existing_cover_filename = str(cover_image.get("filename"))
+            if not existing_cover_filename and not cover_image.get("rendered_from_pdf_page"):
                 existing_cover_filename = image_filename_by_digest.get(cover_digest)
             cover_uid = "cover-image"
             cover_src = ""
@@ -2119,11 +2211,13 @@ def build_epub(content: dict, config: ConversionConfig, original_filename: str, 
                 cover_src = f"images/{existing_cover_filename}"
             else:
                 cover_filename = f"cover.{cover_extension}"
+                if cover_filename in added_image_filenames:
+                    cover_filename = f"cover-image.{cover_extension}"
                 cover_img = epub.EpubItem(
                     uid=cover_uid,
                     file_name=f"images/{cover_filename}",
                     media_type=f"image/{cover_extension}",
-                    content=first_image["data"],
+                    content=cover_image["data"],
                 )
                 book.add_item(cover_img)
                 cover_item = cover_img
@@ -2137,6 +2231,7 @@ def build_epub(content: dict, config: ConversionConfig, original_filename: str, 
                 f'<img src="{cover_src}" alt="{html_module.escape(title)}"/>'
                 "</body></html>"
             )
+            cover_page.add_item(css)
             book.add_item(cover_page)
             # Add cover to spine as first item
             chapters.insert(0, cover_page)
@@ -2156,6 +2251,7 @@ def build_epub(content: dict, config: ConversionConfig, original_filename: str, 
             f'<div class="cover-fallback"><h1>{html_module.escape(title)}</h1>{author_html}</div>'
             "</body></html>"
         )
+        cover_page.add_item(css)
         book.add_item(cover_page)
         chapters.insert(0, cover_page)
 

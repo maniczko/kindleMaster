@@ -148,6 +148,10 @@ class QualityStateServiceTests(unittest.TestCase):
         self.assertEqual(payload["release_verdict"], "ready_with_review")
         self.assertFalse(payload["release_blocked"])
         self.assertEqual(payload["quality_blockers"], [])
+        self.assertEqual(payload["user_facing_verdict"]["decision"], "review")
+        self.assertEqual(payload["user_facing_verdict"]["label"], "Kontrola")
+        self.assertEqual(payload["user_facing_verdict"]["download_label"], "Pobierz EPUB")
+        self.assertGreaterEqual(len(payload["user_facing_reasons"]), 1)
         self.assertFalse(payload["send_to_kindle_ready"])
         self.assertEqual(payload["send_to_kindle_blockers"][0]["code"], "kindle_delivery_release_not_ready")
         self.assertEqual(payload["verdict"]["status"], "passed_with_warnings")
@@ -214,6 +218,10 @@ class QualityStateServiceTests(unittest.TestCase):
         self.assertEqual(payload["release_verdict"], "release_blocked")
         self.assertTrue(payload["release_blocked"])
         self.assertEqual(payload["quality_blockers"][0]["source"], "text_cleanup")
+        self.assertEqual(payload["user_facing_verdict"]["decision"], "blocked")
+        self.assertEqual(payload["user_facing_verdict"]["label"], "Nie publikuj")
+        self.assertEqual(payload["user_facing_verdict"]["download_label"], "Pobierz szkic EPUB do kontroli")
+        self.assertEqual(payload["user_facing_reasons"][0]["code"], "text_cleanup_blocked")
         self.assertFalse(payload["send_to_kindle_ready"])
         self.assertEqual(
             [item["code"] for item in payload["send_to_kindle_blockers"]],
@@ -460,6 +468,9 @@ class QualityStateServiceTests(unittest.TestCase):
         payload = assemble_quality_state_dict(request)
 
         self.assertEqual(payload["release_verdict"], "release_ready")
+        self.assertEqual(payload["user_facing_verdict"]["decision"], "ready")
+        self.assertEqual(payload["user_facing_verdict"]["label"], "Publikuj")
+        self.assertEqual(payload["user_facing_reasons"], [])
         self.assertTrue(payload["send_to_kindle_ready"])
         self.assertEqual(payload["send_to_kindle_blockers"], [])
 

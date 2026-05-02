@@ -120,7 +120,7 @@ def build_publication_document(pdf_path: str, config, analysis: PublicationAnaly
         expect_table_summary=analysis.has_tables,
     )
 
-    if analysis.profile == "diagram_book_reflow":
+    if _should_coalesce_page_chapters_with_pdf_outline(content, analysis):
         content = _coalesce_page_chapters(content, pdf_path, profile=analysis.profile)
 
     content_metadata = content.get("metadata") or {}
@@ -153,6 +153,20 @@ def build_publication_document(pdf_path: str, config, analysis: PublicationAnaly
     if content.get("audit"):
         document.metadata["audit"] = content.get("audit")
     return document
+
+
+def _should_coalesce_page_chapters_with_pdf_outline(content: dict, analysis: PublicationAnalysis) -> bool:
+    chapters = list(content.get("chapters", []) or [])
+    if not chapters or "page_num" not in chapters[0]:
+        return False
+    if analysis.profile == "diagram_book_reflow":
+        return True
+    if analysis.profile != "book_reflow" or not analysis.has_toc:
+        return False
+    outline_target_count = int(len(content.get("toc", []) or []) or analysis.estimated_sections or 0)
+    if outline_target_count <= 0:
+        return False
+    return len(chapters) >= 12 and len(chapters) > max(outline_target_count * 2, outline_target_count + 8)
 
 
 def _sanitize_publication_title(value: str | None, *, file_stem: str = "") -> str:
@@ -393,6 +407,9 @@ def publication_from_content(
         low_confidence_table_count=int(table_summary.get("low_confidence_table_count", 0) or 0),
         fragment_table_count=int(table_summary.get("fragment_table_count", 0) or 0),
         table_summary=table_summary,
+        figure_summary=content_metadata.get("figure_summary") or {},
+        reading_flow=content_metadata.get("reading_flow") or {},
+        ocr_quality=content_metadata.get("ocr_quality") or {},
         tiny_tail_sections=_detect_tiny_tail_sections(sections),
         asset_budget_status=_asset_budget_status_for_document_like_report(analysis=analysis, assets=all_assets),
         extractor_contract_warnings=contract_warnings,
@@ -461,27 +478,77 @@ def finalize_publication_epub(document: PublicationDocument, epub_bytes: bytes) 
 def _build_scanned_content(pdf_path: str, config, pdf_metadata: dict) -> dict:
     from converter import OCR_AVAILABLE, _build_content_from_ocr, extract_pdf_with_pymupdf
 
+    def pymupdf_fallback(*, reason_code: str, message: str) -> dict:
+        return _with_ocr_quality(
+            extract_pdf_with_pymupdf(pdf_path, config, pdf_metadata),
+            {
+                "status": "degraded",
+                "quality_gate_status": "degraded",
+                "reason_codes": [reason_code, "pymupdf_fallback"],
+                "fallback_reason": reason_code,
+                "message": message,
+                "environment_error": reason_code in {"ocr_unavailable", "ocr_disabled", "ocr_exception"},
+            },
+        )
+
+    if not config.enable_external_ocr:
+        return pymupdf_fallback(
+            reason_code="ocr_disabled",
+            message="External OCR is disabled; scanned PDF fell back to PyMuPDF extraction.",
+        )
+    if not OCR_AVAILABLE:
+        return pymupdf_fallback(
+            reason_code="ocr_unavailable",
+            message="OCR module is unavailable; scanned PDF fell back to PyMuPDF extraction.",
+        )
+
     if OCR_AVAILABLE and config.enable_external_ocr:
         try:
             from ocr_module import check_ocrmypdf_ready, get_best_available_engine, run_ocr_on_page, run_ocr_on_pdf
 
             full_ocr_result = None
+            reason_codes: list[str] = []
             if check_ocrmypdf_ready():
                 full_ocr_result = run_ocr_on_pdf(pdf_path, language=config.ocr_language, dpi=300)
                 if full_ocr_result.engine_used == "ocrmypdf" and full_ocr_result.success_rate >= 0.5:
-                    return _build_content_from_ocr(full_ocr_result, config, pdf_metadata)
+                    return _with_ocr_quality(
+                        _build_content_from_ocr(full_ocr_result, config, pdf_metadata),
+                        _ocr_quality_from_result(full_ocr_result, reason_codes=["ocrmypdf_full_document"]),
+                    )
+            else:
+                reason_codes.append("ocrmypdf_unavailable")
 
             baseline_content = extract_pdf_with_pymupdf(pdf_path, config, pdf_metadata)
             chapters = list(baseline_content.get("chapters", []))
             if not chapters:
                 if full_ocr_result is None:
                     full_ocr_result = run_ocr_on_pdf(pdf_path, language=config.ocr_language, dpi=300)
-                return _build_content_from_ocr(full_ocr_result, config, pdf_metadata)
+                return _with_ocr_quality(
+                    _build_content_from_ocr(full_ocr_result, config, pdf_metadata),
+                    _ocr_quality_from_result(
+                        full_ocr_result,
+                        reason_codes=[*reason_codes, "pymupdf_empty_text", "full_document_ocr_fallback"],
+                    ),
+                )
 
             doc = fitz.open(pdf_path)
             try:
                 selected_engine = get_best_available_engine()
+                if selected_engine == "none":
+                    return _with_ocr_quality(
+                        baseline_content,
+                        {
+                            "status": "degraded",
+                            "quality_gate_status": "degraded",
+                            "reason_codes": [*reason_codes, "ocr_unavailable", "pymupdf_fallback"],
+                            "fallback_reason": "ocr_unavailable",
+                            "message": "No page-level OCR engine is available; scanned pages used PyMuPDF fallback.",
+                            "environment_error": True,
+                        },
+                    )
                 ocr_pages = 0
+                low_confidence_pages = 0
+                empty_ocr_pages = 0
                 hybrid_images = list(baseline_content.get("images", []))
 
                 for chapter in chapters:
@@ -502,6 +569,7 @@ def _build_scanned_content(pdf_path: str, config, pdf_metadata: dict) -> dict:
                         engine=selected_engine,
                     )
                     if len((ocr_page.text or "").strip()) < 80:
+                        empty_ocr_pages += 1
                         continue
 
                     ocr_confidence = ocr_page.confidence
@@ -511,6 +579,7 @@ def _build_scanned_content(pdf_path: str, config, pdf_metadata: dict) -> dict:
                     ocr_pages += 1
 
                     if ocr_confidence < 0.62:
+                        low_confidence_pages += 1
                         img_filename = f"ocr_page_{page_num}.jpeg"
                         image_asset = {
                             "filename": img_filename,
@@ -529,12 +598,73 @@ def _build_scanned_content(pdf_path: str, config, pdf_metadata: dict) -> dict:
                 baseline_content["images"] = _merge_content_assets(hybrid_images)
                 if ocr_pages:
                     baseline_content["method"] = f"{baseline_content.get('method', 'pymupdf')}-hybrid-ocr"
-                return baseline_content
+                hybrid_reason_codes = [*reason_codes]
+                if ocr_pages:
+                    hybrid_reason_codes.append("hybrid_ocr_fallback")
+                if low_confidence_pages:
+                    hybrid_reason_codes.append("low_ocr_confidence")
+                if empty_ocr_pages:
+                    hybrid_reason_codes.append("empty_ocr_page")
+                if not ocr_pages:
+                    hybrid_reason_codes.append("pymupdf_fallback")
+                return _with_ocr_quality(
+                    baseline_content,
+                    {
+                        "status": "passed_with_warnings" if hybrid_reason_codes else "passed",
+                        "quality_gate_status": "passed_with_warnings" if hybrid_reason_codes else "passed",
+                        "reason_codes": hybrid_reason_codes,
+                        "fallback_reason": hybrid_reason_codes[0] if hybrid_reason_codes else "",
+                        "engine": selected_engine,
+                        "hybrid_ocr_page_count": ocr_pages,
+                        "low_confidence_page_count": low_confidence_pages,
+                        "empty_ocr_page_count": empty_ocr_pages,
+                        "manual_review_count": low_confidence_pages + empty_ocr_pages,
+                        "message": "Hybrid OCR completed with review flags." if hybrid_reason_codes else "OCR quality passed.",
+                    },
+                )
             finally:
                 doc.close()
-        except Exception:
-            pass
-    return extract_pdf_with_pymupdf(pdf_path, config, pdf_metadata)
+        except Exception as exc:
+            return pymupdf_fallback(
+                reason_code="ocr_exception",
+                message=f"OCR failed with {exc.__class__.__name__}; scanned PDF fell back to PyMuPDF extraction.",
+            )
+    return pymupdf_fallback(
+        reason_code="ocr_unavailable",
+        message="OCR was unavailable; scanned PDF fell back to PyMuPDF extraction.",
+    )
+
+
+def _with_ocr_quality(content: dict, ocr_quality: dict) -> dict:
+    metadata = dict(content.get("metadata") or {})
+    metadata["ocr_quality"] = ocr_quality
+    content["metadata"] = metadata
+    return content
+
+
+def _ocr_quality_from_result(ocr_result, *, reason_codes: list[str]) -> dict:
+    pages = list(getattr(ocr_result, "pages", []) or [])
+    low_confidence_pages = sum(1 for page in pages if float(getattr(page, "confidence", 0.0) or 0.0) < 0.62)
+    empty_ocr_pages = sum(1 for page in pages if len(str(getattr(page, "text", "") or "").strip()) < 80)
+    codes = list(reason_codes)
+    if low_confidence_pages:
+        codes.append("low_ocr_confidence")
+    if empty_ocr_pages:
+        codes.append("empty_ocr_page")
+    status = "passed_with_warnings" if low_confidence_pages or empty_ocr_pages else "passed"
+    return {
+        "status": status,
+        "quality_gate_status": status,
+        "reason_codes": codes,
+        "fallback_reason": codes[0] if codes else "",
+        "engine": str(getattr(ocr_result, "engine_used", "") or ""),
+        "success_rate": round(float(getattr(ocr_result, "success_rate", 0.0) or 0.0), 3),
+        "page_count": int(getattr(ocr_result, "total_pages", len(pages)) or len(pages)),
+        "low_confidence_page_count": low_confidence_pages,
+        "empty_ocr_page_count": empty_ocr_pages,
+        "manual_review_count": low_confidence_pages + empty_ocr_pages,
+        "message": "OCR quality passed." if status == "passed" else "OCR quality needs review.",
+    }
 
 
 def _chapter_plain_text(chapter: dict) -> str:

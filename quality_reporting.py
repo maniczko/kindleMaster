@@ -32,8 +32,18 @@ class RawWorkflowQualitySignals:
     reference_visible_junk_detected: int = 0
     heading_gate_status: str = "passed_with_warnings"
     toc_gate_status: str = "passed_with_warnings"
+    size_budget_status: str = "passed_with_warnings"
     text_cleanup_review_needed_count: int = 0
     text_cleanup_blocked_count: int = 0
+    artifact_rate_per_1000_words: float = 0.0
+    artifact_count: int = 0
+    source_table_count: int = 0
+    xhtml_table_count: int = 0
+    table_cell_coverage: float = 1.0
+    wide_table_count: int = 0
+    heading_manual_review_count: int = 0
+    ocr_manual_review_count: int = 0
+    reading_order_manual_review_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -49,8 +59,18 @@ class RawWorkflowQualitySignals:
             "reference_visible_junk_detected": self.reference_visible_junk_detected,
             "heading_gate_status": self.heading_gate_status,
             "toc_gate_status": self.toc_gate_status,
+            "size_budget_status": self.size_budget_status,
             "text_cleanup_review_needed_count": self.text_cleanup_review_needed_count,
             "text_cleanup_blocked_count": self.text_cleanup_blocked_count,
+            "artifact_rate_per_1000_words": self.artifact_rate_per_1000_words,
+            "artifact_count": self.artifact_count,
+            "source_table_count": self.source_table_count,
+            "xhtml_table_count": self.xhtml_table_count,
+            "table_cell_coverage": self.table_cell_coverage,
+            "wide_table_count": self.wide_table_count,
+            "heading_manual_review_count": self.heading_manual_review_count,
+            "ocr_manual_review_count": self.ocr_manual_review_count,
+            "reading_order_manual_review_count": self.reading_order_manual_review_count,
         }
 
 
@@ -103,6 +123,13 @@ def _safe_int(value: Any, *, default: int = 0) -> int:
         return default
 
 
+def _safe_float(value: Any, *, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def extract_workflow_quality_signals(
     *,
     validation: dict[str, Any],
@@ -126,7 +153,12 @@ def build_raw_workflow_quality_signals(
     external_errors = (validation.get("external_links") or {}).get("errors", [])
     package_errors = (validation.get("package") or {}).get("errors", [])
     text_cleanup = ((quality_report or {}).get("text_cleanup") or {}) if quality_report else {}
+    artifact_rate = text_cleanup.get("artifact_rate") or text_cleanup.get("text_artifacts") or {}
     reference_cleanup = text_cleanup.get("reference_cleanup") or {}
+    ocr_quality = ((quality_report or {}).get("ocr_quality") or {}) if quality_report else {}
+    reading_order = ((quality_report or {}).get("reading_order") or {}) if quality_report else {}
+    table_summary = ((quality_report or {}).get("table_summary") or {}) if quality_report else {}
+    heading_repair = ((quality_report or {}).get("heading_repair") or {}) if quality_report else {}
     gates = audit.get("gates") or {}
 
     return RawWorkflowQualitySignals(
@@ -146,8 +178,18 @@ def build_raw_workflow_quality_signals(
         else 0,
         heading_gate_status=normalize_status(((gates.get("C") or {}).get("status", "unavailable"))),
         toc_gate_status=normalize_status(((gates.get("D") or {}).get("status", "unavailable"))),
+        size_budget_status=normalize_status((quality_report or {}).get("size_budget_status", "unavailable")) if quality_report else "passed_with_warnings",
         text_cleanup_review_needed_count=_safe_int(text_cleanup.get("review_needed_count", 0)) if text_cleanup else 0,
         text_cleanup_blocked_count=_safe_int(text_cleanup.get("blocked_count", 0)) if text_cleanup else 0,
+        artifact_rate_per_1000_words=_safe_float(artifact_rate.get("artifact_rate_per_1000_words", 0.0)) if isinstance(artifact_rate, Mapping) else 0.0,
+        artifact_count=_safe_int(artifact_rate.get("artifact_count", 0)) if isinstance(artifact_rate, Mapping) else 0,
+        source_table_count=_safe_int((quality_report or {}).get("source_table_count", table_summary.get("source_table_count", 0))) if quality_report else 0,
+        xhtml_table_count=_safe_int((quality_report or {}).get("xhtml_table_count", table_summary.get("xhtml_table_count", 0))) if quality_report else 0,
+        table_cell_coverage=_safe_float((quality_report or {}).get("table_cell_coverage", table_summary.get("table_cell_coverage", 1.0)), default=1.0) if quality_report else 1.0,
+        wide_table_count=_safe_int((quality_report or {}).get("wide_table_count", table_summary.get("wide_table_count", 0))) if quality_report else 0,
+        heading_manual_review_count=_safe_int(heading_repair.get("manual_review_count", 0)) if isinstance(heading_repair, Mapping) else 0,
+        ocr_manual_review_count=_safe_int(ocr_quality.get("manual_review_count", 0)) if isinstance(ocr_quality, Mapping) else 0,
+        reading_order_manual_review_count=_safe_int(reading_order.get("manual_review_count", 0)) if isinstance(reading_order, Mapping) else 0,
     )
 
 
@@ -340,6 +382,7 @@ def build_before_after_report(
         key: after_signals.get(key) - before_signals.get(key)
         for key in _numeric_signal_keys(before_signals, after_signals)
     }
+    classified_changes = _classify_before_after_changes(before_signals, after_signals)
     remaining_risks = list(dict.fromkeys((verification_snapshot.get("symptoms") or [])[:10]))
     status = merge_statuses(
         [
@@ -366,11 +409,92 @@ def build_before_after_report(
             "artifacts": verification_snapshot.get("artifacts", {}),
         },
         "delta": delta,
+        "classified_changes": classified_changes,
         "regression_pack_status": regression.get("status", "failed"),
         "smoke_status": smoke.get("status", "failed"),
         "remaining_risks": remaining_risks,
         "unresolved_warnings": remaining_risks,
     }
+
+
+_STATUS_SIGNAL_KEYS = {
+    "validation_status",
+    "epubcheck_status",
+    "reference_cleanup_status",
+    "heading_gate_status",
+    "toc_gate_status",
+    "size_budget_status",
+}
+_LOWER_IS_BETTER_SIGNAL_KEYS = {
+    "error_count",
+    "warning_count",
+    "internal_link_error_count",
+    "external_link_error_count",
+    "broken_href_error_count",
+    "duplicate_id_error_count",
+    "reference_visible_junk_detected",
+    "text_cleanup_review_needed_count",
+    "text_cleanup_blocked_count",
+    "artifact_rate_per_1000_words",
+    "artifact_count",
+    "wide_table_count",
+    "heading_manual_review_count",
+    "ocr_manual_review_count",
+    "reading_order_manual_review_count",
+}
+_HIGHER_IS_BETTER_SIGNAL_KEYS = {
+    "table_cell_coverage",
+}
+
+
+def _classify_before_after_changes(before_signals: Mapping[str, Any], after_signals: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    buckets: dict[str, list[dict[str, Any]]] = {
+        "improved": [],
+        "regressed": [],
+        "unchanged": [],
+        "unknown": [],
+    }
+    keys = sorted(set(before_signals) | set(after_signals))
+    for key in keys:
+        before = before_signals.get(key)
+        after = after_signals.get(key)
+        if before is None or after is None:
+            buckets["unknown"].append({"metric": key, "before": before, "after": after})
+            continue
+        if key in _STATUS_SIGNAL_KEYS:
+            bucket = _classify_status_change(before, after)
+        elif key in _LOWER_IS_BETTER_SIGNAL_KEYS:
+            bucket = _classify_numeric_change(before, after, lower_is_better=True)
+        elif key in _HIGHER_IS_BETTER_SIGNAL_KEYS:
+            bucket = _classify_numeric_change(before, after, lower_is_better=False)
+        else:
+            bucket = "unchanged" if before == after else "unknown"
+        buckets[bucket].append({"metric": key, "before": before, "after": after})
+    return buckets
+
+
+def _classify_status_change(before: Any, after: Any) -> str:
+    status_rank = {"failed": 0, "passed_with_warnings": 1, "passed": 2}
+    before_rank = status_rank.get(normalize_status(str(before)), -1)
+    after_rank = status_rank.get(normalize_status(str(after)), -1)
+    if before_rank < 0 or after_rank < 0:
+        return "unknown"
+    if after_rank > before_rank:
+        return "improved"
+    if after_rank < before_rank:
+        return "regressed"
+    return "unchanged"
+
+
+def _classify_numeric_change(before: Any, after: Any, *, lower_is_better: bool) -> str:
+    before_value = _safe_float(before, default=float("nan"))
+    after_value = _safe_float(after, default=float("nan"))
+    if before_value != before_value or after_value != after_value:
+        return "unknown"
+    if after_value == before_value:
+        return "unchanged"
+    improved = after_value < before_value if lower_is_better else after_value > before_value
+    return "improved" if improved else "regressed"
 
 
 def make_review_item(kind: str, file_name: str, subject: str, reason: str, confidence: float) -> dict[str, Any]:
@@ -725,6 +849,13 @@ def count_broken_href_errors(errors: list[str]) -> int:
 def _numeric_signal_keys(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
     keys: list[str] = []
     for key in sorted(set(before) | set(after)):
-        if isinstance(before.get(key, 0), int) and isinstance(after.get(key, 0), int):
+        before_value = before.get(key, 0)
+        after_value = after.get(key, 0)
+        if (
+            isinstance(before_value, (int, float))
+            and not isinstance(before_value, bool)
+            and isinstance(after_value, (int, float))
+            and not isinstance(after_value, bool)
+        ):
             keys.append(key)
     return keys

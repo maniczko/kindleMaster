@@ -64,6 +64,22 @@ class OcrStressScanFixtureTests(unittest.TestCase):
             self.assertEqual(analysis.page_count, 3)
             self.assertEqual(analysis.to_dict()["scanned_pages"], 3)
 
+    def test_mixed_scan_text_fixture_has_text_and_image_only_pages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target_path = Path(temp_dir) / "mixed_scan_text.pdf"
+
+            reference_inputs_module._build_mixed_scan_text_pdf(target_path)
+
+            with fitz.open(target_path) as document:
+                self.assertEqual(document.page_count, 2)
+                self.assertIn("normal text layer", document[0].get_text("text"))
+                self.assertEqual(document[1].get_text("text").strip(), "")
+                self.assertGreaterEqual(len(document[1].get_images(full=True)), 1)
+
+            analysis = analyze_publication(str(target_path), preferred_profile="auto-premium")
+            self.assertGreaterEqual(analysis.scanned_pages, 1)
+            self.assertGreaterEqual(analysis.text_pages, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

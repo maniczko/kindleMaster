@@ -1,0 +1,107 @@
+{
+  "version": 1,
+  "description": "Golden EPUB feature expectations for representative KindleMaster publication classes. These assertions compare structural features and quality signals, not byte-identical EPUB archives.",
+  "cases": [
+    {
+      "id": "dense_business_guide_pdf",
+      "document_class": "dense_business_guide",
+      "input_type": "pdf",
+      "artifact_candidates": ["dense_business_guide_pdf.epub"],
+      "expectations": {
+        "language": "en",
+        "min_xhtml_count": 10,
+        "min_nav_entries": 50,
+        "min_image_count": 20,
+        "max_artifact_rate_per_1000_words": 1.0,
+        "max_table_columns": 19,
+        "metadata_no_placeholders": true
+      }
+    },
+    {
+      "id": "document_like_report_pdf",
+      "document_class": "technical_study",
+      "input_type": "pdf",
+      "artifact_candidates": ["document_like_report_pdf.epub"],
+      "expectations": {
+        "language": "en",
+        "min_xhtml_count": 3,
+        "min_nav_entries": 5,
+        "max_artifact_rate_per_1000_words": 1.0,
+        "max_table_columns": 12,
+        "metadata_no_placeholders": true
+      }
+    },
+    {
+      "id": "ocr_stress_scan_pdf",
+      "document_class": "scanned_ocr",
+      "input_type": "pdf",
+      "artifact_candidates": ["ocr_stress_scan_pdf.epub"],
+      "expectations": {
+        "language": "en",
+        "min_xhtml_count": 2,
+        "min_nav_entries": 3,
+        "min_image_count": 1,
+        "max_artifact_rate_per_1000_words": 4.0,
+        "metadata_no_placeholders": true
+      }
+    },
+    {
+      "id": "magazine_layout_pdf",
+      "document_class": "magazine_multicolumn",
+      "input_type": "pdf",
+      "artifact_candidates": ["magazine_layout_pdf.epub"],
+      "expectations": {
+        "language": "pl",
+        "min_xhtml_count": 20,
+        "min_nav_entries": 20,
+        "min_image_count": 10,
+        "max_artifact_rate_per_1000_words": 1.0,
+        "metadata_no_placeholders": true
+      }
+    },
+    {
+      "id": "diagram_training_book_pdf",
+      "document_class": "diagram_training_book",
+      "input_type": "pdf",
+      "artifact_candidates": ["diagram_training_book_pdf.epub"],
+      "expectations": {
+        "language": "en",
+        "min_xhtml_count": 5,
+        "min_nav_entries": 5,
+        "min_image_count": 100,
+        "max_artifact_rate_per_1000_words": 5.0,
+        "metadata_no_placeholders": true
+      }
+    },
+    {
+      "id": "list_table_image_docx",
+      "document_class": "tables_heavy_docx",
+      "input_type": "docx",
+      "artifact_candidates": ["list_table_image_docx.epub"],
+      "expectations": {
+        "language": "en",
+        "min_xhtml_count": 1,
+        "min_nav_entries": 3,
+        "min_image_count": 1,
+        "min_table_count": 1,
+        "max_table_columns": 6,
+        "max_artifact_rate_per_1000_words": 1.0,
+        "metadata_no_placeholders": true
+      }
+    },
+    {
+      "id": "simple_report_docx",
+      "document_class": "docx_structured_report",
+      "input_type": "docx",
+      "artifact_candidates": ["simple_report_docx.epub"],
+      "expectations": {
+        "language": "pl",
+        "min_xhtml_count": 1,
+        "min_nav_entries": 3,
+        "max_artifact_rate_per_1000_words": 45.0,
+        "artifact_rate_severity": "warning",
+        "metadata_no_placeholders": true
+      }
+    }
+  ]
+}

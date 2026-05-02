@@ -74,6 +74,11 @@ CORPUS: list[CorpusCase] = [
         notes="Deterministic OCR-stressed scanned PDF generated from the reference-input bootstrap.",
     ),
     CorpusCase(
+        Path("reference_inputs/pdf/mixed_scan_text.pdf"),
+        document_class="mixed-scan-text",
+        notes="Hybrid OCR benchmark PDF with text-layer and image-only pages.",
+    ),
+    CorpusCase(
         Path("reference_inputs/pdf/document_like_report.pdf"),
         document_class="document-like-report",
         notes="Deterministic multi-page report-style PDF generated from the reference-input bootstrap.",
@@ -134,6 +139,13 @@ FOCUSED_OUTPUT_ROUTES = {
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
+    except Exception:
+        return default
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
     except Exception:
         return default
 
@@ -454,7 +466,28 @@ def _build_case_blockers(
                 "detail": f"empty_reference_sections_unresolved={empty_unresolved}",
             }
         )
+    artifact_rate = _text_artifact_rate_payload(quality)
+    if str(artifact_rate.get("status") or "").lower() in {"failed", "fail", "error", "blocked"}:
+        blockers.append(
+            {
+                "code": "text_artifact_rate_failed",
+                "detail": (
+                    f"artifact_rate_per_1000_words={artifact_rate.get('artifact_rate_per_1000_words', 0)}; "
+                    f"artifact_count={artifact_rate.get('artifact_count', 0)}"
+                ),
+            }
+        )
     return blockers
+
+
+def _text_artifact_rate_payload(quality: dict[str, Any]) -> dict[str, Any]:
+    text_cleanup = quality.get("text_cleanup")
+    if isinstance(text_cleanup, dict):
+        artifact_rate = text_cleanup.get("artifact_rate") or text_cleanup.get("text_artifacts")
+        if isinstance(artifact_rate, dict):
+            return artifact_rate
+    artifact_rate = quality.get("artifact_rate") or quality.get("text_artifacts")
+    return artifact_rate if isinstance(artifact_rate, dict) else {}
 
 
 def _reference_cleanup_payload(quality: dict[str, Any]) -> dict[str, Any]:
@@ -568,6 +601,18 @@ def _build_case_warnings(
         warnings.append({"code": "high_review_noise", "detail": f"review_needed_count={review_needed}"})
     if blocked >= 500:
         warnings.append({"code": "high_blocked_noise", "detail": f"blocked_count={blocked}"})
+    artifact_rate = _text_artifact_rate_payload(quality)
+    artifact_status = str(artifact_rate.get("status") or "").lower()
+    if artifact_status in {"passed_with_warnings", "warning", "warnings", "pass_with_review"}:
+        warnings.append(
+            {
+                "code": "text_artifact_rate_review",
+                "detail": (
+                    f"artifact_rate_per_1000_words={_safe_float(artifact_rate.get('artifact_rate_per_1000_words')):g}; "
+                    f"artifact_count={_safe_int(artifact_rate.get('artifact_count'))}"
+                ),
+            }
+        )
     if inspect.get("nav_entries", 0) <= 2 and _safe_int(summary.get("section_count", 0)) >= 5:
         warnings.append({"code": "shallow_toc", "detail": f"nav_entries={inspect.get('nav_entries', 0)} section_count={summary.get('section_count', 0)}"})
     if heading_summary.get("release_status") == "fail":
@@ -599,6 +644,79 @@ def _build_case_warnings(
     if inspect.get("package_language", "").lower() not in {"pl", "en"}:
         warnings.append({"code": "unexpected_language", "detail": inspect.get("package_language", "")})
     return warnings
+
+
+def _build_ocr_benchmark_payload(*, case: CorpusCase, quality: dict[str, Any], inspect: dict[str, Any]) -> dict[str, Any]:
+    if "ocr_scan" not in classify_focus_routes(case.document_class, case.input_type):
+        return {}
+    ocr_quality = quality.get("ocr_quality") or quality.get("ocr_degradation") or {}
+    artifact_rate = _text_artifact_rate_payload(quality)
+    if not isinstance(ocr_quality, dict) or not ocr_quality:
+        return {
+            "status": "unreported",
+            "capability_status": "unreported",
+            "reason_codes": ["ocr_quality_unreported"],
+            "fallback_reason": "ocr_quality_unreported",
+            "release_strict": case.release_strict,
+            "artifact_rate_per_1000_words": _safe_float(artifact_rate.get("artifact_rate_per_1000_words")),
+            "artifact_count": _safe_int(artifact_rate.get("artifact_count")),
+            "text_chapter_count": inspect.get("xhtml_count", 0),
+            "image_count": inspect.get("image_count", 0),
+        }
+
+    status = str(ocr_quality.get("status") or ocr_quality.get("quality_gate_status") or "unavailable").lower()
+    reason_codes = [str(item) for item in (ocr_quality.get("reason_codes") or []) if str(item).strip()]
+    if not reason_codes and ocr_quality.get("fallback_reason"):
+        reason_codes = [str(ocr_quality.get("fallback_reason"))]
+    capability_status = "supported"
+    if status in {"failed", "fail", "error", "blocked", "degraded"}:
+        capability_status = "degraded"
+    elif status in {"unavailable", "not_reported"} or any("unavailable" in code for code in reason_codes):
+        capability_status = "unavailable"
+    elif status in {"passed_with_warnings", "warning", "warnings", "pass_with_review"}:
+        capability_status = "degraded"
+
+    return {
+        "status": status,
+        "capability_status": capability_status,
+        "engine": str(ocr_quality.get("engine") or ocr_quality.get("engine_used") or ""),
+        "success_rate": _safe_float(ocr_quality.get("success_rate")),
+        "reason_codes": reason_codes,
+        "fallback_reason": str(ocr_quality.get("fallback_reason") or (reason_codes[0] if reason_codes else "")),
+        "low_confidence_page_count": _safe_int(ocr_quality.get("low_confidence_page_count")),
+        "empty_ocr_page_count": _safe_int(ocr_quality.get("empty_ocr_page_count")),
+        "manual_review_count": _safe_int(ocr_quality.get("manual_review_count")),
+        "hybrid_ocr_page_count": _safe_int(ocr_quality.get("hybrid_ocr_page_count")),
+        "artifact_rate_per_1000_words": _safe_float(artifact_rate.get("artifact_rate_per_1000_words")),
+        "artifact_count": _safe_int(artifact_rate.get("artifact_count")),
+        "text_chapter_count": inspect.get("xhtml_count", 0),
+        "image_count": inspect.get("image_count", 0),
+        "release_strict": case.release_strict,
+    }
+
+
+def _ocr_benchmark_findings(case: CorpusCase, ocr_benchmark: dict[str, Any]) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    if not ocr_benchmark:
+        return [], []
+    blockers: list[dict[str, str]] = []
+    warnings: list[dict[str, str]] = []
+    capability = str(ocr_benchmark.get("capability_status") or "")
+    reason_codes = ",".join(ocr_benchmark.get("reason_codes") or [])
+    detail = f"capability={capability}; reason_codes={reason_codes}"
+    if capability in {"unreported", "unavailable", "degraded"}:
+        target = blockers if case.release_strict else warnings
+        target.append({"code": "ocr_capability_degraded", "detail": detail})
+    low_confidence_pages = _safe_int(ocr_benchmark.get("low_confidence_page_count"))
+    empty_pages = _safe_int(ocr_benchmark.get("empty_ocr_page_count"))
+    if low_confidence_pages or empty_pages:
+        target = blockers if case.release_strict else warnings
+        target.append(
+            {
+                "code": "ocr_quality_review",
+                "detail": f"low_confidence_page_count={low_confidence_pages}; empty_ocr_page_count={empty_pages}",
+            }
+        )
+    return blockers, warnings
 
 
 def _duration_bucket(elapsed_seconds: float) -> str:
@@ -944,6 +1062,10 @@ def _run_conversion_case(case: CorpusCase, *, run_heading_repair: bool) -> dict[
         stats=repaired_inspect,
         validation_status=str(quality.get("validation_status", "") or ""),
     )
+    ocr_benchmark = _build_ocr_benchmark_payload(case=case, quality=quality, inspect=repaired_inspect)
+    ocr_blockers, ocr_warnings = _ocr_benchmark_findings(case, ocr_benchmark)
+    blockers.extend(ocr_blockers)
+    warnings.extend(ocr_warnings)
     for assertion in _failed_assertions(output_assertions):
         blockers.append(
             {
@@ -987,6 +1109,7 @@ def _run_conversion_case(case: CorpusCase, *, run_heading_repair: bool) -> dict[
         "post_heading_epub_stats": repaired_inspect,
         "output_assertions": output_assertions,
         "output_assertion_counts": _assertion_status_counts(output_assertions),
+        "ocr_benchmark": ocr_benchmark,
         "size_gate": size_gate,
         "release_fallback": release_fallback,
         "grade": grade,
@@ -1070,6 +1193,11 @@ def _build_overall_summary(
         for row in converted
         if (row.get("release_fallback") or {}).get("used")
     )
+    ocr_rows = [row for row in converted if row.get("ocr_benchmark")]
+    ocr_capability_counts = Counter(
+        str((row.get("ocr_benchmark") or {}).get("capability_status") or "unknown")
+        for row in ocr_rows
+    )
     class_grade = {
         row["document_class"]: row.get("grade", "unknown")
         for row in converted
@@ -1089,6 +1217,11 @@ def _build_overall_summary(
         "blocker_counts": dict(blocker_counts),
         "warning_counts": dict(warning_counts),
         "release_fallback_counts": dict(fallback_counts),
+        "ocr_benchmark": {
+            "case_count": len(ocr_rows),
+            "capability_counts": dict(ocr_capability_counts),
+            "case_ids": [str(row.get("case_id") or row.get("file") or "") for row in ocr_rows],
+        },
         "recovered_epubcheck_count": warning_counts.get("pre_heading_epubcheck_recovered", 0),
         "class_grade": class_grade,
         "class_coverage": _build_class_coverage(rows, source_summary=source_summary),
@@ -1158,6 +1291,7 @@ def _build_markdown_report(
         f"- Repeated blockers: `{json.dumps(overall['blocker_counts'], ensure_ascii=False)}`",
         f"- Repeated warnings: `{json.dumps(overall['warning_counts'], ensure_ascii=False)}`",
         f"- Release fallback counts: `{json.dumps(overall.get('release_fallback_counts', {}), ensure_ascii=False)}`",
+        f"- OCR benchmark: `{json.dumps(overall.get('ocr_benchmark', {}), ensure_ascii=False)}`",
         f"- Recovered EPUBCheck cases: `{overall.get('recovered_epubcheck_count', 0)}`",
         f"- Converted classes: `{', '.join(class_coverage.get('converted_classes', [])) or 'none'}`",
         f"- Converted focus routes: `{', '.join(class_coverage.get('converted_focus_routes', [])) or 'none'}`",

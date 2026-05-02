@@ -224,6 +224,9 @@ class TextNormalizationTests(unittest.TestCase):
         self.assertIn("general ledger", chapter)
         self.assertIn("10%", chapter)
         self.assertGreaterEqual(result.summary["auto_fix_count"], 4)
+        self.assertGreaterEqual(result.summary["domain_dictionary_decision_count"], 3)
+        self.assertEqual(result.summary["domain_dictionary_path"], str(dictionary_path))
+        self.assertIn("domain-dictionary", result.summary["reason_code_counts"])
         self.assertEqual(result.epubcheck["status"], "passed")
         self.assertIn("EPUB/chapter_001.xhtml", result.chapter_diffs)
         self.assertIn("# Text Cleanup Report", result.markdown_report)
@@ -343,6 +346,43 @@ class TextNormalizationTests(unittest.TestCase):
         self.assertIn("<code>pro\u2010 jektowe</code>", chapter)
         self.assertEqual(result.summary["auto_fix_count"], 0)
 
+    def test_clean_epub_text_package_preserves_non_lexical_identifiers_and_acronyms(self):
+        chapter_markup = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+            "<p>Contact ada.lovelace@example.com about doi:10.1000/xyz and "
+            "https://example.com/API-v2 before touching INV-2026/ABC-991, "
+            "PO-AB12_CD34, OAuth2, API, HTTP and KPI terms.</p>"
+            "<table><tr><th>Reference</th><th>Value</th></tr>"
+            "<tr><td>SKU-ABC_2026</td><td>API KEY 10. 2%</td></tr></table>"
+            "</body></html>"
+        )
+        epub_bytes = _build_test_epub(chapter_markup=chapter_markup)
+
+        with patch(
+            "text_cleanup_engine.run_epubcheck",
+            return_value={"status": "passed", "tool": "epubcheck", "messages": []},
+        ):
+            result = clean_epub_text_package(epub_bytes, config=TextCleanupConfig(language_hint="en"))
+
+        with zipfile.ZipFile(io.BytesIO(result.epub_bytes), "r") as archive:
+            chapter = archive.read("EPUB/chapter_001.xhtml").decode("utf-8")
+
+        self.assertIn("ada.lovelace@example.com", chapter)
+        self.assertIn("doi.org/10.1000/xyz", chapter)
+        self.assertIn("https://example.com/API-v2", chapter)
+        self.assertIn("INV-2026/ABC-991", chapter)
+        self.assertIn("PO-AB12_CD34", chapter)
+        self.assertIn("OAuth2", chapter)
+        self.assertIn("OAuth2, API, HTTP and KPI terms", chapter)
+        self.assertIn("KPI terms", chapter)
+        self.assertIn("SKU-ABC_2026", chapter)
+        self.assertIn("API KEY 10. 2%", chapter)
+        self.assertNotIn("APIKEY", chapter)
+        self.assertNotIn("PO-AB12 CD34", chapter)
+        self.assertTrue(all(decision.status in {"safe_auto_fix", "review_needed", "blocked"} for decision in result.decisions))
+        self.assertTrue(all(decision.reason_codes for decision in result.decisions))
+
     def test_clean_epub_text_package_repairs_inline_decimal_percent_fragments(self):
         chapter_markup = (
             '<?xml version="1.0" encoding="utf-8"?>'
@@ -431,6 +471,36 @@ class TextNormalizationTests(unittest.TestCase):
         self.assertIn("<p>W praktyce w treści.</p>", chapter)
         self.assertIn("<pre>Wpraktyce w kodzie.</pre>", chapter)
         self.assertIn("<code>issue ra</code>", chapter)
+
+    def test_clean_epub_text_package_skips_all_protected_runtime_tags(self):
+        chapter_markup = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+            "<p>Wpraktyce w treĹ›ci.</p>"
+            "<kbd>Wpraktyce</kbd>"
+            "<samp>issue ra</samp>"
+            "<math><mtext>Wpraktyce</mtext></math>"
+            "<style>.x { content: 'Wpraktyce'; }</style>"
+            "<script>const token = 'issue ra';</script>"
+            "</body></html>"
+        )
+        epub_bytes = _build_test_epub(chapter_markup=chapter_markup)
+
+        with patch(
+            "text_cleanup_engine.run_epubcheck",
+            return_value={"status": "passed", "tool": "epubcheck", "messages": []},
+        ):
+            result = clean_epub_text_package(epub_bytes, config=TextCleanupConfig(language_hint="pl"))
+
+        with zipfile.ZipFile(io.BytesIO(result.epub_bytes), "r") as archive:
+            chapter = archive.read("EPUB/chapter_001.xhtml").decode("utf-8")
+
+        self.assertIn("<p>W praktyce w treĹ›ci.</p>", chapter)
+        self.assertIn("<kbd>Wpraktyce</kbd>", chapter)
+        self.assertIn("<samp>issue ra</samp>", chapter)
+        self.assertIn("<mtext>Wpraktyce</mtext>", chapter)
+        self.assertIn("content: 'Wpraktyce'", chapter)
+        self.assertIn("const token = 'issue ra'", chapter)
 
     def test_clean_epub_text_package_skips_heading_like_review_noise(self):
         chapter_markup = (

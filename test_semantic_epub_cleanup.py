@@ -7,6 +7,7 @@ from collections import Counter
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from bs4 import BeautifulSoup, NavigableString
 from lxml import etree
 
 from epub_package_ops import (
@@ -28,6 +29,7 @@ from kindle_semantic_cleanup import (
     _locate_opf,
     _looks_like_training_book,
     _manual_review_from_heading_decisions,
+    _normalize_existing_table_html,
     _normalize_text_light,
     _pack_epub,
     _process_chapter,
@@ -101,6 +103,72 @@ class SemanticEpubCleanupTests(unittest.TestCase):
         with zipfile.ZipFile(io.BytesIO(repacked), "r") as archive:
             self.assertEqual(archive.read("mimetype"), b"application/epub+zip")
             self.assertIn("EPUB/content.opf", archive.namelist())
+
+    def test_normalize_existing_table_preserves_caption_and_removes_direct_text(self):
+        soup = BeautifulSoup(
+            '<table class="report-table">Table 1: Decision matrix'
+            "<thead><tr><th>Metric</th></tr></thead><tbody><tr><td>Value</td></tr></tbody></table>",
+            "xml",
+        )
+
+        normalized = _normalize_existing_table_html(soup.find("table"))
+
+        self.assertIn("<caption>Table 1: Decision matrix</caption>", normalized)
+        normalized_soup = BeautifulSoup(normalized, "xml")
+        table = normalized_soup.find("table")
+        direct_text = [
+            str(child).strip()
+            for child in table.children
+            if isinstance(child, NavigableString) and str(child).strip()
+        ]
+        self.assertEqual(direct_text, [])
+
+    def test_table_or_diagram_artifact_labels_are_not_toc_entries(self):
+        for label in ("Input", "Output", "Object 1", "State 3", "Rank = 1*3"):
+            self.assertFalse(_should_include_in_toc(label, 2), label)
+
+    def test_transformed_table_structures_survive_chapter_cleanup(self):
+        chapter_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Wide Tables</title></head>
+  <body>
+    <h1>Wide Tables</h1>
+    <p class="table-note">Very wide table converted to readable row summaries for Kindle.</p>
+    <ul class="report-table wide-table very-wide-table table-row-list" data-source="pdf-table">
+      <li><strong>Technique A</strong><ul><li><span class="table-field-label">Task 1:</span> Used</li></ul></li>
+    </ul>
+    <section class="report-table matrix-mapping-table wide-table" data-source="pdf-table">
+      <p class="table-caption">Appendix B Mapping</p>
+      <p class="table-note">Very wide checkbox/matrix table converted to a readable mapping.</p>
+      <dl class="matrix-mapping-list"><dt>Technique B</dt><dd><ul><li>Task 2</li></ul></dd></dl>
+    </section>
+  </body>
+</html>
+"""
+        with TemporaryDirectory() as temp_dir:
+            chapter_path = Path(temp_dir) / "chapter_wide.xhtml"
+            chapter_path.write_text(chapter_source, encoding="utf-8")
+
+            result = _process_chapter(
+                chapter_path,
+                repeated_counts=Counter(),
+                keep_first_seen=set(),
+                title="Wide Tables",
+                author="Tester",
+                language="en",
+            )
+
+        self.assertIn("table-row-list", result.xhtml)
+        self.assertIn("matrix-mapping-table", result.xhtml)
+        self.assertIn("Technique A", result.xhtml)
+        self.assertIn("Technique B", result.xhtml)
+
+    def test_index_page_and_generic_orphan_labels_are_not_toc_entries(self):
+        for label in ("Trustworthy 298", "Glossary 286", "Acceptance and Evaluation Criteria 217"):
+            self.assertFalse(_should_include_in_toc(label, 2), label)
+        for label in ("Proces", "Data", "Measures"):
+            self.assertFalse(_should_include_in_toc(label, 2), label)
+        self.assertTrue(_should_include_in_toc("Business Analysis Key Concepts", 1))
 
     def test_expand_semantic_blocks_rebuilds_lists_and_structured_blocks(self):
         blocks = [

@@ -30,6 +30,19 @@
       "size_bytes": 1019552
     },
     {
+      "id": "mixed_scan_text_pdf",
+      "document_class": "mixed_scan_text",
+      "input_type": "pdf",
+      "language": "en",
+      "quick_smoke": false,
+      "generator": "mixed_scan_text",
+      "target": "reference_inputs/pdf/mixed_scan_text.pdf",
+      "notes": "Generated PDF with one text-layer page and one image-only page for hybrid OCR benchmark coverage.",
+      "source_path": "<generated:mixed_scan_text>",
+      "target_path": "reference_inputs/pdf/mixed_scan_text.pdf",
+      "size_bytes": 341322
+    },
+    {
       "id": "dense_business_guide_pdf",
       "document_class": "dense_business_guide",
       "input_type": "pdf",
@@ -132,7 +145,7 @@
       "generator": "list_table_image",
       "source_path": "<generated:list_table_image>",
       "target_path": "reference_inputs/docx/list_table_image.docx",
-      "size_bytes": 38819
+      "size_bytes": 38820
     },
     {
       "id": "no_heading_document_docx",

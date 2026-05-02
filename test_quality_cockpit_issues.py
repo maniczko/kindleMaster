@@ -204,7 +204,39 @@ class QualityCockpitIssueTests(unittest.TestCase):
         self.assertIn("table_semantics_partial", [issue["code"] for issue in groups["warnings"]])
         self.assertEqual(
             [issue["code"] for issue in groups["review"]],
-            ["table_semantics_review", "wide_table_review"],
+            ["wide_table_review"],
+        )
+
+    def test_suppressed_table_candidates_account_for_source_tables(self) -> None:
+        groups = build_quality_cockpit_issue_groups(
+            content_metrics={
+                "source_table_count": 4,
+                "xhtml_table_count": 1,
+                "transformed_table_count": 1,
+                "fragment_table_count": 2,
+                "suppressed_table_fragment_count": 2,
+                "rendered_low_confidence_table_count": 0,
+                "rendered_fragment_table_count": 0,
+            }
+        )
+
+        self.assertEqual(groups["blockers"], [])
+        self.assertEqual(groups["warnings"], [])
+
+    def test_rendered_false_positive_and_transformed_table_loss_are_blockers(self) -> None:
+        groups = build_quality_cockpit_issue_groups(
+            content_metrics={
+                "source_table_count": 4,
+                "xhtml_table_count": 4,
+                "rendered_low_confidence_table_count": 1,
+                "rendered_fragment_table_count": 1,
+                "transformed_table_content_loss_count": 1,
+            }
+        )
+
+        self.assertEqual(
+            [issue["code"] for issue in groups["blockers"]],
+            ["table_false_positive_rendered", "transformed_table_content_lost"],
         )
 
     def test_empty_reference_section_without_citations_is_review_issue(self) -> None:

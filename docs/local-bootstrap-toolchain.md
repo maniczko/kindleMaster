@@ -27,6 +27,39 @@ python kindlemaster.py doctor
 - The safe loopback fallback is `http://127.0.0.1:5001/`.
 - `bootstrap` installs Python packages only. It does not install Java, EPUBCheck, Tesseract, Ghostscript, qpdf, PDFBox, or Chromium.
 
+## Repeatable Toolchain Container
+
+Use the container path when release-quality work needs a repeatable toolchain rather than the operator's current Windows setup.
+
+Build:
+
+```powershell
+docker build -f Dockerfile.toolchain -t kindlemaster-toolchain .
+```
+
+Run `doctor`:
+
+```powershell
+docker run --rm -it -v ${PWD}:/workspace -w /workspace kindlemaster-toolchain python kindlemaster.py doctor
+```
+
+Run the standard proof lanes:
+
+```powershell
+docker run --rm -it -v ${PWD}:/workspace -w /workspace kindlemaster-toolchain python kindlemaster.py test --suite quick
+docker run --rm -it -v ${PWD}:/workspace -w /workspace kindlemaster-toolchain python kindlemaster.py test --suite corpus
+docker run --rm -it -v ${PWD}:/workspace -w /workspace kindlemaster-toolchain python kindlemaster.py test --suite release
+```
+
+The same image is used by `.devcontainer/devcontainer.json`. Open the folder in a devcontainer to get the full verification environment with:
+
+- Python runtime and developer dependencies from `requirements-dev.txt`,
+- Java and EPUBCheck,
+- Tesseract, OCRmyPDF, Ghostscript, and qpdf for OCR/fallback validation,
+- Playwright Chromium from the Playwright base image.
+
+Runtime-only work does not require Docker. If the container reports a degraded capability, treat it as an environment/toolchain issue first and confirm with `python kindlemaster.py doctor` before blaming EPUB quality.
+
 ## Diagnose Toolchain State
 
 ```powershell
@@ -79,9 +112,10 @@ http://127.0.0.1:5001/
 
 After runtime code changes, restart the server and verify freshness as required by `AGENTS.md`.
 
-## Acceptance For VAT-126
+## Acceptance For Toolchain Work
 
 - The supported setup path is documented.
 - Required versus optional tools are separated.
 - `doctor` is the inspection command for availability.
 - Environment/toolchain failures are not confused with EPUB-quality failures.
+- Docker/devcontainer is available for full release-quality verification, while local runtime-only setup remains supported.

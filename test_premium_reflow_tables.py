@@ -51,21 +51,121 @@ class PremiumReflowTableTests(unittest.TestCase):
         self.assertEqual(_classify_pdf_table_rows(sparse_rows)[0], "layout_grid")
 
     def test_table_classifier_flags_wide_and_low_confidence_tables(self) -> None:
-        wide_rows = [
+        inline_rows = [
             ["A", "B", "C", "D", "E", "F"],
             ["1", "2", "3", "4", "5", "6"],
         ]
+        wide_rows = [
+            ["A", "B", "C", "D", "E", "F", "G"],
+            ["1", "2", "3", "4", "5", "6", "7"],
+        ]
         low_rows = [["Only one cell"]]
 
+        inline_class, inline_issues, inline_confidence = _classify_pdf_table_rows(inline_rows)
         wide_class, wide_issues, wide_confidence = _classify_pdf_table_rows(wide_rows)
         low_class, low_issues, low_confidence = _classify_pdf_table_rows(low_rows)
 
+        self.assertEqual(inline_class, "semantic")
+        self.assertNotIn("wide-table", inline_issues)
+        self.assertGreater(inline_confidence, 0.9)
         self.assertEqual(wide_class, "wide")
         self.assertIn("wide-table", wide_issues)
-        self.assertGreater(wide_confidence, 0.9)
+        self.assertIn("wide-table-review", wide_issues)
+        self.assertGreater(wide_confidence, 0.75)
         self.assertEqual(low_class, "low_confidence")
         self.assertIn("low-confidence-table-shape", low_issues)
         self.assertLess(low_confidence, 0.75)
+
+    def test_wide_table_renders_as_xhtml_with_review_note(self) -> None:
+        table = PublicationTable(
+            page_index=0,
+            bbox=(72.0, 120.0, 560.0, 240.0),
+            y_position=120.0,
+            rows=[
+                ["Item", "A", "B", "C", "D", "E", "F", "G"],
+                ["Alpha", "1", "2", "3", "4", "5", "6", "7"],
+            ],
+            header_rows=1,
+            classification="wide",
+            issues=["wide-table", "wide-table-review"],
+            confidence=0.82,
+        )
+
+        html = _publication_table_to_html(table)
+
+        self.assertIn("<table", html)
+        self.assertIn("wide-table", html)
+        self.assertIn("Wide table structure requires review.", html)
+
+    def test_checkbox_matrix_table_converts_to_readable_mapping(self) -> None:
+        headers = ["Technique"] + [f"Task {index}" for index in range(1, 21)]
+        rows = [
+            ["Technique"] + [""] * 20,
+            [""] + headers[1:],
+            ["Technique A"] + ["X" if index in {1, 4, 20} else "" for index in range(1, 21)],
+            ["Technique B"] + ["X" if index in {2, 3} else "" for index in range(1, 21)],
+        ]
+
+        classification, issues, confidence = _classify_pdf_table_rows(rows)
+        table = PublicationTable(
+            page_index=0,
+            bbox=(72.0, 120.0, 560.0, 520.0),
+            y_position=120.0,
+            rows=rows,
+            header_rows=1,
+            caption="Appendix B: Techniques to Task Mapping",
+            classification=classification,
+            issues=issues,
+            confidence=confidence,
+        )
+
+        html = _publication_table_to_html(table)
+        table.html = html
+        summary = _table_summary_payload({0: [table]})
+
+        self.assertEqual(classification, "matrix_mapping")
+        self.assertIn("matrix-table-transformed", issues)
+        self.assertNotIn("<table", html)
+        self.assertIn("matrix-mapping-table", html)
+        self.assertIn("<dt>Technique A</dt>", html)
+        self.assertIn("<li>Task 1</li>", html)
+        self.assertIn("<li>Task 20</li>", html)
+        self.assertEqual(summary["xhtml_table_count"], 0)
+        self.assertEqual(summary["transformed_table_count"], 1)
+
+    def test_non_matrix_very_wide_table_converts_to_row_summary(self) -> None:
+        headers = ["Risk"] + [f"Impact {index}" for index in range(1, 22)]
+        rows = [
+            headers,
+            ["Payments"] + [f"value {index}" for index in range(1, 22)],
+            ["Ledger"] + ["" if index % 2 else f"note {index}" for index in range(1, 22)],
+        ]
+        classification, issues, confidence = _classify_pdf_table_rows(rows)
+        table = PublicationTable(
+            page_index=0,
+            bbox=(72.0, 120.0, 560.0, 520.0),
+            y_position=120.0,
+            rows=rows,
+            header_rows=1,
+            caption="Table 2: Very wide impact matrix",
+            classification=classification,
+            issues=issues,
+            confidence=confidence,
+        )
+
+        html = _publication_table_to_html(table)
+        table.html = html
+        summary = _table_summary_payload({0: [table]})
+
+        self.assertEqual(classification, "wide")
+        self.assertIn("very-wide-table-review", issues)
+        self.assertNotIn("<table", html)
+        self.assertIn("table-row-list", html)
+        self.assertIn("Very wide table converted to readable row summaries", html)
+        self.assertIn("Payments", html)
+        self.assertIn("Impact 21:", html)
+        self.assertEqual(summary["xhtml_table_count"], 0)
+        self.assertEqual(summary["transformed_table_count"], 1)
 
     def test_table_classifier_flags_single_row_fragments_for_review(self) -> None:
         fragment_rows = [
@@ -78,6 +178,61 @@ class PremiumReflowTableTests(unittest.TestCase):
         self.assertEqual(classification, "fragment")
         self.assertIn("table-fragment", issues)
         self.assertLess(confidence, 0.75)
+
+    def test_low_confidence_and_fragment_tables_are_reported_not_rendered(self) -> None:
+        low_table = PublicationTable(
+            page_index=0,
+            bbox=(72.0, 120.0, 220.0, 150.0),
+            y_position=120.0,
+            rows=[["Out", "put"]],
+            header_rows=0,
+            classification="low_confidence",
+            issues=["low-confidence-table-shape"],
+            confidence=0.55,
+        )
+        fragment_table = PublicationTable(
+            page_index=0,
+            bbox=(72.0, 170.0, 320.0, 220.0),
+            y_position=170.0,
+            rows=[["Header", "Value"], ["", "dangling fragment"]],
+            header_rows=1,
+            classification="fragment",
+            issues=["table-fragment"],
+            confidence=0.58,
+        )
+
+        low_table.html = _publication_table_to_html(low_table)
+        fragment_table.html = _publication_table_to_html(fragment_table)
+        summary = _table_summary_payload({0: [low_table, fragment_table]})
+
+        self.assertEqual(low_table.html, "")
+        self.assertEqual(fragment_table.html, "")
+        self.assertEqual(summary["rendered_low_confidence_table_count"], 0)
+        self.assertEqual(summary["rendered_fragment_table_count"], 0)
+        self.assertEqual(summary["false_positive_table_candidate_count"], 2)
+        self.assertEqual(summary["suppressed_table_fragment_count"], 2)
+
+    def test_captioned_low_confidence_table_can_render_when_evidence_is_strong(self) -> None:
+        table = PublicationTable(
+            page_index=0,
+            bbox=(72.0, 120.0, 420.0, 230.0),
+            y_position=120.0,
+            rows=[
+                ["Role", "Responsibility"],
+                ["Sponsor", "Approves funding"],
+                ["Analyst", "Models requirements"],
+            ],
+            header_rows=1,
+            caption="Table 3.1: Responsibilities",
+            classification="low_confidence",
+            issues=["low-confidence-table-shape"],
+            confidence=0.7,
+        )
+
+        html = _publication_table_to_html(table)
+
+        self.assertIn("<table", html)
+        self.assertIn("<caption>Table 3.1: Responsibilities</caption>", html)
 
     def test_continued_tables_merge_repeated_headers_on_consecutive_pages(self) -> None:
         first = PublicationTable(
@@ -133,6 +288,9 @@ class PremiumReflowTableTests(unittest.TestCase):
         self.assertEqual(table_summary["table_cell_coverage"], 1.0)
         self.assertEqual(table_summary["wide_table_count"], 0)
         self.assertEqual(table_summary["fragment_table_count"], 0)
+        self.assertEqual(table_summary["rendered_low_confidence_table_count"], 0)
+        self.assertEqual(table_summary["rendered_fragment_table_count"], 0)
+        self.assertIn("table_shape_histogram", table_summary)
 
 
 def _build_vector_table_pdf(path: Path) -> None:

@@ -462,8 +462,11 @@ class ConversionQualityState:
     release_verdict: str
     release_blocked: bool
     quality_blockers: tuple[dict[str, Any], ...]
+    user_facing_verdict: dict[str, Any]
+    user_facing_reasons: tuple[dict[str, Any], ...]
     send_to_kindle_ready: bool
     send_to_kindle_blockers: tuple[dict[str, Any], ...]
+    kindle_delivery: dict[str, Any]
     overall_severity: str
     source_type: str
     filename: str
@@ -508,8 +511,11 @@ class ConversionQualityState:
             "release_verdict": self.release_verdict,
             "release_blocked": self.release_blocked,
             "quality_blockers": [dict(item) for item in self.quality_blockers],
+            "user_facing_verdict": self.user_facing_verdict,
+            "user_facing_reasons": [dict(item) for item in self.user_facing_reasons],
             "send_to_kindle_ready": self.send_to_kindle_ready,
             "send_to_kindle_blockers": [dict(item) for item in self.send_to_kindle_blockers],
+            "kindle_delivery": self.kindle_delivery,
             "overall_severity": self.overall_severity,
             "source_type": self.source_type,
             "filename": self.filename,
@@ -861,6 +867,147 @@ def _build_release_verdict(
     return "release_ready"
 
 
+def _normalize_user_facing_reason(item: Mapping[str, Any], *, fallback_severity: str) -> dict[str, Any]:
+    code = _coerce_text(item.get("code"), default="quality_review")
+    message = _coerce_text(item.get("message"), default="Quality review is recommended.")
+    source = _coerce_text(item.get("source"), default="quality")
+    severity = _coerce_text(item.get("severity"), default=fallback_severity) or fallback_severity
+    reason = {
+        "severity": severity,
+        "code": code,
+        "message": message,
+        "source": source or "quality",
+    }
+    suggested_action = _coerce_text(item.get("suggested_action"))
+    if suggested_action:
+        reason["suggested_action"] = suggested_action
+    for optional_key in ("page", "section", "file"):
+        if optional_key in item:
+            reason[optional_key] = item[optional_key]
+    return reason
+
+
+def _build_user_facing_reasons(
+    *,
+    release_verdict: str,
+    quality_blockers: tuple[dict[str, Any], ...],
+    issue_groups: Mapping[str, Any] | None,
+    alerts: tuple[QualityStateAlert, ...],
+    limit: int = 3,
+) -> tuple[dict[str, Any], ...]:
+    reasons: list[dict[str, Any]] = []
+    seen_codes: set[str] = set()
+
+    def push(item: Mapping[str, Any], *, fallback_severity: str) -> None:
+        if len(reasons) >= limit:
+            return
+        reason = _normalize_user_facing_reason(item, fallback_severity=fallback_severity)
+        code = _coerce_text(reason.get("code"))
+        if code in seen_codes:
+            return
+        seen_codes.add(code)
+        reasons.append(reason)
+
+    for blocker in quality_blockers:
+        push(blocker, fallback_severity="blocker")
+    for warning in _quality_issue_list(issue_groups, "warnings"):
+        push(warning, fallback_severity="warning")
+    for review in _quality_issue_list(issue_groups, "review"):
+        push(review, fallback_severity="review")
+    for alert in alerts:
+        push(
+            {
+                "severity": "warning" if alert.level != "error" else "blocker",
+                "code": alert.code,
+                "message": alert.message,
+                "source": "runtime",
+            },
+            fallback_severity="warning",
+        )
+
+    if not reasons and release_verdict == "ready_with_review":
+        push(
+            {
+                "severity": "review",
+                "code": "quality_review_recommended",
+                "message": "Quality evidence indicates this EPUB should be checked before publication.",
+                "source": "quality",
+            },
+            fallback_severity="review",
+        )
+    elif not reasons and release_verdict in {"release_blocked", "failed"}:
+        push(
+            {
+                "severity": "blocker",
+                "code": "release_not_ready",
+                "message": "This EPUB is not ready for publication.",
+                "source": "quality",
+            },
+            fallback_severity="blocker",
+        )
+    return tuple(reasons[:limit])
+
+
+def _build_user_facing_verdict(
+    *,
+    job_status: str,
+    release_verdict: str,
+    reading_verdict: str,
+    download_available: bool,
+    release_blocked: bool,
+    reasons: tuple[dict[str, Any], ...],
+) -> dict[str, Any]:
+    if release_verdict == "release_ready":
+        decision = "ready"
+        status = "ready"
+        tone = "ready"
+        label = "Publikuj"
+        detail = "EPUB jest gotowy do czytania i publikacji."
+    elif release_verdict == "ready_with_review":
+        decision = "review"
+        status = "review"
+        tone = "review"
+        label = "Kontrola"
+        detail = "EPUB wygenerowany, ale wymaga kontroli jakości."
+    elif job_status in {FAILED_JOB_STATUS, TIMED_OUT_JOB_STATUS} or release_verdict == "failed":
+        decision = "blocked"
+        status = "failed"
+        tone = "failed"
+        label = "Nie publikuj"
+        detail = "Konwersja lub walidacja zakończyła się błędem."
+    elif release_blocked or release_verdict == "release_blocked":
+        decision = "blocked"
+        status = "blocked"
+        tone = "failed"
+        label = "Nie publikuj"
+        detail = "EPUB wygenerowany, ale wymaga naprawy przed publikacją."
+    else:
+        decision = "review"
+        status = "pending"
+        tone = "review"
+        label = "Kontrola"
+        detail = "Dowody jakości są niepełne albo niedostępne."
+    if not download_available:
+        download_label = "Pobranie niedostępne"
+    elif decision == "blocked":
+        download_label = "Pobierz szkic EPUB do kontroli"
+    else:
+        download_label = "Pobierz EPUB"
+    return {
+        "decision": decision,
+        "status": status,
+        "tone": tone,
+        "label": label,
+        "detail": detail,
+        "download_label": download_label,
+        "download_available": download_available,
+        "release_verdict": release_verdict,
+        "reading_verdict": reading_verdict,
+        "release_blocked": release_blocked,
+        "top_reason_count": len(reasons),
+    }
+
+
 def _build_send_to_kindle_blockers(
     *,
     job_status: str,
@@ -999,6 +1146,41 @@ def _build_send_to_kindle_blockers(
     return tuple(blockers)
 
 
+def _build_kindle_delivery_payload(
+    *,
+    conversion_metadata: Mapping[str, Any],
+    quality_report: Mapping[str, Any],
+    automated_ready: bool,
+    automated_blockers: tuple[dict[str, Any], ...],
+) -> dict[str, Any]:
+    reported = _dict_payload(conversion_metadata.get("kindle_delivery")) or _dict_payload(quality_report.get("kindle_delivery"))
+    reported_status = _coerce_text(reported.get("status"), default="").lower()
+    if automated_blockers:
+        status = "failed"
+    elif reported_status in {"previewer_passed", "send_to_kindle_passed", "failed"}:
+        status = reported_status
+    else:
+        status = "not_verified"
+    blockers = [dict(item) for item in automated_blockers]
+    if automated_ready and status == "not_verified":
+        blockers.append(
+            {
+                "severity": "review",
+                "code": "kindle_delivery_not_verified",
+                "message": "Kindle Previewer and Send-to-Kindle delivery have not been manually verified.",
+                "source": "kindle_delivery",
+                "suggested_action": "Open the EPUB in Kindle Previewer and complete a Send-to-Kindle delivery check before claiming 10/10.",
+            }
+        )
+    return {
+        "status": status,
+        "automated_ready": automated_ready,
+        "manual_required_for_premium": True,
+        "blockers": blockers,
+        "evidence": _dict_payload(reported.get("evidence")),
+    }
+
+
 def _not_reported_section() -> dict[str, Any]:
     return {"status": "not_reported"}
 
@@ -1058,6 +1240,13 @@ def _normalize_content_metrics_payload(value: Any) -> dict[str, Any]:
         "wide_table_count",
         "low_confidence_table_count",
         "fragment_table_count",
+        "false_positive_table_candidate_count",
+        "suppressed_table_fragment_count",
+        "rendered_low_confidence_table_count",
+        "rendered_fragment_table_count",
+        "transformed_table_preservation_count",
+        "transformed_table_content_loss_count",
+        "table_shape_histogram",
     ):
         if key not in normalized and key in table_summary:
             normalized[key] = table_summary[key]
@@ -1445,22 +1634,35 @@ def _table_semantics_completeness_payload(content_metrics: Mapping[str, Any]) ->
         source_count = 0
     if xhtml_count is None:
         xhtml_count = 0
-    if source_count > 0 and xhtml_count <= 0:
+    transformed_count = _coerce_optional_non_negative_int(metrics.get("transformed_table_count")) or 0
+    suppressed_count = _coerce_optional_non_negative_int(metrics.get("suppressed_table_fragment_count")) or 0
+    represented_count = xhtml_count + transformed_count + suppressed_count
+    if source_count > 0 and represented_count <= 0:
         status = "failed"
-        message = f"Source tables reported but no XHTML tables found ({xhtml_count}/{source_count})."
-    elif source_count > 0 and xhtml_count < source_count:
+        message = f"Source tables reported but no rendered, transformed, or suppressed table decisions found ({represented_count}/{source_count})."
+    elif source_count > 0 and represented_count < source_count:
         status = "passed_with_warnings"
-        message = f"Partial table semantics reported ({xhtml_count}/{source_count})."
+        message = f"Partial table semantics reported ({represented_count}/{source_count})."
     elif source_count > 0:
         status = "passed"
-        message = f"Table semantics preserved ({xhtml_count}/{source_count})."
+        message = f"Table semantics accounted for ({represented_count}/{source_count})."
     else:
         status = "passed"
         message = "No source tables reported."
+    rendered_low_confidence_count = _coerce_optional_non_negative_int(metrics.get("rendered_low_confidence_table_count")) or 0
+    rendered_fragment_count = _coerce_optional_non_negative_int(metrics.get("rendered_fragment_table_count")) or 0
+    transformed_loss_count = _coerce_optional_non_negative_int(metrics.get("transformed_table_content_loss_count")) or 0
+    if rendered_low_confidence_count > 0 or rendered_fragment_count > 0 or transformed_loss_count > 0:
+        status = "failed"
+        message = (
+            "Table semantics include rendered low-confidence fragments or transformed table content loss."
+        )
     return {
         "status": status,
         "source_table_count": source_count,
         "xhtml_table_count": xhtml_count,
+        "transformed_table_count": transformed_count,
+        "represented_table_count": represented_count,
         "table_cell_count": _coerce_optional_non_negative_int(metrics.get("table_cell_count")) or 0,
         "table_row_count": _coerce_optional_non_negative_int(metrics.get("table_row_count")) or 0,
         "table_cell_coverage": metrics.get("table_cell_coverage", 1.0),
@@ -1469,6 +1671,12 @@ def _table_semantics_completeness_payload(content_metrics: Mapping[str, Any]) ->
         "wide_table_count": _coerce_optional_non_negative_int(metrics.get("wide_table_count")) or 0,
         "low_confidence_table_count": _coerce_optional_non_negative_int(metrics.get("low_confidence_table_count")) or 0,
         "fragment_table_count": _coerce_optional_non_negative_int(metrics.get("fragment_table_count")) or 0,
+        "false_positive_table_candidate_count": _coerce_optional_non_negative_int(metrics.get("false_positive_table_candidate_count")) or 0,
+        "suppressed_table_fragment_count": _coerce_optional_non_negative_int(metrics.get("suppressed_table_fragment_count")) or 0,
+        "rendered_low_confidence_table_count": rendered_low_confidence_count,
+        "rendered_fragment_table_count": rendered_fragment_count,
+        "transformed_table_preservation_count": _coerce_optional_non_negative_int(metrics.get("transformed_table_preservation_count")) or 0,
+        "transformed_table_content_loss_count": transformed_loss_count,
         "table_summary": _dict_payload(metrics.get("table_summary")),
         "message": message,
     }
@@ -1815,6 +2023,20 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
         quality_available=quality_available,
         issue_groups=issue_groups,
     )
+    user_facing_reasons = _build_user_facing_reasons(
+        release_verdict=release_verdict,
+        quality_blockers=quality_blockers,
+        issue_groups=issue_groups,
+        alerts=alerts,
+    )
+    user_facing_verdict = _build_user_facing_verdict(
+        job_status=job_status,
+        release_verdict=release_verdict,
+        reading_verdict=reading_verdict,
+        download_available=download_available,
+        release_blocked=release_blocked,
+        reasons=user_facing_reasons,
+    )
     send_to_kindle_blockers = _build_send_to_kindle_blockers(
         job_status=job_status,
         download_available=download_available,
@@ -1826,6 +2048,12 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
         asset_summary=asset_summary,
     )
     send_to_kindle_ready = not send_to_kindle_blockers
+    kindle_delivery = _build_kindle_delivery_payload(
+        conversion_metadata=conversion_metadata,
+        quality_report=quality_report,
+        automated_ready=send_to_kindle_ready,
+        automated_blockers=send_to_kindle_blockers,
+    )
     raw_signals = _build_raw_signals_state(
         summary=summary,
         heading_repair=heading_repair,
@@ -1857,8 +2085,11 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
         release_verdict=release_verdict,
         release_blocked=release_blocked,
         quality_blockers=quality_blockers,
+        user_facing_verdict=user_facing_verdict,
+        user_facing_reasons=user_facing_reasons,
         send_to_kindle_ready=send_to_kindle_ready,
         send_to_kindle_blockers=send_to_kindle_blockers,
+        kindle_delivery=kindle_delivery,
         overall_severity=overall_severity,
         source_type=source_type,
         filename=_coerce_text(request.filename),

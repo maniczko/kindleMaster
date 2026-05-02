@@ -25,6 +25,9 @@ This copies curated fixtures from `example/` and generates repo-local PDF and DO
 and writes `reference_inputs/manifest.json`.
 The per-class size thresholds used by smoke and corpus sweeps live in `reference_inputs/size_budgets.json`.
 Budget lookups normalize both underscored and hyphenated class labels, so `document_like_report` and `document-like-report` resolve to the same policy entry.
+Golden EPUB feature expectations live in `reference_inputs/golden_epub_expectations.json`. They compare reader-facing
+features such as validation status, TOC depth, metadata, image/table preservation, artifact rate, and link integrity
+instead of requiring byte-identical EPUB files.
 
 Manifest cases may set `release_strict: false` when they are validator or repair probes rather than release-ready publication candidates. In that case a passing source validation plus a failing release audit is reported as `passed_with_warnings`, not as a corpus blocker.
 
@@ -58,6 +61,12 @@ Full smoke:
 
 ```powershell
 python kindlemaster.py smoke --mode full
+```
+
+Golden EPUB regression report for already-generated corpus artifacts:
+
+```powershell
+python scripts/run_golden_epub_regression.py --artifact-root output/corpus/smoke
 ```
 
 ## Rules

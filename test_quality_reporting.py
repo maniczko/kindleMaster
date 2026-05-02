@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from quality_reporting import (
+    build_before_after_report,
     build_raw_workflow_quality_signals,
     build_workflow_quality_report,
     build_manual_review_queue_payload,
@@ -191,6 +192,51 @@ class QualityReportingTests(unittest.TestCase):
         self.assertIn("duplicate_dom_ids", verdict.reasons)
         self.assertIn("heading_gate_failed", verdict.reasons)
         self.assertGreaterEqual(verdict.blocker_count, 3)
+
+    def test_before_after_report_classifies_improved_regressed_unchanged_and_unknown(self) -> None:
+        report = build_before_after_report(
+            baseline_payload={
+                "run_id": "run-1",
+                "snapshot": {
+                    "status": "failed",
+                    "signals": {
+                        "validation_status": "failed",
+                        "error_count": 2,
+                        "warning_count": 1,
+                        "table_cell_coverage": 0.5,
+                        "xhtml_table_count": 3,
+                    },
+                    "artifacts": {},
+                },
+            },
+            verification_snapshot={
+                "status": "passed_with_warnings",
+                "signals": {
+                    "validation_status": "passed",
+                    "error_count": 0,
+                    "warning_count": 2,
+                    "table_cell_coverage": 0.9,
+                    "xhtml_table_count": 4,
+                },
+                "symptoms": ["manual review still needed"],
+                "artifacts": {},
+            },
+            regression={"status": "passed"},
+            smoke={"status": "passed"},
+        )
+
+        classified = report["classified_changes"]
+        improved = {item["metric"] for item in classified["improved"]}
+        regressed = {item["metric"] for item in classified["regressed"]}
+        unknown = {item["metric"] for item in classified["unknown"]}
+
+        self.assertEqual(report["status"], "passed_with_warnings")
+        self.assertIn("validation_status", improved)
+        self.assertIn("error_count", improved)
+        self.assertIn("table_cell_coverage", improved)
+        self.assertIn("warning_count", regressed)
+        self.assertIn("xhtml_table_count", unknown)
+        self.assertEqual(report["remaining_risks"], ["manual review still needed"])
 
 
 if __name__ == "__main__":

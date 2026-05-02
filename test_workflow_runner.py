@@ -393,6 +393,11 @@ class WorkflowRunnerTests(unittest.TestCase):
             self.assertEqual(before_after["before"]["status"], "failed")
             self.assertEqual(before_after["after"]["status"], "passed")
             self.assertLess(before_after["delta"]["error_count"], 0)
+            self.assertIn("classified_changes", before_after)
+            improved_metrics = {item["metric"] for item in before_after["classified_changes"]["improved"]}
+            self.assertIn("validation_status", improved_metrics)
+            before_after_md = (root / "reports" / baseline["run_id"] / "before_after.md").read_text(encoding="utf-8")
+            self.assertIn("## Change Classification", before_after_md)
 
     @patch("workflow_runner.run_epub_publishing_quality_recovery", return_value={"decision": "pass", "gates": {"C": {"status": "pass"}, "D": {"status": "pass"}}})
     @patch("workflow_runner.validate_epub_path", return_value={"summary": {"status": "passed", "error_count": 0, "warning_count": 0}, "epubcheck": {"status": "passed"}, "internal_links": {"errors": []}, "external_links": {"errors": []}, "package": {"errors": []}})

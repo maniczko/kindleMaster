@@ -1,0 +1,29 @@
+{
+  "terms": [
+    {
+      "canonical": "general ledger",
+      "variants": ["generalledger"],
+      "lang": "en",
+      "protected": true
+    },
+    {
+      "canonical": "OAuth2",
+      "variants": ["oauth2"],
+      "lang": "en",
+      "protected": true
+    },
+    {
+      "canonical": "PSP",
+      "variants": ["psp"],
+      "lang": "en",
+      "protected": true
+    }
+  ],
+  "forced_splits": {
+    "generalledger": "general ledger"
+  },
+  "forced_merges": {
+    "issue ra": "issuera",
+    "funding owa": "fundingowa"
+  }
+}

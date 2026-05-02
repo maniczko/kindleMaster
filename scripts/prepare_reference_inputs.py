@@ -42,6 +42,16 @@ REFERENCE_CASES = [
         "notes": "Deterministic scanned PDF with OCR-stressed image-only pages and noisy text blocks.",
     },
     {
+        "id": "mixed_scan_text_pdf",
+        "document_class": "mixed_scan_text",
+        "input_type": "pdf",
+        "language": "en",
+        "quick_smoke": False,
+        "generator": "mixed_scan_text",
+        "target": "reference_inputs/pdf/mixed_scan_text.pdf",
+        "notes": "Generated PDF with one text-layer page and one image-only page for hybrid OCR benchmark coverage.",
+    },
+    {
         "id": "dense_business_guide_pdf",
         "document_class": "dense_business_guide",
         "input_type": "pdf",
@@ -201,6 +211,9 @@ def _generate_pdf_fixture(generator: str, target_path: Path) -> None:
         return
     if generator == "ocr_stress_scan":
         _build_ocr_stress_scan_pdf(target_path)
+        return
+    if generator == "mixed_scan_text":
+        _build_mixed_scan_text_pdf(target_path)
         return
     raise ValueError(f"Unknown PDF fixture generator: {generator}")
 
@@ -440,6 +453,39 @@ def _build_ocr_stress_scan_pdf(target_path: Path) -> None:
         document.close()
         for page_image in page_images:
             page_image.close()
+
+
+def _build_mixed_scan_text_pdf(target_path: Path) -> None:
+    scan_image = _build_ocr_stress_scan_page(page_number=1, total_pages=1)
+    document = fitz.open()
+    try:
+        text_page = document.new_page(width=595, height=842)
+        cursor_y = 72
+        cursor_y = _draw_pdf_heading(text_page, cursor_y, "Mixed scan text benchmark")
+        for paragraph in (
+            "This first page has a normal text layer and should not require OCR.",
+            "The second page is image-only, so the benchmark exercises hybrid OCR fallback and reason-code reporting.",
+            "The fixture is deterministic and intentionally generic across scanned business documents.",
+        ):
+            cursor_y = _draw_pdf_paragraph(text_page, cursor_y, paragraph, indent=0)
+        _draw_pdf_footer(text_page, 0, 2)
+
+        scan_page = document.new_page(width=595, height=842)
+        scan_page.insert_image(scan_page.rect, stream=_image_to_png_bytes(scan_image), keep_proportion=False)
+        document.set_metadata(
+            {
+                "title": "Mixed scan text benchmark",
+                "author": "KindleMaster QA",
+                "subject": "Hybrid OCR benchmark fixture",
+                "keywords": "KindleMaster,OCR,scan,hybrid",
+                "creator": "KindleMaster prepare_reference_inputs",
+                "producer": "PyMuPDF",
+            }
+        )
+        document.save(str(target_path), garbage=4, deflate=True, clean=True, no_new_id=True)
+    finally:
+        document.close()
+        scan_image.close()
 
 
 def _build_ocr_stress_scan_page(*, page_number: int, total_pages: int) -> Image.Image:

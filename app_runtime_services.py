@@ -32,6 +32,7 @@ class ConversionRequest:
     force_ocr: bool = False
     heading_repair_enabled: bool = False
     source_type: str | None = None
+    text_cleanup_domain_dictionary_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -259,6 +260,7 @@ def build_conversion_config(request: ConversionRequest) -> Any:
         profile=request.profile,
         force_ocr=request.force_ocr,
         language=request.language,
+        text_cleanup_domain_dictionary_path=request.text_cleanup_domain_dictionary_path,
     )
 
 
@@ -410,6 +412,17 @@ def _build_content_metrics_payload(quality_report: Mapping[str, Any]) -> dict[st
             "archive_entry_count",
             "archive_image_count",
             "largest_assets",
+            "table_cell_count",
+            "table_row_count",
+            "table_cell_coverage",
+            "table_page_count",
+            "multi_page_table_count",
+            "wide_table_count",
+            "low_confidence_table_count",
+            "fragment_table_count",
+            "table_summary",
+            "figure_summary",
+            "reading_flow",
         ),
     )
 

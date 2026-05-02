@@ -176,6 +176,7 @@ def build_workflow_verification_markdown(payload: dict[str, Any]) -> str:
 
 
 def build_workflow_before_after_markdown(payload: dict[str, Any]) -> str:
+    classified = payload.get("classified_changes") or {}
     lines = [
         "# KindleMaster Before/After Comparison",
         "",
@@ -189,6 +190,17 @@ def build_workflow_before_after_markdown(payload: dict[str, Any]) -> str:
     ]
     for key, value in (payload.get("delta") or {}).items():
         lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Change Classification", ""])
+    for bucket in ("improved", "regressed", "unchanged", "unknown"):
+        items = list(classified.get(bucket) or [])
+        lines.append(f"### {bucket.title()}")
+        if not items:
+            lines.append("- None")
+            continue
+        for item in items[:20]:
+            lines.append(
+                f"- `{item.get('metric', '')}`: `{item.get('before', '')}` -> `{item.get('after', '')}`"
+            )
     if payload.get("remaining_risks"):
         lines.extend(["", "## Remaining Risks", ""])
         lines.extend(f"- {risk}" for risk in payload["remaining_risks"])

@@ -225,9 +225,102 @@ def _extract_lines_from_page(page, page_index: int) -> list[TextLine]:
                     page_index=page_index,
                 )
             )
-    # Reading order: top to bottom, then left to right
-    lines.sort(key=lambda ln: (round(ln.y0, 1), ln.x0))
-    return lines
+    return _sort_lines_in_reading_order(lines, page_width=float(page.rect.width or 0.0))
+
+
+def _sort_lines_in_reading_order(lines: list[TextLine], *, page_width: float) -> list[TextLine]:
+    """Sort page text in Kindle reading order, including simple two-column pages."""
+    top_to_bottom = sorted(lines, key=lambda ln: (round(ln.y0, 1), ln.x0))
+    if not _page_has_two_column_text(top_to_bottom, page_width=page_width):
+        return top_to_bottom
+
+    ordered: list[TextLine] = []
+    current_zone: list[TextLine] = []
+    for line in top_to_bottom:
+        if _line_is_full_width_break(line, page_width=page_width):
+            ordered.extend(_sort_column_zone(current_zone, page_width=page_width))
+            current_zone = []
+            ordered.append(line)
+            continue
+        current_zone.append(line)
+    ordered.extend(_sort_column_zone(current_zone, page_width=page_width))
+    return ordered
+
+
+def _line_sort_key(line: TextLine) -> tuple[float, float]:
+    return (round(line.y0, 1), line.x0)
+
+
+def _line_is_full_width_break(line: TextLine, *, page_width: float) -> bool:
+    if page_width <= 0:
+        return False
+    width = max(0.0, line.x1 - line.x0)
+    if width >= page_width * 0.62:
+        return True
+    return line.x0 <= page_width * 0.16 and line.x1 >= page_width * 0.84
+
+
+def _page_has_two_column_text(lines: list[TextLine], *, page_width: float) -> bool:
+    return _two_column_stats(lines, page_width=page_width)["is_two_column"]
+
+
+def _sort_column_zone(lines: list[TextLine], *, page_width: float) -> list[TextLine]:
+    if not lines:
+        return []
+    stats = _two_column_stats(lines, page_width=page_width)
+    if not stats["is_two_column"]:
+        return sorted(lines, key=_line_sort_key)
+
+    mid = page_width / 2.0
+    left: list[TextLine] = []
+    middle: list[TextLine] = []
+    right: list[TextLine] = []
+    for line in lines:
+        center = (line.x0 + line.x1) / 2.0
+        if center < mid and line.x1 < mid + page_width * 0.08:
+            left.append(line)
+        elif center >= mid and line.x0 > mid - page_width * 0.08:
+            right.append(line)
+        else:
+            middle.append(line)
+
+    if len(left) < 2 or len(right) < 2:
+        return sorted(lines, key=_line_sort_key)
+    return sorted(left, key=_line_sort_key) + sorted(middle, key=_line_sort_key) + sorted(right, key=_line_sort_key)
+
+
+def _two_column_stats(lines: list[TextLine], *, page_width: float) -> dict[str, Any]:
+    if page_width <= 0 or len(lines) < 6:
+        return {"is_two_column": False, "left_count": 0, "right_count": 0, "ambiguous_count": 0, "gap": 0.0}
+    mid = page_width / 2.0
+    narrow_lines = [
+        line
+        for line in lines
+        if line.text.strip()
+        and not _line_is_full_width_break(line, page_width=page_width)
+        and max(0.0, line.x1 - line.x0) <= page_width * 0.52
+    ]
+    left = [line for line in narrow_lines if ((line.x0 + line.x1) / 2.0) < mid and line.x1 < mid + page_width * 0.08]
+    right = [line for line in narrow_lines if ((line.x0 + line.x1) / 2.0) >= mid and line.x0 > mid - page_width * 0.08]
+    assigned = {id(line) for line in left + right}
+    ambiguous_count = sum(1 for line in narrow_lines if id(line) not in assigned)
+    if len(left) < 2 or len(right) < 2:
+        return {
+            "is_two_column": False,
+            "left_count": len(left),
+            "right_count": len(right),
+            "ambiguous_count": ambiguous_count,
+            "gap": 0.0,
+        }
+    gap = min(line.x0 for line in right) - max(line.x1 for line in left)
+    is_two_column = gap >= page_width * 0.04
+    return {
+        "is_two_column": is_two_column,
+        "left_count": len(left),
+        "right_count": len(right),
+        "ambiguous_count": ambiguous_count,
+        "gap": round(gap, 2),
+    }
 
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -336,8 +429,7 @@ def _extract_vector_figures(page, page_index: int, img_counter: list[int], lines
         padded.x1 = min(page.rect.x1, padded.x1 + 6)
         padded.y1 = min(page.rect.y1, padded.y1 + 6)
         try:
-            pix = page.get_pixmap(clip=padded, dpi=180, alpha=False)
-            png = pix.tobytes("png")
+            png = _render_clip_png(page, padded, dpi=180, max_long_edge=1200)
         except Exception:
             continue
         img_counter[0] += 1
@@ -348,7 +440,7 @@ def _extract_vector_figures(page, page_index: int, img_counter: list[int], lines
                 data=png,
                 extension="png",
                 page_index=page_index,
-                y_position=rect.y0,
+                y_position=caption.y0,
                 caption=caption.text.strip(),
                 source="vector",
                 bbox=(rect.x0, rect.y0, rect.x1, rect.y1),
@@ -455,6 +547,15 @@ def _find_caption_lines(lines: list[TextLine]) -> list[TextLine]:
     return [line for line in lines if _FIGURE_CAPTION_RE.match(line.text.strip()) and not _TABLE_CAPTION_RE.match(line.text.strip())]
 
 
+def _render_clip_png(page, clip: fitz.Rect, *, dpi: int, max_long_edge: int) -> bytes:
+    base_scale = max(1.0, dpi / 72.0)
+    long_edge = max(float(clip.width), float(clip.height), 1.0)
+    scale = min(base_scale, max_long_edge / long_edge)
+    scale = max(1.0, scale)
+    pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), clip=clip, alpha=False)
+    return pix.tobytes("png")
+
+
 _PAGE_NUMBER_RE = re.compile(r"^\d{1,4}$")
 _MEMBER_COPY_RE = re.compile(
     r"(?i)complimentary\s+iiba(?:Ă‚Â®|Â®)?\s+member\s+copy|not\s+for\s+distribution\s+or\s+resale"
@@ -526,6 +627,8 @@ def _extract_captioned_region_figures(
     lines: list[TextLine],
     *,
     body_size: float,
+    used_caption_keys: set[tuple[float, str]] | None = None,
+    used_regions: list[fitz.Rect] | None = None,
 ) -> list[Figure]:
     figures: list[Figure] = []
     captions = _find_caption_lines(lines)
@@ -534,6 +637,9 @@ def _extract_captioned_region_figures(
 
     page_rect = page.rect
     for index, caption in enumerate(captions):
+        caption_key = (round(caption.y0, 1), caption.text.strip())
+        if used_caption_keys and caption_key in used_caption_keys:
+            continue
         next_caption_y = captions[index + 1].y0 if index + 1 < len(captions) else page_rect.y1 - 24
         stop_y = min(next_caption_y - 10, page_rect.y1 - 24)
 
@@ -569,10 +675,11 @@ def _extract_captioned_region_figures(
         )
         if clip.width < 80 or clip.height < 40:
             continue
+        if used_regions and any(region.intersects(clip) for region in used_regions):
+            continue
 
         try:
-            pix = page.get_pixmap(clip=clip, dpi=190, alpha=False)
-            image_bytes = pix.tobytes("png")
+            image_bytes = _render_clip_png(page, clip, dpi=190, max_long_edge=1200)
         except Exception:
             continue
 
@@ -589,7 +696,7 @@ def _extract_captioned_region_figures(
                 caption=label,
                 source="region",
                 bbox=(clip.x0, max(page_rect.y0, caption.y0 - 2), clip.x1, clip.y1),
-                caption_key=(round(caption.y0, 1), label),
+                caption_key=caption_key,
             )
         )
 
@@ -767,6 +874,23 @@ def _filter_lines_for_figures(lines: list[TextLine], figures: list[Figure]) -> l
 
 
 TABLE_URL_RE = re.compile(r"(?P<url>https?://[^\s<>()]+|www\.[^\s<>()]+)", re.IGNORECASE)
+INLINE_XHTML_TABLE_MAX_COLUMNS = 6
+WIDE_XHTML_TABLE_MAX_COLUMNS = 19
+MATRIX_MAPPING_MIN_COLUMNS = 20
+CHECKBOX_MARKERS = {
+    "x",
+    "yes",
+    "y",
+    "true",
+    "1",
+    "\u2713",
+    "\u2714",
+    "\u221a",
+    "\u2022",
+    "\u25cf",
+    "\u25a0",
+    "\u2611",
+}
 
 
 def _extract_structured_table_regions(pdf_path: str) -> dict[int, list[PublicationTable]]:
@@ -842,9 +966,18 @@ def _classify_pdf_table_rows(rows: list[list[str | None]]) -> tuple[str, list[st
     issues: list[str] = []
     confidence = 0.96
     classification = "semantic"
-    if column_count >= 6:
+    if column_count >= MATRIX_MAPPING_MIN_COLUMNS and _table_rows_look_like_checkbox_matrix(normalized_rows):
+        issues.extend(["wide-table", "matrix-checkbox-table", "matrix-table-transformed"])
+        return "matrix_mapping", issues, 0.88
+    if column_count > INLINE_XHTML_TABLE_MAX_COLUMNS:
         issues.append("wide-table")
         classification = "wide"
+        if column_count <= WIDE_XHTML_TABLE_MAX_COLUMNS:
+            issues.append("wide-table-review")
+            confidence = min(confidence, 0.82)
+        else:
+            issues.append("very-wide-table-review")
+            confidence = min(confidence, 0.68)
     if row_count < 2 or column_count < 2:
         issues.append("low-confidence-table-shape")
         confidence = min(confidence, 0.55)
@@ -860,6 +993,85 @@ def _classify_pdf_table_rows(rows: list[list[str | None]]) -> tuple[str, list[st
         confidence = min(confidence, 0.58)
         classification = "fragment"
     return classification, issues, confidence
+
+
+def _table_rows_look_like_checkbox_matrix(rows: list[list[str]]) -> bool:
+    column_count = max((len(row) for row in rows), default=0)
+    if column_count < MATRIX_MAPPING_MIN_COLUMNS or len(rows) < 3:
+        return False
+    header_rows = _infer_matrix_header_rows(rows)
+    if not header_rows:
+        return False
+    body_rows = rows[header_rows:]
+    label_column = _matrix_label_column_index(rows, header_rows)
+    if label_column is None:
+        return False
+    labeled_rows = 0
+    marker_count = 0
+    non_marker_mapping_values = 0
+    for row in body_rows:
+        label = row[label_column].strip() if label_column < len(row) else ""
+        if label and not _is_checkbox_marker(label):
+            labeled_rows += 1
+        for column_index, cell in enumerate(row):
+            if column_index == label_column:
+                continue
+            value = cell.strip()
+            if not value:
+                continue
+            if _is_checkbox_marker(value):
+                marker_count += 1
+            else:
+                non_marker_mapping_values += 1
+    if labeled_rows < max(2, len(body_rows) // 2):
+        return False
+    if marker_count < max(2, len(body_rows) // 2):
+        return False
+    checked_values = marker_count + non_marker_mapping_values
+    marker_ratio = marker_count / checked_values if checked_values else 0.0
+    return marker_ratio >= 0.8
+
+
+def _matrix_label_column_index(rows: list[list[str]], header_rows: int) -> int | None:
+    body_rows = rows[header_rows:]
+    if not body_rows:
+        return None
+    column_count = max((len(row) for row in rows), default=0)
+    best_index: int | None = None
+    best_score = 0
+    for column_index in range(min(4, column_count)):
+        score = 0
+        for row in body_rows:
+            cell = row[column_index].strip() if column_index < len(row) else ""
+            if cell and not _is_checkbox_marker(cell):
+                score += 1
+        if score > best_score:
+            best_index = column_index
+            best_score = score
+    return best_index
+
+
+def _infer_matrix_header_rows(rows: list[list[str]]) -> int:
+    header_rows = _infer_table_header_rows(rows)
+    if not header_rows:
+        return 0
+    limit = min(len(rows) - 1, 3)
+    while header_rows < limit:
+        row = rows[header_rows]
+        non_empty = [cell.strip() for cell in row if cell.strip()]
+        marker_cells = sum(1 for cell in non_empty if _is_checkbox_marker(cell))
+        if len(non_empty) >= 2 and marker_cells == 0:
+            header_rows += 1
+            continue
+        break
+    return header_rows
+
+
+def _is_checkbox_marker(value: str) -> bool:
+    normalized = re.sub(r"\s+", "", str(value or "").strip().lower())
+    if not normalized:
+        return False
+    return normalized in CHECKBOX_MARKERS
 
 
 def _table_rows_look_like_fragment(rows: list[list[str]]) -> bool:
@@ -915,9 +1127,46 @@ def _infer_table_header_rows(rows: list[list[str]]) -> int:
 def _publication_table_to_html(table: PublicationTable) -> str:
     if not table.rows:
         return ""
+    if not _should_render_publication_table(table):
+        return ""
+    if table.classification == "matrix_mapping" or (
+        table.column_count >= MATRIX_MAPPING_MIN_COLUMNS and _table_rows_look_like_checkbox_matrix(table.rows)
+    ):
+        matrix_html = _publication_matrix_table_to_html(table)
+        if matrix_html:
+            return matrix_html
+    if table.column_count > WIDE_XHTML_TABLE_MAX_COLUMNS:
+        return _publication_very_wide_table_to_html(table)
+    return _publication_table_to_xhtml(table)
+
+
+def _should_render_publication_table(table: PublicationTable) -> bool:
+    if table.classification in {"reference_like", "toc_like", "layout_grid", "layout_noise", "empty"}:
+        return False
+    if table.classification in {"low_confidence", "fragment"} or table.confidence < 0.75:
+        return _table_has_strong_rendering_evidence(table)
+    return True
+
+
+def _table_has_strong_rendering_evidence(table: PublicationTable) -> bool:
+    if not table.caption or not _looks_like_table_caption(table.caption):
+        return False
+    if table.row_count < 2 or table.column_count < 2:
+        return False
+    non_empty = sum(1 for row in table.rows for cell in row if str(cell or "").strip())
+    total = max(1, table.row_count * max(1, table.column_count))
+    fill_ratio = non_empty / total
+    if fill_ratio < 0.45:
+        return False
+    return not _table_rows_look_like_diagram_label_noise(table.rows)
+
+
+def _publication_table_to_xhtml(table: PublicationTable) -> str:
     classes = ["report-table"]
-    if table.column_count >= 6 or table.classification == "wide":
+    if table.column_count > INLINE_XHTML_TABLE_MAX_COLUMNS or table.classification == "wide":
         classes.append("wide-table")
+    if table.column_count > WIDE_XHTML_TABLE_MAX_COLUMNS:
+        classes.append("very-wide-table")
     if table.confidence < 0.75 or "sparse-table" in table.issues:
         classes.append("low-confidence-table")
     if "table-fragment" in table.issues or table.classification == "fragment":
@@ -944,9 +1193,163 @@ def _publication_table_to_html(table: PublicationTable) -> str:
             parts.append(f"<td{class_attr}>{_table_cell_to_html(cell)}</td>")
         parts.append("</tr>")
     parts.append("</tbody></table>")
-    if table.confidence < 0.75:
-        parts.append('<p class="table-note">Table structure requires review.</p>')
+    if _table_requires_review_note(table):
+        note = "Wide table structure requires review." if "wide-table-review" in table.issues else "Table structure requires review."
+        parts.append(f'<p class="table-note">{note}</p>')
     return "".join(parts)
+
+
+def _publication_matrix_table_to_html(table: PublicationTable) -> str:
+    inferred_header_rows = _infer_matrix_header_rows(table.rows)
+    header_rows = max(0, min(max(table.header_rows, inferred_header_rows), len(table.rows)))
+    if not header_rows:
+        return ""
+    label_column = _matrix_label_column_index(table.rows, header_rows)
+    if label_column is None:
+        return ""
+    headers = _matrix_column_headers(table.rows[:header_rows], table.column_count)
+    body_rows = table.rows[header_rows:]
+    parts = ['<section class="report-table matrix-mapping-table wide-table" data-source="pdf-table">']
+    if table.caption:
+        parts.append(f'<p class="table-caption">{html_module.escape(table.caption)}</p>')
+    parts.append('<p class="table-note">Very wide checkbox/matrix table converted to a readable mapping.</p>')
+    parts.append('<dl class="matrix-mapping-list">')
+    mapped_rows = 0
+    for row in body_rows:
+        label = row[label_column].strip() if label_column < len(row) else ""
+        if not label or _is_checkbox_marker(label):
+            continue
+        mapped_headers = [
+            headers[column_index]
+            for column_index, cell in enumerate(row)
+            if column_index != label_column
+            and column_index < len(headers)
+            and headers[column_index]
+            and _is_checkbox_marker(cell)
+        ]
+        if not mapped_headers:
+            continue
+        mapped_rows += 1
+        parts.append(f"<dt>{_table_cell_to_html(label)}</dt><dd><ul>")
+        for header in mapped_headers:
+            parts.append(f"<li>{_table_cell_to_html(header)}</li>")
+        parts.append("</ul></dd>")
+    parts.append("</dl></section>")
+    return "".join(parts) if mapped_rows else ""
+
+
+def _publication_very_wide_table_to_html(table: PublicationTable) -> str:
+    """Render 20+ column tables as Kindle-readable row summaries, not wide XHTML grids."""
+    rows = _normalize_table_rows(table.rows)
+    if not rows:
+        return ""
+    header_rows = max(0, min(table.header_rows or _infer_table_header_rows(rows), len(rows) - 1))
+    if not header_rows and len(rows) > 1:
+        header_rows = 1
+    headers = _matrix_column_headers(rows[:header_rows], max((len(row) for row in rows), default=0)) if header_rows else []
+    body_rows = rows[header_rows:] if header_rows else rows
+    if not body_rows:
+        body_rows = rows
+
+    parts: list[str] = []
+    if table.caption:
+        parts.append(f'<p class="table-caption">{html_module.escape(table.caption)}</p>')
+    parts.append(
+        '<p class="table-note">Very wide table converted to readable row summaries for Kindle.</p>'
+    )
+    parts.append(
+        '<ul class="report-table wide-table very-wide-table table-row-list" data-source="pdf-table">'
+    )
+    emitted_rows = 0
+    for row_index, row in enumerate(body_rows, start=1):
+        label_index = _first_meaningful_table_cell_index(row)
+        label = row[label_index].strip() if label_index is not None else f"Row {row_index}"
+        detail_items: list[str] = []
+        for column_index, cell in enumerate(row):
+            value = cell.strip()
+            if not value or column_index == label_index:
+                continue
+            header = headers[column_index].strip() if column_index < len(headers) else ""
+            if header and _table_text_key(header) != _table_text_key(value):
+                detail_items.append(
+                    f'<li><span class="table-field-label">{_table_cell_to_html(header)}:</span> {_table_cell_to_html(value)}</li>'
+                )
+            else:
+                detail_items.append(f"<li>{_table_cell_to_html(value)}</li>")
+        if not label and not detail_items:
+            continue
+        emitted_rows += 1
+        parts.append(f"<li><strong>{_table_cell_to_html(label)}</strong>")
+        if detail_items:
+            parts.append("<ul>")
+            parts.extend(detail_items)
+            parts.append("</ul>")
+        parts.append("</li>")
+    parts.append("</ul>")
+    if not emitted_rows:
+        return _publication_table_to_xhtml(table)
+    return "".join(parts)
+
+
+def _first_meaningful_table_cell_index(row: list[str]) -> int | None:
+    for index, cell in enumerate(row):
+        value = re.sub(r"\s+", " ", str(cell or "")).strip()
+        if value:
+            return index
+    return None
+
+
+def _table_text_key(value: str) -> str:
+    return re.sub(r"\W+", "", str(value or "").lower())
+
+
+def _matrix_column_headers(header_rows: list[list[str]], column_count: int) -> list[str]:
+    headers: list[str] = []
+    for column_index in range(column_count):
+        pieces = []
+        for row in header_rows:
+            cell = row[column_index].strip() if column_index < len(row) else ""
+            if cell:
+                pieces.append(cell)
+        headers.append(" ".join(pieces))
+    return headers
+
+
+def _table_requires_review_note(table: PublicationTable) -> bool:
+    review_issues = {"wide-table-review", "very-wide-table-review", "matrix-table-transformed"}
+    return table.confidence < 0.75 or bool(review_issues.intersection(table.issues))
+
+
+def _table_rendered_as_mapping(table: PublicationTable) -> bool:
+    html = table.html.lstrip()
+    return (
+        table.classification == "matrix_mapping"
+        or html.startswith('<section class="report-table matrix-mapping-table')
+        or "table-row-list" in html
+    )
+
+
+def _transformed_table_has_content(table: PublicationTable) -> bool:
+    html = table.html or ""
+    if "matrix-mapping-table" in html:
+        return "<dt>" in html and "<li>" in html
+    if "table-row-list" in html:
+        return "<li><strong>" in html
+    return False
+
+
+def _table_rows_look_like_diagram_label_noise(rows: list[list[str]]) -> bool:
+    cells = [_table_noise_key(cell) for row in rows for cell in row if str(cell or "").strip()]
+    if not cells:
+        return True
+    if len(cells) <= 4 and all(cell in {"input", "inputs", "output", "outputs", "out", "put", "noun", "verb", "data", "process"} for cell in cells):
+        return True
+    joined = " ".join(cells)
+    return joined in {"out put", "in put", "input output", "inputs outputs"}
+
+
+def _table_noise_key(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
 
 
 def _table_cell_to_html(value: str) -> str:
@@ -1062,6 +1465,7 @@ def _table_summary_payload(page_tables: dict[int, list[PublicationTable]]) -> di
         return {
             "source_table_count": 0,
             "xhtml_table_count": 0,
+            "transformed_table_count": 0,
             "table_cell_count": 0,
             "table_row_count": 0,
             "table_cell_coverage": 1.0,
@@ -1070,10 +1474,20 @@ def _table_summary_payload(page_tables: dict[int, list[PublicationTable]]) -> di
             "wide_table_count": 0,
             "low_confidence_table_count": 0,
             "fragment_table_count": 0,
+            "false_positive_table_candidate_count": 0,
+            "suppressed_table_fragment_count": 0,
+            "rendered_low_confidence_table_count": 0,
+            "rendered_fragment_table_count": 0,
+            "transformed_table_preservation_count": 0,
+            "transformed_table_content_loss_count": 0,
+            "table_shape_histogram": [],
             "review_tables": [],
         }
     review_tables: list[dict[str, Any]] = []
+    shape_counts: dict[str, int] = {}
     for index, table in enumerate(tables, start=1):
+        shape_key = f"{table.classification}|{table.row_count}x{table.column_count}"
+        shape_counts[shape_key] = shape_counts.get(shape_key, 0) + 1
         if table.confidence < 0.75 or table.issues:
             review_tables.append(
                 {
@@ -1085,20 +1499,62 @@ def _table_summary_payload(page_tables: dict[int, list[PublicationTable]]) -> di
                     "classification": table.classification,
                     "issues": list(table.issues),
                     "caption": table.caption,
+                    "rendered": bool(table.html),
                 }
             )
+    transformed_tables = [table for table in tables if _table_rendered_as_mapping(table)]
+    rendered_low_confidence = [
+        table
+        for table in tables
+        if table.html and (table.confidence < 0.75 or table.classification == "low_confidence")
+    ]
+    rendered_fragments = [
+        table
+        for table in tables
+        if table.html and ("table-fragment" in table.issues or table.classification == "fragment")
+    ]
+    false_positive_candidates = [
+        table
+        for table in tables
+        if (
+            table.classification in {"low_confidence", "fragment", "layout_noise"}
+            or "low-confidence-table-shape" in table.issues
+            or "table-fragment" in table.issues
+            or _table_rows_look_like_diagram_label_noise(table.rows)
+        )
+    ]
+    suppressed_fragments = [
+        table
+        for table in false_positive_candidates
+        if not table.html
+    ]
     return {
         "source_table_count": len(tables),
-        "xhtml_table_count": sum(1 for table in tables if table.html),
+        "xhtml_table_count": sum(1 for table in tables if table.html.lstrip().startswith("<table")),
+        "transformed_table_count": sum(1 for table in tables if _table_rendered_as_mapping(table)),
         "table_cell_count": sum(table.cell_count for table in tables),
         "table_row_count": sum(table.row_count for table in tables),
         "table_cell_coverage": 1.0,
         "table_page_count": len({page for table in tables for page in (table.page_span or [table.page_index])}),
         "multi_page_table_count": sum(1 for table in tables if len(set(table.page_span or [table.page_index])) > 1),
-        "wide_table_count": sum(1 for table in tables if table.column_count >= 6 or table.classification == "wide"),
+        "wide_table_count": sum(1 for table in tables if table.column_count > INLINE_XHTML_TABLE_MAX_COLUMNS or table.classification in {"wide", "matrix_mapping"}),
         "low_confidence_table_count": sum(1 for table in tables if table.confidence < 0.75),
         "fragment_table_count": sum(1 for table in tables if "table-fragment" in table.issues or table.classification == "fragment"),
-        "review_tables": review_tables[:25],
+        "false_positive_table_candidate_count": len(false_positive_candidates),
+        "suppressed_table_fragment_count": len(suppressed_fragments),
+        "rendered_low_confidence_table_count": len(rendered_low_confidence),
+        "rendered_fragment_table_count": len(rendered_fragments),
+        "transformed_table_preservation_count": sum(1 for table in transformed_tables if _transformed_table_has_content(table)),
+        "transformed_table_content_loss_count": sum(1 for table in transformed_tables if not _transformed_table_has_content(table)),
+        "table_shape_histogram": [
+            {
+                "classification": key.split("|", 1)[0],
+                "shape": key.split("|", 1)[1],
+                "count": count,
+            }
+            for key, count in sorted(shape_counts.items(), key=lambda item: (-item[1], item[0]))[:40]
+        ],
+        "review_tables": review_tables[:100],
     }
 
 
@@ -1331,35 +1787,43 @@ def extract_book_premium(
     img_counter = [0]
     page_lines: dict[int, list[TextLine]] = {}
     page_figures: dict[int, list[Figure]] = {}
+    page_widths: dict[int, float] = {}
     for page_num in range(len(doc)):
         page = doc[page_num]
+        page_widths[page_num] = float(page.rect.width or 0.0)
         page_line_items = _filter_noise_lines(
             _extract_lines_from_page(page, page_num),
             page_rect=page.rect,
         )
         page_table_regions = page_tables.get(page_num, [])
         _attach_table_captions(page_table_regions, page_line_items)
-        page_line_items = _filter_lines_for_tables(page_line_items, page_table_regions)
-        if document_like_report:
-            figures = []
-        else:
-            figures = _extract_captioned_region_figures(
+        rendered_table_regions = [table for table in page_table_regions if table.html]
+        page_line_items = _filter_lines_for_tables(page_line_items, rendered_table_regions)
+        figures = _extract_vector_figures(page, page_num, img_counter, page_line_items)
+        used_figure_regions = [fitz.Rect(*figure.bbox) for figure in figures if figure.bbox != (0, 0, 0, 0)]
+        used_caption_keys = {figure.caption_key for figure in figures if figure.caption_key}
+        figures.extend(
+            _extract_captioned_region_figures(
                 page,
                 page_num,
                 img_counter,
                 page_line_items,
                 body_size=body_size,
+                used_caption_keys=used_caption_keys,
+                used_regions=used_figure_regions,
             )
-            figures.extend(
-                _extract_raster_figures(
-                    page,
-                    doc,
-                    page_num,
-                    img_counter,
-                    page_line_items,
-                    used_regions=[fitz.Rect(*figure.bbox) for figure in figures if figure.bbox != (0, 0, 0, 0)],
-                )
+        )
+        used_figure_regions = [fitz.Rect(*figure.bbox) for figure in figures if figure.bbox != (0, 0, 0, 0)]
+        figures.extend(
+            _extract_raster_figures(
+                page,
+                doc,
+                page_num,
+                img_counter,
+                page_line_items,
+                used_regions=used_figure_regions,
             )
+        )
         figures.sort(key=lambda f: f.y_position)
         page_lines[page_num] = _filter_lines_for_figures(page_line_items, figures)
         page_figures[page_num] = figures
@@ -1383,6 +1847,8 @@ def extract_book_premium(
     # â”€â”€ Render each chapter to html_parts â”€â”€
     chapters: list[dict] = []
     cover_assigned = False
+    figure_neighborhood_samples: list[dict[str, Any]] = []
+    reading_flow_samples: list[dict[str, Any]] = []
     for ci, draft in enumerate(drafts):
         if draft.title.strip().lower() == "table of contents":
             continue
@@ -1396,7 +1862,7 @@ def extract_book_premium(
             table
             for p in range(draft.page_start, draft.page_end + 1)
             for table in page_tables.get(p, [])
-            if _table_in_draft(table, draft)
+            if table.html and _table_in_draft(table, draft)
         ]
 
         lines = _drop_repeated_running_headers(lines, chapter_title=draft.title)
@@ -1428,6 +1894,12 @@ def extract_book_premium(
         for table in chapter_tables:
             stream.append({"kind": "table", "table": table, "page_index": table.page_index, "y0": table.y_position})
         stream.sort(key=lambda item: (item["page_index"], item["y0"]))
+        _append_figure_neighborhood_samples(
+            figure_neighborhood_samples,
+            stream,
+            chapter_title=draft.title,
+            max_samples=16,
+        )
 
         html_parts: list[str] = []
         # NOTE: converter.build_epub auto-inserts the chapter title as <h1>,
@@ -1480,6 +1952,19 @@ def extract_book_premium(
         if in_list:
             wrapped.append("</ul>")
 
+        reading_flow_samples.append(
+            {
+                "title": draft.title,
+                "page_start": draft.page_start + 1,
+                "page_end": draft.page_end + 1,
+                "text_char_count": sum(len(block.get("text", "")) for block in blocks),
+                "figure_count": len(chapter_figures),
+                "rendered_table_count": len(chapter_tables),
+                "heading_count": sum(1 for block in blocks if block.get("type") == "heading"),
+                "status": "sampled",
+            }
+        )
+
         # IMPORTANT: leave chapter images [] so build_epub doesn't
         # re-emit figures at the end of the chapter. Image bytes are
         # still registered via the global `images` list below.
@@ -1500,6 +1985,7 @@ def extract_book_premium(
     doc.close()
 
     table_summary = _table_summary_payload(page_tables)
+    reading_order_summary = _reading_order_summary(page_lines, page_widths)
 
     return {
         "success": True,
@@ -1514,7 +2000,125 @@ def extract_book_premium(
             "source_table_count": table_summary["source_table_count"],
             "xhtml_table_count": table_summary["xhtml_table_count"],
             "table_summary": table_summary,
+            "figure_summary": {
+                "figure_count": len(all_images),
+                "sampled_figure_neighborhoods": figure_neighborhood_samples[:16],
+            },
+            "reading_flow": {
+                **reading_order_summary,
+                "sampled_sections": _select_reading_flow_samples(reading_flow_samples),
+            },
             "document_like_report": document_like_report,
         },
     }
 
+
+def _append_figure_neighborhood_samples(
+    samples: list[dict[str, Any]],
+    stream: list[dict],
+    *,
+    chapter_title: str,
+    max_samples: int,
+) -> None:
+    if len(samples) >= max_samples:
+        return
+    for index, item in enumerate(stream):
+        if item.get("kind") != "figure":
+            continue
+        figure = item.get("figure")
+        if not isinstance(figure, Figure):
+            continue
+        previous_text = _nearest_stream_text(stream, index, direction=-1)
+        next_text = _nearest_stream_text(stream, index, direction=1)
+        samples.append(
+            {
+                "chapter": chapter_title,
+                "page": figure.page_index + 1,
+                "caption": figure.caption,
+                "asset": figure.filename,
+                "source": figure.source,
+                "preceding_text": previous_text,
+                "following_text": next_text,
+                "status": "sampled" if figure.caption and previous_text and next_text else "review",
+            }
+        )
+        if len(samples) >= max_samples:
+            return
+
+
+def _nearest_stream_text(stream: list[dict], index: int, *, direction: int) -> str:
+    cursor = index + direction
+    while 0 <= cursor < len(stream):
+        item = stream[cursor]
+        if item.get("kind") == "block":
+            text = re.sub(r"\s+", " ", str((item.get("block") or {}).get("text", ""))).strip()
+            if text:
+                return text[:240]
+        cursor += direction
+    return ""
+
+
+def _select_reading_flow_samples(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if len(samples) <= 12:
+        return samples
+    selected: list[dict[str, Any]] = []
+    wanted_keywords = ("introduction", "techniques", "glossary", "appendix", "perspectives")
+    for sample in samples:
+        title = str(sample.get("title", "")).lower()
+        if any(keyword in title for keyword in wanted_keywords):
+            selected.append(sample)
+    for sample in samples:
+        if sample not in selected:
+            selected.append(sample)
+        if len(selected) >= 12:
+            break
+    return selected[:12]
+
+
+def _reading_order_summary(page_lines: dict[int, list[TextLine]], page_widths: dict[int, float]) -> dict[str, Any]:
+    page_reports: list[dict[str, Any]] = []
+    low_confidence_pages: list[int] = []
+    for page_index, lines in sorted(page_lines.items()):
+        page_width = float(page_widths.get(page_index, 0.0) or 0.0)
+        stats = _two_column_stats(lines, page_width=page_width)
+        if not stats["is_two_column"]:
+            continue
+        assigned_count = int(stats["left_count"]) + int(stats["right_count"])
+        ambiguous_count = int(stats["ambiguous_count"])
+        confidence = 0.94
+        if assigned_count:
+            confidence -= min(0.35, ambiguous_count / max(assigned_count + ambiguous_count, 1))
+        confidence = max(0.45, min(0.98, confidence))
+        page_report = {
+            "page": page_index + 1,
+            "status": "passed" if confidence >= 0.75 else "review",
+            "confidence": round(confidence, 3),
+            "left_line_count": int(stats["left_count"]),
+            "right_line_count": int(stats["right_count"]),
+            "ambiguous_line_count": ambiguous_count,
+            "column_gap": stats["gap"],
+        }
+        page_reports.append(page_report)
+        if confidence < 0.75:
+            low_confidence_pages.append(page_index + 1)
+
+    if low_confidence_pages:
+        status = "passed_with_warnings"
+        message = "Multi-column reading order needs manual review."
+    else:
+        status = "passed"
+        message = "Reading order passed heuristic checks."
+
+    return {
+        "status": status,
+        "quality_gate_status": status,
+        "confidence": round(
+            min((float(page.get("confidence", 1.0)) for page in page_reports), default=1.0),
+            3,
+        ),
+        "estimated_multi_column_pages": len(page_reports),
+        "low_confidence_region_count": len(low_confidence_pages),
+        "manual_review_count": len(low_confidence_pages),
+        "message": message,
+        "pages": page_reports[:24],
+    }

@@ -271,6 +271,27 @@ def _collect_text_cleanup_issues(collector: "_IssueCollector", text_cleanup: Map
             "Inspect review-needed cleanup decisions for false positives or missed repairs.",
         )
 
+    artifact_rate = _mapping(_first_present(text_cleanup.get("artifact_rate"), text_cleanup.get("text_artifacts")))
+    artifact_status = _status(artifact_rate.get("status"))
+    artifact_count = _safe_int(artifact_rate.get("artifact_count"))
+    artifact_rate_value = _safe_float(artifact_rate.get("artifact_rate_per_1000_words"))
+    if artifact_status in FAILED_STATUSES:
+        collector.add(
+            "blocker",
+            "text_artifact_rate_failed",
+            f"Reader text has {artifact_rate_value:g} visible artifact(s) per 1000 words.",
+            "text_cleanup",
+            "Inspect the artifact-rate report and repair split words, OCR junk, visible placeholders, or punctuation spacing before release.",
+        )
+    elif artifact_status in WARNING_STATUSES or artifact_count > 0:
+        collector.add(
+            "review",
+            "text_artifact_rate_review",
+            f"Reader text has {artifact_rate_value:g} visible artifact(s) per 1000 words.",
+            "text_cleanup",
+            "Review artifact-rate samples before treating this EPUB as premium quality.",
+        )
+
 
 def _collect_reference_cleanup_issues(collector: "_IssueCollector", reference_cleanup: Mapping[str, Any]) -> None:
     status = _status(
@@ -592,31 +613,59 @@ def _collect_content_metric_issues(
 
     source_table_count = _safe_int(content_metrics.get("source_table_count"))
     xhtml_table_count = _safe_int(_first_present(content_metrics.get("xhtml_table_count"), content_metrics.get("table_count")))
-    if source_table_count > 0 and xhtml_table_count == 0:
+    transformed_table_count = _safe_int(content_metrics.get("transformed_table_count"))
+    suppressed_table_fragment_count = _safe_int(content_metrics.get("suppressed_table_fragment_count"))
+    represented_table_count = xhtml_table_count + transformed_table_count + suppressed_table_fragment_count
+    if source_table_count > 0 and represented_table_count == 0:
         collector.add(
             "blocker",
             "table_semantics_lost",
-            "Source document had tables, but final EPUB does not contain XHTML tables.",
+            "Source document had tables, but final EPUB does not report rendered, transformed, or suppressed table decisions.",
             "content_metrics",
             "Preserve tables as semantic XHTML or explicitly accept a table-loss release exception.",
         )
-    elif source_table_count > 0 and xhtml_table_count < source_table_count:
+    elif source_table_count > 0 and represented_table_count < source_table_count:
         collector.add(
             "warning",
             "table_semantics_partial",
-            f"Only {xhtml_table_count}/{source_table_count} source tables are reported as XHTML tables.",
+            f"Only {represented_table_count}/{source_table_count} source table candidates are accounted for.",
             "content_metrics",
-            "Inspect table extraction and preserve missing tables as semantic XHTML where possible.",
+            "Inspect table extraction and preserve, transform, or explicitly suppress missing table candidates.",
         )
 
     low_confidence_table_count = _safe_int(content_metrics.get("low_confidence_table_count"))
-    if low_confidence_table_count > 0:
+    rendered_low_confidence_table_count = _safe_int(content_metrics.get("rendered_low_confidence_table_count"))
+    rendered_fragment_table_count = _safe_int(content_metrics.get("rendered_fragment_table_count"))
+    if low_confidence_table_count > 0 and rendered_low_confidence_table_count > 0:
         collector.add(
             "review",
             "table_semantics_review",
             _plural_message(low_confidence_table_count, "Table extraction left {count} low-confidence table.", "Table extraction left low-confidence tables."),
             "content_metrics",
             "Review the extracted XHTML tables against the source PDF before publication.",
+        )
+
+    if rendered_low_confidence_table_count > 0 or rendered_fragment_table_count > 0:
+        collector.add(
+            "blocker",
+            "table_false_positive_rendered",
+            "Low-confidence or fragment table candidates are still rendered in the EPUB.",
+            "content_metrics",
+            "Suppress false-positive table candidates or recover them as complete semantic tables before release.",
+        )
+
+    transformed_table_content_loss_count = _safe_int(content_metrics.get("transformed_table_content_loss_count"))
+    if transformed_table_content_loss_count > 0:
+        collector.add(
+            "blocker",
+            "transformed_table_content_lost",
+            _plural_message(
+                transformed_table_content_loss_count,
+                "Detected {count} transformed table with lost row content.",
+                "Detected transformed tables with lost row content.",
+            ),
+            "content_metrics",
+            "Preserve transformed table row summaries through EPUB finalization before release.",
         )
 
     wide_table_count = _safe_int(content_metrics.get("wide_table_count"))
@@ -630,11 +679,12 @@ def _collect_content_metric_issues(
         )
 
     fragment_table_count = _safe_int(content_metrics.get("fragment_table_count"))
-    if fragment_table_count > 0:
+    unresolved_fragment_count = max(0, fragment_table_count - suppressed_table_fragment_count)
+    if unresolved_fragment_count > 0:
         collector.add(
             "blocker",
             "table_fragment_detected",
-            _plural_message(fragment_table_count, "Table extraction produced {count} fragment table.", "Table extraction produced fragment tables."),
+            _plural_message(unresolved_fragment_count, "Table extraction produced {count} unresolved fragment table.", "Table extraction produced unresolved fragment tables."),
             "content_metrics",
             "Recover the full table from source geometry or demote the fragment to linear text before release.",
         )
@@ -729,6 +779,14 @@ def _safe_int(value: Any) -> int:
     except (TypeError, ValueError):
         return 0
     return max(0, converted)
+
+
+def _safe_float(value: Any) -> float:
+    try:
+        converted = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, converted)
 
 
 def _truthy(value: Any) -> bool:

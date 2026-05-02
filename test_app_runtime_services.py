@@ -483,6 +483,7 @@ class AppRuntimeServicesTests(unittest.TestCase):
                 language="en",
                 force_ocr=True,
                 heading_repair_enabled=True,
+                text_cleanup_domain_dictionary_path="docs/domain-dictionary-example.json",
             ),
             convert_impl=convert_impl,
             heading_repair_impl=heading_repair_impl,
@@ -492,6 +493,7 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertTrue(convert_kwargs["config"].prefer_fixed_layout)
         self.assertTrue(convert_kwargs["config"].force_ocr)
         self.assertEqual(convert_kwargs["config"].language, "en")
+        self.assertEqual(convert_kwargs["config"].text_cleanup_domain_dictionary_path, "docs/domain-dictionary-example.json")
         self.assertEqual(outcome.epub_bytes, b"repaired-epub")
         self.assertEqual(outcome.heading_repair_report["status"], "applied")
         self.assertEqual(outcome.metadata["render_budget_class"], "fixed_layout_dense")

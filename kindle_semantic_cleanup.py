@@ -1535,6 +1535,7 @@ def _dominant_publication_heading(chapter_paths) -> str:
 def _is_front_matter_heading_key(key: str) -> bool:
     return key in {
         "front cover",
+        "front matter",
         "title",
         "copyright",
         "contents",
@@ -2736,6 +2737,11 @@ def _process_chapter(
             body_parts.append("".join(table_parts))
             continue
 
+        if block_type == "transformed-table":
+            close_list_if_needed()
+            body_parts.append(block["html"])
+            continue
+
         if block_type == "problem-page-link":
             close_list_if_needed()
             body_parts.append(
@@ -2809,6 +2815,20 @@ def _extract_logical_blocks(
                         "text": plain_text,
                         "html": table_html,
                         "class_name": _append_class_name(" ".join(_class_list(node)), "semantic-table"),
+                        "is_top": is_top,
+                    }
+                )
+            continue
+
+        if _is_transformed_table_node(node):
+            transformed_html = _normalize_transformed_table_html(node)
+            if transformed_html:
+                blocks.append(
+                    {
+                        "type": "transformed-table",
+                        "text": plain_text,
+                        "html": transformed_html,
+                        "class_name": " ".join(_class_list(node)),
                         "is_top": is_top,
                     }
                 )
@@ -6176,6 +6196,7 @@ def _normalize_existing_table_html(node: Tag) -> str:
 
     allowed_tags = {
         "table",
+        "caption",
         "thead",
         "tbody",
         "tfoot",
@@ -6200,6 +6221,7 @@ def _normalize_existing_table_html(node: Tag) -> str:
     }
     attrs_by_tag = {
         "table": {"class"},
+        "caption": {"class"},
         "th": {"class", "colspan", "rowspan", "scope"},
         "td": {"class", "colspan", "rowspan"},
         "a": {"href", "title"},
@@ -6241,7 +6263,99 @@ def _normalize_existing_table_html(node: Tag) -> str:
         tag.attrs = next_attrs
 
     table["class"] = _normalized_classes(table.get("class"), fallback=["semantic-table"])
+    _move_direct_table_text_to_caption(table, fragment)
     return str(table)
+
+
+def _move_direct_table_text_to_caption(table: Tag, soup: BeautifulSoup) -> bool:
+    """EPUBCheck rejects text nodes directly under table; keep it as caption."""
+    direct_text_nodes = [
+        child
+        for child in list(table.children)
+        if isinstance(child, NavigableString) and _normalize_text(str(child))
+    ]
+    if not direct_text_nodes:
+        return False
+
+    caption_text = _normalize_text(" ".join(str(child) for child in direct_text_nodes))
+    for child in direct_text_nodes:
+        child.extract()
+    if not caption_text:
+        return False
+
+    caption = table.find("caption", recursive=False)
+    if caption is None:
+        caption = soup.new_tag("caption")
+        table.insert(0, caption)
+        caption.append(caption_text)
+    else:
+        existing = _normalize_text(caption.get_text(" ", strip=True))
+        if existing:
+            caption.clear()
+            caption.append(f"{caption_text} {existing}" if caption_text not in existing else existing)
+        else:
+            caption.append(caption_text)
+    return True
+
+
+def _is_transformed_table_node(node: Tag) -> bool:
+    classes = set(_class_list(node))
+    if classes & {"matrix-mapping-table", "table-row-list"}:
+        return True
+    if node.name == "section" and classes & {"report-table", "wide-table"}:
+        return bool(node.find(class_="matrix-mapping-list") or node.find(class_="table-row-list"))
+    return False
+
+
+def _normalize_transformed_table_html(node: Tag) -> str:
+    fragment = BeautifulSoup(str(node), "xml")
+    root = next((child for child in fragment.contents if isinstance(child, Tag)), None)
+    if root is None:
+        return ""
+    allowed_tags = {"section", "p", "ul", "ol", "li", "dl", "dt", "dd", "strong", "span", "a", "br"}
+    attrs_by_tag = {
+        "section": {"class", "data-source"},
+        "p": {"class"},
+        "ul": {"class", "data-source"},
+        "ol": {"class"},
+        "li": {"class"},
+        "dl": {"class"},
+        "dt": {"class"},
+        "dd": {"class"},
+        "span": {"class"},
+        "a": {"href", "title"},
+    }
+    for tag in list(root.find_all(True)):
+        if tag.name not in allowed_tags:
+            tag.unwrap()
+            continue
+        allowed_attrs = attrs_by_tag.get(tag.name, set())
+        next_attrs: dict[str, str | list[str]] = {}
+        for attr_name, attr_value in list(tag.attrs.items()):
+            if attr_name not in allowed_attrs:
+                continue
+            if attr_name == "class":
+                classes = _normalized_classes(attr_value, fallback=[])
+                if classes:
+                    next_attrs[attr_name] = classes
+                continue
+            if attr_name == "href":
+                uri = str(attr_value or "").strip()
+                if uri and not re.match(r"(?i)^(?:javascript|data):", uri):
+                    next_attrs[attr_name] = uri
+                continue
+            text_value = _normalize_text(str(attr_value or ""))
+            if text_value:
+                next_attrs[attr_name] = text_value
+        tag.attrs = next_attrs
+    for text_node in list(root.descendants):
+        if isinstance(text_node, NavigableString):
+            repaired = _repair_text_node(str(text_node))
+            if repaired != str(text_node):
+                text_node.replace_with(repaired)
+    if not _normalize_text(root.get_text(" ", strip=True)):
+        return ""
+    return str(root)
 
 
 def _inject_problem_solution_links(
@@ -9546,6 +9660,12 @@ def _should_include_in_toc(text: str, level: int) -> bool:
         return False
     if _looks_like_synthetic_section_label(normalized):
         return False
+    if _looks_like_table_or_diagram_artifact_toc_label(normalized):
+        return False
+    if len(re.findall(r"\b\d{1,4}\s+\d+(?:\.\d+)+\b", normalized)) >= 2:
+        return False
+    if _looks_like_index_page_toc_label(normalized):
+        return False
     if _looks_like_truncated_heading(normalized):
         return False
     if re.match(r"^[•·▪◦]\s*", normalized):
@@ -9556,7 +9676,7 @@ def _should_include_in_toc(text: str, level: int) -> bool:
         return False
     if _looks_like_front_matter_chrome_heading(normalized):
         return False
-    if level > 1 and _is_low_information_report_toc_label(normalized):
+    if level > 1 and (_is_low_information_report_toc_label(normalized) or _is_dense_generic_orphan_toc_label(normalized)):
         return False
     if _is_generic_schema_heading_label(normalized):
         return False
@@ -9586,6 +9706,63 @@ def _should_include_in_toc(text: str, level: int) -> bool:
     if stripped.endswith(".") and len(stripped) > 80:
         return False
     return True
+
+
+def _looks_like_table_or_diagram_artifact_toc_label(text: str) -> bool:
+    normalized = _normalize_text(text).strip(" .:;")
+    lowered = normalized.lower()
+    if not normalized:
+        return False
+    if lowered in {"input", "inputs", "output", "outputs"}:
+        return True
+    if re.fullmatch(r"(?i)(?:object|state)\s+\d+[A-Za-z]?", normalized):
+        return True
+    if re.fullmatch(r"(?i)rank\s*(?:=|:)?\s*\d+(?:\s*[*x]\s*\d+)?", normalized):
+        return True
+    return False
+
+
+def _looks_like_index_page_toc_label(text: str) -> bool:
+    normalized = _normalize_text(text).strip()
+    if not normalized:
+        return False
+    if re.match(r"(?i)^(?:chapter|appendix|section|part|figure|table|sekcja|rozdzial|rozdział|czesc|część)\b", normalized):
+        return False
+    match = re.fullmatch(r"(?P<label>.+?)\s+(?P<page>\d{1,4})", normalized)
+    if not match:
+        return False
+    label = match.group("label").strip(" .,-")
+    if len(label) > 80 or not any(ch.isalpha() for ch in label):
+        return False
+    words = label.split()
+    if not 1 <= len(words) <= 7:
+        return False
+    return not label.endswith(":")
+
+
+def _is_dense_generic_orphan_toc_label(text: str) -> bool:
+    key_matches = _matching_text_keys(text)
+    return bool(
+        key_matches
+        & {
+            "data",
+            "definition",
+            "description",
+            "elements",
+            "evaluation",
+            "glossary",
+            "limitations",
+            "measures",
+            "process",
+            "proces",
+            "requirements",
+            "solution",
+            "strategy",
+            "summary",
+            "technique",
+            "techniques",
+        }
+    )
 
 
 def _looks_like_synthetic_section_label(text: str) -> bool:

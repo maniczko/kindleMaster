@@ -171,7 +171,7 @@ class RunSmokeTestsStatusTests(unittest.TestCase):
         self.assertEqual(summary["overall_status"], "failed")
         self.assertEqual(summary["failed_cases"], 1)
 
-    def test_non_strict_epub_release_failure_is_reported_as_warning_when_source_validates(self):
+    def test_non_strict_epub_release_failure_is_accepted_when_source_validates(self):
         row = {
             "id": "scan_probe_epub",
             "release_strict": False,
@@ -184,12 +184,17 @@ class RunSmokeTestsStatusTests(unittest.TestCase):
         summary = _build_smoke_summary([row])
         benchmark = _build_case_benchmark(row=row, elapsed_seconds=2.0)
 
-        self.assertEqual(_effective_case_validation_status(row), "passed_with_warnings")
-        self.assertEqual(summary["overall_status"], "passed_with_warnings")
+        self.assertEqual(_effective_case_validation_status(row), "passed")
+        self.assertEqual(summary["overall_status"], "passed")
         self.assertEqual(summary["failed_cases"], 0)
-        self.assertEqual(summary["warning_cases"], 1)
-        self.assertEqual(benchmark["validation_status"], "passed_with_warnings")
+        self.assertEqual(summary["warning_cases"], 0)
+        self.assertEqual(benchmark["validation_status"], "passed")
         self.assertEqual(benchmark["release_audit_status"], "failed")
+        self.assertTrue(benchmark["release_audit_accepted"])
+        self.assertEqual(
+            benchmark["release_audit_acceptance_reason"],
+            "accepted_p2_non_strict_probe_source_validation_passed",
+        )
 
     def test_benchmark_surfaces_duration_and_profile_hints_for_slow_cases(self):
         row = {

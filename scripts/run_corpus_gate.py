@@ -43,6 +43,40 @@ def _derive_corpus_gate_status(*, smoke_status: str, premium_status: str) -> str
     return "passed"
 
 
+def _effective_premium_status_for_gate(
+    premium: dict[str, Any],
+    *,
+    proof_profile: str,
+    output_assertion_status: str,
+) -> str:
+    raw_status = str(
+        premium.get("overall_status")
+        or (premium.get("overall") or {}).get("overall_status")
+        or "failed"
+    )
+    if raw_status != "passed_with_warnings":
+        return raw_status
+    if proof_profile != "standard" or output_assertion_status != "passed":
+        return raw_status
+
+    overall = premium.get("overall") or {}
+    grade_counts = overall.get("grade_counts") or {}
+    has_active_quality_warnings = bool(overall.get("blocker_counts") or overall.get("warning_counts"))
+    has_review_grades = int(grade_counts.get("fail", 0) or 0) > 0 or int(
+        grade_counts.get("pass_with_review", 0) or 0
+    ) > 0
+    if has_active_quality_warnings or has_review_grades:
+        return raw_status
+
+    # Standard corpus combines PDF premium proof with smoke/output assertions
+    # for DOCX/EPUB routes. A partial premium-only scope should not keep the
+    # corpus gate yellow once focused output routes are fully covered and all
+    # remaining quality warnings have been explicitly accepted as P2.
+    if overall.get("proof_scope") == "partial" and overall.get("accepted_warning_counts"):
+        return "passed"
+    return raw_status
+
+
 def _derive_output_assertion_status(output_assertions: dict[str, Any]) -> str:
     if output_assertions.get("status") == "not_evaluated":
         return "passed"
@@ -248,6 +282,7 @@ def _build_corpus_gate_markdown(payload: dict[str, Any]) -> str:
         f"- Proof profile: `{payload['proof_profile']}`",
         f"- Smoke status: `{(smoke.get('summary') or {}).get('overall_status', 'unknown')}`",
         f"- Premium corpus status: `{(premium.get('overall') or {}).get('overall_status', 'unknown')}`",
+        f"- Effective premium status for gate: `{payload.get('effective_premium_status', (premium.get('overall') or {}).get('overall_status', 'unknown'))}`",
         "",
         "## Derived Summary",
         "",
@@ -257,6 +292,7 @@ def _build_corpus_gate_markdown(payload: dict[str, Any]) -> str:
         f"- Premium grade counts: `{json.dumps((premium.get('overall') or {}).get('grade_counts', {}), ensure_ascii=False)}`",
         f"- Premium blockers: `{json.dumps((premium.get('overall') or {}).get('blocker_counts', {}), ensure_ascii=False)}`",
         f"- Premium warnings: `{json.dumps((premium.get('overall') or {}).get('warning_counts', {}), ensure_ascii=False)}`",
+        f"- Premium accepted P2 warnings: `{json.dumps((premium.get('overall') or {}).get('accepted_warning_counts', {}), ensure_ascii=False)}`",
         "",
         "## Benchmark",
         "",
@@ -350,10 +386,15 @@ def run_corpus_gate(
         premium_status = (premium.get("overall") or {}).get("overall_status", "failed")
     output_assertions = _build_gate_output_assertions(smoke=smoke, premium=premium)
     output_assertion_status = _derive_output_assertion_status(output_assertions)
+    effective_premium_status = _effective_premium_status_for_gate(
+        premium,
+        proof_profile=proof_profile,
+        output_assertion_status=output_assertion_status,
+    )
 
     overall_status = _derive_corpus_gate_status(
         smoke_status=(smoke.get("summary") or {}).get("overall_status", "failed"),
-        premium_status=premium_status,
+        premium_status=effective_premium_status,
     )
     overall_status = _derive_corpus_gate_status(
         smoke_status=overall_status,
@@ -364,6 +405,7 @@ def run_corpus_gate(
         "proof_profile": proof_profile,
         "smoke": smoke,
         "premium_corpus": premium,
+        "effective_premium_status": effective_premium_status,
         "output_assertions": output_assertions,
         "output_assertion_status": output_assertion_status,
         "benchmark": _build_gate_benchmark(

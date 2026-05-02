@@ -397,6 +397,8 @@ def _effective_case_validation_status(row: dict[str, Any]) -> str:
         return source_status
 
     release_status = _release_decision_to_validation_status(str(release_audit.get("decision", "") or ""))
+    if _non_strict_release_audit_failure_accepted(row, source_status=source_status, release_status=release_status):
+        return "passed"
     if release_status == "failed":
         if row.get("release_strict") is False and source_status != "failed":
             return "passed_with_warnings"
@@ -421,6 +423,19 @@ def _release_decision_to_validation_status(decision: str) -> str:
     return "failed"
 
 
+def _non_strict_release_audit_failure_accepted(
+    row: dict[str, Any],
+    *,
+    source_status: str,
+    release_status: str,
+) -> bool:
+    return (
+        row.get("release_strict") is False
+        and source_status == "passed"
+        and release_status == "failed"
+    )
+
+
 def _build_case_benchmark(*, row: dict[str, Any], elapsed_seconds: float) -> dict[str, Any]:
     rounded_elapsed = round(float(elapsed_seconds), 4)
     validation_status = _effective_case_validation_status(row)
@@ -428,6 +443,11 @@ def _build_case_benchmark(*, row: dict[str, Any], elapsed_seconds: float) -> dic
     release_status = ""
     if row.get("release_audit"):
         release_status = _release_decision_to_validation_status(str(row["release_audit"].get("decision", "") or ""))
+    release_audit_accepted = _non_strict_release_audit_failure_accepted(
+        row,
+        source_status=source_validation_status,
+        release_status=release_status,
+    )
     quality_report = row.get("quality_report") or {}
     analysis = row.get("analysis") or {}
     size_gate = row.get("size_gate") or {}
@@ -454,6 +474,12 @@ def _build_case_benchmark(*, row: dict[str, Any], elapsed_seconds: float) -> dic
         "validation_status": validation_status,
         "source_validation_status": source_validation_status,
         "release_audit_status": release_status,
+        "release_audit_accepted": release_audit_accepted,
+        "release_audit_acceptance_reason": (
+            "accepted_p2_non_strict_probe_source_validation_passed"
+            if release_audit_accepted
+            else ""
+        ),
         "chess_quality": chess_quality,
         "asset_quality_gate": asset_quality_gate,
         "metrics_missing": missing_metrics,
@@ -731,6 +757,11 @@ def _build_smoke_markdown(payload: dict[str, Any]) -> str:
                     lines.append(f"  - `{asset['name']}` -> `{asset['size_bytes']}` B")
         if row.get("release_audit"):
             lines.append(f"- Release audit: `{row['release_audit'].get('decision', 'unknown')}`")
+            if (row.get("benchmark") or {}).get("release_audit_accepted"):
+                lines.append(
+                    "- Release audit acceptance: "
+                    f"`{(row.get('benchmark') or {}).get('release_audit_acceptance_reason')}`"
+                )
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 

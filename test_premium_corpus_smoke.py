@@ -13,6 +13,7 @@ from premium_corpus_smoke import (
     _build_class_coverage,
     _ocr_benchmark_findings,
     _build_release_fallback_signal,
+    _split_active_and_accepted_warnings,
     _derive_case_grade,
     build_output_assertions,
     inspect_epub,
@@ -259,6 +260,33 @@ class PremiumCorpusSmokeTests(unittest.TestCase):
 
         self.assertEqual([item["code"] for item in warnings], ["text_artifact_rate_review"])
         self.assertEqual(_derive_case_grade([], warnings), "pass_with_review")
+
+    def test_low_artifact_rate_warning_can_be_accepted_as_p2_for_corpus_rollup(self) -> None:
+        case = CorpusCase(Path("reference_inputs/pdf/ocr_stress_scan.pdf"), document_class="ocr_stress_scan")
+        warnings = [{"code": "text_artifact_rate_review", "detail": "artifact_rate_per_1000_words=2.5; artifact_count=2"}]
+        active, accepted = _split_active_and_accepted_warnings(
+            case,
+            warnings=warnings,
+            quality={
+                "text_cleanup": {
+                    "artifact_rate": {
+                        "status": "passed_with_warnings",
+                        "artifact_count": 2,
+                        "artifact_rate_per_1000_words": 2.5,
+                        "counts": {
+                            "technical_placeholder_count": 0,
+                            "ocr_junk_count": 0,
+                        },
+                    }
+                }
+            },
+            heading_summary={"epubcheck_status": "passed"},
+        )
+
+        self.assertEqual(active, [])
+        self.assertEqual(accepted[0]["code"], "text_artifact_rate_review")
+        self.assertEqual(accepted[0]["priority"], "P2")
+        self.assertEqual(_derive_case_grade([], active), "pass")
 
     def test_pre_heading_epubcheck_failure_recovered_by_heading_repair_is_review_not_blocker(self) -> None:
         quality = {"validation_status": "failed"}

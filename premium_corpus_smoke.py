@@ -565,6 +565,81 @@ def _apply_release_strictness(
     return relaxed_blockers, relaxed_warnings
 
 
+def _accepted_warning_reason(
+    warning: dict[str, str],
+    *,
+    case: CorpusCase,
+    quality: dict[str, Any],
+    heading_summary: dict[str, Any],
+) -> str:
+    """Return a P2 acceptance reason for review-only corpus warnings."""
+
+    code = warning.get("code", "")
+    focus_routes = set(classify_focus_routes(case.document_class, case.input_type))
+    if code == "text_artifact_rate_review":
+        artifact_rate = _text_artifact_rate_payload(quality)
+        counts = artifact_rate.get("counts") if isinstance(artifact_rate.get("counts"), dict) else {}
+        hard_visible = _safe_int(counts.get("technical_placeholder_count")) + _safe_int(counts.get("ocr_junk_count"))
+        if (
+            _safe_int(artifact_rate.get("artifact_count")) <= 6
+            and _safe_float(artifact_rate.get("artifact_rate_per_1000_words")) <= 4.0
+            and hard_visible == 0
+        ):
+            return "accepted_p2_low_artifact_rate_without_hard_visible_junk"
+    if code == "heading_manual_review":
+        review_count = _safe_int(heading_summary.get("manual_review_count"))
+        if heading_summary.get("epubcheck_status") == "passed" and review_count <= 5 and focus_routes:
+            return "accepted_p2_profile_heading_review_epubcheck_passed"
+    if code == "reference_empty_section_review":
+        reference_cleanup = _reference_cleanup_payload(quality)
+        if (
+            _safe_int(reference_cleanup.get("citations_detected")) == 0
+            and _safe_int(reference_cleanup.get("visible_junk_detected")) == 0
+            and _safe_int(reference_cleanup.get("empty_reference_sections_unresolved")) <= 1
+        ):
+            return "accepted_p2_empty_reference_section_without_citations"
+    if code == "reference_review_needed":
+        reference_cleanup = _reference_cleanup_payload(quality)
+        reference_status = str(
+            reference_cleanup.get("reference_quality_gate_status")
+            or reference_cleanup.get("quality_gate_status")
+            or reference_cleanup.get("status")
+            or ""
+        ).lower()
+        if (
+            reference_status == "passed"
+            and _safe_int(reference_cleanup.get("citations_detected")) == 0
+            and _safe_int(reference_cleanup.get("visible_junk_detected")) == 0
+            and _safe_int(reference_cleanup.get("unresolved_fragment_count")) == 0
+            and "magazine_layout_heavy" in focus_routes
+        ):
+            return "accepted_p2_magazine_reference_like_text_without_citations_or_visible_junk"
+    return ""
+
+
+def _split_active_and_accepted_warnings(
+    case: CorpusCase,
+    *,
+    warnings: list[dict[str, str]],
+    quality: dict[str, Any],
+    heading_summary: dict[str, Any],
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    active: list[dict[str, str]] = []
+    accepted: list[dict[str, str]] = []
+    for warning in warnings:
+        reason = _accepted_warning_reason(
+            warning,
+            case=case,
+            quality=quality,
+            heading_summary=heading_summary,
+        )
+        if reason:
+            accepted.append({**warning, "accepted_as": reason, "priority": "P2"})
+        else:
+            active.append(warning)
+    return active, accepted
+
+
 def _build_case_warnings(
     *,
     summary: dict[str, Any],
@@ -1051,6 +1126,12 @@ def _run_conversion_case(case: CorpusCase, *, run_heading_repair: bool) -> dict[
         blockers=blockers,
         warnings=warnings,
     )
+    warnings, accepted_warnings = _split_active_and_accepted_warnings(
+        case,
+        warnings=warnings,
+        quality=quality,
+        heading_summary=heading_summary,
+    )
     release_fallback = _build_release_fallback_signal(
         analysis=analysis,
         quality=quality,
@@ -1115,6 +1196,7 @@ def _run_conversion_case(case: CorpusCase, *, run_heading_repair: bool) -> dict[
         "grade": grade,
         "blockers": blockers,
         "warnings": warnings,
+        "accepted_warnings": accepted_warnings,
         "size_bytes": len(converted_epub_bytes),
         "elapsed_seconds": elapsed_seconds,
         "duration_bucket": _duration_bucket(elapsed_seconds),
@@ -1188,6 +1270,9 @@ def _build_overall_summary(
     grade_counts = Counter(row.get("grade", "unknown") for row in converted)
     blocker_counts = Counter(blocker["code"] for row in converted for blocker in row.get("blockers", []))
     warning_counts = Counter(warning["code"] for row in converted for warning in row.get("warnings", []))
+    accepted_warning_counts = Counter(
+        warning["code"] for row in converted for warning in row.get("accepted_warnings", [])
+    )
     fallback_counts = Counter(
         (row.get("release_fallback") or {}).get("severity", "none")
         for row in converted
@@ -1216,6 +1301,7 @@ def _build_overall_summary(
         "grade_counts": dict(grade_counts),
         "blocker_counts": dict(blocker_counts),
         "warning_counts": dict(warning_counts),
+        "accepted_warning_counts": dict(accepted_warning_counts),
         "release_fallback_counts": dict(fallback_counts),
         "ocr_benchmark": {
             "case_count": len(ocr_rows),
@@ -1290,6 +1376,7 @@ def _build_markdown_report(
         f"- Grade counts: `{json.dumps(overall['grade_counts'], ensure_ascii=False)}`",
         f"- Repeated blockers: `{json.dumps(overall['blocker_counts'], ensure_ascii=False)}`",
         f"- Repeated warnings: `{json.dumps(overall['warning_counts'], ensure_ascii=False)}`",
+        f"- Accepted P2 warnings: `{json.dumps(overall.get('accepted_warning_counts', {}), ensure_ascii=False)}`",
         f"- Release fallback counts: `{json.dumps(overall.get('release_fallback_counts', {}), ensure_ascii=False)}`",
         f"- OCR benchmark: `{json.dumps(overall.get('ocr_benchmark', {}), ensure_ascii=False)}`",
         f"- Recovered EPUBCheck cases: `{overall.get('recovered_epubcheck_count', 0)}`",
@@ -1356,6 +1443,13 @@ def _build_markdown_report(
             lines.append("- Warnings:")
             for warning in row["warnings"]:
                 lines.append(f"  - `{warning['code']}`: {warning['detail']}")
+        if row.get("accepted_warnings"):
+            lines.append("- Accepted P2 warnings:")
+            for warning in row["accepted_warnings"]:
+                lines.append(
+                    f"  - `{warning['code']}`: {warning['detail']} "
+                    f"({warning.get('accepted_as', 'accepted_p2')})"
+                )
         fallback_signal = row.get("release_fallback") or {}
         if fallback_signal.get("used"):
             lines.append(f"- Release fallback: `{fallback_signal.get('severity', 'unknown')}` ({_fallback_detail(fallback_signal)})")

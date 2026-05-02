@@ -606,6 +606,11 @@ def _collect_workflow_completeness_warnings(workflow: dict[str, Any]) -> list[st
     latest_incomplete = completeness.get("latest_incomplete")
     if not latest_incomplete:
         return []
+    latest_completed = completeness.get("latest_completed") or {}
+    latest_incomplete_time = _parse_iso_datetime(str(latest_incomplete.get("updated_at") or ""))
+    latest_completed_time = _parse_iso_datetime(str(latest_completed.get("updated_at") or ""))
+    if latest_completed_time and latest_incomplete_time and latest_completed_time > latest_incomplete_time:
+        return []
     classification = latest_incomplete.get("classification", "incomplete")
     run_id = latest_incomplete.get("run_id", "")
     missing = latest_incomplete.get("missing_artifacts") or []

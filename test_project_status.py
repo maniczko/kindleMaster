@@ -338,6 +338,33 @@ reports/project_status.md
         self.assertIn("Latest incomplete workflow", "\n".join(payload["warnings"]))
         self.assertIn("Workflow Completeness", markdown)
 
+    def test_generate_project_status_does_not_warn_for_older_incomplete_workflow(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            reports_root = repo_root / "reports"
+            self._write_vat206_governance_sources(repo_root)
+            self._write_passing_status_inputs(repo_root, reports_root)
+            baseline_only_run_id = "20260421T100000Z-baseline-only"
+            baseline_only_dir = reports_root / "workflows" / baseline_only_run_id
+            baseline_only_dir.mkdir(parents=True, exist_ok=True)
+            (baseline_only_dir / "baseline.json").write_text(
+                json.dumps({"run_id": baseline_only_run_id, "change_area": "semantic", "input_type": "pdf", "snapshot": {"status": "passed"}}),
+                encoding="utf-8",
+            )
+            (baseline_only_dir / "baseline.md").write_text("# Baseline\n", encoding="utf-8")
+            for item in [baseline_only_dir, *baseline_only_dir.rglob("*")]:
+                os.utime(item, (0, 0))
+
+            payload = generate_project_status(
+                repo_root=repo_root,
+                reports_root=reports_root,
+                output_json=reports_root / "project_status.json",
+                output_md=reports_root / "project_status.md",
+            )
+
+        self.assertEqual(payload["workflow"]["completeness"]["latest_incomplete"]["run_id"], baseline_only_run_id)
+        self.assertNotIn("Latest incomplete workflow", "\n".join(payload["warnings"]))
+
     def test_generate_project_status_flags_governance_drift(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             repo_root = Path(temp_dir)

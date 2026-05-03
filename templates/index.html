@@ -2102,20 +2102,764 @@
         min-height: 44px;
       }
     }
+
+    /* UI 3.0 app shell: dashboard/editor/preview layout inspired by product references. */
+    :root {
+      --accent: #f97316;
+      --accent-strong: #ea580c;
+      --accent-soft: #fff3e8;
+      --success: #16a34a;
+      --info: #2563eb;
+      --error: #dc2626;
+      --ink: #172033;
+      --muted: #647084;
+      --line: #e5e7eb;
+      --panel: #ffffff;
+      --panel-strong: #fbfcfe;
+      --bg-body: #f7f8fb;
+      --radius-sm: 6px;
+      --radius: 8px;
+      --radius-lg: 8px;
+      --radius-xl: 8px;
+      --shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+      --shadow-sm: 0 4px 14px rgba(15, 23, 42, 0.05);
+    }
+
+    [data-theme="dark"] {
+      --accent: #fb923c;
+      --accent-strong: #fdba74;
+      --accent-soft: #2f1d10;
+      --success: #4ade80;
+      --info: #60a5fa;
+      --error: #f87171;
+      --ink: #eef2f7;
+      --muted: #aeb8c6;
+      --line: #303845;
+      --panel: #151922;
+      --panel-strong: #1b202b;
+      --bg-body: #0f1218;
+    }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    body {
+      font-size: 13px;
+      background: var(--bg-body);
+    }
+
+    .shell {
+      width: min(1560px, 100%);
+      min-height: 100vh;
+      padding: 0;
+      display: grid;
+      grid-template-columns: 232px minmax(0, 1fr);
+      grid-template-rows: 62px auto;
+      gap: 0;
+    }
+
+    .topbar {
+      grid-column: 2;
+      grid-row: 1;
+      position: sticky;
+      top: 0;
+      z-index: 60;
+      min-height: 62px;
+      padding: 8px 16px;
+      display: grid;
+      grid-template-columns: minmax(190px, 0.75fr) minmax(220px, 1.1fr) minmax(180px, 0.7fr) auto auto;
+      align-items: center;
+      gap: 12px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.92);
+      backdrop-filter: blur(16px);
+      box-shadow: none;
+    }
+
+    [data-theme="dark"] .topbar {
+      background: rgba(21, 25, 34, 0.92);
+    }
+
+    .brand {
+      min-width: 0;
+    }
+
+    .brand h1 {
+      font-size: 1.25rem;
+      letter-spacing: 0;
+    }
+
+    .brand h1 span,
+    .brand-kicker,
+    .section-title {
+      color: var(--accent-strong);
+    }
+
+    .brand p {
+      max-width: 36ch;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      font-size: 0.74rem;
+    }
+
+    .command-search input,
+    .recent-project-control select {
+      width: 100%;
+      min-height: 38px;
+      padding: 8px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--ink);
+      font: inherit;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .system-status-pill {
+      min-height: 38px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 8px 14px;
+      border-radius: 8px;
+      background: #eaf8ef;
+      color: #147a3f;
+      font-size: 0.78rem;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .system-status-pill span {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: currentColor;
+    }
+
+    .topbar-right {
+      gap: 8px;
+      justify-content: end;
+    }
+
+    .topbar .topbar-link,
+    .topbar .stamp {
+      display: none;
+    }
+
+    .new-conversion-button,
+    .button-primary,
+    .quick-upload-button {
+      background: var(--accent) !important;
+      border-color: var(--accent) !important;
+      color: #ffffff !important;
+      box-shadow: 0 8px 18px rgba(249, 115, 22, 0.24) !important;
+    }
+
+    .new-conversion-button {
+      min-height: 38px;
+      padding: 8px 14px;
+      border: 1px solid var(--accent);
+      border-radius: 8px;
+      font-weight: 800;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+
+    .stamp,
+    .topbar-link {
+      border-radius: 8px;
+    }
+
+    .hero-band {
+      grid-column: 2;
+      grid-row: 2;
+      margin: 16px 16px 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.75fr);
+      gap: 16px;
+      padding: 0 !important;
+      border: 0 !important;
+      background: transparent !important;
+      box-shadow: none !important;
+      overflow: visible;
+    }
+
+    .hero-copy,
+    .hero-drop,
+    .dashboard-pipeline,
+    .dashboard-metrics,
+    .flat-sidebar-card,
+    .card,
+    .crop-preview-card,
+    .preview-stage,
+    .quality-cockpit-panel,
+    .pages-panel {
+      border: 1px solid var(--line) !important;
+      border-radius: 8px !important;
+      background: var(--panel) !important;
+      box-shadow: var(--shadow) !important;
+    }
+
+    .hero-copy {
+      min-height: 176px;
+      padding: 24px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 16px;
+    }
+
+    .hero-copy h2 {
+      max-width: 18ch;
+      font-size: clamp(1.7rem, 2.4vw, 2.35rem);
+      line-height: 1.05;
+      letter-spacing: 0;
+    }
+
+    .hero-copy p {
+      max-width: 58ch;
+      color: var(--muted);
+    }
+
+    .hero-highlights {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .highlight {
+      padding: 12px;
+      border-radius: 8px !important;
+      background: var(--panel-strong) !important;
+    }
+
+    .hero-drop {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .drop-zone {
+      min-height: 132px;
+      border-radius: 8px !important;
+      border: 1px dashed rgba(249, 115, 22, 0.5) !important;
+      background: var(--accent-soft) !important;
+    }
+
+    .dashboard-pipeline {
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 0;
+      padding: 16px;
+    }
+
+    .pipeline-step {
+      position: relative;
+      display: grid;
+      justify-items: center;
+      gap: 5px;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    .pipeline-step:not(:last-child)::after {
+      content: "";
+      position: absolute;
+      top: 16px;
+      left: calc(50% + 18px);
+      right: calc(-50% + 18px);
+      height: 2px;
+      background: var(--line);
+    }
+
+    .pipeline-step span {
+      width: 32px;
+      height: 32px;
+      display: grid;
+      place-items: center;
+      border-radius: 999px;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 900;
+      position: relative;
+      z-index: 1;
+    }
+
+    .pipeline-step strong {
+      color: var(--ink);
+      font-size: 0.78rem;
+    }
+
+    .pipeline-step small {
+      font-size: 0.72rem;
+    }
+
+    .dashboard-metrics {
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      padding: 12px;
+      background: transparent !important;
+      border: 0 !important;
+      box-shadow: none !important;
+    }
+
+    .dashboard-metric {
+      min-height: 94px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: var(--shadow-sm);
+    }
+
+    .dashboard-metric span,
+    .dashboard-metric small {
+      display: block;
+      color: var(--muted);
+      font-size: 0.76rem;
+    }
+
+    .dashboard-metric strong {
+      display: block;
+      margin: 4px 0;
+      font-size: 1.65rem;
+      line-height: 1;
+    }
+
+    .workspace {
+      grid-column: 2;
+      grid-row: 3;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 340px;
+      gap: 16px;
+      align-items: start;
+      padding: 16px;
+      margin-top: 0;
+    }
+
+    .setup-rail {
+      position: fixed;
+      top: 0;
+      left: 0;
+      z-index: 70;
+      width: 232px;
+      height: 100vh;
+      overflow: auto;
+      padding: 12px;
+      background: var(--panel);
+      border-right: 1px solid var(--line);
+      gap: 12px;
+    }
+
+    .flat-sidebar-card {
+      order: 0;
+      min-height: calc(100vh - 24px);
+      border: 0 !important;
+      box-shadow: none !important;
+      background: transparent !important;
+      padding: 0;
+    }
+
+    .flat-sidebar-logo-mark {
+      width: 34px;
+      height: 34px;
+      border: 0;
+      background: var(--accent);
+      color: #fff;
+      border-radius: 8px;
+    }
+
+    .flat-sidebar-logo strong {
+      font-size: 1.05rem;
+      letter-spacing: 0;
+      text-transform: none;
+    }
+
+    .quick-upload-button {
+      min-height: 40px;
+      border-radius: 8px;
+    }
+
+    .app-sidebar-nav {
+      gap: 4px;
+    }
+
+    .sidebar-link,
+    .sidebar-utility {
+      min-height: 40px;
+      justify-content: flex-start;
+      gap: 10px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--ink);
+      font-weight: 700;
+    }
+
+    .nav-glyph {
+      width: 24px;
+      color: var(--muted);
+      font-size: 0.7rem;
+      font-weight: 900;
+    }
+
+    .sidebar-link.is-active,
+    .sidebar-link[aria-current="page"] {
+      background: var(--accent-soft);
+      color: var(--accent-strong);
+      border-color: transparent;
+    }
+
+    .workspace > .preview-stage {
+      grid-column: 1;
+      margin-top: 0;
+    }
+
+    .preview-stage {
+      display: grid;
+      grid-template-columns: 150px minmax(0, 1fr);
+      gap: 12px;
+      padding: 16px;
+      min-height: calc(100vh - 98px);
+    }
+
+    .preview-header,
+    .workspace-mode-bar,
+    .workspace-guidance,
+    .workspace-result-summary {
+      grid-column: 1 / -1;
+    }
+
+    .pages-panel {
+      grid-column: 1;
+      grid-row: span 4;
+      align-self: stretch;
+      padding: 12px;
+      box-shadow: none !important;
+    }
+
+    .pages-panel-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: start;
+      margin-bottom: 10px;
+    }
+
+    .pages-panel-header strong {
+      font-size: 0.82rem;
+    }
+
+    .pages-mini-list {
+      list-style: none;
+      display: grid;
+      gap: 8px;
+    }
+
+    .pages-mini-list li {
+      display: grid;
+      gap: 3px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-strong);
+    }
+
+    .pages-mini-list li.is-active {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
+
+    .pages-mini-list span,
+    .pages-mini-list small {
+      color: var(--muted);
+      font-size: 0.72rem;
+    }
+
+    .pages-jump-button {
+      width: 100%;
+      margin-top: 12px;
+    }
+
+    .preview-toolbar,
+    .viewport-shell,
+    .preview-footer {
+      grid-column: 2;
+    }
+
+    .preview-toolbar {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .viewport-shell {
+      min-height: 58vh;
+      background: #f1f3f6 !important;
+    }
+
+    .insights-rail {
+      grid-column: 2;
+      position: sticky;
+      top: 78px;
+      max-height: calc(100vh - 92px);
+      overflow: auto;
+      gap: 12px;
+      padding-right: 0;
+    }
+
+    .insights-rail > .rail-head {
+      display: block;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: var(--shadow-sm);
+    }
+
+    .card,
+    .crop-preview-card {
+      padding: 14px;
+    }
+
+    .card-header,
+    .static-panel-header {
+      border-radius: 8px;
+    }
+
+    .quality-verdict,
+    .quality-cockpit-panel,
+    details.quality-cockpit-panel {
+      border-radius: 8px;
+    }
+
+    .fix-list {
+      list-style: none;
+      display: grid;
+      gap: 8px;
+    }
+
+    .fix-list li {
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-strong);
+    }
+
+    .fix-list strong,
+    .fix-list span {
+      display: block;
+    }
+
+    .fix-list span {
+      color: var(--muted);
+      font-size: 0.76rem;
+      margin-top: 2px;
+    }
+
+    .export-option-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .export-option {
+      min-height: 74px;
+      display: grid;
+      align-content: center;
+      gap: 4px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-strong);
+      text-align: center;
+    }
+
+    .export-option.is-recommended {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
+
+    .export-option span {
+      color: var(--muted);
+      font-size: 0.7rem;
+    }
+
+    :where(button, input, select, a, .drop-zone, summary):focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    @media (max-width: 1280px) {
+      .shell {
+        grid-template-columns: 208px minmax(0, 1fr);
+      }
+
+      .topbar {
+        grid-template-columns: minmax(180px, 0.8fr) minmax(180px, 1fr) auto;
+      }
+
+      .recent-project-control,
+      .topbar-link,
+      .stamp {
+        display: none;
+      }
+
+      .workspace {
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      .workspace > .preview-stage {
+        grid-column: 1;
+      }
+
+      .insights-rail {
+        grid-column: 1;
+        position: static;
+        max-height: none;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .hero-band {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 860px) {
+      .shell {
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+      }
+
+      .topbar {
+        position: sticky;
+        display: grid;
+        grid-template-columns: 1fr;
+        align-items: stretch;
+      }
+
+      .brand p {
+        display: none;
+      }
+
+      .topbar-right {
+        justify-content: stretch;
+        flex-wrap: wrap;
+      }
+
+      .topbar-right > * {
+        flex: 1 1 auto;
+      }
+
+      .hero-band {
+        margin: 12px;
+      }
+
+      .hero-highlights,
+      .dashboard-pipeline,
+      .dashboard-metrics {
+        grid-template-columns: 1fr;
+      }
+
+      .pipeline-step {
+        justify-items: start;
+        text-align: left;
+        grid-template-columns: auto 1fr;
+      }
+
+      .pipeline-step small {
+        grid-column: 2;
+      }
+
+      .pipeline-step:not(:last-child)::after {
+        content: none;
+      }
+
+      .workspace {
+        display: flex !important;
+        flex-direction: column;
+        padding: 0 12px 16px;
+      }
+
+      .setup-rail {
+        position: static;
+        width: auto;
+        height: auto;
+        border-right: 0;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+      }
+
+      .flat-sidebar-card {
+        min-height: 0;
+      }
+
+      .workspace > .preview-stage {
+        margin-top: 0;
+      }
+
+      .preview-stage {
+        display: flex !important;
+        flex-direction: column;
+        min-height: auto;
+      }
+
+      .pages-panel {
+        order: 4;
+      }
+
+      .preview-toolbar,
+      .export-option-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .insights-rail {
+        display: flex !important;
+        flex-direction: column;
+      }
+    }
   </style>
 </head>
 <body>
   <div class="shell" data-vr-hook="vat-209-shell">
-    <header class="topbar">
+    <header class="topbar" data-vr-hook="km-ui3-commandbar">
       <div class="brand">
         <div class="brand-kicker">Lokalny panel EPUB</div>
         <h1>Kindle<span>Master</span></h1>
         <p>Lokalny panel do konwersji PDF/DOCX na premium EPUB. Adres: <code>{{ local_app_url }}</code>.</p>
       </div>
+      <div class="command-search" role="search" aria-label="Szukaj w projektach i historii konwersji">
+        <label class="sr-only" for="topbarSearchInput">Szukaj projektów</label>
+        <input id="topbarSearchInput" type="search" placeholder="Szukaj projektów..." autocomplete="off">
+      </div>
+      <div class="recent-project-control">
+        <label class="sr-only" for="recentProjectSelect">Ostatni projekt</label>
+        <select id="recentProjectSelect" aria-label="Ostatni projekt">
+          <option>Ostatnio: bieżąca konwersja</option>
+        </select>
+      </div>
+      <div class="system-status-pill" id="systemStatusPill" aria-label="Status systemu">
+        <span aria-hidden="true"></span>
+        Wszystko działa
+      </div>
       <div class="topbar-right">
         <a class="topbar-link" href="#recentConversionsList">Historia</a>
         <a class="topbar-link" href="#cardInsights">Raporty</a>
-        <a class="topbar-link" href="#dropZoneHint">Pomoc</a>
+        <button class="new-conversion-button" id="newConversionButton" type="button" aria-label="Rozpocznij nową konwersję">Nowa konwersja</button>
         <div class="stamp"><span>wersja</span>{{ updated_at_label }}</div>
         <button class="theme-toggle" id="themeToggle" title="Przełącz motyw" aria-label="Przełącz motyw jasny/ciemny">🌙</button>
       </div>
@@ -2124,22 +2868,22 @@
     <section class="hero-band" data-vr-hook="vat-209-hero">
       <div class="hero-copy">
         <div>
-          <div class="section-title">Proces</div>
+          <div class="section-title">Bieżący projekt</div>
           <h2>Konwertuj do Kindle EPUB bez chaosu.</h2>
         </div>
         <p>Wrzuc PDF albo DOCX, wybierz profil i zobacz raport jakosci dopiero wtedy, gdy jest potrzebny.</p>
         <div class="hero-highlights">
           <div class="highlight">
-            <strong>1. Wgraj</strong>
-            <span>Jedna akcja startowa dla PDF i DOCX.</span>
+            <strong id="dashboardProjectName">Brak aktywnego pliku</strong>
+            <span>Projekt lokalny. Dane nie opuszczają tej aplikacji.</span>
           </div>
           <div class="highlight">
-            <strong>2. Sprawdz</strong>
-            <span>Profil, OCR i kadrowanie sa blisko glownej decyzji.</span>
+            <strong id="dashboardPageMetric">0 stron</strong>
+            <span>PDF preview i DOCX analiza działają w tym samym przepływie.</span>
           </div>
           <div class="highlight">
-            <strong>3. Pobierz</strong>
-            <span>Raport jakosci pojawia sie po konwersji.</span>
+            <strong id="dashboardVerdictMetric">Kontrola jakości</strong>
+            <span>Download EPUB jest oddzielony od decyzji publikacji.</span>
           </div>
         </div>
       </div>
@@ -2171,6 +2915,22 @@
           </div>
         </div>
       </div>
+
+      <div class="dashboard-pipeline" aria-label="Pipeline konwersji">
+        <div class="pipeline-step is-complete"><span>1</span><strong>Import</strong><small>Gotowy</small></div>
+        <div class="pipeline-step"><span>2</span><strong>OCR</strong><small>Opcjonalnie</small></div>
+        <div class="pipeline-step"><span>3</span><strong>Cleanup</strong><small>Profil</small></div>
+        <div class="pipeline-step"><span>4</span><strong>TOC</strong><small>Naprawa</small></div>
+        <div class="pipeline-step"><span>5</span><strong>EPUBCheck</strong><small>Walidacja</small></div>
+        <div class="pipeline-step"><span>6</span><strong>Eksport</strong><small>Po jakości</small></div>
+      </div>
+
+      <div class="dashboard-metrics" aria-label="Najważniejsze metryki jakości">
+        <div class="dashboard-metric"><span>Tekst</span><strong>--</strong><small>po konwersji</small></div>
+        <div class="dashboard-metric"><span>TOC</span><strong>--</strong><small>struktura</small></div>
+        <div class="dashboard-metric"><span>Metadata</span><strong>--</strong><small>kompletność</small></div>
+        <div class="dashboard-metric"><span>Kindle</span><strong>--</strong><small>mail/send</small></div>
+      </div>
     </section>
 
     <div class="workspace" data-vr-hook="vat-209-workspace">
@@ -2186,11 +2946,17 @@
           <button class="quick-upload-button" id="quickUploadButton" type="button">Wgraj plik</button>
           <div class="workspace-state-label" id="workspaceStateLabel">Brak aktywnego pliku.</div>
 
-          <div class="flat-sidebar-section" aria-label="Widoki">
+          <div class="flat-sidebar-section app-sidebar-nav" aria-label="Widoki">
             <strong>Widoki</strong>
-            <button class="sidebar-link is-active" type="button"><span>Robocze</span></button>
-            <button class="sidebar-link" type="button"><span>Gotowe EPUB-y</span></button>
-            <button class="sidebar-link" type="button"><span>Do kontroli</span></button>
+            <button class="sidebar-link is-active" type="button" data-app-view="dashboard" aria-current="page"><span class="nav-glyph" aria-hidden="true">01</span><span>Dashboard</span></button>
+            <button class="sidebar-link" type="button" data-app-view="library"><span class="nav-glyph" aria-hidden="true">02</span><span>Biblioteka</span></button>
+            <button class="sidebar-link" type="button" data-app-view="conversion"><span class="nav-glyph" aria-hidden="true">03</span><span>Konwersja</span></button>
+            <button class="sidebar-link" type="button" data-app-view="ocr"><span class="nav-glyph" aria-hidden="true">04</span><span>OCR Cleanup</span></button>
+            <button class="sidebar-link" type="button" data-app-view="structure"><span class="nav-glyph" aria-hidden="true">05</span><span>Struktura i TOC</span></button>
+            <button class="sidebar-link" type="button" data-app-view="metadata"><span class="nav-glyph" aria-hidden="true">06</span><span>Metadane</span></button>
+            <button class="sidebar-link" type="button" data-app-view="quality"><span class="nav-glyph" aria-hidden="true">07</span><span>Kontrola jakości</span></button>
+            <button class="sidebar-link" type="button" data-app-view="preview"><span class="nav-glyph" aria-hidden="true">08</span><span>Podgląd</span></button>
+            <button class="sidebar-link" type="button" data-app-view="export"><span class="nav-glyph" aria-hidden="true">09</span><span>Eksport</span></button>
           </div>
 
           <div class="flat-sidebar-section" aria-label="Ostatnie konwersje">
@@ -2215,7 +2981,7 @@
           </div>
 
           <div class="sidebar-utilities" aria-label="Narzędzia">
-            <button class="sidebar-utility" type="button"><span>Ustawienia</span><span>Lokalnie</span></button>
+            <button class="sidebar-utility" type="button" data-app-view="settings"><span>Ustawienia</span><span>Lokalnie</span></button>
             <button class="sidebar-utility" type="button"><span>Profil</span><span>Operator</span></button>
           </div>
         </nav>
@@ -2326,6 +3092,22 @@
         </div>
         <div class="workspace-guidance" id="workspaceGuidance">Tryb podglądu: sprawdź dokument, strony i czytelność przed konwersją.</div>
         <div class="workspace-result-summary" id="workspaceResultSummary" hidden>Wynik EPUB pojawi się tutaj po konwersji.</div>
+
+        <aside class="pages-panel" aria-label="Strony dokumentu">
+          <div class="pages-panel-header">
+            <div>
+              <div class="section-title">Strony</div>
+              <strong>Plan dokumentu</strong>
+            </div>
+            <span id="pagesPanelCount">0</span>
+          </div>
+          <ol class="pages-mini-list">
+            <li class="is-active"><span>1</span><strong>Strona bieżąca</strong><small id="pagesPanelCurrent">Brak pliku</small></li>
+            <li><span>TOC</span><strong>Struktura</strong><small>po analizie</small></li>
+            <li><span>QA</span><strong>Kontrola</strong><small>po konwersji</small></li>
+          </ol>
+          <button class="button-ghost pages-jump-button" id="pagesJumpButton" type="button" disabled>Przejdź do strony</button>
+        </aside>
 
         <div class="preview-toolbar">
           <div class="card tool-card" id="cardNav">
@@ -2462,6 +3244,39 @@
               <canvas id="cropPreviewCanvas"></canvas>
             </div>
             <p class="crop-coverage-note" id="cropCoverageNote">Zaznacz kadr, aby zobaczyc podglad.</p>
+          </div>
+        </div>
+
+        <div class="card read-only-panel" id="cardSuggestedFixes">
+          <div class="static-panel-header">
+            <div>
+              <div class="section-title">Sugestie</div>
+              <p class="card-note">Read-only: lista wskazówek bez automatycznych zmian w EPUB.</p>
+            </div>
+          </div>
+          <div class="card-body">
+            <ul class="fix-list">
+              <li><strong>OCR Cleanup</strong><span>Wykryte problemy pojawią się po analizie.</span></li>
+              <li><strong>Struktura i TOC</strong><span>Naprawa nagłówków działa przez istniejący checkbox.</span></li>
+              <li><strong>Metadane</strong><span>Kontrola jakości pokaże placeholdery i braki.</span></li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="card read-only-panel" id="cardExportOptions">
+          <div class="static-panel-header">
+            <div>
+              <div class="section-title">Eksport</div>
+              <p class="card-note">Formaty i Kindle handoff bez nowych mutujących akcji.</p>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="export-option-grid" aria-label="Opcje eksportu">
+              <div class="export-option is-recommended"><strong>EPUB</strong><span>Rekomendowane</span></div>
+              <div class="export-option"><strong>AZW3</strong><span>Raportowany output</span></div>
+              <div class="export-option"><strong>Send to Kindle</strong><span>Po weryfikacji</span></div>
+            </div>
+            <p class="quality-empty">Pobieranie finalnego pliku pozostaje w panelu raportów po konwersji.</p>
           </div>
         </div>
       </aside>
@@ -2643,8 +3458,18 @@
     const librarySearchInput = $("librarySearchInput");
     const libraryVerdictFilter = $("libraryVerdictFilter");
     const librarySearchButton = $("librarySearchButton");
+    const topbarSearchInput = $("topbarSearchInput");
+    const recentProjectSelect = $("recentProjectSelect");
+    const newConversionButton = $("newConversionButton");
+    const dashboardProjectName = $("dashboardProjectName");
+    const dashboardPageMetric = $("dashboardPageMetric");
+    const dashboardVerdictMetric = $("dashboardVerdictMetric");
+    const pagesPanelCount = $("pagesPanelCount");
+    const pagesPanelCurrent = $("pagesPanelCurrent");
+    const pagesJumpButton = $("pagesJumpButton");
     const profileHint = $("profileHint");
     const presetButtons = Array.from(document.querySelectorAll(".preset-chip[data-profile]"));
+    const appViewButtons = Array.from(document.querySelectorAll("[data-app-view]"));
     const workspaceModeButtons = Array.from(document.querySelectorAll("[data-workspace-mode-button]"));
     const previewStage = document.querySelector(".preview-stage");
 
@@ -2845,6 +3670,7 @@
       cropButton.disabled = !hasPdf || !hasCrop || busy;
       resetCropButton.disabled = !hasCrop || busy;
       applyAllPages.disabled = !hasPdf || busy;
+      if (pagesJumpButton) pagesJumpButton.disabled = !hasPdf || busy;
       forceOcrCheckbox.disabled = selectedSourceType === "docx" || busy;
 
       pageCountValue.textContent = hasPdf ? `${pages}` : "-";
@@ -2992,16 +3818,25 @@
       if (selectedSourceType === "docx") {
         previewTitle.textContent = "Tryb DOCX";
         previewSubtitle.textContent = "Analiza struktury i konwersja EPUB sa dostepne bez podgladu stron.";
+        if (pagesPanelCount) pagesPanelCount.textContent = "DOCX";
+        if (pagesPanelCurrent) pagesPanelCurrent.textContent = "Analiza struktury";
+        if (dashboardPageMetric) dashboardPageMetric.textContent = "DOCX";
         return;
       }
       if (!hasPdfLoaded()) {
         previewTitle.textContent = "Podgląd strony PDF";
         previewSubtitle.textContent = "Po wgraniu pliku mozesz przechodzic miedzy stronami i rysowac kadr na dowolnej z nich.";
+        if (pagesPanelCount) pagesPanelCount.textContent = "0";
+        if (pagesPanelCurrent) pagesPanelCurrent.textContent = selectedFile ? "Czeka na podgląd" : "Brak pliku";
+        if (dashboardPageMetric) dashboardPageMetric.textContent = selectedFile ? "Wczytywanie" : "0 stron";
         return;
       }
       const cropHint = cropRectsByPage.has(currentPageNumber) ? "Ma zapisany kadr." : "Brak kadru.";
       previewTitle.textContent = `Strona ${currentPageNumber} z ${pdfJsDoc.numPages}`;
       previewSubtitle.textContent = `${cropHint} Wlacz eksport wszystkich stron, by uzyc kadru z tej strony dla calego dokumentu.`;
+      if (pagesPanelCount) pagesPanelCount.textContent = `${pdfJsDoc.numPages}`;
+      if (pagesPanelCurrent) pagesPanelCurrent.textContent = `Strona ${currentPageNumber} z ${pdfJsDoc.numPages}`;
+      if (dashboardPageMetric) dashboardPageMetric.textContent = `${pdfJsDoc.numPages} stron`;
     }
 
     function resetAnalysisBox() {
@@ -3030,6 +3865,10 @@
     function updateCurrentFileState(file, sourceType) {
       if (!workspaceStateLabel || !file) return;
       workspaceStateLabel.textContent = `${sourceType.toUpperCase()} wybrany: ${file.name}`;
+      if (dashboardProjectName) dashboardProjectName.textContent = file.name;
+      if (recentProjectSelect) {
+        recentProjectSelect.innerHTML = `<option>Ostatnio: ${escapeHtml(file.name)}</option>`;
+      }
     }
 
     function renderRecentConversions() {
@@ -3786,6 +4625,9 @@
         : sendToKindleReady === false
           ? "Draft do kontroli"
           : "Brak danych";
+      if (dashboardVerdictMetric) {
+        dashboardVerdictMetric.textContent = reportVerdict.label;
+      }
       const blockerItems = getIssueGroupItems(safeIssueGroups, "blockers", safeQualityBlockers);
       const warningItems = getIssueGroupItems(safeIssueGroups, "warnings", warningList);
       const reviewItems = getIssueGroupItems(safeIssueGroups, "review", [...highRiskPageList, ...highRiskSectionList]);
@@ -4925,6 +5767,26 @@
     workspaceModeButtons.forEach((button) => {
       button.addEventListener("click", () => setWorkspaceMode(button.dataset.workspaceModeButton));
     });
+    appViewButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        appViewButtons.forEach((item) => {
+          item.classList.toggle("is-active", item === button);
+          if (item === button) {
+            item.setAttribute("aria-current", "page");
+          } else {
+            item.removeAttribute("aria-current");
+          }
+        });
+        const target = button.dataset.appView || "dashboard";
+        if (target === "dashboard") {
+          document.querySelector("[data-vr-hook='vat-209-hero']")?.scrollIntoView({ behavior: "smooth", block: "start" });
+        } else if (["library", "quality", "metadata", "export"].includes(target)) {
+          document.querySelector("[data-vr-hook='vat-209-insights-rail']")?.scrollIntoView({ behavior: "smooth", block: "start" });
+        } else {
+          document.querySelector("[data-vr-hook='vat-209-preview-stage']")?.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+      });
+    });
     presetButtons.forEach((button) => {
       button.addEventListener("click", () => {
         profileSelect.value = button.dataset.profile;
@@ -4934,6 +5796,22 @@
     analyzeButton.addEventListener("click", analyzePdfForEpub);
     convertEpubButton.addEventListener("click", convertPdfToEpub);
     cropButton.addEventListener("click", cropAndExport);
+    if (newConversionButton) {
+      newConversionButton.addEventListener("click", () => fileInput.click());
+    }
+    if (pagesJumpButton) {
+      pagesJumpButton.addEventListener("click", () => pageNumberInput.focus());
+    }
+    if (topbarSearchInput) {
+      topbarSearchInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          if (librarySearchInput) librarySearchInput.value = topbarSearchInput.value;
+          loadConversionLibrary();
+          document.querySelector("[data-vr-hook='vat-209-insights-rail']")?.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+      });
+    }
     if (librarySearchButton) {
       librarySearchButton.addEventListener("click", () => loadConversionLibrary());
     }

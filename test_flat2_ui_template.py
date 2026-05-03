@@ -19,7 +19,11 @@ class Flat2UiTemplateTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         html = response.get_data(as_text=True)
         self.assertIn('class="flat-sidebar-card"', html)
+        self.assertIn('data-vr-hook="km-ui3-commandbar"', html)
         self.assertIn('id="quickUploadButton"', html)
+        self.assertIn('id="topbarSearchInput"', html)
+        self.assertIn('id="recentProjectSelect"', html)
+        self.assertIn('id="newConversionButton"', html)
         self.assertIn('id="recentConversionsList"', html)
         self.assertIn('class="flat2-quality-report"', html)
         self.assertIn('data-quality-verdict', html)
@@ -56,18 +60,35 @@ class Flat2UiTemplateTests(unittest.TestCase):
 
         self.assertNotIn("<span>1</span></button>", html)
         self.assertNotIn("<span>0</span></button>", html)
-        self.assertIn("<span>Robocze</span>", html)
-        self.assertIn("<span>Gotowe EPUB-y</span>", html)
-        self.assertIn("<span>Do kontroli</span>", html)
+        for label in (
+            "<span>Dashboard</span>",
+            "<span>Biblioteka</span>",
+            "<span>Konwersja</span>",
+            "<span>Kontrola jakości</span>",
+            "<span>Eksport</span>",
+        ):
+            self.assertIn(label, html)
+        self.assertIn('data-app-view="dashboard" aria-current="page"', html)
+        self.assertIn('class="pages-panel"', html)
+        self.assertIn('id="cardSuggestedFixes"', html)
+        self.assertIn('id="cardExportOptions"', html)
 
     def test_vat209_visible_labels_are_polish_first_and_keyboard_reachable(self) -> None:
         html = TEMPLATE_PATH.read_text(encoding="utf-8")
 
         for label in (
             "Lokalny panel EPUB",
-            "Proces",
+            "Bieżący projekt",
+            "Szukaj projektów",
+            "Nowa konwersja",
             "Wgraj plik",
             "Widoki",
+            "Dashboard",
+            "Biblioteka",
+            "Konwersja",
+            "Struktura i TOC",
+            "Kontrola jakości",
+            "Eksport",
             "Ostatnie konwersje",
             "Brak konwersji",
             "Przycięcie A4",

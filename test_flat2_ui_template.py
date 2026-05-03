@@ -8,6 +8,19 @@ from app import app
 
 TEMPLATE_PATH = Path(__file__).with_name("templates") / "index.html"
 STATIC_PATH = Path(__file__).with_name("static")
+FRONTEND_ASSET_PATHS = (
+    STATIC_PATH / "css" / "app-shell.css",
+    STATIC_PATH / "js" / "conversion-ui.js",
+    STATIC_PATH / "js" / "quality-cockpit.js",
+    STATIC_PATH / "js" / "library.js",
+)
+
+
+def frontend_source() -> str:
+    return "\n".join(
+        [TEMPLATE_PATH.read_text(encoding="utf-8")]
+        + [path.read_text(encoding="utf-8") for path in FRONTEND_ASSET_PATHS]
+    )
 
 
 class Flat2UiTemplateTests(unittest.TestCase):
@@ -25,13 +38,18 @@ class Flat2UiTemplateTests(unittest.TestCase):
         self.assertIn('id="recentProjectSelect"', html)
         self.assertIn('id="newConversionButton"', html)
         self.assertIn('id="recentConversionsList"', html)
-        self.assertIn('class="flat2-quality-report"', html)
-        self.assertIn('data-quality-verdict', html)
+        self.assertIn('href="/static/css/app-shell.css"', html)
+        self.assertIn('src="/static/js/conversion-ui.js"', html)
+        self.assertIn('src="/static/js/quality-cockpit.js"', html)
+        self.assertIn('src="/static/js/library.js"', html)
+        frontend = frontend_source()
+        self.assertIn('class="flat2-quality-report"', frontend)
+        self.assertIn('data-quality-verdict', frontend)
         self.assertIn("favicon.ico", html)
         self.assertIn("site.webmanifest", html)
 
     def test_template_declares_flat2_visual_contract(self) -> None:
-        html = TEMPLATE_PATH.read_text(encoding="utf-8")
+        html = frontend_source()
 
         self.assertIn("Flat 2.0 visible contract", html)
         self.assertIn("Premium cockpit cleanup", html)
@@ -44,7 +62,7 @@ class Flat2UiTemplateTests(unittest.TestCase):
         self.assertIn(".hero-band {\n        display: flex !important;", html)
 
     def test_vat209_visual_regression_hooks_and_static_counts_are_declared(self) -> None:
-        html = TEMPLATE_PATH.read_text(encoding="utf-8")
+        html = frontend_source()
 
         for hook in (
             'data-vr-hook="vat-209-shell"',
@@ -74,7 +92,7 @@ class Flat2UiTemplateTests(unittest.TestCase):
         self.assertIn('id="cardExportOptions"', html)
 
     def test_vat209_visible_labels_are_polish_first_and_keyboard_reachable(self) -> None:
-        html = TEMPLATE_PATH.read_text(encoding="utf-8")
+        html = frontend_source()
 
         for label in (
             "Lokalny panel EPUB",
@@ -118,7 +136,7 @@ class Flat2UiTemplateTests(unittest.TestCase):
         self.assertIn('e.key !== "Enter" && e.key !== " "', html)
 
     def test_conversion_setup_panel_explains_profiles_without_backend_drift(self) -> None:
-        html = TEMPLATE_PATH.read_text(encoding="utf-8")
+        html = frontend_source()
 
         self.assertIn('id="profileHint"', html)
         self.assertIn("const PROFILE_DESCRIPTIONS = {", html)
@@ -134,7 +152,7 @@ class Flat2UiTemplateTests(unittest.TestCase):
         self.assertIn("docs/conversion-profiles.md", Path("README.md").read_text(encoding="utf-8"))
 
     def test_document_workspace_declares_modes_and_result_summary(self) -> None:
-        html = TEMPLATE_PATH.read_text(encoding="utf-8")
+        html = frontend_source()
 
         self.assertIn('class="workspace-mode-bar"', html)
         self.assertIn('data-workspace-mode-button="preview"', html)
@@ -147,7 +165,7 @@ class Flat2UiTemplateTests(unittest.TestCase):
         self.assertIn("workspaceResultSummary.textContent", html)
 
     def test_send_to_kindle_handoff_is_documented_and_visible(self) -> None:
-        html = TEMPLATE_PATH.read_text(encoding="utf-8")
+        html = frontend_source()
         readme = Path("README.md").read_text(encoding="utf-8")
 
         self.assertIn("Handoff: pobierz EPUB", html)
@@ -170,14 +188,14 @@ class Flat2UiTemplateTests(unittest.TestCase):
             self.assertGreater(asset_path.stat().st_size, 0, f"Empty favicon asset: {asset_path}")
 
     def test_async_conversion_polling_does_not_abort_active_long_running_jobs(self) -> None:
-        html = TEMPLATE_PATH.read_text(encoding="utf-8")
+        html = frontend_source()
 
         self.assertIn("LONG_CONVERSION_NOTICE_MS", html)
         self.assertIn("Duzy dokument nadal jest przetwarzany", html)
         self.assertNotIn('throw new Error("Konwersja trwa zbyt dlugo. Sprobuj ponownie za chwile.")', html)
 
     def test_recent_conversions_loads_jobs_and_exposes_ready_actions(self) -> None:
-        html = TEMPLATE_PATH.read_text(encoding="utf-8")
+        html = frontend_source()
 
         self.assertIn("/convert/jobs", html)
         self.assertIn("/convert/library", html)
@@ -187,6 +205,13 @@ class Flat2UiTemplateTests(unittest.TestCase):
         self.assertIn('id="librarySearchInput"', html)
         self.assertIn('id="libraryVerdictFilter"', html)
         self.assertIn('id="librarySearchButton"', html)
+        self.assertIn('data-vr-hook="km-library-view"', html)
+        self.assertIn('id="libraryResultsList"', html)
+        self.assertIn('id="librarySummary"', html)
+        self.assertIn("function renderLibraryItem", html)
+        self.assertIn("function renderLibraryResults", html)
+        self.assertIn("function setLibraryViewVisible", html)
+        self.assertIn('setLibraryViewVisible(target === "library")', html)
         self.assertIn("renderRecentConversionItem", html)
         self.assertIn('const evidenceActions = ["ready", "failed", "blocked", "interrupted"].includes(status)', html)
         self.assertIn("recent-conversion-actions", html)
@@ -216,7 +241,7 @@ class Flat2UiTemplateTests(unittest.TestCase):
             self.assertIn(field_name, html)
 
     def test_pdf_preview_uses_read_frequent_canvas_contexts(self) -> None:
-        html = TEMPLATE_PATH.read_text(encoding="utf-8")
+        html = frontend_source()
 
         self.assertIn('pdfCanvas.getContext("2d", { alpha: false, willReadFrequently: true })', html)
         self.assertIn("pdfRenderCanvasFactory", html)
@@ -224,7 +249,7 @@ class Flat2UiTemplateTests(unittest.TestCase):
         self.assertIn("currentPage.render({ canvasContext, viewport, canvasFactory: pdfRenderCanvasFactory })", html)
 
     def test_async_conversion_restart_failure_is_user_friendly(self) -> None:
-        html = TEMPLATE_PATH.read_text(encoding="utf-8")
+        html = frontend_source()
 
         self.assertIn("function isApplicationRestartConversionError(error)", html)
         self.assertIn('failure.code = data.error_code || "";', html)
@@ -232,7 +257,7 @@ class Flat2UiTemplateTests(unittest.TestCase):
         self.assertIn("!interruptedByRestart", html)
 
     def test_quality_cockpit_declares_readonly_panels(self) -> None:
-        html = TEMPLATE_PATH.read_text(encoding="utf-8")
+        html = frontend_source()
 
         for hook in (
             'id="qualityVerdictHeader"',
@@ -281,13 +306,13 @@ class Flat2UiTemplateTests(unittest.TestCase):
         self.assertNotIn("repair-button", html)
 
     def test_status_and_conversion_regions_are_announced_accessibly(self) -> None:
-        html = TEMPLATE_PATH.read_text(encoding="utf-8")
+        html = frontend_source()
 
         self.assertIn('id="statusBox" role="status" aria-live="polite" aria-atomic="true"', html)
         self.assertIn('id="conversionBox" role="region" aria-live="polite" aria-atomic="true"', html)
 
     def test_collapsible_headers_are_keyboard_accessible_buttons(self) -> None:
-        html = TEMPLATE_PATH.read_text(encoding="utf-8")
+        html = frontend_source()
 
         self.assertNotIn('<div class="card-header" onclick=', html)
         self.assertIn("function syncCardHeaderState(card)", html)
@@ -306,7 +331,7 @@ class Flat2UiTemplateTests(unittest.TestCase):
             self.assertIn(f'id="{card_id}Body"', html)
 
     def test_quality_cockpit_declares_single_release_decision_labels(self) -> None:
-        html = TEMPLATE_PATH.read_text(encoding="utf-8")
+        html = frontend_source()
 
         self.assertIn('label: "Publikuj"', html)
         self.assertIn('label: "Kontrola"', html)
@@ -320,7 +345,7 @@ class Flat2UiTemplateTests(unittest.TestCase):
         self.assertNotIn('label: "Failed quality gate"', html)
 
     def test_quality_cockpit_consumes_expanded_optional_quality_state_fields(self) -> None:
-        html = TEMPLATE_PATH.read_text(encoding="utf-8")
+        html = frontend_source()
 
         for field_name in (
             "issue_groups",
@@ -373,7 +398,7 @@ class Flat2UiTemplateTests(unittest.TestCase):
             self.assertIn(normalized_name, html)
 
     def test_quality_cockpit_renders_user_facing_verdict_and_top_reasons(self) -> None:
-        html = TEMPLATE_PATH.read_text(encoding="utf-8")
+        html = frontend_source()
 
         self.assertIn("userFacingVerdict", html)
         self.assertIn("userFacingReasons", html)
@@ -390,7 +415,7 @@ class Flat2UiTemplateTests(unittest.TestCase):
         self.assertIn("user_facing_reasons", html)
 
     def test_quality_cockpit_uses_polish_missing_data_fallback_for_missing_fields(self) -> None:
-        html = TEMPLATE_PATH.read_text(encoding="utf-8")
+        html = frontend_source()
 
         self.assertIn("function notReported(value)", html)
         self.assertIn("Brak danych", html)
@@ -403,7 +428,7 @@ class Flat2UiTemplateTests(unittest.TestCase):
         self.assertIn('safeAssetSummary ? (safeAssetSummary.status || "Zaraportowano") : "Brak danych"', html)
 
     def test_quality_cockpit_actions_remain_links_not_mutating_buttons(self) -> None:
-        html = TEMPLATE_PATH.read_text(encoding="utf-8")
+        html = frontend_source()
         reports_panel_start = html.index('id="qualityReportsActionsPanel"')
         reports_panel = html[reports_panel_start : reports_panel_start + 900]
 
@@ -418,7 +443,7 @@ class Flat2UiTemplateTests(unittest.TestCase):
         self.assertNotIn("fetch(", reports_panel)
 
     def test_recent_conversion_evidence_links_render_for_non_ready_terminal_states(self) -> None:
-        html = TEMPLATE_PATH.read_text(encoding="utf-8")
+        html = frontend_source()
 
         self.assertIn('["blocked", "release_blocked", "quality_blocked"].includes(value)', html)
         self.assertIn('["interrupted", "aborted", "application_restart", "restart"].includes(value)', html)

@@ -8,6 +8,19 @@ from pathlib import Path
 
 
 TEMPLATE_PATH = Path(__file__).with_name("templates") / "index.html"
+STATIC_PATH = Path(__file__).with_name("static")
+FRONTEND_ASSET_PATHS = (
+    STATIC_PATH / "js" / "conversion-ui.js",
+    STATIC_PATH / "js" / "quality-cockpit.js",
+    STATIC_PATH / "js" / "library.js",
+)
+
+
+def frontend_source() -> str:
+    return "\n".join(
+        [TEMPLATE_PATH.read_text(encoding="utf-8")]
+        + [path.read_text(encoding="utf-8") for path in FRONTEND_ASSET_PATHS]
+    )
 
 
 def _extract_function_source(html: str, function_name: str) -> str:
@@ -43,7 +56,7 @@ def _extract_function_source(html: str, function_name: str) -> str:
 class BrowserConversionOutcomeHarnessTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        template_html = TEMPLATE_PATH.read_text(encoding="utf-8")
+        template_html = frontend_source()
         cls.function_sources = [
             _extract_function_source(template_html, "coerceFiniteNumber"),
             _extract_function_source(template_html, "normalizeQualityHealth"),
@@ -492,7 +505,7 @@ process.stdout.write(JSON.stringify({{
         self.assertIn("naprawy przed publik", rendered["verdict"]["detail"])
 
     def test_template_mentions_quality_cockpit_fields_and_not_reported_fallbacks(self) -> None:
-        template_html = TEMPLATE_PATH.read_text(encoding="utf-8")
+        template_html = frontend_source()
 
         for stable_token in (
             "issueGroups",
@@ -548,7 +561,7 @@ process.stdout.write(JSON.stringify({{
         self.assertEqual(payload["statusLog"][-1]["level"], "error")
 
     def test_recent_conversion_item_exposes_blocked_job_evidence_links(self) -> None:
-        template_html = TEMPLATE_PATH.read_text(encoding="utf-8")
+        template_html = frontend_source()
         function_sources = [
             _extract_function_source(template_html, "coerceFiniteNumber"),
             _extract_function_source(template_html, "formatBytes"),

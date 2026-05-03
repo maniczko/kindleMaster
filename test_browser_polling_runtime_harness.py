@@ -8,6 +8,12 @@ from pathlib import Path
 
 
 TEMPLATE_PATH = Path(__file__).with_name("templates") / "index.html"
+STATIC_PATH = Path(__file__).with_name("static")
+FRONTEND_ASSET_PATHS = (
+    STATIC_PATH / "js" / "conversion-ui.js",
+    STATIC_PATH / "js" / "quality-cockpit.js",
+    STATIC_PATH / "js" / "library.js",
+)
 REPO_ROOT = Path(__file__).resolve().parent
 LOCALHOST = "127.0.0.1"
 LOCAL_SERVER_URL = f"http://{LOCALHOST}:5001"
@@ -20,6 +26,13 @@ PRIVACY_NOISE_MARKERS = (
     "permission denied to access property \"sessionstorage\"",
     "cookies are disabled",
 )
+
+
+def frontend_source() -> str:
+    return "\n".join(
+        [TEMPLATE_PATH.read_text(encoding="utf-8")]
+        + [path.read_text(encoding="utf-8") for path in FRONTEND_ASSET_PATHS]
+    )
 
 
 def _extract_function_source(html: str, function_name: str) -> str:
@@ -60,7 +73,7 @@ def _is_privacy_noise_message(message: str) -> bool:
 class BrowserPollingRuntimeHarnessTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        template_html = TEMPLATE_PATH.read_text(encoding="utf-8")
+        template_html = frontend_source()
         cls.function_sources = [
             _extract_function_source(template_html, "isTransientConversionNetworkError"),
             _extract_function_source(template_html, "nextPollDelay"),

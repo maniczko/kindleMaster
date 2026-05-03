@@ -663,8 +663,18 @@ def _spawn_conversion_job(
 
 @app.route("/")
 def index():
-    template_path = Path(app.root_path) / "templates" / "index.html"
-    updated_at = datetime.fromtimestamp(template_path.stat().st_mtime)
+    root_path = Path(app.root_path)
+    ui_asset_paths = [
+        root_path / "templates" / "index.html",
+        root_path / "static" / "css" / "app-shell.css",
+        root_path / "static" / "js" / "conversion-ui.js",
+        root_path / "static" / "js" / "quality-cockpit.js",
+        root_path / "static" / "js" / "library.js",
+    ]
+    updated_at_timestamp = max(
+        path.stat().st_mtime for path in ui_asset_paths if path.exists()
+    )
+    updated_at = datetime.fromtimestamp(updated_at_timestamp)
     local_app_url = build_local_app_url(
         _resolve_request_port_label(request.host, _resolve_server_port())
     )

@@ -18,9 +18,12 @@ The VAT-206 dashboard tracks the latest available evidence for these lanes:
 | `quick` | `python kindlemaster.py test --suite quick` | `reports/governance/quick.json` |
 | `corpus` | `python kindlemaster.py test --suite corpus` | `reports/corpus/corpus_gate.json` |
 | `release` | `python kindlemaster.py test --suite release` | `reports/governance/release.json` |
+| `ui_state_screenshots` | `python kindlemaster.py test --suite runtime` | `reports/ui-state-screenshots/latest/manifest.json` |
 | `status` | `python kindlemaster.py status` | `reports/project_status.json` |
 
 If an evidence file is missing, the dashboard reports that lane as `unavailable` and keeps the expected artifact path visible. Missing lane evidence is a dashboard warning signal; it does not rewrite the authoritative command contract.
+
+The `ui_state_screenshots` lane is a runtime UI evidence lane. Its manifest records state-based screenshots and horizontal-overflow checks for desktop, tablet, mobile, conversion outcomes, and library states. Any recorded horizontal overflow is treated as failed UI evidence.
 
 ## Evidence Freshness
 

@@ -13,6 +13,7 @@ TOP_LEVEL_STATUS_COMMANDS = {
     "quick": "python kindlemaster.py test --suite quick",
     "corpus": "python kindlemaster.py test --suite corpus",
     "release": "python kindlemaster.py test --suite release",
+    "ui_state_screenshots": "python kindlemaster.py test --suite runtime",
     "status": "python kindlemaster.py status",
 }
 
@@ -121,6 +122,13 @@ def _find_latest_existing_path(paths: list[Path]) -> Path | None:
 
 
 def _extract_payload_status(payload: dict[str, Any], *, lane: str) -> str:
+    if lane == "ui_state_screenshots":
+        states = payload.get("states")
+        if isinstance(states, list) and states:
+            has_overflow = any(isinstance(row, dict) and row.get("horizontal_overflow") for row in states)
+            return "failed" if has_overflow else "passed"
+        return "unavailable"
+
     if lane == "doctor":
         surfaces = payload.get("verification_surfaces")
         if isinstance(surfaces, dict):
@@ -285,6 +293,13 @@ def _build_governance_dashboard(
                 governance_root / "release.json",
                 reports_root / "release.json",
                 reports_root / "suites" / "release.json",
+            ],
+        ),
+        "ui_state_screenshots": _build_evidence_row(
+            lane="ui_state_screenshots",
+            command=TOP_LEVEL_STATUS_COMMANDS["ui_state_screenshots"],
+            candidate_paths=[
+                reports_root / "ui-state-screenshots" / "latest" / "manifest.json",
             ],
         ),
         "status": _build_evidence_row(

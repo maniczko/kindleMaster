@@ -254,6 +254,31 @@ reports/project_status.md
                 json.dumps({"suite": "release", "status": "passed_with_warnings"}),
                 encoding="utf-8",
             )
+            screenshots_root = reports_root / "ui-state-screenshots" / "latest"
+            screenshots_root.mkdir(parents=True, exist_ok=True)
+            (screenshots_root / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "run_id": "latest",
+                        "states": [
+                            {
+                                "state": "empty",
+                                "viewport": "desktop",
+                                "screenshot": "output/ui-state-screenshots/latest/desktop/empty.png",
+                                "horizontal_overflow": False,
+                            },
+                            {
+                                "state": "release-blocked",
+                                "viewport": "desktop",
+                                "screenshot": "output/ui-state-screenshots/latest/desktop/release-blocked.png",
+                                "horizontal_overflow": False,
+                            },
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
 
             payload = generate_project_status(
                 repo_root=repo_root,
@@ -268,6 +293,7 @@ reports/project_status.md
         self.assertEqual(payload["dashboard"]["evidence"]["quick"]["status"], "passed")
         self.assertEqual(payload["dashboard"]["evidence"]["corpus"]["status"], "passed")
         self.assertEqual(payload["dashboard"]["evidence"]["release"]["status"], "passed_with_warnings")
+        self.assertEqual(payload["dashboard"]["evidence"]["ui_state_screenshots"]["status"], "passed")
         self.assertEqual(payload["governance"]["drift_status"], "passed")
         self.assertTrue(payload["governance"]["session_override"]["documented"])
         command_check = next(
@@ -275,7 +301,44 @@ reports/project_status.md
         )
         self.assertIn(".codex/README.md", command_check["mirror_sources"])
         self.assertIn("VAT-206 Governance Dashboard", markdown)
+        self.assertIn("ui_state_screenshots", markdown)
         self.assertIn("Active Session Overrides", markdown)
+
+    def test_generate_project_status_flags_ui_state_screenshot_overflow(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            reports_root = repo_root / "reports"
+            self._write_vat206_governance_sources(repo_root)
+            self._write_passing_status_inputs(repo_root, reports_root)
+            screenshots_root = reports_root / "ui-state-screenshots" / "latest"
+            screenshots_root.mkdir(parents=True, exist_ok=True)
+            (screenshots_root / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "run_id": "latest",
+                        "states": [
+                            {
+                                "state": "mobile",
+                                "viewport": "mobile",
+                                "screenshot": "output/ui-state-screenshots/latest/mobile/empty.png",
+                                "horizontal_overflow": True,
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            payload = generate_project_status(
+                repo_root=repo_root,
+                reports_root=reports_root,
+                output_json=reports_root / "project_status.json",
+                output_md=reports_root / "project_status.md",
+            )
+
+        self.assertEqual(payload["dashboard"]["evidence"]["ui_state_screenshots"]["status"], "failed")
+        self.assertEqual(payload["dashboard"]["status"], "failed")
 
     def test_generate_project_status_warns_for_stale_evidence_lanes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -22,6 +22,7 @@ def main() -> int:
     parser.add_argument("--author", default="")
     parser.add_argument("--description", default="")
     parser.add_argument("--publication-profile", default="")
+    parser.add_argument("--strict-premium", action="store_true")
     args = parser.parse_args()
 
     result = run_epub_publishing_quality_recovery(
@@ -33,6 +34,7 @@ def main() -> int:
         expected_description=args.description,
         expected_language=args.language,
         publication_profile=args.publication_profile or None,
+        strict_premium=args.strict_premium,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result.get("decision") != "fail" else 1

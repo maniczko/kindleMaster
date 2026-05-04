@@ -110,6 +110,51 @@ class QualityCockpitIssueTests(unittest.TestCase):
         self.assertEqual(groups, {"blockers": [], "warnings": [], "review": []})
         self.assertEqual(build_quality_cockpit_issue_groups(), {"blockers": [], "warnings": [], "review": []})
 
+    def test_strict_premium_scoring_promotes_kindle_ready_blockers(self) -> None:
+        groups = build_quality_cockpit_issue_groups(
+            premium_scoring={
+                "status": "failed",
+                "kindle_ready": False,
+                "premium_score": 5.0,
+                "issues": [
+                    {
+                        "severity": "blocker",
+                        "code": "suspicious_metadata_author",
+                        "message": "Creator looks like a magazine section.",
+                        "source": "metadata",
+                        "suggested_action": "Fix author metadata.",
+                    },
+                    {
+                        "severity": "blocker",
+                        "code": "magazine_non_content_chapter",
+                        "message": "Galeria is present in the spine.",
+                        "source": "chapter_structure",
+                        "file": "chapter_001.xhtml",
+                        "suggested_action": "Demote non-content chapter.",
+                    },
+                    {
+                        "severity": "review",
+                        "code": "toc_lead_used_as_title",
+                        "message": "TOC entry is too long.",
+                        "source": "toc",
+                        "suggested_action": "Shorten TOC entry.",
+                    },
+                ],
+            }
+        )
+
+        self.assertEqual(
+            [issue["code"] for issue in groups["blockers"]],
+            [
+                "suspicious_metadata_author",
+                "magazine_non_content_chapter",
+                "kindle_ready_blocked_by_quality",
+            ],
+        )
+        self.assertEqual(groups["blockers"][1]["file"], "chapter_001.xhtml")
+        self.assertEqual([issue["code"] for issue in groups["review"]], ["toc_lead_used_as_title"])
+        json.dumps(groups)
+
     def test_semantic_ocr_and_reading_order_gates_promote_release_issues(self) -> None:
         groups = build_quality_cockpit_issue_groups(
             semantic_cleanup={

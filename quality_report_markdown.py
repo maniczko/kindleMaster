@@ -67,9 +67,28 @@ def build_recovery_release_report_markdown(
         "",
         "## Gates",
     ]
-    for gate_name in ("A", "B", "C", "D", "E", "F"):
+    gate_names = sorted(
+        release_summary["gates"].keys(),
+        key=lambda value: (0, value) if str(value).isalpha() else (1, str(value)),
+    )
+    for gate_name in gate_names:
         gate = release_summary["gates"].get(gate_name, {})
         lines.append(f"- Gate {gate_name}: {gate.get('status', 'unknown')} - {gate.get('summary', '')}")
+    premium_scoring = release_summary.get("premium_scoring") or {}
+    if premium_scoring:
+        lines.extend(
+            [
+                "",
+                "## Premium Kindle Gate",
+                f"- Strict premium: {release_summary.get('strict_premium', False)}",
+                f"- Premium score: {premium_scoring.get('premium_score', 'n/a')}/10",
+                f"- Technical valid: {premium_scoring.get('technical_valid', False)}",
+                f"- Mail sendable: {premium_scoring.get('mail_sendable', 'unknown')}",
+                f"- Kindle ready: {premium_scoring.get('kindle_ready', False)}",
+                f"- Premium ready: {premium_scoring.get('premium_ready', False)}",
+                f"- Release verdict: {premium_scoring.get('release_verdict', 'unknown')}",
+            ]
+        )
     lines.extend(
         [
             "",

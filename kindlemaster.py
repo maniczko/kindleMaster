@@ -179,6 +179,7 @@ def main() -> int:
     audit_parser.add_argument("--author", default="")
     audit_parser.add_argument("--description", default="")
     audit_parser.add_argument("--publication-profile", default="")
+    audit_parser.add_argument("--strict-premium", action="store_true")
 
     workflow_parser = subparsers.add_parser(
         "workflow",
@@ -291,6 +292,8 @@ def main() -> int:
             command.extend(["--description", args.description])
         if args.publication_profile:
             command.extend(["--publication-profile", args.publication_profile])
+        if args.strict_premium:
+            command.append("--strict-premium")
         return subprocess.run(command, check=False).returncode
     if args.command == "workflow":
         from workflow_runner import run_workflow_baseline, run_workflow_verify

@@ -58,6 +58,37 @@ class EpubTextArtifactTests(unittest.TestCase):
         self.assertGreater(counts["technical_placeholder_count"], 0)
         self.assertEqual(payload["per_document"][0]["document_path"], "EPUB/chapter_001.xhtml")
 
+    def test_polish_and_mixed_language_lowercase_glued_words_are_counted(self) -> None:
+        epub_bytes = _epub_with_documents(
+            {
+                "chapter_001.xhtml": (
+                    "<p>Politykaiinfotainment oraz Wielkiefermywn wygladaja jak artefakty ekstrakcji. "
+                    "Niezwyk&#322;amatkas&#322;ynnegopremiera tez powinna trafic do raportu.</p>"
+                ),
+            }
+        )
+
+        payload = analyze_epub_text_artifacts(epub_bytes)
+
+        self.assertIn(payload["status"], {"passed_with_warnings", "failed"})
+        self.assertGreaterEqual(payload["counts"]["glued_word_count"], 3)
+
+    def test_known_clean_words_and_acronyms_are_not_counted_as_glued_noise(self) -> None:
+        epub_bytes = _epub_with_documents(
+            {
+                "chapter_001.xhtml": (
+                    "<p>Projektowe wymagania API oraz HTTP URL sa poprawnym tekstem technicznym. "
+                    "Internationalization nie powinno byc karane jako sklejony token. "
+                    "Romanowskiego, kontrasygnaty, cyberstalking, termomodernizacja i Dzieciofobia "
+                    "sa rzadkimi, ale poprawnymi slowami w magazynie.</p>"
+                ),
+            }
+        )
+
+        payload = analyze_epub_text_artifacts(epub_bytes)
+
+        self.assertEqual(payload["counts"]["glued_word_count"], 0)
+
     def test_cockpit_promotes_failed_artifact_rate(self) -> None:
         groups = build_quality_cockpit_issue_groups(
             text_cleanup={
@@ -75,4 +106,3 @@ class EpubTextArtifactTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

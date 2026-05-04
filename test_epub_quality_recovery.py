@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from lxml import etree
 
+from epub_premium_scoring import score_epub_premium_quality
 from epub_quality_recovery import _evaluate_gate_c, run_epub_publishing_quality_recovery
 
 
@@ -55,6 +56,100 @@ class EpubQualityRecoveryTests(unittest.TestCase):
         self.assertTrue(any("suspicious headings" in blocker for blocker in suspicious_result["blockers"]))
         self.assertEqual(empty_result["status"], "fail")
         self.assertIn("No heading structure detected in content documents.", empty_result["blockers"])
+
+    def test_strict_premium_scoring_blocks_technically_valid_noisy_magazine(self):
+        opf_source = """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">magazine-id</dc:identifier>
+    <dc:title>TAJEMNICA REZYGNACJI KACZYNSKIEGO</dc:title>
+    <dc:language>pl</dc:language>
+    <dc:creator>LICZBA TYGODNIA</dc:creator>
+    <dc:date>2024</dc:date>
+  </metadata>
+  <manifest>
+    <item id="chapter_1" href="chapter_001.xhtml" media-type="application/xhtml+xml"/>
+    <item id="chapter_2" href="chapter_002.xhtml" media-type="application/xhtml+xml"/>
+    <item id="chapter_3" href="chapter_003.xhtml" media-type="application/xhtml+xml"/>
+    <item id="chapter_4" href="chapter_004.xhtml" media-type="application/xhtml+xml"/>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="css" href="style/default.css" media-type="text/css"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="chapter_1"/>
+    <itemref idref="chapter_2"/>
+    <itemref idref="chapter_3"/>
+    <itemref idref="chapter_4"/>
+  </spine>
+</package>
+"""
+        article = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Artykul</title></head>
+  <body>
+    <h1>Historia z okladki</h1>
+    <p>Politykaiinfotainment oraz Niezwyklamatkaslynnegopremiera pokazuja, ze tekst ma widoczne artefakty OCR.</p>
+    <p>#awny podzial ©schodͿ-zachod i pro- jekt powinny obnizac jakosc premium.</p>
+  </body>
+</html>
+"""
+        gallery = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Galeria</h1><p>Galeria</p><img src="images/a.jpg" alt=""/></body></html>
+"""
+        advert = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Reklama</h1><p>Reklama</p><img src="images/b.jpg" alt=""/></body></html>
+"""
+        sponsored = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Material sponsorowany</h1><p>Material sponsorowany</p></body></html>
+"""
+        nav_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+  <body><nav epub:type="toc"><ol>
+    <li><a href="chapter_001.xhtml">Spis tresci</a></li>
+    <li><a href="chapter_002.xhtml">Galeria</a></li>
+    <li><a href="chapter_003.xhtml">Reklama</a></li>
+    <li><a href="chapter_004.xhtml">To jest bardzo dlugi lead artykulu ktory nie powinien byc tytulem nawigacji poniewaz wyglada jak caly akapit w spisie tresci</a></li>
+  </ol></nav></body>
+</html>
+"""
+        toc_source = """<?xml version="1.0" encoding="utf-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><head><meta name="dtb:uid" content="magazine-id"/></head><docTitle><text>Legacy</text></docTitle><navMap/></ncx>
+"""
+        container_source = """<?xml version="1.0" encoding="utf-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="EPUB/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>
+"""
+        epub_bytes = self._build_epub_bytes(
+            {
+                "mimetype": "application/epub+zip",
+                "META-INF/container.xml": container_source,
+                "EPUB/content.opf": opf_source,
+                "EPUB/chapter_001.xhtml": article,
+                "EPUB/chapter_002.xhtml": gallery,
+                "EPUB/chapter_003.xhtml": advert,
+                "EPUB/chapter_004.xhtml": sponsored,
+                "EPUB/nav.xhtml": nav_source,
+                "EPUB/toc.ncx": toc_source,
+                "EPUB/style/default.css": "body { font-family: serif; }",
+                "EPUB/images/a.jpg": b"fake",
+                "EPUB/images/b.jpg": b"fake",
+            }
+        )
+
+        payload = score_epub_premium_quality(epub_bytes, epubcheck={"status": "passed", "messages": []})
+        codes = [issue["code"] for issue in payload["issues"]]
+
+        self.assertTrue(payload["technical_valid"])
+        self.assertEqual(payload["mail_sendable"], "likely")
+        self.assertFalse(payload["kindle_ready"])
+        self.assertFalse(payload["premium_ready"])
+        self.assertLessEqual(payload["premium_score"], 5.5)
+        self.assertIn("suspicious_metadata_author", codes)
+        self.assertIn("magazine_non_content_chapter", codes)
+        self.assertIn("toc_non_content_entry", codes)
+        self.assertIn("kindle_ready_blocked_by_quality", codes)
 
     def test_recovery_pipeline_writes_reports_and_final_epub(self):
         opf_source = """<?xml version="1.0" encoding="utf-8"?>
@@ -151,6 +246,7 @@ class EpubQualityRecoveryTests(unittest.TestCase):
             self.assertTrue((reports_dir / "toc_map.json").exists())
             self.assertTrue((reports_dir / "structural_integrity.json").exists())
             self.assertTrue((reports_dir / "epubcheck.json").exists())
+            self.assertTrue((reports_dir / "premium_scoring.json").exists())
             self.assertTrue((reports_dir / "release_report.md").exists())
             self.assertTrue((reports_dir / "manual_review_queue.md").exists())
 

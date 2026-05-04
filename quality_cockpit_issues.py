@@ -28,6 +28,7 @@ def build_quality_cockpit_issue_groups(
     content_metrics: Mapping[str, Any] | None = None,
     toc_preview: Mapping[str, Any] | None = None,
     asset_summary: Mapping[str, Any] | None = None,
+    premium_scoring: Mapping[str, Any] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Build JSON-serializable cockpit issues from normalized-ish quality signals."""
 
@@ -48,6 +49,7 @@ def build_quality_cockpit_issue_groups(
     content_metrics = _mapping(content_metrics)
     toc_preview = _mapping(toc_preview)
     asset_summary = _mapping(asset_summary)
+    premium_scoring = _mapping(premium_scoring)
 
     _collect_validation_issues(collector, validation, epubcheck_detail)
     _collect_size_budget_issues(collector, size_budget)
@@ -62,6 +64,7 @@ def build_quality_cockpit_issue_groups(
     _collect_metadata_health_issues(collector, metadata_health)
     _collect_visible_junk_issues(collector, visible_junk)
     _collect_content_metric_issues(collector, content_metrics, toc_preview, asset_summary)
+    _collect_premium_scoring_issues(collector, premium_scoring)
 
     return collector.issue_groups()
 
@@ -719,6 +722,37 @@ def _collect_content_metric_issues(
             "Asset budget failed for this publication class.",
             "asset_summary",
             "Avoid rasterizing semantic content and reduce image-heavy assets before release.",
+        )
+
+
+def _collect_premium_scoring_issues(collector: "_IssueCollector", premium_scoring: Mapping[str, Any]) -> None:
+    if not premium_scoring:
+        return
+    for item in _iter_issue_like_items(premium_scoring.get("issues")):
+        severity = _status(item.get("severity"))
+        group = "blocker" if severity == "blocker" else "warning" if severity == "warning" else "review"
+        collector.add(
+            group,
+            _first_text(item.get("code"), "premium_quality_issue"),
+            _first_text(item.get("message"), "Premium Kindle quality issue detected."),
+            _first_text(item.get("source"), "premium_scoring"),
+            _first_text(item.get("suggested_action"), "Review strict premium scoring before release."),
+            page=item.get("page"),
+            section=item.get("section"),
+            file=item.get("file"),
+        )
+
+    if premium_scoring.get("kindle_ready") is False and not any(
+        issue.get("code") == "kindle_ready_blocked_by_quality"
+        for group in collector.issue_groups().values()
+        for issue in group
+    ):
+        collector.add(
+            "blocker",
+            "kindle_ready_blocked_by_quality",
+            "Strict premium scoring says this EPUB is not Kindle-ready.",
+            "premium_scoring",
+            "Fix premium scoring blockers before labeling the EPUB Kindle Ready.",
         )
 
 

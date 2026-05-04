@@ -8,12 +8,18 @@ from typing import Any
 
 from bs4 import BeautifulSoup
 
+try:
+    from wordfreq import zipf_frequency as _zipf_frequency
+except Exception:  # pragma: no cover - optional dependency fallback
+    _zipf_frequency = None
+
 
 XHTML_MEMBER_RE = re.compile(r"(?i)(?:^|/)(?:chapter|section|content|text|nav|cover)[^/]*\.x?html$")
 WORD_RE = re.compile(r"\b[^\W\d_]{2,}\b", re.UNICODE)
 SPLIT_WORD_RE = re.compile(r"\b[^\W\d_]{2,24}(?:-|\u00ad|\u2010|\u2011)\s+[^\W\d_]{2,24}\b", re.UNICODE)
 CAMEL_GLUE_RE = re.compile(r"[a-z][A-Z]")
 LONG_ALPHA_RE = re.compile(r"^[^\W\d_]{29,}$", re.UNICODE)
+LOWERCASE_CONNECTOR_GLUE_WORDS = ("oraz", "czy", "ale", "dla", "pod", "nad", "przez", "wobec", "i", "a", "w", "z", "u", "o")
 OCR_JUNK_RE = re.compile(r"(?:\ufffd|\u00c4|\u0139|\u0102|\u00c3|[\u00e2][\u20ac][\u201c-\u201d])")
 SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+[,.!?;:]")
 MISSING_SPACE_AFTER_SENTENCE_RE = re.compile(r"(?<=[.!?])(?=[A-Z])")
@@ -33,6 +39,34 @@ ARTIFACT_KEYS = (
 
 PASSED_RATE_THRESHOLD = 1.0
 REVIEW_RATE_THRESHOLD = 4.0
+
+PRODUCTIVE_PREFIX_PARTS = {
+    "auto",
+    "cyber",
+    "euro",
+    "mikro",
+    "multi",
+    "neuro",
+    "super",
+    "termo",
+}
+INFLECTION_LIKE_RIGHT_PARTS = (
+    "aniu",
+    "eniu",
+    "ingu",
+    "niem",
+    "owych",
+    "owego",
+    "owej",
+    "owscy",
+    "owska",
+    "owską",
+    "owskie",
+    "owskiej",
+    "owskiego",
+    "owskim",
+    "owskich",
+)
 
 
 @dataclass(frozen=True)
@@ -146,7 +180,7 @@ def _analyze_text(document_path: str, text: str) -> TextArtifactMetrics:
 def _count_glued_tokens(tokens: list[str]) -> int:
     count = 0
     for token in tokens:
-        if LONG_ALPHA_RE.match(token):
+        if _looks_like_glued_token(token):
             count += 1
             continue
         transitions = len(CAMEL_GLUE_RE.findall(token))
@@ -158,6 +192,104 @@ def _count_glued_tokens(tokens: list[str]) -> int:
     return count
 
 
+def _looks_like_glued_token(token: str) -> bool:
+    if LONG_ALPHA_RE.match(token):
+        return True
+    if len(token) < 12 or len(token) > 36:
+        return False
+    if not token.isalpha() or token.isupper():
+        return False
+
+    lowered = token.lower()
+    whole_score = _lexical_zipf(lowered)
+    if whole_score >= 1.85:
+        return False
+    if _has_confident_two_word_split(lowered, whole_score=whole_score):
+        return True
+    if _has_confident_connector_split(lowered, whole_score=whole_score):
+        return True
+
+    for suffix_len in (1, 2, 3):
+        stem = lowered[:-suffix_len]
+        suffix = lowered[-suffix_len:]
+        if len(stem) < 10:
+            continue
+        if not _should_try_noisy_stem_split(suffix=suffix, whole_score=whole_score):
+            continue
+        if _has_confident_two_word_split(stem, whole_score=min(whole_score, _lexical_zipf(stem))):
+            return True
+        if _has_confident_connector_split(stem, whole_score=min(whole_score, _lexical_zipf(stem))):
+            return True
+    return False
+
+
+def _has_confident_two_word_split(token: str, *, whole_score: float) -> bool:
+    for split_index in range(4, len(token) - 3):
+        left = token[:split_index]
+        right = token[split_index:]
+        if _looks_like_morphological_or_compound_split(left, right):
+            continue
+        left_score = _lexical_zipf(left)
+        right_score = _lexical_zipf(right)
+        if left_score >= 3.0 and right_score >= 3.0 and whole_score <= 1.7:
+            return True
+        if min(left_score, right_score) >= 2.65 and (left_score + right_score) >= 7.0 and whole_score <= 1.25:
+            return True
+    return False
+
+
+def _has_confident_connector_split(token: str, *, whole_score: float) -> bool:
+    if whole_score > 1.7:
+        return False
+    for connector in LOWERCASE_CONNECTOR_GLUE_WORDS:
+        if len(connector) == 1 and connector != "i":
+            continue
+        start = 4
+        while True:
+            index = token.find(connector, start)
+            if index < 0:
+                break
+            left = token[:index]
+            right = token[index + len(connector) :]
+            start = index + 1
+            if len(left) < 4 or len(right) < 4:
+                continue
+            left_score = _lexical_zipf(left)
+            right_score = _lexical_zipf(right)
+            if left_score >= 3.0 and right_score >= 2.45:
+                return True
+    return False
+
+
+def _looks_like_morphological_or_compound_split(left: str, right: str) -> bool:
+    """Avoid treating ordinary inflectional/compound morphology as PDF glue."""
+
+    if left in PRODUCTIVE_PREFIX_PARTS:
+        return True
+    if right in INFLECTION_LIKE_RIGHT_PARTS:
+        return True
+    if right.startswith(("owsk", "oweg", "owej", "owym", "owych")):
+        return True
+    if len(right) <= 4 and right in {"abym", "aniu", "eniu", "niem"}:
+        return True
+    return False
+
+
+def _should_try_noisy_stem_split(*, suffix: str, whole_score: float) -> bool:
+    if whole_score > 0.05:
+        return False
+    return suffix in {"wn"}
+
+
+def _lexical_zipf(word: str) -> float:
+    if not word or _zipf_frequency is None:
+        return 0.0
+    try:
+        return max(_zipf_frequency(word.lower(), "pl"), _zipf_frequency(word.lower(), "en"))
+    except Exception:
+        return 0.0
+
+
 def _status_for_rate(*, rate: float, word_count: int, counts: dict[str, int]) -> str:
     if word_count <= 0:
         return "unavailable"
@@ -167,4 +299,3 @@ def _status_for_rate(*, rate: float, word_count: int, counts: dict[str, int]) ->
     if rate > PASSED_RATE_THRESHOLD or hard_visible > 0:
         return "passed_with_warnings"
     return "passed"
-

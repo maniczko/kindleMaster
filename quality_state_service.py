@@ -492,6 +492,7 @@ class ConversionQualityState:
     metadata_health: dict[str, Any]
     link_health: dict[str, Any]
     visible_junk: dict[str, Any]
+    premium_scoring: dict[str, Any]
     issue_groups: dict[str, list[dict[str, Any]]]
     quality_completeness: QualityCompletenessState
     raw_signals: QualityRawSignalsState
@@ -541,6 +542,7 @@ class ConversionQualityState:
             "metadata_health": self.metadata_health,
             "link_health": self.link_health,
             "visible_junk": self.visible_junk,
+            "premium_scoring": self.premium_scoring,
             "issue_groups": self.issue_groups,
             "quality_completeness": self.quality_completeness.to_dict(),
             "raw_signals": self.raw_signals.to_dict(),
@@ -1928,6 +1930,9 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
         label="Visible junk",
         fallback=_visible_junk_from_reference_cleanup(reference_cleanup),
     )
+    premium_scoring = _normalize_optional_payload(
+        conversion_metadata.get("premium_scoring") or quality_report.get("premium_scoring")
+    )
     issue_groups = build_quality_cockpit_issue_groups(
         validation=validation.to_dict(),
         heading_repair=heading_repair.to_dict(),
@@ -1945,6 +1950,7 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
         content_metrics=content_metrics,
         toc_preview=toc_preview,
         asset_summary=asset_summary,
+        premium_scoring=premium_scoring,
     )
     quality_completeness = _build_quality_completeness_state(
         validation=validation,
@@ -2115,6 +2121,7 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
         metadata_health=metadata_health,
         link_health=link_health,
         visible_junk=visible_junk,
+        premium_scoring=premium_scoring,
         issue_groups=issue_groups,
         quality_completeness=quality_completeness,
         raw_signals=raw_signals,

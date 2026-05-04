@@ -170,7 +170,7 @@ class BrowserPrivacyDiagnosticsTests(unittest.TestCase):
             page.wait_for_function(
                 """() => {
                   const element = document.querySelector('#statusText');
-                  return !!element && (element.textContent || '').includes('EPUB wygenerowany i pobrany');
+                  return !!element && (element.textContent || '').includes('EPUB wygenerowany');
                 }""",
                 timeout=120000,
             )

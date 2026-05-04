@@ -42,6 +42,7 @@ from kindle_semantic_cleanup import (
     _write_default_css,
     _looks_technical_title,
 )
+from epub_premium_scoring import score_epub_premium_quality
 from premium_tools import run_epubcheck
 from quality_report_markdown import (
     build_manual_review_markdown,
@@ -87,6 +88,7 @@ class RecoveryPaths:
     toc_map: Path
     structural_integrity: Path
     epubcheck: Path
+    premium_scoring: Path
     release_report: Path
     manual_review_queue: Path
 
@@ -101,6 +103,7 @@ def run_epub_publishing_quality_recovery(
     expected_description: str = "",
     expected_language: str = "",
     publication_profile: str | None = None,
+    strict_premium: bool = False,
 ) -> dict[str, Any]:
     source_path = Path(epub_path).resolve()
     if not source_path.exists():
@@ -181,6 +184,14 @@ def run_epub_publishing_quality_recovery(
 
     recommendation = gates["F"]["status"]
     working_bytes = working_bytes or original_bytes
+    premium_scoring = score_epub_premium_quality(working_bytes, epubcheck=final_epubcheck)
+    if strict_premium:
+        gates["G"] = _evaluate_gate_g(premium_scoring)
+        if gates["G"]["status"] == "fail":
+            recommendation = "fail"
+        elif recommendation == "pass" and gates["G"]["status"] == "pass_with_review":
+            recommendation = "pass_with_review"
+
     paths.final_epub.write_bytes(working_bytes)
 
     metadata_payload = build_recovery_metadata_payload(
@@ -211,7 +222,10 @@ def run_epub_publishing_quality_recovery(
     paths.toc_map.write_text(json.dumps(toc_payload, ensure_ascii=False, indent=2), encoding="utf-8")
     paths.structural_integrity.write_text(json.dumps(structural_payload, ensure_ascii=False, indent=2), encoding="utf-8")
     paths.epubcheck.write_text(json.dumps(epubcheck_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    paths.premium_scoring.write_text(json.dumps(premium_scoring, ensure_ascii=False, indent=2), encoding="utf-8")
     paths.manual_review_queue.write_text(build_manual_review_markdown(manual_review), encoding="utf-8")
+    release_summary["premium_scoring"] = premium_scoring
+    release_summary["strict_premium"] = strict_premium
     paths.release_report.write_text(
         build_recovery_release_report_markdown(
             release_summary=release_summary,
@@ -230,10 +244,12 @@ def run_epub_publishing_quality_recovery(
             "toc_map": str(paths.toc_map),
             "structural_integrity": str(paths.structural_integrity),
             "epubcheck": str(paths.epubcheck),
+            "premium_scoring": str(paths.premium_scoring),
             "release_report": str(paths.release_report),
             "manual_review_queue": str(paths.manual_review_queue),
         },
         "gates": gates,
+        "premium_scoring": premium_scoring,
     }
 
 
@@ -546,6 +562,7 @@ def _prepare_output_paths(*, output_dir: Path, reports_dir: Path) -> RecoveryPat
         toc_map=reports_dir / "toc_map.json",
         structural_integrity=reports_dir / "structural_integrity.json",
         epubcheck=reports_dir / "epubcheck.json",
+        premium_scoring=reports_dir / "premium_scoring.json",
         release_report=reports_dir / "release_report.md",
         manual_review_queue=reports_dir / "manual_review_queue.md",
     )
@@ -894,6 +911,37 @@ def _evaluate_gate_f(
         result["status"] = "pass_with_review"
         result["summary"] = "Technical gates passed, but manual review items remain."
     return result
+
+
+def _evaluate_gate_g(premium_scoring: dict[str, Any]) -> dict[str, Any]:
+    blockers = []
+    warnings = []
+    review = []
+    if not premium_scoring.get("technical_valid"):
+        blockers.append("Strict premium scoring: technical validity is not clean.")
+    if premium_scoring.get("mail_sendable") == "no":
+        blockers.append("Strict premium scoring: EPUB is not safe for Send to Kindle delivery limits.")
+    if not premium_scoring.get("kindle_ready"):
+        blockers.append("Strict premium scoring: EPUB is not Kindle-ready quality.")
+    if float(premium_scoring.get("premium_score", 0.0) or 0.0) < 7.0:
+        blockers.append(f"Strict premium score is below release threshold: {premium_scoring.get('premium_score', 0)}/10.")
+
+    for issue in premium_scoring.get("issues", []) or []:
+        if not isinstance(issue, dict):
+            continue
+        severity = str(issue.get("severity", "") or "").lower()
+        message = str(issue.get("message", "") or "").strip()
+        code = str(issue.get("code", "") or "premium-scoring").strip()
+        if not message:
+            continue
+        if severity == "blocker":
+            blockers.append(f"{code}: {message}")
+        elif severity == "warning":
+            warnings.append(f"{code}: {message}")
+        else:
+            review.append(_make_review_item("premium_scoring", str(issue.get("file", "") or "epub"), code, "strict-premium-review", 0.7))
+
+    return _gate_result("G", blockers=blockers, warnings=warnings, manual_review=review)
 
 
 def _gate_result(

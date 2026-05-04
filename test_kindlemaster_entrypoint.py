@@ -360,6 +360,7 @@ class KindleMasterEntrypointTests(unittest.TestCase):
                     "Desc",
                     "--publication-profile",
                     "book",
+                    "--strict-premium",
                 ],
             ):
                 exit_code = kindlemaster.main()
@@ -385,6 +386,7 @@ class KindleMasterEntrypointTests(unittest.TestCase):
                 "Desc",
                 "--publication-profile",
                 "book",
+                "--strict-premium",
             ],
         )
 

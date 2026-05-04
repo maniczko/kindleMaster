@@ -601,6 +601,10 @@ def build_conversion_metadata(
     if validation_details:
         metadata["validation_details"] = validation_details
 
+    premium_scoring = _json_safe_metadata_value(quality_report.get("premium_scoring") or {})
+    if isinstance(premium_scoring, Mapping) and premium_scoring:
+        metadata["premium_scoring"] = dict(premium_scoring)
+
     return metadata
 
 

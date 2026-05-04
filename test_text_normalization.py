@@ -448,6 +448,30 @@ class TextNormalizationTests(unittest.TestCase):
 
         self.assertIn("W ogloszeniu", chapter)
 
+    def test_clean_epub_text_package_repairs_ocr_acronym_and_low_whole_score_glue(self):
+        chapter_markup = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+            "<p>The contentstays deterministic while cleanupsmoke remains visible.</p>"
+            "<p>Repeated lines helpexerciseOCRon faint text and OCRstressnote markers.</p>"
+            "</body></html>"
+        )
+        epub_bytes = _build_test_epub(chapter_markup=chapter_markup)
+
+        with patch(
+            "text_cleanup_engine.run_epubcheck",
+            return_value={"status": "passed", "tool": "epubcheck", "messages": []},
+        ):
+            result = clean_epub_text_package(epub_bytes, config=TextCleanupConfig(language_hint="en"))
+
+        with zipfile.ZipFile(io.BytesIO(result.epub_bytes), "r") as archive:
+            chapter = archive.read("EPUB/chapter_001.xhtml").decode("utf-8")
+
+        self.assertIn("content stays deterministic", chapter)
+        self.assertIn("cleanup smoke remains visible", chapter)
+        self.assertIn("help exercise OCR on faint text", chapter)
+        self.assertIn("OCR stress note markers", chapter)
+
     def test_clean_epub_text_package_skips_protected_tags(self):
         chapter_markup = (
             '<?xml version="1.0" encoding="utf-8"?>'

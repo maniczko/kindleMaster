@@ -68,6 +68,9 @@ SYSTEM_ID_RE = re.compile(r"\b[A-Z]{2,12}[-_][A-Z0-9]{2,}\b")
 INVOICE_RE = re.compile(r"(?i)\b(?:FV|INV|PO|REF|ID)[-/:]?[A-Z0-9][A-Z0-9/_-]{3,}\b")
 WORDISH_RE = re.compile(r"\b[^\W\d_]{1,32}\b", re.UNICODE)
 PAIR_WORD_RE = re.compile(r"(?P<left>\b[^\W\d_]{1,20}\b)(?P<gap>\s+)(?P<right>\b[^\W\d_]{1,20}\b)", re.UNICODE)
+ACRONYM_GLUE_RE = re.compile(
+    r"^(?P<prefix>[A-Za-z]{0,24}?)(?P<acronym>[A-Z]{2,8})(?P<suffix>[a-z]{2,24})$"
+)
 HYPHEN_BREAK_RE = re.compile(
     r"(?P<left>\b[^\W\d_]{2,24})(?P<marker>[-\u00ad\u2010\u2011])(?P<gap>\s+)(?P<right>[^\W\d_]{2,24}\b)",
     re.UNICODE,
@@ -1106,6 +1109,10 @@ def _glued_word_proposal(
             reason_codes=["domain-dictionary", "variant-normalization"],
         )
 
+    acronym_proposal = _acronym_glue_proposal(token, context=context)
+    if acronym_proposal is not None:
+        return acronym_proposal
+
     whole_score = _token_score(token, context.paragraph_language)
     if config.long_document_mode and (whole_score >= 0.22 or _token_score(token, "en") >= 0.24):
         return None
@@ -1118,20 +1125,78 @@ def _glued_word_proposal(
     left, right, lexical_score, reason_codes = split_candidate
     leading_stopword = "leading-stopword" in reason_codes or "single-letter-stopword" in reason_codes
     low_whole_score = "low-whole-score" in reason_codes
+    if low_whole_score:
+        lexical_score = max(lexical_score, 0.9)
     language_score = _language_fit_score(f"{left} {right}", context.paragraph_language)
     if leading_stopword and len(right) >= 6:
         language_score = max(language_score, 0.82 if low_whole_score else 0.72)
+    elif low_whole_score:
+        language_score = max(language_score, 0.82)
     return _Proposal(
         before=token,
         after=f"{left} {right}",
         error_class="glued-word",
         lexical_score=lexical_score,
-        context_score=0.9 if leading_stopword else 0.78,
+        context_score=0.9 if (leading_stopword or low_whole_score) else 0.78,
         language_score=language_score,
         dom_score=1.0,
         bonus_score=0.9 if low_whole_score else (0.6 if leading_stopword else 0.0),
         reason_codes=reason_codes,
     )
+
+
+def _acronym_glue_proposal(token: str, *, context: _TextNodeContext) -> _Proposal | None:
+    match = ACRONYM_GLUE_RE.fullmatch(token)
+    if not match:
+        return None
+    prefix = match.group("prefix") or ""
+    acronym = match.group("acronym") or ""
+    suffix = match.group("suffix") or ""
+    if not acronym or not suffix:
+        return None
+    if prefix and (prefix[:1].isupper() or _token_score(prefix, context.paragraph_language) >= 0.55):
+        return None
+
+    prefix_parts = _split_glued_phrase_part(prefix, context=context) if prefix else []
+    suffix_parts = _split_glued_phrase_part(suffix, context=context)
+    if suffix_parts is None or prefix_parts is None:
+        return None
+
+    replacement_parts = [*prefix_parts, acronym, *suffix_parts]
+    if len(replacement_parts) < 2:
+        return None
+    replacement = " ".join(part for part in replacement_parts if part)
+    if replacement.replace(" ", "") == token:
+        return _Proposal(
+            before=token,
+            after=replacement,
+            error_class="glued-acronym-word",
+            lexical_score=0.95,
+            context_score=0.92,
+            language_score=0.86,
+            dom_score=1.0,
+            bonus_score=0.8,
+            reason_codes=["acronym-boundary", "lexical-split"],
+        )
+    return None
+
+
+def _split_glued_phrase_part(part: str, *, context: _TextNodeContext) -> list[str] | None:
+    if not part:
+        return []
+    if len(part) <= 3:
+        if part.lower() in PL_STOPWORDS or part.lower() in EN_STOPWORDS:
+            return [part]
+        return None
+    if _token_score(part, context.paragraph_language) >= 0.55 or _token_score(part, "en") >= 0.55:
+        return [part]
+    split_candidate = _best_split_candidate(part, context=context)
+    if split_candidate is None:
+        return None
+    left, right, _lexical_score, reason_codes = split_candidate
+    if "lexical-split" not in reason_codes:
+        return None
+    return [left, right]
 
 
 def _split_word_proposal(
@@ -1420,6 +1485,8 @@ def _best_split_candidate(token: str, *, context: _TextNodeContext) -> tuple[str
                 continue
             lexical = min(1.0, (left_score + right_score) / 2.0)
             reason_codes = ["lexical-split"]
+            if whole_score <= 0.08 and min(left_score, right_score) >= 0.55:
+                reason_codes.append("low-whole-score")
         score = lexical - whole_score
         candidate = (left, right, lexical, reason_codes)
         if best is None or score > best[0]:

@@ -232,6 +232,51 @@ class QualityStateServiceTests(unittest.TestCase):
             ],
         )
 
+    def test_strict_premium_score_blocks_kindle_ready_without_blocking_download(self) -> None:
+        request = self._request_from_job_payload(
+            {
+                "status": "ready",
+                "source_type": "epub",
+                "filename": "magazine.epub",
+                "message": "EPUB gotowy do pobrania.",
+                "metadata": {
+                    "profile": "magazine_reflow",
+                    "validation": "passed",
+                    "validation_tool": "epubcheck",
+                    "premium_scoring": {
+                        "status": "failed",
+                        "technical_valid": True,
+                        "mail_sendable": "likely",
+                        "kindle_ready": False,
+                        "premium_ready": False,
+                        "premium_score": 5.0,
+                        "issues": [
+                            {
+                                "severity": "blocker",
+                                "code": "suspicious_metadata_author",
+                                "message": "Creator looks like a section label.",
+                                "source": "metadata",
+                                "suggested_action": "Fix author metadata.",
+                            }
+                        ],
+                    },
+                },
+            },
+            download_url="/convert/download/magazine-job",
+        )
+
+        state = assemble_quality_state(request)
+        payload = assemble_quality_state_dict(request)
+
+        self.assertTrue(state.download_available)
+        self.assertEqual(state.reading_verdict, "ready_with_review")
+        self.assertEqual(state.release_verdict, "release_blocked")
+        self.assertTrue(state.release_blocked)
+        self.assertEqual(state.premium_scoring["premium_score"], 5.0)
+        self.assertEqual(payload["premium_scoring"]["kindle_ready"], False)
+        self.assertIn("suspicious_metadata_author", [item["code"] for item in payload["quality_blockers"]])
+        self.assertFalse(payload["send_to_kindle_ready"])
+
     def test_semantic_ocr_and_reading_order_gates_block_release_not_download(self) -> None:
         request = self._request_from_job_payload(
             {

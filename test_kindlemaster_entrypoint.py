@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import re
 import sys
 import tempfile
@@ -220,9 +221,10 @@ class KindleMasterEntrypointTests(unittest.TestCase):
 
         with patch("premium_tools.detect_toolchain", return_value=toolchain):
             with patch("kindlemaster._print_json") as print_json:
-                with patch("kindlemaster._run_bounded_command", side_effect=fake_run):
-                    with patch("kindlemaster._load_corpus_gate_summary", return_value={"overall_status": "passed"}):
-                        exit_code = _run_tests("release")
+                with patch("kindlemaster._write_governance_artifact"):
+                    with patch("kindlemaster._run_bounded_command", side_effect=fake_run):
+                        with patch("kindlemaster._load_corpus_gate_summary", return_value={"overall_status": "passed"}):
+                            exit_code = _run_tests("release")
 
         self.assertEqual(exit_code, 0)
         executed_commands = [command for _, command, _ in bounded_results]
@@ -266,16 +268,35 @@ class KindleMasterEntrypointTests(unittest.TestCase):
         )
         self.assertEqual(run_mock.call_args.kwargs["cwd"], Path(kindlemaster.__file__).resolve().parent)
 
+    def test_run_tests_quick_writes_governance_artifact(self) -> None:
+        with patch("kindlemaster.subprocess.run", return_value=SimpleNamespace(returncode=0)) as run_mock:
+            with patch("kindlemaster._write_governance_artifact") as artifact_mock:
+                exit_code = _run_tests("quick")
+
+        self.assertEqual(exit_code, 0)
+        run_mock.assert_called_once()
+        artifact_mock.assert_called_once()
+        self.assertEqual(artifact_mock.call_args.kwargs["lane"], "quick")
+        payload = artifact_mock.call_args.kwargs["payload"]
+        self.assertEqual(payload["suite"], "quick")
+        self.assertEqual(payload["status"], "passed")
+        self.assertEqual(payload["returncode"], 0)
+        self.assertEqual(payload["command"], "python kindlemaster.py test --suite quick")
+
     def test_doctor_command_routes_to_toolchain_detection(self) -> None:
         payload = {"verification_surfaces": {"quick": {"status": "supported"}}}
         with patch("premium_tools.detect_toolchain", return_value=payload) as doctor_mock:
             with patch.object(kindlemaster, "_print_json") as print_mock:
-                with patch.object(sys, "argv", ["kindlemaster.py", "doctor"]):
-                    exit_code = kindlemaster.main()
+                with patch.object(kindlemaster, "_write_governance_artifact") as artifact_mock:
+                    with patch.object(sys, "argv", ["kindlemaster.py", "doctor"]):
+                        exit_code = kindlemaster.main()
 
         self.assertEqual(exit_code, 0)
         doctor_mock.assert_called_once()
         print_mock.assert_called_once_with(payload)
+        artifact_mock.assert_called_once()
+        self.assertEqual(artifact_mock.call_args.kwargs["lane"], "doctor")
+        self.assertEqual(artifact_mock.call_args.kwargs["payload"]["command"], "python kindlemaster.py doctor")
 
     def test_prepare_reference_inputs_command_routes_to_bootstrap_script(self) -> None:
         payload = {"manifest": "reference_inputs/manifest.json", "case_count": 3}
@@ -520,9 +541,10 @@ class KindleMasterEntrypointTests(unittest.TestCase):
 
         with patch("premium_tools.detect_toolchain", return_value=toolchain):
             with patch("kindlemaster._print_json") as print_json:
-                with patch("kindlemaster._run_bounded_command", side_effect=fake_run):
-                    with patch("kindlemaster._load_corpus_gate_summary", return_value={"overall_status": "passed_with_warnings"}):
-                        exit_code = _run_tests("release")
+                with patch("kindlemaster._write_governance_artifact"):
+                    with patch("kindlemaster._run_bounded_command", side_effect=fake_run):
+                        with patch("kindlemaster._load_corpus_gate_summary", return_value={"overall_status": "passed_with_warnings"}):
+                            exit_code = _run_tests("release")
 
         self.assertEqual(exit_code, 0)
         executed_commands = [command for _, command, _ in bounded_results]
@@ -563,8 +585,9 @@ class KindleMasterEntrypointTests(unittest.TestCase):
 
         with patch("premium_tools.detect_toolchain", return_value=toolchain):
             with patch("kindlemaster._print_json") as print_json:
-                with patch("kindlemaster._run_bounded_command", side_effect=fake_run):
-                    exit_code = _run_tests("release")
+                with patch("kindlemaster._write_governance_artifact"):
+                    with patch("kindlemaster._run_bounded_command", side_effect=fake_run):
+                        exit_code = _run_tests("release")
 
         self.assertEqual(exit_code, 1)
         payload = print_json.call_args.args[0]
@@ -591,6 +614,34 @@ class KindleMasterEntrypointTests(unittest.TestCase):
         payload = print_json.call_args.args[0]
         self.assertEqual(payload["bootstrap_run"]["requested_profile"], "runtime_only")
         self.assertEqual(payload["bootstrap_run"]["installed_requirements_files"], ["requirements.txt"])
+
+    def test_run_bootstrap_developer_installs_git_hooks_when_not_skipped(self) -> None:
+        hook_payload = {"status": "installed", "hooks_path": ".githooks"}
+        with patch("kindlemaster.subprocess.run", return_value=SimpleNamespace(returncode=0)):
+            with patch("premium_tools.detect_toolchain", return_value={"bootstrap": {"profiles": {}}}):
+                with patch("scripts.install_git_hooks.install_git_hooks", return_value=hook_payload) as hook_mock:
+                    with patch("kindlemaster._print_json") as print_json:
+                        with patch.dict(os.environ, {}, clear=True):
+                            exit_code = _run_bootstrap(runtime_only=False)
+
+        self.assertEqual(exit_code, 0)
+        hook_mock.assert_called_once()
+        payload = print_json.call_args.args[0]
+        self.assertEqual(payload["bootstrap_run"]["git_hooks"], hook_payload)
+
+    def test_run_bootstrap_skips_git_hooks_in_ci_or_when_requested(self) -> None:
+        with patch("kindlemaster.subprocess.run", return_value=SimpleNamespace(returncode=0)):
+            with patch("premium_tools.detect_toolchain", return_value={"bootstrap": {"profiles": {}}}):
+                with patch("scripts.install_git_hooks.install_git_hooks") as hook_mock:
+                    with patch("kindlemaster._print_json") as print_json:
+                        with patch.dict(os.environ, {"CI": "true"}, clear=True):
+                            exit_code = _run_bootstrap(runtime_only=False)
+
+        self.assertEqual(exit_code, 0)
+        hook_mock.assert_not_called()
+        payload = print_json.call_args.args[0]
+        self.assertEqual(payload["bootstrap_run"]["git_hooks"]["status"], "skipped")
+        self.assertEqual(payload["bootstrap_run"]["git_hooks"]["reason"], "ci")
 
     def test_run_serve_uses_resolved_defaults_when_port_and_debug_are_not_provided(self) -> None:
         stdout = io.StringIO()

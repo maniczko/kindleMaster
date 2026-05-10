@@ -19,6 +19,7 @@ Pipeline:
 """
 
 import os
+import io
 import re
 import uuid
 import hashlib
@@ -260,6 +261,8 @@ def finalize_epub_bytes(
             author=author,
             language=config.language,
             publication_profile=publication_profile,
+            chess_min_long_edge=config.diagram_image_long_edge,
+            chess_palette_colors=config.diagram_palette_colors,
             return_report=True,
             report_mode="rich",
         )
@@ -317,6 +320,23 @@ def finalize_epub_bytes(
             "artifact_rate": {
                 "status": "unavailable",
                 "message": f"Artifact rate analysis failed: {exc.__class__.__name__}",
+            },
+        }
+
+    try:
+        from ai_quality_intelligence import evaluate_ai_quality_intelligence
+
+        text_cleanup_summary = {
+            **text_cleanup_summary,
+            "ai_quality": evaluate_ai_quality_intelligence(epub_bytes),
+        }
+    except Exception as exc:
+        text_cleanup_summary = {
+            **text_cleanup_summary,
+            "ai_quality": {
+                "status": "unavailable",
+                "fallback_reasons": [f"ai-quality-evaluation-failed:{exc.__class__.__name__}"],
+                "deterministic_output_preserved": True,
             },
         }
 
@@ -1289,17 +1309,14 @@ CHESS_REFLOW_CSS = """\
   max-width: 22rem;
   height: auto;
   margin: 0 auto;
-  padding: 0.18rem;
-  border: 0.08rem solid #d8d2c3;
   background: #fff;
-  box-sizing: border-box;
   page-break-inside: avoid;
   break-inside: avoid;
   image-rendering: auto;
 }
 
 .diagram-caption {
-  margin: 0 0 0.45em;
+  margin: 0 0 0.72em;
   text-indent: 0;
   text-align: center;
   font-weight: 600;
@@ -1863,11 +1880,11 @@ def _apply_content_metadata_overrides(
         or str(content_metadata.get("creator") or "").strip()
         or str(content_metadata.get("publisher") or "").strip()
     )
-    if candidate_author and _metadata_author_is_weak(metadata.get("author")):
+    if candidate_author and not _metadata_author_is_weak(candidate_author) and _metadata_author_is_weak(metadata.get("author")):
         metadata["author"] = candidate_author
 
     candidate_publisher = str(content_metadata.get("publisher") or "").strip()
-    if candidate_publisher and not str(metadata.get("publisher") or "").strip():
+    if candidate_publisher and not _metadata_author_is_weak(candidate_publisher) and not str(metadata.get("publisher") or "").strip():
         metadata["publisher"] = candidate_publisher
 
     for field in ("description", "subject", "date"):
@@ -1924,6 +1941,8 @@ def build_epub(content: dict, config: ConversionConfig, original_filename: str, 
     
     title = pdf_metadata.get("title") or Path(original_filename).stem
     author = pdf_metadata.get("author") or "Unknown"
+    if _metadata_author_is_weak(author):
+        author = "Unknown"
 
     book = epub.EpubBook()
     book.set_identifier(uuid.uuid4().hex)
@@ -1931,6 +1950,8 @@ def build_epub(content: dict, config: ConversionConfig, original_filename: str, 
     book.set_language(config.language)
     book.add_author(author)
     publisher = (pdf_metadata.get("publisher") or "").strip()
+    if _metadata_author_is_weak(publisher):
+        publisher = ""
     if publisher:
         book.add_metadata("DC", "publisher", publisher)
     description = (pdf_metadata.get("description") or "").strip()

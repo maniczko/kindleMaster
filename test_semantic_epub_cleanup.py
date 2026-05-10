@@ -995,6 +995,169 @@ class SemanticEpubCleanupTests(unittest.TestCase):
             self.assertIn('content="1"', toc_ncx)
             self.assertIn('src="chapter_001.xhtml#forest-walk"', toc_ncx)
 
+    def test_clean_reading_mode_removes_non_content_spine_and_ai_notes(self):
+        opf_source = """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">magazine-id</dc:identifier>
+    <dc:title>Weekly Issue</dc:title>
+    <dc:language>en</dc:language>
+    <dc:creator>The Weekly</dc:creator>
+  </metadata>
+  <manifest>
+    <item id="chapter_1" href="chapter_001.xhtml" media-type="application/xhtml+xml"/>
+    <item id="chapter_2" href="chapter_002.xhtml" media-type="application/xhtml+xml"/>
+    <item id="chapter_3" href="chapter_003.xhtml" media-type="application/xhtml+xml"/>
+    <item id="chapter_4" href="chapter_004.xhtml" media-type="application/xhtml+xml"/>
+    <item id="chapter_5" href="chapter_005.xhtml" media-type="application/xhtml+xml"/>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="css" href="style/default.css" media-type="text/css"/>
+    <item id="img_a" href="images/a.jpg" media-type="image/jpeg"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="chapter_1"/>
+    <itemref idref="chapter_2"/>
+    <itemref idref="chapter_3"/>
+    <itemref idref="chapter_4"/>
+    <itemref idref="chapter_5"/>
+  </spine>
+</package>
+"""
+        article = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>When markets shiver</title></head>
+  <body>
+    <section>
+      <h1>When markets shiver</h1>
+      <p class="author">Jane Reporter</p>
+      <p>This article explains a difficult week for financial markets, central banks, and firms adapting to a changing trade environment.</p>
+      <h2>US</h2>
+      <p>Chart label text that should not become Kindle navigation.</p>
+      <h2>GDP, 2015=100</h2>
+      <p>Another chart label.</p>
+      <h2>Loans †</h2>
+      <p>Small chart footnote label.</p>
+      <h2>FOTOGRAFIE:</h2>
+      <p>Caption credit label.</p>
+      <h2>Triangle®</h2>
+      <p>Trademark artefact.</p>
+      <h2>Co to jest</h2>
+      <p>Polska notatka AI nie nalezy do oryginalnego angielskiego artykulu.</p>
+      <h2>Policy after the storm</h2>
+      <p>The real section continues with analysis and should remain visible in the table of contents.</p>
+    </section>
+  </body>
+</html>
+"""
+        gallery = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Galeria 002</h1><p>Galeria</p><img src="images/a.jpg" alt=""/></body></html>
+"""
+        advert = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Reklama 79</h1><p>Reklama</p></body></html>
+"""
+        ai_note = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Men are souring on - Definicje</h1><p>Definicje i polskie wyjasnienia AI.</p></body></html>
+"""
+        sponsored = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Material sponsorowany</h1><p>Material sponsorowany</p></body></html>
+"""
+        nav_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+  <body><nav epub:type="toc"><ol>
+    <li><a href="chapter_001.xhtml">US</a></li>
+    <li><a href="chapter_002.xhtml">Galeria 002</a></li>
+    <li><a href="chapter_003.xhtml">Reklama 79</a></li>
+    <li><a href="chapter_004.xhtml">Men are souring on - Definicje</a></li>
+    <li><a href="chapter_005.xhtml">Material sponsorowany</a></li>
+  </ol></nav></body>
+</html>
+"""
+        toc_source = """<?xml version="1.0" encoding="utf-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+  <head><meta name="dtb:uid" content="magazine-id"/></head>
+  <docTitle><text>Legacy</text></docTitle>
+  <navMap/>
+</ncx>
+"""
+        container_source = """<?xml version="1.0" encoding="utf-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="EPUB/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>
+"""
+        epub_bytes = self._build_epub_bytes(
+            {
+                "mimetype": "application/epub+zip",
+                "META-INF/container.xml": container_source,
+                "EPUB/content.opf": opf_source,
+                "EPUB/chapter_001.xhtml": article,
+                "EPUB/chapter_002.xhtml": gallery,
+                "EPUB/chapter_003.xhtml": advert,
+                "EPUB/chapter_004.xhtml": ai_note,
+                "EPUB/chapter_005.xhtml": sponsored,
+                "EPUB/nav.xhtml": nav_source,
+                "EPUB/toc.ncx": toc_source,
+                "EPUB/style/default.css": "body { font-family: serif; }",
+                "EPUB/images/a.jpg": b"\xff\xd8\xff\xe0synthetic-jpeg",
+            }
+        )
+
+        cleaned_epub, report = finalize_epub_for_kindle(
+            epub_bytes,
+            title="Weekly Issue",
+            author="The Weekly",
+            language="en",
+            publication_profile="clean_reading",
+            return_report=True,
+            report_mode="rich",
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            with zipfile.ZipFile(io.BytesIO(cleaned_epub), "r") as archive:
+                archive.extractall(temp_dir)
+
+            opf_tree = etree.parse(str(Path(temp_dir) / "EPUB" / "content.opf"))
+            ns = {"opf": "http://www.idpf.org/2007/opf"}
+            manifest_hrefs = {
+                item.get("id"): item.get("href")
+                for item in opf_tree.findall(".//opf:manifest/opf:item", namespaces=ns)
+            }
+            spine_hrefs = [
+                manifest_hrefs[item.get("idref")]
+                for item in opf_tree.findall(".//opf:spine/opf:itemref", namespaces=ns)
+            ]
+
+            self.assertEqual(spine_hrefs, ["chapter_001.xhtml", "nav.xhtml"])
+            for removed_href in ("chapter_002.xhtml", "chapter_003.xhtml", "chapter_004.xhtml", "chapter_005.xhtml"):
+                self.assertIn(removed_href, manifest_hrefs.values())
+                self.assertNotIn(removed_href, spine_hrefs)
+
+            article_xhtml = (Path(temp_dir) / "EPUB" / "chapter_001.xhtml").read_text(encoding="utf-8")
+            nav_xhtml = (Path(temp_dir) / "EPUB" / "nav.xhtml").read_text(encoding="utf-8")
+            self.assertIn("When markets shiver", nav_xhtml)
+            self.assertIn("Policy after the storm", nav_xhtml)
+            for bad_label in (
+                "Galeria",
+                "Reklama",
+                "Definicje",
+                "Material sponsorowany",
+                "Co to jest",
+                "GDP, 2015=100",
+                "Loans",
+                "FOTOGRAFIE",
+                "Triangle",
+                ">US<",
+            ):
+                self.assertNotIn(bad_label, nav_xhtml)
+            self.assertNotIn("Co to jest", article_xhtml)
+            self.assertNotIn("Polska notatka AI", article_xhtml)
+
+        content_cleanup = report["phases"]["content_cleanup"]
+        removed_kinds = {item["kind"] for item in content_cleanup["removed"]}
+        self.assertGreaterEqual(content_cleanup["summary"]["inline_ai_note_block_count"], 1)
+        self.assertEqual(content_cleanup["summary"]["removed_count"], 4)
+        self.assertTrue({"gallery", "advertisement", "ai_note", "sponsor"}.issubset(removed_kinds))
+
     def test_finalize_epub_for_kindle_dedupes_chapter_dom_ids(self):
         opf_source = """<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">

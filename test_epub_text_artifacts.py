@@ -79,8 +79,10 @@ class EpubTextArtifactTests(unittest.TestCase):
                 "chapter_001.xhtml": (
                     "<p>Projektowe wymagania API oraz HTTP URL sa poprawnym tekstem technicznym. "
                     "Internationalization nie powinno byc karane jako sklejony token. "
+                    "OrderRequest, OrderResponse, InvoiceDetailRequest i InvoiceResponse sa nazwami dokumentow. "
                     "Romanowskiego, kontrasygnaty, cyberstalking, termomodernizacja i Dzieciofobia "
-                    "sa rzadkimi, ale poprawnymi slowami w magazynie.</p>"
+                    "sa rzadkimi, ale poprawnymi slowami w magazynie. "
+                    "przećwiczenia i porządkujesz sa poprawnymi slowami.</p>"
                 ),
             }
         )

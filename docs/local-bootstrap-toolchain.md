@@ -23,9 +23,10 @@ python kindlemaster.py doctor
 
 - Python runtime dependencies come from `requirements.txt`.
 - Developer verification dependencies come from `requirements-dev.txt`.
+- Developer bootstrap configures local Git hooks through `.githooks` unless `CI=true` or `KINDLEMASTER_SKIP_GIT_HOOKS=1`.
 - The local app defaults to `http://kindlemaster.localhost:5001/`.
 - The safe loopback fallback is `http://127.0.0.1:5001/`.
-- `bootstrap` installs Python packages only. It does not install Java, EPUBCheck, Tesseract, Ghostscript, qpdf, PDFBox, or Chromium.
+- `bootstrap` installs Python packages and local hook config only. It does not install Java, EPUBCheck, Tesseract, Ghostscript, qpdf, PDFBox, or Chromium.
 
 ## Repeatable Toolchain Container
 
@@ -71,6 +72,7 @@ Use the output to classify failures:
 | Doctor area | If red/degraded | Treat as |
 | --- | --- | --- |
 | `bootstrap` | Missing Python modules | setup failure |
+| `agent_readiness` | degraded | Codex/hook/skill/local-agent setup drift |
 | `verification_surfaces.quick` | unsupported | core environment failure |
 | `verification_surfaces.corpus` | unsupported | core environment failure |
 | `verification_surfaces.browser` | unavailable | optional browser-tooling gap |
@@ -91,6 +93,17 @@ If Waitress or Playwright Python packages are missing, rerun:
 ```powershell
 python kindlemaster.py bootstrap
 ```
+
+## Local Hook Verification
+
+```powershell
+python scripts/install_git_hooks.py --check
+python scripts/install_git_hooks.py --install
+```
+
+Balanced local hooks:
+- pre-commit: static correctness and agent/governance contracts.
+- pre-push: quick suite plus generated project status.
 
 ## Local App Verification
 

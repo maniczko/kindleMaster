@@ -21,6 +21,16 @@ The VAT-206 dashboard tracks the latest available evidence for these lanes:
 | `ui_state_screenshots` | `python kindlemaster.py test --suite runtime` | `reports/ui-state-screenshots/latest/manifest.json` |
 | `status` | `python kindlemaster.py status` | `reports/project_status.json` |
 
+The `doctor` evidence includes an `agent_readiness` section covering repo-local Codex config, pinned Playwright MCP, enabled plugins, installed KindleMaster skills, `.githooks` configuration, and stale `.claude/settings.local.json` markers.
+
+Every governance evidence artifact should include:
+- `generated_at`
+- `command`
+- `status`
+- `returncode`
+- `elapsed_seconds`
+- `notes`
+
 If an evidence file is missing, the dashboard reports that lane as `unavailable` and keeps the expected artifact path visible. Missing lane evidence is a dashboard warning signal; it does not rewrite the authoritative command contract.
 
 The `ui_state_screenshots` lane is a runtime UI evidence lane. Its manifest records state-based screenshots and horizontal-overflow checks for desktop, tablet, mobile, conversion outcomes, and library states. Any recorded horizontal overflow is treated as failed UI evidence.
@@ -73,3 +83,17 @@ In practical terms:
 - active session permissions control what the agent may do right now,
 - `.codex/config.toml` remains the repo-local defaults contract,
 - generated status should document the distinction instead of treating it as policy drift.
+
+## Local Hooks
+
+Developer bootstrap installs the balanced local hook policy through:
+
+```powershell
+python scripts/install_git_hooks.py --install
+```
+
+The installer is skipped for `python kindlemaster.py bootstrap --runtime-only`, `CI=true`, or `KINDLEMASTER_SKIP_GIT_HOOKS=1`.
+
+Hook expectations:
+- `.githooks/pre-commit` runs static correctness checks and fast agent/governance tests.
+- `.githooks/pre-push` runs `python kindlemaster.py test --suite quick` and `python kindlemaster.py status`.

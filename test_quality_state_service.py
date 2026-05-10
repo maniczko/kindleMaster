@@ -235,10 +235,12 @@ class QualityStateServiceTests(unittest.TestCase):
     def test_strict_premium_score_blocks_kindle_ready_without_blocking_download(self) -> None:
         request = self._request_from_job_payload(
             {
+                "job_id": "magazine-job",
                 "status": "ready",
                 "source_type": "epub",
                 "filename": "magazine.epub",
                 "message": "EPUB gotowy do pobrania.",
+                "sentry_event_id": "event-123",
                 "metadata": {
                     "profile": "magazine_reflow",
                     "validation": "passed",
@@ -276,6 +278,27 @@ class QualityStateServiceTests(unittest.TestCase):
         self.assertEqual(payload["premium_scoring"]["kindle_ready"], False)
         self.assertIn("suspicious_metadata_author", [item["code"] for item in payload["quality_blockers"]])
         self.assertFalse(payload["send_to_kindle_ready"])
+        self.assertEqual(payload["score"], 5.0)
+        self.assertTrue(payload["sendable"])
+        self.assertFalse(payload["kindle_ready"])
+        self.assertFalse(payload["premium_ready"])
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(payload["blockers"][0]["code"], "suspicious_metadata_author")
+        self.assertEqual(payload["warnings"], [])
+        self.assertEqual(
+            payload["reports"],
+            {
+                "json": "/convert/report/magazine-job.json",
+                "markdown": "/convert/report/magazine-job.md",
+            },
+        )
+        self.assertEqual(
+            payload["artifacts"],
+            {
+                "download_url": "/convert/download/magazine-job",
+            },
+        )
+        self.assertEqual(payload["sentry_event_id"], "event-123")
 
     def test_semantic_ocr_and_reading_order_gates_block_release_not_download(self) -> None:
         request = self._request_from_job_payload(

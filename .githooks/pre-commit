@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+python -m ruff check --select E9,F63,F7,F82 kindlemaster.py premium_tools.py scripts test_agent_config_contracts.py test_skill_contracts.py test_skill_guardrails.py test_github_ready_enforcement.py test_kindlemaster_entrypoint.py test_project_status.py
+python -m unittest test_agent_config_contracts.py test_skill_contracts.py test_skill_guardrails.py test_github_ready_enforcement.py

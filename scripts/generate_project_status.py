@@ -130,14 +130,29 @@ def _extract_payload_status(payload: dict[str, Any], *, lane: str) -> str:
         return "unavailable"
 
     if lane == "doctor":
+        doctor_statuses: list[str] = []
         surfaces = payload.get("verification_surfaces")
         if isinstance(surfaces, dict):
-            core_surface_statuses = [
+            doctor_statuses.extend(
                 _normalize_status((surfaces.get(name) or {}).get("status"))
                 for name in ("quick", "corpus", "release")
-            ]
-            if any(status != "unavailable" for status in core_surface_statuses):
-                return _pick_worse_status(*core_surface_statuses)
+            )
+        agent_readiness = payload.get("agent_readiness")
+        if isinstance(agent_readiness, dict):
+            doctor_statuses.append(_normalize_status(agent_readiness.get("status")))
+        nested_payload = payload.get("payload")
+        if isinstance(nested_payload, dict) and not doctor_statuses:
+            nested_surfaces = nested_payload.get("verification_surfaces")
+            if isinstance(nested_surfaces, dict):
+                doctor_statuses.extend(
+                    _normalize_status((nested_surfaces.get(name) or {}).get("status"))
+                    for name in ("quick", "corpus", "release")
+                )
+            nested_readiness = nested_payload.get("agent_readiness")
+            if isinstance(nested_readiness, dict):
+                doctor_statuses.append(_normalize_status(nested_readiness.get("status")))
+        if any(status != "unavailable" for status in doctor_statuses):
+            return _pick_worse_status(*doctor_statuses)
 
     summary = payload.get("summary")
     if isinstance(summary, dict):

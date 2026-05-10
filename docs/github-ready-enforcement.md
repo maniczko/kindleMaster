@@ -25,9 +25,75 @@ Local READY lanes:
 GitHub mirrors them as:
 
 - `ready-governance` -> developer bootstrap, Python matrix, static-quality, dependency, security, and coverage governance
-- `ready-quick` -> `python kindlemaster.py test --suite quick`
+- `ready-quick` -> `python kindlemaster.py test --suite quick`, Sprint 1 QA regression tests, and the optional Node contract hook
 - `ready-release` -> `python kindlemaster.py test --suite release`
 - `ready-gate` -> aggregate branch-protection check that fails unless governance, quick, and release lanes pass
+
+## Sprint 1 QA Gate
+
+`ready-quick` also runs:
+
+```powershell
+python -m unittest test_sprint1_quality_gates.py
+```
+
+This keeps release-score blockers visible for bad TOC quality, ad/sponsored fragments, AI notes leaked into reader text, and OCR artifacts without widening the bounded release lane.
+
+## Sprint 2 Runtime/Storage Gate
+
+The quick suite now includes contract tests for the local-first runtime job
+adapter and artifact storage abstraction. Those tests protect retry/timeout
+metadata, replay context, local artifact fallback, R2/S3-compatible
+configuration detection, retention defaults, and signed URL metadata without
+requiring live Trigger.dev or R2 credentials in CI.
+
+Browser-level Sprint 2 coverage lives in the runtime lane:
+
+```powershell
+python -m unittest test_sprint2_playwright_smoke.py
+```
+
+That Playwright smoke is registered in `python kindlemaster.py test --suite
+runtime`, not in `ready-quick`, so the daily quality gate remains bounded.
+
+## Sprint 3 AI Quality Gate
+
+The quick suite includes offline AI quality intelligence contracts:
+
+```powershell
+python -m unittest test_ai_quality_intelligence.py test_ai_ocr_cleanup.py test_ai_toc_detection.py
+```
+
+These tests keep AI OCR cleanup scoped to suspicious fragments, AI TOC detection
+scoped to low-confidence deterministic TOC, and provider failure or low
+confidence on the deterministic fallback path. No live AI credentials are
+required for READY.
+
+## Node Contract Hook
+
+This repo includes a minimal root Node workspace for static UI/API contract regressions. CI installs it only when `package.json` exists, then runs the canonical contract hook:
+
+```powershell
+npm run test:contracts:regression
+```
+
+The package also exposes `npm run test:js` and `npm run test:contract` for local use. If the workspace later migrates to pnpm for Sprint 2+ frontend work, keep the equivalent `pnpm run test:contracts:regression` hook so the READY workflow remains stable.
+
+The Vitest coverage stays contract-focused: it protects static quality-state normalization and the Sprint 4 React shell without making browser automation part of the quick READY lane.
+
+## Sprint 4 React UI Gate
+
+Sprint 4 adds a React/Vite shell at `/app` while preserving the legacy `/`
+panel during migration. Local UI checks are:
+
+```powershell
+npm run build:ui
+npm run test:ui
+```
+
+`npm run test:contracts:regression` now runs the static quality-state contract
+tests plus the React UI contract tests. Browser/runtime coverage remains in
+`python kindlemaster.py test --suite runtime`.
 
 ## Governance Gates
 
@@ -35,6 +101,7 @@ GitHub mirrors them as:
 
 - Python compatibility: Python 3.12, 3.13, and 3.14 on Ubuntu, plus a Windows canary on Python 3.14.
 - Static-quality: `ruff` runs correctness-focused rules only (`E9,F63,F7,F82`) over governance/control-plane files so legacy conversion style debt does not block unrelated work.
+- Agent config contracts: `test_agent_config_contracts.py` keeps Codex config, local hooks, Claude examples, and agent readiness checks aligned.
 - Dependency consistency: `python -m pip check` runs on every matrix entry.
 - Security audit: `pip-audit` runs once on the Ubuntu Python 3.14 lane against `requirements.txt` and `requirements-dev.txt` with a 60-second network timeout.
 - Coverage threshold: deterministic governance/control-plane paths (`kindlemaster.py` and `scripts/generate_project_status.py`) run through `coverage` with `GOVERNANCE_COVERAGE_FAIL_UNDER=75`.

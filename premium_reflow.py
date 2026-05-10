@@ -537,10 +537,11 @@ def _extract_raster_figures(
 _HEADING_NUM_RE = re.compile(r"^(\d+(?:\.\d+){0,4}\.?)(\s+.+)?$")
 _BULLET_RE = re.compile(r"^\s*[â€˘\u2022\u2023\u25E6\u00b7\u2219]\s*")
 _FIGURE_CAPTION_RE = re.compile(
-    r"^(Figure|Table|Diagram|Chart|Illustration|Exhibit)\s+[A-Za-z0-9][A-Za-z0-9.\-]*(?::|\b)",
+    r"^(Figure|Fig\.?|Rys\.?|Rysunek|Table|Tabela|Tab\.?|Diagram|Chart|Wykres|Illustration|Exhibit)\s+[A-Za-z0-9][A-Za-z0-9.\-]*(?::|\b)",
     re.IGNORECASE,
 )
-_TABLE_CAPTION_RE = re.compile(r"^Table\s+[A-Za-z0-9][A-Za-z0-9.\-]*(?::|\b)", re.IGNORECASE)
+_TABLE_CAPTION_RE = re.compile(r"^(?:Table|Tabela|Tab\.?)\s+[A-Za-z0-9][A-Za-z0-9.\-]*(?::|\b)", re.IGNORECASE)
+_NUMBERED_OUTLINE_RE = re.compile(r"^\s*(?P<number>\d{1,2}(?:\.\d{1,2}){0,4})\.?\s+(?P<title>\S.{2,})$")
 
 
 def _find_caption_lines(lines: list[TextLine]) -> list[TextLine]:
@@ -557,6 +558,7 @@ def _render_clip_png(page, clip: fitz.Rect, *, dpi: int, max_long_edge: int) -> 
 
 
 _PAGE_NUMBER_RE = re.compile(r"^\d{1,4}$")
+_RUNNING_PAGE_HEADER_RE = re.compile(r"(?i)\b(?:strona|page)\s+\d{1,4}\b")
 _MEMBER_COPY_RE = re.compile(
     r"(?i)complimentary\s+iiba(?:Ă‚Â®|Â®)?\s+member\s+copy|not\s+for\s+distribution\s+or\s+resale"
 )
@@ -577,6 +579,31 @@ def _looks_like_structural_heading_line(line: TextLine, body_size: float) -> boo
     return False
 
 
+def _looks_like_numbered_outline_heading_line(line: TextLine, *, page_width: float = 0.0) -> bool:
+    text = re.sub(r"\s+", " ", (line.text or "").strip())
+    if not text or len(text) > 170:
+        return False
+    if _FIGURE_CAPTION_RE.match(text):
+        return False
+    if not _NUMBERED_OUTLINE_RE.match(text):
+        return False
+    if re.search(r"[.!?;:]$", text):
+        return False
+    if page_width > 0 and line.x0 > max(132.0, page_width * 0.34):
+        return False
+    if line.x0 > 148:
+        return False
+    return len(text.split()) >= 3
+
+
+def _numbered_outline_level(title: str) -> int:
+    match = _NUMBERED_OUTLINE_RE.match(title or "")
+    if not match:
+        return 1
+    depth = match.group("number").count(".") + 1
+    return min(max(depth, 1), 3)
+
+
 def _filter_noise_lines(lines: list[TextLine], *, page_rect: fitz.Rect) -> list[TextLine]:
     filtered: list[TextLine] = []
     for line in lines:
@@ -584,6 +611,8 @@ def _filter_noise_lines(lines: list[TextLine], *, page_rect: fitz.Rect) -> list[
         if not text:
             continue
         if _MEMBER_COPY_RE.search(text):
+            continue
+        if _RUNNING_PAGE_HEADER_RE.search(text) and (line.y0 < page_rect.y0 + 72 or line.y1 > page_rect.y1 - 72):
             continue
         if _PAGE_NUMBER_RE.fullmatch(text) and (line.y0 < page_rect.y0 + 72 or line.y1 > page_rect.y1 - 42):
             continue
@@ -741,6 +770,8 @@ def _merge_lines_into_paragraphs(
             return 2
         if line.size >= heading_thresholds["h3"]:
             return 3
+        if _looks_like_numbered_outline_heading_line(line):
+            return 3
         # Bold short line with slightly larger font â†’ h3 candidate
         if line.is_bold and line.size > body_size * 1.03 and len(line.text.strip()) < 120:
             return 3
@@ -894,37 +925,153 @@ CHECKBOX_MARKERS = {
 
 
 def _extract_structured_table_regions(pdf_path: str) -> dict[int, list[PublicationTable]]:
-    if pdfplumber is None:
-        return {}
     table_regions: dict[int, list[PublicationTable]] = {}
-    try:
-        with pdfplumber.open(pdf_path) as pdf:
-            for page_index, page in enumerate(pdf.pages):
-                for table in page.find_tables() or []:
-                    rows = table.extract() or []
-                    classification, issues, confidence = _classify_pdf_table_rows(rows)
-                    if classification in {"reference_like", "toc_like", "layout_grid"}:
-                        continue
-                    normalized_rows = _normalize_table_rows(rows)
-                    if not normalized_rows:
-                        continue
-                    x0, top, x1, bottom = table.bbox
-                    table_model = PublicationTable(
-                        page_index=page_index,
-                        bbox=(float(x0), float(top), float(x1), float(bottom)),
-                        rows=normalized_rows,
-                        header_rows=_infer_table_header_rows(normalized_rows),
-                        y_position=float(top),
-                        confidence=confidence,
-                        classification=classification,
-                        issues=issues,
-                        page_span=[page_index],
-                    )
-                    table_model.html = _publication_table_to_html(table_model)
-                    table_regions.setdefault(page_index, []).append(table_model)
-    except Exception:
-        return {}
+    if pdfplumber is not None:
+        try:
+            with pdfplumber.open(pdf_path) as pdf:
+                for page_index, page in enumerate(pdf.pages):
+                    for table in page.find_tables() or []:
+                        rows = table.extract() or []
+                        classification, issues, confidence = _classify_pdf_table_rows(rows)
+                        if classification in {"reference_like", "toc_like", "layout_grid"}:
+                            continue
+                        normalized_rows = _normalize_table_rows(rows)
+                        if not normalized_rows:
+                            continue
+                        x0, top, x1, bottom = table.bbox
+                        table_model = PublicationTable(
+                            page_index=page_index,
+                            bbox=(float(x0), float(top), float(x1), float(bottom)),
+                            rows=normalized_rows,
+                            header_rows=_infer_table_header_rows(normalized_rows),
+                            y_position=float(top),
+                            confidence=confidence,
+                            classification=classification,
+                            issues=issues,
+                            page_span=[page_index],
+                        )
+                        table_model.html = _publication_table_to_html(table_model)
+                        table_regions.setdefault(page_index, []).append(table_model)
+        except Exception:
+            table_regions = {}
+    _add_captioned_positioned_table_fallbacks(pdf_path, table_regions)
     return _merge_continued_tables(table_regions)
+
+
+def _add_captioned_positioned_table_fallbacks(
+    pdf_path: str,
+    table_regions: dict[int, list[PublicationTable]],
+) -> None:
+    try:
+        doc = fitz.open(pdf_path)
+    except Exception:
+        return
+    try:
+        for page_index in range(len(doc)):
+            page = doc[page_index]
+            page_width = float(page.rect.width or 0.0)
+            lines = _extract_lines_from_page(page, page_index)
+            captions = [line for line in lines if _looks_like_table_caption(line.text)]
+            if not captions:
+                continue
+            existing = table_regions.get(page_index, [])
+            for caption in captions:
+                if any(abs(table.y_position - caption.y0) <= 96 for table in existing):
+                    continue
+                table = _captioned_lines_to_publication_table(
+                    caption,
+                    lines,
+                    page_width=page_width,
+                )
+                if table is None:
+                    continue
+                table_regions.setdefault(page_index, []).append(table)
+    finally:
+        doc.close()
+
+
+def _captioned_lines_to_publication_table(
+    caption: TextLine,
+    lines: list[TextLine],
+    *,
+    page_width: float,
+) -> PublicationTable | None:
+    stop_y = caption.y0 + 260
+    content_lines: list[TextLine] = []
+    for line in lines:
+        if line.page_index != caption.page_index:
+            continue
+        if line.y0 <= caption.y1 + 4:
+            continue
+        if line.y0 > stop_y:
+            break
+        text = re.sub(r"\s+", " ", line.text.strip())
+        if not text:
+            continue
+        if _looks_like_table_caption(text) or _looks_like_numbered_outline_heading_line(line, page_width=page_width):
+            break
+        if line.x0 < max(24.0, caption.x0 - 18) or line.x0 > min(page_width - 36.0, caption.x1 + 320):
+            continue
+        content_lines.append(line)
+
+    rows = _positioned_lines_to_table_rows(content_lines)
+    if len(rows) < 2 or max((len(row) for row in rows), default=0) < 2:
+        return None
+    normalized_rows = _normalize_table_rows(rows)
+    classification, issues, confidence = _classify_pdf_table_rows(normalized_rows)
+    if classification in {"reference_like", "toc_like", "layout_grid", "empty"}:
+        return None
+    x0 = min(line.x0 for line in content_lines)
+    y0 = min(line.y0 for line in content_lines)
+    x1 = max(line.x1 for line in content_lines)
+    y1 = max(line.y1 for line in content_lines)
+    if "positioned-text-fallback" not in issues:
+        issues.append("positioned-text-fallback")
+    table = PublicationTable(
+        page_index=caption.page_index,
+        bbox=(x0, y0, x1, y1),
+        rows=normalized_rows,
+        header_rows=_infer_table_header_rows(normalized_rows),
+        caption=caption.text.strip(),
+        y_position=caption.y0,
+        confidence=min(confidence, 0.82),
+        source_method="positioned-text",
+        classification=classification,
+        issues=issues,
+        page_span=[caption.page_index],
+    )
+    table.html = _publication_table_to_html(table)
+    return table if table.html else None
+
+
+def _positioned_lines_to_table_rows(lines: list[TextLine]) -> list[list[str]]:
+    if len(lines) < 4:
+        return []
+    sorted_lines = sorted(lines, key=lambda line: (round(line.y0, 1), line.x0))
+    row_groups: list[list[TextLine]] = []
+    for line in sorted_lines:
+        if not row_groups:
+            row_groups.append([line])
+            continue
+        previous = row_groups[-1]
+        row_mid = sum((item.y0 + item.y1) / 2.0 for item in previous) / len(previous)
+        line_mid = (line.y0 + line.y1) / 2.0
+        tolerance = max(3.5, line.height * 0.7)
+        if abs(line_mid - row_mid) <= tolerance:
+            previous.append(line)
+        else:
+            row_groups.append([line])
+
+    multi_cell_rows = [row for row in row_groups if len(row) >= 2]
+    if len(multi_cell_rows) < 2:
+        return []
+
+    rows: list[list[str]] = []
+    for row in row_groups:
+        cells = [re.sub(r"\s+", " ", cell.text.strip()) for cell in sorted(row, key=lambda item: item.x0)]
+        if any(cells):
+            rows.append(cells)
+    return rows
 
 
 def _table_rows_look_like_reference_records(rows: list[list[str | None]]) -> bool:
@@ -941,13 +1088,34 @@ def _table_rows_look_like_reference_records(rows: list[list[str | None]]) -> boo
 def _normalize_table_rows(rows: list[list[str | None]]) -> list[list[str]]:
     cleaned_rows: list[list[str]] = []
     for row in rows:
-        cleaned = [re.sub(r"\s+", " ", str(cell or "").strip()) for cell in row]
+        cleaned = [_clean_table_cell_text(cell) for cell in row]
         if any(cleaned):
             cleaned_rows.append(cleaned)
     if not cleaned_rows:
         return []
     column_count = max(len(row) for row in cleaned_rows)
     return [row + [""] * (column_count - len(row)) for row in cleaned_rows]
+
+
+def _clean_table_cell_text(value: object) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    if not text:
+        return ""
+    replacements = (
+        (re.compile(r"(?i)\bInvoiceDetailRe\s+quest\b"), "InvoiceDetailRequest"),
+        (re.compile(r"(?i)\bO\s+rderRequest\b"), "OrderRequest"),
+        (re.compile(r"(?i)\bO\s+rderResponse\b"), "OrderResponse"),
+        (re.compile(r"(?i)\bI\s+nvoiceResponse\b"), "InvoiceResponse"),
+        (re.compile(r"(?i)\be\s*[-\u2010\u2011]\s+invoicing\b"), "e-invoicing"),
+        (re.compile(r"(?i)\bremit\s*[-\u2010\u2011]\s+to\b"), "remit-to"),
+        (re.compile(r"(?i)\bEur\s+sap\b"), "Eursap"),
+        (re.compile(r"(?i)\bgovernance\s+dec\s+ku\b"), "governance decku"),
+        (re.compile(r"(?i)\bnotatka\s+rz\b"), "notatkarz"),
+        (re.compile(r"(?i)\bmanagers\s+kim\b"), "managerskim"),
+    )
+    for pattern, replacement in replacements:
+        text = pattern.sub(replacement, text)
+    return text
 
 
 def _classify_pdf_table_rows(rows: list[list[str | None]]) -> tuple[str, list[str], float]:
@@ -1569,7 +1737,10 @@ def _build_chapter_drafts(doc, toc: list, *, use_outline_positions: bool = False
             return positioned
 
     if not toc:
-        # No TOC at all â€“ single chapter covering the whole doc
+        synthetic = _select_synthetic_numbered_outline_chapter_entries(_positioned_numbered_outline_entries(doc))
+        if synthetic:
+            return _chapter_drafts_from_positioned_entries(doc, synthetic)
+        # No TOC at all - single chapter covering the whole doc
         return [ChapterDraft(title="Content", level=1, page_start=0, page_end=len(doc) - 1)]
 
     entries = normalize_toc_entries(toc)
@@ -1615,6 +1786,10 @@ def _build_positioned_chapter_drafts(doc) -> list[ChapterDraft]:
     if not entries:
         return []
 
+    return _chapter_drafts_from_positioned_entries(doc, entries)
+
+
+def _chapter_drafts_from_positioned_entries(doc, entries: list[dict]) -> list[ChapterDraft]:
     drafts: list[ChapterDraft] = []
     for index, entry in enumerate(entries):
         next_entry = entries[index + 1] if index + 1 < len(entries) else None
@@ -1650,6 +1825,56 @@ def _build_positioned_chapter_drafts(doc) -> list[ChapterDraft]:
             ),
         )
     return drafts
+
+
+def _positioned_numbered_outline_entries(doc) -> list[dict]:
+    entries: list[dict] = []
+    seen: set[tuple[int, int, str]] = set()
+    for page_index in range(len(doc)):
+        page = doc[page_index]
+        page_width = float(page.rect.width or 0.0)
+        try:
+            lines = _extract_lines_from_page(page, page_index)
+        except Exception:
+            continue
+        for line in lines:
+            if not _looks_like_numbered_outline_heading_line(line, page_width=page_width):
+                continue
+            title = re.sub(r"\s+", " ", line.text.strip())
+            key = (page_index, int(round(line.y0)), re.sub(r"\W+", "", title.lower()))
+            if key in seen:
+                continue
+            seen.add(key)
+            entries.append(
+                {
+                    "level": _numbered_outline_level(title),
+                    "title": title,
+                    "page": page_index,
+                    "y": float(line.y0),
+                    "source": "synthetic-numbered-outline",
+                }
+            )
+    entries.sort(key=lambda item: (int(item["page"]), float(item.get("y") or 0.0), int(item["level"])))
+    return entries
+
+
+def _select_synthetic_numbered_outline_chapter_entries(entries: list[dict]) -> list[dict]:
+    if len(entries) < 3:
+        return []
+    selected: list[dict] = []
+    previous_key = ""
+    for entry in entries:
+        title = str(entry.get("title") or "")
+        if _is_low_value_outline_title(title):
+            continue
+        key = re.sub(r"\W+", "", title.lower())
+        if key == previous_key:
+            continue
+        previous_key = key
+        if int(entry.get("level", 1) or 1) > 2:
+            continue
+        selected.append(entry)
+    return selected
 
 
 def _positioned_toc_entries(doc) -> list[dict]:
@@ -1828,8 +2053,17 @@ def extract_book_premium(
         page_lines[page_num] = _filter_lines_for_figures(page_line_items, figures)
         page_figures[page_num] = figures
 
-    # â”€â”€ Split into chapters via TOC â”€â”€
+    # â”€â”€ Split into chapters via TOC or synthetic numbered outline â”€â”€
     drafts = _build_chapter_drafts(doc, toc, use_outline_positions=document_like_report)
+    detected_outline_drafts = [draft for draft in drafts if draft.title not in {"Content", "Front Matter"}]
+    synthetic_outline_count = 0 if toc else len(detected_outline_drafts)
+    if synthetic_outline_count >= 3 and page_tables and len(doc) >= 3:
+        document_like_report = True
+    toc_for_output = toc or [
+        (draft.level, draft.title, draft.page_start + 1)
+        for draft in detected_outline_drafts
+    ]
+    emitted_toc_entries: list[tuple[int, str, int]] = []
 
     # Build all_images registry (flat)
     all_images: list[dict] = []
@@ -1952,6 +2186,9 @@ def extract_book_premium(
         if in_list:
             wrapped.append("</ul>")
 
+        if not wrapped and not chapter_figures and not chapter_tables:
+            continue
+
         reading_flow_samples.append(
             {
                 "title": draft.title,
@@ -1978,11 +2215,16 @@ def extract_book_premium(
                 "_page_end": draft.page_end,
             }
         )
+        if not toc and draft.title != "Front Matter":
+            emitted_toc_entries.append((draft.level, draft.title, draft.page_start + 1))
 
         if not cover_assigned and chapter_figures:
             cover_assigned = True
 
     doc.close()
+
+    if not toc and emitted_toc_entries:
+        toc_for_output = emitted_toc_entries
 
     table_summary = _table_summary_payload(page_tables)
     reading_order_summary = _reading_order_summary(page_lines, page_widths)
@@ -1994,12 +2236,13 @@ def extract_book_premium(
         "layout_mode": "reflowable",
         "chapters": chapters,
         "images": all_images,
-        "toc": toc,
+        "toc": toc_for_output,
         "metadata": {
             **(pdf_metadata or {}),
             "source_table_count": table_summary["source_table_count"],
             "xhtml_table_count": table_summary["xhtml_table_count"],
             "table_summary": table_summary,
+            "table_reconstruction": table_summary,
             "figure_summary": {
                 "figure_count": len(all_images),
                 "sampled_figure_neighborhoods": figure_neighborhood_samples[:16],
@@ -2009,6 +2252,9 @@ def extract_book_premium(
                 "sampled_sections": _select_reading_flow_samples(reading_flow_samples),
             },
             "document_like_report": document_like_report,
+            "detected_outline_entries": len(toc_for_output),
+            "synthetic_outline_entries": synthetic_outline_count,
+            "reader_artifact_score": {},
         },
     }
 

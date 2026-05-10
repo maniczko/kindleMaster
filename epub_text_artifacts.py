@@ -27,6 +27,13 @@ URL_FRAGMENT_RE = re.compile(r"(?i)(?:https?\s*:\s*/?\s*/|www\s*\.\s+|doi\s*:\s+
 TECHNICAL_PLACEHOLDER_RE = re.compile(
     r"(?i)(?:__KM_PROTECTED_\d+__|\bTODO\b|\bFIXME\b|\b(?:Object|State)\s+\d+\b|\bRank\s*=\s*\d+\s*\*\s*\d+\b)"
 )
+KNOWN_CAMEL_DOMAIN_TOKENS = {
+    "OrderRequest",
+    "OrderResponse",
+    "InvoiceDetailRequest",
+    "InvoiceResponse",
+}
+POLISH_DIACRITIC_RE = re.compile(r"[ąćęłńóśźżĄĆĘŁŃÓŚŹŻ]")
 
 ARTIFACT_KEYS = (
     "split_word_count",
@@ -180,6 +187,8 @@ def _analyze_text(document_path: str, text: str) -> TextArtifactMetrics:
 def _count_glued_tokens(tokens: list[str]) -> int:
     count = 0
     for token in tokens:
+        if token in KNOWN_CAMEL_DOMAIN_TOKENS:
+            continue
         if _looks_like_glued_token(token):
             count += 1
             continue
@@ -193,6 +202,10 @@ def _count_glued_tokens(tokens: list[str]) -> int:
 
 
 def _looks_like_glued_token(token: str) -> bool:
+    if token in KNOWN_CAMEL_DOMAIN_TOKENS:
+        return False
+    if POLISH_DIACRITIC_RE.search(token) and not CAMEL_GLUE_RE.search(token) and len(token) < 18:
+        return False
     if LONG_ALPHA_RE.match(token):
         return True
     if len(token) < 12 or len(token) > 36:

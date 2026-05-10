@@ -18,14 +18,23 @@ PDF_TECHNICAL_METADATA_MARKERS = (
     "producer",
     "scanner",
     "microsoft word",
+    "python-docx",
     "libreoffice",
     "openoffice",
     "quarkxpress",
     "indesign",
 )
+PDF_TECHNICAL_METADATA_EXACT_VALUES = {
+    "unknown",
+    "writer",
+    "python-docx",
+    "libreoffice writer",
+    "openoffice writer",
+}
 PDF_TITLE_NOISE_RE = re.compile(
     r"(?i)\b(?:isbn|issn|copyright|all rights reserved|www\.|https?://|table of contents|contents|spis tresci|spis treści)\b"
 )
+PDF_COVER_TITLE_NOISE_EXTRA_RE = re.compile(r"(?i)\b(?:material do nauki|materia[lł] do nauki)\b")
 LETTER_SPACED_TOKEN_RE = re.compile(r"^[A-Z&]{1,3}$")
 
 
@@ -82,6 +91,8 @@ def _looks_like_pdf_technical_value(value: str) -> bool:
     if not normalized:
         return True
     lowered = normalized.lower()
+    if lowered in PDF_TECHNICAL_METADATA_EXACT_VALUES:
+        return True
     return any(marker in lowered for marker in PDF_TECHNICAL_METADATA_MARKERS)
 
 
@@ -104,7 +115,9 @@ def _pdf_author_is_weak(value: str | None) -> bool:
     if not normalized:
         return True
     lowered = normalized.lower()
-    if lowered in {"unknown", "author", "creator"}:
+    if lowered in {"unknown", "author", "creator", "writer", "python-docx", "libreoffice writer"}:
+        return True
+    if _looks_like_pdf_technical_value(normalized):
         return True
     return _looks_like_pdf_technical_value(normalized)
 
@@ -152,6 +165,8 @@ def _looks_like_cover_title_noise(text: str) -> bool:
         return True
     if PDF_TITLE_NOISE_RE.search(normalized):
         return True
+    if PDF_COVER_TITLE_NOISE_EXTRA_RE.search(normalized):
+        return True
     if YEAR_RE.fullmatch(normalized):
         return True
     if re.fullmatch(r"[A-Z]{2,6}", normalized):
@@ -174,7 +189,7 @@ def _infer_pdf_title_from_cover(doc: Any, *, file_stem: str) -> str:
         return _clean_pdf_metadata_value(" ".join(lines[:2]))
 
     max_size = max(float(item["size"]) for item in candidates)
-    min_title_size = max(12.0, max_size * 0.62)
+    min_title_size = max(12.0, max_size * 0.88)
     chosen: list[str] = []
     for item in candidates:
         text = str(item["text"])
@@ -186,9 +201,84 @@ def _infer_pdf_title_from_cover(doc: Any, *, file_stem: str) -> str:
         if len(chosen) >= 4 or len(" ".join(chosen)) > 180:
             break
     title = _clean_pdf_metadata_value(" ".join(chosen))
+    title = _repair_title_trailing_fragment_from_filename(title, file_stem=file_stem)
     if _pdf_title_is_weak(title, file_stem=file_stem):
         return ""
     return title
+
+
+def _repair_title_trailing_fragment_from_filename(title: str, *, file_stem: str) -> str:
+    cleaned = _clean_pdf_metadata_value(title)
+    if not cleaned:
+        return cleaned
+    match = re.search(r"(?P<prefix>.*\b)(?P<fragment>[A-Za-z]{2,12})$", cleaned)
+    if not match:
+        return cleaned
+    fragment = match.group("fragment")
+    filename_tokens = [
+        token
+        for token in re.split(r"[_\-\s]+", file_stem or "")
+        if re.fullmatch(r"[A-Za-z]{3,24}", token or "")
+    ]
+    replacement = ""
+    for token in filename_tokens:
+        if token.lower().startswith(fragment.lower()) and len(token) >= len(fragment) + 2:
+            replacement = token
+            break
+    if not replacement:
+        return cleaned
+    if fragment[:1].isupper():
+        replacement = replacement[:1].upper() + replacement[1:].lower()
+    repaired = f"{match.group('prefix')}{replacement}"
+    if repaired.count("(") > repaired.count(")"):
+        repaired += ")"
+    return repaired
+
+
+def _infer_author_from_filename(file_stem: str) -> str:
+    normalized = re.sub(r"[\s\-]+", "_", file_stem or "").strip("_")
+    if not normalized:
+        return ""
+    tokens = [token for token in normalized.split("_") if token]
+    if len(tokens) < 3:
+        return ""
+    version_index = None
+    for index, token in enumerate(tokens):
+        if re.fullmatch(r"v?\d+(?:\.\d+)?", token, flags=re.IGNORECASE):
+            version_index = index
+            break
+    if version_index is None or version_index == 0:
+        return ""
+    candidate = tokens[version_index - 1].strip()
+    if not re.fullmatch(r"[^\W\d_]{2,16}", candidate, flags=re.UNICODE):
+        return ""
+    lowered = candidate.lower()
+    blocked = {
+        "final",
+        "draft",
+        "copy",
+        "material",
+        "nauka",
+        "raport",
+        "report",
+        "ebook",
+        "epub",
+        "pdf",
+        "book",
+        "guide",
+        "handbook",
+        "study",
+        "training",
+        "tech",
+        "technical",
+        "prod",
+        "production",
+    }
+    if lowered in blocked:
+        return ""
+    if len(lowered) > 4 and candidate == lowered:
+        return ""
+    return lowered[:1].upper() + lowered[1:]
 
 
 def _clean_publisher_candidate(value: str) -> str:
@@ -376,6 +466,7 @@ def _extract_pdf_metadata(pdf_path: str) -> dict[str, object]:
     """Extract and infer publication metadata for use in EPUB metadata."""
 
     file_stem = Path(pdf_path).stem
+    metadata_inference: dict[str, list[str]] = {"title": [], "author": [], "publisher": []}
     try:
         doc = fitz.open(pdf_path)
         try:
@@ -397,12 +488,31 @@ def _extract_pdf_metadata(pdf_path: str) -> dict[str, object]:
         finally:
             doc.close()
 
-        title = raw_title if not _pdf_title_is_weak(raw_title, file_stem=file_stem) else inferred.get("title", "") or file_stem
+        raw_title_is_weak = _pdf_title_is_weak(raw_title, file_stem=file_stem)
+        title = raw_title if not raw_title_is_weak else inferred.get("title", "") or file_stem
+        if raw_title_is_weak and inferred.get("title"):
+            metadata_inference["title"].append("cover-title")
         publisher = str(inferred.get("publisher", "") or "")
         if raw_author and publisher and _publisher_expands_author_acronym(raw_author, publisher):
             author = publisher
+            metadata_inference["author"].append("publisher-expanded-acronym")
         else:
-            author = raw_author if not _pdf_author_is_weak(raw_author) else str(inferred.get("author", "") or "") or "Unknown"
+            raw_author_is_weak = _pdf_author_is_weak(raw_author)
+            if raw_author and raw_author_is_weak:
+                metadata_inference["author"].append("technical-author-rejected")
+            if not raw_author_is_weak:
+                author = raw_author
+            else:
+                filename_author = _infer_author_from_filename(file_stem)
+                if filename_author:
+                    author = filename_author
+                    metadata_inference["author"].append("filename-author")
+                else:
+                    author = str(inferred.get("author", "") or "") or "Unknown"
+                    if inferred.get("author"):
+                        metadata_inference["author"].append("text-author")
+        if publisher:
+            metadata_inference["publisher"].append("text-publisher")
         subjects = list(inferred.get("subjects", []) or [])
         subject = raw_subject or raw_keywords or str(inferred.get("subject", "") or "")
         description = str(inferred.get("description", "") or "")
@@ -421,6 +531,7 @@ def _extract_pdf_metadata(pdf_path: str) -> dict[str, object]:
             "creation_date": creation_date,
             "modification_date": modification_date,
             "date": publication_date,
+            "metadata_inference": {key: value for key, value in metadata_inference.items() if value},
         }
     except Exception as error:
         print(f"Warning: Could not extract PDF metadata: {error}")
@@ -436,6 +547,7 @@ def _extract_pdf_metadata(pdf_path: str) -> dict[str, object]:
             "creation_date": "",
             "modification_date": "",
             "date": "",
+            "metadata_inference": {},
         }
 
 

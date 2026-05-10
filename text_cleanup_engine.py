@@ -75,6 +75,7 @@ HYPHEN_BREAK_RE = re.compile(
     r"(?P<left>\b[^\W\d_]{2,24})(?P<marker>[-\u00ad\u2010\u2011])(?P<gap>\s+)(?P<right>[^\W\d_]{2,24}\b)",
     re.UNICODE,
 )
+E_INVOICING_SPLIT_RE = re.compile(r"(?i)\be\s*[-\u2010\u2011]\s+invoicing\b")
 SPACE_BEFORE_PUNCT_RE = re.compile(r"(?P<space>\s+)(?P<punct>[,.;:!?])")
 MISSING_SENTENCE_SPACE_RE = re.compile(r"(?P<lead>[.!?;:])(?P<next>[A-ZĄĆĘŁŃÓŚŹŻ])")
 NUMBER_PERCENT_RE = re.compile(r"(?P<number>\d)\s+(?P<unit>%)")
@@ -165,6 +166,12 @@ DEFAULT_DOMAIN_TERMS = (
     {"canonical": "acquiringowym", "variants": ["acquiringowym"], "protected": True},
     {"canonical": "ownerem", "variants": ["ownerem"], "protected": True},
     {"canonical": "ownera", "variants": ["ownera"], "protected": True},
+    {"canonical": "ownerzy", "variants": ["ownerzy"], "protected": True},
+    {"canonical": "e-invoicing", "variants": ["einvoicing", "e invoicing"], "protected": True},
+    {"canonical": "Eursap", "variants": ["Eursap"], "protected": True},
+    {"canonical": "InvoiceDetailRequest", "variants": ["InvoiceDetailRequest"], "protected": True},
+    {"canonical": "OrderRequest", "variants": ["OrderRequest"], "protected": True},
+    {"canonical": "OrderResponse", "variants": ["OrderResponse"], "protected": True},
     {"canonical": "walidowac", "variants": ["walidowac"], "protected": True},
     {"canonical": "walidacja", "variants": ["walidacja"], "protected": True},
     {"canonical": "general ledger", "variants": ["generalledger"], "protected": True},
@@ -173,6 +180,22 @@ DEFAULT_DOMAIN_TERMS = (
     {"canonical": "queenside", "variants": ["queenside"], "protected": True},
     {"canonical": "simul", "variants": ["simul"], "protected": True},
 )
+DEFAULT_FORCED_MERGES = {
+    "re port": "report",
+    "re portu": "reportu",
+    "InvoiceDetailRe quest": "InvoiceDetailRequest",
+    "O rderRequest": "OrderRequest",
+    "O rderResponse": "OrderResponse",
+    "I nvoiceResponse": "InvoiceResponse",
+    "o wner": "owner",
+    "o wnerzy": "ownerzy",
+    "o wnerem": "ownerem",
+    "notatka rz": "notatkarz",
+    "dec ku": "decku",
+    "governance dec": "governance deck",
+    "managers kim": "managerskim",
+    "o sadzisz": "osadzisz",
+}
 POLISH_MIXED_SUFFIX_FRAGMENTS = POLISH_SUFFIX_FRAGMENTS | {"em", "om", "ie", "ego", "owej", "owym", "owych"}
 
 
@@ -504,6 +527,12 @@ def _augment_runtime_domain_terms(
 
 def _load_domain_dictionary(path: str | None) -> _DomainLexicon:
     lexicon = _DomainLexicon()
+    lexicon.forced_merges = {
+        _normalize_lookup_key(key): value
+        for key, value in DEFAULT_FORCED_MERGES.items()
+    }
+    for replacement in lexicon.forced_merges.values():
+        lexicon.protected_terms.add(_normalize_lookup_key(replacement))
     for term in DEFAULT_DOMAIN_TERMS:
         canonical = str(term.get("canonical") or "").strip()
         if not canonical:
@@ -549,11 +578,11 @@ def _load_domain_dictionary(path: str | None) -> _DomainLexicon:
         for key, value in forced_splits.items()
         if str(value).strip()
     }
-    lexicon.forced_merges = {
+    lexicon.forced_merges.update({
         _normalize_lookup_key(key): str(value).strip()
         for key, value in forced_merges.items()
         if str(value).strip()
-    }
+    })
     for replacement in lexicon.forced_merges.values():
         lexicon.protected_terms.add(_normalize_lookup_key(replacement))
     return lexicon
@@ -773,6 +802,7 @@ def _clean_text_slot(
 
     appliers = (
         _apply_forced_split_pass,
+        _apply_known_phrase_pass,
         _apply_forced_merge_pass,
         _apply_hyphen_break_pass,
         _apply_split_word_pass,
@@ -837,6 +867,49 @@ def _apply_forced_merge_pass(text: str, *, context: _TextNodeContext, config: Te
         config=config,
         builder=lambda left, gap, right: _forced_merge_proposal(left, gap, right, context=context, lexicon=lexicon),
     )
+
+
+def _apply_known_phrase_pass(text: str, *, context: _TextNodeContext, config: TextCleanupConfig, lexicon: _DomainLexicon):
+    del lexicon
+    if context.is_anchor_text:
+        return text, []
+    patterns = (
+        (E_INVOICING_SPLIT_RE, lambda match: "E-invoicing" if match.group(0).startswith("E") else "e-invoicing", "known-domain-phrase"),
+        (re.compile(r"(?i)\bremit\s*[-\u2010\u2011]\s+to\b"), lambda match: "remit-to", "known-domain-phrase"),
+        (re.compile(r"(?i)\bEur\s+sap\b"), lambda match: "Eursap", "known-domain-phrase"),
+        (re.compile(r"(?i)\bw\s+a\s+lidacyjne\b"), lambda match: "walidacyjne", "known-pl-split-word"),
+        (re.compile(r"(?i)\ba\s+u\s+toprezent(?P<suffix>[^\s<.,;:]*)"), lambda match: f"autoprezent{match.group('suffix') or ''}", "known-pl-split-word"),
+        (re.compile(r"(?i)\bgovernance\s+dec\s+ku\b"), lambda match: "governance decku", "known-pl-en-suffix-phrase"),
+    )
+    working = text
+    decisions: list[CleanupDecision] = []
+    for pattern, replacement_builder, reason_code in patterns:
+        rebuilt: list[str] = []
+        cursor = 0
+        changed = False
+        for match in pattern.finditer(working):
+            replacement = replacement_builder(match)
+            proposal = _Proposal(
+                before=match.group(0),
+                after=replacement,
+                error_class="known-phrase-spacing",
+                lexical_score=1.0,
+                context_score=0.96,
+                language_score=0.95,
+                dom_score=1.0,
+                bonus_score=1.0,
+                reason_codes=[reason_code],
+            )
+            decision = _make_decision(proposal, context=context, config=config)
+            decisions.append(decision)
+            rebuilt.append(working[cursor:match.start()])
+            rebuilt.append(replacement if decision.status == "safe_auto_fix" else match.group(0))
+            cursor = match.end()
+            changed = True
+        if changed:
+            rebuilt.append(working[cursor:])
+            working = "".join(rebuilt)
+    return working, decisions
 
 
 def _apply_hyphen_break_pass(text: str, *, context: _TextNodeContext, config: TextCleanupConfig, lexicon: _DomainLexicon):
@@ -1018,7 +1091,9 @@ def _forced_split_proposal(token: str, *, context: _TextNodeContext, lexicon: _D
 
 
 def _forced_merge_proposal(left: str, gap: str, right: str, *, context: _TextNodeContext, lexicon: _DomainLexicon) -> _Proposal | None:
-    del gap, context
+    del gap
+    if context.is_anchor_text:
+        return None
     joined_key = _normalize_lookup_key(f"{left} {right}")
     replacement = lexicon.forced_merges.get(joined_key)
     if not replacement:
@@ -1209,6 +1284,8 @@ def _split_word_proposal(
     lexicon: _DomainLexicon,
 ) -> _Proposal | None:
     del gap
+    if context.is_anchor_text:
+        return None
     if PLACEHOLDER_RE.fullmatch(left) or PLACEHOLDER_RE.fullmatch(right):
         return None
     if lexicon.is_protected(left) or lexicon.is_protected(right):
@@ -1413,8 +1490,16 @@ def _protect_segments(text: str) -> tuple[str, dict[str, str]]:
         placeholders[key] = match.group(0)
         return key
 
-    for pattern in (URL_RE, EMAIL_RE, VERSION_RE, SYSTEM_ID_RE, INVOICE_RE):
+    for pattern in (URL_RE, EMAIL_RE, VERSION_RE, SYSTEM_ID_RE):
         protected = pattern.sub(_replace, protected)
+
+    def _replace_invoice_like(match: re.Match) -> str:
+        token = match.group(0)
+        if re.search(r"[\d/_:-]", token) or token.upper() == token:
+            return _replace(match)
+        return token
+
+    protected = INVOICE_RE.sub(_replace_invoice_like, protected)
     return protected, placeholders
 
 

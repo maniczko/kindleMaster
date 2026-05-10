@@ -18,6 +18,8 @@ class GithubReadyEnforcementTests(unittest.TestCase):
         self.assertIn('python-version: "3.14"', workflow_text)
         self.assertIn("windows-latest", workflow_text)
         self.assertIn("python kindlemaster.py test --suite quick", workflow_text)
+        self.assertIn("python -m unittest test_sprint1_quality_gates.py", workflow_text)
+        self.assertIn("pnpm run test:contracts:regression", workflow_text)
         self.assertIn("python kindlemaster.py test --suite release", workflow_text)
         self.assertIn("needs:", workflow_text)
         self.assertIn("- ready-governance", workflow_text)
@@ -61,10 +63,14 @@ class GithubReadyEnforcementTests(unittest.TestCase):
         self.assertIn("pip-audit", doc_text)
         self.assertIn("coverage", doc_text)
         self.assertIn("core conversion coverage", doc_text)
+        self.assertIn("Sprint 1 QA regression tests", doc_text)
+        self.assertIn("pnpm run test:contracts:regression", doc_text)
         self.assertIn("Python 3.12, 3.13, and 3.14", doc_text)
         self.assertIn("governance artifacts", doc_text)
         self.assertIn("ready-gate", workflow_text)
         self.assertIn("Python 3.12, 3.13, and 3.14", matrix_text)
+        self.assertIn("test_sprint1_quality_gates.py", matrix_text)
+        self.assertIn("pnpm run test:contracts:regression", matrix_text)
         self.assertIn("Windows canary", matrix_text)
 
 

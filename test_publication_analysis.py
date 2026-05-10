@@ -8,12 +8,44 @@ from unittest.mock import patch
 
 import fitz
 
-from premium_reflow import _build_chapter_drafts, _select_positioned_outline_chapter_entries
+from premium_reflow import PublicationTable, _build_chapter_drafts, _publication_table_to_html, _select_positioned_outline_chapter_entries
 from publication_analysis import _choose_profile, analyze_publication
 from publication_pipeline import _normalize_section_title_candidate
 
 
 class PublicationAnalysisTests(unittest.TestCase):
+    def _create_numbered_training_pdf_without_bookmarks(self, pdf_path: Path) -> None:
+        doc = fitz.open()
+        for page_index in range(4):
+            page = doc.new_page(width=595, height=842)
+            page.insert_text((42, 32), f"Material do nauki - Coupa | Strona {page_index + 1}", fontsize=8)
+            if page_index == 0:
+                page.insert_text((72, 92), "Material do nauki i podniesienia wartosci rynkowej", fontsize=15)
+                page.insert_text((72, 132), "1. Co ta oferta naprawde premiuje", fontsize=16)
+            elif page_index == 1:
+                page.insert_text((72, 92), "2. Jak ta rola rozklada sie na realne zadania", fontsize=16)
+            elif page_index == 2:
+                page.insert_text((72, 92), "3.2 Jak myslec o e-invoicing na poziomie PMO", fontsize=15)
+            else:
+                page.insert_text((72, 92), "18.1 Case A - dostawca nie moze wystawic faktury", fontsize=15)
+            page.insert_text(
+                (72, 132),
+                "Ten akapit opisuje proces, governance, ownerow, ryzyka i decyzje. " * 4,
+                fontsize=10,
+            )
+            page.draw_rect(fitz.Rect(72, 240, 520, 330))
+            page.draw_line((72, 270), (520, 270))
+            page.draw_line((220, 240), (220, 330))
+            page.draw_line((370, 240), (370, 330))
+            page.insert_text((82, 258), "Tabela 1. Priorytety kompetencyjne", fontsize=9)
+            page.insert_text((82, 290), "Obszar", fontsize=9)
+            page.insert_text((230, 290), "Waga", fontsize=9)
+            page.insert_text((380, 290), "Priorytet", fontsize=9)
+            page.draw_rect(fitz.Rect(72, 420, 240, 510))
+            page.insert_text((82, 462), "Rys. 1", fontsize=9)
+        doc.save(pdf_path)
+        doc.close()
+
     def test_forced_diagram_profile_skips_expensive_table_detection(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             pdf_path = Path(temp_dir) / "diagram-profile.pdf"
@@ -51,6 +83,79 @@ class PublicationAnalysisTests(unittest.TestCase):
         self.assertEqual(profile, "book_reflow")
         self.assertEqual(ui_profile, "technical-study")
         self.assertIn("raport", reason.lower())
+
+    def test_numbered_training_report_without_bookmarks_routes_to_technical_book(self) -> None:
+        profile, ui_profile, reason = _choose_profile(
+            preferred_profile="auto-premium",
+            total_pages=20,
+            has_toc=False,
+            has_tables=True,
+            has_diagrams=False,
+            has_meaningful_images=True,
+            estimated_columns=2,
+            layout_heavy=True,
+            text_heavy=True,
+            text_page_ratio=1.0,
+            scanned_page_ratio=0.0,
+            legacy_strategy="layout_fixed",
+            numbered_section_count=18,
+        )
+
+        self.assertEqual(profile, "book_reflow")
+        self.assertEqual(ui_profile, "technical-study")
+        self.assertIn("numerowane", reason.lower())
+
+    def test_analyze_publication_detects_numbered_report_outline_without_pdf_bookmarks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = Path(temp_dir) / "material_nauka_coupa_iwo_v5.pdf"
+            self._create_numbered_training_pdf_without_bookmarks(pdf_path)
+
+            with patch("publication_analysis.detect_toolchain", return_value={}):
+                analysis = analyze_publication(str(pdf_path))
+
+        self.assertFalse(analysis.has_toc)
+        self.assertEqual(analysis.profile, "book_reflow")
+        self.assertEqual(analysis.ui_profile, "technical-study")
+        self.assertIn("numbered-sections", analysis.detected_features)
+        self.assertGreaterEqual(analysis.estimated_sections, 4)
+
+    def test_premium_reflow_builds_synthetic_chapter_drafts_from_numbered_headings(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = Path(temp_dir) / "material_nauka_coupa_iwo_v5.pdf"
+            self._create_numbered_training_pdf_without_bookmarks(pdf_path)
+            doc = fitz.open(pdf_path)
+            try:
+                drafts = _build_chapter_drafts(doc, [])
+            finally:
+                doc.close()
+
+        titles = [draft.title for draft in drafts]
+        self.assertIn("1. Co ta oferta naprawde premiuje", titles)
+        self.assertIn("2. Jak ta rola rozklada sie na realne zadania", titles)
+        self.assertIn("3.2 Jak myslec o e-invoicing na poziomie PMO", titles)
+        self.assertIn("18.1 Case A - dostawca nie moze wystawic faktury", titles)
+
+    def test_captioned_table_candidates_render_as_kindle_table_or_row_list(self) -> None:
+        table = PublicationTable(
+            page_index=0,
+            bbox=(72.0, 240.0, 520.0, 330.0),
+            y_position=240.0,
+            rows=[
+                ["Obszar", "Waga", "Priorytet"],
+                ["E-invoicing", "5.0", "wysoki"],
+                ["PMO governance", "4.9", "wysoki"],
+            ],
+            header_rows=1,
+            caption="Tabela 1. Priorytety kompetencyjne",
+            confidence=0.96,
+            classification="semantic",
+        )
+
+        rendered = _publication_table_to_html(table)
+
+        self.assertTrue(rendered.startswith('<table class="report-table"') or "table-row-list" in rendered)
+        self.assertIn("Tabela 1. Priorytety kompetencyjne", rendered)
+        self.assertNotIn("<p>Tabela 1. Priorytety kompetencyjne</p>", rendered)
 
     def test_section_title_normalization_preserves_meaningful_hyphenated_report_titles(self) -> None:
         self.assertEqual(

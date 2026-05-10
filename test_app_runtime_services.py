@@ -270,6 +270,13 @@ class AppRuntimeServicesTests(unittest.TestCase):
                         "records_reconstructed": 6,
                         "manual_review": [{"id": index} for index in range(20)],
                     },
+                    "ai_quality": {
+                        "status": "fallback",
+                        "before_quality_score": 7.4,
+                        "after_quality_score": 7.4,
+                        "provider": {"ocr_cleanup": "none", "toc_detection": "none"},
+                        "fallback_reasons": ["provider-not-configured"],
+                    },
                 },
                 "semantic_cleanup": {
                     "status": "failed",
@@ -320,6 +327,9 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertEqual(len(metadata["content_metrics"]["largest_assets"]), 20)
         self.assertEqual(metadata["text_cleanup"]["review_needed_count"], 2)
         self.assertEqual(len(metadata["text_cleanup"]["examples"]), 20)
+        self.assertEqual(metadata["ai_quality"]["status"], "fallback")
+        self.assertEqual(metadata["ai_quality"]["before_quality_score"], 7.4)
+        self.assertEqual(metadata["ai_quality"]["provider"]["ocr_cleanup"], "none")
         self.assertEqual(metadata["reference_cleanup"]["quality_gate_status"], "passed_with_warnings")
         self.assertEqual(metadata["reference_cleanup"]["visible_junk_detected"], 1)
         self.assertEqual(metadata["semantic_cleanup"]["status"], "failed")

@@ -4,7 +4,9 @@ __pycache__/
 .venv/
 
 # Agent/editor state
-.claude/
+.claude/*
+.claude/settings.local.json
+!.claude/settings.example.json
 
 # Local environments
 .env
@@ -45,6 +47,7 @@ live_test_v9_unzipped/
 # Binary/tool downloads kept locally
 node_modules/
 dist/
+static/react/
 tools/
 tesseract-setup.exe
 extracted_img_*.jpeg

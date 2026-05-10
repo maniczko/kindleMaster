@@ -9,6 +9,7 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
+import tomllib
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,23 @@ DEV_REQUIREMENT_MODULES: tuple[tuple[str, str, str], ...] = (
     ("coverage[toml]", "coverage", "coverage"),
     ("playwright", "playwright", "Playwright"),
     ("waitress", "waitress", "Waitress"),
+)
+
+KINDLEMASTER_SKILL_NAMES: tuple[str, ...] = (
+    "kindlemaster-epub-release-auditor",
+    "kindlemaster-reference-repair",
+    "kindlemaster-heading-toc-recovery",
+    "kindlemaster-text-normalization-pl-en",
+    "kindlemaster-corpus-smoke",
+    "kindlemaster-workflow-operator",
+    "kindlemaster-ui-runtime-debug",
+)
+
+REQUIRED_CODEX_PLUGINS: tuple[str, ...] = (
+    "github@openai-curated",
+    "linear@openai-curated",
+    "build-web-apps@openai-curated",
+    "browser-use@openai-bundled",
 )
 
 
@@ -301,6 +319,135 @@ def clear_toolchain_cache() -> None:
     _detect_toolchain_cached.cache_clear()
 
 
+def _read_git_hooks_path(repo_root: Path) -> str:
+    try:
+        completed = subprocess.run(
+            ["git", "config", "--get", "core.hooksPath"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except Exception:
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout.strip().strip('"').replace("\\", "/").rstrip("/")
+
+
+def _read_codex_config(config_path: Path) -> tuple[dict[str, Any] | None, str]:
+    if not config_path.exists():
+        return None, "missing"
+    try:
+        return tomllib.loads(config_path.read_text(encoding="utf-8")), ""
+    except Exception as exc:
+        return None, f"parse_error: {exc}"
+
+
+def _agent_check(status: str, *, details: dict[str, Any] | None = None, notes: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "status": status,
+        "details": details or {},
+        "notes": notes or [],
+    }
+
+
+def _plugin_enabled(config: dict[str, Any], plugin_name: str) -> bool:
+    plugins = config.get("plugins")
+    if not isinstance(plugins, dict):
+        return False
+    payload = plugins.get(plugin_name)
+    return isinstance(payload, dict) and payload.get("enabled") is True
+
+
+def detect_agent_readiness(*, repo_root: str | Path | None = None) -> dict[str, Any]:
+    resolved_root = Path(repo_root or Path.cwd()).resolve()
+    config_path = resolved_root / ".codex" / "config.toml"
+    config, config_error = _read_codex_config(config_path)
+    checks: dict[str, dict[str, Any]] = {}
+
+    checks["codex_config"] = _agent_check(
+        "supported" if config is not None else "unsupported",
+        details={"path": str(config_path), "present": config_path.exists(), "parsable": config is not None},
+        notes=[] if config is not None else [config_error],
+    )
+
+    playwright_args: list[str] = []
+    if config:
+        mcp_servers = config.get("mcp_servers")
+        if isinstance(mcp_servers, dict):
+            playwright = mcp_servers.get("playwright")
+            if isinstance(playwright, dict) and isinstance(playwright.get("args"), list):
+                playwright_args = [str(item) for item in playwright["args"]]
+    has_pinned_playwright_mcp = any(arg.startswith("@playwright/mcp@") and arg != "@playwright/mcp@latest" for arg in playwright_args)
+    checks["playwright_mcp_pin"] = _agent_check(
+        "supported" if has_pinned_playwright_mcp else "unsupported",
+        details={"args": playwright_args},
+        notes=[] if has_pinned_playwright_mcp else ["Playwright MCP must be pinned and must not use @latest."],
+    )
+
+    missing_plugins = [plugin for plugin in REQUIRED_CODEX_PLUGINS if not (config and _plugin_enabled(config, plugin))]
+    checks["plugins"] = _agent_check(
+        "supported" if not missing_plugins else "unsupported",
+        details={"required": list(REQUIRED_CODEX_PLUGINS), "missing": missing_plugins},
+    )
+
+    skills_root = Path.home() / ".codex" / "skills"
+    missing_skills = [skill for skill in KINDLEMASTER_SKILL_NAMES if not (skills_root / skill).exists()]
+    checks["skills"] = _agent_check(
+        "supported" if not missing_skills else "degraded",
+        details={"root": str(skills_root), "required": list(KINDLEMASTER_SKILL_NAMES), "missing": missing_skills},
+        notes=[] if not missing_skills else ["Some KindleMaster Codex skills are not installed for this user."],
+    )
+
+    hooks_path = _read_git_hooks_path(resolved_root)
+    hook_files = {
+        "pre-commit": (resolved_root / ".githooks" / "pre-commit").is_file(),
+        "pre-push": (resolved_root / ".githooks" / "pre-push").is_file(),
+    }
+    hooks_ready = hooks_path == ".githooks" and all(hook_files.values())
+    checks["git_hooks"] = _agent_check(
+        "supported" if hooks_ready else "degraded",
+        details={"core_hooks_path": hooks_path, "expected": ".githooks", "hook_files": hook_files},
+        notes=[] if hooks_ready else ["Run `python scripts/install_git_hooks.py --install`."],
+    )
+
+    claude_local = resolved_root / ".claude" / "settings.local.json"
+    if claude_local.exists():
+        try:
+            claude_text = claude_local.read_text(encoding="utf-8")
+            stale_markers = [marker for marker in ("python app.py", "localhost:5000") if marker in claude_text]
+            claude_status = "supported" if not stale_markers else "degraded"
+            claude_notes = [] if not stale_markers else [f"Stale Claude local markers: {', '.join(stale_markers)}."]
+            claude_details = {"path": str(claude_local), "present": True, "stale_markers": stale_markers}
+        except Exception as exc:
+            claude_status = "degraded"
+            claude_notes = [f"Could not read Claude local settings: {exc}"]
+            claude_details = {"path": str(claude_local), "present": True, "stale_markers": []}
+    else:
+        claude_status = "supported"
+        claude_notes = ["No local Claude settings file was found; this is acceptable."]
+        claude_details = {"path": str(claude_local), "present": False, "stale_markers": []}
+    checks["claude_local_settings"] = _agent_check(claude_status, details=claude_details, notes=claude_notes)
+
+    statuses = [check["status"] for check in checks.values()]
+    if any(status == "unsupported" for status in statuses):
+        overall_status = "unsupported"
+    elif any(status == "degraded" for status in statuses):
+        overall_status = "degraded"
+    else:
+        overall_status = "supported"
+
+    return {
+        "status": overall_status,
+        "checks": checks,
+        "notes": [
+            "Agent readiness covers Codex config, local hooks, installed KindleMaster skills, and stale local agent settings.",
+        ],
+    }
+
+
 def detect_toolchain(*, refresh: bool = False) -> dict:
     if refresh:
         clear_toolchain_cache()
@@ -395,6 +542,8 @@ def _detect_toolchain_uncached() -> dict:
         release_status = "supported"
         if any(item["status"] != "supported" for item in release_optional_followups):
             release_status = "degraded"
+
+    agent_readiness = detect_agent_readiness(repo_root=Path.cwd())
 
     verification_surfaces = {
         "quick": quick_surface,
@@ -574,6 +723,7 @@ def _detect_toolchain_uncached() -> dict:
                 "Java, EPUBCheck, Tesseract, Ghostscript, qpdf, PDFBox, and Chromium remain separately managed local tools.",
             ],
         },
+        "agent_readiness": agent_readiness,
         "verification_surfaces": verification_surfaces,
         "conversion_capabilities": conversion_capabilities,
     }

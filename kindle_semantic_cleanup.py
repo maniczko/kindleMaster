@@ -668,7 +668,7 @@ img {
 }
 
 figcaption {
-  margin: 0 0 0.45em;
+  margin: 0 0 0.68em;
   text-align: center;
   text-indent: 0;
   line-height: 1.28;
@@ -680,13 +680,14 @@ figcaption {
   margin: 0 0 0.55em;
 }
 
+.chess-problem .diagram-caption {
+  margin-bottom: 0.72em;
+}
+
 .chess-problem img {
   width: 100%;
   max-width: 28rem;
-  padding: 0.18rem;
-  border: 0.08rem solid #d8d2c3;
   background: #fff;
-  box-sizing: border-box;
   image-rendering: auto;
 }
 
@@ -951,6 +952,239 @@ class ProcessedChapter:
     reference_report: dict[str, int]
 
 
+@dataclass(frozen=True)
+class ReadingFlowClassification:
+    file_name: str
+    title: str
+    kind: str
+    reason: str
+    confidence: float
+    word_count: int
+    text_chars: int
+    image_count: int
+    remove_in_clean: bool
+
+    def as_report_item(self) -> dict[str, object]:
+        return {
+            "file": self.file_name,
+            "title": self.title,
+            "kind": self.kind,
+            "reason": self.reason,
+            "confidence": round(float(self.confidence), 2),
+            "word_count": int(self.word_count),
+            "text_chars": int(self.text_chars),
+            "image_count": int(self.image_count),
+            "remove_in_clean": bool(self.remove_in_clean),
+        }
+
+
+READING_FLOW_NON_CONTENT_PATTERNS: tuple[tuple[str, str, str, float], ...] = (
+    ("gallery", r"\b(?:galeria|gallery|photo gallery|slideshow)\b", "gallery label", 0.96),
+    ("advertisement", r"\b(?:reklama|advertisement|advert)\b", "advertisement label", 0.96),
+    ("sponsor", r"\b(?:material sponsorowany|sponsored|advertorial|paid content)\b", "sponsor label", 0.92),
+)
+
+AI_NOTE_LABEL_KEYS = {
+    "co to jest",
+    "jak dziala",
+    "jak dziala?",
+    "definicje",
+    "definitions",
+    "architecture",
+    "architektura",
+    "implikacje biznesowe",
+    "przyklad",
+    "wniosek",
+    "ryzyka",
+    "rekomendacje",
+    "zaleznosci systemowe",
+}
+
+
+def _publication_profile_key(publication_profile: str | None) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", (publication_profile or "").strip().lower()).strip("_")
+
+
+def _is_clean_reading_profile(publication_profile: str | None) -> bool:
+    profile = _publication_profile_key(publication_profile)
+    return profile in {"clean_reading", "kindle_clean_reading", "magazine_clean_reading"} or profile.endswith("_clean_reading")
+
+
+def _is_learning_mode_profile(publication_profile: str | None) -> bool:
+    return _publication_profile_key(publication_profile) in {"learning_mode", "kindle_learning_mode", "magazine_learning_mode"}
+
+
+def _fold_label_key(value: str) -> str:
+    normalized = _normalize_text(value).replace("\u0142", "l").replace("\u0141", "L")
+    folded = unicodedata.normalize("NFKD", normalized).encode("ascii", "ignore").decode("ascii")
+    return _normalize_key(folded)
+
+
+def _matches_ai_note_label(text: str) -> bool:
+    key = _fold_label_key(text).strip(" -:;,.?")
+    if key in AI_NOTE_LABEL_KEYS:
+        return True
+    return any(key.endswith(f" - {label}") for label in AI_NOTE_LABEL_KEYS)
+
+
+def _chapter_text_metrics(chapter_path: Path) -> dict[str, object]:
+    soup = BeautifulSoup(chapter_path.read_text(encoding="utf-8"), "xml")
+    title_node = soup.find("title")
+    title_text = _normalize_text(title_node.get_text(" ", strip=True)) if title_node is not None else ""
+    heading = soup.find(["h1", "h2", "h3"])
+    heading_text = _normalize_text(heading.get_text(" ", strip=True)) if heading is not None else ""
+    body = soup.find("body")
+    text = _normalize_text(body.get_text(" ", strip=True) if body is not None else soup.get_text(" ", strip=True))
+    words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'\u2019-]*", text)
+    return {
+        "title": title_text or heading_text,
+        "heading": heading_text,
+        "text": text,
+        "word_count": len(words),
+        "text_chars": len(text),
+        "image_count": len(soup.find_all("img")),
+        "heading_count": len(soup.find_all(["h1", "h2", "h3"])),
+    }
+
+
+def _classify_reading_flow_document(chapter_path: Path) -> ReadingFlowClassification:
+    metrics = _chapter_text_metrics(chapter_path)
+    title_text = str(metrics["title"] or "")
+    heading_text = str(metrics["heading"] or "")
+    text = str(metrics["text"] or "")
+    word_count = int(metrics["word_count"] or 0)
+    text_chars = int(metrics["text_chars"] or 0)
+    image_count = int(metrics["image_count"] or 0)
+    label_blob = _fold_label_key(f"{title_text} {heading_text} {text[:240]}")
+    title_key = _fold_label_key(title_text or heading_text)
+
+    if chapter_path.name == "cover.xhtml":
+        return ReadingFlowClassification(chapter_path.name, title_text, "cover", "cover document", 0.99, word_count, text_chars, image_count, False)
+
+    if word_count == 0 and image_count == 0:
+        return ReadingFlowClassification(chapter_path.name, title_text, "empty", "empty XHTML document", 0.99, word_count, text_chars, image_count, True)
+
+    for kind, pattern, reason, confidence in READING_FLOW_NON_CONTENT_PATTERNS:
+        if re.search(pattern, label_blob, flags=re.IGNORECASE):
+            remove = kind in {"gallery", "advertisement"} or word_count <= 360 or title_key.startswith("material sponsorowany")
+            return ReadingFlowClassification(chapter_path.name, title_text, kind, reason, confidence, word_count, text_chars, image_count, remove)
+
+    if _matches_ai_note_label(title_text) or _matches_ai_note_label(heading_text):
+        return ReadingFlowClassification(chapter_path.name, title_text, "ai_note", "AI learning note label", 0.9, word_count, text_chars, image_count, True)
+
+    ai_label_hits = sum(1 for label in AI_NOTE_LABEL_KEYS if re.search(rf"\b{re.escape(label)}\b", label_blob))
+    if ai_label_hits >= 2 and word_count <= 420:
+        return ReadingFlowClassification(chapter_path.name, title_text, "ai_note", "cluster of AI learning labels", 0.82, word_count, text_chars, image_count, True)
+
+    if image_count >= 1 and word_count <= 18:
+        return ReadingFlowClassification(chapter_path.name, title_text, "caption", "image-only or caption-only stub", 0.82, word_count, text_chars, image_count, True)
+
+    front_matter_labels = {"contents", "table of contents", "spis tresci", "cover", "front cover", "newsletter"}
+    if title_key in front_matter_labels:
+        remove = word_count <= 35 and image_count == 0
+        return ReadingFlowClassification(chapter_path.name, title_text, "front_matter", "front matter label", 0.72, word_count, text_chars, image_count, remove)
+
+    return ReadingFlowClassification(chapter_path.name, title_text, "article", "reader-facing content", 0.66, word_count, text_chars, image_count, False)
+
+
+def _strip_inline_ai_note_blocks(
+    chapter_path: Path,
+    *,
+    source_language: str,
+) -> list[dict[str, object]]:
+    soup = BeautifulSoup(chapter_path.read_text(encoding="utf-8"), "xml")
+    body = soup.find("body")
+    if body is None:
+        return []
+
+    source_language = _canonicalize_language(source_language)
+    headings = list(body.find_all(["h1", "h2", "h3", "h4"]))
+    ai_label_count = sum(1 for heading in headings if _matches_ai_note_label(heading.get_text(" ", strip=True)))
+    removed: list[dict[str, object]] = []
+
+    for heading in headings:
+        if heading.parent is None:
+            continue
+        heading_text = _normalize_text(heading.get_text(" ", strip=True))
+        if not _matches_ai_note_label(heading_text):
+            continue
+        heading_key = _fold_label_key(heading_text)
+        if heading_key == "architektura" and source_language == "pl" and ai_label_count < 2:
+            continue
+
+        level_match = re.fullmatch(r"h([1-4])", heading.name or "")
+        level = int(level_match.group(1)) if level_match else 2
+        removed_nodes = 1
+        sibling = heading.find_next_sibling()
+        while sibling is not None:
+            next_sibling = sibling.find_next_sibling()
+            if isinstance(sibling, Tag) and re.fullmatch(r"h([1-4])", sibling.name or ""):
+                next_level = int(sibling.name[1])
+                if next_level <= level:
+                    break
+            if isinstance(sibling, Tag):
+                sibling.decompose()
+                removed_nodes += 1
+            sibling = next_sibling
+        heading.decompose()
+        removed.append(
+            {
+                "file": chapter_path.name,
+                "label": heading_text,
+                "kind": "ai_note_block",
+                "reason": "removed from clean_reading body",
+                "confidence": 0.86,
+                "removed_nodes": removed_nodes,
+            }
+        )
+
+    if removed:
+        chapter_path.write_text(_serialize_soup_document(soup), encoding="utf-8")
+    return removed
+
+
+def _plan_clean_reading_flow(
+    chapter_paths: list[Path],
+    *,
+    language: str,
+    publication_profile: str | None,
+) -> tuple[list[Path], dict[str, object]]:
+    clean_mode = _is_clean_reading_profile(publication_profile)
+    classifications = [_classify_reading_flow_document(path) for path in chapter_paths]
+    removed = [item for item in classifications if clean_mode and item.remove_in_clean]
+    removed_files = {item.file_name for item in removed}
+    active_paths = [path for path in chapter_paths if path.name not in removed_files]
+
+    inline_removed: list[dict[str, object]] = []
+    if clean_mode:
+        for chapter_path in active_paths:
+            if chapter_path.name == "cover.xhtml":
+                continue
+            inline_removed.extend(_strip_inline_ai_note_blocks(chapter_path, source_language=language))
+
+    if not active_paths and chapter_paths:
+        fallback = max(chapter_paths, key=lambda path: int(_chapter_text_metrics(path).get("word_count", 0) or 0))
+        active_paths = [fallback]
+        removed = [item for item in removed if item.file_name != fallback.name]
+        removed_files = {item.file_name for item in removed}
+
+    status = "completed" if clean_mode else "skipped"
+    mode = "clean_reading" if clean_mode else (_publication_profile_key(publication_profile) or "default")
+    report = {
+        "status": status,
+        "mode": mode,
+        "removed": [item.as_report_item() for item in removed],
+        "kept": [item.as_report_item() for item in classifications if item.file_name not in removed_files],
+        "inline_ai_note_blocks_removed": inline_removed,
+        "summary": {
+            "removed_count": len(removed),
+            "kept_count": len(active_paths),
+            "inline_ai_note_block_count": len(inline_removed),
+        },
+    }
+    return active_paths, report
+
+
 def finalize_epub_for_kindle(
     epub_bytes: bytes,
     *,
@@ -958,6 +1192,8 @@ def finalize_epub_for_kindle(
     author: str,
     language: str,
     publication_profile: str | None = None,
+    chess_min_long_edge: int | None = None,
+    chess_palette_colors: int | None = None,
     return_report: bool = False,
     report_mode: str = "reference",
 ) -> bytes | tuple[bytes, dict[str, object]]:
@@ -1146,6 +1382,11 @@ def finalize_epub_for_kindle(
                 title=title,
                 publication_profile=publication_profile,
             )
+            chapter_list, content_cleanup_phase = _plan_clean_reading_flow(
+                chapter_list,
+                language=language,
+                publication_profile=publication_profile,
+            )
             if cleanup_scope == "training-book":
                 package_overrides = _repair_training_book_package(
                     chapter_list,
@@ -1179,13 +1420,23 @@ def finalize_epub_for_kindle(
             spine_order = list(package_overrides.get("spine_order") or [])
             if not spine_order:
                 spine_order = [path.name for path in chapter_list if path.name != "cover.xhtml"]
+            excluded_spine_files = {
+                str(item.get("file", ""))
+                for item in content_cleanup_phase.get("removed", [])
+                if str(item.get("file", ""))
+            }
 
             for chapter_path in chapter_list:
                 if chapter_path.name == "cover.xhtml":
                     continue
                 _normalize_chapter_dom_ids(chapter_path)
-            _strip_unresolved_fragment_links(processed.keys())
-            _audit_diagram_presentation(opf_path.parent, language=language)
+            _strip_unresolved_fragment_links(chapter_list)
+            _audit_diagram_presentation(
+                opf_path.parent,
+                language=language,
+                chess_min_long_edge=chess_min_long_edge,
+                chess_palette_colors=chess_palette_colors,
+            )
             _write_default_css(root_dir)
             toc_entries = _rebuild_toc_entries_from_final_chapters(
                 chapter_list,
@@ -1203,11 +1454,11 @@ def finalize_epub_for_kindle(
             )
             _rewrite_navigation(root_dir, opf_path, toc_entries=toc_entries, title=title, language=language)
             _synchronize_xhtml_language(opf_path.parent, language=language)
-            _reorder_opf_spine(opf_path, spine_order)
+            _reorder_opf_spine(opf_path, spine_order, excluded_files=excluded_spine_files)
             metadata_after = _snapshot_package_metadata(opf_path) if rich_report_enabled else {}
             navigation_after = _inventory_navigation_document(opf_path) if rich_report_enabled else {}
             toc_map = (
-                _build_toc_map(toc_entries, chapter_paths=list(processed.keys()), package_dir=opf_path.parent)
+                _build_toc_map(toc_entries, chapter_paths=chapter_list, package_dir=opf_path.parent)
                 if rich_report_enabled
                 else []
             )
@@ -1215,7 +1466,7 @@ def finalize_epub_for_kindle(
                 _collect_structural_integrity_summary(
                     opf_path,
                     root_dir=root_dir,
-                    chapter_paths=list(processed.keys()),
+                    chapter_paths=chapter_list,
                     toc_map=toc_map,
                 )
                 if rich_report_enabled
@@ -1230,11 +1481,11 @@ def finalize_epub_for_kindle(
                         requested_title=title,
                         requested_author=author,
                         requested_language=language,
-                        chapter_paths=list(processed.keys()),
+                        chapter_paths=chapter_list,
                     )
                     heading_phase = _build_heading_phase_report(
                         heading_decisions,
-                        chapter_paths=list(processed.keys()),
+                        chapter_paths=chapter_list,
                         package_dir=opf_path.parent,
                     )
                     toc_phase = _build_toc_phase_report(
@@ -1249,6 +1500,7 @@ def finalize_epub_for_kindle(
                         **structural_integrity,
                     }
                     phase_report["reference_cleanup"] = _finalize_reference_report(reference_report)
+                    phase_report["phases"]["content_cleanup"] = content_cleanup_phase
                     phase_report["phases"]["metadata_repair"] = metadata_phase
                     phase_report["phases"]["heading_recovery"] = heading_phase
                     phase_report["phases"]["toc_rebuild"] = toc_phase
@@ -1269,12 +1521,13 @@ def finalize_epub_for_kindle(
                     phase_report["manual_review_queue"] = _dedupe_manual_review_items(manual_review_queue)
                     phase_report["summary"] = {
                         "cleanup_scope": cleanup_scope,
-                        "chapter_count": len(processed),
+                        "chapter_count": len(chapter_list),
                         "toc_entry_count_before": int(navigation_before.get("entry_count", 0) or 0),
                         "toc_entry_count_after": len(toc_entries),
                         "heading_decision_count": len(heading_decisions),
                         "manual_review_count": len(phase_report["manual_review_queue"]),
                         "reference_cleanup": phase_report["reference_cleanup"],
+                        "content_cleanup": content_cleanup_phase.get("summary", {}),
                     }
                     phase_report["status"] = phase_report["gates"]["F"]["status"]
                     return packed_epub, phase_report
@@ -1381,6 +1634,7 @@ def _initialize_finalize_phase_report(
         "summary": {},
         "phases": {
             "inventory": {"status": "pending"},
+            "content_cleanup": {"status": "pending"},
             "metadata_repair": {"status": "pending"},
             "heading_recovery": {"status": "pending"},
             "toc_rebuild": {"status": "pending"},
@@ -1455,7 +1709,13 @@ def _build_inventory_conflicts(
     metadata_author = str(metadata_snapshot.get("creator", "") or "")
     metadata_language = str(metadata_snapshot.get("language", "") or "")
 
-    if metadata_title and dominant_heading and not _looks_technical_title(metadata_title) and not _title_fragments_match(metadata_title, dominant_heading):
+    if (
+        metadata_title
+        and dominant_heading
+        and not _looks_technical_title(metadata_title)
+        and not _title_fragments_match(metadata_title, dominant_heading)
+        and not _is_introductory_publication_heading(dominant_heading)
+    ):
         conflicts.append(
             _manual_review_item(
                 phase="inventory",
@@ -1605,6 +1865,20 @@ def _looks_like_publication_title_candidate(text: str) -> bool:
         return False
     capitalized = sum(1 for word in words if word[:1].isupper())
     return capitalized * 2 >= len(words)
+
+
+def _is_introductory_publication_heading(text: str) -> bool:
+    """Return true for normal first content sections that should not replace metadata titles."""
+
+    key = _canonical_heading_text(text)
+    return key in {
+        "executive summary",
+        "summary",
+        "introduction",
+        "overview",
+        "streszczenie",
+        "wstep",
+    }
 
 
 def _inventory_navigation_document(opf_path: Path) -> dict[str, object]:
@@ -1944,9 +2218,15 @@ def _should_suppress_heading_review_item(decision: dict[str, object]) -> bool:
             return True
         if any(pattern.match(before_text) for pattern in TOC_HEADING_PATTERNS):
             return True
+        if _looks_like_publication_title_candidate(before_text):
+            return True
 
     if reason == "reconstructed-heading":
         if _looks_like_game_caption(after_text):
+            return True
+        if _is_dense_generic_orphan_toc_label(after_text):
+            return True
+        if _canonical_heading_text(after_text) in {"jak dziala", "co to jest", "implikacje biznesowe", "przyklad"}:
             return True
         if re.match(r"^\d+\.\s+[A-Z][^,]{3,},\s+.+\b\d{4}\b", after_text):
             return True
@@ -2008,7 +2288,12 @@ def _build_metadata_phase_report(
     dominant_heading = _dominant_publication_heading(chapter_paths)
     after_title = str(after.get("title", "") or "")
     after_author = str(after.get("creator", "") or "")
-    if dominant_heading and after_title and not _title_fragments_match(after_title, dominant_heading):
+    if (
+        dominant_heading
+        and after_title
+        and not _title_fragments_match(after_title, dominant_heading)
+        and not _is_introductory_publication_heading(dominant_heading)
+    ):
         manual_review.append(
             _manual_review_item(
                 phase="metadata_repair",
@@ -6823,7 +7108,13 @@ def _synchronize_xhtml_language(package_dir: Path, *, language: str) -> None:
             xhtml_path.write_text(_serialize_soup_document(soup), encoding="utf-8")
 
 
-def _maybe_enhance_diagram_asset(asset_path: Path, *, min_long_edge: int) -> dict[str, object]:
+def _maybe_enhance_diagram_asset(
+    asset_path: Path,
+    *,
+    min_long_edge: int,
+    line_art: bool = False,
+    palette_colors: int | None = None,
+) -> dict[str, object]:
     result: dict[str, object] = {"width": 0, "height": 0, "low_res": False, "enhanced": False}
     if _PILImage is None or not asset_path.exists() or not asset_path.is_file():
         return result
@@ -6843,7 +7134,8 @@ def _maybe_enhance_diagram_asset(asset_path: Path, *, min_long_edge: int) -> dic
                 return result
 
             new_size = (max(int(round(width * scale)), width), max(int(round(height * scale)), height))
-            resample = getattr(getattr(_PILImage, "Resampling", _PILImage), "LANCZOS")
+            resampling = getattr(_PILImage, "Resampling", _PILImage)
+            resample = getattr(resampling, "LANCZOS")
             enhanced = image.resize(new_size, resample)
             save_kwargs: dict[str, object] = {"optimize": True}
             target_format = (image.format or "").upper()
@@ -6851,6 +7143,13 @@ def _maybe_enhance_diagram_asset(asset_path: Path, *, min_long_edge: int) -> dic
                 save_kwargs["quality"] = 92
             elif target_format == "PNG":
                 save_kwargs["compress_level"] = 9
+                if line_art:
+                    colors = max(2, min(int(palette_colors or 16), 64))
+                    enhanced = enhanced.convert("L").quantize(
+                        colors=colors,
+                        method=_PILImage.Quantize.MEDIANCUT,
+                        dither=_PILImage.Dither.NONE,
+                    )
             if image.format:
                 enhanced.save(asset_path, format=image.format, **save_kwargs)
             else:
@@ -6865,10 +7164,17 @@ def _maybe_enhance_diagram_asset(asset_path: Path, *, min_long_edge: int) -> dic
     return result
 
 
-def _audit_diagram_presentation(package_dir: Path, *, language: str) -> None:
+def _audit_diagram_presentation(
+    package_dir: Path,
+    *,
+    language: str,
+    chess_min_long_edge: int | None = None,
+    chess_palette_colors: int | None = None,
+) -> None:
     resolved_language = _canonicalize_language(language)
     generic_chess_alt = "Diagram szachowy" if resolved_language == "pl" else "Chess diagram"
     generic_technical_alt = "Diagram techniczny" if resolved_language == "pl" else "Technical diagram"
+    resolved_chess_min_edge = 960 if chess_min_long_edge is None else max(0, int(chess_min_long_edge or 0))
 
     for xhtml_path in package_dir.glob("*.xhtml"):
         soup = BeautifulSoup(xhtml_path.read_text(encoding="utf-8"), "xml")
@@ -6908,8 +7214,13 @@ def _audit_diagram_presentation(package_dir: Path, *, language: str) -> None:
                 continue
 
             asset_path = package_dir / Path(src)
-            min_long_edge = 960 if is_chess else 1200
-            audit = _maybe_enhance_diagram_asset(asset_path, min_long_edge=min_long_edge)
+            min_long_edge = resolved_chess_min_edge if is_chess else 1200
+            audit = _maybe_enhance_diagram_asset(
+                asset_path,
+                min_long_edge=min_long_edge,
+                line_art=is_chess,
+                palette_colors=chess_palette_colors if is_chess else None,
+            )
             if audit.get("low_res"):
                 current_classes = _class_list(figure)
                 low_res_classes = _normalized_classes(current_classes, fallback=["low-res-diagram"])
@@ -6989,10 +7300,10 @@ def _detect_cleanup_scope(
     title: str,
     publication_profile: str | None,
 ) -> str:
-    profile = (publication_profile or "").strip().lower()
+    profile = _publication_profile_key(publication_profile)
     if _looks_like_training_book(chapter_paths, title=title):
         return "training-book"
-    if profile == "magazine_reflow":
+    if profile == "magazine_reflow" or profile == "full_magazine" or _is_learning_mode_profile(publication_profile):
         return "magazine"
     return "book"
 
@@ -8780,7 +9091,7 @@ def _update_opf_metadata(
     tree.write(str(opf_path), encoding="utf-8", xml_declaration=True, pretty_print=False)
 
 
-def _reorder_opf_spine(opf_path: Path, ordered_files: list[str]) -> None:
+def _reorder_opf_spine(opf_path: Path, ordered_files: list[str], *, excluded_files: set[str] | None = None) -> None:
     parser = etree.XMLParser(remove_blank_text=False)
     tree = etree.parse(str(opf_path), parser)
     root = tree.getroot()
@@ -8788,6 +9099,7 @@ def _reorder_opf_spine(opf_path: Path, ordered_files: list[str]) -> None:
     spine = root.find(".//opf:spine", NS)
     if manifest is None or spine is None:
         return
+    excluded_files = set(excluded_files or set())
 
     href_to_id: dict[str, str] = {}
     for item in manifest.findall("opf:item", NS):
@@ -8803,6 +9115,8 @@ def _reorder_opf_spine(opf_path: Path, ordered_files: list[str]) -> None:
     nav_id = href_to_id.get("nav.xhtml", "")
 
     for href in ordered_files:
+        if href in excluded_files:
+            continue
         item_id = href_to_id.get(href)
         if item_id and item_id not in {cover_id, nav_id} and item_id not in ordered_idrefs:
             ordered_idrefs.append(item_id)
@@ -8810,6 +9124,8 @@ def _reorder_opf_spine(opf_path: Path, ordered_files: list[str]) -> None:
     for itemref in itemrefs:
         item_id = itemref.get("idref", "")
         href = next((name for name, ref_id in href_to_id.items() if ref_id == item_id), "")
+        if href in excluded_files:
+            continue
         if href == "cover.xhtml":
             continue
         if href == "nav.xhtml":
@@ -9713,6 +10029,17 @@ def _looks_like_table_or_diagram_artifact_toc_label(text: str) -> bool:
     lowered = normalized.lower()
     if not normalized:
         return False
+    folded = _fold_label_key(normalized).strip(" .:;")
+    if re.fullmatch(r"[A-Z]{2,4}", normalized) and normalized not in {"HTML", "JSON", "XML"}:
+        return True
+    if any(marker in normalized for marker in ("†", "‡", "®", "™")) and len(normalized) <= 40:
+        return True
+    if folded in {"fotografie", "photographs", "sources", "source", "notes", "note"}:
+        return True
+    if re.fullmatch(r"(?:gdp|loans|debt|exports|imports|inflation|unemployment)(?:[, ].*)?", folded):
+        return True
+    if re.fullmatch(r"[a-z]{1,3}\s*,?\s*\d{4}\s*=\s*100", folded):
+        return True
     if lowered in {"input", "inputs", "output", "outputs"}:
         return True
     if re.fullmatch(r"(?i)(?:object|state)\s+\d+[A-Za-z]?", normalized):

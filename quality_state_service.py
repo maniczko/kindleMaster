@@ -86,6 +86,18 @@ def _coerce_optional_bool(value: Any) -> bool | None:
     return None
 
 
+def _coerce_optional_non_negative_number(value: Any) -> int | float | None:
+    try:
+        converted = float(value)
+    except (TypeError, ValueError):
+        return None
+    if converted < 0:
+        return None
+    if converted.is_integer():
+        return int(converted)
+    return round(converted, 2)
+
+
 def _first_non_none(*values: int | None) -> int | None:
     for value in values:
         if value is not None:
@@ -417,10 +429,12 @@ class QualityCompletenessState:
 @dataclass(frozen=True)
 class ConversionQualityStateRequest:
     job_status: str
+    job_id: str = ""
     source_type: str = ""
     filename: str = ""
     message: str = ""
     error: str = ""
+    sentry_event_id: str = ""
     conversion_metadata: Mapping[str, Any] = field(default_factory=dict)
     output_size_bytes: int | None = None
     download_url: str = ""
@@ -436,11 +450,13 @@ class ConversionQualityStateRequest:
     ) -> "ConversionQualityStateRequest":
         conversion_metadata = _mapping(payload.get("metadata")) or _mapping(payload.get("conversion"))
         return cls(
+            job_id=_coerce_text(payload.get("job_id")),
             job_status=_coerce_text(payload.get("status"), default="unknown"),
             source_type=_coerce_text(payload.get("source_type")),
             filename=_coerce_text(payload.get("filename")),
             message=_coerce_text(payload.get("message")),
             error=_coerce_text(payload.get("error")),
+            sentry_event_id=_coerce_first_text(payload.get("sentry_event_id"), conversion_metadata.get("sentry_event_id")),
             conversion_metadata=conversion_metadata,
             output_size_bytes=_coerce_optional_non_negative_int(payload.get("output_size_bytes")),
             download_url=_coerce_text(download_url or payload.get("download_url")),
@@ -467,6 +483,15 @@ class ConversionQualityState:
     send_to_kindle_ready: bool
     send_to_kindle_blockers: tuple[dict[str, Any], ...]
     kindle_delivery: dict[str, Any]
+    score: int | float
+    sendable: bool
+    kindle_ready: bool
+    premium_ready: bool
+    blockers: tuple[dict[str, Any], ...]
+    warnings: tuple[dict[str, Any], ...]
+    reports: dict[str, Any]
+    artifacts: dict[str, Any]
+    sentry_event_id: str
     overall_severity: str
     source_type: str
     filename: str
@@ -517,6 +542,15 @@ class ConversionQualityState:
             "send_to_kindle_ready": self.send_to_kindle_ready,
             "send_to_kindle_blockers": [dict(item) for item in self.send_to_kindle_blockers],
             "kindle_delivery": self.kindle_delivery,
+            "score": self.score,
+            "sendable": self.sendable,
+            "kindle_ready": self.kindle_ready,
+            "premium_ready": self.premium_ready,
+            "blockers": [dict(item) for item in self.blockers],
+            "warnings": [dict(item) for item in self.warnings],
+            "reports": self.reports,
+            "artifacts": self.artifacts,
+            "sentry_event_id": self.sentry_event_id,
             "overall_severity": self.overall_severity,
             "source_type": self.source_type,
             "filename": self.filename,
@@ -800,6 +834,101 @@ def _build_quality_blockers(
             },
         )
     return tuple(blockers)
+
+
+def _coerce_public_score(
+    *,
+    premium_scoring: Mapping[str, Any],
+    conversion_metadata: Mapping[str, Any],
+    quality_completeness: QualityCompletenessState,
+) -> int | float:
+    nested_scores = _dict_payload(premium_scoring.get("scores"))
+    score = _coerce_optional_non_negative_number(
+        _first_non_empty_value(
+            premium_scoring.get("premium_score"),
+            nested_scores.get("premium_score"),
+            premium_scoring.get("score"),
+            conversion_metadata.get("quality_score"),
+            quality_completeness.score,
+        )
+    )
+    return score if score is not None else 0
+
+
+def _first_non_empty_value(*values: Any) -> Any:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        return value
+    return None
+
+
+def _premium_bool(premium_scoring: Mapping[str, Any], key: str, *, default: bool) -> bool:
+    value = premium_scoring.get(key)
+    if isinstance(value, bool):
+        return value
+    parsed = _coerce_optional_bool(value)
+    if parsed is not None:
+        return parsed
+    return default
+
+
+def _public_sendable(*, premium_scoring: Mapping[str, Any], download_available: bool) -> bool:
+    mail_sendable = _coerce_text(premium_scoring.get("mail_sendable")).lower()
+    if mail_sendable:
+        return mail_sendable in {"yes", "likely", "web_only", "true", "sendable"}
+    return download_available
+
+
+def _dedupe_public_issues(items: list[dict[str, Any]]) -> tuple[dict[str, Any], ...]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in items:
+        code = _coerce_text(item.get("code"))
+        message = _coerce_text(item.get("message"))
+        source = _coerce_text(item.get("source"), default="quality")
+        marker = (code, message, source)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        deduped.append(dict(item))
+    return tuple(deduped)
+
+
+def _build_public_warnings(
+    *,
+    issue_groups: Mapping[str, Any],
+    alerts: tuple[QualityStateAlert, ...],
+) -> tuple[dict[str, Any], ...]:
+    warnings = [*_quality_issue_list(issue_groups, "warnings"), *_quality_issue_list(issue_groups, "review")]
+    warnings.extend(
+        {
+            "severity": "warning",
+            "code": alert.code,
+            "message": alert.message,
+            "source": "quality_state",
+        }
+        for alert in alerts
+        if alert.level == "warning"
+    )
+    return _dedupe_public_issues(warnings)
+
+
+def _build_public_reports(*, job_status: str, job_id: str) -> dict[str, str]:
+    if job_status != READY_JOB_STATUS or not job_id:
+        return {}
+    return {
+        "json": f"/convert/report/{job_id}.json",
+        "markdown": f"/convert/report/{job_id}.md",
+    }
+
+
+def _build_public_artifacts(*, download_url: str) -> dict[str, str]:
+    if not download_url:
+        return {}
+    return {"download_url": download_url}
 
 
 def _has_structural_reader_failure(
@@ -2078,6 +2207,26 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
         alerts=alerts,
         issue_groups=issue_groups,
     )
+    public_score = _coerce_public_score(
+        premium_scoring=premium_scoring,
+        conversion_metadata=conversion_metadata,
+        quality_completeness=quality_completeness,
+    )
+    public_sendable = _public_sendable(
+        premium_scoring=premium_scoring,
+        download_available=download_available,
+    )
+    public_kindle_ready = _premium_bool(
+        premium_scoring,
+        "kindle_ready",
+        default=send_to_kindle_ready,
+    )
+    public_premium_ready = _premium_bool(
+        premium_scoring,
+        "premium_ready",
+        default=False,
+    )
+    public_warnings = _build_public_warnings(issue_groups=issue_groups, alerts=alerts)
 
     return ConversionQualityState(
         status=job_status,
@@ -2096,6 +2245,15 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
         send_to_kindle_ready=send_to_kindle_ready,
         send_to_kindle_blockers=send_to_kindle_blockers,
         kindle_delivery=kindle_delivery,
+        score=public_score,
+        sendable=public_sendable,
+        kindle_ready=public_kindle_ready,
+        premium_ready=public_premium_ready,
+        blockers=quality_blockers,
+        warnings=public_warnings,
+        reports=_build_public_reports(job_status=job_status, job_id=request.job_id),
+        artifacts=_build_public_artifacts(download_url=_coerce_text(download_state.download_url)),
+        sentry_event_id=_coerce_first_text(request.sentry_event_id, conversion_metadata.get("sentry_event_id")),
         overall_severity=overall_severity,
         source_type=source_type,
         filename=_coerce_text(request.filename),

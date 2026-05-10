@@ -72,9 +72,13 @@ def build_conversion_job_record(
         "output_path": "",
         "download_name": filename.rsplit(".", 1)[0] + ".epub",
         "metadata": {},
+        "runtime": {},
+        "artifacts": {},
+        "artifact_storage": {},
         "output_size_bytes": 0,
         "error": "",
         "error_code": "",
+        "sentry_event_id": "",
     }
 
 
@@ -551,6 +555,9 @@ def build_conversion_metadata(
     text_cleanup = _json_safe_metadata_value(quality_report.get("text_cleanup") or {})
     if isinstance(text_cleanup, Mapping) and text_cleanup:
         metadata["text_cleanup"] = dict(text_cleanup)
+        ai_quality = text_cleanup.get("ai_quality")
+        if isinstance(ai_quality, Mapping) and ai_quality:
+            metadata["ai_quality"] = dict(_json_safe_metadata_value(ai_quality, list_limit=METADATA_MESSAGE_LIMIT))
         reference_cleanup = text_cleanup.get("reference_cleanup")
         if isinstance(reference_cleanup, Mapping) and reference_cleanup:
             metadata["reference_cleanup"] = dict(

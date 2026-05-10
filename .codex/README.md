@@ -19,6 +19,8 @@ Current repo-local defaults:
 - approval policy: `on-request`
 - multi-agent work: enabled
 - browser verification: Browser Use plugin plus pinned Playwright MCP `@playwright/mcp@0.0.70`
+- local Git hook path: `.githooks`
+- agent readiness surface: `python kindlemaster.py doctor`
 
 ## Why this is separate from global config
 
@@ -44,6 +46,7 @@ Keep these repo conventions synchronized between `.codex/config.toml`, `README.m
 - smoke and test defaults,
 - restrictions specific to this repo,
 - release and localhost freshness expectations.
+- local hook policy and governance evidence lanes.
 
 Preferred browser URL for this repo: `http://kindlemaster.localhost:5001/`.
 Loopback bind remains `127.0.0.1:5001` for runtime safety and tool fallback.
@@ -77,7 +80,21 @@ python kindlemaster.py validate path\to\file.epub
 python kindlemaster.py audit path\to\file.epub
 python kindlemaster.py workflow baseline path\to\input.pdf --change-area reference
 python kindlemaster.py workflow verify path\to\input.pdf --run-id <run_id>
+python scripts/install_git_hooks.py --check
+python scripts/install_git_hooks.py --install
 ```
+
+## Governance Evidence
+
+The standard local evidence files are generated, not hand maintained:
+
+```text
+reports/governance/doctor.json
+reports/governance/quick.json
+reports/governance/release.json
+```
+
+Each file records `generated_at`, `command`, `status`, `returncode`, `elapsed_seconds`, and `notes`. The project status dashboard reads these files for freshness warnings.
 
 ## Guardrails
 

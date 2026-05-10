@@ -7,12 +7,14 @@ import signal
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
 TEST_FILE_PATTERN = "test*.py"
 
 QUICK_TESTS = [
+    "test_agent_config_contracts.py",
     "test_skill_contracts.py",
     "test_skill_guardrails.py",
     "test_github_ready_enforcement.py",
@@ -21,15 +23,24 @@ QUICK_TESTS = [
     "test_kindlemaster_entrypoint.py",
     "test_premium_tools.py",
     "test_flat2_ui_template.py",
+    "test_sprint4_ui_contracts.py",
     "test_browser_conversion_outcome_harness.py",
     "test_app_async_convert.py",
     "test_conversion_library.py",
     "test_app_runtime_services.py",
+    "test_runtime_job_adapter.py",
+    "test_artifact_storage.py",
+    "test_ai_ocr_cleanup.py",
+    "test_ai_toc_detection.py",
+    "test_ai_quality_intelligence.py",
     "test_app_quality_state_route.py",
+    "test_sentry_observability.py",
     "test_docx_conversion.py",
     "test_app_docx_conversion.py",
     "test_epub_validation.py",
     "test_chess_fix.py",
+    "test_chess_diagram_visual_quality.py",
+    "test_chess_notation_regression.py",
     "test_converter_publication_budget.py",
     "test_fixed_layout_render_budget.py",
     "test_converter_fixed_layout_budget_enforcement.py",
@@ -38,6 +49,7 @@ QUICK_TESTS = [
     "test_quality_state_service.py",
     "test_quality_cockpit_issues.py",
     "test_quality_cockpit_preview.py",
+    "test_sprint1_quality_gates.py",
     "test_run_smoke_tests.py",
     "test_magazine_kindle_reflow.py",
     "test_smoke_chess_quality.py",
@@ -84,6 +96,7 @@ BROWSER_TESTS = [
 RUNTIME_TESTS = [
     "test_runtime_waitress_smoke.py",
     "test_browser_polling_e2e.py",
+    "test_sprint2_playwright_smoke.py",
     "test_browser_privacy_diagnostics.py",
     "test_ui_state_screenshot_pack.py",
 ]
@@ -209,7 +222,24 @@ def main() -> int:
     if args.command == "doctor":
         from premium_tools import detect_toolchain
 
-        _print_json(detect_toolchain())
+        started = time.perf_counter()
+        payload = detect_toolchain(refresh=True)
+        _write_governance_artifact(
+            lane="doctor",
+            payload=_governance_artifact_payload(
+                command="python kindlemaster.py doctor",
+                status=_derive_doctor_artifact_status(payload),
+                returncode=0,
+                started=started,
+                notes=["Toolchain and agent-readiness detection completed."],
+                extra={
+                    "verification_surfaces": payload.get("verification_surfaces", {}),
+                    "agent_readiness": payload.get("agent_readiness", {}),
+                    "payload": payload,
+                },
+            ),
+        )
+        _print_json(payload)
         return 0
     if args.command == "prepare-reference-inputs":
         from scripts.prepare_reference_inputs import prepare_reference_inputs
@@ -333,18 +363,34 @@ def _run_bootstrap(*, runtime_only: bool) -> int:
         completed = subprocess.run(command, check=False)
         if completed.returncode != 0:
             return completed.returncode
+    git_hooks_payload = _maybe_install_git_hooks(runtime_only=runtime_only)
+
     from premium_tools import detect_toolchain
 
-    payload = detect_toolchain()
+    payload = detect_toolchain(refresh=True)
     payload["bootstrap_run"] = {
         "requested_profile": "runtime_only" if runtime_only else "developer",
         "installed_requirements_files": ["requirements.txt"] if runtime_only else ["requirements.txt", "requirements-dev.txt"],
+        "git_hooks": git_hooks_payload,
         "notes": [
             "Use `python kindlemaster.py doctor` to re-check the local toolchain later without reinstalling packages.",
         ],
     }
     _print_json(payload)
     return 0
+
+
+def _maybe_install_git_hooks(*, runtime_only: bool) -> dict[str, Any]:
+    if runtime_only:
+        return {"status": "skipped", "reason": "runtime_only"}
+    if os.environ.get("CI", "").strip().lower() in {"1", "true", "yes"}:
+        return {"status": "skipped", "reason": "ci"}
+    if os.environ.get("KINDLEMASTER_SKIP_GIT_HOOKS", "").strip():
+        return {"status": "skipped", "reason": "env"}
+
+    from scripts.install_git_hooks import install_git_hooks
+
+    return install_git_hooks(Path(__file__).resolve().parent)
 
 
 def _run_serve(*, port: int | None, debug: bool, runtime: str) -> int:
@@ -435,22 +481,49 @@ def _run_tests(suite: str) -> int:
         return _run_release_suite(repo_root=repo_root, release_surface=verification_surfaces.get("release", {}))
     if suite == "full":
         command: Sequence[str] = [sys.executable, "-m", "unittest", "discover", "-p", TEST_FILE_PATTERN]
+        return subprocess.run(command, check=False, cwd=repo_root).returncode
+    if suite == "quick":
+        command = [sys.executable, "-m", "unittest", *SUITE_REGISTRY["quick"]]
+        started = time.perf_counter()
+        completed = subprocess.run(command, check=False, cwd=repo_root)
+        payload = _governance_artifact_payload(
+            command="python kindlemaster.py test --suite quick",
+            status="passed" if completed.returncode == 0 else "failed",
+            returncode=completed.returncode,
+            started=started,
+            notes=["Quick suite completed."],
+            extra={"suite": "quick"},
+        )
+        _write_governance_artifact(lane="quick", payload=payload, repo_root=repo_root)
+        return completed.returncode
     else:
         command = [sys.executable, "-m", "unittest", *SUITE_REGISTRY["quick"]]
     return subprocess.run(command, check=False, cwd=repo_root).returncode
 
 
 def _run_release_suite(*, repo_root: Path, release_surface: dict[str, Any]) -> int:
+    started = time.perf_counter()
     release_notes = _release_suite_notes(release_surface)
     if release_surface.get("status") == "unsupported":
-        _print_json(
-            {
-                "suite": "release",
-                "status": "unavailable",
-                "missing_requirements": release_surface.get("missing_requirements", []),
-                "notes": release_notes,
-            }
+        payload = {
+            "suite": "release",
+            "status": "unavailable",
+            "missing_requirements": release_surface.get("missing_requirements", []),
+            "notes": release_notes,
+        }
+        _write_governance_artifact(
+            lane="release",
+            payload=_governance_artifact_payload(
+                command="python kindlemaster.py test --suite release",
+                status="failed",
+                returncode=1,
+                started=started,
+                notes=release_notes,
+                extra=payload,
+            ),
+            repo_root=repo_root,
         )
+        _print_json(payload)
         return 1
 
     commands: list[tuple[str, Sequence[str]]] = [
@@ -488,16 +561,27 @@ def _run_release_suite(*, repo_root: Path, release_surface: dict[str, Any]) -> i
         )
         step_results.append(result)
         if result["returncode"] != 0:
-            _print_json(
-                {
-                    "suite": "release",
-                    "status": "failed",
-                    "failed_step": label,
-                    "steps": step_results,
-                    "notes": release_notes,
-                    "skipped_optional_surfaces": skipped_followups,
-                }
+            payload = {
+                "suite": "release",
+                "status": "failed",
+                "failed_step": label,
+                "steps": step_results,
+                "notes": release_notes,
+                "skipped_optional_surfaces": skipped_followups,
+            }
+            _write_governance_artifact(
+                lane="release",
+                payload=_governance_artifact_payload(
+                    command="python kindlemaster.py test --suite release",
+                    status="failed",
+                    returncode=1,
+                    started=started,
+                    notes=release_notes,
+                    extra=payload,
+                ),
+                repo_root=repo_root,
             )
+            _print_json(payload)
             return 1
 
     corpus_summary = _load_corpus_gate_summary(repo_root / "reports" / "corpus" / "corpus_gate.json")
@@ -507,17 +591,28 @@ def _run_release_suite(*, repo_root: Path, release_surface: dict[str, Any]) -> i
     if skipped_followups:
         warning_reasons.append("optional_followups_skipped")
     status = "passed_with_warnings" if warning_reasons else "passed"
-    _print_json(
-        {
-            "suite": "release",
-            "status": status,
-            "warning_reasons": warning_reasons,
-            "corpus_gate": corpus_summary,
-            "steps": step_results,
-            "notes": release_notes,
-            "skipped_optional_surfaces": skipped_followups,
-        }
+    payload = {
+        "suite": "release",
+        "status": status,
+        "warning_reasons": warning_reasons,
+        "corpus_gate": corpus_summary,
+        "steps": step_results,
+        "notes": release_notes,
+        "skipped_optional_surfaces": skipped_followups,
+    }
+    _write_governance_artifact(
+        lane="release",
+        payload=_governance_artifact_payload(
+            command="python kindlemaster.py test --suite release",
+            status=status,
+            returncode=0,
+            started=started,
+            notes=release_notes,
+            extra=payload,
+        ),
+        repo_root=repo_root,
     )
+    _print_json(payload)
     return 0
 
 
@@ -625,6 +720,70 @@ def _load_corpus_gate_summary(path: Path) -> dict[str, Any]:
         "warning_counts": premium_overall.get("warning_counts", {}),
         "benchmark": payload.get("benchmark", {}),
     }
+
+
+def _governance_artifact_payload(
+    *,
+    command: str,
+    status: str,
+    returncode: int,
+    started: float,
+    notes: list[str] | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "command": command,
+        "status": status,
+        "returncode": returncode,
+        "elapsed_seconds": round(time.perf_counter() - started, 4),
+        "notes": notes or [],
+        **(extra or {}),
+    }
+
+
+def _write_governance_artifact(
+    *,
+    lane: str,
+    payload: dict[str, Any],
+    repo_root: Path | None = None,
+) -> Path:
+    resolved_root = repo_root or Path(__file__).resolve().parent
+    report_path = resolved_root / "reports" / "governance" / f"{lane}.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(_json_text(payload), encoding="utf-8")
+    return report_path
+
+
+def _derive_doctor_artifact_status(payload: dict[str, Any]) -> str:
+    status_priority = {
+        "supported": 0,
+        "passed": 0,
+        "degraded": 1,
+        "passed_with_warnings": 1,
+        "unsupported": 2,
+        "failed": 2,
+        "unavailable": 1,
+    }
+    statuses: list[str] = []
+    surfaces = payload.get("verification_surfaces")
+    if isinstance(surfaces, dict):
+        for surface_name in ("quick", "corpus", "release"):
+            surface = surfaces.get(surface_name)
+            if isinstance(surface, dict):
+                statuses.append(str(surface.get("status", "unavailable")))
+    agent_readiness = payload.get("agent_readiness")
+    if isinstance(agent_readiness, dict):
+        statuses.append(str(agent_readiness.get("status", "unavailable")))
+
+    if not statuses:
+        return "passed"
+    worst = max(statuses, key=lambda item: status_priority.get(item, 1))
+    if status_priority.get(worst, 1) >= 2:
+        return "failed"
+    if status_priority.get(worst, 1) == 1:
+        return "passed_with_warnings"
+    return "passed"
 
 
 def _json_safe(value: Any) -> Any:

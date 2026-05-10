@@ -931,8 +931,27 @@ Current repo-local Codex defaults:
 - approval policy: `on-request`
 - multi-agent support: enabled
 - browser/runtime verification support: Browser Use plugin and pinned Playwright MCP
+- local governance hooks: `.githooks/pre-commit` and `.githooks/pre-push`
+- agent readiness reporting: `python kindlemaster.py doctor` includes `agent_readiness`
 
 Keep MCP and plugin entries deterministic. Do not use floating MCP versions such as `@latest`; pin versions and update them deliberately with a small verification pass.
+
+Local developer bootstrap should install hooks through:
+
+```powershell
+python scripts/install_git_hooks.py --install
+```
+
+`python kindlemaster.py bootstrap` runs that installer for the developer profile, but skips it for `--runtime-only`, `CI=true`, or `KINDLEMASTER_SKIP_GIT_HOOKS=1`. The balanced local policy is:
+- pre-commit: static correctness checks and fast agent/governance tests,
+- pre-push: `python kindlemaster.py test --suite quick` and `python kindlemaster.py status`.
+
+Governance evidence is written under `reports/governance/`:
+- `doctor.json` from `python kindlemaster.py doctor`,
+- `quick.json` from `python kindlemaster.py test --suite quick`,
+- `release.json` from `python kindlemaster.py test --suite release`.
+
+Each evidence artifact must include `generated_at`, `command`, `status`, `returncode`, `elapsed_seconds`, and `notes`.
 
 ## 35. Standard Engineering Workflow
 

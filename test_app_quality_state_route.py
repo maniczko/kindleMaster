@@ -43,6 +43,7 @@ class AppQualityStateRouteTests(unittest.TestCase):
         output_path: str = "",
         output_path_exists: bool | None = None,
         error: str = "",
+        sentry_event_id: str = "",
     ) -> None:
         created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         if status == "ready" and not output_path and output_path_exists is not False:
@@ -62,6 +63,7 @@ class AppQualityStateRouteTests(unittest.TestCase):
                 "metadata": metadata or {},
                 "output_size_bytes": output_size_bytes,
                 "error": error,
+                "sentry_event_id": sentry_event_id,
             }
         self.cleanup_job_ids.append(job_id)
 
@@ -343,6 +345,7 @@ class AppQualityStateRouteTests(unittest.TestCase):
             source_type="docx",
             message="Konwersja nie powiodla sie.",
             error="timeout while reading source",
+            sentry_event_id="event-failed-1",
         )
 
         response = self.client.get("/convert/quality/quality-failed")
@@ -362,6 +365,15 @@ class AppQualityStateRouteTests(unittest.TestCase):
         self.assertEqual(payload["quality_state"]["quality_blockers"][0]["code"], "conversion_failed")
         self.assertEqual(payload["quality_state"]["overall_severity"], "error")
         self.assertEqual(payload["quality_state"]["source_type"], "docx")
+        self.assertEqual(payload["quality_state"]["score"], 0)
+        self.assertFalse(payload["quality_state"]["sendable"])
+        self.assertFalse(payload["quality_state"]["kindle_ready"])
+        self.assertFalse(payload["quality_state"]["premium_ready"])
+        self.assertEqual(payload["quality_state"]["blockers"][0]["code"], "conversion_failed")
+        self.assertEqual(payload["quality_state"]["warnings"], [])
+        self.assertEqual(payload["quality_state"]["reports"], {})
+        self.assertEqual(payload["quality_state"]["artifacts"], {})
+        self.assertEqual(payload["quality_state"]["sentry_event_id"], "event-failed-1")
         self.assertEqual(
             [alert["code"] for alert in payload["quality_state"]["alerts"]],
             ["conversion_failed"],

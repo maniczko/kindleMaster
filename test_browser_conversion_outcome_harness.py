@@ -66,6 +66,42 @@ class BrowserConversionOutcomeHarnessTests(unittest.TestCase):
             _extract_function_source(template_html, "formatBytes"),
             _extract_function_source(template_html, "applyConversionOutcome"),
         ]
+        cls.render_report_sources = [
+            _extract_function_source(template_html, "coerceFiniteNumber"),
+            _extract_function_source(template_html, "formatBytes"),
+            _extract_function_source(template_html, "escapeHtml"),
+            _extract_function_source(template_html, "normalizeQualityHealth"),
+            _extract_function_source(template_html, "normalizeQualityCompleteness"),
+            _extract_function_source(template_html, "formatQualityHealth"),
+            _extract_function_source(template_html, "formatCompletenessScore"),
+            _extract_function_source(template_html, "formatStatusText"),
+            _extract_function_source(template_html, "notReported"),
+            _extract_function_source(template_html, "normalizeOptionalObject"),
+            _extract_function_source(template_html, "normalizeOptionalArray"),
+            _extract_function_source(template_html, "formatMetricValue"),
+            _extract_function_source(template_html, "renderQualityRows"),
+            _extract_function_source(template_html, "renderCompactList"),
+            _extract_function_source(template_html, "describeQualityReason"),
+            _extract_function_source(template_html, "buildTopQualityReasons"),
+            _extract_function_source(template_html, "renderTopQualityReasons"),
+            _extract_function_source(template_html, "formatPremiumScore"),
+            _extract_function_source(template_html, "resolveKindleReadyValue"),
+            _extract_function_source(template_html, "formatYesNo"),
+            _extract_function_source(template_html, "qualityToneFromStatus"),
+            _extract_function_source(template_html, "qualityToneFromBoolean"),
+            _extract_function_source(template_html, "qualityToneFromPremiumScore"),
+            _extract_function_source(template_html, "formatAiVerifierStatus"),
+            _extract_function_source(template_html, "renderQualityHeroMetric"),
+            _extract_function_source(template_html, "getIssueGroupItems"),
+            _extract_function_source(template_html, "summarizeIssueGroup"),
+            _extract_function_source(template_html, "buildManualReviewQueue"),
+            _extract_function_source(template_html, "renderManualReviewQueue"),
+            _extract_function_source(template_html, "renderIssueColumn"),
+            _extract_function_source(template_html, "renderQualityDisclosurePanel"),
+            _extract_function_source(template_html, "deriveQualityVerdict"),
+            _extract_function_source(template_html, "renderAuditList"),
+            _extract_function_source(template_html, "renderConversionReport"),
+        ]
 
     def _run_apply_conversion_outcome(self, job_payload: dict, *, selected_source_type: str = "pdf") -> dict:
         node_script = f"""
@@ -101,15 +137,48 @@ process.stdout.write(JSON.stringify({{
 }}));
 """
         completed = subprocess.run(
-            ["node", "-e", node_script],
+            ["node", "-"],
             cwd=Path(__file__).parent,
-            stdin=subprocess.DEVNULL,
+            input=node_script,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
         )
         if completed.returncode != 0:
             self.fail(f"Node harness nie uruchomił się poprawnie:\nSTDOUT:\n{completed.stdout}\nSTDERR:\n{completed.stderr}")
+        return json.loads(completed.stdout)
+
+    def _run_render_conversion_report(self, report_payload: dict) -> dict:
+        node_script = f"""
+const vm = require("node:vm");
+const functionSources = {json.dumps(self.render_report_sources, ensure_ascii=False)};
+const reportPayload = {json.dumps(report_payload, ensure_ascii=False)};
+globalThis.conversionBox = {{ className: "", innerHTML: "" }};
+globalThis.dashboardVerdictMetric = {{ textContent: "" }};
+
+for (const source of functionSources) {{
+  vm.runInThisContext(source);
+}}
+
+renderConversionReport(reportPayload);
+process.stdout.write(JSON.stringify({{
+  className: conversionBox.className,
+  html: conversionBox.innerHTML,
+  dashboardVerdict: dashboardVerdictMetric.textContent,
+}}));
+"""
+        completed = subprocess.run(
+            ["node", "-"],
+            cwd=Path(__file__).parent,
+            input=node_script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        if completed.returncode != 0:
+            self.fail(f"Node render harness nie uruchomił się poprawnie:\nSTDOUT:\n{completed.stdout}\nSTDERR:\n{completed.stderr}")
         return json.loads(completed.stdout)
 
     def test_apply_conversion_outcome_uses_conversion_payload_as_current_fallback_contract(self) -> None:
@@ -334,6 +403,19 @@ process.stdout.write(JSON.stringify({{
                             {"key": "text_cleanup", "label": "Text cleanup", "status": "not_reported", "reported": False},
                         ],
                     },
+                    "premium_scoring": {
+                        "status": "passed_with_warnings",
+                        "premium_score": 8.4,
+                        "kindle_ready": True,
+                    },
+                    "kindle_delivery": {
+                        "status": "not_verified",
+                        "automated_ready": True,
+                    },
+                    "ai_verifier": {
+                        "status": "passed",
+                        "message": "AI verifier accepted the evidence bundle.",
+                    },
                 },
             }
         )
@@ -350,8 +432,94 @@ process.stdout.write(JSON.stringify({{
         self.assertEqual(rendered["qualityCompleteness"]["score"], 78)
         self.assertEqual(rendered["qualityCompleteness"]["missingCount"], 2)
         self.assertEqual(rendered["qualityCompleteness"]["missingSections"], ["text_cleanup", "reference_cleanup"])
+        self.assertEqual(rendered["premiumScoring"]["premium_score"], 8.4)
+        self.assertTrue(rendered["premiumScoring"]["kindle_ready"])
+        self.assertEqual(rendered["kindleDelivery"]["status"], "not_verified")
+        self.assertEqual(rendered["aiVerifier"]["status"], "passed")
         self.assertTrue(rendered["downloadAvailable"])
         self.assertFalse(rendered["releaseBlocked"])
+
+    def test_render_conversion_report_promotes_publication_decision_metrics_and_top_reasons(self) -> None:
+        payload = self._run_render_conversion_report(
+            {
+                "profile": "book_reflow",
+                "validation": "passed",
+                "validationTool": "epubcheck",
+                "sections": 8,
+                "assets": 1,
+                "layout": "reflowable",
+                "outputSizeBytes": 8192,
+                "warnings": 1,
+                "highRiskPages": 0,
+                "highRiskSections": 0,
+                "qualityStateUrl": "/convert/quality/job-cockpit",
+                "downloadUrl": "/convert/download/job-cockpit",
+                "downloadAvailable": True,
+                "releaseVerdict": "release_blocked",
+                "releaseBlocked": True,
+                "qualityBlockers": [
+                    {
+                        "code": "reference_coverage_failed",
+                        "message": "References are incomplete.",
+                        "source": "quality_gate",
+                    },
+                    {
+                        "code": "visible_junk_detected",
+                        "message": "Visible OCR junk remains.",
+                        "source": "visible_junk",
+                    },
+                ],
+                "sendToKindleReady": False,
+                "sendToKindleBlockers": [{"code": "kindle_delivery_release_not_ready"}],
+                "issueGroups": {
+                    "blockers": [],
+                    "warnings": [{"code": "toc_review", "message": "TOC requires review."}],
+                    "review": [{"code": "manual_review", "message": "Manual spot check required."}],
+                },
+                "premiumScoring": {
+                    "status": "failed",
+                    "premium_score": 6.8,
+                    "kindle_ready": False,
+                },
+                "aiVerifier": {
+                    "status": "failed",
+                    "message": "Verifier found unresolved blockers.",
+                },
+                "userFacingVerdict": {
+                    "label": "Nie publikuj",
+                    "message": "Fix blockers before release.",
+                },
+                "userFacingReasons": [
+                    {"code": "reader_visible_blocker", "message": "Reader-visible blocker remains."}
+                ],
+                "qualityCompleteness": {
+                    "status": "complete",
+                    "score": 100,
+                    "expected_sections": 8,
+                    "reported_sections": 8,
+                },
+            }
+        )
+
+        html = payload["html"]
+        self.assertIn('id="qualityVerdictHeader"', html)
+        self.assertIn("Publikuj", html)
+        self.assertIn("Kontrola", html)
+        self.assertIn("Nie publikuj", html)
+        self.assertIn("Premium score", html)
+        self.assertIn("6.8/10", html)
+        self.assertIn("Kindle-ready", html)
+        self.assertIn(">no<", html)
+        self.assertIn("AI verifier", html)
+        self.assertIn("Verifier found unresolved blockers.", html)
+        self.assertIn("Top 3 reasons/blockers", html)
+        self.assertIn("reference_coverage_failed", html)
+        self.assertIn("visible_junk_detected", html)
+        self.assertIn("reader_visible_blocker", html)
+        self.assertNotIn("toc_review", html.split("qualityTopReasons", 1)[1].split("</ol>", 1)[0])
+        self.assertIn("JSON jakości", html)
+        self.assertIn("Pobierz szkic EPUB do kontroli", html)
+        self.assertEqual(payload["dashboardVerdict"], "Nie publikuj")
 
     def test_apply_conversion_outcome_keeps_download_available_when_release_is_blocked(self) -> None:
         payload = self._run_apply_conversion_outcome(
@@ -523,6 +691,16 @@ process.stdout.write(JSON.stringify({{
             "qualityBlockers",
             "qualityCompleteness",
             "quality_completeness",
+            "premiumScoring",
+            "premium_scoring",
+            "kindleDelivery",
+            "kindle_delivery",
+            "aiVerifier",
+            "ai_verifier",
+            "Premium score",
+            "Kindle-ready",
+            "AI verifier",
+            "Top 3 reasons/blockers",
             "Kolejka kontroli ręcznej",
             "Kompletność",
             "EPUB wygenerowany, ale wymaga kontroli jakości",

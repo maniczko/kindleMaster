@@ -1,0 +1,15 @@
+{
+  "model_version": "quality-verifier-v1-bootstrap",
+  "model_type": "local_quality_policy",
+  "trained_at": "2026-05-11T00:00:00Z",
+  "training_status": "bootstrap_policy_until_feedback_dataset_is_sufficient",
+  "thresholds": {
+    "min_ready_premium_score": 7.0,
+    "min_premium_ready_score": 9.0,
+    "max_blockers_for_ready": 0
+  },
+  "metrics": {
+    "status": "insufficient_feedback_data",
+    "note": "Runtime records feedback events, but this model is only promoted through explicit offline evaluation."
+  }
+}

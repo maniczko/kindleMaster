@@ -497,6 +497,7 @@ class ConversionConfig:
     enable_ml_fallback: bool = True
     enable_epubcheck: bool = True
     route_model_mode: str = "shadow"
+    quality_gate_mode: str = "draft"
     
     # Metadata
     language: str = "pl"

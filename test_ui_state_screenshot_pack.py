@@ -88,6 +88,15 @@ def _quality_state(
         "quality_blockers": blockers or [],
         "send_to_kindle_ready": send_to_kindle_ready,
         "send_to_kindle_blockers": [] if send_to_kindle_ready else [{"code": "kindle_delivery_not_verified"}],
+        "premium_scoring": {
+            "status": "passed" if release_verdict == "release_ready" else "failed" if release_blocked else "passed_with_warnings",
+            "premium_score": 9.4 if release_verdict == "release_ready" else 5.8 if release_blocked else 7.6,
+            "kindle_ready": not release_blocked,
+        },
+        "ai_verifier": {
+            "status": "passed" if release_verdict == "release_ready" else "failed" if release_blocked else "passed_with_warnings",
+            "message": "AI verifier evidence available.",
+        },
         "summary": {
             "profile": "book_reflow",
             "strategy": "premium",
@@ -438,6 +447,7 @@ class UiStateScreenshotPackTests(unittest.TestCase):
               horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth + 1,
               statusText: document.querySelector('#statusText')?.textContent || '',
               hasQualityDecision: Boolean(document.querySelector('#qualityDecisionStrip')),
+              qualityHeroText: document.querySelector('#qualityVerdictHeader')?.textContent || '',
               hasLibraryList: Boolean(document.querySelector('#recentConversionsList')),
             })"""
         )
@@ -452,6 +462,10 @@ class UiStateScreenshotPackTests(unittest.TestCase):
                 "has_library_list": bool(metrics["hasLibraryList"]),
             }
         )
+        if metrics["hasQualityDecision"]:
+            self.assertIn("Premium score", metrics["qualityHeroText"])
+            self.assertIn("Kindle-ready", metrics["qualityHeroText"])
+            self.assertIn("AI verifier", metrics["qualityHeroText"])
         self.assertFalse(metrics["horizontalOverflow"], f"{state}/{viewport_name} has horizontal overflow: {metrics}")
 
     def _load_pdf(self, page) -> None:

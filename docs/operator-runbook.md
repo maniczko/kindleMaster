@@ -86,6 +86,16 @@ python epub_quality_recovery.py path\to\file.epub
 
 Use `/convert/quality/<job_id>` to decide whether the issue is a release blocker, warning, or manual-review item. Validation blockers should remain visible through `quality_state.quality_blockers` and `quality_state.alerts`.
 
+## Runtime Quality Gate
+
+Every web/CLI conversion now runs the runtime gate on the final EPUB bytes after optional heading repair. The gate writes:
+
+- `premium_scoring`: deterministic premium score, Kindle-ready flags, blockers, and top quality issues.
+- `ai_quality_verification`: local policy/model verdict with confidence, model version, feature hash, and reason codes.
+- `quality_gate_mode`: `draft` by default.
+
+Default `draft` mode never blocks the file download, but it blocks release publication. The UI should show `Nie publikuj`, `send_to_kindle_ready=false`, and the download label `Pobierz szkic EPUB do kontroli` until the operator reviews the report. Use `--quality-gate-mode off` only for diagnostic comparisons, not for release evidence.
+
 ## ML Route Operations
 
 KindleMaster ML V1 is local-first and audit-only by default. Runtime conversion uses `route_model_mode=shadow`, so the heuristic route remains selected while `route_decision` records the JSON model prediction, confidence, model version, and input feature hash.
@@ -93,6 +103,28 @@ KindleMaster ML V1 is local-first and audit-only by default. Runtime conversion 
 ```powershell
 python kindlemaster.py ml dataset
 python kindlemaster.py ml evaluate
+```
+
+To log local human feedback for a completed CLI conversion, first keep the conversion report:
+
+```powershell
+python kindlemaster.py convert path\to\input.pdf --output output\book.epub --report-json reports\book-conversion.json
+python kindlemaster.py ml feedback --report-json reports\book-conversion.json --feedback-status accepted --quality-label usable --quality-score 4 --route-label book_reflow --issue-tag headings --notes "Usable after TOC review"
+python kindlemaster.py ml dataset --feedback-log reports\ml\feedback\conversion_feedback.jsonl
+```
+
+Feedback records are append-only JSONL under `reports/ml/feedback/conversion_feedback.jsonl` by default. They never update `models/route_classifier_v1.json` or change route selection. A feedback record becomes a route dataset row only when the operator provides a valid `--route-label` and the conversion report contains enough analysis fields to rebuild the local route feature payload.
+
+For web/runtime integration, conversion-quality events are recorded automatically after metadata assembly. User feedback is recorded separately through:
+
+```text
+POST /convert/feedback/<job_id>
+```
+
+This endpoint appends local JSONL feedback and explicitly does not train or mutate models. CLI operators can export the same feedback stream with:
+
+```powershell
+python kindlemaster.py ml feedback-export
 ```
 
 Use `assist` only for controlled experiments:

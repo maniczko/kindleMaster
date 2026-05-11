@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
 from ml_features import ROUTE_LABELS, route_example_from_analysis
+from ml_feedback import load_feedback_records, route_examples_from_feedback
 
 
 Analyzer = Callable[[str], Any]
@@ -19,6 +20,7 @@ def build_ml_datasets(
     reports_root: str | Path = "reports",
     output_dir: str | Path = "reports/ml/datasets",
     repo_root: str | Path = ".",
+    feedback_log_paths: Iterable[str | Path] | None = None,
     pdf_analyzer: Analyzer | None = None,
     docx_analyzer: Analyzer | None = None,
 ) -> dict[str, Any]:
@@ -71,11 +73,20 @@ def build_ml_datasets(
         except Exception as error:
             skipped.append({"case_id": case_id, "reason": "analysis_failed", "error": str(error), "path": str(input_path)})
 
+    feedback_records, feedback_load_skipped = load_feedback_records(
+        log_paths=feedback_log_paths,
+        repo_root=root,
+    ) if feedback_log_paths else ([], [])
+    feedback_route_examples, feedback_route_skipped = route_examples_from_feedback(feedback_records)
+    route_examples.extend(feedback_route_examples)
+
     heading_reference_examples = list(_collect_heading_reference_examples(reports_root_path))
     route_path = output_root / "route_examples.jsonl"
+    feedback_route_path = output_root / "feedback_route_examples.jsonl"
     review_path = output_root / "heading_reference_examples.jsonl"
     completeness_path = output_root / "completeness_report.json"
     _write_jsonl(route_path, route_examples)
+    _write_jsonl(feedback_route_path, feedback_route_examples)
     _write_jsonl(review_path, heading_reference_examples)
 
     label_counts = dict(Counter(example["label"] for example in route_examples))
@@ -84,16 +95,22 @@ def build_ml_datasets(
     completeness = {
         "status": completeness_status,
         "route_example_count": len(route_examples),
+        "manifest_route_example_count": len(route_examples) - len(feedback_route_examples),
+        "feedback_record_count": len(feedback_records),
+        "feedback_route_example_count": len(feedback_route_examples),
         "heading_reference_example_count": len(heading_reference_examples),
         "route_label_counts": label_counts,
         "missing_route_classes": missing_classes,
         "skipped": skipped,
+        "feedback_skipped": feedback_load_skipped + feedback_route_skipped,
         "outputs": {
             "route_examples": str(route_path),
+            "feedback_route_examples": str(feedback_route_path),
             "heading_reference_examples": str(review_path),
             "completeness_report": str(completeness_path),
         },
         "analysis_mode": "analysis_only_no_full_conversion",
+        "online_learning": False,
     }
     completeness_path.write_text(json.dumps(completeness, ensure_ascii=False, indent=2), encoding="utf-8")
     return completeness
@@ -223,12 +240,14 @@ def main() -> int:
     parser.add_argument("--labels", default="reference_inputs/ml_labels.json")
     parser.add_argument("--reports-root", default="reports")
     parser.add_argument("--output-dir", default="reports/ml/datasets")
+    parser.add_argument("--feedback-log", action="append", default=[])
     args = parser.parse_args()
     payload = build_ml_datasets(
         manifest_path=args.manifest,
         labels_path=args.labels,
         reports_root=args.reports_root,
         output_dir=args.output_dir,
+        feedback_log_paths=args.feedback_log,
     )
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0 if payload.get("status") != "failed" else 1

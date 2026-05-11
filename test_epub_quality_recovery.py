@@ -151,6 +151,84 @@ class EpubQualityRecoveryTests(unittest.TestCase):
         self.assertIn("toc_non_content_entry", codes)
         self.assertIn("kindle_ready_blocked_by_quality", codes)
 
+    def test_premium_scoring_blocks_polish_structural_labels_in_english_epub(self):
+        opf_source = """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">english-magazine-id</dc:identifier>
+    <dc:title>Global Projects Review</dc:title>
+    <dc:language>en</dc:language>
+    <dc:creator>Editorial Team</dc:creator>
+    <dc:publisher>Project Press</dc:publisher>
+  </metadata>
+  <manifest>
+    <item id="chapter_1" href="chapter_001.xhtml" media-type="application/xhtml+xml"/>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="chapter_1"/>
+  </spine>
+</package>
+"""
+        chapter_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Co to jest</title></head>
+  <body>
+    <h1>Co to jest</h1>
+    <p class="kicker">Przykład</p>
+    <p>This English article has enough clean prose to avoid relying on technical validity alone.</p>
+  </body>
+</html>
+"""
+        nav_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+  <body><nav epub:type="toc"><ol><li><a href="chapter_001.xhtml">Jak działa</a></li></ol></nav></body>
+</html>
+"""
+        toc_source = """<?xml version="1.0" encoding="utf-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><head><meta name="dtb:uid" content="english-magazine-id"/></head><docTitle><text>Global Projects Review</text></docTitle><navMap/></ncx>
+"""
+        container_source = """<?xml version="1.0" encoding="utf-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="EPUB/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>
+"""
+        epub_bytes = self._build_epub_bytes(
+            {
+                "mimetype": "application/epub+zip",
+                "META-INF/container.xml": container_source,
+                "EPUB/content.opf": opf_source,
+                "EPUB/chapter_001.xhtml": chapter_source,
+                "EPUB/nav.xhtml": nav_source,
+                "EPUB/toc.ncx": toc_source,
+            }
+        )
+
+        payload = score_epub_premium_quality(epub_bytes, epubcheck={"status": "passed", "messages": []})
+        codes = [issue["code"] for issue in payload["issues"]]
+
+        self.assertIn("language_label_contamination", codes)
+        self.assertFalse(payload["kindle_ready"])
+        self.assertGreater(payload["metrics"]["language_label_contamination"]["hit_count"], 2)
+        self.assertIn("Co to jest", payload["metrics"]["language_label_contamination"]["labels"])
+
+        polish_epub_bytes = self._build_epub_bytes(
+            {
+                "mimetype": "application/epub+zip",
+                "META-INF/container.xml": container_source,
+                "EPUB/content.opf": opf_source.replace("<dc:language>en</dc:language>", "<dc:language>pl</dc:language>"),
+                "EPUB/chapter_001.xhtml": chapter_source,
+                "EPUB/nav.xhtml": nav_source,
+                "EPUB/toc.ncx": toc_source,
+            }
+        )
+        polish_payload = score_epub_premium_quality(polish_epub_bytes, epubcheck={"status": "passed", "messages": []})
+        polish_codes = [issue["code"] for issue in polish_payload["issues"]]
+
+        self.assertNotIn("language_label_contamination", polish_codes)
+        self.assertEqual(polish_payload["metrics"]["language_label_contamination"]["hit_count"], 0)
+
     def test_recovery_pipeline_writes_reports_and_final_epub(self):
         opf_source = """<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">

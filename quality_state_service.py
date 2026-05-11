@@ -493,6 +493,8 @@ class ConversionQualityState:
     link_health: dict[str, Any]
     visible_junk: dict[str, Any]
     premium_scoring: dict[str, Any]
+    ai_quality_verification: dict[str, Any]
+    quality_gate_mode: str
     issue_groups: dict[str, list[dict[str, Any]]]
     quality_completeness: QualityCompletenessState
     raw_signals: QualityRawSignalsState
@@ -543,6 +545,8 @@ class ConversionQualityState:
             "link_health": self.link_health,
             "visible_junk": self.visible_junk,
             "premium_scoring": self.premium_scoring,
+            "ai_quality_verification": self.ai_quality_verification,
+            "quality_gate_mode": self.quality_gate_mode,
             "issue_groups": self.issue_groups,
             "quality_completeness": self.quality_completeness.to_dict(),
             "raw_signals": self.raw_signals.to_dict(),
@@ -1933,6 +1937,14 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
     premium_scoring = _normalize_optional_payload(
         conversion_metadata.get("premium_scoring") or quality_report.get("premium_scoring")
     )
+    ai_quality_verification = _normalize_optional_payload(
+        conversion_metadata.get("ai_quality_verification") or quality_report.get("ai_quality_verification")
+    )
+    quality_gate_mode = _coerce_first_text(
+        conversion_metadata.get("quality_gate_mode"),
+        quality_report.get("quality_gate_mode"),
+        default="",
+    ).strip().lower()
     issue_groups = build_quality_cockpit_issue_groups(
         validation=validation.to_dict(),
         heading_repair=heading_repair.to_dict(),
@@ -2009,6 +2021,16 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
         issue_groups=issue_groups,
         alerts=alerts,
     )
+    if job_status == READY_JOB_STATUS and quality_gate_mode == "draft":
+        draft_blocker = {
+            "severity": "blocker",
+            "code": "runtime_quality_gate_draft",
+            "message": "Conversion completed in draft quality-gate mode and is not approved for publication.",
+            "source": "quality_gate",
+            "suggested_action": "Review premium scoring, AI verifier output, and user feedback before promoting this EPUB.",
+        }
+        if not any(item.get("code") == draft_blocker["code"] for item in quality_blockers):
+            quality_blockers = (*quality_blockers, draft_blocker)
     release_blocked = job_status in {FAILED_JOB_STATUS, TIMED_OUT_JOB_STATUS} or bool(quality_blockers)
     reading_verdict = _build_reading_verdict(
         job_status=job_status,
@@ -2122,6 +2144,8 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
         link_health=link_health,
         visible_junk=visible_junk,
         premium_scoring=premium_scoring,
+        ai_quality_verification=ai_quality_verification,
+        quality_gate_mode=quality_gate_mode,
         issue_groups=issue_groups,
         quality_completeness=quality_completeness,
         raw_signals=raw_signals,

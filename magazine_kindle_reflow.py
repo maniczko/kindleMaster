@@ -43,6 +43,26 @@ SPONSORED_TITLE_STOPWORDS = {
     "kino",
     "lezakach",
 }
+MAGAZINE_SPECIAL_LABELS = {
+    "en": {
+        "advertisement": "Advertisement",
+        "sponsored": "Sponsored",
+        "gallery": "Gallery",
+        "cover": "Cover",
+        "contents": "Contents",
+        "newsletter": "Newsletter",
+        "special": "Special page",
+    },
+    "pl": {
+        "advertisement": "Reklama",
+        "sponsored": "Materiał sponsorowany",
+        "gallery": "Galeria",
+        "cover": "Okładka",
+        "contents": "Spis treści",
+        "newsletter": "Newsletter",
+        "special": "Strona specjalna",
+    },
+}
 BYLINE_RE = re.compile(
     r"^(?:TEKST|ROZMAWIA|AUTOR|AUTORKA|OPRAC\.?|FOT\.?|ZDJĘCIA|ZDJECIA|FOTO|PRZEŁOŻYŁ|PRZELOZYL)\b",
     re.IGNORECASE,
@@ -135,7 +155,12 @@ def convert_magazine_to_kindle_reflow(pdf_path: str, config: ConversionConfig | 
     toc_entries = _build_toc_entries(pages)
     toc_title_map = {entry["page_label"]: entry["title"] for entry in toc_entries if entry.get("page_label")}
     chapters = _coalesce_fragile_chapters(_group_pages_into_articles(pages, toc_title_map=toc_title_map))
-    chapter_title_map = _resolve_chapter_titles(chapters, toc_entries=toc_entries, toc_title_map=toc_title_map)
+    chapter_title_map = _resolve_chapter_titles(
+        chapters,
+        toc_entries=toc_entries,
+        toc_title_map=toc_title_map,
+        language=config.language,
+    )
 
     cover_image = _extract_cover_image(doc, config)
     images: list[dict] = [cover_image] if cover_image else []
@@ -153,11 +178,12 @@ def convert_magazine_to_kindle_reflow(pdf_path: str, config: ConversionConfig | 
                 fallback=f"Artykuł {chapter_index}",
                 toc_title_map=toc_title_map,
                 chapter_kind=chapter_kind,
+                language=config.language,
             )
         html_parts: list[str] = []
 
         if all(page.is_toc for page in chapter_pages):
-            chapter_title = "Spis treści"
+            chapter_title = _special_page_label("contents", config.language)
             html_parts.extend(_render_structured_toc(toc_entries))
         elif chapter_kind in {"advertisement", "sponsored", "gallery", "newsletter"}:
             for page in chapter_pages:
@@ -933,25 +959,39 @@ def _last_editorial_text(chapter_pages: list[PageModel]) -> str:
 def _chapter_should_be_toc_excluded(chapter_kind: str) -> bool:
     return chapter_kind in {"advertisement", "sponsored", "gallery", "newsletter", "contents"}
 
+
+def _magazine_label_language(language: str | None) -> str:
+    normalized = (language or "").strip().lower()
+    if normalized.startswith("en"):
+        return "en"
+    return "pl"
+
+
+def _special_page_label(label_key: str, language: str | None) -> str:
+    labels = MAGAZINE_SPECIAL_LABELS[_magazine_label_language(language)]
+    return labels.get(label_key, labels["special"])
+
+
 def _pick_chapter_title(
     chapter_pages: list[PageModel],
     fallback: str,
     *,
     toc_title_map: dict[str, str] | None = None,
     chapter_kind: str = "article",
+    language: str | None = "pl",
 ) -> str:
     if chapter_pages and chapter_pages[0].is_cover:
-        return "Okładka"
+        return _special_page_label("cover", language)
     if chapter_kind == "contents":
-        return "Spis treści"
+        return _special_page_label("contents", language)
     if chapter_kind == "advertisement":
-        return _label_special_section("Reklama", chapter_pages)
+        return _label_special_section(_special_page_label("advertisement", language), chapter_pages)
     if chapter_kind == "sponsored":
-        return _label_special_section("Materiał sponsorowany", chapter_pages)
+        return _label_special_section(_special_page_label("sponsored", language), chapter_pages)
     if chapter_kind == "gallery":
-        return _label_special_section("Galeria", chapter_pages)
+        return _label_special_section(_special_page_label("gallery", language), chapter_pages)
     if chapter_kind == "newsletter":
-        return _label_special_section("Newsletter", chapter_pages)
+        return _label_special_section(_special_page_label("newsletter", language), chapter_pages)
     toc_title_map = toc_title_map or {}
     start_label = chapter_pages[0].page_label if chapter_pages else None
     mapped_title = toc_title_map.get(start_label or "")
@@ -965,7 +1005,7 @@ def _pick_chapter_title(
             continue
         title_quality = _classify_title_quality(cleaned_title)
         if title_quality in {"weak", "broken"}:
-            sponsored_title = _synthesize_sponsored_feature_title(chapter_pages)
+            sponsored_title = _synthesize_sponsored_feature_title(chapter_pages, language=language)
             if sponsored_title:
                 return sponsored_title
         if title_quality not in {"technical", "missing"}:
@@ -975,7 +1015,7 @@ def _pick_chapter_title(
     for page in chapter_pages:
         if page.section_label:
             return _clean_article_title(page.section_label)
-    sponsored_title = _synthesize_sponsored_feature_title(chapter_pages)
+    sponsored_title = _synthesize_sponsored_feature_title(chapter_pages, language=language)
     if sponsored_title:
         return sponsored_title
     return fallback
@@ -994,7 +1034,7 @@ def _chapter_has_sponsored_marker(chapter_pages: list[PageModel]) -> bool:
     return False
 
 
-def _synthesize_sponsored_feature_title(chapter_pages: list[PageModel]) -> str:
+def _synthesize_sponsored_feature_title(chapter_pages: list[PageModel], *, language: str | None = "pl") -> str:
     snippets: list[str] = []
     for page in chapter_pages[:2]:
         for block in page.blocks:
@@ -1066,14 +1106,15 @@ def _synthesize_sponsored_feature_title(chapter_pages: list[PageModel]) -> str:
             best_phrase = candidate
             best_score = score
 
+    sponsored_label = _special_page_label("sponsored", language)
     if explicit_brand:
-        return f"Material sponsorowany - {explicit_brand}"
+        return f"{sponsored_label} - {explicit_brand}"
     if best_phrase and best_score >= 5:
         repeated_brand = combined.count(best_phrase) >= 2
         if sponsor_signal or repeated_brand or any(char.isdigit() for char in best_phrase):
-            return f"Material sponsorowany - {best_phrase}"
+            return f"{sponsored_label} - {best_phrase}"
     if sponsor_signal:
-        return "Material sponsorowany"
+        return sponsored_label
     return ""
 
 
@@ -1151,14 +1192,19 @@ def _classify_title_quality(title: str | None) -> str:
     normalized = _clean_article_title(title)
     if not normalized:
         return "missing"
-    if normalized in {"Okładka", "Spis treści", "Reklama", "Galeria", "Newsletter"}:
+    special_labels = {
+        label
+        for labels in MAGAZINE_SPECIAL_LABELS.values()
+        for key, label in labels.items()
+        if key != "special"
+    }
+    if normalized in special_labels:
         return "strong"
+    special_prefixes = special_labels | {"Material sponsorowany"}
     if (
-        normalized.startswith("Reklama ")
+        any(normalized.startswith(f"{label} ") for label in special_prefixes)
         or normalized.startswith("Materiał sponsorowany")
         or normalized.startswith("Material sponsorowany")
-        or normalized.startswith("Galeria ")
-        or normalized.startswith("Newsletter ")
     ):
         return "strong"
     if re.fullmatch(r"(?i)(artykuł|sekcja|rozdział)\s+\d+", normalized):
@@ -1347,6 +1393,7 @@ def _resolve_chapter_titles(
     *,
     toc_entries: list[dict[str, str]],
     toc_title_map: dict[str, str],
+    language: str | None = "pl",
 ) -> dict[int, str]:
     resolved: dict[int, str] = {}
     used_toc_indices: set[int] = set()
@@ -1362,6 +1409,7 @@ def _resolve_chapter_titles(
             fallback=f"Artykuł {article_order + 1}",
             toc_title_map=toc_title_map,
             chapter_kind=chapter_kind,
+            language=language,
         )
         cleaned_base = _clean_article_title(base_title)
         start_label = chapter_pages[0].page_label if chapter_pages else None
@@ -1416,7 +1464,13 @@ def _resolve_chapter_titles(
 
         if base_quality in {"missing", "technical", "weak"}:
             previous_title = _neighbor_resolved_title(chapters, resolved, chapter_index, direction=-1)
-            next_title = _neighbor_candidate_title(chapters, chapter_index, direction=1, toc_title_map=toc_title_map)
+            next_title = _neighbor_candidate_title(
+                chapters,
+                chapter_index,
+                direction=1,
+                toc_title_map=toc_title_map,
+                language=language,
+            )
             if previous_title:
                 resolved[chapter_index] = f"{previous_title} — ciąg dalszy"
                 continue
@@ -1457,6 +1511,7 @@ def _neighbor_candidate_title(
     *,
     direction: int,
     toc_title_map: dict[str, str],
+    language: str | None = "pl",
 ) -> str:
     probe = chapter_index + direction
     steps = 0
@@ -1471,6 +1526,7 @@ def _neighbor_candidate_title(
             fallback="",
             toc_title_map=toc_title_map,
             chapter_kind=kind,
+            language=language,
         )
         if title and _classify_title_quality(title) == "strong":
             return title
@@ -1870,18 +1926,15 @@ def _render_special_layout_page(
     ext = "png"
     data, ext = _optimize_image(pix.tobytes("png"), ext, config)
     filename = f"special_p{page.page_index + 1}.{ext}"
-    alt_label = {
-        "advertisement": "Reklama",
-        "sponsored": "Materiał sponsorowany",
-        "gallery": "Galeria",
-        "newsletter": "Newsletter",
-    }.get(chapter_kind, chapter_title or "Strona specjalna")
+    alt_label = _special_page_label(chapter_kind, config.language)
+    if chapter_kind not in MAGAZINE_SPECIAL_LABELS[_magazine_label_language(config.language)]:
+        alt_label = chapter_title or _special_page_label("special", config.language)
     figure_class = "figure magazine-special"
     html_parts = [
         f'<figure class="{figure_class}"><img src="images/{filename}" alt="{html_module.escape(alt_label)}"/></figure>'
     ]
     if chapter_kind == "sponsored" and chapter_title:
-        html_parts.insert(0, f'<p class="kicker">Materiał sponsorowany</p>')
+        html_parts.insert(0, f'<p class="kicker">{html_module.escape(_special_page_label("sponsored", config.language))}</p>')
     return html_parts, [{"filename": filename, "extension": ext, "data": data}]
 
 

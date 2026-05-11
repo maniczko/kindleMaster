@@ -1,5 +1,6 @@
 import io
 import unittest
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -14,6 +15,9 @@ from magazine_kindle_reflow import (
     _infer_publication_creator,
     _infer_publication_title,
     _optimize_image,
+    _pick_chapter_title,
+    _render_special_layout_page,
+    _synthesize_sponsored_feature_title,
 )
 
 
@@ -82,6 +86,61 @@ class MagazineKindleReflowTests(unittest.TestCase):
         self.assertTrue(_chapter_should_be_toc_excluded("contents"))
         self.assertFalse(_chapter_should_be_toc_excluded("article"))
         self.assertFalse(_chapter_should_be_toc_excluded("interview"))
+
+    def test_special_magazine_titles_follow_epub_language(self) -> None:
+        advert = [_page(2, content_type="advertisement")]
+        sponsored = [_page(3, content_type="sponsored")]
+        gallery = [_page(4, content_type="gallery")]
+        cover = _page(0, content_type="cover")
+        cover.is_cover = True
+
+        self.assertEqual(
+            _pick_chapter_title(advert, fallback="", chapter_kind="advertisement", language="en"),
+            "Advertisement 3",
+        )
+        self.assertEqual(
+            _pick_chapter_title(sponsored, fallback="", chapter_kind="sponsored", language="pl"),
+            "Materiał sponsorowany 4",
+        )
+        self.assertEqual(
+            _pick_chapter_title(gallery, fallback="", chapter_kind="gallery", language="en-US"),
+            "Gallery 5",
+        )
+        self.assertEqual(_pick_chapter_title([cover], fallback="", language="en"), "Cover")
+        self.assertEqual(
+            _pick_chapter_title([_page(1)], fallback="", chapter_kind="contents", language="en"),
+            "Contents",
+        )
+        self.assertEqual(
+            _synthesize_sponsored_feature_title([_page(5, title=None, body="partner")], language="en"),
+            "Sponsored",
+        )
+
+    def test_special_layout_alt_and_kicker_follow_epub_language(self) -> None:
+        class FakePixmap:
+            def tobytes(self, _format: str) -> bytes:
+                return b"raw-png"
+
+        class FakePage:
+            def get_pixmap(self, *args, **kwargs) -> FakePixmap:
+                return FakePixmap()
+
+        class FakeDocument:
+            def __getitem__(self, _index: int) -> FakePage:
+                return FakePage()
+
+        with patch("magazine_kindle_reflow._optimize_image", return_value=(b"optimized", "jpeg")):
+            html_parts, image_items = _render_special_layout_page(
+                _page(0, content_type="sponsored"),
+                FakeDocument(),
+                ConversionConfig(language="en"),
+                "Sponsored 1",
+                "sponsored",
+            )
+
+        self.assertIn('<p class="kicker">Sponsored</p>', html_parts)
+        self.assertTrue(any('alt="Sponsored"' in part for part in html_parts))
+        self.assertEqual(image_items[0]["filename"], "special_p1.jpeg")
 
     def test_newsletter_pages_are_classified_as_auxiliary_sections(self) -> None:
         model = _page(

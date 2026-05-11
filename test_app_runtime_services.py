@@ -5,6 +5,8 @@ import sys
 import tempfile
 import threading
 import unittest
+import zipfile
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -22,6 +24,61 @@ from app_runtime_services import (
     run_document_conversion,
     serve_http_app,
 )
+
+
+def _minimal_epub_bytes(*, language: str = "en", title: str = "Quality Sample", body: str | None = None) -> bytes:
+    chapter_body = body or (
+        "<h1>Introduction</h1>"
+        "<p>This is a clean reader-facing chapter with enough prose to exercise the runtime premium quality gate.</p>"
+        "<p>The conversion should remain downloadable, but the metadata must include a premium score and AI verifier.</p>"
+    )
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        archive.writestr(
+            "META-INF/container.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>""",
+        )
+        archive.writestr(
+            "OEBPS/content.opf",
+            f"""<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">urn:uuid:quality-sample</dc:identifier>
+    <dc:title>{title}</dc:title>
+    <dc:creator>KindleMaster QA</dc:creator>
+    <dc:language>{language}</dc:language>
+    <dc:publisher>KindleMaster</dc:publisher>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="chapter1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="chapter1"/>
+  </spine>
+</package>""",
+        )
+        archive.writestr(
+            "OEBPS/nav.xhtml",
+            f"""<!doctype html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="{language}">
+<head><title>{title}</title></head>
+<body><nav epub:type="toc"><ol><li><a href="chapter1.xhtml">Introduction</a></li></ol></nav></body>
+</html>""",
+        )
+        archive.writestr(
+            "OEBPS/chapter1.xhtml",
+            f"""<!doctype html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="{language}">
+<head><title>Introduction</title></head>
+<body>{chapter_body}</body>
+</html>""",
+        )
+    return buffer.getvalue()
 
 
 class AppRuntimeServicesTests(unittest.TestCase):
@@ -193,6 +250,8 @@ class AppRuntimeServicesTests(unittest.TestCase):
                 profile="auto-premium",
                 language="pl",
                 heading_repair_enabled=True,
+                quality_gate_mode="off",
+                feedback_enabled=False,
             ),
             convert_impl=convert_impl,
             heading_repair_impl=heading_repair_impl,
@@ -214,6 +273,69 @@ class AppRuntimeServicesTests(unittest.TestCase):
                 ("repairing_headings", "Naprawiam headingi i TOC w EPUB..."),
             ],
         )
+
+    def test_run_document_conversion_applies_runtime_quality_gate_and_ai_verifier(self) -> None:
+        base_epub = _minimal_epub_bytes()
+        convert_impl = Mock(
+            return_value={
+                "epub_bytes": base_epub,
+                "source_type": "pdf",
+                "analysis": {
+                    "profile": "magazine_reflow",
+                    "confidence": 0.81,
+                    "legacy_strategy": "magazine_reflow",
+                    "route_decision": {
+                        "mode": "shadow",
+                        "heuristic_profile": "magazine_reflow",
+                        "heuristic_confidence": 0.81,
+                        "selected_profile": "magazine_reflow",
+                        "override_used": False,
+                    },
+                },
+                "quality_report": {
+                    "validation_status": "passed",
+                    "validation_tool": "epubcheck",
+                    "validation_messages": [],
+                    "warnings": [],
+                    "high_risk_pages": [],
+                    "high_risk_sections": [],
+                },
+                "document_summary": {
+                    "title": "Quality Sample",
+                    "author": "KindleMaster QA",
+                    "language": "en",
+                    "layout_mode": "reflowable",
+                    "section_count": 1,
+                    "asset_count": 0,
+                },
+            }
+        )
+        heading_repair_impl = Mock()
+
+        outcome = run_document_conversion(
+            ConversionRequest(
+                source_path="sample.pdf",
+                source_type="pdf",
+                original_filename="sample.pdf",
+                profile="auto-premium",
+                language="en",
+                heading_repair_enabled=False,
+                quality_gate_mode="draft",
+                feedback_enabled=False,
+            ),
+            convert_impl=convert_impl,
+            heading_repair_impl=heading_repair_impl,
+        )
+
+        quality_report = outcome.result["quality_report"]
+        self.assertIn("premium_scoring", quality_report)
+        self.assertIn("ai_quality_verification", quality_report)
+        self.assertEqual(quality_report["quality_gate_mode"], "draft")
+        self.assertEqual(outcome.metadata["quality_gate_mode"], "draft")
+        self.assertIn("premium_score", outcome.metadata["premium_scoring"])
+        self.assertIn("features_hash", outcome.metadata["ai_quality_verification"])
+        self.assertEqual(outcome.metadata["ai_quality_verification"]["quality_gate_mode"], "draft")
+        self.assertFalse(heading_repair_impl.called)
 
     def test_build_conversion_metadata_preserves_cockpit_inputs_and_flattened_fields(self) -> None:
         result = {

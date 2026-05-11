@@ -260,6 +260,14 @@ class QualityStateServiceTests(unittest.TestCase):
                             }
                         ],
                     },
+                    "ai_quality_verification": {
+                        "status": "failed",
+                        "decision": "block",
+                        "confidence": 0.91,
+                        "model_version": "quality-verifier-v1-bootstrap",
+                        "features_hash": "abc123",
+                        "reason_codes": ["premium-blockers"],
+                    },
                 },
             },
             download_url="/convert/download/magazine-job",
@@ -274,7 +282,54 @@ class QualityStateServiceTests(unittest.TestCase):
         self.assertTrue(state.release_blocked)
         self.assertEqual(state.premium_scoring["premium_score"], 5.0)
         self.assertEqual(payload["premium_scoring"]["kindle_ready"], False)
+        self.assertEqual(payload["ai_quality_verification"]["decision"], "block")
+        self.assertEqual(payload["ai_quality_verification"]["features_hash"], "abc123")
         self.assertIn("suspicious_metadata_author", [item["code"] for item in payload["quality_blockers"]])
+        self.assertFalse(payload["send_to_kindle_ready"])
+
+    def test_draft_quality_gate_blocks_release_not_download_even_when_score_passes(self) -> None:
+        request = self._request_from_job_payload(
+            {
+                "status": "ready",
+                "source_type": "pdf",
+                "filename": "draft.pdf",
+                "message": "EPUB gotowy do pobrania.",
+                "metadata": {
+                    "profile": "book_reflow",
+                    "validation": "passed",
+                    "validation_tool": "epubcheck",
+                    "quality_gate_mode": "draft",
+                    "premium_scoring": {
+                        "status": "passed",
+                        "technical_valid": True,
+                        "mail_sendable": "likely",
+                        "kindle_ready": True,
+                        "premium_ready": True,
+                        "premium_score": 9.3,
+                        "issues": [],
+                    },
+                    "ai_quality_verification": {
+                        "status": "passed",
+                        "decision": "ready",
+                        "confidence": 0.95,
+                        "features_hash": "readyhash",
+                    },
+                },
+            },
+            download_url="/convert/download/draft-job",
+        )
+
+        state = assemble_quality_state(request)
+        payload = assemble_quality_state_dict(request)
+
+        self.assertTrue(state.download_available)
+        self.assertEqual(state.release_verdict, "release_blocked")
+        self.assertTrue(state.release_blocked)
+        self.assertEqual(state.quality_gate_mode, "draft")
+        self.assertEqual(payload["quality_gate_mode"], "draft")
+        self.assertEqual(payload["quality_blockers"][0]["code"], "runtime_quality_gate_draft")
+        self.assertEqual(payload["user_facing_verdict"]["label"], "Nie publikuj")
+        self.assertEqual(payload["user_facing_verdict"]["download_label"], "Pobierz szkic EPUB do kontroli")
         self.assertFalse(payload["send_to_kindle_ready"])
 
     def test_semantic_ocr_and_reading_order_gates_block_release_not_download(self) -> None:

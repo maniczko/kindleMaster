@@ -1598,6 +1598,130 @@
     .quality-verdict[data-tone="review"] { border-left-color: var(--accent); }
     .quality-verdict[data-tone="failed"] { border-left-color: var(--error); }
 
+    .quality-cockpit-hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 12px;
+      padding: 14px;
+      background:
+        linear-gradient(135deg, color-mix(in srgb, var(--accent-soft) 72%, transparent), transparent 64%),
+        var(--panel-strong);
+    }
+
+    .quality-hero-copy {
+      display: grid;
+      gap: 7px;
+      min-width: 0;
+    }
+
+    .quality-hero-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .quality-eyebrow {
+      color: var(--accent-strong);
+      font-size: 0.68rem;
+      font-weight: 900;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .quality-cockpit-hero strong {
+      font-size: clamp(1.3rem, 2.4vw, 1.95rem);
+      line-height: 1;
+      letter-spacing: -0.03em;
+    }
+
+    .quality-cockpit-hero > .quality-hero-copy > span:not(.quality-eyebrow) {
+      display: block;
+      margin-top: 0;
+      color: var(--muted);
+      font-size: 0.82rem;
+      line-height: 1.4;
+    }
+
+    .quality-cockpit-hero .quality-decision-strip {
+      margin-top: 4px;
+    }
+
+    .quality-hero-metrics {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+      gap: 8px;
+    }
+
+    .quality-hero-metric {
+      min-width: 0;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--panel);
+      box-shadow: var(--shadow-sm);
+    }
+
+    .quality-hero-metric[data-tone="ready"] {
+      border-color: color-mix(in srgb, var(--success) 42%, var(--line));
+    }
+
+    .quality-hero-metric[data-tone="failed"] {
+      border-color: color-mix(in srgb, var(--error) 46%, var(--line));
+    }
+
+    .quality-hero-metric[data-tone="review"] {
+      border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+    }
+
+    .quality-hero-metric span,
+    .quality-hero-metric small {
+      display: block;
+      color: var(--muted);
+      font-size: 0.66rem;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      line-height: 1.2;
+      text-transform: uppercase;
+    }
+
+    .quality-hero-metric strong {
+      display: block;
+      margin: 4px 0;
+      font-size: 1.05rem;
+      line-height: 1.05;
+      letter-spacing: -0.02em;
+      overflow-wrap: anywhere;
+    }
+
+    .quality-top-reasons {
+      min-width: 0;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--panel);
+    }
+
+    .quality-top-reasons .quality-panel-title {
+      margin-bottom: 7px;
+    }
+
+    .quality-top-reasons-list {
+      display: grid;
+      gap: 6px;
+      margin: 0;
+      padding-left: 18px;
+      color: var(--ink);
+    }
+
+    .quality-top-reasons-list li {
+      padding-left: 2px;
+      color: var(--muted);
+      font-size: 0.78rem;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+
     .quality-decision-strip {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1642,6 +1766,23 @@
       color: var(--muted);
       font-size: 0.8rem;
       line-height: 1.4;
+    }
+
+    .quality-verdict.quality-cockpit-hero strong {
+      font-size: clamp(1.3rem, 2.4vw, 1.95rem);
+      line-height: 1;
+      letter-spacing: -0.03em;
+    }
+
+    .quality-verdict.quality-cockpit-hero .quality-eyebrow {
+      display: inline-flex;
+      margin-top: 0;
+      color: var(--accent-strong);
+      font-size: 0.68rem;
+      font-weight: 900;
+      letter-spacing: 0.12em;
+      line-height: 1.2;
+      text-transform: uppercase;
     }
 
     .quality-verdict .quality-status-pill {
@@ -1864,6 +2005,7 @@
 
     @media (max-width: 720px) {
       .quality-verdict,
+      .quality-hero-metrics,
       .quality-cockpit-grid,
       .quality-matrix {
         grid-template-columns: 1fr;

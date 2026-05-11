@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 import os
 from datetime import UTC, datetime
+from unittest.mock import patch
 
 import app as app_module
 from app import app
@@ -145,6 +146,41 @@ class AppQualityStateRouteTests(unittest.TestCase):
             [alert["code"] for alert in payload["quality_state"]["alerts"]],
             ["size_budget_warning", "quality_warning"],
         )
+
+    def test_convert_feedback_route_records_local_feedback_without_online_learning(self) -> None:
+        self._register_job(
+            "quality-feedback",
+            status="ready",
+            message="EPUB gotowy do pobrania.",
+            metadata={
+                "source_type": "pdf",
+                "profile": "book_reflow",
+                "premium_scoring": {"status": "failed", "premium_score": 4.2, "kindle_ready": False},
+                "ai_quality_verification": {"features_hash": "abc123", "decision": "block"},
+            },
+            output_size_bytes=4096,
+        )
+
+        with patch("ml_feedback.append_user_feedback") as append_feedback:
+            append_feedback.return_value = {"record_id": "fb_test_record"}
+            response = self.client.post(
+                "/convert/feedback/quality-feedback",
+                json={
+                    "status": "rejected",
+                    "quality_label": "blocked",
+                    "quality_score": 1,
+                    "issue_tags": ["language_label_contamination"],
+                    "notes": "Nie publikowac.",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["feedback_status"], "recorded")
+        self.assertEqual(payload["record_id"], "fb_test_record")
+        self.assertFalse(payload["online_learning"])
+        append_feedback.assert_called_once()
 
     def test_convert_quality_route_includes_ready_quality_cockpit_contract(self) -> None:
         metadata = build_conversion_metadata(

@@ -34,6 +34,8 @@ class ConversionRequest:
     source_type: str | None = None
     text_cleanup_domain_dictionary_path: str | None = None
     route_model_mode: str = "shadow"
+    quality_gate_mode: str = "draft"
+    feedback_enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -263,6 +265,7 @@ def build_conversion_config(request: ConversionRequest) -> Any:
         language=request.language,
         text_cleanup_domain_dictionary_path=request.text_cleanup_domain_dictionary_path,
         route_model_mode=request.route_model_mode,
+        quality_gate_mode=request.quality_gate_mode,
     )
 
 
@@ -375,6 +378,60 @@ def _json_safe_metadata_value(
         return _json_safe_metadata_value(to_dict(), list_limit=list_limit, depth=depth - 1)
 
     return str(value)
+
+
+def _quality_gate_epubcheck_payload(
+    *,
+    quality_report: Mapping[str, Any],
+    heading_repair_report: Mapping[str, Any],
+) -> dict[str, Any]:
+    heading_status = str(heading_repair_report.get("status", "") or "").strip().lower()
+    heading_epubcheck = str(heading_repair_report.get("epubcheck_status", "") or "").strip()
+    if heading_status == "applied" and heading_epubcheck:
+        return {
+            "status": heading_epubcheck,
+            "messages": [],
+            "tool": "epubcheck",
+        }
+    return {
+        "status": str(quality_report.get("validation_status", "unavailable") or "unavailable"),
+        "messages": list(quality_report.get("validation_messages", []) or []),
+        "tool": str(quality_report.get("validation_tool", "unknown") or "unknown"),
+    }
+
+
+def _apply_runtime_quality_gate(
+    *,
+    result: dict[str, Any],
+    epub_bytes: bytes,
+    request: ConversionRequest,
+    heading_repair_report: Mapping[str, Any],
+) -> dict[str, Any]:
+    mode = str(request.quality_gate_mode or "draft").strip().lower()
+    if mode == "off":
+        return result
+
+    from epub_premium_scoring import score_epub_premium_quality
+    from ml_quality_verifier import build_ai_quality_verification
+
+    updated_result = dict(result)
+    quality_report = _to_mapping_payload(updated_result.get("quality_report", {}) or {})
+    analysis = _to_mapping_payload(updated_result.get("analysis", {}) or {})
+    epubcheck_payload = _quality_gate_epubcheck_payload(
+        quality_report=quality_report,
+        heading_repair_report=heading_repair_report,
+    )
+    premium_scoring = score_epub_premium_quality(epub_bytes, epubcheck=epubcheck_payload)
+    quality_report["premium_scoring"] = premium_scoring
+    quality_report["ai_quality_verification"] = build_ai_quality_verification(
+        premium_scoring=premium_scoring,
+        quality_report=quality_report,
+        analysis=analysis,
+        quality_gate_mode=mode,
+    )
+    quality_report["quality_gate_mode"] = mode
+    updated_result["quality_report"] = quality_report
+    return updated_result
 
 
 def _compact_mapping(
@@ -606,6 +663,11 @@ def build_conversion_metadata(
     premium_scoring = _json_safe_metadata_value(quality_report.get("premium_scoring") or {})
     if isinstance(premium_scoring, Mapping) and premium_scoring:
         metadata["premium_scoring"] = dict(premium_scoring)
+    ai_quality_verification = _json_safe_metadata_value(quality_report.get("ai_quality_verification") or {})
+    if isinstance(ai_quality_verification, Mapping) and ai_quality_verification:
+        metadata["ai_quality_verification"] = dict(ai_quality_verification)
+    if quality_report.get("quality_gate_mode"):
+        metadata["quality_gate_mode"] = str(quality_report.get("quality_gate_mode") or "")
 
     return metadata
 
@@ -756,12 +818,39 @@ def run_document_conversion(
                 heading_repair_report["error"] = str(error)
 
     detected_source_type = str(result.get("source_type", source_type) or source_type)
+    result = _apply_runtime_quality_gate(
+        result=result,
+        epub_bytes=epub_bytes,
+        request=request,
+        heading_repair_report=heading_repair_report,
+    )
     metadata = build_conversion_metadata(
         result=result,
         detected_source_type=detected_source_type,
         heading_repair_enabled=request.heading_repair_enabled,
         heading_repair_report=heading_repair_report,
     )
+    if request.feedback_enabled:
+        try:
+            from ml_feedback import append_conversion_feedback_event
+
+            append_conversion_feedback_event(
+                source_path=request.source_path,
+                original_filename=request.original_filename,
+                source_type=detected_source_type,
+                metadata=metadata,
+                result=result,
+            )
+            metadata["feedback_learning"] = {
+                "status": "recorded",
+                "learning_mode": "feedback_retrain_no_online_updates",
+            }
+        except Exception as error:
+            metadata["feedback_learning"] = {
+                "status": "failed",
+                "learning_mode": "feedback_retrain_no_online_updates",
+                "error": str(error),
+            }
     return ConversionOutcome(
         result=result,
         epub_bytes=epub_bytes,

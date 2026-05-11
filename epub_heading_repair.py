@@ -37,9 +37,11 @@ from kindle_semantic_cleanup import (
     _looks_like_reference_section_title,
     _normalize_text,
     _rewrite_navigation,
+    _serialize_soup_document,
     _slugify,
     _snapshot_package_metadata,
     _should_include_in_toc,
+    _strip_english_output_polish_structural_dom_artifacts,
     _training_book_key,
     _title_fragments_match,
     finalize_epub_for_kindle,
@@ -450,6 +452,7 @@ def repair_epub_headings_and_toc(
         repaired_epub,
         publication_profile=publication_profile,
         preferred_outline_entries=source_outline_entries,
+        language_hint=defaults["language"],
     )
     epubcheck = run_epubcheck(repaired_epub)
 
@@ -891,6 +894,7 @@ def _normalize_headings_and_rebuild_navigation(
     *,
     publication_profile: str | None = None,
     preferred_outline_entries: list[dict[str, Any]] | None = None,
+    language_hint: str = "",
 ) -> tuple[bytes, dict[str, list[dict[str, Any]]], list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
     with tempfile.TemporaryDirectory() as temp_dir:
         root_dir = Path(temp_dir)
@@ -898,6 +902,12 @@ def _normalize_headings_and_rebuild_navigation(
         opf_path = _locate_opf(root_dir)
         chapter_paths = _get_spine_xhtml_paths(opf_path)
         package_outline_entries = _extract_existing_toc_entries_from_package(opf_path, chapter_paths)
+        metadata = _snapshot_package_metadata(opf_path)
+        resolved_language = (
+            _normalize_text(str(metadata.get("language", "") or ""))
+            or _normalize_text(language_hint)
+            or "en"
+        )
 
         after_scan: dict[str, list[dict[str, Any]]] = {}
         empty_reference_files: set[str] = set()
@@ -905,6 +915,7 @@ def _normalize_headings_and_rebuild_navigation(
             after_scan[chapter_path.name] = _ensure_heading_ids_and_scan(
                 chapter_path,
                 publication_profile=publication_profile,
+                language_hint=resolved_language,
             )
             if _chapter_is_empty_reference_section(chapter_path, after_scan[chapter_path.name]):
                 empty_reference_files.add(chapter_path.name)
@@ -920,13 +931,12 @@ def _normalize_headings_and_rebuild_navigation(
             after_scan=after_scan,
             publication_profile=publication_profile,
         )
-        metadata = _snapshot_package_metadata(opf_path)
         _rewrite_navigation(
             root_dir,
             opf_path,
             toc_entries=toc_entries,
             title=_normalize_text(str(metadata.get("title", "") or "")) or "Publication",
-            language=_normalize_text(str(metadata.get("language", "") or "")) or "en",
+            language=resolved_language,
         )
         _strip_missing_landmarks(opf_path.parent / "nav.xhtml", package_dir=opf_path.parent)
         toc_map = _build_toc_map(toc_entries, chapter_paths=chapter_paths, package_dir=opf_path.parent)
@@ -991,6 +1001,7 @@ def _ensure_heading_ids_and_scan(
     chapter_path: Path,
     *,
     publication_profile: str | None = None,
+    language_hint: str = "",
 ) -> list[dict[str, Any]]:
     original = chapter_path.read_text(encoding="utf-8")
     soup = BeautifulSoup(original, "xml")
@@ -1001,6 +1012,15 @@ def _ensure_heading_ids_and_scan(
     changed = _demote_heading_noise(soup, publication_profile=publication_profile) or changed
     if _is_magazine_publication_profile(publication_profile):
         changed = _clean_magazine_heading_text_nodes(soup) or changed
+    if (language_hint or "").strip().lower().startswith("en"):
+        if changed:
+            chapter_path.write_text(_serialize_soup_document(soup), encoding="utf-8")
+            original = chapter_path.read_text(encoding="utf-8")
+            soup = BeautifulSoup(original, "xml")
+        changed = _strip_english_output_polish_structural_dom_artifacts(chapter_path, language=language_hint) or changed
+        if changed:
+            original = chapter_path.read_text(encoding="utf-8")
+            soup = BeautifulSoup(original, "xml")
     changed = _ensure_primary_heading(soup) or changed
     id_counts = Counter(
         _normalize_text(str(node.get("id", "") or ""))

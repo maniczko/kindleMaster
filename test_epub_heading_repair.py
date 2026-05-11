@@ -654,7 +654,8 @@ class EpubHeadingRepairTests(unittest.TestCase):
         with zipfile.ZipFile(io.BytesIO(result.epub_bytes), "r") as archive:
             chapter = archive.read("EPUB/chapter_001.xhtml").decode("utf-8")
 
-        self.assertEqual(chapter.count('id="business-analysis-planning-and-monitoring-co-to-jest"'), 1)
+        self.assertEqual(chapter.count('id="business-analysis-planning-and-monitoring"'), 1)
+        self.assertNotIn("Co to jest", chapter)
         self.assertEqual(result.epubcheck["status"], "passed")
 
     def test_repair_epub_headings_and_toc_merges_split_heading_clusters(self):

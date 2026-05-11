@@ -36,6 +36,7 @@ from kindle_semantic_cleanup import (
     _resolve_publication_language,
     _rewrite_navigation,
     _rewrite_solution_backlinks,
+    _strip_english_output_polish_structural_dom_artifacts,
     _strip_unresolved_fragment_links,
     _synchronize_xhtml_language,
     _update_opf_metadata,
@@ -427,6 +428,7 @@ def _run_recovery_phases(
                 title=expected_title or source_path.stem,
                 author=expected_author or raw_author_candidate or "Unknown",
                 language=expected_language or "en",
+                publication_profile=publication_profile,
             )
             processed[chapter_path] = chapter_result
             toc_entries.extend(chapter_result.nav_entries)
@@ -516,9 +518,27 @@ def _run_recovery_phases(
         )
         resolved_toc_entries = list(package_overrides.get("toc_entries") or toc_entries)
         spine_order = list(package_overrides.get("spine_order") or [])
+        non_linear_spine_files = {
+            str(name)
+            for name in (package_overrides.get("non_linear_spine_files") or [])
+            if str(name)
+        }
         if not spine_order:
-            spine_order = [path.name for path in chapter_paths if path.name != "cover.xhtml"]
+            spine_order = [
+                path.name
+                for path in chapter_paths
+                if path.name != "cover.xhtml" and path.name not in non_linear_spine_files
+            ]
+        if non_linear_spine_files:
+            resolved_toc_entries = [
+                entry
+                for entry in resolved_toc_entries
+                if str(entry.get("file_name") or "") not in non_linear_spine_files
+            ]
 
+        for chapter_path in chapter_paths:
+            if chapter_path.name != "cover.xhtml":
+                _strip_english_output_polish_structural_dom_artifacts(chapter_path, language=resolved_language)
         _strip_unresolved_fragment_links(chapter_paths)
         _audit_diagram_presentation(opf_path.parent, language=resolved_language)
         _write_default_css(root_dir)
@@ -533,7 +553,7 @@ def _run_recovery_phases(
         )
         _rewrite_navigation(root_dir, opf_path, toc_entries=resolved_toc_entries, title=resolved_title, language=resolved_language)
         _synchronize_xhtml_language(opf_path.parent, language=resolved_language)
-        _reorder_opf_spine(opf_path, spine_order)
+        _reorder_opf_spine(opf_path, spine_order, non_linear_files=non_linear_spine_files)
         final_bytes = _pack_epub(root_dir)
 
     final_inventory = _inventory_epub(final_bytes, label="final")

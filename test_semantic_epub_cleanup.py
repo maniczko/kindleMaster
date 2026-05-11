@@ -14,6 +14,7 @@ from epub_package_ops import (
     _get_spine_xhtml_paths as _shared_get_spine_xhtml_paths,
     _locate_opf as _shared_locate_opf,
 )
+from epub_premium_scoring import score_epub_premium_quality
 from kindle_semantic_cleanup import (
     _build_curated_toc_entries,
     _detect_cleanup_scope,
@@ -72,15 +73,19 @@ class SemanticEpubCleanupTests(unittest.TestCase):
   </metadata>
   <manifest>
     <item id="chapter-1" href="chapter_001.xhtml" media-type="application/xhtml+xml"/>
+    <item id="appendix" href="appendix.xhtml" media-type="application/xhtml+xml"/>
     <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
   </manifest>
   <spine>
     <itemref idref="chapter-1"/>
+    <itemref idref="appendix" linear="no"/>
     <itemref idref="nav"/>
   </spine>
 </package>""",
                 "EPUB/chapter_001.xhtml": """<?xml version="1.0" encoding="utf-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml"><head><title>One</title></head><body><h1>One</h1></body></html>""",
+                "EPUB/appendix.xhtml": """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Ad</title></head><body><h1>Advertisement</h1></body></html>""",
                 "EPUB/nav.xhtml": """<?xml version="1.0" encoding="utf-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body><nav epub:type="toc"><ol><li><a href="chapter_001.xhtml">One</a></li></ol></nav></body></html>""",
             }
@@ -298,6 +303,91 @@ class SemanticEpubCleanupTests(unittest.TestCase):
         self.assertIn("Architektura - Co to jest", nav_texts)
         self.assertIn("Architektura - Jak działa", nav_texts)
         self.assertIn("Zależności systemowe", nav_texts)
+
+    def test_process_chapter_localizes_knowledge_sections_for_english_and_skips_magazine_profile(self):
+        chapter_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <title>Publishing System</title>
+  </head>
+  <body>
+    <h1>Publishing System</h1>
+    <p>The publishing architecture is defined as a coordinated service layer that connects extraction, validation, and EPUB delivery into one editorial workflow. First the pipeline reads the source file, second it analyzes the reading order, then it renders semantic chapters, and finally it publishes a validated package for the reader. For example, the same service can route a magazine through article-first reflow while preserving a book route for long-form prose. This means operators get fewer manual corrections, clearer release evidence, and a more predictable Kindle-ready artifact.</p>
+  </body>
+</html>
+"""
+        with TemporaryDirectory() as temp_dir:
+            chapter_path = Path(temp_dir) / "chapter_knowledge_en.xhtml"
+            chapter_path.write_text(chapter_source, encoding="utf-8")
+
+            result = _process_chapter(
+                chapter_path,
+                repeated_counts=Counter(),
+                keep_first_seen=set(),
+                title="Publishing System",
+                author="Tester",
+                language="en",
+            )
+
+        self.assertIn(">Definitions</h2>", result.xhtml)
+        self.assertIn(">How it works</h3>", result.xhtml)
+        self.assertIn(">Example</h3>", result.xhtml)
+        self.assertIn(">Business implications</h3>", result.xhtml)
+        self.assertNotIn("Co to jest", result.xhtml)
+        self.assertNotIn("Jak działa", result.xhtml)
+
+        with TemporaryDirectory() as temp_dir:
+            chapter_path = Path(temp_dir) / "chapter_magazine_en.xhtml"
+            chapter_path.write_text(chapter_source, encoding="utf-8")
+
+            magazine_result = _process_chapter(
+                chapter_path,
+                repeated_counts=Counter(),
+                keep_first_seen=set(),
+                title="Publishing System",
+                author="Tester",
+                language="en",
+                publication_profile="magazine_reflow",
+            )
+
+        self.assertNotIn(">What it is</h", magazine_result.xhtml)
+        self.assertNotIn(">How it works</h", magazine_result.xhtml)
+        self.assertNotIn("Co to jest", magazine_result.xhtml)
+
+    def test_process_chapter_strips_inline_polish_structural_labels_from_english_output(self):
+        chapter_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>World Briefing</title></head>
+  <body>
+    <h1>World Briefing</h1>
+    <h2>Market Briefing - Definicje</h2>
+    <p>Anonymous Co to jest A former official argues that the administration is losing its grip.</p>
+    <p>Material sponsorowany - 72 The Economist May Culture contains a real article after a contaminated prefix.</p>
+    <p>Briefing Summit in Beijing Co to jest Jak działa For a time, investors thought the leaders might settle the dispute.</p>
+  </body>
+</html>
+"""
+        with TemporaryDirectory() as temp_dir:
+            chapter_path = Path(temp_dir) / "chapter_contaminated_en.xhtml"
+            chapter_path.write_text(chapter_source, encoding="utf-8")
+
+            result = _process_chapter(
+                chapter_path,
+                repeated_counts=Counter(),
+                keep_first_seen=set(),
+                title="World Briefing",
+                author="Tester",
+                language="en",
+                publication_profile="magazine_reflow",
+            )
+
+        self.assertNotIn("Co to jest", result.xhtml)
+        self.assertNotIn("Jak działa", result.xhtml)
+        self.assertNotIn("Definicje", result.xhtml)
+        self.assertNotIn("Material sponsorowany", result.xhtml)
+        self.assertIn("Market Briefing", result.xhtml)
+        self.assertIn("A former official argues", result.xhtml)
+        self.assertIn("Culture contains a real article", result.xhtml)
 
     def test_navigation_builders_keep_level_three_sections(self):
         toc_entries = [
@@ -994,6 +1084,125 @@ class SemanticEpubCleanupTests(unittest.TestCase):
             self.assertIn('src="images/cover.jpeg"', cover_xhtml)
             self.assertIn('content="1"', toc_ncx)
             self.assertIn('src="chapter_001.xhtml#forest-walk"', toc_ncx)
+
+    def test_finalize_magazine_demotes_english_ads_and_galleries_out_of_reading_spine(self):
+        opf_source = """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">magazine-id</dc:identifier>
+    <dc:title>Global Weekly</dc:title>
+    <dc:language>en</dc:language>
+    <dc:creator>Editorial Team</dc:creator>
+  </metadata>
+  <manifest>
+    <item id="contents" href="chapter_001.xhtml" media-type="application/xhtml+xml"/>
+    <item id="article" href="chapter_002.xhtml" media-type="application/xhtml+xml"/>
+    <item id="gallery" href="chapter_003.xhtml" media-type="application/xhtml+xml"/>
+    <item id="advert" href="chapter_004.xhtml" media-type="application/xhtml+xml"/>
+    <item id="photo_stub" href="chapter_005.xhtml" media-type="application/xhtml+xml"/>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="css" href="style/default.css" media-type="text/css"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="contents"/>
+    <itemref idref="article"/>
+    <itemref idref="gallery"/>
+    <itemref idref="advert"/>
+    <itemref idref="photo_stub"/>
+  </spine>
+</package>
+"""
+        contents = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Contents</title></head>
+  <body><section><h1 id="contents">Contents</h1><p>12. Market Week</p></section></body>
+</html>
+"""
+        article = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Market Week</title></head>
+  <body><section><h1 id="market-week">Market Week</h1><p>Clean market analysis text with enough editorial prose to represent a real article in the issue.</p></section></body>
+</html>
+"""
+        gallery = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Gallery</title></head>
+  <body><section><h1 id="gallery">Gallery</h1><p>Gallery</p><img src="images/gallery.jpg" alt=""/></section></body>
+</html>
+"""
+        advert = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Advertisement</title></head>
+  <body><section><h1 id="advertisement">Advertisement</h1><p>Advertisement</p><img src="images/ad.jpg" alt=""/></section></body>
+</html>
+"""
+        photo_stub = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Photo Note</title></head>
+  <body><section><p id="photo-note">Photo Note</p><img src="images/photo.jpg" alt=""/></section></body>
+</html>
+"""
+        nav_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+  <body><nav epub:type="toc"><ol><li><a href="chapter_001.xhtml">Contents</a></li></ol></nav></body>
+</html>
+"""
+        toc_source = """<?xml version="1.0" encoding="utf-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><head><meta name="dtb:uid" content="magazine-id"/></head><docTitle><text>Global Weekly</text></docTitle><navMap/></ncx>
+"""
+        container_source = """<?xml version="1.0" encoding="utf-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="EPUB/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>
+"""
+        epub_bytes = self._build_epub_bytes(
+            {
+                "mimetype": "application/epub+zip",
+                "META-INF/container.xml": container_source,
+                "EPUB/content.opf": opf_source,
+                "EPUB/chapter_001.xhtml": contents,
+                "EPUB/chapter_002.xhtml": article,
+                "EPUB/chapter_003.xhtml": gallery,
+                "EPUB/chapter_004.xhtml": advert,
+                "EPUB/chapter_005.xhtml": photo_stub,
+                "EPUB/nav.xhtml": nav_source,
+                "EPUB/toc.ncx": toc_source,
+                "EPUB/style/default.css": "body { font-family: serif; }",
+                "EPUB/images/gallery.jpg": b"fake-gallery",
+                "EPUB/images/ad.jpg": b"fake-ad",
+                "EPUB/images/photo.jpg": b"fake-photo",
+            }
+        )
+
+        cleaned_epub = finalize_epub_for_kindle(
+            epub_bytes,
+            title="Global Weekly",
+            author="Editorial Team",
+            language="en",
+            publication_profile="magazine_reflow",
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            with zipfile.ZipFile(io.BytesIO(cleaned_epub), "r") as archive:
+                archive.extractall(temp_dir)
+
+            opf_tree = etree.parse(str(Path(temp_dir) / "EPUB" / "content.opf"))
+            ns = {"opf": "http://www.idpf.org/2007/opf"}
+            spine = opf_tree.findall(".//opf:spine/opf:itemref", namespaces=ns)
+            spine_by_idref = {item.get("idref"): item for item in spine}
+            nav_xhtml = (Path(temp_dir) / "EPUB" / "nav.xhtml").read_text(encoding="utf-8")
+
+        self.assertNotEqual(spine_by_idref["article"].get("linear"), "no")
+        self.assertEqual(spine_by_idref["gallery"].get("linear"), "no")
+        self.assertEqual(spine_by_idref["advert"].get("linear"), "no")
+        self.assertEqual(spine_by_idref["photo_stub"].get("linear"), "no")
+        self.assertNotIn(">Gallery<", nav_xhtml)
+        self.assertNotIn(">Advertisement<", nav_xhtml)
+
+        quality = score_epub_premium_quality(cleaned_epub, epubcheck={"status": "passed", "messages": []})
+        codes = [issue["code"] for issue in quality["issues"]]
+        self.assertNotIn("magazine_non_content_chapter", codes)
 
     def test_finalize_epub_for_kindle_dedupes_chapter_dom_ids(self):
         opf_source = """<?xml version="1.0" encoding="utf-8"?>

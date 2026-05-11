@@ -9,7 +9,7 @@ This document is the agent-facing map for how KindleMaster turns PDF or DOCX inp
 | Stage | Runtime owner | What happens | Primary tests or gates |
 | --- | --- | --- | --- |
 | 1. Input and command routing | `kindlemaster.py`, `app.py` | CLI and Flask routes accept PDF/DOCX input and route conversion through the same core conversion path. | `test_kindlemaster_entrypoint.py`, `test_app_async_convert.py`, `test_pdf_runtime_flow.py` |
-| 2. Publication analysis | `publication_analysis.py` | Detects publication class and route hints for books, reports, scans, magazines, training/chess-like inputs, and DOCX. | `test_publication_pipeline.py`, `test_premium_corpus_smoke.py` |
+| 2. Publication analysis | `publication_analysis.py`, `ml_features.py`, `ml_route_model.py` | Detects publication class and route hints for books, reports, scans, magazines, training/chess-like inputs, and DOCX. The local JSON route model runs in `shadow` by default and reports `route_decision`; `assist` requires an explicit flag and confidence gates. | `test_publication_analysis.py`, `test_ml_route_model.py`, `test_publication_pipeline.py`, `test_premium_corpus_smoke.py` |
 | 3. Extraction and OCR | `premium_reflow.py`, `magazine_kindle_reflow.py`, `pymupdf_chess_extractor.py`, `docx_conversion.py` | Extracts text, headings, tables, images, diagrams, OCR text, and DOCX structure into the shared publication model or legacy content shape. | `test_docx_conversion.py`, `test_magazine_conversion.py`, `test_chess_fix.py`, `test_prepare_reference_inputs_ocr_fixture.py` |
 | 4. Text cleanup | `text_cleanup_engine.py`, `text_normalization.py` | Repairs split/glued text and PL/EN artifacts using scored, conservative transformations. | `test_text_normalization.py`, `test_converter_text_cleanup.py` |
 | 5. Publication model and quality report | `publication_pipeline.py`, `publication_model.py`, `quality_reporting.py`, `quality_state_service.py` | Shapes conversion output, metrics, quality state, fallback signals, and machine-readable report payloads. | `test_release_quality_recovery.py`, `test_quality_reporting.py`, `test_quality_state_service.py` |
@@ -28,6 +28,7 @@ Fallback is allowed, but it must be visible. Do not treat fallback output as pre
 | EPUBCheck unavailable | `python kindlemaster.py doctor`, validator payloads | Internal validators still run; release claims must mention EPUBCheck unavailability. |
 | Browser/runtime optional tools unavailable | `python kindlemaster.py test --suite browser`, `python kindlemaster.py test --suite runtime` | Return an explicit unavailable/degraded result instead of silently passing. |
 | Heading/reference ambiguity | manual review queue and release reports | Preserve valid existing structure or flag manual review; do not invent structure. |
+| ML uncertainty | `route_decision`, `reports/ml/datasets/completeness_report.json` | Keep runtime in `shadow` unless assist gates pass; rebuild datasets with `python kindlemaster.py ml dataset` before training. |
 
 ## Where To Add Tests
 
@@ -36,6 +37,7 @@ Fallback is allowed, but it must be visible. Do not treat fallback output as pre
 - Shared cleanup changes: update `test_semantic_epub_cleanup.py` and run the text/TOC/reference regression pack from `AGENTS.md`.
 - Release or quality reporting changes: update quality/report tests and run `python kindlemaster.py status` only as derived evidence, not as a hand-maintained truth source.
 - Corpus/generalization claims: run `python kindlemaster.py test --suite corpus` and keep blockers visible if any fixture fails.
+- ML route or review changes: run `python kindlemaster.py ml dataset`, `python kindlemaster.py ml evaluate`, and the ML unit tests before enabling assist experiments.
 
 ## Release Gate Summary
 

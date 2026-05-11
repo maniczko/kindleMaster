@@ -14,6 +14,8 @@ from docx.oxml.text.paragraph import CT_P
 from docx.table import Table as DocxTable, _Cell
 from docx.text.paragraph import Paragraph as DocxParagraph
 
+from ml_features import docx_route_feature_payload
+from ml_route_model import build_route_decision
 from premium_tools import detect_toolchain
 from publication_model import PublicationAnalysis, PublicationBlock, PublicationDocument, PublicationSection
 
@@ -39,7 +41,7 @@ TECHNICAL_AUTHOR_MARKERS = (
 HEADING_STYLE_RE = re.compile(r"heading\s*(?P<level>[1-6])", re.IGNORECASE)
 
 
-def analyze_docx(docx_path: str | Path) -> dict[str, Any]:
+def analyze_docx(docx_path: str | Path, route_model_mode: str = "shadow") -> dict[str, Any]:
     resolved_path = Path(docx_path).resolve()
     document = load_docx_document(str(resolved_path))
     counts = _count_docx_features(document)
@@ -102,6 +104,16 @@ def analyze_docx(docx_path: str | Path) -> dict[str, Any]:
             "profile_reason": "DOCX reflow profile selected from document structure rather than page geometry.",
         },
     }
+    route_features = docx_route_feature_payload(analysis)
+    route_decision = build_route_decision(
+        heuristic_profile="docx_reflow",
+        heuristic_confidence=confidence,
+        features=route_features,
+        mode=route_model_mode,
+        allow_override=False,
+    )
+    analysis["route_decision"] = route_decision
+    analysis["publication_analysis"]["route_decision"] = route_decision
     return analysis
 
 
@@ -109,10 +121,11 @@ def build_docx_publication_document(
     docx_path: str | Path,
     *,
     language: str,
+    route_model_mode: str = "shadow",
 ) -> PublicationDocument:
     resolved_path = Path(docx_path).resolve()
     document = load_docx_document(str(resolved_path))
-    analysis_payload = analyze_docx(resolved_path)
+    analysis_payload = analyze_docx(resolved_path, route_model_mode=route_model_mode)
     publication_payload = analysis_payload["publication_analysis"]
     properties = document.core_properties
     title = _sanitize_docx_title(properties.title or resolved_path.stem, file_stem=resolved_path.stem) or resolved_path.stem
@@ -301,6 +314,7 @@ def build_docx_publication_document(
         detected_features=list(publication_payload["detected_features"]),
         external_tools=publication_payload["external_tools"],
         profile_reason=publication_payload["profile_reason"],
+        route_decision=publication_payload.get("route_decision", {}),
     )
     return PublicationDocument(
         title=title,

@@ -34,6 +34,7 @@ DEV_REQUIREMENT_MODULES: tuple[tuple[str, str, str], ...] = (
     ("coverage[toml]", "coverage", "coverage"),
     ("playwright", "playwright", "Playwright"),
     ("waitress", "waitress", "Waitress"),
+    ("scikit-learn", "sklearn", "scikit-learn"),
 )
 
 
@@ -488,6 +489,7 @@ def _detect_toolchain_uncached() -> dict:
             "coverage": developer_requirements["packages"]["coverage[toml]"]["installed"],
             "playwright": playwright_module_found,
             "waitress": waitress_module_found,
+            "sklearn": developer_requirements["packages"]["scikit-learn"]["installed"],
             "ocrmypdf": _module_available("ocrmypdf"),
         },
         "commands": {
@@ -564,7 +566,7 @@ def _detect_toolchain_uncached() -> dict:
                     "missing_modules": list(developer_requirements["missing_modules"]),
                     "manual_steps": ["python -m playwright install chromium"],
                     "notes": [
-                        "Adds pytest, coverage, Playwright, and Waitress for local verification lanes.",
+                        "Adds pytest, coverage, Playwright, Waitress, and scikit-learn for local verification and ML training lanes.",
                         "Chromium remains a separate local install even after requirements-dev.txt is installed.",
                     ],
                 },

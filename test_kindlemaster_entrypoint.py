@@ -85,6 +85,7 @@ class KindleMasterEntrypointTests(unittest.TestCase):
             request = conversion_mock.call_args.args[0]
             self.assertEqual(request.source_type, "pdf")
             self.assertEqual(request.language, "pl")
+            self.assertEqual(request.route_model_mode, "shadow")
             self.assertEqual(request.text_cleanup_domain_dictionary_path, "docs/domain-dictionary-example.json")
             payload = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["source_type"], "pdf")
@@ -143,6 +144,7 @@ class KindleMasterEntrypointTests(unittest.TestCase):
             "coverage": True,
             "playwright": True,
             "waitress": True,
+            "sklearn": True,
             "ocrmypdf": False,
         }
 

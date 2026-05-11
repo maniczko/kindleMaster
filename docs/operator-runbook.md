@@ -86,6 +86,23 @@ python epub_quality_recovery.py path\to\file.epub
 
 Use `/convert/quality/<job_id>` to decide whether the issue is a release blocker, warning, or manual-review item. Validation blockers should remain visible through `quality_state.quality_blockers` and `quality_state.alerts`.
 
+## ML Route Operations
+
+KindleMaster ML V1 is local-first and audit-only by default. Runtime conversion uses `route_model_mode=shadow`, so the heuristic route remains selected while `route_decision` records the JSON model prediction, confidence, model version, and input feature hash.
+
+```powershell
+python kindlemaster.py ml dataset
+python kindlemaster.py ml evaluate
+```
+
+Use `assist` only for controlled experiments:
+
+```powershell
+python kindlemaster.py convert path\to\input.pdf --output output\ml-assist.epub --route-model-mode assist
+```
+
+Do not treat a model as release-enabling unless `reports/ml/datasets/completeness_report.json` is not `insufficient_data` and corpus output is unchanged in default `shadow` mode.
+
 ## Cleanup Guidance
 
 - Conversion job history is local, derived runtime state.

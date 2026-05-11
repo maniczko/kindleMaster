@@ -1098,6 +1098,7 @@ def _run_conversion_case(case: CorpusCase, *, run_heading_repair: bool) -> dict[
             author_hint=str(summary.get("author", "")),
             language_hint=str(inspect.get("package_language", "")),
             publication_profile=(analysis.profile if hasattr(analysis, "profile") else None),
+            already_semantic_cleaned=True,
         )
         heading_summary = {
             "status": "completed",

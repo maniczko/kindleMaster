@@ -320,8 +320,14 @@ def _build_governance_dashboard(
 
 
 def _extract_top_level_commands(kindlemaster_source: str) -> list[str]:
-    top_level_source = kindlemaster_source.split("workflow_subparsers", 1)[0]
-    commands = sorted(set(re.findall(r"add_parser\(\s*\"([^\"]+)\"", top_level_source)))
+    commands = sorted(
+        set(
+            re.findall(
+                r"(?:^|\n)\s*(?:\w+\s*=\s*)?subparsers\.add_parser\(\s*\"([^\"]+)\"",
+                kindlemaster_source,
+            )
+        )
+    )
     return [command for command in commands if command not in {"baseline", "verify"}]
 
 

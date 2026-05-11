@@ -26,6 +26,7 @@ Use this checklist before claiming that a KindleMaster conversion change is rele
 | Tables/lists/images/diagrams | targeted tests, audit, smoke output | required rich content is preserved and valid | core article/book content is missing or malformed |
 | Output size/budget | size budget tests and reports | output stays within class policy or warning is accepted | size budget fails without accepted reason |
 | Manual review queue | audit/release report | queue size is zero for release-ready, or accepted for review-ready | unresolved manual-review item is release blocking |
+| ML route shadow | `route_decision`, `python kindlemaster.py ml evaluate` | default `shadow` does not change selected profile or EPUB output; decisions include model version and feature hash | `shadow` changes runtime output, or assist override lacks confidence-gate evidence |
 | Corpus confidence | `python kindlemaster.py test --suite corpus` and `reports/corpus/corpus_gate.json` | corpus gate passes for generic claims | corpus gate fails and the task claims generic release readiness |
 | Project status | `python kindlemaster.py status` | `overall_status` is `passed` for full release claims | `overall_status` is `failed` |
 
@@ -35,6 +36,8 @@ For docs-only changes, run docs/governance tests. For conversion-quality changes
 
 ```powershell
 python kindlemaster.py test --suite quick
+python kindlemaster.py ml dataset
+python kindlemaster.py ml evaluate
 python kindlemaster.py test --suite corpus
 python kindlemaster.py test --suite release
 python kindlemaster.py status

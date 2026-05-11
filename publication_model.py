@@ -89,6 +89,7 @@ class PublicationAnalysis:
     detected_features: list[str] = field(default_factory=list)
     external_tools: dict[str, Any] = field(default_factory=dict)
     profile_reason: str = ""
+    route_decision: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -117,6 +118,7 @@ class PublicationAnalysis:
             "detected_features": self.detected_features,
             "external_tools": self.external_tools,
             "profile_reason": self.profile_reason,
+            "route_decision": self.route_decision,
         }
 
 

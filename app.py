@@ -511,14 +511,18 @@ def _cleanup_expired_conversion_jobs(*, now: datetime | None = None, force: bool
     upload_root = Path(UPLOAD_DIR)
     if upload_root.exists():
         for candidate in upload_root.iterdir():
-            if not candidate.is_file():
+            try:
+                if not candidate.is_file():
+                    continue
+                stat_result = candidate.stat()
+            except OSError:
                 continue
             resolved_path = _normalize_temp_artifact_path(str(candidate))
             if resolved_path in active_paths:
                 continue
             if candidate.suffix.lower() not in {".pdf", ".docx", ".epub"}:
                 continue
-            modified_at = datetime.fromtimestamp(candidate.stat().st_mtime, tz=UTC)
+            modified_at = datetime.fromtimestamp(stat_result.st_mtime, tz=UTC)
             if modified_at >= file_cutoff:
                 continue
             try:
@@ -544,6 +548,7 @@ def _run_conversion_pipeline(
     force_ocr: bool,
     language: str,
     heading_repair_enabled: bool,
+    route_model_mode: str = "shadow",
     status_callback=None,
 ) -> dict:
     outcome = run_document_conversion(
@@ -552,6 +557,7 @@ def _run_conversion_pipeline(
             source_type=source_type,
             original_filename=original_filename,
             profile=profile,
+            route_model_mode=route_model_mode,
             force_ocr=force_ocr,
             language=language,
             heading_repair_enabled=heading_repair_enabled,
@@ -577,6 +583,7 @@ def _spawn_conversion_job(
     force_ocr: bool,
     language: str,
     heading_repair_enabled: bool,
+    route_model_mode: str = "shadow",
 ) -> None:
     def _worker() -> None:
         output_path = os.path.join(UPLOAD_DIR, f"{job_id}.epub")
@@ -598,6 +605,7 @@ def _spawn_conversion_job(
                 source_type=source_type,
                 original_filename=original_filename,
                 profile=profile,
+                route_model_mode=route_model_mode,
                 force_ocr=force_ocr,
                 language=language,
                 heading_repair_enabled=heading_repair_enabled,
@@ -709,6 +717,7 @@ def convert():
 
     # Get conversion preferences from form
     profile = request.form.get("profile", "auto-premium")
+    route_model_mode = request.form.get("route_model_mode", "shadow")
     force_ocr = request.form.get("ocr", "false") == "true"
     language = request.form.get("language", "pl")
     heading_repair_enabled = request.form.get("heading_repair", "false") == "true"
@@ -733,6 +742,7 @@ def convert():
             source_type=source_type,
             original_filename=file.filename,
             profile=profile,
+            route_model_mode=route_model_mode,
             force_ocr=force_ocr,
             language=language,
             heading_repair_enabled=heading_repair_enabled,
@@ -781,6 +791,7 @@ def convert_start():
     source_suffix = f".{source_type}"
 
     profile = request.form.get("profile", "auto-premium")
+    route_model_mode = request.form.get("route_model_mode", "shadow")
     force_ocr = request.form.get("ocr", "false") == "true"
     language = request.form.get("language", "pl")
     heading_repair_enabled = request.form.get("heading_repair", "false") == "true"
@@ -821,6 +832,7 @@ def convert_start():
         source_type=source_type,
         original_filename=file.filename,
         profile=profile,
+        route_model_mode=route_model_mode,
         force_ocr=force_ocr,
         language=language,
         heading_repair_enabled=heading_repair_enabled,

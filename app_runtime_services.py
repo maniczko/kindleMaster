@@ -33,6 +33,7 @@ class ConversionRequest:
     heading_repair_enabled: bool = False
     source_type: str | None = None
     text_cleanup_domain_dictionary_path: str | None = None
+    route_model_mode: str = "shadow"
 
 
 @dataclass(frozen=True)
@@ -261,6 +262,7 @@ def build_conversion_config(request: ConversionRequest) -> Any:
         force_ocr=request.force_ocr,
         language=request.language,
         text_cleanup_domain_dictionary_path=request.text_cleanup_domain_dictionary_path,
+        route_model_mode=request.route_model_mode,
     )
 
 
@@ -730,6 +732,7 @@ def run_document_conversion(
                     author_hint=str((result.get("document_summary", {}) or {}).get("author", "") or ""),
                     language_hint=request.language,
                     publication_profile=_resolved_publication_profile(request=request, result=result),
+                    already_semantic_cleaned=True,
                 )
                 heading_repair_report = {
                     "status": "applied",

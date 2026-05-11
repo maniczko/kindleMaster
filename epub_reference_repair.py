@@ -40,6 +40,7 @@ from kindle_semantic_cleanup import (
     _split_reference_title_and_description,
     _strip_reference_link_candidates,
 )
+from ml_review_ranker import rank_manual_review_queue
 from premium_tools import run_epubcheck
 
 
@@ -2324,6 +2325,11 @@ def _build_reference_summary(
         "empty_reference_sections_unresolved": empty_reference_sections_unresolved,
         "reference_quality_gate_status": reference_quality_gate_status,
     }
+    summary["manual_review_queue"] = rank_manual_review_queue(
+        [record.to_dict() for record in records if record.review_flag],
+        source="reference",
+    )
+    summary["manual_review_count"] = len(summary["manual_review_queue"])
     return summary
 
 

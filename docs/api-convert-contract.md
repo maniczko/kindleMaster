@@ -55,6 +55,7 @@ Request: `multipart/form-data`
 | `ocr` | no | String boolean; `true` forces OCR where supported. |
 | `language` | no | Defaults to `pl`. |
 | `heading_repair` | no | String boolean; `true` enables heading/TOC repair. |
+| `route_model_mode` | no | `off`, `shadow`, or `assist`; defaults to `shadow`. `shadow` reports ML route decisions without changing the selected profile. |
 
 Success: `202 Accepted`
 

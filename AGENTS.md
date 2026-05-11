@@ -825,6 +825,7 @@ Supported first-class commands:
 - `smoke`
 - `corpus`
 - `status`
+- `ml` with `dataset`, `train`, and `evaluate` subcommands
 - `test`
 - `audit`
 - `workflow` with `baseline` and `verify` subcommands
@@ -858,6 +859,8 @@ Use these locations consistently:
 - `output/smoke/` and `reports/smoke/` for smoke runs,
 - `output/corpus/` and `reports/corpus/` for derived corpus-wide proof runs,
 - `reports/project_status.json` and `reports/project_status.md` for the derived project status view,
+- `reports/ml/datasets/` for derived ML route and review datasets,
+- `models/route_classifier_v1.json` and `models/decision_ranker_v1.json` for local JSON-only runtime inference artifacts,
 - `reports/validators/` for validator output,
 - `reference_inputs/` for curated source fixtures.
 

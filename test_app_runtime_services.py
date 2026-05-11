@@ -206,6 +206,7 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertEqual(outcome.metadata["heading_repair"]["status"], "failed")
         self.assertEqual(outcome.metadata["strategy"], "text_reflowable")
         self.assertEqual(heading_repair_impl.call_args.kwargs["publication_profile"], "book_reflow")
+        self.assertTrue(heading_repair_impl.call_args.kwargs["already_semantic_cleaned"])
         self.assertEqual(
             status_updates,
             [
@@ -499,6 +500,7 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertEqual(outcome.metadata["render_budget_class"], "fixed_layout_dense")
         self.assertEqual(outcome.metadata["heading_repair"]["status"], "applied")
         self.assertEqual(outcome.metadata["strategy"], "layout_fixed")
+        self.assertTrue(heading_repair_impl.call_args.kwargs["already_semantic_cleaned"])
 
     def test_run_document_conversion_marks_heading_repair_exception_as_failed_and_keeps_base_epub(self) -> None:
         convert_impl = Mock(

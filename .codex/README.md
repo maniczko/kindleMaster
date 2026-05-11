@@ -69,6 +69,9 @@ python kindlemaster.py convert path\to\input.docx --output output\result.epub
 python kindlemaster.py test --suite quick
 python kindlemaster.py test --suite corpus
 python kindlemaster.py status
+python kindlemaster.py ml dataset
+python kindlemaster.py ml train
+python kindlemaster.py ml evaluate
 python kindlemaster.py test --suite browser
 python kindlemaster.py test --suite runtime
 python kindlemaster.py test --suite release

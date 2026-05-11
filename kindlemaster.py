@@ -53,12 +53,14 @@ QUICK_TESTS = [
     "test_text_normalization.py",
     "test_converter_text_cleanup.py",
     "test_semantic_epub_cleanup.py",
+    "test_epub_quality_selection.py",
     "test_epub_reference_repair.py",
     "test_epub_heading_repair.py",
 ]
 
 RELEASE_TESTS = [
     "test_toc_segmentation.py",
+    "test_epub_quality_selection.py",
     "test_epub_quality_recovery.py",
     "test_release_quality_recovery.py",
     "test_epub_release_pipeline.py",

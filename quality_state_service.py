@@ -493,6 +493,7 @@ class ConversionQualityState:
     link_health: dict[str, Any]
     visible_junk: dict[str, Any]
     premium_scoring: dict[str, Any]
+    quality_selection: dict[str, Any]
     ai_quality_verification: dict[str, Any]
     quality_gate_mode: str
     issue_groups: dict[str, list[dict[str, Any]]]
@@ -545,6 +546,7 @@ class ConversionQualityState:
             "link_health": self.link_health,
             "visible_junk": self.visible_junk,
             "premium_scoring": self.premium_scoring,
+            "quality_selection": self.quality_selection,
             "ai_quality_verification": self.ai_quality_verification,
             "quality_gate_mode": self.quality_gate_mode,
             "issue_groups": self.issue_groups,
@@ -1937,6 +1939,9 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
     premium_scoring = _normalize_optional_payload(
         conversion_metadata.get("premium_scoring") or quality_report.get("premium_scoring")
     )
+    quality_selection = _normalize_optional_payload(
+        conversion_metadata.get("quality_selection") or quality_report.get("quality_selection")
+    )
     ai_quality_verification = _normalize_optional_payload(
         conversion_metadata.get("ai_quality_verification") or quality_report.get("ai_quality_verification")
     )
@@ -2144,6 +2149,7 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
         link_health=link_health,
         visible_junk=visible_junk,
         premium_scoring=premium_scoring,
+        quality_selection=quality_selection,
         ai_quality_verification=ai_quality_verification,
         quality_gate_mode=quality_gate_mode,
         issue_groups=issue_groups,

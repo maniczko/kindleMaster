@@ -274,6 +274,103 @@ class AppRuntimeServicesTests(unittest.TestCase):
             ],
         )
 
+    def test_run_document_conversion_keeps_pre_heading_epub_when_heading_repair_worsens_quality(self) -> None:
+        base_epub = _minimal_epub_bytes(title="Runtime Quality Selection")
+        repaired_epub = _minimal_epub_bytes(
+            title="Runtime Quality Selection",
+            body="<h1>Material sponsorowany - R4</h1><p>worse-marker</p>",
+        )
+        convert_impl = Mock(
+            return_value={
+                "epub_bytes": base_epub,
+                "source_type": "pdf",
+                "analysis": {
+                    "profile": "book_reflow",
+                    "confidence": 0.92,
+                    "legacy_strategy": "text_reflowable",
+                },
+                "quality_report": {
+                    "validation_status": "passed",
+                    "validation_tool": "epubcheck",
+                    "validation_messages": [],
+                    "warnings": [],
+                    "high_risk_pages": [],
+                    "high_risk_sections": [],
+                },
+                "document_summary": {
+                    "title": "Runtime Quality Selection",
+                    "author": "KindleMaster QA",
+                    "language": "en",
+                    "layout_mode": "reflowable",
+                    "section_count": 1,
+                    "asset_count": 0,
+                },
+            }
+        )
+        heading_repair_impl = Mock(
+            return_value=SimpleNamespace(
+                epub_bytes=repaired_epub,
+                summary={
+                    "release_status": "pass",
+                    "toc_entries_before": 1,
+                    "toc_entries_after": 1,
+                    "headings_removed": 0,
+                    "manual_review_count": 0,
+                    "epubcheck_status": "passed",
+                },
+                epubcheck={"status": "passed", "messages": []},
+            )
+        )
+
+        def scoring(epub_bytes, *, epubcheck=None):
+            del epubcheck
+            if epub_bytes == repaired_epub:
+                return {
+                    "status": "failed",
+                    "technical_valid": True,
+                    "kindle_ready": False,
+                    "premium_ready": False,
+                    "premium_score": 5.2,
+                    "release_verdict": "release_blocked",
+                    "issue_counts": {"blocker": 1},
+                    "issues": [{"severity": "blocker", "code": "magazine_non_content_chapter"}],
+                }
+            return {
+                "status": "passed_with_warnings",
+                "technical_valid": True,
+                "kindle_ready": True,
+                "premium_ready": False,
+                "premium_score": 9.1,
+                "release_verdict": "ready_with_review",
+                "issue_counts": {"review": 1},
+                "issues": [{"severity": "review", "code": "toc_lead_used_as_title"}],
+            }
+
+        with patch("epub_quality_selection.score_epub_premium_quality", side_effect=scoring):
+            outcome = run_document_conversion(
+                ConversionRequest(
+                    source_path="sample.pdf",
+                    source_type="pdf",
+                    original_filename="sample.pdf",
+                    profile="auto-premium",
+                    language="en",
+                    heading_repair_enabled=True,
+                    quality_gate_mode="draft",
+                    feedback_enabled=False,
+                ),
+                convert_impl=convert_impl,
+                heading_repair_impl=heading_repair_impl,
+            )
+
+        self.assertEqual(outcome.epub_bytes, base_epub)
+        self.assertNotEqual(outcome.epub_bytes, repaired_epub)
+        self.assertEqual(outcome.heading_repair_report["status"], "rejected")
+        self.assertEqual(outcome.result["quality_report"]["quality_selection"]["status"], "rejected")
+        self.assertEqual(outcome.metadata["quality_selection"]["selected_stage"], "pre_heading")
+        self.assertEqual(outcome.metadata["quality_selection"]["rejected_stage"], "heading_repair")
+        self.assertIn("quality_monotonic_regression", outcome.metadata["quality_selection"]["reason_codes"])
+        heading_repair_impl.assert_called_once()
+
     def test_run_document_conversion_applies_runtime_quality_gate_and_ai_verifier(self) -> None:
         base_epub = _minimal_epub_bytes()
         convert_impl = Mock(

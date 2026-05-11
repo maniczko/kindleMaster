@@ -44,6 +44,7 @@ from kindle_semantic_cleanup import (
     _looks_technical_title,
 )
 from epub_premium_scoring import score_epub_premium_quality
+from epub_quality_selection import select_epub_by_quality
 from premium_tools import run_epubcheck
 from quality_report_markdown import (
     build_manual_review_markdown,
@@ -90,6 +91,7 @@ class RecoveryPaths:
     structural_integrity: Path
     epubcheck: Path
     premium_scoring: Path
+    quality_selection: Path
     release_report: Path
     manual_review_queue: Path
 
@@ -116,6 +118,7 @@ def run_epub_publishing_quality_recovery(
     baseline_epubcheck = run_epubcheck(original_bytes)
     gates: dict[str, dict[str, Any]] = {}
     manual_review: list[dict[str, Any]] = []
+    quality_selection_stages: list[dict[str, Any]] = []
 
     gates["A"] = _evaluate_gate_a(original_inventory)
     manual_review.extend(gates["A"].get("manual_review", []))
@@ -130,7 +133,7 @@ def run_epub_publishing_quality_recovery(
     final_epubcheck = {"status": "unavailable", "tool": "epubcheck", "messages": []}
 
     if gates["A"]["status"] != "fail":
-        working_bytes, metadata_diff, metadata_epubcheck = _run_metadata_phase(
+        metadata_candidate_bytes, attempted_metadata_diff, metadata_candidate_epubcheck = _run_metadata_phase(
             working_bytes,
             source_path=source_path,
             expected_title=expected_title,
@@ -139,7 +142,38 @@ def run_epub_publishing_quality_recovery(
             expected_language=expected_language,
             publication_profile=publication_profile,
         )
+        metadata_selection = select_epub_by_quality(
+            original_bytes,
+            metadata_candidate_bytes,
+            baseline_label="source",
+            candidate_label="post_metadata",
+            baseline_epubcheck=baseline_epubcheck,
+            candidate_epubcheck=metadata_candidate_epubcheck,
+        )
+        metadata_selection_report = {**metadata_selection.report, "phase": "metadata"}
+        quality_selection_stages.append(metadata_selection_report)
+        working_bytes = metadata_selection.selected_bytes
+        metadata_epubcheck = metadata_selection.selected_epubcheck
         metadata_after_inventory = _inventory_epub(working_bytes, label="post_metadata")
+        if metadata_selection.report["status"] == "rejected":
+            metadata_diff = {
+                "before": original_inventory["metadata"],
+                "after": metadata_after_inventory["metadata"],
+                "changes": [],
+                "rejected_changes": attempted_metadata_diff.get("changes", []),
+                "quality_selection": metadata_selection_report,
+            }
+            manual_review.append(
+                _make_review_item(
+                    "quality_selection",
+                    "package",
+                    "Metadata phase rejected because it reduced EPUB quality.",
+                    "metadata-quality-regression",
+                    0.86,
+                )
+            )
+        else:
+            metadata_diff = attempted_metadata_diff
         gates["B"] = _evaluate_gate_b(
             before=original_inventory,
             after=metadata_after_inventory,
@@ -149,8 +183,16 @@ def run_epub_publishing_quality_recovery(
         )
         manual_review.extend(gates["B"].get("manual_review", []))
 
-        working_bytes, heading_report, toc_report, structural_report, final_epubcheck = _run_recovery_phases(
-            working_bytes,
+        pre_recovery_bytes = working_bytes
+        pre_recovery_epubcheck = metadata_epubcheck
+        (
+            recovery_candidate_bytes,
+            recovery_heading_report,
+            recovery_toc_report,
+            recovery_structural_report,
+            recovery_epubcheck,
+        ) = _run_recovery_phases(
+            pre_recovery_bytes,
             source_path=source_path,
             expected_title=expected_title,
             expected_author=expected_author,
@@ -158,7 +200,39 @@ def run_epub_publishing_quality_recovery(
             expected_language=expected_language,
             publication_profile=publication_profile,
         )
+        recovery_selection = select_epub_by_quality(
+            pre_recovery_bytes,
+            recovery_candidate_bytes,
+            baseline_label="pre_recovery",
+            candidate_label="recovered",
+            baseline_epubcheck=pre_recovery_epubcheck,
+            candidate_epubcheck=recovery_epubcheck,
+        )
+        recovery_selection_report = {**recovery_selection.report, "phase": "recovery"}
+        quality_selection_stages.append(recovery_selection_report)
+        working_bytes = recovery_selection.selected_bytes
+        final_epubcheck = recovery_selection.selected_epubcheck
         final_inventory = _inventory_epub(working_bytes, label="final")
+        if recovery_selection.report["status"] == "rejected":
+            heading_report = _build_rejected_recovery_heading_report(
+                recovery_selection_report,
+                attempted_heading_report=recovery_heading_report,
+            )
+            toc_report = final_inventory["toc"]
+            structural_report = final_inventory["structural_integrity"]
+            manual_review.append(
+                _make_review_item(
+                    "quality_selection",
+                    "final.epub",
+                    "Recovery phase rejected because it reduced EPUB quality.",
+                    "recovery-quality-regression",
+                    0.9,
+                )
+            )
+        else:
+            heading_report = recovery_heading_report
+            toc_report = recovery_toc_report
+            structural_report = recovery_structural_report
         gates["C"] = _evaluate_gate_c(heading_report, final_inventory)
         gates["D"] = _evaluate_gate_d(toc_report, final_inventory)
         gates["E"] = _evaluate_gate_e(structural_report)
@@ -185,6 +259,7 @@ def run_epub_publishing_quality_recovery(
 
     recommendation = gates["F"]["status"]
     working_bytes = working_bytes or original_bytes
+    quality_selection = _build_quality_selection_report(quality_selection_stages)
     premium_scoring = score_epub_premium_quality(working_bytes, epubcheck=final_epubcheck)
     if strict_premium:
         gates["G"] = _evaluate_gate_g(premium_scoring)
@@ -224,8 +299,10 @@ def run_epub_publishing_quality_recovery(
     paths.structural_integrity.write_text(json.dumps(structural_payload, ensure_ascii=False, indent=2), encoding="utf-8")
     paths.epubcheck.write_text(json.dumps(epubcheck_payload, ensure_ascii=False, indent=2), encoding="utf-8")
     paths.premium_scoring.write_text(json.dumps(premium_scoring, ensure_ascii=False, indent=2), encoding="utf-8")
+    paths.quality_selection.write_text(json.dumps(quality_selection, ensure_ascii=False, indent=2), encoding="utf-8")
     paths.manual_review_queue.write_text(build_manual_review_markdown(manual_review), encoding="utf-8")
     release_summary["premium_scoring"] = premium_scoring
+    release_summary["quality_selection"] = quality_selection
     release_summary["strict_premium"] = strict_premium
     paths.release_report.write_text(
         build_recovery_release_report_markdown(
@@ -246,11 +323,13 @@ def run_epub_publishing_quality_recovery(
             "structural_integrity": str(paths.structural_integrity),
             "epubcheck": str(paths.epubcheck),
             "premium_scoring": str(paths.premium_scoring),
+            "quality_selection": str(paths.quality_selection),
             "release_report": str(paths.release_report),
             "manual_review_queue": str(paths.manual_review_queue),
         },
         "gates": gates,
         "premium_scoring": premium_scoring,
+        "quality_selection": quality_selection,
     }
 
 
@@ -570,6 +649,71 @@ def _run_recovery_phases(
     return final_bytes, heading_report, toc_report, structural_report, run_epubcheck(final_bytes)
 
 
+def _build_rejected_recovery_heading_report(
+    selection_report: dict[str, Any],
+    *,
+    attempted_heading_report: dict[str, Any],
+) -> dict[str, Any]:
+    attempted_summary = dict(attempted_heading_report.get("summary") or {})
+    return build_heading_report_payload(
+        summary={
+            "status": "rejected",
+            "release_status": "pass_with_review",
+            "removed_count": 0,
+            "recovered_count": 0,
+            "attempted_removed_count": int(attempted_summary.get("removed_count", 0) or 0),
+            "attempted_recovered_count": int(attempted_summary.get("recovered_count", 0) or 0),
+            "quality_selection_status": "rejected",
+            "quality_selection_reason": "recovery_rejected_due_to_quality_regression",
+        },
+        decisions=[],
+        manual_review=[
+            _make_review_item(
+                "quality_selection",
+                "final.epub",
+                ", ".join(selection_report.get("reason_codes", []) or []),
+                "recovery-quality-regression",
+                0.9,
+            )
+        ],
+    )
+
+
+def _build_quality_selection_report(stages: list[dict[str, Any]]) -> dict[str, Any]:
+    if not stages:
+        return {
+            "status": "not_applied",
+            "selected_candidate": "",
+            "rejected_candidate": "",
+            "selected_stage": "",
+            "rejected_stage": "",
+            "reason_codes": [],
+            "stages": [],
+        }
+    rejected_stages = [stage for stage in stages if stage.get("status") == "rejected"]
+    representative = rejected_stages[-1] if rejected_stages else stages[-1]
+    reason_codes: list[str] = []
+    reason_source = rejected_stages if rejected_stages else stages
+    for stage in reason_source:
+        reason_codes.extend(str(code) for code in (stage.get("reason_codes") or []) if code)
+    return {
+        **representative,
+        "status": "rejected" if rejected_stages else "accepted",
+        "reason_codes": _dedupe_texts(reason_codes),
+        "stages": stages,
+    }
+
+
+def _dedupe_texts(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        if value and value not in seen:
+            seen.add(value)
+            deduped.append(value)
+    return deduped
+
+
 def _prepare_output_paths(*, output_dir: Path, reports_dir: Path) -> RecoveryPaths:
     output_dir.mkdir(parents=True, exist_ok=True)
     reports_dir.mkdir(parents=True, exist_ok=True)
@@ -583,6 +727,7 @@ def _prepare_output_paths(*, output_dir: Path, reports_dir: Path) -> RecoveryPat
         structural_integrity=reports_dir / "structural_integrity.json",
         epubcheck=reports_dir / "epubcheck.json",
         premium_scoring=reports_dir / "premium_scoring.json",
+        quality_selection=reports_dir / "quality_selection.json",
         release_report=reports_dir / "release_report.md",
         manual_review_queue=reports_dir / "manual_review_queue.md",
     )

@@ -33,6 +33,9 @@ def append_conversion_feedback_event(
         quality_label=_quality_label_from_metadata(metadata),
     )
     premium = _mapping(metadata.get("premium_scoring")) or _mapping(_mapping(result.get("quality_report")).get("premium_scoring"))
+    quality_selection = _mapping(metadata.get("quality_selection")) or _mapping(
+        _mapping(result.get("quality_report")).get("quality_selection")
+    )
     ai_verifier = _mapping(metadata.get("ai_quality_verification")) or _mapping(
         _mapping(result.get("quality_report")).get("ai_quality_verification")
     )
@@ -43,6 +46,7 @@ def append_conversion_feedback_event(
     record["quality"]["premium_status"] = premium.get("status")
     record["quality"]["kindle_ready"] = premium.get("kindle_ready")
     record["quality"]["premium_issue_counts"] = premium.get("issue_counts") or {}
+    record["quality"]["quality_selection"] = _quality_selection_summary(quality_selection)
     record["quality"]["ai_quality_verification"] = {
         "status": ai_verifier.get("status"),
         "decision": ai_verifier.get("decision"),
@@ -94,6 +98,7 @@ def append_user_feedback(
         "quality": {
             "premium_score": _mapping(metadata.get("premium_scoring")).get("premium_score"),
             "premium_status": _mapping(metadata.get("premium_scoring")).get("status"),
+            "quality_selection": _quality_selection_summary(_mapping(metadata.get("quality_selection"))),
             "ai_quality_verification": _mapping(metadata.get("ai_quality_verification")),
         },
     }
@@ -449,6 +454,20 @@ def _quality_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
         "warning_count": len(warnings),
         "final_output_size_bytes": _int_value(quality.get("final_output_size_bytes")),
         "size_budget_status": str(quality.get("size_budget_status", "") or ""),
+        "quality_selection": _quality_selection_summary(_mapping(quality.get("quality_selection"))),
+    }
+
+
+def _quality_selection_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
+    if not payload:
+        return {}
+    return {
+        "status": str(payload.get("status", "") or ""),
+        "selected_candidate": str(payload.get("selected_candidate") or payload.get("selected_stage") or ""),
+        "rejected_candidate": str(payload.get("rejected_candidate") or payload.get("rejected_stage") or ""),
+        "score_delta": _float_value(payload.get("score_delta")),
+        "blocker_delta": _int_value(payload.get("blocker_delta")),
+        "reason_codes": list(payload.get("reason_codes") or []),
     }
 
 

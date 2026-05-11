@@ -941,6 +941,7 @@
       const metadataSummaryState = qualityState && qualityState.metadata_summary && typeof qualityState.metadata_summary === "object" ? qualityState.metadata_summary : null;
       const qualityCompletenessState = qualityState && qualityState.quality_completeness && typeof qualityState.quality_completeness === "object" ? qualityState.quality_completeness : null;
       const premiumScoringState = qualityState && qualityState.premium_scoring && typeof qualityState.premium_scoring === "object" ? qualityState.premium_scoring : null;
+      const qualitySelectionState = qualityState && qualityState.quality_selection && typeof qualityState.quality_selection === "object" ? qualityState.quality_selection : null;
       const kindleDeliveryState = qualityState && qualityState.kindle_delivery && typeof qualityState.kindle_delivery === "object" ? qualityState.kindle_delivery : null;
       const aiVerifierState = qualityState && qualityState.ai_verifier && typeof qualityState.ai_verifier === "object"
         ? qualityState.ai_verifier
@@ -1036,6 +1037,7 @@
         epubcheckDetail: epubcheckDetailState || (conversion && conversion.epubcheck_detail) || null,
         metadataSummary: metadataSummaryState || (conversion && conversion.metadata_summary) || null,
         premiumScoring: premiumScoringState || (conversion && conversion.premium_scoring) || null,
+        qualitySelection: qualitySelectionState || (conversion && conversion.quality_selection) || null,
         kindleDelivery: kindleDeliveryState || (conversion && conversion.kindle_delivery) || null,
         aiVerifier: aiVerifierState || (conversion && (conversion.ai_verifier || conversion.ai_quality_verification || conversion.ai_verification)) || null,
         metadataHealth: normalizeQualityHealth(metadataHealthState || (conversion && conversion.metadata_health), "Metadane"),
@@ -1107,6 +1109,7 @@
         epubcheckDetail: normalized.epubcheckDetail,
         metadataSummary: normalized.metadataSummary,
         premiumScoring: normalized.premiumScoring,
+        qualitySelection: normalized.qualitySelection,
         kindleDelivery: normalized.kindleDelivery,
         aiVerifier: normalized.aiVerifier,
         metadataHealth: normalized.metadataHealth,

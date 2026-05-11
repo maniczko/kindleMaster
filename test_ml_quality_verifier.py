@@ -35,6 +35,40 @@ class MlQualityVerifierTests(unittest.TestCase):
         self.assertEqual(payload["top_issues"][0]["code"], "language_label_contamination")
         self.assertEqual(len(payload["features_hash"]), 16)
 
+    def test_reports_quality_selection_rejected_without_hiding_selected_artifact_score(self) -> None:
+        payload = build_ai_quality_verification(
+            premium_scoring={
+                "status": "passed",
+                "technical_valid": True,
+                "kindle_ready": True,
+                "premium_ready": True,
+                "premium_score": 9.1,
+                "issue_counts": {"blocker": 0},
+                "issues": [],
+            },
+            quality_report={
+                "validation_status": "passed",
+                "quality_selection": {
+                    "status": "rejected",
+                    "selected_stage": "pre_heading",
+                    "rejected_stage": "heading_repair",
+                    "baseline_score": 9.1,
+                    "candidate_score": 5.2,
+                    "score_delta": -3.9,
+                    "blocker_delta": 1,
+                    "reason_codes": ["quality_monotonic_regression"],
+                },
+            },
+        )
+
+        self.assertEqual(payload["decision"], "ready")
+        self.assertEqual(payload["status"], "passed")
+        self.assertIn("quality-regression-prevented", payload["reason_codes"])
+        self.assertEqual(payload["quality_selection"]["status"], "rejected")
+        self.assertEqual(payload["quality_selection"]["selected_candidate"], "pre_heading")
+        self.assertEqual(payload["features"]["quality_selection_status"], "rejected")
+        self.assertEqual(len(payload["features_hash"]), 16)
+
     def test_missing_model_file_falls_back_without_hiding_premium_blockers(self) -> None:
         payload = build_ai_quality_verification(
             premium_scoring={

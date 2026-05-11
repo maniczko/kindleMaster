@@ -109,6 +109,89 @@ class SemanticEpubCleanupTests(unittest.TestCase):
             self.assertEqual(archive.read("mimetype"), b"application/epub+zip")
             self.assertIn("EPUB/content.opf", archive.namelist())
 
+    def test_finalize_epub_demotes_numeric_image_page_fragment_from_spine_and_toc(self):
+        epub_bytes = self._build_epub_bytes(
+            {
+                "mimetype": "application/epub+zip",
+                "META-INF/container.xml": """<?xml version="1.0"?>
+<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
+  <rootfiles><rootfile full-path="EPUB/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>""",
+                "EPUB/content.opf": """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Magazine Probe</dc:title>
+    <dc:creator>KindleMaster QA</dc:creator>
+    <dc:language>en</dc:language>
+    <dc:identifier id="bookid">urn:test:page-fragment</dc:identifier>
+    <meta property="dcterms:modified">2026-01-01T00:00:00Z</meta>
+  </metadata>
+  <manifest>
+    <item id="fragment" href="chapter_001.xhtml" media-type="application/xhtml+xml"/>
+    <item id="article" href="chapter_002.xhtml" media-type="application/xhtml+xml"/>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="img1" href="images/page.png" media-type="image/png"/>
+  </manifest>
+  <spine>
+    <itemref idref="fragment"/>
+    <itemref idref="article"/>
+  </spine>
+</package>""",
+                "EPUB/chapter_001.xhtml": """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>002</title></head><body><h1>002</h1><img src="images/page.png" alt=""/></body></html>""",
+                "EPUB/chapter_002.xhtml": """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Real Article</title></head><body><h1>Real Article</h1><p>This is a real article with enough prose to remain in the primary reading spine after cleanup.</p></body></html>""",
+                "EPUB/nav.xhtml": """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body><nav epub:type="toc"><ol><li><a href="chapter_001.xhtml">002</a></li><li><a href="chapter_002.xhtml">Real Article</a></li></ol></nav></body></html>""",
+                "EPUB/images/page.png": b"fake-png",
+            }
+        )
+
+        cleaned_epub = finalize_epub_for_kindle(
+            epub_bytes,
+            title="Magazine Probe",
+            author="KindleMaster QA",
+            language="en",
+            publication_profile="magazine_reflow",
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            with zipfile.ZipFile(io.BytesIO(cleaned_epub), "r") as archive:
+                archive.extractall(temp_dir)
+            opf_path = Path(temp_dir) / "EPUB" / "content.opf"
+            spine_paths = _get_spine_xhtml_paths(opf_path)
+            nav_text = (Path(temp_dir) / "EPUB" / "nav.xhtml").read_text(encoding="utf-8")
+            opf_tree = etree.parse(str(opf_path))
+            itemrefs = {
+                itemref.get("idref"): itemref.get("linear", "yes")
+                for itemref in opf_tree.getroot().xpath(".//opf:itemref", namespaces={"opf": "http://www.idpf.org/2007/opf"})
+            }
+
+        self.assertEqual([path.name for path in spine_paths], ["chapter_002.xhtml"])
+        self.assertEqual(itemrefs["fragment"], "no")
+        self.assertNotIn(">002<", nav_text)
+        self.assertIn("Real Article", nav_text)
+
+    def test_build_nav_sanitizes_lead_like_toc_label_at_safe_boundary(self):
+        nav_html = _build_nav_xhtml(
+            toc_entries=[
+                {
+                    "file_name": "chapter_001.xhtml",
+                    "id": "",
+                    "text": (
+                        "Clean Title: this is a long lead paragraph that should not become the full "
+                        "navigation label because it reads like article prose rather than a title"
+                    ),
+                    "level": 1,
+                }
+            ],
+            title="Sample",
+            language="en",
+        )
+
+        self.assertIn(">Clean Title<", nav_html)
+        self.assertNotIn("long lead paragraph", nav_html)
+
     def test_normalize_existing_table_preserves_caption_and_removes_direct_text(self):
         soup = BeautifulSoup(
             '<table class="report-table">Table 1: Decision matrix'

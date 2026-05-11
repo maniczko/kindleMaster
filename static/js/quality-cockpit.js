@@ -160,6 +160,7 @@
         blockers = [],
         issueBlockers = [],
         userFacingReasons = [],
+        qualitySelectionReasons = [],
         sendToKindleBlockers = [],
         warnings = [],
         reviewItems = [],
@@ -170,6 +171,7 @@
         blockers,
         issueBlockers,
         userFacingReasons,
+        qualitySelectionReasons,
         sendToKindleBlockers,
         warnings,
         reviewItems,
@@ -552,6 +554,7 @@
         epubcheckDetail = null,
         metadataSummary = null,
         premiumScoring = null,
+        qualitySelection = null,
         kindleDelivery = null,
         aiVerifier = null,
         metadataHealth = null,
@@ -687,6 +690,7 @@
       const safeEpubcheckDetail = normalizeOptionalObject(epubcheckDetail);
       const safeMetadataSummary = normalizeOptionalObject(metadataSummary);
       const safePremiumScoring = normalizeOptionalObject(premiumScoring);
+      const safeQualitySelection = normalizeOptionalObject(qualitySelection);
       const safeKindleDelivery = normalizeOptionalObject(kindleDelivery);
       const safeQualityCompleteness = normalizeQualityCompleteness(qualityCompleteness);
       const safeQualityBlockers = normalizeOptionalArray(qualityBlockers);
@@ -723,6 +727,9 @@
       );
       const qualityRows = renderQualityRows([
         ["Premium score", premiumScoreLabel],
+        ["Wybor artefaktu", safeQualitySelection ? formatStatusText(safeQualitySelection.status || "reported") : "Brak danych"],
+        ["Wybrany EPUB", safeQualitySelection ? (safeQualitySelection.selected_candidate || safeQualitySelection.selected_stage || "Brak danych") : "Brak danych"],
+        ["Odrzucony EPUB", safeQualitySelection ? (safeQualitySelection.rejected_candidate || safeQualitySelection.rejected_stage || "Brak danych") : "Brak danych"],
         ["Kindle-ready", kindleReadyLabel],
         ["AI verifier", aiVerifierLabel],
         ["Kompletność", formatCompletenessScore(safeQualityCompleteness)],
@@ -810,6 +817,13 @@
         ["Rozmiar", Number.isFinite(outputSizeBytes) && outputSizeBytes > 0 ? formatBytes(outputSizeBytes) : "Brak danych"],
         ["Blokery", safeSendToKindleBlockers.length],
       ]);
+      const qualitySelectionRows = renderQualityRows([
+        ["Status", safeQualitySelection ? formatStatusText(safeQualitySelection.status || "reported") : "Brak danych"],
+        ["Wybrany", safeQualitySelection ? (safeQualitySelection.selected_candidate || safeQualitySelection.selected_stage || "Brak danych") : "Brak danych"],
+        ["Odrzucony", safeQualitySelection ? (safeQualitySelection.rejected_candidate || safeQualitySelection.rejected_stage || "Brak danych") : "Brak danych"],
+        ["Delta score", safeQualitySelection && Number.isFinite(coerceFiniteNumber(safeQualitySelection.score_delta)) ? coerceFiniteNumber(safeQualitySelection.score_delta) : "Brak danych"],
+        ["Delta blockerow", safeQualitySelection && Number.isFinite(coerceFiniteNumber(safeQualitySelection.blocker_delta)) ? coerceFiniteNumber(safeQualitySelection.blocker_delta) : "Brak danych"],
+      ]);
       const qualityMatrixPanel = renderQualityDisclosurePanel({
         id: "qualityMatrixPanel",
         title: "Macierz jakości",
@@ -865,6 +879,16 @@
           ${safeSendToKindleBlockers.length ? renderCompactList(safeSendToKindleBlockers, "Brak danych", 5) : `<div class="quality-empty">Brak blockerów wysyłki.</div>`}
         `,
       });
+      const qualitySelectionPanel = renderQualityDisclosurePanel({
+        id: "qualitySelectionPanel",
+        title: "Wybor artefaktu",
+        subtitle: safeQualitySelection ? formatStatusText(safeQualitySelection.status || "reported") : "Brak danych",
+        body: `
+          <div class="quality-matrix">${qualitySelectionRows}</div>
+          ${safeQualitySelection && Array.isArray(safeQualitySelection.reason_codes) ? renderCompactList(safeQualitySelection.reason_codes, "Brak danych", 6) : ""}
+          ${safeQualitySelection && safeQualitySelection.status === "rejected" ? `<div class="quality-empty">Automatyczna naprawa odrzucona: pogarsza jakosc EPUB. Pobierany jest lepszy artefakt.</div>` : ""}
+        `,
+      });
       const userFacingDecision = safeUserFacingVerdict && safeUserFacingVerdict.decision ? safeUserFacingVerdict.decision : "";
       const decisionKey = userFacingDecision || (reportVerdict.key === "ready"
         ? "ready"
@@ -888,6 +912,9 @@
         blockers: safeQualityBlockers,
         issueBlockers: blockerItems,
         userFacingReasons: safeUserFacingReasons,
+        qualitySelectionReasons: safeQualitySelection && safeQualitySelection.status === "rejected"
+          ? [{ code: "quality_selection_rejected", message: "Automatyczna naprawa odrzucona: pogarsza jakosc EPUB.", source: "quality_selection" }]
+          : [],
         sendToKindleBlockers: safeSendToKindleBlockers,
         warnings: warningItems,
         reviewItems,
@@ -938,6 +965,7 @@
             ${tocPreviewPanel}
             ${metadataPanel}
             ${assetsPanel}
+            ${qualitySelectionPanel}
             ${kindleDeliveryPanel}
             <div class="quality-cockpit-panel" id="qualityReportsActionsPanel" data-span="wide">
               <div class="quality-panel-title"><span>Raporty / akcje</span><small>Tylko odczyt</small></div>

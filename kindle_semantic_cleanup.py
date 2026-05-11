@@ -7335,33 +7335,51 @@ def _repair_generic_package(
     toc_entries: list[dict],
     cleanup_scope: str,
 ) -> dict[str, object]:
+    non_linear_spine_files = _detect_generic_page_fragment_files(chapter_paths)
+    content_chapter_paths = [path for path in chapter_paths if path.name not in non_linear_spine_files]
+    if not content_chapter_paths:
+        content_chapter_paths = list(chapter_paths)
     resolved_title, resolved_author, resolved_language = _derive_package_metadata(
-        chapter_paths,
+        content_chapter_paths,
         title=title,
         author=author,
         language=language,
         allow_training_defaults=False,
     )
-    for chapter_path in chapter_paths:
+    for chapter_path in content_chapter_paths:
         heading_text, _ = _resolve_heading_target(chapter_path)
         if heading_text:
             _ensure_primary_heading(chapter_path, fallback_title=heading_text)
-    resolved_toc_entries = toc_entries if _toc_entries_look_useful(toc_entries) and _toc_entries_align_with_chapters(toc_entries, chapter_paths) else []
+    filtered_toc_entries = [
+        entry
+        for entry in toc_entries
+        if str(entry.get("file_name") or "") not in non_linear_spine_files
+    ]
+    resolved_toc_entries = (
+        filtered_toc_entries
+        if _toc_entries_look_useful(filtered_toc_entries)
+        and _toc_entries_align_with_chapters(filtered_toc_entries, content_chapter_paths)
+        else []
+    )
     if not resolved_toc_entries:
-        if _looks_like_training_book_outline(chapter_paths, toc_entries=toc_entries):
-            resolved_toc_entries = _build_curated_toc_entries(chapter_paths, language=resolved_language)
+        if _looks_like_training_book_outline(content_chapter_paths, toc_entries=filtered_toc_entries):
+            resolved_toc_entries = _build_curated_toc_entries(content_chapter_paths, language=resolved_language)
         if not resolved_toc_entries:
             resolved_toc_entries = _build_generic_toc_entries(
-                chapter_paths,
+                content_chapter_paths,
                 cleanup_scope=cleanup_scope,
                 language=resolved_language,
             )
-    return {
+    package = {
         "title": resolved_title,
         "author": resolved_author,
         "language": resolved_language,
         "toc_entries": resolved_toc_entries,
     }
+    if non_linear_spine_files:
+        package["spine_order"] = [path.name for path in content_chapter_paths if path.name != "cover.xhtml"]
+        package["non_linear_spine_files"] = sorted(non_linear_spine_files)
+    return package
 
 
 def _repair_magazine_package(
@@ -7390,6 +7408,7 @@ def _repair_magazine_package(
             cleanup_scope="magazine",
         )
         extras = _fallback_magazine_non_linear_files(chapter_infos, contents_file=str(issue_outline.get("file_name") or ""))
+        extras.update(_detect_generic_page_fragment_files(chapter_paths))
         if extras:
             package["spine_order"] = [
                 info["file_name"]
@@ -7421,6 +7440,7 @@ def _repair_magazine_package(
         assignments,
         contents_file=issue_outline["file_name"],
     )
+    extras.update(_detect_generic_page_fragment_files(chapter_paths))
     toc_entries = _build_magazine_toc_entries(
         issue_outline=issue_outline,
         ordered_issue_entries=ordered_issue_entries,
@@ -7428,6 +7448,11 @@ def _repair_magazine_package(
         front_features=front_features,
         additional_features=additional_features,
     )
+    toc_entries = [
+        entry
+        for entry in toc_entries
+        if str(entry.get("file_name") or "") not in extras
+    ]
     spine_order = [
         info["file_name"]
         for info in chapter_infos
@@ -7875,6 +7900,48 @@ def _fallback_magazine_non_linear_files(chapter_infos: list[dict[str, object]], 
         ):
             extras.add(file_name)
     return extras
+
+
+def _detect_generic_page_fragment_files(chapter_paths) -> set[str]:
+    return {
+        chapter_path.name
+        for chapter_path in chapter_paths
+        if _looks_like_generic_page_fragment_document(chapter_path)
+    }
+
+
+def _looks_like_generic_page_fragment_document(chapter_path: Path) -> bool:
+    if chapter_path.name == "cover.xhtml":
+        return False
+    try:
+        soup = BeautifulSoup(chapter_path.read_text(encoding="utf-8"), "xml")
+    except Exception:
+        return False
+    title_node = soup.find("title")
+    title_text = _normalize_text(title_node.get_text(" ", strip=True)) if title_node is not None else ""
+    heading = soup.find(["h1", "h2", "h3"])
+    heading_text = _normalize_text(heading.get_text(" ", strip=True)) if heading is not None else ""
+    label = heading_text or title_text
+    if not _looks_like_page_fragment_label(label):
+        return False
+    body_text = _normalize_text(soup.get_text(" ", strip=True))
+    paragraphs = [
+        _normalize_text(node.get_text(" ", strip=True))
+        for node in soup.find_all("p")
+    ]
+    has_real_paragraph = any(len(text) >= 80 and len(text.split()) >= 10 for text in paragraphs)
+    image_count = len(soup.find_all("img"))
+    low_information_text = len(body_text) <= 180 or len(body_text.split()) <= 24
+    return low_information_text and not has_real_paragraph and (image_count >= 1 or len(body_text) <= 80)
+
+
+def _looks_like_page_fragment_label(text: str) -> bool:
+    normalized = _normalize_text(text).strip(" .:-")
+    if not normalized:
+        return False
+    if re.fullmatch(r"\d{1,4}", normalized):
+        return True
+    return bool(re.fullmatch(r"(?i)(?:page|strona)\s+\d{1,4}", normalized))
 
 
 def _looks_like_magazine_image_only_stub(info: dict[str, object]) -> bool:
@@ -9573,6 +9640,7 @@ def _normalize_toc_entries_for_render(toc_entries: list[dict]) -> list[dict]:
     normalized_entries: list[dict] = []
     for entry in toc_entries:
         label = _normalize_text(entry.get("text", ""))
+        label = _sanitize_toc_label_for_render(label)
         if not label:
             continue
         try:
@@ -9583,6 +9651,37 @@ def _normalize_toc_entries_for_render(toc_entries: list[dict]) -> list[dict]:
     if normalized_entries:
         return normalized_entries
     return [{"file_name": "chapter_001.xhtml", "id": "", "text": "Start", "level": 1}]
+
+
+def _sanitize_toc_label_for_render(label: str) -> str:
+    normalized = _normalize_text(label)
+    if not normalized:
+        return ""
+    if len(normalized) <= 90 and len(normalized.split()) <= 12:
+        return normalized
+    for separator in ("? ", ". ", "! ", ": ", " - ", " â€“ ", " â€” "):
+        if separator not in normalized:
+            continue
+        candidate = normalized.split(separator, 1)[0].strip(" -:;,.!?")
+        if _looks_like_safe_short_toc_title(candidate):
+            return candidate
+    return normalized
+
+
+def _looks_like_safe_short_toc_title(candidate: str) -> bool:
+    normalized = _normalize_text(candidate)
+    if not normalized:
+        return False
+    words = normalized.split()
+    if not 2 <= len(words) <= 12:
+        return False
+    if len(normalized) > 90:
+        return False
+    if not any(character.isalpha() for character in normalized):
+        return False
+    if normalized.endswith((".", ",", ";", ":")):
+        return False
+    return True
 
 
 def _build_toc_tree(toc_entries: list[dict]) -> list[dict]:

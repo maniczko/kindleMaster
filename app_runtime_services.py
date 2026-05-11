@@ -434,6 +434,52 @@ def _apply_runtime_quality_gate(
     return updated_result
 
 
+def _runtime_epubcheck_payload_from_quality_report(quality_report: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "status": str(quality_report.get("validation_status", "unavailable") or "unavailable"),
+        "messages": list(quality_report.get("validation_messages", []) or []),
+        "tool": str(quality_report.get("validation_tool", "unknown") or "unknown"),
+    }
+
+
+def _apply_heading_quality_selection(
+    *,
+    result: dict[str, Any],
+    baseline_epub_bytes: bytes,
+    candidate_epub_bytes: bytes,
+    candidate_epubcheck: Mapping[str, Any],
+    request: ConversionRequest,
+    heading_repair_report: dict[str, Any],
+) -> tuple[bytes, dict[str, Any], dict[str, Any]]:
+    mode = str(request.quality_gate_mode or "draft").strip().lower()
+    if mode == "off":
+        return candidate_epub_bytes, result, heading_repair_report
+
+    from epub_quality_selection import select_epub_by_quality
+
+    updated_result = dict(result)
+    quality_report = _to_mapping_payload(updated_result.get("quality_report", {}) or {})
+    selection = select_epub_by_quality(
+        baseline_epub_bytes,
+        candidate_epub_bytes,
+        baseline_label="pre_heading",
+        candidate_label="heading_repair",
+        baseline_epubcheck=_runtime_epubcheck_payload_from_quality_report(quality_report),
+        candidate_epubcheck=candidate_epubcheck,
+    )
+    quality_selection = {**selection.report, "phase": "heading_repair"}
+    quality_report["quality_selection"] = quality_selection
+    updated_result["quality_report"] = quality_report
+    if selection.report["status"] == "rejected":
+        updated_heading_report = dict(heading_repair_report)
+        updated_heading_report["status"] = "rejected"
+        updated_heading_report["release_status"] = "pass_with_review"
+        updated_heading_report["quality_selection_status"] = "rejected"
+        updated_heading_report["error"] = "Heading/TOC repair rejected because it reduced premium quality."
+        return selection.selected_bytes, updated_result, updated_heading_report
+    return selection.selected_bytes, updated_result, heading_repair_report
+
+
 def _compact_mapping(
     payload: Mapping[str, Any],
     keys: tuple[str, ...],
@@ -663,6 +709,9 @@ def build_conversion_metadata(
     premium_scoring = _json_safe_metadata_value(quality_report.get("premium_scoring") or {})
     if isinstance(premium_scoring, Mapping) and premium_scoring:
         metadata["premium_scoring"] = dict(premium_scoring)
+    quality_selection = _json_safe_metadata_value(quality_report.get("quality_selection") or {})
+    if isinstance(quality_selection, Mapping) and quality_selection:
+        metadata["quality_selection"] = dict(quality_selection)
     ai_quality_verification = _json_safe_metadata_value(quality_report.get("ai_quality_verification") or {})
     if isinstance(ai_quality_verification, Mapping) and ai_quality_verification:
         metadata["ai_quality_verification"] = dict(ai_quality_verification)
@@ -771,6 +820,7 @@ def run_document_conversion(
 
     result = convert_impl(request.source_path, **convert_kwargs)
     epub_bytes = result["epub_bytes"]
+    pre_heading_repair_epub_bytes = epub_bytes
     heading_repair_report = _default_heading_repair_report()
 
     if request.heading_repair_enabled:
@@ -812,7 +862,14 @@ def run_document_conversion(
                         heading_repair_result.epubcheck.get("messages", []) or []
                     )
                 else:
-                    epub_bytes = heading_repair_result.epub_bytes
+                    epub_bytes, result, heading_repair_report = _apply_heading_quality_selection(
+                        result=result,
+                        baseline_epub_bytes=pre_heading_repair_epub_bytes,
+                        candidate_epub_bytes=heading_repair_result.epub_bytes,
+                        candidate_epubcheck=heading_repair_result.epubcheck,
+                        request=request,
+                        heading_repair_report=heading_repair_report,
+                    )
             except Exception as error:
                 heading_repair_report["status"] = "failed"
                 heading_repair_report["error"] = str(error)

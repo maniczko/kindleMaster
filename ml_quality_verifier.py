@@ -43,6 +43,8 @@ def build_ai_quality_verification(
     premium_ready = bool(premium.get("premium_ready"))
     technical_valid = bool(premium.get("technical_valid"))
     route_decision = dict(source_analysis.get("route_decision") or {})
+    quality_selection = dict(report.get("quality_selection") or {})
+    quality_selection_status = str(quality_selection.get("status", "") or "").strip().lower()
 
     reason_codes: list[str] = []
     if not premium:
@@ -57,6 +59,8 @@ def build_ai_quality_verification(
         reason_codes.append("manual-review-needed")
     if not kindle_ready:
         reason_codes.append("kindle-not-ready")
+    if quality_selection_status == "rejected":
+        reason_codes.append("quality-regression-prevented")
 
     if not premium:
         decision = "review"
@@ -88,6 +92,9 @@ def build_ai_quality_verification(
         "profile": str(source_analysis.get("profile", "") or ""),
         "route_model_mode": str(route_decision.get("mode", "") or ""),
         "route_override_used": bool(route_decision.get("override_used")),
+        "quality_selection_status": quality_selection_status,
+        "quality_selection_score_delta": _float_value(quality_selection.get("score_delta"), 0.0),
+        "quality_selection_blocker_delta": int(_float_value(quality_selection.get("blocker_delta"), 0.0)),
     }
     top_issues = _top_issues(issues)
     return {
@@ -100,6 +107,7 @@ def build_ai_quality_verification(
         "quality_gate_mode": str(quality_gate_mode or "draft"),
         "features": features,
         "features_hash": _features_hash(features),
+        "quality_selection": _compact_quality_selection(quality_selection),
         "reason_codes": _dedupe(reason_codes),
         "top_issues": top_issues,
         "summary": _summary(decision=decision, premium_score=premium_score, blocker_count=blocker_count),
@@ -139,6 +147,23 @@ def _top_issues(issues: list[dict[str, Any]], *, limit: int = 5) -> list[dict[st
         }
         for item in rows[:limit]
     ]
+
+
+def _compact_quality_selection(quality_selection: Mapping[str, Any]) -> dict[str, Any]:
+    if not quality_selection:
+        return {}
+    return {
+        "status": str(quality_selection.get("status", "") or ""),
+        "selected_candidate": str(
+            quality_selection.get("selected_candidate") or quality_selection.get("selected_stage") or ""
+        ),
+        "rejected_candidate": str(
+            quality_selection.get("rejected_candidate") or quality_selection.get("rejected_stage") or ""
+        ),
+        "score_delta": _float_value(quality_selection.get("score_delta"), 0.0),
+        "blocker_delta": int(_float_value(quality_selection.get("blocker_delta"), 0.0)),
+        "reason_codes": list(quality_selection.get("reason_codes") or []),
+    }
 
 
 def _features_hash(features: Mapping[str, Any]) -> str:

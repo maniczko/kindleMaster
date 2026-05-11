@@ -408,6 +408,14 @@ process.stdout.write(JSON.stringify({{
                         "premium_score": 8.4,
                         "kindle_ready": True,
                     },
+                    "quality_selection": {
+                        "status": "rejected",
+                        "selected_candidate": "pre_heading",
+                        "rejected_candidate": "heading_repair",
+                        "score_delta": -2.4,
+                        "blocker_delta": 1,
+                        "reason_codes": ["quality_monotonic_regression"],
+                    },
                     "kindle_delivery": {
                         "status": "not_verified",
                         "automated_ready": True,
@@ -434,6 +442,8 @@ process.stdout.write(JSON.stringify({{
         self.assertEqual(rendered["qualityCompleteness"]["missingSections"], ["text_cleanup", "reference_cleanup"])
         self.assertEqual(rendered["premiumScoring"]["premium_score"], 8.4)
         self.assertTrue(rendered["premiumScoring"]["kindle_ready"])
+        self.assertEqual(rendered["qualitySelection"]["status"], "rejected")
+        self.assertEqual(rendered["qualitySelection"]["selected_candidate"], "pre_heading")
         self.assertEqual(rendered["kindleDelivery"]["status"], "not_verified")
         self.assertEqual(rendered["aiVerifier"]["status"], "passed")
         self.assertTrue(rendered["downloadAvailable"])
@@ -481,6 +491,14 @@ process.stdout.write(JSON.stringify({{
                     "premium_score": 6.8,
                     "kindle_ready": False,
                 },
+                "qualitySelection": {
+                    "status": "rejected",
+                    "selected_candidate": "pre_heading",
+                    "rejected_candidate": "heading_repair",
+                    "score_delta": -3.9,
+                    "blocker_delta": 1,
+                    "reason_codes": ["quality_monotonic_regression"],
+                },
                 "aiVerifier": {
                     "status": "failed",
                     "message": "Verifier found unresolved blockers.",
@@ -507,6 +525,9 @@ process.stdout.write(JSON.stringify({{
         self.assertIn("Kontrola", html)
         self.assertIn("Nie publikuj", html)
         self.assertIn("Premium score", html)
+        self.assertIn("Wybor artefaktu", html)
+        self.assertIn("pre_heading", html)
+        self.assertIn("Automatyczna naprawa odrzucona", html)
         self.assertIn("6.8/10", html)
         self.assertIn("Kindle-ready", html)
         self.assertIn(">no<", html)

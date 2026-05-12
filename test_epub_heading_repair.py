@@ -106,7 +106,16 @@ class EpubHeadingRepairTests(unittest.TestCase):
     def test_dense_handbook_navigation_filter_rejects_index_page_debris(self):
         for label in ("Trustworthy 298", "Glossary 286", "Acceptance and Evaluation Criteria 217"):
             self.assertFalse(_is_clean_navigation_heading_text(label, level=2), label)
-        for label in ("Input", "Output", "Object 1", "State 3", "Rank = 1*3", "Data", "Proces"):
+        for label in (
+            "Input",
+            "Output",
+            "Object 1",
+            "State 3",
+            "Rank = 1*3",
+            "Data",
+            "Proces",
+            "2. Page 2 records scope, input assumptions, and the expected conversion",
+        ):
             self.assertFalse(_is_clean_navigation_heading_text(label, level=2), label)
         self.assertTrue(_is_clean_navigation_heading_text("Business Analysis Key Concepts", level=1))
 
@@ -845,6 +854,8 @@ class EpubHeadingRepairTests(unittest.TestCase):
       <p>Caption-like content is not a navigation target.</p>
       <h2>Page 12</h2>
       <p>Page markers are layout artifacts.</p>
+      <h2>2. Page 2 records scope, input assumptions, and the expected conversion</h2>
+      <p>Numbered page descriptions can come from generated source outlines and must not enter navigation.</p>
       <h2>Methods</h2>
       <p>Methods is a valid short section with supporting prose after it.</p>
       <h2>Results</h2>
@@ -870,6 +881,7 @@ class EpubHeadingRepairTests(unittest.TestCase):
         self.assertNotIn("99%", toc_labels)
         self.assertNotIn("Figure 4: Revenue overview", toc_labels)
         self.assertNotIn("Page 12", toc_labels)
+        self.assertNotIn("2. Page 2 records scope, input assumptions, and the expected conversion", toc_labels)
         self.assertEqual(result.qa["gates"]["C"]["status"], "pass")
 
     def test_heading_gate_relaxes_h1_cardinality_for_fragment_profiles_only(self):

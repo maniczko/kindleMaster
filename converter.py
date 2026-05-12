@@ -324,11 +324,39 @@ def finalize_epub_bytes(
         }
 
     try:
-        from ai_quality_intelligence import evaluate_ai_quality_intelligence
+        from ai_quality_intelligence import AIQualityProviders, evaluate_ai_quality_intelligence
+        from openai_quality_provider import build_openai_quality_provider_from_env
 
+        openai_provider = build_openai_quality_provider_from_env()
+        providers = (
+            AIQualityProviders(ocr_cleanup=openai_provider, toc_detection=openai_provider)
+            if openai_provider is not None
+            else None
+        )
+        ai_quality_report = evaluate_ai_quality_intelligence(epub_bytes, providers=providers)
+        try:
+            from ai_quality_feedback import maybe_record_ai_quality_feedback
+
+            ai_quality_report = {
+                **ai_quality_report,
+                "feedback_recording": maybe_record_ai_quality_feedback(
+                    ai_quality_report,
+                    original_filename=original_filename,
+                    language=config.language,
+                    publication_profile=publication_profile,
+                ),
+            }
+        except Exception as feedback_exc:
+            ai_quality_report = {
+                **ai_quality_report,
+                "feedback_recording": {
+                    "status": "failed",
+                    "reason": feedback_exc.__class__.__name__,
+                },
+            }
         text_cleanup_summary = {
             **text_cleanup_summary,
-            "ai_quality": evaluate_ai_quality_intelligence(epub_bytes),
+            "ai_quality": ai_quality_report,
         }
     except Exception as exc:
         text_cleanup_summary = {

@@ -1887,6 +1887,8 @@ def _looks_like_navigation_artifact_heading(text: str) -> bool:
         return True
     if re.match(r"(?i)^(?:page|strona)\s*\d+(?:\s*(?:of|z)\s*\d+)?$", normalized):
         return True
+    if re.match(r"(?i)^\d+(?:\.\d+){0,3}\.?\s+(?:page|strona)\s+\d+\b", normalized):
+        return True
     if len(re.findall(r"\b\d{1,4}\s+\d+(?:\.\d+)+\b", normalized)) >= 2:
         return True
     if _looks_like_index_page_heading(normalized):

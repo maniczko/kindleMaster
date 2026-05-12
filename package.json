@@ -11,12 +11,16 @@
     "test:contract": "vitest run --config vitest.config.js --dir static/js",
     "test:ui": "vitest run --config vitest.config.js --dir frontend/src",
     "test:contracts:regression": "npm run test:contract && npm run test:ui",
-    "test:e2e": "python kindlemaster.py test --suite runtime"
+    "test:e2e": "python kindlemaster.py test --suite runtime",
+    "trigger:dev": "npx trigger.dev@latest dev",
+    "trigger:deploy": "npx trigger.dev@latest deploy",
+    "trigger:check": "tsc --noEmit"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
+    "@types/node": "^25.6.2",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
@@ -26,6 +30,7 @@
     "vitest": "^4.0.0"
   },
   "dependencies": {
+    "@trigger.dev/sdk": "^4.4.5",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^1.14.0",

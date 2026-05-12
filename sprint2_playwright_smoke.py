@@ -55,6 +55,7 @@ def classify_smoke_contract(
     convert_start_accepted: bool,
     download_attempted: bool,
     quality_rendered: bool,
+    retry_attempted: bool = False,
     console_errors: list[str] | None = None,
 ) -> SmokeContractResult:
     console_errors = console_errors or []
@@ -81,6 +82,8 @@ def classify_smoke_contract(
         )
 
     status = str((status_payload or {}).get("status") or "")
+    error_code = str((status_payload or {}).get("error_code") or "")
+    retryable = bool((status_payload or {}).get("retryable"))
     quality_state = _quality_state(status_payload)
     release_verdict = str(quality_state.get("release_verdict") or (status_payload or {}).get("release_verdict") or "")
     release_blocked = bool(quality_state.get("release_blocked") or release_verdict == "release_blocked")
@@ -88,6 +91,12 @@ def classify_smoke_contract(
     if not isinstance(quality_blockers, list):
         quality_blockers = []
 
+    if error_code in {"missing_output", "output_missing"}:
+        return SmokeContractResult(status=FAILED, reason="missing_output", required_evidence=REQUIRED_RUNTIME_EVIDENCE)
+    if error_code in {"ocr_failed", "ocr_error"}:
+        return SmokeContractResult(status=FAILED, reason="ocr_failed", required_evidence=REQUIRED_RUNTIME_EVIDENCE)
+    if status == "failed" and retryable and not retry_attempted:
+        return SmokeContractResult(status=FAILED, reason="retryable_failure_without_retry", required_evidence=REQUIRED_RUNTIME_EVIDENCE)
     if status in {"failed", "timed_out"}:
         return SmokeContractResult(status=FAILED, reason=f"conversion_{status}", required_evidence=REQUIRED_RUNTIME_EVIDENCE)
     if release_blocked or quality_blockers:

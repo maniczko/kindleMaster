@@ -22,7 +22,17 @@ SENTRY_TRACES_SAMPLE_RATE=0.0
 python scripts/check_sentry_config.py
 ```
 
-6. Restart the app:
+6. Send one controlled smoke event when you need end-to-end ingest evidence:
+
+```bash
+python scripts/send_sentry_smoke_event.py --send
+```
+
+The script writes local evidence to `reports/sentry/smoke_event_latest.json`
+and emits a tagged info event named `KindleMaster controlled Sentry smoke
+event`. Do not use it for routine test loops.
+
+7. Restart the app:
 
 ```bash
 python kindlemaster.py serve

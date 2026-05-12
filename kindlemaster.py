@@ -33,6 +33,8 @@ QUICK_TESTS = [
     "test_ai_ocr_cleanup.py",
     "test_ai_toc_detection.py",
     "test_ai_quality_intelligence.py",
+    "test_ai_quality_feedback.py",
+    "test_openai_quality_provider.py",
     "test_app_quality_state_route.py",
     "test_sentry_observability.py",
     "test_docx_conversion.py",

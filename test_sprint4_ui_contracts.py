@@ -53,6 +53,16 @@ class Sprint4UiContractsTests(unittest.TestCase):
         ):
             self.assertIn(marker, source)
 
+    def test_shadcn_registry_config_is_explicit_about_local_primitives(self) -> None:
+        config = json.loads((REPO_ROOT / "components.json").read_text(encoding="utf-8"))
+        docs = (REPO_ROOT / "docs" / "shadcn-status.md").read_text(encoding="utf-8")
+
+        self.assertEqual(config["$schema"], "https://ui.shadcn.com/schema.json")
+        self.assertEqual(config["aliases"]["ui"], "@/components/ui")
+        self.assertEqual(config["aliases"]["utils"], "@/lib/utils")
+        self.assertEqual(config["iconLibrary"], "lucide")
+        self.assertIn("official shadcn registry config + shadcn-style local primitives", docs)
+
     def test_flask_serves_sprint4_app_route_without_breaking_legacy_root(self) -> None:
         client = app.test_client()
 
@@ -71,4 +81,3 @@ class Sprint4UiContractsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

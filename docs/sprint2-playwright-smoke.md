@@ -13,6 +13,8 @@ hard dependency from the quick suite to a live browser.
   passed.
 - Represent terminal outcomes as `passed`, `failed`, `blocked`, or
   `unavailable`.
+- Protect explicit regression cases for heavy PDFs, OCR failure, missing output,
+  retryable failure without retry evidence, and timeout states.
 - The test is registered in `python kindlemaster.py test --suite runtime`.
 
 ## Runtime And Storage Contract
@@ -21,6 +23,11 @@ Sprint 2 also adds local-first runtime/storage foundations:
 
 - `runtime_job_adapter.py` records provider, retry policy, timeout, status,
   external id, and replay metadata for each conversion job.
+- When `KINDLEMASTER_TRIGGER_ENABLED=1` and `TRIGGER_SECRET_KEY` are set,
+  `runtime_job_adapter.py` submits the replay metadata to the real
+  `kindlemaster-conversion` Trigger.dev task through
+  `scripts/trigger_conversion_job.mjs`. Without those variables, local fallback
+  stays active for developer and CI runs.
 - `artifact_storage.py` stores input/output/report/log artifacts through a
   local fallback by default and exposes an R2/S3-compatible metadata contract
   when remote storage is configured.

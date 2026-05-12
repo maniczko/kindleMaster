@@ -8,6 +8,9 @@ from runtime_job_adapter import (
     RetryPolicy,
     RuntimeJobExecutionError,
     RuntimeJobStatus,
+    TriggerDevConfig,
+    TriggerDevRuntimeJobAdapter,
+    build_runtime_job_adapter,
 )
 
 
@@ -84,6 +87,58 @@ class RuntimeJobAdapterTests(unittest.TestCase):
         self.assertIsNotNone(failed)
         self.assertEqual(failed.status, RuntimeJobStatus.FAILED)
         self.assertEqual(failed.error, "boom")
+
+    def test_factory_selects_trigger_dev_only_when_explicitly_enabled_and_secret_exists(self) -> None:
+        local = build_runtime_job_adapter(env={"KINDLEMASTER_TRIGGER_ENABLED": "1"})
+        trigger = build_runtime_job_adapter(
+            env={
+                "KINDLEMASTER_TRIGGER_ENABLED": "1",
+                "TRIGGER_SECRET_KEY": "tr_dev_secret",
+            }
+        )
+
+        self.assertIsInstance(local, LocalRuntimeJobAdapter)
+        self.assertNotIsInstance(local, TriggerDevRuntimeJobAdapter)
+        self.assertIsInstance(trigger, TriggerDevRuntimeJobAdapter)
+
+    def test_trigger_dev_adapter_submits_replay_metadata_and_preserves_external_run_id(self) -> None:
+        captured: dict[str, str] = {}
+
+        def fake_runner(script_path: str, stdin_payload: str) -> str:
+            captured["script_path"] = script_path
+            captured["stdin_payload"] = stdin_payload
+            return '{"external_id":"run_123"}'
+
+        adapter = TriggerDevRuntimeJobAdapter(
+            config=TriggerDevConfig(enabled=True, script_path="scripts/trigger_conversion_job.mjs"),
+            retry_policy=RetryPolicy(max_attempts=3, backoff_seconds=5),
+            timeout_seconds=120,
+            command_runner=fake_runner,
+        )
+        handle = adapter.submit(
+            ReplayableCommand(
+                name="convert",
+                kwargs={"source_type": "pdf", "profile": "auto-premium"},
+                context={"job_id": "job-trigger"},
+            ),
+            job_id="job-trigger",
+        )
+
+        self.assertEqual(handle.provider, "trigger.dev")
+        self.assertEqual(handle.external_id, "run_123")
+        self.assertEqual(handle.status, RuntimeJobStatus.QUEUED)
+        self.assertEqual(captured["script_path"], "scripts/trigger_conversion_job.mjs")
+        self.assertIn('"job_id": "job-trigger"', captured["stdin_payload"])
+        self.assertIn('"max_attempts": 3', captured["stdin_payload"])
+
+    def test_trigger_dev_adapter_disabled_keeps_trigger_provider_but_no_external_id(self) -> None:
+        adapter = TriggerDevRuntimeJobAdapter(config=TriggerDevConfig(enabled=False))
+
+        handle = adapter.submit(ReplayableCommand(name="convert"), job_id="job-disabled")
+
+        self.assertEqual(handle.provider, "trigger.dev")
+        self.assertEqual(handle.external_id, "")
+        self.assertEqual(handle.message, "Trigger.dev is not configured.")
 
 
 if __name__ == "__main__":

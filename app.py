@@ -70,7 +70,7 @@ from sentry_observability import (
     capture_conversion_exception,
     configure_sentry_backend,
 )
-from runtime_job_adapter import LocalRuntimeJobAdapter, ReplayableCommand, RetryPolicy, RuntimeJobStatus
+from runtime_job_adapter import ReplayableCommand, RetryPolicy, RuntimeJobStatus, build_runtime_job_adapter
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 MB
@@ -79,7 +79,7 @@ SENTRY_BACKEND_STATE = configure_sentry_backend()
 UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "kindlemaster")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 ARTIFACT_STORAGE = build_artifact_storage(local_root=Path("output") / "artifacts")
-RUNTIME_JOB_ADAPTER = LocalRuntimeJobAdapter(
+RUNTIME_JOB_ADAPTER = build_runtime_job_adapter(
     retry_policy=RetryPolicy(max_attempts=1),
     timeout_seconds=DEFAULT_CONVERSION_QUEUE_POLICY.max_runtime_seconds,
 )

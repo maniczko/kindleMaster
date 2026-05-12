@@ -3,6 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+import json
+import os
+from pathlib import Path
+import subprocess
 from typing import Any, Callable, Mapping
 from uuid import uuid4
 
@@ -182,6 +186,98 @@ class LocalRuntimeJobAdapter:
         )
         self._jobs[normalized_job_id] = updated
         return updated
+
+
+@dataclass(frozen=True)
+class TriggerDevConfig:
+    enabled: bool = False
+    task_id: str = "kindlemaster-conversion"
+    script_path: str = "scripts/trigger_conversion_job.mjs"
+    project_ref: str = ""
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> "TriggerDevConfig":
+        source = os.environ if env is None else env
+        enabled = str(source.get("KINDLEMASTER_TRIGGER_ENABLED", "") or "").strip().lower() in {"1", "true", "yes", "on"}
+        secret_key = str(source.get("TRIGGER_SECRET_KEY", "") or "").strip()
+        return cls(
+            enabled=enabled and bool(secret_key),
+            task_id=str(source.get("KINDLEMASTER_TRIGGER_TASK_ID", "") or "").strip() or "kindlemaster-conversion",
+            script_path=str(source.get("KINDLEMASTER_TRIGGER_SCRIPT", "") or "").strip() or "scripts/trigger_conversion_job.mjs",
+            project_ref=str(source.get("TRIGGER_PROJECT_REF", "") or "").strip(),
+        )
+
+
+class TriggerDevRuntimeJobAdapter(LocalRuntimeJobAdapter):
+    """Submit conversion metadata to Trigger.dev while keeping local metadata semantics."""
+
+    def __init__(
+        self,
+        *,
+        config: TriggerDevConfig | None = None,
+        retry_policy: RetryPolicy | None = None,
+        timeout_seconds: int = 30 * 60,
+        command_runner: Callable[[str, str], str] | None = None,
+    ) -> None:
+        super().__init__(provider="trigger.dev", retry_policy=retry_policy, timeout_seconds=timeout_seconds)
+        self.config = config or TriggerDevConfig.from_env()
+        self._command_runner = command_runner or _run_trigger_command
+
+    def submit(self, command: ReplayableCommand, *, job_id: str | None = None) -> RuntimeJobHandle:
+        handle = super().submit(command, job_id=job_id)
+        if not self.config.enabled:
+            return self.update_status(handle.job_id, RuntimeJobStatus.QUEUED, message="Trigger.dev is not configured.")
+
+        payload = {
+            "job_id": handle.job_id,
+            "task_id": self.config.task_id,
+            "retry_policy": self.retry_policy.to_metadata(),
+            "timeout_seconds": self.timeout_seconds,
+            "replay": command.to_metadata(),
+        }
+        output = self._command_runner(self.config.script_path, json.dumps(payload, ensure_ascii=False))
+        if output.strip().startswith("{"):
+            response = json.loads(output)
+        else:
+            response = {}
+        external_id = str(response.get("external_id") or response.get("id") or "")
+        if not external_id:
+            raise RuntimeJobExecutionError("Trigger.dev did not return a run id.")
+        return self.update_status(
+            handle.job_id,
+            RuntimeJobStatus.QUEUED,
+            external_id=external_id,
+            message="Submitted to Trigger.dev.",
+        )
+
+
+def build_runtime_job_adapter(
+    *,
+    env: Mapping[str, str] | None = None,
+    retry_policy: RetryPolicy | None = None,
+    timeout_seconds: int = 30 * 60,
+) -> LocalRuntimeJobAdapter:
+    config = TriggerDevConfig.from_env(env)
+    if config.enabled:
+        return TriggerDevRuntimeJobAdapter(config=config, retry_policy=retry_policy, timeout_seconds=timeout_seconds)
+    return LocalRuntimeJobAdapter(retry_policy=retry_policy, timeout_seconds=timeout_seconds)
+
+
+def _run_trigger_command(script_path: str, stdin_payload: str) -> str:
+    script = Path(script_path)
+    if not script.exists():
+        raise RuntimeJobExecutionError(f"Trigger.dev script is missing: {script}")
+    completed = subprocess.run(
+        ["node", str(script)],
+        input=stdin_payload,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeJobExecutionError((completed.stderr or completed.stdout or "Trigger.dev submission failed.").strip())
+    return completed.stdout
 
 
 def _utc_now_label() -> str:

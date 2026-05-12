@@ -1,10 +1,16 @@
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
+import { fileURLToPath, URL } from "node:url";
 
 export default defineConfig({
   root: "frontend",
   base: "/static/react/",
   plugins: [react()],
+  resolve: {
+    alias: {
+      "@": fileURLToPath(new URL("./frontend/src", import.meta.url)),
+    },
+  },
   build: {
     outDir: "../static/react",
     emptyOutDir: true,
@@ -22,4 +28,3 @@ export default defineConfig({
     setupFiles: ["./frontend/src/test/setup.ts"],
   },
 });
-

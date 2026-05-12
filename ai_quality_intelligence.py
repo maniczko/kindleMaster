@@ -80,6 +80,14 @@ def evaluate_ai_quality_intelligence(
         str(ocr_result.fallback_reason or ""),
         str(toc_result.audit.get("fallback_reason", "") or ""),
     )
+    learning_signals = _learning_signals(
+        accepted_ai_change_count=accepted_ai_change_count,
+        fallback_reasons=fallback_reasons,
+        before_score=before_score,
+        ocr_fragment_count=len(ocr_result.fragments),
+        toc_status=str(toc_result.audit.get("status", "") or ""),
+        toc_changed_count=len((toc_result.audit.get("changed_entries") or {}).get("added", []) or []),
+    )
     return {
         "status": _overall_status(
             accepted_ai_change_count=accepted_ai_change_count,
@@ -113,6 +121,7 @@ def evaluate_ai_quality_intelligence(
             "entries": toc_result.entries[:30],
             "audit": toc_result.audit,
         },
+        "learning_signals": learning_signals,
     }
 
 
@@ -279,3 +288,33 @@ def _looks_like_noisy_toc_label(label: str) -> bool:
 
 def _elapsed_ms(started: float) -> int:
     return max(0, int(round((time.perf_counter() - started) * 1000)))
+
+
+def _learning_signals(
+    *,
+    accepted_ai_change_count: int,
+    fallback_reasons: list[str],
+    before_score: float,
+    ocr_fragment_count: int,
+    toc_status: str,
+    toc_changed_count: int,
+) -> dict[str, Any]:
+    actions: list[str] = []
+    if ocr_fragment_count:
+        actions.append("review_ocr_artifact_patterns")
+    if toc_changed_count or toc_status == "accepted":
+        actions.append("review_toc_segmentation_heuristics")
+    if before_score and before_score < 7:
+        actions.append("consider_new_regression_fixture")
+    if any("provider" in reason for reason in fallback_reasons):
+        actions.append("verify_ai_provider_configuration")
+    if accepted_ai_change_count:
+        actions.append("promote_accepted_ai_suggestions_to_human_review")
+    return {
+        "candidate_fix_count": accepted_ai_change_count,
+        "ocr_fragment_count": ocr_fragment_count,
+        "toc_changed_count": toc_changed_count,
+        "should_create_fixture": bool((before_score and before_score < 7) or accepted_ai_change_count >= 2),
+        "recommended_actions": actions,
+        "self_modifying_code_allowed": False,
+    }

@@ -160,6 +160,83 @@ class Sprint2PlaywrightSmokeContractTests(unittest.TestCase):
         self.assertEqual(result.status, FAILED)
         self.assertEqual(result.reason, "conversion_failed")
 
+    def test_timeout_status_maps_to_failed_contract(self) -> None:
+        result = classify_smoke_contract(
+            status_payload={"status": "timed_out", "quality_state": _quality_state(job_id="job-timeout")},
+            upload_selected=True,
+            convert_start_accepted=True,
+            quality_rendered=True,
+            download_attempted=True,
+        )
+
+        self.assertEqual(result.status, FAILED)
+        self.assertEqual(result.reason, "conversion_timed_out")
+
+    def test_missing_output_maps_to_specific_failure(self) -> None:
+        result = classify_smoke_contract(
+            status_payload={
+                "status": "failed",
+                "error_code": "missing_output",
+                "quality_state": _quality_state(job_id="job-missing-output"),
+            },
+            upload_selected=True,
+            convert_start_accepted=True,
+            quality_rendered=True,
+            download_attempted=True,
+        )
+
+        self.assertEqual(result.status, FAILED)
+        self.assertEqual(result.reason, "missing_output")
+
+    def test_ocr_failure_maps_to_specific_failure(self) -> None:
+        result = classify_smoke_contract(
+            status_payload={
+                "status": "failed",
+                "error_code": "ocr_failed",
+                "quality_state": _quality_state(job_id="job-ocr-failed"),
+            },
+            upload_selected=True,
+            convert_start_accepted=True,
+            quality_rendered=True,
+            download_attempted=True,
+        )
+
+        self.assertEqual(result.status, FAILED)
+        self.assertEqual(result.reason, "ocr_failed")
+
+    def test_retryable_failure_requires_retry_evidence(self) -> None:
+        result = classify_smoke_contract(
+            status_payload={
+                "status": "failed",
+                "retryable": True,
+                "quality_state": _quality_state(job_id="job-retryable"),
+            },
+            upload_selected=True,
+            convert_start_accepted=True,
+            quality_rendered=True,
+            download_attempted=True,
+            retry_attempted=False,
+        )
+
+        self.assertEqual(result.status, FAILED)
+        self.assertEqual(result.reason, "retryable_failure_without_retry")
+
+    def test_heavy_pdf_ready_payload_still_maps_to_passed_contract(self) -> None:
+        payload = _ready_payload(job_id="job-heavy")
+        payload["conversion"]["output_size_bytes"] = 42 * 1024 * 1024
+        payload["quality_state"]["summary"]["output_size_bytes"] = 42 * 1024 * 1024
+
+        result = classify_smoke_contract(
+            status_payload=payload,
+            upload_selected=True,
+            convert_start_accepted=True,
+            quality_rendered=True,
+            download_attempted=True,
+        )
+
+        self.assertEqual(result.status, PASSED)
+        self.assertEqual(result.reason, "runtime_roundtrip_ready")
+
     def test_release_blocked_payload_maps_to_blocked_contract_with_download_evidence(self) -> None:
         result = classify_smoke_contract(
             status_payload=_ready_payload(job_id="job-blocked", release_blocked=True),

@@ -745,14 +745,18 @@ def _cleanup_expired_conversion_jobs(*, now: datetime | None = None, force: bool
     upload_root = Path(UPLOAD_DIR)
     if upload_root.exists():
         for candidate in upload_root.iterdir():
-            if not candidate.is_file():
+            try:
+                if not candidate.is_file():
+                    continue
+                stat_result = candidate.stat()
+            except OSError:
                 continue
             resolved_path = _normalize_temp_artifact_path(str(candidate))
             if resolved_path in active_paths:
                 continue
             if candidate.suffix.lower() not in {".pdf", ".docx", ".epub"}:
                 continue
-            modified_at = datetime.fromtimestamp(candidate.stat().st_mtime, tz=UTC)
+            modified_at = datetime.fromtimestamp(stat_result.st_mtime, tz=UTC)
             if modified_at >= file_cutoff:
                 continue
             try:
@@ -778,6 +782,8 @@ def _run_conversion_pipeline(
     force_ocr: bool,
     language: str,
     heading_repair_enabled: bool,
+    route_model_mode: str = "shadow",
+    quality_gate_mode: str = "draft",
     status_callback=None,
 ) -> dict:
     outcome = run_document_conversion(
@@ -786,6 +792,8 @@ def _run_conversion_pipeline(
             source_type=source_type,
             original_filename=original_filename,
             profile=profile,
+            route_model_mode=route_model_mode,
+            quality_gate_mode=quality_gate_mode,
             force_ocr=force_ocr,
             language=language,
             heading_repair_enabled=heading_repair_enabled,
@@ -811,6 +819,8 @@ def _spawn_conversion_job(
     force_ocr: bool,
     language: str,
     heading_repair_enabled: bool,
+    route_model_mode: str = "shadow",
+    quality_gate_mode: str = "draft",
 ) -> None:
     def _worker() -> None:
         output_path = os.path.join(UPLOAD_DIR, f"{job_id}.epub")
@@ -833,6 +843,8 @@ def _spawn_conversion_job(
                 source_type=source_type,
                 original_filename=original_filename,
                 profile=profile,
+                route_model_mode=route_model_mode,
+                quality_gate_mode=quality_gate_mode,
                 force_ocr=force_ocr,
                 language=language,
                 heading_repair_enabled=heading_repair_enabled,
@@ -997,6 +1009,8 @@ def convert():
 
     # Get conversion preferences from form
     profile = request.form.get("profile", "auto-premium")
+    route_model_mode = request.form.get("route_model_mode", "shadow")
+    quality_gate_mode = request.form.get("quality_gate_mode", "draft")
     force_ocr = request.form.get("ocr", "false") == "true"
     language = request.form.get("language", "pl")
     heading_repair_enabled = request.form.get("heading_repair", "false") == "true"
@@ -1021,6 +1035,8 @@ def convert():
             source_type=source_type,
             original_filename=file.filename,
             profile=profile,
+            route_model_mode=route_model_mode,
+            quality_gate_mode=quality_gate_mode,
             force_ocr=force_ocr,
             language=language,
             heading_repair_enabled=heading_repair_enabled,
@@ -1077,6 +1093,8 @@ def convert_start():
     source_suffix = f".{source_type}"
 
     profile = request.form.get("profile", "auto-premium")
+    route_model_mode = request.form.get("route_model_mode", "shadow")
+    quality_gate_mode = request.form.get("quality_gate_mode", "draft")
     force_ocr = request.form.get("ocr", "false") == "true"
     language = request.form.get("language", "pl")
     heading_repair_enabled = request.form.get("heading_repair", "false") == "true"
@@ -1137,6 +1155,8 @@ def convert_start():
         source_type=source_type,
         original_filename=file.filename,
         profile=profile,
+        route_model_mode=route_model_mode,
+        quality_gate_mode=quality_gate_mode,
         force_ocr=force_ocr,
         language=language,
         heading_repair_enabled=heading_repair_enabled,
@@ -1327,6 +1347,56 @@ def convert_quality(job_id: str):
             "runtime": dict(job.get("runtime", {}) or {}),
             "artifacts": dict(job.get("artifacts", {}) or {}),
             "artifact_storage": dict(job.get("artifact_storage", {}) or {}),
+        }
+    )
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+
+@app.route("/convert/feedback/<job_id>", methods=["POST"])
+def convert_feedback(job_id: str):
+    _mark_timed_out_conversion_jobs()
+    _cleanup_expired_conversion_jobs()
+    job = _get_conversion_job(job_id)
+    if not job:
+        return _json_error(
+            "Nie znaleziono zadania konwersji.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="feedback",
+            job_id=job_id,
+        )
+    payload = request.get_json(silent=True)
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        return _json_error(
+            "Feedback musi byc obiektem JSON.",
+            error_code="invalid_feedback_payload",
+            status_code=400,
+            phase="feedback",
+            job_id=job_id,
+        )
+    try:
+        from ml_feedback import append_user_feedback
+
+        record = append_user_feedback(job_id=job_id, feedback=payload, job=job)
+    except Exception as error:
+        return _json_error(
+            f"Nie udalo sie zapisac feedbacku: {error}",
+            error_code="feedback_write_failed",
+            status_code=500,
+            phase="feedback",
+            job_id=job_id,
+        )
+    response = jsonify(
+        {
+            "success": True,
+            "job_id": job_id,
+            "feedback_status": "recorded",
+            "record_id": record.get("record_id", ""),
+            "online_learning": False,
         }
     )
     response.headers["Cache-Control"] = "no-store, max-age=0"

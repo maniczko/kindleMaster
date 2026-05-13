@@ -46,6 +46,10 @@ QUICK_TESTS = [
     "test_converter_publication_budget.py",
     "test_fixed_layout_render_budget.py",
     "test_converter_fixed_layout_budget_enforcement.py",
+    "test_ml_features.py",
+    "test_ml_route_model.py",
+    "test_ml_datasets.py",
+    "test_ml_quality_verifier.py",
     "test_publication_analysis.py",
     "test_publication_pipeline.py",
     "test_quality_state_service.py",
@@ -63,12 +67,14 @@ QUICK_TESTS = [
     "test_text_normalization.py",
     "test_converter_text_cleanup.py",
     "test_semantic_epub_cleanup.py",
+    "test_epub_quality_selection.py",
     "test_epub_reference_repair.py",
     "test_epub_heading_repair.py",
 ]
 
 RELEASE_TESTS = [
     "test_toc_segmentation.py",
+    "test_epub_quality_selection.py",
     "test_epub_quality_recovery.py",
     "test_release_quality_recovery.py",
     "test_epub_release_pipeline.py",
@@ -153,6 +159,8 @@ def main() -> int:
     convert_parser.add_argument("--output", required=True)
     convert_parser.add_argument("--language", default="pl")
     convert_parser.add_argument("--profile", default="auto-premium")
+    convert_parser.add_argument("--route-model-mode", choices=("off", "shadow", "assist"), default="shadow")
+    convert_parser.add_argument("--quality-gate-mode", choices=("off", "draft"), default="draft")
     convert_parser.add_argument("--heading-repair", action="store_true")
     convert_parser.add_argument("--domain-dictionary", default="")
     convert_parser.add_argument("--report-json", default="")
@@ -181,6 +189,44 @@ def main() -> int:
     status_parser.add_argument("--reports-root", default="reports")
     status_parser.add_argument("--output-json", default="reports/project_status.json")
     status_parser.add_argument("--output-md", default="reports/project_status.md")
+
+    ml_parser = subparsers.add_parser("ml", help="Build datasets, train, and evaluate local ML route/review helpers.")
+    ml_subparsers = ml_parser.add_subparsers(dest="ml_command")
+    ml_dataset = ml_subparsers.add_parser("dataset", help="Build ML JSONL datasets from manifest and existing reports.")
+    ml_dataset.add_argument("--manifest", default="reference_inputs/manifest.json")
+    ml_dataset.add_argument("--labels", default="reference_inputs/ml_labels.json")
+    ml_dataset.add_argument("--reports-root", default="reports")
+    ml_dataset.add_argument("--output-dir", default="reports/ml/datasets")
+    ml_dataset.add_argument("--feedback-log", action="append", default=[])
+
+    ml_feedback = ml_subparsers.add_parser("feedback", help="Log or export local conversion feedback without online learning.")
+    ml_feedback.add_argument("--report-json", default="")
+    ml_feedback.add_argument("--log", default="reports/ml/feedback/conversion_feedback.jsonl")
+    ml_feedback.add_argument("--source", default="")
+    ml_feedback.add_argument("--output", default="")
+    ml_feedback.add_argument("--case-id", default="")
+    ml_feedback.add_argument("--feedback-status", choices=("accepted", "needs_review", "rejected"), default="needs_review")
+    ml_feedback.add_argument("--quality-label", choices=("unknown", "good", "usable", "poor", "blocked"), default="unknown")
+    ml_feedback.add_argument("--quality-score", default=None)
+    ml_feedback.add_argument("--route-label", default="")
+    ml_feedback.add_argument("--issue-tag", action="append", default=[])
+    ml_feedback.add_argument("--notes", default="")
+    ml_feedback.add_argument("--reviewer", default="")
+    ml_feedback.add_argument("--export-dir", default="")
+
+    ml_train = ml_subparsers.add_parser("train", help="Train the local route classifier and export JSON inference weights.")
+    ml_train.add_argument("--dataset", default="reports/ml/datasets/route_examples.jsonl")
+    ml_train.add_argument("--model", default="models/route_classifier_v1.json")
+    ml_train.add_argument("--report", default="reports/ml/route_classifier_v1.metrics.json")
+
+    ml_evaluate = ml_subparsers.add_parser("evaluate", help="Evaluate a JSON route model without importing scikit-learn.")
+    ml_evaluate.add_argument("--dataset", default="reports/ml/datasets/route_examples.jsonl")
+    ml_evaluate.add_argument("--model", default="models/route_classifier_v1.json")
+    ml_evaluate.add_argument("--report", default="reports/ml/route_classifier_v1.evaluation.json")
+
+    ml_feedback = ml_subparsers.add_parser("feedback-export", help="Export local conversion/user feedback events into an ML JSONL dataset.")
+    ml_feedback.add_argument("--feedback-log", default="reports/ml/feedback/conversion_feedback.jsonl")
+    ml_feedback.add_argument("--output", default="reports/ml/datasets/quality_feedback_examples.jsonl")
 
     test_parser = subparsers.add_parser("test", help="Run standard KindleMaster test suites.")
     test_parser.add_argument("--suite", choices=("quick", "release", "full", "browser", "runtime", "corpus"), default="quick")
@@ -256,6 +302,8 @@ def main() -> int:
             output_path=args.output,
             language=args.language,
             profile=args.profile,
+            route_model_mode=args.route_model_mode,
+            quality_gate_mode=args.quality_gate_mode,
             heading_repair=args.heading_repair,
             domain_dictionary=args.domain_dictionary,
             report_json=args.report_json,
@@ -302,6 +350,8 @@ def main() -> int:
         )
         _print_json(payload)
         return 0 if payload.get("overall_status") != "failed" else 1
+    if args.command == "ml":
+        return _run_ml(args)
     if args.command == "test":
         return _run_tests(args.suite)
     if args.command == "audit":
@@ -393,6 +443,100 @@ def _maybe_install_git_hooks(*, runtime_only: bool) -> dict[str, Any]:
     from scripts.install_git_hooks import install_git_hooks
 
     return install_git_hooks(Path(__file__).resolve().parent)
+
+
+def _run_ml(args: argparse.Namespace) -> int:
+    if args.ml_command == "dataset":
+        from scripts.build_ml_datasets import build_ml_datasets
+
+        payload = build_ml_datasets(
+            manifest_path=args.manifest,
+            labels_path=args.labels,
+            reports_root=args.reports_root,
+            output_dir=args.output_dir,
+            feedback_log_paths=args.feedback_log,
+        )
+        _print_json(payload)
+        return 0 if payload.get("status") != "failed" else 1
+    if args.ml_command == "feedback":
+        return _run_ml_feedback(args)
+    if args.ml_command == "feedback-export":
+        from ml_feedback import export_feedback_dataset
+
+        payload = export_feedback_dataset(
+            feedback_log=args.feedback_log,
+            output_path=args.output,
+        )
+        _print_json(payload)
+        return 0 if payload.get("status") == "exported" else 1
+    if args.ml_command == "train":
+        from scripts.train_route_classifier import train_route_classifier
+
+        payload = train_route_classifier(
+            dataset_path=args.dataset,
+            model_path=args.model,
+            report_path=args.report,
+        )
+        _print_json(payload)
+        return 0 if payload.get("status") == "trained" else 1
+    if args.ml_command == "evaluate":
+        from scripts.train_route_classifier import evaluate_route_classifier
+
+        payload = evaluate_route_classifier(
+            dataset_path=args.dataset,
+            model_path=args.model,
+            report_path=args.report,
+        )
+        _print_json(payload)
+        return 0 if payload.get("status") != "failed" else 1
+    _print_json({"status": "failed", "error": "Missing ml subcommand. Use dataset, feedback, feedback-export, train, or evaluate."})
+    return 1
+
+
+def _run_ml_feedback(args: argparse.Namespace) -> int:
+    from ml_feedback import append_conversion_feedback_from_report, export_feedback_datasets
+
+    payload: dict[str, Any] = {
+        "status": "completed",
+        "online_learning": False,
+        "actions": [],
+    }
+    failed = False
+    if args.report_json:
+        logged = append_conversion_feedback_from_report(
+            report_path=args.report_json,
+            log_path=args.log,
+            source_path=args.source or None,
+            output_path=args.output or None,
+            case_id=args.case_id,
+            feedback_status=args.feedback_status,
+            quality_label=args.quality_label,
+            quality_score=args.quality_score,
+            route_label=args.route_label,
+            issue_tags=args.issue_tag,
+            notes=args.notes,
+            reviewer=args.reviewer,
+        )
+        payload["actions"].append("log")
+        payload["logged"] = logged
+        failed = failed or logged.get("status") == "failed"
+    if args.export_dir:
+        exported = export_feedback_datasets(
+            log_paths=[args.log],
+            output_dir=args.export_dir,
+        )
+        payload["actions"].append("export")
+        payload["exported"] = exported
+        failed = failed or exported.get("status") == "failed"
+    if not payload["actions"]:
+        payload = {
+            "status": "failed",
+            "error": "Provide --report-json to log feedback, --export-dir to export feedback datasets, or both.",
+            "online_learning": False,
+        }
+        failed = True
+    _print_json(payload)
+    return 1 if failed else 0
 
 
 def _run_serve(*, port: int | None, debug: bool, runtime: str) -> int:
@@ -823,6 +967,8 @@ def _run_convert(
     language: str,
     profile: str,
     heading_repair: bool,
+    route_model_mode: str = "shadow",
+    quality_gate_mode: str = "draft",
     domain_dictionary: str = "",
     report_json: str = "",
 ) -> int:
@@ -846,6 +992,8 @@ def _run_convert(
             source_type=source_type,
             original_filename=resolved_input.name,
             profile=profile,
+            route_model_mode=route_model_mode,
+            quality_gate_mode=quality_gate_mode,
             language=language,
             heading_repair_enabled=heading_repair,
             text_cleanup_domain_dictionary_path=domain_dictionary or None,

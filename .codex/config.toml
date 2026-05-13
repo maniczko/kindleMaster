@@ -17,6 +17,9 @@
 # - quick tests: python kindlemaster.py test --suite quick
 # - corpus tests: python kindlemaster.py test --suite corpus
 # - derived project status: python kindlemaster.py status
+# - ML datasets: python kindlemaster.py ml dataset
+# - ML training: python kindlemaster.py ml train
+# - ML evaluation: python kindlemaster.py ml evaluate
 # - browser tests: python kindlemaster.py test --suite browser
 # - runtime tests: python kindlemaster.py test --suite runtime
 # - release tests: python kindlemaster.py test --suite release

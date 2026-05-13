@@ -51,6 +51,8 @@ def _get_spine_xhtml_paths(opf_path: Path) -> list[Path]:
 
     ordered_paths: list[Path] = []
     for itemref in root.findall(".//opf:spine/opf:itemref", NS):
+        if str(itemref.get("linear", "yes") or "yes").lower() == "no":
+            continue
         manifest_item = manifest_by_id.get(itemref.get("idref"))
         if manifest_item is None:
             continue
@@ -176,4 +178,3 @@ def _normalize_metadata_text(text: str) -> str:
     normalized = normalized.replace("\u00ad", "")
     normalized = normalized.replace("\xa0", " ")
     return re.sub(r"\s+", " ", normalized).strip()
-

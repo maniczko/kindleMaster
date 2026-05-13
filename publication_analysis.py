@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import fitz
 
+from ml_features import route_feature_payload
+from ml_route_model import build_route_decision
 from premium_tools import detect_toolchain
 from publication_model import PublicationAnalysis
 
@@ -27,7 +29,11 @@ NUMBERED_HEADING_CAPTION_RE = re.compile(
 )
 
 
-def analyze_publication(pdf_path: str, preferred_profile: str = "auto-premium") -> PublicationAnalysis:
+def analyze_publication(
+    pdf_path: str,
+    preferred_profile: str = "auto-premium",
+    route_model_mode: str = "shadow",
+) -> PublicationAnalysis:
     doc = fitz.open(pdf_path)
     toc = doc.get_toc()
     total_pages = len(doc)
@@ -188,6 +194,44 @@ def analyze_publication(pdf_path: str, preferred_profile: str = "auto-premium") 
         font_consistency=font_consistency,
     )
     fallback_recommendation = _fallback_recommendation(profile, confidence, scanned_page_ratio)
+    feature_payload = route_feature_payload(
+        {
+            "page_count": total_pages,
+            "text_page_ratio": text_page_ratio,
+            "scanned_page_ratio": scanned_page_ratio,
+            "image_page_ratio": image_page_ratio,
+            "has_toc": has_toc,
+            "has_tables": has_tables,
+            "has_diagrams": has_diagrams,
+            "has_meaningful_images": has_meaningful_images,
+            "estimated_columns": estimated_columns,
+            "heading_density": heading_density,
+            "font_consistency": font_consistency,
+            "layout_heavy": layout_heavy,
+            "text_heavy": text_heavy,
+            "scanned_pages": scanned_pages,
+            "text_pages": pages_with_text,
+            "image_pages": pages_with_images,
+        },
+        input_type="pdf",
+    )
+    route_decision = build_route_decision(
+        heuristic_profile=profile,
+        heuristic_confidence=confidence,
+        features=feature_payload,
+        mode=route_model_mode,
+        allow_override=not (preferred_profile and preferred_profile != "auto-premium"),
+    )
+    if route_decision.get("override_used"):
+        original_profile = profile
+        profile = str(route_decision.get("selected_profile", "") or profile)
+        confidence = float(route_decision.get("ml_confidence", confidence) or confidence)
+        ui_profile = _ui_profile_for_profile(profile, fallback=ui_profile)
+        profile_reason = (
+            f"ML assist selected {profile}; heuristic was {original_profile}. "
+            f"Reason codes: {', '.join(route_decision.get('reason_codes', []))}."
+        )
+        fallback_recommendation = _fallback_recommendation(profile, confidence, scanned_page_ratio)
 
     features = []
     if has_toc:
@@ -243,6 +287,7 @@ def analyze_publication(pdf_path: str, preferred_profile: str = "auto-premium") 
         external_tools=detect_toolchain(),
         profile_reason=profile_reason,
         detected_outline_entries=numbered_section_count,
+        route_decision=route_decision,
     )
 
 
@@ -460,6 +505,18 @@ def _choose_profile(**kwargs) -> tuple[str, str, str]:
     if legacy_strategy == "layout_fixed":
         return "fixed_layout_fallback", "preserve-layout", "Układ dokumentu jest zbyt ciężki dla bezpiecznego reflow."
     return "book_reflow", "book", "Domyślny profil tekstowy."
+
+
+def _ui_profile_for_profile(profile: str, *, fallback: str) -> str:
+    mapping = {
+        "book_reflow": "book",
+        "diagram_book_reflow": "book",
+        "magazine_reflow": "magazine",
+        "scanned_reflow": "preserve-layout",
+        "fixed_layout_fallback": "preserve-layout",
+        "docx_reflow": "book",
+    }
+    return mapping.get(str(profile or "").strip().lower(), fallback)
 
 
 def _is_document_like_report_candidate(

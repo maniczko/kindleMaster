@@ -63,6 +63,8 @@ class PublicationAnalysisTests(unittest.TestCase):
 
         self.assertEqual(analysis.profile, "diagram_book_reflow")
         self.assertFalse(analysis.has_tables)
+        self.assertEqual(analysis.route_decision["mode"], "shadow")
+        self.assertEqual(analysis.route_decision["selected_profile"], "diagram_book_reflow")
 
     def test_document_like_report_routes_to_technical_book_before_magazine(self) -> None:
         profile, ui_profile, reason = _choose_profile(
@@ -156,6 +158,55 @@ class PublicationAnalysisTests(unittest.TestCase):
         self.assertTrue(rendered.startswith('<table class="report-table"') or "table-row-list" in rendered)
         self.assertIn("Tabela 1. Priorytety kompetencyjne", rendered)
         self.assertNotIn("<p>Tabela 1. Priorytety kompetencyjne</p>", rendered)
+
+    def test_shadow_route_decision_does_not_change_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = Path(temp_dir) / "shadow.pdf"
+            doc = fitz.open()
+            page = doc.new_page()
+            page.insert_text((72, 72), "Plain text publication. " * 30)
+            doc.save(str(pdf_path))
+            doc.close()
+
+            with patch("publication_analysis.detect_toolchain", return_value={}):
+                analysis = analyze_publication(str(pdf_path), route_model_mode="shadow")
+
+        self.assertEqual(analysis.profile, analysis.route_decision["heuristic_profile"])
+        self.assertEqual(analysis.route_decision["selected_profile"], analysis.profile)
+        self.assertFalse(analysis.route_decision["override_used"])
+        self.assertIn("input_features_hash", analysis.route_decision)
+
+    def test_assist_route_decision_can_override_when_gate_allows_it(self) -> None:
+        decision = {
+            "heuristic_profile": "book_reflow",
+            "heuristic_confidence": 0.55,
+            "ml_profile": "magazine_reflow",
+            "ml_confidence": 0.91,
+            "selected_profile": "magazine_reflow",
+            "mode": "assist",
+            "override_used": True,
+            "reason_codes": ["assist-override"],
+            "model_version": "test",
+            "input_features_hash": "abc",
+            "scores": {"magazine_reflow": 0.91},
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = Path(temp_dir) / "assist.pdf"
+            doc = fitz.open()
+            page = doc.new_page()
+            page.insert_text((72, 72), "Plain text publication. " * 30)
+            doc.save(str(pdf_path))
+            doc.close()
+
+            with (
+                patch("publication_analysis.detect_toolchain", return_value={}),
+                patch("publication_analysis.build_route_decision", return_value=decision),
+            ):
+                analysis = analyze_publication(str(pdf_path), route_model_mode="assist")
+
+        self.assertEqual(analysis.profile, "magazine_reflow")
+        self.assertEqual(analysis.route_decision["selected_profile"], "magazine_reflow")
+        self.assertTrue(analysis.route_decision["override_used"])
 
     def test_section_title_normalization_preserves_meaningful_hyphenated_report_titles(self) -> None:
         self.assertEqual(

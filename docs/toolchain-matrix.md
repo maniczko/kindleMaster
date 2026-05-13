@@ -9,9 +9,17 @@ For the operator setup sequence and failure classification guidance, see [local-
 | Profile | Command | Installs | What it supports |
 | --- | --- | --- | --- |
 | `runtime_only` | `python kindlemaster.py bootstrap --runtime-only` | `requirements.txt` | conversion, validation, smoke, Flask serving, `quick`, and the core `release` lane |
-| `developer` | `python kindlemaster.py bootstrap` | `requirements.txt` + `requirements-dev.txt` plus local `.githooks` setup | everything in `runtime_only` plus pytest/coverage/ruff/pip-audit/Waitress/Playwright support for governance, browser, and runtime verification lanes |
+| `developer` | `python kindlemaster.py bootstrap` | `requirements.txt` + `requirements-dev.txt` plus local `.githooks` setup | everything in `runtime_only` plus pytest/coverage/ruff/pip-audit/Waitress/Playwright and `scikit-learn` support for governance, browser, runtime, and ML training lanes |
 
 Bootstrap manages Python packages and local Git hook configuration for the developer profile. It does not install Java, EPUBCheck, Tesseract, Ghostscript, qpdf, PDFBox, or Chromium.
+
+ML runtime inference is local JSON math and belongs to the runtime footprint. Training uses `scikit-learn` from `requirements-dev.txt` only:
+
+```powershell
+python kindlemaster.py ml dataset
+python kindlemaster.py ml train
+python kindlemaster.py ml evaluate
+```
 
 ## Verification Surfaces
 

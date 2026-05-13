@@ -75,6 +75,11 @@
         primary: "Główna próba",
         skipped: "Pominięto",
         applied: "Zastosowano",
+        verified: "Zweryfikowano",
+        not_verified: "Niezweryfikowane",
+        previewer_passed: "Kindle Previewer OK",
+        send_to_kindle_passed: "Send to Kindle OK",
+        blocked: "Zablokowane",
       };
       return labels[normalized] || text;
     }
@@ -132,6 +137,133 @@
             return `<li>${escapeHtml(item)}</li>`;
           }).join("")}
         </ul>
+      `;
+    }
+
+    function describeQualityReason(item) {
+      if (item === null || item === undefined || item === "") return "";
+      if (typeof item !== "object") return String(item);
+      const code = item.code ? `[${item.code}] ` : "";
+      const message = item.message || item.title || item.name || item.summary || item.detail || item.suggested_action || "";
+      const source = item.source ? ` (${item.source})` : "";
+      if (message) return `${code}${message}${source}`;
+      try {
+        return `${code}${JSON.stringify(item)}`;
+      } catch (error) {
+        return code || "Zgłoszono problem jakości.";
+      }
+    }
+
+    function buildTopQualityReasons(options) {
+      const payload = options || {};
+      const {
+        blockers = [],
+        issueBlockers = [],
+        userFacingReasons = [],
+        qualitySelectionReasons = [],
+        sendToKindleBlockers = [],
+        warnings = [],
+        reviewItems = [],
+        fallbackReason = "",
+        isReady = false,
+      } = payload;
+      const orderedGroups = [
+        blockers,
+        issueBlockers,
+        userFacingReasons,
+        qualitySelectionReasons,
+        sendToKindleBlockers,
+        warnings,
+        reviewItems,
+      ];
+      const seen = new Set();
+      const reasons = [];
+      orderedGroups.forEach((group) => {
+        normalizeOptionalArray(group).forEach((item) => {
+          const reason = describeQualityReason(item).trim();
+          const key = reason.toLowerCase();
+          if (!reason || seen.has(key)) return;
+          seen.add(key);
+          reasons.push(reason);
+        });
+      });
+      if (!reasons.length) {
+        reasons.push(isReady ? "Brak blockerów publikacji." : (fallbackReason || "Brak danych."));
+      }
+      return reasons.slice(0, 3);
+    }
+
+    function renderTopQualityReasons(items) {
+      const safeItems = normalizeOptionalArray(items).filter(Boolean);
+      return `
+        <ol class="quality-top-reasons-list">
+          ${safeItems.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+        </ol>
+      `;
+    }
+
+    function formatPremiumScore(premiumScoring) {
+      const payload = normalizeOptionalObject(premiumScoring) || {};
+      const score = coerceFiniteNumber(payload.premium_score ?? payload.premiumScore ?? payload.score_10 ?? payload.score);
+      if (!Number.isFinite(score)) return "Brak danych";
+      const clamped = Math.max(0, Math.min(10, score));
+      const precision = Number.isInteger(clamped) ? 0 : 1;
+      return `${clamped.toFixed(precision)}/10`;
+    }
+
+    function resolveKindleReadyValue(premiumScoring, sendToKindleReady, kindleDelivery) {
+      const scoring = normalizeOptionalObject(premiumScoring) || {};
+      const delivery = normalizeOptionalObject(kindleDelivery) || {};
+      if (typeof scoring.kindle_ready === "boolean") return scoring.kindle_ready;
+      if (typeof scoring.kindleReady === "boolean") return scoring.kindleReady;
+      if (typeof delivery.automated_ready === "boolean") return delivery.automated_ready;
+      if (typeof sendToKindleReady === "boolean") return sendToKindleReady;
+      return null;
+    }
+
+    function formatYesNo(value) {
+      if (value === true) return "yes";
+      if (value === false) return "no";
+      return "Brak danych";
+    }
+
+    function qualityToneFromStatus(value) {
+      const normalized = String(value ?? "").toLowerCase();
+      if (["passed", "ready", "release_ready", "verified", "previewer_passed", "send_to_kindle_passed", "success"].includes(normalized)) return "ready";
+      if (["failed", "error", "release_blocked", "blocked", "no"].includes(normalized)) return "failed";
+      return "review";
+    }
+
+    function qualityToneFromBoolean(value) {
+      if (value === true) return "ready";
+      if (value === false) return "failed";
+      return "review";
+    }
+
+    function qualityToneFromPremiumScore(premiumScoring) {
+      const payload = normalizeOptionalObject(premiumScoring) || {};
+      const score = coerceFiniteNumber(payload.premium_score ?? payload.premiumScore ?? payload.score_10 ?? payload.score);
+      if (!Number.isFinite(score)) return "review";
+      if (score >= 9) return "ready";
+      if (score >= 7) return "review";
+      return "failed";
+    }
+
+    function formatAiVerifierStatus(aiVerifier) {
+      if (aiVerifier === null || aiVerifier === undefined || aiVerifier === "") return "Brak danych";
+      if (typeof aiVerifier !== "object") return formatStatusText(aiVerifier);
+      const status = aiVerifier.status || aiVerifier.state || aiVerifier.verdict || aiVerifier.result || "reported";
+      const message = aiVerifier.message || aiVerifier.summary || aiVerifier.detail || "";
+      return [formatStatusText(status), message].filter(Boolean).join(" / ") || "Brak danych";
+    }
+
+    function renderQualityHeroMetric(label, value, detail = "", tone = "review") {
+      return `
+        <div class="quality-hero-metric" data-tone="${escapeHtml(tone)}">
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(value)}</strong>
+          ${detail ? `<small>${escapeHtml(detail)}</small>` : ""}
+        </div>
       `;
     }
 
@@ -211,14 +343,15 @@
       `;
     }
 
-    function renderQualityDisclosurePanel({
-      id,
-      title,
-      subtitle = "",
-      body = "",
-      wide = false,
-      open = false,
-    }) {
+    function renderQualityDisclosurePanel(options) {
+      const {
+        id,
+        title,
+        subtitle = "",
+        body = "",
+        wide = false,
+        open = false,
+      } = options || {};
       return `
         <details class="quality-cockpit-panel" id="${escapeHtml(id)}"${wide ? ' data-span="wide"' : ""}${open ? " open" : ""}>
           <summary class="quality-panel-title">
@@ -381,51 +514,56 @@
       `;
     }
 
-    function renderConversionReport({
-      profile,
-      validation,
-      validationTool,
-      sections,
-      assets,
-      layout,
-      outputSizeBytes = null,
-      warnings,
-      highRiskPages,
-      highRiskSections,
-      warningList = [],
-      highRiskPageList = [],
-      highRiskSectionList = [],
-      headingRepair = null,
-      qualityAvailable = null,
-      severity = "",
-      alerts = [],
-      sizeBudget = null,
-      renderBudget = null,
-      verdict = null,
-      qualityStateUrl = "",
-      downloadUrl = "",
-      downloadAvailable = null,
-      readingVerdict = "",
-      releaseVerdict = "",
-      releaseBlocked = false,
-      qualityBlockers = [],
-      sendToKindleReady = null,
-      sendToKindleBlockers = [],
-      issueGroups = null,
-      contentMetrics = null,
-      textCleanup = null,
-      referenceCleanup = null,
-      assetSummary = null,
-      tocPreview = null,
-      epubcheckDetail = null,
-      metadataSummary = null,
-      metadataHealth = null,
-      linkHealth = null,
-      visibleJunk = null,
-      qualityCompleteness = null,
-      userFacingVerdict = "",
-      userFacingReasons = [],
-    }) {
+    function renderConversionReport(options) {
+      const {
+        profile,
+        validation,
+        validationTool,
+        sections,
+        assets,
+        layout,
+        outputSizeBytes = null,
+        warnings,
+        highRiskPages,
+        highRiskSections,
+        warningList = [],
+        highRiskPageList = [],
+        highRiskSectionList = [],
+        headingRepair = null,
+        qualityAvailable = null,
+        severity = "",
+        alerts = [],
+        sizeBudget = null,
+        renderBudget = null,
+        verdict = null,
+        qualityStateUrl = "",
+        downloadUrl = "",
+        downloadAvailable = null,
+        readingVerdict = "",
+        releaseVerdict = "",
+        releaseBlocked = false,
+        qualityBlockers = [],
+        sendToKindleReady = null,
+        sendToKindleBlockers = [],
+        issueGroups = null,
+        contentMetrics = null,
+        textCleanup = null,
+        referenceCleanup = null,
+        assetSummary = null,
+        tocPreview = null,
+        epubcheckDetail = null,
+        metadataSummary = null,
+        premiumScoring = null,
+        qualitySelection = null,
+        kindleDelivery = null,
+        aiVerifier = null,
+        metadataHealth = null,
+        linkHealth = null,
+        visibleJunk = null,
+        qualityCompleteness = null,
+        userFacingVerdict = "",
+        userFacingReasons = [],
+      } = options || {};
       const safeValidation = validation || "unavailable";
       const reportVerdict = verdict || deriveQualityVerdict({
         severity,
@@ -551,6 +689,9 @@
       const safeTocPreview = normalizeOptionalObject(tocPreview);
       const safeEpubcheckDetail = normalizeOptionalObject(epubcheckDetail);
       const safeMetadataSummary = normalizeOptionalObject(metadataSummary);
+      const safePremiumScoring = normalizeOptionalObject(premiumScoring);
+      const safeQualitySelection = normalizeOptionalObject(qualitySelection);
+      const safeKindleDelivery = normalizeOptionalObject(kindleDelivery);
       const safeQualityCompleteness = normalizeQualityCompleteness(qualityCompleteness);
       const safeQualityBlockers = normalizeOptionalArray(qualityBlockers);
       const safeSendToKindleBlockers = normalizeOptionalArray(sendToKindleBlockers);
@@ -569,6 +710,10 @@
         : sendToKindleReady === false
           ? "Draft do kontroli"
           : "Brak danych";
+      const premiumScoreLabel = formatPremiumScore(safePremiumScoring);
+      const kindleReadyValue = resolveKindleReadyValue(safePremiumScoring, sendToKindleReady, safeKindleDelivery);
+      const kindleReadyLabel = formatYesNo(kindleReadyValue);
+      const aiVerifierLabel = formatAiVerifierStatus(aiVerifier);
       if (dashboardVerdictMetric) {
         dashboardVerdictMetric.textContent = reportVerdict.label;
       }
@@ -581,6 +726,12 @@
         [...highRiskPageList, ...highRiskSectionList],
       );
       const qualityRows = renderQualityRows([
+        ["Premium score", premiumScoreLabel],
+        ["Wybor artefaktu", safeQualitySelection ? formatStatusText(safeQualitySelection.status || "reported") : "Brak danych"],
+        ["Wybrany EPUB", safeQualitySelection ? (safeQualitySelection.selected_candidate || safeQualitySelection.selected_stage || "Brak danych") : "Brak danych"],
+        ["Odrzucony EPUB", safeQualitySelection ? (safeQualitySelection.rejected_candidate || safeQualitySelection.rejected_stage || "Brak danych") : "Brak danych"],
+        ["Kindle-ready", kindleReadyLabel],
+        ["AI verifier", aiVerifierLabel],
         ["Kompletność", formatCompletenessScore(safeQualityCompleteness)],
         ["Pobranie", downloadAvailable === null ? "Brak danych" : Boolean(downloadAvailable)],
         ["Gotowość do czytania", readingVerdict || reportVerdict.label],
@@ -666,6 +817,13 @@
         ["Rozmiar", Number.isFinite(outputSizeBytes) && outputSizeBytes > 0 ? formatBytes(outputSizeBytes) : "Brak danych"],
         ["Blokery", safeSendToKindleBlockers.length],
       ]);
+      const qualitySelectionRows = renderQualityRows([
+        ["Status", safeQualitySelection ? formatStatusText(safeQualitySelection.status || "reported") : "Brak danych"],
+        ["Wybrany", safeQualitySelection ? (safeQualitySelection.selected_candidate || safeQualitySelection.selected_stage || "Brak danych") : "Brak danych"],
+        ["Odrzucony", safeQualitySelection ? (safeQualitySelection.rejected_candidate || safeQualitySelection.rejected_stage || "Brak danych") : "Brak danych"],
+        ["Delta score", safeQualitySelection && Number.isFinite(coerceFiniteNumber(safeQualitySelection.score_delta)) ? coerceFiniteNumber(safeQualitySelection.score_delta) : "Brak danych"],
+        ["Delta blockerow", safeQualitySelection && Number.isFinite(coerceFiniteNumber(safeQualitySelection.blocker_delta)) ? coerceFiniteNumber(safeQualitySelection.blocker_delta) : "Brak danych"],
+      ]);
       const qualityMatrixPanel = renderQualityDisclosurePanel({
         id: "qualityMatrixPanel",
         title: "Macierz jakości",
@@ -721,6 +879,16 @@
           ${safeSendToKindleBlockers.length ? renderCompactList(safeSendToKindleBlockers, "Brak danych", 5) : `<div class="quality-empty">Brak blockerów wysyłki.</div>`}
         `,
       });
+      const qualitySelectionPanel = renderQualityDisclosurePanel({
+        id: "qualitySelectionPanel",
+        title: "Wybor artefaktu",
+        subtitle: safeQualitySelection ? formatStatusText(safeQualitySelection.status || "reported") : "Brak danych",
+        body: `
+          <div class="quality-matrix">${qualitySelectionRows}</div>
+          ${safeQualitySelection && Array.isArray(safeQualitySelection.reason_codes) ? renderCompactList(safeQualitySelection.reason_codes, "Brak danych", 6) : ""}
+          ${safeQualitySelection && safeQualitySelection.status === "rejected" ? `<div class="quality-empty">Automatyczna naprawa odrzucona: pogarsza jakosc EPUB. Pobierany jest lepszy artefakt.</div>` : ""}
+        `,
+      });
       const userFacingDecision = safeUserFacingVerdict && safeUserFacingVerdict.decision ? safeUserFacingVerdict.decision : "";
       const decisionKey = userFacingDecision || (reportVerdict.key === "ready"
         ? "ready"
@@ -740,6 +908,41 @@
           `).join("")}
         </div>
       `;
+      const topReasons = buildTopQualityReasons({
+        blockers: safeQualityBlockers,
+        issueBlockers: blockerItems,
+        userFacingReasons: safeUserFacingReasons,
+        qualitySelectionReasons: safeQualitySelection && safeQualitySelection.status === "rejected"
+          ? [{ code: "quality_selection_rejected", message: "Automatyczna naprawa odrzucona: pogarsza jakosc EPUB.", source: "quality_selection" }]
+          : [],
+        sendToKindleBlockers: safeSendToKindleBlockers,
+        warnings: warningItems,
+        reviewItems,
+        fallbackReason: userFacingDetail,
+        isReady: decisionKey === "ready",
+      });
+      const cockpitHero = `
+        <div class="quality-verdict quality-cockpit-hero" id="qualityVerdictHeader" data-tone="${escapeHtml(reportVerdict.tone)}">
+          <div class="quality-hero-copy">
+            <div class="quality-hero-header">
+              <span class="quality-eyebrow">Decyzja publikacji</span>
+              <div class="quality-status-pill" aria-label="Status walidacji">Walidacja: ${escapeHtml(formatStatusText(safeValidation || "not_reported"))}</div>
+            </div>
+            <strong>${escapeHtml(userFacingLabel)}</strong>
+            <span>${escapeHtml(userFacingDetail)}</span>
+            ${decisionStrip}
+          </div>
+          <div class="quality-hero-metrics" aria-label="Kluczowe metryki jakości">
+            ${renderQualityHeroMetric("Premium score", premiumScoreLabel, "target 9/10", qualityToneFromPremiumScore(safePremiumScoring))}
+            ${renderQualityHeroMetric("Kindle-ready", kindleReadyLabel, "yes/no", qualityToneFromBoolean(kindleReadyValue))}
+            ${renderQualityHeroMetric("AI verifier", aiVerifierLabel, "status", qualityToneFromStatus(aiVerifier && typeof aiVerifier === "object" ? (aiVerifier.status || aiVerifier.state || aiVerifier.verdict || aiVerifier.result) : aiVerifier))}
+          </div>
+          <div class="quality-top-reasons" id="qualityTopReasons">
+            <div class="quality-panel-title"><span>Top 3 reasons/blockers</span><small>blokery najpierw</small></div>
+            ${renderTopQualityReasons(topReasons)}
+          </div>
+        </div>
+      `;
       const downloadLabel = safeUserFacingVerdict && safeUserFacingVerdict.download_label
         ? safeUserFacingVerdict.download_label
         : releaseBlocked || reportVerdict.key === "release_blocked"
@@ -751,14 +954,7 @@
       ].filter(Boolean).join("");
       const qualityReportPanel = `
         <div class="flat2-quality-report" data-quality-verdict="${escapeHtml(reportVerdict.key)}" data-vr-hook="vat-209-quality-report">
-          ${decisionStrip}
-          <div class="quality-verdict" id="qualityVerdictHeader" data-tone="${escapeHtml(reportVerdict.tone)}">
-            <div>
-              <strong>${escapeHtml(userFacingLabel)}</strong>
-              <span>${escapeHtml(userFacingDetail)}</span>
-            </div>
-            <div class="quality-status-pill" aria-label="Status walidacji">Walidacja: ${escapeHtml(formatStatusText(safeValidation || "not_reported"))}</div>
-          </div>
+          ${cockpitHero}
           <div class="quality-cockpit-grid" id="qualityCockpit">
             ${issueBoard}
             ${userFacingReasonsPanel}
@@ -769,6 +965,7 @@
             ${tocPreviewPanel}
             ${metadataPanel}
             ${assetsPanel}
+            ${qualitySelectionPanel}
             ${kindleDeliveryPanel}
             <div class="quality-cockpit-panel" id="qualityReportsActionsPanel" data-span="wide">
               <div class="quality-panel-title"><span>Raporty / akcje</span><small>Tylko odczyt</small></div>
@@ -918,4 +1115,3 @@
         highRiskSections: null,
       });
     }
-

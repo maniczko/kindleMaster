@@ -232,6 +232,48 @@ class EpubHeadingRepairTests(unittest.TestCase):
         self.assertIn("4.1 CSP, SAN, cXML, sFTP, email/PDF", nav)
         self.assertNotIn(">Definicje</a>", nav)
 
+    def test_repair_epub_headings_and_toc_skips_duplicate_semantic_cleanup_for_finalized_epub(self):
+        chapter_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Finalized Handbook</title></head>
+  <body>
+    <section>
+      <h1 id="finalized-handbook">Finalized Handbook</h1>
+      <p>The chapter already passed semantic cleanup upstream.</p>
+      <h2 id="delivery-controls">Delivery Controls</h2>
+      <p>The secondary heading should remain in the rebuilt navigation.</p>
+    </section>
+  </body>
+</html>
+"""
+        epub_bytes = self._minimal_epub(
+            chapter_source,
+            nav_label="Legacy label",
+            nav_href="chapter_001.xhtml#missing-input",
+        )
+
+        with patch(
+            "epub_heading_repair.finalize_epub_for_kindle",
+            side_effect=AssertionError("duplicate semantic cleanup should be skipped"),
+        ) as semantic_mock:
+            with patch(
+                "epub_heading_repair.run_epubcheck",
+                return_value={"status": "passed", "tool": "epubcheck", "messages": []},
+            ):
+                result = repair_epub_headings_and_toc(
+                    epub_bytes,
+                    language_hint="en",
+                    already_semantic_cleaned=True,
+                )
+
+        semantic_mock.assert_not_called()
+        toc_labels = [item["label"] for item in result.toc_mapping]
+        self.assertIn("Finalized Handbook", toc_labels)
+        self.assertIn("Delivery Controls", toc_labels)
+        self.assertGreaterEqual(result.summary["headings_kept"], 2)
+        self.assertEqual(result.qa["gates"]["A"]["status"], "pass")
+        self.assertEqual(result.summary["release_status"], "pass")
+
     def test_repair_epub_headings_and_toc_removes_fake_heading_and_rebuilds_toc(self):
         chapter_source = """<?xml version="1.0" encoding="utf-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml">
@@ -686,7 +728,8 @@ class EpubHeadingRepairTests(unittest.TestCase):
         with zipfile.ZipFile(io.BytesIO(result.epub_bytes), "r") as archive:
             chapter = archive.read("EPUB/chapter_001.xhtml").decode("utf-8")
 
-        self.assertEqual(chapter.count('id="business-analysis-planning-and-monitoring-co-to-jest"'), 1)
+        self.assertEqual(chapter.count('id="business-analysis-planning-and-monitoring"'), 1)
+        self.assertNotIn("Co to jest", chapter)
         self.assertEqual(result.epubcheck["status"], "passed")
 
     def test_repair_epub_headings_and_toc_merges_split_heading_clusters(self):

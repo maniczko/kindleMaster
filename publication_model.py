@@ -90,6 +90,7 @@ class PublicationAnalysis:
     external_tools: dict[str, Any] = field(default_factory=dict)
     profile_reason: str = ""
     detected_outline_entries: int = 0
+    route_decision: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -119,6 +120,7 @@ class PublicationAnalysis:
             "external_tools": self.external_tools,
             "profile_reason": self.profile_reason,
             "detected_outline_entries": self.detected_outline_entries,
+            "route_decision": self.route_decision,
         }
 
 

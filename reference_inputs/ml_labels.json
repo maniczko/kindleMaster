@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "label_source": "explicit_bootstrap_labels_for_ml_roadmap_v1",
+  "classes": [
+    "book_reflow",
+    "magazine_reflow",
+    "diagram_book_reflow",
+    "scanned_reflow",
+    "docx_reflow",
+    "fixed_layout_fallback"
+  ],
+  "cases": {
+    "ocr_probe_pdf": {
+      "route_label": "scanned_reflow",
+      "label_quality": "weak",
+      "notes": "Tiny OCR probe; useful as a scanned-route seed when the fixture is present."
+    },
+    "ocr_stress_scan_pdf": {
+      "route_label": "scanned_reflow",
+      "label_quality": "generated",
+      "notes": "Generated image-heavy OCR stress case."
+    },
+    "mixed_scan_text_pdf": {
+      "route_label": "fixed_layout_fallback",
+      "label_quality": "weak",
+      "notes": "Hybrid scan/text stress case where conservative fixed-layout fallback is safer until more labels exist."
+    },
+    "dense_business_guide_pdf": {
+      "route_label": "book_reflow",
+      "label_quality": "curated",
+      "notes": "Dense handbook/book-like reflow seed."
+    },
+    "diagram_training_book_pdf": {
+      "route_label": "diagram_book_reflow",
+      "label_quality": "curated",
+      "notes": "Training/diagram-heavy book seed."
+    },
+    "magazine_layout_pdf": {
+      "route_label": "magazine_reflow",
+      "label_quality": "curated",
+      "notes": "Layout-heavy magazine/editorial seed."
+    },
+    "document_like_report_pdf": {
+      "route_label": "book_reflow",
+      "label_quality": "generated",
+      "notes": "Document-like report currently belongs to technical book reflow."
+    },
+    "simple_report_docx": {
+      "route_label": "docx_reflow",
+      "label_quality": "generated",
+      "notes": "Structured DOCX seed."
+    },
+    "list_table_image_docx": {
+      "route_label": "docx_reflow",
+      "label_quality": "generated",
+      "notes": "Rich DOCX seed with tables, images and lists."
+    },
+    "no_heading_document_docx": {
+      "route_label": "docx_reflow",
+      "label_quality": "generated",
+      "notes": "DOCX fallback-sectioning seed."
+    }
+  }
+}

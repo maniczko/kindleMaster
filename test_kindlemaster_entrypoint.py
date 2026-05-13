@@ -86,6 +86,8 @@ class KindleMasterEntrypointTests(unittest.TestCase):
             request = conversion_mock.call_args.args[0]
             self.assertEqual(request.source_type, "pdf")
             self.assertEqual(request.language, "pl")
+            self.assertEqual(request.route_model_mode, "shadow")
+            self.assertEqual(request.quality_gate_mode, "draft")
             self.assertEqual(request.text_cleanup_domain_dictionary_path, "docs/domain-dictionary-example.json")
             payload = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["source_type"], "pdf")
@@ -144,6 +146,7 @@ class KindleMasterEntrypointTests(unittest.TestCase):
             "coverage": True,
             "playwright": True,
             "waitress": True,
+            "sklearn": True,
             "ocrmypdf": False,
         }
 
@@ -357,6 +360,108 @@ class KindleMasterEntrypointTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         validate_mock.assert_called_once_with(["a.epub", "b.epub"], reports_dir="reports/validators")
         print_mock.assert_called_once_with(payload)
+
+    def test_ml_dataset_command_passes_feedback_logs_to_builder(self) -> None:
+        payload = {"status": "insufficient_data", "feedback_route_example_count": 1}
+        with patch("scripts.build_ml_datasets.build_ml_datasets", return_value=payload) as dataset_mock:
+            with patch.object(kindlemaster, "_print_json") as print_mock:
+                with patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "kindlemaster.py",
+                        "ml",
+                        "dataset",
+                        "--manifest",
+                        "manifest.json",
+                        "--labels",
+                        "labels.json",
+                        "--reports-root",
+                        "reports",
+                        "--output-dir",
+                        "reports/ml/datasets",
+                        "--feedback-log",
+                        "reports/ml/feedback/conversion_feedback.jsonl",
+                    ],
+                ):
+                    exit_code = kindlemaster.main()
+
+        self.assertEqual(exit_code, 0)
+        dataset_mock.assert_called_once_with(
+            manifest_path="manifest.json",
+            labels_path="labels.json",
+            reports_root="reports",
+            output_dir="reports/ml/datasets",
+            feedback_log_paths=["reports/ml/feedback/conversion_feedback.jsonl"],
+        )
+        print_mock.assert_called_once_with(payload)
+
+    def test_ml_feedback_command_logs_and_exports_without_training(self) -> None:
+        logged = {"status": "logged", "record_id": "fb_1"}
+        exported = {"status": "exported", "route_example_count": 1}
+        with patch("ml_feedback.append_conversion_feedback_from_report", return_value=logged) as log_mock:
+            with patch("ml_feedback.export_feedback_datasets", return_value=exported) as export_mock:
+                with patch.object(kindlemaster, "_print_json") as print_mock:
+                    with patch.object(
+                        sys,
+                        "argv",
+                        [
+                            "kindlemaster.py",
+                            "ml",
+                            "feedback",
+                            "--report-json",
+                            "reports/conversion.json",
+                            "--log",
+                            "reports/ml/feedback/conversion_feedback.jsonl",
+                            "--source",
+                            "inputs/source.pdf",
+                            "--output",
+                            "output/source.epub",
+                            "--case-id",
+                            "case-1",
+                            "--feedback-status",
+                            "accepted",
+                            "--quality-label",
+                            "usable",
+                            "--quality-score",
+                            "4",
+                            "--route-label",
+                            "book_reflow",
+                            "--issue-tag",
+                            "toc",
+                            "--notes",
+                            "Looks usable.",
+                            "--reviewer",
+                            "operator",
+                            "--export-dir",
+                            "reports/ml/feedback",
+                        ],
+                    ):
+                        exit_code = kindlemaster.main()
+
+        self.assertEqual(exit_code, 0)
+        log_mock.assert_called_once_with(
+            report_path="reports/conversion.json",
+            log_path="reports/ml/feedback/conversion_feedback.jsonl",
+            source_path="inputs/source.pdf",
+            output_path="output/source.epub",
+            case_id="case-1",
+            feedback_status="accepted",
+            quality_label="usable",
+            quality_score="4",
+            route_label="book_reflow",
+            issue_tags=["toc"],
+            notes="Looks usable.",
+            reviewer="operator",
+        )
+        export_mock.assert_called_once_with(
+            log_paths=["reports/ml/feedback/conversion_feedback.jsonl"],
+            output_dir="reports/ml/feedback",
+        )
+        payload = print_mock.call_args.args[0]
+        self.assertEqual(payload["status"], "completed")
+        self.assertFalse(payload["online_learning"])
+        self.assertEqual(payload["actions"], ["log", "export"])
 
     def test_audit_command_builds_release_audit_invocation(self) -> None:
         with patch("kindlemaster.subprocess.run", return_value=SimpleNamespace(returncode=0)) as run_mock:

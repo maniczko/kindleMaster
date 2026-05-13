@@ -1,0 +1,32 @@
+{
+  "model_version": "decision-ranker-v1-bootstrap",
+  "model_type": "linear_review_priority",
+  "trained_at": "2026-05-11T00:00:00Z",
+  "training_status": "bootstrap_seed_until_heading_reference_examples_are_sufficient",
+  "feature_order": [
+    "review_flag",
+    "low_confidence",
+    "unresolved",
+    "broken_or_missing",
+    "heading_structural",
+    "reference_link"
+  ],
+  "intercept": 0.12,
+  "weights": {
+    "review_flag": 0.22,
+    "low_confidence": 0.28,
+    "unresolved": 0.25,
+    "broken_or_missing": 0.25,
+    "heading_structural": 0.12,
+    "reference_link": 0.18
+  },
+  "thresholds": {
+    "priority_1": 0.78,
+    "priority_2": 0.48
+  },
+  "metrics": {
+    "status": "insufficient_data",
+    "example_count": 0,
+    "note": "Run python kindlemaster.py ml dataset, then train a replacement when labeled review examples are available."
+  }
+}

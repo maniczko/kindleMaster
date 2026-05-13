@@ -81,7 +81,7 @@ The Sprint 4 React shell is available at `http://127.0.0.1:5001/app` after `npm 
 
 ## Core Commands
 
-The supported first-class command set is `bootstrap`, `doctor`, `prepare-reference-inputs`, `serve`, `convert`, `validate`, `smoke`, `corpus`, `status`, `test`, `audit`, and `workflow`.
+The supported first-class command set is `bootstrap`, `doctor`, `prepare-reference-inputs`, `serve`, `convert`, `validate`, `smoke`, `corpus`, `status`, `ml`, `test`, `audit`, and `workflow`.
 
 ```powershell
 python kindlemaster.py doctor
@@ -91,6 +91,9 @@ python kindlemaster.py smoke --mode micro
 python kindlemaster.py smoke --mode quick
 python kindlemaster.py corpus
 python kindlemaster.py status
+python kindlemaster.py ml dataset
+python kindlemaster.py ml train
+python kindlemaster.py ml evaluate
 python kindlemaster.py test --suite corpus
 python kindlemaster.py validate path\to\file.epub
 python kindlemaster.py audit path\to\file.epub

@@ -37,13 +37,16 @@ from kindle_semantic_cleanup import (
     _looks_like_reference_section_title,
     _normalize_text,
     _rewrite_navigation,
+    _serialize_soup_document,
     _slugify,
     _snapshot_package_metadata,
     _should_include_in_toc,
+    _strip_english_output_polish_structural_dom_artifacts,
     _training_book_key,
     _title_fragments_match,
     finalize_epub_for_kindle,
 )
+from ml_review_ranker import rank_manual_review_queue
 from premium_tools import run_epubcheck
 
 INLINE_HEADING_PREFIXES = (
@@ -394,6 +397,7 @@ def repair_epub_headings_and_toc(
     author_hint: str = "",
     language_hint: str = "",
     publication_profile: str | None = None,
+    already_semantic_cleaned: bool = False,
 ) -> HeadingRepairResult:
     if not epub_bytes:
         empty_epubcheck = {"status": "unavailable", "tool": "epubcheck", "messages": []}
@@ -438,22 +442,44 @@ def repair_epub_headings_and_toc(
         author_hint=author_hint,
         language_hint=language_hint,
     )
-    repaired_epub, phase_report = finalize_epub_for_kindle(
-        epub_bytes,
-        title=defaults["title"],
-        author=defaults["author"],
-        language=defaults["language"],
-        publication_profile=publication_profile,
-        return_report=True,
-        report_mode="rich",
-    )
     source_outline_entries = _extract_existing_toc_entries_from_epub(epub_bytes)
+    if already_semantic_cleaned:
+        repaired_epub = epub_bytes
+        phase_report: dict[str, Any] = {}
+    else:
+        repaired_epub, phase_report = finalize_epub_for_kindle(
+            epub_bytes,
+            title=defaults["title"],
+            author=defaults["author"],
+            language=defaults["language"],
+            publication_profile=publication_profile,
+            return_report=True,
+            report_mode="rich",
+        )
     repaired_epub, after_scan, raw_toc_map, nav_summary, structural_phase = _normalize_headings_and_rebuild_navigation(
         repaired_epub,
         publication_profile=publication_profile,
         preferred_outline_entries=source_outline_entries,
+        language_hint=defaults["language"],
     )
     epubcheck = run_epubcheck(repaired_epub)
+
+    if already_semantic_cleaned:
+        heading_decisions = _derive_heading_decisions_from_scan(
+            before_scan=before_scan,
+            after_scan=after_scan,
+        )
+        manual_review_queue = _build_lightweight_manual_review_queue(
+            toc_map=raw_toc_map,
+            after_scan=after_scan,
+            structural_phase=structural_phase,
+            publication_profile=publication_profile,
+        )
+        phase_report = _build_lightweight_phase_report(
+            source_outline_entries=source_outline_entries,
+            heading_decisions=heading_decisions,
+            manual_review_queue=manual_review_queue,
+        )
 
     inventory_phase = ((phase_report.get("phases") or {}).get("inventory") or {})
     heading_phase = ((phase_report.get("phases") or {}).get("heading_recovery") or {})
@@ -481,6 +507,7 @@ def repair_epub_headings_and_toc(
         toc_map=raw_toc_map,
         structural_phase=structural_phase,
     )
+    manual_review_queue = rank_manual_review_queue(manual_review_queue, source="heading")
     toc_mapping = _build_heading_toc_mapping(
         toc_phase=toc_phase,
         heading_inventory=heading_inventory,
@@ -881,6 +908,7 @@ def _normalize_headings_and_rebuild_navigation(
     *,
     publication_profile: str | None = None,
     preferred_outline_entries: list[dict[str, Any]] | None = None,
+    language_hint: str = "",
 ) -> tuple[bytes, dict[str, list[dict[str, Any]]], list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
     with tempfile.TemporaryDirectory() as temp_dir:
         root_dir = Path(temp_dir)
@@ -888,6 +916,12 @@ def _normalize_headings_and_rebuild_navigation(
         opf_path = _locate_opf(root_dir)
         chapter_paths = _get_spine_xhtml_paths(opf_path)
         package_outline_entries = _extract_existing_toc_entries_from_package(opf_path, chapter_paths)
+        metadata = _snapshot_package_metadata(opf_path)
+        resolved_language = (
+            _normalize_text(str(metadata.get("language", "") or ""))
+            or _normalize_text(language_hint)
+            or "en"
+        )
 
         after_scan: dict[str, list[dict[str, Any]]] = {}
         empty_reference_files: set[str] = set()
@@ -895,6 +929,7 @@ def _normalize_headings_and_rebuild_navigation(
             after_scan[chapter_path.name] = _ensure_heading_ids_and_scan(
                 chapter_path,
                 publication_profile=publication_profile,
+                language_hint=resolved_language,
             )
             if _chapter_is_empty_reference_section(chapter_path, after_scan[chapter_path.name]):
                 empty_reference_files.add(chapter_path.name)
@@ -910,13 +945,12 @@ def _normalize_headings_and_rebuild_navigation(
             after_scan=after_scan,
             publication_profile=publication_profile,
         )
-        metadata = _snapshot_package_metadata(opf_path)
         _rewrite_navigation(
             root_dir,
             opf_path,
             toc_entries=toc_entries,
             title=_normalize_text(str(metadata.get("title", "") or "")) or "Publication",
-            language=_normalize_text(str(metadata.get("language", "") or "")) or "en",
+            language=resolved_language,
         )
         _strip_missing_landmarks(opf_path.parent / "nav.xhtml", package_dir=opf_path.parent)
         toc_map = _build_toc_map(toc_entries, chapter_paths=chapter_paths, package_dir=opf_path.parent)
@@ -981,6 +1015,7 @@ def _ensure_heading_ids_and_scan(
     chapter_path: Path,
     *,
     publication_profile: str | None = None,
+    language_hint: str = "",
 ) -> list[dict[str, Any]]:
     original = chapter_path.read_text(encoding="utf-8")
     soup = BeautifulSoup(original, "xml")
@@ -991,6 +1026,15 @@ def _ensure_heading_ids_and_scan(
     changed = _demote_heading_noise(soup, publication_profile=publication_profile) or changed
     if _is_magazine_publication_profile(publication_profile):
         changed = _clean_magazine_heading_text_nodes(soup) or changed
+    if (language_hint or "").strip().lower().startswith("en"):
+        if changed:
+            chapter_path.write_text(_serialize_soup_document(soup), encoding="utf-8")
+            original = chapter_path.read_text(encoding="utf-8")
+            soup = BeautifulSoup(original, "xml")
+        changed = _strip_english_output_polish_structural_dom_artifacts(chapter_path, language=language_hint) or changed
+        if changed:
+            original = chapter_path.read_text(encoding="utf-8")
+            soup = BeautifulSoup(original, "xml")
     changed = _ensure_primary_heading(soup) or changed
     id_counts = Counter(
         _normalize_text(str(node.get("id", "") or ""))
@@ -2547,6 +2591,201 @@ def _build_heading_inventory(
             str(item.get("location", "") or ""),
         ),
     )
+
+
+def _build_lightweight_phase_report(
+    *,
+    source_outline_entries: list[dict[str, Any]],
+    heading_decisions: list[dict[str, Any]],
+    manual_review_queue: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "status": "completed",
+        "summary": {
+            "mode": "lightweight-heading-repair",
+            "manual_review_count": len(manual_review_queue),
+        },
+        "phases": {
+            "inventory": {
+                "navigation": {"entry_count": len(source_outline_entries)},
+            },
+            "heading_recovery": {
+                "status": "completed",
+                "decisions": heading_decisions,
+            },
+        },
+        "gates": {
+            "A": {
+                "status": "pass",
+                "blockers": [],
+                "warnings": [
+                    "Skipped duplicate semantic cleanup because the input EPUB was already semantic-cleaned upstream."
+                ],
+            },
+            "B": {
+                "status": "pass",
+                "blockers": [],
+                "warnings": [],
+            },
+        },
+        "manual_review_queue": manual_review_queue,
+    }
+
+
+def _derive_heading_decisions_from_scan(
+    *,
+    before_scan: dict[str, list[dict[str, Any]]],
+    after_scan: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    before_remaining = {file_name: list(items) for file_name, items in before_scan.items()}
+    after_remaining = {file_name: list(items) for file_name, items in after_scan.items()}
+    decisions: list[dict[str, Any]] = []
+
+    for file_name in sorted(set(before_remaining) | set(after_remaining)):
+        remaining_after = after_remaining.setdefault(file_name, [])
+        for candidate in before_remaining.get(file_name, []):
+            matched = _pop_matching_candidate(remaining_after, candidate)
+            if matched is None:
+                if str(candidate.get("element", "")).startswith("h"):
+                    decisions.append(
+                        {
+                            "file": file_name,
+                            "before": candidate,
+                            "after": {},
+                            "status": "removed",
+                            "reason": "heading-demoted-during-runtime-repair",
+                            "confidence": 0.78,
+                        }
+                    )
+                continue
+
+            status, reason, confidence = _lightweight_heading_decision_payload(
+                before_candidate=candidate,
+                after_candidate=matched,
+            )
+            decisions.append(
+                {
+                    "file": file_name,
+                    "before": candidate,
+                    "after": matched,
+                    "status": status,
+                    "reason": reason,
+                    "confidence": confidence,
+                }
+            )
+
+    for file_name, remaining in after_remaining.items():
+        for candidate in remaining:
+            if not str(candidate.get("element", "")).startswith("h"):
+                continue
+            decisions.append(
+                {
+                    "file": file_name,
+                    "before": {},
+                    "after": candidate,
+                    "status": "added",
+                    "reason": "reconstructed-heading",
+                    "confidence": 0.72,
+                }
+            )
+
+    return sorted(
+        decisions,
+        key=lambda item: (
+            str(item.get("file", "") or ""),
+            int(((item.get("before") or {}).get("order") or (item.get("after") or {}).get("order") or 0)),
+            str(((item.get("before") or {}).get("location") or (item.get("after") or {}).get("location") or "")),
+        ),
+    )
+
+
+def _lightweight_heading_decision_payload(
+    *,
+    before_candidate: dict[str, Any],
+    after_candidate: dict[str, Any],
+) -> tuple[str, str, float]:
+    before_is_heading = str(before_candidate.get("element", "")).startswith("h")
+    after_is_heading = str(after_candidate.get("element", "")).startswith("h")
+    if not after_is_heading:
+        return "kept", "validated-heading", 0.99
+    if not before_is_heading:
+        return "promoted", "runtime-pseudo-heading-promoted", 0.76
+    if before_candidate.get("level") != after_candidate.get("level"):
+        return "releveled", "runtime-heading-level-adjusted", 0.82
+    return "kept", "validated-heading", 0.99
+
+
+def _build_lightweight_manual_review_queue(
+    *,
+    toc_map: list[dict[str, Any]],
+    after_scan: dict[str, list[dict[str, Any]]],
+    structural_phase: dict[str, Any],
+    publication_profile: str | None = None,
+) -> list[dict[str, Any]]:
+    review_items: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+
+    def add_item(*, phase: str, file_name: str, reason: str, before: str = "", after: str = "", confidence: float = 0.6) -> None:
+        key = (
+            _normalize_text(phase),
+            _normalize_text(file_name),
+            _normalize_text(reason),
+            _normalize_text(after or before),
+        )
+        if key in seen:
+            return
+        seen.add(key)
+        review_items.append(
+            {
+                "phase": phase,
+                "file": file_name,
+                "reason": reason,
+                "before": before,
+                "after": after,
+                "confidence": round(confidence, 4),
+            }
+        )
+
+    for entry in toc_map:
+        file_name = _normalize_text(str(entry.get("file", "") or entry.get("target_file", "") or ""))
+        label = _normalize_text(str(entry.get("label", "") or ""))
+        heading_text = _normalize_text(str(entry.get("heading_text", "") or ""))
+        for issue in entry.get("issues", []) or []:
+            add_item(
+                phase="toc_rebuild",
+                file_name=file_name,
+                reason=_normalize_text(str(issue or "")),
+                before=label,
+                after=heading_text,
+                confidence=0.6,
+            )
+
+    for issue in structural_phase.get("broken_internal_links", []) or []:
+        if not isinstance(issue, dict):
+            continue
+        add_item(
+            phase="structural_integrity",
+            file_name=_normalize_text(str(issue.get("file", "") or "")),
+            reason=_normalize_text(str(issue.get("reason", "") or "broken-internal-link")),
+            before=_normalize_text(str(issue.get("href", "") or "")),
+            confidence=0.5,
+        )
+
+    for file_name, items in after_scan.items():
+        for item in items:
+            text = _normalize_text(str(item.get("text", "") or ""))
+            if not text or not _is_suspicious_final_heading_text(text, publication_profile=publication_profile):
+                continue
+            add_item(
+                phase="heading_recovery",
+                file_name=file_name,
+                reason="suspicious-final-heading",
+                before=text,
+                after=text,
+                confidence=0.58,
+            )
+
+    return review_items
 
 
 def _pop_matching_candidate(candidates: list[dict[str, Any]], payload: dict[str, Any]) -> dict[str, Any] | None:

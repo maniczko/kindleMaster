@@ -151,6 +151,84 @@ class EpubQualityRecoveryTests(unittest.TestCase):
         self.assertIn("toc_non_content_entry", codes)
         self.assertIn("kindle_ready_blocked_by_quality", codes)
 
+    def test_premium_scoring_blocks_polish_structural_labels_in_english_epub(self):
+        opf_source = """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">english-magazine-id</dc:identifier>
+    <dc:title>Global Projects Review</dc:title>
+    <dc:language>en</dc:language>
+    <dc:creator>Editorial Team</dc:creator>
+    <dc:publisher>Project Press</dc:publisher>
+  </metadata>
+  <manifest>
+    <item id="chapter_1" href="chapter_001.xhtml" media-type="application/xhtml+xml"/>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="chapter_1"/>
+  </spine>
+</package>
+"""
+        chapter_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Co to jest</title></head>
+  <body>
+    <h1>Co to jest</h1>
+    <p class="kicker">Przykład</p>
+    <p>This English article has enough clean prose to avoid relying on technical validity alone.</p>
+  </body>
+</html>
+"""
+        nav_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+  <body><nav epub:type="toc"><ol><li><a href="chapter_001.xhtml">Jak działa</a></li></ol></nav></body>
+</html>
+"""
+        toc_source = """<?xml version="1.0" encoding="utf-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><head><meta name="dtb:uid" content="english-magazine-id"/></head><docTitle><text>Global Projects Review</text></docTitle><navMap/></ncx>
+"""
+        container_source = """<?xml version="1.0" encoding="utf-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="EPUB/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>
+"""
+        epub_bytes = self._build_epub_bytes(
+            {
+                "mimetype": "application/epub+zip",
+                "META-INF/container.xml": container_source,
+                "EPUB/content.opf": opf_source,
+                "EPUB/chapter_001.xhtml": chapter_source,
+                "EPUB/nav.xhtml": nav_source,
+                "EPUB/toc.ncx": toc_source,
+            }
+        )
+
+        payload = score_epub_premium_quality(epub_bytes, epubcheck={"status": "passed", "messages": []})
+        codes = [issue["code"] for issue in payload["issues"]]
+
+        self.assertIn("language_label_contamination", codes)
+        self.assertFalse(payload["kindle_ready"])
+        self.assertGreater(payload["metrics"]["language_label_contamination"]["hit_count"], 2)
+        self.assertIn("Co to jest", payload["metrics"]["language_label_contamination"]["labels"])
+
+        polish_epub_bytes = self._build_epub_bytes(
+            {
+                "mimetype": "application/epub+zip",
+                "META-INF/container.xml": container_source,
+                "EPUB/content.opf": opf_source.replace("<dc:language>en</dc:language>", "<dc:language>pl</dc:language>"),
+                "EPUB/chapter_001.xhtml": chapter_source,
+                "EPUB/nav.xhtml": nav_source,
+                "EPUB/toc.ncx": toc_source,
+            }
+        )
+        polish_payload = score_epub_premium_quality(polish_epub_bytes, epubcheck={"status": "passed", "messages": []})
+        polish_codes = [issue["code"] for issue in polish_payload["issues"]]
+
+        self.assertNotIn("language_label_contamination", polish_codes)
+        self.assertEqual(polish_payload["metrics"]["language_label_contamination"]["hit_count"], 0)
+
     def test_recovery_pipeline_writes_reports_and_final_epub(self):
         opf_source = """<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
@@ -454,6 +532,136 @@ class EpubQualityRecoveryTests(unittest.TestCase):
                     )
 
             self.assertIn(result["gates"]["C"]["status"], {"pass", "pass_with_review"})
+
+    def test_recovery_pipeline_rejects_worse_recovered_epub_quality_selection(self):
+        opf_source = """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">quality-selection-id</dc:identifier>
+    <dc:title>Quality Selection Sample</dc:title>
+    <dc:language>en</dc:language>
+    <dc:creator>KindleMaster QA</dc:creator>
+    <dc:publisher>KindleMaster</dc:publisher>
+    <meta property="dcterms:modified">2026-01-01T00:00:00Z</meta>
+  </metadata>
+  <manifest>
+    <item id="chapter_1" href="chapter_001.xhtml" media-type="application/xhtml+xml"/>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="chapter_1"/>
+  </spine>
+</package>
+"""
+        clean_chapter = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Introduction</title></head>
+<body><h1>Introduction</h1><p>This chapter has clean text and should remain the selected EPUB when recovery regresses.</p></body></html>
+"""
+        nav_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body><nav epub:type="toc"><ol><li><a href="chapter_001.xhtml">Introduction</a></li></ol></nav></body></html>
+"""
+        toc_source = """<?xml version="1.0" encoding="utf-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><head><meta name="dtb:uid" content="quality-selection-id"/></head><docTitle><text>Quality Selection Sample</text></docTitle><navMap/></ncx>
+"""
+        container_source = """<?xml version="1.0" encoding="utf-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="EPUB/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>
+"""
+        clean_epub = self._build_epub_bytes(
+            {
+                "mimetype": "application/epub+zip",
+                "META-INF/container.xml": container_source,
+                "EPUB/content.opf": opf_source,
+                "EPUB/chapter_001.xhtml": clean_chapter,
+                "EPUB/nav.xhtml": nav_source,
+                "EPUB/toc.ncx": toc_source,
+            }
+        )
+        worse_chapter = clean_chapter.replace("Introduction", "Material sponsorowany - R4").replace(
+            "clean text",
+            "worse-marker clean text",
+        )
+        worse_epub = self._build_epub_bytes(
+            {
+                "mimetype": "application/epub+zip",
+                "META-INF/container.xml": container_source,
+                "EPUB/content.opf": opf_source,
+                "EPUB/chapter_001.xhtml": worse_chapter,
+                "EPUB/nav.xhtml": nav_source.replace("Introduction", "Material sponsorowany - R4"),
+                "EPUB/toc.ncx": toc_source,
+            }
+        )
+
+        def scoring(epub_bytes, *, epubcheck=None):
+            del epubcheck
+            try:
+                with zipfile.ZipFile(io.BytesIO(epub_bytes), "r") as archive:
+                    has_worse_marker = any(b"worse-marker" in archive.read(name) for name in archive.namelist())
+            except Exception:
+                has_worse_marker = False
+            if has_worse_marker:
+                return {
+                    "status": "failed",
+                    "technical_valid": True,
+                    "kindle_ready": False,
+                    "premium_ready": False,
+                    "premium_score": 7.0,
+                    "release_verdict": "release_blocked",
+                    "issue_counts": {"blocker": 1},
+                    "issues": [{"severity": "blocker", "code": "magazine_non_content_chapter"}],
+                }
+            return {
+                "status": "passed_with_warnings",
+                "technical_valid": True,
+                "kindle_ready": True,
+                "premium_ready": False,
+                "premium_score": 9.1,
+                "release_verdict": "ready_with_review",
+                "issue_counts": {"review": 1},
+                "issues": [{"severity": "review", "code": "toc_lead_used_as_title"}],
+            }
+
+        with TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir) / "input.epub"
+            output_dir = Path(temp_dir) / "output"
+            reports_dir = Path(temp_dir) / "reports"
+            source_path.write_bytes(clean_epub)
+
+            passed_epubcheck = {"status": "passed", "tool": "epubcheck", "messages": []}
+            with patch("epub_quality_recovery.run_epubcheck", return_value=passed_epubcheck):
+                with patch("epub_quality_selection.score_epub_premium_quality", side_effect=scoring):
+                    with patch("epub_quality_recovery.score_epub_premium_quality", side_effect=scoring):
+                        with patch(
+                            "epub_quality_recovery._run_recovery_phases",
+                            return_value=(
+                                worse_epub,
+                                {"summary": {"removed_count": 1, "recovered_count": 1}, "manual_review": []},
+                                {"entries": [], "warnings": [], "toc_nav_count": 1},
+                                {"status": "passed"},
+                                passed_epubcheck,
+                            ),
+                        ):
+                            result = run_epub_publishing_quality_recovery(
+                                source_path,
+                                output_dir=output_dir,
+                                reports_dir=reports_dir,
+                                expected_language="en",
+                                strict_premium=True,
+                            )
+
+            self.assertEqual(result["quality_selection"]["status"], "rejected")
+            self.assertEqual(result["quality_selection"]["selected_stage"], "pre_recovery")
+            self.assertEqual(result["quality_selection"]["rejected_stage"], "recovered")
+            self.assertIn("recovery_rejected_due_to_quality_regression", result["quality_selection"]["reason_codes"])
+            self.assertLess(result["quality_selection"]["candidate_score"], result["quality_selection"]["baseline_score"])
+            self.assertTrue((reports_dir / "quality_selection.json").exists())
+            final_bytes = (output_dir / "final.epub").read_bytes()
+            with zipfile.ZipFile(io.BytesIO(final_bytes), "r") as archive:
+                final_text = b"\n".join(archive.read(name) for name in archive.namelist())
+            self.assertNotIn(b"worse-marker", final_text)
+            self.assertNotIn(b"Material sponsorowany - R4", final_text)
 
 
 if __name__ == "__main__":

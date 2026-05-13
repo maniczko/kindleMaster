@@ -49,6 +49,16 @@ GENERIC_TOC_PATTERNS = NON_CONTENT_LABEL_PATTERNS + (
     r"\bstate\s+\d+\b",
     r"\brank\s*=",
 )
+LANGUAGE_LABEL_CONTAMINATION_THRESHOLD = 2
+POLISH_STRUCTURAL_LABEL_PATTERNS = (
+    ("Co to jest", r"\bco\s+to\s+jest\b"),
+    ("Jak działa", r"\bjak\s+dzia[łl]a\b"),
+    ("Przykład", r"\bprzyk[łl]ad\b"),
+    ("Definicje", r"\bdefinicje\b"),
+    ("Reklama", r"\breklama\b"),
+    ("Galeria", r"\bgaleria\b"),
+    ("Materiał sponsorowany", r"\bmateria[łl]\s+sponsorowany\b"),
+)
 UNSUPPORTED_MEDIA_TYPES = (
     "text/javascript",
     "application/javascript",
@@ -152,6 +162,23 @@ def score_epub_premium_quality(
                 "Title looks like a single article heading while the EPUB contains a multi-article issue.",
                 "metadata",
                 "Use the magazine/issue title when the EPUB represents a full issue.",
+            )
+        )
+
+    language_label_contamination = _detect_language_label_contamination(
+        language=language,
+        documents=documents,
+        toc_entries=toc_entries,
+    )
+    if language_label_contamination["hit_count"] > LANGUAGE_LABEL_CONTAMINATION_THRESHOLD:
+        labels = ", ".join(language_label_contamination["labels"][:5])
+        issues.append(
+            _issue(
+                "blocker",
+                "language_label_contamination",
+                f"English EPUB contains Polish structural labels above threshold: {labels}.",
+                "language",
+                "Regenerate magazine structural labels for language=en and verify the EPUB language metadata.",
             )
         )
 
@@ -318,6 +345,7 @@ def score_epub_premium_quality(
         "spine_document_count": len(documents),
         "non_content_chapter_count": len(non_content_docs),
         "long_chapter_without_heading_count": len(long_without_heading),
+        "language_label_contamination": language_label_contamination,
         "unsupported_media_count": len(unsupported_media),
         "text_artifacts": text_artifacts,
     }
@@ -479,6 +507,59 @@ def _read_nav_entries(archive: zipfile.ZipFile, path: str) -> list[dict[str, str
     return entries
 
 
+def _detect_language_label_contamination(
+    *,
+    language: str,
+    documents: list[_SpineDocument],
+    toc_entries: list[dict[str, str]],
+) -> dict[str, Any]:
+    counter: Counter[str] = Counter()
+    samples: list[dict[str, str]] = []
+    result = {
+        "language": language,
+        "threshold": LANGUAGE_LABEL_CONTAMINATION_THRESHOLD,
+        "hit_count": 0,
+        "labels": [],
+        "samples": samples,
+    }
+    if not _is_english_language(language):
+        return result
+
+    contexts: list[tuple[str, str, str]] = []
+    for entry in toc_entries:
+        contexts.append(("toc", entry.get("label", ""), ""))
+    for doc in documents:
+        contexts.append(("heading", doc.title, doc.file))
+        contexts.append(("reader_text", doc.text, doc.file))
+
+    for source, text, file_name in contexts:
+        normalized = _normalize_label(text)
+        if not normalized:
+            continue
+        for label, pattern in POLISH_STRUCTURAL_LABEL_PATTERNS:
+            hit_count = len(re.findall(pattern, normalized, flags=re.IGNORECASE))
+            if not hit_count:
+                continue
+            counter[label] += hit_count
+            if len(samples) < 8:
+                samples.append(
+                    {
+                        "label": label,
+                        "source": source,
+                        "file": file_name,
+                        "sample": text[:120],
+                    }
+                )
+
+    result["hit_count"] = sum(counter.values())
+    result["labels"] = [label for label, _count in counter.most_common()]
+    return result
+
+
+def _is_english_language(language: str) -> bool:
+    return (language or "").strip().lower().startswith("en")
+
+
 def _metadata_issue(code: str, message: str) -> dict[str, Any]:
     return _issue("blocker", code, message, "metadata", "Fix required reader-facing metadata before release.")
 
@@ -544,6 +625,8 @@ def _metadata_score(*, metadata: dict[str, str], issues: list[dict[str, Any]]) -
         score -= 3.0
     if "suspicious_metadata_author" in codes:
         score -= 5.0
+    if "language_label_contamination" in codes:
+        score -= 2.0
     if "metadata_title_may_be_article_heading" in codes:
         score -= 1.5
     if not metadata.get("publisher"):

@@ -940,6 +940,18 @@
       const epubcheckDetailState = qualityState && qualityState.epubcheck_detail && typeof qualityState.epubcheck_detail === "object" ? qualityState.epubcheck_detail : null;
       const metadataSummaryState = qualityState && qualityState.metadata_summary && typeof qualityState.metadata_summary === "object" ? qualityState.metadata_summary : null;
       const qualityCompletenessState = qualityState && qualityState.quality_completeness && typeof qualityState.quality_completeness === "object" ? qualityState.quality_completeness : null;
+      const premiumScoringState = qualityState && qualityState.premium_scoring && typeof qualityState.premium_scoring === "object" ? qualityState.premium_scoring : null;
+      const qualitySelectionState = qualityState && qualityState.quality_selection && typeof qualityState.quality_selection === "object" ? qualityState.quality_selection : null;
+      const kindleDeliveryState = qualityState && qualityState.kindle_delivery && typeof qualityState.kindle_delivery === "object" ? qualityState.kindle_delivery : null;
+      const aiVerifierState = qualityState && qualityState.ai_verifier && typeof qualityState.ai_verifier === "object"
+        ? qualityState.ai_verifier
+        : qualityState && qualityState.ai_quality_verification && typeof qualityState.ai_quality_verification === "object"
+          ? qualityState.ai_quality_verification
+          : qualityState && qualityState.ai_verification && typeof qualityState.ai_verification === "object"
+            ? qualityState.ai_verification
+            : qualityState && qualityState.ai_verifier_status
+              ? { status: qualityState.ai_verifier_status }
+              : null;
       const issueGroupBlockers = issueGroupsState && Array.isArray(issueGroupsState.blockers)
         ? issueGroupsState.blockers
         : issueGroupsState && issueGroupsState.blockers && typeof issueGroupsState.blockers === "object" && Array.isArray(issueGroupsState.blockers.items)
@@ -1024,6 +1036,10 @@
         tocPreview: tocPreviewState || (conversion && conversion.toc_preview) || null,
         epubcheckDetail: epubcheckDetailState || (conversion && conversion.epubcheck_detail) || null,
         metadataSummary: metadataSummaryState || (conversion && conversion.metadata_summary) || null,
+        premiumScoring: premiumScoringState || (conversion && conversion.premium_scoring) || null,
+        qualitySelection: qualitySelectionState || (conversion && conversion.quality_selection) || null,
+        kindleDelivery: kindleDeliveryState || (conversion && conversion.kindle_delivery) || null,
+        aiVerifier: aiVerifierState || (conversion && (conversion.ai_verifier || conversion.ai_quality_verification || conversion.ai_verification)) || null,
         metadataHealth: normalizeQualityHealth(metadataHealthState || (conversion && conversion.metadata_health), "Metadane"),
         linkHealth: normalizeQualityHealth(linkHealthState || (conversion && conversion.link_health), "Linki"),
         visibleJunk: normalizeQualityHealth(visibleJunkState || (conversion && conversion.visible_junk), "Widoczne artefakty"),
@@ -1092,6 +1108,10 @@
         tocPreview: normalized.tocPreview,
         epubcheckDetail: normalized.epubcheckDetail,
         metadataSummary: normalized.metadataSummary,
+        premiumScoring: normalized.premiumScoring,
+        qualitySelection: normalized.qualitySelection,
+        kindleDelivery: normalized.kindleDelivery,
+        aiVerifier: normalized.aiVerifier,
         metadataHealth: normalized.metadataHealth,
         linkHealth: normalized.linkHealth,
         visibleJunk: normalized.visibleJunk,

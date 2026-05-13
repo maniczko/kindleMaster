@@ -544,6 +544,8 @@ class ConversionConfig:
     enable_external_ocr: bool = True
     enable_ml_fallback: bool = True
     enable_epubcheck: bool = True
+    route_model_mode: str = "shadow"
+    quality_gate_mode: str = "draft"
     
     # Metadata
     language: str = "pl"
@@ -2598,7 +2600,11 @@ def convert_pdf_to_epub_with_report(
             publication_to_content,
         )
 
-        analysis = analyze_publication(pdf_path, preferred_profile=config.profile)
+        analysis = analyze_publication(
+            pdf_path,
+            preferred_profile=config.profile,
+            route_model_mode=config.route_model_mode,
+        )
         preserve_layout = config.profile == "preserve-layout" or analysis.profile == "fixed_layout_fallback"
 
         if preserve_layout:
@@ -2772,8 +2778,12 @@ def convert_docx_to_epub_with_report(
     from docx_conversion import analyze_docx, build_docx_publication_document
     from publication_pipeline import finalize_publication_epub, publication_to_content
 
-    analysis = analyze_docx(docx_path)
-    document = build_docx_publication_document(docx_path, language=config.language)
+    analysis = analyze_docx(docx_path, route_model_mode=config.route_model_mode)
+    document = build_docx_publication_document(
+        docx_path,
+        language=config.language,
+        route_model_mode=config.route_model_mode,
+    )
     content = publication_to_content(document)
     # DOCX images are valid inline assets, but they should not be promoted to an automatic cover.
     content["suppress_auto_cover"] = True

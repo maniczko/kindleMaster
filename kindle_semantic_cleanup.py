@@ -362,6 +362,35 @@ KNOWLEDGE_SCHEMA_LABELS = {
     "example": "Przykład",
     "business": "Implikacje biznesowe",
 }
+KNOWLEDGE_TOPIC_LABELS_EN = {
+    "definitions": "Definitions",
+    "process": "Process",
+    "architecture": "Architecture",
+    "dependencies": "System dependencies",
+}
+KNOWLEDGE_SCHEMA_LABELS_EN = {
+    "what": "What it is",
+    "how": "How it works",
+    "example": "Example",
+    "business": "Business implications",
+}
+ENGLISH_OUTPUT_POLISH_STRUCTURAL_LABELS = (
+    "Co to jest",
+    "Jak działa",
+    "Jak dziala",
+    "Przykład",
+    "Przyklad",
+    "Definicje",
+    "Architektura",
+    "Proces",
+    "Implikacje biznesowe",
+    "Zależności systemowe",
+    "Zaleznosci systemowe",
+    "Reklama",
+    "Galeria",
+    "Materiał sponsorowany",
+    "Material sponsorowany",
+)
 KNOWLEDGE_TOPIC_PATTERNS = {
     "definitions": (
         re.compile(r"(?i)\b(?:definicj\w*|pojęci\w*|glosariusz|słownik pojęć|oznacza|jest to|defined as|refers to|means)\b"),
@@ -428,7 +457,7 @@ SPLIT_JOIN_STOPWORDS = {
 }
 MAGAZINE_TOC_LINE_RE = re.compile(r"^(?P<page>\d{1,3})\.\s+(?P<title>.+)$")
 MAGAZINE_SPECIAL_TITLE_RE = re.compile(
-    r"(?i)^(?:galeria|reklama|materia[łl]\s+sponsorowany|material\s+sponsorowany|advertorial)\b"
+    r"(?i)^(?:galeria|gallery|reklama|advertisement|ad|materia[łl]\s+sponsorowany|material\s+sponsorowany|sponsored|sponsored\s+content|advertorial)\b"
 )
 MAGAZINE_PROMO_TEXT_RE = re.compile(
     r"(?i)\b(?:prenumerata|subskrypcja|zam[oó]w|oferta|partner|sponsorowan|reklama|kino na leżakach|kpo|dotacj)\b"
@@ -439,16 +468,29 @@ MAGAZINE_BYLINE_RE = re.compile(
 MAGAZINE_SECTION_SKIP_RE = re.compile(r"(?i)^(?:spis treści|table of contents|contents)$")
 MAGAZINE_FEATURE_SKIP_KEYS = {
     "galeria",
+    "gallery",
     "reklama",
+    "advertisement",
+    "ad",
+    "advertorial",
+    "sponsored",
+    "sponsored content",
     "material sponsorowany",
     "materiał sponsorowany",
     "spis treści",
+    "table of contents",
+    "contents",
 }
 MAGAZINE_EXTRA_TITLE_HINTS = (
     "material sponsorowany",
     "materiał sponsorowany",
     "reklama",
     "galeria",
+    "advertisement",
+    "advertorial",
+    "sponsored",
+    "sponsored content",
+    "gallery",
     "prenumerata",
     "dotacji z kpo",
 )
@@ -1027,6 +1069,21 @@ def _matches_ai_note_label(text: str) -> bool:
     return any(key.endswith(f" - {label}") for label in AI_NOTE_LABEL_KEYS)
 
 
+def _looks_like_inline_ai_note_text(text: str) -> bool:
+    key = _fold_label_key(text)
+    if not key:
+        return False
+    return any(
+        marker in key
+        for marker in (
+            "notatka ai",
+            "wyjasnienia ai",
+            "ai note",
+            "ai learning note",
+        )
+    )
+
+
 def _chapter_text_metrics(chapter_path: Path) -> dict[str, object]:
     soup = BeautifulSoup(chapter_path.read_text(encoding="utf-8"), "xml")
     title_node = soup.find("title")
@@ -1137,6 +1194,25 @@ def _strip_inline_ai_note_blocks(
                 "removed_nodes": removed_nodes,
             }
         )
+
+    if source_language != "pl":
+        for node in list(body.find_all(["p", "li"])):
+            if node.parent is None:
+                continue
+            note_text = _normalize_text(node.get_text(" ", strip=True))
+            if not _looks_like_inline_ai_note_text(note_text):
+                continue
+            node.decompose()
+            removed.append(
+                {
+                    "file": chapter_path.name,
+                    "label": note_text[:120],
+                    "kind": "ai_note_block",
+                    "reason": "removed inline AI note text from clean_reading body",
+                    "confidence": 0.82,
+                    "removed_nodes": 1,
+                }
+            )
 
     if removed:
         chapter_path.write_text(_serialize_soup_document(soup), encoding="utf-8")
@@ -1329,6 +1405,7 @@ def finalize_epub_for_kindle(
                     title=title,
                     author=author,
                     language=language,
+                    publication_profile=publication_profile,
                 )
                 processed[chapter_path] = chapter_result
                 if rich_report_enabled:
@@ -1418,8 +1495,17 @@ def finalize_epub_for_kindle(
             language = _resolve_publication_language(language, samples=raw_language_samples)
             toc_entries = list(package_overrides.get("toc_entries") or toc_entries)
             spine_order = list(package_overrides.get("spine_order") or [])
+            non_linear_spine_files = {
+                str(name)
+                for name in (package_overrides.get("non_linear_spine_files") or [])
+                if str(name)
+            }
             if not spine_order:
-                spine_order = [path.name for path in chapter_list if path.name != "cover.xhtml"]
+                spine_order = [
+                    path.name
+                    for path in chapter_list
+                    if path.name != "cover.xhtml" and path.name not in non_linear_spine_files
+                ]
             excluded_spine_files = {
                 str(item.get("file", ""))
                 for item in content_cleanup_phase.get("removed", [])
@@ -1429,6 +1515,7 @@ def finalize_epub_for_kindle(
             for chapter_path in chapter_list:
                 if chapter_path.name == "cover.xhtml":
                     continue
+                _strip_english_output_polish_structural_dom_artifacts(chapter_path, language=language)
                 _normalize_chapter_dom_ids(chapter_path)
             _strip_unresolved_fragment_links(chapter_list)
             _audit_diagram_presentation(
@@ -1441,6 +1528,7 @@ def finalize_epub_for_kindle(
             toc_entries = _rebuild_toc_entries_from_final_chapters(
                 chapter_list,
                 fallback_entries=toc_entries,
+                exclude_files=non_linear_spine_files,
             )
             metadata_before_update = _snapshot_package_metadata(opf_path) if rich_report_enabled else {}
             _update_opf_metadata(
@@ -1454,7 +1542,12 @@ def finalize_epub_for_kindle(
             )
             _rewrite_navigation(root_dir, opf_path, toc_entries=toc_entries, title=title, language=language)
             _synchronize_xhtml_language(opf_path.parent, language=language)
-            _reorder_opf_spine(opf_path, spine_order, excluded_files=excluded_spine_files)
+            _reorder_opf_spine(
+                opf_path,
+                spine_order,
+                excluded_files=excluded_spine_files,
+                non_linear_files=non_linear_spine_files,
+            )
             metadata_after = _snapshot_package_metadata(opf_path) if rich_report_enabled else {}
             navigation_after = _inventory_navigation_document(opf_path) if rich_report_enabled else {}
             toc_map = (
@@ -2742,6 +2835,7 @@ def _process_chapter(
     title: str,
     author: str,
     language: str,
+    publication_profile: str | None = None,
 ) -> ProcessedChapter:
     soup = BeautifulSoup(chapter_path.read_text(encoding="utf-8"), "xml")
     chapter_title = soup.find("title").get_text(strip=True) if soup.find("title") else ""
@@ -2778,6 +2872,7 @@ def _process_chapter(
     )
     if section_context == "body" and _looks_like_reference_section(logical_blocks, chapter_title=chapter_title):
         section_context = "references"
+    knowledge_enabled = not _is_magazine_publication_profile(publication_profile)
     if section_context != "contents":
         logical_blocks = _split_inline_solution_entries(logical_blocks)
     logical_blocks = _attach_caption_paragraphs_to_following_figures(logical_blocks)
@@ -2787,14 +2882,24 @@ def _process_chapter(
     logical_blocks = _merge_paragraph_blocks(logical_blocks)
     logical_blocks = _prune_redundant_headings(logical_blocks, chapter_title=chapter_title, section_context=section_context)
     logical_blocks = _clean_paragraph_heading_artifacts(logical_blocks, chapter_title=chapter_title)
-    logical_blocks = _expand_semantic_blocks(logical_blocks, section_context=section_context)
+    logical_blocks = _expand_semantic_blocks(
+        logical_blocks,
+        section_context=section_context,
+        enable_knowledge_sections=knowledge_enabled,
+    )
     logical_blocks = _rebuild_reference_sections(
         logical_blocks,
         section_context=section_context,
         chapter_title=chapter_title,
         reference_report=reference_report,
     )
-    logical_blocks = _rebuild_knowledge_structure(logical_blocks, section_context=section_context)
+    logical_blocks = _rebuild_knowledge_structure(
+        logical_blocks,
+        section_context=section_context,
+        language=language,
+        enabled=knowledge_enabled,
+    )
+    logical_blocks = _strip_language_contaminated_structural_labels(logical_blocks, language=language)
     logical_blocks = _enforce_heading_hierarchy(logical_blocks, chapter_title=chapter_title, section_context=section_context)
     logical_blocks = _demote_repetitive_schema_headings(logical_blocks)
     logical_blocks = _classify_intro_metadata(logical_blocks, section_context=section_context)
@@ -3598,7 +3703,7 @@ def _looks_like_table_header_heading(text: str) -> bool:
 def _demote_repetitive_schema_headings(blocks: list[dict]) -> list[dict]:
     schema_heading_keys = {
         key
-        for label in KNOWLEDGE_SCHEMA_LABELS.values()
+        for label in [*KNOWLEDGE_SCHEMA_LABELS.values(), *KNOWLEDGE_SCHEMA_LABELS_EN.values()]
         for key in _matching_text_keys(label)
     }
     heading_counts = Counter(
@@ -5412,6 +5517,44 @@ def _score_pattern_group(patterns: tuple[re.Pattern, ...], text: str) -> int:
     return score
 
 
+def _knowledge_language_key(language: str | None) -> str:
+    normalized = (language or "").strip().lower()
+    return "en" if normalized.startswith("en") else "pl"
+
+
+def _knowledge_topic_labels(language: str | None) -> dict[str, str]:
+    return KNOWLEDGE_TOPIC_LABELS_EN if _knowledge_language_key(language) == "en" else KNOWLEDGE_TOPIC_LABELS
+
+
+def _knowledge_schema_labels(language: str | None) -> dict[str, str]:
+    return KNOWLEDGE_SCHEMA_LABELS_EN if _knowledge_language_key(language) == "en" else KNOWLEDGE_SCHEMA_LABELS
+
+
+def _knowledge_topic_label(topic_key: str, language: str | None) -> str:
+    return _knowledge_topic_labels(language).get(topic_key, "")
+
+
+def _knowledge_schema_label(role: str, language: str | None) -> str:
+    return _knowledge_schema_labels(language).get(role, "")
+
+
+def _all_knowledge_heading_labels() -> list[str]:
+    labels: list[str] = []
+    for mapping in (
+        KNOWLEDGE_TOPIC_LABELS,
+        KNOWLEDGE_TOPIC_LABELS_EN,
+        KNOWLEDGE_SCHEMA_LABELS,
+        KNOWLEDGE_SCHEMA_LABELS_EN,
+    ):
+        labels.extend(mapping.values())
+    return labels
+
+
+def _is_magazine_publication_profile(publication_profile: str | None) -> bool:
+    normalized = (publication_profile or "").strip().lower().replace("-", "_")
+    return normalized == "magazine_reflow"
+
+
 def _infer_knowledge_topic_from_text(text: str) -> str:
     normalized = _normalize_text(text)
     if not normalized:
@@ -5444,13 +5587,19 @@ def _infer_knowledge_topic_from_text(text: str) -> str:
     return best_topic if best_score >= 2 else ""
 
 
-def _heading_matches_knowledge_topic(heading_text: str, topic_key: str) -> bool:
+def _heading_matches_knowledge_topic(heading_text: str, topic_key: str, *, language: str | None = None) -> bool:
     if not heading_text or not topic_key:
         return False
     normalized = _normalize_key(heading_text)
-    label_key = _normalize_key(KNOWLEDGE_TOPIC_LABELS.get(topic_key, ""))
-    if label_key and label_key in normalized:
-        return True
+    labels = {
+        KNOWLEDGE_TOPIC_LABELS.get(topic_key, ""),
+        KNOWLEDGE_TOPIC_LABELS_EN.get(topic_key, ""),
+        _knowledge_topic_label(topic_key, language),
+    }
+    for label in labels:
+        label_key = _normalize_key(label)
+        if label_key and label_key in normalized:
+            return True
     return _infer_knowledge_topic_from_text(heading_text) == topic_key
 
 
@@ -5586,13 +5735,17 @@ def _render_knowledge_section_blocks(
     current_heading_text: str,
     current_heading_level: int,
     active_topic: str,
+    language: str | None = None,
 ) -> tuple[list[dict], str]:
     emitted: list[dict] = []
     base_heading_level = max(1, int(current_heading_level or 1))
     topic_key = block.get("topic_key", "") or ""
-    topic_label = KNOWLEDGE_TOPIC_LABELS.get(topic_key, "")
+    topic_label = _knowledge_topic_label(topic_key, language)
     should_insert_topic_heading = bool(
-        topic_label and base_heading_level < 3 and active_topic != topic_key and not _heading_matches_knowledge_topic(current_heading_text, topic_key)
+        topic_label
+        and base_heading_level < 3
+        and active_topic != topic_key
+        and not _heading_matches_knowledge_topic(current_heading_text, topic_key, language=language)
     )
 
     if should_insert_topic_heading:
@@ -5625,7 +5778,7 @@ def _render_knowledge_section_blocks(
         if not role or not items:
             continue
 
-        label = KNOWLEDGE_SCHEMA_LABELS.get(role, "")
+        label = _knowledge_schema_label(role, language)
         role_class = _append_class_name(base_class_name, f"knowledge-body knowledge-{role}")
         if label:
             if render_schema_headings:
@@ -5674,7 +5827,15 @@ def _render_knowledge_section_blocks(
     return emitted or [block], active_topic
 
 
-def _rebuild_knowledge_structure(blocks: list[dict], *, section_context: str = "body") -> list[dict]:
+def _rebuild_knowledge_structure(
+    blocks: list[dict],
+    *,
+    section_context: str = "body",
+    language: str | None = None,
+    enabled: bool = True,
+) -> list[dict]:
+    if not enabled:
+        return blocks
     if section_context not in {"body", "appendix", "glossary"}:
         return blocks
     if any("report-label" in (block.get("class_name") or "") for block in blocks):
@@ -5700,6 +5861,7 @@ def _rebuild_knowledge_structure(blocks: list[dict], *, section_context: str = "
                 current_heading_text=current_heading_text,
                 current_heading_level=current_heading_level,
                 active_topic=active_topic,
+                language=language,
             )
             rebuilt.extend(rendered_blocks)
             continue
@@ -5709,9 +5871,9 @@ def _rebuild_knowledge_structure(blocks: list[dict], *, section_context: str = "
             topic_key
             and current_heading_level < 3
             and active_topic != topic_key
-            and not _heading_matches_knowledge_topic(current_heading_text, topic_key)
+            and not _heading_matches_knowledge_topic(current_heading_text, topic_key, language=language)
         ):
-            topic_label = KNOWLEDGE_TOPIC_LABELS.get(topic_key, "")
+            topic_label = _knowledge_topic_label(topic_key, language)
             if topic_label:
                 rebuilt.append(
                     {
@@ -5731,7 +5893,12 @@ def _rebuild_knowledge_structure(blocks: list[dict], *, section_context: str = "
     return rebuilt
 
 
-def _expand_semantic_blocks(blocks: list[dict], *, section_context: str = "body") -> list[dict]:
+def _expand_semantic_blocks(
+    blocks: list[dict],
+    *,
+    section_context: str = "body",
+    enable_knowledge_sections: bool = True,
+) -> list[dict]:
     expanded: list[dict] = []
 
     for block in blocks:
@@ -5820,7 +5987,7 @@ def _expand_semantic_blocks(blocks: list[dict], *, section_context: str = "body"
             )
             continue
 
-        knowledge_block = _build_knowledge_section_block(block, section_context=section_context)
+        knowledge_block = _build_knowledge_section_block(block, section_context=section_context) if enable_knowledge_sections else None
         if knowledge_block:
             expanded.append(knowledge_block)
             continue
@@ -5829,6 +5996,128 @@ def _expand_semantic_blocks(blocks: list[dict], *, section_context: str = "body"
         expanded.extend(split_blocks)
 
     return expanded
+
+
+def _strip_language_contaminated_structural_labels(blocks: list[dict], *, language: str) -> list[dict]:
+    if not (language or "").strip().lower().startswith("en"):
+        return blocks
+
+    label_keys = {_normalize_key(label).strip(" .:-–—") for label in ENGLISH_OUTPUT_POLISH_STRUCTURAL_LABELS}
+    labels = tuple(sorted(ENGLISH_OUTPUT_POLISH_STRUCTURAL_LABELS, key=len, reverse=True))
+    if not label_keys:
+        return blocks
+
+    cleaned: list[dict] = []
+    for block in blocks:
+        block_type = block.get("type")
+        if block_type not in {"heading", "paragraph"}:
+            cleaned.append(block)
+            continue
+
+        text = _normalize_text(block.get("text", ""))
+        text_key = _normalize_key(text).strip(" .:-–—")
+        if text_key in label_keys and len(text) <= 48:
+            continue
+
+        stripped = _strip_polish_structural_labels_from_english_text(text, labels=labels, label_keys=label_keys)
+        if stripped == text:
+            cleaned.append(block)
+            continue
+        if not stripped:
+            continue
+
+        updated = {**block, "text": stripped}
+        if "nav_text" in updated:
+            updated["nav_text"] = _strip_polish_structural_labels_from_english_text(
+                str(updated.get("nav_text") or ""),
+                labels=labels,
+                label_keys=label_keys,
+            )
+        if updated.get("type") == "paragraph":
+            updated["html"] = html.escape(stripped)
+        if updated.get("type") == "heading":
+            updated["id"] = _slugify(stripped)
+        cleaned.append(updated)
+
+    return cleaned
+
+
+def _strip_polish_structural_labels_from_english_text(
+    text: str,
+    *,
+    labels: tuple[str, ...],
+    label_keys: set[str],
+) -> str:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return ""
+
+    for separator in (" - ", " – ", " — ", ": "):
+        if separator not in normalized:
+            continue
+        prefix, suffix = normalized.rsplit(separator, 1)
+        if _normalize_key(suffix).strip(" .:-–—") in label_keys:
+            return _normalize_text(prefix)
+
+    cleaned = normalized
+    for label in labels:
+        pattern = re.compile(
+            rf"(?i)(?:\s*[-:–—]\s*)?(?<!\w){re.escape(label)}(?!\w)(?:\s*[-:–—]\s*)?"
+        )
+        cleaned = pattern.sub(" ", cleaned)
+    return _normalize_text(cleaned)
+
+
+def _strip_english_output_polish_structural_dom_artifacts(chapter_path: Path, *, language: str) -> bool:
+    if not (language or "").strip().lower().startswith("en") or not chapter_path.exists():
+        return False
+
+    labels = tuple(sorted(ENGLISH_OUTPUT_POLISH_STRUCTURAL_LABELS, key=len, reverse=True))
+    label_keys = {_normalize_key(label).strip(" .:-–—") for label in ENGLISH_OUTPUT_POLISH_STRUCTURAL_LABELS}
+    original = chapter_path.read_text(encoding="utf-8")
+    soup = BeautifulSoup(original, "xml")
+    changed = False
+
+    title_node = soup.find("title")
+    if title_node is not None:
+        text = _normalize_text(title_node.get_text(" ", strip=True))
+        cleaned = _strip_polish_structural_labels_from_english_text(text, labels=labels, label_keys=label_keys)
+        if cleaned and cleaned != text:
+            title_node.clear()
+            title_node.string = cleaned
+            changed = True
+
+    for node in soup.find_all(["h1", "h2", "h3", "p", "span", "figcaption"]):
+        if any(isinstance(child, Tag) for child in node.children):
+            continue
+        text = _normalize_text(node.get_text(" ", strip=True))
+        if not text:
+            continue
+        cleaned = _strip_polish_structural_labels_from_english_text(text, labels=labels, label_keys=label_keys)
+        if cleaned == text:
+            continue
+        if not cleaned:
+            node.decompose()
+            changed = True
+            continue
+        node.clear()
+        node.string = cleaned
+        if node.name in {"h1", "h2", "h3", "p", "span"} and node.get("id"):
+            node["id"] = _slugify(cleaned)
+        changed = True
+
+    for image in soup.find_all("img"):
+        alt = _normalize_text(str(image.get("alt", "") or ""))
+        if not alt:
+            continue
+        cleaned = _strip_polish_structural_labels_from_english_text(alt, labels=labels, label_keys=label_keys)
+        if cleaned and cleaned != alt:
+            image["alt"] = cleaned
+            changed = True
+
+    if changed:
+        chapter_path.write_text(_serialize_soup_document(soup), encoding="utf-8")
+    return changed
 
 
 def _enforce_heading_hierarchy(blocks: list[dict], *, chapter_title: str, section_context: str) -> list[dict]:
@@ -6062,10 +6351,7 @@ def _merge_leading_heading_fragments(blocks: list[dict]) -> list[dict]:
     if len(candidate_indexes) < 2:
         return blocks
 
-    knowledge_heading_keys = {
-        _normalize_key(label)
-        for label in [*KNOWLEDGE_TOPIC_LABELS.values(), *KNOWLEDGE_SCHEMA_LABELS.values()]
-    }
+    knowledge_heading_keys = {_normalize_key(label) for label in _all_knowledge_heading_labels()}
     if any(_normalize_key(text) in knowledge_heading_keys for text in candidate_texts):
         return blocks
 
@@ -7399,33 +7685,51 @@ def _repair_generic_package(
     toc_entries: list[dict],
     cleanup_scope: str,
 ) -> dict[str, object]:
+    non_linear_spine_files = _detect_generic_page_fragment_files(chapter_paths)
+    content_chapter_paths = [path for path in chapter_paths if path.name not in non_linear_spine_files]
+    if not content_chapter_paths:
+        content_chapter_paths = list(chapter_paths)
     resolved_title, resolved_author, resolved_language = _derive_package_metadata(
-        chapter_paths,
+        content_chapter_paths,
         title=title,
         author=author,
         language=language,
         allow_training_defaults=False,
     )
-    for chapter_path in chapter_paths:
+    for chapter_path in content_chapter_paths:
         heading_text, _ = _resolve_heading_target(chapter_path)
         if heading_text:
             _ensure_primary_heading(chapter_path, fallback_title=heading_text)
-    resolved_toc_entries = toc_entries if _toc_entries_look_useful(toc_entries) and _toc_entries_align_with_chapters(toc_entries, chapter_paths) else []
+    filtered_toc_entries = [
+        entry
+        for entry in toc_entries
+        if str(entry.get("file_name") or "") not in non_linear_spine_files
+    ]
+    resolved_toc_entries = (
+        filtered_toc_entries
+        if _toc_entries_look_useful(filtered_toc_entries)
+        and _toc_entries_align_with_chapters(filtered_toc_entries, content_chapter_paths)
+        else []
+    )
     if not resolved_toc_entries:
-        if _looks_like_training_book_outline(chapter_paths, toc_entries=toc_entries):
-            resolved_toc_entries = _build_curated_toc_entries(chapter_paths, language=resolved_language)
+        if _looks_like_training_book_outline(content_chapter_paths, toc_entries=filtered_toc_entries):
+            resolved_toc_entries = _build_curated_toc_entries(content_chapter_paths, language=resolved_language)
         if not resolved_toc_entries:
             resolved_toc_entries = _build_generic_toc_entries(
-                chapter_paths,
+                content_chapter_paths,
                 cleanup_scope=cleanup_scope,
                 language=resolved_language,
             )
-    return {
+    package = {
         "title": resolved_title,
         "author": resolved_author,
         "language": resolved_language,
         "toc_entries": resolved_toc_entries,
     }
+    if non_linear_spine_files:
+        package["spine_order"] = [path.name for path in content_chapter_paths if path.name != "cover.xhtml"]
+        package["non_linear_spine_files"] = sorted(non_linear_spine_files)
+    return package
 
 
 def _repair_magazine_package(
@@ -7443,8 +7747,9 @@ def _repair_magazine_package(
         allow_training_defaults=False,
     )
     issue_outline = _extract_magazine_issue_outline(chapter_paths)
+    chapter_infos = [_build_magazine_chapter_info(path, index=index) for index, path in enumerate(chapter_paths)]
     if not issue_outline["entries"]:
-        return _repair_generic_package(
+        package = _repair_generic_package(
             chapter_paths,
             title=resolved_title,
             author=resolved_author,
@@ -7452,9 +7757,23 @@ def _repair_magazine_package(
             toc_entries=[],
             cleanup_scope="magazine",
         )
+        extras = _fallback_magazine_non_linear_files(chapter_infos, contents_file=str(issue_outline.get("file_name") or ""))
+        extras.update(_detect_generic_page_fragment_files(chapter_paths))
+        if extras:
+            package["spine_order"] = [
+                info["file_name"]
+                for info in chapter_infos
+                if info["file_name"] not in extras
+            ]
+            package["toc_entries"] = [
+                entry
+                for entry in list(package.get("toc_entries") or [])
+                if str(entry.get("file_name") or "") not in extras
+            ]
+            package["non_linear_spine_files"] = sorted(extras)
+        return package
     ordered_issue_entries = _sort_magazine_issue_entries(issue_outline["entries"])
 
-    chapter_infos = [_build_magazine_chapter_info(path, index=index) for index, path in enumerate(chapter_paths)]
     chapter_info_by_name = {info["file_name"]: info for info in chapter_infos}
     assignments = _plan_magazine_issue_assignments(ordered_issue_entries, chapter_infos)
     assignments_by_file: dict[str, list[dict]] = defaultdict(list)
@@ -7471,6 +7790,7 @@ def _repair_magazine_package(
         assignments,
         contents_file=issue_outline["file_name"],
     )
+    extras.update(_detect_generic_page_fragment_files(chapter_paths))
     toc_entries = _build_magazine_toc_entries(
         issue_outline=issue_outline,
         ordered_issue_entries=ordered_issue_entries,
@@ -7478,14 +7798,15 @@ def _repair_magazine_package(
         front_features=front_features,
         additional_features=additional_features,
     )
+    toc_entries = [
+        entry
+        for entry in toc_entries
+        if str(entry.get("file_name") or "") not in extras
+    ]
     spine_order = [
         info["file_name"]
         for info in chapter_infos
         if info["file_name"] not in extras
-    ] + [
-        info["file_name"]
-        for info in chapter_infos
-        if info["file_name"] in extras
     ]
     return {
         "title": resolved_title,
@@ -7493,6 +7814,7 @@ def _repair_magazine_package(
         "language": resolved_language,
         "toc_entries": toc_entries,
         "spine_order": spine_order,
+        "non_linear_spine_files": sorted(extras),
     }
 
 
@@ -7626,11 +7948,16 @@ def _build_magazine_chapter_info(chapter_path: Path, *, index: int) -> dict[str,
 
     full_text = _normalize_text(soup.get_text(" ", strip=True))
     title_key = _magazine_key(title_text or start_text)
-    if title_key.startswith("galeria"):
+    if title_key.startswith("galeria") or title_key.startswith("gallery"):
         special_type = "gallery"
-    elif title_key.startswith("reklama"):
+    elif title_key.startswith("reklama") or title_key.startswith("advertisement") or title_key == "ad":
         special_type = "advertisement"
-    elif title_key.startswith("material sponsorowany") or title_key.startswith("materiał sponsorowany"):
+    elif (
+        title_key.startswith("material sponsorowany")
+        or title_key.startswith("materiał sponsorowany")
+        or title_key.startswith("sponsored")
+        or title_key.startswith("advertorial")
+    ):
         special_type = "sponsored"
     else:
         special_type = ""
@@ -7645,9 +7972,11 @@ def _build_magazine_chapter_info(chapter_path: Path, *, index: int) -> dict[str,
         "start_node_index": next((item["node_index"] for item in candidates if item["kind"] == "start"), 0),
         "is_contents": bool(MAGAZINE_SECTION_SKIP_RE.match(start_text or title_text)),
         "special_type": special_type,
+        "image_count": len(soup.find_all("img")),
+        "text_chars": len(full_text),
         "is_special_hint": bool(
             MAGAZINE_SPECIAL_TITLE_RE.match(title_text or start_text)
-            or any(hint in title_key for hint in MAGAZINE_EXTRA_TITLE_HINTS)
+            or _looks_like_magazine_extra_title(title_key)
             or MAGAZINE_PROMO_TEXT_RE.search(full_text[:1200])
         ),
         "has_byline": any(candidate["kind"] == "byline" for candidate in candidates),
@@ -7904,6 +8233,76 @@ def _apply_magazine_assignments(chapter_info: dict[str, object], assignments: li
         chapter_path.write_text(_serialize_soup_document(soup), encoding="utf-8")
 
 
+def _fallback_magazine_non_linear_files(chapter_infos: list[dict[str, object]], *, contents_file: str) -> set[str]:
+    extras: set[str] = set()
+    for info in chapter_infos:
+        file_name = str(info["file_name"])
+        if file_name == contents_file:
+            continue
+        title_key = _magazine_key(str(info.get("title") or info.get("start_text") or ""))
+        if (
+            info.get("special_type") in {"gallery", "advertisement"}
+            or (info.get("special_type") == "sponsored" and not info.get("has_byline"))
+            or _looks_like_magazine_image_only_stub(info)
+            or bool(info.get("is_special_hint"))
+            or title_key in MAGAZINE_FEATURE_SKIP_KEYS
+            or _looks_like_magazine_extra_title(title_key)
+        ):
+            extras.add(file_name)
+    return extras
+
+
+def _detect_generic_page_fragment_files(chapter_paths) -> set[str]:
+    return {
+        chapter_path.name
+        for chapter_path in chapter_paths
+        if _looks_like_generic_page_fragment_document(chapter_path)
+    }
+
+
+def _looks_like_generic_page_fragment_document(chapter_path: Path) -> bool:
+    if chapter_path.name == "cover.xhtml":
+        return False
+    try:
+        soup = BeautifulSoup(chapter_path.read_text(encoding="utf-8"), "xml")
+    except Exception:
+        return False
+    title_node = soup.find("title")
+    title_text = _normalize_text(title_node.get_text(" ", strip=True)) if title_node is not None else ""
+    heading = soup.find(["h1", "h2", "h3"])
+    heading_text = _normalize_text(heading.get_text(" ", strip=True)) if heading is not None else ""
+    label = heading_text or title_text
+    if not _looks_like_page_fragment_label(label):
+        return False
+    body_text = _normalize_text(soup.get_text(" ", strip=True))
+    paragraphs = [
+        _normalize_text(node.get_text(" ", strip=True))
+        for node in soup.find_all("p")
+    ]
+    has_real_paragraph = any(len(text) >= 80 and len(text.split()) >= 10 for text in paragraphs)
+    image_count = len(soup.find_all("img"))
+    low_information_text = len(body_text) <= 180 or len(body_text.split()) <= 24
+    return low_information_text and not has_real_paragraph and (image_count >= 1 or len(body_text) <= 80)
+
+
+def _looks_like_page_fragment_label(text: str) -> bool:
+    normalized = _normalize_text(text).strip(" .:-")
+    if not normalized:
+        return False
+    if re.fullmatch(r"\d{1,4}", normalized):
+        return True
+    return bool(re.fullmatch(r"(?i)(?:page|strona)\s+\d{1,4}", normalized))
+
+
+def _looks_like_magazine_image_only_stub(info: dict[str, object]) -> bool:
+    try:
+        image_count = int(info.get("image_count") or 0)
+        text_chars = int(info.get("text_chars") or 0)
+    except (TypeError, ValueError):
+        return False
+    return image_count >= 1 and text_chars < 160 and not bool(info.get("has_byline"))
+
+
 def _classify_magazine_feature_buckets(
     chapter_infos: list[dict[str, object]],
     assignments: list[dict | None],
@@ -7933,6 +8332,9 @@ def _classify_magazine_feature_buckets(
         if re.search(r"(?i)\b(ciąg dalszy|continued)\b", title):
             continue
         if title_key.startswith("rozmowa z ") and file_name not in assigned_files:
+            continue
+        if _looks_like_magazine_image_only_stub(info):
+            extras.add(file_name)
             continue
         if info["is_special_hint"] and file_name not in assigned_files:
             extras.add(file_name)
@@ -8206,7 +8608,12 @@ def _should_normalize_magazine_heading(current_text: str, desired_title: str) ->
 def _looks_like_magazine_extra_title(title_key: str) -> bool:
     if not title_key:
         return False
-    return any(hint in title_key for hint in MAGAZINE_EXTRA_TITLE_HINTS)
+    return any(
+        title_key == hint
+        or title_key.startswith(f"{hint} ")
+        or title_key.startswith(f"{hint} -")
+        for hint in MAGAZINE_EXTRA_TITLE_HINTS
+    )
 
 
 def _toc_entries_look_useful(toc_entries: list[dict]) -> bool:
@@ -9091,7 +9498,13 @@ def _update_opf_metadata(
     tree.write(str(opf_path), encoding="utf-8", xml_declaration=True, pretty_print=False)
 
 
-def _reorder_opf_spine(opf_path: Path, ordered_files: list[str], *, excluded_files: set[str] | None = None) -> None:
+def _reorder_opf_spine(
+    opf_path: Path,
+    ordered_files: list[str],
+    *,
+    excluded_files: set[str] | list[str] | tuple[str, ...] | None = None,
+    non_linear_files: set[str] | list[str] | tuple[str, ...] | None = None,
+) -> None:
     parser = etree.XMLParser(remove_blank_text=False)
     tree = etree.parse(str(opf_path), parser)
     root = tree.getroot()
@@ -9099,23 +9512,29 @@ def _reorder_opf_spine(opf_path: Path, ordered_files: list[str], *, excluded_fil
     spine = root.find(".//opf:spine", NS)
     if manifest is None or spine is None:
         return
-    excluded_files = set(excluded_files or set())
+    excluded_files = {str(name) for name in (excluded_files or []) if str(name)}
 
     href_to_id: dict[str, str] = {}
+    id_to_href: dict[str, str] = {}
     for item in manifest.findall("opf:item", NS):
         href = item.get("href", "")
         item_id = item.get("id", "")
         if href and item_id:
             href_to_id[href] = item_id
+            id_to_href[item_id] = href
 
     itemrefs = list(spine.findall("opf:itemref", NS))
     itemref_by_idref = {itemref.get("idref", ""): itemref for itemref in itemrefs if itemref.get("idref")}
     ordered_idrefs: list[str] = []
+    non_linear_hrefs = {str(name) for name in (non_linear_files or []) if str(name)}
+    non_linear_idrefs: list[str] = []
     cover_id = href_to_id.get("cover.xhtml", "")
     nav_id = href_to_id.get("nav.xhtml", "")
 
     for href in ordered_files:
         if href in excluded_files:
+            continue
+        if href in non_linear_hrefs:
             continue
         item_id = href_to_id.get(href)
         if item_id and item_id not in {cover_id, nav_id} and item_id not in ordered_idrefs:
@@ -9123,15 +9542,24 @@ def _reorder_opf_spine(opf_path: Path, ordered_files: list[str], *, excluded_fil
 
     for itemref in itemrefs:
         item_id = itemref.get("idref", "")
-        href = next((name for name, ref_id in href_to_id.items() if ref_id == item_id), "")
+        href = id_to_href.get(item_id, "")
         if href in excluded_files:
             continue
         if href == "cover.xhtml":
             continue
         if href == "nav.xhtml":
             continue
+        if href in non_linear_hrefs:
+            if item_id and item_id not in non_linear_idrefs:
+                non_linear_idrefs.append(item_id)
+            continue
         if item_id and item_id not in ordered_idrefs:
             ordered_idrefs.append(item_id)
+
+    for href in sorted(non_linear_hrefs):
+        item_id = href_to_id.get(href, "")
+        if item_id and item_id not in {cover_id, nav_id} and item_id not in non_linear_idrefs:
+            non_linear_idrefs.append(item_id)
 
     def ensure_itemref(item_id: str) -> etree._Element | None:
         if not item_id:
@@ -9153,6 +9581,13 @@ def _reorder_opf_spine(opf_path: Path, ordered_files: list[str], *, excluded_fil
     for item_id in ordered_idrefs:
         itemref = ensure_itemref(item_id)
         if itemref is not None:
+            if itemref.get("linear") == "no":
+                del itemref.attrib["linear"]
+            new_sequence.append(itemref)
+    for item_id in non_linear_idrefs:
+        itemref = ensure_itemref(item_id)
+        if itemref is not None:
+            itemref.set("linear", "no")
             new_sequence.append(itemref)
     if nav_ref is not None:
         nav_ref.set("linear", "no")
@@ -9561,6 +9996,7 @@ def _normalize_toc_entries_for_render(toc_entries: list[dict]) -> list[dict]:
     normalized_entries: list[dict] = []
     for entry in toc_entries:
         label = _normalize_text(entry.get("text", ""))
+        label = _sanitize_toc_label_for_render(label)
         if not label:
             continue
         try:
@@ -9571,6 +10007,37 @@ def _normalize_toc_entries_for_render(toc_entries: list[dict]) -> list[dict]:
     if normalized_entries:
         return normalized_entries
     return [{"file_name": "chapter_001.xhtml", "id": "", "text": "Start", "level": 1}]
+
+
+def _sanitize_toc_label_for_render(label: str) -> str:
+    normalized = _normalize_text(label)
+    if not normalized:
+        return ""
+    if len(normalized) <= 90 and len(normalized.split()) <= 12:
+        return normalized
+    for separator in ("? ", ". ", "! ", ": ", " - ", " â€“ ", " â€” "):
+        if separator not in normalized:
+            continue
+        candidate = normalized.split(separator, 1)[0].strip(" -:;,.!?")
+        if _looks_like_safe_short_toc_title(candidate):
+            return candidate
+    return normalized
+
+
+def _looks_like_safe_short_toc_title(candidate: str) -> bool:
+    normalized = _normalize_text(candidate)
+    if not normalized:
+        return False
+    words = normalized.split()
+    if not 2 <= len(words) <= 12:
+        return False
+    if len(normalized) > 90:
+        return False
+    if not any(character.isalpha() for character in normalized):
+        return False
+    if normalized.endswith((".", ",", ";", ":")):
+        return False
+    return True
 
 
 def _build_toc_tree(toc_entries: list[dict]) -> list[dict]:
@@ -10513,10 +10980,12 @@ def _rebuild_toc_entries_from_final_chapters(
     chapter_paths: list[Path],
     *,
     fallback_entries: list[dict[str, object]] | None = None,
+    exclude_files: set[str] | list[str] | tuple[str, ...] | None = None,
 ) -> list[dict[str, object]]:
     rebuilt: list[dict[str, object]] = []
+    excluded = {str(name) for name in (exclude_files or []) if str(name)}
     for chapter_path in chapter_paths:
-        if chapter_path.name == "cover.xhtml" or not chapter_path.exists():
+        if chapter_path.name == "cover.xhtml" or chapter_path.name in excluded or not chapter_path.exists():
             continue
         candidates = _collect_heading_candidates_from_path(chapter_path, include_pseudo=False)
         rebuilt.extend(
@@ -10527,7 +10996,7 @@ def _rebuild_toc_entries_from_final_chapters(
         )
     if rebuilt:
         return _dedupe_repeated_subsection_toc_labels(rebuilt)
-    return list(fallback_entries or [])
+    return [entry for entry in list(fallback_entries or []) if str(entry.get("file_name") or "") not in excluded]
 
 
 def _dedupe_repeated_subsection_toc_labels(entries: list[dict[str, object]]) -> list[dict[str, object]]:

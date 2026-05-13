@@ -23,6 +23,12 @@ except Exception:
     find_chess_diagram_regions = None
 
 
+NUMBERED_SECTION_HEADING_RE = re.compile(r"^\s*\d{1,2}(?:\.\d{1,2}){0,4}\.?\s+\S.{2,}$")
+NUMBERED_HEADING_CAPTION_RE = re.compile(
+    r"(?i)^\s*(?:table|tabela|tab\.|figure|fig\.|rys\.?|rysunek|diagram|wykres|chart|exhibit)\s+\d"
+)
+
+
 def analyze_publication(
     pdf_path: str,
     preferred_profile: str = "auto-premium",
@@ -39,6 +45,7 @@ def analyze_publication(
     column_estimates: list[int] = []
     meaningful_image_pages = 0
     detected_diagrams = 0
+    numbered_heading_keys: set[str] = set()
 
     sample_pages = list(range(min(total_pages, 24)))
 
@@ -75,14 +82,28 @@ def analyze_publication(
                     block_fonts = []
                     text_fragments = []
                     for line in block.get("lines", []):
+                        line_fragments = []
+                        line_sizes = []
                         for span in line.get("spans", []):
                             span_text = (span.get("text") or "").strip()
                             if span_text:
                                 text_fragments.append(span_text)
+                                line_fragments.append(span_text)
                             size = float(span.get("size", 0.0))
                             if size:
                                 font_sizes.append(size)
                                 block_fonts.append(size)
+                                line_sizes.append(size)
+                        line_text = re.sub(r"\s+", " ", " ".join(line_fragments)).strip()
+                        bbox = line.get("bbox", (0, 0, 0, 0))
+                        line_size = max(line_sizes) if line_sizes else 0.0
+                        if _looks_like_numbered_section_heading(
+                            line_text,
+                            x0=float(bbox[0] or 0.0),
+                            page_width=float(page.rect.width or 0.0),
+                            font_size=line_size,
+                        ):
+                            numbered_heading_keys.add(_numbered_heading_key(line_text))
                     if block_fonts:
                         block_median = median(block_fonts)
                         if block_median >= 14 and len(" ".join(text_fragments).split()) <= 20:
@@ -124,7 +145,11 @@ def analyze_publication(
     estimated_columns = round(mean(column_estimates)) if column_estimates else 1
     heading_density = mean(heading_scores) if heading_scores else 0.0
     font_consistency = _font_consistency(font_medians)
-    estimated_sections = _estimate_sections_from_toc(toc) if toc else _estimate_sections_from_headings(heading_density, total_pages)
+    numbered_section_count = len(numbered_heading_keys)
+    estimated_sections = _estimate_sections_from_toc(toc) if toc else max(
+        _estimate_sections_from_headings(heading_density, total_pages),
+        numbered_section_count,
+    )
     legacy_strategy = (
         "ocr_fixed"
         if scanned_page_ratio > 0.5
@@ -156,6 +181,7 @@ def analyze_publication(
         text_page_ratio=text_page_ratio,
         scanned_page_ratio=scanned_page_ratio,
         legacy_strategy=legacy_strategy,
+        numbered_section_count=numbered_section_count,
     )
     confidence = _estimate_confidence(
         profile=profile,
@@ -222,6 +248,8 @@ def analyze_publication(
         features.append("text-heavy")
     if estimated_columns >= 2:
         features.append(f"{estimated_columns}-column")
+    if numbered_section_count >= 3:
+        features.append("numbered-sections")
     if _is_document_like_report_candidate(
         has_toc=has_toc,
         has_tables=has_tables,
@@ -258,6 +286,7 @@ def analyze_publication(
         detected_features=features,
         external_tools=detect_toolchain(),
         profile_reason=profile_reason,
+        detected_outline_entries=numbered_section_count,
         route_decision=route_decision,
     )
 
@@ -377,6 +406,33 @@ def _estimate_sections_from_headings(heading_density: float, total_pages: int) -
     return estimate
 
 
+def _looks_like_numbered_section_heading(
+    text: str,
+    *,
+    x0: float = 0.0,
+    page_width: float = 0.0,
+    font_size: float = 0.0,
+) -> bool:
+    normalized = re.sub(r"\s+", " ", (text or "").strip())
+    if not normalized or len(normalized) > 170:
+        return False
+    if NUMBERED_HEADING_CAPTION_RE.match(normalized):
+        return False
+    if not NUMBERED_SECTION_HEADING_RE.match(normalized):
+        return False
+    if re.search(r"[.!?;:]$", normalized):
+        return False
+    if page_width > 0 and x0 > max(132.0, page_width * 0.34):
+        return False
+    if font_size and font_size < 8.0:
+        return False
+    return len(normalized.split()) >= 3
+
+
+def _numbered_heading_key(text: str) -> str:
+    return re.sub(r"\W+", "", (text or "").lower())
+
+
 def _estimate_sections_from_toc(toc: list) -> int:
     if not toc:
         return 0
@@ -417,6 +473,7 @@ def _choose_profile(**kwargs) -> tuple[str, str, str]:
     legacy_strategy = kwargs["legacy_strategy"]
     text_page_ratio = float(kwargs.get("text_page_ratio", 0.0) or 0.0)
     total_pages = int(kwargs.get("total_pages", 0) or 0)
+    numbered_section_count = int(kwargs.get("numbered_section_count", 0) or 0)
 
     if scanned_page_ratio > 0.55:
         return "scanned_reflow", "preserve-layout", "Duży udział stron skanowanych wymaga OCR/fallbacków."
@@ -431,6 +488,14 @@ def _choose_profile(**kwargs) -> tuple[str, str, str]:
         total_pages=total_pages,
     ):
         return "book_reflow", "technical-study", "Wykryto raport/dokument techniczny z jedną kolumną, spisem treści i tabelami."
+    if _is_numbered_document_like_report_candidate(
+        numbered_section_count=numbered_section_count,
+        has_tables=has_tables,
+        text_page_ratio=text_page_ratio,
+        scanned_page_ratio=scanned_page_ratio,
+        total_pages=total_pages,
+    ):
+        return "book_reflow", "technical-study", "Wykryto raport/dokument techniczny: numerowane sekcje i tabele."
     if layout_heavy and has_meaningful_images and scanned_page_ratio < 0.35:
         return "magazine_reflow", "magazine", "Wykryto publikację layout-heavy z warstwą tekstową, lepszą do article-first reflow niż do screenshotów."
     if has_tables and has_toc:
@@ -470,6 +535,21 @@ def _is_document_like_report_candidate(
     if scanned_page_ratio >= 0.35:
         return False
     if text_page_ratio < 0.65:
+        return False
+    return total_pages >= 3
+
+
+def _is_numbered_document_like_report_candidate(
+    *,
+    numbered_section_count: int,
+    has_tables: bool,
+    text_page_ratio: float,
+    scanned_page_ratio: float,
+    total_pages: int,
+) -> bool:
+    if numbered_section_count < 3 or not has_tables:
+        return False
+    if scanned_page_ratio >= 0.35 or text_page_ratio < 0.65:
         return False
     return total_pages >= 3
 

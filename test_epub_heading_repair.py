@@ -10,6 +10,7 @@ from lxml import etree
 
 from epub_heading_repair import (
     _build_toc_entries_from_scan,
+    _clean_magazine_toc_label_text,
     _evaluate_heading_gate_after_rebuild,
     _filter_resolved_manual_review_items,
     _is_clean_navigation_heading_text,
@@ -28,6 +29,18 @@ class EpubHeadingRepairTests(unittest.TestCase):
                 compress_type = zipfile.ZIP_STORED if archive_path == "mimetype" else zipfile.ZIP_DEFLATED
                 archive.writestr(archive_path, payload, compress_type=compress_type)
         return output.getvalue()
+
+    def test_clean_magazine_toc_label_text_shortens_datelines_and_leads(self):
+        self.assertEqual(
+            _clean_magazine_toc_label_text(
+                "When Donald Trump meets Xi Jinping, mutual vulnerability will be no substitute for global leadership The summit of suspicion"
+            ),
+            "The summit of suspicion",
+        )
+        self.assertEqual(
+            _clean_magazine_toc_label_text("NATIONAL HARBOUR, MARYLAND A report from the basement of the Select USA Investment Summit"),
+            "A report from the basement of the Select USA Investment Summit",
+        )
 
     def _minimal_epub(
         self,
@@ -93,7 +106,16 @@ class EpubHeadingRepairTests(unittest.TestCase):
     def test_dense_handbook_navigation_filter_rejects_index_page_debris(self):
         for label in ("Trustworthy 298", "Glossary 286", "Acceptance and Evaluation Criteria 217"):
             self.assertFalse(_is_clean_navigation_heading_text(label, level=2), label)
-        for label in ("Input", "Output", "Object 1", "State 3", "Rank = 1*3", "Data", "Proces"):
+        for label in (
+            "Input",
+            "Output",
+            "Object 1",
+            "State 3",
+            "Rank = 1*3",
+            "Data",
+            "Proces",
+            "2. Page 2 records scope, input assumptions, and the expected conversion",
+        ):
             self.assertFalse(_is_clean_navigation_heading_text(label, level=2), label)
         self.assertTrue(_is_clean_navigation_heading_text("Business Analysis Key Concepts", level=1))
 
@@ -157,6 +179,58 @@ class EpubHeadingRepairTests(unittest.TestCase):
         self.assertIn("2. Delivery", ncx)
         self.assertNotIn("Page 12", nav)
         self.assertNotIn("https://example.com/footer", nav)
+
+    def test_repair_epub_headings_and_toc_preserves_numbered_h1_near_tables(self):
+        chapter_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>4.1 CSP, SAN, cXML, sFTP, email/PDF - co musisz umiec odroznic</title></head>
+  <body>
+    <section>
+      <h1 id="section-41">4.1 CSP, SAN, cXML, sFTP, email/PDF - co musisz umiec odroznic</h1>
+      <p>Rozdzial wyjasnia roznice miedzy kanalami integracji i ich konsekwencje operacyjne.</p>
+      <table>
+        <thead><tr><th>Kanal</th><th>Definicja</th></tr></thead>
+        <tbody><tr><td>CSP</td><td>Portal dostawcy.</td></tr></tbody>
+      </table>
+      <h2 id="defs">Definicje</h2>
+      <table>
+        <thead><tr><th>Termin</th><th>Znaczenie</th></tr></thead>
+        <tbody><tr><td>SAN</td><td>Powiadomienie dla dostawcy.</td></tr></tbody>
+      </table>
+    </section>
+  </body>
+</html>
+"""
+        epub_bytes = self._minimal_epub(
+            chapter_source,
+            nav_label="Legacy label",
+            nav_href="chapter_001.xhtml#missing",
+        )
+
+        with patch(
+            "epub_heading_repair.run_epubcheck",
+            return_value={"status": "passed", "tool": "epubcheck", "messages": []},
+        ):
+            result = repair_epub_headings_and_toc(
+                epub_bytes,
+                language_hint="pl",
+                publication_profile="book_reflow",
+            )
+
+        toc_labels = [item["label"] for item in result.toc_mapping]
+
+        self.assertIn("4.1 CSP, SAN, cXML, sFTP, email/PDF - co musisz umiec odroznic", toc_labels)
+        self.assertNotIn("Definicje", toc_labels)
+        self.assertEqual(result.summary["chapters_without_h1_after"], [])
+        self.assertEqual(result.qa["gates"]["C"]["status"], "pass")
+
+        with zipfile.ZipFile(io.BytesIO(result.epub_bytes), "r") as archive:
+            chapter = archive.read("EPUB/chapter_001.xhtml").decode("utf-8")
+            nav = archive.read("EPUB/nav.xhtml").decode("utf-8")
+
+        self.assertIn("<h1", chapter)
+        self.assertIn("4.1 CSP, SAN, cXML, sFTP, email/PDF", nav)
+        self.assertNotIn(">Definicje</a>", nav)
 
     def test_repair_epub_headings_and_toc_skips_duplicate_semantic_cleanup_for_finalized_epub(self):
         chapter_source = """<?xml version="1.0" encoding="utf-8"?>
@@ -823,6 +897,8 @@ class EpubHeadingRepairTests(unittest.TestCase):
       <p>Caption-like content is not a navigation target.</p>
       <h2>Page 12</h2>
       <p>Page markers are layout artifacts.</p>
+      <h2>2. Page 2 records scope, input assumptions, and the expected conversion</h2>
+      <p>Numbered page descriptions can come from generated source outlines and must not enter navigation.</p>
       <h2>Methods</h2>
       <p>Methods is a valid short section with supporting prose after it.</p>
       <h2>Results</h2>
@@ -848,6 +924,7 @@ class EpubHeadingRepairTests(unittest.TestCase):
         self.assertNotIn("99%", toc_labels)
         self.assertNotIn("Figure 4: Revenue overview", toc_labels)
         self.assertNotIn("Page 12", toc_labels)
+        self.assertNotIn("2. Page 2 records scope, input assumptions, and the expected conversion", toc_labels)
         self.assertEqual(result.qa["gates"]["C"]["status"], "pass")
 
     def test_heading_gate_relaxes_h1_cardinality_for_fragment_profiles_only(self):

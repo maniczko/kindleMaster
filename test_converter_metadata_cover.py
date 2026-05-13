@@ -48,6 +48,27 @@ def _create_dense_handbook_pdf(path: Path) -> None:
     doc.close()
 
 
+def _create_training_pdf_with_technical_metadata(path: Path) -> None:
+    doc = fitz.open()
+    doc.set_metadata(
+        {
+            "title": "",
+            "author": "python-docx",
+            "subject": "",
+            "creator": "Writer",
+            "producer": "LibreOffice 25.2.3.2",
+        }
+    )
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 110), "MATERIAL DO NAUKI I PODNIESIENIA WARTOSCI RYNKOWEJ", fontsize=14)
+    page.insert_text((72, 150), "Eursap: IT Project Manager / PMO (E-Invoicing & Coupa)", fontsize=22)
+    page.insert_text((72, 198), "Spersonalizowany przewodnik na ok. 20 stron A4", fontsize=12)
+    page.insert_text((72, 250), "1. Co ta oferta naprawde premiuje", fontsize=16)
+    page.insert_text((72, 286), "Sama nazwa stanowiska moze mylic. " * 4, fontsize=10)
+    doc.save(path)
+    doc.close()
+
+
 def _opf_root(epub_path: Path) -> ET.Element:
     with zipfile.ZipFile(epub_path) as zf:
         opf_name = next(name for name in zf.namelist() if name.endswith(".opf"))
@@ -73,6 +94,19 @@ class ConverterMetadataCoverTests(unittest.TestCase):
         self.assertEqual(metadata["date"], "2022")
         self.assertIn("A Guide to Enterprise Analysis", metadata["description"])
         self.assertIn("International Handbook Institute", metadata["description"])
+
+    def test_pdf_metadata_rejects_technical_docx_values_and_infers_safe_filename_author(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf_path = Path(tmp) / "material_nauka_eursap_coupa_iwo_v5.pdf"
+            _create_training_pdf_with_technical_metadata(pdf_path)
+
+            metadata = _extract_pdf_metadata(str(pdf_path))
+
+        self.assertEqual(metadata["title"], "Eursap: IT Project Manager / PMO (E-Invoicing & Coupa)")
+        self.assertEqual(metadata["author"], "Iwo")
+        self.assertNotEqual(metadata.get("publisher"), "python-docx")
+        self.assertEqual(metadata["creator"], "Writer")
+        self.assertIn("filename-author", metadata.get("metadata_inference", {}).get("author", []))
 
     def test_build_epub_renders_first_pdf_page_as_cover_with_opf_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

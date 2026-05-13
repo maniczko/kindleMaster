@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+python kindlemaster.py test --suite quick
+python kindlemaster.py status

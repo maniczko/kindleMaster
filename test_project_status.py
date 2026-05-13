@@ -251,7 +251,18 @@ reports/project_status.md
             )
             (governance_root / "quick.json").write_text(json.dumps({"suite": "quick", "status": "passed"}), encoding="utf-8")
             (governance_root / "release.json").write_text(
-                json.dumps({"suite": "release", "status": "passed_with_warnings"}),
+                json.dumps(
+                    {
+                        "generated_at": "2026-04-22T12:00:00+00:00",
+                        "command": "python kindlemaster.py test --suite release",
+                        "suite": "release",
+                        "status": "passed_with_warnings",
+                        "returncode": 0,
+                        "elapsed_seconds": 0.12,
+                        "notes": ["optional follow-up skipped"],
+                    },
+                    ensure_ascii=False,
+                ),
                 encoding="utf-8",
             )
             screenshots_root = reports_root / "ui-state-screenshots" / "latest"
@@ -293,6 +304,10 @@ reports/project_status.md
         self.assertEqual(payload["dashboard"]["evidence"]["quick"]["status"], "passed")
         self.assertEqual(payload["dashboard"]["evidence"]["corpus"]["status"], "passed")
         self.assertEqual(payload["dashboard"]["evidence"]["release"]["status"], "passed_with_warnings")
+        self.assertEqual(
+            payload["dashboard"]["evidence"]["release"]["command"],
+            "python kindlemaster.py test --suite release",
+        )
         self.assertEqual(payload["dashboard"]["evidence"]["ui_state_screenshots"]["status"], "passed")
         self.assertEqual(payload["governance"]["drift_status"], "passed")
         self.assertTrue(payload["governance"]["session_override"]["documented"])

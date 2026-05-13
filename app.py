@@ -30,6 +30,7 @@ from app_runtime_services import (
     run_document_conversion,
     serve_http_app,
 )
+from artifact_storage import ArtifactKind, build_artifact_storage
 from conversion_api_contracts import (
     ConversionDownloadState,
     ERROR_MISSING_OUTPUT,
@@ -58,18 +59,30 @@ from conversion_library import (
     build_quality_report_payload,
     render_quality_report_markdown,
 )
-from flask import Flask, request, jsonify, render_template, send_file
+from flask import Flask, request, jsonify, render_template, redirect, send_file
 from werkzeug.exceptions import RequestEntityTooLarge
 from converter import convert_document_to_epub_with_report, detect_pdf_type
 from docx_conversion import analyze_docx
 from epub_heading_repair import repair_epub_headings_and_toc
 from publication_analysis import analyze_publication
+from sentry_observability import (
+    build_conversion_context,
+    capture_conversion_exception,
+    configure_sentry_backend,
+)
+from runtime_job_adapter import ReplayableCommand, RetryPolicy, RuntimeJobStatus, build_runtime_job_adapter
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 MB
+SENTRY_BACKEND_STATE = configure_sentry_backend()
 
 UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "kindlemaster")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+ARTIFACT_STORAGE = build_artifact_storage(local_root=Path("output") / "artifacts")
+RUNTIME_JOB_ADAPTER = build_runtime_job_adapter(
+    retry_policy=RetryPolicy(max_attempts=1),
+    timeout_seconds=DEFAULT_CONVERSION_QUEUE_POLICY.max_runtime_seconds,
+)
 
 DEFAULT_CONVERSION_POLL_INTERVAL_MS = 1500
 MAX_CONVERSION_POLL_INTERVAL_MS = 5000
@@ -151,6 +164,218 @@ def _log_conversion_event(
     return payload
 
 
+def _conversion_sentry_context(
+    *,
+    job_id: str = "",
+    source_type: str = "",
+    profile: str = "",
+    metadata: dict | None = None,
+) -> dict:
+    conversion_metadata = metadata or {}
+    premium_scoring = conversion_metadata.get("premium_scoring") or {}
+    if not isinstance(premium_scoring, dict):
+        premium_scoring = {}
+    quality_score = premium_scoring.get("premium_score")
+    if quality_score is None:
+        quality_score = conversion_metadata.get("quality_score")
+    premium_ready = premium_scoring.get("premium_ready")
+    if not isinstance(premium_ready, bool):
+        premium_ready = None
+    return build_conversion_context(
+        job_id=job_id,
+        input_type=source_type,
+        source_type=source_type,
+        profile=profile or str(conversion_metadata.get("profile", "") or ""),
+        quality_score=quality_score,
+        premium_ready=premium_ready,
+    )
+
+
+def _artifact_storage_status() -> dict:
+    try:
+        return dict(ARTIFACT_STORAGE.availability())
+    except Exception as error:
+        return {
+            "provider": getattr(ARTIFACT_STORAGE, "provider", "unknown"),
+            "status": "unavailable",
+            "reason": str(error),
+        }
+
+
+def _store_artifact_bytes(
+    *,
+    job_id: str,
+    kind: ArtifactKind,
+    filename: str,
+    data: bytes,
+) -> dict:
+    try:
+        record = ARTIFACT_STORAGE.put_bytes(
+            job_id=job_id,
+            kind=kind,
+            filename=filename,
+            data=data,
+        )
+        metadata = record.to_metadata()
+        if kind == ArtifactKind.OUTPUT:
+            metadata["signed_url"] = ARTIFACT_STORAGE.signed_url(record)
+        return metadata
+    except Exception as error:
+        return {
+            "provider": getattr(ARTIFACT_STORAGE, "provider", "unknown"),
+            "status": "failed",
+            "kind": kind.value,
+            "job_id": job_id,
+            "filename": filename,
+            "location": "",
+            "size_bytes": len(data),
+            "content_type": "",
+            "retention": {},
+            "signed_url": {"available": False, "url": "", "expires_in_seconds": 0, "reason": "store_failed"},
+            "error": str(error),
+        }
+
+
+def _merge_job_artifacts(job_id: str, updates: dict[str, dict]) -> dict | None:
+    job = _get_conversion_job(job_id)
+    if not job:
+        return None
+    artifacts = dict(job.get("artifacts", {}) or {})
+    artifacts.update(updates)
+    return _set_conversion_job(
+        job_id,
+        artifacts=artifacts,
+        artifact_storage=_artifact_storage_status(),
+    )
+
+
+def _store_quality_report_artifacts(job_id: str) -> None:
+    job = _get_conversion_job(job_id)
+    if not job or job.get("status") != "ready":
+        return
+    try:
+        report_payload = build_quality_report_payload(
+            job_id,
+            job,
+            quality_state=_build_job_quality_state(job_id, job),
+            output_size_bytes=_read_output_size_bytes(job),
+            include_text=True,
+        )
+        report_json = _store_artifact_bytes(
+            job_id=job_id,
+            kind=ArtifactKind.REPORT,
+            filename=f"{job_id}.quality.json",
+            data=json.dumps(report_payload, ensure_ascii=False, indent=2).encode("utf-8"),
+        )
+        report_markdown = _store_artifact_bytes(
+            job_id=job_id,
+            kind=ArtifactKind.REPORT,
+            filename=f"{job_id}.quality.md",
+            data=render_quality_report_markdown(report_payload).encode("utf-8"),
+        )
+        log_artifact = _store_artifact_bytes(
+            job_id=job_id,
+            kind=ArtifactKind.LOG,
+            filename=f"{job_id}.runtime.json",
+            data=json.dumps(
+                {
+                    "job_id": job_id,
+                    "status": job.get("status", ""),
+                    "runtime": job.get("runtime", {}) or {},
+                    "artifact_storage": job.get("artifact_storage", {}) or {},
+                },
+                ensure_ascii=False,
+                indent=2,
+            ).encode("utf-8"),
+        )
+    except Exception as error:
+        _merge_job_artifacts(
+            job_id,
+            {
+                "report_error": {
+                    "provider": getattr(ARTIFACT_STORAGE, "provider", "unknown"),
+                    "status": "failed",
+                    "kind": "report",
+                    "job_id": job_id,
+                    "error": str(error),
+                }
+            },
+        )
+        return
+    _merge_job_artifacts(
+        job_id,
+        {
+            "report_json": report_json,
+            "report_markdown": report_markdown,
+            "log": log_artifact,
+        },
+    )
+
+
+def _signed_output_artifact_url(job: dict) -> str:
+    output_artifact = (job.get("artifacts", {}) or {}).get("output")
+    if not isinstance(output_artifact, dict):
+        return ""
+    signed_url = output_artifact.get("signed_url")
+    if not isinstance(signed_url, dict) or not signed_url.get("available"):
+        return ""
+    return str(signed_url.get("url", "") or "").strip()
+
+
+def _build_replayable_conversion_command(
+    *,
+    job_id: str,
+    source_type: str,
+    original_filename: str,
+    profile: str,
+    force_ocr: bool,
+    language: str,
+    heading_repair_enabled: bool,
+) -> ReplayableCommand:
+    return ReplayableCommand(
+        name="convert",
+        kwargs={
+            "source_type": source_type,
+            "original_filename": original_filename,
+            "profile": profile,
+            "force_ocr": force_ocr,
+            "language": language,
+            "heading_repair_enabled": heading_repair_enabled,
+        },
+        context={
+            "job_id": job_id,
+            "public_status_url": f"/convert/status/{job_id}",
+            "quality_url": f"/convert/quality/{job_id}",
+            "download_url": f"/convert/download/{job_id}",
+        },
+    )
+
+
+def _submit_runtime_job(job_id: str, command: ReplayableCommand) -> dict:
+    try:
+        return RUNTIME_JOB_ADAPTER.submit(command, job_id=job_id).to_metadata()
+    except Exception as error:
+        return {
+            "job_id": job_id,
+            "provider": "local",
+            "external_id": "",
+            "status": "failed",
+            "error": str(error),
+            "replay": command.to_metadata(),
+        }
+
+
+def _update_runtime_job(job_id: str, status: RuntimeJobStatus, **fields) -> dict:
+    try:
+        return RUNTIME_JOB_ADAPTER.update_status(job_id, status, **fields).to_metadata()
+    except Exception:
+        job = _get_conversion_job(job_id) or {}
+        runtime = dict(job.get("runtime", {}) or {})
+        runtime["status"] = status.value
+        runtime.update({key: value for key, value in fields.items() if value is not None})
+        return runtime
+
+
 @app.errorhandler(RequestEntityTooLarge)
 def _handle_oversized_upload(error):
     return _json_error(
@@ -228,10 +453,12 @@ def _candidate_job_download_url(job_id: str, job: dict) -> str | None:
 
 
 def _build_job_download_state(job_id: str, job: dict) -> ConversionDownloadState:
+    remote_output_available = bool(_signed_output_artifact_url(job))
     return resolve_conversion_download_state(
         job_status=job.get("status"),
         output_path=job.get("output_path", ""),
         download_url=_candidate_job_download_url(job_id, job),
+        output_path_exists=True if remote_output_available else None,
     )
 
 
@@ -245,10 +472,14 @@ def _build_job_quality_state(job_id: str, job: dict) -> dict:
     if output_size_bytes is not None:
         payload["output_size_bytes"] = output_size_bytes
     payload["output_path_exists"] = _build_job_download_state(job_id, job).output_path_exists
-    return build_conversion_quality_state(
+    quality_state = build_conversion_quality_state(
         payload,
         download_url=_candidate_job_download_url(job_id, job),
     )
+    artifacts = dict(quality_state.get("artifacts", {}) or {})
+    artifacts.update(dict(job.get("artifacts", {}) or {}))
+    quality_state["artifacts"] = artifacts
+    return quality_state
 
 
 def _resolve_request_port_label(host_header: str | None, fallback_port: int) -> str:
@@ -363,6 +594,9 @@ def _build_conversion_job_history_item(job_id: str, job: dict) -> dict:
         "download_available": download_state.download_available,
         "download_state": download_state.to_dict(),
         "quality_state_url": f"/convert/quality/{response_job_id}",
+        "runtime": dict(job.get("runtime", {}) or {}),
+        "artifacts": dict(job.get("artifacts", {}) or {}),
+        "artifact_storage": dict(job.get("artifact_storage", {}) or {}),
     }
     if download_state.download_url:
         item["download_url"] = download_state.download_url
@@ -592,7 +826,8 @@ def _spawn_conversion_job(
         output_path = os.path.join(UPLOAD_DIR, f"{job_id}.epub")
 
         def _status_callback(status: str, message: str) -> None:
-            _set_conversion_job(job_id, status=status, message=message)
+            runtime_metadata = _update_runtime_job(job_id, RuntimeJobStatus.RUNNING, message=message)
+            _set_conversion_job(job_id, status=status, message=message, runtime=runtime_metadata)
             _log_conversion_event(
                 "convert.job.phase",
                 job_id=job_id,
@@ -621,6 +856,20 @@ def _spawn_conversion_job(
                 handle.write(payload["epub_bytes"])
             output_size_bytes = os.path.getsize(output_path)
             metadata = _attach_output_size_metadata(payload["metadata"], output_size_bytes)
+            output_artifact = _store_artifact_bytes(
+                job_id=job_id,
+                kind=ArtifactKind.OUTPUT,
+                filename=payload["download_name"],
+                data=payload["epub_bytes"],
+            )
+            job_before_ready = _get_conversion_job(job_id) or {}
+            artifacts = dict(job_before_ready.get("artifacts", {}) or {})
+            artifacts["output"] = output_artifact
+            runtime_metadata = _update_runtime_job(
+                job_id,
+                RuntimeJobStatus.SUCCEEDED,
+                message="EPUB gotowy do pobrania.",
+            )
             _set_conversion_job(
                 job_id,
                 status="ready",
@@ -628,10 +877,14 @@ def _spawn_conversion_job(
                 output_path=output_path,
                 download_name=payload["download_name"],
                 metadata=metadata,
+                runtime=runtime_metadata,
+                artifacts=artifacts,
+                artifact_storage=_artifact_storage_status(),
                 output_size_bytes=output_size_bytes,
                 error="",
                 error_code="",
             )
+            _store_quality_report_artifacts(job_id)
             _log_conversion_event(
                 "convert.job.phase",
                 job_id=job_id,
@@ -644,13 +897,30 @@ def _spawn_conversion_job(
         except Exception as error:
             if not _worker_can_finish_job(job_id):
                 return
+            sentry_event_id = capture_conversion_exception(
+                error,
+                context=_conversion_sentry_context(
+                    job_id=job_id,
+                    source_type=source_type,
+                    profile=profile,
+                ),
+            )
+            runtime_metadata = _update_runtime_job(
+                job_id,
+                RuntimeJobStatus.FAILED,
+                error=str(error),
+                message="Konwersja nie powiodla sie.",
+            )
             _set_conversion_job(
                 job_id,
                 status="failed",
                 message="Konwersja nie powiodla sie.",
+                runtime=runtime_metadata,
+                artifact_storage=_artifact_storage_status(),
                 output_size_bytes=0,
                 error=str(error),
                 error_code="conversion_failed",
+                sentry_event_id=sentry_event_id,
             )
             _log_conversion_event(
                 "convert.job.failed",
@@ -702,6 +972,24 @@ def index():
         "index.html",
         local_app_url=local_app_url,
         updated_at_label=updated_at_label,
+    )
+
+
+@app.route("/app")
+@app.route("/app/<path:_path>")
+def react_app(_path: str = ""):
+    """Serve the Sprint 4 React shell when the Vite build is available."""
+
+    root_path = Path(app.root_path)
+    react_index = root_path / "static" / "react" / "index.html"
+    local_app_url = build_local_app_url(
+        _resolve_request_port_label(request.host, _resolve_server_port())
+    )
+    if react_index.exists():
+        return react_index.read_text(encoding="utf-8")
+    return render_template(
+        "react_app_unbuilt.html",
+        local_app_url=local_app_url,
     )
 
 
@@ -763,6 +1051,14 @@ def convert():
         _apply_conversion_headers(response, payload["metadata"])
         return response
     except Exception as e:
+        capture_conversion_exception(
+            e,
+            context=_conversion_sentry_context(
+                job_id=job_id,
+                source_type=source_type,
+                profile=profile,
+            ),
+        )
         return _json_error(
             f"Konwersja nie powiodla sie: {str(e)}",
             error_code="conversion_failed",
@@ -815,15 +1111,35 @@ def convert_start():
             retryable=True,
         )
     created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-    _CONVERSION_JOB_STORE.create(
-        build_conversion_job_record(
-            job_id=job_id,
-            source_path=source_path,
-            source_type=source_type,
-            filename=file.filename,
-            created_at=created_at,
-        )
+    input_artifact = _store_artifact_bytes(
+        job_id=job_id,
+        kind=ArtifactKind.INPUT,
+        filename=file.filename,
+        data=Path(source_path).read_bytes(),
     )
+    runtime_metadata = _submit_runtime_job(
+        job_id,
+        _build_replayable_conversion_command(
+            job_id=job_id,
+            source_type=source_type,
+            original_filename=file.filename,
+            profile=profile,
+            force_ocr=force_ocr,
+            language=language,
+            heading_repair_enabled=heading_repair_enabled,
+        ),
+    )
+    job_record = build_conversion_job_record(
+        job_id=job_id,
+        source_path=source_path,
+        source_type=source_type,
+        filename=file.filename,
+        created_at=created_at,
+    )
+    job_record["runtime"] = runtime_metadata
+    job_record["artifacts"] = {"input": input_artifact}
+    job_record["artifact_storage"] = _artifact_storage_status()
+    _CONVERSION_JOB_STORE.create(job_record)
     _log_conversion_event(
         "convert.job.created",
         job_id=job_id,
@@ -854,6 +1170,9 @@ def convert_start():
             "source_type": source_type,
             "message": "Konwersja wystartowala. Trwa przygotowanie EPUB.",
             "poll_after_ms": DEFAULT_CONVERSION_POLL_INTERVAL_MS,
+            "runtime": runtime_metadata,
+            "artifacts": {"input": input_artifact},
+            "artifact_storage": job_record["artifact_storage"],
         }
     )
     response.status_code = 202
@@ -996,6 +1315,9 @@ def convert_status(job_id: str):
             "output_size_bytes": _read_output_size_bytes(job) if job.get("status") == "ready" else None,
             "quality_state": _build_job_quality_state(job_id, job),
             "quality_state_url": f"/convert/quality/{job_id}",
+            "runtime": dict(job.get("runtime", {}) or {}),
+            "artifacts": dict(job.get("artifacts", {}) or {}),
+            "artifact_storage": dict(job.get("artifact_storage", {}) or {}),
         }
     )
     response.headers["Cache-Control"] = "no-store, max-age=0"
@@ -1022,6 +1344,9 @@ def convert_quality(job_id: str):
             "success": True,
             "job_id": job["job_id"],
             "quality_state": _build_job_quality_state(job_id, job),
+            "runtime": dict(job.get("runtime", {}) or {}),
+            "artifacts": dict(job.get("artifacts", {}) or {}),
+            "artifact_storage": dict(job.get("artifact_storage", {}) or {}),
         }
     )
     response.headers["Cache-Control"] = "no-store, max-age=0"
@@ -1131,6 +1456,10 @@ def convert_download(job_id: str):
             phase="download",
             job_id=job_id,
         )
+
+    signed_artifact_url = _signed_output_artifact_url(job)
+    if signed_artifact_url:
+        return redirect(signed_artifact_url, code=302)
 
     response = send_file(
         output_path,

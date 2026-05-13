@@ -31,6 +31,8 @@
 # - release audit: python kindlemaster.py audit path\to\file.epub
 # - workflow baseline: python kindlemaster.py workflow baseline path\to\input.pdf --change-area reference
 # - workflow verify: python kindlemaster.py workflow verify path\to\input.pdf --run-id <run_id>
+# - install local hooks: python scripts/install_git_hooks.py --install
+# - check local hooks: python scripts/install_git_hooks.py --check
 #
 # Repo restrictions:
 # - no publication-specific runtime hacks
@@ -39,6 +41,13 @@
 # - no skipping validators, smoke, or release gates after runtime changes
 # - prefer the standard kindlemaster.py entrypoint over ad-hoc scripts
 # - generated output/ and reports/ artifacts are derived evidence, not policy authority
+# - local hooks are balanced: pre-commit runs fast governance checks, pre-push runs quick + status
+#
+# Governance evidence mirror:
+# - doctor: reports/governance/doctor.json
+# - quick: reports/governance/quick.json
+# - release: reports/governance/release.json
+# - doctor includes agent_readiness for Codex config, pinned MCP, plugins, skills, hooks, and stale local agent settings
 #
 # Active settings below are intentionally small and portable. Keep speculative
 # preferences as comments unless Codex supports them as real config keys.

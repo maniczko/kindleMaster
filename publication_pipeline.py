@@ -412,6 +412,16 @@ def publication_from_content(
         ocr_quality=content_metadata.get("ocr_quality") or {},
         tiny_tail_sections=_detect_tiny_tail_sections(sections),
         asset_budget_status=_asset_budget_status_for_document_like_report(analysis=analysis, assets=all_assets),
+        text_cleanup=content_metadata.get("text_cleanup") or {},
+        detected_outline_entries=int(
+            content_metadata.get("detected_outline_entries", 0)
+            or len(content.get("toc", []) or [])
+            or analysis.detected_outline_entries
+            or 0
+        ),
+        table_reconstruction=content_metadata.get("table_reconstruction") or table_summary,
+        metadata_inference=content_metadata.get("metadata_inference") or {},
+        reader_artifact_score=content_metadata.get("reader_artifact_score") or {},
         extractor_contract_warnings=contract_warnings,
     )
 

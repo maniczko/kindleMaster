@@ -333,6 +333,56 @@ class UiStateScreenshotPackTests(unittest.TestCase):
             accept_downloads=True,
             viewport={"width": viewport[0], "height": viewport[1]},
         )
+        context.add_init_script(
+            """
+            (() => {
+              const makeViewport = (scale = 1) => ({
+                width: 612 * scale,
+                height: 792 * scale,
+                scale,
+              });
+              window.pdfjsLib = {
+                GlobalWorkerOptions: {},
+                getDocument: () => ({
+                  promise: Promise.resolve({
+                    numPages: 3,
+                    getPage: async () => ({
+                      getViewport: ({ scale = 1 } = {}) => makeViewport(scale),
+                      render: ({ canvasContext, viewport }) => {
+                        if (canvasContext && viewport) {
+                          canvasContext.save();
+                          canvasContext.fillStyle = "#ffffff";
+                          canvasContext.fillRect(0, 0, viewport.width, viewport.height);
+                          canvasContext.fillStyle = "#f3f4f6";
+                          canvasContext.fillRect(48, 48, viewport.width - 96, viewport.height - 96);
+                          canvasContext.fillStyle = "#111827";
+                          canvasContext.font = "24px sans-serif";
+                          canvasContext.fillText("KindleMaster PDF preview", 72, 96);
+                          canvasContext.restore();
+                        }
+                        return { promise: Promise.resolve(), cancel: () => {} };
+                      },
+                    }),
+                  }),
+                }),
+              };
+              window.PDFLib = {
+                PDFDocument: {
+                  load: async () => ({
+                    getPages: () => [
+                      { getWidth: () => 612, getHeight: () => 792 },
+                    ],
+                    embedPage: async () => ({}),
+                  }),
+                  create: async () => ({
+                    addPage: () => ({ drawPage: () => {} }),
+                    save: async () => new Uint8Array([37, 80, 68, 70]),
+                  }),
+                },
+              };
+            })();
+            """
+        )
         page = context.new_page()
         page.on("console", lambda message: self._record_console(message))
         page.on("pageerror", lambda error: self._record_page_error(error))

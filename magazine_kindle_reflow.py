@@ -1056,6 +1056,8 @@ def _synthesize_sponsored_feature_title(chapter_pages: list[PageModel], *, langu
         return ""
 
     sponsor_signal = _chapter_has_sponsored_marker(chapter_pages)
+    if not sponsor_signal:
+        return ""
 
     phrase_re = re.compile(
         r"\b(?:[0-9A-ZĄĆĘŁŃÓŚŹŻ][0-9A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż&+/-]{1,24})"

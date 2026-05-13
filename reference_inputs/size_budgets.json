@@ -64,15 +64,15 @@
       "baseline_cases": ["example/The Woodpecker Method ( PDFDrive ).pdf"],
       "notes": "Balanced reflow gate for diagram-heavy training books with many inline boards.",
       "primary": {
-        "diagram_long_edge": 640,
-        "diagram_palette_colors": 16,
+        "diagram_long_edge": 520,
+        "diagram_palette_colors": 10,
         "diagram_target_dpi": 128,
         "raster_long_edge": 1280,
         "raster_jpeg_quality": 80
       },
       "fallback": {
-        "diagram_long_edge": 560,
-        "diagram_palette_colors": 12,
+        "diagram_long_edge": 504,
+        "diagram_palette_colors": 10,
         "diagram_target_dpi": 112,
         "raster_long_edge": 1180,
         "raster_jpeg_quality": 76

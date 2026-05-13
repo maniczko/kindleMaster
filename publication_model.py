@@ -89,6 +89,7 @@ class PublicationAnalysis:
     detected_features: list[str] = field(default_factory=list)
     external_tools: dict[str, Any] = field(default_factory=dict)
     profile_reason: str = ""
+    detected_outline_entries: int = 0
     route_decision: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -118,6 +119,7 @@ class PublicationAnalysis:
             "detected_features": self.detected_features,
             "external_tools": self.external_tools,
             "profile_reason": self.profile_reason,
+            "detected_outline_entries": self.detected_outline_entries,
             "route_decision": self.route_decision,
         }
 
@@ -160,6 +162,10 @@ class PublicationQualityReport:
     validation_messages: list[str] = field(default_factory=list)
     validation_tool: str = "none"
     text_cleanup: dict[str, Any] = field(default_factory=dict)
+    detected_outline_entries: int = 0
+    table_reconstruction: dict[str, Any] = field(default_factory=dict)
+    metadata_inference: dict[str, Any] = field(default_factory=dict)
+    reader_artifact_score: dict[str, Any] = field(default_factory=dict)
     extractor_contract_warnings: list[dict[str, Any]] = field(default_factory=list)
 
     def content_metrics_dict(self) -> dict[str, Any]:
@@ -198,6 +204,10 @@ class PublicationQualityReport:
             "tiny_tail_section_count": len(self.tiny_tail_sections),
             "asset_budget_status": self.asset_budget_status,
             "text_cleanup": self.text_cleanup,
+            "detected_outline_entries": self.detected_outline_entries,
+            "table_reconstruction": self.table_reconstruction,
+            "metadata_inference": self.metadata_inference,
+            "reader_artifact_score": self.reader_artifact_score,
             "extractor_contract_warnings": self.extractor_contract_warnings,
         }
 

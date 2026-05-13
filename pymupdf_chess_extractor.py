@@ -45,9 +45,9 @@ FIGURINE_FONT_TOKENS = ("sptimefig", "spariesfig")
 FIGURINE_TEXT_MAP = {
     "\xa2": "K",
     "\xa3": "Q",
-    "\xa4": "R",
+    "\xa4": "N",
     "\xa5": "B",
-    "\xa6": "N",
+    "\xa6": "R",
     "\xa9": " with compensation",
     "\xb1": " \u00b1",
     "\xb2": " +=",
@@ -143,6 +143,7 @@ def _expand_chess_region_for_auxiliary_labels(
     height = max(y1 - y0, 1.0)
     margin_x = max(12.0, width * 0.10)
     margin_y = max(12.0, height * 0.10)
+    side_marker_margin = max(14.0, width * 0.18)
 
     expanded = [x0, y0, x1, y1]
     suppressed_indices = set(region.text_span_indices)
@@ -171,13 +172,18 @@ def _expand_chess_region_for_auxiliary_labels(
     expanded_bbox = (
         max(page_rect.x0, expanded[0] - 2.0),
         max(page_rect.y0, expanded[1] - 2.0),
-        min(page_rect.x1, expanded[2] + 2.0),
+        min(page_rect.x1, expanded[2] + side_marker_margin + 2.0),
         min(page_rect.y1, expanded[3] + 2.0),
     )
     return expanded_bbox, suppressed_indices
 
 
-def _resize_image_to_long_edge(image: Image.Image, max_long_edge: int) -> Image.Image:
+def _resize_image_to_long_edge(
+    image: Image.Image,
+    max_long_edge: int,
+    *,
+    resample=Image.LANCZOS,
+) -> Image.Image:
     target_long_edge = max(1, int(max_long_edge or 0))
     if target_long_edge <= 0:
         return image
@@ -190,7 +196,7 @@ def _resize_image_to_long_edge(image: Image.Image, max_long_edge: int) -> Image.
             max(1, int(round(image.width * scale))),
             max(1, int(round(image.height * scale))),
         ),
-        Image.LANCZOS,
+        resample,
     )
     return resized
 
@@ -200,7 +206,12 @@ def _optimize_chess_diagram_export(
     config: ConversionConfig,
 ) -> tuple[bytes, int, int]:
     source_image = Image.open(io.BytesIO(png_data)).convert("L")
-    image = _resize_image_to_long_edge(source_image, config.diagram_image_long_edge)
+    image = _resize_image_to_long_edge(
+        source_image,
+        config.diagram_image_long_edge,
+        resample=Image.Resampling.LANCZOS,
+    )
+    image = _prepare_chess_diagram_for_reader(image)
     target_palette_size = max(4, min(int(config.diagram_palette_colors or 0), 64))
 
     baseline = _encode_chess_diagram_png(image, target_palette_size)
@@ -231,7 +242,8 @@ def _legacy_prequantized_chess_image(
     output = io.BytesIO()
     prequantized.save(output, format="PNG", optimize=True, compress_level=9)
     decoded = Image.open(io.BytesIO(output.getvalue())).convert("L")
-    return _resize_image_to_long_edge(decoded, max_long_edge)
+    resized = _resize_image_to_long_edge(decoded, max_long_edge, resample=Image.Resampling.LANCZOS)
+    return _prepare_chess_diagram_for_reader(resized)
 
 
 def _encode_legacy_size_ceiling_png(
@@ -278,6 +290,22 @@ def _build_chess_diagram_png_candidates(
         _encode_chess_diagram_png(contrast_sharp_image, target_palette_size),
         _encode_chess_diagram_png(hatch_softened_image, compact_hatch_palette_size),
     ]
+
+
+def _prepare_chess_diagram_for_reader(image: Image.Image) -> Image.Image:
+    """Lighten noisy hatch midtones while preserving black piece strokes."""
+    grayscale = image.convert("L")
+
+    def tone(pixel: int) -> int:
+        if pixel < 80:
+            return pixel
+        if pixel < 180:
+            return min(255, pixel + 24)
+        if pixel < 235:
+            return min(255, pixel + 12)
+        return pixel
+
+    return grayscale.point(tone)
 
 
 def _soften_chess_diagram_hatch_texture(image: Image.Image) -> Image.Image:

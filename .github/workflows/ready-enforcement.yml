@@ -55,7 +55,7 @@ jobs:
         run: python -m pip check
 
       - name: Run static-quality gate
-        run: python -m ruff check --select E9,F63,F7,F82 --output-format=github kindlemaster.py premium_tools.py scripts test_github_ready_enforcement.py test_kindlemaster_entrypoint.py test_project_status.py test_skill_contracts.py test_skill_guardrails.py
+        run: python -m ruff check --select E9,F63,F7,F82 --output-format=github kindlemaster.py premium_tools.py scripts test_agent_config_contracts.py test_github_ready_enforcement.py test_kindlemaster_entrypoint.py test_project_status.py test_skill_contracts.py test_skill_guardrails.py
 
       - name: Run dependency security audit
         if: ${{ matrix.security_audit }}
@@ -64,7 +64,7 @@ jobs:
       - name: Run governance coverage threshold
         run: |
           python -c "from pathlib import Path; Path('reports/coverage').mkdir(parents=True, exist_ok=True)"
-          python -m coverage run -m unittest test_github_ready_enforcement.py test_kindlemaster_entrypoint.py test_project_status.py test_skill_contracts.py test_skill_guardrails.py
+          python -m coverage run -m unittest test_agent_config_contracts.py test_github_ready_enforcement.py test_kindlemaster_entrypoint.py test_project_status.py test_skill_contracts.py test_skill_guardrails.py
           python -m coverage report --include="kindlemaster.py,scripts/generate_project_status.py" --fail-under=${{ env.GOVERNANCE_COVERAGE_FAIL_UNDER }}
           python -m coverage xml -o reports/coverage/coverage-${{ matrix.os }}-py${{ matrix.python-version }}.xml
 
@@ -113,6 +113,48 @@ jobs:
 
       - name: Run quick READY lane
         run: python kindlemaster.py test --suite quick
+
+      - name: Run Sprint 1 QA regression gate
+        run: python -m unittest test_sprint1_quality_gates.py
+
+      - name: Set up Node when workspace exists
+        if: ${{ hashFiles('package.json') != '' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run Vitest contract regressions when workspace exists
+        shell: bash
+        run: |
+          if [[ ! -f package.json ]]; then
+            echo "No package.json found; skipping Node contract regressions."
+            echo "Future hook: pnpm run test:contracts:regression"
+            exit 0
+          fi
+
+          corepack enable
+          if [[ -f pnpm-lock.yaml ]]; then
+            corepack prepare pnpm@9 --activate
+            pnpm install --frozen-lockfile
+            if node -e "const scripts=require('./package.json').scripts||{}; process.exit(scripts['test:contracts:regression'] ? 0 : 1)"; then
+              pnpm run test:contracts:regression
+            else
+              echo "::notice::Node workspace found, but package.json has no test:contracts:regression script."
+              echo "Expected hook: pnpm run test:contracts:regression"
+            fi
+          else
+            if [[ -f package-lock.json ]]; then
+              npm ci
+            else
+              npm install
+            fi
+            if node -e "const scripts=require('./package.json').scripts||{}; process.exit(scripts['test:contracts:regression'] ? 0 : 1)"; then
+              npm run test:contracts:regression
+            else
+              echo "::notice::Node workspace found, but package.json has no test:contracts:regression script."
+              echo "Expected hook: pnpm run test:contracts:regression"
+            fi
+          fi
 
       - name: Upload quick READY artifacts
         if: ${{ always() }}

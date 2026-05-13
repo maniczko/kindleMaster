@@ -262,6 +262,14 @@ DENSE_TABLE_DIAGRAM_ARTIFACT_LABELS = {
     "outputs",
 }
 
+GENERIC_TABLE_SUBHEADING_KEYS = {
+    "definicje",
+    "definitions",
+    "terminologia",
+    "terminy",
+    "terms",
+}
+
 MAGAZINE_GENERIC_TOC_LABEL_KEYS = {
     "business implications",
     "co to jest",
@@ -528,6 +536,9 @@ def repair_epub_headings_and_toc(
         after_scan=after_scan,
         publication_profile=publication_profile,
     )
+    content_cleanup_phase = ((phase_report.get("phases") or {}).get("content_cleanup") or {})
+    summary["content_cleanup"] = content_cleanup_phase.get("summary", {})
+    summary["content_cleanup_removed"] = content_cleanup_phase.get("removed", [])
     qa_payload = _build_qa_payload(
         phase_report=phase_report,
         toc_mapping=toc_mapping,
@@ -857,11 +868,14 @@ def _should_prefer_existing_outline_toc(
 
 def _is_clean_navigation_heading_text(text: str, *, level: int) -> bool:
     normalized = _normalize_text(text)
-    if not _should_include_in_toc(normalized, level):
+    strong_numbered_heading = _looks_like_strong_numbered_section_heading(normalized)
+    if not _should_include_in_toc(normalized, level) and not strong_numbered_heading:
         return False
     if _looks_like_figure_caption_heading(normalized):
         return False
-    if _looks_like_table_header_heading(normalized):
+    if _looks_like_generic_table_subheading(normalized, level=level):
+        return False
+    if _looks_like_table_header_heading(normalized) and not strong_numbered_heading:
         return False
     if _looks_like_navigation_artifact_heading(normalized):
         return False
@@ -1301,6 +1315,8 @@ def _demote_heading_noise(
         text = _normalize_text(node.get_text(" ", strip=True))
         if not text:
             continue
+        if _protects_strong_numbered_heading_from_noise(node, text):
+            continue
         lowered = text.lower()
         if (
             text[:1] in {"•", "·", "▪", "◦", ""}
@@ -1458,6 +1474,18 @@ def _clean_magazine_toc_label_text(text: str) -> str:
     cleaned = _normalize_text(text).strip(" -:;,.")
     if not cleaned:
         return ""
+    dateline_match = re.match(
+        r"^(?:[A-Z][A-Z'.-]+(?:\s+[A-Z][A-Z'.-]+){0,3}),\s*(?:[A-Z][A-Z'.-]+(?:\s+[A-Z][A-Z'.-]+){0,3})\s+(?P<title>(?:A|An|The)\s+.+)$",
+        cleaned,
+    )
+    if dateline_match:
+        cleaned = _normalize_text(dateline_match.group("title")).strip(" -:;,.")
+    long_title_match = re.search(
+        r"\b(?P<title>(?:A|An|The)\s+[A-Za-z][A-Za-z'’-]+(?:\s+[A-Za-z][A-Za-z'’-]+){1,8})$",
+        cleaned,
+    )
+    if long_title_match and (len(cleaned) > 90 or len(cleaned.split()) > 12):
+        cleaned = _normalize_text(long_title_match.group("title")).strip(" -:;,.")
     cleaned = re.sub(
         r"(?i)\s+[-–—]\s*(?:co\s+to\s+jest|jak\s+dzia[łl]a|implikacje\s+biznesowe|przyk[łl]ad|proces)\s*$",
         "",
@@ -1573,6 +1601,12 @@ def _heading_text_keys(text: str) -> set[str]:
 
 def _is_magazine_generic_reflow_label(text: str) -> bool:
     return bool(_heading_text_keys(text) & MAGAZINE_GENERIC_TOC_LABEL_KEYS) or _looks_like_magazine_generic_combo_heading(text)
+
+
+def _looks_like_generic_table_subheading(text: str, *, level: int) -> bool:
+    if level <= 1 or _looks_like_numbered_heading(text):
+        return False
+    return bool(_heading_text_keys(text) & GENERIC_TABLE_SUBHEADING_KEYS)
 
 
 def _looks_like_magazine_generic_combo_heading(text: str) -> bool:
@@ -1897,6 +1931,8 @@ def _looks_like_navigation_artifact_heading(text: str) -> bool:
         return True
     if re.match(r"(?i)^(?:page|strona)\s*\d+(?:\s*(?:of|z)\s*\d+)?$", normalized):
         return True
+    if re.match(r"(?i)^\d+(?:\.\d+){0,3}\.?\s+(?:page|strona)\s+\d+\b", normalized):
+        return True
     if len(re.findall(r"\b\d{1,4}\s+\d+(?:\.\d+)+\b", normalized)) >= 2:
         return True
     if _looks_like_index_page_heading(normalized):
@@ -2210,7 +2246,34 @@ def _should_skip_repetitive_dense_heading(text: str, *, level: int, repeated_cou
 
 
 def _looks_like_numbered_heading(text: str) -> bool:
-    return bool(re.match(r"^\d+(?:\.\d+){0,3}\b", _normalize_text(text)))
+    return bool(re.match(r"^\d+(?:\.\d+){0,3}\.?\b", _normalize_text(text)))
+
+
+def _looks_like_strong_numbered_section_heading(text: str) -> bool:
+    normalized = _normalize_text(text).strip()
+    match = re.match(r"^\d+(?:\.\d+){0,3}\.?\s+(?P<title>.+)$", normalized)
+    if not match:
+        return False
+    title = match.group("title").strip(" .:;-")
+    if len(title) < 4 or not any(char.isalpha() for char in title):
+        return False
+    if _looks_like_figure_caption_heading(normalized):
+        return False
+    if _looks_like_navigation_artifact_heading(normalized):
+        return False
+    if _looks_like_synthetic_section_label(normalized):
+        return False
+    if _looks_like_dense_table_or_diagram_artifact_heading(normalized):
+        return False
+    return True
+
+
+def _protects_strong_numbered_heading_from_noise(node: Tag, text: str) -> bool:
+    if not node.name or not str(node.name).startswith("h"):
+        return False
+    if node.find_parent(["figure", "figcaption", "table", "thead", "tbody", "tfoot"]):
+        return False
+    return _looks_like_strong_numbered_section_heading(text)
 
 
 def _looks_like_person_credential_heading(text: str) -> bool:
@@ -2903,7 +2966,14 @@ def _uses_relaxed_heading_cardinality(publication_profile: str | None) -> bool:
 
 def _is_magazine_publication_profile(publication_profile: str | None) -> bool:
     profile = (publication_profile or "").strip().lower().replace("-", "_")
-    return bool(profile and ("magazine" in profile or profile in {"editorial_layout", "editorial_reflow"}))
+    return bool(
+        profile
+        and (
+            "magazine" in profile
+            or profile in {"editorial_layout", "editorial_reflow", "clean_reading", "kindle_clean_reading"}
+            or profile.endswith("_clean_reading")
+        )
+    )
 
 
 def _is_suspicious_final_heading_text(text: str, *, publication_profile: str | None = None) -> bool:
@@ -2918,6 +2988,8 @@ def _is_suspicious_final_heading_text(text: str, *, publication_profile: str | N
     if _looks_like_figure_caption_heading(normalized):
         return True
     if _looks_like_table_header_heading(normalized):
+        if _looks_like_strong_numbered_section_heading(normalized):
+            return False
         if _is_magazine_publication_profile(publication_profile) and len(normalized.split()) >= 5:
             return False
         return True
@@ -2933,7 +3005,7 @@ def _is_suspicious_final_heading_text(text: str, *, publication_profile: str | N
         return True
     if _looks_like_trailing_fragment_heading(normalized):
         return True
-    if _looks_like_truncated_heading(normalized):
+    if _looks_like_truncated_heading(normalized) and not _looks_like_strong_numbered_section_heading(normalized):
         return True
     return False
 

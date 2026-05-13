@@ -13,7 +13,7 @@ import io
 from dataclasses import dataclass
 
 import fitz  # PyMuPDF
-from PIL import Image, ImageOps
+from PIL import Image, ImageDraw, ImageOps
 
 
 CHESS_FONT_INDICATORS = [
@@ -461,18 +461,12 @@ def render_chess_diagram_to_png(
     )
     png_bytes = pix.tobytes("png")
 
-    # Trim away captions / surrounding page debris and normalize boards to a
-    # square white canvas so all diagrams have the same
-    # visual proportions in reflowable EPUB readers, even when PDF span boxes
-    # differ slightly from page to page.
+    # Trim away captions and surrounding page debris. Keep the crop tight
+    # instead of adding a square white canvas; coordinates and side-to-move
+    # markers can legitimately make a diagram non-square, and extra canvas
+    # reads as a frame while increasing PNG cost.
     img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
     img = _crop_to_board_region(img)
-    canvas_size = max(img.size)
-    if img.width != img.height:
-        canvas = Image.new("RGB", (canvas_size, canvas_size), "white")
-        offset = ((canvas_size - img.width) // 2, (canvas_size - img.height) // 2)
-        canvas.paste(img, offset)
-        img = canvas
 
     if optimize:
         optimized = _optimize_chess_diagram_image(img)
@@ -584,14 +578,248 @@ def _find_border_band(
     minimum_run: int,
 ) -> tuple[tuple[int, int], tuple[int, int]] | None:
     """Find the first and last contiguous border bands for board lines."""
+    groups = _find_border_groups(counts, runs, minimum_count, minimum_run)
+    if len(groups) < 2:
+        return None
+    return groups[0], groups[-1]
+
+
+def _find_border_groups(
+    counts: list[int],
+    runs: list[int],
+    minimum_count: int,
+    minimum_run: int,
+) -> list[tuple[int, int]]:
+    """Find contiguous border-line candidates."""
     candidates = [
         idx for idx, (count, run) in enumerate(zip(counts, runs))
         if count >= minimum_count and run >= minimum_run
     ]
-    groups = _contiguous_groups(candidates)
-    if len(groups) < 2:
+    return _contiguous_groups(candidates)
+
+
+def _select_board_border_box(
+    row_groups: list[tuple[int, int]],
+    col_groups: list[tuple[int, int]],
+) -> tuple[int, int, int, int] | None:
+    """Choose the square-like border pair for one board from possibly many boards."""
+    best: tuple[float, int, int, int, int] | None = None
+
+    for row_start_idx in range(len(row_groups)):
+        for row_end_idx in range(row_start_idx + 1, len(row_groups)):
+            top = row_groups[row_start_idx][0]
+            bottom = row_groups[row_end_idx][1]
+            board_height = bottom - top + 1
+            if board_height < 80:
+                continue
+
+            for col_start_idx in range(len(col_groups)):
+                for col_end_idx in range(col_start_idx + 1, len(col_groups)):
+                    left = col_groups[col_start_idx][0]
+                    right = col_groups[col_end_idx][1]
+                    board_width = right - left + 1
+                    if board_width < 80:
+                        continue
+
+                    ratio = board_width / float(board_height)
+                    if not 0.72 <= ratio <= 1.28:
+                        continue
+
+                    square_penalty = abs(board_width - board_height) / float(max(board_width, board_height))
+                    position_penalty = (top + left) * 0.0001
+                    span_penalty = (row_end_idx - row_start_idx + col_end_idx - col_start_idx) * 0.00001
+                    size_bonus = min(board_width, board_height) * 0.0002
+                    score = square_penalty + position_penalty + span_penalty - size_bonus
+                    candidate = (score, top, bottom, left, right)
+                    if best is None or candidate < best:
+                        best = candidate
+
+    if best is None:
         return None
-    return groups[0], groups[-1]
+    _, top, bottom, left, right = best
+    return top, bottom, left, right
+
+
+def _bottom_crop_limit_after_coordinates(
+    gray: Image.Image,
+    *,
+    left: int,
+    right: int,
+    bottom: int,
+    board_width: int,
+    board_height: int,
+    pad_left: int,
+    pad_right: int,
+    max_pad_bottom: int,
+) -> int:
+    """Keep file labels below the board while trimming the next exercise."""
+    width, height = gray.size
+    scan_start = min(height - 1, bottom + 1)
+    scan_end = min(height - 1, bottom + max_pad_bottom)
+    if scan_start >= scan_end:
+        return min(height, bottom + max_pad_bottom + 1)
+
+    x0 = max(0, left - pad_left)
+    x1 = min(width, right + pad_right + 1)
+    dark_row_threshold = max(2, int((x1 - x0) * 0.006))
+    dark_rows: list[int] = []
+    pixels = gray.load()
+    for y in range(scan_start, scan_end + 1):
+        dark_count = 0
+        for x in range(x0, x1):
+            if pixels[x, y] < 96:
+                dark_count += 1
+                if dark_count >= dark_row_threshold:
+                    dark_rows.append(y)
+                    break
+
+    groups = _contiguous_groups(dark_rows)
+    min_pad_bottom = max(24, int(board_height * 0.075))
+    label_attach_limit = bottom + max(34, int(board_height * 0.105))
+    gap_limit = max(8, int(board_height * 0.025))
+    safety_margin = max(8, int(board_height * 0.02))
+
+    keep_until = bottom
+    kept_label_group = False
+    next_group_start: int | None = None
+    for group_start, group_end in groups:
+        if not kept_label_group:
+            if group_start <= label_attach_limit:
+                keep_until = max(keep_until, group_end)
+                kept_label_group = True
+                continue
+            next_group_start = group_start
+            break
+
+        if group_start - keep_until <= gap_limit:
+            keep_until = max(keep_until, group_end)
+            continue
+
+        next_group_start = group_start
+        break
+
+    target_bottom = max(bottom + min_pad_bottom, keep_until + safety_margin)
+    if next_group_start is not None:
+        target_bottom = min(target_bottom, max(bottom + 1, next_group_start - safety_margin))
+
+    return min(height, max(bottom + 1, target_bottom + 1))
+
+
+def _right_crop_limit_after_marker(
+    gray: Image.Image,
+    *,
+    top: int,
+    bottom: int,
+    right: int,
+    board_width: int,
+    board_height: int,
+    default_pad_right: int,
+    max_pad_right: int,
+) -> int:
+    """Keep side-to-move markers beside the board without swallowing neighbors."""
+    width, _height = gray.size
+    scan_start = min(width - 1, right + 1)
+    scan_end = min(width - 1, right + max_pad_right)
+    if scan_start >= scan_end:
+        return min(width, right + default_pad_right + 1)
+
+    marker_y0 = max(0, top - int(board_height * 0.03))
+    marker_y1 = min(gray.height, bottom + int(board_height * 0.08) + 1)
+    dark_col_threshold = max(2, int((marker_y1 - marker_y0) * 0.008))
+    pixels = gray.load()
+    dark_cols: list[int] = []
+    for x in range(scan_start, scan_end + 1):
+        dark_count = 0
+        for y in range(marker_y0, marker_y1):
+            if pixels[x, y] < 96:
+                dark_count += 1
+                if dark_count >= dark_col_threshold:
+                    dark_cols.append(x)
+                    break
+
+    groups = _contiguous_groups(dark_cols)
+    marker_attach_limit = right + max(54, int(board_width * 0.13))
+    safety_margin = max(7, int(board_width * 0.018))
+    default_limit = min(width, right + default_pad_right + 1)
+    if not groups:
+        return default_limit
+
+    keep_until = right + default_pad_right
+    for group_start, group_end in groups:
+        if group_start > marker_attach_limit:
+            break
+        keep_until = max(keep_until, group_end + safety_margin)
+
+    return min(width, max(default_limit, keep_until + 1))
+
+
+def _redraw_right_side_marker(
+    img: Image.Image,
+    *,
+    board_top: int,
+    board_bottom: int,
+    board_right: int,
+    board_width: int,
+    board_height: int,
+) -> Image.Image:
+    """Replace fragile PDF side-to-move glyphs with clean line-art markers."""
+    scan_x0 = min(img.width, board_right + max(5, int(board_width * 0.012)))
+    scan_y0 = max(0, board_top - int(board_height * 0.03))
+    scan_y1 = min(img.height, board_bottom + max(16, int(board_height * 0.10)) + 1)
+    if scan_x0 >= img.width or scan_y0 >= scan_y1:
+        return img
+
+    gray = img.convert("L")
+    dark_pixels: list[tuple[int, int]] = []
+    pixels = gray.load()
+    for y in range(scan_y0, scan_y1):
+        for x in range(scan_x0, img.width):
+            if pixels[x, y] < 96:
+                dark_pixels.append((x, y))
+
+    min_dark_pixels = max(24, int(board_height * 0.045))
+    if len(dark_pixels) < min_dark_pixels:
+        return img
+
+    marker_left = min(x for x, _y in dark_pixels)
+    marker_right = max(x for x, _y in dark_pixels)
+    marker_top = min(y for _x, y in dark_pixels)
+    marker_bottom = max(y for _x, y in dark_pixels)
+    marker_width = marker_right - marker_left + 1
+    marker_height = marker_bottom - marker_top + 1
+    if marker_width > board_width * 0.22 or marker_height > board_height * 0.35:
+        return img
+
+    output = img.copy()
+    draw = ImageDraw.Draw(output)
+    white = (255, 255, 255) if output.mode == "RGB" else 255
+    black = (0, 0, 0) if output.mode == "RGB" else 0
+
+    erase_box = (
+        max(0, marker_left - 4),
+        max(0, marker_top - 4),
+        min(output.width - 1, marker_right + 4),
+        min(output.height - 1, marker_bottom + 4),
+    )
+    draw.rectangle(erase_box, fill=white)
+
+    marker_size = max(24, min(40, int(board_width * 0.075), int(board_height * 0.09)))
+    center_y = (marker_top + marker_bottom) // 2
+    triangle_top = max(3, min(output.height - marker_size - 4, center_y - marker_size // 2))
+    triangle_left = board_right + max(10, int(board_width * 0.026))
+    triangle_left = min(triangle_left, output.width - marker_size - 6)
+    if triangle_left <= board_right + 2:
+        return output
+
+    points = [
+        (triangle_left + marker_size // 2, triangle_top),
+        (triangle_left, triangle_top + marker_size),
+        (triangle_left + marker_size, triangle_top + marker_size),
+        (triangle_left + marker_size // 2, triangle_top),
+    ]
+    line_width = max(2, int(marker_size * 0.07))
+    draw.line(points, fill=black, width=line_width, joint="curve")
+    return output
 
 
 def _crop_to_board_region(img: Image.Image) -> Image.Image:
@@ -601,24 +829,28 @@ def _crop_to_board_region(img: Image.Image) -> Image.Image:
 
     row_counts, col_counts, row_runs, col_runs = _longest_dark_runs(gray)
 
-    border_rows = _find_border_band(
+    row_minimum_count = max(20, int(width * BOARD_BORDER_DENSITY_RATIO))
+    row_minimum_run = max(80, int(width * BOARD_BORDER_RUN_RATIO))
+    col_minimum_count = max(20, int(height * BOARD_BORDER_DENSITY_RATIO))
+    col_minimum_run = max(80, int(height * BOARD_BORDER_RUN_RATIO))
+
+    border_row_groups = _find_border_groups(
         row_counts,
         row_runs,
-        minimum_count=max(20, int(width * BOARD_BORDER_DENSITY_RATIO)),
-        minimum_run=max(80, int(width * BOARD_BORDER_RUN_RATIO)),
+        minimum_count=row_minimum_count,
+        minimum_run=row_minimum_run,
     )
-    border_cols = _find_border_band(
+    border_col_groups = _find_border_groups(
         col_counts,
         col_runs,
-        minimum_count=max(20, int(height * BOARD_BORDER_DENSITY_RATIO)),
-        minimum_run=max(80, int(height * BOARD_BORDER_RUN_RATIO)),
+        minimum_count=col_minimum_count,
+        minimum_run=col_minimum_run,
     )
 
-    if border_rows and border_cols:
-        top = border_rows[0][0]
-        bottom = border_rows[1][1]
-        left = border_cols[0][0]
-        right = border_cols[1][1]
+    selected_board = _select_board_border_box(border_row_groups, border_col_groups)
+
+    if selected_board:
+        top, bottom, left, right = selected_board
     else:
         row_band = _largest_dense_band(row_counts, max(10, int(width * BOARD_DENSITY_RATIO)))
         col_band = _largest_dense_band(col_counts, max(10, int(height * BOARD_DENSITY_RATIO)))
@@ -630,21 +862,54 @@ def _crop_to_board_region(img: Image.Image) -> Image.Image:
     board_width = right - left + 1
     board_height = bottom - top + 1
 
-    # Keep coordinates and side markers, but remove stray caption strips above the
-    # board by using a much tighter top padding than the other edges.
-    pad_left = max(24, int(board_width * 0.10))
-    pad_right = max(30, int(board_width * 0.16))
-    pad_top = max(8, int(board_height * 0.035))
-    pad_bottom = max(18, int(board_height * 0.12))
+    # Keep rank/file coordinates near the board, but avoid pulling in exercise
+    # numbers or neighboring diagrams from dense multi-board pages.
+    pad_left = max(18, int(board_width * 0.075))
+    pad_right = max(24, int(board_width * 0.10))
+    max_pad_right = max(74, int(board_width * 0.20))
+    pad_top = max(2, int(board_height * 0.012))
+    pad_bottom = max(34, int(board_height * 0.12))
+    bottom_limit = _bottom_crop_limit_after_coordinates(
+        gray,
+        left=left,
+        right=right,
+        bottom=bottom,
+        board_width=board_width,
+        board_height=board_height,
+        pad_left=pad_left,
+        pad_right=pad_right,
+        max_pad_bottom=pad_bottom,
+    )
+    right_limit = _right_crop_limit_after_marker(
+        gray,
+        top=top,
+        bottom=bottom,
+        right=right,
+        board_width=board_width,
+        board_height=board_height,
+        default_pad_right=pad_right,
+        max_pad_right=max_pad_right,
+    )
 
     crop_box = (
         max(0, left - pad_left),
         max(0, top - pad_top),
-        min(width, right + pad_right + 1),
-        min(height, bottom + pad_bottom + 1),
+        right_limit,
+        bottom_limit,
     )
     cropped = img.crop(crop_box)
-    return cropped if cropped.size[0] > 0 and cropped.size[1] > 0 else img
+    if cropped.size[0] <= 0 or cropped.size[1] <= 0:
+        return img
+
+    crop_left, crop_top, _crop_right, _crop_bottom = crop_box
+    return _redraw_right_side_marker(
+        cropped,
+        board_top=top - crop_top,
+        board_bottom=bottom - crop_top,
+        board_right=right - crop_left,
+        board_width=board_width,
+        board_height=board_height,
+    )
 
 
 def generate_chess_diagram_css() -> str:

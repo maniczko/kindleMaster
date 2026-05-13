@@ -9,9 +9,9 @@ For the operator setup sequence and failure classification guidance, see [local-
 | Profile | Command | Installs | What it supports |
 | --- | --- | --- | --- |
 | `runtime_only` | `python kindlemaster.py bootstrap --runtime-only` | `requirements.txt` | conversion, validation, smoke, Flask serving, `quick`, and the core `release` lane |
-| `developer` | `python kindlemaster.py bootstrap` | `requirements.txt` + `requirements-dev.txt` | everything in `runtime_only` plus pytest/coverage/ruff/pip-audit/Waitress/Playwright and `scikit-learn` support for governance, browser, runtime, and ML training lanes |
+| `developer` | `python kindlemaster.py bootstrap` | `requirements.txt` + `requirements-dev.txt` plus local `.githooks` setup | everything in `runtime_only` plus pytest/coverage/ruff/pip-audit/Waitress/Playwright and `scikit-learn` support for governance, browser, runtime, and ML training lanes |
 
-Bootstrap only manages Python packages. It does not install Java, EPUBCheck, Tesseract, Ghostscript, qpdf, PDFBox, or Chromium.
+Bootstrap manages Python packages and local Git hook configuration for the developer profile. It does not install Java, EPUBCheck, Tesseract, Ghostscript, qpdf, PDFBox, or Chromium.
 
 ML runtime inference is local JSON math and belongs to the runtime footprint. Training uses `scikit-learn` from `requirements-dev.txt` only:
 
@@ -25,12 +25,12 @@ python kindlemaster.py ml evaluate
 
 | Surface | Support level | Minimal command | Required local toolchain | Degradation behavior |
 | --- | --- | --- | --- | --- |
-| `quick` | core | `python kindlemaster.py test --suite quick` | runtime bootstrap only | hard-fails if runtime Python deps are missing |
+| `quick` | core | `python kindlemaster.py test --suite quick` | runtime bootstrap only | hard-fails if runtime Python deps are missing; includes Sprint 2 runtime job and artifact storage contract tests plus Sprint 3 AI quality contract fixtures |
 | `corpus` | core | `python kindlemaster.py test --suite corpus` | runtime bootstrap only | hard-fails if runtime Python deps are missing; writes derived corpus gate reports and benchmark summaries under `reports/corpus/` |
 | `release` | core | `python kindlemaster.py test --suite release` | runtime bootstrap only | runs bounded release-specific unit shards plus the standard corpus gate; browser/runtime follow-ups are skipped when their optional toolchains are missing |
 | `full` | diagnostic | `python kindlemaster.py test --suite full` | runtime bootstrap plus any optional dependencies used by discovered tests | runs `unittest discover -p test*.py` across explicit and intentionally discover-only tests; use as an all-discovery diagnostic lane, not as a bounded release gate |
 | `browser` | optional | `python kindlemaster.py test --suite browser` | developer bootstrap + Chromium | returns a clear unavailable report if Playwright or Chromium is missing |
-| `runtime` | optional | `python kindlemaster.py test --suite runtime` | developer bootstrap + Chromium | returns a clear unavailable report if Waitress, Playwright, or Chromium is missing |
+| `runtime` | optional | `python kindlemaster.py test --suite runtime` | developer bootstrap + Chromium | returns a clear unavailable report if Waitress, Playwright, or Chromium is missing; includes Sprint 2 Playwright upload/status/quality/download smoke |
 
 ## GitHub Governance Matrix
 
@@ -40,11 +40,11 @@ The GitHub READY workflow defines the external compatibility policy for CI:
 | --- | --- | --- | --- |
 | `ready-governance` | Ubuntu | Python 3.12, 3.13, and 3.14 | Supported Python matrix for static-quality, dependency consistency, and governance coverage |
 | `ready-governance` | Windows | Python 3.14 | Windows canary for local-first operator compatibility |
-| `ready-quick` | Ubuntu | Python 3.14 | Mirrors `python kindlemaster.py test --suite quick` |
+| `ready-quick` | Ubuntu | Python 3.14, Node 22 when `package.json` exists | Mirrors `python kindlemaster.py test --suite quick`, runs Sprint 1 QA regressions, and runs `npm run test:contracts:regression` from the React/Vite workspace; keep an equivalent `pnpm run test:contracts:regression` hook if the workspace later moves to pnpm |
 | `ready-release` | Ubuntu | Python 3.14 | Mirrors `python kindlemaster.py test --suite release` |
 | `ready-gate` | Ubuntu | n/a | Stable branch-protection aggregate over governance, quick, and release lanes |
 
-Governance CI runs `ruff` with correctness-only rules (`E9,F63,F7,F82`) over governance/control-plane files, `pip check`, one `pip-audit` dependency audit on Ubuntu Python 3.14, a coverage threshold of `75` for deterministic command/status governance paths (`kindlemaster.py` and `scripts/generate_project_status.py`), and a core conversion coverage threshold of `45` on Ubuntu Python 3.14. Quick and release jobs upload derived `reports/` and `output/` artifacts for review.
+Governance CI runs `ruff` with correctness-only rules (`E9,F63,F7,F82`) over governance/control-plane files, `test_agent_config_contracts.py` for agent readiness contracts, `pip check`, one `pip-audit` dependency audit on Ubuntu Python 3.14, a coverage threshold of `75` for deterministic command/status governance paths (`kindlemaster.py` and `scripts/generate_project_status.py`), and a core conversion coverage threshold of `45` on Ubuntu Python 3.14. Quick CI runs the Python quick suite, `test_sprint1_quality_gates.py`, and the Node/Vitest contract hook (`npm run test:contracts:regression`, pnpm equivalent acceptable after migration) when a Node workspace exists. Sprint 4 UI work additionally uses `npm run build:ui` and `npm run test:ui` locally before browser/runtime verification. Quick and release jobs upload derived `reports/` and `output/` artifacts for review.
 
 Install Chromium for Playwright-backed surfaces with:
 
@@ -77,6 +77,7 @@ The report is intended to answer three questions:
 Key sections:
 
 - `bootstrap`: the supported Python bootstrap profiles, their missing modules, and manual follow-up steps.
+- `agent_readiness`: Codex config, pinned Playwright MCP, required plugins, KindleMaster skills, `.githooks`, and stale local agent settings.
 - `verification_surfaces`: the local status of `quick`, `corpus`, `release`, `browser`, and `runtime`.
 - `conversion_capabilities`: whether optional EPUBCheck/OCR/PDFBox enhancements are available.
 

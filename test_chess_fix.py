@@ -471,15 +471,15 @@ class ChessDiagramEpubBuilderTests(unittest.TestCase):
     def test_figural_chess_notation_maps_every_piece_to_san_letter(self) -> None:
         self.assertEqual(
             _normalize_text_for_epub("\xa2\xa3\xa4\xa5\xa6", "SPTimeFig-Roman"),
-            "KQRBN",
+            "KQNBR",
         )
         self.assertEqual(
             _normalize_text_for_epub("\xa2\xa3\xa4\xa5\xa6", "SPAriesFig-Bold"),
-            "KQRBN",
+            "KQNBR",
         )
         self.assertEqual(
             _normalize_text_for_epub("\xa2b5 \xa3xd7+ \xa4a8 \xa5g2 \xa6f3", "SPTimeFig-Roman"),
-            "Kb5 Qxd7+ Ra8 Bg2 Nf3",
+            "Kb5 Qxd7+ Na8 Bg2 Rf3",
         )
         self.assertEqual(_normalize_text_for_epub("\xb1", "SPAriesFig-Bold"), " \u00b1")
         self.assertEqual(_normalize_text_for_epub("\xb2", "SPAriesFig-Bold"), " +=")

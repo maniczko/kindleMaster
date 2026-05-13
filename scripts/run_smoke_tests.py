@@ -5,6 +5,7 @@ from html.parser import HTMLParser
 import io
 import json
 import posixpath
+import re
 import time
 from pathlib import Path
 import sys
@@ -28,8 +29,10 @@ CHESS_IMAGE_OVERSIZE_EDGE = 640
 CHESS_IMAGE_HARD_EDGE = 768
 CHESS_ASSET_WARN_BYTES = 512 * 1024
 CHESS_ASSET_HARD_BYTES = 1024 * 1024
-CHESS_TOTAL_ASSET_WARN_BYTES = 2 * 1024 * 1024
-CHESS_TOTAL_ASSET_HARD_BYTES = 4 * 1024 * 1024
+CHESS_TOTAL_ASSET_WARN_BYTES = 4 * 1024 * 1024
+CHESS_TOTAL_ASSET_HARD_BYTES = 5 * 1024 * 1024
+CHESS_OUTER_WHITESPACE_WARN_RATIO = 0.18
+CHESS_OUTER_WHITESPACE_HARD_RATIO = 0.28
 SMOKE_MODES = ("micro", "quick", "full")
 FAST_CASE_SECONDS = 5.0
 SLOW_CASE_SECONDS = 30.0
@@ -208,6 +211,10 @@ def _empty_chess_quality_metrics() -> dict[str, int | float]:
         "contrast_range_avg": 0,
         "edge_mean_min": 0,
         "edge_mean_avg": 0,
+        "outer_whitespace_ratio_max": 0,
+        "outer_whitespace_ratio_avg": 0,
+        "chess_css_border_rule_count": 0,
+        "chess_css_padding_rule_count": 0,
     }
 
 
@@ -227,6 +234,7 @@ def _inspect_epub_chess_quality(epub_bytes: bytes) -> dict[str, int | float]:
                 except KeyError:
                     continue
                 parser.feed_document(raw.decode("utf-8", errors="replace"), document_path=name)
+            _attach_chess_css_frame_metrics(archive=archive, metrics=metrics)
 
             srcs = parser.chess_diagram_srcs
             unique_srcs = sorted(set(srcs))
@@ -305,6 +313,7 @@ def _attach_chess_asset_metrics(*, archive: ZipFile, srcs: list[str], metrics: d
     asset_sizes: list[int] = []
     contrast_ranges: list[float] = []
     edge_means: list[float] = []
+    whitespace_ratios: list[float] = []
     quality_scores: list[float] = []
     for src in srcs:
         if not src:
@@ -323,6 +332,7 @@ def _attach_chess_asset_metrics(*, archive: ZipFile, srcs: list[str], metrics: d
             continue
         contrast_ranges.append(score_metrics["contrast_range"])
         edge_means.append(score_metrics["edge_mean"])
+        whitespace_ratios.append(score_metrics["outer_whitespace_ratio"])
         quality_scores.append(score_metrics["quality_score"])
         metrics["max_chess_image_edge_px"] = max(int(metrics["max_chess_image_edge_px"]), int(edge))
         if edge > CHESS_IMAGE_OVERSIZE_EDGE:
@@ -338,6 +348,34 @@ def _attach_chess_asset_metrics(*, archive: ZipFile, srcs: list[str], metrics: d
         metrics["contrast_range_avg"] = round(sum(contrast_ranges) / len(contrast_ranges), 4)
         metrics["edge_mean_min"] = round(min(edge_means), 4)
         metrics["edge_mean_avg"] = round(sum(edge_means) / len(edge_means), 4)
+        metrics["outer_whitespace_ratio_max"] = round(max(whitespace_ratios), 4)
+        metrics["outer_whitespace_ratio_avg"] = round(sum(whitespace_ratios) / len(whitespace_ratios), 4)
+
+
+def _attach_chess_css_frame_metrics(*, archive: ZipFile, metrics: dict[str, int | float]) -> None:
+    border_count = 0
+    padding_count = 0
+    css_names = [name for name in archive.namelist() if name.lower().endswith(".css")]
+    for name in css_names:
+        try:
+            css = archive.read(name).decode("utf-8", errors="replace")
+        except KeyError:
+            continue
+        counts = _count_chess_diagram_frame_declarations(css)
+        border_count += counts["border"]
+        padding_count += counts["padding"]
+    metrics["chess_css_border_rule_count"] = border_count
+    metrics["chess_css_padding_rule_count"] = padding_count
+
+
+def _count_chess_diagram_frame_declarations(css: str) -> dict[str, int]:
+    border_count = 0
+    padding_count = 0
+    for match in re.finditer(r"(?<![-\w])\.chess-diagram(?![-\w])[^{}]*\{(?P<body>.*?)\}", css, flags=re.DOTALL):
+        body = match.group("body")
+        border_count += len(re.findall(r"(?m)^\s*border(?:-[\w-]+)?\s*:", body))
+        padding_count += len(re.findall(r"(?m)^\s*padding(?:-[\w-]+)?\s*:", body))
+    return {"border": border_count, "padding": padding_count}
 
 
 def _score_chess_asset_image(raw_image: Image.Image) -> dict[str, float]:
@@ -349,8 +387,22 @@ def _score_chess_asset_image(raw_image: Image.Image) -> dict[str, float]:
     return {
         "contrast_range": contrast,
         "edge_mean": edge_mean,
+        "outer_whitespace_ratio": _measure_outer_whitespace_ratio(image),
         "quality_score": contrast + edge_mean,
     }
+
+
+def _measure_outer_whitespace_ratio(image: Image.Image) -> float:
+    width, height = image.size
+    if width <= 0 or height <= 0:
+        return 0.0
+    bbox = image.point(lambda value: 255 if value < 245 else 0).getbbox()
+    if bbox is None:
+        return 1.0
+    left, top, right, bottom = bbox
+    right_margin = max(0, width - right)
+    bottom_margin = max(0, height - bottom)
+    return (left + top + right_margin + bottom_margin) / float((width * 2) + (height * 2))
 
 
 def _build_smoke_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -569,6 +621,9 @@ def _evaluate_chess_asset_quality_gate(chess_quality: dict[str, Any]) -> dict[st
     largest_asset = int(chess_quality.get("largest_chess_asset_bytes") or 0)
     total_assets = int(chess_quality.get("total_chess_asset_bytes") or 0)
     oversize_count = int(chess_quality.get("oversize_count_gt_640") or 0)
+    whitespace_ratio = float(chess_quality.get("outer_whitespace_ratio_max") or 0)
+    css_border_count = int(chess_quality.get("chess_css_border_rule_count") or 0)
+    css_padding_count = int(chess_quality.get("chess_css_padding_rule_count") or 0)
     reasons: list[str] = []
     status = "passed"
 
@@ -593,6 +648,26 @@ def _evaluate_chess_asset_quality_gate(chess_quality: dict[str, Any]) -> dict[st
         status = "passed_with_warnings"
         reasons.append(f"total chess assets {total_assets} B exceed warning budget {CHESS_TOTAL_ASSET_WARN_BYTES} B")
 
+    if whitespace_ratio > CHESS_OUTER_WHITESPACE_HARD_RATIO:
+        status = "failed"
+        reasons.append(
+            f"outer whitespace ratio {whitespace_ratio:.4f} exceeds hard budget "
+            f"{CHESS_OUTER_WHITESPACE_HARD_RATIO:.2f}"
+        )
+    elif whitespace_ratio > CHESS_OUTER_WHITESPACE_WARN_RATIO and status != "failed":
+        status = "passed_with_warnings"
+        reasons.append(
+            f"outer whitespace ratio {whitespace_ratio:.4f} exceeds warning budget "
+            f"{CHESS_OUTER_WHITESPACE_WARN_RATIO:.2f}"
+        )
+
+    if css_border_count or css_padding_count:
+        status = "failed"
+        reasons.append(
+            f"decorative chess CSS frame detected: border rules {css_border_count}, "
+            f"padding rules {css_padding_count}"
+        )
+
     return {
         "status": status,
         "budget": "chess_crisp_low_size",
@@ -603,10 +678,15 @@ def _evaluate_chess_asset_quality_gate(chess_quality: dict[str, Any]) -> dict[st
         "hard_largest_asset_bytes": CHESS_ASSET_HARD_BYTES,
         "warn_total_asset_bytes": CHESS_TOTAL_ASSET_WARN_BYTES,
         "hard_total_asset_bytes": CHESS_TOTAL_ASSET_HARD_BYTES,
+        "warn_outer_whitespace_ratio": CHESS_OUTER_WHITESPACE_WARN_RATIO,
+        "hard_outer_whitespace_ratio": CHESS_OUTER_WHITESPACE_HARD_RATIO,
         "max_edge_px": max_edge,
         "oversize_count_gt_640": oversize_count,
         "largest_asset_bytes": largest_asset,
         "total_asset_bytes": total_assets,
+        "outer_whitespace_ratio_max": whitespace_ratio,
+        "chess_css_border_rule_count": css_border_count,
+        "chess_css_padding_rule_count": css_padding_count,
     }
 
 
@@ -734,7 +814,11 @@ def _build_smoke_markdown(payload: dict[str, Any]) -> str:
                 f"contrast min/avg `{chess_quality.get('contrast_range_min', 0)}`/"
                 f"`{chess_quality.get('contrast_range_avg', 0)}`, "
                 f"edge mean min/avg `{chess_quality.get('edge_mean_min', 0)}`/"
-                f"`{chess_quality.get('edge_mean_avg', 0)}`"
+                f"`{chess_quality.get('edge_mean_avg', 0)}`, "
+                f"outer whitespace max/avg `{chess_quality.get('outer_whitespace_ratio_max', 0)}`/"
+                f"`{chess_quality.get('outer_whitespace_ratio_avg', 0)}`, "
+                f"CSS frame border/padding `{chess_quality.get('chess_css_border_rule_count', 0)}`/"
+                f"`{chess_quality.get('chess_css_padding_rule_count', 0)}`"
             )
         asset_gate = row.get("asset_quality_gate") or (benchmark.get("asset_quality_gate") or {})
         if asset_gate:

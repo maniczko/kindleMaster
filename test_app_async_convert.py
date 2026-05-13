@@ -18,14 +18,30 @@ class AppAsyncConvertTests(unittest.TestCase):
         self.client = app.test_client()
         self.cleanup_paths: list[str] = []
         self.cleanup_job_ids: list[str] = []
+        with app_module._CONVERSION_JOBS_LOCK:
+            self.original_conversion_jobs = {
+                job_id: dict(job)
+                for job_id, job in app_module._CONVERSION_JOBS.items()
+            }
+            app_module._CONVERSION_JOBS.clear()
 
     def tearDown(self) -> None:
+        for job in app_module._CONVERSION_JOBS.values():
+            for artifact in (job.get("artifacts", {}) or {}).values():
+                if not isinstance(artifact, dict) or artifact.get("provider") != "local":
+                    continue
+                location = str(artifact.get("location", "") or "")
+                if location and os.path.exists(location):
+                    os.remove(location)
         for path in self.cleanup_paths:
             if path and os.path.exists(path):
                 os.remove(path)
         with app_module._CONVERSION_JOBS_LOCK:
-            for job_id in self.cleanup_job_ids:
-                app_module._CONVERSION_JOBS.pop(job_id, None)
+            app_module._CONVERSION_JOBS.clear()
+            app_module._CONVERSION_JOBS.update(
+                {job_id: dict(job) for job_id, job in self.original_conversion_jobs.items()}
+            )
+        app_module._CONVERSION_JOB_STORE.persist()
 
     def _write_epub_fixture(self, job_id: str, body: str) -> str:
         output_path = os.path.join(app_module.UPLOAD_DIR, f"{job_id}.epub")
@@ -107,6 +123,10 @@ class AppAsyncConvertTests(unittest.TestCase):
         self.assertTrue(payload["success"])
         self.assertEqual(payload["status"], "queued")
         self.assertEqual(payload["poll_after_ms"], app_module.DEFAULT_CONVERSION_POLL_INTERVAL_MS)
+        self.assertEqual(payload["runtime"]["provider"], "local")
+        self.assertEqual(payload["runtime"]["replay"]["command"]["name"], "convert")
+        self.assertEqual(payload["artifacts"]["input"]["kind"], "input")
+        self.assertIn(payload["artifacts"]["input"]["status"], {"stored", "unavailable", "failed"})
         job_id = payload["job_id"]
         self.cleanup_job_ids.append(job_id)
 
@@ -124,8 +144,11 @@ class AppAsyncConvertTests(unittest.TestCase):
         self.assertEqual(status_payload["download_url"], f"/convert/download/{job_id}")
         self.assertTrue(status_payload["download_available"])
         self.assertEqual(status_payload["download_state"]["status"], "available")
+        self.assertEqual(status_payload["runtime"]["provider"], "local")
+        self.assertIn("input", status_payload["artifacts"])
         self.assertTrue(status_payload["quality_state"]["download_available"])
         self.assertEqual(status_payload["quality_state"]["download_state"]["status"], "available")
+        self.assertIn("input", status_payload["quality_state"]["artifacts"])
 
         download_response = self.client.get(f"/convert/download/{job_id}")
         self.assertEqual(download_response.status_code, 200)
@@ -823,6 +846,57 @@ class AppAsyncConvertTests(unittest.TestCase):
         self.assertEqual(response.get_json()["error"], "EPUB nie jest jeszcze gotowy do pobrania.")
         self.assertEqual(response.get_json()["error_code"], "queue_failed")
         self.assertTrue(response.get_json()["retryable"])
+
+    def test_convert_download_redirects_to_signed_output_artifact_when_available(self) -> None:
+        job_id = "ready-signed-output"
+        created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        with app_module._CONVERSION_JOBS_LOCK:
+            app_module._CONVERSION_JOBS[job_id] = {
+                "job_id": job_id,
+                "status": "ready",
+                "message": "EPUB gotowy do pobrania.",
+                "source_type": "pdf",
+                "filename": "sample.pdf",
+                "created_at": created_at,
+                "updated_at": created_at,
+                "source_path": "",
+                "output_path": "",
+                "download_name": "sample.epub",
+                "metadata": {"source_type": "pdf", "profile": "book_reflow"},
+                "runtime": {"provider": "local", "status": "succeeded"},
+                "artifacts": {
+                    "output": {
+                        "provider": "r2",
+                        "status": "stored",
+                        "kind": "output",
+                        "job_id": job_id,
+                        "filename": "sample.epub",
+                        "location": "r2://kindlemaster/ready-signed-output/output/sample.epub",
+                        "size_bytes": 1234,
+                        "content_type": "application/epub+zip",
+                        "retention": {"days": 30, "expires_at": ""},
+                        "signed_url": {
+                            "available": True,
+                            "url": "https://signed.example.invalid/sample.epub",
+                            "expires_in_seconds": 900,
+                            "reason": "",
+                        },
+                    }
+                },
+                "artifact_storage": {"provider": "r2", "status": "available", "reason": ""},
+                "output_size_bytes": 1234,
+                "error": "",
+            }
+        self.cleanup_job_ids.append(job_id)
+
+        status_response = self.client.get(f"/convert/status/{job_id}")
+        response = self.client.get(f"/convert/download/{job_id}")
+
+        self.assertEqual(status_response.status_code, 200)
+        self.assertTrue(status_response.get_json()["download_available"])
+        self.assertEqual(status_response.get_json()["download_state"]["status"], "available")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers["Location"], "https://signed.example.invalid/sample.epub")
 
     def test_convert_download_returns_500_and_marks_job_failed_when_ready_file_is_missing(self) -> None:
         job_id = "ready-missing-file"

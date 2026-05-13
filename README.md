@@ -12,6 +12,8 @@ python kindlemaster.py status
 python kindlemaster.py test --suite browser
 python kindlemaster.py test --suite runtime
 python kindlemaster.py test --suite release
+npm run build:ui
+npm run test:ui
 ```
 
 The supported toolchain matrix lives in [docs/toolchain-matrix.md](docs/toolchain-matrix.md).
@@ -29,6 +31,8 @@ The supported toolchain matrix lives in [docs/toolchain-matrix.md](docs/toolchai
 - `docs/send-to-kindle-handoff.md` explains the manual post-conversion handoff and when an EPUB is safe to send.
 - `docs/kindle-previewer-validation.md` defines the manual Kindle Previewer and Send to Kindle evidence checklist.
 - `docs/text-artifact-rate.md` documents reader-facing text artifact rate thresholds used by quality reports.
+- `docs/sprint3-ai-quality-intelligence.md` documents the AI OCR cleanup and AI TOC detection contract, including fallback, confidence, and cost reporting.
+- `docs/sprint4-ui-modernization.md` documents the React/Vite UI shell, `/app` route, shadcn-style primitives, and migration rule.
 - `reference_inputs/golden_epub_expectations.json` defines golden EPUB feature expectations for representative conversion classes.
 - `docs/source-of-truth-matrix.md` mirrors the control-plane authority model for status, Linear, reports, and release truth.
 - `docs/independent-audit-mode.md` explains standalone EPUB artifact audit versus full project status.
@@ -38,6 +42,15 @@ The supported toolchain matrix lives in [docs/toolchain-matrix.md](docs/toolchai
 - Generated files under `reports/` and `output/` are derived artifacts, not governance authority.
 
 Repo-local Codex defaults are `gpt-5.5` with `xhigh` reasoning, `on-request` approvals, multi-agent support, GitHub/Linear/Build Web Apps/Browser Use plugins, and pinned Playwright MCP for browser verification.
+
+Local Codex governance also includes tracked Git hooks under `.githooks/`. Developer bootstrap installs them automatically unless `CI=true`, `--runtime-only`, or `KINDLEMASTER_SKIP_GIT_HOOKS=1` is set. To check or repair manually:
+
+```powershell
+python scripts/install_git_hooks.py --check
+python scripts/install_git_hooks.py --install
+```
+
+`python kindlemaster.py doctor` reports `agent_readiness` for Codex config, pinned MCP, enabled plugins, KindleMaster skills, local hook setup, and stale local agent settings.
 
 ## Local Setup
 
@@ -63,6 +76,8 @@ docker run --rm -it -v ${PWD}:/workspace -w /workspace kindlemaster-toolchain py
 The same image is wired through `.devcontainer/devcontainer.json`. Details live in [docs/local-bootstrap-toolchain.md](docs/local-bootstrap-toolchain.md).
 
 The async HTTP flow keeps the existing `/convert/start -> /convert/status/<job_id> -> /convert/download/<job_id>` contract and now also exposes normalized quality state at `GET /convert/quality/<job_id>`. `GET /convert/status/<job_id>` includes the same payload under `quality_state` plus a `quality_state_url`.
+
+The Sprint 4 React shell is available at `http://127.0.0.1:5001/app` after `npm run build:ui`. During development, use `npm run dev:ui` and open `http://127.0.0.1:5173/`; Vite proxies the existing Flask API.
 
 ## Core Commands
 
@@ -112,6 +127,11 @@ They write:
 The derived project status lane reads existing evidence and writes:
 - `reports/project_status.json`
 - `reports/project_status.md`
+
+The governance evidence lanes are refreshed by:
+- `python kindlemaster.py doctor` -> `reports/governance/doctor.json`
+- `python kindlemaster.py test --suite quick` -> `reports/governance/quick.json`
+- `python kindlemaster.py test --suite release` -> `reports/governance/release.json`
 
 Use [docs/independent-audit-mode.md](docs/independent-audit-mode.md) when evaluating one EPUB artifact independently from the whole-project status surface.
 

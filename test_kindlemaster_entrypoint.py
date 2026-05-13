@@ -245,6 +245,52 @@ class KindleMasterEntrypointTests(unittest.TestCase):
         self.assertEqual(payload["status"], "passed_with_warnings")
         self.assertEqual(payload["warning_reasons"], ["optional_followups_skipped"])
 
+    def test_run_tests_release_can_use_ci_corpus_proof_profile(self) -> None:
+        toolchain = {
+            "verification_surfaces": {
+                "release": {
+                    "status": "supported",
+                    "notes": ["ci release"],
+                    "optional_followups": [],
+                }
+            }
+        }
+
+        bounded_results = []
+
+        def fake_run(command, *, cwd, label, timeout_seconds):
+            bounded_results.append((label, command, timeout_seconds))
+            return {
+                "label": label,
+                "command": list(command),
+                "status": "passed",
+                "returncode": 0,
+                "timeout_seconds": timeout_seconds,
+                "elapsed_seconds": 0.01,
+            }
+
+        with patch.dict(os.environ, {"KINDLEMASTER_RELEASE_PROOF_PROFILE": "ci"}):
+            with patch("premium_tools.detect_toolchain", return_value=toolchain):
+                with patch("kindlemaster._print_json") as print_json:
+                    with patch("kindlemaster._write_governance_artifact"):
+                        with patch("kindlemaster._run_bounded_command", side_effect=fake_run):
+                            with patch("kindlemaster._load_corpus_gate_summary", return_value={"overall_status": "passed"}):
+                                exit_code = _run_tests("release")
+
+        self.assertEqual(exit_code, 0)
+        executed_commands = [command for _, command, _ in bounded_results]
+        self.assertEqual(
+            executed_commands,
+            [
+                [sys.executable, "-m", "unittest", *RELEASE_TESTS],
+                [sys.executable, "-m", "unittest", *CORPUS_TESTS],
+                [sys.executable, "kindlemaster.py", "corpus", "--proof-profile", "ci"],
+            ],
+        )
+        self.assertEqual(bounded_results[2][0], "corpus-gate-ci")
+        payload = print_json.call_args.args[0]
+        self.assertIn("Release corpus gate is using `ci` proof profile.", payload["notes"])
+
     def test_run_tests_corpus_executes_unittests_then_corpus_gate(self) -> None:
         with patch("kindlemaster.subprocess.run", return_value=SimpleNamespace(returncode=0)) as run_mock:
             exit_code = _run_tests("corpus")

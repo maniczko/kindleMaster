@@ -10,7 +10,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 import kindlemaster
-from scripts.run_corpus_gate import STANDARD_PREMIUM_FILTERS, _build_gate_output_assertions, run_corpus_gate
+from scripts.run_corpus_gate import (
+    CI_PREMIUM_FILTERS,
+    STANDARD_PREMIUM_FILTERS,
+    _build_gate_output_assertions,
+    run_corpus_gate,
+)
 
 
 class CorpusGateTests(unittest.TestCase):
@@ -163,6 +168,9 @@ class CorpusGateTests(unittest.TestCase):
         self.assertIn("diagram_training_book", STANDARD_PREMIUM_FILTERS)
         self.assertNotIn("large-diagram-corpus", STANDARD_PREMIUM_FILTERS)
         self.assertGreaterEqual(len(STANDARD_PREMIUM_FILTERS), 4)
+
+    def test_ci_premium_filters_keep_release_runner_toolchain_bounded(self) -> None:
+        self.assertEqual(CI_PREMIUM_FILTERS, ["document-like-report"])
 
     def test_gate_output_assertions_cover_focused_routes_from_real_epub_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -457,6 +465,39 @@ class CorpusGateTests(unittest.TestCase):
             output_root="output/corpus",
             reports_root="reports/corpus",
             proof_profile="full",
+            smoke_case_filters=[],
+            premium_case_filters=[],
+        )
+
+    def test_kindlemaster_corpus_command_can_request_ci_proof_profile(self) -> None:
+        payload = {
+            "overall_status": "passed_with_warnings",
+            "smoke": {"summary": {"overall_status": "passed", "cases_run": 4}},
+            "premium_corpus": {"overall": {"overall_status": "passed", "converted_case_count": 1}},
+            "artifacts": {},
+        }
+
+        with patch("scripts.run_corpus_gate.run_corpus_gate", return_value=payload) as gate_mock, patch.object(
+            kindlemaster,
+            "_print_json",
+        ), patch.object(
+            sys,
+            "argv",
+            [
+                "kindlemaster.py",
+                "corpus",
+                "--proof-profile",
+                "ci",
+            ],
+        ):
+            exit_code = kindlemaster.main()
+
+        self.assertEqual(exit_code, 0)
+        gate_mock.assert_called_once_with(
+            manifest_path="reference_inputs/manifest.json",
+            output_root="output/corpus",
+            reports_root="reports/corpus",
+            proof_profile="ci",
             smoke_case_filters=[],
             premium_case_filters=[],
         )

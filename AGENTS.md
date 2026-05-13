@@ -584,6 +584,10 @@ Expected:
 - no visible technical junk in final output,
 - EPUBCheck status understood and reported.
 
+The default local release corpus proof profile is `standard`. GitHub Actions may set
+`KINDLEMASTER_RELEASE_PROOF_PROFILE=ci` for clean runner enforcement, but that is
+CI evidence only and must not be used to claim full local premium corpus coverage.
+
 ### Corpus gate
 
 Expected for generic quality claims:

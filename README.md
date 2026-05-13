@@ -103,6 +103,8 @@ python kindlemaster.py workflow verify path\to\input.pdf --run-id <run_id>
 
 `python kindlemaster.py test --suite full` is a diagnostic all-discovery lane. It delegates to `unittest discover -p test*.py`, so it also runs tests intentionally kept out of the explicit `quick`, `release`, `corpus`, `browser`, and `runtime` suite registry.
 
+`python kindlemaster.py test --suite release` uses the local `standard` corpus proof by default. GitHub READY sets `KINDLEMASTER_RELEASE_PROOF_PROFILE=ci` so clean runners can enforce release units and bounded corpus evidence without pretending to have the full local OCR/PDF premium toolchain.
+
 Use `workflow baseline/verify` when you are fixing a real defect and need the standard engineering loop:
 `reproduce -> isolate -> fix -> validate -> compare before/after`.
 

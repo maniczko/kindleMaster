@@ -34,6 +34,12 @@ STANDARD_PREMIUM_FILTERS = [
     "diagram_training_book",
 ]
 
+CI_SMOKE_FILTERS = list(STANDARD_SMOKE_FILTERS)
+
+CI_PREMIUM_FILTERS = [
+    "document-like-report",
+]
+
 
 def _derive_corpus_gate_status(*, smoke_status: str, premium_status: str) -> str:
     if "failed" in {smoke_status, premium_status}:
@@ -98,9 +104,21 @@ def _resolve_case_filters(
 ) -> list[str] | None:
     if explicit_filters:
         return list(explicit_filters)
-    if proof_profile == "standard":
+    if proof_profile in {"standard", "ci"}:
         return list(standard_filters)
     return None
+
+
+def _default_smoke_filters_for_profile(proof_profile: str) -> list[str]:
+    if proof_profile == "ci":
+        return list(CI_SMOKE_FILTERS)
+    return list(STANDARD_SMOKE_FILTERS)
+
+
+def _default_premium_filters_for_profile(proof_profile: str) -> list[str]:
+    if proof_profile == "ci":
+        return list(CI_PREMIUM_FILTERS)
+    return list(STANDARD_PREMIUM_FILTERS)
 
 
 def _case_validation_status(row: dict[str, Any]) -> str:
@@ -350,12 +368,12 @@ def run_corpus_gate(
     resolved_smoke_filters = _resolve_case_filters(
         proof_profile=proof_profile,
         explicit_filters=smoke_case_filters,
-        standard_filters=STANDARD_SMOKE_FILTERS,
+        standard_filters=_default_smoke_filters_for_profile(proof_profile),
     )
     resolved_premium_filters = _resolve_case_filters(
         proof_profile=proof_profile,
         explicit_filters=premium_case_filters,
-        standard_filters=STANDARD_PREMIUM_FILTERS,
+        standard_filters=_default_premium_filters_for_profile(proof_profile),
     )
 
     smoke_output_dir = resolved_output_root / "smoke"
@@ -485,7 +503,7 @@ def main() -> int:
     parser.add_argument("--manifest", default="reference_inputs/manifest.json")
     parser.add_argument("--output-root", default="output/corpus")
     parser.add_argument("--reports-root", default="reports/corpus")
-    parser.add_argument("--proof-profile", choices=("standard", "full"), default="standard")
+    parser.add_argument("--proof-profile", choices=("standard", "full", "ci"), default="standard")
     parser.add_argument("--smoke-case", action="append", default=[])
     parser.add_argument("--premium-case", action="append", default=[])
     args = parser.parse_args()

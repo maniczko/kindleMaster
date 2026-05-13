@@ -26,7 +26,7 @@ GitHub mirrors them as:
 
 - `ready-governance` -> developer bootstrap, Python matrix, static-quality, dependency, security, and coverage governance
 - `ready-quick` -> `python kindlemaster.py test --suite quick`, Sprint 1 QA regression tests, and the optional Node contract hook
-- `ready-release` -> `python kindlemaster.py test --suite release`
+- `ready-release` -> `python kindlemaster.py test --suite release` with `KINDLEMASTER_RELEASE_PROOF_PROFILE=ci`
 - `ready-gate` -> aggregate branch-protection check that fails unless governance, quick, and release lanes pass
 
 ## Sprint 1 QA Gate
@@ -38,6 +38,10 @@ python -m unittest test_sprint1_quality_gates.py
 ```
 
 This keeps release-score blockers visible for bad TOC quality, ad/sponsored fragments, AI notes leaked into reader text, and OCR artifacts without widening the bounded release lane.
+
+## CI Release Proof Profile
+
+GitHub Actions runs the release lane with `KINDLEMASTER_RELEASE_PROOF_PROFILE=ci`. This keeps the external READY gate deterministic on clean runners that do not have the full local premium PDF/OCR toolchain. The CI profile still runs release units, corpus units, standard smoke evidence, and one dense/report premium conversion case, but it does not claim the full local standard corpus proof. Local release-candidate work should continue to use the default `standard` profile.
 
 ## Sprint 2 Runtime/Storage Gate
 

@@ -86,9 +86,12 @@ RELEASE_STEP_TIMEOUTS_SECONDS = {
     "release-units": 300,
     "corpus-units": 240,
     "corpus-gate-standard": 1800,
+    "corpus-gate-ci": 900,
     "browser-followup": 300,
     "runtime-followup": 480,
 }
+
+RELEASE_PROOF_PROFILES = {"standard", "ci"}
 
 CORPUS_TESTS = [
     "test_premium_corpus_smoke.py",
@@ -180,7 +183,7 @@ def main() -> int:
     corpus_parser.add_argument("--manifest", default="reference_inputs/manifest.json")
     corpus_parser.add_argument("--output-root", default="output/corpus")
     corpus_parser.add_argument("--reports-root", default="reports/corpus")
-    corpus_parser.add_argument("--proof-profile", choices=("standard", "full"), default="standard")
+    corpus_parser.add_argument("--proof-profile", choices=("standard", "full", "ci"), default="standard")
     corpus_parser.add_argument("--smoke-case", action="append", default=[])
     corpus_parser.add_argument("--premium-case", action="append", default=[])
 
@@ -650,6 +653,9 @@ def _run_tests(suite: str) -> int:
 def _run_release_suite(*, repo_root: Path, release_surface: dict[str, Any]) -> int:
     started = time.perf_counter()
     release_notes = _release_suite_notes(release_surface)
+    proof_profile = _release_proof_profile()
+    if proof_profile != "standard":
+        release_notes.append(f"Release corpus gate is using `{proof_profile}` proof profile.")
     if release_surface.get("status") == "unsupported":
         payload = {
             "suite": "release",
@@ -676,8 +682,8 @@ def _run_release_suite(*, repo_root: Path, release_surface: dict[str, Any]) -> i
         ("release-units", [sys.executable, "-m", "unittest", *SUITE_REGISTRY["release"]]),
         ("corpus-units", [sys.executable, "-m", "unittest", *SUITE_REGISTRY["corpus"]]),
         (
-            "corpus-gate-standard",
-            [sys.executable, "kindlemaster.py", "corpus", "--proof-profile", "standard"],
+            f"corpus-gate-{proof_profile}",
+            [sys.executable, "kindlemaster.py", "corpus", "--proof-profile", proof_profile],
         ),
     ]
     optional_followups = release_surface.get("optional_followups", [])
@@ -762,9 +768,16 @@ def _run_release_suite(*, repo_root: Path, release_surface: dict[str, Any]) -> i
     return 0
 
 
+def _release_proof_profile() -> str:
+    requested = os.environ.get("KINDLEMASTER_RELEASE_PROOF_PROFILE", "standard").strip().lower()
+    if requested in RELEASE_PROOF_PROFILES:
+        return requested
+    return "standard"
+
+
 def _release_suite_notes(release_surface: dict[str, Any]) -> list[str]:
     notes = [
-        "Runs bounded release-specific unit shards plus the standard corpus gate.",
+        "Runs bounded release-specific unit shards plus the configured corpus gate.",
         "Does not duplicate the quick suite; run `python kindlemaster.py test --suite quick` before clean release claims.",
     ]
     if release_surface.get("optional_followups"):

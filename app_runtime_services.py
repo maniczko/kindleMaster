@@ -20,7 +20,7 @@ METADATA_DEPTH_LIMIT = 4
 
 ConvertFunction = Callable[..., dict[str, Any]]
 HeadingRepairFunction = Callable[..., Any]
-StatusCallback = Callable[[str, str], None]
+StatusCallback = Callable[..., None]
 
 
 @dataclass(frozen=True)
@@ -76,6 +76,14 @@ def build_conversion_job_record(
         "download_name": filename.rsplit(".", 1)[0] + ".epub",
         "metadata": {},
         "runtime": {},
+        "progress": {
+            "stage_id": "queued",
+            "stage_label": "Przygotowanie",
+            "percent_estimate": 5,
+            "health": "working",
+            "heartbeat_at": created_at,
+            "updated_at": created_at,
+        },
         "artifacts": {},
         "artifact_storage": {},
         "output_size_bytes": 0,
@@ -415,7 +423,12 @@ def _apply_runtime_quality_gate(
     if mode == "off":
         return result
 
-    from epub_premium_scoring import score_epub_premium_quality
+    from epub_premium_scoring import (
+        apply_magazine_premium_quality_to_scoring,
+        build_magazine_premium_quality_contract,
+        refresh_magazine_article_map_from_epub,
+        score_epub_premium_quality,
+    )
     from ml_quality_verifier import build_ai_quality_verification
 
     updated_result = dict(result)
@@ -425,8 +438,38 @@ def _apply_runtime_quality_gate(
         quality_report=quality_report,
         heading_repair_report=heading_repair_report,
     )
+    if str(heading_repair_report.get("status", "") or "").strip().lower() == "applied":
+        heading_epubcheck = str(heading_repair_report.get("epubcheck_status", "") or "").strip().lower()
+        if heading_epubcheck == "passed":
+            quality_report["validation_status"] = "passed"
+            quality_report["validation_tool"] = "epubcheck"
+            quality_report["validation_messages"] = []
+            quality_report["epubcheck_status"] = "passed"
+            quality_report["error_count"] = 0
+            stale_warnings = []
+            for warning in list(quality_report.get("warnings", []) or []):
+                warning_text = str(warning)
+                if "EPUBCheck" in warning_text or "epubcheck" in warning_text.lower():
+                    continue
+                stale_warnings.append(warning)
+            quality_report["warnings"] = stale_warnings
     premium_scoring = score_epub_premium_quality(epub_bytes, epubcheck=epubcheck_payload)
+    magazine_quality = _to_mapping_payload(quality_report.get("magazine_premium_quality") or {})
+    if magazine_quality:
+        article_map = _to_mapping_payload(magazine_quality.get("article_map") or {})
+        if article_map:
+            article_map = refresh_magazine_article_map_from_epub(article_map, epub_bytes)
+        magazine_quality = build_magazine_premium_quality_contract(
+            premium_scoring=premium_scoring,
+            magazine_audit={"article_map": article_map},
+            validation_status=str(quality_report.get("validation_status", "") or ""),
+        )
+        premium_scoring = apply_magazine_premium_quality_to_scoring(premium_scoring, magazine_quality)
+        quality_report["magazine_premium_quality"] = magazine_quality
     quality_report["premium_scoring"] = premium_scoring
+    dense_summary = ((premium_scoring.get("metrics") or {}) or {}).get("dense_handbook_navigation_summary")
+    if isinstance(dense_summary, Mapping) and dense_summary:
+        quality_report["dense_handbook_navigation_summary"] = dict(dense_summary)
     quality_report["ai_quality_verification"] = build_ai_quality_verification(
         premium_scoring=premium_scoring,
         quality_report=quality_report,
@@ -532,6 +575,8 @@ def _build_content_metrics_payload(quality_report: Mapping[str, Any]) -> dict[st
             "table_summary",
             "figure_summary",
             "reading_flow",
+            "magazine_premium_quality",
+            "dense_handbook_navigation_summary",
         ),
     )
 
@@ -742,6 +787,13 @@ def build_conversion_quality_state(
     return assemble_quality_state_dict(request)
 
 
+def _emit_status(callback: StatusCallback, status: str, message: str, **progress_fields: Any) -> None:
+    try:
+        callback(status, message, **progress_fields)
+    except TypeError:
+        callback(status, message)
+
+
 def enrich_conversion_metadata_with_output_size(
     metadata: Mapping[str, Any] | None,
     output_size_bytes: int | None,
@@ -816,7 +868,14 @@ def run_document_conversion(
 ) -> ConversionOutcome:
     source_type = _fallback_source_type(request)
     if status_callback:
-        status_callback("running", f"Konwertuje {source_type.upper()} do EPUB...")
+        _emit_status(
+            status_callback,
+            "running",
+            f"Ekstrakcja tekstu z {source_type.upper()}...",
+            stage_id="extracting",
+            stage_label="Ekstrakcja tekstu",
+            percent_estimate=20,
+        )
 
     convert_kwargs: dict[str, Any] = {
         "config": build_conversion_config(request),
@@ -826,6 +885,15 @@ def run_document_conversion(
         convert_kwargs["source_type"] = request.source_type
 
     result = convert_impl(request.source_path, **convert_kwargs)
+    if status_callback:
+        _emit_status(
+            status_callback,
+            "running",
+            "Składanie artykułów i struktury EPUB...",
+            stage_id="assembling",
+            stage_label="Składanie artykułów",
+            percent_estimate=45,
+        )
     epub_bytes = result["epub_bytes"]
     pre_heading_repair_epub_bytes = epub_bytes
     heading_repair_report = _default_heading_repair_report()
@@ -843,7 +911,14 @@ def run_document_conversion(
             )
         else:
             if status_callback:
-                status_callback("repairing_headings", "Naprawiam headingi i TOC w EPUB...")
+                _emit_status(
+                    status_callback,
+                    "repairing_headings",
+                    "Naprawiam headingi i TOC w EPUB...",
+                    stage_id="repairing_toc",
+                    stage_label="Naprawa TOC",
+                    percent_estimate=65,
+                )
             try:
                 heading_repair_result = heading_repair_impl(
                     epub_bytes,
@@ -882,6 +957,15 @@ def run_document_conversion(
                 heading_repair_report["error"] = str(error)
 
     detected_source_type = str(result.get("source_type", source_type) or source_type)
+    if status_callback:
+        _emit_status(
+            status_callback,
+            "running",
+            "Uruchamiam audyt premium EPUB...",
+            stage_id="premium_audit",
+            stage_label="Audyt premium",
+            percent_estimate=82,
+        )
     result = _apply_runtime_quality_gate(
         result=result,
         epub_bytes=epub_bytes,
@@ -898,18 +982,34 @@ def run_document_conversion(
         try:
             from ml_feedback import append_conversion_feedback_event
 
-            append_conversion_feedback_event(
+            feedback_record = append_conversion_feedback_event(
                 source_path=request.source_path,
                 original_filename=request.original_filename,
                 source_type=detected_source_type,
                 metadata=metadata,
                 result=result,
             )
+            metadata["ml_feedback"] = {
+                "status": "recorded",
+                "recommended_record": {
+                    "record_id": str(feedback_record.get("record_id", "") or ""),
+                    "case_id": str(feedback_record.get("case_id", "") or ""),
+                    "quality_label": str((_to_mapping_payload(feedback_record.get("feedback"))).get("quality_label", "") or ""),
+                    "quality_score": (_to_mapping_payload(feedback_record.get("feedback"))).get("quality_score"),
+                    "issue_tags": list((_to_mapping_payload(feedback_record.get("feedback"))).get("issue_tags") or [])[:12],
+                },
+                "learning_mode": "feedback_retrain_no_online_updates",
+            }
             metadata["feedback_learning"] = {
                 "status": "recorded",
                 "learning_mode": "feedback_retrain_no_online_updates",
             }
         except Exception as error:
+            metadata["ml_feedback"] = {
+                "status": "failed",
+                "learning_mode": "feedback_retrain_no_online_updates",
+                "error": str(error),
+            }
             metadata["feedback_learning"] = {
                 "status": "failed",
                 "learning_mode": "feedback_retrain_no_online_updates",

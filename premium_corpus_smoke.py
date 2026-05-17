@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import copy
+import hashlib
 import io
 import json
 import re
+import sys
 import tempfile
 import time
 import zipfile
@@ -17,7 +20,9 @@ from lxml import etree
 
 from converter import ConversionConfig, convert_pdf_to_epub_with_report
 from epub_heading_repair import repair_epub_headings_and_toc
+from epub_premium_scoring import build_magazine_premium_quality_contract, refresh_magazine_article_map_from_epub
 from publication_analysis import analyze_publication
+from quality_policy import accepted_corpus_warning_reason, warning_policy_catalog
 from size_budget_policy import evaluate_size_budget, get_document_size_budget, inspect_epub_archive, load_size_budget_policy
 
 
@@ -134,6 +139,7 @@ FOCUSED_OUTPUT_ROUTES = {
     "ocr_scan": "OCR/scan",
     "diagram_chess": "Diagram/chess",
 }
+_INSPECT_EPUB_CACHE: dict[str, dict[str, Any]] = {}
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -323,6 +329,11 @@ def _extract_nav_depth(ol_tag) -> int:
 
 
 def inspect_epub(epub_bytes: bytes) -> dict[str, Any]:
+    digest = hashlib.sha256(epub_bytes).hexdigest()
+    cached = _INSPECT_EPUB_CACHE.get(digest)
+    if cached is not None:
+        return copy.deepcopy(cached)
+
     with zipfile.ZipFile(io.BytesIO(epub_bytes)) as archive:
         names = archive.namelist()
         xhtml_names = [name for name in names if name.endswith(".xhtml")]
@@ -384,7 +395,7 @@ def inspect_epub(epub_bytes: bytes) -> dict[str, Any]:
                 if href.startswith("#") and href[1:] and href[1:] not in ids:
                     broken_internal_anchors += 1
 
-        return {
+        result = {
             "xhtml_count": len(content_xhtml),
             "image_count": len(image_names),
             "nav_entries": nav_entry_count,
@@ -400,6 +411,8 @@ def inspect_epub(epub_bytes: bytes) -> dict[str, Any]:
             "broken_internal_anchors": broken_internal_anchors,
             "heading_counts": dict(heading_counts),
         }
+        _INSPECT_EPUB_CACHE[digest] = copy.deepcopy(result)
+        return result
 
 
 def _build_case_blockers(
@@ -475,6 +488,24 @@ def _build_case_blockers(
                     f"artifact_rate_per_1000_words={artifact_rate.get('artifact_rate_per_1000_words', 0)}; "
                     f"artifact_count={artifact_rate.get('artifact_count', 0)}"
                 ),
+            }
+        )
+    magazine_contract = quality.get("magazine_premium_quality")
+    if isinstance(magazine_contract, dict) and str(magazine_contract.get("status") or "").lower() in {
+        "failed",
+        "fail",
+        "error",
+        "blocked",
+    }:
+        issue_codes = [
+            str(issue.get("code", "") or "")
+            for issue in magazine_contract.get("issues", [])
+            if isinstance(issue, dict) and str(issue.get("severity", "") or "").lower() == "blocker"
+        ]
+        blockers.append(
+            {
+                "code": "magazine_premium_quality_failed",
+                "detail": ", ".join(issue_codes[:8]) or "magazine_premium_quality.status=failed",
             }
         )
     return blockers
@@ -580,24 +611,41 @@ def _accepted_warning_reason(
         artifact_rate = _text_artifact_rate_payload(quality)
         counts = artifact_rate.get("counts") if isinstance(artifact_rate.get("counts"), dict) else {}
         hard_visible = _safe_int(counts.get("technical_placeholder_count")) + _safe_int(counts.get("ocr_junk_count"))
-        if (
-            _safe_int(artifact_rate.get("artifact_count")) <= 6
-            and _safe_float(artifact_rate.get("artifact_rate_per_1000_words")) <= 4.0
-            and hard_visible == 0
-        ):
-            return "accepted_p2_low_artifact_rate_without_hard_visible_junk"
+        return accepted_corpus_warning_reason(
+            code,
+            metrics={
+                "artifact_count": _safe_int(artifact_rate.get("artifact_count")),
+                "artifact_rate_per_1000_words": _safe_float(artifact_rate.get("artifact_rate_per_1000_words")),
+                "hard_visible_artifact_count": hard_visible,
+            },
+        )
     if code == "heading_manual_review":
         review_count = _safe_int(heading_summary.get("manual_review_count"))
-        if heading_summary.get("epubcheck_status") == "passed" and review_count <= 5 and focus_routes:
-            return "accepted_p2_profile_heading_review_epubcheck_passed"
+        return accepted_corpus_warning_reason(
+            code,
+            metrics={
+                "post_heading_epubcheck_status": heading_summary.get("epubcheck_status"),
+                "manual_review_count": review_count,
+                "has_focus_route": bool(focus_routes),
+            },
+        )
+    if code == "pre_heading_epubcheck_recovered":
+        return accepted_corpus_warning_reason(
+            code,
+            metrics={"post_heading_epubcheck_status": heading_summary.get("epubcheck_status")},
+        )
     if code == "reference_empty_section_review":
         reference_cleanup = _reference_cleanup_payload(quality)
-        if (
-            _safe_int(reference_cleanup.get("citations_detected")) == 0
-            and _safe_int(reference_cleanup.get("visible_junk_detected")) == 0
-            and _safe_int(reference_cleanup.get("empty_reference_sections_unresolved")) <= 1
-        ):
-            return "accepted_p2_empty_reference_section_without_citations"
+        return accepted_corpus_warning_reason(
+            code,
+            metrics={
+                "citations_detected": _safe_int(reference_cleanup.get("citations_detected")),
+                "visible_junk_detected": _safe_int(reference_cleanup.get("visible_junk_detected")),
+                "empty_reference_sections_unresolved": _safe_int(
+                    reference_cleanup.get("empty_reference_sections_unresolved")
+                ),
+            },
+        )
     if code == "reference_review_needed":
         reference_cleanup = _reference_cleanup_payload(quality)
         reference_status = str(
@@ -606,14 +654,26 @@ def _accepted_warning_reason(
             or reference_cleanup.get("status")
             or ""
         ).lower()
-        if (
-            reference_status == "passed"
-            and _safe_int(reference_cleanup.get("citations_detected")) == 0
-            and _safe_int(reference_cleanup.get("visible_junk_detected")) == 0
-            and _safe_int(reference_cleanup.get("unresolved_fragment_count")) == 0
-            and "magazine_layout_heavy" in focus_routes
-        ):
-            return "accepted_p2_magazine_reference_like_text_without_citations_or_visible_junk"
+        return accepted_corpus_warning_reason(
+            code,
+            metrics={
+                "reference_status": reference_status,
+                "citations_detected": _safe_int(reference_cleanup.get("citations_detected")),
+                "visible_junk_detected": _safe_int(reference_cleanup.get("visible_junk_detected")),
+                "unresolved_fragment_count": _safe_int(reference_cleanup.get("unresolved_fragment_count")),
+                "focus_routes": sorted(focus_routes),
+            },
+        )
+    if code == "magazine_premium_quality_review":
+        issue_codes = [
+            token.strip()
+            for token in str(warning.get("detail", "") or "").split(",")
+            if token.strip()
+        ]
+        return accepted_corpus_warning_reason(
+            code,
+            metrics={"magazine_issue_codes": issue_codes},
+        )
     return ""
 
 
@@ -718,6 +778,21 @@ def _build_case_warnings(
         )
     if inspect.get("package_language", "").lower() not in {"pl", "en"}:
         warnings.append({"code": "unexpected_language", "detail": inspect.get("package_language", "")})
+    magazine_contract = quality.get("magazine_premium_quality")
+    if isinstance(magazine_contract, dict):
+        contract_status = str(magazine_contract.get("status") or "").lower()
+        if contract_status in {"passed_with_warnings", "warning", "warnings", "pass_with_review"}:
+            issue_codes = [
+                str(issue.get("code", "") or "")
+                for issue in magazine_contract.get("issues", [])
+                if isinstance(issue, dict) and str(issue.get("severity", "") or "").lower() in {"review", "warning"}
+            ]
+            warnings.append(
+                {
+                    "code": "magazine_premium_quality_review",
+                    "detail": ", ".join(issue_codes[:8]) or f"magazine_premium_quality.status={contract_status}",
+                }
+            )
     return warnings
 
 
@@ -768,6 +843,29 @@ def _build_ocr_benchmark_payload(*, case: CorpusCase, quality: dict[str, Any], i
         "image_count": inspect.get("image_count", 0),
         "release_strict": case.release_strict,
     }
+
+
+def _refresh_magazine_quality_for_effective_epub(
+    quality: dict[str, Any],
+    *,
+    epub_bytes: bytes,
+    validation_status: str,
+) -> dict[str, Any]:
+    magazine_contract = quality.get("magazine_premium_quality")
+    if not isinstance(magazine_contract, dict):
+        return quality
+    article_map = magazine_contract.get("article_map")
+    if not isinstance(article_map, dict) or not article_map.get("articles"):
+        return quality
+
+    refreshed_quality = dict(quality)
+    refreshed_article_map = refresh_magazine_article_map_from_epub(article_map, epub_bytes)
+    refreshed_quality["magazine_premium_quality"] = build_magazine_premium_quality_contract(
+        validation_status=validation_status,
+        magazine_audit={"article_map": refreshed_article_map},
+        text_artifacts=_text_artifact_rate_payload(quality),
+    )
+    return refreshed_quality
 
 
 def _ocr_benchmark_findings(case: CorpusCase, ocr_benchmark: dict[str, Any]) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
@@ -1062,15 +1160,20 @@ def _run_conversion_case(case: CorpusCase, *, run_heading_repair: bool) -> dict[
         }
 
     started = time.perf_counter()
+    stage_timings: dict[str, float] = {}
+    stage_started = time.perf_counter()
     result = convert_pdf_to_epub_with_report(
         str(case.path),
         config=ConversionConfig(profile="auto-premium"),
         original_filename=case.path.name,
     )
+    stage_timings["convert"] = round(time.perf_counter() - stage_started, 4)
     analysis = result["analysis"]
     summary = result.get("document_summary", {})
     quality = result.get("quality_report", {})
     converted_epub_bytes = result["epub_bytes"]
+
+    stage_started = time.perf_counter()
     inspect = inspect_epub(converted_epub_bytes)
     policy = load_size_budget_policy()
     size_gate = evaluate_size_budget(
@@ -1080,6 +1183,7 @@ def _run_conversion_case(case: CorpusCase, *, run_heading_repair: bool) -> dict[
         inspection=inspect_epub_archive(converted_epub_bytes),
         label="klasy dokumentu",
     )
+    stage_timings["inspect_and_size_gate"] = round(time.perf_counter() - stage_started, 4)
 
     heading_summary: dict[str, Any] = {
         "status": "skipped",
@@ -1091,7 +1195,9 @@ def _run_conversion_case(case: CorpusCase, *, run_heading_repair: bool) -> dict[
         "epubcheck_status": "unavailable",
     }
     repaired_inspect = inspect
+    effective_epub_bytes = converted_epub_bytes
     if run_heading_repair:
+        stage_started = time.perf_counter()
         heading_result = repair_epub_headings_and_toc(
             converted_epub_bytes,
             title_hint=str(summary.get("title", "")),
@@ -1109,8 +1215,24 @@ def _run_conversion_case(case: CorpusCase, *, run_heading_repair: bool) -> dict[
             "manual_review_count": heading_result.summary.get("manual_review_count", 0),
             "epubcheck_status": heading_result.summary.get("epubcheck_status", "unavailable"),
         }
+        effective_epub_bytes = heading_result.epub_bytes
         repaired_inspect = inspect_epub(heading_result.epub_bytes)
+        stage_timings["heading_repair"] = round(time.perf_counter() - stage_started, 4)
+    else:
+        stage_timings["heading_repair"] = 0.0
 
+    stage_started = time.perf_counter()
+    effective_validation_status = str(quality.get("validation_status", "") or "")
+    if _epubcheck_recovered_by_heading_repair(quality=quality, heading_summary=heading_summary):
+        effective_validation_status = "passed"
+    quality = _refresh_magazine_quality_for_effective_epub(
+        quality,
+        epub_bytes=effective_epub_bytes,
+        validation_status=effective_validation_status,
+    )
+    stage_timings["quality_refresh"] = round(time.perf_counter() - stage_started, 4)
+
+    stage_started = time.perf_counter()
     blockers = _build_case_blockers(
         quality=quality,
         inspect=repaired_inspect,
@@ -1142,7 +1264,7 @@ def _run_conversion_case(case: CorpusCase, *, run_heading_repair: bool) -> dict[
         document_class=case.document_class,
         input_type=case.input_type,
         stats=repaired_inspect,
-        validation_status=str(quality.get("validation_status", "") or ""),
+        validation_status=effective_validation_status,
     )
     ocr_benchmark = _build_ocr_benchmark_payload(case=case, quality=quality, inspect=repaired_inspect)
     ocr_blockers, ocr_warnings = _ocr_benchmark_findings(case, ocr_benchmark)
@@ -1171,8 +1293,10 @@ def _run_conversion_case(case: CorpusCase, *, run_heading_repair: bool) -> dict[
         blockers.append({"code": "size_budget_failed", "detail": size_gate["message"]})
     elif size_gate["status"] == "passed_with_warnings":
         warnings.append({"code": "size_budget_warning", "detail": size_gate["message"]})
+    stage_timings["gate_rollup"] = round(time.perf_counter() - stage_started, 4)
     grade = _derive_case_grade(blockers, warnings)
     elapsed_seconds = round(time.perf_counter() - started, 4)
+    stage_timings["total"] = elapsed_seconds
 
     return {
         "case_id": case.case_id or case.path.stem,
@@ -1200,6 +1324,7 @@ def _run_conversion_case(case: CorpusCase, *, run_heading_repair: bool) -> dict[
         "accepted_warnings": accepted_warnings,
         "size_bytes": len(converted_epub_bytes),
         "elapsed_seconds": elapsed_seconds,
+        "timing_breakdown": stage_timings,
         "duration_bucket": _duration_bucket(elapsed_seconds),
         "profile_hint": _case_profile_hint(case=case, analysis=analysis),
     }
@@ -1310,6 +1435,7 @@ def _build_overall_summary(
             "case_ids": [str(row.get("case_id") or row.get("file") or "") for row in ocr_rows],
         },
         "recovered_epubcheck_count": warning_counts.get("pre_heading_epubcheck_recovered", 0),
+        "warning_policy": warning_policy_catalog(),
         "class_grade": class_grade,
         "class_coverage": _build_class_coverage(rows, source_summary=source_summary),
         "overall_status": overall_status,
@@ -1545,6 +1671,13 @@ def run_premium_corpus_smoke(
     }
 
 
+def _print_json_for_console(payload: dict[str, Any]) -> None:
+    """Print JSON without failing on Windows legacy console encodings."""
+    rendered = json.dumps(payload, ensure_ascii=False, indent=2)
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    print(rendered.encode(encoding, errors="replace").decode(encoding, errors="replace"))
+
+
 def _case_matches_filters(case: CorpusCase, filters: list[str]) -> bool:
     if not filters:
         return True
@@ -1584,7 +1717,7 @@ def main() -> int:
         )
     except ValueError as exc:
         parser.error(str(exc))
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    _print_json_for_console(payload)
     return 1 if payload["overall"].get("overall_status") == "failed" else 0
 
 

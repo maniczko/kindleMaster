@@ -1561,6 +1561,7 @@ def _build_chapter_audit(
         "kind": chapter_kind,
         "page_range": [chapter_pages[0].page_index + 1, chapter_pages[-1].page_index + 1],
         "page_labels": [page.page_label for page in chapter_pages if page.page_label],
+        "source_toc_page_labels": toc_starts,
         "page_titles": page_titles[:8],
         "risk_flags": risk_flags,
         "risk_score": risk_score,
@@ -1596,9 +1597,113 @@ def _build_magazine_audit(pages: list[PageModel], content_chapters: list[dict]) 
     return {
         "page_map": page_rows,
         "chapters": chapter_rows,
+        "article_map": _build_magazine_article_map(pages, content_chapters),
         "high_risk_chapters": [row for row in chapter_rows if row.get("risk_score", 0) >= 2],
         "high_risk_pages": [row for row in page_rows if row.get("risk_score", 0) >= 3],
     }
+
+
+def _build_magazine_article_map(pages: list[PageModel], content_chapters: list[dict]) -> dict:
+    toc_entries = _build_toc_entries(pages)
+    toc_titles = [_clean_article_title(entry.get("title", "")) for entry in toc_entries if entry.get("title")]
+    rows: list[dict] = []
+    editorial_rows: list[dict] = []
+    non_content_count = 0
+    front_matter_after_article_count = 0
+    first_editorial_index: int | None = None
+
+    for index, chapter in enumerate(content_chapters):
+        audit = dict(chapter.get("_audit") or {})
+        kind = str(audit.get("kind") or chapter.get("_kind") or "article")
+        title = _clean_article_title(str(chapter.get("title") or audit.get("title") or ""))
+        page_range = list(audit.get("page_range") or [0, 0])
+        toc_page_labels = list(audit.get("source_toc_page_labels") or [])
+        toc_matched = bool(toc_page_labels) or any(
+            _title_similarity(title, candidate) >= 0.52
+            for candidate in toc_titles
+            if title and candidate
+        )
+        risk_flags = list(audit.get("risk_flags") or [])
+        title_quality = _classify_title_quality(title)
+        row = {
+            "index": index + 1,
+            "title": title,
+            "kind": kind,
+            "page_range": page_range,
+            "toc_matched": toc_matched,
+            "title_quality": title_quality,
+            "risk_flags": risk_flags,
+            "risk_score": int(audit.get("risk_score", 0) or 0),
+            "toc_excluded": bool(chapter.get("toc_excluded")),
+        }
+        rows.append(row)
+        if kind in {"article", "interview"}:
+            if first_editorial_index is None:
+                first_editorial_index = index
+            editorial_rows.append(row)
+        elif kind in {"advertisement", "sponsored", "gallery", "newsletter"}:
+            non_content_count += 1
+        elif kind in {"contents", "front_matter"} and first_editorial_index is not None:
+            front_matter_after_article_count += 1
+
+    toc_covered = sum(1 for row in editorial_rows if row["toc_matched"])
+    editorial_count = len(editorial_rows)
+    toc_coverage = round(toc_covered / editorial_count, 3) if editorial_count else 1.0
+    truncated_titles = [
+        row
+        for row in editorial_rows
+        if row["title_quality"] in {"weak", "broken"} or _title_needs_toc_help(row["title"])
+    ]
+    high_risk = [row for row in editorial_rows if int(row.get("risk_score", 0) or 0) >= 2]
+    low_res_images = _count_low_resolution_magazine_images(pages)
+
+    blockers: list[str] = []
+    review: list[str] = []
+    if editorial_count >= 4 and toc_coverage < 0.95:
+        blockers.append("magazine_article_toc_coverage_below_95")
+    if front_matter_after_article_count:
+        blockers.append("magazine_front_matter_after_articles")
+    if truncated_titles:
+        review.append("magazine_article_titles_need_review")
+    if high_risk:
+        review.append("magazine_high_risk_article_segmentation")
+    if low_res_images:
+        review.append("magazine_low_resolution_images")
+
+    return {
+        "status": "failed" if blockers else "passed_with_warnings" if review else "passed",
+        "article_count": len(rows),
+        "editorial_article_count": editorial_count,
+        "toc_entry_count": len(toc_entries),
+        "toc_covered_article_count": toc_covered,
+        "toc_coverage": toc_coverage,
+        "toc_missing_articles": [row for row in editorial_rows if not row["toc_matched"]][:20],
+        "front_matter_before_articles": front_matter_after_article_count == 0,
+        "front_matter_after_article_count": front_matter_after_article_count,
+        "non_content_chapter_count": non_content_count,
+        "truncated_title_count": len(truncated_titles),
+        "high_risk_article_count": len(high_risk),
+        "low_resolution_image_count": low_res_images,
+        "blockers": blockers,
+        "review": review,
+        "articles": rows[:80],
+    }
+
+
+def _count_low_resolution_magazine_images(pages: list[PageModel]) -> int:
+    count = 0
+    for page in pages:
+        for block in page.blocks:
+            if block.kind != "image" or not block.image_data:
+                continue
+            try:
+                image = Image.open(io.BytesIO(block.image_data))
+                width, height = image.size
+            except Exception:
+                continue
+            if min(width, height) < 260 or width < 600:
+                count += 1
+    return count
 
 
 def _score_risk_flags(flags: list[str]) -> int:

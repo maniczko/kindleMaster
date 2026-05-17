@@ -111,8 +111,29 @@ class MlDatasetBuilderTests(unittest.TestCase):
                 },
                 "quality_report": {
                     "validation_status": "passed_with_warnings",
+                    "epubcheck_status": "passed_with_warnings",
+                    "validation_tool": "epubcheck",
                     "warnings": ["layout review needed"],
                     "final_output_size_bytes": 1234,
+                    "premium_scoring": {
+                        "status": "passed_with_warnings",
+                        "premium_score": 7.4,
+                        "kindle_ready": True,
+                        "premium_ready": False,
+                        "issue_counts": {"review": 1},
+                    },
+                    "text_cleanup": {
+                        "artifact_rate": {
+                            "status": "passed",
+                            "artifact_count": 2,
+                            "artifact_rate_per_1000_words": 1.25,
+                        }
+                    },
+                    "magazine_premium_quality": {
+                        "toc_usefulness_ratio": 0.88,
+                        "issue_toc_coverage": 0.75,
+                        "nav_linear_editorial_coverage": 0.9,
+                    },
                 },
                 "document_summary": {"language": "en", "profile": "book_reflow"},
             }
@@ -153,6 +174,9 @@ class MlDatasetBuilderTests(unittest.TestCase):
             feedback_lines = (root / "reports" / "ml" / "feedback" / "route_feedback_examples.jsonl").read_text(
                 encoding="utf-8"
             ).splitlines()
+            magazine_quality_lines = (
+                root / "reports" / "ml" / "datasets" / "magazine_quality_examples.jsonl"
+            ).read_text(encoding="utf-8").splitlines()
 
             self.assertEqual(log_payload["status"], "logged")
             self.assertTrue(log_payload["include_in_route_training"])
@@ -160,15 +184,126 @@ class MlDatasetBuilderTests(unittest.TestCase):
             self.assertEqual(export_payload["route_example_count"], 1)
             self.assertEqual(dataset_payload["feedback_record_count"], 1)
             self.assertEqual(dataset_payload["feedback_route_example_count"], 1)
+            self.assertEqual(dataset_payload["magazine_quality_example_count"], 1)
             self.assertFalse(dataset_payload["feedback_skipped"])
             self.assertEqual(len(route_lines), 1)
             self.assertEqual(len(feedback_lines), 1)
+            self.assertEqual(len(magazine_quality_lines), 1)
             route_example = json.loads(route_lines[0])
             self.assertEqual(route_example["case_id"], "magazine_feedback")
             self.assertEqual(route_example["label"], "magazine_reflow")
             self.assertEqual(route_example["feedback_status"], "accepted")
             self.assertTrue(route_example["features"]["layout_heavy"])
             self.assertFalse(route_example["features"]["text_heavy"])
+            quality_example = json.loads(magazine_quality_lines[0])
+            self.assertEqual(quality_example["quality_label"], "usable")
+            self.assertEqual(quality_example["final_label"], "usable")
+            self.assertEqual(quality_example["issue_tags"], ["layout", "toc"])
+            self.assertEqual(quality_example["output_metrics"]["premium_score"], 7.4)
+            self.assertEqual(quality_example["output_metrics"]["artifact_rate_per_1000_words"], 1.25)
+            self.assertEqual(quality_example["output_metrics"]["toc_usefulness_ratio"], 0.88)
+            self.assertEqual(quality_example["output_metrics"]["issue_toc_coverage"], 0.75)
+            self.assertEqual(quality_example["output_metrics"]["article_coverage"], 0.9)
+            self.assertEqual(quality_example["output_metrics"]["validation_status"], "passed_with_warnings")
+            self.assertEqual(quality_example["output_metrics"]["epubcheck_status"], "passed_with_warnings")
+            self.assertTrue(quality_example["source_features"]["layout_heavy"])
+            self.assertTrue(quality_example["route_features"]["layout_heavy"])
+
+    def test_magazine_quality_dataset_accepts_premium_and_legacy_good_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report_path = root / "reports" / "premium_magazine.json"
+            report_path.parent.mkdir(parents=True)
+            conversion_report = {
+                "source_type": "pdf",
+                "source_path": "inputs/premium-magazine.pdf",
+                "output_path": "output/premium-magazine.epub",
+                "analysis": {
+                    "profile": "magazine_reflow",
+                    "confidence": 0.86,
+                    "page_count": 12,
+                    "text_pages": 12,
+                    "scanned_pages": 0,
+                    "image_pages": 9,
+                    "has_toc": True,
+                    "has_tables": False,
+                    "has_diagrams": False,
+                    "has_meaningful_images": True,
+                    "estimated_columns": 2,
+                    "heading_density": 0.32,
+                    "font_consistency": 0.82,
+                    "layout_heavy": True,
+                    "text_heavy": False,
+                    "route_decision": {
+                        "heuristic_profile": "magazine_reflow",
+                        "heuristic_confidence": 0.86,
+                        "selected_profile": "magazine_reflow",
+                        "mode": "shadow",
+                    },
+                },
+                "quality_report": {
+                    "validation_status": "passed",
+                    "epubcheck_status": "passed",
+                    "premium_scoring": {
+                        "status": "passed",
+                        "premium_score": 9.2,
+                        "kindle_ready": True,
+                        "premium_ready": True,
+                    },
+                    "magazine_premium_quality": {
+                        "toc_usefulness_ratio": 0.96,
+                        "issue_toc_coverage": 1.0,
+                        "nav_linear_editorial_coverage": 0.95,
+                    },
+                },
+                "document_summary": {"language": "en", "profile": "magazine_reflow"},
+            }
+            report_path.write_text(json.dumps(conversion_report), encoding="utf-8")
+            (root / "manifest.json").write_text(json.dumps({"cases": []}), encoding="utf-8")
+            (root / "labels.json").write_text(json.dumps({"cases": {}}), encoding="utf-8")
+
+            append_conversion_feedback_from_report(
+                report_path=report_path,
+                log_path="reports/ml/feedback/conversion_feedback.jsonl",
+                repo_root=root,
+                case_id="legacy_good_magazine",
+                feedback_status="accepted",
+                quality_label="good",
+                route_label="magazine_reflow",
+                issue_tags=["premium-ready"],
+                created_at="2026-05-11T10:00:00Z",
+            )
+            append_conversion_feedback_from_report(
+                report_path=report_path,
+                log_path="reports/ml/feedback/conversion_feedback.jsonl",
+                repo_root=root,
+                case_id="explicit_premium_magazine",
+                feedback_status="accepted",
+                quality_label="premium",
+                route_label="magazine_reflow",
+                issue_tags=["premium-ready"],
+                created_at="2026-05-11T10:01:00Z",
+            )
+
+            payload = build_ml_datasets(
+                manifest_path="manifest.json",
+                labels_path="labels.json",
+                reports_root="reports",
+                output_dir="reports/ml/datasets",
+                feedback_log_paths=["reports/ml/feedback/conversion_feedback.jsonl"],
+                repo_root=root,
+            )
+            lines = (root / "reports" / "ml" / "datasets" / "magazine_quality_examples.jsonl").read_text(
+                encoding="utf-8"
+            ).splitlines()
+            rows = {json.loads(line)["case_id"]: json.loads(line) for line in lines}
+
+            self.assertEqual(payload["magazine_quality_example_count"], 2)
+            self.assertEqual(rows["legacy_good_magazine"]["quality_label"], "good")
+            self.assertEqual(rows["legacy_good_magazine"]["final_label"], "premium")
+            self.assertEqual(rows["explicit_premium_magazine"]["quality_label"], "premium")
+            self.assertEqual(rows["explicit_premium_magazine"]["final_label"], "premium")
+            self.assertEqual(rows["explicit_premium_magazine"]["output_metrics"]["premium_score"], 9.2)
 
 
 if __name__ == "__main__":

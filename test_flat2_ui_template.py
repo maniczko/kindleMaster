@@ -378,6 +378,7 @@ class Flat2UiTemplateTests(unittest.TestCase):
             "textCleanup",
             "referenceCleanup",
             "assetSummary",
+            "magazineQualityPreview",
             "tocPreview",
             "epubcheckDetail",
             "metadataSummary",
@@ -413,6 +414,17 @@ class Flat2UiTemplateTests(unittest.TestCase):
         self.assertIn('renderCompactList(safeUserFacingReasons, "Brak danych", 5)', html)
         self.assertIn("user_facing_verdict", html)
         self.assertIn("user_facing_reasons", html)
+        self.assertIn("Top 5 reasons/blockers", html)
+        self.assertIn("renderMagazineProblemSamples", html)
+        self.assertIn("qualityMagazinePreviewPanel", html)
+
+    def test_conversion_polling_understands_progress_heartbeat_states(self) -> None:
+        html = frontend_source()
+
+        self.assertIn("function renderConversionProgressMessage", html)
+        self.assertIn("Pracuje długo, ale serwer odpowiada", html)
+        self.assertIn("Brak świeżego heartbeat, sprawdzam dalej", html)
+        self.assertIn('data.status === "failed" || data.status === "timed_out"', html)
 
     def test_quality_cockpit_uses_polish_missing_data_fallback_for_missing_fields(self) -> None:
         html = frontend_source()
@@ -435,7 +447,7 @@ class Flat2UiTemplateTests(unittest.TestCase):
         self.assertIn('qualityStateUrl ? `<a href="${escapeHtml(qualityStateUrl)}"', html)
         self.assertIn('downloadUrl ? `<a href="${escapeHtml(downloadUrl)}"', html)
         self.assertIn('class="quality-download-action"', html)
-        self.assertIn("Pobierz szkic EPUB do kontroli", html)
+        self.assertIn("Pobierz szkic EPUB", html)
         self.assertIn("const downloadLabel = safeUserFacingVerdict && safeUserFacingVerdict.download_label", html)
         self.assertIn('releaseBlocked || reportVerdict.key === "release_blocked"', html)
         self.assertIn('data-readonly="true"', reports_panel)
@@ -450,7 +462,7 @@ class Flat2UiTemplateTests(unittest.TestCase):
         self.assertIn('["ready", "failed", "blocked", "interrupted"].includes(status)', html)
         self.assertIn('class="recent-conversion-evidence"', html)
         self.assertIn("Zadanie:", html)
-        self.assertIn("Pobierz szkic EPUB do kontroli", html)
+        self.assertIn("Pobierz szkic EPUB", html)
 
 
 if __name__ == "__main__":

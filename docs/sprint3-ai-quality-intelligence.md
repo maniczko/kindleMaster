@@ -16,6 +16,7 @@ The report includes:
 - `score_delta`
 - `provider`
 - `confidence`
+- `magazine_review`
 - `estimated_cost_usd`
 - `changed_fragment_count`
 - `changed_toc_entry_count`
@@ -46,6 +47,8 @@ Safety rules:
 - EPUB bytes are not rewritten by the AI provider,
 - OCR suggestions still pass confidence and length safety checks,
 - TOC suggestions may only reuse existing hrefs,
+- magazine review receives compact evidence only: suspicious OCR/flow fragments, TOC entries, article summaries, image metrics, and premium issues,
+- magazine review suggestions may only reference known hrefs or known suspicious-fragment indexes,
 - provider failures fall back to deterministic quality reporting,
 - feedback records are local derived evidence under `reports/ai-quality-feedback/`.
 
@@ -60,6 +63,10 @@ Accepted AI edits require confidence and safe length checks. The current integra
 AI TOC detection only runs when deterministic TOC confidence is low. It rejects captions, chart labels, figure labels, ads, sponsored labels, duplicate labels, and missing links.
 
 If AI confidence is low or no usable entries remain after filtering, KindleMaster falls back to deterministic TOC entries.
+
+## Magazine Review
+
+AI magazine review is evidence-only. It can report suspected bad reading order, truncated titles, TOC coverage gaps, non-content misclassification, OCR cleanup candidates, fixture tags, and confidence, but it never mutates EPUB bytes.
 
 ## Learning Loop
 

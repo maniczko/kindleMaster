@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -17,6 +18,12 @@ DEFAULT_OPENAI_MODEL = "gpt-4.1-mini"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_TIMEOUT_SECONDS = 45
 DEFAULT_MAX_INPUT_CHARS = 8_000
+MAX_MAGAZINE_TOC_ENTRIES = 80
+MAX_MAGAZINE_ARTICLES = 60
+MAX_MAGAZINE_FRAGMENTS = 24
+MAX_MAGAZINE_ISSUES = 24
+MAX_MAGAZINE_IMAGE_ROWS = 40
+MAX_MAGAZINE_TEXT_CHARS = 420
 
 QUALITY_ENABLE_KEYS = ("KINDLEMASTER_OPENAI_QUALITY", "KINDLEMASTER_AI_QUALITY_OPENAI")
 ENV_FILES = (".env.local", ".env")
@@ -123,6 +130,31 @@ class OpenAIQualityProvider:
             },
         )
 
+    def review_magazine(self, context: dict[str, Any]) -> dict[str, Any]:
+        compact_context = _compact_magazine_review_context(context, self.config.max_input_chars)
+        payload = self._responses_payload(
+            name="kindlemaster_magazine_review",
+            schema=_magazine_review_schema(),
+            instructions=(
+                "You are a conservative EPUB magazine quality reviewer. Use only the compact evidence provided: "
+                "suspicious OCR or flow fragments, TOC entries, article summaries, image metrics, and premium issues. "
+                "Do not ask for or infer from full EPUB/PDF bytes. Return evidence only; never propose byte rewrites. "
+                "Only reuse hrefs and fragment indexes that appear in the context. Flag likely reading-order, title, "
+                "TOC coverage, non-content classification, and OCR cleanup issues. Return JSON only."
+            ),
+            user_payload=compact_context,
+        )
+        result = self._call(payload)
+        parsed = _extract_json(result)
+        review = _sanitize_magazine_review(parsed, compact_context)
+        review["estimated_cost_usd"] = _estimated_cost(result)
+        review["provider"] = self.name
+        review["metadata"] = {
+            "model": self.config.model,
+            "usage": result.get("usage", {}),
+        }
+        return review
+
     def _responses_payload(self, *, name: str, schema: dict[str, Any], instructions: str, user_payload: dict[str, Any]) -> dict[str, Any]:
         return {
             "model": self.config.model,
@@ -181,6 +213,9 @@ def openai_quality_configuration_status(*, env: Mapping[str, str] | None = None,
         "api_key_present": bool(str(resolved.get("OPENAI_API_KEY", "") or "").strip()),
         "model": str(resolved.get("KINDLEMASTER_OPENAI_QUALITY_MODEL") or DEFAULT_OPENAI_MODEL),
         "base_url": str(resolved.get("OPENAI_BASE_URL") or DEFAULT_OPENAI_BASE_URL),
+        "mode": "evidence_only",
+        "evidence_only": True,
+        "full_document_upload": False,
     }
 
 
@@ -307,6 +342,87 @@ def _toc_schema() -> dict[str, Any]:
     }
 
 
+def _magazine_review_schema() -> dict[str, Any]:
+    href_evidence_item = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "href": {"type": "string"},
+            "evidence": {"type": "string"},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        },
+        "required": ["href", "evidence", "confidence"],
+    }
+    title_item = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "href": {"type": "string"},
+            "observed_title": {"type": "string"},
+            "suggested_title": {"type": "string"},
+            "evidence": {"type": "string"},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        },
+        "required": ["href", "observed_title", "suggested_title", "evidence", "confidence"],
+    }
+    missing_article_item = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "href": {"type": "string"},
+            "title": {"type": "string"},
+            "evidence": {"type": "string"},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        },
+        "required": ["href", "title", "evidence", "confidence"],
+    }
+    non_content_item = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "href": {"type": "string"},
+            "label": {"type": "string"},
+            "evidence": {"type": "string"},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        },
+        "required": ["href", "label", "evidence", "confidence"],
+    }
+    ocr_item = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "fragment_index": {"type": "integer", "minimum": 0},
+            "before": {"type": "string"},
+            "suggested": {"type": "string"},
+            "evidence": {"type": "string"},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        },
+        "required": ["fragment_index", "before", "suggested", "evidence", "confidence"],
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "suspected_bad_reading_order": {"type": "array", "items": href_evidence_item},
+            "truncated_titles": {"type": "array", "items": title_item},
+            "toc_missing_articles": {"type": "array", "items": missing_article_item},
+            "non_content_misclassified": {"type": "array", "items": non_content_item},
+            "ocr_cleanup_candidates": {"type": "array", "items": ocr_item},
+            "suggested_fixture_tags": {"type": "array", "items": {"type": "string"}},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        },
+        "required": [
+            "suspected_bad_reading_order",
+            "truncated_titles",
+            "toc_missing_articles",
+            "non_content_misclassified",
+            "ocr_cleanup_candidates",
+            "suggested_fixture_tags",
+            "confidence",
+        ],
+    }
+
+
 def _compact_scoring(scoring: Any) -> dict[str, Any]:
     if not isinstance(scoring, dict):
         return {}
@@ -316,6 +432,405 @@ def _compact_scoring(scoring: Any) -> dict[str, Any]:
         "scores": scoring.get("scores", {}),
         "issues": (scoring.get("issues") or [])[:20],
     }
+
+
+def _compact_magazine_review_context(context: dict[str, Any], max_chars: int) -> dict[str, Any]:
+    source = context if isinstance(context, dict) else {}
+    payload = {
+        "context_version": "magazine-review-v1",
+        "context_truncated": False,
+        "toc_entries": _compact_magazine_toc_entries(source.get("toc_entries")),
+        "article_map": _compact_magazine_articles(source.get("article_map")),
+        "suspicious_fragments": _compact_magazine_fragments(
+            source.get("suspicious_fragments") or source.get("suspicious_ocr_fragments")
+        ),
+        "flow_fragments": _compact_magazine_flow_fragments(source.get("flow_fragments")),
+        "image_metrics": _compact_magazine_image_metrics(source.get("image_metrics")),
+        "premium_issues": _compact_magazine_issues(source.get("premium_issues") or source.get("issues")),
+    }
+    return _trim_json_payload(payload, max(600, int(max_chars or DEFAULT_MAX_INPUT_CHARS)))
+
+
+def _compact_magazine_toc_entries(value: Any) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for index, item in enumerate(_iter_dicts(value)):
+        entries.append(
+            {
+                "index": _coerce_int(item.get("index"), index),
+                "label": _clip_text_field(item.get("label") or item.get("title"), 180),
+                "href": _clip_text_field(item.get("href"), 240),
+                "level": _coerce_int(item.get("level"), 1),
+            }
+        )
+        if len(entries) >= MAX_MAGAZINE_TOC_ENTRIES:
+            break
+    return entries
+
+
+def _compact_magazine_articles(value: Any) -> list[dict[str, Any]]:
+    articles: list[dict[str, Any]] = []
+    raw_articles = value.get("articles") if isinstance(value, Mapping) else value
+    for index, item in enumerate(_iter_dicts(raw_articles)):
+        articles.append(
+            {
+                "index": _coerce_int(item.get("index") or item.get("position"), index),
+                "href": _clip_text_field(item.get("href"), 240),
+                "title": _clip_text_field(item.get("title"), 180),
+                "word_count": _coerce_int(item.get("word_count"), 0),
+                "image_count": _coerce_int(item.get("image_count"), 0),
+                "heading_count": _coerce_int(item.get("heading_count"), 0),
+                "text_preview": _clip_text_field(item.get("text_preview") or item.get("sample_text"), MAX_MAGAZINE_TEXT_CHARS),
+                "risk_flags": _compact_string_list(item.get("risk_flags"), limit=8, chars=80),
+            }
+        )
+        if len(articles) >= MAX_MAGAZINE_ARTICLES:
+            break
+    return articles
+
+
+def _compact_magazine_fragments(value: Any) -> list[dict[str, Any]]:
+    fragments: list[dict[str, Any]] = []
+    if not isinstance(value, list):
+        return fragments
+    for index, item in enumerate(value):
+        if isinstance(item, Mapping):
+            fragment = {
+                "index": _coerce_int(item.get("index") or item.get("fragment_index"), index),
+                "href": _clip_text_field(item.get("href"), 240),
+                "text": _clip_text_field(item.get("text") or item.get("before"), MAX_MAGAZINE_TEXT_CHARS),
+                "artifact_counts": _compact_counts(item.get("artifact_counts")),
+            }
+        else:
+            fragment = {
+                "index": index,
+                "href": "",
+                "text": _clip_text_field(item, MAX_MAGAZINE_TEXT_CHARS),
+                "artifact_counts": {},
+            }
+        fragments.append(fragment)
+        if len(fragments) >= MAX_MAGAZINE_FRAGMENTS:
+            break
+    return fragments
+
+
+def _compact_magazine_flow_fragments(value: Any) -> list[dict[str, Any]]:
+    fragments: list[dict[str, Any]] = []
+    for index, item in enumerate(_iter_dicts(value)):
+        fragments.append(
+            {
+                "index": _coerce_int(item.get("index"), index),
+                "href": _clip_text_field(item.get("href"), 240),
+                "kind": _clip_text_field(item.get("kind") or item.get("type"), 80),
+                "title": _clip_text_field(item.get("title") or item.get("label"), 180),
+                "evidence": _clip_text_field(item.get("evidence") or item.get("sample"), MAX_MAGAZINE_TEXT_CHARS),
+            }
+        )
+        if len(fragments) >= MAX_MAGAZINE_FRAGMENTS:
+            break
+    return fragments
+
+
+def _compact_magazine_image_metrics(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    scalar_keys = (
+        "total_images",
+        "articles_with_images",
+        "image_only_articles",
+        "missing_alt_count",
+        "low_resolution_image_count",
+        "total_image_bytes",
+        "largest_image_bytes",
+    )
+    metrics: dict[str, Any] = {
+        key: _coerce_int(value.get(key), 0)
+        for key in scalar_keys
+        if key in value
+    }
+    per_article: list[dict[str, Any]] = []
+    for item in _iter_dicts(value.get("per_article")):
+        per_article.append(
+            {
+                "href": _clip_text_field(item.get("href"), 240),
+                "image_count": _coerce_int(item.get("image_count"), 0),
+                "missing_alt_count": _coerce_int(item.get("missing_alt_count"), 0),
+                "text_chars": _coerce_int(item.get("text_chars"), 0),
+            }
+        )
+        if len(per_article) >= MAX_MAGAZINE_IMAGE_ROWS:
+            break
+    if per_article:
+        metrics["per_article"] = per_article
+    return metrics
+
+
+def _compact_magazine_issues(value: Any) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    for item in _iter_dicts(value):
+        issues.append(
+            {
+                "code": _clip_text_field(item.get("code"), 100),
+                "severity": _clip_text_field(item.get("severity"), 40),
+                "source": _clip_text_field(item.get("source"), 80),
+                "file": _clip_text_field(item.get("file"), 240),
+                "message": _clip_text_field(item.get("message"), 260),
+                "suggested_action": _clip_text_field(item.get("suggested_action"), 260),
+            }
+        )
+        if len(issues) >= MAX_MAGAZINE_ISSUES:
+            break
+    return issues
+
+
+def _sanitize_magazine_review(parsed: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    allowed_hrefs = _allowed_magazine_hrefs(context)
+    fragment_text_by_index = _fragment_text_by_index(context)
+    return {
+        "suspected_bad_reading_order": _sanitize_href_evidence_list(
+            parsed.get("suspected_bad_reading_order"),
+            allowed_hrefs=allowed_hrefs,
+        ),
+        "truncated_titles": _sanitize_title_list(parsed.get("truncated_titles"), allowed_hrefs=allowed_hrefs),
+        "toc_missing_articles": _sanitize_missing_article_list(
+            parsed.get("toc_missing_articles"),
+            allowed_hrefs=allowed_hrefs,
+        ),
+        "non_content_misclassified": _sanitize_non_content_list(
+            parsed.get("non_content_misclassified"),
+            allowed_hrefs=allowed_hrefs,
+        ),
+        "ocr_cleanup_candidates": _sanitize_ocr_candidate_list(
+            parsed.get("ocr_cleanup_candidates"),
+            fragment_text_by_index=fragment_text_by_index,
+        ),
+        "suggested_fixture_tags": _sanitize_fixture_tags(parsed.get("suggested_fixture_tags")),
+        "confidence": _clamp(parsed.get("confidence")),
+    }
+
+
+def _sanitize_href_evidence_list(value: Any, *, allowed_hrefs: set[str]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for item in _iter_dicts(value):
+        href = _clean_allowed_href(item.get("href"), allowed_hrefs)
+        if not href:
+            continue
+        items.append(
+            {
+                "href": href,
+                "evidence": _clip_text_field(item.get("evidence") or item.get("reason"), 360),
+                "confidence": _clamp(item.get("confidence")),
+            }
+        )
+        if len(items) >= MAX_MAGAZINE_FRAGMENTS:
+            break
+    return items
+
+
+def _sanitize_title_list(value: Any, *, allowed_hrefs: set[str]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for item in _iter_dicts(value):
+        href = _clean_allowed_href(item.get("href"), allowed_hrefs)
+        if not href:
+            continue
+        items.append(
+            {
+                "href": href,
+                "observed_title": _clip_text_field(item.get("observed_title") or item.get("observed"), 180),
+                "suggested_title": _clip_text_field(item.get("suggested_title") or item.get("suggested"), 180),
+                "evidence": _clip_text_field(item.get("evidence") or item.get("reason"), 360),
+                "confidence": _clamp(item.get("confidence")),
+            }
+        )
+        if len(items) >= MAX_MAGAZINE_FRAGMENTS:
+            break
+    return items
+
+
+def _sanitize_missing_article_list(value: Any, *, allowed_hrefs: set[str]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for item in _iter_dicts(value):
+        href = _clean_allowed_href(item.get("href"), allowed_hrefs)
+        if not href:
+            continue
+        items.append(
+            {
+                "href": href,
+                "title": _clip_text_field(item.get("title") or item.get("label"), 180),
+                "evidence": _clip_text_field(item.get("evidence") or item.get("reason"), 360),
+                "confidence": _clamp(item.get("confidence")),
+            }
+        )
+        if len(items) >= MAX_MAGAZINE_FRAGMENTS:
+            break
+    return items
+
+
+def _sanitize_non_content_list(value: Any, *, allowed_hrefs: set[str]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for item in _iter_dicts(value):
+        href = _clean_allowed_href(item.get("href"), allowed_hrefs)
+        if not href:
+            continue
+        items.append(
+            {
+                "href": href,
+                "label": _clip_text_field(item.get("label") or item.get("title"), 180),
+                "evidence": _clip_text_field(item.get("evidence") or item.get("reason"), 360),
+                "confidence": _clamp(item.get("confidence")),
+            }
+        )
+        if len(items) >= MAX_MAGAZINE_FRAGMENTS:
+            break
+    return items
+
+
+def _sanitize_ocr_candidate_list(value: Any, *, fragment_text_by_index: dict[int, str]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for item in _iter_dicts(value):
+        index = _coerce_int(item.get("fragment_index") if "fragment_index" in item else item.get("index"), -1)
+        if index not in fragment_text_by_index:
+            continue
+        items.append(
+            {
+                "fragment_index": index,
+                "before": fragment_text_by_index[index],
+                "suggested": _clip_text_field(item.get("suggested") or item.get("after"), MAX_MAGAZINE_TEXT_CHARS),
+                "evidence": _clip_text_field(item.get("evidence") or item.get("reason"), 360),
+                "confidence": _clamp(item.get("confidence")),
+            }
+        )
+        if len(items) >= MAX_MAGAZINE_FRAGMENTS:
+            break
+    return items
+
+
+def _sanitize_fixture_tags(value: Any) -> list[str]:
+    tags: list[str] = []
+    seen: set[str] = set()
+    if not isinstance(value, list):
+        return tags
+    for item in value:
+        tag = re.sub(r"[^a-z0-9_-]+", "-", str(item or "").strip().lower()).strip("-_")
+        if len(tag) < 2:
+            continue
+        tag = tag[:60]
+        if tag in seen:
+            continue
+        seen.add(tag)
+        tags.append(tag)
+        if len(tags) >= 12:
+            break
+    return tags
+
+
+def _allowed_magazine_hrefs(context: dict[str, Any]) -> set[str]:
+    allowed: set[str] = set()
+    for key in ("toc_entries", "article_map", "flow_fragments"):
+        for item in _iter_dicts(context.get(key)):
+            href = str(item.get("href") or "").strip()
+            if href:
+                allowed.add(href)
+    return allowed
+
+
+def _fragment_text_by_index(context: dict[str, Any]) -> dict[int, str]:
+    fragments: dict[int, str] = {}
+    for item in _iter_dicts(context.get("suspicious_fragments")):
+        index = _coerce_int(item.get("index"), -1)
+        if index >= 0:
+            fragments[index] = _clip_text_field(item.get("text"), MAX_MAGAZINE_TEXT_CHARS)
+    return fragments
+
+
+def _clean_allowed_href(value: Any, allowed_hrefs: set[str]) -> str:
+    href = str(value or "").strip()
+    if not href or href not in allowed_hrefs:
+        return ""
+    return href
+
+
+def _trim_json_payload(payload: dict[str, Any], budget: int) -> dict[str, Any]:
+    result = dict(payload)
+    if _json_length(result) <= budget:
+        return result
+
+    result["context_truncated"] = True
+    for key in ("premium_issues", "suspicious_fragments", "flow_fragments", "article_map", "toc_entries"):
+        items = list(result.get(key) or [])
+        while items and _json_length(result) > budget:
+            items.pop()
+            result[key] = items
+
+    if _json_length(result) <= budget:
+        return result
+
+    for char_limit in (220, 140, 80, 40):
+        clipped = _clip_strings_in_payload(result, char_limit)
+        clipped["context_truncated"] = True
+        result = clipped
+        if _json_length(result) <= budget:
+            return result
+
+    minimal = {
+        "context_version": "magazine-review-v1",
+        "context_truncated": True,
+        "toc_entries": [],
+        "article_map": [],
+        "suspicious_fragments": [],
+        "flow_fragments": [],
+        "image_metrics": {},
+        "premium_issues": [],
+    }
+    if _json_length(minimal) <= budget:
+        return minimal
+    return {"context_truncated": True}
+
+
+def _clip_strings_in_payload(value: Any, char_limit: int) -> Any:
+    if isinstance(value, dict):
+        return {key: _clip_strings_in_payload(item, char_limit) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_clip_strings_in_payload(item, char_limit) for item in value]
+    if isinstance(value, str):
+        return _clip_text_field(value, char_limit)
+    return value
+
+
+def _json_length(payload: dict[str, Any]) -> int:
+    return len(json.dumps(payload, ensure_ascii=False))
+
+
+def _iter_dicts(value: Any):
+    if not isinstance(value, list):
+        return
+    for item in value:
+        if isinstance(item, dict):
+            yield item
+
+
+def _compact_counts(value: Any) -> dict[str, int]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {str(key)[:80]: _coerce_int(count, 0) for key, count in list(value.items())[:12]}
+
+
+def _compact_string_list(value: Any, *, limit: int, chars: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for item in value:
+        result.append(_clip_text_field(item, chars))
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _clip_text_field(value: Any, limit: int) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    suffix = " [...clipped]"
+    return text[: max(0, limit - len(suffix))] + suffix
 
 
 def _clip(text: str, limit: int) -> str:
@@ -345,3 +860,10 @@ def _coerce_level(value: Any) -> int | None:
         return max(1, min(4, int(value)))
     except (TypeError, ValueError):
         return None
+
+
+def _coerce_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default

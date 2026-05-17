@@ -190,7 +190,7 @@
       if (!reasons.length) {
         reasons.push(isReady ? "Brak blockerów publikacji." : (fallbackReason || "Brak danych."));
       }
-      return reasons.slice(0, 3);
+      return reasons.slice(0, 5);
     }
 
     function renderTopQualityReasons(items) {
@@ -199,6 +199,28 @@
         <ol class="quality-top-reasons-list">
           ${safeItems.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
         </ol>
+      `;
+    }
+
+    function renderMagazineProblemSamples(preview) {
+      const payload = normalizeOptionalObject(preview);
+      const samples = payload ? normalizeOptionalArray(payload.problem_samples || payload.samples) : [];
+      if (!samples.length) {
+        return `<div class="quality-empty">Brak automatycznych próbek problemów magazynu.</div>`;
+      }
+      return `
+        <ul class="quality-compact-list quality-sample-list">
+          ${samples.slice(0, 10).map((item) => {
+            const type = item && item.type ? item.type : "sample";
+            const title = item && (item.title || item.evidence) ? (item.title || item.evidence) : "Próbka jakości";
+            const evidence = item && item.evidence ? `: ${item.evidence}` : "";
+            const source = item && item.source ? ` [${item.source}]` : "";
+            const location = item && item.location && typeof item.location === "object"
+              ? [item.location.href, item.location.file, item.location.page ? `str. ${item.location.page}` : "", item.location.section].filter(Boolean).join(" / ")
+              : "";
+            return `<li><strong>${escapeHtml(type)}</strong>${escapeHtml(source)} — ${escapeHtml(title)}${escapeHtml(evidence)}${location ? `<br><small>${escapeHtml(location)}</small>` : ""}</li>`;
+          }).join("")}
+        </ul>
       `;
     }
 
@@ -550,6 +572,7 @@
         textCleanup = null,
         referenceCleanup = null,
         assetSummary = null,
+        magazineQualityPreview = null,
         tocPreview = null,
         epubcheckDetail = null,
         metadataSummary = null,
@@ -686,6 +709,7 @@
       const safeTextCleanup = normalizeOptionalObject(textCleanup);
       const safeReferenceCleanup = normalizeOptionalObject(referenceCleanup);
       const safeAssetSummary = normalizeOptionalObject(assetSummary);
+      const safeMagazineQualityPreview = normalizeOptionalObject(magazineQualityPreview);
       const safeTocPreview = normalizeOptionalObject(tocPreview);
       const safeEpubcheckDetail = normalizeOptionalObject(epubcheckDetail);
       const safeMetadataSummary = normalizeOptionalObject(metadataSummary);
@@ -869,6 +893,14 @@
         subtitle: safeAssetSummary ? (safeAssetSummary.status || "Zaraportowano") : "Brak danych",
         body: `<div class="quality-matrix">${imageRows}</div>`,
       });
+      const magazinePreviewPanel = renderQualityDisclosurePanel({
+        id: "qualityMagazinePreviewPanel",
+        title: "Szybki preview magazynu",
+        subtitle: safeMagazineQualityPreview ? `${safeMagazineQualityPreview.sample_count || 0} próbek` : "Brak danych",
+        body: renderMagazineProblemSamples(safeMagazineQualityPreview),
+        wide: true,
+        open: Boolean(safeMagazineQualityPreview && safeMagazineQualityPreview.sample_count),
+      });
       const kindleDeliveryPanel = renderQualityDisclosurePanel({
         id: "qualityKindleDeliveryPanel",
         title: "Kindle / mail",
@@ -938,7 +970,7 @@
             ${renderQualityHeroMetric("AI verifier", aiVerifierLabel, "status", qualityToneFromStatus(aiVerifier && typeof aiVerifier === "object" ? (aiVerifier.status || aiVerifier.state || aiVerifier.verdict || aiVerifier.result) : aiVerifier))}
           </div>
           <div class="quality-top-reasons" id="qualityTopReasons">
-            <div class="quality-panel-title"><span>Top 3 reasons/blockers</span><small>blokery najpierw</small></div>
+            <div class="quality-panel-title"><span>Top 5 reasons/blockers</span><small>blokery najpierw</small></div>
             ${renderTopQualityReasons(topReasons)}
           </div>
         </div>
@@ -946,7 +978,7 @@
       const downloadLabel = safeUserFacingVerdict && safeUserFacingVerdict.download_label
         ? safeUserFacingVerdict.download_label
         : releaseBlocked || reportVerdict.key === "release_blocked"
-        ? "Pobierz szkic EPUB do kontroli"
+        ? "Pobierz szkic EPUB"
         : "Pobierz EPUB";
       const qualityLinks = [
         qualityStateUrl ? `<a href="${escapeHtml(qualityStateUrl)}" target="_blank" rel="noreferrer">JSON jakości</a>` : "",
@@ -963,6 +995,7 @@
             ${completenessPanel}
             ${epubcheckPanel}
             ${tocPreviewPanel}
+            ${magazinePreviewPanel}
             ${metadataPanel}
             ${assetsPanel}
             ${qualitySelectionPanel}

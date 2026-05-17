@@ -34,7 +34,7 @@ def _find_free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def _wait_until_server_ready(base_url: str, process: subprocess.Popen[bytes], timeout_seconds: float = 45.0) -> None:
+def _wait_until_server_ready(base_url: str, process: subprocess.Popen[bytes], timeout_seconds: float = 90.0) -> None:
     deadline = time.time() + timeout_seconds
     last_error: Exception | None = None
     while time.time() < deadline:

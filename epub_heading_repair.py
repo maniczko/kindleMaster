@@ -12,8 +12,10 @@ from typing import Any
 from urllib.parse import unquote
 
 from bs4 import BeautifulSoup, Tag
+from lxml import etree
 
 from epub_package_ops import (
+    NS,
     _extract_epub,
     _get_spine_xhtml_paths,
     _locate_opf,
@@ -21,6 +23,7 @@ from epub_package_ops import (
 )
 from kindle_semantic_cleanup import (
     _build_toc_map,
+    _build_non_linear_reachability_toc_entries,
     _collect_structural_integrity_summary,
     _dedupe_repeated_subsection_toc_labels,
     _evaluate_structural_gate,
@@ -256,10 +259,12 @@ DENSE_GENERIC_TOC_LABELS = {
 }
 
 DENSE_TABLE_DIAGRAM_ARTIFACT_LABELS = {
+    "game",
     "input",
     "inputs",
     "output",
     "outputs",
+    "step",
 }
 
 GENERIC_TABLE_SUBHEADING_KEYS = {
@@ -497,6 +502,7 @@ def repair_epub_headings_and_toc(
         toc_map=raw_toc_map,
         nav_summary=nav_summary,
         after_scan=after_scan,
+        toc_file_order=structural_phase.get("toc_file_order", []),
     )
     gates = dict(phase_report.get("gates") or {})
     gates["C"] = _evaluate_heading_gate_after_rebuild(after_scan, publication_profile=publication_profile)
@@ -883,6 +889,8 @@ def _is_clean_navigation_heading_text(text: str, *, level: int) -> bool:
         return False
     if _looks_like_dense_table_or_diagram_artifact_heading(normalized):
         return False
+    if _looks_like_dense_procedural_or_mapping_artifact(normalized):
+        return False
     return True
 
 
@@ -945,6 +953,22 @@ def _normalize_headings_and_rebuild_navigation(
             after_scan=after_scan,
             publication_profile=publication_profile,
         )
+        if _is_magazine_publication_profile(publication_profile):
+            toc_entries = _supplement_magazine_toc_with_linear_chapters(
+                toc_entries,
+                linear_paths=_get_linear_spine_xhtml_paths(opf_path),
+                after_scan=after_scan,
+            )
+        non_linear_paths = _get_non_linear_spine_xhtml_paths(opf_path)
+        if non_linear_paths:
+            toc_entries.extend(
+                _build_non_linear_reachability_toc_entries(
+                    list(chapter_paths) + non_linear_paths,
+                    non_linear_files={path.name for path in non_linear_paths},
+                    language=resolved_language,
+                    parent_file=non_linear_paths[0].name,
+                )
+            )
         _rewrite_navigation(
             root_dir,
             opf_path,
@@ -953,18 +977,122 @@ def _normalize_headings_and_rebuild_navigation(
             language=resolved_language,
         )
         _strip_missing_landmarks(opf_path.parent / "nav.xhtml", package_dir=opf_path.parent)
-        toc_map = _build_toc_map(toc_entries, chapter_paths=chapter_paths, package_dir=opf_path.parent)
+        toc_chapter_paths = list(chapter_paths) + [path for path in non_linear_paths if path not in chapter_paths]
+        toc_map = _build_toc_map(toc_entries, chapter_paths=toc_chapter_paths, package_dir=opf_path.parent)
         nav_summary = _inventory_navigation_document(opf_path)
+        toc_file_order = [path.name for path in toc_chapter_paths]
         structural_phase = {
             "status": "completed",
+            "toc_file_order": toc_file_order,
             **_collect_structural_integrity_summary(
                 opf_path,
                 root_dir=root_dir,
-                chapter_paths=chapter_paths,
+                chapter_paths=toc_chapter_paths,
                 toc_map=toc_map,
             ),
         }
         return _pack_epub(root_dir), after_scan, toc_map, nav_summary, structural_phase
+
+
+def _get_non_linear_spine_xhtml_paths(opf_path: Path) -> list[Path]:
+    root = etree.parse(str(opf_path)).getroot()
+    manifest_by_id = {item.get("id"): item for item in root.findall(".//opf:manifest/opf:item", NS)}
+    paths: list[Path] = []
+    for itemref in root.findall(".//opf:spine/opf:itemref", NS):
+        if str(itemref.get("linear", "yes") or "yes").lower() != "no":
+            continue
+        manifest_item = manifest_by_id.get(itemref.get("idref"))
+        if manifest_item is None:
+            continue
+        href = manifest_item.get("href") or ""
+        media_type = manifest_item.get("media-type") or ""
+        if media_type != "application/xhtml+xml" or href.endswith("nav.xhtml") or href.endswith("cover.xhtml"):
+            continue
+        paths.append((opf_path.parent / href).resolve())
+    return paths
+
+
+def _get_linear_spine_xhtml_paths(opf_path: Path) -> list[Path]:
+    root = etree.parse(str(opf_path)).getroot()
+    manifest_by_id = {item.get("id"): item for item in root.findall(".//opf:manifest/opf:item", NS)}
+    paths: list[Path] = []
+    for itemref in root.findall(".//opf:spine/opf:itemref", NS):
+        if str(itemref.get("linear", "yes") or "yes").lower() == "no":
+            continue
+        manifest_item = manifest_by_id.get(itemref.get("idref"))
+        if manifest_item is None:
+            continue
+        href = manifest_item.get("href") or ""
+        media_type = manifest_item.get("media-type") or ""
+        if media_type != "application/xhtml+xml" or href.endswith("nav.xhtml"):
+            continue
+        paths.append((opf_path.parent / href).resolve())
+    return paths
+
+
+def _supplement_magazine_toc_with_linear_chapters(
+    toc_entries: list[dict[str, Any]],
+    *,
+    linear_paths: list[Path],
+    after_scan: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    if not linear_paths:
+        return toc_entries
+
+    linear_order = {path.name: index for index, path in enumerate(linear_paths)}
+    covered_files = {
+        str(entry.get("file_name", "") or "")
+        for entry in toc_entries
+        if str(entry.get("file_name", "") or "") in linear_order
+    }
+    supplemented: list[dict[str, Any]] = list(toc_entries)
+
+    for path in linear_paths:
+        file_name = path.name
+        if file_name == "nav.xhtml":
+            continue
+        if file_name in covered_files:
+            continue
+        if file_name == "cover.xhtml":
+            supplemented.append({"file_name": file_name, "id": "", "text": "Okładka", "level": 1})
+            continue
+
+        label, anchor_id = _fallback_magazine_toc_label(path, after_scan.get(file_name, []))
+        if not label:
+            continue
+        supplemented.append({"file_name": file_name, "id": anchor_id, "text": label, "level": 1})
+
+    original_order = {id(entry): index for index, entry in enumerate(supplemented)}
+
+    def sort_key(entry: dict[str, Any]) -> tuple[int, int]:
+        file_name = str(entry.get("file_name", "") or "")
+        return (linear_order.get(file_name, 10**9), original_order.get(id(entry), 10**9))
+
+    return _dedupe_repeated_subsection_toc_labels(sorted(supplemented, key=sort_key))
+
+
+def _fallback_magazine_toc_label(chapter_path: Path, scan_items: list[dict[str, Any]]) -> tuple[str, str]:
+    for item in scan_items:
+        text = _normalize_text(str(item.get("text", "") or ""))
+        if text and _is_clean_navigation_heading_text(text, level=1):
+            return text, _normalize_text(str(item.get("id", "") or ""))
+
+    try:
+        soup = BeautifulSoup(chapter_path.read_text(encoding="utf-8"), "xml")
+    except OSError:
+        return chapter_path.stem.replace("_", " ").title(), ""
+
+    for selector in ("h1", "h2", "title", "p"):
+        for node in soup.find_all(selector):
+            text = _normalize_text(node.get_text(" ", strip=True))
+            if not text:
+                continue
+            if selector == "p" and len(text.split()) > 18:
+                continue
+            if _looks_like_navigation_artifact_heading(text):
+                continue
+            return text, _normalize_text(str(node.get("id", "") or ""))
+    return chapter_path.stem.replace("_", " ").title(), ""
 
 
 def _scan_heading_candidates_from_text(
@@ -1327,6 +1455,8 @@ def _demote_heading_noise(
             or _looks_like_table_header_heading(text)
             or _looks_like_navigation_artifact_heading(text)
             or (_looks_like_dense_table_or_diagram_artifact_heading(text) and _heading_has_dense_artifact_context(node))
+            or _looks_like_dense_micro_heading_noise(node, text)
+            or _looks_like_dense_procedural_or_mapping_artifact(text)
             or _looks_like_synthetic_section_label(text)
             or (_looks_like_truncated_heading(text) and not _has_supporting_content(node))
             or (relaxed_profile and _looks_like_relaxed_profile_heading_noise(node, text))
@@ -1970,6 +2100,39 @@ def _looks_like_dense_table_or_diagram_artifact_heading(text: str) -> bool:
     return False
 
 
+def _looks_like_dense_procedural_or_mapping_artifact(text: str) -> bool:
+    normalized = _normalize_text(text).strip(" .:;")
+    if not normalized:
+        return False
+    if re.fullmatch(r"(?i)step\s+\d+\.?", normalized):
+        return True
+    if re.match(r"^\d+\.\s+[A-Z][^:]{3,80}:\s+.{16,}$", normalized):
+        return True
+    if len(re.findall(r"\b\d+(?:\.\d+){1,3}\.?\s+[A-Z][A-Za-z]+", normalized)) >= 2:
+        return True
+    if re.match(r"(?i)^description\s+[A-Z][A-Za-z]+\s+[A-Z][A-Za-z]+\s+\w+\.?$", normalized):
+        return True
+    return False
+
+
+def _looks_like_dense_micro_heading_noise(node: Tag, text: str) -> bool:
+    if not node.name or not str(node.name).startswith("h"):
+        return False
+    raw_level = str(node.name)[1:]
+    level = int(raw_level) if raw_level.isdigit() else 0
+    if level <= 1:
+        return False
+    normalized = _normalize_text(text).strip(" .:;")
+    lowered = normalized.lower()
+    if re.fullmatch(r"\.\d+\s+(?:strengths|limitations|description)", lowered):
+        return True
+    if re.fullmatch(r"\d+(?:\.\d+){1,2}\s+\d+(?:\.\d+){2,3}", normalized):
+        return True
+    if lowered in DENSE_GENERIC_TOC_LABELS and _heading_has_dense_artifact_context(node):
+        return True
+    return False
+
+
 def _extract_inline_heading_prefix(text: str) -> tuple[str, str]:
     normalized = _normalize_text(text)
     lower_text = normalized.lower()
@@ -2212,6 +2375,8 @@ def _should_include_dense_handbook_heading(
         return False
     if _looks_like_dense_table_or_diagram_artifact_heading(text):
         return False
+    if _looks_like_dense_procedural_or_mapping_artifact(text):
+        return False
     if level == 3 and not (_looks_like_numbered_heading(text) or len(text.split()) >= 3):
         return False
     if len(items) >= 12 and level >= 2 and _looks_like_dense_backmatter_heading(text):
@@ -2232,6 +2397,8 @@ def _should_skip_repetitive_dense_heading(text: str, *, level: int, repeated_cou
     if normalized[:1] in {"•", "·", "▪", "◦", ""}:
         return True
     if _looks_like_truncated_heading(normalized):
+        return True
+    if _looks_like_dense_procedural_or_mapping_artifact(normalized):
         return True
     if repeated_count <= 1 or _looks_like_numbered_heading(normalized):
         return False
@@ -2317,8 +2484,9 @@ def _build_post_rebuild_toc_phase(
     toc_map: list[dict[str, Any]],
     nav_summary: dict[str, Any],
     after_scan: dict[str, list[dict[str, Any]]],
+    toc_file_order: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
-    spine_order = list(after_scan.keys())
+    spine_order = [str(item) for item in (toc_file_order or []) if str(item)] or list(after_scan.keys())
     last_position = -1
     spine_positions = {file_name: index for index, file_name in enumerate(spine_order)}
     spine_order_matches = True
@@ -3084,9 +3252,56 @@ def _build_summary(
             for file_name, counts in _per_file_heading_counts(after_scan).items()
             if counts.get("h1", 0) == 0
         ),
+        "dense_handbook_navigation_summary": _build_dense_handbook_navigation_summary(
+            after_scan=after_scan,
+            toc_mapping=toc_mapping,
+        ),
         "epubcheck_status": epubcheck.get("status", "unavailable"),
         "release_status": release_status,
     }
+
+
+def _build_dense_handbook_navigation_summary(
+    *,
+    after_scan: dict[str, list[dict[str, Any]]],
+    toc_mapping: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not _is_dense_handbook_scan(after_scan):
+        return {}
+    per_file_counts = {
+        file_name: len([item for item in items if int(item.get("level") or 0) in {1, 2, 3}])
+        for file_name, items in after_scan.items()
+    }
+    largest_file = max(per_file_counts, key=per_file_counts.get) if per_file_counts else ""
+    heading_noise = [
+        _normalize_text(str(item.get("text", "") or ""))
+        for items in after_scan.values()
+        for item in items
+        if _looks_like_dense_micro_heading_noise(_candidate_stub_tag(item), str(item.get("text", "") or ""))
+        or _looks_like_dense_procedural_or_mapping_artifact(str(item.get("text", "") or ""))
+        or _looks_like_dense_table_or_diagram_artifact_heading(str(item.get("text", "") or ""))
+    ]
+    toc_noise = [
+        _normalize_text(str(item.get("label", "") or ""))
+        for item in toc_mapping
+        if _looks_like_dense_procedural_or_mapping_artifact(str(item.get("label", "") or ""))
+        or _looks_like_dense_table_or_diagram_artifact_heading(str(item.get("label", "") or ""))
+    ]
+    return {
+        "profile": "dense_handbook",
+        "largest_heading_file": largest_file,
+        "largest_heading_file_heading_count": per_file_counts.get(largest_file, 0) if largest_file else 0,
+        "heading_noise_count": len(heading_noise),
+        "heading_noise_samples": heading_noise[:10],
+        "toc_noise_count": len(toc_noise),
+        "toc_noise_samples": toc_noise[:10],
+    }
+
+
+def _candidate_stub_tag(item: dict[str, Any]) -> Tag:
+    soup = BeautifulSoup("", "html.parser")
+    level = int(item.get("level") or 2)
+    return soup.new_tag(f"h{max(1, min(level, 6))}")
 
 
 def _build_qa_payload(

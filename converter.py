@@ -329,7 +329,11 @@ def finalize_epub_bytes(
 
         openai_provider = build_openai_quality_provider_from_env()
         providers = (
-            AIQualityProviders(ocr_cleanup=openai_provider, toc_detection=openai_provider)
+            AIQualityProviders(
+                ocr_cleanup=openai_provider,
+                toc_detection=openai_provider,
+                magazine_review=openai_provider,
+            )
             if openai_provider is not None
             else None
         )

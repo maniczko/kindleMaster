@@ -92,7 +92,7 @@
         ? (payload.error || payload.message || "Konwersja nie powiodla sie.")
         : (payload.textExcerpt || payload.message || payload.readingVerdict || "");
       const downloadLabel = payload.releaseBlocked || payload.verdict === "release_blocked"
-        ? "Pobierz szkic EPUB do kontroli"
+        ? "Pobierz szkic EPUB"
         : "Pobierz EPUB";
       const evidenceActions = ["ready", "failed", "blocked", "interrupted"].includes(status);
       const actions = evidenceActions ? [

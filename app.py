@@ -95,6 +95,20 @@ CONVERSION_CLEANUP_MIN_INTERVAL_SECONDS = 60
 MAX_ACTIVE_CONVERSION_JOBS = DEFAULT_CONVERSION_QUEUE_POLICY.max_active_jobs
 MAX_CONVERSION_JOB_RUNTIME_SECONDS = DEFAULT_CONVERSION_QUEUE_POLICY.max_runtime_seconds
 MAX_CONVERSION_JOB_STALE_SECONDS = DEFAULT_CONVERSION_QUEUE_POLICY.max_stale_seconds
+CONVERSION_PROGRESS_HEARTBEAT_SECONDS = 45
+CONVERSION_PROGRESS_LONG_RUNNING_SECONDS = 5 * 60
+CONVERSION_PROGRESS_STALLED_SECONDS = 2 * 60
+CONVERSION_PROGRESS_STAGES = {
+    "queued": ("Przygotowanie", 5),
+    "extracting": ("Ekstrakcja tekstu", 20),
+    "assembling": ("Składanie artykułów", 45),
+    "repairing_toc": ("Naprawa TOC", 65),
+    "premium_audit": ("Audyt premium", 82),
+    "packaging": ("Pakowanie EPUB", 94),
+    "ready": ("Gotowe", 100),
+    "failed": ("Błąd", 100),
+    "timed_out": ("Limit czasu", 100),
+}
 _CONVERSION_JOBS: dict[str, dict] = {}
 _CONVERSION_JOBS_LOCK = threading.Lock()
 _CONVERSION_JOB_STORE = ConversionJobStore(
@@ -307,9 +321,20 @@ def _store_quality_report_artifacts(job_id: str) -> None:
         {
             "report_json": report_json,
             "report_markdown": report_markdown,
-            "log": log_artifact,
+        "log": log_artifact,
         },
     )
+
+
+def _ensure_quality_report_artifacts(job_id: str, job: dict) -> dict:
+    if job.get("status") != "ready":
+        return job
+    artifacts = dict(job.get("artifacts", {}) or {})
+    required = {"report_json", "report_markdown", "log"}
+    if required.issubset(set(artifacts)):
+        return job
+    _store_quality_report_artifacts(job_id)
+    return _get_conversion_job(job_id) or job
 
 
 def _signed_output_artifact_url(job: dict) -> str:
@@ -374,6 +399,201 @@ def _update_runtime_job(job_id: str, status: RuntimeJobStatus, **fields) -> dict
         runtime["status"] = status.value
         runtime.update({key: value for key, value in fields.items() if value is not None})
         return runtime
+
+
+def _progress_timestamp(now: datetime | None = None) -> str:
+    current_time = now or datetime.now(UTC)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=UTC)
+    return current_time.isoformat().replace("+00:00", "Z")
+
+
+def _normalize_progress_stage(stage_id: str | None) -> tuple[str, str, int]:
+    normalized = str(stage_id or "extracting").strip().lower() or "extracting"
+    label, percent = CONVERSION_PROGRESS_STAGES.get(normalized, CONVERSION_PROGRESS_STAGES["extracting"])
+    return normalized, label, percent
+
+
+def _build_progress_payload(
+    *,
+    stage_id: str | None,
+    stage_label: str | None = None,
+    percent_estimate: int | float | None = None,
+    status: str = "running",
+    message: str = "",
+    heartbeat_at: str | None = None,
+    existing: dict | None = None,
+) -> dict:
+    normalized_stage_id, default_label, default_percent = _normalize_progress_stage(stage_id)
+    now_label = heartbeat_at or _progress_timestamp()
+    try:
+        normalized_percent = int(percent_estimate if percent_estimate is not None else default_percent)
+    except (TypeError, ValueError):
+        normalized_percent = default_percent
+    payload = dict(existing or {})
+    payload.update(
+        {
+            "stage_id": normalized_stage_id,
+            "stage_label": str(stage_label or default_label),
+            "percent_estimate": max(0, min(100, normalized_percent)),
+            "status": str(status or "running"),
+            "message": str(message or ""),
+            "heartbeat_at": now_label,
+            "updated_at": now_label,
+        }
+    )
+    return payload
+
+
+def _compute_progress_health(job: dict, progress: dict, *, now: datetime | None = None) -> dict:
+    status = str(job.get("status", "") or "").lower()
+    current_time = now or datetime.now(UTC)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=UTC)
+    heartbeat_at = _parse_job_timestamp(str(progress.get("heartbeat_at", "") or "")) or _parse_job_timestamp(
+        str(job.get("updated_at", "") or "")
+    )
+    heartbeat_age_seconds = int((current_time - heartbeat_at).total_seconds()) if heartbeat_at else None
+    elapsed_seconds = _compute_job_elapsed_seconds(job)
+    if status == "timed_out":
+        health = "timed_out"
+    elif status in TERMINAL_CONVERSION_JOB_STATUSES:
+        health = "working"
+    elif heartbeat_age_seconds is not None and heartbeat_age_seconds > CONVERSION_PROGRESS_STALLED_SECONDS:
+        health = "stalled"
+    elif elapsed_seconds is not None and elapsed_seconds > CONVERSION_PROGRESS_LONG_RUNNING_SECONDS:
+        health = "long_running"
+    else:
+        health = "working"
+    payload = dict(progress)
+    payload.update(
+        {
+            "health": health,
+            "heartbeat_age_seconds": heartbeat_age_seconds,
+            "elapsed_seconds": elapsed_seconds,
+            "long_running_after_seconds": CONVERSION_PROGRESS_LONG_RUNNING_SECONDS,
+            "stalled_after_seconds": CONVERSION_PROGRESS_STALLED_SECONDS,
+            "runtime_timeout_seconds": MAX_CONVERSION_JOB_RUNTIME_SECONDS,
+        }
+    )
+    return payload
+
+
+def _build_job_progress_state(job: dict, *, now: datetime | None = None) -> dict:
+    status = str(job.get("status", "") or "").lower()
+    existing = dict(job.get("progress", {}) or {})
+    stage_id = existing.get("stage_id")
+    if not stage_id:
+        if status == "repairing_headings":
+            stage_id = "repairing_toc"
+        elif status in {"ready", "failed", "timed_out"}:
+            stage_id = status
+        elif status == "queued":
+            stage_id = "queued"
+        else:
+            stage_id = "extracting"
+    payload = _build_progress_payload(
+        stage_id=str(stage_id),
+        stage_label=str(existing.get("stage_label") or ""),
+        percent_estimate=existing.get("percent_estimate"),
+        status=status or str(existing.get("status") or "running"),
+        message=str(job.get("message") or existing.get("message") or ""),
+        heartbeat_at=str(existing.get("heartbeat_at") or job.get("updated_at") or ""),
+        existing=existing,
+    )
+    return _compute_progress_health(job, payload, now=now)
+
+
+class ConversionProgressReporter:
+    def __init__(self, job_id: str, *, source_type: str, heartbeat_seconds: int = CONVERSION_PROGRESS_HEARTBEAT_SECONDS) -> None:
+        self.job_id = job_id
+        self.source_type = source_type
+        self.heartbeat_seconds = heartbeat_seconds
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        stage_id, stage_label, percent = _normalize_progress_stage("queued")
+        self._progress = _build_progress_payload(
+            stage_id=stage_id,
+            stage_label=stage_label,
+            percent_estimate=percent,
+            status="queued",
+            message="Plik odebrany. Konwersja zaraz się rozpocznie.",
+        )
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._run, name=f"km-progress-{self.job_id}", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=1.0)
+
+    def update(self, status: str, message: str, **progress_fields) -> None:
+        stage_id = progress_fields.get("stage_id")
+        stage_label = progress_fields.get("stage_label")
+        percent_estimate = progress_fields.get("percent_estimate")
+        if not stage_id and status == "repairing_headings":
+            stage_id = "repairing_toc"
+        with self._lock:
+            self._progress = _build_progress_payload(
+                stage_id=stage_id or self._progress.get("stage_id") or "extracting",
+                stage_label=stage_label or self._progress.get("stage_label"),
+                percent_estimate=percent_estimate if percent_estimate is not None else self._progress.get("percent_estimate"),
+                status=status,
+                message=message,
+                existing=self._progress,
+            )
+            progress = dict(self._progress)
+        runtime_metadata = _update_runtime_job(self.job_id, RuntimeJobStatus.RUNNING, message=message)
+        _set_conversion_job(self.job_id, status=status, message=message, runtime=runtime_metadata, progress=progress)
+        _log_conversion_event(
+            "convert.job.phase",
+            job_id=self.job_id,
+            phase=str(progress.get("stage_id") or "conversion"),
+            status=status,
+            safe_message=message,
+            source_type=self.source_type,
+        )
+
+    def heartbeat(self) -> None:
+        job = _get_conversion_job(self.job_id)
+        if not job or not is_active_conversion_status(job.get("status")):
+            return
+        with self._lock:
+            progress = _build_progress_payload(
+                stage_id=str(self._progress.get("stage_id") or "extracting"),
+                stage_label=str(self._progress.get("stage_label") or ""),
+                percent_estimate=self._progress.get("percent_estimate"),
+                status=str(job.get("status") or self._progress.get("status") or "running"),
+                message=str(job.get("message") or self._progress.get("message") or ""),
+                existing=self._progress,
+            )
+            self._progress = progress
+        runtime_metadata = _update_runtime_job(
+            self.job_id,
+            RuntimeJobStatus.RUNNING,
+            message=str(progress.get("message") or ""),
+        )
+        _set_conversion_job(self.job_id, runtime=runtime_metadata, progress=progress)
+
+    def terminal_progress(self, stage_id: str, message: str) -> dict:
+        stage_id, stage_label, percent = _normalize_progress_stage(stage_id)
+        with self._lock:
+            self._progress = _build_progress_payload(
+                stage_id=stage_id,
+                stage_label=stage_label,
+                percent_estimate=percent,
+                status=stage_id,
+                message=message,
+                existing=self._progress,
+            )
+            return dict(self._progress)
+
+    def _run(self) -> None:
+        while not self._stop_event.wait(self.heartbeat_seconds):
+            self.heartbeat()
 
 
 @app.errorhandler(RequestEntityTooLarge)
@@ -632,6 +852,12 @@ def _mark_timed_out_conversion_jobs(*, now: datetime | None = None) -> dict:
             should_timeout, runtime_seconds, _stale_seconds = should_timeout_job(job, now=current_time)
             if not should_timeout:
                 continue
+            if _should_defer_stale_timeout_for_active_runtime_job(
+                job_id,
+                runtime_seconds=runtime_seconds,
+                stale_seconds=_stale_seconds,
+            ):
+                continue
             elapsed = runtime_seconds
             job.update(
                 build_timed_out_job_fields(
@@ -639,6 +865,13 @@ def _mark_timed_out_conversion_jobs(*, now: datetime | None = None) -> dict:
                     message="Konwersja przekroczyla limit czasu.",
                     error="Konwersja przekroczyla limit czasu. Uruchom ja ponownie po sprawdzeniu pliku zrodlowego.",
                 )
+            )
+            job["progress"] = _build_progress_payload(
+                stage_id="timed_out",
+                status="timed_out",
+                message=job["error"],
+                heartbeat_at=_progress_timestamp(now=current_time),
+                existing=dict(job.get("progress", {}) or {}),
             )
             timed_out.append(job_id)
             _log_conversion_event(
@@ -656,6 +889,33 @@ def _mark_timed_out_conversion_jobs(*, now: datetime | None = None) -> dict:
     if timed_out:
         _CONVERSION_JOB_STORE.persist()
     return {"timed_out_jobs": len(timed_out), "job_ids": timed_out}
+
+
+def _should_defer_stale_timeout_for_active_runtime_job(
+    job_id: str,
+    *,
+    runtime_seconds: int | None,
+    stale_seconds: int | None,
+) -> bool:
+    """Do not mark a live local worker as timed out only because its job row is stale."""
+
+    runtime_limit_exceeded = (
+        runtime_seconds is not None
+        and runtime_seconds > MAX_CONVERSION_JOB_RUNTIME_SECONDS
+    )
+    stale_limit_exceeded = (
+        stale_seconds is not None
+        and stale_seconds > MAX_CONVERSION_JOB_STALE_SECONDS
+    )
+    if runtime_limit_exceeded or not stale_limit_exceeded:
+        return False
+    try:
+        runtime_handle = RUNTIME_JOB_ADAPTER.get(job_id)
+    except Exception:
+        return False
+    if runtime_handle is None:
+        return False
+    return runtime_handle.status == RuntimeJobStatus.RUNNING
 
 
 def _worker_can_finish_job(job_id: str) -> bool:
@@ -824,18 +1084,11 @@ def _spawn_conversion_job(
 ) -> None:
     def _worker() -> None:
         output_path = os.path.join(UPLOAD_DIR, f"{job_id}.epub")
+        progress_reporter = ConversionProgressReporter(job_id, source_type=source_type)
+        progress_reporter.start()
 
-        def _status_callback(status: str, message: str) -> None:
-            runtime_metadata = _update_runtime_job(job_id, RuntimeJobStatus.RUNNING, message=message)
-            _set_conversion_job(job_id, status=status, message=message, runtime=runtime_metadata)
-            _log_conversion_event(
-                "convert.job.phase",
-                job_id=job_id,
-                phase="conversion",
-                status=status,
-                safe_message=message,
-                source_type=source_type,
-            )
+        def _status_callback(status: str, message: str, **progress_fields) -> None:
+            progress_reporter.update(status, message, **progress_fields)
 
         try:
             payload = _run_conversion_pipeline(
@@ -852,6 +1105,13 @@ def _spawn_conversion_job(
             )
             if not _worker_can_finish_job(job_id):
                 return
+            progress_reporter.update(
+                "running",
+                "Pakowanie EPUB i zapisywanie artefaktów...",
+                stage_id="packaging",
+                stage_label="Pakowanie EPUB",
+                percent_estimate=94,
+            )
             with open(output_path, "wb") as handle:
                 handle.write(payload["epub_bytes"])
             output_size_bytes = os.path.getsize(output_path)
@@ -878,6 +1138,7 @@ def _spawn_conversion_job(
                 download_name=payload["download_name"],
                 metadata=metadata,
                 runtime=runtime_metadata,
+                progress=progress_reporter.terminal_progress("ready", "EPUB gotowy do pobrania."),
                 artifacts=artifacts,
                 artifact_storage=_artifact_storage_status(),
                 output_size_bytes=output_size_bytes,
@@ -921,6 +1182,7 @@ def _spawn_conversion_job(
                 error=str(error),
                 error_code="conversion_failed",
                 sentry_event_id=sentry_event_id,
+                progress=progress_reporter.terminal_progress("failed", "Konwersja nie powiodła się."),
             )
             _log_conversion_event(
                 "convert.job.failed",
@@ -935,6 +1197,7 @@ def _spawn_conversion_job(
                 exception_class=error.__class__.__name__,
             )
         finally:
+            progress_reporter.stop()
             if os.path.exists(source_path):
                 os.remove(source_path)
             _set_conversion_job(job_id, source_path="")
@@ -1288,6 +1551,7 @@ def convert_status(job_id: str):
             phase="recovery",
             job_id=job_id,
         )
+    job = _ensure_quality_report_artifacts(job_id, job)
     download_state = _build_job_download_state(job_id, job)
     download_url = download_state.download_url
     conversion_payload = None
@@ -1310,6 +1574,7 @@ def convert_status(job_id: str):
             "download_url": download_url,
             "download_available": download_state.download_available,
             "download_state": download_state.to_dict(),
+            "progress": _build_job_progress_state(job),
             "poll_after_ms": _recommended_poll_interval_ms(job),
             "elapsed_seconds": _compute_job_elapsed_seconds(job),
             "output_size_bytes": _read_output_size_bytes(job) if job.get("status") == "ready" else None,
@@ -1338,6 +1603,7 @@ def convert_quality(job_id: str):
             phase="recovery",
             job_id=job_id,
         )
+    job = _ensure_quality_report_artifacts(job_id, job)
 
     response = jsonify(
         {
@@ -1345,6 +1611,7 @@ def convert_quality(job_id: str):
             "job_id": job["job_id"],
             "quality_state": _build_job_quality_state(job_id, job),
             "runtime": dict(job.get("runtime", {}) or {}),
+            "progress": _build_job_progress_state(job),
             "artifacts": dict(job.get("artifacts", {}) or {}),
             "artifact_storage": dict(job.get("artifact_storage", {}) or {}),
         }

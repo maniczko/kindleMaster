@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from epub_premium_scoring import score_epub_premium_quality
 
@@ -78,6 +78,22 @@ def select_epub_by_quality(
         "reason_codes": reason_codes,
         "baseline": baseline_summary,
         "candidate": candidate_summary,
+        "candidates": [
+            {
+                "label": baseline_label,
+                "role": "baseline",
+                "selected": selected_label == baseline_label,
+                "epubcheck_status": str(baseline_epubcheck_payload.get("status", "") or ""),
+                **baseline_summary,
+            },
+            {
+                "label": candidate_label,
+                "role": "candidate",
+                "selected": selected_label == candidate_label,
+                "epubcheck_status": str(candidate_epubcheck_payload.get("status", "") or ""),
+                **candidate_summary,
+            },
+        ],
         "baseline_score": baseline_summary["premium_score"],
         "candidate_score": candidate_summary["premium_score"],
         "score_delta": score_delta,
@@ -93,6 +109,103 @@ def select_epub_by_quality(
         candidate_scoring=candidate_scoring,
         report=report,
     )
+
+
+def select_best_epub_candidate(
+    candidates: Sequence[Mapping[str, Any]],
+    *,
+    baseline_label: str = "baseline",
+) -> QualitySelectionResult:
+    """Select the best deterministic EPUB candidate using the same no-regression policy.
+
+    The first candidate is treated as the baseline. ML may recommend candidate order
+    elsewhere, but this selector remains deterministic and quality-gated.
+    """
+
+    if len(candidates) < 2:
+        raise ValueError("select_best_epub_candidate requires at least two candidates")
+
+    baseline = candidates[0]
+    current_label = str(baseline.get("label") or baseline_label)
+    current_bytes = _candidate_bytes(baseline)
+    current_epubcheck = dict(baseline.get("epubcheck") or {})
+    baseline_scoring = score_epub_premium_quality(current_bytes, epubcheck=current_epubcheck)
+    current_scoring = baseline_scoring
+    candidate_reports: list[dict[str, Any]] = [
+        {
+            "label": current_label,
+            "role": "baseline",
+            "selected": False,
+            "epubcheck_status": str(current_epubcheck.get("status", "") or ""),
+            **_scoring_summary(baseline_scoring),
+        }
+    ]
+    step_reports: list[dict[str, Any]] = []
+
+    for index, candidate in enumerate(candidates[1:], start=1):
+        label = str(candidate.get("label") or f"candidate_{index}")
+        candidate_bytes = _candidate_bytes(candidate)
+        candidate_epubcheck = dict(candidate.get("epubcheck") or {})
+        pair_result = select_epub_by_quality(
+            current_bytes,
+            candidate_bytes,
+            baseline_label=current_label,
+            candidate_label=label,
+            baseline_epubcheck=current_epubcheck,
+            candidate_epubcheck=candidate_epubcheck,
+        )
+        step_reports.append(pair_result.report)
+        candidate_reports.append(
+            {
+                "label": label,
+                "role": "candidate",
+                "selected": False,
+                "epubcheck_status": str(candidate_epubcheck.get("status", "") or ""),
+                **_scoring_summary(pair_result.candidate_scoring),
+            }
+        )
+        if pair_result.report.get("selected_candidate") == label:
+            current_label = label
+            current_bytes = pair_result.selected_bytes
+            current_epubcheck = pair_result.selected_epubcheck
+            current_scoring = pair_result.selected_scoring
+
+    for row in candidate_reports:
+        row["selected"] = row.get("label") == current_label
+
+    baseline_summary = _scoring_summary(baseline_scoring)
+    selected_summary = _scoring_summary(current_scoring)
+    report = {
+        "status": "accepted" if current_label != str(baseline.get("label") or baseline_label) else "baseline_retained",
+        "selected_candidate": current_label,
+        "selected_stage": current_label,
+        "baseline": baseline_summary,
+        "candidate": selected_summary,
+        "candidates": candidate_reports,
+        "steps": step_reports,
+        "baseline_score": baseline_summary["premium_score"],
+        "candidate_score": selected_summary["premium_score"],
+        "score_delta": round(selected_summary["premium_score"] - baseline_summary["premium_score"], 3),
+        "blocker_delta": int(selected_summary["blocker_count"] - baseline_summary["blocker_count"]),
+        "selected_is_candidate": current_label != str(baseline.get("label") or baseline_label),
+        "selected_is_recovered": _looks_like_recovery_label(current_label),
+        "reason_codes": ["quality_no_hard_regression"],
+    }
+    return QualitySelectionResult(
+        selected_bytes=current_bytes,
+        selected_epubcheck=current_epubcheck,
+        selected_scoring=current_scoring,
+        baseline_scoring=baseline_scoring,
+        candidate_scoring=current_scoring,
+        report=report,
+    )
+
+
+def _candidate_bytes(candidate: Mapping[str, Any]) -> bytes:
+    epub_bytes = candidate.get("epub_bytes", candidate.get("bytes"))
+    if isinstance(epub_bytes, bytes):
+        return epub_bytes
+    raise ValueError("Each EPUB quality candidate must provide bytes in `epub_bytes` or `bytes`.")
 
 
 def _rejection_reason_codes(

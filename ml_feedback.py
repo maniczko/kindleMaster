@@ -13,7 +13,9 @@ DEFAULT_FEEDBACK_LOG_PATH = Path("reports/ml/feedback/conversion_feedback.jsonl"
 DEFAULT_FEEDBACK_EXPORT_DIR = Path("reports/ml/feedback")
 FEEDBACK_SCHEMA_VERSION = 1
 FEEDBACK_STATUSES = ("accepted", "needs_review", "rejected")
-QUALITY_LABELS = ("unknown", "good", "usable", "poor", "blocked")
+QUALITY_LABELS = ("unknown", "premium", "usable", "poor", "blocked", "good")
+QUALITY_FINAL_LABELS = ("premium", "usable", "poor", "blocked")
+QUALITY_LABEL_ALIASES = {"good": "premium"}
 
 
 def append_conversion_feedback_event(
@@ -31,6 +33,8 @@ def append_conversion_feedback_event(
         case_id=Path(original_filename).stem,
         feedback_status="needs_review",
         quality_label=_quality_label_from_metadata(metadata),
+        quality_score=_mapping(metadata.get("premium_scoring")).get("premium_score"),
+        issue_tags=_issue_tags_from_metadata(metadata, result=result),
     )
     premium = _mapping(metadata.get("premium_scoring")) or _mapping(_mapping(result.get("quality_report")).get("premium_scoring"))
     quality_selection = _mapping(metadata.get("quality_selection")) or _mapping(
@@ -88,7 +92,7 @@ def append_user_feedback(
         },
         "feedback": {
             "status": _clean_choice(feedback.get("status"), FEEDBACK_STATUSES, default="needs_review"),
-            "quality_label": _clean_choice(feedback.get("quality_label"), QUALITY_LABELS, default="unknown"),
+            "quality_label": _clean_quality_label(feedback.get("quality_label")),
             "quality_score": _optional_float(feedback.get("quality_score")),
             "route_label": _clean_route_label(feedback.get("route_label", "")),
             "issue_tags": _clean_issue_tags(feedback.get("issue_tags") or feedback.get("tags") or []),
@@ -194,7 +198,7 @@ def conversion_feedback_record(
     route = _route_summary(report_payload)
     feedback = {
         "status": _clean_choice(feedback_status, FEEDBACK_STATUSES, default="needs_review"),
-        "quality_label": _clean_choice(quality_label, QUALITY_LABELS, default="unknown"),
+        "quality_label": _clean_quality_label(quality_label),
         "quality_score": _optional_float(quality_score),
         "route_label": _clean_route_label(route_label),
         "issue_tags": _clean_issue_tags(issue_tags or []),
@@ -377,6 +381,138 @@ def route_examples_from_feedback(
     return examples, skipped
 
 
+def magazine_quality_examples_from_feedback(
+    records: Iterable[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    examples: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for index, record in enumerate(records):
+        record_id = str(record.get("record_id", "") or f"feedback-{index}")
+        feedback = _mapping(record.get("feedback"))
+        quality_label = _clean_quality_label(feedback.get("quality_label"))
+        final_label = _final_quality_label(quality_label)
+        if final_label not in QUALITY_FINAL_LABELS:
+            skipped.append({"source": "feedback", "record_id": record_id, "reason": "missing_quality_label"})
+            continue
+
+        route = _mapping(record.get("route"))
+        conversion = _mapping(record.get("conversion"))
+        route_label = (
+            _clean_route_label(feedback.get("route_label", ""))
+            or _clean_route_label(route.get("selected_profile", ""))
+            or _clean_route_label(route.get("heuristic_profile", ""))
+            or _clean_route_label(route.get("ml_profile", ""))
+        )
+        if not _is_magazine_quality_record(route_label=route_label, route=route, conversion=conversion):
+            skipped.append({"source": "feedback", "record_id": record_id, "reason": "not_magazine_quality_record"})
+            continue
+
+        raw_features = (
+            _mapping(route.get("features"))
+            or _mapping(record.get("source_features"))
+            or _mapping(record.get("route_features"))
+        )
+        if not raw_features:
+            skipped.append({"source": "feedback", "record_id": record_id, "reason": "missing_route_features"})
+            continue
+        source_features = normalize_route_features(raw_features)
+        quality = _mapping(record.get("quality"))
+        example = {
+            "case_id": str(record.get("case_id", "") or record_id),
+            "feedback_record_id": record_id,
+            "created_at": str(record.get("created_at", "") or ""),
+            "source_path": str(conversion.get("source_path") or conversion.get("report_path") or ""),
+            "output_path": str(conversion.get("output_path") or ""),
+            "input_type": str(conversion.get("source_type") or source_features.get("input_type") or "pdf"),
+            "document_class": str(conversion.get("document_class", "") or ""),
+            "language": str(conversion.get("language", "") or ""),
+            "quality_label": quality_label,
+            "final_label": final_label,
+            "label": final_label,
+            "issue_tags": _clean_issue_tags(feedback.get("issue_tags") or []),
+            "source_features": source_features,
+            "route_features": source_features,
+            "route": {
+                "label": route_label,
+                "heuristic_profile": str(route.get("heuristic_profile", "") or ""),
+                "heuristic_confidence": round(_float_value(route.get("heuristic_confidence")), 3),
+                "selected_profile": str(route.get("selected_profile", "") or ""),
+                "ml_profile": str(route.get("ml_profile", "") or ""),
+                "ml_confidence": round(_float_value(route.get("ml_confidence")), 6),
+                "override_used": bool(route.get("override_used", False)),
+                "features_hash": route_features_hash(source_features),
+                "model_version": str(route.get("model_version", "") or ""),
+            },
+            "feedback_status": str(feedback.get("status", "") or ""),
+            "feedback_quality_score": feedback.get("quality_score"),
+            "output_metrics": _quality_output_metrics(quality),
+        }
+        examples.append(example)
+    return examples, skipped
+
+
+def quality_feedback_examples_from_feedback(
+    records: Iterable[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    examples: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for index, record in enumerate(records):
+        record_id = str(record.get("record_id", "") or f"feedback-{index}")
+        feedback = _mapping(record.get("feedback"))
+        quality_label = _clean_quality_label(feedback.get("quality_label"))
+        final_label = _final_quality_label(quality_label)
+        if final_label not in QUALITY_FINAL_LABELS:
+            skipped.append({"source": "feedback", "record_id": record_id, "reason": "missing_quality_label"})
+            continue
+
+        conversion = _mapping(record.get("conversion"))
+        quality = _mapping(record.get("quality"))
+        route = _mapping(record.get("route"))
+        issue_tags = _clean_issue_tags(feedback.get("issue_tags") or [])
+        examples.append(
+            {
+                "case_id": str(record.get("case_id", "") or record_id),
+                "feedback_record_id": record_id,
+                "created_at": str(record.get("created_at", "") or ""),
+                "source_path": str(conversion.get("source_path") or conversion.get("report_path") or ""),
+                "output_path": str(conversion.get("output_path") or ""),
+                "input_type": str(conversion.get("source_type") or "unknown"),
+                "document_class": str(conversion.get("document_class", "") or ""),
+                "quality_label": quality_label,
+                "final_label": final_label,
+                "label": final_label,
+                "quality_score": _optional_float(feedback.get("quality_score")),
+                "issue_tags": issue_tags,
+                "route_label": _clean_route_label(feedback.get("route_label", "")),
+                "route": {
+                    "selected_profile": str(route.get("selected_profile", "") or ""),
+                    "heuristic_profile": str(route.get("heuristic_profile", "") or ""),
+                    "ml_profile": str(route.get("ml_profile", "") or ""),
+                    "features_hash": str(route.get("features_hash", "") or ""),
+                },
+                "output_metrics": _quality_output_metrics(quality),
+                "dataset_role": _quality_dataset_role(issue_tags=issue_tags, conversion=conversion),
+                "online_learning": False,
+            }
+        )
+    return examples, skipped
+
+
+def _quality_dataset_role(*, issue_tags: list[str], conversion: Mapping[str, Any]) -> str:
+    markers = " ".join(
+        [
+            *issue_tags,
+            str(conversion.get("document_class", "") or ""),
+            str(conversion.get("profile", "") or ""),
+        ]
+    ).lower()
+    if any(token in markers for token in ("dense_handbook", "dense", "handbook", "business_guide")):
+        return "dense_handbook_quality"
+    if "magazine" in markers:
+        return "magazine_quality"
+    return "general_quality"
+
+
 def _conversion_summary(
     payload: Mapping[str, Any],
     *,
@@ -438,6 +574,12 @@ def _route_features(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 def _quality_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
     quality = _mapping(payload.get("quality_report"))
+    premium = _mapping(quality.get("premium_scoring"))
+    premium_scores = _mapping(premium.get("scores"))
+    premium_metrics = _mapping(premium.get("metrics"))
+    artifact_rate = _artifact_rate_payload(quality=quality, premium=premium)
+    magazine_quality = _mapping(quality.get("magazine_premium_quality"))
+    magazine_metrics = _mapping(magazine_quality.get("metrics"))
     blockers = _list_value(quality.get("quality_blockers")) or _list_value(quality.get("blockers"))
     alerts = _list_value(quality.get("alerts"))
     warnings = _list_value(quality.get("warnings"))
@@ -452,8 +594,45 @@ def _quality_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
         "blocker_count": len(blockers),
         "alert_count": len(alerts),
         "warning_count": len(warnings),
+        "validation_status": str(quality.get("validation_status", "") or ""),
+        "epubcheck_status": str(quality.get("epubcheck_status") or quality.get("validation_status", "") or ""),
+        "validation_tool": str(quality.get("validation_tool", "") or ""),
+        "error_count": _int_value(quality.get("error_count")),
         "final_output_size_bytes": _int_value(quality.get("final_output_size_bytes")),
         "size_budget_status": str(quality.get("size_budget_status", "") or ""),
+        "premium_score": _optional_metric(premium.get("premium_score", premium_scores.get("premium_score"))),
+        "premium_status": str(premium.get("status", "") or ""),
+        "kindle_ready": _optional_bool(premium.get("kindle_ready")),
+        "premium_ready": _optional_bool(premium.get("premium_ready")),
+        "premium_issue_counts": dict(_mapping(premium.get("issue_counts"))),
+        "premium_issue_codes": [
+            str(issue.get("code", "") or "")
+            for issue in _list_value(premium.get("issues"))
+            if isinstance(issue, Mapping) and str(issue.get("code", "") or "")
+        ],
+        "artifact_rate": artifact_rate,
+        "artifact_rate_per_1000_words": _optional_metric(artifact_rate.get("artifact_rate_per_1000_words")),
+        "artifact_count": _optional_int(artifact_rate.get("artifact_count")),
+        "toc_coverage": _first_metric(
+            (quality, magazine_quality, magazine_metrics, premium_metrics),
+            ("toc_coverage", "toc_usefulness_ratio", "issue_toc_coverage"),
+        ),
+        "toc_usefulness_ratio": _first_metric(
+            (quality, magazine_quality, magazine_metrics, premium_metrics),
+            ("toc_usefulness_ratio",),
+        ),
+        "issue_toc_coverage": _first_metric(
+            (quality, magazine_quality, magazine_metrics, premium_metrics),
+            ("issue_toc_coverage",),
+        ),
+        "article_coverage": _first_metric(
+            (quality, magazine_quality, magazine_metrics, premium_metrics),
+            ("article_coverage", "nav_linear_editorial_coverage"),
+        ),
+        "nav_linear_editorial_coverage": _first_metric(
+            (quality, magazine_quality, magazine_metrics, premium_metrics),
+            ("nav_linear_editorial_coverage",),
+        ),
         "quality_selection": _quality_selection_summary(_mapping(quality.get("quality_selection"))),
     }
 
@@ -474,12 +653,129 @@ def _quality_selection_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
 def _quality_label_from_metadata(metadata: Mapping[str, Any]) -> str:
     premium = _mapping(metadata.get("premium_scoring"))
     if premium.get("premium_ready") is True:
-        return "good"
+        return "premium"
     if premium.get("kindle_ready") is True:
         return "usable"
     if str(premium.get("status", "") or "").lower() == "failed":
         return "blocked"
     return "unknown"
+
+
+def _issue_tags_from_metadata(metadata: Mapping[str, Any], *, result: Mapping[str, Any]) -> list[str]:
+    premium = _mapping(metadata.get("premium_scoring")) or _mapping(_mapping(result.get("quality_report")).get("premium_scoring"))
+    issues = [item for item in premium.get("issues", []) or [] if isinstance(item, Mapping)]
+    tags: list[str] = []
+    for issue in issues:
+        code = str(issue.get("code", "") or "").strip()
+        source = str(issue.get("source", "") or "").strip()
+        if code:
+            tags.append(code)
+        if source:
+            tags.append(source)
+    metrics = _mapping(premium.get("metrics"))
+    dense = _mapping(metrics.get("dense_handbook_navigation_summary"))
+    if dense:
+        tags.append("dense_handbook")
+        if int(_float_value(dense.get("toc_noise_count"))) > 0:
+            tags.append("toc_noise")
+        if int(_float_value(dense.get("heading_noise_count"))) > 0:
+            tags.append("heading_noise")
+    text_artifacts = _mapping(metrics.get("text_artifacts"))
+    if str(text_artifacts.get("status", "") or "").lower() in {"failed", "passed_with_warnings"}:
+        tags.append("text_artifacts")
+    return _clean_issue_tags(tags)
+
+
+def _is_magazine_quality_record(
+    *,
+    route_label: str,
+    route: Mapping[str, Any],
+    conversion: Mapping[str, Any],
+) -> bool:
+    if route_label in {"magazine_reflow", "dense_business_guide_pdf", "book_reflow"}:
+        return True
+    markers = (
+        route.get("selected_profile"),
+        route.get("heuristic_profile"),
+        route.get("ml_profile"),
+        conversion.get("profile"),
+        conversion.get("document_class"),
+    )
+    return any(
+        token in str(marker or "").strip().lower()
+        for marker in markers
+        for token in ("magazine", "dense", "handbook", "business_guide")
+    )
+
+
+def _quality_output_metrics(quality: Mapping[str, Any]) -> dict[str, Any]:
+    metrics: dict[str, Any] = {
+        "premium_score": _optional_metric(quality.get("premium_score")),
+        "premium_status": str(quality.get("premium_status", "") or ""),
+        "kindle_ready": _optional_bool(quality.get("kindle_ready")),
+        "premium_ready": _optional_bool(quality.get("premium_ready")),
+        "validation_status": str(quality.get("validation_status") or quality.get("status") or "unknown"),
+        "epubcheck_status": str(
+            quality.get("epubcheck_status")
+            or quality.get("validation_status")
+            or quality.get("status")
+            or "unknown"
+        ),
+        "validation_tool": str(quality.get("validation_tool", "") or ""),
+        "error_count": _optional_int(quality.get("error_count")),
+        "blocker_count": _optional_int(quality.get("blocker_count")),
+        "alert_count": _optional_int(quality.get("alert_count")),
+        "warning_count": _optional_int(quality.get("warning_count")),
+        "final_output_size_bytes": _optional_int(quality.get("final_output_size_bytes")),
+        "size_budget_status": str(quality.get("size_budget_status", "") or ""),
+    }
+    artifact_rate = _mapping(quality.get("artifact_rate"))
+    if artifact_rate:
+        metrics["artifact_rate"] = dict(artifact_rate)
+        metrics["artifact_rate_per_1000_words"] = _optional_metric(
+            artifact_rate.get("artifact_rate_per_1000_words")
+        )
+        metrics["artifact_count"] = _optional_int(artifact_rate.get("artifact_count"))
+    elif quality.get("artifact_rate_per_1000_words") is not None or quality.get("artifact_count") is not None:
+        metrics["artifact_rate_per_1000_words"] = _optional_metric(quality.get("artifact_rate_per_1000_words"))
+        metrics["artifact_count"] = _optional_int(quality.get("artifact_count"))
+
+    for key in (
+        "toc_coverage",
+        "toc_usefulness_ratio",
+        "issue_toc_coverage",
+        "article_coverage",
+        "nav_linear_editorial_coverage",
+    ):
+        value = _optional_metric(quality.get(key))
+        if value is not None:
+            metrics[key] = value
+    return metrics
+
+
+def _artifact_rate_payload(*, quality: Mapping[str, Any], premium: Mapping[str, Any]) -> dict[str, Any]:
+    text_cleanup = _mapping(quality.get("text_cleanup"))
+    premium_metrics = _mapping(premium.get("metrics"))
+    for candidate in (
+        quality.get("artifact_rate"),
+        quality.get("text_artifacts"),
+        text_cleanup.get("artifact_rate"),
+        text_cleanup.get("text_artifacts"),
+        premium_metrics.get("text_artifacts"),
+        premium.get("text_artifacts"),
+    ):
+        if isinstance(candidate, Mapping):
+            return dict(candidate)
+    return {}
+
+
+def _first_metric(mappings: Iterable[Mapping[str, Any]], keys: Iterable[str]) -> float | None:
+    for mapping in mappings:
+        for key in keys:
+            value = _optional_metric(mapping.get(key))
+            if value is not None:
+                return value
+    return None
 
 
 def _analysis_payload(payload: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -572,6 +868,16 @@ def _clean_choice(value: Any, choices: tuple[str, ...], *, default: str) -> str:
     return normalized if normalized in choices else default
 
 
+def _clean_quality_label(value: Any, *, default: str = "unknown") -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in QUALITY_LABELS else default
+
+
+def _final_quality_label(value: Any) -> str:
+    normalized = _clean_quality_label(value)
+    return QUALITY_LABEL_ALIASES.get(normalized, normalized)
+
+
 def _clean_route_label(value: Any) -> str:
     normalized = str(value or "").strip()
     return normalized if normalized in ROUTE_LABELS else ""
@@ -596,6 +902,39 @@ def _optional_float(value: Any) -> float | None:
         return round(max(0.0, min(float(value), 5.0)), 3)
     except (TypeError, ValueError):
         return None
+
+
+def _optional_metric(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return round(float(value), 6)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on", "y"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "n"}:
+        return False
+    return None
 
 
 def _float_value(value: Any) -> float:

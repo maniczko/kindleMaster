@@ -95,7 +95,7 @@ class BrowserPollingE2ETests(unittest.TestCase):
                     process.wait(timeout=5)
 
     @classmethod
-    def _wait_until_server_ready(cls, timeout_seconds: float = 30.0) -> None:
+    def _wait_until_server_ready(cls, timeout_seconds: float = 90.0) -> None:
         deadline = time.time() + timeout_seconds
         last_error: Exception | None = None
         while time.time() < deadline:

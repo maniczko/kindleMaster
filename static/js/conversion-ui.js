@@ -1,6 +1,6 @@
-    const PDF_JS_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
-    const PDF_JS_WORKER_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-    const PDF_LIB_URL = "https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js";
+    const PDF_JS_URL = "/static/vendor/pdfjs/pdf.min.js";
+    const PDF_JS_WORKER_URL = "/static/vendor/pdfjs/pdf.worker.min.js";
+    const PDF_LIB_URL = "/static/vendor/pdf-lib/pdf-lib.min.js";
     let pdfPreviewLibrariesPromise = null;
 
     function loadExternalScript(src) {
@@ -936,6 +936,7 @@
       const textCleanupState = qualityState && qualityState.text_cleanup && typeof qualityState.text_cleanup === "object" ? qualityState.text_cleanup : null;
       const referenceCleanupState = qualityState && qualityState.reference_cleanup && typeof qualityState.reference_cleanup === "object" ? qualityState.reference_cleanup : null;
       const assetSummaryState = qualityState && qualityState.asset_summary && typeof qualityState.asset_summary === "object" ? qualityState.asset_summary : null;
+      const magazineQualityPreviewState = qualityState && qualityState.magazine_quality_preview && typeof qualityState.magazine_quality_preview === "object" ? qualityState.magazine_quality_preview : null;
       const tocPreviewState = qualityState && qualityState.toc_preview && typeof qualityState.toc_preview === "object" ? qualityState.toc_preview : null;
       const epubcheckDetailState = qualityState && qualityState.epubcheck_detail && typeof qualityState.epubcheck_detail === "object" ? qualityState.epubcheck_detail : null;
       const metadataSummaryState = qualityState && qualityState.metadata_summary && typeof qualityState.metadata_summary === "object" ? qualityState.metadata_summary : null;
@@ -1033,6 +1034,7 @@
         textCleanup: textCleanupState || (conversion && conversion.text_cleanup) || null,
         referenceCleanup: referenceCleanupState || (conversion && conversion.reference_cleanup) || null,
         assetSummary: assetSummaryState || (conversion && conversion.asset_summary) || null,
+        magazineQualityPreview: magazineQualityPreviewState || (conversion && conversion.magazine_quality_preview) || null,
         tocPreview: tocPreviewState || (conversion && conversion.toc_preview) || null,
         epubcheckDetail: epubcheckDetailState || (conversion && conversion.epubcheck_detail) || null,
         metadataSummary: metadataSummaryState || (conversion && conversion.metadata_summary) || null,
@@ -1105,6 +1107,7 @@
         textCleanup: normalized.textCleanup,
         referenceCleanup: normalized.referenceCleanup,
         assetSummary: normalized.assetSummary,
+        magazineQualityPreview: normalized.magazineQualityPreview,
         tocPreview: normalized.tocPreview,
         epubcheckDetail: normalized.epubcheckDetail,
         metadataSummary: normalized.metadataSummary,
@@ -1199,6 +1202,30 @@
       );
     }
 
+    function renderConversionProgressMessage(data, fallbackStartedAt, sourceLabel) {
+      const progress = data && data.progress && typeof data.progress === "object" ? data.progress : null;
+      const stageLabel = progress && progress.stage_label ? progress.stage_label : "";
+      const percent = progress && Number.isFinite(Number(progress.percent_estimate)) ? Number(progress.percent_estimate) : null;
+      const health = progress && progress.health ? progress.health : "working";
+      const elapsedSeconds = Number.isFinite(data && data.elapsed_seconds)
+        ? data.elapsed_seconds
+        : Math.max(1, Math.round((Date.now() - fallbackStartedAt) / 1000));
+      const baseMessage = data && data.message
+        ? data.message
+        : `Konwertuje ${sourceLabel} do EPUB...`;
+      const stageText = stageLabel ? `${stageLabel}${percent !== null ? ` (${percent}%)` : ""}: ` : "";
+      if (health === "long_running") {
+        return `${stageText}${baseMessage} Pracuje długo, ale serwer odpowiada (${Math.max(1, Math.round(elapsedSeconds / 60))} min).`;
+      }
+      if (health === "stalled") {
+        return `${stageText}${baseMessage} Brak świeżego heartbeat, sprawdzam dalej.`;
+      }
+      if (health === "timed_out") {
+        return `${stageText}${baseMessage}`;
+      }
+      return `${stageText}${baseMessage}`;
+    }
+
     async function fetchJsonWithTimeout(url, options = {}, timeoutMs = CONVERSION_REQUEST_TIMEOUT_MS) {
       const controller = new AbortController();
       const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -1256,7 +1283,10 @@
             throw new Error((data && data.error) || text || "Nie udalo sie sprawdzic statusu konwersji.");
           }
           transientErrorCount = 0;
-          if (data.message) {
+          if (data.progress && typeof data.progress === "object") {
+            const progressMessage = renderConversionProgressMessage(data, startedAt, sourceLabel);
+            setStatus(progressMessage, data.progress.health === "stalled" ? "error" : "info");
+          } else if (data.message) {
             const activeForMs = Date.now() - startedAt;
             if (
               activeForMs >= LONG_CONVERSION_NOTICE_MS
@@ -1280,7 +1310,7 @@
             setStatus(`Konwertuje ${sourceLabel} do EPUB... (${elapsedSeconds}s)`, "info");
           }
           if (data.status === "ready") return data;
-          if (data.status === "failed") {
+          if (data.status === "failed" || data.status === "timed_out") {
             const failure = new Error(data.error || "Konwersja nie powiodla sie.");
             failure.code = data.error_code || "";
             failure.jobStatus = data.status;

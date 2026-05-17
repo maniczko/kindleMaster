@@ -220,7 +220,7 @@ class QualityStateServiceTests(unittest.TestCase):
         self.assertEqual(payload["quality_blockers"][0]["source"], "text_cleanup")
         self.assertEqual(payload["user_facing_verdict"]["decision"], "blocked")
         self.assertEqual(payload["user_facing_verdict"]["label"], "Nie publikuj")
-        self.assertEqual(payload["user_facing_verdict"]["download_label"], "Pobierz szkic EPUB do kontroli")
+        self.assertEqual(payload["user_facing_verdict"]["download_label"], "Pobierz szkic EPUB")
         self.assertEqual(payload["user_facing_reasons"][0]["code"], "text_cleanup_blocked")
         self.assertFalse(payload["send_to_kindle_ready"])
         self.assertEqual(
@@ -352,8 +352,141 @@ class QualityStateServiceTests(unittest.TestCase):
         self.assertEqual(payload["quality_gate_mode"], "draft")
         self.assertEqual(payload["quality_blockers"][0]["code"], "runtime_quality_gate_draft")
         self.assertEqual(payload["user_facing_verdict"]["label"], "Nie publikuj")
-        self.assertEqual(payload["user_facing_verdict"]["download_label"], "Pobierz szkic EPUB do kontroli")
+        self.assertEqual(payload["user_facing_verdict"]["download_label"], "Pobierz szkic EPUB")
         self.assertFalse(payload["send_to_kindle_ready"])
+
+    def test_release_blocked_payload_keeps_top_five_user_reasons(self) -> None:
+        issues = [
+            {
+                "severity": "blocker",
+                "code": f"blocker_{index}",
+                "message": f"Problem {index}",
+                "source": "premium_scoring",
+            }
+            for index in range(6)
+        ]
+        request = self._request_from_job_payload(
+            {
+                "status": "ready",
+                "source_type": "pdf",
+                "filename": "blocked.pdf",
+                "metadata": {
+                    "validation": "passed",
+                    "validation_tool": "epubcheck",
+                    "premium_scoring": {
+                        "status": "failed",
+                        "technical_valid": True,
+                        "mail_sendable": "likely",
+                        "kindle_ready": False,
+                        "premium_ready": False,
+                        "premium_score": 4.5,
+                        "issues": issues,
+                    },
+                },
+            },
+            download_url="/convert/download/blocked-job",
+        )
+
+        payload = assemble_quality_state_dict(request)
+
+        self.assertEqual(payload["release_verdict"], "release_blocked")
+        self.assertEqual(payload["user_facing_verdict"]["label"], "Nie publikuj")
+        self.assertEqual(payload["user_facing_verdict"]["download_label"], "Pobierz szkic EPUB")
+        self.assertEqual(len(payload["user_facing_reasons"]), 5)
+        self.assertEqual([item["code"] for item in payload["user_facing_reasons"]], [f"blocker_{index}" for index in range(5)])
+
+    def test_magazine_quality_preview_returns_problem_samples(self) -> None:
+        request = self._request_from_job_payload(
+            {
+                "status": "ready",
+                "source_type": "pdf",
+                "filename": "magazine.pdf",
+                "metadata": {
+                    "profile": "magazine_reflow",
+                    "validation": "passed",
+                    "validation_tool": "epubcheck",
+                    "premium_scoring": {
+                        "status": "failed",
+                        "kindle_ready": False,
+                        "premium_score": 4.2,
+                        "issues": [
+                            {
+                                "severity": "review",
+                                "code": "toc_lead_used_as_title",
+                                "message": "TOC entry looks like an article lead.",
+                                "source": "toc",
+                            },
+                            {
+                                "severity": "blocker",
+                                "code": "ocr_glued_words_detected",
+                                "message": "Glued words detected.",
+                                "source": "text_artifacts",
+                            },
+                            {
+                                "severity": "review",
+                                "code": "image_low_resolution_for_kindle",
+                                "message": "Low resolution charts detected.",
+                                "source": "assets",
+                            },
+                        ],
+                        "metrics": {
+                            "text_artifacts": {
+                                "artifact_rate_per_1000_words": 8.0,
+                                "per_document": [
+                                    {
+                                        "document_path": "chapter_019.xhtml",
+                                        "artifact_count": 9,
+                                        "artifact_rate_per_1000_words": 12.0,
+                                    }
+                                ],
+                            }
+                        },
+                        "magazine_premium_quality": {
+                            "article_map": {
+                                "truncated_titles": [
+                                    {
+                                        "title": "AI as a Mentor in",
+                                        "href": "chapter_008.xhtml",
+                                        "reason": "Title ends with a preposition.",
+                                    }
+                                ],
+                                "toc_missing_articles": [
+                                    {
+                                        "title": "Paragraf w projekcie",
+                                        "href": "chapter_019.xhtml",
+                                    }
+                                ],
+                                "articles": [
+                                    {
+                                        "title": "Reklama",
+                                        "kind": "advertisement",
+                                        "href": "chapter_003.xhtml",
+                                    }
+                                ],
+                            }
+                        },
+                    },
+                    "asset_summary": {
+                        "low_resolution_images": [
+                            {"name": "chart.jpg", "width": 315, "height": 188, "path": "EPUB/images/chart.jpg"}
+                        ]
+                    },
+                },
+            },
+            download_url="/convert/download/magazine-job",
+        )
+
+        payload = assemble_quality_state_dict(request)
+        preview = payload["magazine_quality_preview"]
+        sample_types = [item["type"] for item in preview["problem_samples"]]
+
+        self.assertEqual(preview["status"], "reported")
+        self.assertLessEqual(preview["sample_count"], 10)
+        self.assertIn("truncated_title", sample_types)
+        self.assertIn("suspicious_toc", sample_types)
+        self.assertIn("text_artifact", sample_types)
+        self.assertIn("non_content_in_flow", sample_types)
+        self.assertIn("low_res_image", sample_types)
 
     def test_semantic_ocr_and_reading_order_gates_block_release_not_download(self) -> None:
         request = self._request_from_job_payload(

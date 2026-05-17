@@ -7,6 +7,7 @@ import json
 import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import app as app_module
@@ -777,8 +778,89 @@ class AppAsyncConvertTests(unittest.TestCase):
         self.assertEqual(payload["status"], "timed_out")
         self.assertEqual(payload["error_code"], "conversion_timeout")
         self.assertEqual(payload["poll_after_ms"], 0)
+        self.assertEqual(payload["progress"]["health"], "timed_out")
+        self.assertEqual(payload["progress"]["stage_id"], "timed_out")
         self.assertEqual(payload["quality_state"]["release_verdict"], "failed")
         self.assertEqual(payload["quality_state"]["quality_blockers"][0]["code"], "conversion_timeout")
+
+    def test_stale_job_is_not_timed_out_when_local_runtime_worker_is_still_running(self) -> None:
+        job_id = "stale-but-live-worker"
+        created_at = (
+            datetime.now(UTC) - timedelta(seconds=app_module.MAX_CONVERSION_JOB_STALE_SECONDS + 60)
+        ).isoformat().replace("+00:00", "Z")
+        with app_module._CONVERSION_JOBS_LOCK:
+            app_module._CONVERSION_JOBS[job_id] = {
+                "job_id": job_id,
+                "status": "repairing_headings",
+                "message": "Naprawiam headingi i TOC w EPUB...",
+                "source_type": "pdf",
+                "filename": "long-magazine.pdf",
+                "created_at": created_at,
+                "updated_at": created_at,
+                "source_path": "",
+                "output_path": "",
+                "download_name": "long-magazine.epub",
+                "metadata": {},
+                "output_size_bytes": 0,
+                "error": "",
+            }
+        self.cleanup_job_ids.append(job_id)
+
+        with patch.object(
+            app_module.RUNTIME_JOB_ADAPTER,
+            "get",
+            return_value=SimpleNamespace(status=app_module.RuntimeJobStatus.RUNNING),
+        ):
+            response = self.client.get(f"/convert/status/{job_id}")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["status"], "repairing_headings")
+        self.assertNotEqual(payload.get("error_code"), "conversion_timeout")
+        self.assertGreater(payload["poll_after_ms"], 0)
+        self.assertEqual(payload["progress"]["health"], "stalled")
+        self.assertEqual(payload["progress"]["stage_id"], "repairing_toc")
+
+    def test_progress_payload_reports_live_heartbeat_for_active_job(self) -> None:
+        job_id = "heartbeat-job"
+        created_at = (
+            datetime.now(UTC) - timedelta(seconds=app_module.CONVERSION_PROGRESS_LONG_RUNNING_SECONDS + 30)
+        ).isoformat().replace("+00:00", "Z")
+        heartbeat_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        with app_module._CONVERSION_JOBS_LOCK:
+            app_module._CONVERSION_JOBS[job_id] = {
+                "job_id": job_id,
+                "status": "running",
+                "message": "Uruchamiam audyt premium EPUB...",
+                "source_type": "pdf",
+                "filename": "long.pdf",
+                "created_at": created_at,
+                "updated_at": heartbeat_at,
+                "source_path": "",
+                "output_path": "",
+                "download_name": "long.epub",
+                "metadata": {},
+                "output_size_bytes": 0,
+                "error": "",
+                "progress": {
+                    "stage_id": "premium_audit",
+                    "stage_label": "Audyt premium",
+                    "percent_estimate": 82,
+                    "heartbeat_at": heartbeat_at,
+                },
+            }
+        self.cleanup_job_ids.append(job_id)
+
+        response = self.client.get(f"/convert/status/{job_id}")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["status"], "running")
+        self.assertEqual(payload["progress"]["stage_id"], "premium_audit")
+        self.assertEqual(payload["progress"]["stage_label"], "Audyt premium")
+        self.assertEqual(payload["progress"]["percent_estimate"], 82)
+        self.assertEqual(payload["progress"]["health"], "long_running")
+        self.assertLess(payload["progress"]["heartbeat_age_seconds"], app_module.CONVERSION_PROGRESS_STALLED_SECONDS)
 
     def test_conversion_timeout_writes_structured_recovery_log(self) -> None:
         job_id = "stale-log-job"

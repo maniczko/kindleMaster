@@ -87,6 +87,43 @@ class FakeTocProvider:
         )
 
 
+class FakeMagazineReviewProvider:
+    name = "fake-magazine-review"
+
+    def review_magazine(self, context):
+        self.context = context
+        return {
+            "provider": self.name,
+            "confidence": 0.86,
+            "estimated_cost_usd": 0.03,
+            "suspected_bad_reading_order": [
+                {
+                    "href": "chapter_002.xhtml",
+                    "evidence": "article map",
+                    "confidence": 0.82,
+                },
+                {
+                    "href": "invented.xhtml",
+                    "evidence": "model invented a link",
+                    "confidence": 0.99,
+                }
+            ],
+            "truncated_titles": [
+                {
+                    "href": "chapter_001.xhtml",
+                    "observed_title": "Article",
+                    "suggested_title": "Article One",
+                    "evidence": "TOC has the complete title",
+                    "confidence": 0.77,
+                }
+            ],
+            "toc_missing_articles": [],
+            "non_content_misclassified": [],
+            "ocr_cleanup_candidates": [{"fragment_index": 999, "before": "nope", "suggested": "nope", "evidence": "bad index", "confidence": 1.0}],
+            "suggested_fixture_tags": ["bad_reading_order"],
+        }
+
+
 class AIQualityIntelligenceTests(unittest.TestCase):
     def test_clean_book_skips_ai_and_preserves_deterministic_output(self) -> None:
         epub_bytes = _build_epub(
@@ -173,6 +210,48 @@ class AIQualityIntelligenceTests(unittest.TestCase):
         self.assertEqual(report["changed_toc_entry_count"], 0)
         self.assertTrue(report["deterministic_output_preserved"])
         self.assertGreaterEqual(report["after_quality_score"], 0.0)
+
+    def test_magazine_review_runs_on_compact_context_without_rewriting_epub(self) -> None:
+        epub_bytes = _build_epub(
+            chapters={
+                "chapter_001.xhtml": "<h1>Article One</h1><p>Clean magazine article text.</p>",
+                "chapter_002.xhtml": "<h1>Article Two</h1><p>More article text.</p>",
+            },
+            nav_entries=[("Article One", "chapter_001.xhtml"), ("Article Two", "chapter_002.xhtml")],
+            title="Magazine",
+        )
+        provider = FakeMagazineReviewProvider()
+
+        report = evaluate_ai_quality_intelligence(
+            epub_bytes,
+            providers=AIQualityProviders(magazine_review=provider),
+            premium_scoring={
+                "premium_score": 8.1,
+                "release_verdict": "ready_with_review",
+                "issues": [{"code": "magazine_article_coverage_low", "severity": "blocker"}],
+                "metrics": {"toc_entry_count": 2},
+            },
+            magazine_context={
+                "article_map": {
+                    "editorial_article_count": 2,
+                    "toc_coverage": 0.5,
+                    "articles": [{"title": "Article One", "kind": "article", "toc_matched": True}],
+                }
+            },
+        )
+
+        self.assertTrue(report["deterministic_output_preserved"])
+        self.assertFalse(report["magazine_review"]["output_epub_changed"])
+        self.assertEqual(report["magazine_review"]["status"], "reported")
+        self.assertEqual(report["magazine_review"]["suggested_fixture_tags"], ["bad_reading_order"])
+        self.assertEqual(
+            report["magazine_review"]["suspected_bad_reading_order"],
+            [{"href": "chapter_002.xhtml", "evidence": "article map", "confidence": 0.82}],
+        )
+        self.assertEqual(report["magazine_review"]["truncated_titles"][0]["href"], "chapter_001.xhtml")
+        self.assertEqual(report["magazine_review"]["ocr_cleanup_candidates"], [])
+        self.assertIn("article_map", provider.context)
+        self.assertLessEqual(report["magazine_review"]["context_summary"]["bounded_context_chars"], 10000)
 
 
 if __name__ == "__main__":

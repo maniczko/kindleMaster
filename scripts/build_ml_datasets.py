@@ -7,7 +7,12 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
 from ml_features import ROUTE_LABELS, route_example_from_analysis
-from ml_feedback import load_feedback_records, route_examples_from_feedback
+from ml_feedback import (
+    load_feedback_records,
+    magazine_quality_examples_from_feedback,
+    quality_feedback_examples_from_feedback,
+    route_examples_from_feedback,
+)
 
 
 Analyzer = Callable[[str], Any]
@@ -78,15 +83,21 @@ def build_ml_datasets(
         repo_root=root,
     ) if feedback_log_paths else ([], [])
     feedback_route_examples, feedback_route_skipped = route_examples_from_feedback(feedback_records)
+    magazine_quality_examples, magazine_quality_skipped = magazine_quality_examples_from_feedback(feedback_records)
+    quality_feedback_examples, quality_feedback_skipped = quality_feedback_examples_from_feedback(feedback_records)
     route_examples.extend(feedback_route_examples)
 
     heading_reference_examples = list(_collect_heading_reference_examples(reports_root_path))
     route_path = output_root / "route_examples.jsonl"
     feedback_route_path = output_root / "feedback_route_examples.jsonl"
+    magazine_quality_path = output_root / "magazine_quality_examples.jsonl"
+    quality_feedback_path = output_root / "quality_feedback_examples.jsonl"
     review_path = output_root / "heading_reference_examples.jsonl"
     completeness_path = output_root / "completeness_report.json"
     _write_jsonl(route_path, route_examples)
     _write_jsonl(feedback_route_path, feedback_route_examples)
+    _write_jsonl(magazine_quality_path, magazine_quality_examples)
+    _write_jsonl(quality_feedback_path, quality_feedback_examples)
     _write_jsonl(review_path, heading_reference_examples)
 
     label_counts = dict(Counter(example["label"] for example in route_examples))
@@ -98,14 +109,21 @@ def build_ml_datasets(
         "manifest_route_example_count": len(route_examples) - len(feedback_route_examples),
         "feedback_record_count": len(feedback_records),
         "feedback_route_example_count": len(feedback_route_examples),
+        "magazine_quality_example_count": len(magazine_quality_examples),
+        "quality_feedback_example_count": len(quality_feedback_examples),
+        "quality_feedback_role_counts": dict(Counter(example.get("dataset_role", "unknown") for example in quality_feedback_examples)),
         "heading_reference_example_count": len(heading_reference_examples),
         "route_label_counts": label_counts,
         "missing_route_classes": missing_classes,
         "skipped": skipped,
         "feedback_skipped": feedback_load_skipped + feedback_route_skipped,
+        "magazine_quality_skipped": magazine_quality_skipped,
+        "quality_feedback_skipped": quality_feedback_skipped,
         "outputs": {
             "route_examples": str(route_path),
             "feedback_route_examples": str(feedback_route_path),
+            "magazine_quality_examples": str(magazine_quality_path),
+            "quality_feedback_examples": str(quality_feedback_path),
             "heading_reference_examples": str(review_path),
             "completeness_report": str(completeness_path),
         },

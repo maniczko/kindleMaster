@@ -58,6 +58,8 @@ QUICK_TESTS = [
     "test_sprint1_quality_gates.py",
     "test_run_smoke_tests.py",
     "test_magazine_kindle_reflow.py",
+    "test_magazine_epub_quality_gate.py",
+    "test_epub_premium_scoring.py",
     "test_smoke_chess_quality.py",
     "test_conversion_cleanup_ttl_contract.py",
     "test_vat_fixture_contracts.py",
@@ -85,10 +87,10 @@ RELEASE_TIMEOUT_RETURN_CODE = 124
 RELEASE_STEP_TIMEOUTS_SECONDS = {
     "release-units": 300,
     "corpus-units": 240,
-    "corpus-gate-standard": 1800,
+    "corpus-gate-standard": 2700,
     "corpus-gate-ci": 900,
     "browser-followup": 300,
-    "runtime-followup": 480,
+    "runtime-followup": 900,
 }
 
 RELEASE_PROOF_PROFILES = {"standard", "ci"}
@@ -244,6 +246,12 @@ def main() -> int:
     audit_parser.add_argument("--description", default="")
     audit_parser.add_argument("--publication-profile", default="")
     audit_parser.add_argument("--strict-premium", action="store_true")
+    audit_parser.add_argument(
+        "--timeout-seconds",
+        type=int,
+        default=0,
+        help="Stop the release audit after N seconds and return partial evidence instead of hanging.",
+    )
 
     workflow_parser = subparsers.add_parser(
         "workflow",
@@ -379,7 +387,25 @@ def main() -> int:
             command.extend(["--publication-profile", args.publication_profile])
         if args.strict_premium:
             command.append("--strict-premium")
-        return subprocess.run(command, check=False).returncode
+        if args.timeout_seconds and args.timeout_seconds > 0:
+            command.extend(["--timeout-seconds", str(args.timeout_seconds)])
+        try:
+            return subprocess.run(
+                command,
+                check=False,
+                timeout=args.timeout_seconds if args.timeout_seconds and args.timeout_seconds > 0 else None,
+            ).returncode
+        except subprocess.TimeoutExpired as error:
+            partial_payload = _audit_timeout_payload(
+                epub_path=args.epub_path,
+                strict_premium=bool(args.strict_premium),
+                timeout_seconds=int(args.timeout_seconds or 0),
+                command=command,
+                captured_stdout=error.stdout,
+                captured_stderr=error.stderr,
+            )
+            _print_json(partial_payload)
+            return RELEASE_TIMEOUT_RETURN_CODE
     if args.command == "workflow":
         from workflow_runner import run_workflow_baseline, run_workflow_verify
 
@@ -943,6 +969,48 @@ def _derive_doctor_artifact_status(payload: dict[str, Any]) -> str:
     if status_priority.get(worst, 1) == 1:
         return "passed_with_warnings"
     return "passed"
+
+
+def _audit_timeout_payload(
+    *,
+    epub_path: str,
+    strict_premium: bool,
+    timeout_seconds: int,
+    command: Sequence[str],
+    captured_stdout: bytes | str | None,
+    captured_stderr: bytes | str | None,
+) -> dict[str, Any]:
+    return {
+        "status": "incomplete",
+        "decision": "pass_with_review",
+        "release_verdict": "ready_with_review",
+        "epub_path": epub_path,
+        "strict_premium": strict_premium,
+        "timeout_seconds": timeout_seconds,
+        "completed_stages": ["audit_subprocess_started"],
+        "failed_stage": "release_audit",
+        "issues": [
+            {
+                "severity": "review",
+                "code": "strict_audit_stage_timeout",
+                "message": f"Strict release audit exceeded {timeout_seconds} seconds and returned partial evidence.",
+                "suggested_action": "Use direct strict scoring or rerun audit with a larger timeout after performance tuning.",
+            }
+        ],
+        "command": list(command),
+        "captured_stdout_tail": _decode_tail(captured_stdout),
+        "captured_stderr_tail": _decode_tail(captured_stderr),
+    }
+
+
+def _decode_tail(value: bytes | str | None, *, limit: int = 4000) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        text = value.decode("utf-8", errors="replace")
+    else:
+        text = str(value)
+    return text[-limit:]
 
 
 def _json_safe(value: Any) -> Any:

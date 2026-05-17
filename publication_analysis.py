@@ -488,6 +488,14 @@ def _choose_profile(**kwargs) -> tuple[str, str, str]:
         total_pages=total_pages,
     ):
         return "book_reflow", "technical-study", "Wykryto raport/dokument techniczny z jedną kolumną, spisem treści i tabelami."
+    if (
+        layout_heavy
+        and has_meaningful_images
+        and estimated_columns >= 2
+        and total_pages >= 40
+        and scanned_page_ratio < 0.35
+    ):
+        return "magazine_reflow", "magazine", "Detected a long multi-column publication with images; magazine reflow protects reading order."
     if _is_numbered_document_like_report_candidate(
         numbered_section_count=numbered_section_count,
         has_tables=has_tables,

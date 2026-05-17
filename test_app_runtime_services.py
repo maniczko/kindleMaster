@@ -269,8 +269,10 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertEqual(
             status_updates,
             [
-                ("running", "Konwertuje PDF do EPUB..."),
+                ("running", "Ekstrakcja tekstu z PDF..."),
+                ("running", "Składanie artykułów i struktury EPUB..."),
                 ("repairing_headings", "Naprawiam headingi i TOC w EPUB..."),
+                ("running", "Uruchamiam audyt premium EPUB..."),
             ],
         )
 
@@ -433,6 +435,46 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertIn("features_hash", outcome.metadata["ai_quality_verification"])
         self.assertEqual(outcome.metadata["ai_quality_verification"]["quality_gate_mode"], "draft")
         self.assertFalse(heading_repair_impl.called)
+
+    def test_run_document_conversion_reports_progress_stages(self) -> None:
+        base_epub = _minimal_epub_bytes()
+        convert_impl = Mock(
+            return_value={
+                "epub_bytes": base_epub,
+                "source_type": "pdf",
+                "analysis": {"profile": "magazine_reflow", "legacy_strategy": "magazine_reflow"},
+                "quality_report": {"validation_status": "passed", "validation_tool": "epubcheck"},
+                "document_summary": {"title": "Stage Sample", "section_count": 1, "asset_count": 0},
+            }
+        )
+        heading_repair_impl = Mock()
+        calls: list[dict] = []
+
+        def status_callback(status: str, message: str, **fields) -> None:
+            calls.append({"status": status, "message": message, **fields})
+
+        run_document_conversion(
+            ConversionRequest(
+                source_path="sample.pdf",
+                source_type="pdf",
+                original_filename="sample.pdf",
+                profile="auto-premium",
+                language="pl",
+                heading_repair_enabled=False,
+                quality_gate_mode="draft",
+                feedback_enabled=False,
+            ),
+            convert_impl=convert_impl,
+            heading_repair_impl=heading_repair_impl,
+            status_callback=status_callback,
+        )
+
+        self.assertEqual(
+            [item["stage_id"] for item in calls],
+            ["extracting", "assembling", "premium_audit"],
+        )
+        self.assertEqual(calls[0]["stage_label"], "Ekstrakcja tekstu")
+        self.assertEqual(calls[-1]["percent_estimate"], 82)
 
     def test_build_conversion_metadata_preserves_cockpit_inputs_and_flattened_fields(self) -> None:
         result = {
@@ -613,7 +655,14 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertIn("diagram-heavy training book", outcome.heading_repair_report["error"])
         self.assertEqual(outcome.metadata["heading_repair"]["status"], "skipped")
         heading_repair_impl.assert_not_called()
-        self.assertEqual(status_updates, [("running", "Konwertuje PDF do EPUB...")])
+        self.assertEqual(
+            status_updates,
+            [
+                ("running", "Ekstrakcja tekstu z PDF..."),
+                ("running", "Składanie artykułów i struktury EPUB..."),
+                ("running", "Uruchamiam audyt premium EPUB..."),
+            ],
+        )
 
     def test_run_document_conversion_omits_source_type_for_cli_style_requests(self) -> None:
         convert_impl = Mock(
@@ -729,6 +778,8 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertEqual(outcome.metadata["render_budget_class"], "fixed_layout_dense")
         self.assertEqual(outcome.metadata["heading_repair"]["status"], "applied")
         self.assertEqual(outcome.metadata["strategy"], "layout_fixed")
+        self.assertEqual(outcome.result["quality_report"]["validation_status"], "passed")
+        self.assertEqual(outcome.result["quality_report"]["epubcheck_status"], "passed")
         self.assertTrue(heading_repair_impl.call_args.kwargs["already_semantic_cleaned"])
 
     def test_run_document_conversion_marks_heading_repair_exception_as_failed_and_keeps_base_epub(self) -> None:

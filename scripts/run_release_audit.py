@@ -23,6 +23,12 @@ def main() -> int:
     parser.add_argument("--description", default="")
     parser.add_argument("--publication-profile", default="")
     parser.add_argument("--strict-premium", action="store_true")
+    parser.add_argument(
+        "--timeout-seconds",
+        type=int,
+        default=0,
+        help="Accepted by the standard entrypoint; timeout enforcement happens in kindlemaster.py.",
+    )
     args = parser.parse_args()
 
     result = run_epub_publishing_quality_recovery(

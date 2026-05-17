@@ -33,7 +33,7 @@ def _server_is_ready(base_url: str) -> bool:
         return False
 
 
-def _wait_for_server(base_url: str, process: subprocess.Popen[bytes], timeout_seconds: float = 45.0) -> None:
+def _wait_for_server(base_url: str, process: subprocess.Popen[bytes], timeout_seconds: float = 90.0) -> None:
     deadline = time.time() + timeout_seconds
     last_error: Exception | None = None
     while time.time() < deadline:

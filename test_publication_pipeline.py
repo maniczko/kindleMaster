@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import io
 import unittest
+import zipfile
 
-from publication_model import PublicationAnalysis
+from epub_premium_scoring import build_magazine_premium_quality_contract
+from publication_model import PublicationAnalysis, PublicationDocument, PublicationQualityReport
 from publication_pipeline import (
     _looks_like_cover_masthead_line,
     _ocr_quality_from_result,
     _should_coalesce_page_chapters_with_pdf_outline,
+    finalize_publication_epub,
     publication_from_content,
 )
 
@@ -32,6 +36,67 @@ def _analysis(**overrides) -> PublicationAnalysis:
     }
     defaults.update(overrides)
     return PublicationAnalysis(**defaults)
+
+
+def _minimal_magazine_epub(nav_labels: list[str]) -> bytes:
+    buffer = io.BytesIO()
+    nav_items = "\n".join(
+        f'<li><a href="chapter_001.xhtml#nav-{index}">{label}</a></li>'
+        for index, label in enumerate(nav_labels, start=1)
+    )
+    body_items = "\n".join(
+        f'<section id="nav-{index}"><h1>{label}</h1><p>Clean editorial text for {label}.</p></section>'
+        for index, label in enumerate(nav_labels, start=1)
+    )
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        archive.writestr(
+            "META-INF/container.xml",
+            """<?xml version="1.0" encoding="utf-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="EPUB/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>
+""",
+        )
+        archive.writestr(
+            "EPUB/content.opf",
+            """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">publication-pipeline-fixture</dc:identifier>
+    <dc:title>Magazine Issue</dc:title>
+    <dc:creator>Editorial Team</dc:creator>
+    <dc:language>en</dc:language>
+    <dc:publisher>Publisher</dc:publisher>
+    <meta property="dcterms:modified">2026-01-01T00:00:00Z</meta>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="chapter1" href="chapter_001.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine><itemref idref="chapter1"/></spine>
+</package>
+""",
+        )
+        archive.writestr(
+            "EPUB/nav.xhtml",
+            f"""<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+  <head><title>Navigation</title></head>
+  <body><nav epub:type="toc"><ol>{nav_items}</ol></nav></body>
+</html>
+""",
+        )
+        archive.writestr(
+            "EPUB/chapter_001.xhtml",
+            f"""<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Main Feature</title></head>
+  <body>{body_items}</body>
+</html>
+""",
+        )
+    return buffer.getvalue()
 
 
 class PublicationPipelineTests(unittest.TestCase):
@@ -142,6 +207,47 @@ class PublicationPipelineTests(unittest.TestCase):
             document.quality_report.content_metrics_dict()["table_summary"]["review_tables"][0]["classification"],
             "wide",
         )
+
+    def test_finalize_publication_epub_refreshes_magazine_article_map_from_final_nav(self) -> None:
+        article_map = {
+            "article_count": 3,
+            "editorial_article_count": 3,
+            "toc_entry_count": 1,
+            "toc_covered_article_count": 1,
+            "toc_coverage": 0.333,
+            "blockers": ["magazine_article_toc_coverage_below_95"],
+            "review": [],
+            "articles": [
+                {"title": "Main Feature", "kind": "article", "toc_matched": True, "toc_excluded": False},
+                {"title": "Second Feature", "kind": "article", "toc_matched": False, "toc_excluded": False},
+                {"title": "Third Interview", "kind": "interview", "toc_matched": False, "toc_excluded": False},
+            ],
+        }
+        quality_report = PublicationQualityReport(
+            magazine_premium_quality=build_magazine_premium_quality_contract(
+                magazine_audit={"article_map": article_map}
+            )
+        )
+        document = PublicationDocument(
+            title="Magazine Issue",
+            author="Editorial Team",
+            language="en",
+            profile="magazine_reflow",
+            analysis=_analysis(profile="magazine_reflow"),
+            quality_report=quality_report,
+        )
+
+        finalized = finalize_publication_epub(
+            document,
+            _minimal_magazine_epub(["Main Feature", "Second Feature", "Third Interview"]),
+        )
+
+        refreshed_map = finalized.magazine_premium_quality["article_map"]
+        self.assertEqual(finalized.validation_status, "passed")
+        self.assertEqual(refreshed_map["coverage_source"], "final_epub_nav")
+        self.assertEqual(refreshed_map["toc_coverage"], 1.0)
+        self.assertEqual(refreshed_map["toc_missing_articles"], [])
+        self.assertNotIn("magazine_article_toc_coverage_below_95", refreshed_map["blockers"])
 
     def test_ocr_quality_result_reports_reason_codes_and_review_counts(self) -> None:
         class Page:

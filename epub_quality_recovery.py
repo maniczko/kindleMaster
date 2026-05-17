@@ -23,6 +23,7 @@ from kindle_semantic_cleanup import (
     _extract_epub,
     _get_spine_xhtml_paths,
     _inject_problem_solution_links,
+    _build_non_linear_reachability_toc_entries,
     _is_placeholder_author,
     _is_pre_paginated,
     _locate_opf,
@@ -614,6 +615,14 @@ def _run_recovery_phases(
                 for entry in resolved_toc_entries
                 if str(entry.get("file_name") or "") not in non_linear_spine_files
             ]
+            resolved_toc_entries.extend(
+                _build_non_linear_reachability_toc_entries(
+                    chapter_paths,
+                    non_linear_files=non_linear_spine_files,
+                    language=resolved_language,
+                    parent_file=spine_order[0] if spine_order else "",
+                )
+            )
 
         for chapter_path in chapter_paths:
             if chapter_path.name != "cover.xhtml":

@@ -718,6 +718,21 @@ def _build_governance_summary(repo_root: Path) -> dict[str, Any]:
     workflow_path = repo_root / ".github" / "workflows" / "ready-enforcement.yml"
     doc_path = repo_root / "docs" / "github-ready-enforcement.md"
     drift = _build_drift_summary(repo_root)
+    try:
+        from openai_quality_provider import openai_quality_configuration_status
+
+        openai_quality = openai_quality_configuration_status(cwd=repo_root)
+    except Exception as error:
+        openai_quality = {
+            "enabled": False,
+            "api_key_present": False,
+            "model": "",
+            "base_url": "",
+            "mode": "evidence_only",
+            "evidence_only": True,
+            "full_document_upload": False,
+            "error": str(error),
+        }
     return {
         "ready_workflow_present": workflow_path.exists(),
         "ready_workflow_path": str(workflow_path),
@@ -728,6 +743,7 @@ def _build_governance_summary(repo_root: Path) -> dict[str, Any]:
         "drift_failed_checks": drift.get("failed_checks", []),
         "drift_unavailable_checks": drift.get("unavailable_checks", []),
         "session_override": drift["session_override"],
+        "openai_quality": openai_quality,
     }
 
 
@@ -827,6 +843,8 @@ def generate_project_status(
             "ready_doc_present": governance["ready_doc_present"],
             "dashboard_status": dashboard["status"],
             "drift_status": governance["drift_status"],
+            "openai_quality_enabled": bool((governance.get("openai_quality") or {}).get("enabled")),
+            "openai_quality_mode": str((governance.get("openai_quality") or {}).get("mode", "evidence_only")),
             "session_override_documented": governance["session_override"]["documented"],
             "workflow_complete_count": workflow["completeness"]["complete_count"],
             "workflow_incomplete_count": workflow["completeness"]["incomplete_count"],
@@ -868,6 +886,7 @@ def build_project_status_markdown(payload: dict[str, Any]) -> str:
         f"- GitHub READY workflow present: `{governance['ready_workflow_present']}`",
         f"- VAT-206 dashboard: `{dashboard['status']}`",
         f"- Governance drift: `{governance['drift_status']}`",
+        f"- OpenAI quality reviewer: `enabled={bool((governance.get('openai_quality') or {}).get('enabled'))}`, mode `{(governance.get('openai_quality') or {}).get('mode', 'evidence_only')}`",
         "",
         "## Evidence",
         "",

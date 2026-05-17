@@ -268,6 +268,45 @@ class CorpusGateTests(unittest.TestCase):
         self.assertEqual(output_assertions["focus_routes"]["diagram_chess"]["status"], "covered_with_warnings")
         self.assertEqual(output_assertions["failed_routes"], [])
 
+    def test_gate_output_assertions_use_post_heading_recovered_validation(self) -> None:
+        premium_payload = {
+            "cases": [
+                {
+                    "case_id": "magazine_layout_pdf",
+                    "document_class": "magazine_layout",
+                    "input_type": "pdf",
+                    "mode": "convert-and-audit",
+                    "grade": "pass_with_review",
+                    "quality": {"validation_status": "failed"},
+                    "heading_repair": {"status": "applied", "epubcheck_status": "passed"},
+                    "output_assertions": [
+                        {
+                            "id": "content_xhtml_present",
+                            "route": "base",
+                            "status": "passed",
+                            "severity": "blocker",
+                            "detail": "xhtml_count=36",
+                        },
+                        {
+                            "id": "validation_not_failed",
+                            "route": "base",
+                            "status": "passed",
+                            "severity": "blocker",
+                            "detail": "validation_status=passed",
+                        },
+                    ],
+                }
+            ]
+        }
+
+        output_assertions = _build_gate_output_assertions(smoke={"cases": []}, premium=premium_payload)
+
+        route = output_assertions["focus_routes"]["magazine_layout_heavy"]
+        self.assertEqual(route["status"], "covered_with_warnings")
+        self.assertEqual(route["cases"][0]["validation_status"], "passed")
+        self.assertEqual(route["cases"][0]["raw_validation_status"], "failed")
+        self.assertEqual(output_assertions["failed_routes"], [])
+
     def test_corpus_gate_persists_stable_derived_status_evidence(self) -> None:
         smoke_payload = {
             "summary": {

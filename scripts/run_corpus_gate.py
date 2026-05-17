@@ -151,6 +151,27 @@ def _roll_up_assertions(assertions: list[dict[str, str]], *, validation_status: 
     return "skipped"
 
 
+def _premium_effective_validation_status(row: dict[str, Any], assertions: list[dict[str, str]]) -> str:
+    raw_status = str(((row.get("quality") or {}).get("validation_status")) or "")
+    validation_assertion = next(
+        (
+            assertion
+            for assertion in assertions
+            if assertion.get("id") == "validation_not_failed" and assertion.get("status") == "passed"
+        ),
+        None,
+    )
+    heading = row.get("heading_repair") or {}
+    heading_recovered = (
+        raw_status == "failed"
+        and str(heading.get("epubcheck_status") or "").lower() == "passed"
+        and str(heading.get("status") or "").lower() in {"applied", "completed"}
+    )
+    if validation_assertion or heading_recovered:
+        return "passed"
+    return raw_status
+
+
 def _build_smoke_output_evidence(row: dict[str, Any]) -> dict[str, Any]:
     document_class = str(row.get("document_class", "") or "")
     input_type = str(row.get("input_type", "") or "")
@@ -202,6 +223,8 @@ def _build_premium_output_evidence(row: dict[str, Any]) -> dict[str, Any]:
         )
     else:
         validation_status = str(((row.get("quality") or {}).get("validation_status")) or "")
+    raw_validation_status = validation_status
+    validation_status = _premium_effective_validation_status(row, assertions)
     status = _roll_up_assertions(assertions, validation_status=validation_status)
     grade = str(row.get("grade", ""))
     if status == "passed" and grade == "pass_with_review":
@@ -215,6 +238,7 @@ def _build_premium_output_evidence(row: dict[str, Any]) -> dict[str, Any]:
         "input_type": input_type,
         "status": status,
         "validation_status": validation_status,
+        "raw_validation_status": raw_validation_status,
         "grade": grade,
         "focus_routes": list(classify_focus_routes(document_class, input_type)),
         "assertions": assertions,
@@ -320,6 +344,7 @@ def _build_corpus_gate_markdown(payload: dict[str, Any]) -> str:
         f"- Classes covered: `{benchmark.get('class_count', 0)}`",
         f"- Slowest smoke cases: `{json.dumps(benchmark.get('slowest_smoke_cases', []), ensure_ascii=False)}`",
         f"- Slowest premium cases: `{json.dumps(benchmark.get('slowest_premium_cases', []), ensure_ascii=False)}`",
+        f"- Slowest premium stages: `{json.dumps(benchmark.get('slowest_premium_stages', []), ensure_ascii=False)}`",
         "",
         "## Output Assertions",
         "",
@@ -474,6 +499,7 @@ def _build_gate_benchmark(
         "classes": sorted(smoke_classes | premium_classes),
         "slowest_smoke_cases": list(smoke_benchmark.get("slowest_cases") or [])[:5],
         "slowest_premium_cases": _slowest_premium_cases(premium),
+        "slowest_premium_stages": _slowest_premium_stages(premium),
         "premium_converted_case_count": (premium.get("overall") or {}).get("converted_case_count", 0),
     }
 
@@ -496,6 +522,31 @@ def _slowest_premium_cases(premium: dict[str, Any]) -> list[dict[str, Any]]:
         }
         for row in rows[:5]
     ]
+
+
+def _slowest_premium_stages(premium: dict[str, Any]) -> list[dict[str, Any]]:
+    stages: list[dict[str, Any]] = []
+    for row in premium.get("cases", []) or []:
+        timing = row.get("timing_breakdown") or {}
+        if not isinstance(timing, dict):
+            continue
+        for stage, elapsed in timing.items():
+            if stage == "total":
+                continue
+            try:
+                seconds = float(elapsed)
+            except Exception:
+                continue
+            stages.append(
+                {
+                    "case_id": str(row.get("case_id", "") or row.get("file", "")),
+                    "document_class": str(row.get("document_class", "")),
+                    "stage": str(stage),
+                    "elapsed_seconds": round(seconds, 4),
+                }
+            )
+    stages.sort(key=lambda item: float(item.get("elapsed_seconds", 0.0)), reverse=True)
+    return stages[:8]
 
 
 def main() -> int:

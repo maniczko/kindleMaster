@@ -89,6 +89,12 @@ class VerificationReport:
     issue_toc_entries: int
     issue_toc_covered: int
     issue_toc_coverage: float
+    linear_editorial_chapters: int
+    nav_covered_linear_editorial_chapters: int
+    nav_linear_editorial_coverage: float
+    non_linear_content_chapters: int
+    unreachable_non_linear_chapters: list[str]
+    nav_to_non_linear_chapters: int
     main_flow_chapters: int
     non_editorial_chapters: int
     non_editorial_ratio: float
@@ -159,6 +165,11 @@ def main() -> int:
             report.issue_toc_entries > 0
             and report.issue_toc_coverage < args.min_issue_toc_coverage
         )
+        or bool(report.unreachable_non_linear_chapters)
+        or (
+            report.linear_editorial_chapters >= 4
+            and report.nav_linear_editorial_coverage < args.min_issue_toc_coverage
+        )
         or (
             report.main_flow_chapters > 0
             and report.non_editorial_ratio > args.max_non_editorial_ratio
@@ -175,6 +186,7 @@ def verify_epub(source: EpubSource, args: argparse.Namespace) -> VerificationRep
     opf_soup = BeautifulSoup(source.read_text(opf_path), "xml")
     manifest = parse_manifest(opf_soup)
     spine = parse_spine(opf_soup)
+    spine_linear_by_href = parse_spine_linear_by_href(opf_soup, manifest)
     spine_files = resolve_spine_files(spine, manifest)
     nav_path = find_nav_path(manifest)
 
@@ -202,6 +214,14 @@ def verify_epub(source: EpubSource, args: argparse.Namespace) -> VerificationRep
     toc_generic = sum(1 for entry in toc_entries if is_generic_label(entry["text"]))
     toc_useful = toc_total - toc_generic
     toc_usefulness_ratio = toc_useful / toc_total if toc_total else 0.0
+    nav_target_files = {entry.get("target_file", "") for entry in toc_entries if entry.get("target_file")}
+    non_linear_content_files = {
+        resolve_package_path(opf_dir, href)
+        for href, linear in spine_linear_by_href.items()
+        if linear == "no" and Path(href).name.lower() not in {"nav.xhtml", "cover.xhtml"}
+    }
+    unreachable_non_linear = sorted(non_linear_content_files - nav_target_files)
+    nav_to_non_linear = len(non_linear_content_files & nav_target_files)
 
     issue_covered = sum(
         1
@@ -213,12 +233,25 @@ def verify_epub(source: EpubSource, args: argparse.Namespace) -> VerificationRep
     main_flow = [chapter for chapter in chapter_summary if chapter.classification not in {"cover", "toc", "back-matter"}]
     non_editorial = [chapter for chapter in main_flow if chapter.classification != "editorial"]
     non_editorial_ratio = len(non_editorial) / len(main_flow) if main_flow else 0.0
+    linear_editorial = [
+        chapter.file
+        for chapter in chapter_summary
+        if chapter.classification == "editorial" and chapter.file not in non_linear_content_files
+    ]
+    nav_covered_linear_editorial = sorted(set(linear_editorial) & nav_target_files)
+    nav_linear_editorial_coverage = (
+        len(nav_covered_linear_editorial) / len(linear_editorial)
+        if linear_editorial
+        else 1.0
+    )
 
     verdict = "PASS"
     if (
         toc_total < args.min_toc_links
         or toc_usefulness_ratio < 0.5
         or (issue_toc_entries and issue_coverage < args.min_issue_toc_coverage)
+        or bool(unreachable_non_linear)
+        or (len(linear_editorial) >= 4 and nav_linear_editorial_coverage < args.min_issue_toc_coverage)
         or (main_flow and non_editorial_ratio > args.max_non_editorial_ratio)
         or broken_links
         or broken_assets
@@ -234,6 +267,12 @@ def verify_epub(source: EpubSource, args: argparse.Namespace) -> VerificationRep
         issue_toc_entries=len(issue_toc_entries),
         issue_toc_covered=issue_covered,
         issue_toc_coverage=round(issue_coverage, 3),
+        linear_editorial_chapters=len(linear_editorial),
+        nav_covered_linear_editorial_chapters=len(nav_covered_linear_editorial),
+        nav_linear_editorial_coverage=round(nav_linear_editorial_coverage, 3),
+        non_linear_content_chapters=len(non_linear_content_files),
+        unreachable_non_linear_chapters=unreachable_non_linear,
+        nav_to_non_linear_chapters=nav_to_non_linear,
         main_flow_chapters=len(main_flow),
         non_editorial_chapters=len(non_editorial),
         non_editorial_ratio=round(non_editorial_ratio, 3),
@@ -276,6 +315,20 @@ def parse_spine(opf_soup: BeautifulSoup) -> list[str]:
         if idref:
             spine.append(idref)
     return spine
+
+
+def parse_spine_linear_by_href(opf_soup: BeautifulSoup, manifest: dict[str, dict[str, str]]) -> dict[str, str]:
+    linear_by_href: dict[str, str] = {}
+    for itemref in opf_soup.find_all("itemref"):
+        idref = itemref.get("idref", "")
+        item = manifest.get(idref)
+        if not item:
+            continue
+        href = item.get("href", "")
+        if not href:
+            continue
+        linear_by_href[href] = (itemref.get("linear") or "yes").strip().lower()
+    return linear_by_href
 
 
 def find_nav_path(manifest: dict[str, dict[str, str]]) -> str:
@@ -322,7 +375,11 @@ def extract_nav_toc_entries(source: EpubSource, nav_path: str, opf_dir: str) -> 
         text = clean_text(link.get_text(" ", strip=True))
         href = link.get("href", "")
         if text:
-            entries.append({"text": text, "href": href})
+            target_file = ""
+            target_path, _fragment = resolve_path(nav_full, href)
+            if target_path:
+                target_file = target_path
+            entries.append({"text": text, "href": href, "target_file": target_file})
     return entries
 
 
@@ -538,6 +595,14 @@ def print_report(report: VerificationReport) -> None:
     print(f"  extracted entries: {report.issue_toc_entries}")
     print(f"  covered by nav: {report.issue_toc_covered}")
     print(f"  coverage: {report.issue_toc_coverage:.3f}")
+    print("")
+    print("Linear article reachability")
+    print(f"  linear editorial chapters: {report.linear_editorial_chapters}")
+    print(f"  covered by nav: {report.nav_covered_linear_editorial_chapters}")
+    print(f"  coverage: {report.nav_linear_editorial_coverage:.3f}")
+    print(f"  non-linear content chapters: {report.non_linear_content_chapters}")
+    print(f"  unreachable non-linear chapters: {len(report.unreachable_non_linear_chapters)}")
+    print(f"  nav links to non-linear chapters: {report.nav_to_non_linear_chapters}")
     print("")
     print("Main flow ratio")
     print(f"  main-flow chapters: {report.main_flow_chapters}")

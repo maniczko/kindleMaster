@@ -18,6 +18,7 @@ from publication_model import (
 )
 from text_normalization import ocr_text_to_html_parts as build_normalized_ocr_html_parts
 from toc_segmentation import normalize_toc_entries, select_section_outline_entries
+from epub_premium_scoring import build_magazine_premium_quality_contract, refresh_magazine_article_map_from_epub
 
 TECHNICAL_TITLE_MARKERS = (
     "emvc",
@@ -372,6 +373,7 @@ def publication_from_content(
     asset_diagram_count = sum(1 for asset in all_assets if asset.get("is_chess"))
     content_metadata = content.get("metadata") or {}
     table_summary = content_metadata.get("table_summary") or {}
+    content_audit = content.get("audit") or {}
     source_table_count = int(content_metadata.get("source_table_count", 0) or table_count)
     xhtml_table_count = int(content_metadata.get("xhtml_table_count", 0) or table_count)
     report = PublicationQualityReport(
@@ -422,6 +424,11 @@ def publication_from_content(
         table_reconstruction=content_metadata.get("table_reconstruction") or table_summary,
         metadata_inference=content_metadata.get("metadata_inference") or {},
         reader_artifact_score=content_metadata.get("reader_artifact_score") or {},
+        magazine_premium_quality=(
+            build_magazine_premium_quality_contract(magazine_audit=content_audit)
+            if analysis.profile == "magazine_reflow"
+            else {}
+        ),
         extractor_contract_warnings=contract_warnings,
     )
 
@@ -482,6 +489,15 @@ def finalize_publication_epub(document: PublicationDocument, epub_bytes: bytes) 
             document.quality_report.warnings.append("EPUBCheck zglosil problemy wymagajace poprawy przed release.")
     if not document.quality_report.external_tools_used:
         document.quality_report.external_tools_used = detect_toolchain()
+    if document.profile == "magazine_reflow" and document.quality_report.magazine_premium_quality:
+        article_map = document.quality_report.magazine_premium_quality.get("article_map")
+        if isinstance(article_map, dict) and article_map.get("articles"):
+            refreshed_article_map = refresh_magazine_article_map_from_epub(article_map, epub_bytes)
+            document.quality_report.magazine_premium_quality = build_magazine_premium_quality_contract(
+                validation_status=validation.get("status", ""),
+                magazine_audit={"article_map": refreshed_article_map},
+                text_artifacts=document.quality_report.reader_artifact_score,
+            )
     return document.quality_report
 
 

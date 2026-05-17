@@ -125,6 +125,20 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
+def _list_of_dicts(value: Any, *, limit: int) -> tuple[dict[str, Any], ...]:
+    if not isinstance(value, list):
+        return ()
+    items: list[dict[str, Any]] = []
+    for raw_item in value:
+        if isinstance(raw_item, Mapping):
+            items.append(dict(raw_item))
+        elif raw_item not in (None, ""):
+            items.append({"message": str(raw_item)})
+        if len(items) >= limit:
+            break
+    return tuple(items)
+
+
 def _string_list(value: Any, *, limit: int) -> tuple[str, ...]:
     if not isinstance(value, list):
         return ()
@@ -511,6 +525,7 @@ class ConversionQualityState:
     ocr_quality: dict[str, Any]
     reading_order: dict[str, Any]
     asset_summary: dict[str, Any]
+    magazine_quality_preview: dict[str, Any]
     toc_preview: dict[str, Any]
     epubcheck_detail: dict[str, Any]
     metadata_summary: dict[str, Any]
@@ -519,7 +534,9 @@ class ConversionQualityState:
     visible_junk: dict[str, Any]
     premium_scoring: dict[str, Any]
     quality_selection: dict[str, Any]
+    ai_quality: dict[str, Any]
     ai_quality_verification: dict[str, Any]
+    ml_feedback: dict[str, Any]
     quality_gate_mode: str
     issue_groups: dict[str, list[dict[str, Any]]]
     quality_completeness: QualityCompletenessState
@@ -573,6 +590,7 @@ class ConversionQualityState:
             "ocr_quality": self.ocr_quality,
             "reading_order": self.reading_order,
             "asset_summary": self.asset_summary,
+            "magazine_quality_preview": self.magazine_quality_preview,
             "toc_preview": self.toc_preview,
             "epubcheck_detail": self.epubcheck_detail,
             "metadata_summary": self.metadata_summary,
@@ -581,7 +599,9 @@ class ConversionQualityState:
             "visible_junk": self.visible_junk,
             "premium_scoring": self.premium_scoring,
             "quality_selection": self.quality_selection,
+            "ai_quality": self.ai_quality,
             "ai_quality_verification": self.ai_quality_verification,
+            "ml_feedback": self.ml_feedback,
             "quality_gate_mode": self.quality_gate_mode,
             "issue_groups": self.issue_groups,
             "quality_completeness": self.quality_completeness.to_dict(),
@@ -1030,7 +1050,7 @@ def _build_user_facing_reasons(
     quality_blockers: tuple[dict[str, Any], ...],
     issue_groups: Mapping[str, Any] | None,
     alerts: tuple[QualityStateAlert, ...],
-    limit: int = 3,
+    limit: int = 5,
 ) -> tuple[dict[str, Any], ...]:
     reasons: list[dict[str, Any]] = []
     seen_codes: set[str] = set()
@@ -1127,7 +1147,7 @@ def _build_user_facing_verdict(
     if not download_available:
         download_label = "Pobranie niedostępne"
     elif decision == "blocked":
-        download_label = "Pobierz szkic EPUB do kontroli"
+        download_label = "Pobierz szkic EPUB"
     else:
         download_label = "Pobierz EPUB"
     return {
@@ -1142,6 +1162,206 @@ def _build_user_facing_verdict(
         "reading_verdict": reading_verdict,
         "release_blocked": release_blocked,
         "top_reason_count": len(reasons),
+    }
+
+
+def _build_magazine_quality_preview(
+    *,
+    conversion_metadata: Mapping[str, Any],
+    quality_report: Mapping[str, Any],
+    issue_groups: Mapping[str, Any] | None,
+    premium_scoring: Mapping[str, Any] | None,
+    text_cleanup: Mapping[str, Any] | None,
+    asset_summary: Mapping[str, Any] | None,
+    ai_quality_verification: Mapping[str, Any] | None,
+    limit: int = 10,
+) -> dict[str, Any]:
+    samples: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def push(
+        sample_type: str,
+        *,
+        severity: str,
+        title: str,
+        evidence: str,
+        location: Mapping[str, Any] | None = None,
+        suggested_action: str = "",
+        source: str = "deterministic",
+    ) -> None:
+        if len(samples) >= limit:
+            return
+        normalized_title = _coerce_text(title, default=sample_type)
+        normalized_evidence = _coerce_text(evidence, default=normalized_title)
+        location_payload = {
+            key: value
+            for key, value in dict(location or {}).items()
+            if value not in (None, "", [])
+        }
+        key = "|".join(
+            [
+                sample_type,
+                normalized_title.lower(),
+                normalized_evidence[:100].lower(),
+                str(location_payload.get("href") or location_payload.get("file") or location_payload.get("page") or ""),
+            ]
+        )
+        if key in seen:
+            return
+        seen.add(key)
+        samples.append(
+            {
+                "type": sample_type,
+                "severity": _coerce_text(severity, default="review") or "review",
+                "title": normalized_title,
+                "evidence": normalized_evidence,
+                "location": location_payload,
+                "suggested_action": _coerce_text(suggested_action),
+                "source": _coerce_text(source, default="deterministic") or "deterministic",
+            }
+        )
+
+    scoring = _mapping(premium_scoring)
+    scoring_metrics = _mapping(scoring.get("metrics"))
+    magazine_contract = _mapping(scoring.get("magazine_premium_quality"))
+    article_map = _mapping(
+        magazine_contract.get("article_map")
+        or conversion_metadata.get("magazine_article_map")
+        or _mapping(quality_report.get("magazine_premium_quality")).get("article_map")
+        or quality_report.get("magazine_article_map")
+        or quality_report.get("article_map")
+    )
+
+    for item in _list_of_dicts(article_map.get("truncated_titles"), limit=4):
+        push(
+            "truncated_title",
+            severity="review",
+            title=item.get("title") or "Podejrzany tytuł artykułu",
+            evidence=item.get("reason") or item.get("title") or "Tytuł wygląda na urwany, zbyt długi albo lead-like.",
+            location={"href": item.get("href") or item.get("chapter_href"), "page": item.get("page") or item.get("page_start")},
+            suggested_action="Zweryfikuj tytuł artykułu i skróć wpis TOC.",
+        )
+
+    for item in _list_of_dicts(article_map.get("toc_missing_articles"), limit=4):
+        push(
+            "suspicious_toc",
+            severity="warning",
+            title=item.get("title") or "Artykuł poza TOC",
+            evidence="Artykuł nie ma pewnego pokrycia w spisie treści magazynu.",
+            location={"href": item.get("href") or item.get("chapter_href"), "page": item.get("page") or item.get("page_start")},
+            suggested_action="Dodaj lub napraw wpis TOC dla realnego artykułu.",
+        )
+
+    for item in _list_of_dicts(article_map.get("articles"), limit=20):
+        kind = _coerce_text(item.get("kind") or item.get("content_type")).lower()
+        if kind in {"ad", "advertisement", "gallery", "sponsored", "newsletter"} or bool(item.get("toc_excluded")):
+            push(
+                "non_content_in_flow",
+                severity="warning",
+                title=item.get("title") or "Materiał nietreściowy w przepływie",
+                evidence=f"Sekcja typu {kind or 'non-content'} wymaga świadomego umieszczenia poza głównym czytaniem.",
+                location={"href": item.get("href") or item.get("chapter_href"), "page": item.get("page") or item.get("page_start")},
+                suggested_action="Przenieś do materiałów dodatkowych albo wyłącz z linear flow.",
+            )
+
+    for issue in [
+        *_quality_issue_list(issue_groups, "blockers"),
+        *_quality_issue_list(issue_groups, "warnings"),
+        *_quality_issue_list(issue_groups, "review"),
+        *_list_of_dicts(scoring.get("issues"), limit=40),
+    ]:
+        code = _coerce_text(issue.get("code"))
+        if code in {"toc_lead_used_as_title", "toc_non_content_entry", "toc_duplicate_label", "magazine_issue_toc_coverage_low", "magazine_article_coverage_low"}:
+            sample_type = "suspicious_toc"
+            suggested_action = "Sprawdź, czy TOC zawiera realny tytuł artykułu, a nie lead albo etykietę layoutu."
+        elif code in {"ocr_glued_words_detected", "ocr_artifacts_need_review", "ocr_suspicious_unicode", "text_artifact_rate_failed", "magazine_text_artifact_rate_high"}:
+            sample_type = "text_artifact"
+            suggested_action = "Sprawdź próbki OCR i reguły dehyphenacji/sklejonych słów."
+        elif code in {"magazine_non_content_chapter", "magazine_non_editorial_in_spine"}:
+            sample_type = "non_content_in_flow"
+            suggested_action = "Przenieś reklamę, galerię lub sponsor stub poza główny flow."
+        elif code == "magazine_article_title_truncated":
+            sample_type = "truncated_title"
+            suggested_action = "Zweryfikuj tytuły artykułów i pokrycie TOC."
+        elif code == "image_low_resolution_for_kindle":
+            sample_type = "low_res_image"
+            suggested_action = "Wyeksportuj wykres w większej rozdzielczości albo dodaj pełnowymiarowy fallback."
+        else:
+            continue
+        push(
+            sample_type,
+            severity=_coerce_text(issue.get("severity"), default="review") or "review",
+            title=code or sample_type,
+            evidence=issue.get("message") or issue.get("detail") or code or sample_type,
+            location={"file": issue.get("file"), "page": issue.get("page"), "section": issue.get("section")},
+            suggested_action=issue.get("suggested_action") or suggested_action,
+        )
+
+    artifact_payload = _mapping(scoring_metrics.get("text_artifacts") or _mapping(text_cleanup).get("artifact_rate"))
+    per_document = sorted(
+        _list_of_dicts(artifact_payload.get("per_document"), limit=50),
+        key=lambda item: int(item.get("artifact_count") or 0),
+        reverse=True,
+    )
+    for item in per_document[:3]:
+        if int(item.get("artifact_count") or 0) <= 0:
+            continue
+        push(
+            "text_artifact",
+            severity="review",
+            title=item.get("document_path") or "Widoczne artefakty tekstu",
+            evidence=f"{item.get('artifact_count')} artefaktów / {item.get('artifact_rate_per_1000_words')} na 1000 słów.",
+            location={"file": item.get("document_path")},
+            suggested_action="Otwórz ten rozdział i sprawdź sklejone lub rozbite słowa.",
+        )
+
+    for item in _list_of_dicts(_mapping(asset_summary).get("low_resolution_images"), limit=4):
+        push(
+            "low_res_image",
+            severity="review",
+            title=item.get("name") or item.get("path") or "Niska rozdzielczość obrazu",
+            evidence=f"{item.get('width', '?')}x{item.get('height', '?')} px może być za mało dla wykresu na Kindle.",
+            location={"file": item.get("path") or item.get("href") or item.get("name")},
+            suggested_action="Sprawdź czy to wykres/diagram; jeśli tak, wygeneruj większy wariant.",
+        )
+
+    magazine_review = _mapping(_mapping(ai_quality_verification).get("magazine_review"))
+    for item in _list_of_dicts(magazine_review.get("truncated_titles"), limit=3):
+        push(
+            "truncated_title",
+            severity="review",
+            title=item.get("title") or "AI: podejrzany tytuł",
+            evidence=item.get("reason") or "AI reviewer oznaczył tytuł jako podejrzany.",
+            location={"href": item.get("href")},
+            suggested_action="Potwierdź deterministyczną regułą przed zmianą pipeline.",
+            source="ai_review",
+        )
+    for item in _list_of_dicts(magazine_review.get("non_content_misclassified"), limit=3):
+        push(
+            "non_content_in_flow",
+            severity="review",
+            title=item.get("label") or item.get("title") or "AI: non-content w flow",
+            evidence=item.get("reason") or "AI reviewer oznaczył materiał nietreściowy.",
+            location={"href": item.get("href")},
+            suggested_action="Potwierdź klasyfikację i dodaj test regresyjny.",
+            source="ai_review",
+        )
+    for item in _list_of_dicts(magazine_review.get("ocr_cleanup_candidates"), limit=3):
+        push(
+            "text_artifact",
+            severity="review",
+            title=item.get("text") or item.get("label") or "AI: fragment OCR",
+            evidence=item.get("reason") or item.get("suggested_fix") or "AI reviewer oznaczył fragment OCR.",
+            location={"href": item.get("href")},
+            suggested_action="Nie zmieniaj automatycznie; dodaj deterministyczną regułę po akceptacji.",
+            source="ai_review",
+        )
+
+    return {
+        "status": "reported" if samples else "not_reported",
+        "sample_count": len(samples),
+        "sample_limit": limit,
+        "problem_samples": samples[:limit],
     }
 
 
@@ -2071,8 +2291,14 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
     quality_selection = _normalize_optional_payload(
         conversion_metadata.get("quality_selection") or quality_report.get("quality_selection")
     )
+    ai_quality = _normalize_optional_payload(
+        conversion_metadata.get("ai_quality") or quality_report.get("ai_quality")
+    )
     ai_quality_verification = _normalize_optional_payload(
         conversion_metadata.get("ai_quality_verification") or quality_report.get("ai_quality_verification")
+    )
+    ml_feedback = _normalize_optional_payload(
+        conversion_metadata.get("ml_feedback") or quality_report.get("ml_feedback")
     )
     quality_gate_mode = _coerce_first_text(
         conversion_metadata.get("quality_gate_mode"),
@@ -2097,6 +2323,15 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
         toc_preview=toc_preview,
         asset_summary=asset_summary,
         premium_scoring=premium_scoring,
+    )
+    magazine_quality_preview = _build_magazine_quality_preview(
+        conversion_metadata=conversion_metadata,
+        quality_report=quality_report,
+        issue_groups=issue_groups,
+        premium_scoring=premium_scoring,
+        text_cleanup=text_cleanup,
+        asset_summary=asset_summary,
+        ai_quality_verification=ai_quality_verification,
     )
     quality_completeness = _build_quality_completeness_state(
         validation=validation,
@@ -2300,6 +2535,7 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
         ocr_quality=ocr_quality,
         reading_order=reading_order,
         asset_summary=asset_summary,
+        magazine_quality_preview=magazine_quality_preview,
         toc_preview=toc_preview,
         epubcheck_detail=epubcheck_detail,
         metadata_summary=metadata_summary,
@@ -2308,7 +2544,9 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
         visible_junk=visible_junk,
         premium_scoring=premium_scoring,
         quality_selection=quality_selection,
+        ai_quality=ai_quality,
         ai_quality_verification=ai_quality_verification,
+        ml_feedback=ml_feedback,
         quality_gate_mode=quality_gate_mode,
         issue_groups=issue_groups,
         quality_completeness=quality_completeness,

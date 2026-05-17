@@ -25,8 +25,9 @@ SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+[,.!?;:]")
 MISSING_SPACE_AFTER_SENTENCE_RE = re.compile(r"(?<=[.!?])(?=[A-Z])")
 URL_FRAGMENT_RE = re.compile(r"(?i)(?:https?\s*:\s*/?\s*/|www\s*\.\s+|doi\s*:\s+|https?://\s+)")
 TECHNICAL_PLACEHOLDER_RE = re.compile(
-    r"(?i)(?:__KM_PROTECTED_\d+__|\bTODO\b|\bFIXME\b|\b(?:Object|State)\s+\d+\b|\bRank\s*=\s*\d+\s*\*\s*\d+\b)"
+    r"(?i)(?:__KM_PROTECTED_\d+__|\bTODO\b|\bFIXME\b)"
 )
+LAYOUT_PLACEHOLDER_RE = re.compile(r"(?i)\b(?:Object|State)\s+\d+\b|\bRank\s*=\s*\d+\s*\*\s*\d+\b")
 KNOWN_CAMEL_DOMAIN_TOKENS = {
     "OrderRequest",
     "OrderResponse",
@@ -172,6 +173,11 @@ def _extract_visible_text(raw: bytes) -> str:
 
 def _analyze_text(document_path: str, text: str) -> TextArtifactMetrics:
     tokens = WORD_RE.findall(text or "")
+    dense_handbook_context = _looks_like_dense_handbook_text(text or "")
+    layout_placeholder_count = len(LAYOUT_PLACEHOLDER_RE.findall(text or ""))
+    technical_placeholder_count = len(TECHNICAL_PLACEHOLDER_RE.findall(text or ""))
+    if not dense_handbook_context:
+        technical_placeholder_count += layout_placeholder_count
     counts = {
         "split_word_count": len(SPLIT_WORD_RE.findall(text or "")),
         "glued_word_count": _count_glued_tokens(tokens),
@@ -179,9 +185,26 @@ def _analyze_text(document_path: str, text: str) -> TextArtifactMetrics:
         "punctuation_spacing_count": len(SPACE_BEFORE_PUNCT_RE.findall(text or ""))
         + len(MISSING_SPACE_AFTER_SENTENCE_RE.findall(text or "")),
         "suspicious_url_fragment_count": len(URL_FRAGMENT_RE.findall(text or "")),
-        "technical_placeholder_count": len(TECHNICAL_PLACEHOLDER_RE.findall(text or "")),
+        "technical_placeholder_count": technical_placeholder_count,
     }
     return TextArtifactMetrics(document_path=document_path, word_count=len(tokens), counts=counts)
+
+
+def _looks_like_dense_handbook_text(text: str) -> bool:
+    normalized = " ".join((text or "").lower().split())
+    if len(normalized) < 800:
+        return False
+    signals = (
+        "business analysis",
+        "requirements",
+        "stakeholder",
+        "solution evaluation",
+        "strategy analysis",
+        "techniques",
+        "appendix",
+        "glossary",
+    )
+    return sum(1 for signal in signals if signal in normalized) >= 3
 
 
 def _count_glued_tokens(tokens: list[str]) -> int:

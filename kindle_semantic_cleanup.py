@@ -1530,6 +1530,15 @@ def finalize_epub_for_kindle(
                 fallback_entries=toc_entries,
                 exclude_files=non_linear_spine_files,
             )
+            if non_linear_spine_files:
+                toc_entries.extend(
+                    _build_non_linear_reachability_toc_entries(
+                        chapter_list,
+                        non_linear_files=non_linear_spine_files,
+                        language=language,
+                        parent_file=spine_order[0] if spine_order else "",
+                    )
+                )
             metadata_before_update = _snapshot_package_metadata(opf_path) if rich_report_enabled else {}
             _update_opf_metadata(
                 opf_path,
@@ -7720,6 +7729,15 @@ def _repair_generic_package(
                 cleanup_scope=cleanup_scope,
                 language=resolved_language,
             )
+    if non_linear_spine_files:
+        resolved_toc_entries.extend(
+            _build_non_linear_reachability_toc_entries(
+                chapter_paths,
+                non_linear_files=non_linear_spine_files,
+                language=resolved_language,
+                parent_file=content_chapter_paths[0].name if content_chapter_paths else "",
+            )
+        )
     package = {
         "title": resolved_title,
         "author": resolved_author,
@@ -7770,6 +7788,14 @@ def _repair_magazine_package(
                 for entry in list(package.get("toc_entries") or [])
                 if str(entry.get("file_name") or "") not in extras
             ]
+            package["toc_entries"].extend(
+                _build_non_linear_reachability_toc_entries(
+                    chapter_paths,
+                    non_linear_files=extras,
+                    language=resolved_language,
+                    parent_file=package["spine_order"][0] if package["spine_order"] else "",
+                )
+            )
             package["non_linear_spine_files"] = sorted(extras)
         return package
     ordered_issue_entries = _sort_magazine_issue_entries(issue_outline["entries"])
@@ -7808,6 +7834,14 @@ def _repair_magazine_package(
         for info in chapter_infos
         if info["file_name"] not in extras
     ]
+    toc_entries.extend(
+        _build_non_linear_reachability_toc_entries(
+            chapter_paths,
+            non_linear_files=extras,
+            language=resolved_language,
+            parent_file=issue_outline["file_name"] or (spine_order[0] if spine_order else ""),
+        )
+    )
     return {
         "title": resolved_title,
         "author": resolved_author,
@@ -7816,6 +7850,43 @@ def _repair_magazine_package(
         "spine_order": spine_order,
         "non_linear_spine_files": sorted(extras),
     }
+
+
+def _build_non_linear_reachability_toc_entries(
+    chapter_paths,
+    *,
+    non_linear_files: set[str] | list[str] | tuple[str, ...],
+    language: str,
+    parent_file: str = "",
+) -> list[dict]:
+    non_linear_names = {str(name) for name in non_linear_files if str(name)}
+    if not non_linear_names:
+        return []
+    ordered_paths = [path for path in chapter_paths if path.name in non_linear_names]
+    if not ordered_paths:
+        return []
+    parent_label = "Materiały dodatkowe" if _canonicalize_language(language) == "pl" else "Additional Materials"
+    entries: list[dict] = []
+    parent_target = parent_file if parent_file in non_linear_names else ordered_paths[0].name
+    if parent_file:
+        entries.append({"file_name": parent_target, "id": "", "text": parent_label, "level": 1})
+        child_level = 2
+    else:
+        child_level = 1
+    for chapter_path in ordered_paths:
+        label, anchor_id = _resolve_heading_target(chapter_path)
+        label = _normalize_text(label) or chapter_path.stem.replace("_", " ").title()
+        if _normalize_key(label) in {"cover", "table of contents", "contents", "spis tresci", "spis treści"}:
+            label = chapter_path.stem.replace("_", " ").title()
+        entries.append(
+            {
+                "file_name": chapter_path.name,
+                "id": anchor_id,
+                "text": label,
+                "level": child_level,
+            }
+        )
+    return entries
 
 
 def _extract_magazine_issue_outline(chapter_paths) -> dict[str, object]:

@@ -166,6 +166,7 @@ class PublicationQualityReport:
     table_reconstruction: dict[str, Any] = field(default_factory=dict)
     metadata_inference: dict[str, Any] = field(default_factory=dict)
     reader_artifact_score: dict[str, Any] = field(default_factory=dict)
+    magazine_premium_quality: dict[str, Any] = field(default_factory=dict)
     extractor_contract_warnings: list[dict[str, Any]] = field(default_factory=list)
 
     def content_metrics_dict(self) -> dict[str, Any]:
@@ -208,6 +209,7 @@ class PublicationQualityReport:
             "table_reconstruction": self.table_reconstruction,
             "metadata_inference": self.metadata_inference,
             "reader_artifact_score": self.reader_artifact_score,
+            "magazine_premium_quality": self.magazine_premium_quality,
             "extractor_contract_warnings": self.extractor_contract_warnings,
         }
 

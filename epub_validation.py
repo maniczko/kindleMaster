@@ -48,6 +48,8 @@ def validate_epub_bytes(epub_bytes: bytes, *, label: str = "<memory>") -> dict[s
         "documents_with_duplicate_ids": 0,
         "links_checked": 0,
         "external_links_checked": 0,
+        "non_linear_spine_targets": 0,
+        "unreachable_non_linear_spine_targets": 0,
     }
 
     try:
@@ -224,6 +226,14 @@ def validate_epub_bytes(epub_bytes: bytes, *, label: str = "<memory>") -> dict[s
             internal_warnings=internal_warnings,
             document_stats=document_stats,
         )
+        _validate_non_linear_spine_reachability(
+            opf_tree,
+            manifest_by_id=manifest_by_id,
+            nav_target=nav_target,
+            document_index=document_index,
+            internal_errors=internal_errors,
+            document_stats=document_stats,
+        )
 
     return _build_validation_payload(
         label=label,
@@ -391,6 +401,47 @@ def _validate_spine(
     for target in spine_targets:
         if target not in manifest_targets:
             package_errors.append(f"Resolved spine target missing from manifest: {target}")
+
+
+def _validate_non_linear_spine_reachability(
+    opf_tree: etree._ElementTree,
+    *,
+    manifest_by_id: dict[str, dict[str, str]],
+    nav_target: str | None,
+    document_index: dict[str, dict[str, Any]],
+    internal_errors: list[str],
+    document_stats: dict[str, int],
+) -> None:
+    non_linear_targets: set[str] = set()
+    for itemref in opf_tree.xpath("//*[local-name()='spine']/*[local-name()='itemref']"):
+        if (itemref.get("linear") or "yes").strip().lower() != "no":
+            continue
+        manifest_item = manifest_by_id.get((itemref.get("idref") or "").strip())
+        if not manifest_item or manifest_item.get("media_type") not in XHTML_MIME_TYPES:
+            continue
+        target = manifest_item["resolved_path"]
+        if target == nav_target or PurePosixPath(target).name.lower() in {"nav.xhtml", "cover.xhtml"}:
+            continue
+        non_linear_targets.add(target)
+
+    document_stats["non_linear_spine_targets"] = len(non_linear_targets)
+    if not non_linear_targets:
+        return
+
+    reachable_targets: set[str] = set()
+    for current_path, payload in document_index.items():
+        for ref in payload.get("refs", []):
+            value = ref.get("value", "")
+            if not value or _is_external_href(value) or value.startswith(("mailto:", "data:")):
+                continue
+            target_doc, _fragment = _resolve_href_target(current_path, value)
+            if target_doc in non_linear_targets:
+                reachable_targets.add(target_doc)
+
+    unreachable = sorted(non_linear_targets - reachable_targets)
+    document_stats["unreachable_non_linear_spine_targets"] = len(unreachable)
+    for target in unreachable:
+        internal_errors.append(f"Non-linear spine content is unreachable by hyperlink: {target}")
 
 
 def _index_content_documents(

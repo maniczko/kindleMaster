@@ -93,6 +93,73 @@ class OpenAIQualityProviderTests(unittest.TestCase):
         self.assertEqual(len(result.entries), 1)
         self.assertEqual(result.entries[0].href, "chapter.xhtml")
 
+    def test_magazine_review_uses_compact_bounded_context(self) -> None:
+        calls = []
+
+        def fake_transport(_url, _headers, payload, _timeout):
+            calls.append(payload)
+            return {
+                "output_text": json.dumps(
+                    {
+                        "confidence": 0.81,
+                        "suspected_bad_reading_order": [],
+                        "truncated_titles": [
+                            {
+                                "href": "chapter.xhtml",
+                                "observed_title": "AI as a",
+                                "suggested_title": "AI as a Mentor",
+                                "evidence": "ends with preposition",
+                                "confidence": 0.78,
+                            },
+                            {
+                                "href": "invented.xhtml",
+                                "observed_title": "Invented",
+                                "suggested_title": "Invented Link",
+                                "evidence": "model invented this href",
+                                "confidence": 0.99,
+                            }
+                        ],
+                        "toc_missing_articles": [],
+                        "non_content_misclassified": [],
+                        "ocr_cleanup_candidates": [],
+                        "suggested_fixture_tags": ["magazine_title_truncated"],
+                    }
+                )
+            }
+
+        provider = OpenAIQualityProvider(
+            OpenAIQualityConfig(api_key="sk-test", max_input_chars=1800),
+            transport=fake_transport,
+        )
+        result = provider.review_magazine(
+            {
+                "suspicious_fragments": ["X" * 5000],
+                "epub_bytes": "FULL_EPUB_BYTES_SHOULD_NOT_LEAK",
+                "pdf_bytes": "FULL_PDF_BYTES_SHOULD_NOT_LEAK",
+                "toc_entries": [{"label": "Article", "href": "chapter.xhtml"}],
+                "article_map": {
+                    "editorial_article_count": 1,
+                    "articles": [{"href": "chapter.xhtml", "title": "Y" * 1000, "kind": "article", "toc_matched": False}],
+                },
+                "image_metrics": {"low_resolution_image_count": 2, "raw_image_data": "RAW_IMAGE_BYTES_SHOULD_NOT_LEAK"},
+                "premium_issues": [{"code": "toc_lead_used_as_title", "severity": "review", "message": "M" * 1000}],
+            }
+        )
+        sent_user_content = calls[0]["input"][1]["content"]
+        sent_context = json.loads(sent_user_content)
+
+        self.assertEqual(result["confidence"], 0.81)
+        self.assertEqual(result["truncated_titles"][0]["href"], "chapter.xhtml")
+        self.assertEqual(result["truncated_titles"][0]["suggested_title"], "AI as a Mentor")
+        self.assertEqual(len(result["truncated_titles"]), 1)
+        self.assertLessEqual(len(sent_user_content), 1800)
+        self.assertNotIn("FULL_EPUB_BYTES_SHOULD_NOT_LEAK", sent_user_content)
+        self.assertNotIn("FULL_PDF_BYTES_SHOULD_NOT_LEAK", sent_user_content)
+        self.assertNotIn("RAW_IMAGE_BYTES_SHOULD_NOT_LEAK", sent_user_content)
+        self.assertLessEqual(len(sent_context["suspicious_fragments"][0]["text"]), 420)
+        self.assertLessEqual(len(sent_context["article_map"][0]["title"]), 180)
+        self.assertEqual(calls[0]["text"]["format"]["type"], "json_schema")
+
 
 if __name__ == "__main__":
     unittest.main()

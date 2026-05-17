@@ -169,7 +169,8 @@ class SemanticEpubCleanupTests(unittest.TestCase):
 
         self.assertEqual([path.name for path in spine_paths], ["chapter_002.xhtml"])
         self.assertEqual(itemrefs["fragment"], "no")
-        self.assertNotIn(">002<", nav_text)
+        self.assertIn(">Additional Materials<", nav_text)
+        self.assertIn('href="chapter_001.xhtml#002"', nav_text)
         self.assertIn("Real Article", nav_text)
 
     def test_build_nav_sanitizes_lead_like_toc_label_at_safe_boundary(self):
@@ -1443,8 +1444,9 @@ class SemanticEpubCleanupTests(unittest.TestCase):
         self.assertEqual(spine_by_idref["gallery"].get("linear"), "no")
         self.assertEqual(spine_by_idref["advert"].get("linear"), "no")
         self.assertEqual(spine_by_idref["photo_stub"].get("linear"), "no")
-        self.assertNotIn(">Gallery<", nav_xhtml)
-        self.assertNotIn(">Advertisement<", nav_xhtml)
+        self.assertIn(">Additional Materials<", nav_xhtml)
+        self.assertIn('href="chapter_003.xhtml#gallery"', nav_xhtml)
+        self.assertIn('href="chapter_004.xhtml#advertisement"', nav_xhtml)
 
         quality = score_epub_premium_quality(cleaned_epub, epubcheck={"status": "passed", "messages": []})
         codes = [issue["code"] for issue in quality["issues"]]

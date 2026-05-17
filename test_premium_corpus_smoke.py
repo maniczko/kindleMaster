@@ -214,6 +214,78 @@ class PremiumCorpusSmokeTests(unittest.TestCase):
         self.assertIn("reference_empty_section_review", [item["code"] for item in warnings])
         self.assertEqual(_derive_case_grade(blockers, warnings), "pass_with_review")
 
+    def test_pre_heading_epubcheck_recovery_is_accepted_p2_when_final_heading_passes(self) -> None:
+        case = CorpusCase(Path("reference_inputs/pdf/magazine_layout.pdf"), document_class="magazine-layout")
+        warnings = [{"code": "pre_heading_epubcheck_recovered", "detail": "pre_heading=failed; post_heading=passed"}]
+
+        active, accepted = _split_active_and_accepted_warnings(
+            case,
+            warnings=warnings,
+            quality={"validation_status": "failed"},
+            heading_summary={"epubcheck_status": "passed", "status": "completed"},
+        )
+
+        self.assertEqual(active, [])
+        self.assertEqual(accepted[0]["priority"], "P2")
+        self.assertEqual(
+            accepted[0]["accepted_as"],
+            "accepted_p2_pre_heading_epubcheck_recovered_final_passed",
+        )
+
+    def test_magazine_quality_review_requires_repair_for_truncated_titles(self) -> None:
+        case = CorpusCase(Path("reference_inputs/pdf/magazine_layout.pdf"), document_class="magazine-layout")
+        warnings = [
+            {
+                "code": "magazine_premium_quality_review",
+                "detail": "magazine_url_fragment_review, image_low_resolution_for_kindle, magazine_article_title_truncated",
+            }
+        ]
+
+        active, accepted = _split_active_and_accepted_warnings(
+            case,
+            warnings=warnings,
+            quality={},
+            heading_summary={"epubcheck_status": "passed"},
+        )
+
+        self.assertEqual(active, warnings)
+        self.assertEqual(accepted, [])
+
+    def test_inspect_epub_cache_returns_defensive_copy(self) -> None:
+        epub_bytes = self._build_epub_bytes(
+            {
+                "mimetype": "application/epub+zip",
+                "META-INF/container.xml": """<?xml version="1.0" encoding="utf-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="EPUB/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>
+""",
+                "EPUB/content.opf": """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Cache Probe</dc:title>
+    <dc:creator>Test</dc:creator>
+    <dc:language>en</dc:language>
+  </metadata>
+</package>
+""",
+                "EPUB/nav.xhtml": """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+  <body><nav epub:type="toc"><ol><li><a href="chapter.xhtml#intro">Intro</a></li></ol></nav></body>
+</html>
+""",
+                "EPUB/chapter.xhtml": """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body><h1 id="intro">Intro</h1></body></html>
+""",
+            }
+        )
+
+        first = inspect_epub(epub_bytes)
+        first["package_title"] = "mutated"
+        second = inspect_epub(epub_bytes)
+
+        self.assertEqual(second["package_title"], "Cache Probe")
+
     def test_text_artifact_rate_failed_is_release_blocker(self) -> None:
         quality = {
             "validation_status": "passed",

@@ -84,6 +84,7 @@ class BrowserConversionOutcomeHarnessTests(unittest.TestCase):
             _extract_function_source(template_html, "describeQualityReason"),
             _extract_function_source(template_html, "buildTopQualityReasons"),
             _extract_function_source(template_html, "renderTopQualityReasons"),
+            _extract_function_source(template_html, "renderMagazineProblemSamples"),
             _extract_function_source(template_html, "formatPremiumScore"),
             _extract_function_source(template_html, "resolveKindleReadyValue"),
             _extract_function_source(template_html, "formatYesNo"),
@@ -533,13 +534,13 @@ process.stdout.write(JSON.stringify({{
         self.assertIn(">no<", html)
         self.assertIn("AI verifier", html)
         self.assertIn("Verifier found unresolved blockers.", html)
-        self.assertIn("Top 3 reasons/blockers", html)
+        self.assertIn("Top 5 reasons/blockers", html)
         self.assertIn("reference_coverage_failed", html)
         self.assertIn("visible_junk_detected", html)
         self.assertIn("reader_visible_blocker", html)
         self.assertNotIn("toc_review", html.split("qualityTopReasons", 1)[1].split("</ol>", 1)[0])
         self.assertIn("JSON jakości", html)
-        self.assertIn("Pobierz szkic EPUB do kontroli", html)
+        self.assertIn("Pobierz szkic EPUB", html)
         self.assertEqual(payload["dashboardVerdict"], "Nie publikuj")
 
     def test_apply_conversion_outcome_keeps_download_available_when_release_is_blocked(self) -> None:
@@ -721,7 +722,7 @@ process.stdout.write(JSON.stringify({{
             "Premium score",
             "Kindle-ready",
             "AI verifier",
-            "Top 3 reasons/blockers",
+            "Top 5 reasons/blockers",
             "Kolejka kontroli ręcznej",
             "Kompletność",
             "EPUB wygenerowany, ale wymaga kontroli jakości",
@@ -805,7 +806,7 @@ process.stdout.write(JSON.stringify({{ html }}));
         rendered = json.loads(completed.stdout)["html"]
         self.assertIn('data-job-status="blocked"', rendered)
         self.assertIn("Zadanie: job-blocked-42", rendered)
-        self.assertIn("Pobierz szkic EPUB do kontroli", rendered)
+        self.assertIn("Pobierz szkic EPUB", rendered)
         self.assertIn("JSON", rendered)
         self.assertIn("Raport MD", rendered)
         self.assertIn("Raport JSON", rendered)

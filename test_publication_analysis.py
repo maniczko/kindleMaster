@@ -107,6 +107,27 @@ class PublicationAnalysisTests(unittest.TestCase):
         self.assertEqual(ui_profile, "technical-study")
         self.assertIn("numerowane", reason.lower())
 
+    def test_long_layout_heavy_multicolumn_publication_routes_to_magazine_before_numbered_report(self) -> None:
+        profile, ui_profile, reason = _choose_profile(
+            preferred_profile="auto-premium",
+            total_pages=84,
+            has_toc=False,
+            has_tables=True,
+            has_diagrams=False,
+            has_meaningful_images=True,
+            estimated_columns=2,
+            layout_heavy=True,
+            text_heavy=False,
+            text_page_ratio=0.96,
+            scanned_page_ratio=0.05,
+            legacy_strategy="layout_fixed",
+            numbered_section_count=12,
+        )
+
+        self.assertEqual(profile, "magazine_reflow")
+        self.assertEqual(ui_profile, "magazine")
+        self.assertIn("multi-column", reason)
+
     def test_analyze_publication_detects_numbered_report_outline_without_pdf_bookmarks(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             pdf_path = Path(temp_dir) / "material_nauka_coupa_iwo_v5.pdf"

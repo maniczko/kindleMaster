@@ -590,6 +590,36 @@ def _detect_toolchain_uncached() -> dict:
         ocr_notes.append("The pipeline can fall back to direct Tesseract OCR when OCRmyPDF system dependencies are incomplete.")
     if ocr_status == "unavailable":
         ocr_notes.append("OCR-heavy scanned PDFs will not have the optional OCRmyPDF enhancement path.")
+    try:
+        from openai_quality_provider import openai_quality_configuration_status
+
+        openai_quality = openai_quality_configuration_status(cwd=Path.cwd())
+    except Exception as error:
+        openai_quality = {
+            "enabled": False,
+            "api_key_present": False,
+            "model": "",
+            "base_url": "",
+            "mode": "evidence_only",
+            "evidence_only": True,
+            "full_document_upload": False,
+            "error": str(error),
+        }
+    openai_quality_enabled = bool(openai_quality.get("enabled"))
+    openai_quality_key_present = bool(openai_quality.get("api_key_present"))
+    if openai_quality_enabled and openai_quality_key_present:
+        openai_quality_status = "supported"
+        openai_quality_missing: list[str] = []
+    elif openai_quality_enabled:
+        openai_quality_status = "degraded"
+        openai_quality_missing = ["OPENAI_API_KEY"]
+    else:
+        openai_quality_status = "unavailable"
+        openai_quality_missing = ["KINDLEMASTER_OPENAI_QUALITY=1"]
+    openai_quality_notes = [
+        "Optional evidence-only reviewer for short OCR/TOC/flow samples.",
+        "It never mutates EPUB bytes automatically.",
+    ]
 
     conversion_capabilities = {
         "core_conversion": _capability_payload(
@@ -617,6 +647,13 @@ def _detect_toolchain_uncached() -> dict:
             status="supported" if not pdfbox_missing else "unavailable",
             description="Optional PDFBox extraction and diagnostics helpers.",
             missing_requirements=pdfbox_missing,
+        ),
+        "openai_quality_review": _capability_payload(
+            support_level="optional",
+            status=openai_quality_status,
+            description="Optional OpenAI reviewer for short quality samples; evidence-only and opt-in.",
+            missing_requirements=openai_quality_missing,
+            notes=openai_quality_notes,
         ),
     }
 
@@ -693,6 +730,7 @@ def _detect_toolchain_uncached() -> dict:
             "jar_found": bool(pdfbox_jar),
             "jar_path": str(pdfbox_jar) if pdfbox_jar else None,
         },
+        "openai_quality": openai_quality,
         "bootstrap": {
             "entrypoint": "python kindlemaster.py bootstrap",
             "runtime_only_entrypoint": "python kindlemaster.py bootstrap --runtime-only",
@@ -762,6 +800,10 @@ def find_pdfbox_jar() -> Path | None:
 
 
 _EPUBCHECK_RESULT_CACHE: dict[str, dict] = {}
+
+
+def clear_epubcheck_cache() -> None:
+    _EPUBCHECK_RESULT_CACHE.clear()
 
 
 def run_epubcheck(epub_bytes: bytes) -> dict:

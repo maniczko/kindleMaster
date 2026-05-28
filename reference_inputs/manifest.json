@@ -12,9 +12,9 @@
       "source": "example/ocr_runtime_probe.pdf",
       "target": "reference_inputs/pdf/ocr_probe.pdf",
       "notes": "Tiny OCR probe for the fastest conversion smoke.",
-      "source_path": "example/ocr_runtime_probe.pdf",
+      "source_path": "<generated-fallback:ocr_probe_pdf>",
       "target_path": "reference_inputs/pdf/ocr_probe.pdf",
-      "size_bytes": 859
+      "size_bytes": 2137
     },
     {
       "id": "ocr_stress_scan_pdf",
@@ -51,9 +51,9 @@
       "source": "example/BABOK_Guide_v3_Member.pdf",
       "target": "reference_inputs/pdf/dense_business_guide.pdf",
       "notes": "Dense handbook fixture for heading, TOC, and text-cleanup regression.",
-      "source_path": "example/BABOK_Guide_v3_Member.pdf",
+      "source_path": "<generated-fallback:dense_business_guide_pdf>",
       "target_path": "reference_inputs/pdf/dense_business_guide.pdf",
-      "size_bytes": 4432970
+      "size_bytes": 5326
     },
     {
       "id": "diagram_training_book_pdf",
@@ -64,9 +64,26 @@
       "source": "example/tactits_sample_80pages.pdf",
       "target": "reference_inputs/pdf/diagram_training_book.pdf",
       "notes": "Training/diagram-heavy PDF for layout-sensitive smoke runs.",
-      "source_path": "example/tactits_sample_80pages.pdf",
+      "source_path": "<generated-fallback:diagram_training_book_pdf>",
       "target_path": "reference_inputs/pdf/diagram_training_book.pdf",
-      "size_bytes": 1092189
+      "size_bytes": 5346
+    },
+    {
+      "id": "fundamenty_scan_chess_pdf",
+      "document_class": "diagram_training_book",
+      "input_type": "pdf",
+      "language": "pl",
+      "quick_smoke": false,
+      "release_strict": false,
+      "source": "reference_inputs/pdf/fundamenty_1_1_scan_chess.pdf",
+      "target": "reference_inputs/pdf/fundamenty_1_1_scan_chess.pdf",
+      "notes": "Image-only Polish chess training book fixture for scanned-board FEN recognition.",
+      "chess_fen_seed_labels": "reference_inputs/chess_fen/labels/fundamenty_seed_positions.jsonl",
+      "chess_fen_template_profile": "fundamenty_merida_like",
+      "chess_fen_seed_exact_accuracy_min": 0.9,
+      "source_path": "reference_inputs/pdf/fundamenty_1_1_scan_chess.pdf",
+      "target_path": "reference_inputs/pdf/fundamenty_1_1_scan_chess.pdf",
+      "size_bytes": 70035088
     },
     {
       "id": "magazine_layout_pdf",
@@ -77,9 +94,9 @@
       "source": "example/02695ab2e05aab728b4b995caa682f947e8be2c3291ff490579797c5a3cc5e26.pdf",
       "target": "reference_inputs/pdf/magazine_layout.pdf",
       "notes": "Magazine/business-report style PDF with layout-heavy structures.",
-      "source_path": "example/02695ab2e05aab728b4b995caa682f947e8be2c3291ff490579797c5a3cc5e26.pdf",
+      "source_path": "<generated-fallback:magazine_layout_pdf>",
       "target_path": "reference_inputs/pdf/magazine_layout.pdf",
-      "size_bytes": 10790479
+      "size_bytes": 5281
     },
     {
       "id": "document_like_report_pdf",
@@ -104,9 +121,9 @@
       "source": "example/scan_probe_premium.epub",
       "target": "reference_inputs/epub/scan_probe.epub",
       "notes": "Small EPUB for fast validator and repair smoke.",
-      "source_path": "example/scan_probe_premium.epub",
+      "source_path": "<generated-fallback:scan_probe_epub>",
       "target_path": "reference_inputs/epub/scan_probe.epub",
-      "size_bytes": 16687
+      "size_bytes": 2387
     },
     {
       "id": "dense_business_guide_epub",
@@ -117,9 +134,9 @@
       "source": "example/BABOK_current_output.epub",
       "target": "reference_inputs/epub/dense_business_guide.epub",
       "notes": "Representative generated EPUB for release-audit and validator smoke.",
-      "source_path": "example/BABOK_current_output.epub",
+      "source_path": "<generated-fallback:dense_business_guide_epub>",
       "target_path": "reference_inputs/epub/dense_business_guide.epub",
-      "size_bytes": 691647
+      "size_bytes": 2458
     },
     {
       "id": "simple_report_docx",

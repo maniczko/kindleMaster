@@ -91,6 +91,16 @@ class EpubPremiumScoringTests(unittest.TestCase):
         self.assertLessEqual(scoring["premium_score"], 4.5)
         self.assertIn("epubcheck_non_linear_unreachable", codes)
 
+    def test_meaningful_book_index_entries_do_not_count_as_toc_noise(self) -> None:
+        scoring = score_epub_premium_quality(
+            _minimal_epub_with_nav(["Main Feature", "Index of games", "Index of composers and analysts"]),
+            epubcheck={"status": "passed", "messages": []},
+        )
+
+        codes = [issue["code"] for issue in scoring["issues"]]
+
+        self.assertNotIn("toc_non_content_entry", codes)
+
     def test_magazine_contract_blocks_premium_when_artifacts_exceed_threshold(self) -> None:
         base_scoring = {
             "technical_valid": True,

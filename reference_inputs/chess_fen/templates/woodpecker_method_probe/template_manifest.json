@@ -1,0 +1,25 @@
+{
+  "status": "ok",
+  "labels_path": "reference_inputs\\chess_fen\\labels\\woodpecker_method_probe_seed_positions.jsonl",
+  "output_dir": "reference_inputs\\chess_fen\\templates\\woodpecker_method_probe",
+  "boards_processed": 20,
+  "template_count": 1280,
+  "label_counts": {
+    "empty-light": 407,
+    "n-black": 21,
+    "r-black": 32,
+    "empty-dark": 424,
+    "k-black": 20,
+    "q-black": 17,
+    "p-black": 116,
+    "b-black": 20,
+    "R-white": 30,
+    "P-white": 115,
+    "N-white": 17,
+    "Q-white": 17,
+    "B-white": 24,
+    "K-white": 20
+  },
+  "clean_output": true,
+  "removed_stale_files": 1281
+}

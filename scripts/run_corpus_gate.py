@@ -18,6 +18,10 @@ from premium_corpus_smoke import (
     inspect_epub,
     run_premium_corpus_smoke,
 )
+from scripts.evaluate_chess_fen_corpus import (
+    DEFAULT_CHESS_FEN_EVAL_MIN_CONFIDENCE,
+    evaluate_chess_fen_corpus,
+)
 from scripts.run_smoke_tests import run_smoke_tests
 
 STANDARD_SMOKE_FILTERS = [
@@ -41,10 +45,11 @@ CI_PREMIUM_FILTERS = [
 ]
 
 
-def _derive_corpus_gate_status(*, smoke_status: str, premium_status: str) -> str:
-    if "failed" in {smoke_status, premium_status}:
+def _derive_corpus_gate_status(*statuses: str, smoke_status: str = "", premium_status: str = "") -> str:
+    merged = {status for status in (*statuses, smoke_status, premium_status) if status}
+    if "failed" in merged:
         return "failed"
-    if "passed_with_warnings" in {smoke_status, premium_status}:
+    if "passed_with_warnings" in merged:
         return "passed_with_warnings"
     return "passed"
 
@@ -315,6 +320,7 @@ def _build_gate_output_assertions(*, smoke: dict[str, Any], premium: dict[str, A
 def _build_corpus_gate_markdown(payload: dict[str, Any]) -> str:
     smoke = payload["smoke"]
     premium = payload["premium_corpus"]
+    fen_corpus = payload.get("fen_corpus") or {}
     benchmark = payload.get("benchmark") or {}
     output_assertions = payload.get("output_assertions") or {}
     lines = [
@@ -324,6 +330,7 @@ def _build_corpus_gate_markdown(payload: dict[str, Any]) -> str:
         f"- Proof profile: `{payload['proof_profile']}`",
         f"- Smoke status: `{(smoke.get('summary') or {}).get('overall_status', 'unknown')}`",
         f"- Premium corpus status: `{(premium.get('overall') or {}).get('overall_status', 'unknown')}`",
+        f"- FEN corpus status: `{fen_corpus.get('status', 'unknown')}`",
         f"- Effective premium status for gate: `{payload.get('effective_premium_status', (premium.get('overall') or {}).get('overall_status', 'unknown'))}`",
         "",
         "## Derived Summary",
@@ -335,6 +342,17 @@ def _build_corpus_gate_markdown(payload: dict[str, Any]) -> str:
         f"- Premium blockers: `{json.dumps((premium.get('overall') or {}).get('blocker_counts', {}), ensure_ascii=False)}`",
         f"- Premium warnings: `{json.dumps((premium.get('overall') or {}).get('warning_counts', {}), ensure_ascii=False)}`",
         f"- Premium accepted P2 warnings: `{json.dumps((premium.get('overall') or {}).get('accepted_warning_counts', {}), ensure_ascii=False)}`",
+        f"- FEN evaluated profiles: `{fen_corpus.get('evaluated_case_count', 0)}`",
+        f"- FEN missing profiles: `{fen_corpus.get('missing_profile_count', 0)}`",
+        f"- FEN min seed labels/profile: `{fen_corpus.get('default_min_seed_label_count', 0)}`",
+        f"- FEN valid seed labels: `{sum(int(((case.get('label_validation') or {}).get('valid_label_count') or 0)) for case in fen_corpus.get('cases', []))}`",
+        f"- FEN overall exact accuracy: `{fen_corpus.get('overall_exact_fen_accuracy', 0)}`",
+        f"- FEN false positives: `{fen_corpus.get('total_false_positive_count', 0)}`",
+        f"- FEN font-board candidate profiles: `{fen_corpus.get('font_board_candidate_profile_count', 0)}`",
+        f"- FEN font-board candidate status: `{fen_corpus.get('font_board_candidate_status', 'not_configured')}`",
+        f"- FEN font-board candidate failures: `{fen_corpus.get('font_board_candidate_failed_count', 0)}`",
+        f"- FEN reasons: `{json.dumps(fen_corpus.get('reasons', []), ensure_ascii=False)}`",
+        f"- FEN next actions: `{json.dumps(fen_corpus.get('next_required_actions', []), ensure_ascii=False)}`",
         "",
         "## Benchmark",
         "",
@@ -368,6 +386,7 @@ def _build_corpus_gate_markdown(payload: dict[str, Any]) -> str:
             f"- Smoke Markdown: `{payload['artifacts']['smoke_md']}`",
             f"- Premium corpus JSON: `{payload['artifacts']['premium_json']}`",
             f"- Premium corpus Markdown: `{payload['artifacts']['premium_md']}`",
+            f"- FEN corpus JSON: `{payload['artifacts']['fen_corpus_json']}`",
             "",
         ]
     )
@@ -384,6 +403,8 @@ def run_corpus_gate(
     premium_output_md: str | Path | None = None,
     smoke_case_filters: list[str] | None = None,
     premium_case_filters: list[str] | None = None,
+    fen_min_profile_count: int = 1,
+    fen_min_seed_label_count: int = 20,
 ) -> dict[str, Any]:
     gate_started = time.perf_counter()
     resolved_output_root = Path(output_root).resolve()
@@ -424,6 +445,15 @@ def run_corpus_gate(
         progress=False,
     )
     premium_elapsed = time.perf_counter() - premium_started
+    fen_corpus_json_path = resolved_reports_root / "fen_corpus_90.json"
+    fen_corpus = evaluate_chess_fen_corpus(
+        manifest_path,
+        min_confidence=DEFAULT_CHESS_FEN_EVAL_MIN_CONFIDENCE,
+        default_min_exact_accuracy=0.90,
+        default_min_seed_label_count=fen_min_seed_label_count,
+        min_profile_count=fen_min_profile_count,
+        output_path=fen_corpus_json_path,
+    )
     premium_status = premium.get("overall_status")
     if not premium_status:
         premium_status = (premium.get("overall") or {}).get("overall_status", "failed")
@@ -443,11 +473,13 @@ def run_corpus_gate(
         smoke_status=overall_status,
         premium_status=output_assertion_status,
     )
+    overall_status = _derive_corpus_gate_status(overall_status, str(fen_corpus.get("status") or "failed"))
     payload = {
         "overall_status": overall_status,
         "proof_profile": proof_profile,
         "smoke": smoke,
         "premium_corpus": premium,
+        "fen_corpus": fen_corpus,
         "effective_premium_status": effective_premium_status,
         "output_assertions": output_assertions,
         "output_assertion_status": output_assertion_status,
@@ -463,6 +495,7 @@ def run_corpus_gate(
             "smoke_md": str(smoke_reports_dir / "smoke_full.md"),
             "premium_json": str(premium_json_path),
             "premium_md": str(premium_md_path),
+            "fen_corpus_json": str(fen_corpus_json_path),
         },
     }
     (resolved_reports_root / "corpus_gate.json").write_text(
@@ -557,6 +590,8 @@ def main() -> int:
     parser.add_argument("--proof-profile", choices=("standard", "full", "ci"), default="standard")
     parser.add_argument("--smoke-case", action="append", default=[])
     parser.add_argument("--premium-case", action="append", default=[])
+    parser.add_argument("--fen-min-profile-count", type=int, default=1)
+    parser.add_argument("--fen-min-seed-label-count", type=int, default=20)
     args = parser.parse_args()
 
     payload = run_corpus_gate(
@@ -566,6 +601,8 @@ def main() -> int:
         proof_profile=args.proof_profile,
         smoke_case_filters=args.smoke_case,
         premium_case_filters=args.premium_case,
+        fen_min_profile_count=args.fen_min_profile_count,
+        fen_min_seed_label_count=args.fen_min_seed_label_count,
     )
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 1 if payload["overall_status"] == "failed" else 0

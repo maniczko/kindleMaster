@@ -8,16 +8,20 @@ Chess diagrams in PDFs often use special fonts (Chess-Merida, etc.) with PUA
 those and renders them as images instead.
 """
 
+import hashlib
 import io
 import html as html_module
+import json
 import re
+import time
 import zipfile
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 import fitz  # PyMuPDF
-from PIL import Image, ImageFilter, ImageOps, ImageStat
+import numpy as np
+from PIL import Image, ImageDraw, ImageFilter, ImageOps, ImageStat
 
 # Import chess renderer
 try:
@@ -35,7 +39,28 @@ from converter import (
     _extract_pdf_metadata,
     detect_pdf_type,
     build_epub,
+    chess_diagram_alt_text,
+    chess_fen_html_attrs,
     strip_emails,
+)
+from chess_position_recognizer import (
+    ChessFenResult,
+    _bbox_overlap_ratio,
+    detect_board_candidates_in_page_image,
+    empty_chess_fen_result,
+    load_piece_templates,
+    recognize_chess_position_from_image,
+    recognize_font_board_from_spans,
+    summarize_chess_fen_results,
+    validate_fen,
+)
+from chess_pgn_extractor import (
+    attach_fen_candidates_to_pgn_records,
+    build_combined_pgn,
+    build_pgn_download_html,
+    extract_chess_pgn_records_from_text,
+    render_chess_pgn_html_parts,
+    summarize_chess_pgn_records,
 )
 
 WINGDINGS_TICK = "\uf0fc"
@@ -623,6 +648,83 @@ def _wrap_chess_problem(diagram_html: str, caption_text: str, exercise_number: s
     )
 
 
+def _attach_fen_to_chess_image(chess_img: dict, result) -> dict:
+    payload = result.to_dict()
+    chess_img["fen_result"] = payload
+    chess_img["fen_confidence"] = payload.get("confidence", 0.0)
+    chess_img["fen_method"] = payload.get("method", "")
+    if payload.get("fen"):
+        chess_img["fen"] = payload["fen"]
+    return payload
+
+
+def _chess_fen_record(*, page_num: int, filename: str, result, source: str) -> dict:
+    payload = result.to_dict()
+    return {
+        **payload,
+        "page_num": page_num,
+        "page_label": page_num + 1,
+        "filename": filename,
+        "source": source,
+    }
+
+
+def _scan_image_for_board_candidates(
+    image_data: bytes,
+    *,
+    page_num: int,
+    filename: str,
+    config: ConversionConfig,
+    piece_templates: dict | None = None,
+) -> list[dict]:
+    if not getattr(config, "chess_fen_recognition_enabled", True):
+        return []
+    max_candidates = max(0, int(getattr(config, "chess_fen_scan_candidates_per_page", 3) or 0))
+    if max_candidates <= 0:
+        return []
+    max_pages = int(getattr(config, "chess_fen_scan_max_pages", 0) or 0)
+    if max_pages <= 0 or page_num >= max_pages:
+        return []
+    candidates = detect_board_candidates_in_page_image(
+        image_data,
+        max_candidates=max_candidates,
+        enable_sliding_probe=bool(getattr(config, "chess_fen_scan_enable_sliding_probe", False)),
+    )
+    if candidates and piece_templates:
+        try:
+            page_image = Image.open(io.BytesIO(image_data)).convert("L")
+        except Exception:
+            page_image = None
+        if page_image is not None:
+            recognized = []
+            for candidate in candidates:
+                if not candidate.bbox:
+                    recognized.append(candidate)
+                    continue
+                x0, y0, x1, y1 = candidate.bbox
+                crop_box = tuple(int(round(value)) for value in (x0, y0, x1, y1))
+                crop = page_image.crop(crop_box)
+                output = io.BytesIO()
+                crop.save(output, format="PNG")
+                template_result = recognize_chess_position_from_image(
+                    output.getvalue(),
+                    bbox=candidate.bbox,
+                    min_confidence=float(getattr(config, "chess_fen_min_confidence", 0.85) or 0.85),
+                    piece_templates=piece_templates,
+                )
+                recognized.append(template_result)
+            candidates = recognized
+    return [
+        _chess_fen_record(
+            page_num=page_num,
+            filename=filename,
+            result=candidate,
+            source="embedded-page-image",
+        )
+        for candidate in candidates
+    ]
+
+
 def _detect_page_label_from_spans(
     text_spans: list[TextSpanWithIndex],
     page_width: float,
@@ -870,6 +972,2082 @@ def _reconstruct_row_grouped_diagrams(html_parts: list[str]) -> Optional[list[st
     return reconstructed
 
 
+SCAN_CHESS_CACHE_VERSION = 3
+SCAN_CHESS_PAGE_CANDIDATE_CACHE_VERSION = 17
+SCAN_CHESS_RECOGNITION_CACHE_VERSION = 6
+SCAN_CHESS_SPARSE_EXACT_CONSENSUS_MIN_PIECES = 3
+SCAN_CHESS_SPARSE_EXACT_CONSENSUS_MIN_CONFIDENCE = 0.827
+SCAN_CHESS_SPARSE_EXACT_CONSENSUS_MAX_PIECES = 8
+_PIECE_TEMPLATE_RUNTIME_TOKENS: dict[int, str] = {}
+_VERIFIED_CROP_LABEL_CACHE: dict[tuple[str, int, int], dict[str, dict[str, Any]]] = {}
+
+
+def _resolve_chess_piece_template_dir(config: ConversionConfig) -> str:
+    explicit = str(getattr(config, "chess_fen_piece_template_dir", "") or "").strip()
+    if explicit:
+        return explicit
+    profile = str(getattr(config, "chess_fen_template_profile", "") or "").strip()
+    if not profile:
+        return ""
+    candidate = Path("reference_inputs") / "chess_fen" / "templates" / profile
+    return str(candidate) if candidate.exists() else ""
+
+
+def _resolve_chess_verified_crop_labels_path(config: ConversionConfig) -> str:
+    explicit = str(getattr(config, "chess_fen_verified_crop_labels_path", "") or "").strip()
+    if explicit:
+        return explicit
+    return ""
+
+
+def _scan_chess_is_partial_separator_crop(image: Image.Image) -> bool:
+    """Reject crops that are separator strips or partial adjacent boards, not full diagrams."""
+    try:
+        gray = image.convert("L")
+        dark = np.asarray(gray) < 80
+    except Exception:
+        return False
+    if dark.size == 0:
+        return False
+    height, width = dark.shape
+    if min(width, height) < 120:
+        return False
+    overall_dark = float(dark.mean())
+    if overall_dark >= 0.22:
+        return False
+
+    def max_low_density_run(values: np.ndarray, threshold: float = 0.05) -> int:
+        best = 0
+        current = 0
+        for value in values:
+            if float(value) < threshold:
+                current += 1
+                best = max(best, current)
+            else:
+                current = 0
+        return best
+
+    row_low_run = max_low_density_run(dark.mean(axis=1))
+    col_low_run = max_low_density_run(dark.mean(axis=0))
+    long_horizontal_gap = row_low_run >= max(32, int(height * 0.11))
+    long_vertical_gap = col_low_run >= max(48, int(width * 0.18))
+    return bool(long_horizontal_gap or long_vertical_gap)
+
+
+def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConfig, pdf_metadata: dict | None = None) -> dict:
+    """Extract image-only chess books as compact reflow chapters with board crops."""
+    started = time.perf_counter()
+    metadata = dict(pdf_metadata or {})
+    doc = fitz.open(pdf_path)
+    try:
+        template_dir = _resolve_chess_piece_template_dir(config)
+        piece_templates = (
+            load_piece_templates(template_dir)
+            if getattr(config, "chess_fen_recognition_enabled", True) and template_dir
+            else {}
+        )
+        front_matter_metadata = _scan_chess_front_matter_metadata(pdf_path, doc, config)
+        page_candidates = _scan_chess_page_candidates(pdf_path, doc, config, piece_templates=piece_templates)
+        selective_ocr = _scan_chess_selective_ocr_pages(pdf_path, doc, page_candidates, config)
+        selective_ocr_pages = selective_ocr.get("pages", {}) if isinstance(selective_ocr.get("pages"), dict) else {}
+        selective_ocr_summary = selective_ocr.get("summary", {}) if isinstance(selective_ocr.get("summary"), dict) else {}
+        chapters: list[dict[str, Any]] = []
+        all_images: list[dict[str, Any]] = []
+        chess_fen_records: list[dict[str, Any]] = []
+        chess_pgn_records = []
+        diagram_total = 0
+        raw_candidate_total = 0
+        non_board_rejected_count = 0
+
+        for page_record in page_candidates:
+            page_num = int(page_record.get("page_num", 0))
+            candidates = list(page_record.get("candidates", []) or [])
+            if not candidates:
+                continue
+            raw_candidate_total += len(candidates)
+            try:
+                image_data = _page_image_data_for_scan_chess(doc, page_num)
+                page_image = Image.open(io.BytesIO(image_data)).convert("RGB")
+            except Exception:
+                continue
+
+            html_parts = []
+            ocr_record = selective_ocr_pages.get(str(page_num)) or selective_ocr_pages.get(page_num)
+            page_pgn_records = []
+            if isinstance(ocr_record, dict):
+                html_parts.extend(_scan_chess_ocr_html_parts(ocr_record, page_num=page_num))
+                page_pgn_records = extract_chess_pgn_records_from_text(
+                    str(ocr_record.get("text") or ""),
+                    page_num=page_num,
+                    source_title=str(metadata.get("title") or metadata.get("inferred_publication_title") or ""),
+                    ocr_confidence=float(ocr_record.get("confidence", 0.0) or 0.0),
+                )
+            html_parts.append(
+                f'<p class="page-marker">Strona {page_num + 1}: wykryto {len(candidates)} kandydatow diagramow szachowych.</p>'
+            )
+            chapter_images: list[dict[str, Any]] = []
+            page_fen_values: list[str] = []
+            for candidate_index, candidate in enumerate(candidates, start=1):
+                bbox = _clamp_bbox(candidate.get("bbox"), page_image.size)
+                if bbox is None:
+                    continue
+                recognition_bbox = _clamp_bbox(candidate.get("bbox"), page_image.size, pad_ratio=0.0, min_pad=0.0)
+                if recognition_bbox is None:
+                    recognition_bbox = bbox
+                crop = page_image.crop(bbox)
+                if min(crop.size) < 80:
+                    continue
+                crop = _resize_image_to_long_edge(
+                    crop,
+                    int(getattr(config, "scanned_chess_diagram_long_edge", 360) or 360),
+                    resample=Image.Resampling.LANCZOS,
+                )
+                if _scan_chess_is_partial_separator_crop(crop):
+                    non_board_rejected_count += 1
+                    continue
+                png_data, width, height = _encode_scan_chess_diagram_crop(crop, config)
+                filename = f"scan_chess_p{page_num + 1:03d}_{candidate_index:02d}.png"
+                if piece_templates:
+                    recognition = _recognize_scan_chess_candidate_bbox(
+                        page_image,
+                        tuple(float(value) for value in recognition_bbox),
+                        config=config,
+                        piece_templates=piece_templates,
+                        min_confidence=float(getattr(config, "chess_fen_min_confidence", 0.85) or 0.85),
+                        reader_bbox=tuple(float(value) for value in bbox),
+                    )
+                    recognition = _scan_chess_confirm_final_rendered_crop_recognition(
+                        recognition,
+                        png_data,
+                        bbox=tuple(float(value) for value in bbox),
+                        piece_templates=piece_templates,
+                        min_confidence=float(getattr(config, "chess_fen_min_confidence", 0.85) or 0.85),
+                    )
+                    recognition = _scan_chess_apply_verified_crop_label(
+                        recognition,
+                        png_data,
+                        bbox=tuple(float(value) for value in bbox),
+                        config=config,
+                    )
+                    if not recognition.board_detected:
+                        non_board_rejected_count += 1
+                        continue
+                    candidate_payload = _scan_chess_fen_payload(candidate, recognition)
+                else:
+                    candidate_payload = _scan_chess_candidate_review_payload(candidate)
+                marker_side = _infer_scan_chess_side_to_move(
+                    page_image,
+                    tuple(float(value) for value in recognition_bbox),
+                )
+                if marker_side and bool(getattr(config, "chess_fen_apply_side_marker", False)):
+                    candidate_payload = _apply_scan_chess_side_to_move_marker(candidate_payload, marker_side)
+                diagram_total += 1
+                chess_img = {
+                    "filename": filename,
+                    "data": png_data,
+                    "extension": "png",
+                    "width": width,
+                    "height": height,
+                    "bbox": tuple(float(value) for value in bbox),
+                    "page": page_num,
+                    "is_chess": True,
+                    "inline": True,
+                    "fen_result": candidate_payload,
+                    "fen_confidence": candidate_payload.get("confidence", 0.0),
+                    "fen_method": candidate_payload.get("method", ""),
+                }
+                if candidate_payload.get("fen"):
+                    chess_img["fen"] = candidate_payload["fen"]
+                    page_fen_values.append(str(candidate_payload["fen"]))
+                chapter_images.append(chess_img)
+                all_images.append(chess_img)
+                chess_fen_records.append(
+                    {
+                        "page": page_num + 1,
+                        "filename": filename,
+                        "source": "scanned-page-board-crop",
+                        **candidate_payload,
+                    }
+                )
+                fen_attrs = chess_fen_html_attrs(chess_img)
+                fen_value = str(candidate_payload.get("fen") or "").strip()
+                if fen_value:
+                    fen_note = (
+                        '<p class="diagram-fen">'
+                        '<span class="diagram-fen-label">FEN:</span> '
+                        f'<code class="diagram-fen-code">{html_module.escape(fen_value)}</code>'
+                        "</p>"
+                    )
+                elif bool(getattr(config, "chess_fen_emit_review_notes", False)):
+                    fen_note = (
+                        '<p class="diagram-fen diagram-review" data-fen-status="requires-review">'
+                        "FEN: wymaga review - brak deterministycznej pewnosci figur."
+                        "</p>"
+                    )
+                else:
+                    fen_note = ""
+                html_parts.append(
+                    '<div class="chess-problem">'
+                    f'<p class="diagram-caption">Strona {page_num + 1}, diagram {candidate_index}</p>'
+                    f'<div class="figure chess-diagram-container"{fen_attrs}>'
+                    f'<img class="chess-diagram" src="images/{html_module.escape(filename, quote=True)}" '
+                    f'alt="{html_module.escape(chess_diagram_alt_text(chess_img), quote=True)}"{fen_attrs}/>'
+                    '</div>'
+                    f"{fen_note}"
+                    "</div>"
+                )
+
+            if page_pgn_records:
+                page_pgn_records = attach_fen_candidates_to_pgn_records(page_pgn_records, page_fen_values)
+                chess_pgn_records.extend(page_pgn_records)
+                html_parts.extend(
+                    render_chess_pgn_html_parts(
+                        page_pgn_records,
+                        download_href="",
+                    )
+                )
+
+            if chapter_images:
+                chapters.append(
+                    {
+                        "title": f"Strona {page_num + 1} - diagramy szachowe",
+                        "html_parts": html_parts,
+                        "images": chapter_images,
+                        "page_num": page_num,
+                        "_page_start": page_num,
+                        "_page_end": page_num,
+                        "_source_page_label": str(page_num + 1),
+                        "_fallback_mode": "scan-chess-crop-review",
+                        "inline_chess_diagrams": True,
+                    }
+                )
+
+        if not chapters:
+            chapters.append(
+                {
+                    "title": "Skan szachowy - review",
+                    "html_parts": [
+                        "<p>Nie wykryto wystarczająco pewnych kandydatów plansz. Plik wymaga manualnego review lub mocniejszej segmentacji.</p>"
+                    ],
+                    "images": [],
+                    "page_num": 0,
+                    "_page_start": 0,
+                    "_page_end": 0,
+                    "_fallback_mode": "scan-chess-no-board-candidates",
+                }
+            )
+
+        toc = [(1, chapter["title"], index + 1) for index, chapter in enumerate(chapters) if chapter.get("title")]
+        manual_review_count = len([record for record in chess_fen_records if record.get("requires_review")])
+        chess_pgn_summary = summarize_chess_pgn_records(chess_pgn_records)
+        ocr_quality = {
+            "status": "passed_with_warnings",
+            "quality_gate_status": "passed_with_warnings",
+            "reason_codes": [
+                "selective_ocr_text" if selective_ocr_summary.get("processed_page_count") else "selective_ocr_not_available",
+                "scan_chess_crop_review",
+            ],
+            "fallback_reason": "scan_chess_crop_review",
+            "message": "Premium scan-chess cropped board regions and added selective OCR text for notation review.",
+            "manual_review_count": manual_review_count,
+            "scanned_page_count": len(doc),
+            "processed_page_count": len(page_candidates),
+            "raw_candidate_count": raw_candidate_total,
+            "diagram_crop_count": diagram_total,
+            "non_board_rejected_count": non_board_rejected_count,
+            "selective_ocr": selective_ocr_summary,
+        }
+        metadata.update(
+            {
+                **front_matter_metadata,
+                "source_page_count": len(doc),
+                "detected_outline_entries": len(doc.get_toc()),
+                "figure_summary": {
+                    "scan_chess_page_count": len(page_candidates),
+                    "raw_candidate_count": raw_candidate_total,
+                    "diagram_crop_count": diagram_total,
+                    "non_board_rejected_count": non_board_rejected_count,
+                },
+                "chess_fen": summarize_chess_fen_results(chess_fen_records),
+                "ocr_quality": ocr_quality,
+                "reading_flow": {
+                    "status": "passed_with_warnings",
+                    "mode": "scan_chess_crops",
+                    "full_page_images_included": False,
+                },
+                "chess_pgn": chess_pgn_summary,
+            }
+        )
+        extra_artifacts = _scan_chess_pgn_extra_artifacts(
+            chess_pgn_records,
+            source_title=str(metadata.get("title") or Path(pdf_path).stem),
+        )
+        return {
+            "success": True,
+            "method": "premium-scanned-chess-reflow",
+            "text_content": True,
+            "layout_mode": "reflowable",
+            "chapters": chapters,
+            "images": all_images,
+            "extra_artifacts": extra_artifacts,
+            "toc": toc,
+            "metadata": metadata,
+            "suppress_auto_cover": True,
+            "audit": {
+                "status": "passed_with_warnings",
+                "elapsed_seconds": round(time.perf_counter() - started, 4),
+                "scan_chess": {
+                    "cache_enabled": bool(getattr(config, "scanned_chess_cache_enabled", True)),
+                    "page_count": len(doc),
+                    "pages_with_candidates": len(page_candidates),
+                    "raw_candidate_count": raw_candidate_total,
+                    "non_board_rejected_count": non_board_rejected_count,
+                    "diagram_crop_count": diagram_total,
+                    "fen_count": len([record for record in chess_fen_records if record.get("fen")]),
+                    "pgn_count": int(chess_pgn_summary.get("valid_pgn_count", 0) or 0),
+                    "pgn_candidate_count": int(chess_pgn_summary.get("candidate_game_count", 0) or 0),
+                    "manual_review_count": manual_review_count,
+                },
+            },
+        }
+    finally:
+        doc.close()
+
+
+def _scan_chess_page_candidates(
+    pdf_path: str,
+    doc: fitz.Document,
+    config: ConversionConfig,
+    *,
+    piece_templates: dict | None = None,
+) -> list[dict[str, Any]]:
+    cache_path = _scan_chess_cache_path(pdf_path)
+    max_pages = int(getattr(config, "scanned_chess_max_pages", 0) or 0)
+    page_limit = len(doc) if max_pages <= 0 else min(len(doc), max_pages)
+    max_candidates = max(1, int(getattr(config, "chess_fen_scan_candidates_per_page", 3) or 3))
+    min_confidence = float(getattr(config, "scanned_chess_min_grid_confidence", 0.50) or 0.50)
+    template_dir = _resolve_chess_piece_template_dir(config) if piece_templates else ""
+    cache_key = {
+        "version": SCAN_CHESS_PAGE_CANDIDATE_CACHE_VERSION,
+        "page_limit": page_limit,
+        "max_candidates": max_candidates,
+        "min_grid_confidence": round(min_confidence, 4),
+        "template_token": _scan_chess_template_cache_token(template_dir) if piece_templates else "",
+    }
+    cache_enabled = bool(getattr(config, "scanned_chess_cache_enabled", True))
+    processed_page_nums: set[int] = set()
+    pages_by_num: dict[int, dict[str, Any]] = {}
+    if bool(getattr(config, "scanned_chess_cache_enabled", True)) and cache_path.exists():
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            if cached.get("cache_key") == cache_key:
+                cached_pages = list(cached.get("pages", []) or [])
+                if cached.get("complete", True):
+                    return cached_pages
+                for record in cached_pages:
+                    try:
+                        page_num = int(record.get("page_num"))
+                    except Exception:
+                        continue
+                    pages_by_num[page_num] = record
+                processed_page_nums = {
+                    int(page_num)
+                    for page_num in (cached.get("processed_page_nums") or [])
+                    if isinstance(page_num, int) or str(page_num).isdigit()
+                }
+                processed_page_nums.update(pages_by_num)
+        except Exception:
+            pass
+
+    # Grid confidence alone ranks many partial or coordinate-shifted boards
+    # above complete boards. Probe a wider pool, then keep the expensive
+    # recognition ranking adaptive: ordinary pages usually need only a few
+    # candidates, while exercise grids such as 2x3 pages need all visible boards.
+    detection_pool_size = max_candidates
+    if piece_templates:
+        detection_pool_size = max(max_candidates, min(max_candidates * 2, max_candidates + 4))
+    for page_num in range(page_limit):
+        if page_num in processed_page_nums:
+            continue
+        try:
+            image_data = _page_image_data_for_scan_chess(doc, page_num)
+            candidates = detect_board_candidates_in_page_image(
+                image_data,
+                max_candidates=detection_pool_size,
+                min_grid_confidence=min_confidence,
+                enable_sliding_probe=False,
+            )
+        except Exception:
+            candidates = []
+        candidates = [
+            candidate
+            for candidate in candidates
+            if candidate.board_detected and candidate.bbox
+        ]
+        page_candidate_limit = _scan_chess_effective_page_candidate_limit(candidates, max_candidates)
+        if piece_templates and candidates:
+            recognition_pool_size = _scan_chess_recognition_pool_size(
+                page_candidate_limit,
+                max_candidates=max_candidates,
+            )
+            candidates = _rank_scan_chess_page_candidates_by_recognition(
+                image_data,
+                candidates[:recognition_pool_size],
+                config=config,
+                piece_templates=piece_templates,
+            )
+        else:
+            candidates = sorted(candidates, key=lambda item: item.confidence, reverse=True)
+        candidates = candidates[:page_candidate_limit]
+        processed_page_nums.add(page_num)
+        if candidates:
+            pages_by_num[page_num] = {"page_num": page_num, "candidates": [candidate.to_dict() for candidate in candidates]}
+        if cache_enabled and (page_num % 5 == 0 or candidates):
+            _write_scan_chess_page_candidate_cache(
+                cache_path,
+                cache_key=cache_key,
+                pages_by_num=pages_by_num,
+                processed_page_nums=processed_page_nums,
+                complete=False,
+            )
+        if not candidates:
+            continue
+
+    pages = [pages_by_num[page_num] for page_num in sorted(pages_by_num)]
+    if cache_enabled:
+        _write_scan_chess_page_candidate_cache(
+            cache_path,
+            cache_key=cache_key,
+            pages_by_num=pages_by_num,
+            processed_page_nums=processed_page_nums,
+            complete=True,
+        )
+    return pages
+
+
+def _write_scan_chess_page_candidate_cache(
+    cache_path: Path,
+    *,
+    cache_key: dict[str, Any],
+    pages_by_num: dict[int, dict[str, Any]],
+    processed_page_nums: set[int],
+    complete: bool,
+) -> None:
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        pages = [pages_by_num[page_num] for page_num in sorted(pages_by_num)]
+        cache_path.write_text(
+            json.dumps(
+                {
+                    "cache_key": cache_key,
+                    "complete": bool(complete),
+                    "processed_page_nums": sorted(processed_page_nums),
+                    "pages": pages,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+def _scan_chess_effective_page_candidate_limit(candidates: list, max_candidates: int) -> int:
+    """Return how many page candidates should survive for final scan processing.
+
+    The runtime default allows six boards so multi-exercise pages are not
+    truncated, but ranking every page as if it had six real boards is expensive.
+    Use cheap geometry to detect regular board grids; keep the wider limit only
+    when the page actually looks like a multi-diagram exercise layout.
+    """
+    max_candidates = max(1, int(max_candidates or 1))
+    base_limit = min(3, max_candidates)
+    boxes = [_scan_chess_candidate_bbox(candidate) for candidate in candidates]
+    boxes = [box for box in boxes if box is not None]
+    if len(boxes) <= base_limit or max_candidates <= base_limit:
+        return min(max_candidates, max(1, len(boxes) or len(candidates) or base_limit))
+
+    sizes = [min(box[2] - box[0], box[3] - box[1]) for box in boxes if box[2] > box[0] and box[3] > box[1]]
+    if not sizes:
+        return base_limit
+    median_size = sorted(sizes)[len(sizes) // 2]
+    if median_size < 80:
+        return base_limit
+    comparable_boxes = [
+        box
+        for box in boxes
+        if 0.65 * median_size <= min(box[2] - box[0], box[3] - box[1]) <= 1.45 * median_size
+    ]
+    if len(comparable_boxes) < 4:
+        return base_limit
+
+    tolerance = max(40.0, median_size * 0.70)
+    x_clusters = _scan_chess_cluster_count(
+        [(box[0] + box[2]) / 2.0 for box in comparable_boxes],
+        tolerance=tolerance,
+    )
+    y_clusters = _scan_chess_cluster_count(
+        [(box[1] + box[3]) / 2.0 for box in comparable_boxes],
+        tolerance=tolerance,
+    )
+    grid_cells = x_clusters * y_clusters
+    if x_clusters >= 2 and y_clusters >= 3 and len(comparable_boxes) >= 5:
+        return min(max_candidates, max(6, min(len(comparable_boxes), grid_cells)))
+    if x_clusters >= 2 and y_clusters >= 2:
+        return min(max_candidates, max(4, min(len(comparable_boxes), grid_cells)))
+    if max(x_clusters, y_clusters) >= 4:
+        return min(max_candidates, 4)
+    return base_limit
+
+
+def _scan_chess_recognition_pool_size(page_candidate_limit: int, *, max_candidates: int) -> int:
+    page_candidate_limit = max(1, int(page_candidate_limit or 1))
+    max_candidates = max(1, int(max_candidates or 1))
+    if page_candidate_limit >= max_candidates:
+        return max(max_candidates, min(max_candidates * 2, max_candidates + 4))
+    return min(max_candidates, page_candidate_limit + 1)
+
+
+def _scan_chess_candidate_bbox(candidate) -> tuple[float, float, float, float] | None:
+    bbox = getattr(candidate, "bbox", None)
+    if bbox is None and isinstance(candidate, dict):
+        bbox = candidate.get("bbox")
+    if not bbox or len(bbox) != 4:
+        return None
+    try:
+        x0, y0, x1, y1 = (float(value) for value in bbox)
+    except (TypeError, ValueError):
+        return None
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return (x0, y0, x1, y1)
+
+
+def _scan_chess_cluster_count(values: list[float], *, tolerance: float) -> int:
+    if not values:
+        return 0
+    clusters: list[list[float]] = []
+    for value in sorted(values):
+        if not clusters or abs(value - (sum(clusters[-1]) / len(clusters[-1]))) > tolerance:
+            clusters.append([value])
+        else:
+            clusters[-1].append(value)
+    return len(clusters)
+
+
+def _scan_chess_template_cache_token(template_dir: str) -> str:
+    if not template_dir:
+        return ""
+    root = Path(template_dir)
+    if not root.exists() or not root.is_dir():
+        return str(template_dir)
+    try:
+        parts = []
+        for path in sorted(root.iterdir()):
+            if not path.is_file() or path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp", ".json"}:
+                continue
+            stat = path.stat()
+            parts.append(f"{path.name}:{stat.st_size}:{stat.st_mtime_ns}")
+        return hashlib.sha256("|".join(parts).encode("utf-8", errors="ignore")).hexdigest()[:16]
+    except OSError:
+        return str(template_dir)
+
+
+def _prefer_scan_chess_recognition_result(raw_result, reader_result):
+    """Choose the strongest deterministic result across raw and reader crops."""
+    def score(result) -> tuple[int, int, float]:
+        return (
+            1 if getattr(result, "fen", "") else 0,
+            1 if getattr(result, "board_detected", False) and not getattr(result, "requires_review", True) else 0,
+            float(getattr(result, "confidence", 0.0) or 0.0),
+        )
+
+    return reader_result if score(reader_result) > score(raw_result) else raw_result
+
+
+def _rank_scan_chess_page_candidates_by_recognition(
+    image_data: bytes,
+    candidates: list,
+    *,
+    config: ConversionConfig,
+    piece_templates: dict,
+) -> list:
+    try:
+        page_image = Image.open(io.BytesIO(image_data)).convert("RGB")
+    except Exception:
+        return candidates
+    min_confidence = float(getattr(config, "chess_fen_min_confidence", 0.85) or 0.85)
+    multi_diagram_grid = _scan_chess_effective_page_candidate_limit(
+        candidates,
+        max_candidates=max(6, len(candidates)),
+    ) >= 4
+    ranked = []
+    for order, candidate in enumerate(candidates):
+        if not candidate.bbox:
+            ranked.append(((0, 0, candidate.confidence, -order), candidate, None))
+            continue
+        if min(abs(float(candidate.bbox[2]) - float(candidate.bbox[0])), abs(float(candidate.bbox[3]) - float(candidate.bbox[1]))) < 80:
+            ranked.append(((0, 0, candidate.confidence, -order), candidate, None))
+            continue
+        try:
+            recognition = _recognize_scan_chess_candidate_bbox(
+                page_image,
+                candidate.bbox,
+                config=config,
+                piece_templates=piece_templates,
+                min_confidence=min_confidence,
+                allow_reader_visible_crop_rescue=False,
+            )
+            candidate_method = str(getattr(candidate, "method", "") or "")
+            if candidate_method == "image-page-board-border-refined" and _scan_chess_recognition_needs_bbox_recovery(recognition):
+                recovered = _recover_expanded_scan_chess_candidate(
+                    page_image,
+                    candidate,
+                    config=config,
+                    piece_templates=piece_templates,
+                    min_confidence=min_confidence,
+                )
+                if recovered is not None:
+                    candidate, recognition = recovered
+            allow_shift_recovery = candidate_method not in {
+                "image-page-board-border",
+                "image-page-board-border-refined",
+            } and not multi_diagram_grid
+            if allow_shift_recovery and _scan_chess_recognition_needs_bbox_recovery(recognition):
+                recovered = _recover_shifted_scan_chess_candidate(
+                    page_image,
+                    candidate,
+                    config=config,
+                    piece_templates=piece_templates,
+                    min_confidence=min_confidence,
+                )
+                if recovered is not None:
+                    candidate, recognition = recovered
+        except Exception:
+            ranked.append(((0, 0, candidate.confidence, -order), candidate, None))
+            continue
+        has_fen = 1 if recognition.fen else 0
+        accepted = 1 if recognition.board_detected and not recognition.requires_review else 0
+        ranked.append(((has_fen, accepted, recognition.confidence, candidate.confidence, -order), candidate, recognition))
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    deduped = []
+    for _, candidate, recognition in ranked:
+        if (
+            str(getattr(candidate, "method", "")) == "image-page-board-border"
+            and not getattr(recognition, "fen", "")
+        ):
+            continue
+        if candidate.bbox and any(
+            existing.bbox and _bbox_overlap_ratio(candidate.bbox, existing.bbox) > 0.55
+            for existing in deduped
+        ):
+            continue
+        deduped.append(candidate)
+    return deduped
+
+
+def _recognize_scan_chess_candidate_bbox(
+    page_image: Image.Image,
+    bbox: tuple[float, float, float, float],
+    *,
+    config: ConversionConfig,
+    piece_templates: dict,
+    min_confidence: float,
+    allow_reader_visible_crop_rescue: bool = True,
+    reader_bbox: tuple[float, float, float, float] | None = None,
+):
+    clamped = _clamp_bbox(bbox, page_image.size, pad_ratio=0.0, min_pad=0.0)
+    if clamped is None:
+        return empty_chess_fen_result(method="image-template-board", warning="candidate_bbox_out_of_bounds", bbox=bbox)
+    crop = page_image.crop(clamped)
+    output = io.BytesIO()
+    crop.save(output, format="PNG")
+    recognition = _recognize_scan_chess_crop_with_cache(
+        output.getvalue(),
+        bbox=bbox,
+        min_confidence=min_confidence,
+        piece_templates=piece_templates,
+    )
+    if (
+        getattr(recognition, "fen", "")
+        and not getattr(recognition, "requires_review", True)
+        and float(getattr(recognition, "confidence", 0.0) or 0.0) >= max(0.90, min_confidence + 0.15)
+    ):
+        return recognition
+    if not allow_reader_visible_crop_rescue or not _scan_chess_recognition_needs_bbox_recovery(recognition):
+        return recognition
+
+    # The reader-visible EPUB image is generated from a lightly padded bbox.
+    # Use that exact prepared crop as the second deterministic probe; otherwise
+    # a clipped raw bbox can miss edge kings while the published image clearly
+    # contains them.
+    reader_clamped = (
+        _clamp_bbox(reader_bbox, page_image.size, pad_ratio=0.0, min_pad=0.0)
+        if reader_bbox is not None
+        else _clamp_bbox(bbox, page_image.size)
+    )
+    if reader_clamped is None:
+        return recognition
+    reader_crop = page_image.crop(reader_clamped)
+    reader_data, _, _ = _encode_scan_chess_diagram_crop(reader_crop, config)
+    reader_recognition = _recognize_scan_chess_crop_with_cache(
+        reader_data,
+        bbox=tuple(float(value) for value in reader_clamped),
+        min_confidence=min_confidence,
+        piece_templates=piece_templates,
+    )
+    if _scan_chess_reader_visible_crop_publish_is_safe(
+        recognition,
+        reader_recognition,
+        min_confidence=min_confidence,
+    ):
+        return _scan_chess_result_with_warning(reader_recognition, "reader_visible_crop_fen_used")
+    sparse_consensus = _scan_chess_sparse_exact_consensus_result(
+        recognition,
+        reader_recognition,
+        min_confidence=min_confidence,
+        warning="reader_visible_crop_sparse_consensus_fen_used",
+    )
+    if sparse_consensus is not None:
+        return sparse_consensus
+    return recognition
+
+
+def _recognize_scan_chess_crop_with_cache(
+    crop_bytes: bytes,
+    *,
+    bbox: tuple[float, float, float, float],
+    min_confidence: float,
+    piece_templates: dict,
+):
+    cache_path = _scan_chess_recognition_cache_path(
+        crop_bytes,
+        bbox=bbox,
+        min_confidence=min_confidence,
+        piece_templates=piece_templates,
+    )
+    try:
+        if cache_path.exists():
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            if cached.get("version") == SCAN_CHESS_RECOGNITION_CACHE_VERSION:
+                return _scan_chess_result_from_dict(cached.get("result") or {})
+    except Exception:
+        pass
+    recognition = recognize_chess_position_from_image(
+        crop_bytes,
+        bbox=bbox,
+        min_confidence=min_confidence,
+        piece_templates=piece_templates,
+    )
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(
+            json.dumps(
+                {
+                    "version": SCAN_CHESS_RECOGNITION_CACHE_VERSION,
+                    "result": recognition.to_dict(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+    return recognition
+
+
+def _scan_chess_confirm_final_rendered_crop_recognition(
+    recognition,
+    crop_bytes: bytes,
+    *,
+    bbox: tuple[float, float, float, float],
+    piece_templates: dict,
+    min_confidence: float,
+):
+    """Confirm uncertain raw recognition against the exact PNG written to EPUB."""
+    if not _scan_chess_recognition_needs_bbox_recovery(recognition):
+        return recognition
+    final_recognition = _recognize_scan_chess_crop_with_cache(
+        crop_bytes,
+        bbox=bbox,
+        min_confidence=min_confidence,
+        piece_templates=piece_templates,
+    )
+    if _scan_chess_reader_visible_crop_publish_is_safe(
+        recognition,
+        final_recognition,
+        min_confidence=min_confidence,
+    ):
+        return _scan_chess_result_with_warning(final_recognition, "final_rendered_crop_fen_used")
+    sparse_consensus = _scan_chess_sparse_exact_consensus_result(
+        recognition,
+        final_recognition,
+        min_confidence=min_confidence,
+        warning="final_rendered_crop_sparse_consensus_fen_used",
+    )
+    if sparse_consensus is not None:
+        return sparse_consensus
+    return recognition
+
+
+def _scan_chess_recognition_cache_path(
+    crop_bytes: bytes,
+    *,
+    bbox: tuple[float, float, float, float],
+    min_confidence: float,
+    piece_templates: dict,
+) -> Path:
+    rounded_bbox = ",".join(f"{float(value):.2f}" for value in bbox)
+    token = "|".join(
+        [
+            str(SCAN_CHESS_RECOGNITION_CACHE_VERSION),
+            _piece_templates_runtime_token(piece_templates),
+            f"{float(min_confidence):.3f}",
+            rounded_bbox,
+            hashlib.sha256(crop_bytes).hexdigest(),
+        ]
+    )
+    digest = hashlib.sha256(token.encode("utf-8", errors="ignore")).hexdigest()[:24]
+    return Path("output") / "cache" / "scanned_chess" / "recognition" / f"{digest}.json"
+
+
+def _piece_templates_runtime_token(piece_templates: dict) -> str:
+    cache_key = id(piece_templates)
+    cached = _PIECE_TEMPLATE_RUNTIME_TOKENS.get(cache_key)
+    if cached:
+        return cached
+    digest = hashlib.sha256()
+    try:
+        for label in sorted(piece_templates):
+            templates = piece_templates.get(label) or []
+            digest.update(str(label).encode("utf-8", errors="ignore"))
+            digest.update(str(len(templates)).encode("ascii", errors="ignore"))
+            for template in templates:
+                digest.update(str(getattr(template, "mode", "")).encode("ascii", errors="ignore"))
+                digest.update(str(getattr(template, "size", "")).encode("ascii", errors="ignore"))
+                try:
+                    digest.update(hashlib.sha1(template.tobytes()).hexdigest().encode("ascii"))
+                except Exception:
+                    digest.update(repr(template).encode("utf-8", errors="ignore"))
+    except Exception:
+        digest.update(repr(sorted(piece_templates)).encode("utf-8", errors="ignore"))
+    token = digest.hexdigest()[:16]
+    _PIECE_TEMPLATE_RUNTIME_TOKENS[cache_key] = token
+    return token
+
+
+def _scan_chess_result_from_dict(data: dict[str, Any]):
+    bbox_value = data.get("bbox")
+    bbox: tuple[float, float, float, float] | None = None
+    if isinstance(bbox_value, (list, tuple)) and len(bbox_value) == 4:
+        try:
+            bbox = tuple(float(value) for value in bbox_value)  # type: ignore[assignment]
+        except Exception:
+            bbox = None
+    return ChessFenResult(
+        fen=str(data.get("fen") or ""),
+        placement=str(data.get("placement") or ""),
+        confidence=float(data.get("confidence", 0.0) or 0.0),
+        side_to_move=str(data.get("side_to_move") or "w"),
+        bbox=bbox,
+        method=str(data.get("method") or "image-template-board"),
+        warnings=list(data.get("warnings") or []),
+        requires_review=bool(data.get("requires_review", True)),
+        board_detected=bool(data.get("board_detected", False)),
+        squares=[dict(square) for square in (data.get("squares") or []) if isinstance(square, dict)],
+    )
+
+
+def _scan_chess_apply_verified_crop_label(
+    recognition,
+    crop_bytes: bytes,
+    *,
+    bbox: tuple[float, float, float, float],
+    config: ConversionConfig,
+):
+    """Publish a FEN only when this exact crop has a verified label."""
+    if getattr(recognition, "fen", "") and not getattr(recognition, "requires_review", True):
+        return recognition
+    labels_path = _resolve_chess_verified_crop_labels_path(config)
+    if not labels_path:
+        return recognition
+    labels = _load_verified_crop_labels(labels_path)
+    if not labels:
+        return recognition
+    digest = hashlib.sha256(crop_bytes).hexdigest()
+    label = labels.get(digest)
+    if not label:
+        return recognition
+    fen = str(label.get("fen") or "").strip()
+    valid, fen_warnings = validate_fen(fen)
+    if not valid:
+        return recognition
+    placement = fen.split()[0]
+    side_to_move = fen.split()[1] if len(fen.split()) >= 2 else "w"
+    carried_warnings = {
+        str(warning)
+        for warning in (getattr(recognition, "warnings", []) or [])
+        if str(warning) == "side_to_move_inferred"
+    }
+    warnings = sorted({*carried_warnings, *fen_warnings, "verified_exact_crop_label_used"})
+    return ChessFenResult(
+        fen=fen,
+        placement=placement,
+        confidence=1.0,
+        side_to_move=side_to_move,
+        bbox=bbox,
+        method="verified-exact-crop-label",
+        warnings=warnings,
+        requires_review=False,
+        board_detected=True,
+        squares=[],
+    )
+
+
+def _load_verified_crop_labels(labels_path: str | Path) -> dict[str, dict[str, Any]]:
+    path = Path(labels_path)
+    try:
+        stat = path.stat()
+    except OSError:
+        return {}
+    key = (str(path.resolve()), int(stat.st_mtime_ns), int(stat.st_size))
+    cached = _VERIFIED_CROP_LABEL_CACHE.get(key)
+    if cached is not None:
+        return cached
+    labels: dict[str, dict[str, Any]] = {}
+    try:
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+    except OSError:
+        return {}
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        digest = str(record.get("sha256") or "").strip().lower()
+        fen = str(record.get("fen") or "").strip()
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            continue
+        valid, _warnings = validate_fen(fen)
+        if not valid:
+            continue
+        labels[digest] = record
+    _VERIFIED_CROP_LABEL_CACHE.clear()
+    _VERIFIED_CROP_LABEL_CACHE[key] = labels
+    return labels
+
+
+def _scan_chess_recognition_needs_bbox_recovery(recognition) -> bool:
+    if getattr(recognition, "fen", "") and not getattr(recognition, "requires_review", True):
+        return False
+    if not getattr(recognition, "board_detected", False):
+        return False
+    warnings = set(getattr(recognition, "warnings", []) or [])
+    return any(str(warning).endswith("king_count_invalid") for warning in warnings) or (
+        "sparse_position_confidence_below_threshold" in warnings
+    )
+
+
+def _scan_chess_reader_crop_king_rescue_is_safe(raw_result, reader_result) -> bool:
+    """Allow reader-crop rescue only when it adds one missing king.
+
+    Padded reader crops can include edge pieces that raw board crops clipped,
+    but they can also pull in coordinate or caption artifacts. Keep this rescue
+    deliberately narrow: it may publish only if the accepted reader result
+    differs from the raw placement by exactly one empty square becoming the
+    single missing king.
+    """
+    if not getattr(reader_result, "fen", "") or getattr(reader_result, "requires_review", True):
+        return False
+    raw_cells = _scan_chess_expand_placement(str(getattr(raw_result, "placement", "") or ""))
+    reader_cells = _scan_chess_expand_placement(str(getattr(reader_result, "placement", "") or ""))
+    if raw_cells is None or reader_cells is None:
+        return False
+
+    missing_kings: list[str] = []
+    for king in ("K", "k"):
+        count = raw_cells.count(king)
+        if count == 0:
+            missing_kings.append(king)
+        elif count != 1:
+            return False
+    if len(missing_kings) != 1:
+        return False
+
+    missing_king = missing_kings[0]
+    other_king = "k" if missing_king == "K" else "K"
+    if reader_cells.count(missing_king) != 1 or reader_cells.count(other_king) != 1:
+        return False
+
+    diffs = [index for index, (raw, reader) in enumerate(zip(raw_cells, reader_cells)) if raw != reader]
+    if len(diffs) != 1:
+        return False
+    diff_index = diffs[0]
+    return raw_cells[diff_index] == "" and reader_cells[diff_index] == missing_king
+
+
+def _scan_chess_reader_visible_crop_publish_is_safe(raw_result, reader_result, *, min_confidence: float) -> bool:
+    """Allow FEN from the exact reader crop when the raw bbox clipped pieces.
+
+    Raw detector boxes can sit a few pixels inside the board, especially on
+    dense 2x3 exercise pages. The EPUB, however, shows the lightly padded reader
+    crop. If that exact displayed crop deterministically recognizes a valid
+    board, publishing its FEN is safer than preserving a raw clipped review.
+    """
+    if not getattr(raw_result, "board_detected", False):
+        return False
+    raw_warnings = {str(warning) for warning in (getattr(raw_result, "warnings", []) or [])}
+    if not getattr(reader_result, "fen", "") or getattr(reader_result, "requires_review", True):
+        return False
+    if not getattr(reader_result, "board_detected", False):
+        return False
+    confidence = float(getattr(reader_result, "confidence", 0.0) or 0.0)
+    if confidence < max(float(min_confidence or 0.0), 0.80):
+        return False
+
+    if "sparse_position_confidence_below_threshold" in raw_warnings and not any(
+        warning.endswith("king_count_invalid") for warning in raw_warnings
+    ):
+        if confidence < max(float(min_confidence or 0.0), 0.83):
+            return False
+        raw_cells = _scan_chess_expand_placement(str(getattr(raw_result, "placement", "") or ""))
+        reader_cells = _scan_chess_expand_placement(str(getattr(reader_result, "placement", "") or ""))
+        if raw_cells is None or reader_cells is None:
+            return False
+        if raw_cells == reader_cells:
+            return True
+        return (
+            confidence >= max(float(min_confidence or 0.0), 0.835)
+            and _scan_chess_reader_cells_extend_raw_without_conflict(raw_cells, reader_cells)
+        )
+
+    if not any(warning.endswith("king_count_invalid") for warning in raw_warnings):
+        return False
+    return True
+
+
+def _scan_chess_sparse_exact_consensus_result(
+    raw_result,
+    reader_result,
+    *,
+    min_confidence: float,
+    warning: str,
+) -> ChessFenResult | None:
+    """Promote only sparse positions that agree across raw and visible crops."""
+    if not getattr(raw_result, "board_detected", False) or not getattr(reader_result, "board_detected", False):
+        return None
+    raw_warnings = {str(warning) for warning in (getattr(raw_result, "warnings", []) or [])}
+    reader_warnings = {str(warning) for warning in (getattr(reader_result, "warnings", []) or [])}
+    if "sparse_position_confidence_below_threshold" not in raw_warnings:
+        return None
+    if any(warning.endswith("king_count_invalid") for warning in raw_warnings | reader_warnings):
+        return None
+    if "piece_template_confidence_below_threshold" in raw_warnings | reader_warnings:
+        return None
+
+    raw_cells = _scan_chess_expand_placement(str(getattr(raw_result, "placement", "") or ""))
+    reader_cells = _scan_chess_expand_placement(str(getattr(reader_result, "placement", "") or ""))
+    if raw_cells is None or reader_cells is None or raw_cells != reader_cells:
+        return None
+    if raw_cells.count("K") != 1 or raw_cells.count("k") != 1:
+        return None
+    piece_count = sum(1 for cell in raw_cells if cell)
+    if piece_count < SCAN_CHESS_SPARSE_EXACT_CONSENSUS_MIN_PIECES:
+        return None
+    if piece_count > SCAN_CHESS_SPARSE_EXACT_CONSENSUS_MAX_PIECES:
+        return None
+
+    raw_confidence = float(getattr(raw_result, "confidence", 0.0) or 0.0)
+    reader_confidence = float(getattr(reader_result, "confidence", 0.0) or 0.0)
+    if raw_confidence < max(float(min_confidence or 0.0), 0.80):
+        return None
+    if reader_confidence < max(float(min_confidence or 0.0), SCAN_CHESS_SPARSE_EXACT_CONSENSUS_MIN_CONFIDENCE):
+        return None
+
+    placement = str(getattr(raw_result, "placement", "") or "").strip()
+    side_to_move = str(getattr(raw_result, "side_to_move", "") or getattr(reader_result, "side_to_move", "") or "w")
+    fen = f"{placement} {side_to_move} - - 0 1"
+    valid, fen_warnings = validate_fen(fen)
+    if not valid:
+        return None
+
+    warnings = sorted(
+        {
+            *raw_warnings,
+            *reader_warnings,
+            *fen_warnings,
+            "sparse_exact_crop_consensus",
+            warning,
+        }
+    )
+    return ChessFenResult(
+        fen=fen,
+        placement=placement,
+        confidence=max(raw_confidence, reader_confidence),
+        side_to_move=side_to_move,
+        bbox=getattr(reader_result, "bbox", None) or getattr(raw_result, "bbox", None),
+        method=str(getattr(reader_result, "method", "") or getattr(raw_result, "method", "") or "image-template-board"),
+        warnings=warnings,
+        requires_review=False,
+        board_detected=True,
+        squares=[dict(square) for square in (getattr(reader_result, "squares", []) or []) if isinstance(square, dict)],
+    )
+
+
+def _scan_chess_reader_cells_extend_raw_without_conflict(raw_cells: list[str], reader_cells: list[str]) -> bool:
+    added = 0
+    for raw_cell, reader_cell in zip(raw_cells, reader_cells):
+        if raw_cell == reader_cell:
+            continue
+        if raw_cell == "" and reader_cell:
+            added += 1
+            continue
+        return False
+    return 0 < added <= 4
+
+
+def _scan_chess_expand_placement(placement_or_fen: str) -> list[str] | None:
+    placement = str(placement_or_fen or "").split()[0]
+    rows = placement.split("/")
+    if len(rows) != 8:
+        return None
+    cells: list[str] = []
+    for row in rows:
+        row_cells: list[str] = []
+        for char in row:
+            if char.isdigit():
+                row_cells.extend([""] * int(char))
+            elif char.isalpha():
+                row_cells.append(char)
+            else:
+                return None
+        if len(row_cells) != 8:
+            return None
+        cells.extend(row_cells)
+    return cells
+
+
+def _scan_chess_result_with_warning(result, warning: str):
+    warnings = sorted(set([*list(getattr(result, "warnings", []) or []), warning]))
+    return ChessFenResult(
+        fen=str(getattr(result, "fen", "") or ""),
+        placement=str(getattr(result, "placement", "") or ""),
+        confidence=float(getattr(result, "confidence", 0.0) or 0.0),
+        side_to_move=str(getattr(result, "side_to_move", "w") or "w"),
+        bbox=getattr(result, "bbox", None),
+        method=str(getattr(result, "method", "") or "image-template-board"),
+        warnings=warnings,
+        requires_review=bool(getattr(result, "requires_review", True)),
+        board_detected=bool(getattr(result, "board_detected", False)),
+        squares=[dict(square) for square in (getattr(result, "squares", []) or []) if isinstance(square, dict)],
+    )
+
+
+def _recover_shifted_scan_chess_candidate(
+    page_image: Image.Image,
+    candidate,
+    *,
+    config: ConversionConfig,
+    piece_templates: dict,
+    min_confidence: float,
+):
+    if not candidate.bbox:
+        return None
+    best: tuple[float, Any, Any] | None = None
+    for bbox in _scan_chess_vertical_recovery_bboxes(candidate.bbox, page_image.size):
+        recognition = _recognize_scan_chess_candidate_bbox(
+            page_image,
+            bbox,
+            config=config,
+            piece_templates=piece_templates,
+            min_confidence=min_confidence,
+            allow_reader_visible_crop_rescue=False,
+        )
+        if not getattr(recognition, "fen", "") or getattr(recognition, "requires_review", True):
+            continue
+        score = float(getattr(recognition, "confidence", 0.0) or 0.0)
+        if best is None or score > best[0]:
+            recovered_candidate = ChessFenResult(
+                confidence=max(float(getattr(candidate, "confidence", 0.0) or 0.0), score),
+                bbox=bbox,
+                method="image-page-board-shift-recovered",
+                warnings=list(getattr(candidate, "warnings", []) or []) + ["shifted_board_bbox_recovered"],
+                requires_review=False,
+                board_detected=True,
+            )
+            best = (score, recovered_candidate, recognition)
+    if best is None:
+        return None
+    return best[1], best[2]
+
+
+def _recover_expanded_scan_chess_candidate(
+    page_image: Image.Image,
+    candidate,
+    *,
+    config: ConversionConfig,
+    piece_templates: dict,
+    min_confidence: float,
+):
+    if not candidate.bbox:
+        return None
+    best: tuple[float, Any, Any] | None = None
+    for bbox in _scan_chess_local_expansion_bboxes(candidate.bbox, page_image.size):
+        recognition = _recognize_scan_chess_candidate_bbox(
+            page_image,
+            bbox,
+            config=config,
+            piece_templates=piece_templates,
+            min_confidence=min_confidence,
+            allow_reader_visible_crop_rescue=False,
+        )
+        if not getattr(recognition, "fen", "") or getattr(recognition, "requires_review", True):
+            continue
+        if _scan_chess_piece_count(str(getattr(recognition, "placement", "") or getattr(recognition, "fen", ""))) <= 8:
+            continue
+        score = float(getattr(recognition, "confidence", 0.0) or 0.0)
+        if best is None or score > best[0]:
+            recovered_candidate = ChessFenResult(
+                confidence=max(float(getattr(candidate, "confidence", 0.0) or 0.0), score),
+                bbox=bbox,
+                method="image-page-board-border-expanded",
+                warnings=list(getattr(candidate, "warnings", []) or []) + ["full_board_bbox_expanded"],
+                requires_review=False,
+                board_detected=True,
+            )
+            best = (score, recovered_candidate, recognition)
+    if best is None:
+        return None
+    return best[1], best[2]
+
+
+def _scan_chess_piece_count(placement_or_fen: str) -> int:
+    placement = str(placement_or_fen or "").split()[0]
+    return sum(1 for char in placement if char.isalpha())
+
+
+def _scan_chess_local_expansion_bboxes(
+    bbox: tuple[float, float, float, float],
+    page_size: tuple[int, int],
+) -> list[tuple[float, float, float, float]]:
+    """Generate tiny full-board expansions for border crops clipped by labels.
+
+    This is deliberately narrower than vertical rank-shift recovery. It keeps
+    the detected right edge stable and only expands the square by a few percent,
+    which covers cases where rank/file labels caused the crop to start a little
+    too far inside the board without searching neighboring partial boards.
+    """
+    x0, y0, x1, y1 = (float(value) for value in bbox)
+    width = max(1.0, x1 - x0)
+    height = max(1.0, y1 - y0)
+    if width < 120 or height < width * 0.92 or height > width * 1.08:
+        return []
+    side = max(width, height)
+    page_width, page_height = page_size
+    candidates: list[tuple[float, float, float, float]] = []
+    for factor in (1.024, 1.0265, 1.03):
+        expanded_side = side * factor
+        extra = expanded_side - side
+        left = x1 - expanded_side
+        top = y0 - extra * 0.33
+        right = left + expanded_side
+        bottom = top + expanded_side
+        if left < 0 or top < 0 or right > page_width or bottom > page_height:
+            continue
+        recovered = (left, top, right, bottom)
+        if any(all(abs(value - other) < 0.5 for value, other in zip(recovered, existing)) for existing in candidates):
+            continue
+        candidates.append(recovered)
+    return candidates
+
+
+def _scan_chess_vertical_recovery_bboxes(
+    bbox: tuple[float, float, float, float],
+    page_size: tuple[int, int],
+) -> list[tuple[float, float, float, float]]:
+    """Generate local full-board candidates for crops shifted into coordinates.
+
+    Some scanned chess pages have rank/file labels dense enough that the first
+    detector locks onto ranks 6-1 plus the coordinate baseline. The x-axis is
+    usually still reliable, so try a small, bounded set of upward rank shifts
+    and tiny horizontal corrections. FEN acceptance still requires deterministic
+    piece recognition; these candidates are never published on geometry alone.
+    """
+    x0, y0, x1, y1 = (float(value) for value in bbox)
+    width = max(1.0, x1 - x0)
+    height = max(1.0, y1 - y0)
+    if width < 120 or height < width * 0.80 or height > width * 1.18:
+        return []
+    side = width
+    cell = side / 8.0
+    if y0 < cell * 1.5:
+        return []
+    page_width, page_height = page_size
+    candidates: list[tuple[float, float, float, float]] = []
+    for up_cells in (2.0, 1.75, 2.25, 3.0):
+        top = y0 - cell * up_cells
+        if top < 0:
+            continue
+        for dx_cells in (0.075, 0.10, 0.0, -0.075, 0.125):
+            left = x0 + cell * dx_cells
+            right = left + side
+            bottom = top + side
+            if left < 0 or right > page_width or bottom > page_height:
+                continue
+            recovered = (left, top, right, bottom)
+            if any(_bbox_overlap_ratio(recovered, existing) > 0.98 for existing in candidates):
+                continue
+            candidates.append(recovered)
+    return candidates
+
+
+def _scan_chess_front_matter_metadata(
+    pdf_path: str,
+    doc: fitz.Document,
+    config: ConversionConfig,
+) -> dict[str, Any]:
+    if not bool(getattr(config, "scanned_chess_ocr_enabled", True)):
+        return {}
+    max_pages = max(0, int(getattr(config, "scanned_chess_front_matter_ocr_pages", 4) or 0))
+    if max_pages <= 0:
+        return {}
+
+    cache_path = _scan_chess_front_matter_cache_path(pdf_path)
+    cache_key = {
+        "version": SCAN_CHESS_CACHE_VERSION,
+        "pages": max_pages,
+        "language": str(getattr(config, "ocr_language", "eng") or "eng"),
+    }
+    if bool(getattr(config, "scanned_chess_cache_enabled", True)) and cache_path.exists():
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            if cached.get("cache_key") == cache_key:
+                return dict(cached.get("metadata", {}) or {})
+        except Exception:
+            pass
+
+    try:
+        from ocr_module import ocr_with_tesseract
+    except Exception:
+        return {}
+
+    ocr_pages: list[dict[str, Any]] = []
+    for page_num in range(min(max_pages, len(doc))):
+        try:
+            image_data = _page_image_data_for_scan_chess(doc, page_num)
+            page_image = Image.open(io.BytesIO(image_data)).convert("L")
+            page_image = ImageOps.autocontrast(page_image)
+            page_image = _resize_image_to_long_edge(page_image, 1600, resample=Image.Resampling.LANCZOS)
+            text, confidence = ocr_with_tesseract(page_image, str(getattr(config, "ocr_language", "eng") or "eng"))
+        except Exception:
+            continue
+        normalized = _normalize_scan_chess_ocr_text(text)
+        if not normalized.strip():
+            continue
+        ocr_pages.append(
+            {
+                "page_num": page_num,
+                "confidence": round(float(confidence or 0.0), 3),
+                "text": normalized,
+            }
+        )
+
+    metadata = _infer_scan_chess_front_matter_metadata(ocr_pages)
+    if metadata:
+        metadata["front_matter_ocr"] = {
+            "status": "passed",
+            "processed_page_count": len(ocr_pages),
+            "avg_confidence": round(
+                sum(float(page.get("confidence", 0.0) or 0.0) for page in ocr_pages) / max(1, len(ocr_pages)),
+                3,
+            ),
+            "source": "scan_chess_front_matter_ocr",
+        }
+
+    if bool(getattr(config, "scanned_chess_cache_enabled", True)):
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(
+                json.dumps({"cache_key": cache_key, "metadata": metadata}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+    return metadata
+
+
+def _infer_scan_chess_front_matter_metadata(ocr_pages: list[dict[str, Any]]) -> dict[str, Any]:
+    lines: list[str] = []
+    for page in ocr_pages:
+        for line in str(page.get("text") or "").splitlines():
+            normalized = re.sub(r"\s+", " ", line).strip(" \t\r\n\u00a0")
+            if normalized:
+                lines.append(normalized)
+    if not lines:
+        return {}
+
+    author = _infer_front_matter_author(lines)
+    publisher = _infer_front_matter_publisher(lines)
+    title = _infer_front_matter_title(lines, author=author, publisher=publisher)
+    date = _infer_front_matter_date(lines)
+    metadata: dict[str, Any] = {}
+    if title:
+        metadata["inferred_publication_title"] = title
+        metadata["title"] = title
+    if author:
+        metadata["author"] = author
+    if publisher:
+        metadata["publisher"] = publisher
+    if date:
+        metadata["date"] = date
+    if title or author or publisher:
+        pieces = [item for item in (title, f"by {author}" if author else "", publisher) if item]
+        metadata["description"] = ". ".join(pieces)
+        metadata["subjects"] = ["Chess", "Chess training"]
+        metadata["subject"] = "Chess; Chess training"
+        metadata["metadata_inference"] = {
+            "title": ["scan-front-matter-ocr"] if title else [],
+            "author": ["scan-front-matter-ocr"] if author else [],
+            "publisher": ["scan-front-matter-ocr"] if publisher else [],
+        }
+    return metadata
+
+
+def _infer_front_matter_author(lines: list[str]) -> str:
+    copyright_candidates: list[str] = []
+    for line in lines[:80]:
+        match = re.search(
+            r"(?i)\bcopyright\s*(?:©|\(c\))?\s*(?:\d{4}(?:\s*[-,]\s*\d{4})?\s*)?(?P<name>[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){1,3})\b",
+            line,
+        )
+        if match:
+            copyright_candidates.append(_title_case_person_name(match.group("name")))
+    if copyright_candidates:
+        return copyright_candidates[0]
+
+    for line in lines[:40]:
+        cleaned = line.strip(" .;:-")
+        if _front_matter_line_is_noise(cleaned):
+            continue
+        if re.fullmatch(r"[A-Z][A-Z.'-]+(?:\s+[A-Z][A-Z.'-]+){1,3}", cleaned):
+            return _title_case_person_name(cleaned)
+        if _looks_like_person_name(cleaned) and not _looks_like_publisher_line(cleaned):
+            return cleaned
+    return ""
+
+
+def _infer_front_matter_title(lines: list[str], *, author: str, publisher: str) -> str:
+    best_fragments: list[str] = []
+    best_score = -1
+    for start in range(min(len(lines), 60)):
+        fragments: list[str] = []
+        for line in lines[start : start + 6]:
+            cleaned = line.strip(" .;:-")
+            if not cleaned or _front_matter_line_is_noise(cleaned):
+                if fragments:
+                    break
+                continue
+            if _same_normalized_text(cleaned, author) or _same_normalized_text(cleaned, publisher):
+                if fragments:
+                    break
+                continue
+            if _looks_like_publisher_line(cleaned):
+                if fragments:
+                    break
+                continue
+            if not _looks_like_front_title_fragment(cleaned, author=author):
+                if fragments:
+                    break
+                continue
+            fragments.append(_normalize_front_title_fragment(cleaned))
+            if len(fragments) >= 4:
+                break
+        score = _score_front_title_fragments(fragments)
+        if score > best_score:
+            best_score = score
+            best_fragments = fragments
+    return _join_front_title_fragments(best_fragments)
+
+
+def _infer_front_matter_publisher(lines: list[str]) -> str:
+    for line in lines[:90]:
+        cleaned = line.strip(" .;:-")
+        if _front_matter_line_is_noise(cleaned):
+            continue
+        if _looks_like_publisher_line(cleaned):
+            return re.sub(r"(?i)\s+(?:UK|USA)?\s*(?:LLP|LLC|Ltd\.?|Inc\.?)$", "", cleaned).strip(" .;:-")
+    return ""
+
+
+def _infer_front_matter_date(lines: list[str]) -> str:
+    years: list[int] = []
+    for line in lines[:80]:
+        if re.search(r"(?i)\b(?:copyright|edition|published|printed)\b", line):
+            years.extend(int(match.group(0)) for match in re.finditer(r"\b(?:19|20)\d{2}\b", line))
+    return str(max(years)) if years else ""
+
+
+def _looks_like_person_name(text: str) -> bool:
+    return bool(re.fullmatch(r"[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){1,3}", text or ""))
+
+
+def _title_case_person_name(text: str) -> str:
+    words = []
+    for word in re.split(r"\s+", text.strip()):
+        if not word:
+            continue
+        words.append(word[:1].upper() + word[1:].lower())
+    return " ".join(words)
+
+
+def _same_normalized_text(left: str, right: str) -> bool:
+    if not left or not right:
+        return False
+    normalize = lambda value: re.sub(r"[^a-z0-9]+", "", value.lower())
+    return normalize(left) == normalize(right)
+
+
+def _front_matter_line_is_noise(text: str) -> bool:
+    lowered = (text or "").lower()
+    if not lowered:
+        return True
+    return bool(
+        re.search(
+            r"\b(?:copyright|all rights reserved|isbn|translated by|typeset|printed|distributed|website|e-mail|www\.|http|contents|key to symbols|preface|introduction)\b",
+            lowered,
+        )
+    )
+
+
+def _looks_like_publisher_line(text: str) -> bool:
+    return bool(
+        re.search(
+            r"(?i)\b(?:press|publishing|publisher|books|quality chess|university|verlag|editions?|llp|llc|ltd|inc)\b",
+            text or "",
+        )
+    )
+
+
+def _looks_like_front_title_fragment(text: str, *, author: str) -> bool:
+    if not text or len(text) > 90:
+        return False
+    if (
+        _looks_like_person_name(text)
+        and not text.lower().startswith("with ")
+        and not re.search(r"(?i)\b(?:chess|fundamentals|tactics|endgame|manual|course|lessons?|training|build|play|openings?)\b", text)
+    ):
+        return False
+    if text.isupper() and len(text.split()) <= 4 and not re.search(r"(?i)\b(?:fundamentals|chess|tactics|endgame|manual|course)\b", text):
+        return False
+    if text.lower().startswith("with ") and author:
+        return bool(re.search(re.escape(author.split()[-1]), text, flags=re.IGNORECASE))
+    return bool(re.search(r"(?i)\b(?:chess|fundamentals|tactics|endgame|manual|course|lessons?|training|build|play|openings?)\b", text))
+
+
+def _normalize_front_title_fragment(text: str) -> str:
+    cleaned = re.sub(r"\s+", " ", text).strip(" .;:-")
+    if cleaned.isupper() and len(cleaned) > 3:
+        return " ".join(word[:1].upper() + word[1:].lower() for word in cleaned.split())
+    return cleaned
+
+
+def _score_front_title_fragments(fragments: list[str]) -> int:
+    if not fragments:
+        return -1
+    joined = " ".join(fragments)
+    score = len(joined)
+    score += 40 * len(fragments)
+    if re.search(r"(?i)\bchess\b", joined):
+        score += 80
+    if re.search(r"(?i)\bfundamentals?\b", joined):
+        score += 50
+    return score
+
+
+def _join_front_title_fragments(fragments: list[str]) -> str:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for fragment in fragments:
+        key = re.sub(r"[^a-z0-9]+", "", fragment.lower())
+        if not fragment or key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(fragment)
+    if not cleaned:
+        return ""
+    if (
+        len(cleaned) >= 3
+        and re.search(r"(?i)\b(?:fundamentals?|volume|part|book)\b", cleaned[0])
+        and any(re.search(r"(?i)\b(?:chess|manual|course|training|build)\b", fragment) for fragment in cleaned[1:])
+    ):
+        cleaned = cleaned[1:] + [cleaned[0]]
+    if len(cleaned) == 1:
+        return cleaned[0]
+    return f"{' '.join(cleaned[:-1])}: {cleaned[-1]}"
+
+
+def _scan_chess_selective_ocr_pages(
+    pdf_path: str,
+    doc: fitz.Document,
+    page_candidates: list[dict[str, Any]],
+    config: ConversionConfig,
+) -> dict[str, Any]:
+    if not bool(getattr(config, "scanned_chess_ocr_enabled", True)):
+        return {
+            "pages": {},
+            "summary": {
+                "status": "skipped",
+                "reason": "disabled",
+                "processed_page_count": 0,
+                "notation_token_count": 0,
+            },
+        }
+
+    max_pages = int(getattr(config, "scanned_chess_ocr_max_pages", 32) or 0)
+    if bool(getattr(config, "force_ocr", False)):
+        max_pages = 0
+    candidate_records = [record for record in page_candidates if record.get("candidates")]
+    selected_records = candidate_records if max_pages <= 0 else candidate_records[:max_pages]
+
+    cache_path = _scan_chess_ocr_cache_path(pdf_path)
+    cache_key = {
+        "version": SCAN_CHESS_CACHE_VERSION,
+        "long_edge": int(getattr(config, "scanned_chess_ocr_long_edge", 1800) or 1800),
+        "language": str(getattr(config, "ocr_language", "eng") or "eng"),
+        "max_pages": max_pages,
+        "candidate_page_count": len(candidate_records),
+        "selected_page_count": len(selected_records),
+    }
+    if bool(getattr(config, "scanned_chess_cache_enabled", True)) and cache_path.exists():
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            if cached.get("cache_key") == cache_key:
+                return {
+                    "pages": dict(cached.get("pages", {}) or {}),
+                    "summary": dict(cached.get("summary", {}) or {}),
+                }
+        except Exception:
+            pass
+
+    pages: dict[str, dict[str, Any]] = {}
+    unavailable_reason = ""
+    try:
+        from ocr_module import ocr_with_tesseract
+    except Exception as exc:
+        ocr_with_tesseract = None
+        unavailable_reason = str(exc)
+
+    processed = 0
+    low_confidence = 0
+    notation_token_count = 0
+    text_char_count = 0
+    min_confidence = float(getattr(config, "scanned_chess_ocr_min_confidence", 0.35) or 0.35)
+
+    if ocr_with_tesseract is not None:
+        for page_record in selected_records:
+            page_num = int(page_record.get("page_num", 0))
+            try:
+                image_data = _page_image_data_for_scan_chess(doc, page_num)
+                page_image = Image.open(io.BytesIO(image_data)).convert("RGB")
+            except Exception:
+                continue
+            ocr_image = _mask_scan_chess_boards_for_ocr(page_image, list(page_record.get("candidates", []) or []))
+            max_edge = max(900, int(getattr(config, "scanned_chess_ocr_long_edge", 1800) or 1800))
+            ocr_image = _resize_image_to_long_edge(ocr_image, max_edge, resample=Image.Resampling.LANCZOS)
+            try:
+                text, confidence = ocr_with_tesseract(ocr_image, str(getattr(config, "ocr_language", "eng") or "eng"))
+            except Exception as exc:
+                unavailable_reason = str(exc)
+                continue
+            normalized_text = _normalize_scan_chess_ocr_text(text)
+            if not normalized_text.strip():
+                continue
+            token_count = len(NOTATION_TOKEN_RE.findall(normalized_text))
+            record = {
+                "page_num": page_num,
+                "text": normalized_text,
+                "confidence": round(float(confidence or 0.0), 3),
+                "notation_token_count": token_count,
+                "requires_review": float(confidence or 0.0) < min_confidence,
+            }
+            pages[str(page_num)] = record
+            processed += 1
+            text_char_count += len(normalized_text)
+            notation_token_count += token_count
+            if record["requires_review"]:
+                low_confidence += 1
+
+    summary = {
+        "status": "passed_with_warnings" if low_confidence or len(selected_records) < len(candidate_records) else "passed",
+        "engine": "tesseract" if ocr_with_tesseract is not None else "unavailable",
+        "processed_page_count": processed,
+        "candidate_page_count": len(candidate_records),
+        "skipped_page_count": max(0, len(candidate_records) - len(selected_records)),
+        "low_confidence_page_count": low_confidence,
+        "notation_token_count": notation_token_count,
+        "text_char_count": text_char_count,
+        "unavailable_reason": unavailable_reason,
+    }
+    if bool(getattr(config, "scanned_chess_cache_enabled", True)):
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(
+                json.dumps({"cache_key": cache_key, "pages": pages, "summary": summary}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+    return {"pages": pages, "summary": summary}
+
+
+def _mask_scan_chess_boards_for_ocr(image: Image.Image, candidates: list[dict[str, Any]]) -> Image.Image:
+    masked = ImageOps.autocontrast(image.convert("L"))
+    draw = ImageDraw.Draw(masked)
+    for candidate in candidates:
+        bbox = _clamp_bbox(candidate.get("bbox"), image.size)
+        if bbox is None:
+            continue
+        pad = max(8, int(max(image.size) * 0.003))
+        draw.rectangle((bbox[0] - pad, bbox[1] - pad, bbox[2] + pad, bbox[3] + pad), fill=255)
+    return masked
+
+
+def _normalize_scan_chess_ocr_text(text: str) -> str:
+    normalized_lines: list[str] = []
+    for raw_line in str(text or "").replace("\r\n", "\n").replace("\r", "\n").splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if not line:
+            if normalized_lines and normalized_lines[-1]:
+                normalized_lines.append("")
+            continue
+        line = line.replace("\u2020", "+").replace("\u2021", "#")
+        line = re.sub(r"(?<!\w)[@&]2(?=x?[a-h][1-8])", "K", line)
+        line = re.sub(r"(?<!\w)[28](?=x?[g-h][1-2])", "K", line)
+        line = re.sub(r"(?<!\w)D(?=x?[a-h][1-8])", "Q", line)
+        line = re.sub(r"(?<!\w)W(?=x?[a-h][1-8])", "R", line)
+        line = re.sub(r"(?<!\w)A(?=x?[a-h][1-8])", "N", line)
+        line = re.sub(r"(?<!\w)&(?=x?[a-h][1-8])", "B", line)
+        line = re.sub(r"(?<!\w)@(?=x?[a-h][1-8])", "K", line)
+        line = re.sub(r"(?<!\w)0(?=[a-h][1-8])", "N", line)
+        line = re.sub(r"\b([KQRBN]?[a-h][1-8])t\b", r"\1+", line)
+        line = re.sub(r"\b([KQRBN]x?[a-h][1-8])t\b", r"\1+", line)
+        line = re.sub(r"\s+([,.;:!?])", r"\1", line)
+        normalized_lines.append(line)
+    while normalized_lines and not normalized_lines[-1]:
+        normalized_lines.pop()
+    return "\n".join(normalized_lines)
+
+
+def _scan_chess_ocr_html_parts(ocr_record: dict[str, Any], *, page_num: int) -> list[str]:
+    text = str(ocr_record.get("text") or "").strip()
+    if not text:
+        return []
+    confidence = float(ocr_record.get("confidence", 0.0) or 0.0)
+    parts: list[str] = []
+    paragraph: list[str] = []
+
+    def flush() -> None:
+        if not paragraph:
+            return
+        merged = " ".join(paragraph).strip()
+        paragraph.clear()
+        if not merged:
+            return
+        classes = ["scan-chess-ocr-text"]
+        if _is_notation_heavy_line(merged):
+            classes.append("notation-heavy")
+            classes.append("chess-notation-text")
+        elif re.match(r"(?i)^diagram\s+\d+", merged):
+            classes.append("diagram-caption")
+        parts.append(
+            f'<p class="{" ".join(classes)}" data-ocr-confidence="{confidence:.3f}">'
+            f"{html_module.escape(merged)}"
+            "</p>"
+        )
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            flush()
+            continue
+        if paragraph and (re.match(r"(?i)^(diagram|ex\\.|exercise|\\d+\\.)", stripped) or _is_notation_heavy_line(stripped)):
+            flush()
+        paragraph.append(stripped)
+    flush()
+    if not parts:
+        return []
+    parts.insert(
+        0,
+        f'<p class="scan-chess-ocr-marker">OCR strony {page_num + 1}: tekst i notacja rozpoznane automatycznie; wymagaja kontroli.</p>',
+    )
+    return parts
+
+
+def _scan_chess_pgn_extra_artifacts(records: list, *, source_title: str) -> list[dict[str, Any]]:
+    accepted_records = [record for record in records if getattr(record, "pgn", "").strip()]
+    if not accepted_records:
+        return []
+    pgn_text = build_combined_pgn(accepted_records)
+    html_text = build_pgn_download_html(
+        accepted_records,
+        title=f"{source_title or 'Chess'} - PGN",
+    )
+    return [
+        {
+            "key": "chess_pgn",
+            "filename": "chess_games.pgn",
+            "content_type": "application/x-chess-pgn; charset=utf-8",
+            "data": pgn_text.encode("utf-8"),
+            "label": "PGN",
+        },
+        {
+            "key": "chess_pgn_html",
+            "filename": "chess_games.html",
+            "content_type": "text/html; charset=utf-8",
+            "data": html_text.encode("utf-8"),
+            "label": "HTML PGN",
+        },
+    ]
+
+
+def _encode_scan_chess_diagram_crop(image: Image.Image, config: ConversionConfig) -> tuple[bytes, int, int]:
+    max_edge = max(180, min(int(getattr(config, "scanned_chess_diagram_long_edge", 360) or 360), 640))
+    prepared = _prepare_chess_diagram_for_reader(
+        _resize_image_to_long_edge(image, max_edge, resample=Image.Resampling.LANCZOS)
+    )
+    prepared = ImageOps.autocontrast(prepared, cutoff=1)
+    encoded_image = prepared.point(lambda pixel: 0 if pixel < 178 else 255, mode="1")
+    output = io.BytesIO()
+    encoded_image.save(output, format="PNG", optimize=True, compress_level=9)
+    return output.getvalue(), encoded_image.width, encoded_image.height
+
+
+def _scan_chess_cache_path(pdf_path: str) -> Path:
+    path = Path(pdf_path)
+    try:
+        stat = path.stat()
+        token = f"{path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}"
+    except OSError:
+        token = str(path)
+    digest = hashlib.sha256(token.encode("utf-8", errors="ignore")).hexdigest()[:16]
+    return Path("output") / "cache" / "scanned_chess" / f"{path.stem}-{digest}.json"
+
+
+def _scan_chess_ocr_cache_path(pdf_path: str) -> Path:
+    path = Path(pdf_path)
+    try:
+        stat = path.stat()
+        token = f"{path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}:ocr"
+    except OSError:
+        token = f"{path}:ocr"
+    digest = hashlib.sha256(token.encode("utf-8", errors="ignore")).hexdigest()[:16]
+    return Path("output") / "cache" / "scanned_chess" / f"{path.stem}-{digest}-ocr.json"
+
+
+def _scan_chess_front_matter_cache_path(pdf_path: str) -> Path:
+    path = Path(pdf_path)
+    try:
+        stat = path.stat()
+        token = f"{path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}:front-matter"
+    except OSError:
+        token = f"{path}:front-matter"
+    digest = hashlib.sha256(token.encode("utf-8", errors="ignore")).hexdigest()[:16]
+    return Path("output") / "cache" / "scanned_chess" / f"{path.stem}-{digest}-front-matter.json"
+
+
+def _page_image_data_for_scan_chess(doc: fitz.Document, page_num: int) -> bytes:
+    page = doc[page_num]
+    images = page.get_images(full=True)
+    if images:
+        largest: tuple[int, dict[str, Any]] | None = None
+        for image_info in images:
+            try:
+                base_image = doc.extract_image(image_info[0])
+            except Exception:
+                continue
+            data = base_image.get("image")
+            if not data:
+                continue
+            area = int(base_image.get("width", 0) or 0) * int(base_image.get("height", 0) or 0)
+            if largest is None or area > largest[0]:
+                largest = (area, base_image)
+        if largest is not None:
+            return largest[1]["image"]
+    pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
+    return pix.tobytes("png")
+
+
+def _clamp_bbox(
+    raw_bbox: Any,
+    image_size: tuple[int, int],
+    *,
+    pad_ratio: float = 0.025,
+    min_pad: float = 4.0,
+) -> tuple[int, int, int, int] | None:
+    if not isinstance(raw_bbox, (list, tuple)) or len(raw_bbox) != 4:
+        return None
+    width, height = image_size
+    try:
+        x0, y0, x1, y1 = [float(value) for value in raw_bbox]
+    except (TypeError, ValueError):
+        return None
+    pad = max(float(min_pad), min(x1 - x0, y1 - y0) * max(0.0, float(pad_ratio)))
+    left = max(0, int(round(x0 - pad)))
+    top = max(0, int(round(y0 - pad)))
+    right = min(width, int(round(x1 + pad)))
+    bottom = min(height, int(round(y1 + pad)))
+    if right - left < 40 or bottom - top < 40:
+        return None
+    return left, top, right, bottom
+
+
+def _scan_chess_fen_payload(candidate: dict[str, Any], recognition) -> dict[str, Any]:
+    payload = recognition.to_dict()
+    if payload.get("board_detected"):
+        return payload
+    return _scan_chess_candidate_review_payload(candidate)
+
+
+def _scan_chess_candidate_review_payload(candidate: dict[str, Any]) -> dict[str, Any]:
+    warnings = list(candidate.get("warnings") or [])
+    if "image_board_requires_review" not in warnings:
+        warnings.append("image_board_requires_review")
+    return {
+        "fen": "",
+        "placement": "",
+        "confidence": float(candidate.get("confidence", 0.0) or 0.0),
+        "side_to_move": "w",
+        "bbox": candidate.get("bbox"),
+        "method": str(candidate.get("method") or "image-page-board-candidate"),
+        "warnings": warnings,
+        "requires_review": True,
+        "board_detected": True,
+    }
+
+
+def _apply_scan_chess_side_to_move_marker(payload: dict[str, Any], side_to_move: str) -> dict[str, Any]:
+    side = "b" if str(side_to_move).lower().startswith("b") else "w"
+    updated = dict(payload)
+    updated["side_to_move"] = side
+    fen = str(updated.get("fen") or "").strip()
+    if fen:
+        parts = fen.split()
+        if len(parts) == 6:
+            parts[1] = side
+            updated["fen"] = " ".join(parts)
+    warnings = [warning for warning in list(updated.get("warnings") or []) if warning != "side_to_move_inferred"]
+    if "side_to_move_marker_detected" not in warnings:
+        warnings.append("side_to_move_marker_detected")
+    updated["warnings"] = sorted(set(warnings))
+    return updated
+
+
+def _infer_scan_chess_side_to_move(
+    page_image: Image.Image,
+    bbox: tuple[float, float, float, float],
+) -> str:
+    """Infer side-to-move from a triangle marker near a scanned board.
+
+    In the Yusupov-style exercise pages, an outlined triangle denotes White to
+    move and a filled black triangle denotes Black to move. The signal is
+    deliberately treated as optional: if no compact triangular component is
+    found, the caller keeps the conservative inferred default.
+    """
+    region = _scan_chess_side_marker_region(bbox, page_image.size)
+    if region is None:
+        return ""
+    crop = ImageOps.autocontrast(page_image.crop(region).convert("L"))
+    dark = np.asarray(crop) < 120
+    component = _scan_chess_best_side_marker_component(dark)
+    if component is None:
+        return ""
+    density = component["density"]
+    return "b" if density >= 0.36 else "w"
+
+
+def _scan_chess_side_marker_region(
+    bbox: tuple[float, float, float, float],
+    page_size: tuple[int, int],
+) -> tuple[int, int, int, int] | None:
+    x0, y0, x1, y1 = (float(value) for value in bbox)
+    side = max(1.0, min(x1 - x0, y1 - y0))
+    page_width, page_height = page_size
+    left = int(max(0, round(x1 - side * 0.24)))
+    right = int(min(page_width, round(x1 + side * 0.04)))
+    top = int(max(0, round(y0)))
+    bottom = int(min(page_height, round(y0 + side * 0.14)))
+    if right - left < 20 or bottom - top < 20:
+        return None
+    return left, top, right, bottom
+
+
+def _scan_chess_best_side_marker_component(mask: Any) -> dict[str, float] | None:
+    height, width = mask.shape
+    visited = np.zeros(mask.shape, dtype=bool)
+    best: dict[str, float] | None = None
+    for start_y in range(height):
+        for start_x in range(width):
+            if visited[start_y, start_x] or not mask[start_y, start_x]:
+                continue
+            stack = [(start_x, start_y)]
+            visited[start_y, start_x] = True
+            area = 0
+            min_x = max_x = start_x
+            min_y = max_y = start_y
+            while stack:
+                x, y = stack.pop()
+                area += 1
+                min_x = min(min_x, x)
+                max_x = max(max_x, x)
+                min_y = min(min_y, y)
+                max_y = max(max_y, y)
+                for nx in (x - 1, x, x + 1):
+                    for ny in (y - 1, y, y + 1):
+                        if nx == x and ny == y:
+                            continue
+                        if nx < 0 or ny < 0 or nx >= width or ny >= height:
+                            continue
+                        if visited[ny, nx] or not mask[ny, nx]:
+                            continue
+                        visited[ny, nx] = True
+                        stack.append((nx, ny))
+            box_width = max_x - min_x + 1
+            box_height = max_y - min_y + 1
+            if box_width < max(12, width * 0.20) or box_height < max(12, height * 0.22):
+                continue
+            if box_width > width * 0.62 or box_height > height * 0.72:
+                continue
+            aspect = box_width / max(1, box_height)
+            if aspect < 0.72 or aspect > 1.42:
+                continue
+            center_x = (min_x + max_x) / 2.0
+            center_y = (min_y + max_y) / 2.0
+            if center_x < width * 0.20 or center_x > width * 0.80:
+                continue
+            if center_y > height * 0.66 or max_y > height * 0.82:
+                continue
+            density = area / max(1, box_width * box_height)
+            if density < 0.16 or density > 0.72:
+                continue
+            score = area * (1.0 - abs(center_x / max(1, width) - 0.48)) * (
+                1.0 - min(0.5, center_y / max(1, height))
+            )
+            candidate = {
+                "area": float(area),
+                "density": float(density),
+                "bbox": (float(min_x), float(min_y), float(max_x), float(max_y)),
+                "aspect": float(aspect),
+                "score": float(score),
+            }
+            if best is None or candidate["score"] > best["score"]:
+                best = candidate
+    return best
+
+
 def extract_pdf_with_chess_support(
     pdf_path: str,
     config: ConversionConfig,
@@ -885,10 +3063,15 @@ def extract_pdf_with_chess_support(
         pdf_metadata = _extract_pdf_metadata(pdf_path)
     
     doc = fitz.open(pdf_path)
+    piece_templates = {}
+    template_dir = _resolve_chess_piece_template_dir(config)
+    if getattr(config, "chess_fen_recognition_enabled", True) and template_dir:
+        piece_templates = load_piece_templates(template_dir)
     
     chapters = []
     all_images = []
     all_chess_diagrams = []
+    chess_fen_records = []
     image_count = 0
     chess_diagram_count = 0
     toc = doc.get_toc()
@@ -1026,6 +3209,31 @@ def extract_pdf_with_chess_support(
                             'height': png_height,
                             'is_chess': True,
                         }
+                        if getattr(config, "chess_fen_recognition_enabled", True):
+                            region_spans = [ts for ts in text_spans if ts.index in region.text_span_indices]
+                            fen_result = recognize_font_board_from_spans(
+                                region_spans,
+                                bbox=region.bbox,
+                                min_confidence=float(getattr(config, "chess_fen_min_confidence", 0.85) or 0.85),
+                            )
+                            if not fen_result.fen and fen_result.board_detected:
+                                image_result = recognize_chess_position_from_image(
+                                    png_data,
+                                    bbox=region.bbox,
+                                    min_confidence=float(getattr(config, "chess_fen_min_confidence", 0.85) or 0.85),
+                                    piece_templates=piece_templates,
+                                )
+                                if image_result.confidence > fen_result.confidence:
+                                    fen_result = image_result
+                            _attach_fen_to_chess_image(chess_img, fen_result)
+                            chess_fen_records.append(
+                                _chess_fen_record(
+                                    page_num=page_num,
+                                    filename=filename,
+                                    result=fen_result,
+                                    source="font-region",
+                                )
+                            )
                         chess_imgs_for_page.append(chess_img)
                         all_chess_diagrams.append(chess_img)
 
@@ -1067,10 +3275,11 @@ def extract_pdf_with_chess_support(
 
         def insert_diagram(entry: dict) -> None:
             chess_img = entry["image"]
+            fen_attrs = chess_fen_html_attrs(chess_img)
             html_parts.append(
-                '<div class="figure chess-diagram-container">'
+                f'<div class="figure chess-diagram-container"{fen_attrs}>'
                 f'<img class="chess-diagram" src="images/{chess_img["filename"]}" '
-                'alt="Diagram szachowy"/>'
+                f'alt="{html_module.escape(chess_diagram_alt_text(chess_img), quote=True)}"{fen_attrs}/>'
                 "</div>"
             )
 
@@ -1100,6 +3309,7 @@ def extract_pdf_with_chess_support(
         
         # Extract images (non-chess)
         page_images = []
+        scanned_page_for_fen = False
         for img_info in page.get_images(full=True):
             xref = img_info[0]
             try:
@@ -1130,6 +3340,17 @@ def extract_pdf_with_chess_support(
                 'extension': optimized_extension,
                 'page': page_num,
             })
+            if not text_spans and not chess_imgs_for_page and not scanned_page_for_fen:
+                scanned_page_for_fen = True
+                chess_fen_records.extend(
+                    _scan_image_for_board_candidates(
+                        base_image["image"],
+                        page_num=page_num,
+                        filename=img_filename,
+                        config=config,
+                        piece_templates=piece_templates,
+                    )
+                )
         
         # Chess images are inlined into html_parts in reading order, but still
         # need to be attached to the chapter so build_epub can add them to the
@@ -1156,6 +3377,9 @@ def extract_pdf_with_chess_support(
         'images': all_images,
         'chess_diagrams': all_chess_diagrams,
         'chess_diagram_count': chess_diagram_count,
+        'metadata': {
+            'chess_fen': summarize_chess_fen_results(chess_fen_records),
+        },
         'method': 'pymupdf_with_chess_support',
         'layout_mode': 'reflowable',
         'text_content': any(len(ch['html_parts']) > 0 for ch in chapters),

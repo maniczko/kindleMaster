@@ -172,6 +172,30 @@ def maybe_link_problem_reference(fragment: str, exercise_target_map: dict[str, s
     return f'<p{attrs}><a class="solution-backlink" href="{target}">{safe_text}</a></p>'
 
 
+def chess_fen_html_attrs(chess_img: dict) -> str:
+    """Return safe data attributes for a recognized chess position."""
+    fen = str(chess_img.get("fen") or "").strip()
+    if not fen:
+        return ""
+    confidence = chess_img.get("fen_confidence", "")
+    attrs = [f'data-fen="{html_module.escape(fen, quote=True)}"']
+    try:
+        attrs.append(f'data-fen-confidence="{float(confidence):.3f}"')
+    except (TypeError, ValueError):
+        pass
+    method = str(chess_img.get("fen_method") or "").strip()
+    if method:
+        attrs.append(f'data-fen-method="{html_module.escape(method, quote=True)}"')
+    return " " + " ".join(attrs)
+
+
+def chess_diagram_alt_text(chess_img: dict) -> str:
+    fen = str(chess_img.get("fen") or "").strip()
+    if not fen:
+        return "Diagram szachowy"
+    return f"Diagram szachowy, FEN: {fen}"
+
+
 def finalize_epub_bytes(
     epub_bytes: bytes,
     config: "ConversionConfig",
@@ -255,13 +279,18 @@ def finalize_epub_bytes(
     try:
         from kindle_semantic_cleanup import finalize_epub_for_kindle
 
+        semantic_chess_min_long_edge = (
+            0
+            if publication_profile == "premium_scanned_chess_reflow"
+            else config.diagram_image_long_edge
+        )
         epub_bytes, semantic_report = finalize_epub_for_kindle(
             epub_bytes,
             title=title,
             author=author,
             language=config.language,
             publication_profile=publication_profile,
-            chess_min_long_edge=config.diagram_image_long_edge,
+            chess_min_long_edge=semantic_chess_min_long_edge,
             chess_palette_colors=config.diagram_palette_colors,
             return_report=True,
             report_mode="rich",
@@ -527,6 +556,29 @@ class ConversionConfig:
     diagram_raster_jpeg_quality: int = 82
     diagram_budget_key: str = ""
     diagram_budget_attempt: str = "primary"
+    chess_fen_recognition_enabled: bool = True
+    # Calibrated on the scanned Fundamenty seed set and aligned with the
+    # acceptance eval gate: deterministic templates remain review-only below
+    # this threshold instead of publishing low-certainty FEN.
+    chess_fen_min_confidence: float = 0.84
+    chess_fen_scan_max_pages: int = 24
+    chess_fen_scan_candidates_per_page: int = 6
+    chess_fen_piece_template_dir: str = ""
+    chess_fen_template_profile: str = "fundamenty_merida_like"
+    chess_fen_verified_crop_labels_path: str = "reference_inputs/chess_fen/labels/fundamenty_verified_crop_labels.jsonl"
+    chess_fen_emit_review_notes: bool = False
+    chess_fen_apply_side_marker: bool = True
+    chess_fen_review_provider_enabled: bool = False
+    chess_fen_scan_enable_sliding_probe: bool = False
+    scanned_chess_max_pages: int = 0  # 0 means all pages for premium scanned-chess extraction
+    scanned_chess_min_grid_confidence: float = 0.50
+    scanned_chess_cache_enabled: bool = True
+    scanned_chess_diagram_long_edge: int = 360
+    scanned_chess_ocr_enabled: bool = True
+    scanned_chess_ocr_max_pages: int = 0  # 0 means OCR all detected chess pages
+    scanned_chess_ocr_long_edge: int = 1800
+    scanned_chess_ocr_min_confidence: float = 0.35
+    scanned_chess_front_matter_ocr_pages: int = 4
     
     # Typography
     body_font_family: str = "Georgia, serif"
@@ -811,6 +863,7 @@ def _build_publication_pipeline_result(
     return {
         "epub_bytes": epub_bytes,
         "quality_report": quality_report,
+        "extra_artifacts": list(content.get("extra_artifacts") or []),
         "document": document.to_dict(),
         "document_summary": {
             "title": document.title,
@@ -830,6 +883,7 @@ def _publication_response_payload(*, result: dict, analysis) -> dict:
         "source_type": "pdf",
         "analysis": analysis,
         "quality_report": result["quality_report"],
+        "extra_artifacts": list(result.get("extra_artifacts") or []),
         "document": result["document"],
         "document_summary": result["document_summary"],
     }
@@ -2196,9 +2250,10 @@ def build_epub(content: dict, config: ConversionConfig, original_filename: str, 
                 height = y1 - y0
                 
                 html_content += (
-                    f'<div class="chess-diagram-container">\n'
+                    f'<div class="chess-diagram-container"{chess_fen_html_attrs(chess_img)}>\n'
                     f'<img class="chess-diagram" src="images/{chess_img["filename"]}" '
-                    f'alt="Diagram szachowy" '
+                    f'alt="{html_module.escape(chess_diagram_alt_text(chess_img), quote=True)}"'
+                    f'{chess_fen_html_attrs(chess_img)} '
                     f'style="width: {min(width, 400):.0f}px; height: auto; max-width: 100%;"/>\n'
                     f'</div>\n'
                 )

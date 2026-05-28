@@ -102,6 +102,7 @@ class BrowserPrivacyDiagnosticsTests(unittest.TestCase):
         result: dict = {"browser": browser_name}
         try:
             context = browser.new_context(base_url=self.base_url, accept_downloads=True)
+            context.add_init_script("window.localStorage.setItem('kindlemaster.start.continue-local', '1');")
             page = context.new_page()
             page.on("console", lambda message: console_messages.append({"type": message.type, "text": message.text}))
             page.on("pageerror", lambda error: page_errors.append(str(error)))

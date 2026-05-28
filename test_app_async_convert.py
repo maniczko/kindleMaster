@@ -424,6 +424,33 @@ class AppAsyncConvertTests(unittest.TestCase):
                     "validation_tool": "epubcheck",
                     "warnings": 0,
                 },
+                "artifacts": {
+                    "chess_pgn": {
+                        "provider": "local",
+                        "status": "stored",
+                        "kind": "report",
+                        "job_id": ready_id,
+                        "filename": "chess_games.pgn",
+                        "location": os.path.join("output", "artifacts", ready_id, "report", "chess_games.pgn"),
+                        "size_bytes": 42,
+                        "content_type": "application/x-chess-pgn; charset=utf-8",
+                        "download_url": f"/convert/artifact/{ready_id}/chess_pgn",
+                        "label": "PGN",
+                    },
+                    "chess_pgn_html": {
+                        "provider": "local",
+                        "status": "stored",
+                        "kind": "report",
+                        "job_id": ready_id,
+                        "filename": "chess_games.html",
+                        "location": os.path.join("output", "artifacts", ready_id, "report", "chess_games.html"),
+                        "size_bytes": 96,
+                        "content_type": "text/html; charset=utf-8",
+                        "download_url": f"/convert/artifact/{ready_id}/chess_pgn_html",
+                        "label": "HTML PGN",
+                    },
+                },
+                "artifact_storage": {"provider": "local", "status": "available", "reason": ""},
                 "output_size_bytes": 0,
                 "error": "",
             }
@@ -461,7 +488,228 @@ class AppAsyncConvertTests(unittest.TestCase):
         self.assertEqual(item["report_markdown_url"], f"/convert/report/{ready_id}.md")
         self.assertTrue(item["download_available"])
         self.assertEqual(item["download_state"]["status"], "available")
+        self.assertEqual(item["artifacts"]["chess_pgn"]["download_url"], f"/convert/artifact/{ready_id}/chess_pgn")
+        self.assertEqual(item["artifacts"]["chess_pgn_html"]["download_url"], f"/convert/artifact/{ready_id}/chess_pgn_html")
+        self.assertEqual(item["artifact_storage"]["provider"], "local")
         self.assertIn("title", item["matched_fields"])
+
+    def test_convert_artifact_serves_local_pgn_and_redirects_remote_html(self) -> None:
+        job_id = "ready-chess-artifacts"
+        created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        artifact_dir = Path(app_module.app.root_path) / "output" / "artifacts" / job_id / "report"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        pgn_path = artifact_dir / "chess_games.pgn"
+        pgn_path.write_text('[Event "Unit"]\n\n1. e4 e5 *\n', encoding="utf-8")
+        self.cleanup_paths.append(str(pgn_path))
+        with app_module._CONVERSION_JOBS_LOCK:
+            app_module._CONVERSION_JOBS[job_id] = {
+                "job_id": job_id,
+                "status": "ready",
+                "message": "EPUB gotowy do pobrania.",
+                "source_type": "pdf",
+                "filename": "chess.pdf",
+                "created_at": created_at,
+                "updated_at": created_at,
+                "source_path": "",
+                "output_path": "",
+                "download_name": "chess.epub",
+                "metadata": {"source_type": "pdf", "profile": "premium_scanned_chess_reflow"},
+                "runtime": {"provider": "local", "status": "succeeded"},
+                "artifacts": {
+                    "chess_pgn": {
+                        "provider": "local",
+                        "status": "stored",
+                        "kind": "report",
+                        "job_id": job_id,
+                        "filename": "chess_games.pgn",
+                        "location": str(pgn_path),
+                        "size_bytes": pgn_path.stat().st_size,
+                        "content_type": "application/x-chess-pgn; charset=utf-8",
+                        "retention": {"days": 90, "expires_at": ""},
+                        "signed_url": {"available": False, "url": "", "expires_in_seconds": 0, "reason": "local_storage"},
+                    },
+                    "chess_pgn_html": {
+                        "provider": "r2",
+                        "status": "stored",
+                        "kind": "report",
+                        "job_id": job_id,
+                        "filename": "chess_games.html",
+                        "location": "r2://kindlemaster/ready-chess-artifacts/report/chess_games.html",
+                        "size_bytes": 128,
+                        "content_type": "text/html; charset=utf-8",
+                        "retention": {"days": 90, "expires_at": ""},
+                        "signed_url": {
+                            "available": True,
+                            "url": "https://signed.example.invalid/chess_games.html",
+                            "expires_in_seconds": 900,
+                            "reason": "",
+                        },
+                    },
+                },
+                "artifact_storage": {"provider": "r2", "status": "available", "reason": ""},
+                "output_size_bytes": 0,
+                "error": "",
+            }
+        self.cleanup_job_ids.append(job_id)
+
+        local_response = self.client.get(f"/convert/artifact/{job_id}/chess_pgn")
+        remote_response = self.client.get(f"/convert/artifact/{job_id}/chess_pgn_html")
+
+        self.assertEqual(local_response.status_code, 200)
+        self.assertIn(b'[Event "Unit"]', local_response.data)
+        self.assertEqual(remote_response.status_code, 302)
+        self.assertEqual(remote_response.headers["Location"], "https://signed.example.invalid/chess_games.html")
+
+    def test_supabase_cloud_sync_uploads_pgn_html_artifact_metadata(self) -> None:
+        job_id = "cloud-sync-chess-job"
+        created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        artifact_dir = Path(app_module.app.root_path) / "output" / "artifacts" / job_id / "report"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        html_path = artifact_dir / "chess_games.html"
+        html_path.write_text("<html><body>PGN</body></html>", encoding="utf-8")
+        self.cleanup_paths.append(str(html_path))
+        with app_module._CONVERSION_JOBS_LOCK:
+            app_module._CONVERSION_JOBS[job_id] = {
+                "job_id": job_id,
+                "status": "ready",
+                "message": "EPUB gotowy do pobrania.",
+                "source_type": "pdf",
+                "filename": "cloud-sync.pdf",
+                "created_at": created_at,
+                "updated_at": created_at,
+                "source_path": "",
+                "output_path": "",
+                "download_name": "cloud-sync.epub",
+                "metadata": {"source_type": "pdf", "profile": "premium_scanned_chess_reflow"},
+                "runtime": {"provider": "local", "status": "succeeded"},
+                "artifacts": {
+                    "chess_pgn_html": {
+                        "provider": "local",
+                        "status": "stored",
+                        "kind": "report",
+                        "job_id": job_id,
+                        "filename": "chess_games.html",
+                        "location": str(html_path),
+                        "size_bytes": html_path.stat().st_size,
+                        "content_type": "text/html; charset=utf-8",
+                        "retention": {"days": 90, "expires_at": ""},
+                        "signed_url": {"available": False, "url": "", "expires_in_seconds": 0, "reason": "local_storage"},
+                    }
+                },
+                "artifact_storage": {"provider": "local", "status": "available", "reason": ""},
+                "output_size_bytes": 0,
+                "error": "",
+            }
+        self.cleanup_job_ids.append(job_id)
+
+        json_calls: list[tuple[str, str]] = []
+        byte_calls: list[tuple[str, str, bytes]] = []
+
+        def fake_json(path, *, token, method="GET", payload=None, prefer=""):
+            json_calls.append((method, path))
+            if path.startswith("/storage/v1/object/sign/"):
+                return 200, {"signedURL": "https://supabase.example.invalid/signed/chess_games.html"}
+            return 201, [{"ok": True}]
+
+        def fake_bytes(path, *, token, method, data, content_type, extra_headers=None):
+            byte_calls.append((method, path, data))
+            return 200, {"Key": "stored"}
+
+        with patch("app._supabase_request_json", side_effect=fake_json), patch(
+            "app._supabase_request_bytes",
+            side_effect=fake_bytes,
+        ):
+            result = app_module._sync_conversion_job_to_supabase(
+                job_id,
+                token="unit-token",
+                user_id="11111111-1111-1111-1111-111111111111",
+                upload_artifacts=True,
+            )
+
+        self.assertEqual(result["status"], "synced")
+        self.assertTrue(any(path.startswith("/rest/v1/conversion_jobs") for _method, path in json_calls))
+        self.assertTrue(any(path.startswith("/rest/v1/conversion_artifacts") for _method, path in json_calls))
+        self.assertEqual(byte_calls[0][0], "POST")
+        self.assertIn("/storage/v1/object/kindlemaster-artifacts/11111111-1111-1111-1111-111111111111/cloud-sync-chess-job/chess_games.html", byte_calls[0][1])
+        self.assertEqual(byte_calls[0][2], b"<html><body>PGN</body></html>")
+        synced_job = app_module._get_conversion_job(job_id)
+        assert synced_job is not None
+        artifact = synced_job["artifacts"]["chess_pgn_html"]
+        self.assertEqual(artifact["cloud"]["provider"], "supabase")
+        self.assertTrue(artifact["signed_url"]["available"])
+
+    def test_convert_library_imports_supabase_pgn_html_artifact(self) -> None:
+        user_id = "22222222-2222-2222-2222-222222222222"
+
+        def fake_json(path, *, token, method="GET", payload=None, prefer=""):
+            if path.startswith("/rest/v1/conversion_jobs"):
+                return 200, [
+                    {
+                        "job_id": "cloud-library-job",
+                        "user_id": user_id,
+                        "status": "ready",
+                        "message": "EPUB gotowy do pobrania.",
+                        "filename": "cloud-fundamenty.pdf",
+                        "source_type": "pdf",
+                        "download_name": "cloud-fundamenty.epub",
+                        "created_at": "2026-05-28T10:00:00Z",
+                        "updated_at": "2026-05-28T10:05:00Z",
+                        "elapsed_seconds": 123,
+                        "output_size_bytes": 1024,
+                        "metadata": {
+                            "title": "Cloud Fundamenty",
+                            "source_type": "pdf",
+                            "profile": "premium_scanned_chess_reflow",
+                            "validation": "passed",
+                            "validation_tool": "epubcheck",
+                        },
+                        "quality_state_snapshot": {},
+                        "auto_repair": {},
+                        "email_delivery": {},
+                        "runtime": {"provider": "local", "status": "succeeded"},
+                        "error": "",
+                        "error_code": "",
+                    }
+                ]
+            if path.startswith("/rest/v1/conversion_artifacts"):
+                return 200, [
+                    {
+                        "job_id": "cloud-library-job",
+                        "user_id": user_id,
+                        "kind": "chess_pgn_html",
+                        "filename": "chess_games.html",
+                        "content_type": "text/html; charset=utf-8",
+                        "size_bytes": 2048,
+                        "storage_bucket": "kindlemaster-artifacts",
+                        "storage_path": f"{user_id}/cloud-library-job/chess_games.html",
+                        "signed_url_metadata": {},
+                        "retention_days": 90,
+                    }
+                ]
+            if path.startswith("/storage/v1/object/sign/"):
+                return 200, {"signedURL": "/storage/v1/object/sign/kindlemaster-artifacts/cloud-html?token=unit"}
+            return 0, {}
+
+        with patch("app._authenticated_request_context", return_value=({"id": user_id}, "unit-token")), patch(
+            "app._supabase_request_json",
+            side_effect=fake_json,
+        ), patch("app._supabase_public_settings", return_value=("https://supabase.example.invalid", "publishable")), patch(
+            "app._ensure_local_artifact_history_loaded",
+            return_value={"imported": 0},
+        ):
+            response = self.client.get("/convert/library?status=ready&q=cloud-fundamenty&limit=100")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["cloud_sync"]["status"], "synced")
+        self.assertEqual(payload["count"], 1)
+        item = payload["items"][0]
+        self.assertEqual(item["job_id"], "cloud-library-job")
+        self.assertEqual(item["artifact_storage"]["provider"], "supabase")
+        html_artifact = item["artifacts"]["chess_pgn_html"]
+        self.assertEqual(html_artifact["provider"], "supabase")
+        self.assertEqual(html_artifact["storage_bucket"], "kindlemaster-artifacts")
+        self.assertTrue(html_artifact["download_url"].startswith("https://"))
 
     def test_ready_missing_output_reports_consistent_download_state_without_availability(self) -> None:
         now = datetime.now(UTC)

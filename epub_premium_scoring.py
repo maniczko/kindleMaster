@@ -986,6 +986,8 @@ def _toc_noise_issue(entry: dict[str, str]) -> dict[str, Any] | None:
     normalized = _normalize_label(label)
     if not normalized:
         return _issue("review", "toc_non_content_entry", "Empty TOC label.", "toc", "Remove empty navigation entries.")
+    if _is_meaningful_index_toc_label(normalized):
+        return None
     if _matches_any(normalized, GENERIC_TOC_PATTERNS):
         return _issue(
             "review",
@@ -1011,6 +1013,18 @@ def _toc_noise_issue(entry: dict[str, str]) -> dict[str, Any] | None:
             "Shorten navigation labels to article or section titles.",
         )
     return None
+
+
+def _is_meaningful_index_toc_label(label: str) -> bool:
+    normalized = _normalize_label(label).strip(" .:;")
+    if not normalized:
+        return False
+    lowered = normalized.lower()
+    if lowered == "index":
+        return False
+    if re.fullmatch(r"(?:index|indeks)\s+(?:of\s+|[a-ząćęłńóśźż]+\s+)?[a-ząćęłńóśźż][a-ząćęłńóśźż\s&-]{2,80}", lowered):
+        return True
+    return False
 
 
 def _dense_handbook_navigation_quality(

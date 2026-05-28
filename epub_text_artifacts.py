@@ -23,6 +23,9 @@ LOWERCASE_CONNECTOR_GLUE_WORDS = ("oraz", "czy", "ale", "dla", "pod", "nad", "pr
 OCR_JUNK_RE = re.compile(r"(?:\ufffd|\u00c4|\u0139|\u0102|\u00c3|[\u00e2][\u20ac][\u201c-\u201d])")
 SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+[,.!?;:]")
 MISSING_SPACE_AFTER_SENTENCE_RE = re.compile(r"(?<=[.!?])(?=[A-Z])")
+CHESS_OR_INITIAL_PERIOD_CONTEXT_RE = re.compile(
+    r"(?:\b\d+\.{1,3}|\b[A-Z]\.|\b[A-Z][a-z]{1,24}\s+\d+\.|\b[A-Z][a-z]{1,24}\s+[A-Z]\.)$"
+)
 URL_FRAGMENT_RE = re.compile(r"(?i)(?:https?\s*:\s*/?\s*/|www\s*\.\s+|doi\s*:\s+|https?://\s+)")
 TECHNICAL_PLACEHOLDER_RE = re.compile(
     r"(?i)(?:__KM_PROTECTED_\d+__|\bTODO\b|\bFIXME\b)"
@@ -183,11 +186,32 @@ def _analyze_text(document_path: str, text: str) -> TextArtifactMetrics:
         "glued_word_count": _count_glued_tokens(tokens),
         "ocr_junk_count": len(OCR_JUNK_RE.findall(text or "")),
         "punctuation_spacing_count": len(SPACE_BEFORE_PUNCT_RE.findall(text or ""))
-        + len(MISSING_SPACE_AFTER_SENTENCE_RE.findall(text or "")),
+        + _count_missing_sentence_spaces(text or ""),
         "suspicious_url_fragment_count": len(URL_FRAGMENT_RE.findall(text or "")),
         "technical_placeholder_count": technical_placeholder_count,
     }
     return TextArtifactMetrics(document_path=document_path, word_count=len(tokens), counts=counts)
+
+
+def _count_missing_sentence_spaces(text: str) -> int:
+    count = 0
+    for match in MISSING_SPACE_AFTER_SENTENCE_RE.finditer(text or ""):
+        left = text[max(0, match.start() - 48) : match.start()]
+        if _looks_like_chess_or_initial_period_context(left):
+            continue
+        count += 1
+    return count
+
+
+def _looks_like_chess_or_initial_period_context(left_context: str) -> bool:
+    compact = " ".join((left_context or "").split())
+    if not compact:
+        return False
+    if CHESS_OR_INITIAL_PERIOD_CONTEXT_RE.search(compact):
+        return True
+    # Algebraic chess notation commonly appears as "2.Kh1", "1...Qe2", or
+    # "5...Nxf7"; these are not sentence-boundary spacing errors.
+    return bool(re.search(r"\b\d+\.{1,3}[KQRBN]?[a-h]?[1-8]?x?[a-h]?[1-8]?$", compact))
 
 
 def _looks_like_dense_handbook_text(text: str) -> bool:

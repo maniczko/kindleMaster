@@ -112,6 +112,7 @@ class BrowserPollingE2ETests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.context = self.browser.new_context(accept_downloads=True)
+        self.context.add_init_script("window.localStorage.setItem('kindlemaster.start.continue-local', '1');")
         self.page = self.context.new_page()
 
     def tearDown(self) -> None:

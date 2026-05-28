@@ -141,6 +141,43 @@ class ChessDiagramEpubBuilderTests(unittest.TestCase):
         self.assertEqual(chapter_one.count('src="images/board_inline.png"'), 1)
         self.assertNotIn("chess-diagrams-section", chapter_one)
 
+    def test_build_epub_writes_fen_metadata_for_fallback_chess_diagram(self) -> None:
+        fen = "8/8/8/3k4/8/8/4K3/8 w - - 0 1"
+        content = {
+            "chapters": [
+                {
+                    "title": "Fen Probe",
+                    "html_parts": ["<p>Position below.</p>"],
+                    "images": [
+                        {
+                            "filename": "board_fen.png",
+                            "data": _TINY_PNG,
+                            "extension": "png",
+                            "bbox": (0, 0, 220, 220),
+                            "is_chess": True,
+                            "fen": fen,
+                            "fen_confidence": 0.96,
+                            "fen_method": "font-board",
+                        }
+                    ],
+                }
+            ],
+            "images": [],
+            "method": "unit-probe",
+        }
+
+        epub_bytes = build_epub(
+            content,
+            ConversionConfig(language="en"),
+            "fen.pdf",
+            {"title": "FEN Probe", "author": "Codex QA"},
+        )
+
+        chapter = self._read_epub_entry(epub_bytes, "EPUB/chapter_001.xhtml")
+        self.assertIn(f'data-fen="{fen}"', chapter)
+        self.assertIn('data-fen-confidence="0.960"', chapter)
+        self.assertIn("Diagram szachowy, FEN:", chapter)
+
     def test_publication_to_content_preserves_inline_chess_diagram_marker(self) -> None:
         analysis = PublicationAnalysis(
             profile="diagram_book_reflow",

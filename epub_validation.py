@@ -20,7 +20,9 @@ XHTML_MIME_TYPES = {
     "application/xhtml+xml",
     "text/html",
 }
-_TLD_EXTRACT = tldextract.TLDExtract(suffix_list_urls=None)
+# Keep URL validation fully local and lock-free. The default tldextract cache
+# lives under site-packages on this runtime and can deadlock parallel test lanes.
+_TLD_EXTRACT = tldextract.TLDExtract(cache_dir=None, suffix_list_urls=None)
 _BROKEN_ENCODING_TAIL_RE = re.compile(r"%(?:[0-9A-Fa-f])?$")
 _IPV4_RE = re.compile(r"^\d+\.\d+\.\d+\.\d+$")
 

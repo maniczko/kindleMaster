@@ -670,6 +670,31 @@ class SemanticEpubCleanupTests(unittest.TestCase):
         self.assertTrue(any(entry["id"] == "solution-architecture" for entry in entries))
         self.assertFalse(any(entry["id"] == "stale-anchor" for entry in entries))
 
+    def test_scanned_chess_reflow_toc_uses_only_chapter_level_headings(self):
+        chapter_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Chess Chapter</title></head>
+  <body>
+    <section>
+      <h1 id="mating-motifs">1. Mating motifs</h1>
+      <p>OCR text with chess notation.</p>
+      <h2 id="diagram-noise">Diagram 1-1 A.Model - G.Goldberg 1...Qe2+</h2>
+      <h3 id="ocr-noise">Ff</h3>
+    </section>
+  </body>
+</html>
+"""
+        with TemporaryDirectory() as temp_dir:
+            chapter_path = Path(temp_dir) / "chapter_001.xhtml"
+            chapter_path.write_text(chapter_source, encoding="utf-8")
+
+            entries = _rebuild_toc_entries_from_final_chapters(
+                [chapter_path],
+                publication_profile="premium_scanned_chess_reflow",
+            )
+
+        self.assertEqual([entry["text"] for entry in entries], ["1. Mating motifs"])
+
     def test_process_chapter_rebuilds_polish_references_from_anchor_labels_and_list_items(self):
         chapter_source = """<?xml version="1.0" encoding="utf-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml">

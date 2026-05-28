@@ -4,9 +4,10 @@ Sprint 4 introduces a React/Vite UI workspace while keeping the Flask API stable
 
 ## Routes
 
-- `/` remains the legacy static control panel during migration.
+- `/` opens the React shell when the production build exists.
 - `/app` serves the React shell after `npm run build:ui`.
 - If the React build is missing, `/app` returns a small unbuilt-state page with the local commands.
+- If the React build is missing, `/` falls back to the legacy static control panel.
 - `static/react/` is generated build output and is ignored by Git.
 
 ## Commands
@@ -47,4 +48,4 @@ The shared quality-state adapter consumes:
 
 ## Migration Rule
 
-Do not remove the legacy template until the Sprint 4 React route has browser and runtime coverage in CI. The root route can move to React after the old `test_flat2_ui_template.py` contract is retired or rewritten.
+Do not remove the legacy template until the Sprint 4 React route has browser and runtime coverage in CI. The root route now prefers React when `static/react/index.html` exists, while retaining the legacy template as the clean-checkout fallback.

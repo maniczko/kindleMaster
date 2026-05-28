@@ -2992,7 +2992,7 @@
 
     @media (max-width: 1280px) {
       .shell {
-        grid-template-columns: 208px minmax(0, 1fr);
+        grid-template-columns: 232px minmax(0, 1fr);
       }
 
       .topbar {
@@ -3049,7 +3049,7 @@
       }
     }
 
-    @media (max-width: 860px) {
+    @media (max-width: 980px) {
       .shell {
         display: flex;
         flex-direction: column;

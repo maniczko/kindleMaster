@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import io
+import tempfile
 import unittest
 import zipfile
+from pathlib import Path
+from unittest.mock import patch
 
 from epub_premium_scoring import build_magazine_premium_quality_contract
 from publication_model import PublicationAnalysis, PublicationDocument, PublicationQualityReport
 from publication_pipeline import (
+    _build_scanned_content,
     _looks_like_cover_masthead_line,
     _ocr_quality_from_result,
+    _should_skip_external_ocr_for_large_scan,
     _should_coalesce_page_chapters_with_pdf_outline,
     finalize_publication_epub,
     publication_from_content,
@@ -300,6 +305,47 @@ class PublicationPipelineTests(unittest.TestCase):
         self.assertEqual(document.quality_report.ocr_quality["status"], "degraded")
         self.assertIn("ocr_unavailable", document.quality_report.to_dict()["ocr_quality"]["reason_codes"])
         self.assertIn("ocr_quality", document.quality_report.content_metrics_dict())
+
+    def test_large_scanned_pdf_without_forced_ocr_skips_external_ocr(self) -> None:
+        class Config:
+            enable_external_ocr = True
+            force_ocr = False
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pdf_path = Path(tmpdir) / "large-scan.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4\n")
+            with patch("converter.OCR_AVAILABLE", True), patch(
+                "converter.extract_pdf_with_pymupdf",
+                return_value={"chapters": [{"title": "Scan", "page_num": 0, "html_parts": []}], "metadata": {}},
+            ) as fallback:
+                content = _build_scanned_content(
+                    str(pdf_path),
+                    Config(),
+                    {"source_page_count": 266},
+                )
+
+        fallback.assert_called_once()
+        ocr_quality = content["metadata"]["ocr_quality"]
+        self.assertTrue(ocr_quality["auto_ocr_skipped"])
+        self.assertIn("ocr_skipped_large_scan", ocr_quality["reason_codes"])
+        self.assertFalse(ocr_quality["environment_error"])
+
+    def test_forced_ocr_does_not_skip_large_scanned_pdf(self) -> None:
+        class Config:
+            force_ocr = True
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pdf_path = Path(tmpdir) / "large-scan.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4\n")
+
+            should_skip, details = _should_skip_external_ocr_for_large_scan(
+                str(pdf_path),
+                Config(),
+                {"source_page_count": 266},
+            )
+
+        self.assertFalse(should_skip)
+        self.assertEqual(details, {})
 
     def test_diagram_book_back_cover_is_not_flagged_as_empty_fallback_section(self) -> None:
         analysis = PublicationAnalysis(

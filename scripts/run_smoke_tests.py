@@ -33,6 +33,7 @@ CHESS_TOTAL_ASSET_WARN_BYTES = 4 * 1024 * 1024
 CHESS_TOTAL_ASSET_HARD_BYTES = 5 * 1024 * 1024
 CHESS_OUTER_WHITESPACE_WARN_RATIO = 0.18
 CHESS_OUTER_WHITESPACE_HARD_RATIO = 0.28
+CHESS_FEN_ACCEPTANCE_MIN = 0.80
 SMOKE_MODES = ("micro", "quick", "full")
 FAST_CASE_SECONDS = 5.0
 SLOW_CASE_SECONDS = 30.0
@@ -42,6 +43,15 @@ PUA_RANGES = (
     range(0xE000, 0xF900),
     range(0xF0000, 0x100000),
     range(0x100000, 0x110000),
+)
+VISIBLE_FEN_PATTERN = re.compile(
+    r"\b(?:[prnbqkPRNBQK1-8]{1,8}/){7}[prnbqkPRNBQK1-8]{1,8}\s+"
+    r"[wb]\s+(?:-|[KQkq]{1,4})\s+(?:-|[a-h][36])\s+\d+\s+\d+\b"
+)
+FEN_REVIEW_PATTERN = re.compile(
+    r"\bFEN\s*[:：-]?\s*"
+    r"(?:wymaga\s+review|requires[-\s]+review|manual[-\s]+review|review(?:\s+required)?)\b",
+    flags=re.IGNORECASE,
 )
 
 
@@ -116,6 +126,7 @@ def run_smoke_tests(
             row["epub_size_bytes"] = len(artifact_bytes)
             row["chess_quality"] = _inspect_epub_chess_quality(artifact_bytes)
             row["asset_quality_gate"] = _evaluate_chess_asset_quality_gate(row["chess_quality"])
+            row["fen_acceptance_gate"] = _evaluate_chess_fen_acceptance_gate(row)
             document_class = str(case.get("document_class", ""))
             row["size_gate"] = evaluate_size_budget(
                 budget_key=document_class,
@@ -196,6 +207,9 @@ def _case_matches(case: dict[str, Any], filters: list[str]) -> bool:
 def _empty_chess_quality_metrics() -> dict[str, int | float]:
     return {
         "chess_diagram_tag_count": 0,
+        "data_fen_count": 0,
+        "visible_fen_count": 0,
+        "fen_review_count": 0,
         "unique_src_count": 0,
         "duplicate_src_count": 0,
         "pua_count": 0,
@@ -241,6 +255,9 @@ def _inspect_epub_chess_quality(epub_bytes: bytes) -> dict[str, int | float]:
             metrics.update(
                 {
                     "chess_diagram_tag_count": parser.chess_diagram_tag_count,
+                    "data_fen_count": parser.data_fen_count,
+                    "visible_fen_count": parser.visible_fen_count,
+                    "fen_review_count": parser.fen_review_count,
                     "unique_src_count": len(unique_srcs),
                     "duplicate_src_count": max(0, len(srcs) - len(unique_srcs)),
                     "pua_count": parser.pua_count,
@@ -258,15 +275,24 @@ class _ChessQualityHTMLParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.document_path = ""
         self.chess_diagram_tag_count = 0
+        self.data_fen_count = 0
+        self.visible_fen_count = 0
+        self.fen_review_count = 0
         self.chess_diagram_srcs: list[str] = []
         self.pua_count = 0
         self.unicode_figurine_count = 0
+        self._text_parts: list[str] = []
 
     def feed_document(self, data: str, *, document_path: str) -> None:
         self.document_path = document_path.replace("\\", "/")
+        self._text_parts = []
         super().feed(data)
         self.close()
+        visible_text = " ".join(self._text_parts)
+        self.visible_fen_count += len(VISIBLE_FEN_PATTERN.findall(visible_text))
+        self.fen_review_count += len(FEN_REVIEW_PATTERN.findall(visible_text))
         self.reset()
+        self._text_parts = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self._handle_tag(attrs)
@@ -275,6 +301,8 @@ class _ChessQualityHTMLParser(HTMLParser):
         self._handle_tag(attrs)
 
     def handle_data(self, data: str) -> None:
+        if data:
+            self._text_parts.append(data)
         for char in data:
             codepoint = ord(char)
             if any(codepoint in pua_range for pua_range in PUA_RANGES):
@@ -284,6 +312,8 @@ class _ChessQualityHTMLParser(HTMLParser):
 
     def _handle_tag(self, attrs: list[tuple[str, str | None]]) -> None:
         attr_map = {name.lower(): value or "" for name, value in attrs}
+        if "data-fen" in attr_map:
+            self.data_fen_count += 1
         classes = {token for token in attr_map.get("class", "").split() if token}
         if "chess-diagram" not in classes:
             return
@@ -412,11 +442,17 @@ def _build_smoke_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     size_warnings = 0
     asset_failures = 0
     asset_warnings = 0
+    fen_failures = 0
+    fen_warnings = 0
     for row in rows:
         validation_status = _effective_case_validation_status(row)
         size_status = (row.get("size_gate") or {}).get("status", "passed")
         asset_status = (row.get("asset_quality_gate") or {}).get("status", "passed")
-        status = _merge_statuses(_merge_statuses(validation_status, size_status), asset_status)
+        fen_status = (row.get("fen_acceptance_gate") or {}).get("status", "not_applicable")
+        status = _merge_statuses(
+            _merge_statuses(_merge_statuses(validation_status, size_status), asset_status),
+            fen_status,
+        )
         if status == "failed":
             failures += 1
         elif status == "passed_with_warnings":
@@ -429,6 +465,10 @@ def _build_smoke_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
             asset_failures += 1
         elif asset_status == "passed_with_warnings":
             asset_warnings += 1
+        if fen_status == "failed":
+            fen_failures += 1
+        elif fen_status == "passed_with_warnings":
+            fen_warnings += 1
     overall = "failed" if failures else ("passed_with_warnings" if warnings else "passed")
     return {
         "cases_run": len(rows),
@@ -438,6 +478,8 @@ def _build_smoke_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "size_warning_cases": size_warnings,
         "asset_failed_cases": asset_failures,
         "asset_warning_cases": asset_warnings,
+        "fen_failed_cases": fen_failures,
+        "fen_warning_cases": fen_warnings,
         "overall_status": overall,
     }
 
@@ -506,6 +548,7 @@ def _build_case_benchmark(*, row: dict[str, Any], elapsed_seconds: float) -> dic
     inspection = size_gate.get("inspection") or {}
     chess_quality = row.get("chess_quality") or _empty_chess_quality_metrics()
     asset_quality_gate = row.get("asset_quality_gate") or _evaluate_chess_asset_quality_gate(chess_quality)
+    fen_acceptance_gate = row.get("fen_acceptance_gate") or _evaluate_chess_fen_acceptance_gate(row)
     fallback_mode = _detect_fallback_mode(analysis=analysis, quality_report=quality_report)
     profile_hint = _build_profile_hint(row=row, analysis=analysis, quality_report=quality_report, fallback_mode=fallback_mode)
     missing_metrics: list[str] = []
@@ -534,6 +577,7 @@ def _build_case_benchmark(*, row: dict[str, Any], elapsed_seconds: float) -> dic
         ),
         "chess_quality": chess_quality,
         "asset_quality_gate": asset_quality_gate,
+        "fen_acceptance_gate": fen_acceptance_gate,
         "metrics_missing": missing_metrics,
     }
 
@@ -690,6 +734,63 @@ def _evaluate_chess_asset_quality_gate(chess_quality: dict[str, Any]) -> dict[st
     }
 
 
+def _evaluate_chess_fen_acceptance_gate(row: dict[str, Any]) -> dict[str, Any]:
+    quality_report = row.get("quality_report") or {}
+    chess_fen = quality_report.get("chess_fen") or {}
+    source = "quality_report.chess_fen"
+    diagram_count = int(chess_fen.get("diagram_count") or 0)
+    fen_count = int(chess_fen.get("fen_count") or 0)
+    manual_review_count = int(chess_fen.get("manual_review_count") or 0)
+
+    if diagram_count <= 0:
+        chess_quality = row.get("chess_quality") or {}
+        diagram_count = int(chess_quality.get("chess_diagram_tag_count") or 0)
+        raw_data_fen_count = int(chess_quality.get("data_fen_count") or 0)
+        fen_count = min(diagram_count, raw_data_fen_count)
+        manual_review_count = int(chess_quality.get("fen_review_count") or 0)
+        source = "epub_chess_quality"
+
+    if diagram_count <= 0:
+        return {
+            "status": "not_applicable",
+            "fen_coverage": 0.0,
+            "fen_acceptance_min": CHESS_FEN_ACCEPTANCE_MIN,
+            "diagram_count": 0,
+            "fen_count": 0,
+            "manual_review_count": 0,
+            "manual_review_ratio": 0.0,
+            "source": source,
+            "message": "No chess diagrams detected.",
+        }
+
+    fen_coverage = round(fen_count / max(1, diagram_count), 4)
+    manual_review_ratio = round(manual_review_count / max(1, diagram_count), 4)
+    if fen_coverage < CHESS_FEN_ACCEPTANCE_MIN:
+        status = "failed"
+        message = (
+            f"FEN coverage {fen_coverage:.4f} is below acceptance minimum "
+            f"{CHESS_FEN_ACCEPTANCE_MIN:.2f}."
+        )
+    elif manual_review_count > 0:
+        status = "passed_with_warnings"
+        message = f"FEN coverage passed, but {manual_review_count} diagram(s) still require review."
+    else:
+        status = "passed"
+        message = f"FEN coverage passed the {CHESS_FEN_ACCEPTANCE_MIN:.0%} acceptance gate."
+
+    return {
+        "status": status,
+        "fen_coverage": fen_coverage,
+        "fen_acceptance_min": CHESS_FEN_ACCEPTANCE_MIN,
+        "diagram_count": diagram_count,
+        "fen_count": fen_count,
+        "manual_review_count": manual_review_count,
+        "manual_review_ratio": manual_review_ratio,
+        "source": source,
+        "message": message,
+    }
+
+
 def _build_benchmark_summary(rows: list[dict[str, Any]], *, elapsed_seconds: float) -> dict[str, Any]:
     classes = {str(row.get("document_class", "") or "") for row in rows if row.get("document_class")}
     slowest = sorted(
@@ -800,6 +901,9 @@ def _build_smoke_markdown(payload: dict[str, Any]) -> str:
             lines.append(
                 "- Chess quality: "
                 f"diagrams `{chess_quality.get('chess_diagram_tag_count', 0)}`, "
+                f"data FEN `{chess_quality.get('data_fen_count', 0)}`, "
+                f"visible FEN `{chess_quality.get('visible_fen_count', 0)}`, "
+                f"FEN review `{chess_quality.get('fen_review_count', 0)}`, "
                 f"unique src `{chess_quality.get('unique_src_count', 0)}`, "
                 f"duplicate src `{chess_quality.get('duplicate_src_count', 0)}`, "
                 f"PUA `{chess_quality.get('pua_count', 0)}`, "
@@ -825,6 +929,14 @@ def _build_smoke_markdown(payload: dict[str, Any]) -> str:
             lines.append(
                 f"- Asset quality gate: `{asset_gate.get('status', 'unknown')}` "
                 f"budget `{asset_gate.get('budget', 'unknown')}` - {asset_gate.get('message', '')}"
+            )
+        fen_gate = row.get("fen_acceptance_gate") or (benchmark.get("fen_acceptance_gate") or {})
+        if fen_gate:
+            lines.append(
+                f"- FEN acceptance gate: `{fen_gate.get('status', 'unknown')}` "
+                f"coverage `{fen_gate.get('fen_coverage', 0)}` / min "
+                f"`{fen_gate.get('fen_acceptance_min', CHESS_FEN_ACCEPTANCE_MIN)}` - "
+                f"{fen_gate.get('message', '')}"
             )
         if row.get("size_gate"):
             size_gate = row["size_gate"]

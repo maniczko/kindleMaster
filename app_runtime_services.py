@@ -576,6 +576,8 @@ def _build_content_metrics_payload(quality_report: Mapping[str, Any]) -> dict[st
             "figure_summary",
             "reading_flow",
             "magazine_premium_quality",
+            "chess_fen",
+            "chess_pgn",
             "dense_handbook_navigation_summary",
         ),
     )

@@ -139,9 +139,12 @@ def analyze_publication(
     layout_heavy = pages_with_images > 0 and image_page_ratio >= 0.35
     text_heavy = pages_with_text > total_pages * 0.5 and image_page_ratio <= 0.15
     has_toc = bool(toc)
+    has_chess_training_outline = _has_chess_training_outline(toc)
     has_meaningful_images = meaningful_image_pages > 0
     has_tables = False if preferred_profile == "diagram_book_reflow" else _detect_tables(pdf_path, sample_pages)
-    has_diagrams = detected_diagrams > 0 or _detect_chess_fonts(pdf_path)
+    has_diagrams = detected_diagrams > 0 or _detect_chess_fonts(pdf_path) or (
+        has_chess_training_outline and scanned_page_ratio > 0.55
+    )
     estimated_columns = round(mean(column_estimates)) if column_estimates else 1
     heading_density = mean(heading_scores) if heading_scores else 0.0
     font_consistency = _font_consistency(font_medians)
@@ -182,6 +185,7 @@ def analyze_publication(
         scanned_page_ratio=scanned_page_ratio,
         legacy_strategy=legacy_strategy,
         numbered_section_count=numbered_section_count,
+        has_chess_training_outline=has_chess_training_outline,
     )
     confidence = _estimate_confidence(
         profile=profile,
@@ -242,6 +246,8 @@ def analyze_publication(
         features.append("diagrams")
     if has_meaningful_images:
         features.append("meaningful-images")
+    if has_chess_training_outline:
+        features.append("chess-training-outline")
     if layout_heavy:
         features.append("layout-heavy")
     if text_heavy:
@@ -454,6 +460,8 @@ def _choose_profile(**kwargs) -> tuple[str, str, str]:
             "diagram_book_reflow": ("diagram_book_reflow", "book"),
             "magazine": ("magazine_reflow", "magazine"),
             "magazine_reflow": ("magazine_reflow", "magazine"),
+            "premium_scanned_chess_reflow": ("premium_scanned_chess_reflow", "book"),
+            "scan_chess_reflow": ("premium_scanned_chess_reflow", "book"),
             "technical-study": ("book_reflow", "technical-study"),
             "scanned_reflow": ("scanned_reflow", "book"),
             "preserve-layout": ("fixed_layout_fallback", "preserve-layout"),
@@ -470,11 +478,18 @@ def _choose_profile(**kwargs) -> tuple[str, str, str]:
     has_tables = kwargs["has_tables"]
     has_toc = kwargs["has_toc"]
     has_meaningful_images = kwargs["has_meaningful_images"]
+    has_chess_training_outline = bool(kwargs.get("has_chess_training_outline", False))
     legacy_strategy = kwargs["legacy_strategy"]
     text_page_ratio = float(kwargs.get("text_page_ratio", 0.0) or 0.0)
     total_pages = int(kwargs.get("total_pages", 0) or 0)
     numbered_section_count = int(kwargs.get("numbered_section_count", 0) or 0)
 
+    if scanned_page_ratio > 0.55 and has_chess_training_outline:
+        return (
+            "premium_scanned_chess_reflow",
+            "book",
+            "Wykryto skanowaną publikację szachową; używam segmentacji diagramów zamiast pełnostronicowego EPUB obrazowego.",
+        )
     if scanned_page_ratio > 0.55:
         return "scanned_reflow", "preserve-layout", "Duży udział stron skanowanych wymaga OCR/fallbacków."
     if has_diagrams and (has_toc or text_heavy):
@@ -520,6 +535,7 @@ def _ui_profile_for_profile(profile: str, *, fallback: str) -> str:
         "book_reflow": "book",
         "diagram_book_reflow": "book",
         "magazine_reflow": "magazine",
+        "premium_scanned_chess_reflow": "book",
         "scanned_reflow": "preserve-layout",
         "fixed_layout_fallback": "preserve-layout",
         "docx_reflow": "book",
@@ -580,6 +596,8 @@ def _estimate_confidence(**kwargs) -> float:
 
 
 def _fallback_recommendation(profile: str, confidence: float, scanned_page_ratio: float) -> str:
+    if profile == "premium_scanned_chess_reflow":
+        return "scan-chess-segment-and-review"
     if profile == "fixed_layout_fallback":
         return "render-whole-document-fixed"
     if scanned_page_ratio > 0.3:
@@ -587,3 +605,40 @@ def _fallback_recommendation(profile: str, confidence: float, scanned_page_ratio
     if confidence < 0.6:
         return "page-level-figure-fallback"
     return "semantic-reflow"
+
+
+def _has_chess_training_outline(toc: list) -> bool:
+    if not toc:
+        return False
+    joined = " ".join(str(entry[1] or "") for entry in toc if len(entry) >= 2).lower()
+    if not joined:
+        return False
+    markers = {
+        "mate",
+        "mating",
+        "tactic",
+        "tactics",
+        "pawn",
+        "bishop",
+        "queen",
+        "king",
+        "rook",
+        "knight",
+        "opening",
+        "gambit",
+        "stalemate",
+        "combination",
+        "pin",
+        "opposition",
+        "diagram",
+        "szach",
+        "mat",
+        "pion",
+        "goniec",
+        "hetman",
+        "wieża",
+        "wieza",
+        "skoczek",
+        "roszada",
+    }
+    return sum(1 for marker in markers if marker in joined) >= 3

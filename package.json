@@ -30,6 +30,7 @@
     "vitest": "^4.0.0"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.106.2",
     "@trigger.dev/sdk": "^4.4.5",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

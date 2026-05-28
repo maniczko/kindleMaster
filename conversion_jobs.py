@@ -21,7 +21,7 @@ TERMINAL_CONVERSION_JOB_STATUSES = frozenset({STATUS_READY, STATUS_FAILED, STATU
 @dataclass(frozen=True)
 class ConversionQueuePolicy:
     max_active_jobs: int = 2
-    max_runtime_seconds: int = 30 * 60
+    max_runtime_seconds: int = 60 * 60
     max_stale_seconds: int = 12 * 60
     default_poll_interval_ms: int = 1500
     max_poll_interval_ms: int = 5000

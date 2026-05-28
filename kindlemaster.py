@@ -43,6 +43,7 @@ QUICK_TESTS = [
     "test_chess_fix.py",
     "test_chess_diagram_visual_quality.py",
     "test_chess_notation_regression.py",
+    "test_chess_pgn_extraction.py",
     "test_converter_publication_budget.py",
     "test_fixed_layout_render_budget.py",
     "test_converter_fixed_layout_budget_enforcement.py",
@@ -86,7 +87,7 @@ RELEASE_TESTS = [
 RELEASE_TIMEOUT_RETURN_CODE = 124
 RELEASE_STEP_TIMEOUTS_SECONDS = {
     "release-units": 300,
-    "corpus-units": 240,
+    "corpus-units": 420,
     "corpus-gate-standard": 2700,
     "corpus-gate-ci": 900,
     "browser-followup": 300,
@@ -99,11 +100,13 @@ CORPUS_TESTS = [
     "test_premium_corpus_smoke.py",
     "test_premium_corpus_smoke_batches.py",
     "test_corpus_gate.py",
+    "test_chess_fen_recognition.py",
     "test_golden_epub_regression.py",
 ]
 
 BROWSER_TESTS = [
     "test_browser_polling_runtime_harness.py",
+    "test_react_shell_browser_smoke.py",
 ]
 
 RUNTIME_TESTS = [
@@ -188,6 +191,8 @@ def main() -> int:
     corpus_parser.add_argument("--proof-profile", choices=("standard", "full", "ci"), default="standard")
     corpus_parser.add_argument("--smoke-case", action="append", default=[])
     corpus_parser.add_argument("--premium-case", action="append", default=[])
+    corpus_parser.add_argument("--fen-min-profile-count", type=int, default=1)
+    corpus_parser.add_argument("--fen-min-seed-label-count", type=int, default=20)
 
     status_parser = subparsers.add_parser("status", help="Generate a derived project status from existing evidence artifacts.")
     status_parser.add_argument("--repo-root", default=".")
@@ -347,6 +352,8 @@ def main() -> int:
             proof_profile=args.proof_profile,
             smoke_case_filters=args.smoke_case,
             premium_case_filters=args.premium_case,
+            fen_min_profile_count=args.fen_min_profile_count,
+            fen_min_seed_label_count=args.fen_min_seed_label_count,
         )
         _print_json(payload)
         return 0 if payload.get("overall_status") != "failed" else 1

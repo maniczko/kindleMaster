@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { normalizeQualityState } from "./quality-state";
 
 describe("normalizeQualityState", () => {
-  it("maps premium ready release payloads to the premium ready label", () => {
+  it("maps premium ready release payloads to the Polish premium ready label", () => {
     const state = normalizeQualityState({
       score: 94,
       premium_ready: true,
@@ -13,7 +13,7 @@ describe("normalizeQualityState", () => {
     });
 
     expect(state.status).toBe("premium_ready");
-    expect(state.label).toBe("Premium ready");
+    expect(state.label).toBe("Gotowe premium");
     expect(state.score).toBe(94);
     expect(state.reports.json).toBe("/convert/report/job.json");
     expect(state.artifacts.epub).toBe("/convert/download/job");

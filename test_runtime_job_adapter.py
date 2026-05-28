@@ -32,7 +32,7 @@ class RuntimeJobAdapterTests(unittest.TestCase):
         self.assertEqual(metadata["status"], "queued")
         self.assertEqual(metadata["external_id"], "")
         self.assertEqual(metadata["retry_policy"]["max_attempts"], 1)
-        self.assertEqual(metadata["timeout_seconds"], 1800)
+        self.assertEqual(metadata["timeout_seconds"], 3600)
         self.assertEqual(metadata["replay"]["command"]["name"], "convert")
         self.assertEqual(metadata["replay"]["context"]["job_id"], "job-1")
 

@@ -10,7 +10,9 @@ from scripts.run_smoke_tests import (
     _build_case_benchmark,
     _build_smoke_markdown,
     _build_smoke_summary,
+    _empty_chess_quality_metrics,
     _evaluate_chess_asset_quality_gate,
+    _evaluate_chess_fen_acceptance_gate,
     _inspect_epub_chess_quality,
 )
 
@@ -55,7 +57,10 @@ class SmokeChessQualityTests(unittest.TestCase):
 <html xmlns="http://www.w3.org/1999/xhtml">
   <body>
     <p>PUA: \ue06d Figurine: \u265e</p>
-    <img class="chess-diagram primary" src="images/board_large.png" alt="board"/>
+    <p>FEN: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1</p>
+    <p>FEN: wymaga review</p>
+    <div class="chess-position" data-fen="8/8/8/8/8/8/8/8 w - - 0 1">accepted container</div>
+    <img class="chess-diagram primary" data-fen="8/8/8/8/8/8/8/8 w - - 0 1" src="images/board_large.png" alt="board"/>
     <img class="chess-diagram" src="images/board_large.png" alt="duplicate"/>
     <figure class="chess-diagram"><figcaption>diagram wrapper</figcaption></figure>
     <img class="chess-diagram" src="images/board_small.png" alt="small"/>
@@ -83,6 +88,9 @@ class SmokeChessQualityTests(unittest.TestCase):
         summary = _build_smoke_summary([row])
 
         self.assertEqual(metrics["chess_diagram_tag_count"], 4)
+        self.assertEqual(metrics["data_fen_count"], 2)
+        self.assertEqual(metrics["visible_fen_count"], 1)
+        self.assertEqual(metrics["fen_review_count"], 1)
         self.assertEqual(metrics["unique_src_count"], 2)
         self.assertEqual(metrics["duplicate_src_count"], 1)
         self.assertEqual(metrics["pua_count"], 1)
@@ -101,19 +109,79 @@ class SmokeChessQualityTests(unittest.TestCase):
         self.assertEqual(benchmark["validation_status"], "passed")
         self.assertEqual(benchmark["metrics_missing"], [])
         self.assertEqual(benchmark["chess_quality"], metrics)
+        self.assertEqual(benchmark["fen_acceptance_gate"]["status"], "failed")
+        self.assertEqual(benchmark["fen_acceptance_gate"]["fen_coverage"], 0.5)
         self.assertEqual(asset_gate["status"], "passed_with_warnings")
         self.assertEqual(asset_gate["budget"], "chess_crisp_low_size")
         self.assertEqual(benchmark["asset_quality_gate"], asset_gate)
         self.assertEqual(summary["overall_status"], "passed_with_warnings")
         self.assertEqual(summary["asset_warning_cases"], 1)
 
+        row["fen_acceptance_gate"] = benchmark["fen_acceptance_gate"]
         markdown = _build_smoke_markdown({"mode": "quick", "summary": {"cases_run": 1}, "cases": [row]})
+        self.assertIn("data FEN", markdown)
+        self.assertIn("visible FEN", markdown)
+        self.assertIn("FEN review", markdown)
         self.assertIn("total asset", markdown)
         self.assertIn("avg asset", markdown)
         self.assertIn("quality min/avg", markdown)
         self.assertIn("contrast min/avg", markdown)
         self.assertIn("edge mean min/avg", markdown)
         self.assertIn("Asset quality gate", markdown)
+        self.assertIn("FEN acceptance gate", markdown)
+
+    def test_chess_fen_acceptance_gate_requires_80_percent_coverage(self) -> None:
+        row = {
+            "quality_report": {
+                "chess_fen": {
+                    "diagram_count": 100,
+                    "fen_count": 79,
+                    "manual_review_count": 21,
+                }
+            }
+        }
+
+        failed = _evaluate_chess_fen_acceptance_gate(row)
+        self.assertEqual(failed["status"], "failed")
+        self.assertEqual(failed["fen_coverage"], 0.79)
+        self.assertEqual(failed["fen_acceptance_min"], 0.80)
+
+        row["quality_report"]["chess_fen"]["fen_count"] = 80
+        row["quality_report"]["chess_fen"]["manual_review_count"] = 20
+        warning = _evaluate_chess_fen_acceptance_gate(row)
+        self.assertEqual(warning["status"], "passed_with_warnings")
+        self.assertEqual(warning["fen_coverage"], 0.8)
+
+        row["quality_report"]["chess_fen"]["fen_count"] = 100
+        row["quality_report"]["chess_fen"]["manual_review_count"] = 0
+        passed = _evaluate_chess_fen_acceptance_gate(row)
+        self.assertEqual(passed["status"], "passed")
+        self.assertEqual(passed["fen_coverage"], 1.0)
+
+    def test_chess_fen_acceptance_gate_participates_in_smoke_summary(self) -> None:
+        row = {
+            "id": "diagram_book",
+            "validation": {"summary": {"status": "passed"}},
+            "size_gate": {"status": "passed"},
+            "asset_quality_gate": {"status": "passed"},
+            "fen_acceptance_gate": {
+                "status": "failed",
+                "fen_coverage": 0.79,
+                "fen_acceptance_min": 0.80,
+            },
+        }
+
+        summary = _build_smoke_summary([row])
+
+        self.assertEqual(summary["overall_status"], "failed")
+        self.assertEqual(summary["fen_failed_cases"], 1)
+
+    def test_empty_chess_quality_metrics_include_fen_counts(self) -> None:
+        metrics = _empty_chess_quality_metrics()
+
+        for key in ("data_fen_count", "visible_fen_count", "fen_review_count"):
+            self.assertIn(key, metrics)
+            self.assertEqual(metrics[key], 0)
 
     def test_chess_quality_metrics_default_to_zero_without_chess_assets(self) -> None:
         epub_bytes = self._build_epub_bytes(

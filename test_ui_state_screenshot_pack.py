@@ -333,6 +333,7 @@ class UiStateScreenshotPackTests(unittest.TestCase):
             accept_downloads=True,
             viewport={"width": viewport[0], "height": viewport[1]},
         )
+        context.add_init_script("window.localStorage.setItem('kindlemaster.start.continue-local', '1');")
         context.add_init_script(
             """
             (() => {

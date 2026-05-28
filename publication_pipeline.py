@@ -84,11 +84,15 @@ TRAINING_BOOK_SECTION_LABELS = {
     "back cover": "Back Cover",
 }
 
+AUTO_OCR_WITHOUT_FORCE_MAX_PAGES = 120
+AUTO_OCR_WITHOUT_FORCE_MAX_BYTES = 40 * 1024 * 1024
+
 
 def build_publication_document(pdf_path: str, config, analysis: PublicationAnalysis) -> PublicationDocument:
     from converter import _extract_pdf_metadata, extract_pdf_with_pymupdf
 
     pdf_metadata = _extract_pdf_metadata(pdf_path)
+    pdf_metadata["source_page_count"] = analysis.page_count
     file_stem = Path(pdf_path).stem
     title = _sanitize_publication_title(pdf_metadata.get("title") or file_stem, file_stem=file_stem) or file_stem
     author = _sanitize_publication_author(pdf_metadata.get("author") or "Unknown")
@@ -106,6 +110,10 @@ def build_publication_document(pdf_path: str, config, analysis: PublicationAnaly
         from pymupdf_chess_extractor import extract_pdf_with_chess_support
 
         content = extract_pdf_with_chess_support(pdf_path, config, pdf_metadata)
+    elif analysis.profile == "premium_scanned_chess_reflow":
+        from pymupdf_chess_extractor import extract_scanned_chess_pdf_with_support
+
+        content = extract_scanned_chess_pdf_with_support(pdf_path, config, pdf_metadata)
     elif analysis.profile == "scanned_reflow":
         content = _build_scanned_content(pdf_path, config, pdf_metadata)
     elif analysis.profile == "book_reflow":
@@ -153,6 +161,8 @@ def build_publication_document(pdf_path: str, config, analysis: PublicationAnaly
         document.metadata["source_metadata"] = content.get("metadata")
     if content.get("audit"):
         document.metadata["audit"] = content.get("audit")
+    if content.get("extra_artifacts"):
+        document.metadata["_extra_artifacts"] = content.get("extra_artifacts")
     return document
 
 
@@ -160,7 +170,7 @@ def _should_coalesce_page_chapters_with_pdf_outline(content: dict, analysis: Pub
     chapters = list(content.get("chapters", []) or [])
     if not chapters or "page_num" not in chapters[0]:
         return False
-    if analysis.profile == "diagram_book_reflow":
+    if analysis.profile in {"diagram_book_reflow", "premium_scanned_chess_reflow"}:
         return True
     if analysis.profile != "book_reflow" or not analysis.has_toc:
         return False
@@ -310,7 +320,11 @@ def publication_from_content(
 
     for index, chapter in enumerate(content.get("chapters", []), start=1):
         section_title = _resolve_section_title(chapter, index=index, profile=analysis.profile)
-        training_role = _training_book_section_role(section_title) if analysis.profile == "diagram_book_reflow" else ""
+        training_role = (
+            _training_book_section_role(section_title)
+            if analysis.profile in {"diagram_book_reflow", "premium_scanned_chess_reflow"}
+            else ""
+        )
         page_start = int(chapter.get("_page_start", chapter.get("page_num", index - 1)))
         page_end = int(chapter.get("_page_end", page_start))
         section = PublicationSection(
@@ -334,7 +348,7 @@ def publication_from_content(
         for fragment in chapter.get("html_parts", []):
             section.blocks.extend(_fragment_to_blocks(fragment, page_index=page_start))
 
-        has_structural_assets = analysis.profile == "diagram_book_reflow" and bool(section.assets)
+        has_structural_assets = analysis.profile in {"diagram_book_reflow", "premium_scanned_chess_reflow"} and bool(section.assets)
         is_intentionally_sparse = _is_intentionally_sparse_training_section(section, profile=analysis.profile)
         if not section.blocks and not has_structural_assets and not is_intentionally_sparse:
             fallback_pages.append(index)
@@ -429,6 +443,8 @@ def publication_from_content(
             if analysis.profile == "magazine_reflow"
             else {}
         ),
+        chess_fen=content_metadata.get("chess_fen") or {},
+        chess_pgn=content_metadata.get("chess_pgn") or {},
         extractor_contract_warnings=contract_warnings,
     )
 
@@ -443,6 +459,7 @@ def publication_from_content(
         metadata={
             "layout_mode": content.get("layout_mode", "reflowable"),
             "estimated_sections": analysis.estimated_sections,
+            "suppress_auto_cover": bool(content.get("suppress_auto_cover", False)),
         },
         quality_report=report,
     )
@@ -474,8 +491,10 @@ def publication_to_content(document: PublicationDocument) -> dict:
         "method": "publication-model",
         "text_content": True,
         "layout_mode": document.metadata.get("layout_mode", "reflowable"),
+        "suppress_auto_cover": bool(document.metadata.get("suppress_auto_cover", False)),
         "images": document.assets,
         "chapters": chapters,
+        "extra_artifacts": list(document.metadata.get("_extra_artifacts") or []),
     }
 
 
@@ -504,17 +523,20 @@ def finalize_publication_epub(document: PublicationDocument, epub_bytes: bytes) 
 def _build_scanned_content(pdf_path: str, config, pdf_metadata: dict) -> dict:
     from converter import OCR_AVAILABLE, _build_content_from_ocr, extract_pdf_with_pymupdf
 
-    def pymupdf_fallback(*, reason_code: str, message: str) -> dict:
+    def pymupdf_fallback(*, reason_code: str, message: str, extra: dict | None = None) -> dict:
+        ocr_quality = {
+            "status": "degraded",
+            "quality_gate_status": "degraded",
+            "reason_codes": [reason_code, "pymupdf_fallback"],
+            "fallback_reason": reason_code,
+            "message": message,
+            "environment_error": reason_code in {"ocr_unavailable", "ocr_disabled", "ocr_exception"},
+        }
+        if extra:
+            ocr_quality.update(extra)
         return _with_ocr_quality(
             extract_pdf_with_pymupdf(pdf_path, config, pdf_metadata),
-            {
-                "status": "degraded",
-                "quality_gate_status": "degraded",
-                "reason_codes": [reason_code, "pymupdf_fallback"],
-                "fallback_reason": reason_code,
-                "message": message,
-                "environment_error": reason_code in {"ocr_unavailable", "ocr_disabled", "ocr_exception"},
-            },
+            ocr_quality,
         )
 
     if not config.enable_external_ocr:
@@ -526,6 +548,21 @@ def _build_scanned_content(pdf_path: str, config, pdf_metadata: dict) -> dict:
         return pymupdf_fallback(
             reason_code="ocr_unavailable",
             message="OCR module is unavailable; scanned PDF fell back to PyMuPDF extraction.",
+        )
+
+    skip_auto_ocr, skip_details = _should_skip_external_ocr_for_large_scan(pdf_path, config, pdf_metadata)
+    if skip_auto_ocr:
+        return pymupdf_fallback(
+            reason_code="ocr_skipped_large_scan",
+            message=(
+                "Large scanned PDF used image-preserving fallback because OCR was not forced. "
+                "Enable OCR explicitly for full-document recognition."
+            ),
+            extra={
+                "auto_ocr_skipped": True,
+                "skip_reason": "large_scan_without_forced_ocr",
+                **skip_details,
+            },
         )
 
     if OCR_AVAILABLE and config.enable_external_ocr:
@@ -661,6 +698,46 @@ def _build_scanned_content(pdf_path: str, config, pdf_metadata: dict) -> dict:
     )
 
 
+def _should_skip_external_ocr_for_large_scan(pdf_path: str, config, pdf_metadata: dict | None) -> tuple[bool, dict]:
+    if bool(getattr(config, "force_ocr", False)):
+        return False, {}
+    page_count = _metadata_page_count(pdf_path, pdf_metadata)
+    size_bytes = _safe_file_size_bytes(pdf_path)
+    skip = page_count >= AUTO_OCR_WITHOUT_FORCE_MAX_PAGES or size_bytes >= AUTO_OCR_WITHOUT_FORCE_MAX_BYTES
+    return skip, {
+        "page_count": page_count,
+        "input_size_bytes": size_bytes,
+        "auto_ocr_page_limit": AUTO_OCR_WITHOUT_FORCE_MAX_PAGES,
+        "auto_ocr_size_limit_bytes": AUTO_OCR_WITHOUT_FORCE_MAX_BYTES,
+    }
+
+
+def _metadata_page_count(pdf_path: str, pdf_metadata: dict | None) -> int:
+    metadata = pdf_metadata or {}
+    for key in ("source_page_count", "page_count"):
+        try:
+            page_count = int(metadata.get(key) or 0)
+        except (TypeError, ValueError):
+            page_count = 0
+        if page_count > 0:
+            return page_count
+    try:
+        doc = fitz.open(pdf_path)
+        try:
+            return len(doc)
+        finally:
+            doc.close()
+    except Exception:
+        return 0
+
+
+def _safe_file_size_bytes(pdf_path: str) -> int:
+    try:
+        return Path(pdf_path).stat().st_size
+    except OSError:
+        return 0
+
+
 def _with_ocr_quality(content: dict, ocr_quality: dict) -> dict:
     metadata = dict(content.get("metadata") or {})
     metadata["ocr_quality"] = ocr_quality
@@ -780,7 +857,7 @@ def _extract_section_title_from_html_parts(html_parts: list[str]) -> str:
 
 def _resolve_section_title(chapter: dict, *, index: int, profile: str) -> str:
     raw_title = _normalize_section_title_candidate(chapter.get("title") or "")
-    if profile != "diagram_book_reflow":
+    if profile not in {"diagram_book_reflow", "premium_scanned_chess_reflow"}:
         return raw_title or f"Sekcja {index}"
 
     raw_role = _training_book_section_role(raw_title)
@@ -989,7 +1066,7 @@ def _node_to_block(node, page_index: int) -> PublicationBlock:
 
 
 def _infer_section_kind(section_title: str, *, index: int, profile: str | None = None) -> str:
-    if profile == "diagram_book_reflow":
+    if profile in {"diagram_book_reflow", "premium_scanned_chess_reflow"}:
         role = _training_book_section_role(section_title)
         if role == "front cover":
             return "cover"
@@ -1029,7 +1106,7 @@ def _infer_section_kind(section_title: str, *, index: int, profile: str | None =
 
 
 def _is_intentionally_sparse_training_section(section: PublicationSection, *, profile: str | None = None) -> bool:
-    if profile != "diagram_book_reflow":
+    if profile not in {"diagram_book_reflow", "premium_scanned_chess_reflow"}:
         return False
 
     role = _training_book_section_role(section.title) or _training_book_section_role(
@@ -1074,9 +1151,9 @@ def _asset_budget_status_for_document_like_report(*, analysis: PublicationAnalys
 def _build_document_warnings(*, analysis: PublicationAnalysis, sections: list[PublicationSection], content: dict, fallback_pages: list[int]) -> list[str]:
     warnings: list[str] = []
     section_count = len(sections)
-    if analysis.profile in {"book_reflow", "diagram_book_reflow"} and analysis.has_toc and section_count > max(analysis.estimated_sections * 2, 40):
+    if analysis.profile in {"book_reflow", "diagram_book_reflow", "premium_scanned_chess_reflow"} and analysis.has_toc and section_count > max(analysis.estimated_sections * 2, 40):
         warnings.append("Liczba sekcji jest podejrzanie wysoka wzgledem struktury TOC.")
-    if analysis.profile == "diagram_book_reflow" and section_count > 80:
+    if analysis.profile in {"diagram_book_reflow", "premium_scanned_chess_reflow"} and section_count > 80:
         warnings.append("Publikacja z diagramami nadal wyglada na zbyt rozbita na sekcje.")
     if fallback_pages:
         warnings.append(f"Wykryto {len(fallback_pages)} pustych lub fallbackowych sekcji.")
@@ -1256,7 +1333,7 @@ def _detect_section_entries_from_pages(pdf_path: str, *, profile: str) -> list[d
             title = _normalize_training_book_section_title(title) or title
             if entries and title == entries[-1]["title"]:
                 continue
-            if profile == "diagram_book_reflow" and not _looks_like_diagram_section_title(title):
+            if profile in {"diagram_book_reflow", "premium_scanned_chess_reflow"} and not _looks_like_diagram_section_title(title):
                 continue
             entries.append({"page": page_num, "title": title})
         return entries

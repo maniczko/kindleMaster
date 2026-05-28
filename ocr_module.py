@@ -267,8 +267,8 @@ def _prepare_image_for_ocr(img: Image.Image) -> Image.Image:
 
 def _tesseract_config_string(tessdata_dir: Optional[str], *, psm: int = 4) -> str:
     parts = []
-    if tessdata_dir:
-        parts.extend(["--tessdata-dir", tessdata_dir])
+    # configure_tesseract() sets TESSDATA_PREFIX. Passing --tessdata-dir through
+    # pytesseract is brittle on Windows paths with spaces and can break OCR.
     parts.extend(["--oem", "1", "--psm", str(psm), "-c", "preserve_interword_spaces=1"])
     return " ".join(parts)
 

@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+import zipfile
 
 import fitz
 
@@ -79,6 +80,82 @@ class OcrStressScanFixtureTests(unittest.TestCase):
             analysis = analyze_publication(str(target_path), preferred_profile="auto-premium")
             self.assertGreaterEqual(analysis.scanned_pages, 1)
             self.assertGreaterEqual(analysis.text_pages, 1)
+
+    def test_prepare_reference_inputs_normalizes_copied_epub_metadata_for_epubcheck(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_path = root / "source.epub"
+            _write_minimal_epub_without_modified(source_path)
+            epub_case = {
+                "id": "scan_probe_epub",
+                "document_class": "scan_probe",
+                "input_type": "epub",
+                "language": "pl",
+                "quick_smoke": True,
+                "release_strict": False,
+                "source": "source.epub",
+                "target": "reference_inputs/epub/scan_probe.epub",
+                "notes": "Small EPUB for fast validator and repair smoke.",
+            }
+
+            with patch.object(reference_inputs_module, "REFERENCE_CASES", [epub_case]):
+                reference_inputs_module.prepare_reference_inputs(root_dir=root)
+
+            target_path = root / "reference_inputs" / "epub" / "scan_probe.epub"
+            with zipfile.ZipFile(target_path) as archive:
+                opf = archive.read("EPUB/content.opf").decode("utf-8")
+
+            self.assertIn('property="dcterms:modified"', opf)
+
+
+def _write_minimal_epub_without_modified(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        archive.writestr(
+            "META-INF/container.xml",
+            """<?xml version="1.0" encoding="utf-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="EPUB/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>
+""",
+        )
+        archive.writestr(
+            "EPUB/content.opf",
+            """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book-id">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="book-id">fixture</dc:identifier>
+    <dc:title>Fixture</dc:title>
+    <dc:creator>Reference Fixture Team</dc:creator>
+    <dc:language>pl</dc:language>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="chapter"/>
+  </spine>
+</package>
+""",
+        )
+        archive.writestr(
+            "EPUB/nav.xhtml",
+            """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+  <body><nav epub:type="toc"><ol><li><a href="chapter.xhtml#intro">Intro</a></li></ol></nav></body>
+</html>
+""",
+        )
+        archive.writestr(
+            "EPUB/chapter.xhtml",
+            """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body><h1 id="intro">Intro</h1></body></html>
+""",
+        )
 
 
 if __name__ == "__main__":

@@ -107,7 +107,7 @@ class LocalRuntimeJobAdapter:
         *,
         provider: str = "local",
         retry_policy: RetryPolicy | None = None,
-        timeout_seconds: int = 30 * 60,
+        timeout_seconds: int = 60 * 60,
     ) -> None:
         normalized_provider = str(provider or "").strip() or "local"
         if timeout_seconds < 1:

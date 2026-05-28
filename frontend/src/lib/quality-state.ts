@@ -10,11 +10,15 @@ export interface QualityStatePayload {
   reading_verdict?: string | null;
   release_verdict?: string | null;
   release_blocked?: boolean | null;
+  send_to_kindle_ready?: boolean | null;
+  send_to_kindle_blockers?: Array<Record<string, unknown>> | null;
   quality_blockers?: Array<Record<string, unknown>> | null;
   blockers?: Array<Record<string, unknown>> | null;
   warnings?: Array<string | Record<string, unknown>> | number | null;
   reports?: Record<string, string> | null;
   artifacts?: Record<string, string> | null;
+  audit?: Record<string, unknown> | null;
+  auto_repair?: Record<string, unknown> | null;
   sentry_event_id?: string | null;
   summary?: Record<string, unknown> | null;
   user_facing_verdict?: {
@@ -31,22 +35,24 @@ export interface NormalizedQualityState {
   score: number;
   blockers: Array<Record<string, unknown>>;
   warnings: Array<string | Record<string, unknown>>;
+  sendToKindleReady: boolean | null;
+  sendToKindleBlockers: Array<Record<string, unknown>>;
   reports: Record<string, string>;
   artifacts: Record<string, string>;
   sentryEventId: string;
 }
 
 const STATUS_LABELS: Record<QualityStatus, string> = {
-  processing: "Processing",
-  needs_review: "Needs review",
-  kindle_ready: "Kindle ready",
-  premium_ready: "Premium ready",
-  failed: "Failed",
+  processing: "Przetwarzanie",
+  needs_review: "Wymaga kontroli",
+  kindle_ready: "Gotowe na Kindle",
+  premium_ready: "Gotowe premium",
+  failed: "Błąd",
 };
 
 const STATUS_DETAILS: Record<QualityStatus, string> = {
   processing: "Konwersja jest w toku albo czeka na pierwsze dane jakości.",
-  needs_review: "EPUB jest dostępny, ale quality gate wymaga kontroli.",
+  needs_review: "EPUB jest dostępny, ale bramka jakości wymaga kontroli.",
   kindle_ready: "Plik wygląda na gotowy do wysłania na Kindle.",
   premium_ready: "Plik spełnia próg premium i może iść dalej bez ręcznej blokady.",
   failed: "Konwersja albo walidacja zgłosiła błąd blokujący.",
@@ -55,6 +61,7 @@ const STATUS_DETAILS: Record<QualityStatus, string> = {
 export function normalizeQualityState(payload?: QualityStatePayload | null): NormalizedQualityState {
   const state = payload && typeof payload === "object" ? payload : {};
   const blockers = normalizeIssueList(state.quality_blockers ?? state.blockers);
+  const sendToKindleBlockers = normalizeIssueList(state.send_to_kindle_blockers);
   const warnings = normalizeWarningList(state.warnings);
   const releaseVerdict = String(state.release_verdict ?? "").toLowerCase();
   const readingVerdict = String(state.reading_verdict ?? "").toLowerCase();
@@ -82,6 +89,8 @@ export function normalizeQualityState(payload?: QualityStatePayload | null): Nor
     score,
     blockers,
     warnings,
+    sendToKindleReady: typeof state.send_to_kindle_ready === "boolean" ? state.send_to_kindle_ready : null,
+    sendToKindleBlockers,
     reports: normalizeRecord(state.reports),
     artifacts: normalizeRecord(state.artifacts),
     sentryEventId: String(state.sentry_event_id ?? ""),
@@ -94,7 +103,7 @@ function normalizeIssueList(value: unknown): Array<Record<string, unknown>> {
 }
 
 function normalizeWarningList(value: unknown): Array<string | Record<string, unknown>> {
-  if (typeof value === "number") return value > 0 ? [`${value} warning(s)`] : [];
+  if (typeof value === "number") return value > 0 ? [`${value} ostrzeżenie/ostrzeżeń`] : [];
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string | Record<string, unknown> => {
     return typeof item === "string" || Boolean(item && typeof item === "object" && !Array.isArray(item));

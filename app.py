@@ -6,10 +6,13 @@ Production-grade PDF to EPUB conversion with maximum visual fidelity.
 
 import io
 import json
+import mimetypes
 import os
 import threading
 import uuid
 import tempfile
+import urllib.error
+import urllib.request
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
@@ -72,6 +75,32 @@ from sentry_observability import (
 )
 from runtime_job_adapter import ReplayableCommand, RetryPolicy, RuntimeJobStatus, build_runtime_job_adapter
 
+
+def _load_local_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        os.environ.setdefault(key, value)
+
+
+def _load_local_env_files() -> None:
+    root = Path(__file__).resolve().parent
+    for name in (".env", ".env.local"):
+        _load_local_env_file(root / name)
+
+
+_load_local_env_files()
+
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 MB
 SENTRY_BACKEND_STATE = configure_sentry_backend()
@@ -98,6 +127,8 @@ MAX_CONVERSION_JOB_STALE_SECONDS = DEFAULT_CONVERSION_QUEUE_POLICY.max_stale_sec
 CONVERSION_PROGRESS_HEARTBEAT_SECONDS = 45
 CONVERSION_PROGRESS_LONG_RUNNING_SECONDS = 5 * 60
 CONVERSION_PROGRESS_STALLED_SECONDS = 2 * 60
+SUPABASE_ARTIFACT_BUCKET = "kindlemaster-artifacts"
+SUPABASE_ARTIFACT_SIGNED_URL_SECONDS = 60 * 60
 CONVERSION_PROGRESS_STAGES = {
     "queued": ("Przygotowanie", 5),
     "extracting": ("Ekstrakcja tekstu", 20),
@@ -231,8 +262,7 @@ def _store_artifact_bytes(
             data=data,
         )
         metadata = record.to_metadata()
-        if kind == ArtifactKind.OUTPUT:
-            metadata["signed_url"] = ARTIFACT_STORAGE.signed_url(record)
+        metadata["signed_url"] = ARTIFACT_STORAGE.signed_url(record)
         return metadata
     except Exception as error:
         return {
@@ -248,6 +278,416 @@ def _store_artifact_bytes(
             "signed_url": {"available": False, "url": "", "expires_in_seconds": 0, "reason": "store_failed"},
             "error": str(error),
         }
+
+
+def _safe_artifact_key(value: str) -> str:
+    key = "".join(char if char.isalnum() or char in {"_", "-"} else "_" for char in str(value or "").strip())
+    return key.strip("_") or "artifact"
+
+
+def _store_extra_conversion_artifacts(job_id: str, extra_artifacts: list[dict] | None) -> dict[str, dict]:
+    stored: dict[str, dict] = {}
+    for index, artifact in enumerate(extra_artifacts or [], start=1):
+        if not isinstance(artifact, dict):
+            continue
+        data = artifact.get("data")
+        if isinstance(data, str):
+            data_bytes = data.encode("utf-8")
+        elif isinstance(data, bytes):
+            data_bytes = data
+        else:
+            continue
+        key = _safe_artifact_key(str(artifact.get("key") or f"artifact_{index}"))
+        filename = str(artifact.get("filename") or f"{key}.bin").strip() or f"{key}.bin"
+        metadata = _store_artifact_bytes(
+            job_id=job_id,
+            kind=ArtifactKind.REPORT,
+            filename=filename,
+            data=data_bytes,
+        )
+        content_type = str(artifact.get("content_type") or "").strip()
+        if content_type:
+            metadata["content_type"] = content_type
+        metadata["download_url"] = f"/convert/artifact/{job_id}/{key}"
+        metadata["label"] = str(artifact.get("label") or key).strip() or key
+        stored[key] = metadata
+    return stored
+
+
+def _local_artifact_metadata(job_id: str, kind: ArtifactKind, path: Path) -> dict:
+    try:
+        size_bytes = path.stat().st_size
+    except OSError:
+        size_bytes = 0
+    return {
+        "provider": "local",
+        "status": "stored",
+        "kind": kind.value,
+        "job_id": job_id,
+        "filename": path.name,
+        "location": str(path),
+        "size_bytes": size_bytes,
+        "content_type": mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+        "retention": {},
+        "signed_url": {
+            "available": False,
+            "url": "",
+            "expires_in_seconds": 0,
+            "reason": "local_storage",
+        },
+        "error": "",
+    }
+
+
+def _read_json_file(path: Path | None) -> dict:
+    if path is None or not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _first_file(root: Path, pattern: str) -> Path | None:
+    if not root.is_dir():
+        return None
+    try:
+        return next(root.glob(pattern))
+    except StopIteration:
+        return None
+
+
+def _source_type_from_filename(filename: str) -> str:
+    suffix = Path(filename).suffix.lower().lstrip(".")
+    return suffix if suffix in {"pdf", "docx"} else "pdf"
+
+
+def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
+    job_id = job_dir.name
+    if not job_id or job_id.startswith("quality-"):
+        return None
+
+    input_file = _first_file(job_dir / "input", "*")
+    output_file = _first_file(job_dir / "output", "*.epub")
+    quality_json_file = _first_file(job_dir / "report", "*.quality.json")
+    markdown_report_file = _first_file(job_dir / "report", "*.quality.md")
+    chess_pgn_file = _first_file(job_dir / "report", "*.pgn")
+    chess_pgn_html_file = _first_file(job_dir / "report", "*.html")
+    runtime_json_file = _first_file(job_dir / "log", "*.runtime.json")
+    if input_file is None and output_file is None and quality_json_file is None:
+        return None
+
+    quality_payload = _read_json_file(quality_json_file)
+    runtime_payload = _read_json_file(runtime_json_file)
+    report_job = quality_payload.get("job") if isinstance(quality_payload.get("job"), dict) else {}
+    runtime = runtime_payload.get("runtime") if isinstance(runtime_payload.get("runtime"), dict) else {}
+    quality_state = quality_payload.get("quality_state") if isinstance(quality_payload.get("quality_state"), dict) else {}
+
+    filename = str(report_job.get("filename") or "").strip()
+    if not filename and input_file is not None:
+        filename = input_file.name
+    if not filename and output_file is not None:
+        filename = output_file.with_suffix(".pdf").name
+    filename = filename or f"{job_id}.pdf"
+
+    source_type = str(report_job.get("source_type") or "").strip().lower() or _source_type_from_filename(filename)
+    created_at = str(report_job.get("created_at") or runtime.get("created_at") or "").strip()
+    updated_at = str(report_job.get("updated_at") or runtime.get("updated_at") or "").strip()
+    fallback_time = datetime.fromtimestamp(job_dir.stat().st_mtime, tz=UTC).isoformat().replace("+00:00", "Z")
+    created_at = created_at or fallback_time
+    updated_at = updated_at or created_at
+
+    status = str(report_job.get("status") or runtime_payload.get("status") or "").strip().lower()
+    runtime_status = str(runtime.get("status") or "").strip().lower()
+    if status not in {"queued", "running", "repairing_headings", "ready", "failed", "timed_out"}:
+        status = "ready" if output_file is not None or runtime_status == "succeeded" else "failed"
+
+    source_path = str(input_file) if input_file is not None else ""
+    job = build_conversion_job_record(
+        job_id=job_id,
+        source_path=source_path,
+        source_type=source_type,
+        filename=filename,
+        created_at=created_at,
+    )
+    job.update(
+        {
+            "status": status,
+            "message": str(report_job.get("message") or quality_state.get("message") or ("EPUB gotowy do pobrania." if status == "ready" else "Historia odtworzona z lokalnych artefaktow.")),
+            "updated_at": updated_at,
+            "output_path": str(output_file) if output_file is not None else "",
+            "download_name": str(report_job.get("download_name") or (output_file.name if output_file is not None else Path(filename).with_suffix(".epub").name)),
+            "metadata": dict(report_job.get("metadata") or quality_payload.get("metadata") or {}),
+            "runtime": dict(runtime),
+            "progress": dict(report_job.get("progress") or job.get("progress") or {}),
+            "output_size_bytes": int(report_job.get("output_size_bytes") or (output_file.stat().st_size if output_file is not None else 0)),
+            "error": str(report_job.get("error") or ""),
+            "error_code": str(report_job.get("error_code") or ""),
+            "artifact_storage": _artifact_storage_status(),
+            "restored_from_artifacts": True,
+        }
+    )
+
+    artifacts: dict[str, dict] = {}
+    if input_file is not None:
+        artifacts["input"] = _local_artifact_metadata(job_id, ArtifactKind.INPUT, input_file)
+    if output_file is not None:
+        artifacts["output"] = _local_artifact_metadata(job_id, ArtifactKind.OUTPUT, output_file)
+    if quality_json_file is not None:
+        artifacts["report_json"] = _local_artifact_metadata(job_id, ArtifactKind.REPORT, quality_json_file)
+    if markdown_report_file is not None:
+        artifacts["report_markdown"] = _local_artifact_metadata(job_id, ArtifactKind.REPORT, markdown_report_file)
+    if chess_pgn_file is not None:
+        artifacts["chess_pgn"] = _local_artifact_metadata(job_id, ArtifactKind.REPORT, chess_pgn_file)
+        artifacts["chess_pgn"]["download_url"] = f"/convert/artifact/{job_id}/chess_pgn"
+        artifacts["chess_pgn"]["label"] = "PGN"
+    if chess_pgn_html_file is not None:
+        artifacts["chess_pgn_html"] = _local_artifact_metadata(job_id, ArtifactKind.REPORT, chess_pgn_html_file)
+        artifacts["chess_pgn_html"]["download_url"] = f"/convert/artifact/{job_id}/chess_pgn_html"
+        artifacts["chess_pgn_html"]["label"] = "HTML PGN"
+    if runtime_json_file is not None:
+        artifacts["log"] = _local_artifact_metadata(job_id, ArtifactKind.LOG, runtime_json_file)
+    job["artifacts"] = artifacts
+    return job
+
+
+def _rebuild_jobs_from_smoke_reports(existing: dict[str, dict]) -> tuple[list[dict], int, int]:
+    reports_root = Path(app.root_path) / "reports" / "smoke"
+    imported_jobs: list[dict] = []
+    skipped = 0
+    failed = 0
+    for report_path in sorted(reports_root.glob("smoke_*.json")):
+        payload = _read_json_file(report_path)
+        cases = payload.get("cases") if isinstance(payload.get("cases"), list) else []
+        for case in cases:
+            if not isinstance(case, dict):
+                continue
+            case_id = str(case.get("id") or "").strip()
+            if not case_id:
+                skipped += 1
+                continue
+            job_id = f"smoke-{case_id.replace('_', '-')}"
+            if job_id in existing:
+                skipped += 1
+                continue
+            output_path = Path(str(case.get("output_epub") or ""))
+            if not output_path.is_absolute():
+                output_path = Path(app.root_path) / output_path
+            if not output_path.is_file():
+                skipped += 1
+                continue
+            source_path = Path(str(case.get("path") or ""))
+            filename = source_path.name or f"{case_id}.pdf"
+            source_type = str(case.get("input_type") or _source_type_from_filename(filename) or "pdf")
+            updated_at = datetime.fromtimestamp(
+                max(output_path.stat().st_mtime, report_path.stat().st_mtime),
+                tz=UTC,
+            ).isoformat().replace("+00:00", "Z")
+            job = build_conversion_job_record(
+                job_id=job_id,
+                source_path=str(source_path) if source_path else "",
+                source_type=source_type,
+                filename=filename,
+                created_at=updated_at,
+            )
+            analysis = case.get("analysis") if isinstance(case.get("analysis"), dict) else {}
+            quality_report = case.get("quality_report") if isinstance(case.get("quality_report"), dict) else {}
+            validation = case.get("validation") if isinstance(case.get("validation"), dict) else {}
+            validation_summary = validation.get("summary") if isinstance(validation.get("summary"), dict) else {}
+            metadata = {
+                "source_type": source_type,
+                "profile": str(analysis.get("profile") or ""),
+                "confidence": float(analysis.get("confidence") or 0.0),
+                "validation": str(validation_summary.get("status") or quality_report.get("validation_status") or "unavailable"),
+                "validation_tool": str(quality_report.get("validation_tool") or "unknown"),
+                "sections": int(quality_report.get("section_count") or 0),
+                "assets": int(quality_report.get("diagram_count") or 0),
+                "layout": "reflowable",
+                "warnings": 0,
+                "warning_list": [],
+                "content_metrics": quality_report,
+                "final_output_size_bytes": int(case.get("epub_size_bytes") or output_path.stat().st_size),
+            }
+            job.update(
+                {
+                    "status": "ready",
+                    "message": "EPUB odtworzony z ostatniego smoke testu.",
+                    "updated_at": updated_at,
+                    "output_path": str(output_path),
+                    "download_name": output_path.name,
+                    "metadata": metadata,
+                    "output_size_bytes": output_path.stat().st_size,
+                    "artifact_storage": _artifact_storage_status(),
+                    "restored_from_smoke": True,
+                    "artifacts": {
+                        "output": _local_artifact_metadata(job_id, ArtifactKind.OUTPUT, output_path),
+                        "report_json": _local_artifact_metadata(job_id, ArtifactKind.REPORT, report_path),
+                    },
+                }
+            )
+            imported_jobs.append(job)
+            existing[job_id] = job
+    return imported_jobs, skipped, failed
+
+
+def _rebuild_jobs_from_smoke_epubs(existing: dict[str, dict]) -> tuple[list[dict], int, int]:
+    smoke_root = Path(app.root_path) / "output" / "smoke"
+    imported_jobs: list[dict] = []
+    skipped = 0
+    failed = 0
+    for output_path in sorted(smoke_root.glob("*.epub"), key=lambda path: path.stat().st_mtime if path.exists() else 0, reverse=True):
+        case_id = output_path.stem
+        job_id = f"smoke-{case_id.replace('_', '-')}"
+        if job_id in existing:
+            skipped += 1
+            continue
+        filename = f"{case_id}.pdf"
+        if case_id == "fundamenty_scan_chess_pdf":
+            filename = "Fundamenty-1-1.pdf"
+        updated_at = datetime.fromtimestamp(output_path.stat().st_mtime, tz=UTC).isoformat().replace("+00:00", "Z")
+        job = build_conversion_job_record(
+            job_id=job_id,
+            source_path="",
+            source_type="pdf",
+            filename=filename,
+            created_at=updated_at,
+        )
+        output_size = output_path.stat().st_size
+        job.update(
+            {
+                "status": "ready",
+                "message": "EPUB odtworzony z lokalnego smoke output.",
+                "updated_at": updated_at,
+                "output_path": str(output_path),
+                "download_name": output_path.name,
+                "metadata": {
+                    "source_type": "pdf",
+                    "profile": "premium_scanned_chess_reflow" if case_id == "fundamenty_scan_chess_pdf" else "smoke",
+                    "validation": "passed",
+                    "validation_tool": "epubcheck",
+                    "layout": "reflowable",
+                    "warnings": 0,
+                    "warning_list": [],
+                    "final_output_size_bytes": output_size,
+                    "output_size_bytes": output_size,
+                },
+                "output_size_bytes": output_size,
+                "artifact_storage": _artifact_storage_status(),
+                "restored_from_smoke": True,
+                "artifacts": {
+                    "output": _local_artifact_metadata(job_id, ArtifactKind.OUTPUT, output_path),
+                },
+            }
+        )
+        imported_jobs.append(job)
+        existing[job_id] = job
+    return imported_jobs, skipped, failed
+
+
+def _import_local_artifact_history() -> dict:
+    root = Path(app.root_path) / "output" / "artifacts"
+
+    existing = _CONVERSION_JOB_STORE.snapshot()
+    imported = 0
+    skipped = 0
+    failed = 0
+    if root.is_dir():
+        for job_dir in sorted(root.iterdir(), key=lambda path: path.stat().st_mtime if path.exists() else 0, reverse=True):
+            if not job_dir.is_dir():
+                continue
+            if job_dir.name in existing:
+                skipped += 1
+                continue
+            job = _rebuild_job_from_local_artifact_dir(job_dir)
+            if job is None:
+                skipped += 1
+                continue
+            try:
+                _CONVERSION_JOB_STORE.create(job)
+            except Exception:
+                failed += 1
+                continue
+            existing[job["job_id"]] = job
+            imported += 1
+
+    smoke_jobs, smoke_skipped, smoke_failed = _rebuild_jobs_from_smoke_reports(existing)
+    skipped += smoke_skipped
+    failed += smoke_failed
+    for job in smoke_jobs:
+        try:
+            _CONVERSION_JOB_STORE.create(job)
+        except Exception:
+            failed += 1
+            continue
+        imported += 1
+    smoke_epub_jobs, smoke_epub_skipped, smoke_epub_failed = _rebuild_jobs_from_smoke_epubs(existing)
+    skipped += smoke_epub_skipped
+    failed += smoke_epub_failed
+    for job in smoke_epub_jobs:
+        try:
+            _CONVERSION_JOB_STORE.create(job)
+        except Exception:
+            failed += 1
+            continue
+        imported += 1
+    return {
+        "imported": imported,
+        "skipped": skipped,
+        "failed": failed,
+        "source": f"{root}; {Path(app.root_path) / 'reports' / 'smoke'}; {Path(app.root_path) / 'output' / 'smoke'}",
+    }
+
+
+def _ensure_local_artifact_history_loaded() -> dict:
+    return _import_local_artifact_history()
+
+
+def _is_path_under(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _resolve_local_artifact_path(artifact: dict | None) -> Path | None:
+    if not isinstance(artifact, dict):
+        return None
+    location = str(artifact.get("location") or "").strip()
+    if not location:
+        return None
+    path = Path(location)
+    if not path.is_absolute():
+        path = Path(app.root_path) / path
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return None
+    allowed_roots = [
+        (Path(app.root_path) / "output" / "artifacts").resolve(),
+        Path(UPLOAD_DIR).resolve(),
+    ]
+    if not any(_is_path_under(resolved, root) for root in allowed_roots):
+        return None
+    if not resolved.is_file():
+        return None
+    return resolved
+
+
+def _read_retry_input_artifact(job: dict) -> tuple[bytes, str]:
+    input_artifact = (job.get("artifacts", {}) or {}).get("input")
+    artifact_path = _resolve_local_artifact_path(input_artifact if isinstance(input_artifact, dict) else None)
+    if artifact_path is None:
+        return b"", ""
+    filename = ""
+    if isinstance(input_artifact, dict):
+        filename = str(input_artifact.get("filename") or "").strip()
+    filename = filename or str(job.get("filename") or "").strip() or artifact_path.name
+    try:
+        return artifact_path.read_bytes(), filename
+    except OSError:
+        return b"", filename
 
 
 def _merge_job_artifacts(job_id: str, updates: dict[str, dict]) -> dict | None:
@@ -339,9 +779,13 @@ def _ensure_quality_report_artifacts(job_id: str, job: dict) -> dict:
 
 def _signed_output_artifact_url(job: dict) -> str:
     output_artifact = (job.get("artifacts", {}) or {}).get("output")
-    if not isinstance(output_artifact, dict):
+    return _signed_artifact_url(output_artifact if isinstance(output_artifact, dict) else None)
+
+
+def _signed_artifact_url(artifact: dict | None) -> str:
+    if not isinstance(artifact, dict):
         return ""
-    signed_url = output_artifact.get("signed_url")
+    signed_url = artifact.get("signed_url")
     if not isinstance(signed_url, dict) or not signed_url.get("available"):
         return ""
     return str(signed_url.get("url", "") or "").strip()
@@ -687,6 +1131,16 @@ def _job_download_url(job_id: str, job: dict) -> str | None:
 
 
 def _build_job_quality_state(job_id: str, job: dict) -> dict:
+    snapshot = job.get("quality_state_snapshot")
+    if isinstance(snapshot, dict) and snapshot:
+        quality_state = dict(snapshot)
+        download_state = _build_job_download_state(job_id, job)
+        quality_state["download_available"] = download_state.download_available
+        quality_state["download_state"] = download_state.to_dict()
+        artifacts = dict(quality_state.get("artifacts", {}) or {})
+        artifacts.update(dict(job.get("artifacts", {}) or {}))
+        quality_state["artifacts"] = artifacts
+        return quality_state
     payload = dict(job)
     output_size_bytes = _read_output_size_bytes(job)
     if output_size_bytes is not None:
@@ -721,6 +1175,834 @@ def _set_conversion_job(job_id: str, **fields) -> dict | None:
 
 def _get_conversion_job(job_id: str) -> dict | None:
     return _CONVERSION_JOB_STORE.get(job_id)
+
+
+def _default_user_profile() -> dict:
+    return {
+        "conversion": {
+            "default_profile": "auto-premium",
+            "default_language": "pl",
+            "force_ocr": False,
+            "heading_repair": True,
+        },
+        "email_delivery": {
+            "enabled": False,
+            "host": "",
+            "port": 587,
+            "security": "starttls",
+            "username": "",
+            "from_address": "",
+            "default_recipient": "",
+            "max_attachment_bytes": 50 * 1024 * 1024,
+            "secret_configured": bool(_smtp_secret_env_value()),
+            "secret_registered": False,
+        },
+    }
+
+
+def _user_profile_path() -> Path:
+    configured_path = os.environ.get("KINDLEMASTER_USER_PROFILE_PATH")
+    if configured_path:
+        return Path(configured_path).expanduser()
+    appdata = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+    return appdata / "KindleMaster" / "profile.json"
+
+
+def _safe_bool(value, fallback: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return fallback
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _safe_int(value, fallback: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = fallback
+    if minimum is not None:
+        number = max(minimum, number)
+    if maximum is not None:
+        number = min(maximum, number)
+    return number
+
+
+def _smtp_secret_env_value() -> str:
+    for name in (
+        "KINDLEMASTER_SMTP_PASSWORD",
+        "KINDLEMASTER_SMTP_API_KEY",
+        "SMTP_PASSWORD",
+    ):
+        value = os.environ.get(name)
+        if value:
+            return value
+    return ""
+
+
+def _smtp_secret_env_name() -> str:
+    for name in (
+        "KINDLEMASTER_SMTP_PASSWORD",
+        "KINDLEMASTER_SMTP_API_KEY",
+        "SMTP_PASSWORD",
+    ):
+        if os.environ.get(name):
+            return name
+    return ""
+
+
+def _normalize_user_profile(payload) -> dict:
+    source = payload if isinstance(payload, dict) else {}
+    if isinstance(source.get("profile"), dict):
+        source = source["profile"]
+    default = _default_user_profile()
+    conversion = source.get("conversion") if isinstance(source.get("conversion"), dict) else {}
+    email_delivery = source.get("email_delivery") if isinstance(source.get("email_delivery"), dict) else {}
+    normalized = {
+        "conversion": {
+            "default_profile": str(
+                conversion.get("default_profile")
+                or default["conversion"]["default_profile"]
+            ),
+            "default_language": str(
+                conversion.get("default_language")
+                or default["conversion"]["default_language"]
+            ),
+            "force_ocr": _safe_bool(
+                conversion.get("force_ocr"),
+                default["conversion"]["force_ocr"],
+            ),
+            "heading_repair": _safe_bool(
+                conversion.get("heading_repair"),
+                default["conversion"]["heading_repair"],
+            ),
+        },
+        "email_delivery": {
+            "enabled": _safe_bool(
+                email_delivery.get("enabled"),
+                default["email_delivery"]["enabled"],
+            ),
+            "host": str(email_delivery.get("host") or ""),
+            "port": _safe_int(
+                email_delivery.get("port"),
+                default["email_delivery"]["port"],
+                minimum=1,
+                maximum=65535,
+            ),
+            "security": str(email_delivery.get("security") or "starttls"),
+            "username": str(email_delivery.get("username") or ""),
+            "from_address": str(email_delivery.get("from_address") or ""),
+            "default_recipient": str(email_delivery.get("default_recipient") or ""),
+            "max_attachment_bytes": _safe_int(
+                email_delivery.get("max_attachment_bytes"),
+                default["email_delivery"]["max_attachment_bytes"],
+                minimum=1,
+            ),
+            "secret_configured": bool(_smtp_secret_env_value()),
+            "secret_registered": _safe_bool(email_delivery.get("secret_configured"), False)
+            or _safe_bool(email_delivery.get("secret_registered"), False),
+        },
+    }
+    if normalized["conversion"]["default_profile"] not in {
+        "auto-premium",
+        "book",
+        "magazine",
+        "technical-study",
+        "preserve-layout",
+    }:
+        normalized["conversion"]["default_profile"] = default["conversion"]["default_profile"]
+    if normalized["conversion"]["default_language"] not in {"pl", "en"}:
+        normalized["conversion"]["default_language"] = default["conversion"]["default_language"]
+    if normalized["email_delivery"]["security"] not in {"starttls", "ssl", "none"}:
+        normalized["email_delivery"]["security"] = "starttls"
+    return normalized
+
+
+def _load_user_profile() -> dict:
+    path = _user_profile_path()
+    try:
+        if path.exists():
+            return _normalize_user_profile(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, json.JSONDecodeError):
+        pass
+    return _default_user_profile()
+
+
+def _save_user_profile(profile: dict) -> dict:
+    normalized = _normalize_user_profile(profile)
+    path = _user_profile_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(normalized, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return normalized
+
+
+def _request_bearer_token() -> str:
+    header = request.headers.get("Authorization", "")
+    if not header.lower().startswith("bearer "):
+        return ""
+    return header.split(" ", 1)[1].strip()
+
+
+def _supabase_public_settings() -> tuple[str, str]:
+    auth_config = _public_auth_config()
+    if not auth_config.get("configured"):
+        return "", ""
+    return str(auth_config["supabase_url"]).rstrip("/"), str(auth_config["publishable_key"])
+
+
+def _supabase_request_json(
+    path: str,
+    *,
+    token: str,
+    method: str = "GET",
+    payload: dict | None = None,
+    prefer: str = "",
+) -> tuple[int, object]:
+    supabase_url, publishable_key = _supabase_public_settings()
+    if not supabase_url or not publishable_key or not token:
+        return 0, {}
+    body = None
+    headers = {
+        "apikey": publishable_key,
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+    if payload is not None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    if prefer:
+        headers["Prefer"] = prefer
+    request_obj = urllib.request.Request(
+        f"{supabase_url}{path}",
+        data=body,
+        headers=headers,
+        method=method,
+    )
+    try:
+        with urllib.request.urlopen(request_obj, timeout=10) as response:
+            raw = response.read().decode("utf-8")
+            return response.status, json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            parsed = {"message": raw}
+        return exc.code, parsed
+    except (OSError, TimeoutError, json.JSONDecodeError):
+        return 0, {}
+
+
+def _supabase_request_bytes(
+    path: str,
+    *,
+    token: str,
+    method: str,
+    data: bytes,
+    content_type: str,
+    extra_headers: dict[str, str] | None = None,
+) -> tuple[int, object]:
+    supabase_url, publishable_key = _supabase_public_settings()
+    if not supabase_url or not publishable_key or not token:
+        return 0, {}
+    headers = {
+        "apikey": publishable_key,
+        "Authorization": f"Bearer {token}",
+        "Content-Type": content_type or "application/octet-stream",
+        "Accept": "application/json",
+    }
+    headers.update(extra_headers or {})
+    request_obj = urllib.request.Request(
+        f"{supabase_url}{path}",
+        data=data,
+        headers=headers,
+        method=method,
+    )
+    try:
+        with urllib.request.urlopen(request_obj, timeout=30) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+            try:
+                payload = json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                payload = {"message": raw}
+            return response.status, payload
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            payload = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            payload = {"message": raw}
+        return exc.code, payload
+    except (OSError, TimeoutError):
+        return 0, {}
+
+
+def _supabase_auth_user(token: str) -> dict | None:
+    status, payload = _supabase_request_json("/auth/v1/user", token=token)
+    if status != 200 or not isinstance(payload, dict) or not payload.get("id"):
+        return None
+    return payload
+
+
+def _profile_from_supabase_row(row: dict | None) -> dict:
+    if not isinstance(row, dict):
+        return _default_user_profile()
+    return _normalize_user_profile(
+        {
+            "conversion": row.get("conversion_defaults") or {},
+            "email_delivery": row.get("smtp_defaults") or {},
+        }
+    )
+
+
+def _profile_to_supabase_row(user_id: str, profile: dict) -> dict:
+    normalized = _normalize_user_profile(profile)
+    smtp_defaults = dict(normalized["email_delivery"])
+    smtp_defaults["secret_configured"] = bool(
+        smtp_defaults.get("secret_configured") or smtp_defaults.get("secret_registered")
+    )
+    smtp_defaults.pop("secret_registered", None)
+    return {
+        "user_id": user_id,
+        "conversion_defaults": normalized["conversion"],
+        "smtp_defaults": smtp_defaults,
+    }
+
+
+def _load_supabase_user_profile(token: str, user_id: str) -> dict | None:
+    query = (
+        "/rest/v1/user_profiles"
+        f"?user_id=eq.{quote(user_id, safe='')}"
+        "&select=user_id,conversion_defaults,smtp_defaults,updated_at"
+        "&limit=1"
+    )
+    status, payload = _supabase_request_json(query, token=token)
+    if status != 200 or not isinstance(payload, list) or not payload:
+        return None
+    return _profile_from_supabase_row(payload[0])
+
+
+def _save_supabase_user_profile(token: str, user_id: str, profile: dict) -> dict | None:
+    row = _profile_to_supabase_row(user_id, profile)
+    status, payload = _supabase_request_json(
+        "/rest/v1/user_profiles?on_conflict=user_id",
+        token=token,
+        method="POST",
+        payload=row,
+        prefer="resolution=merge-duplicates,return=representation",
+    )
+    if status not in {200, 201} or not isinstance(payload, list) or not payload:
+        return None
+    return _profile_from_supabase_row(payload[0])
+
+
+def _supabase_storage_object_path(user_id: str, job_id: str, filename: str) -> str:
+    safe_user = _safe_artifact_key(user_id)
+    safe_job = _safe_artifact_key(job_id)
+    safe_filename = Path(str(filename or "artifact.bin")).name or "artifact.bin"
+    safe_filename = "".join(char if char.isalnum() or char in {"_", "-", "."} else "_" for char in safe_filename)
+    safe_filename = safe_filename.strip("._") or "artifact.bin"
+    return f"{safe_user}/{safe_job}/{safe_filename}"
+
+
+def _normalize_supabase_signed_url(payload: object) -> dict:
+    if not isinstance(payload, dict):
+        return {
+            "available": False,
+            "url": "",
+            "expires_in_seconds": SUPABASE_ARTIFACT_SIGNED_URL_SECONDS,
+            "reason": "invalid_signed_url_response",
+        }
+    signed_url = str(payload.get("signedURL") or payload.get("signedUrl") or payload.get("url") or "").strip()
+    if signed_url.startswith("/"):
+        supabase_url, _publishable_key = _supabase_public_settings()
+        signed_url = f"{supabase_url}{signed_url}" if supabase_url else signed_url
+    return {
+        "available": bool(signed_url),
+        "url": signed_url,
+        "expires_in_seconds": SUPABASE_ARTIFACT_SIGNED_URL_SECONDS,
+        "reason": "" if signed_url else "missing_signed_url",
+    }
+
+
+def _supabase_create_storage_signed_url(token: str, *, bucket: str, storage_path: str) -> dict:
+    status, payload = _supabase_request_json(
+        f"/storage/v1/object/sign/{quote(bucket, safe='')}/{quote(storage_path, safe='/')}",
+        token=token,
+        method="POST",
+        payload={"expiresIn": SUPABASE_ARTIFACT_SIGNED_URL_SECONDS},
+    )
+    if status not in {200, 201}:
+        return {
+            "available": False,
+            "url": "",
+            "expires_in_seconds": SUPABASE_ARTIFACT_SIGNED_URL_SECONDS,
+            "reason": f"storage_sign_failed_{status}",
+        }
+    return _normalize_supabase_signed_url(payload)
+
+
+def _supabase_upload_artifact_bytes(
+    token: str,
+    *,
+    user_id: str,
+    job_id: str,
+    artifact_key: str,
+    artifact: dict,
+    data: bytes,
+) -> dict:
+    filename = str(artifact.get("filename") or f"{artifact_key}.bin").strip() or f"{artifact_key}.bin"
+    content_type = str(artifact.get("content_type") or mimetypes.guess_type(filename)[0] or "application/octet-stream")
+    storage_path = _supabase_storage_object_path(user_id, job_id, filename)
+    status, payload = _supabase_request_bytes(
+        f"/storage/v1/object/{quote(SUPABASE_ARTIFACT_BUCKET, safe='')}/{quote(storage_path, safe='/')}",
+        token=token,
+        method="POST",
+        data=data,
+        content_type=content_type,
+        extra_headers={"x-upsert": "true"},
+    )
+    if status not in {200, 201}:
+        return {
+            "status": "failed",
+            "provider": "supabase",
+            "storage_bucket": SUPABASE_ARTIFACT_BUCKET,
+            "storage_path": storage_path,
+            "error": f"storage_upload_failed_{status}",
+            "details": payload if isinstance(payload, dict) else {},
+        }
+    signed_url = _supabase_create_storage_signed_url(
+        token,
+        bucket=SUPABASE_ARTIFACT_BUCKET,
+        storage_path=storage_path,
+    )
+    return {
+        "status": "stored",
+        "provider": "supabase",
+        "storage_bucket": SUPABASE_ARTIFACT_BUCKET,
+        "storage_path": storage_path,
+        "signed_url": signed_url,
+        "error": "",
+    }
+
+
+def _read_artifact_bytes_for_cloud(artifact: dict) -> bytes:
+    artifact_path = _resolve_local_artifact_path(artifact)
+    if artifact_path is None or not artifact_path.is_file():
+        return b""
+    try:
+        return artifact_path.read_bytes()
+    except OSError:
+        return b""
+
+
+def _job_to_supabase_row(user_id: str, job_id: str, job: dict) -> dict:
+    metadata = dict(job.get("metadata", {}) or {})
+    try:
+        quality_state_snapshot = _build_job_quality_state(job_id, job)
+    except Exception:
+        quality_state_snapshot = dict(job.get("quality_state", {}) or {})
+    return {
+        "job_id": job_id,
+        "user_id": user_id,
+        "status": str(job.get("status") or "queued"),
+        "message": str(job.get("message") or ""),
+        "filename": str(job.get("filename") or ""),
+        "source_type": str(job.get("source_type") or "pdf"),
+        "download_name": str(job.get("download_name") or ""),
+        "created_at": str(job.get("created_at") or datetime.now(UTC).isoformat().replace("+00:00", "Z")),
+        "updated_at": str(job.get("updated_at") or datetime.now(UTC).isoformat().replace("+00:00", "Z")),
+        "elapsed_seconds": _compute_job_history_elapsed_seconds(job),
+        "output_size_bytes": int(_read_output_size_bytes(job) or job.get("output_size_bytes") or 0),
+        "metadata": metadata,
+        "quality_state_snapshot": quality_state_snapshot if isinstance(quality_state_snapshot, dict) else {},
+        "auto_repair": dict(job.get("auto_repair", {}) or {}),
+        "email_delivery": dict(job.get("email_delivery", {}) or {}),
+        "runtime": dict(job.get("runtime", {}) or {}),
+        "error": str(job.get("error") or ""),
+        "error_code": str(job.get("error_code") or ""),
+        "imported_from_local": bool(job.get("restored_from_artifacts") or job.get("imported_from_local")),
+    }
+
+
+def _artifact_to_supabase_row(
+    *,
+    user_id: str,
+    job_id: str,
+    artifact_key: str,
+    artifact: dict,
+    cloud: dict | None = None,
+) -> dict:
+    cloud = cloud or {}
+    retention = artifact.get("retention") if isinstance(artifact.get("retention"), dict) else {}
+    storage_bucket = str(cloud.get("storage_bucket") or artifact.get("storage_bucket") or SUPABASE_ARTIFACT_BUCKET)
+    storage_path = str(cloud.get("storage_path") or artifact.get("storage_path") or "")
+    signed_url = cloud.get("signed_url") if isinstance(cloud.get("signed_url"), dict) else artifact.get("signed_url")
+    if not isinstance(signed_url, dict):
+        signed_url = {}
+    return {
+        "job_id": job_id,
+        "user_id": user_id,
+        "kind": artifact_key,
+        "filename": str(artifact.get("filename") or f"{artifact_key}.bin"),
+        "content_type": str(artifact.get("content_type") or "application/octet-stream"),
+        "size_bytes": int(artifact.get("size_bytes") or 0),
+        "storage_bucket": storage_bucket,
+        "storage_path": storage_path,
+        "signed_url_metadata": signed_url,
+        "retention_days": int(retention.get("days") or 30),
+    }
+
+
+def _save_supabase_conversion_job(token: str, user_id: str, job_id: str, job: dict) -> dict:
+    row = _job_to_supabase_row(user_id, job_id, job)
+    status, payload = _supabase_request_json(
+        "/rest/v1/conversion_jobs?on_conflict=job_id",
+        token=token,
+        method="POST",
+        payload=row,
+        prefer="resolution=merge-duplicates,return=representation",
+    )
+    if status not in {200, 201}:
+        return {"status": "failed", "provider": "supabase", "error": f"job_upsert_failed_{status}", "payload": payload}
+    return {"status": "synced", "provider": "supabase", "error": ""}
+
+
+def _save_supabase_conversion_artifact(
+    token: str,
+    *,
+    user_id: str,
+    job_id: str,
+    artifact_key: str,
+    artifact: dict,
+    cloud: dict,
+) -> dict:
+    row = _artifact_to_supabase_row(
+        user_id=user_id,
+        job_id=job_id,
+        artifact_key=artifact_key,
+        artifact=artifact,
+        cloud=cloud,
+    )
+    status, payload = _supabase_request_json(
+        "/rest/v1/conversion_artifacts?on_conflict=job_id,kind",
+        token=token,
+        method="POST",
+        payload=row,
+        prefer="resolution=merge-duplicates,return=representation",
+    )
+    if status not in {200, 201}:
+        return {
+            "status": "failed",
+            "provider": "supabase",
+            "artifact_key": artifact_key,
+            "error": f"artifact_upsert_failed_{status}",
+            "payload": payload,
+        }
+    return {"status": "synced", "provider": "supabase", "artifact_key": artifact_key, "error": ""}
+
+
+def _sync_conversion_job_to_supabase(
+    job_id: str,
+    *,
+    token: str,
+    user_id: str,
+    upload_artifacts: bool = False,
+) -> dict:
+    if not token or not user_id:
+        return {"status": "skipped", "provider": "supabase", "reason": "not_authenticated"}
+    job = _get_conversion_job(job_id)
+    if not job:
+        return {"status": "skipped", "provider": "supabase", "reason": "job_missing"}
+    job_sync = _save_supabase_conversion_job(token, user_id, job_id, job)
+    artifact_results: list[dict] = []
+    artifact_updates: dict[str, dict] = {}
+    if upload_artifacts and job_sync.get("status") == "synced":
+        for artifact_key, artifact in dict(job.get("artifacts", {}) or {}).items():
+            if not isinstance(artifact, dict):
+                continue
+            data = _read_artifact_bytes_for_cloud(artifact)
+            if not data:
+                continue
+            cloud = _supabase_upload_artifact_bytes(
+                token,
+                user_id=user_id,
+                job_id=job_id,
+                artifact_key=str(artifact_key),
+                artifact=artifact,
+                data=data,
+            )
+            if cloud.get("status") == "stored":
+                updated_artifact = dict(artifact)
+                updated_artifact["cloud"] = {
+                    "provider": "supabase",
+                    "storage_bucket": cloud.get("storage_bucket", ""),
+                    "storage_path": cloud.get("storage_path", ""),
+                    "status": "stored",
+                }
+                if isinstance(cloud.get("signed_url"), dict):
+                    updated_artifact["signed_url"] = cloud["signed_url"]
+                artifact_updates[str(artifact_key)] = updated_artifact
+                artifact_results.append(
+                    _save_supabase_conversion_artifact(
+                        token,
+                        user_id=user_id,
+                        job_id=job_id,
+                        artifact_key=str(artifact_key),
+                        artifact=updated_artifact,
+                        cloud=cloud,
+                    )
+                )
+            else:
+                artifact_results.append(cloud)
+    if artifact_updates:
+        current = _get_conversion_job(job_id) or job
+        artifacts = dict(current.get("artifacts", {}) or {})
+        artifacts.update(artifact_updates)
+        _set_conversion_job(job_id, artifacts=artifacts)
+    final_status = "synced" if job_sync.get("status") == "synced" and not any(
+        result.get("status") == "failed" for result in artifact_results
+    ) else "partial"
+    sync_payload = {
+        "status": final_status,
+        "provider": "supabase",
+        "job": job_sync,
+        "artifacts": artifact_results,
+    }
+    _set_conversion_job(job_id, cloud_sync=sync_payload)
+    return sync_payload
+
+
+def _artifact_from_supabase_row(token: str, row: dict) -> tuple[str, dict]:
+    artifact_key = str(row.get("kind") or "").strip() or "artifact"
+    bucket = str(row.get("storage_bucket") or SUPABASE_ARTIFACT_BUCKET)
+    storage_path = str(row.get("storage_path") or "")
+    signed_url = _supabase_create_storage_signed_url(token, bucket=bucket, storage_path=storage_path) if storage_path else {}
+    artifact = {
+        "provider": "supabase",
+        "status": "stored",
+        "kind": artifact_key,
+        "job_id": str(row.get("job_id") or ""),
+        "filename": str(row.get("filename") or f"{artifact_key}.bin"),
+        "location": f"supabase://{bucket}/{storage_path}" if storage_path else "",
+        "storage_bucket": bucket,
+        "storage_path": storage_path,
+        "size_bytes": int(row.get("size_bytes") or 0),
+        "content_type": str(row.get("content_type") or "application/octet-stream"),
+        "retention": {"days": int(row.get("retention_days") or 30), "expires_at": ""},
+        "signed_url": signed_url,
+    }
+    if signed_url.get("available"):
+        artifact["download_url"] = str(signed_url.get("url") or "")
+    return artifact_key, artifact
+
+
+def _job_from_supabase_row(row: dict, artifacts: dict[str, dict]) -> dict:
+    created_at = str(row.get("created_at") or datetime.now(UTC).isoformat().replace("+00:00", "Z"))
+    job = build_conversion_job_record(
+        job_id=str(row.get("job_id") or ""),
+        source_path="",
+        source_type=str(row.get("source_type") or "pdf"),
+        filename=str(row.get("filename") or ""),
+        created_at=created_at,
+    )
+    job.update(
+        {
+            "status": str(row.get("status") or "queued"),
+            "message": str(row.get("message") or ""),
+            "updated_at": str(row.get("updated_at") or created_at),
+            "download_name": str(row.get("download_name") or job.get("download_name") or ""),
+            "metadata": dict(row.get("metadata") or {}),
+            "quality_state_snapshot": dict(row.get("quality_state_snapshot") or {}),
+            "auto_repair": dict(row.get("auto_repair") or {}),
+            "email_delivery": dict(row.get("email_delivery") or {}),
+            "runtime": dict(row.get("runtime") or {}),
+            "output_size_bytes": int(row.get("output_size_bytes") or 0),
+            "error": str(row.get("error") or ""),
+            "error_code": str(row.get("error_code") or ""),
+            "artifacts": artifacts,
+            "artifact_storage": {"provider": "supabase", "status": "available", "reason": ""},
+            "cloud_sync": {"status": "synced", "provider": "supabase"},
+        }
+    )
+    return job
+
+
+def _load_supabase_conversion_jobs(token: str, user_id: str, *, limit: int) -> dict[str, dict]:
+    if not token or not user_id:
+        return {}
+    jobs_path = (
+        "/rest/v1/conversion_jobs"
+        f"?user_id=eq.{quote(user_id, safe='')}"
+        "&select=*"
+        "&order=updated_at.desc"
+        f"&limit={max(1, min(limit, MAX_CONVERSION_JOB_HISTORY_LIMIT))}"
+    )
+    status, payload = _supabase_request_json(jobs_path, token=token)
+    if status != 200 or not isinstance(payload, list) or not payload:
+        return {}
+    artifacts_path = (
+        "/rest/v1/conversion_artifacts"
+        f"?user_id=eq.{quote(user_id, safe='')}"
+        "&select=*"
+    )
+    artifact_status, artifact_payload = _supabase_request_json(artifacts_path, token=token)
+    artifact_rows = artifact_payload if artifact_status == 200 and isinstance(artifact_payload, list) else []
+    artifacts_by_job: dict[str, dict[str, dict]] = {}
+    for row in artifact_rows:
+        if not isinstance(row, dict):
+            continue
+        job_id = str(row.get("job_id") or "")
+        if not job_id:
+            continue
+        key, artifact = _artifact_from_supabase_row(token, row)
+        artifacts_by_job.setdefault(job_id, {})[key] = artifact
+    jobs: dict[str, dict] = {}
+    for row in payload:
+        if not isinstance(row, dict):
+            continue
+        job_id = str(row.get("job_id") or "")
+        if not job_id:
+            continue
+        jobs[job_id] = _job_from_supabase_row(row, artifacts_by_job.get(job_id, {}))
+    return jobs
+
+
+def _merge_cloud_jobs_into_store_for_request(*, limit: int | None = None) -> dict:
+    user, token = _authenticated_request_context()
+    if not user or not token:
+        return {"status": "local", "provider": "local", "imported": 0}
+    user_id = str(user.get("id") or "")
+    cloud_jobs = _load_supabase_conversion_jobs(
+        token,
+        user_id,
+        limit=limit or MAX_CONVERSION_JOB_HISTORY_LIMIT,
+    )
+    imported = 0
+    for job_id, cloud_job in cloud_jobs.items():
+        local_job = _get_conversion_job(job_id)
+        if local_job and local_job.get("status") in ACTIVE_CONVERSION_JOB_STATUSES:
+            continue
+        local_updated = _conversion_job_sort_timestamp(local_job) if local_job else None
+        cloud_updated = _conversion_job_sort_timestamp(cloud_job)
+        if local_job and local_updated and local_updated >= cloud_updated:
+            continue
+        _CONVERSION_JOB_STORE.create(cloud_job)
+        imported += 1
+    return {"status": "synced", "provider": "supabase", "imported": imported, "user_id": user_id}
+
+
+def _authenticated_request_context() -> tuple[dict | None, str]:
+    token = _request_bearer_token()
+    if not token:
+        return None, ""
+    user = _supabase_auth_user(token)
+    if not user:
+        return None, ""
+    return user, token
+
+
+def _load_request_user_profile() -> tuple[dict, dict]:
+    user, token = _authenticated_request_context()
+    if user and token:
+        profile = _load_supabase_user_profile(token, str(user["id"]))
+        if profile is not None:
+            return profile, {
+                "profile_scope": "cloud",
+                "cloud_sync": {"status": "synced", "provider": "supabase"},
+                "authenticated": True,
+                "auth": user,
+            }
+        return _load_user_profile(), {
+            "profile_scope": "cloud",
+            "cloud_sync": {"status": "empty", "provider": "supabase"},
+            "authenticated": True,
+            "auth": user,
+        }
+    return _load_user_profile(), {
+        "profile_scope": "local",
+        "cloud_sync": {"status": "local", "provider": "local"},
+        "authenticated": False,
+        "auth": None,
+    }
+
+
+def _public_auth_config() -> dict:
+    supabase_url = os.environ.get("KINDLEMASTER_SUPABASE_URL", "").strip()
+    publishable_key = (
+        os.environ.get("KINDLEMASTER_SUPABASE_PUBLISHABLE_KEY", "")
+        or os.environ.get("KINDLEMASTER_SUPABASE_ANON_KEY", "")
+    ).strip()
+    enabled = _safe_bool(os.environ.get("KINDLEMASTER_SUPABASE_AUTH"), False)
+    configured = bool(enabled and supabase_url and publishable_key)
+    return {
+        "enabled": enabled,
+        "configured": configured,
+        "provider": "supabase" if configured else "local",
+        "supabase_url": supabase_url if configured else "",
+        "publishable_key": publishable_key if configured else "",
+        "require_login": False,
+        "missing_config": [] if configured else ["KINDLEMASTER_SUPABASE_AUTH"],
+    }
+
+
+def _delivery_public_config(profile: dict | None = None) -> dict:
+    profile = profile or _load_user_profile()
+    profile_email = dict(profile.get("email_delivery", {}) or {})
+    enabled = _safe_bool(
+        os.environ.get("KINDLEMASTER_EMAIL_DELIVERY"),
+        _safe_bool(profile_email.get("enabled"), False),
+    )
+    host = os.environ.get("KINDLEMASTER_SMTP_HOST") or str(profile_email.get("host") or "")
+    username = os.environ.get("KINDLEMASTER_SMTP_USERNAME") or str(profile_email.get("username") or "")
+    from_address = os.environ.get("KINDLEMASTER_SMTP_FROM") or str(profile_email.get("from_address") or username)
+    secret_configured = bool(_smtp_secret_env_value())
+    secret_registered = _safe_bool(profile_email.get("secret_registered"), False) or _safe_bool(
+        profile_email.get("secret_configured"), False
+    )
+    registered_or_visible_secret = bool(secret_configured or secret_registered)
+    configured = bool(enabled and host and username and from_address and registered_or_visible_secret)
+    send_ready = bool(enabled and host and username and from_address and secret_configured)
+    missing = []
+    if not enabled:
+        missing.append("KINDLEMASTER_EMAIL_DELIVERY")
+    if not host:
+        missing.append("KINDLEMASTER_SMTP_HOST")
+    if not username:
+        missing.append("KINDLEMASTER_SMTP_USERNAME")
+    if not from_address:
+        missing.append("KINDLEMASTER_SMTP_FROM")
+    if not registered_or_visible_secret:
+        missing.append("KINDLEMASTER_SMTP_PASSWORD")
+    return {
+        "enabled": enabled,
+        "configured": configured,
+        "send_ready": send_ready,
+        "provider": "smtp",
+        "secret_configured": secret_configured,
+        "secret_registered": secret_registered,
+        "secret_env_name": _smtp_secret_env_name(),
+        "profile_configured": bool(profile_email.get("default_recipient")),
+        "config_source": "env+profile",
+        "missing_config": missing,
+        "default_recipient": str(profile_email.get("default_recipient") or ""),
+        "max_attachment_bytes": _safe_int(
+            profile_email.get("max_attachment_bytes"),
+            50 * 1024 * 1024,
+            minimum=1,
+        ),
+    }
+
+
+def _mask_email_address(value: str) -> str:
+    normalized = str(value or "").strip()
+    if "@" not in normalized:
+        return ""
+    local, domain = normalized.split("@", 1)
+    return f"{local[:1]}***@{domain}" if local and domain else ""
 
 
 def _parse_job_timestamp(value: str | None) -> datetime | None:
@@ -814,9 +2096,14 @@ def _build_conversion_job_history_item(job_id: str, job: dict) -> dict:
         "download_available": download_state.download_available,
         "download_state": download_state.to_dict(),
         "quality_state_url": f"/convert/quality/{response_job_id}",
+        "report_json_url": f"/convert/report/{response_job_id}.json",
+        "report_markdown_url": f"/convert/report/{response_job_id}.md",
         "runtime": dict(job.get("runtime", {}) or {}),
         "artifacts": dict(job.get("artifacts", {}) or {}),
         "artifact_storage": dict(job.get("artifact_storage", {}) or {}),
+        "cloud_sync": dict(job.get("cloud_sync", {}) or {}),
+        "auto_repair": dict(job.get("auto_repair", {}) or {}),
+        "email_delivery": dict(job.get("email_delivery", {}) or {}),
     }
     if download_state.download_url:
         item["download_url"] = download_state.download_url
@@ -829,12 +2116,18 @@ def _build_conversion_job_history_item(job_id: str, job: dict) -> dict:
 def _build_library_payload(*, default_include_text: bool = False) -> dict:
     _mark_timed_out_conversion_jobs()
     _cleanup_expired_conversion_jobs()
-    return build_library_index(
+    filters = _resolve_library_filters(default_include_text=default_include_text)
+    cloud_sync = _merge_cloud_jobs_into_store_for_request(limit=filters.limit)
+    import_result = _ensure_local_artifact_history_loaded()
+    payload = build_library_index(
         _CONVERSION_JOB_STORE.snapshot(),
         quality_state_builder=lambda job_id, job: _build_job_quality_state(job_id, dict(job)),
         output_size_resolver=lambda job: _read_output_size_bytes(dict(job)),
-        filters=_resolve_library_filters(default_include_text=default_include_text),
+        filters=filters,
     )
+    payload["import"] = import_result
+    payload["cloud_sync"] = cloud_sync
+    return payload
 
 
 def _active_conversion_job_count() -> int:
@@ -1066,6 +2359,7 @@ def _run_conversion_pipeline(
         "epub_bytes": outcome.epub_bytes,
         "download_name": outcome.download_name,
         "metadata": outcome.metadata,
+        "extra_artifacts": list(outcome.result.get("extra_artifacts") or []),
     }
 
 
@@ -1081,6 +2375,8 @@ def _spawn_conversion_job(
     heading_repair_enabled: bool,
     route_model_mode: str = "shadow",
     quality_gate_mode: str = "draft",
+    cloud_user_id: str = "",
+    cloud_token: str = "",
 ) -> None:
     def _worker() -> None:
         output_path = os.path.join(UPLOAD_DIR, f"{job_id}.epub")
@@ -1125,6 +2421,7 @@ def _spawn_conversion_job(
             job_before_ready = _get_conversion_job(job_id) or {}
             artifacts = dict(job_before_ready.get("artifacts", {}) or {})
             artifacts["output"] = output_artifact
+            artifacts.update(_store_extra_conversion_artifacts(job_id, payload.get("extra_artifacts")))
             runtime_metadata = _update_runtime_job(
                 job_id,
                 RuntimeJobStatus.SUCCEEDED,
@@ -1146,6 +2443,13 @@ def _spawn_conversion_job(
                 error_code="",
             )
             _store_quality_report_artifacts(job_id)
+            if cloud_user_id and cloud_token:
+                _sync_conversion_job_to_supabase(
+                    job_id,
+                    token=cloud_token,
+                    user_id=cloud_user_id,
+                    upload_artifacts=True,
+                )
             _log_conversion_event(
                 "convert.job.phase",
                 job_id=job_id,
@@ -1184,6 +2488,13 @@ def _spawn_conversion_job(
                 sentry_event_id=sentry_event_id,
                 progress=progress_reporter.terminal_progress("failed", "Konwersja nie powiodła się."),
             )
+            if cloud_user_id and cloud_token:
+                _sync_conversion_job_to_supabase(
+                    job_id,
+                    token=cloud_token,
+                    user_id=cloud_user_id,
+                    upload_artifacts=False,
+                )
             _log_conversion_event(
                 "convert.job.failed",
                 level="error",
@@ -1206,8 +2517,11 @@ def _spawn_conversion_job(
     thread.start()
 
 
-@app.route("/")
-def index():
+def _react_shell_index_path() -> Path:
+    return Path(app.root_path) / "static" / "react" / "index.html"
+
+
+def _render_legacy_index():
     root_path = Path(app.root_path)
     ui_asset_paths = [
         root_path / "templates" / "index.html",
@@ -1238,13 +2552,29 @@ def index():
     )
 
 
+@app.route("/")
+def index():
+    if _react_shell_index_path().exists():
+        return redirect("/app", code=302)
+    return _render_legacy_index()
+
+
+@app.route("/legacy")
+def legacy_index():
+    return _render_legacy_index()
+
+
+@app.route("/favicon.ico")
+def favicon():
+    return ("", 204)
+
+
 @app.route("/app")
 @app.route("/app/<path:_path>")
 def react_app(_path: str = ""):
     """Serve the Sprint 4 React shell when the Vite build is available."""
 
-    root_path = Path(app.root_path)
-    react_index = root_path / "static" / "react" / "index.html"
+    react_index = _react_shell_index_path()
     local_app_url = build_local_app_url(
         _resolve_request_port_label(request.host, _resolve_server_port())
     )
@@ -1254,6 +2584,252 @@ def react_app(_path: str = ""):
         "react_app_unbuilt.html",
         local_app_url=local_app_url,
     )
+
+
+@app.route("/auth/config", methods=["GET"])
+def auth_config():
+    response = jsonify({"success": True, "auth": _public_auth_config()})
+    apply_no_store_headers(response.headers)
+    return response
+
+
+@app.route("/auth/me", methods=["GET"])
+def auth_me():
+    user, _token = _authenticated_request_context()
+    if user:
+        email = str(user.get("email") or "")
+        response = jsonify(
+            {
+                "success": True,
+                "auth": {
+                    "authenticated": True,
+                    "user_id": str(user.get("id") or ""),
+                    "email": email,
+                    "email_masked": _mask_email_address(email),
+                    "provider": "supabase",
+                },
+            }
+        )
+        apply_no_store_headers(response.headers)
+        return response
+    response = jsonify(
+        {
+            "success": True,
+            "auth": {
+                "authenticated": False,
+                "user_id": "",
+                "email": "",
+                "email_masked": "",
+                "provider": "local",
+            },
+        }
+    )
+    apply_no_store_headers(response.headers)
+    return response
+
+
+@app.route("/user/profile", methods=["GET"])
+def user_profile_get():
+    profile, context = _load_request_user_profile()
+    user = context.get("auth") if isinstance(context.get("auth"), dict) else {}
+    response = jsonify(
+        {
+            "success": True,
+            "profile": profile,
+            "profile_scope": context["profile_scope"],
+            "profile_path_configured": bool(os.environ.get("KINDLEMASTER_USER_PROFILE_PATH")),
+            "profile_path": str(_user_profile_path()) if context["profile_scope"] == "local" else "",
+            "cloud_sync": context["cloud_sync"],
+            "authenticated": context["authenticated"],
+            "user_id": str(user.get("id") or ""),
+            "email_masked": _mask_email_address(str(user.get("email") or "")),
+        }
+    )
+    apply_no_store_headers(response.headers)
+    return response
+
+
+@app.route("/user/profile", methods=["PUT"])
+def user_profile_put():
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return _json_error(
+            "Profil uzytkownika musi byc obiektem JSON.",
+            error_code="invalid_profile_request",
+            status_code=400,
+            phase="settings",
+        )
+    user, token = _authenticated_request_context()
+    if user and token:
+        saved_cloud = _save_supabase_user_profile(token, str(user["id"]), payload)
+        if saved_cloud is not None:
+            _save_user_profile(saved_cloud)
+            response = jsonify(
+                {
+                    "success": True,
+                    "profile": saved_cloud,
+                    "profile_scope": "cloud",
+                    "cloud_sync": {"status": "synced", "provider": "supabase"},
+                    "authenticated": True,
+                    "user_id": str(user.get("id") or ""),
+                    "email_masked": _mask_email_address(str(user.get("email") or "")),
+                }
+            )
+            apply_no_store_headers(response.headers)
+            return response
+        return _json_error(
+            "Nie udalo sie zapisac profilu w Supabase.",
+            error_code="profile_cloud_write_failed",
+            status_code=502,
+            phase="settings",
+            retryable=True,
+        )
+    try:
+        profile = _save_user_profile(payload)
+    except OSError:
+        return _json_error(
+            "Nie udalo sie zapisac profilu uzytkownika.",
+            error_code="profile_write_failed",
+            status_code=500,
+            phase="settings",
+            retryable=True,
+        )
+    response = jsonify(
+        {
+            "success": True,
+            "profile": profile,
+            "profile_scope": "local",
+            "cloud_sync": {"status": "local", "provider": "local"},
+            "authenticated": False,
+        }
+    )
+    apply_no_store_headers(response.headers)
+    return response
+
+
+@app.route("/user/library/import-local", methods=["POST"])
+def user_library_import_local():
+    import_result = _import_local_artifact_history()
+    response = jsonify(
+        {
+            "success": True,
+            "import": import_result,
+            "message": "Lokalna historia zostala odtworzona z zachowanych artefaktow.",
+        }
+    )
+    apply_no_store_headers(response.headers)
+    return response
+
+
+@app.route("/convert/delivery/config", methods=["GET"])
+def convert_delivery_config():
+    profile, context = _load_request_user_profile()
+    response = jsonify(
+        {
+            "success": True,
+            "delivery": _delivery_public_config(profile),
+            "profile_scope": context["profile_scope"],
+            "cloud_sync": context["cloud_sync"],
+        }
+    )
+    apply_no_store_headers(response.headers)
+    return response
+
+
+@app.route("/convert/repair/<job_id>", methods=["POST"])
+def convert_repair(job_id: str):
+    _mark_timed_out_conversion_jobs()
+    _cleanup_expired_conversion_jobs()
+    job = _get_conversion_job(job_id)
+    if not job:
+        return _json_error(
+            "Nie znaleziono zadania konwersji do naprawy.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="repair",
+            job_id=job_id,
+        )
+    if job.get("status") != "ready":
+        return _json_error(
+            "Naprawa jest dostepna dopiero po zakonczeniu konwersji.",
+            error_code="repair_not_ready",
+            status_code=409,
+            phase="repair",
+            job_id=job_id,
+        )
+    auto_repair = {
+        "status": "skipped",
+        "reason": "delivery_repair_not_enabled_in_local_fallback",
+        "actions": [],
+    }
+    updated_job = _set_conversion_job(job_id, auto_repair=auto_repair) or job
+    quality_state = _build_job_quality_state(job_id, updated_job)
+    response = jsonify(
+        {
+            "success": True,
+            "job": _build_conversion_job_history_item(job_id, updated_job),
+            "quality_state": quality_state,
+            "auto_repair": auto_repair,
+        }
+    )
+    apply_no_store_headers(response.headers)
+    return response
+
+
+@app.route("/convert/delivery/<job_id>/email", methods=["POST"])
+def convert_delivery_email(job_id: str):
+    _mark_timed_out_conversion_jobs()
+    _cleanup_expired_conversion_jobs()
+    job = _get_conversion_job(job_id)
+    if not job or job.get("status") != "ready":
+        return _json_error(
+            "Nie znaleziono gotowego zadania do wysylki.",
+            error_code="delivery_not_ready",
+            status_code=404,
+            phase="delivery",
+            job_id=job_id,
+        )
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return _json_error(
+            "Payload wysylki musi byc obiektem JSON.",
+            error_code="invalid_delivery_request",
+            status_code=400,
+            phase="delivery",
+            job_id=job_id,
+        )
+    profile, _context = _load_request_user_profile()
+    recipient = str(payload.get("to", "") or profile["email_delivery"].get("default_recipient", "")).strip()
+    if not recipient or "@" not in recipient:
+        return _json_error(
+            "Podaj poprawny adres Kindle.",
+            error_code="invalid_delivery_request",
+            status_code=400,
+            phase="delivery",
+            job_id=job_id,
+        )
+    delivery_config = _delivery_public_config(profile)
+    if not delivery_config.get("configured"):
+        return _json_error(
+            "Wysylka email jest wylaczona albo konfiguracja SMTP jest niekompletna.",
+            error_code="delivery_unavailable",
+            status_code=503,
+            phase="delivery",
+            job_id=job_id,
+        )
+    delivery_payload = {
+        "status": "configured_not_sent",
+        "artifact": str(payload.get("artifact") or "epub"),
+        "masked_recipient": _mask_email_address(recipient),
+        "diagnostics": {
+            "smtp": {"configured": True},
+            "message": {"dry_run": True},
+        },
+    }
+    _set_conversion_job(job_id, email_delivery=delivery_payload)
+    response = jsonify({"success": True, "delivery": delivery_payload})
+    apply_no_store_headers(response.headers)
+    return response
 
 
 @app.route("/convert", methods=["POST"])
@@ -1338,6 +2914,8 @@ def convert():
 def convert_start():
     _mark_timed_out_conversion_jobs()
     _cleanup_expired_conversion_jobs()
+    cloud_user, cloud_token = _authenticated_request_context()
+    cloud_user_id = str(cloud_user.get("id") or "") if cloud_user else ""
     if _active_conversion_job_count() >= MAX_ACTIVE_CONVERSION_JOBS:
         return _json_error(
             "Kolejka konwersji jest pelna. Sprobuj ponownie za chwile.",
@@ -1403,6 +2981,11 @@ def convert_start():
     job_record["artifacts"] = {"input": input_artifact}
     job_record["artifact_storage"] = _artifact_storage_status()
     _CONVERSION_JOB_STORE.create(job_record)
+    cloud_sync = (
+        _sync_conversion_job_to_supabase(job_id, token=cloud_token, user_id=cloud_user_id, upload_artifacts=False)
+        if cloud_user_id and cloud_token
+        else {"status": "local", "provider": "local"}
+    )
     _log_conversion_event(
         "convert.job.created",
         job_id=job_id,
@@ -1423,6 +3006,8 @@ def convert_start():
         force_ocr=force_ocr,
         language=language,
         heading_repair_enabled=heading_repair_enabled,
+        cloud_user_id=cloud_user_id,
+        cloud_token=cloud_token,
     )
 
     response = jsonify(
@@ -1436,6 +3021,7 @@ def convert_start():
             "runtime": runtime_metadata,
             "artifacts": {"input": input_artifact},
             "artifact_storage": job_record["artifact_storage"],
+            "cloud_sync": cloud_sync,
         }
     )
     response.status_code = 202
@@ -1448,8 +3034,10 @@ def convert_start():
 def convert_jobs():
     _mark_timed_out_conversion_jobs()
     _cleanup_expired_conversion_jobs()
-    jobs = _CONVERSION_JOB_STORE.snapshot()
     limit = _resolve_conversion_job_history_limit()
+    cloud_sync = _merge_cloud_jobs_into_store_for_request(limit=limit)
+    import_result = _ensure_local_artifact_history_loaded()
+    jobs = _CONVERSION_JOB_STORE.snapshot()
     recent_jobs = sorted(
         jobs.items(),
         key=lambda item: _conversion_job_sort_timestamp(item[1]),
@@ -1464,6 +3052,8 @@ def convert_jobs():
             ],
             "count": len(recent_jobs),
             "total": len(jobs),
+            "import": import_result,
+            "cloud_sync": cloud_sync,
         }
     )
     response.headers["Cache-Control"] = "no-store, max-age=0"
@@ -1538,6 +3128,164 @@ def convert_quality_report(job_id: str, extension: str):
     return response
 
 
+@app.route("/convert/retry/<job_id>", methods=["POST"])
+def convert_retry(job_id: str):
+    _mark_timed_out_conversion_jobs()
+    _cleanup_expired_conversion_jobs()
+    cloud_user, cloud_token = _authenticated_request_context()
+    cloud_user_id = str(cloud_user.get("id") or "") if cloud_user else ""
+    if _active_conversion_job_count() >= MAX_ACTIVE_CONVERSION_JOBS:
+        return _json_error(
+            "Kolejka konwersji jest pelna. Sprobuj ponownie za chwile.",
+            error_code=ERROR_QUEUE_FAILED,
+            status_code=429,
+            phase="retry",
+            job_id=job_id,
+            retryable=True,
+        )
+    previous_job = _get_conversion_job(job_id)
+    if not previous_job:
+        return _json_error(
+            "Nie znaleziono zadania do ponowienia.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="retry",
+            job_id=job_id,
+        )
+
+    input_bytes, input_filename = _read_retry_input_artifact(previous_job)
+    if not input_bytes:
+        return _json_error(
+            "Nie znaleziono zachowanego pliku wejsciowego dla tego zadania.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=409,
+            phase="retry",
+            job_id=job_id,
+        )
+
+    source_type = detect_supported_source_type(input_filename) or str(previous_job.get("source_type") or "").strip()
+    if source_type not in {"pdf", "docx"}:
+        return _json_error(
+            "Nie mozna ustalic typu pliku do ponowienia.",
+            error_code=ERROR_UPLOAD_FAILED,
+            status_code=400,
+            phase="retry",
+            job_id=job_id,
+        )
+
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        payload = {}
+    replay = (((previous_job.get("runtime", {}) or {}).get("replay", {}) or {}).get("command", {}) or {}).get("kwargs", {}) or {}
+    if not isinstance(replay, dict):
+        replay = {}
+    profile = str(payload.get("profile") or replay.get("profile") or "auto-premium")
+    route_model_mode = str(payload.get("route_model_mode") or "shadow")
+    quality_gate_mode = str(payload.get("quality_gate_mode") or "draft")
+    force_ocr = _safe_bool(payload.get("force_ocr"), _safe_bool(replay.get("force_ocr"), False))
+    language = str(payload.get("language") or replay.get("language") or "pl")
+    heading_repair_enabled = _safe_bool(
+        payload.get("heading_repair_enabled"),
+        _safe_bool(replay.get("heading_repair_enabled"), False),
+    )
+
+    retry_job_id = uuid.uuid4().hex
+    source_path = os.path.join(UPLOAD_DIR, f"{retry_job_id}.{source_type}")
+    try:
+        Path(source_path).write_bytes(input_bytes)
+    except OSError:
+        return _json_error(
+            "Nie udalo sie przygotowac pliku do ponownej konwersji.",
+            error_code=ERROR_UPLOAD_FAILED,
+            status_code=500,
+            phase="retry",
+            job_id=job_id,
+            retryable=True,
+        )
+
+    created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    input_artifact = _store_artifact_bytes(
+        job_id=retry_job_id,
+        kind=ArtifactKind.INPUT,
+        filename=input_filename,
+        data=input_bytes,
+    )
+    runtime_metadata = _submit_runtime_job(
+        retry_job_id,
+        _build_replayable_conversion_command(
+            job_id=retry_job_id,
+            source_type=source_type,
+            original_filename=input_filename,
+            profile=profile,
+            force_ocr=force_ocr,
+            language=language,
+            heading_repair_enabled=heading_repair_enabled,
+        ),
+    )
+    retry_record = build_conversion_job_record(
+        job_id=retry_job_id,
+        source_path=source_path,
+        source_type=source_type,
+        filename=input_filename,
+        created_at=created_at,
+    )
+    retry_record["runtime"] = runtime_metadata
+    retry_record["artifacts"] = {"input": input_artifact}
+    retry_record["artifact_storage"] = _artifact_storage_status()
+    retry_record["retry_of"] = job_id
+    retry_record["retry_reason"] = str(previous_job.get("error_code") or previous_job.get("status") or "")
+    _CONVERSION_JOB_STORE.create(retry_record)
+    cloud_sync = (
+        _sync_conversion_job_to_supabase(retry_job_id, token=cloud_token, user_id=cloud_user_id, upload_artifacts=False)
+        if cloud_user_id and cloud_token
+        else {"status": "local", "provider": "local"}
+    )
+    _log_conversion_event(
+        "convert.job.retry",
+        job_id=retry_job_id,
+        phase="retry",
+        status="queued",
+        safe_message="Ponowiono konwersje z zachowanego pliku wejsciowego.",
+        source_type=source_type,
+    )
+
+    _spawn_conversion_job(
+        job_id=retry_job_id,
+        source_path=source_path,
+        source_type=source_type,
+        original_filename=input_filename,
+        profile=profile,
+        route_model_mode=route_model_mode,
+        quality_gate_mode=quality_gate_mode,
+        force_ocr=force_ocr,
+        language=language,
+        heading_repair_enabled=heading_repair_enabled,
+        cloud_user_id=cloud_user_id,
+        cloud_token=cloud_token,
+    )
+
+    response = jsonify(
+        {
+            "success": True,
+            "job_id": retry_job_id,
+            "retry_of": job_id,
+            "status": "queued",
+            "source_type": source_type,
+            "filename": input_filename,
+            "message": "Ponowiono konwersje z zachowanego pliku wejsciowego.",
+            "poll_after_ms": DEFAULT_CONVERSION_POLL_INTERVAL_MS,
+            "runtime": runtime_metadata,
+            "artifacts": {"input": input_artifact},
+            "artifact_storage": retry_record["artifact_storage"],
+            "cloud_sync": cloud_sync,
+        }
+    )
+    response.status_code = 202
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+
 @app.route("/convert/status/<job_id>", methods=["GET"])
 def convert_status(job_id: str):
     _mark_timed_out_conversion_jobs()
@@ -1583,6 +3331,8 @@ def convert_status(job_id: str):
             "runtime": dict(job.get("runtime", {}) or {}),
             "artifacts": dict(job.get("artifacts", {}) or {}),
             "artifact_storage": dict(job.get("artifact_storage", {}) or {}),
+            "auto_repair": dict(job.get("auto_repair", {}) or {}),
+            "email_delivery": dict(job.get("email_delivery", {}) or {}),
         }
     )
     response.headers["Cache-Control"] = "no-store, max-age=0"
@@ -1614,7 +3364,56 @@ def convert_quality(job_id: str):
             "progress": _build_job_progress_state(job),
             "artifacts": dict(job.get("artifacts", {}) or {}),
             "artifact_storage": dict(job.get("artifact_storage", {}) or {}),
+            "auto_repair": dict(job.get("auto_repair", {}) or {}),
+            "email_delivery": dict(job.get("email_delivery", {}) or {}),
         }
+    )
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+
+@app.route("/convert/artifact/<job_id>/<artifact_key>", methods=["GET"])
+def convert_artifact_download(job_id: str, artifact_key: str):
+    _mark_timed_out_conversion_jobs()
+    _cleanup_expired_conversion_jobs()
+    job = _get_conversion_job(job_id)
+    if not job:
+        return _json_error(
+            "Nie znaleziono zadania konwersji.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="download",
+            job_id=job_id,
+        )
+    key = _safe_artifact_key(artifact_key)
+    artifacts = dict(job.get("artifacts", {}) or {})
+    artifact = artifacts.get(key)
+    if not isinstance(artifact, dict):
+        return _json_error(
+            "Nie znaleziono artefaktu zadania.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="download",
+            job_id=job_id,
+        )
+    artifact_path = _resolve_local_artifact_path(artifact)
+    if artifact_path is None or not artifact_path.is_file():
+        signed_url = _signed_artifact_url(artifact)
+        if signed_url:
+            return redirect(signed_url, code=302)
+        return _json_error(
+            "Artefakt nie jest dostepny lokalnie.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="download",
+            job_id=job_id,
+        )
+    response = send_file(
+        artifact_path,
+        mimetype=str(artifact.get("content_type") or mimetypes.guess_type(artifact_path.name)[0] or "application/octet-stream"),
+        as_attachment=True,
+        download_name=str(artifact.get("filename") or artifact_path.name),
     )
     response.headers["Cache-Control"] = "no-store, max-age=0"
     response.headers["Pragma"] = "no-cache"

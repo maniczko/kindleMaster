@@ -3,8 +3,6 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from app import app
-
 
 TEMPLATE_PATH = Path(__file__).with_name("templates") / "index.html"
 STATIC_PATH = Path(__file__).with_name("static")
@@ -24,13 +22,9 @@ def frontend_source() -> str:
 
 
 class Flat2UiTemplateTests(unittest.TestCase):
-    def test_index_renders_flat_shell_sidebar_and_quality_report_hooks(self) -> None:
-        client = app.test_client()
+    def test_legacy_template_declares_flat_shell_sidebar_and_quality_report_hooks(self) -> None:
+        html = TEMPLATE_PATH.read_text(encoding="utf-8")
 
-        response = client.get("/")
-
-        self.assertEqual(response.status_code, 200)
-        html = response.get_data(as_text=True)
         self.assertIn('class="flat-sidebar-card"', html)
         self.assertIn('data-vr-hook="km-ui3-commandbar"', html)
         self.assertIn('id="quickUploadButton"', html)
@@ -38,10 +32,10 @@ class Flat2UiTemplateTests(unittest.TestCase):
         self.assertIn('id="recentProjectSelect"', html)
         self.assertIn('id="newConversionButton"', html)
         self.assertIn('id="recentConversionsList"', html)
-        self.assertIn('href="/static/css/app-shell.css"', html)
-        self.assertIn('src="/static/js/conversion-ui.js"', html)
-        self.assertIn('src="/static/js/quality-cockpit.js"', html)
-        self.assertIn('src="/static/js/library.js"', html)
+        self.assertIn("filename='css/app-shell.css'", html)
+        self.assertIn("filename='js/conversion-ui.js'", html)
+        self.assertIn("filename='js/quality-cockpit.js'", html)
+        self.assertIn("filename='js/library.js'", html)
         frontend = frontend_source()
         self.assertIn('class="flat2-quality-report"', frontend)
         self.assertIn('data-quality-verdict', frontend)
@@ -58,6 +52,9 @@ class Flat2UiTemplateTests(unittest.TestCase):
         self.assertIn("--focus-ring", html)
         self.assertIn(":where(button, input, select, a, .drop-zone):focus-visible", html)
         self.assertIn(".quality-matrix", html)
+        self.assertIn("@media (max-width: 980px)", html)
+        self.assertIn("grid-template-columns: 232px minmax(0, 1fr);", html)
+        self.assertIn("position: static;\n        width: auto;\n        height: auto;", html)
         self.assertIn("JSON jakości", html)
         self.assertIn(".hero-band {\n        display: flex !important;", html)
 

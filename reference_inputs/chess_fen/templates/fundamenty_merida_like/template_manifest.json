@@ -1,0 +1,25 @@
+{
+  "status": "ok",
+  "labels_path": "reference_inputs\\chess_fen\\labels\\fundamenty_seed_positions.jsonl",
+  "output_dir": "reference_inputs\\chess_fen\\templates\\fundamenty_merida_like",
+  "boards_processed": 40,
+  "template_count": 2560,
+  "label_counts": {
+    "empty-light": 967,
+    "empty-dark": 942,
+    "R-white": 51,
+    "p-black": 156,
+    "q-black": 30,
+    "r-black": 47,
+    "k-black": 40,
+    "P-white": 162,
+    "Q-white": 21,
+    "N-white": 24,
+    "K-white": 40,
+    "b-black": 30,
+    "B-white": 27,
+    "n-black": 23
+  },
+  "clean_output": true,
+  "removed_stale_files": 2561
+}

@@ -1529,6 +1529,7 @@ def finalize_epub_for_kindle(
                 chapter_list,
                 fallback_entries=toc_entries,
                 exclude_files=non_linear_spine_files,
+                publication_profile=publication_profile,
             )
             if non_linear_spine_files:
                 toc_entries.extend(
@@ -3152,6 +3153,11 @@ def _process_chapter(
         if block_type == "figure":
             close_list_if_needed()
             body_parts.append(block["html"])
+            continue
+
+        if block_type == "raw-html":
+            close_list_if_needed()
+            body_parts.append(block["html"])
 
     close_list_if_needed()
     body_parts.append("</section>")
@@ -3197,6 +3203,10 @@ def _extract_logical_blocks(
         if node.name == "span" and "page-marker" in _class_list(node):
             node["class"] = "page-marker"
             blocks.append({"type": "page-marker", "html": str(node)})
+            continue
+
+        if "chess-pgn" in _class_list(node):
+            blocks.append({"type": "raw-html", "text": plain_text, "html": str(node)})
             continue
 
         if node.name in {"div", "figure", "img"}:
@@ -6730,15 +6740,55 @@ def _normalize_figure_html(node: Tag) -> str:
         caption = fragment.find(class_="diagram-caption")
         caption_text = _normalize_text(caption.get_text(" ", strip=True)) if caption else ""
         caption_html = _sanitize_inline_html(_inner_html(caption)) if caption else ""
+        fen_source = img if img.get("data-fen") else fragment.find(attrs={"data-fen": True})
+        fen_value = str(fen_source.get("data-fen", "") if fen_source else "").strip()
+        fen_confidence = str(fen_source.get("data-fen-confidence", "") if fen_source else "").strip()
+        fen_method = str(fen_source.get("data-fen-method", "") if fen_source else "").strip()
+        fen_note = next(
+            (
+                candidate
+                for candidate in fragment.find_all(["p", "div"])
+                if {"diagram-fen", "diagram-review"}.intersection(_class_list(candidate))
+            ),
+            None,
+        )
+        fen_note_html = _sanitize_inline_html(_inner_html(fen_note)) if fen_note else ""
+        fen_note_classes = _normalized_classes(
+            fen_note.get("class") if fen_note else None,
+            fallback=["diagram-fen"],
+        )
+        fen_note_status = str(fen_note.get("data-fen-status", "") if fen_note else "").strip()
+        if fen_value:
+            fen_note_html = (
+                '<span class="diagram-fen-label">FEN:</span> '
+                f'<code class="diagram-fen-code">{html.escape(fen_value)}</code>'
+            )
+        if fen_value:
+            img["data-fen"] = fen_value
+            if fen_confidence:
+                img["data-fen-confidence"] = fen_confidence
+            if fen_method:
+                img["data-fen-method"] = fen_method
         if not img.get("alt"):
-            img["alt"] = caption_text or "Diagram szachowy"
+            img["alt"] = f"Diagram szachowy, FEN: {fen_value}" if fen_value else (caption_text or "Diagram szachowy")
         figure_attrs = ' class="chess-problem"'
         if exercise_id:
             figure_attrs += f' id="{html.escape(exercise_id)}"'
+        if fen_value:
+            figure_attrs += f' data-fen="{html.escape(fen_value)}"'
+            if fen_confidence:
+                figure_attrs += f' data-fen-confidence="{html.escape(fen_confidence)}"'
+            if fen_method:
+                figure_attrs += f' data-fen-method="{html.escape(fen_method)}"'
         figure_html = [f"<figure{figure_attrs}>"]
         if caption_html:
             figure_html.append(f'<figcaption class="diagram-caption">{caption_html}</figcaption>')
         figure_html.append(str(img))
+        if fen_note_html:
+            fen_note_attrs = f' class="{" ".join(html.escape(class_name) for class_name in fen_note_classes)}"'
+            if fen_note_status:
+                fen_note_attrs += f' data-fen-status="{html.escape(fen_note_status)}"'
+            figure_html.append(f"<p{fen_note_attrs}>{fen_note_html}</p>")
         figure_html.append("</figure>")
         return "".join(figure_html)
 
@@ -11003,6 +11053,7 @@ def _collect_nav_entries_from_heading_candidates(
     candidates: list[dict[str, object]],
     *,
     file_name: str,
+    max_level: int = 3,
 ) -> list[dict[str, object]]:
     nav_entries: list[dict[str, object]] = []
     nav_targets_seen: set[str] = set()
@@ -11013,6 +11064,8 @@ def _collect_nav_entries_from_heading_candidates(
 
     for candidate in candidates:
         level = max(1, min(int(candidate.get("level") or 1), 3))
+        if level > max_level:
+            continue
         text = _normalize_text(str(candidate.get("text", "") or ""))
         anchor_id = _normalize_text(str(candidate.get("id", "") or ""))
         if not text or not anchor_id:
@@ -11052,9 +11105,12 @@ def _rebuild_toc_entries_from_final_chapters(
     *,
     fallback_entries: list[dict[str, object]] | None = None,
     exclude_files: set[str] | list[str] | tuple[str, ...] | None = None,
+    publication_profile: str | None = None,
 ) -> list[dict[str, object]]:
     rebuilt: list[dict[str, object]] = []
     excluded = {str(name) for name in (exclude_files or []) if str(name)}
+    profile_key = (publication_profile or "").strip().lower()
+    nav_max_level = 1 if profile_key == "premium_scanned_chess_reflow" else 3
     for chapter_path in chapter_paths:
         if chapter_path.name == "cover.xhtml" or chapter_path.name in excluded or not chapter_path.exists():
             continue
@@ -11063,6 +11119,7 @@ def _rebuild_toc_entries_from_final_chapters(
             _collect_nav_entries_from_heading_candidates(
                 candidates,
                 file_name=chapter_path.name,
+                max_level=nav_max_level,
             )
         )
     if rebuilt:

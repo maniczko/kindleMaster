@@ -167,6 +167,8 @@ class PublicationQualityReport:
     metadata_inference: dict[str, Any] = field(default_factory=dict)
     reader_artifact_score: dict[str, Any] = field(default_factory=dict)
     magazine_premium_quality: dict[str, Any] = field(default_factory=dict)
+    chess_fen: dict[str, Any] = field(default_factory=dict)
+    chess_pgn: dict[str, Any] = field(default_factory=dict)
     extractor_contract_warnings: list[dict[str, Any]] = field(default_factory=list)
 
     def content_metrics_dict(self) -> dict[str, Any]:
@@ -210,6 +212,8 @@ class PublicationQualityReport:
             "metadata_inference": self.metadata_inference,
             "reader_artifact_score": self.reader_artifact_score,
             "magazine_premium_quality": self.magazine_premium_quality,
+            "chess_fen": self.chess_fen,
+            "chess_pgn": self.chess_pgn,
             "extractor_contract_warnings": self.extractor_contract_warnings,
         }
 
@@ -247,6 +251,11 @@ class PublicationDocument:
     quality_report: PublicationQualityReport = field(default_factory=PublicationQualityReport)
 
     def to_dict(self) -> dict[str, Any]:
+        public_metadata = {
+            key: value
+            for key, value in self.metadata.items()
+            if not str(key).startswith("_")
+        }
         return {
             "title": self.title,
             "author": self.author,
@@ -255,6 +264,6 @@ class PublicationDocument:
             "analysis": self.analysis.to_dict(),
             "sections": [section.to_dict() for section in self.sections],
             "asset_count": len(self.assets),
-            "metadata": self.metadata,
+            "metadata": public_metadata,
             "quality_report": self.quality_report.to_dict(),
         }

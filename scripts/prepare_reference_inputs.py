@@ -72,6 +72,20 @@ REFERENCE_CASES = [
         "notes": "Training/diagram-heavy PDF for layout-sensitive smoke runs.",
     },
     {
+        "id": "fundamenty_scan_chess_pdf",
+        "document_class": "diagram_training_book",
+        "input_type": "pdf",
+        "language": "pl",
+        "quick_smoke": False,
+        "release_strict": False,
+        "source": "reference_inputs/pdf/fundamenty_1_1_scan_chess.pdf",
+        "target": "reference_inputs/pdf/fundamenty_1_1_scan_chess.pdf",
+        "notes": "Image-only Polish chess training book fixture for scanned-board FEN recognition.",
+        "chess_fen_seed_labels": "reference_inputs/chess_fen/labels/fundamenty_seed_positions.jsonl",
+        "chess_fen_template_profile": "fundamenty_merida_like",
+        "chess_fen_seed_exact_accuracy_min": 0.9,
+    },
+    {
         "id": "magazine_layout_pdf",
         "document_class": "magazine_layout",
         "input_type": "pdf",
@@ -163,12 +177,17 @@ def prepare_reference_inputs(*, root_dir: str | Path = ".") -> dict[str, Any]:
             source_path_label = f"<generated:{case['generator']}>"
         else:
             source = resolved_root / case["source"]
-            if source.exists():
+            if source.exists() and source.resolve() == target.resolve():
+                source_path_label = case["source"]
+            elif source.exists():
                 shutil.copy2(source, target)
                 source_path_label = case["source"]
             else:
                 _generate_source_surrogate_fixture(case, target)
                 source_path_label = f"<generated-fallback:{case['id']}>"
+
+        if str(case.get("input_type", "")).lower() == "epub":
+            _normalize_epub_fixture(target, language=str(case.get("language", "en") or "en"))
 
         prepared_case = {
             **case,
@@ -235,7 +254,7 @@ def _generate_source_surrogate_pdf(case: dict[str, Any], target_path: Path) -> N
     document.set_metadata(
         {
             "title": title,
-            "author": "KindleMaster CI",
+            "author": "Reference Fixture Team",
             "subject": f"Generated fallback for {case.get('id', 'reference case')}",
             "creator": "KindleMaster prepare_reference_inputs",
             "producer": "PyMuPDF",
@@ -290,8 +309,9 @@ def _generate_source_surrogate_epub(case: dict[str, Any], target_path: Path) -> 
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:identifier id="book-id">kindlemaster-generated-{_slug(str(case.get('id', 'fixture')))}</dc:identifier>
     <dc:title>{_xml_escape(title)}</dc:title>
-    <dc:creator>KindleMaster CI</dc:creator>
+    <dc:creator>Reference Fixture Team</dc:creator>
     <dc:language>{_xml_escape(language)}</dc:language>
+    <meta property="dcterms:modified">2026-01-01T00:00:00Z</meta>
   </metadata>
   <manifest>
     <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
@@ -318,6 +338,55 @@ def _generate_source_surrogate_epub(case: dict[str, Any], target_path: Path) -> 
         archive.writestr("EPUB/content.opf", opf)
         archive.writestr("EPUB/nav.xhtml", nav)
         archive.writestr("EPUB/chapter_001.xhtml", chapter)
+
+
+def _normalize_epub_fixture(target_path: Path, *, language: str) -> None:
+    if not target_path.exists() or target_path.suffix.lower() != ".epub":
+        return
+    with zipfile.ZipFile(target_path, "r") as archive:
+        entries = [(item, archive.read(item.filename)) for item in archive.infolist()]
+    opf_names = [item.filename for item, _data in entries if item.filename.lower().endswith(".opf")]
+    if not opf_names:
+        return
+    opf_name = opf_names[0]
+    normalized_entries: list[tuple[zipfile.ZipInfo, bytes]] = []
+    changed = False
+    for item, data in entries:
+        if item.filename == opf_name:
+            text = data.decode("utf-8")
+            if 'property="dcterms:modified"' not in text and "property='dcterms:modified'" not in text:
+                text = text.replace(
+                    "  </metadata>",
+                    "    <meta property=\"dcterms:modified\">2026-01-01T00:00:00Z</meta>\n  </metadata>",
+                    1,
+                )
+                changed = True
+            if "<dc:language>" not in text and "</metadata>" in text:
+                text = text.replace(
+                    "  </metadata>",
+                    f"    <dc:language>{_xml_escape(language)}</dc:language>\n  </metadata>",
+                    1,
+                )
+                changed = True
+            data = text.encode("utf-8")
+        normalized_entries.append((item, data))
+    if not changed:
+        return
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".epub", dir=str(target_path.parent)) as tmp:
+        temp_path = Path(tmp.name)
+    try:
+        with zipfile.ZipFile(temp_path, "w") as archive:
+            mimetype_entry = next((entry for entry in normalized_entries if entry[0].filename == "mimetype"), None)
+            if mimetype_entry:
+                archive.writestr("mimetype", mimetype_entry[1], compress_type=zipfile.ZIP_STORED)
+            for item, data in normalized_entries:
+                if item.filename == "mimetype":
+                    continue
+                archive.writestr(item.filename, data, compress_type=item.compress_type)
+        temp_path.replace(target_path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
 
 
 def _case_title(case: dict[str, Any]) -> str:

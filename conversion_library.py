@@ -312,6 +312,8 @@ def build_library_item(
         "quality_state_url": f"/convert/quality/{response_job_id}",
         "report_json_url": f"/convert/report/{response_job_id}.json",
         "report_markdown_url": f"/convert/report/{response_job_id}.md",
+        "artifacts": dict(_mapping(job.get("artifacts"))),
+        "artifact_storage": dict(_mapping(job.get("artifact_storage"))),
         "release_verdict": fields["release_verdict"] or "unknown",
         "reading_verdict": fields["reading_verdict"] or "unknown",
         "release_blocked": bool(quality_state.get("release_blocked")),

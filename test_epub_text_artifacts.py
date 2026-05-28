@@ -91,6 +91,20 @@ class EpubTextArtifactTests(unittest.TestCase):
 
         self.assertEqual(payload["counts"]["glued_word_count"], 0)
 
+    def test_chess_notation_and_player_initials_do_not_count_as_sentence_spacing_noise(self) -> None:
+        epub_bytes = _epub_with_documents(
+            {
+                "chapter_001.xhtml": (
+                    "<p>A.Yusupov explains 1...Qe2+! 2.Kh1 Rxh2!! and "
+                    "5...Nxf7 6.Bxf7+ in a normal chess variation.</p>"
+                ),
+            }
+        )
+
+        payload = analyze_epub_text_artifacts(epub_bytes)
+
+        self.assertEqual(payload["counts"]["punctuation_spacing_count"], 0)
+
     def test_cockpit_promotes_failed_artifact_rate(self) -> None:
         groups = build_quality_cockpit_issue_groups(
             text_cleanup={

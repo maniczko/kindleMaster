@@ -77,7 +77,7 @@ The same image is wired through `.devcontainer/devcontainer.json`. Details live 
 
 The async HTTP flow keeps the existing `/convert/start -> /convert/status/<job_id> -> /convert/download/<job_id>` contract and now also exposes normalized quality state at `GET /convert/quality/<job_id>`. `GET /convert/status/<job_id>` includes the same payload under `quality_state` plus a `quality_state_url`.
 
-The Sprint 4 React shell is available at `http://127.0.0.1:5001/app` after `npm run build:ui`. During development, use `npm run dev:ui` and open `http://127.0.0.1:5173/`; Vite proxies the existing Flask API.
+The preferred local UI at `http://127.0.0.1:5001/` uses the Sprint 4 React shell after `npm run build:ui`; the direct route is `http://127.0.0.1:5001/app`. During development, use `npm run dev:ui` and open `http://127.0.0.1:5173/`; Vite proxies the existing Flask API.
 
 ## Core Commands
 

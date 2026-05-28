@@ -87,8 +87,9 @@ The Vitest coverage stays contract-focused: it protects static quality-state nor
 
 ## Sprint 4 React UI Gate
 
-Sprint 4 adds a React/Vite shell at `/app` while preserving the legacy `/`
-panel during migration. Local UI checks are:
+Sprint 4 adds a React/Vite shell at `/app`; after `npm run build:ui`, `/`
+redirects to that shell while clean checkouts without `static/react/` keep the
+legacy panel as fallback. Local UI checks are:
 
 ```powershell
 npm run build:ui

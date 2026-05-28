@@ -43,6 +43,7 @@ QUICK_TESTS = [
     "test_chess_fix.py",
     "test_chess_diagram_visual_quality.py",
     "test_chess_notation_regression.py",
+    "test_chess_pgn_extraction.py",
     "test_converter_publication_budget.py",
     "test_fixed_layout_render_budget.py",
     "test_converter_fixed_layout_budget_enforcement.py",

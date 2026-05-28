@@ -3460,6 +3460,9 @@ class ChessFenRecognitionTests(unittest.TestCase):
 
         doc = fitz.open(pdf_path)
         try:
+            max_page_num = max(expected_pages)
+            if doc.page_count <= max_page_num:
+                self.skipTest("Full Fundamenty scan fixture is unavailable in this environment")
             for page_num, expected_placements in expected_pages.items():
                 image_data = _page_image_data_for_scan_chess(doc, page_num)
                 candidates = detect_board_candidates_in_page_image(

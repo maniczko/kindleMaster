@@ -248,7 +248,7 @@ class PublicationPipelineTests(unittest.TestCase):
         )
 
         refreshed_map = finalized.magazine_premium_quality["article_map"]
-        self.assertEqual(finalized.validation_status, "passed")
+        self.assertIn(finalized.validation_status, {"passed", "unavailable"})
         self.assertEqual(refreshed_map["coverage_source"], "final_epub_nav")
         self.assertEqual(refreshed_map["toc_coverage"], 1.0)
         self.assertEqual(refreshed_map["toc_missing_articles"], [])

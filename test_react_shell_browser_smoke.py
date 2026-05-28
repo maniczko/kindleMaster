@@ -52,6 +52,9 @@ class ReactShellBrowserSmokeTests(unittest.TestCase):
         except Exception as exc:  # pragma: no cover - environment-dependent gate
             raise unittest.SkipTest(f"Python Playwright is unavailable: {exc}") from exc
 
+        if not (REPO_ROOT / "static" / "react" / "index.html").exists():
+            raise unittest.SkipTest("React production bundle is unavailable; run `npm run build:ui` before browser smoke")
+
         cls.port = _find_free_port()
         cls.base_url = f"http://127.0.0.1:{cls.port}"
         environment = os.environ.copy()

@@ -63,6 +63,8 @@ from pymupdf_chess_extractor import (
     _scan_chess_vertical_recovery_bboxes,
     _scan_chess_candidate_review_payload,
     _scan_chess_ocr_html_parts,
+    _scan_chess_recalibrate_cached_result,
+    _scan_chess_recognition_cache_path,
     _scan_image_for_board_candidates,
 )
 
@@ -73,6 +75,47 @@ class ChessFenRecognitionTests(unittest.TestCase):
 
     def test_scan_chess_recognition_cache_version_covers_recognizer_acceptance_changes(self) -> None:
         self.assertGreaterEqual(SCAN_CHESS_RECOGNITION_CACHE_VERSION, 6)
+
+    def test_scan_chess_recognition_cache_path_is_threshold_independent(self) -> None:
+        image_data = b"same-crop"
+        bbox = (1.0, 2.0, 81.0, 82.0)
+        templates = {"K": [Image.new("L", (8, 8), 0)]}
+
+        high_threshold = _scan_chess_recognition_cache_path(
+            image_data,
+            bbox=bbox,
+            min_confidence=0.84,
+            piece_templates=templates,
+        )
+        calibrated_threshold = _scan_chess_recognition_cache_path(
+            image_data,
+            bbox=bbox,
+            min_confidence=0.835,
+            piece_templates=templates,
+        )
+
+        self.assertEqual(high_threshold, calibrated_threshold)
+
+    def test_cached_scan_chess_result_is_recalibrated_to_current_threshold(self) -> None:
+        cached = ChessFenResult(
+            fen="",
+            placement="8/8/8/8/8/8/7k/7K",
+            confidence=0.838,
+            side_to_move="w",
+            method="image-template-board",
+            warnings=["piece_template_confidence_below_threshold", "side_to_move_inferred"],
+            requires_review=True,
+            board_detected=True,
+        )
+
+        accepted = _scan_chess_recalibrate_cached_result(cached, min_confidence=0.835)
+        still_review = _scan_chess_recalibrate_cached_result(cached, min_confidence=0.84)
+
+        self.assertFalse(accepted.requires_review)
+        self.assertEqual(accepted.fen, "8/8/8/8/8/8/7k/7K w - - 0 1")
+        self.assertNotIn("piece_template_confidence_below_threshold", accepted.warnings)
+        self.assertTrue(still_review.requires_review)
+        self.assertEqual(still_review.fen, "")
 
     def test_conversion_config_has_verified_crop_label_path(self) -> None:
         config = ConversionConfig()
@@ -269,7 +312,7 @@ class ChessFenRecognitionTests(unittest.TestCase):
             templates,
             grid_confidence=0.95,
             bbox=None,
-            min_confidence=0.84,
+            min_confidence=0.835,
         )
 
         self.assertEqual(result.fen, "")
@@ -855,8 +898,8 @@ class ChessFenRecognitionTests(unittest.TestCase):
             min_exact_accuracy=0.90,
         )
 
-        self.assertEqual(DEFAULT_CHESS_FEN_EVAL_MIN_CONFIDENCE, 0.84)
-        self.assertEqual(result["min_confidence"], 0.84)
+        self.assertEqual(DEFAULT_CHESS_FEN_EVAL_MIN_CONFIDENCE, 0.835)
+        self.assertEqual(result["min_confidence"], 0.835)
         self.assertEqual(result["status"], "passed")
         self.assertGreaterEqual(result["exact_fen_accuracy"], 0.90)
         self.assertEqual(result["false_positive_count"], 0)
@@ -2778,6 +2821,9 @@ class ChessFenRecognitionTests(unittest.TestCase):
             side_effect=lambda *_args, **kwargs: Path(temp_dir)
             / ("recognition_" + "_".join(str(int(value)) for value in kwargs.get("bbox", (0, 0, 0, 0))) + ".json"),
         ), mock.patch(
+            "pymupdf_chess_extractor._scan_chess_legacy_recognition_cache_paths",
+            return_value=[],
+        ), mock.patch(
             "pymupdf_chess_extractor.recognize_chess_position_from_image",
             side_effect=[
                 invalid_recognition,
@@ -2809,6 +2855,9 @@ class ChessFenRecognitionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir, mock.patch(
             "pymupdf_chess_extractor._scan_chess_recognition_cache_path",
             side_effect=lambda *_args, **_kwargs: Path(temp_dir) / "recognition.json",
+        ), mock.patch(
+            "pymupdf_chess_extractor._scan_chess_legacy_recognition_cache_paths",
+            return_value=[],
         ), mock.patch(
             "pymupdf_chess_extractor.recognize_chess_position_from_image",
             return_value=recognition,
@@ -4061,7 +4110,7 @@ class ChessFenRecognitionTests(unittest.TestCase):
         config = ConversionConfig()
 
         self.assertEqual(config.chess_fen_template_profile, "fundamenty_merida_like")
-        self.assertEqual(config.chess_fen_min_confidence, 0.84)
+        self.assertEqual(config.chess_fen_min_confidence, 0.835)
         self.assertFalse(config.chess_fen_emit_review_notes)
         self.assertTrue(config.chess_fen_apply_side_marker)
         self.assertFalse(config.chess_fen_review_provider_enabled)

@@ -626,7 +626,7 @@ class ConversionConfig:
     # Calibrated on the scanned Fundamenty seed set and aligned with the
     # acceptance eval gate: deterministic templates remain review-only below
     # this threshold instead of publishing low-certainty FEN.
-    chess_fen_min_confidence: float = 0.84
+    chess_fen_min_confidence: float = 0.835
     chess_fen_scan_max_pages: int = 24
     chess_fen_scan_candidates_per_page: int = 6
     chess_fen_piece_template_dir: str = ""

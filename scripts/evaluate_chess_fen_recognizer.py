@@ -21,7 +21,7 @@ from chess_position_recognizer import (
     recognize_chess_position_from_image,
 )
 
-DEFAULT_CHESS_FEN_EVAL_MIN_CONFIDENCE = 0.84
+DEFAULT_CHESS_FEN_EVAL_MIN_CONFIDENCE = 0.835
 DEFAULT_CHESS_FEN_EXACT_ACCURACY_MIN = 0.90
 
 

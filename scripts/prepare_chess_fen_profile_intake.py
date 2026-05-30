@@ -151,7 +151,7 @@ def _readme(profile: str, candidate_labels: Path, verified_seed_target: Path, te
             "1. Open `candidate_labels_review.jsonl` and manually fill only verified FEN rows.",
             f"2. Save verified rows to `{verified_seed_target}`.",
             f"3. Build templates: `python scripts/build_chess_piece_templates.py {verified_seed_target} --output-dir {template_target}`.",
-            "4. Evaluate with `python scripts/evaluate_chess_fen_corpus.py --manifest reference_inputs/manifest.json --min-confidence 0.84 --min-exact-accuracy 0.90 --min-profile-count 2`.",
+            "4. Evaluate with `python scripts/evaluate_chess_fen_corpus.py --manifest reference_inputs/manifest.json --min-confidence 0.835 --min-exact-accuracy 0.90 --min-profile-count 2`.",
             "",
             f"Candidate review queue: `{candidate_labels}`",
         ]

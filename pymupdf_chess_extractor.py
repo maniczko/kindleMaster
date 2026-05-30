@@ -2100,7 +2100,40 @@ def _recognize_scan_chess_crop_with_cache(
         if cache_path.exists():
             cached = json.loads(cache_path.read_text(encoding="utf-8"))
             if cached.get("version") == SCAN_CHESS_RECOGNITION_CACHE_VERSION:
-                return _scan_chess_result_from_dict(cached.get("result") or {})
+                return _scan_chess_recalibrate_cached_result(
+                    _scan_chess_result_from_dict(cached.get("result") or {}),
+                    min_confidence=min_confidence,
+                )
+        for legacy_path in _scan_chess_legacy_recognition_cache_paths(
+            crop_bytes,
+            bbox=bbox,
+            min_confidence=min_confidence,
+            piece_templates=piece_templates,
+        ):
+            if not legacy_path.exists():
+                continue
+            cached = json.loads(legacy_path.read_text(encoding="utf-8"))
+            if cached.get("version") == SCAN_CHESS_RECOGNITION_CACHE_VERSION:
+                result = _scan_chess_recalibrate_cached_result(
+                    _scan_chess_result_from_dict(cached.get("result") or {}),
+                    min_confidence=min_confidence,
+                )
+                try:
+                    cache_path.parent.mkdir(parents=True, exist_ok=True)
+                    cache_path.write_text(
+                        json.dumps(
+                            {
+                                "version": SCAN_CHESS_RECOGNITION_CACHE_VERSION,
+                                "result": result.to_dict(),
+                            },
+                            ensure_ascii=False,
+                            indent=2,
+                        ),
+                        encoding="utf-8",
+                    )
+                except Exception:
+                    pass
+                return result
     except Exception:
         pass
     recognition = recognize_chess_position_from_image(
@@ -2173,13 +2206,110 @@ def _scan_chess_recognition_cache_path(
         [
             str(SCAN_CHESS_RECOGNITION_CACHE_VERSION),
             _piece_templates_runtime_token(piece_templates),
-            f"{float(min_confidence):.3f}",
             rounded_bbox,
             hashlib.sha256(crop_bytes).hexdigest(),
         ]
     )
     digest = hashlib.sha256(token.encode("utf-8", errors="ignore")).hexdigest()[:24]
     return Path("output") / "cache" / "scanned_chess" / "recognition" / f"{digest}.json"
+
+
+def _scan_chess_legacy_recognition_cache_paths(
+    crop_bytes: bytes,
+    *,
+    bbox: tuple[float, float, float, float],
+    min_confidence: float,
+    piece_templates: dict,
+) -> list[Path]:
+    """Return cache paths from versions that baked the acceptance threshold in.
+
+    Piece matching produces the same placement/confidence regardless of the
+    publication threshold; only FEN publication changes. Reusing older cache
+    entries avoids a full 266-page re-recognition pass after safe threshold
+    calibration.
+    """
+    rounded_bbox = ",".join(f"{float(value):.2f}" for value in bbox)
+    image_digest = hashlib.sha256(crop_bytes).hexdigest()
+    template_token = _piece_templates_runtime_token(piece_templates)
+    thresholds = []
+    for value in (min_confidence, 0.84, 0.835, 0.85, 0.70):
+        formatted = f"{float(value):.3f}"
+        if formatted not in thresholds:
+            thresholds.append(formatted)
+    paths: list[Path] = []
+    for threshold in thresholds:
+        token = "|".join(
+            [
+                str(SCAN_CHESS_RECOGNITION_CACHE_VERSION),
+                template_token,
+                threshold,
+                rounded_bbox,
+                image_digest,
+            ]
+        )
+        digest = hashlib.sha256(token.encode("utf-8", errors="ignore")).hexdigest()[:24]
+        paths.append(Path("output") / "cache" / "scanned_chess" / "recognition" / f"{digest}.json")
+    return paths
+
+
+def _scan_chess_recalibrate_cached_result(result, *, min_confidence: float):
+    """Apply the current FEN acceptance threshold to cached recognition data."""
+    if not getattr(result, "board_detected", False):
+        return result
+
+    confidence = float(getattr(result, "confidence", 0.0) or 0.0)
+    placement = str(getattr(result, "placement", "") or "").strip()
+    side_to_move = str(getattr(result, "side_to_move", "") or "w").strip() or "w"
+    warnings = {str(warning) for warning in (getattr(result, "warnings", []) or [])}
+
+    disqualifying_warnings = {
+        warning
+        for warning in warnings
+        if warning not in {
+            "piece_template_confidence_below_threshold",
+            "side_to_move_inferred",
+            "side_to_move_marker_detected",
+            "dense_board_area_crop_used",
+            "final_rendered_crop_fen_used",
+            "reader_visible_crop_fen_used",
+            "verified_exact_crop_label_used",
+        }
+        and not warning.startswith("fen:")
+    }
+    if confidence < float(min_confidence or 0.0) or disqualifying_warnings or not placement:
+        if getattr(result, "fen", "") and not getattr(result, "requires_review", True):
+            recalibrated_warnings = sorted({*warnings, "piece_template_confidence_below_threshold"})
+            return ChessFenResult(
+                fen="",
+                placement=placement,
+                confidence=confidence,
+                side_to_move=side_to_move,
+                bbox=getattr(result, "bbox", None),
+                method=str(getattr(result, "method", "") or "image-template-board"),
+                warnings=recalibrated_warnings,
+                requires_review=True,
+                board_detected=True,
+                squares=[dict(square) for square in (getattr(result, "squares", []) or []) if isinstance(square, dict)],
+            )
+        return result
+
+    fen = f"{placement} {side_to_move} - - 0 1"
+    valid, fen_warnings = validate_fen(fen)
+    if not valid:
+        return result
+    recalibrated_warnings = sorted((warnings - {"piece_template_confidence_below_threshold"}) | set(fen_warnings))
+    return ChessFenResult(
+        fen=fen,
+        placement=placement,
+        confidence=confidence,
+        side_to_move=side_to_move,
+        bbox=getattr(result, "bbox", None),
+        method=str(getattr(result, "method", "") or "image-template-board"),
+        warnings=recalibrated_warnings,
+        requires_review=False,
+        board_detected=True,
+        squares=[dict(square) for square in (getattr(result, "squares", []) or []) if isinstance(square, dict)],
+    )
 
 
 def _piece_templates_runtime_token(piece_templates: dict) -> str:

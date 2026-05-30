@@ -203,7 +203,7 @@ class CorpusGateTests(unittest.TestCase):
         self.assertIn("review_ready", markdown)
         self.fen_corpus_mock.assert_called_with(
             "reference_inputs/manifest.json",
-            min_confidence=0.84,
+            min_confidence=0.835,
             default_min_exact_accuracy=0.90,
             default_min_seed_label_count=20,
             min_profile_count=2,

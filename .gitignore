@@ -41,6 +41,7 @@ test_result.txt
 # Generated runtime artifacts
 reports/
 output/
+.playwright-mcp/
 .playwright-cli/
 live_test_v9_unzipped/
 
@@ -55,6 +56,7 @@ rendered_page.png
 single_diagram_test.png
 
 # Misc local reports / scratch files
+kindlemaster-*.png
 *_REPORT.md
 RUNDA_1_REPORT.md
 DEEP_ANALYSIS.md
@@ -67,3 +69,4 @@ SIZE_OPTIMIZATION_REPORT.md
 TECHNICAL_ANALYSIS.md
 CHESS_DIAGRAM_REPORT.md
 CHESS_DIAGRAM_FIX_REPORT.md
+.vercel

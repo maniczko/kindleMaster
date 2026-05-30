@@ -27,6 +27,15 @@ NUMBERED_SECTION_HEADING_RE = re.compile(r"^\s*\d{1,2}(?:\.\d{1,2}){0,4}\.?\s+\S
 NUMBERED_HEADING_CAPTION_RE = re.compile(
     r"(?i)^\s*(?:table|tabela|tab\.|figure|fig\.|rys\.?|rysunek|diagram|wykres|chart|exhibit)\s+\d"
 )
+CHESS_MOVE_TOKEN_RE = re.compile(
+    r"\b(?:\d{1,3}\.(?:\.\.)?|O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[+#]?|[a-h]x?[a-h]?[1-8](?:=[QRBN])?[+#]?|1-0|0-1|1/2-1/2)\b"
+)
+CHESS_GAME_META_RE = re.compile(
+    r"(?i)\b(?:[A-E][0-9]{2}|blitz|rapid|classical|white|black|variation|attack|defen[cs]e|gambit|titled|chess)\b"
+)
+LARGE_DOCUMENT_SAMPLE_ANALYSIS_MIN_PAGES = 360
+LARGE_DOCUMENT_SAMPLE_HEAD_PAGES = 24
+LARGE_DOCUMENT_SPARSE_SAMPLE_PAGES = 24
 
 
 def analyze_publication(
@@ -46,10 +55,17 @@ def analyze_publication(
     meaningful_image_pages = 0
     detected_diagrams = 0
     numbered_heading_keys: set[str] = set()
+    sample_texts: list[str] = []
 
-    sample_pages = list(range(min(total_pages, 24)))
+    sample_pages = list(range(min(total_pages, LARGE_DOCUMENT_SAMPLE_HEAD_PAGES)))
+    sampled_large_chess_notation = _should_use_sampled_large_chess_notation_analysis(doc, total_pages)
+    scan_pages = (
+        _large_document_sparse_sample_pages(total_pages)
+        if sampled_large_chess_notation
+        else list(range(total_pages))
+    )
 
-    for page_num in range(total_pages):
+    for page_num in scan_pages:
         page = doc[page_num]
         text = page.get_text().strip()
         has_text = len(text) > 50
@@ -61,7 +77,7 @@ def analyze_publication(
 
         if not has_text and images:
             scanned_pages += 1
-        elif has_text and images:
+        elif has_text and images and not sampled_large_chess_notation:
             text_area = 0.0
             for block in page.get_text("dict").get("blocks", []):
                 if block.get("type") == 0:
@@ -72,6 +88,7 @@ def analyze_publication(
                 scanned_pages += 1
 
         if page_num in sample_pages:
+            sample_texts.append(text)
             page_dict = page.get_text("dict", sort=True)
             font_sizes = []
             heading_blocks = 0
@@ -133,17 +150,43 @@ def analyze_publication(
 
     doc.close()
 
-    image_page_ratio = (pages_with_images / total_pages) if total_pages else 0.0
-    text_page_ratio = (pages_with_text / total_pages) if total_pages else 0.0
-    scanned_page_ratio = (scanned_pages / total_pages) if total_pages else 0.0
+    observed_page_count = len(scan_pages) if sampled_large_chess_notation else total_pages
+    estimated_pages_with_images = _estimate_total_from_sample(
+        pages_with_images,
+        observed_page_count=observed_page_count,
+        total_pages=total_pages,
+        sampled=sampled_large_chess_notation,
+    )
+    estimated_pages_with_text = _estimate_total_from_sample(
+        pages_with_text,
+        observed_page_count=observed_page_count,
+        total_pages=total_pages,
+        sampled=sampled_large_chess_notation,
+    )
+    estimated_scanned_pages = _estimate_total_from_sample(
+        scanned_pages,
+        observed_page_count=observed_page_count,
+        total_pages=total_pages,
+        sampled=sampled_large_chess_notation,
+    )
+    image_page_ratio = (estimated_pages_with_images / total_pages) if total_pages else 0.0
+    text_page_ratio = (estimated_pages_with_text / total_pages) if total_pages else 0.0
+    scanned_page_ratio = (estimated_scanned_pages / total_pages) if total_pages else 0.0
     layout_heavy = pages_with_images > 0 and image_page_ratio >= 0.35
-    text_heavy = pages_with_text > total_pages * 0.5 and image_page_ratio <= 0.15
+    text_heavy = estimated_pages_with_text > total_pages * 0.5 and image_page_ratio <= 0.15
     has_toc = bool(toc)
     has_chess_training_outline = _has_chess_training_outline(toc)
     has_meaningful_images = meaningful_image_pages > 0
     has_tables = False if preferred_profile == "diagram_book_reflow" else _detect_tables(pdf_path, sample_pages)
     has_diagrams = detected_diagrams > 0 or _detect_chess_fonts(pdf_path) or (
         has_chess_training_outline and scanned_page_ratio > 0.55
+    )
+    has_chess_notation_collection = sampled_large_chess_notation or _detect_chess_notation_collection(
+        sample_texts,
+        total_pages=total_pages,
+        text_page_ratio=text_page_ratio,
+        image_page_ratio=image_page_ratio,
+        scanned_page_ratio=scanned_page_ratio,
     )
     estimated_columns = round(mean(column_estimates)) if column_estimates else 1
     heading_density = mean(heading_scores) if heading_scores else 0.0
@@ -186,6 +229,7 @@ def analyze_publication(
         legacy_strategy=legacy_strategy,
         numbered_section_count=numbered_section_count,
         has_chess_training_outline=has_chess_training_outline,
+        has_chess_notation_collection=has_chess_notation_collection,
     )
     confidence = _estimate_confidence(
         profile=profile,
@@ -213,9 +257,9 @@ def analyze_publication(
             "font_consistency": font_consistency,
             "layout_heavy": layout_heavy,
             "text_heavy": text_heavy,
-            "scanned_pages": scanned_pages,
-            "text_pages": pages_with_text,
-            "image_pages": pages_with_images,
+            "scanned_pages": estimated_scanned_pages,
+            "text_pages": estimated_pages_with_text,
+            "image_pages": estimated_pages_with_images,
         },
         input_type="pdf",
     )
@@ -224,7 +268,7 @@ def analyze_publication(
         heuristic_confidence=confidence,
         features=feature_payload,
         mode=route_model_mode,
-        allow_override=not (preferred_profile and preferred_profile != "auto-premium"),
+        allow_override=not (preferred_profile and preferred_profile != "auto-premium") and not has_chess_notation_collection,
     )
     if route_decision.get("override_used"):
         original_profile = profile
@@ -248,12 +292,16 @@ def analyze_publication(
         features.append("meaningful-images")
     if has_chess_training_outline:
         features.append("chess-training-outline")
+    if has_chess_notation_collection:
+        features.append("chess-notation-collection")
     if layout_heavy:
         features.append("layout-heavy")
     if text_heavy:
         features.append("text-heavy")
     if estimated_columns >= 2:
         features.append(f"{estimated_columns}-column")
+    if sampled_large_chess_notation:
+        features.append("sampled-analysis")
     if numbered_section_count >= 3:
         features.append("numbered-sections")
     if _is_document_like_report_candidate(
@@ -283,9 +331,9 @@ def analyze_publication(
         is_scanned=scanned_page_ratio > 0.5,
         layout_heavy=layout_heavy,
         text_heavy=text_heavy,
-        scanned_pages=scanned_pages,
-        text_pages=pages_with_text,
-        image_pages=pages_with_images,
+        scanned_pages=estimated_scanned_pages,
+        text_pages=estimated_pages_with_text,
+        image_pages=estimated_pages_with_images,
         estimated_columns=estimated_columns,
         heading_density=heading_density,
         font_consistency=font_consistency,
@@ -295,6 +343,64 @@ def analyze_publication(
         detected_outline_entries=numbered_section_count,
         route_decision=route_decision,
     )
+
+
+def _large_document_sparse_sample_pages(total_pages: int) -> list[int]:
+    if total_pages <= 0:
+        return []
+    head_pages = list(range(min(total_pages, LARGE_DOCUMENT_SAMPLE_HEAD_PAGES)))
+    if total_pages <= LARGE_DOCUMENT_SAMPLE_HEAD_PAGES:
+        return head_pages
+    sparse_count = min(LARGE_DOCUMENT_SPARSE_SAMPLE_PAGES, max(0, total_pages - len(head_pages)))
+    sparse_pages = {
+        round(index * (total_pages - 1) / max(1, sparse_count - 1))
+        for index in range(sparse_count)
+    }
+    return sorted(set(head_pages) | {page for page in sparse_pages if 0 <= page < total_pages})
+
+
+def _should_use_sampled_large_chess_notation_analysis(doc: fitz.Document, total_pages: int) -> bool:
+    if total_pages < LARGE_DOCUMENT_SAMPLE_ANALYSIS_MIN_PAGES:
+        return False
+    sample_count = min(total_pages, LARGE_DOCUMENT_SAMPLE_HEAD_PAGES)
+    if sample_count <= 0:
+        return False
+    sample_texts: list[str] = []
+    text_pages = 0
+    image_pages = 0
+    scanned_pages = 0
+    for page_num in range(sample_count):
+        page = doc[page_num]
+        text = page.get_text().strip()
+        images = page.get_images(full=True)
+        has_text = len(text) > 50
+        if has_text:
+            text_pages += 1
+        if images:
+            image_pages += 1
+        if not has_text and images:
+            scanned_pages += 1
+        sample_texts.append(text)
+    return _detect_chess_notation_collection(
+        sample_texts,
+        total_pages=total_pages,
+        text_page_ratio=text_pages / sample_count,
+        image_page_ratio=image_pages / sample_count,
+        scanned_page_ratio=scanned_pages / sample_count,
+    )
+
+
+def _estimate_total_from_sample(
+    count: int,
+    *,
+    observed_page_count: int,
+    total_pages: int,
+    sampled: bool,
+) -> int:
+    if not sampled or observed_page_count <= 0:
+        return count
+    ratio = max(0.0, min(float(count) / float(observed_page_count), 1.0))
+    return max(0, min(total_pages, int(round(ratio * total_pages))))
 
 
 def _choose_render_budget_class(
@@ -353,6 +459,47 @@ def _detect_chess_fonts(pdf_path: str) -> bool:
     finally:
         doc.close()
     return False
+
+
+def _detect_chess_notation_collection(
+    sample_texts: list[str],
+    *,
+    total_pages: int,
+    text_page_ratio: float,
+    image_page_ratio: float,
+    scanned_page_ratio: float,
+) -> bool:
+    """Detect text-layer chess game collections that look like magazines geometrically.
+
+    Large chess databases/notes often have two columns and many board images,
+    so pure layout heuristics route them to magazine reflow. Their primary
+    reading value is SAN/PGN notation text, so they need a notation-first path
+    that does not rasterize every embedded board image.
+    """
+    if total_pages < 40:
+        return False
+    if text_page_ratio < 0.65 or scanned_page_ratio >= 0.25:
+        return False
+    if image_page_ratio < 0.15:
+        return False
+
+    notation_pages = 0
+    meta_pages = 0
+    total_tokens = 0
+    for text in sample_texts[:24]:
+        normalized = re.sub(r"\s+", " ", text or "").strip()
+        if not normalized:
+            continue
+        tokens = CHESS_MOVE_TOKEN_RE.findall(normalized)
+        token_count = len(tokens)
+        total_tokens += token_count
+        if token_count >= 8:
+            notation_pages += 1
+        if token_count >= 4 and CHESS_GAME_META_RE.search(normalized):
+            meta_pages += 1
+
+    sampled_pages = max(1, len([text for text in sample_texts[:24] if str(text or "").strip()]))
+    return notation_pages >= 3 and meta_pages >= 2 and total_tokens >= max(24, sampled_pages * 4)
 
 
 def _page_text_spans(page: fitz.Page, page_num: int) -> list[SimpleNamespace]:
@@ -479,6 +626,7 @@ def _choose_profile(**kwargs) -> tuple[str, str, str]:
     has_toc = kwargs["has_toc"]
     has_meaningful_images = kwargs["has_meaningful_images"]
     has_chess_training_outline = bool(kwargs.get("has_chess_training_outline", False))
+    has_chess_notation_collection = bool(kwargs.get("has_chess_notation_collection", False))
     legacy_strategy = kwargs["legacy_strategy"]
     text_page_ratio = float(kwargs.get("text_page_ratio", 0.0) or 0.0)
     total_pages = int(kwargs.get("total_pages", 0) or 0)
@@ -492,6 +640,12 @@ def _choose_profile(**kwargs) -> tuple[str, str, str]:
         )
     if scanned_page_ratio > 0.55:
         return "scanned_reflow", "preserve-layout", "Duży udział stron skanowanych wymaga OCR/fallbacków."
+    if has_chess_notation_collection:
+        return (
+            "book_reflow",
+            "book",
+            "Wykryto tekstowa kolekcje partii szachowych; uzywam notacji-first reflow bez magazynowej rasteryzacji tysiecy diagramow.",
+        )
     if has_diagrams and (has_toc or text_heavy):
         return "diagram_book_reflow", "book", "Wykryto publikację tekstową z diagramami wymagającymi image-first."
     if _is_document_like_report_candidate(

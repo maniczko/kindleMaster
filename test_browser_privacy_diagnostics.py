@@ -107,7 +107,7 @@ class BrowserPrivacyDiagnosticsTests(unittest.TestCase):
             page.on("console", lambda message: console_messages.append({"type": message.type, "text": message.text}))
             page.on("pageerror", lambda error: page_errors.append(str(error)))
             page.on("requestfailed", lambda request: failed_requests.append(request.url))
-            page.goto("/")
+            page.goto("/legacy")
             page.route(
                 "**/convert/start",
                 lambda route: route.fulfill(

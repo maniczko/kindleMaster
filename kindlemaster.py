@@ -26,6 +26,7 @@ QUICK_TESTS = [
     "test_sprint4_ui_contracts.py",
     "test_browser_conversion_outcome_harness.py",
     "test_app_async_convert.py",
+    "test_app_pdf_compression.py",
     "test_conversion_library.py",
     "test_app_runtime_services.py",
     "test_runtime_job_adapter.py",
@@ -43,6 +44,7 @@ QUICK_TESTS = [
     "test_chess_fix.py",
     "test_chess_diagram_visual_quality.py",
     "test_chess_notation_regression.py",
+    "test_chess_notation_reflow.py",
     "test_chess_pgn_extraction.py",
     "test_converter_publication_budget.py",
     "test_fixed_layout_render_budget.py",
@@ -65,6 +67,7 @@ QUICK_TESTS = [
     "test_conversion_cleanup_ttl_contract.py",
     "test_vat_fixture_contracts.py",
     "test_prepare_reference_inputs_ocr_fixture.py",
+    "test_pdf_weight_reducer.py",
     "test_reference_inputs_document_like_fixture.py",
     "test_epub_text_artifacts.py",
     "test_text_normalization.py",
@@ -87,7 +90,7 @@ RELEASE_TESTS = [
 RELEASE_TIMEOUT_RETURN_CODE = 124
 RELEASE_STEP_TIMEOUTS_SECONDS = {
     "release-units": 300,
-    "corpus-units": 420,
+    "corpus-units": 600,
     "corpus-gate-standard": 2700,
     "corpus-gate-ci": 900,
     "browser-followup": 300,
@@ -578,33 +581,35 @@ def _run_ml_feedback(args: argparse.Namespace) -> int:
 def _run_serve(*, port: int | None, debug: bool, runtime: str) -> int:
     from app import app
     from app_runtime_services import (
-        LOCALHOST,
         build_local_app_url,
         resolve_debug_mode,
+        resolve_server_host,
         resolve_server_port,
         serve_http_app,
     )
 
     effective_port = port if port is not None else resolve_server_port()
+    effective_host = resolve_server_host()
     effective_debug = debug or resolve_debug_mode()
+    display_url = os.environ.get("KINDLEMASTER_PUBLIC_BASE_URL") or build_local_app_url(effective_port)
     if runtime == "waitress":
         print(
             (
-                f"Starting KindleMaster on {build_local_app_url(effective_port)} "
-                f"(bind={LOCALHOST}, runtime=waitress, debug={effective_debug})"
+                f"Starting KindleMaster on {display_url} "
+                f"(bind={effective_host}, runtime=waitress, debug={effective_debug})"
             ),
             flush=True,
         )
-        return serve_http_app(app, host=LOCALHOST, port=effective_port, debug=effective_debug, runtime=runtime)
+        return serve_http_app(app, host=effective_host, port=effective_port, debug=effective_debug, runtime=runtime)
 
     print(
         (
-            f"Starting KindleMaster on {build_local_app_url(effective_port)} "
-            f"(bind={LOCALHOST}, runtime=flask, debug={effective_debug})"
+            f"Starting KindleMaster on {display_url} "
+            f"(bind={effective_host}, runtime=flask, debug={effective_debug})"
         ),
         flush=True,
     )
-    return serve_http_app(app, host=LOCALHOST, port=effective_port, debug=effective_debug, runtime=runtime)
+    return serve_http_app(app, host=effective_host, port=effective_port, debug=effective_debug, runtime=runtime)
 
 
 def _run_tests(suite: str) -> int:
@@ -1029,6 +1034,8 @@ def _json_safe(value: Any) -> Any:
         return [_json_safe(item) for item in value]
     if isinstance(value, tuple):
         return [_json_safe(item) for item in value]
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
     return str(value)

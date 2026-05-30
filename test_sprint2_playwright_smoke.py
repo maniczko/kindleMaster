@@ -403,7 +403,7 @@ class Sprint2PlaywrightRuntimeSmokeTests(unittest.TestCase):
             ),
         )
 
-        self.page.goto(f"{self.base_url}/")
+        self.page.goto(f"{self.base_url}/legacy")
         self.page.set_input_files("#fileInput", str(SAMPLE_PDF))
         self.page.locator("#fileName").wait_for(state="visible")
         evidence["upload_selected"] = self.page.locator("#fileName").text_content() == SAMPLE_PDF.name

@@ -12,6 +12,16 @@ LOCALHOST = "127.0.0.1"
 LOCAL_APP_HOSTNAME = "kindlemaster.localhost"
 DEFAULT_PORT = 5001
 DEFAULT_DEBUG = False
+DEFAULT_LOCAL_DEV_CORS_ORIGINS = frozenset(
+    {
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://kindlemaster.localhost:5173",
+        "http://kindlemaster.localhost:5174",
+    }
+)
 DEFAULT_OVERSIZED_EPUB_WARNING_BYTES = 25 * 1024 * 1024
 SUPPORTED_SOURCE_SUFFIXES = frozenset({".pdf", ".docx"})
 METADATA_LIST_LIMIT = 20
@@ -150,7 +160,10 @@ class ConversionJobStore:
                 job["message"] = "Konwersja przerwana przez restart aplikacji."
                 job["error"] = "Konwersja zostala przerwana przez restart aplikacji. Uruchom konwersje ponownie."
                 job["error_code"] = "application_restart"
-                job["source_path"] = ""
+                source_path = str(job.get("source_path") or "").strip()
+                if source_path and not Path(source_path).is_file():
+                    source_path = ""
+                job["source_path"] = source_path
                 job["updated_at"] = now
             loaded_jobs[job_id] = job
 
@@ -248,12 +261,41 @@ def resolve_server_port(environ: Mapping[str, str] | None = None) -> int:
     return DEFAULT_PORT
 
 
+def resolve_server_host(environ: Mapping[str, str] | None = None) -> str:
+    environment = os.environ if environ is None else environ
+    host = str(
+        environment.get("KINDLEMASTER_BIND_HOST")
+        or environment.get("HOST")
+        or ""
+    ).strip()
+    return host or LOCALHOST
+
+
 def resolve_debug_mode(environ: Mapping[str, str] | None = None) -> bool:
     environment = os.environ if environ is None else environ
     debug_raw = str(environment.get("FLASK_DEBUG", environment.get("DEBUG", ""))).strip().lower()
     if not debug_raw:
         return DEFAULT_DEBUG
     return debug_raw in {"1", "true", "yes", "on"}
+
+
+def resolve_allowed_cors_origins(environ: Mapping[str, str] | None = None) -> set[str]:
+    environment = os.environ if environ is None else environ
+    raw = str(environment.get("KINDLEMASTER_ALLOWED_ORIGINS", "") or "")
+    configured = {origin.strip().rstrip("/") for origin in raw.split(",") if origin.strip()}
+    configured.discard("*")
+
+    local_dev_raw = str(environment.get("KINDLEMASTER_ALLOW_LOCAL_DEV_CORS", "1") or "").strip().lower()
+    if local_dev_raw in {"1", "true", "yes", "on"}:
+        configured.update(DEFAULT_LOCAL_DEV_CORS_ORIGINS)
+    return configured
+
+
+def is_allowed_cors_origin(origin: str | None, environ: Mapping[str, str] | None = None) -> bool:
+    normalized_origin = str(origin or "").strip().rstrip("/")
+    if not normalized_origin:
+        return False
+    return normalized_origin in resolve_allowed_cors_origins(environ)
 
 
 def serve_http_app(application: Any, *, host: str, port: int, debug: bool, runtime: str) -> int:
@@ -341,12 +383,51 @@ def _should_skip_heading_repair(
         return False, ""
 
     profile = _extract_analysis_profile(result)
+    detected_features = _result_detected_features(result)
+    document_summary = result.get("document_summary", {}) or {}
+    publication_kind = ""
+    if isinstance(document_summary, Mapping):
+        publication_kind = str(document_summary.get("publication_kind", "") or "")
+        layout_mode = str(document_summary.get("layout_mode", "") or "").strip().lower()
+    else:
+        layout_mode = ""
+    resolved_profile = _resolved_publication_profile(request=request, result=result).strip().lower()
+    if (
+        resolved_profile in {"fixed_layout_fallback", "preserve-layout", "preserve_layout"}
+        or request.profile in {"preserve-layout", "fixed_layout_fallback"}
+        or layout_mode == "fixed-layout"
+    ):
+        return (
+            True,
+            "Pominieto heading repair dla fixed-layout EPUB; TOC jest stronowy, a semantyczna naprawa naglowkow moze uszkodzic layout.",
+        )
+    if profile == "book_reflow" and "chess-notation-collection" in {
+        str(feature).strip().lower() for feature in detected_features
+    }:
+        return (
+            True,
+            "Pominieto heading repair dla chess-notation-collection, aby nie klasyfikowac notacji PGN jako bibliografii.",
+        )
+    if "chess-notation-collection" in publication_kind.lower():
+        return (
+            True,
+            "Pominieto heading repair dla chess-notation-collection, aby nie klasyfikowac notacji PGN jako bibliografii.",
+        )
     if profile == "diagram_book_reflow":
         return (
             True,
             "Pominieto heading repair dla diagram-heavy training book, aby zachowac stabilne TOC i uniknac bardzo dlugiego post-processingu",
         )
     return False, ""
+
+
+def _result_detected_features(result: Mapping[str, Any]) -> list[Any]:
+    analysis = result.get("analysis", {}) or {}
+    if isinstance(analysis, Mapping):
+        features = analysis.get("detected_features") or []
+        return list(features) if isinstance(features, (list, tuple, set)) else []
+    features = getattr(analysis, "detected_features", []) or []
+    return list(features) if isinstance(features, (list, tuple, set)) else []
 
 
 def _to_mapping_payload(value: Any) -> dict[str, Any]:

@@ -207,7 +207,7 @@ class ReactShellBrowserSmokeTests(unittest.TestCase):
         self.page.goto(f"{self.base_url}/app#library")
 
         self.page.locator("h1", has_text="Biblioteka").wait_for()
-        self.page.get_by_role("button", name="browser-smoke.pdf").wait_for()
+        self.page.get_by_role("button", name="browser-smoke.pdf", exact=True).wait_for()
         self.assertEqual(self.page.locator('a:has-text("PDF")').get_attribute("href"), "/convert/preview/job-browser/input")
 
         self.page.get_by_role("button", name="Otwórz").click()

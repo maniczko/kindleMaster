@@ -2,9 +2,20 @@ from __future__ import annotations
 
 import json
 import unittest
+import zipfile
+from io import BytesIO
 from pathlib import Path
 
-from fixed_layout_builder_v2 import resolve_fixed_layout_render_settings
+import fitz
+from PIL import Image
+
+from fixed_layout_builder_v2 import (
+    demote_fixed_layout_non_content_pages,
+    inject_fixed_layout_viewports,
+    repair_fixed_layout_epub,
+    render_page_to_image,
+    resolve_fixed_layout_render_settings,
+)
 from publication_analysis import _choose_render_budget_class
 from size_budget_policy import evaluate_size_budget, load_size_budget_policy
 
@@ -74,6 +85,72 @@ class FixedLayoutRenderBudgetTests(unittest.TestCase):
 
         self.assertEqual(payload["status"], "failed")
         self.assertIn("Brak zdefiniowanego budzetu", payload["message"])
+
+    def test_fixed_layout_viewport_injection_covers_nav_and_cover(self) -> None:
+        epub_bytes = BytesIO()
+        with zipfile.ZipFile(epub_bytes, "w") as archive:
+            archive.writestr("EPUB/nav.xhtml", "<html><head><title>Nav</title></head><body/></html>")
+            archive.writestr("EPUB/cover.xhtml", "<html><head><title>Cover</title></head><body/></html>")
+            archive.writestr("EPUB/page_000.xhtml", "<html><head><title>Page</title></head><body/></html>")
+
+        repaired = inject_fixed_layout_viewports(
+            epub_bytes.getvalue(),
+            {"EPUB/page_000.xhtml": (612, 792)},
+        )
+
+        with zipfile.ZipFile(BytesIO(repaired), "r") as archive:
+            for name in ("EPUB/nav.xhtml", "EPUB/cover.xhtml", "EPUB/page_000.xhtml"):
+                text = archive.read(name).decode("utf-8")
+                self.assertIn('name="viewport"', text)
+                self.assertIn("width=612,height=792", text)
+
+    def test_fixed_layout_package_repair_canonicalizes_uuid_identifier(self) -> None:
+        epub_bytes = BytesIO()
+        with zipfile.ZipFile(epub_bytes, "w") as archive:
+            archive.writestr(
+                "EPUB/content.opf",
+                """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">urn:uuid:6a8c54c0781441a1948bd08d68ef99d9</dc:identifier>
+  </metadata>
+</package>""",
+            )
+
+        repaired = repair_fixed_layout_epub(epub_bytes.getvalue())
+
+        with zipfile.ZipFile(BytesIO(repaired), "r") as archive:
+            text = archive.read("EPUB/content.opf").decode("utf-8")
+        self.assertIn("urn:uuid:6a8c54c0-7814-41a1-948b-d08d68ef99d9", text)
+
+    def test_non_content_demotion_uses_linear_no_without_custom_opf_prefix(self) -> None:
+        epub_bytes = BytesIO()
+        with zipfile.ZipFile(epub_bytes, "w") as archive:
+            archive.writestr(
+                "EPUB/content.opf",
+                """<package><metadata></metadata><manifest>
+<item id="p0" href="page_000.xhtml" media-type="application/xhtml+xml"/>
+</manifest><spine><itemref idref="p0"/></spine></package>""",
+            )
+
+        repaired = demote_fixed_layout_non_content_pages(epub_bytes.getvalue(), {"page_000.xhtml"})
+
+        with zipfile.ZipFile(BytesIO(repaired), "r") as archive:
+            text = archive.read("EPUB/content.opf").decode("utf-8")
+        self.assertIn('linear="no"', text)
+        self.assertNotIn("kindlemaster:", text)
+
+    def test_render_page_to_image_emits_baseline_jpeg(self) -> None:
+        doc = fitz.open()
+        page = doc.new_page(width=120, height=120)
+        page.insert_text((20, 60), "Baseline JPEG")
+        image_bytes, _width, _height = render_page_to_image(page, dpi=72, jpeg_quality=75)
+        doc.close()
+
+        image = Image.open(BytesIO(image_bytes))
+
+        self.assertEqual(image.format, "JPEG")
+        self.assertFalse(bool(image.info.get("progression")))
 
 
 if __name__ == "__main__":

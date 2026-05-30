@@ -52,6 +52,22 @@ class KindleMasterEntrypointTests(unittest.TestCase):
         self.assertIn('"custom-object"', rendered)
         self.assertIn("• poprawa jakości", rendered)
 
+    def test_json_text_decodes_utf8_bytes_without_python_bytes_repr(self) -> None:
+        rendered = _json_text(
+            {
+                "extra_artifacts": [
+                    {
+                        "filename": "chess_games.html",
+                        "data": "Kopiuj pełną notację".encode("utf-8"),
+                    }
+                ]
+            }
+        )
+
+        self.assertIn("Kopiuj pełną notację", rendered)
+        self.assertNotIn("\\xc5", rendered)
+        self.assertNotIn("b'", rendered)
+
     def test_run_convert_writes_json_report_for_pdf(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             input_path = Path(temp_dir) / "probe.pdf"
@@ -799,13 +815,14 @@ class KindleMasterEntrypointTests(unittest.TestCase):
 
         with patch("app_runtime_services.resolve_server_port", return_value=5401):
             with patch("app_runtime_services.resolve_debug_mode", return_value=True):
-                with patch("app_runtime_services.serve_http_app", return_value=0) as serve_mock:
-                    with contextlib.redirect_stdout(stdout):
-                        exit_code = kindlemaster._run_serve(
-                            port=None,
-                            debug=False,
-                            runtime="flask",
-                        )
+                with patch("app_runtime_services.resolve_server_host", return_value="127.0.0.1"):
+                    with patch("app_runtime_services.serve_http_app", return_value=0) as serve_mock:
+                        with contextlib.redirect_stdout(stdout):
+                            exit_code = kindlemaster._run_serve(
+                                port=None,
+                                debug=False,
+                                runtime="flask",
+                            )
 
         self.assertEqual(exit_code, 0)
         self.assertIn("http://kindlemaster.localhost:5401/", stdout.getvalue())

@@ -439,6 +439,21 @@ When confidence is low:
 - prefer omitting an uncertain rebuilt artifact from final visible output rather than showing technical junk,
 - prefer report-only unresolved cases over fake certainty.
 
+## 18A. Chess PGN Export Hard Rules
+
+Chess PGN output is a strict publication artifact, not a loose OCR transcript. Apply these rules to every chess-book PGN export, especially `chess_games.pgn` and any `PGN/FEN` HTML download:
+
+- Downloadable PGN must be importable by a PGN parser. Export only records that pass deterministic parsing/replay; send ambiguous or illegal records to review while keeping their raw book notation visible in HTML.
+- Always emit required PGN headers. At minimum include `[Result "..."]`; use `*` when the result is genuinely unknown. Also emit safe fallbacks for `[Date "..."]`, `[Round "..."]`, `[White "..."]`, and `[Black "..."]` without inventing metadata.
+- Convert ECO/opening metadata into headers. A bare line such as `D00` must become `[ECO "D00"]`; a line like `B13: Caro-Kann...` must become `[ECO "B13"]` and `[Opening "Caro-Kann..."]`; a bracket-only source such as `[Kitty Kat]` must become `[Annotator "Kitty Kat"]` or source metadata, not movetext.
+- Every non-move annotation in movetext must be enclosed as PGN syntax. Engine values such as `-0.68/21`, `0.01/22`, and `=0.21/18`, prose comments such as `The position is equal.`, `Black is clearly winning.`, `Endgame KRB-KRB`, and `Weighted Error Value: ...` must be comments in `{ ... }`.
+- Normalize OCR-spaced prose before export when safe, for example `a i m i n g f o r... K f 3.` should become a readable comment like `{aiming for... Kf3}` rather than visible junk.
+- Use round parentheses for variations. Square brackets are reserved for PGN tags only, so `[ 14.a4=... ]`, `[ 14...Qxb2... ]`, `[ 21.Qxc4... ]`, and all similar in-game branches must become `( ... )` or stay in review if they cannot be made parseable.
+- Remove or normalize non-standard tokens from downloadable PGN. `(Diagram)` and the ChessBase marker `⌒` must not appear in `chess_games.pgn`; private-use ChessBase glyphs must be mapped or removed; technical extensions such as `[%eval ...]`, `[%emt ...]`, and `[%clk ...]` must not leak into clean PGN.
+- Keep move/comment spacing valid. Examples: `14.c3-0.68/21` becomes `14. c3 {-0.68/21}`, `14...Be7-0.18/18` becomes `14... Be7 {-0.18/18}`, and `39...Qd5=Inhibits Bd8+.` becomes `39... Qd5 {Inhibits Bd8+.}`.
+- Move numbering must be continuous and unambiguous. Regressions, large jumps, repeated same-side moves, or duplicate move numbers outside valid RAV syntax must block strict PGN export and produce a review record instead.
+- HTML may show the full source notation in source order, but the visible/copyable notation must be normalized with the same PGN-safety rules: no raw `(Diagram)`, square-bracket in-game variations, private ChessBase markers, bare engine evals, or OCR-spaced prose. Keep raw OCR only in machine-readable reports/JSON for auditability, and never label uncertain text as accepted PGN.
+
 ## 19. Enterprise Documentation Rule
 
 If a repeated class of mistake appears more than once, do not only patch code.

@@ -22,7 +22,23 @@ vi.mock("@supabase/supabase-js", () => ({
   createClient: supabaseMocks.createClient,
 }));
 
-import App from "./App";
+vi.mock("pdfjs-dist", () => ({
+  GlobalWorkerOptions: { workerSrc: "" },
+  getDocument: vi.fn(() => ({
+    promise: Promise.resolve({
+      numPages: 2,
+      getPage: vi.fn(async () => ({
+        getViewport: vi.fn(() => ({ width: 420, height: 600 })),
+        render: vi.fn(() => ({ promise: Promise.resolve() })),
+      })),
+      destroy: vi.fn(async () => undefined),
+    }),
+  })),
+}));
+
+vi.mock("pdfjs-dist/build/pdf.worker.min.js?url", () => ({ default: "/pdf.worker.mock.js" }));
+
+import App, { parsePdfPageSelection } from "./App";
 
 const fetchMock = vi.fn();
 
@@ -104,6 +120,14 @@ describe("Premium React shell", () => {
     window.localStorage.clear();
     Object.defineProperty(URL, "createObjectURL", { configurable: true, value: vi.fn(() => "blob:kindlemaster-preview") });
     Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: vi.fn() });
+    Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
+      configurable: true,
+      value: vi.fn(() => ({
+        setTransform: vi.fn(),
+        clearRect: vi.fn(),
+        drawImage: vi.fn(),
+      })),
+    });
   });
 
   afterEach(() => {
@@ -111,6 +135,14 @@ describe("Premium React shell", () => {
     fetchMock.mockReset();
     window.localStorage.clear();
     window.history.replaceState(null, "", "/");
+  });
+
+  it("parses PDF page deletion selections safely", () => {
+    expect(parsePdfPageSelection("2, 4,5", 10)).toEqual({ pages: [2, 4, 5], error: "" });
+    expect(parsePdfPageSelection("1-3, 6", 10)).toEqual({ pages: [1, 2, 3, 6], error: "" });
+    expect(parsePdfPageSelection("3-1", 10).error).toContain("Nieprawidłowy zakres");
+    expect(parsePdfPageSelection("1-10", 10).error).toContain("wszystkich stron");
+    expect(parsePdfPageSelection("11", 10).error).toContain("wykracza poza dokument");
   });
 
   it("renders a Polish premium workspace with primary views and no debug nav", async () => {
@@ -320,7 +352,75 @@ describe("Premium React shell", () => {
     await user.upload(await screen.findByLabelText("Wgraj PDF albo DOCX"), file);
 
     expect(screen.getAllByText("sample.pdf").length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText("Automatyka konwersji")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Auto Premium dobierze najlepszą ścieżkę/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Status:/)).not.toBeInTheDocument();
+    expect(screen.getByText("Opcje zaawansowane")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Rozpocznij konwersję" })).toBeEnabled();
+  });
+
+  it("compresses a PDF on demand and can use the smaller PDF for conversion", async () => {
+    const user = userEvent.setup();
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/convert/jobs")) return { ok: true, json: async () => ({ jobs: [] }) };
+      if (url === "/auth/config") return { ok: true, json: async () => ({ success: true, auth: { enabled: false, configured: false } }) };
+      if (url === "/user/profile") return { ok: true, json: async () => ({ success: true, profile: defaultProfile }) };
+      if (url === "/convert/delivery/config") return { ok: true, json: async () => ({ success: true, delivery: { configured: false } }) };
+      if (url === "/pdf/compress" && init?.method === "POST") {
+        return {
+          ok: true,
+          json: async () => ({
+            success: true,
+            job_id: "compress-job",
+            original_size_bytes: 43300000,
+            compressed_size_bytes: 18700000,
+            reduction_percent: 56.8,
+            quality_profile: "balanced",
+            method: "ghostscript+qpdf",
+            warnings: ["SprawdĹş drobny tekst."],
+            download_url: "/pdf/compress/download/compress-job",
+            download_name: "sample.compressed.pdf",
+          }),
+        };
+      }
+      if (url === "/pdf/compress/download/compress-job") {
+        return {
+          ok: true,
+          blob: async () => new Blob(["smaller-pdf"], { type: "application/pdf" }),
+          headers: new Headers(),
+        };
+      }
+      if (url === "/convert/start" && init?.method === "POST") {
+        return {
+          ok: true,
+          json: async () => ({ success: true, job_id: "job-ready", status: "ready", download_url: "" }),
+        };
+      }
+      if (url === "/convert/status/job-ready") {
+        return { ok: true, json: async () => ({ success: true, job_id: "job-ready", status: "ready" }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    render(<App />);
+
+    const file = new File(["large-pdf"], "sample.pdf", { type: "application/pdf" });
+    await user.upload(await screen.findByLabelText("Wgraj PDF albo DOCX"), file);
+    await user.click(screen.getByRole("button", { name: /Zmniejsz wag/ }));
+
+    expect(await screen.findByText("PDF zmniejszony")).toBeInTheDocument();
+    expect(screen.getByText(/41.29 MB/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Pobierz mniejszy PDF/ })).toHaveAttribute("href", "/pdf/compress/download/compress-job");
+
+    await user.click(screen.getByRole("button", { name: /Użyj mniejszego PDF do konwersji/ }));
+    await user.click(screen.getByRole("button", { name: /Rozpocznij konwersj/ }));
+
+    await waitFor(() => {
+      const startCall = fetchMock.mock.calls.find(([url, init]) => String(url) === "/convert/start" && init?.method === "POST");
+      expect(startCall).toBeTruthy();
+      const body = startCall?.[1]?.body as FormData;
+      expect((body.get("file") as File).name).toBe("sample.compressed.pdf");
+    });
   });
 
   it("shows an active processing job in the Library before it reaches persisted history", async () => {
@@ -518,7 +618,7 @@ describe("Premium React shell", () => {
           ok: true,
           json: async () => ({
             success: true,
-            delivery: { status: "sent", masked_recipient: "r***@kindle.com" },
+            delivery: { status: "sent", artifact: "input", masked_recipient: "r***@kindle.com" },
           }),
         };
       }
@@ -533,10 +633,11 @@ describe("Premium React shell", () => {
     expect(screen.queryByText("Gotowe do wysyłki")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "PDF" })).toHaveAttribute("href", "/convert/preview/job-ready/input");
     expect(screen.queryByLabelText("Adres Kindle dla sample.pdf")).not.toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("Format wysyłki dla sample.pdf"), "input");
     expect(screen.getByRole("button", { name: "Wyślij na Kindle" })).toHaveAttribute("title", "Wyślij na r***@kindle.com");
     await user.click(screen.getByRole("button", { name: "Wyślij na Kindle" }));
 
-    expect(await screen.findByText("Wysłano do r***@kindle.com")).toBeInTheDocument();
+    expect(await screen.findByText("Wysłano PDF do r***@kindle.com")).toBeInTheDocument();
     expect(fetchMock.mock.calls.map(([url]) => String(url))).not.toContain("/convert/quality/job-ready");
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -544,7 +645,7 @@ describe("Premium React shell", () => {
         expect.objectContaining({
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ to: "reader@kindle.com" }),
+          body: JSON.stringify({ to: "reader@kindle.com", artifact: "input" }),
         }),
       );
     });
@@ -621,7 +722,7 @@ describe("Premium React shell", () => {
       expect.stringContaining("Uwagi jakości"),
     );
     await user.click(screen.getByRole("button", { name: "Wyślij na Kindle" }));
-    expect(await screen.findByText("Wysłano do r***@kindle.com")).toBeInTheDocument();
+    expect(await screen.findByText("Wysłano EPUB do r***@kindle.com")).toBeInTheDocument();
     expect(screen.queryByText("Wysyłka niedostępna")).not.toBeInTheDocument();
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -629,7 +730,7 @@ describe("Premium React shell", () => {
         expect.objectContaining({
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ to: "reader@kindle.com" }),
+          body: JSON.stringify({ to: "reader@kindle.com", artifact: "epub" }),
         }),
       );
     });
@@ -648,8 +749,10 @@ describe("Premium React shell", () => {
                 job_id: "job-ready",
                 filename: "sample.pdf",
                 status: "ready",
+                source_type: "pdf",
                 elapsed_seconds: 12.4,
                 output_size_bytes: 2048,
+                artifacts: { input: { filename: "sample.pdf", location: "output/artifacts/job-ready/input/sample.pdf" } },
                 quality_state: { release_verdict: "release_ready", premium_ready: true },
                 email_delivery: {
                   diagnostics: {
@@ -700,6 +803,10 @@ describe("Premium React shell", () => {
     expect(screen.getByText("job-ready")).toBeInTheDocument();
     expect(screen.getAllByText("2.0 KB").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByLabelText("Informacje o aktywnym zadaniu")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Zmniejsz rozmiar/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Kadruj" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Usuń strony" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Kadruj" })).not.toBeInTheDocument();
     expect(screen.getAllByText("Rozmiar").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByRole("heading", { name: "Diagnostyka SMTP" })).toBeInTheDocument();
     expect(screen.getByText("smtp.example.com:587 / starttls")).toBeInTheDocument();
@@ -710,6 +817,140 @@ describe("Premium React shell", () => {
     await user.click(screen.getByRole("button", { name: "Strona główna KindleMaster" }));
     expect(await screen.findByRole("heading", { name: "Konwersja" })).toBeInTheDocument();
     expect(screen.queryByLabelText("Informacje o aktywnym zadaniu")).not.toBeInTheDocument();
+  });
+
+  it("compresses the saved source PDF from file details", async () => {
+    const user = userEvent.setup();
+    let resolveCompression: ((response: Response) => void) | null = null;
+    const pendingCompression = new Promise<Response>((resolve) => {
+      resolveCompression = resolve;
+    });
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/convert/jobs")) {
+        return {
+          ok: true,
+          json: async () => ({
+            jobs: [
+              {
+                job_id: "job-source",
+                filename: "source.pdf",
+                source_type: "pdf",
+                status: "ready",
+                output_size_bytes: 4096,
+                artifacts: {
+                  input: {
+                    filename: "source.pdf",
+                    download_url: "https://storage.example.com/signed-source.pdf",
+                    signed_url: { available: true, url: "https://storage.example.com/signed-source.pdf" },
+                  },
+                },
+                quality_state: { release_verdict: "release_ready", premium_ready: true },
+              },
+            ],
+          }),
+        };
+      }
+      if (url === "/user/profile") {
+        return { ok: true, json: async () => ({ success: true, profile: defaultProfile }) };
+      }
+      if (url === "/convert/delivery/config") {
+        return { ok: true, json: async () => ({ success: true, delivery: { configured: false } }) };
+      }
+      if (url === "/pdf/compress/job/job-source" && init?.method === "POST") {
+        const formData = init.body as FormData;
+        expect(formData.get("file")).toBeNull();
+        expect(formData.get("profile")).toBe("balanced");
+        return pendingCompression;
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Biblioteka" }));
+    await user.click(await screen.findByRole("button", { name: "source.pdf" }));
+    await user.click(screen.getByRole("button", { name: /Zmniejsz rozmiar/ }));
+
+    expect(screen.getByText("Zmniejszanie PDF")).toBeInTheDocument();
+    expect(screen.getByText(/przygotowuję bezpieczny profil kompresji/)).toBeInTheDocument();
+    expect(screen.getByText(/Rekoduję obrazy/)).toBeInTheDocument();
+
+    resolveCompression?.({
+          ok: true,
+          json: async () => ({
+            success: true,
+            job_id: "compress-source",
+            original_size_bytes: 4096,
+            compressed_size_bytes: 2048,
+            reduction_percent: 50,
+            download_url: "/pdf/compress/download/compress-source",
+            download_name: "source.compressed.pdf",
+            quality_profile: "balanced",
+            method: "ghostscript+qpdf",
+            warnings: [],
+          }),
+        } as Response);
+
+    expect(await screen.findByText("PDF zmniejszony")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Pobierz mniejszy PDF/ })).toHaveAttribute("href", "/pdf/compress/download/compress-source");
+    expect(screen.queryByRole("button", { name: /Użyj mniejszego PDF do konwersji/ })).not.toBeInTheDocument();
+  });
+
+  it("deletes a publication from the Library after confirmation", async () => {
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/convert/jobs/delete-me" && init?.method === "DELETE") {
+        return { ok: true, json: async () => ({ success: true, status: "deleted", job_id: "delete-me" }) };
+      }
+      if (url.startsWith("/convert/jobs")) {
+        return {
+          ok: true,
+          json: async () => ({
+            jobs: [
+              {
+                job_id: "delete-me",
+                filename: "delete-me.pdf",
+                source_type: "pdf",
+                status: "ready",
+                output_size_bytes: 2048,
+                quality_state: { release_verdict: "release_ready", premium_ready: true },
+              },
+              {
+                job_id: "keep-me",
+                filename: "keep-me.pdf",
+                source_type: "pdf",
+                status: "ready",
+                output_size_bytes: 1024,
+                quality_state: { release_verdict: "release_ready", premium_ready: true },
+              },
+            ],
+          }),
+        };
+      }
+      if (url === "/user/profile") {
+        return { ok: true, json: async () => ({ success: true, profile: defaultProfile }) };
+      }
+      if (url === "/convert/delivery/config") {
+        return { ok: true, json: async () => ({ success: true, delivery: { configured: false } }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Biblioteka" }));
+    expect(await screen.findByRole("button", { name: "delete-me.pdf" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Usuń publikację delete-me.pdf" }));
+
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("delete-me.pdf"));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "delete-me.pdf" })).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "keep-me.pdf" })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith("/convert/jobs/delete-me", expect.objectContaining({ method: "DELETE" }));
+    });
+    confirmSpy.mockRestore();
   });
 
   it("lets file details send the final EPUB to Kindle and hides the details report card", async () => {
@@ -754,12 +995,18 @@ describe("Premium React shell", () => {
       if (url === "/convert/delivery/config") {
         return { ok: true, json: async () => ({ success: true, delivery: { configured: true } }) };
       }
+      if (url === "/convert/artifact/job-pdf/input") {
+        return {
+          ok: true,
+          arrayBuffer: async () => new Uint8Array([37, 80, 68, 70]).buffer,
+        };
+      }
       if (url === "/convert/delivery/job-pdf/email" && init?.method === "POST") {
         return {
           ok: true,
           json: async () => ({
             success: true,
-            delivery: { status: "sent", artifact: "epub", masked_recipient: "r***@kindle.com" },
+            delivery: { status: "sent", artifact: "input", masked_recipient: "r***@kindle.com" },
           }),
         };
       }
@@ -771,26 +1018,86 @@ describe("Premium React shell", () => {
     await user.click(await screen.findByRole("button", { name: "cropped-source.pdf" }));
 
     expect(screen.getByRole("link", { name: /PDF źródłowy/ })).toHaveAttribute("href", "/convert/preview/job-pdf/input");
-    expect(screen.getByRole("link", { name: "Kadruj PDF" })).toHaveAttribute("href", "/legacy");
+    expect(screen.getByRole("button", { name: "Kadruj" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Kadruj" }));
+    expect(screen.getByLabelText("Kadrowanie PDF w nowym układzie")).toBeInTheDocument();
+    expect(screen.getByText("Podgląd i ustawienia kadrowania są dostępne bez przechodzenia do starego panelu.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Otwórz PDF" })).toHaveAttribute("href", "/convert/artifact/job-pdf/input");
+    expect(await screen.findByText("Podgląd strony 1 z 2.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Poprzednia strona" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Następna strona" })).toBeEnabled();
+    expect(screen.getByLabelText("Warstwa zaznaczania kadru")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Kadruj cały PDF" })).toBeEnabled();
+    expect(screen.getByLabelText("Usuwanie stron PDF")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("np. 2,4,5 albo 1-3")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Kadruj" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Raport jakości" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "JSON" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Markdown" })).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("Format załącznika Kindle")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Format wysyłki na Kindle")).toBeInTheDocument();
     expect(screen.queryByText("Do: r***@kindle.com")).not.toBeInTheDocument();
 
+    await user.selectOptions(screen.getByLabelText("Format wysyłki na Kindle"), "input");
     await user.click(screen.getByRole("button", { name: "Wyślij na Kindle" }));
 
-    expect(await screen.findByText("Wysłano EPUB do r***@kindle.com")).toBeInTheDocument();
+    expect(await screen.findByText("Wysłano PDF do r***@kindle.com")).toBeInTheDocument();
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
         "/convert/delivery/job-pdf/email",
         expect.objectContaining({
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ to: "reader@kindle.com", artifact: "epub" }),
+          body: JSON.stringify({ to: "reader@kindle.com", artifact: "input" }),
         }),
       );
     });
+  });
+
+  it("shows a stable source PDF unavailable message without retrying missing crop preview", async () => {
+    const user = userEvent.setup();
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith("/convert/jobs")) {
+        return {
+          ok: true,
+          json: async () => ({
+            jobs: [
+              {
+                job_id: "missing-pdf",
+                filename: "missing-source.pdf",
+                source_type: "pdf",
+                status: "ready",
+                download_url: "/convert/download/missing-pdf",
+                quality_state: { score: 70, release_verdict: "review" },
+              },
+            ],
+          }),
+        };
+      }
+      if (url === "/user/profile") {
+        return { ok: true, json: async () => ({ success: true, profile: defaultProfile }) };
+      }
+      if (url === "/convert/delivery/config") {
+        return { ok: true, json: async () => ({ success: true, delivery: { configured: true } }) };
+      }
+      if (url === "/convert/artifact/missing-pdf/input") {
+        return {
+          ok: false,
+          status: 404,
+          json: async () => ({ error_code: "source_artifact_unavailable" }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Biblioteka" }));
+    await user.click(await screen.findByRole("button", { name: "missing-source.pdf" }));
+    await user.click(screen.getByRole("button", { name: "Kadruj" }));
+
+    expect(await screen.findByText("Nie udało się pobrać PDF źródłowego; odśwież bibliotekę albo wgraj plik ponownie.")).toBeInTheDocument();
+    const previewCalls = fetchMock.mock.calls.filter(([input]) => String(input) === "/convert/artifact/missing-pdf/input");
+    expect(previewCalls).toHaveLength(1);
   });
 
   it("runs manual EPUB repair from file details and shows the result", async () => {
@@ -853,7 +1160,7 @@ describe("Premium React shell", () => {
     expect(
       screen.getAllByText("EPUB zawiera obrazy progressive JPEG (1); mail może zostać wysłany, ale zalecane jest przekodowanie do baseline JPEG albo PNG.").length,
     ).toBeGreaterThanOrEqual(1);
-    const repairCard = screen.getByRole("heading", { name: "Naprawa i wysyłka" }).closest(".km-card");
+    const repairCard = screen.getByRole("heading", { name: "Wysyłka na Kindle" }).closest(".km-card");
     expect(repairCard).not.toHaveTextContent("EPUB zawiera obrazy progressive JPEG");
     expect(screen.queryByLabelText("Adres Kindle dla blocked.pdf")).not.toBeInTheDocument();
     expect(screen.queryByText("Do: r***@kindle.com")).not.toBeInTheDocument();
@@ -938,6 +1245,10 @@ describe("Premium React shell", () => {
     await user.click(await screen.findByRole("button", { name: "Ustawienia" }));
     expect(screen.getByText(/Wysyłka na Kindle/)).toBeInTheDocument();
     expect(screen.queryByText("Dostawca")).not.toBeInTheDocument();
+    const advancedSettings = screen.getByText("Zaawansowane ustawienia konwersji").closest("details");
+    expect(advancedSettings).not.toHaveAttribute("open");
+    await user.click(screen.getByText("Zaawansowane ustawienia konwersji"));
+    expect(advancedSettings).toHaveAttribute("open");
     await user.selectOptions(screen.getByLabelText("Domyślny profil konwersji"), "magazine");
     await user.selectOptions(screen.getByLabelText("Domyślny język OCR"), "en");
     await user.type(screen.getByLabelText("Host SMTP"), "smtp.example.com");

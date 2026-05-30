@@ -102,7 +102,11 @@ def build_publication_document(pdf_path: str, config, analysis: PublicationAnaly
     if cover_metadata.get("author") and _is_weak_publication_author(author):
         author = cover_metadata["author"]
 
-    if analysis.profile == "magazine_reflow":
+    if analysis.profile == "book_reflow" and "chess-notation-collection" in set(analysis.detected_features or []):
+        from pymupdf_chess_extractor import extract_chess_notation_pdf_reflow
+
+        content = extract_chess_notation_pdf_reflow(pdf_path, config, pdf_metadata)
+    elif analysis.profile == "magazine_reflow":
         from magazine_kindle_reflow import convert_magazine_to_kindle_reflow
 
         content = convert_magazine_to_kindle_reflow(pdf_path, config=config)
@@ -123,9 +127,10 @@ def build_publication_document(pdf_path: str, config, analysis: PublicationAnaly
     else:
         content = extract_pdf_with_pymupdf(pdf_path, config, pdf_metadata)
 
+    intentionally_skips_images = "chess-notation-collection" in set(analysis.detected_features or [])
     content, extractor_contract_warnings = adapt_extractor_content(
         content,
-        expect_images=analysis.has_meaningful_images,
+        expect_images=analysis.has_meaningful_images and not intentionally_skips_images,
         expect_table_summary=analysis.has_tables,
     )
 
@@ -305,9 +310,10 @@ def publication_from_content(
     extractor_contract_warnings: list[dict[str, object]] | None = None,
 ) -> PublicationDocument:
     if extractor_contract_warnings is None:
+        intentionally_skips_images = "chess-notation-collection" in set(analysis.detected_features or [])
         content, contract_warnings = adapt_extractor_content(
             content,
-            expect_images=analysis.has_meaningful_images,
+            expect_images=analysis.has_meaningful_images and not intentionally_skips_images,
             expect_table_summary=analysis.has_tables,
         )
     else:
@@ -972,7 +978,7 @@ def _fragment_to_blocks(fragment: str, *, page_index: int) -> list[PublicationBl
 def _node_to_block(node, page_index: int) -> PublicationBlock:
     text = node.get_text(" ", strip=True)
     name = node.name
-    css_class = " ".join(node.get("class", [])) if node.get("class") else None
+    css_class = _node_class_value(node)
 
     if name == "span" and "page-marker" in (css_class or ""):
         return PublicationBlock(
@@ -1063,6 +1069,15 @@ def _node_to_block(node, page_index: int) -> PublicationBlock:
         source_type="mixed",
         style_class=css_class,
     )
+
+
+def _node_class_value(node) -> str | None:
+    raw_class = node.get("class")
+    if raw_class is None:
+        return None
+    if isinstance(raw_class, str):
+        return raw_class.strip() or None
+    return " ".join(str(value).strip() for value in raw_class if str(value).strip()) or None
 
 
 def _infer_section_kind(section_title: str, *, index: int, profile: str | None = None) -> str:
@@ -1157,7 +1172,11 @@ def _build_document_warnings(*, analysis: PublicationAnalysis, sections: list[Pu
         warnings.append("Publikacja z diagramami nadal wyglada na zbyt rozbita na sekcje.")
     if fallback_pages:
         warnings.append(f"Wykryto {len(fallback_pages)} pustych lub fallbackowych sekcji.")
-    if not content.get("images") and analysis.has_meaningful_images:
+    if (
+        not content.get("images")
+        and analysis.has_meaningful_images
+        and "chess-notation-collection" not in set(analysis.detected_features or [])
+    ):
         warnings.append("Analiza wykryla istotne grafiki, ale finalny content ich nie zachowal.")
     audit = content.get("audit") or {}
     high_risk = audit.get("high_risk_chapters") or []

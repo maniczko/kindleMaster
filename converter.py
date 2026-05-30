@@ -27,6 +27,7 @@ import shutil
 import tempfile
 import subprocess
 import html as html_module
+import zipfile
 from pathlib import Path
 from dataclasses import dataclass, replace
 from typing import Optional
@@ -219,6 +220,31 @@ def finalize_epub_bytes(
         "epubcheck_status": "unavailable",
         "status": "unavailable",
     }
+
+    if _is_chess_notation_collection_metadata(pdf_metadata):
+        text_cleanup_summary = {
+            **text_cleanup_summary,
+            "status": "skipped",
+            "profile_skip": True,
+            "bounded_long_form_skip": True,
+            "skip_reason": (
+                "Skipped expensive semantic/text cleanup for a large chess notation collection. "
+                "SAN/PGN-like notation is preserved verbatim and EPUBCheck still runs in the publication gate."
+            ),
+            "semantic_cleanup": {
+                "status": "skipped",
+                "quality_gate_status": "skipped",
+                "message": "Large chess notation collection uses notation-first fast finalization.",
+            },
+            "reference_cleanup": {
+                "status": "skipped",
+                "quality_gate_status": "skipped",
+                "message": "Reference repair is not applicable to notation-first chess collections.",
+            },
+        }
+        if return_details:
+            return epub_bytes, text_cleanup_summary
+        return epub_bytes
 
     if profile_key == "diagram_book_reflow":
         text_cleanup_summary = {
@@ -425,11 +451,21 @@ def _should_skip_expensive_text_cleanup(pdf_metadata: dict | None, *, publicatio
     title = str(metadata.get("title") or "")
     subject = str(metadata.get("subject") or metadata.get("keywords") or "")
     profile_hint = str(metadata.get("ui_profile") or metadata.get("publication_kind") or "")
+    detected_features = " ".join(str(item) for item in (metadata.get("detected_features") or []))
+    if "chess-notation-collection" in " ".join([profile_hint, detected_features]).lower():
+        return True
     handbook_signal = re.search(
         r"(?i)\b(?:guide|handbook|manual|standard|body of knowledge|technical-study|dense)\b",
         " ".join([title, subject, profile_hint]),
     )
     return bool(handbook_signal)
+
+
+def _is_chess_notation_collection_metadata(pdf_metadata: dict | None) -> bool:
+    metadata = pdf_metadata or {}
+    profile_hint = str(metadata.get("publication_kind") or metadata.get("ui_profile") or "")
+    detected_features = " ".join(str(item) for item in (metadata.get("detected_features") or []))
+    return "chess-notation-collection" in " ".join([profile_hint, detected_features]).lower()
 
 
 def _semantic_reference_cleanup_payload(semantic_report: object) -> dict:
@@ -570,6 +606,7 @@ class ConversionConfig:
     chess_fen_apply_side_marker: bool = True
     chess_fen_review_provider_enabled: bool = False
     chess_fen_scan_enable_sliding_probe: bool = False
+    chess_notation_chapter_pages: int = 40
     scanned_chess_max_pages: int = 0  # 0 means all pages for premium scanned-chess extraction
     scanned_chess_min_grid_confidence: float = 0.50
     scanned_chess_cache_enabled: bool = True
@@ -678,6 +715,19 @@ def _build_fixed_layout_epub_with_budget(
         )
         raw_epub_bytes, builder_name = _build_fixed_layout_epub_once(pdf_path, attempt_config, pdf_metadata)
         finalized_epub_bytes = finalize_epub_bytes(raw_epub_bytes, attempt_config, pdf_metadata, original_filename)
+        try:
+            from fixed_layout_builder_v2 import (
+                _should_demote_fixed_layout_non_content,
+                demote_fixed_layout_non_content_pages_by_content,
+                repair_fixed_layout_epub,
+            )
+
+            if zipfile.is_zipfile(io.BytesIO(finalized_epub_bytes)):
+                finalized_epub_bytes = repair_fixed_layout_epub(finalized_epub_bytes)
+                if _should_demote_fixed_layout_non_content(pdf_metadata):
+                    finalized_epub_bytes = demote_fixed_layout_non_content_pages_by_content(finalized_epub_bytes)
+        except Exception as exc:
+            print(f"Warning: fixed-layout package repair failed: {exc}")
         inspection = inspect_epub_archive(finalized_epub_bytes)
         size_gate = evaluate_size_budget(
             budget_key=normalized_class,
@@ -834,6 +884,10 @@ def _build_publication_pipeline_result(
     finalize_publication_epub,
 ) -> dict:
     document = build_publication_document(pdf_path, config, analysis)
+    if _metadata_title_is_weak(document.title, original_filename=original_filename):
+        fallback_title = Path(original_filename).stem.strip()
+        if fallback_title:
+            document.title = fallback_title
     content = publication_to_content(document)
     final_metadata = {
         **pdf_metadata,
@@ -842,7 +896,10 @@ def _build_publication_pipeline_result(
         "source_pdf_path": pdf_path,
         "source_page_count": getattr(analysis, "page_count", 0),
         "ui_profile": getattr(analysis, "ui_profile", ""),
+        "detected_features": list(getattr(analysis, "detected_features", []) or []),
     }
+    if "chess-notation-collection" in set(getattr(analysis, "detected_features", []) or []):
+        final_metadata["publication_kind"] = "chess-notation-collection"
     source_metadata = document.metadata.get("source_metadata") if isinstance(document.metadata, dict) else {}
     if isinstance(source_metadata, dict):
         for field in ("publisher", "description", "subject", "date"):
@@ -1434,6 +1491,64 @@ CHESS_REFLOW_CSS = """\
   text-decoration: underline;
   text-underline-offset: 0.12em;
 }
+
+.chess-notation-page,
+.chess-notation-text,
+.chess-pgn-text,
+.chess-pgn-review-text,
+.diagram-fen {
+  color: #111;
+  text-indent: 0;
+  text-align: left;
+  hyphens: none;
+}
+
+.chess-notation-page,
+.chess-pgn-text,
+.chess-pgn-review-text {
+  display: block;
+  margin: 0.85em 0 1.2em;
+  padding: 0.85em 0;
+  background: transparent;
+  font-family: "Courier New", Courier, monospace;
+  font-size: 0.95em;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chess-notation-page code,
+.chess-pgn-text code,
+.chess-pgn-review-text code,
+.diagram-fen-code {
+  color: #111;
+  background: transparent;
+  font-family: "Courier New", Courier, monospace;
+}
+
+.chess-pgn,
+.chess-pgn-review {
+  margin: 1.2em 0 1.5em;
+  padding-top: 0.45em;
+  border-top: 1px solid #d8d0c2;
+  page-break-inside: avoid;
+  break-inside: avoid;
+}
+
+.chess-pgn-review-note,
+.chess-pgn-review-warnings {
+  color: #111;
+  font-size: 0.92em;
+}
+
+.diagram-fen {
+  margin: 0.45em 0 0.7em;
+  font-size: 0.92em;
+}
+
+.diagram-fen-label {
+  font-weight: 700;
+}
 """
 
 
@@ -1981,6 +2096,96 @@ def _apply_content_metadata_overrides(
             metadata[field] = candidate
 
     return metadata
+
+
+def _looks_like_english_source_filename(original_filename: str) -> bool:
+    stem = Path(original_filename or "").stem
+    return bool(re.search(r"(?:^|[-_.\s])en(?:$|[-_.\s])", stem, flags=re.IGNORECASE))
+
+
+def _issue_title_from_filename(original_filename: str) -> str:
+    stem = Path(original_filename or "").stem.strip()
+    if not stem:
+        return ""
+    cleaned = re.sub(r"[_]+", " ", stem)
+    cleaned = re.sub(r"\s*-\s*(?:en|eng|english|pl|pol|polish)\s*$", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" -")
+    return cleaned
+
+
+def _issue_creator_from_filename(original_filename: str) -> str:
+    title = _issue_title_from_filename(original_filename)
+    if not title:
+        return ""
+    date_match = re.search(
+        r"\s+-\s+(?:jan|feb|mar|apr|may|jun|june|jul|aug|sep|oct|nov|dec|spring|summer|fall|winter|\d{4})",
+        title,
+        flags=re.IGNORECASE,
+    )
+    if date_match:
+        return title[: date_match.start()].strip(" -")
+    parts = [part.strip() for part in title.split(" - ") if part.strip()]
+    return parts[0] if len(parts) >= 2 else ""
+
+
+def _metadata_author_is_weak_for_issue(author: str | None) -> bool:
+    if _metadata_author_is_weak(author):
+        return True
+    normalized = str(author or "").strip().lower()
+    return normalized in {
+        "jan",
+        "january",
+        "feb",
+        "february",
+        "mar",
+        "march",
+        "apr",
+        "april",
+        "may",
+        "jun",
+        "june",
+        "jul",
+        "july",
+        "aug",
+        "august",
+        "sep",
+        "september",
+        "oct",
+        "october",
+        "nov",
+        "november",
+        "dec",
+        "december",
+    }
+
+
+def _prepare_fixed_layout_metadata_and_config(
+    *,
+    pdf_metadata: dict,
+    config: ConversionConfig,
+    original_filename: str,
+) -> tuple[dict, ConversionConfig]:
+    metadata = dict(pdf_metadata or {})
+    issue_title = _issue_title_from_filename(original_filename)
+    if issue_title and _metadata_title_is_weak(metadata.get("title"), original_filename=original_filename):
+        metadata["title"] = issue_title
+    elif issue_title and len(issue_title) >= 12:
+        current_title = str(metadata.get("title") or "").strip()
+        current_tokens = set(re.findall(r"[A-Za-z]{4,}", current_title.lower()))
+        filename_tokens = set(re.findall(r"[A-Za-z]{4,}", issue_title.lower()))
+        if len(filename_tokens) >= 3 and len(current_tokens & filename_tokens) <= 1:
+            metadata["title"] = issue_title
+
+    creator = _issue_creator_from_filename(original_filename)
+    if creator and _metadata_author_is_weak_for_issue(metadata.get("author")):
+        metadata["author"] = creator
+    if creator and not str(metadata.get("publisher") or "").strip():
+        metadata["publisher"] = creator
+
+    language = str(config.language or "").strip().lower()
+    if language in {"", "pl", "pol"} and _looks_like_english_source_filename(original_filename):
+        config = replace(config, language="en", ocr_language="eng")
+    return metadata, config
 
 
 def _render_pdf_cover_image(pdf_path: str | None, *, max_dimension: int = 1800) -> dict | None:
@@ -2667,6 +2872,11 @@ def convert_pdf_to_epub_with_report(
         preserve_layout = config.profile == "preserve-layout" or analysis.profile == "fixed_layout_fallback"
 
         if preserve_layout:
+            pdf_metadata, config = _prepare_fixed_layout_metadata_and_config(
+                pdf_metadata=pdf_metadata,
+                config=config,
+                original_filename=original_filename,
+            )
             fixed_layout_config = replace(
                 config,
                 prefer_fixed_layout=True,
@@ -2679,10 +2889,21 @@ def convert_pdf_to_epub_with_report(
                 original_filename=original_filename,
                 render_budget_class=analysis.render_budget_class,
             )
+            try:
+                from premium_tools import run_epubcheck
+
+                epubcheck_report = run_epubcheck(epub_bytes)
+            except Exception as exc:
+                epubcheck_report = {
+                    "status": "unavailable",
+                    "tool": "epubcheck",
+                    "messages": [f"EPUBCheck validation failed to run: {exc.__class__.__name__}"],
+                }
             validation_report = {
-                "validation_status": "unavailable",
-                "validation_messages": ["Build wykonany sciezka fallback preserve-layout."],
-                "validation_tool": "legacy",
+                "validation_status": epubcheck_report.get("status", "unavailable"),
+                "validation_messages": list(epubcheck_report.get("messages", []) or []),
+                "validation_tool": epubcheck_report.get("tool", "epubcheck"),
+                "epubcheck_status": epubcheck_report.get("status", "unavailable"),
                 "render_budget_class": fixed_layout_details["render_budget_class"],
                 "render_budget_attempt": fixed_layout_details["render_budget_attempt"],
                 "size_budget_status": fixed_layout_details["size_budget_status"],

@@ -318,6 +318,7 @@ def build_library_item(
         "reading_verdict": fields["reading_verdict"] or "unknown",
         "release_blocked": bool(quality_state.get("release_blocked")),
         "quality_blockers": blockers,
+        "quality_state": dict(quality_state),
         "metadata_summary": metadata_summary,
         "searchable_text_available": bool(text_payload.get("available")),
         "text_excerpt": _text(text_payload.get("excerpt")),

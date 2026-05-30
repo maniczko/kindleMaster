@@ -71,6 +71,59 @@ def _minimal_epub_with_nav(nav_labels: list[str]) -> bytes:
     return buffer.getvalue()
 
 
+def _fixed_layout_epub_with_demoted_ad_page() -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        archive.writestr(
+            "META-INF/container.xml",
+            """<?xml version="1.0" encoding="utf-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="EPUB/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>
+""",
+        )
+        archive.writestr(
+            "EPUB/content.opf",
+            """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">premium-scoring-fixture</dc:identifier>
+    <dc:title>Magazine Issue</dc:title>
+    <dc:creator>Editorial Team</dc:creator>
+    <dc:language>en</dc:language>
+    <meta property="kindlemaster:demoted-non-content-pages">1</meta>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="article" href="article.xhtml" media-type="application/xhtml+xml"/>
+    <item id="ad" href="page_001.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="article"/>
+    <itemref idref="ad" linear="no"/>
+  </spine>
+</package>
+""",
+        )
+        archive.writestr(
+            "EPUB/nav.xhtml",
+            """<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<body><nav epub:type="toc"><ol><li><a href="article.xhtml">Main Feature</a></li><li><a href="page_001.xhtml">Advertisement</a></li></ol></nav></body></html>""",
+        )
+        archive.writestr(
+            "EPUB/article.xhtml",
+            """<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Main Feature</title></head>
+<body><h1>Main Feature</h1><p>This is an editorial article with enough readable prose for scoring.</p></body></html>""",
+        )
+        archive.writestr(
+            "EPUB/page_001.xhtml",
+            """<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Advertisement</title></head>
+<body><img src="ad.jpg" alt="Advertisement"/></body></html>""",
+        )
+    return buffer.getvalue()
+
+
 class EpubPremiumScoringTests(unittest.TestCase):
     def test_epubcheck_non_linear_unreachable_caps_score_and_blocks_release(self) -> None:
         scoring = score_epub_premium_quality(
@@ -192,6 +245,18 @@ class EpubPremiumScoringTests(unittest.TestCase):
         self.assertEqual(refreshed["toc_coverage"], 1.0)
         self.assertEqual(refreshed["toc_missing_articles"], [])
         self.assertNotIn("magazine_article_toc_coverage_below_95", refreshed["blockers"])
+
+    def test_demoted_non_content_pages_do_not_count_as_main_spine_blockers(self) -> None:
+        scoring = score_epub_premium_quality(
+            _fixed_layout_epub_with_demoted_ad_page(),
+            epubcheck={"status": "passed", "messages": []},
+        )
+
+        codes = [issue["code"] for issue in scoring["issues"]]
+
+        self.assertEqual(scoring["metrics"]["demoted_non_content_page_count"], 1)
+        self.assertEqual(scoring["metrics"]["non_content_chapter_count"], 0)
+        self.assertNotIn("magazine_non_content_chapter", codes)
 
 
 if __name__ == "__main__":

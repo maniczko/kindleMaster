@@ -15,6 +15,7 @@ from premium_corpus_smoke import (
     _build_release_fallback_signal,
     _split_active_and_accepted_warnings,
     _derive_case_grade,
+    _should_run_heading_repair_for_profile,
     build_output_assertions,
     inspect_epub,
     CorpusSourceSummary,
@@ -332,6 +333,11 @@ class PremiumCorpusSmokeTests(unittest.TestCase):
 
         self.assertEqual([item["code"] for item in warnings], ["text_artifact_rate_review"])
         self.assertEqual(_derive_case_grade([], warnings), "pass_with_review")
+
+    def test_premium_scanned_chess_reflow_skips_standalone_heading_repair(self) -> None:
+        self.assertFalse(_should_run_heading_repair_for_profile("premium_scanned_chess_reflow"))
+        self.assertTrue(_should_run_heading_repair_for_profile("book_reflow"))
+        self.assertTrue(_should_run_heading_repair_for_profile(None))
 
     def test_low_artifact_rate_warning_can_be_accepted_as_p2_for_corpus_rollup(self) -> None:
         case = CorpusCase(Path("reference_inputs/pdf/ocr_stress_scan.pdf"), document_class="ocr_stress_scan")

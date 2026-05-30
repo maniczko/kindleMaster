@@ -521,6 +521,13 @@ def _text_artifact_rate_payload(quality: dict[str, Any]) -> dict[str, Any]:
     return artifact_rate if isinstance(artifact_rate, dict) else {}
 
 
+def _should_run_heading_repair_for_profile(publication_profile: object) -> bool:
+    profile_key = str(publication_profile or "").strip().lower()
+    if profile_key == "premium_scanned_chess_reflow":
+        return False
+    return True
+
+
 def _reference_cleanup_payload(quality: dict[str, Any]) -> dict[str, Any]:
     direct = quality.get("reference_cleanup")
     if isinstance(direct, dict):
@@ -1196,14 +1203,16 @@ def _run_conversion_case(case: CorpusCase, *, run_heading_repair: bool) -> dict[
     }
     repaired_inspect = inspect
     effective_epub_bytes = converted_epub_bytes
-    if run_heading_repair:
+    analysis_profile = analysis.profile if hasattr(analysis, "profile") else None
+    effective_run_heading_repair = run_heading_repair and _should_run_heading_repair_for_profile(analysis_profile)
+    if effective_run_heading_repair:
         stage_started = time.perf_counter()
         heading_result = repair_epub_headings_and_toc(
             converted_epub_bytes,
             title_hint=str(summary.get("title", "")),
             author_hint=str(summary.get("author", "")),
             language_hint=str(inspect.get("package_language", "")),
-            publication_profile=(analysis.profile if hasattr(analysis, "profile") else None),
+            publication_profile=analysis_profile,
             already_semantic_cleaned=True,
         )
         heading_summary = {
@@ -1220,6 +1229,17 @@ def _run_conversion_case(case: CorpusCase, *, run_heading_repair: bool) -> dict[
         stage_timings["heading_repair"] = round(time.perf_counter() - stage_started, 4)
     else:
         stage_timings["heading_repair"] = 0.0
+        if run_heading_repair and not effective_run_heading_repair:
+            heading_summary = {
+                **heading_summary,
+                "status": "skipped",
+                "release_status": "skipped",
+                "skip_reason": (
+                    "Skipped standalone heading repair for premium scanned chess reflow; "
+                    "the route already builds a source-order diagram/section structure and "
+                    "generic heading recovery misclassifies OCR chess notation as headings."
+                ),
+            }
 
     stage_started = time.perf_counter()
     effective_validation_status = str(quality.get("validation_status", "") or "")

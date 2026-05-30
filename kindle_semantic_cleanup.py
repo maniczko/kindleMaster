@@ -1056,6 +1056,10 @@ def _is_learning_mode_profile(publication_profile: str | None) -> bool:
     return _publication_profile_key(publication_profile) in {"learning_mode", "kindle_learning_mode", "magazine_learning_mode"}
 
 
+def _is_scanned_chess_reflow_profile(publication_profile: str | None) -> bool:
+    return _publication_profile_key(publication_profile) == "premium_scanned_chess_reflow"
+
+
 def _fold_label_key(value: str) -> str:
     normalized = _normalize_text(value).replace("\u0142", "l").replace("\u0141", "L")
     folded = unicodedata.normalize("NFKD", normalized).encode("ascii", "ignore").decode("ascii")
@@ -1312,6 +1316,7 @@ def finalize_epub_for_kindle(
                     requested_title=title,
                     requested_author=author,
                     requested_language=language,
+                    publication_profile=publication_profile,
                 )
                 phase_report["phases"]["inventory"] = {
                     "status": "completed",
@@ -1585,6 +1590,7 @@ def finalize_epub_for_kindle(
                         requested_author=author,
                         requested_language=language,
                         chapter_paths=chapter_list,
+                        publication_profile=publication_profile,
                     )
                     heading_phase = _build_heading_phase_report(
                         heading_decisions,
@@ -1805,6 +1811,7 @@ def _build_inventory_conflicts(
     requested_title: str,
     requested_author: str,
     requested_language: str,
+    publication_profile: str | None = None,
 ) -> list[dict[str, object]]:
     conflicts: list[dict[str, object]] = []
     dominant_heading = _dominant_publication_heading(chapter_paths)
@@ -1815,6 +1822,7 @@ def _build_inventory_conflicts(
     if (
         metadata_title
         and dominant_heading
+        and not _is_scanned_chess_reflow_profile(publication_profile)
         and not _looks_technical_title(metadata_title)
         and not _title_fragments_match(metadata_title, dominant_heading)
         and not _is_introductory_publication_heading(dominant_heading)
@@ -1855,7 +1863,11 @@ def _build_inventory_conflicts(
                 confidence=0.7,
             )
         )
-    if _looks_technical_title(_normalize_text(requested_title)) and dominant_heading:
+    if (
+        _looks_technical_title(_normalize_text(requested_title))
+        and dominant_heading
+        and not _is_scanned_chess_reflow_profile(publication_profile)
+    ):
         conflicts.append(
             _manual_review_item(
                 phase="inventory",
@@ -2385,6 +2397,7 @@ def _build_metadata_phase_report(
     requested_author: str,
     requested_language: str,
     chapter_paths,
+    publication_profile: str | None = None,
 ) -> dict[str, object]:
     diff = _metadata_diff(before, after)
     manual_review: list[dict[str, object]] = []
@@ -2394,6 +2407,7 @@ def _build_metadata_phase_report(
     if (
         dominant_heading
         and after_title
+        and not _is_scanned_chess_reflow_profile(publication_profile)
         and not _title_fragments_match(after_title, dominant_heading)
         and not _is_introductory_publication_heading(dominant_heading)
     ):
@@ -2882,12 +2896,14 @@ def _process_chapter(
     )
     if section_context == "body" and _looks_like_reference_section(logical_blocks, chapter_title=chapter_title):
         section_context = "references"
-    knowledge_enabled = not _is_magazine_publication_profile(publication_profile)
+    scanned_chess_mode = _is_scanned_chess_reflow_profile(publication_profile)
+    knowledge_enabled = not _is_magazine_publication_profile(publication_profile) and not scanned_chess_mode
     if section_context != "contents":
         logical_blocks = _split_inline_solution_entries(logical_blocks)
     logical_blocks = _attach_caption_paragraphs_to_following_figures(logical_blocks)
-    logical_blocks = _promote_heading_blocks(logical_blocks, section_context=section_context)
-    logical_blocks = _merge_heading_runs(logical_blocks)
+    if not scanned_chess_mode:
+        logical_blocks = _promote_heading_blocks(logical_blocks, section_context=section_context)
+        logical_blocks = _merge_heading_runs(logical_blocks)
     logical_blocks = _demote_false_headings(logical_blocks, section_context=section_context)
     logical_blocks = _merge_paragraph_blocks(logical_blocks)
     logical_blocks = _prune_redundant_headings(logical_blocks, chapter_title=chapter_title, section_context=section_context)

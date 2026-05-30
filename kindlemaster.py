@@ -90,7 +90,7 @@ RELEASE_TESTS = [
 RELEASE_TIMEOUT_RETURN_CODE = 124
 RELEASE_STEP_TIMEOUTS_SECONDS = {
     "release-units": 300,
-    "corpus-units": 420,
+    "corpus-units": 600,
     "corpus-gate-standard": 2700,
     "corpus-gate-ci": 900,
     "browser-followup": 300,

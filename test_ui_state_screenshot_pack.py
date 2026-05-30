@@ -393,7 +393,7 @@ class UiStateScreenshotPackTests(unittest.TestCase):
             library_items=library_items or [],
             search_items=search_items or library_items or [],
         )
-        page.goto("/")
+        page.goto("/legacy")
         page.wait_for_selector('[data-vr-hook="vat-209-shell"]')
         return context, page
 

@@ -120,7 +120,7 @@ class BrowserPollingE2ETests(unittest.TestCase):
             self.context.close()
 
     def _load_pdf(self) -> None:
-        self.page.goto(f"{self.base_url}/")
+        self.page.goto(f"{self.base_url}/legacy")
         self.page.set_input_files("#fileInput", str(SAMPLE_PDF))
         self.page.locator("#fileName").wait_for(state="visible")
         self.assertEqual(self.page.locator("#fileName").text_content(), "ocr_probe.pdf")

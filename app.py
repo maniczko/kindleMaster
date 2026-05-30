@@ -8,6 +8,7 @@ import io
 import json
 import mimetypes
 import os
+import shutil
 import threading
 import uuid
 import tempfile
@@ -69,6 +70,7 @@ from converter import convert_document_to_epub_with_report, detect_pdf_type
 from docx_conversion import analyze_docx
 from epub_heading_repair import repair_epub_headings_and_toc
 from publication_analysis import analyze_publication
+from pdf_weight_reducer import PdfCompressionFailed, PdfCompressionUnavailable, compress_pdf, normalize_compression_profile
 from sentry_observability import (
     build_conversion_context,
     capture_conversion_exception,
@@ -130,6 +132,10 @@ MAX_CONVERSION_JOB_STALE_SECONDS = DEFAULT_CONVERSION_QUEUE_POLICY.max_stale_sec
 CONVERSION_PROGRESS_HEARTBEAT_SECONDS = 45
 CONVERSION_PROGRESS_LONG_RUNNING_SECONDS = 5 * 60
 CONVERSION_PROGRESS_STALLED_SECONDS = 2 * 60
+PDF_COMPRESS_JOB_RETENTION_SECONDS = 6 * 60 * 60
+PDF_COMPRESS_REMOTE_DOWNLOAD_TIMEOUT_SECONDS = 120
+PDF_COMPRESS_DIR = Path(UPLOAD_DIR) / "pdf_compress"
+PDF_COMPRESS_DIR.mkdir(parents=True, exist_ok=True)
 SUPABASE_ARTIFACT_BUCKET = "kindlemaster-artifacts"
 SUPABASE_ARTIFACT_SIGNED_URL_SECONDS = 60 * 60
 CONVERSION_PROGRESS_STAGES = {
@@ -153,6 +159,7 @@ _CONVERSION_JOB_STORE = ConversionJobStore(
 )
 _CONVERSION_JOB_STORE.load()
 _LAST_CONVERSION_CLEANUP_AT: datetime | None = None
+_PDF_COMPRESS_JOBS: dict[str, dict] = {}
 
 
 def _json_error(
@@ -265,6 +272,347 @@ def _conversion_sentry_context(
         quality_score=quality_score,
         premium_ready=premium_ready,
     )
+
+
+def _cleanup_expired_pdf_compression_jobs() -> None:
+    now = datetime.now(UTC)
+    expired: list[str] = []
+    for job_id, job in list(_PDF_COMPRESS_JOBS.items()):
+        created_at_raw = str(job.get("created_at") or "")
+        try:
+            created_at = datetime.fromisoformat(created_at_raw.replace("Z", "+00:00"))
+        except ValueError:
+            created_at = now
+        if (now - created_at).total_seconds() > PDF_COMPRESS_JOB_RETENTION_SECONDS:
+            expired.append(job_id)
+
+    for job_id in expired:
+        job = _PDF_COMPRESS_JOBS.pop(job_id, None) or {}
+        for key in ("source_path", "output_path"):
+            path = str(job.get(key) or "")
+            if path:
+                try:
+                    resolved = Path(path).resolve()
+                    if _is_path_under(resolved, PDF_COMPRESS_DIR.resolve()) and resolved.exists():
+                        resolved.unlink()
+                except OSError:
+                    pass
+
+
+def _safe_remove_temp_file(path: str | os.PathLike[str]) -> None:
+    try:
+        Path(path).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _safe_remove_local_job_path(path: str | os.PathLike[str] | Path | None) -> bool:
+    if not path:
+        return False
+    try:
+        target = Path(path)
+        if not target.is_absolute():
+            target = Path(app.root_path) / target
+        resolved = target.resolve()
+    except (OSError, TypeError):
+        return False
+    allowed_roots = [
+        Path(UPLOAD_DIR).resolve(),
+        (Path(app.root_path) / "output").resolve(),
+        (Path(app.root_path) / "reports").resolve(),
+    ]
+    if not any(_is_path_under(resolved, root) for root in allowed_roots):
+        return False
+    try:
+        if resolved.is_file():
+            resolved.unlink()
+            return True
+        artifact_root = (Path(app.root_path) / "output" / "artifacts").resolve()
+        if resolved.is_dir() and _is_path_under(resolved, artifact_root):
+            shutil.rmtree(resolved)
+            return True
+    except OSError:
+        return False
+    return False
+
+
+def _cleanup_deleted_conversion_job_files(job_id: str, job: dict) -> dict:
+    removed: set[Path] = set()
+
+    def remove_once(path: str | os.PathLike[str] | Path | None) -> None:
+        if not path:
+            return
+        try:
+            target = Path(path)
+            resolved = (Path(app.root_path) / target).resolve() if not target.is_absolute() else target.resolve()
+        except (OSError, TypeError):
+            return
+        if resolved in removed:
+            return
+        if _safe_remove_local_job_path(resolved):
+            removed.add(resolved)
+
+    remove_once(job.get("source_path"))
+    remove_once(job.get("output_path"))
+
+    artifacts = dict(job.get("artifacts", {}) or {})
+    artifact_job_dirs: set[Path] = set()
+    artifact_root = (Path(app.root_path) / "output" / "artifacts").resolve()
+    for artifact in artifacts.values():
+        if not isinstance(artifact, dict):
+            continue
+        artifact_path = _resolve_local_artifact_path(artifact)
+        if artifact_path is not None:
+            remove_once(artifact_path)
+            try:
+                relative = artifact_path.resolve().relative_to(artifact_root)
+                if relative.parts:
+                    artifact_job_dirs.add(artifact_root / relative.parts[0])
+            except (OSError, ValueError):
+                pass
+
+    for artifact_dir in artifact_job_dirs:
+        remove_once(artifact_dir)
+
+    return {"removed_files": len(removed), "job_id": job_id}
+
+
+def _delete_supabase_conversion_job(token: str, user_id: str, job_id: str) -> dict:
+    if not token or not user_id or not job_id:
+        return {"status": "skipped", "provider": "supabase", "reason": "missing_auth"}
+    safe_user = quote(user_id, safe="")
+    safe_job = quote(job_id, safe="")
+    artifact_status, artifact_payload = _supabase_request_json(
+        f"/rest/v1/conversion_artifacts?user_id=eq.{safe_user}&job_id=eq.{safe_job}",
+        token=token,
+        method="DELETE",
+        prefer="return=representation",
+    )
+    job_status, job_payload = _supabase_request_json(
+        f"/rest/v1/conversion_jobs?user_id=eq.{safe_user}&job_id=eq.{safe_job}",
+        token=token,
+        method="DELETE",
+        prefer="return=representation",
+    )
+    if artifact_status in {200, 204} and job_status in {200, 204}:
+        deleted_rows = 0
+        if isinstance(artifact_payload, list):
+            deleted_rows += len(artifact_payload)
+        if isinstance(job_payload, list):
+            deleted_rows += len(job_payload)
+        return {"status": "deleted", "provider": "supabase", "deleted_rows": deleted_rows}
+    return {
+        "status": "failed",
+        "provider": "supabase",
+        "artifact_status": artifact_status,
+        "job_status": job_status,
+    }
+
+
+def _pdf_compression_source_warnings(path: Path) -> list[str]:
+    try:
+        pdf_type = detect_pdf_type(str(path))
+    except Exception:
+        return []
+    warnings: list[str] = []
+    if pdf_type.get("is_scanned") or float(pdf_type.get("scanned_page_ratio") or 0.0) > 0.35:
+        warnings.append("PDF wyglada na skan; po kompresji sprawdz jakosc OCR i drobny tekst.")
+    if pdf_type.get("has_images") and not pdf_type.get("has_text_layer"):
+        warnings.append("PDF jest obrazowy; zbyt mocna kompresja moze pogorszyc diagramy i rozpoznawanie pozycji.")
+    return warnings
+
+
+def _download_remote_pdf_artifact(url: str, target_path: Path) -> None:
+    if not url:
+        raise PdfCompressionFailed("Missing signed URL for source PDF artifact.")
+    request = urllib.request.Request(url, headers={"User-Agent": "KindleMaster PDF compression"})
+    try:
+        with urllib.request.urlopen(request, timeout=PDF_COMPRESS_REMOTE_DOWNLOAD_TIMEOUT_SECONDS) as response:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            with target_path.open("wb") as handle:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+    except (OSError, urllib.error.URLError) as error:
+        raise PdfCompressionFailed(f"Could not download source PDF artifact: {error}") from error
+    if not target_path.is_file() or target_path.stat().st_size <= 0:
+        raise PdfCompressionFailed("Downloaded source PDF artifact is empty.")
+
+
+def _send_remote_artifact_proxy(artifact: dict, *, job_id: str, artifact_key: str):
+    signed_url = _signed_artifact_url(artifact)
+    if not signed_url:
+        response = _json_error(
+            "Artefakt nie jest dostepny lokalnie.",
+            error_code="source_artifact_unavailable" if artifact_key == "input" else ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="download",
+            job_id=job_id,
+        )
+        response.headers["X-KindleMaster-Artifact-Source"] = "missing"
+        return response
+    request_obj = urllib.request.Request(signed_url, headers={"User-Agent": "KindleMaster artifact proxy"})
+    try:
+        with urllib.request.urlopen(request_obj, timeout=PDF_COMPRESS_REMOTE_DOWNLOAD_TIMEOUT_SECONDS) as remote:
+            data = remote.read()
+    except urllib.error.HTTPError as error:
+        status_code = int(getattr(error, "code", 0) or 502)
+        if status_code in {403, 404, 410}:
+            response = _json_error(
+                "PDF zrodlowy nie jest juz dostepny w magazynie artefaktow.",
+                error_code="source_artifact_unavailable" if artifact_key == "input" else ERROR_MISSING_OUTPUT,
+                status_code=410 if status_code == 410 else 404,
+                phase="download",
+                job_id=job_id,
+                retryable=False,
+            )
+            response.headers["X-KindleMaster-Artifact-Source"] = "missing"
+            response.headers["X-KindleMaster-Remote-Status"] = str(status_code)
+            return response
+        response = _json_error(
+            "Nie udalo sie pobrac zdalnego artefaktu.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=502,
+            phase="download",
+            job_id=job_id,
+            retryable=True,
+        )
+        response.headers["X-KindleMaster-Artifact-Source"] = "remote"
+        response.headers["X-KindleMaster-Remote-Status"] = str(status_code)
+        return response
+    except (OSError, urllib.error.URLError) as error:
+        response = _json_error(
+            f"Nie udalo sie pobrac zdalnego artefaktu: {error}",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=502,
+            phase="download",
+            job_id=job_id,
+            retryable=True,
+        )
+        response.headers["X-KindleMaster-Artifact-Source"] = "remote"
+        return response
+    if not data:
+        response = _json_error(
+            "Zdalny artefakt jest pusty.",
+            error_code="source_artifact_unavailable" if artifact_key == "input" else ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="download",
+            job_id=job_id,
+        )
+        response.headers["X-KindleMaster-Artifact-Source"] = "missing"
+        return response
+    filename = str(artifact.get("filename") or f"{artifact_key}.bin")
+    response = send_file(
+        io.BytesIO(data),
+        mimetype=str(artifact.get("content_type") or mimetypes.guess_type(filename)[0] or "application/octet-stream"),
+        as_attachment=False,
+        download_name=filename,
+    )
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["X-KindleMaster-Artifact-Proxy"] = "remote"
+    response.headers["X-KindleMaster-Artifact-Source"] = "remote"
+    return response
+
+
+def _pdf_source_fallback_roots() -> list[Path]:
+    roots: list[Path] = [Path(UPLOAD_DIR)]
+    configured = os.environ.get("KINDLEMASTER_SOURCE_FALLBACK_DIRS", "")
+    for raw_path in configured.split(os.pathsep):
+        raw_path = raw_path.strip()
+        if raw_path:
+            roots.append(Path(raw_path))
+    home = Path.home()
+    if home:
+        roots.extend([home / "Downloads", home / "Desktop"])
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        try:
+            resolved = root.resolve()
+        except OSError:
+            continue
+        key = str(resolved).lower()
+        if key not in seen:
+            unique.append(resolved)
+            seen.add(key)
+    return unique
+
+
+def _find_local_pdf_source_fallback(filename: str, expected_size: int = 0) -> Path | None:
+    safe_name = Path(str(filename or "")).name
+    if not safe_name.lower().endswith(".pdf"):
+        return None
+    for root in _pdf_source_fallback_roots():
+        candidate = root / safe_name
+        try:
+            if not candidate.is_file():
+                continue
+            if expected_size > 0 and candidate.stat().st_size != expected_size:
+                continue
+            return candidate.resolve()
+        except OSError:
+            continue
+    return None
+
+
+def _send_local_input_artifact_fallback(job_id: str, job: dict, artifact: dict):
+    filename = str(artifact.get("filename") or job.get("filename") or f"{job_id}.pdf").strip() or f"{job_id}.pdf"
+    fallback_path = _find_local_pdf_source_fallback(filename, int(artifact.get("size_bytes") or 0))
+    if fallback_path is None:
+        return None
+    artifact.update(
+        {
+            "provider": "local",
+            "status": "stored",
+            "kind": "input",
+            "job_id": job_id,
+            "filename": filename,
+            "location": str(fallback_path),
+            "size_bytes": fallback_path.stat().st_size,
+            "content_type": "application/pdf",
+            "signed_url": {"available": False, "url": "", "expires_in_seconds": 0, "reason": "local_fallback"},
+        }
+    )
+    artifacts = dict(job.get("artifacts", {}) or {})
+    artifacts["input"] = artifact
+    job["artifacts"] = artifacts
+    _CONVERSION_JOB_STORE.create(job)
+    response = send_file(
+        io.BytesIO(fallback_path.read_bytes()),
+        mimetype="application/pdf",
+        as_attachment=False,
+        download_name=filename,
+    )
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["X-KindleMaster-Artifact-Source"] = "fallback"
+    return response
+
+
+def _resolve_job_source_pdf_for_compression(job_id: str, job: dict) -> tuple[Path, str, bool]:
+    artifacts = dict(job.get("artifacts", {}) or {})
+    input_artifact = artifacts.get("input")
+    if not isinstance(input_artifact, dict):
+        raise PdfCompressionFailed("No preserved source PDF artifact is available for this job.")
+
+    filename = str(input_artifact.get("filename") or job.get("filename") or f"{job_id}.pdf").strip() or f"{job_id}.pdf"
+    local_path = _resolve_local_artifact_path(input_artifact)
+    if local_path is not None:
+        return local_path, filename, False
+
+    local_fallback = _find_local_pdf_source_fallback(filename, int(input_artifact.get("size_bytes") or 0))
+    if local_fallback is not None:
+        return local_fallback, filename, False
+
+    signed_url = _signed_artifact_url(input_artifact) or str(input_artifact.get("download_url") or "").strip()
+    if not signed_url:
+        raise PdfCompressionFailed("Source PDF artifact is not locally available and has no signed URL.")
+    source_path = PDF_COMPRESS_DIR / f"{job_id}.artifact-source.pdf"
+    _download_remote_pdf_artifact(signed_url, source_path)
+    return source_path, filename, True
 
 
 def _artifact_storage_status() -> dict:
@@ -2898,6 +3246,232 @@ def convert_delivery_email(job_id: str):
     return response
 
 
+@app.route("/pdf/compress", methods=["POST"])
+def pdf_compress():
+    _cleanup_expired_pdf_compression_jobs()
+    file = request.files.get("file") or request.files.get("pdf")
+    if not file or not file.filename:
+        return _json_error(
+            "Przeslij plik PDF do zmniejszenia.",
+            error_code=ERROR_UPLOAD_FAILED,
+            status_code=400,
+            phase="pdf_compression",
+        )
+    if detect_supported_source_type(file.filename) != "pdf":
+        return _json_error(
+            "Zmniejszanie wagi jest dostepne tylko dla plikow PDF.",
+            error_code="pdf_compression_unsupported_source",
+            status_code=400,
+            phase="pdf_compression",
+        )
+
+    profile = normalize_compression_profile(request.form.get("profile", "balanced"))
+    job_id = uuid.uuid4().hex
+    source_path = PDF_COMPRESS_DIR / f"{job_id}.source.pdf"
+    try:
+        file.save(source_path)
+    except OSError:
+        return _json_error(
+            "Nie udalo sie zapisac PDF do kompresji.",
+            error_code=ERROR_UPLOAD_FAILED,
+            status_code=500,
+            phase="pdf_compression",
+            retryable=True,
+        )
+
+    warnings = _pdf_compression_source_warnings(source_path)
+    try:
+        result = compress_pdf(source_path, PDF_COMPRESS_DIR, profile=profile, job_id=job_id)
+    except PdfCompressionUnavailable as error:
+        _safe_remove_temp_file(source_path)
+        return _json_error(
+            str(error),
+            error_code="pdf_compression_unavailable",
+            status_code=503,
+            phase="pdf_compression",
+            retryable=True,
+        )
+    except PdfCompressionFailed as error:
+        _safe_remove_temp_file(source_path)
+        return _json_error(
+            f"Zmniejszanie PDF nie powiodlo sie: {error}",
+            error_code="pdf_compression_failed",
+            status_code=500,
+            phase="pdf_compression",
+            retryable=True,
+        )
+
+    all_warnings = [*warnings, *result.warnings]
+    created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    download_name = f"{Path(file.filename).stem}.compressed.pdf"
+    payload = {
+        "success": result.success,
+        "job_id": result.job_id,
+        "status": result.status,
+        "original_size_bytes": result.original_size_bytes,
+        "compressed_size_bytes": result.compressed_size_bytes,
+        "reduction_percent": result.reduction_percent,
+        "quality_profile": result.quality_profile,
+        "method": result.method,
+        "warnings": all_warnings,
+        "download_url": f"/pdf/compress/download/{result.job_id}" if result.success else "",
+        "download_name": download_name if result.success else "",
+    }
+    if not result.success:
+        payload["error_code"] = result.status
+        payload["error"] = "Kompresja nie zmniejszyla pliku."
+        _safe_remove_temp_file(source_path)
+    else:
+        _PDF_COMPRESS_JOBS[result.job_id] = {
+            "job_id": result.job_id,
+            "source_path": str(source_path),
+            "output_path": result.output_path,
+            "download_name": download_name,
+            "created_at": created_at,
+            "profile": result.quality_profile,
+        }
+
+    response = jsonify(payload)
+    apply_no_store_headers(response.headers)
+    return response
+
+
+@app.route("/pdf/compress/download/<job_id>", methods=["GET"])
+def pdf_compress_download(job_id: str):
+    _cleanup_expired_pdf_compression_jobs()
+    safe_job_id = "".join(ch for ch in str(job_id or "") if ch.isalnum() or ch in {"-", "_"})
+    job = _PDF_COMPRESS_JOBS.get(safe_job_id)
+    if not job:
+        return _json_error(
+            "Skompresowany PDF nie jest juz dostepny. Uruchom zmniejszanie ponownie.",
+            error_code="pdf_compression_missing_output",
+            status_code=404,
+            phase="pdf_compression",
+        )
+    output_path = Path(str(job.get("output_path") or ""))
+    try:
+        resolved = output_path.resolve()
+    except OSError:
+        resolved = output_path
+    if not _is_path_under(resolved, PDF_COMPRESS_DIR.resolve()) or not resolved.is_file():
+        return _json_error(
+            "Brak pliku PDF do pobrania.",
+            error_code="pdf_compression_missing_output",
+            status_code=404,
+            phase="pdf_compression",
+        )
+    return send_file(
+        resolved,
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=str(job.get("download_name") or f"{safe_job_id}.pdf"),
+    )
+
+
+@app.route("/pdf/compress/job/<job_id>", methods=["POST"])
+def pdf_compress_job_source(job_id: str):
+    _cleanup_expired_pdf_compression_jobs()
+    job = _get_conversion_job(job_id)
+    if not job:
+        return _json_error(
+            "Nie znaleziono zadania z PDF zrodlowym.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="pdf_compression",
+            job_id=job_id,
+        )
+    source_type = str(job.get("source_type") or "").strip().lower()
+    filename = str(job.get("filename") or "").strip()
+    if source_type != "pdf" and not filename.lower().endswith(".pdf"):
+        return _json_error(
+            "Zmniejszanie wagi jest dostepne tylko dla zadan PDF.",
+            error_code="pdf_compression_unsupported_source",
+            status_code=400,
+            phase="pdf_compression",
+            job_id=job_id,
+        )
+
+    profile = normalize_compression_profile(request.form.get("profile", "balanced"))
+    downloaded_source = False
+    source_path: Path | None = None
+    try:
+        source_path, source_filename, downloaded_source = _resolve_job_source_pdf_for_compression(job_id, job)
+        warnings = _pdf_compression_source_warnings(source_path)
+        result = compress_pdf(source_path, PDF_COMPRESS_DIR, profile=profile, job_id=uuid.uuid4().hex)
+    except PdfCompressionUnavailable as error:
+        if downloaded_source and source_path is not None:
+            _safe_remove_temp_file(source_path)
+        return _json_error(
+            str(error),
+            error_code="pdf_compression_unavailable",
+            status_code=503,
+            phase="pdf_compression",
+            job_id=job_id,
+            retryable=True,
+        )
+    except PdfCompressionFailed as error:
+        if downloaded_source and source_path is not None:
+            _safe_remove_temp_file(source_path)
+        source_unavailable = any(
+            marker in str(error)
+            for marker in (
+                "source PDF artifact",
+                "Source PDF artifact",
+                "No preserved source PDF artifact",
+                "Could not download source PDF artifact",
+            )
+        )
+        return _json_error(
+            (
+                "Nie moge odnalezc PDF zrodlowego dla tego zadania. "
+                "Wgraj plik ponownie albo upewnij sie, ze artefakt wejsciowy istnieje w chmurze."
+                if source_unavailable
+                else f"Zmniejszanie PDF zrodlowego nie powiodlo sie: {error}"
+            ),
+            error_code="pdf_source_unavailable" if source_unavailable else "pdf_compression_failed",
+            status_code=409 if source_unavailable else 500,
+            phase="pdf_compression",
+            job_id=job_id,
+            retryable=not source_unavailable,
+        )
+
+    all_warnings = [*warnings, *result.warnings]
+    created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    download_name = f"{Path(source_filename).stem}.compressed.pdf"
+    payload = {
+        "success": result.success,
+        "job_id": result.job_id,
+        "source_job_id": job_id,
+        "status": result.status,
+        "original_size_bytes": result.original_size_bytes,
+        "compressed_size_bytes": result.compressed_size_bytes,
+        "reduction_percent": result.reduction_percent,
+        "quality_profile": result.quality_profile,
+        "method": result.method,
+        "warnings": all_warnings,
+        "download_url": f"/pdf/compress/download/{result.job_id}" if result.success else "",
+        "download_name": download_name if result.success else "",
+    }
+    if not result.success:
+        payload["error_code"] = result.status
+        payload["error"] = "Kompresja nie zmniejszyla pliku."
+        if downloaded_source:
+            _safe_remove_temp_file(source_path)
+    else:
+        _PDF_COMPRESS_JOBS[result.job_id] = {
+            "job_id": result.job_id,
+            "source_path": str(source_path),
+            "output_path": result.output_path,
+            "download_name": download_name,
+            "created_at": created_at,
+            "profile": result.quality_profile,
+        }
+
+    response = jsonify(payload)
+    apply_no_store_headers(response.headers)
+    return response
+
+
 @app.route("/convert", methods=["POST"])
 def convert():
     """Convert uploaded PDF or DOCX to EPUB."""
@@ -3124,6 +3698,59 @@ def convert_jobs():
     )
     response.headers["Cache-Control"] = "no-store, max-age=0"
     response.headers["Pragma"] = "no-cache"
+    return response
+
+
+@app.route("/convert/jobs/<job_id>", methods=["DELETE"])
+def convert_job_delete(job_id: str):
+    _mark_timed_out_conversion_jobs()
+    _cleanup_expired_conversion_jobs()
+    job = _get_conversion_job(job_id)
+    if not job:
+        return _json_error(
+            "Nie znaleziono zadania konwersji.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="delete",
+            job_id=job_id,
+        )
+    if is_active_conversion_status(str(job.get("status") or "")):
+        return _json_error(
+            "Nie można usunąć publikacji, która jest jeszcze przetwarzana.",
+            error_code="conversion_job_active",
+            status_code=409,
+            phase="delete",
+            job_id=job_id,
+            retryable=True,
+        )
+
+    deleted = _CONVERSION_JOB_STORE.delete(job_id)
+    if not deleted:
+        return _json_error(
+            "Nie znaleziono zadania konwersji.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="delete",
+            job_id=job_id,
+        )
+
+    cleanup = _cleanup_deleted_conversion_job_files(job_id, deleted)
+    cloud_user, cloud_token = _authenticated_request_context()
+    cloud_delete = (
+        _delete_supabase_conversion_job(cloud_token, str(cloud_user.get("id") or ""), job_id)
+        if cloud_user and cloud_token
+        else {"status": "skipped", "provider": "supabase", "reason": "anonymous_or_local"}
+    )
+    response = jsonify(
+        {
+            "success": True,
+            "job_id": job_id,
+            "status": "deleted",
+            "cleanup": cleanup,
+            "cloud_delete": cloud_delete,
+        }
+    )
+    apply_no_store_headers(response.headers)
     return response
 
 
@@ -3445,6 +4072,12 @@ def convert_artifact_download(job_id: str, artifact_key: str):
     _cleanup_expired_conversion_jobs()
     job = _get_conversion_job(job_id)
     if not job:
+        # Details views may survive a local server restart while the durable job
+        # history lives in Supabase. If the browser sends auth, rehydrate the
+        # local store before deciding the artifact is missing.
+        _merge_cloud_jobs_into_store_for_request(limit=MAX_CONVERSION_JOB_HISTORY_LIMIT)
+        job = _get_conversion_job(job_id)
+    if not job:
         return _json_error(
             "Nie znaleziono zadania konwersji.",
             error_code=ERROR_MISSING_OUTPUT,
@@ -3465,24 +4098,20 @@ def convert_artifact_download(job_id: str, artifact_key: str):
         )
     artifact_path = _resolve_local_artifact_path(artifact)
     if artifact_path is None or not artifact_path.is_file():
-        signed_url = _signed_artifact_url(artifact)
-        if signed_url:
-            return redirect(signed_url, code=302)
-        return _json_error(
-            "Artefakt nie jest dostepny lokalnie.",
-            error_code=ERROR_MISSING_OUTPUT,
-            status_code=404,
-            phase="download",
-            job_id=job_id,
-        )
+        if key == "input":
+            fallback_response = _send_local_input_artifact_fallback(job_id, job, artifact)
+            if fallback_response is not None:
+                return fallback_response
+        return _send_remote_artifact_proxy(artifact, job_id=job_id, artifact_key=key)
     response = send_file(
         artifact_path,
         mimetype=str(artifact.get("content_type") or mimetypes.guess_type(artifact_path.name)[0] or "application/octet-stream"),
-        as_attachment=True,
+        as_attachment=key != "input",
         download_name=str(artifact.get("filename") or artifact_path.name),
     )
     response.headers["Cache-Control"] = "no-store, max-age=0"
     response.headers["Pragma"] = "no-cache"
+    response.headers["X-KindleMaster-Artifact-Source"] = "local"
     return response
 
 

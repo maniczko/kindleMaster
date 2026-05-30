@@ -133,6 +133,7 @@ def score_epub_premium_quality(
     toc_entries = package["toc_entries"]
     documents = package["documents"]
     manifest = package["manifest"]
+    demoted_non_content_page_count = int(package.get("demoted_non_content_page_count", 0) or 0)
 
     epubcheck_status = str((epubcheck or {}).get("status", "") or "").strip().lower()
     epubcheck_messages = _epubcheck_messages(epubcheck)
@@ -400,6 +401,7 @@ def score_epub_premium_quality(
         "toc_duplicate_label_count": len(duplicate_toc_labels),
         "spine_document_count": len(documents),
         "non_content_chapter_count": len(non_content_docs),
+        "demoted_non_content_page_count": demoted_non_content_page_count,
         "long_chapter_without_heading_count": len(long_without_heading),
         "language_label_contamination": language_label_contamination,
         "unsupported_media_count": len(unsupported_media),
@@ -710,6 +712,7 @@ def _read_epub_package(epub_bytes: bytes) -> dict[str, Any]:
             opf_dir = ""
         opf_soup = BeautifulSoup(archive.read(opf_path), "xml")
         manifest = _parse_manifest(opf_soup)
+        demoted_non_content_count = _parse_demoted_non_content_page_count(opf_soup, manifest)
         spine_hrefs = _parse_spine_hrefs(opf_soup, manifest)
         documents = [_read_spine_document(archive, _resolve_package_path(opf_dir, href)) for href in spine_hrefs]
         documents = [doc for doc in documents if doc is not None]
@@ -723,6 +726,7 @@ def _read_epub_package(epub_bytes: bytes) -> dict[str, Any]:
             "manifest": list(manifest.values()),
             "documents": documents,
             "toc_entries": toc_entries,
+            "demoted_non_content_page_count": demoted_non_content_count,
         }
         _EPUB_PACKAGE_CACHE[digest] = copy.deepcopy(result)
         return result
@@ -816,6 +820,29 @@ def _parse_manifest(opf_soup: BeautifulSoup) -> dict[str, dict[str, str]]:
             "media_type": str(item.get("media-type", "") or ""),
         }
     return manifest
+
+
+def _parse_demoted_non_content_page_count(
+    opf_soup: BeautifulSoup,
+    manifest: dict[str, dict[str, str]],
+) -> int:
+    declared = opf_soup.find("meta", attrs={"property": "kindlemaster:demoted-non-content-pages"})
+    if declared is not None:
+        try:
+            return max(0, int(str(declared.get_text("", strip=True) or "0")))
+        except ValueError:
+            pass
+    count = 0
+    for itemref in opf_soup.find_all("itemref"):
+        linear = str(itemref.get("linear", "yes") or "yes").lower()
+        if linear != "no":
+            continue
+        idref = str(itemref.get("idref", "") or "")
+        item = manifest.get(idref) or {}
+        href = item.get("href", "")
+        if re.search(r"(?:^|/)page_\d+\.xhtml$", href):
+            count += 1
+    return count
 
 
 def _parse_spine_hrefs(opf_soup: BeautifulSoup, manifest: dict[str, dict[str, str]]) -> list[str]:

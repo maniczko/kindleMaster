@@ -14,6 +14,7 @@ This gives 1:1 visual fidelity for scanned/image-heavy PDFs.
 """
 
 import io
+import uuid
 import html as html_module
 from pathlib import Path
 from dataclasses import dataclass
@@ -153,7 +154,7 @@ def render_page_to_image(page: fitz.Page, dpi: int = 200, jpeg_quality: int = 85
     if img.mode in ("RGBA", "LA", "P"):
         img = img.convert("RGB")
     jpeg_bytes = io.BytesIO()
-    img.save(jpeg_bytes, format="JPEG", quality=jpeg_quality, optimize=True, progressive=True)
+    img.save(jpeg_bytes, format="JPEG", quality=jpeg_quality, optimize=True, progressive=False)
     jpeg_bytes.seek(0)
     
     return jpeg_bytes.read(), pix.width, pix.height
@@ -295,6 +296,7 @@ def generate_fixed_layout_page_html(
     parts.append('<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">')
     parts.append("<head>")
     parts.append(f'<title>Strona {page_num + 1}</title>')
+    parts.append(f'<meta name="viewport" content="width={int(round(page_width))},height={int(round(page_height))}"/>')
     parts.append('<link href="../style/fixed.css" rel="stylesheet" type="text/css"/>')
     parts.append("</head>")
     parts.append("<body>")
@@ -377,7 +379,7 @@ def build_fixed_layout_epub(
     
     doc = fitz.open(pdf_path)
     book = epub.EpubBook()
-    book.set_identifier("urn:uuid:" + epub.uuid.uuid4().hex)
+    book.set_identifier("urn:uuid:" + str(uuid.uuid4()))
     book.set_title(title)
     book.set_language(config.language)
     book.add_author(author)
@@ -480,8 +482,19 @@ def build_fixed_layout_epub(
         # Try to get first page image
         try:
             doc2 = fitz.open(pdf_path)
-            pix = doc2[0].get_pixmap(dpi=cover_dpi)
-            first_page_img = pix.tobytes("jpeg", quality=cover_quality)
+            pix = doc2[0].get_pixmap(dpi=cover_dpi, alpha=False)
+            cover_image = Image.open(io.BytesIO(pix.tobytes("png")))
+            if cover_image.mode in ("RGBA", "LA", "P"):
+                cover_image = cover_image.convert("RGB")
+            cover_buffer = io.BytesIO()
+            cover_image.save(
+                cover_buffer,
+                format="JPEG",
+                quality=cover_quality,
+                optimize=True,
+                progressive=False,
+            )
+            first_page_img = cover_buffer.getvalue()
             doc2.close()
         except Exception:
             pass
@@ -502,7 +515,8 @@ def build_fixed_layout_epub(
                 lang=config.language,
             )
             cover_page.content = (
-                '<html><body class="cover-page" style="margin:0;padding:0;text-align:center;">'
+                '<html><head><title>Okładka</title><meta name="viewport" content="width=1200,height=1600"/></head>'
+                '<body class="cover-page" style="margin:0;padding:0;text-align:center;">'
                 '<img src="images/cover.jpeg" alt="' + html_module.escape(title) + '" '
                 'style="max-width:100%;max-height:100%;"/>'
                 "</body></html>"
@@ -526,4 +540,9 @@ def build_fixed_layout_epub(
     epub.write_epub(epub_buffer, book)
     epub_buffer.seek(0)
     
-    return epub_buffer.getvalue()
+    try:
+        from fixed_layout_builder_v2 import repair_fixed_layout_epub
+
+        return repair_fixed_layout_epub(epub_buffer.getvalue())
+    except Exception:
+        return epub_buffer.getvalue()

@@ -20,7 +20,6 @@ from urllib.parse import quote
 from app_runtime_services import (
     DEFAULT_DEBUG,
     DEFAULT_PORT,
-    LOCALHOST,
     ConversionRequest,
     ConversionJobStore,
     build_conversion_job_record,
@@ -28,7 +27,9 @@ from app_runtime_services import (
     enrich_conversion_metadata_with_output_size,
     build_local_app_url,
     detect_supported_source_type,
+    is_allowed_cors_origin,
     resolve_debug_mode as runtime_resolve_debug_mode,
+    resolve_server_host as runtime_resolve_server_host,
     resolve_server_port as runtime_resolve_server_port,
     run_document_conversion,
     serve_http_app,
@@ -105,9 +106,11 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 MB
 SENTRY_BACKEND_STATE = configure_sentry_backend()
 
-UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "kindlemaster")
+UPLOAD_DIR = os.environ.get("KINDLEMASTER_UPLOAD_DIR") or os.path.join(tempfile.gettempdir(), "kindlemaster")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-ARTIFACT_STORAGE = build_artifact_storage(local_root=Path("output") / "artifacts")
+ARTIFACT_STORAGE = build_artifact_storage(
+    local_root=Path(os.environ.get("KINDLEMASTER_ARTIFACT_ROOT") or Path("output") / "artifacts")
+)
 RUNTIME_JOB_ADAPTER = build_runtime_job_adapter(
     retry_policy=RetryPolicy(max_attempts=1),
     timeout_seconds=DEFAULT_CONVERSION_QUEUE_POLICY.max_runtime_seconds,
@@ -171,6 +174,34 @@ def _json_error(
     response = jsonify(payload)
     response.status_code = status_code
     apply_no_store_headers(response.headers)
+    return response
+
+
+@app.before_request
+def _handle_cors_preflight():
+    if request.method != "OPTIONS":
+        return None
+    if not is_allowed_cors_origin(request.headers.get("Origin")):
+        return None
+    response = app.make_response(("", 204))
+    return response
+
+
+@app.after_request
+def _apply_cors_headers(response):
+    origin = request.headers.get("Origin")
+    if not is_allowed_cors_origin(origin):
+        return response
+    response.headers["Access-Control-Allow-Origin"] = str(origin).strip().rstrip("/")
+    existing_vary = response.headers.get("Vary", "")
+    vary_values = {value.strip() for value in existing_vary.split(",") if value.strip()}
+    vary_values.add("Origin")
+    response.headers["Vary"] = ", ".join(sorted(vary_values))
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    requested_headers = request.headers.get("Access-Control-Request-Headers", "")
+    response.headers["Access-Control-Allow-Headers"] = requested_headers or "Authorization, Content-Type"
+    response.headers["Access-Control-Max-Age"] = "600"
     return response
 
 
@@ -445,7 +476,7 @@ def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
     if chess_pgn_html_file is not None:
         artifacts["chess_pgn_html"] = _local_artifact_metadata(job_id, ArtifactKind.REPORT, chess_pgn_html_file)
         artifacts["chess_pgn_html"]["download_url"] = f"/convert/artifact/{job_id}/chess_pgn_html"
-        artifacts["chess_pgn_html"]["label"] = "HTML PGN"
+        artifacts["chess_pgn_html"]["label"] = "HTML PGN/FEN"
     if runtime_json_file is not None:
         artifacts["log"] = _local_artifact_metadata(job_id, ArtifactKind.LOG, runtime_json_file)
     job["artifacts"] = artifacts
@@ -675,17 +706,48 @@ def _resolve_local_artifact_path(artifact: dict | None) -> Path | None:
     return resolved
 
 
+def _resolve_retry_source_path(job: dict) -> Path | None:
+    """Return a persisted upload path that is safe to reuse for retry."""
+    if not isinstance(job, dict):
+        return None
+
+    candidates: list[Path] = []
+    source_path = str(job.get("source_path") or "").strip()
+    if source_path:
+        candidates.append(Path(source_path))
+
+    job_id = str(job.get("job_id") or "").strip()
+    filename = str(job.get("filename") or "").strip()
+    source_type = detect_supported_source_type(filename) or str(job.get("source_type") or "").strip().lower()
+    if job_id and source_type in {"pdf", "docx"}:
+        candidates.append(Path(UPLOAD_DIR) / f"{job_id}.{source_type}")
+
+    upload_root = Path(UPLOAD_DIR).resolve()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        if not _is_path_under(resolved, upload_root):
+            continue
+        if resolved.is_file():
+            return resolved
+    return None
+
+
 def _read_retry_input_artifact(job: dict) -> tuple[bytes, str]:
     input_artifact = (job.get("artifacts", {}) or {}).get("input")
     artifact_path = _resolve_local_artifact_path(input_artifact if isinstance(input_artifact, dict) else None)
-    if artifact_path is None:
-        return b"", ""
     filename = ""
     if isinstance(input_artifact, dict):
         filename = str(input_artifact.get("filename") or "").strip()
-    filename = filename or str(job.get("filename") or "").strip() or artifact_path.name
+    fallback_path = _resolve_retry_source_path(job)
+    source_path = artifact_path or fallback_path
+    if source_path is None:
+        return b"", filename or str(job.get("filename") or "").strip()
+    filename = filename or str(job.get("filename") or "").strip() or source_path.name
     try:
-        return artifact_path.read_bytes(), filename
+        return source_path.read_bytes(), filename
     except OSError:
         return b"", filename
 
@@ -1058,6 +1120,10 @@ def _encode_header_payload(payload, *, limit: int = 20) -> str:
 
 def _resolve_server_port() -> int:
     return runtime_resolve_server_port()
+
+
+def _resolve_server_host() -> str:
+    return runtime_resolve_server_host()
 
 
 def _resolve_debug_mode() -> bool:
@@ -3646,11 +3712,12 @@ def _get_publication_recommendation(publication_analysis: dict) -> str:
 
 
 if __name__ == "__main__":
-    host = LOCALHOST
+    host = _resolve_server_host()
     port = _resolve_server_port()
     debug = _resolve_debug_mode()
+    display_url = os.environ.get("KINDLEMASTER_PUBLIC_BASE_URL") or build_local_app_url(port)
     print(
-        f"Starting KindleMaster on {build_local_app_url(port)} (bind={host}, debug={debug})",
+        f"Starting KindleMaster on {display_url} (bind={host}, debug={debug})",
         flush=True,
     )
     serve_http_app(app, host=host, port=port, debug=debug, runtime="flask")

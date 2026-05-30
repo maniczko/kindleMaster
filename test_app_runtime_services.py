@@ -18,11 +18,15 @@ from app_runtime_services import (
     build_local_app_url,
     build_conversion_job_record,
     detect_supported_source_type,
+    is_allowed_cors_origin,
     pick_epubcheck_error,
+    resolve_allowed_cors_origins,
     resolve_debug_mode,
+    resolve_server_host,
     resolve_server_port,
     run_document_conversion,
     serve_http_app,
+    _should_skip_heading_repair,
 )
 
 
@@ -170,6 +174,33 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertIn("Uruchom konwersje ponownie", reloaded_jobs["job-running"]["error"])
         self.assertEqual(reloaded_jobs["job-running"]["source_path"], "")
 
+    def test_conversion_job_store_preserves_existing_input_path_after_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir) / "job-running.pdf"
+            source_path.write_bytes(b"%PDF-1.4\n")
+            store_path = Path(temp_dir) / "jobs.json"
+            store = ConversionJobStore({}, threading.Lock(), persistence_path=store_path)
+            store.create(
+                {
+                    "job_id": "job-running",
+                    "status": "running",
+                    "message": "Konwertuje PDF do EPUB...",
+                    "created_at": "2026-04-25T10:00:00Z",
+                    "updated_at": "2026-04-25T10:00:00Z",
+                    "source_path": str(source_path),
+                    "metadata": {},
+                    "error": "",
+                }
+            )
+
+            reloaded_jobs: dict[str, dict] = {}
+            reloaded_store = ConversionJobStore(reloaded_jobs, threading.Lock(), persistence_path=store_path)
+            load_result = reloaded_store.load()
+
+        self.assertEqual(load_result["interrupted_jobs"], 1)
+        self.assertEqual(reloaded_jobs["job-running"]["status"], "failed")
+        self.assertEqual(reloaded_jobs["job-running"]["source_path"], str(source_path))
+
     def test_resolve_server_port_and_debug_mode_use_safe_env_defaults(self) -> None:
         self.assertEqual(resolve_server_port({}), 5001)
         self.assertEqual(resolve_server_port({"PORT": "5512"}), 5512)
@@ -180,6 +211,30 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertTrue(resolve_debug_mode({"DEBUG": "true"}))
         self.assertTrue(resolve_debug_mode({"FLASK_DEBUG": "1"}))
         self.assertFalse(resolve_debug_mode({"FLASK_DEBUG": "off"}))
+
+    def test_resolve_server_host_defaults_to_loopback_and_allows_container_bind(self) -> None:
+        self.assertEqual(resolve_server_host({}), "127.0.0.1")
+        self.assertEqual(resolve_server_host({"KINDLEMASTER_BIND_HOST": "0.0.0.0"}), "0.0.0.0")
+        self.assertEqual(resolve_server_host({"HOST": "0.0.0.0"}), "0.0.0.0")
+        self.assertEqual(resolve_server_host({"KINDLEMASTER_BIND_HOST": "0.0.0.0", "HOST": "127.0.0.1"}), "0.0.0.0")
+
+    def test_cors_origin_policy_allows_configured_origins_without_wildcards(self) -> None:
+        env = {
+            "KINDLEMASTER_ALLOWED_ORIGINS": "https://kindlemaster.vercel.app, *, https://preview.vercel.app/",
+            "KINDLEMASTER_ALLOW_LOCAL_DEV_CORS": "0",
+        }
+
+        self.assertEqual(
+            resolve_allowed_cors_origins(env),
+            {"https://kindlemaster.vercel.app", "https://preview.vercel.app"},
+        )
+        self.assertTrue(is_allowed_cors_origin("https://preview.vercel.app/", env))
+        self.assertFalse(is_allowed_cors_origin("https://evil.example", env))
+        self.assertFalse(is_allowed_cors_origin("*", env))
+
+    def test_cors_origin_policy_keeps_vite_dev_origins_available_by_default(self) -> None:
+        self.assertTrue(is_allowed_cors_origin("http://127.0.0.1:5173", {}))
+        self.assertTrue(is_allowed_cors_origin("http://kindlemaster.localhost:5174", {}))
 
     def test_pick_epubcheck_error_prefers_explicit_error_line(self) -> None:
         message = pick_epubcheck_error(
@@ -192,6 +247,25 @@ class AppRuntimeServicesTests(unittest.TestCase):
 
         self.assertEqual(message, "ERROR(RSC-007): broken fragment target")
         self.assertEqual(pick_epubcheck_error([]), "Heading/TOC repair failed.")
+
+    def test_should_skip_heading_repair_for_fixed_layout_outputs(self) -> None:
+        skip, reason = _should_skip_heading_repair(
+            ConversionRequest(
+                source_path="sample.pdf",
+                source_type="pdf",
+                original_filename="sample.pdf",
+                profile="auto-premium",
+                language="en",
+                heading_repair_enabled=True,
+            ),
+            {
+                "analysis": {"profile": "fixed_layout_fallback"},
+                "document_summary": {"layout_mode": "fixed-layout"},
+            },
+        )
+
+        self.assertTrue(skip)
+        self.assertIn("fixed-layout", reason)
 
     def test_run_document_conversion_keeps_base_epub_when_heading_repair_epubcheck_fails(self) -> None:
         base_epub = b"base-epub"
@@ -664,6 +738,54 @@ class AppRuntimeServicesTests(unittest.TestCase):
             ],
         )
 
+    def test_run_document_conversion_skips_heading_repair_for_chess_notation_collections(self) -> None:
+        convert_impl = Mock(
+            return_value={
+                "epub_bytes": b"notation-epub",
+                "source_type": "pdf",
+                "analysis": {
+                    "profile": "book_reflow",
+                    "confidence": 0.9,
+                    "legacy_strategy": "text_reflowable",
+                    "detected_features": ["chess-notation-collection"],
+                },
+                "quality_report": {
+                    "validation_status": "passed",
+                    "validation_tool": "epubcheck",
+                    "warnings": [],
+                    "high_risk_pages": [],
+                    "high_risk_sections": [],
+                },
+                "document_summary": {
+                    "title": "Jobava Collection",
+                    "author": "Unknown",
+                    "layout_mode": "reflowable",
+                    "section_count": 20,
+                    "asset_count": 0,
+                },
+            }
+        )
+        heading_repair_impl = Mock()
+
+        outcome = run_document_conversion(
+            ConversionRequest(
+                source_path="jobava.pdf",
+                source_type="pdf",
+                original_filename="jobava.pdf",
+                profile="auto-premium",
+                language="en",
+                heading_repair_enabled=True,
+            ),
+            convert_impl=convert_impl,
+            heading_repair_impl=heading_repair_impl,
+        )
+
+        self.assertEqual(outcome.epub_bytes, b"notation-epub")
+        self.assertEqual(outcome.heading_repair_report["status"], "skipped")
+        self.assertIn("chess-notation-collection", outcome.heading_repair_report["error"])
+        self.assertEqual(outcome.metadata["heading_repair"]["status"], "skipped")
+        heading_repair_impl.assert_not_called()
+
     def test_run_document_conversion_omits_source_type_for_cli_style_requests(self) -> None:
         convert_impl = Mock(
             return_value={
@@ -773,14 +895,13 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertTrue(convert_kwargs["config"].force_ocr)
         self.assertEqual(convert_kwargs["config"].language, "en")
         self.assertEqual(convert_kwargs["config"].text_cleanup_domain_dictionary_path, "docs/domain-dictionary-example.json")
-        self.assertEqual(outcome.epub_bytes, b"repaired-epub")
-        self.assertEqual(outcome.heading_repair_report["status"], "applied")
+        self.assertEqual(outcome.epub_bytes, b"base-epub")
+        self.assertEqual(outcome.heading_repair_report["status"], "skipped")
         self.assertEqual(outcome.metadata["render_budget_class"], "fixed_layout_dense")
-        self.assertEqual(outcome.metadata["heading_repair"]["status"], "applied")
+        self.assertEqual(outcome.metadata["heading_repair"]["status"], "skipped")
         self.assertEqual(outcome.metadata["strategy"], "layout_fixed")
-        self.assertEqual(outcome.result["quality_report"]["validation_status"], "passed")
-        self.assertEqual(outcome.result["quality_report"]["epubcheck_status"], "passed")
-        self.assertTrue(heading_repair_impl.call_args.kwargs["already_semantic_cleaned"])
+        self.assertEqual(outcome.result["quality_report"]["validation_status"], "passed_with_warnings")
+        heading_repair_impl.assert_not_called()
 
     def test_run_document_conversion_marks_heading_repair_exception_as_failed_and_keeps_base_epub(self) -> None:
         convert_impl = Mock(

@@ -5,12 +5,62 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from publication_model import PublicationAnalysis
+from publication_model import PublicationAnalysis, PublicationDocument
 
-from converter import ConversionConfig, convert_pdf_to_epub_with_report
+from converter import ConversionConfig, _build_publication_pipeline_result, convert_pdf_to_epub_with_report
 
 
 class PublicationBudgetSelectionTests(unittest.TestCase):
+    @patch("converter.finalize_epub_bytes", return_value=(b"epub", {"status": "skipped"}))
+    @patch("converter.build_epub", return_value=b"epub")
+    def test_publication_pipeline_uses_original_filename_when_temp_job_id_title_is_weak(
+        self,
+        mock_build_epub,
+        _mock_finalize_epub,
+    ) -> None:
+        analysis = PublicationAnalysis(
+            profile="book_reflow",
+            confidence=0.68,
+            page_count=1990,
+            render_budget_class="fixed_layout_extreme",
+            has_toc=False,
+            has_tables=False,
+            has_diagrams=False,
+            has_meaningful_images=True,
+            estimated_sections=50,
+            fallback_recommendation="semantic-reflow",
+            ui_profile="book",
+            legacy_strategy="layout_fixed",
+            has_text_layer=True,
+            is_scanned=False,
+            layout_heavy=True,
+            text_heavy=False,
+            detected_features=["chess-notation-collection"],
+        )
+        document = PublicationDocument(
+            title="3a7e54b878fe4414a54c8224242b412c",
+            author="Unknown",
+            language="pl",
+            profile="book_reflow",
+            analysis=analysis,
+            metadata={},
+        )
+
+        result = _build_publication_pipeline_result(
+            "C:/tmp/3a7e54b878fe4414a54c8224242b412c.pdf",
+            config=ConversionConfig(language="pl"),
+            analysis=analysis,
+            pdf_metadata={"title": "3a7e54b878fe4414a54c8224242b412c", "author": "Unknown"},
+            original_filename="876908532-Chess-Notes-the-Jobava-London-Game-Collectioin-D01-2025-1990pages.pdf",
+            build_publication_document=lambda *_args, **_kwargs: document,
+            publication_to_content=lambda _document: {"chapters": [], "extra_artifacts": []},
+            finalize_publication_epub=lambda doc, _epub_bytes: doc.quality_report,
+        )
+
+        expected_title = "876908532-Chess-Notes-the-Jobava-London-Game-Collectioin-D01-2025-1990pages"
+        self.assertEqual(result["document_summary"]["title"], expected_title)
+        self.assertEqual(mock_build_epub.call_args.args[3]["title"], expected_title)
+
     @patch("converter._extract_pdf_metadata", return_value={"title": "Woodpecker", "author": "Authors"})
     @patch("converter._evaluate_publication_size_budget")
     @patch("converter._build_publication_pipeline_result")

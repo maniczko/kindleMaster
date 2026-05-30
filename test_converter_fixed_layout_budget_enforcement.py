@@ -3,10 +3,28 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from converter import ConversionConfig, SizeBudgetExceededError, _build_fixed_layout_epub_with_budget
+from converter import (
+    ConversionConfig,
+    SizeBudgetExceededError,
+    _build_fixed_layout_epub_with_budget,
+    _prepare_fixed_layout_metadata_and_config,
+)
 
 
 class FixedLayoutBudgetEnforcementTests(unittest.TestCase):
+    def test_fixed_layout_metadata_uses_english_issue_filename_when_pdf_title_is_article(self) -> None:
+        metadata, config = _prepare_fixed_layout_metadata_and_config(
+            pdf_metadata={"title": "How to Build a", "author": "June"},
+            config=ConversionConfig(language="pl", ocr_language="pol"),
+            original_filename="Harvard_Business_Review_-_May-June_2026_-_En.pdf",
+        )
+
+        self.assertEqual(metadata["title"], "Harvard Business Review - May-June 2026")
+        self.assertEqual(metadata["author"], "Harvard Business Review")
+        self.assertEqual(metadata["publisher"], "Harvard Business Review")
+        self.assertEqual(config.language, "en")
+        self.assertEqual(config.ocr_language, "eng")
+
     def test_fixed_layout_budget_retries_with_fallback_before_success(self) -> None:
         attempts: list[str] = []
 

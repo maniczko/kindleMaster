@@ -39,6 +39,7 @@ import {
   type AccountState,
   type AuthConfigPayload,
 } from "./lib/auth";
+import { apiRequestInput, apiUrl } from "./lib/api-base";
 import { normalizeQualityState, type NormalizedQualityState, type QualityStatePayload } from "./lib/quality-state";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -247,7 +248,7 @@ function App() {
 
   async function loadAuth() {
     try {
-      const response = await fetch("/auth/config", { cache: "no-store" });
+      const response = await fetch(apiUrl("/auth/config"), { cache: "no-store" });
       const payload = await response.json();
       const config = (payload.auth ?? {}) as AuthConfigPayload;
       setAuthConfig(config);
@@ -275,14 +276,15 @@ function App() {
 
   async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}) {
     const token = await accessTokenFromClient(authClientRef.current);
-    if (!token) return fetch(input, init);
+    const resolvedInput = apiRequestInput(input);
+    if (!token) return fetch(resolvedInput, init);
     const baseHeaders =
       init.headers instanceof Headers
         ? Object.fromEntries(init.headers.entries())
         : Array.isArray(init.headers)
           ? Object.fromEntries(init.headers)
           : { ...(init.headers as Record<string, string> | undefined) };
-    return fetch(input, {
+    return fetch(resolvedInput, {
       ...init,
       headers: {
         ...baseHeaders,
@@ -642,7 +644,6 @@ function App() {
   const canStart = Boolean(file && !isBusy);
   const debugText = JSON.stringify(activeJob ?? { status: "idle" }, null, 2);
   const showStartScreen = !authReady || (!account.authenticated && Boolean(authConfig.enabled && authConfig.configured) && !guestMode);
-  const legacyStatusText = buildLegacyStatusText(activeJob, activeStatus, file, isBusy, error, normalizedQuality);
 
   if (showStartScreen) {
     return (
@@ -708,9 +709,6 @@ function App() {
           <div>
             <h1>{viewTitle(activeView)}</h1>
             <p>{viewDescription(activeView)}</p>
-            <p id="statusText" className="km-legacy-status" role="status" aria-live="polite">
-              Status: {legacyStatusText}
-            </p>
             {activeView !== "library" ? (
               <div className="km-global-library-compat" aria-label="Szybkie wyszukiwanie biblioteki">
                 <input
@@ -855,7 +853,9 @@ function ConvertView({
         <Card className="km-upload-panel">
           <CardHeader>
             <CardTitle>Nowa konwersja</CardTitle>
-            <CardDescription>Wgraj dokument, wybierz profil i sprawdź tylko te informacje, które wpływają na decyzję.</CardDescription>
+            <CardDescription>
+              Wgraj dokument. KindleMaster sam dobierze profil, OCR i naprawę struktury; ręczne ustawienia są tylko dla wyjątków.
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <label className="km-drop-zone">
@@ -872,36 +872,47 @@ function ConvertView({
               <span>{file ? formatBytes(file.size) : "PDF albo DOCX"}</span>
             </label>
 
-            <div className="km-form-grid">
-              <label>
-                <span>Profil</span>
-                <select value={profile} onChange={(event) => setProfile(event.target.value)}>
-                  {profiles.map((item) => (
-                    <option value={item.value} key={item.value}>
-                      {item.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <span>Język OCR</span>
-                <select value={language} onChange={(event) => setLanguage(event.target.value)}>
-                  <option value="pl">pl</option>
-                  <option value="en">en</option>
-                </select>
-              </label>
-            </div>
+            <details className="km-advanced-conversion">
+              <summary>Opcje zaawansowane</summary>
+              <div className="km-form-grid">
+                <label>
+                  <span>Profil</span>
+                  <select value={profile} onChange={(event) => setProfile(event.target.value)}>
+                    {profiles.map((item) => (
+                      <option value={item.value} key={item.value}>
+                        {item.label}
+                      </option>
+                    ))}
+                  </select>
+                  <small>Auto Premium analizuje dokument i wybiera trasę: książka, magazyn, skan, diagramy albo szachy.</small>
+                </label>
+                <label>
+                  <span>Język OCR</span>
+                  <select value={language} onChange={(event) => setLanguage(event.target.value)}>
+                    <option value="pl">pl</option>
+                    <option value="en">en</option>
+                  </select>
+                  <small>Używany tylko wtedy, gdy potrzebne jest OCR. Dla polskich książek zostaw „pl”.</small>
+                </label>
+              </div>
 
-            <div className="km-switch-row">
-              <label>
-                <input type="checkbox" checked={forceOcr} onChange={(event) => setForceOcr(event.target.checked)} />
-                Wymuś OCR
-              </label>
-              <label>
-                <input type="checkbox" checked={headingRepair} onChange={(event) => setHeadingRepair(event.target.checked)} />
-                Naprawa nagłówków
-              </label>
-            </div>
+              <div className="km-switch-row">
+                <label>
+                  <input type="checkbox" checked={forceOcr} onChange={(event) => setForceOcr(event.target.checked)} />
+                  <span>
+                    Wymuś OCR
+                    <small>Włącz tylko dla skanu bez tekstu; może znacząco wydłużyć konwersję.</small>
+                  </span>
+                </label>
+                <label>
+                  <input type="checkbox" checked={headingRepair} onChange={(event) => setHeadingRepair(event.target.checked)} />
+                  <span>
+                    Naprawa nagłówków
+                    <small>Odbudowuje spis treści i hierarchię rozdziałów; domyślnie warto zostawić włączone.</small>
+                  </span>
+                </label>
+              </div>
+            </details>
 
             {canPreviewUploadedPdf ? (
               <Button type="button" variant="outline" className="km-preview-inline-action" onClick={openPreview}>
@@ -1287,7 +1298,7 @@ function PdfPreviewWorkspace({ file }: { file: File | null }) {
                 <option value="manual">Ręcznie</option>
               </select>
             </label>
-            <a className="km-button km-button-primary km-button-md" href={isPdf ? "/legacy" : undefined} aria-disabled={!isPdf}>
+            <a className="km-button km-button-primary km-button-md" href={isPdf ? apiUrl("/legacy") : undefined} aria-disabled={!isPdf}>
               Kadruj do A4
             </a>
           </div>
@@ -1546,7 +1557,7 @@ function LibraryJobRow({
   const processingDetail = libraryProcessingDetail(job, jobStatus);
   const quality = normalizeQualityState(job.quality_state ?? null);
   const jobLabel = jobDisplayName(job) || "zadania";
-  const sourcePreviewUrl = String(job.source_preview_url || "").trim();
+  const sourcePreviewUrl = apiUrl(String(job.source_preview_url || "").trim());
   const recipientConfigured = Boolean(configuredRecipient);
   const deliveryQualityWarnings = quality.sendToKindleReady === false ? formatDeliveryBlockers(quality.sendToKindleBlockers) : [];
   const canSendToKindle = Boolean(job.job_id && job.status === "ready" && deliveryConfig.configured && recipientConfigured);
@@ -1666,7 +1677,7 @@ function LibraryJobRow({
           </a>
         ) : null}
         {job.download_url ? (
-          <a className="km-button km-button-outline km-button-sm" href={job.download_url}>
+          <a className="km-button km-button-outline km-button-sm" href={apiUrl(job.download_url)}>
             <Download data-icon="inline-start" aria-hidden="true" />
             EPUB
           </a>
@@ -1875,7 +1886,7 @@ function FileDetailsWorkspace({
   const [deliveryBusy, setDeliveryBusy] = React.useState(false);
   const configuredRecipient = defaultKindleRecipient.trim();
   const autoRepair = normalizeAutoRepair(job?.auto_repair ?? job?.quality_state?.auto_repair);
-  const sourcePreviewUrl = String(job?.source_preview_url || "").trim();
+  const sourcePreviewUrl = apiUrl(String(job?.source_preview_url || "").trim());
   React.useEffect(() => {
     setKindleEmail(configuredRecipient);
   }, [configuredRecipient]);
@@ -2016,7 +2027,7 @@ function FileDetailsWorkspace({
                   <BookOpen data-icon="inline-start" aria-hidden="true" />
                   Podgląd PDF
                 </a>
-                <a className="km-button km-button-outline km-button-sm" href="/legacy">
+                <a className="km-button km-button-outline km-button-sm" href={apiUrl("/legacy")}>
                   <Scissors data-icon="inline-start" aria-hidden="true" />
                   Kadruj PDF
                 </a>
@@ -2256,67 +2267,81 @@ function SettingsPanel({
           <div className="km-settings-grid">
             <fieldset className="km-settings-form">
               <legend>Domyślne ustawienia konwersji</legend>
-              <label>
-                <span>Domyślny profil konwersji</span>
-                <select
-                  aria-label="Domyślny profil konwersji"
-                  value={settingsForm.conversion.default_profile}
-                  onChange={(event) =>
-                    setSettingsForm((current) => ({
-                      ...current,
-                      conversion: { ...current.conversion, default_profile: event.target.value },
-                    }))
-                  }
-                >
-                  {profiles.map((item) => (
-                    <option value={item.value} key={item.value}>
-                      {item.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <span>Domyślny język OCR</span>
-                <select
-                  aria-label="Domyślny język OCR"
-                  value={settingsForm.conversion.default_language}
-                  onChange={(event) =>
-                    setSettingsForm((current) => ({
-                      ...current,
-                      conversion: { ...current.conversion, default_language: event.target.value },
-                    }))
-                  }
-                >
-                  <option value="pl">pl</option>
-                  <option value="en">en</option>
-                </select>
-              </label>
-              <label className="km-inline-check">
-                <input
-                  type="checkbox"
-                  checked={settingsForm.conversion.force_ocr}
-                  onChange={(event) =>
-                    setSettingsForm((current) => ({
-                      ...current,
-                      conversion: { ...current.conversion, force_ocr: event.target.checked },
-                    }))
-                  }
-                />
-                Domyślnie wymuszaj OCR
-              </label>
-              <label className="km-inline-check">
-                <input
-                  type="checkbox"
-                  checked={settingsForm.conversion.heading_repair}
-                  onChange={(event) =>
-                    setSettingsForm((current) => ({
-                      ...current,
-                      conversion: { ...current.conversion, heading_repair: event.target.checked },
-                    }))
-                  }
-                />
-                Domyślnie naprawiaj nagłówki
-              </label>
+              <div className="km-auto-conversion-card km-settings-auto-summary">
+                <div>
+                  <span className="km-eyebrow">Automatyka konwersji</span>
+                  <strong>Auto Premium dobiera profil i OCR przy starcie konwersji</strong>
+                  <p>Ręczne domyślne ustawienia zostają dostępne jako override, ale nie konkurują z głównym widokiem.</p>
+                </div>
+                <span className="km-auto-pill">Zalecane</span>
+              </div>
+
+              <details className="km-advanced-conversion km-settings-advanced-conversion">
+                <summary>Zaawansowane ustawienia konwersji</summary>
+                <div className="km-settings-advanced-body">
+                  <label>
+                    <span>Domyślny profil konwersji</span>
+                    <select
+                      aria-label="Domyślny profil konwersji"
+                      value={settingsForm.conversion.default_profile}
+                      onChange={(event) =>
+                        setSettingsForm((current) => ({
+                          ...current,
+                          conversion: { ...current.conversion, default_profile: event.target.value },
+                        }))
+                      }
+                    >
+                      {profiles.map((item) => (
+                        <option value={item.value} key={item.value}>
+                          {item.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>Domyślny język OCR</span>
+                    <select
+                      aria-label="Domyślny język OCR"
+                      value={settingsForm.conversion.default_language}
+                      onChange={(event) =>
+                        setSettingsForm((current) => ({
+                          ...current,
+                          conversion: { ...current.conversion, default_language: event.target.value },
+                        }))
+                      }
+                    >
+                      <option value="pl">pl</option>
+                      <option value="en">en</option>
+                    </select>
+                  </label>
+                  <label className="km-inline-check">
+                    <input
+                      type="checkbox"
+                      checked={settingsForm.conversion.force_ocr}
+                      onChange={(event) =>
+                        setSettingsForm((current) => ({
+                          ...current,
+                          conversion: { ...current.conversion, force_ocr: event.target.checked },
+                        }))
+                      }
+                    />
+                    Domyślnie wymuszaj OCR
+                  </label>
+                  <label className="km-inline-check">
+                    <input
+                      type="checkbox"
+                      checked={settingsForm.conversion.heading_repair}
+                      onChange={(event) =>
+                        setSettingsForm((current) => ({
+                          ...current,
+                          conversion: { ...current.conversion, heading_repair: event.target.checked },
+                        }))
+                      }
+                    />
+                    Domyślnie naprawiaj nagłówki
+                  </label>
+                </div>
+              </details>
             </fieldset>
 
             <fieldset className="km-settings-form">
@@ -3025,12 +3050,12 @@ function autoRepairMessage(value: unknown) {
 
 function buildArtifactRows(job: ConversionJobPayload | null, quality: NormalizedQualityState) {
   const rows: Array<{ label: string; href: string }> = [];
-  if (job?.download_url) rows.push({ label: "Finalny EPUB", href: job.download_url });
-  if (job?.source_preview_url) rows.push({ label: "PDF źródłowy", href: job.source_preview_url });
+  if (job?.download_url) rows.push({ label: "Finalny EPUB", href: apiUrl(job.download_url) });
+  if (job?.source_preview_url) rows.push({ label: "PDF źródłowy", href: apiUrl(job.source_preview_url) });
   const pgnUrl = artifactDownloadUrl(job, "chess_pgn");
   if (pgnUrl) rows.push({ label: "PGN partii", href: pgnUrl });
   const pgnHtmlUrl = artifactDownloadUrl(job, "chess_pgn_html");
-  if (pgnHtmlUrl) rows.push({ label: "HTML PGN", href: pgnHtmlUrl });
+  if (pgnHtmlUrl) rows.push({ label: "HTML PGN/FEN", href: pgnHtmlUrl });
   void quality;
   return rows;
 }
@@ -3041,9 +3066,9 @@ function artifactDownloadUrl(job: ConversionJobPayload | null, key: string) {
   if (!artifact || typeof artifact !== "object" || Array.isArray(artifact)) return "";
   const source = artifact as Record<string, unknown>;
   const directUrl = String(source.download_url || "").trim();
-  if (directUrl) return directUrl;
+  if (directUrl) return apiUrl(directUrl);
   if (!job?.job_id) return "";
-  return `/convert/artifact/${encodeURIComponent(job.job_id)}/${encodeURIComponent(key)}`;
+  return apiUrl(`/convert/artifact/${encodeURIComponent(job.job_id)}/${encodeURIComponent(key)}`);
 }
 
 function formatSeconds(value: unknown) {

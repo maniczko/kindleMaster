@@ -998,6 +998,58 @@ class AppAsyncConvertTests(unittest.TestCase):
         self.assertTrue(payload["retryable"])
         spawn_mock.assert_not_called()
 
+    def test_convert_retry_uses_temp_input_when_artifact_file_is_missing(self) -> None:
+        job_id = "retry-source-fallback"
+        source_path = os.path.join(app_module.UPLOAD_DIR, f"{job_id}.pdf")
+        Path(source_path).write_bytes(b"%PDF-1.4\nretry-source")
+        self.cleanup_paths.append(source_path)
+        created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        with app_module._CONVERSION_JOBS_LOCK:
+            app_module._CONVERSION_JOBS[job_id] = {
+                "job_id": job_id,
+                "status": "failed",
+                "message": "Konwersja przerwana przez restart aplikacji.",
+                "source_type": "pdf",
+                "filename": "retry-source.pdf",
+                "created_at": created_at,
+                "updated_at": created_at,
+                "source_path": "",
+                "output_path": "",
+                "download_name": "retry-source.epub",
+                "metadata": {},
+                "runtime": {"replay": {"command": {"kwargs": {"profile": "auto-premium", "language": "pl"}}}},
+                "artifacts": {
+                    "input": {
+                        "provider": "local",
+                        "status": "stored",
+                        "kind": "input",
+                        "job_id": job_id,
+                        "filename": "retry-source.pdf",
+                        "location": f"output/artifacts/{job_id}/input/missing.pdf",
+                    }
+                },
+                "output_size_bytes": 0,
+                "error": "restart",
+                "error_code": "application_restart",
+            }
+        self.cleanup_job_ids.append(job_id)
+
+        with patch("app._spawn_conversion_job") as spawn_mock:
+            response = self.client.post(f"/convert/retry/{job_id}", json={})
+
+        self.assertEqual(response.status_code, 202)
+        payload = response.get_json()
+        retry_job_id = payload["job_id"]
+        self.cleanup_job_ids.append(retry_job_id)
+        with app_module._CONVERSION_JOBS_LOCK:
+            retry_job = dict(app_module._CONVERSION_JOBS[retry_job_id])
+        self.cleanup_paths.append(retry_job["source_path"])
+
+        self.assertEqual(retry_job["retry_of"], job_id)
+        self.assertEqual(Path(retry_job["source_path"]).read_bytes(), b"%PDF-1.4\nretry-source")
+        self.assertEqual(payload["artifacts"]["input"]["filename"], "retry-source.pdf")
+        spawn_mock.assert_called_once()
+
     def test_stale_active_job_is_marked_timed_out_by_status_route(self) -> None:
         job_id = "stale-running-job"
         created_at = (datetime.now(UTC) - timedelta(seconds=app_module.MAX_CONVERSION_JOB_RUNTIME_SECONDS + 60)).isoformat().replace("+00:00", "Z")

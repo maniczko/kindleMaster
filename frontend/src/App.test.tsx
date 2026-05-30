@@ -320,6 +320,10 @@ describe("Premium React shell", () => {
     await user.upload(await screen.findByLabelText("Wgraj PDF albo DOCX"), file);
 
     expect(screen.getAllByText("sample.pdf").length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText("Automatyka konwersji")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Auto Premium dobierze najlepszą ścieżkę/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Status:/)).not.toBeInTheDocument();
+    expect(screen.getByText("Opcje zaawansowane")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Rozpocznij konwersję" })).toBeEnabled();
   });
 
@@ -938,6 +942,10 @@ describe("Premium React shell", () => {
     await user.click(await screen.findByRole("button", { name: "Ustawienia" }));
     expect(screen.getByText(/Wysyłka na Kindle/)).toBeInTheDocument();
     expect(screen.queryByText("Dostawca")).not.toBeInTheDocument();
+    const advancedSettings = screen.getByText("Zaawansowane ustawienia konwersji").closest("details");
+    expect(advancedSettings).not.toHaveAttribute("open");
+    await user.click(screen.getByText("Zaawansowane ustawienia konwersji"));
+    expect(advancedSettings).toHaveAttribute("open");
     await user.selectOptions(screen.getByLabelText("Domyślny profil konwersji"), "magazine");
     await user.selectOptions(screen.getByLabelText("Domyślny język OCR"), "en");
     await user.type(screen.getByLabelText("Host SMTP"), "smtp.example.com");

@@ -3205,7 +3205,7 @@ def _extract_logical_blocks(
             blocks.append({"type": "page-marker", "html": str(node)})
             continue
 
-        if "chess-pgn" in _class_list(node):
+        if {"chess-pgn", "chess-pgn-review"} & set(_class_list(node)):
             blocks.append({"type": "raw-html", "text": plain_text, "html": str(node)})
             continue
 

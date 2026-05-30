@@ -55,10 +55,13 @@ from chess_position_recognizer import (
     validate_fen,
 )
 from chess_pgn_extractor import (
+    annotate_records_with_replayed_fens,
     attach_fen_candidates_to_pgn_records,
     build_combined_pgn,
     build_pgn_download_html,
     extract_chess_pgn_records_from_text,
+    merge_chess_pgn_continuation_records,
+    normalize_ocr_text_for_pgn,
     render_chess_pgn_html_parts,
     summarize_chess_pgn_records,
 )
@@ -96,6 +99,24 @@ GAME_CAPTION_RE = re.compile(r"^[A-Z].{2,}\s[â€“-]\s.+(?:19|20)\d{2}$")
 
 
 GAME_CAPTION_RE = re.compile(r"^[A-Z].{2,}\s[\u2013-]\s.+(?:18|19|20)\d{2}$")
+SAN_TOKEN_PATTERN = r"(?:O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?)"
+EVAL_TOKEN_PATTERN = r"(?:\+\u2013|\u2013\+|\+=|=\+|\u00b1|\u2213)"
+PROMOTION_SPACE_RE = re.compile(r"=\s+([QRBN])\b")
+SAN_MATE_RE = re.compile(rf"({SAN_TOKEN_PATTERN})\s+mate\b(?!\s+in\b)", re.IGNORECASE)
+SAN_PLUS_SPACE_RE = re.compile(r"(?<=[KQRBNa-h0-9])\s+\+(?=[!?]|\s|$)")
+SAN_HASH_SPACE_RE = re.compile(r"(?<=[KQRBNa-h0-9])\s+#(?=[!?]|\s|$)")
+SAN_EVAL_SPLIT_RE = re.compile(rf"(?<=[A-Za-z0-9])([+#])\s*({EVAL_TOKEN_PATTERN})")
+MATE_HASH_PHRASE_RE = re.compile(r"\b(with|avoid|back-rank|smothered|of|the)\s+#(?=\s|[.,;:!?]|$)", re.IGNORECASE)
+DIGIT_CAMEL_RE = re.compile(r"(?<=[0-9])(?=[A-Z][a-z])")
+DIGIT_MATE_RE = re.compile(r"(?<=[0-9])(?=mate\b)")
+PLUS_ANNOTATION_SPACE_RE = re.compile(r"\+\s+([!?])")
+HASH_ANNOTATION_SPACE_RE = re.compile(r"#\s+([!?])")
+WHITESPACE_RE = re.compile(r"\s+")
+MULTISPACE_RE = re.compile(r"\s{2,}")
+CLEAN_PUNCT_SPACE_RE = re.compile(r"\s+([,.;:!?])")
+CLEAN_PUNCT_JOIN_RE = re.compile(r"([,.;:!?])([^\s])")
+CLEAN_DECIMAL_RE = re.compile(r"(\d)\s+\.\s+(\d)")
+CLEAN_MOVE_NUMBER_RE = re.compile(r"\b(\d{1,3}\.)\s+([KQRBNOa-h])")
 
 
 @dataclass
@@ -126,6 +147,8 @@ class TextLineItem:
     text: str
     font_size: float
     y: float
+    x0: float = 0.0
+    x1: float = 0.0
 
 
 def _bbox_is_inside(inner: tuple, outer: tuple, margin: float = 1.5) -> bool:
@@ -467,11 +490,13 @@ def _optimize_embedded_raster_image(
         return image_bytes, normalized_ext
 
 
+def _mate_hash_phrase_replacement(match: re.Match[str]) -> str:
+    return f"{match.group(1)} mate"
+
+
 def _normalize_text_for_epub(text: str, font_name: str) -> str:
     """Replace Wingdings-only markers with readable Unicode."""
     normalized = text or ""
-    san_token = r"(?:O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?)"
-    eval_token = r"(?:\+\u2013|\u2013\+|\+=|=\+|\u00b1|\u2213)"
     font_lower = (font_name or "").lower()
     if any(token in font_lower for token in FIGURINE_FONT_TOKENS):
         normalized = "".join(FIGURINE_TEXT_MAP.get(char, char) for char in normalized)
@@ -487,23 +512,26 @@ def _normalize_text_for_epub(text: str, font_name: str) -> str:
     normalized = normalized.replace("-/+", "\u2213")
     normalized = normalized.replace("\u2020", "+").replace("\u2021", "+").replace("\u2713", " ")
     normalized = normalized.replace("1–0", "1-0").replace("0–1", "0-1").replace("½–½", "½-½")
-    normalized = re.sub(r"=\s+([QRBN])\b", r"=\1", normalized)
-    normalized = re.sub(rf"({san_token})\s+mate\b(?!\s+in\b)", r"\1#", normalized, flags=re.IGNORECASE)
-    normalized = re.sub(r"(?<=[KQRBNa-h0-9])\s+\+(?=[!?]|\s|$)", "+", normalized)
-    normalized = re.sub(r"(?<=[KQRBNa-h0-9])\s+#(?=[!?]|\s|$)", "#", normalized)
-    normalized = re.sub(rf"(?<=[A-Za-z0-9])([+#])\s*({eval_token})", r"\1 (\2)", normalized)
-    normalized = re.sub(r"\bwith\s+#(?=\s|[.,;:!?]|$)", "with mate", normalized, flags=re.IGNORECASE)
-    normalized = re.sub(r"\bavoid\s+#(?=\s|[.,;:!?]|$)", "avoid mate", normalized, flags=re.IGNORECASE)
-    normalized = re.sub(r"\bback-rank\s+#(?=\s|[.,;:!?]|$)", "back-rank mate", normalized, flags=re.IGNORECASE)
-    normalized = re.sub(r"\bsmothered\s+#(?=\s|[.,;:!?]|$)", "smothered mate", normalized, flags=re.IGNORECASE)
-    normalized = re.sub(r"\bof\s+#(?=\s|[.,;:!?]|$)", "of mate", normalized, flags=re.IGNORECASE)
-    normalized = re.sub(r"\bthe\s+#(?=\s|[.,;:!?]|$)", "the mate", normalized, flags=re.IGNORECASE)
-    normalized = INLINE_EVAL_RE.sub(r"\1 ", normalized)
-    normalized = re.sub(r"(?<=[0-9])(?=[A-Z][a-z])", " ", normalized)
-    normalized = re.sub(r"(?<=[0-9])(?=mate\b)", " ", normalized)
-    normalized = re.sub(r"\+\s+([!?])", r"+\1", normalized)
-    normalized = re.sub(r"#\s+([!?])", r"#\1", normalized)
-    normalized = re.sub(r"\s{2,}", " ", normalized)
+    if "=" in normalized and " " in normalized:
+        normalized = PROMOTION_SPACE_RE.sub(r"=\1", normalized)
+    if "mate" in normalized.lower():
+        normalized = SAN_MATE_RE.sub(r"\1#", normalized)
+        normalized = DIGIT_MATE_RE.sub(" ", normalized)
+    if "+" in normalized:
+        normalized = SAN_PLUS_SPACE_RE.sub("+", normalized)
+        normalized = SAN_EVAL_SPLIT_RE.sub(r"\1 (\2)", normalized)
+        normalized = PLUS_ANNOTATION_SPACE_RE.sub(r"+\1", normalized)
+    if "#" in normalized:
+        normalized = SAN_HASH_SPACE_RE.sub("#", normalized)
+        normalized = SAN_EVAL_SPLIT_RE.sub(r"\1 (\2)", normalized)
+        normalized = MATE_HASH_PHRASE_RE.sub(_mate_hash_phrase_replacement, normalized)
+        normalized = HASH_ANNOTATION_SPACE_RE.sub(r"#\1", normalized)
+    if INLINE_EVAL_RE.search(normalized):
+        normalized = INLINE_EVAL_RE.sub(r"\1 ", normalized)
+    if any(char.isdigit() for char in normalized) and any(char.isupper() for char in normalized):
+        normalized = DIGIT_CAMEL_RE.sub(" ", normalized)
+    if "  " in normalized or "\t" in normalized:
+        normalized = MULTISPACE_RE.sub(" ", normalized)
     return normalized
 
 
@@ -594,9 +622,348 @@ def _build_line_items(raw_lines: list[dict], skipped_indices: set[int]) -> list[
             text=line_text,
             font_size=max_font_size,
             y=min(float(segment.get("y0", 0.0)) for segment in segments),
+            x0=min(float(segment.get("x0", 0.0)) for segment in segments),
+            x1=max(float(segment.get("x1", 0.0)) for segment in segments),
         ))
 
     return items
+
+
+def extract_chess_notation_pdf_reflow(
+    pdf_path: str,
+    config: ConversionConfig,
+    pdf_metadata: dict | None = None,
+) -> dict:
+    """Extract large text-layer chess game collections as notation-first EPUB.
+
+    These PDFs often contain thousands of embedded board images. Rendering or
+    optimizing each board image makes generation very slow and can exceed size
+    budgets. This path preserves the SAN/PGN-like text layer and deliberately
+    sends raster diagrams to the report/review layer instead of inlining them.
+    """
+    started = time.perf_counter()
+    metadata = dict(pdf_metadata or _extract_pdf_metadata(pdf_path) or {})
+    doc = fitz.open(pdf_path)
+    total_pages = len(doc)
+    try:
+        chunk_pages = max(10, int(getattr(config, "chess_notation_chapter_pages", 40) or 40))
+        chapters: list[dict[str, Any]] = []
+        current_parts: list[str] = []
+        current_text_lines: list[str] = []
+        current_start = 0
+        text_pages = 0
+        notation_line_count = 0
+        skipped_image_count = 0
+        chess_pgn_records: list[Any] = []
+        text_extraction_seconds = 0.0
+        pgn_extraction_seconds = 0.0
+
+        def flush_chapter(end_page: int) -> None:
+            nonlocal current_parts, current_text_lines, current_start, chess_pgn_records, pgn_extraction_seconds
+            if not current_parts:
+                current_start = end_page + 1
+                current_text_lines = []
+                return
+            flush_started = time.perf_counter()
+            chapter_records = annotate_records_with_replayed_fens(
+                extract_chess_pgn_records_from_text(
+                    "\n".join(current_text_lines),
+                    page_num=current_start,
+                    source_title=str(metadata.get("title") or Path(pdf_path).stem),
+                    ocr_confidence=1.0,
+                )
+            )
+            chess_pgn_records.extend(chapter_records)
+            if chapter_records:
+                current_parts.extend(
+                    render_chess_pgn_html_parts(
+                        chapter_records,
+                        download_href="",
+                    )
+                )
+            pgn_extraction_seconds += time.perf_counter() - flush_started
+            chapters.append(
+                {
+                    "title": f"Partie {current_start + 1}-{end_page + 1}",
+                    "html_parts": current_parts,
+                    "images": [],
+                    "_page_start": current_start,
+                    "_page_end": end_page,
+                    "_kind": "chess-notation",
+                }
+            )
+            current_parts = []
+            current_text_lines = []
+            current_start = end_page + 1
+
+        for page_num in range(total_pages):
+            if page_num > current_start and (page_num - current_start) >= chunk_pages:
+                flush_chapter(page_num - 1)
+
+            page = doc[page_num]
+            page_started = time.perf_counter()
+            skipped_image_count += len(page.get_images(full=True))
+            line_items = _chess_notation_line_items_from_page(page, page_num)
+            body_lines = _chess_notation_body_lines(line_items)
+            page_parts = _chess_notation_page_html_parts(line_items, page_num=page_num, body_lines=body_lines)
+            text_extraction_seconds += time.perf_counter() - page_started
+            if page_parts:
+                text_pages += 1
+                notation_line_count += sum(1 for line in body_lines if _is_notation_heavy_line(line))
+                current_parts.extend(page_parts)
+                current_text_lines.extend(body_lines)
+
+        flush_chapter(total_pages - 1)
+    finally:
+        doc.close()
+
+    chess_pgn_records = merge_chess_pgn_continuation_records(chess_pgn_records)
+    chess_pgn_summary = summarize_chess_pgn_records(chess_pgn_records)
+    audit_metadata = dict(metadata.get("audit") or {})
+    audit_metadata.update(
+        {
+            "elapsed_seconds": round(time.perf_counter() - started, 4),
+            "timings": {
+                "text_extraction_seconds": round(text_extraction_seconds, 4),
+                "pgn_extraction_seconds": round(pgn_extraction_seconds, 4),
+            },
+        }
+    )
+
+    return {
+        "success": True,
+        "method": "chess-notation-text-reflow",
+        "text_content": bool(chapters),
+        "layout_mode": "reflowable",
+        "metadata": {
+            **metadata,
+            "publication_kind": "chess-notation-collection",
+            "image_policy": "embedded_board_images_skipped_for_runtime_budget",
+            "source_page_count": total_pages,
+            "text_page_count": text_pages,
+            "notation_line_count": notation_line_count,
+            "skipped_embedded_image_count": skipped_image_count,
+            "chess_pgn": chess_pgn_summary,
+            "audit": audit_metadata,
+            "chess_fen": {
+                "status": "passed" if chess_pgn_summary.get("derived_final_fen_count") else "requires_review",
+                "source": "pgn_replay",
+                "diagram_count": int(chess_pgn_summary.get("candidate_game_count", 0) or 0),
+                "fen_count": int(chess_pgn_summary.get("fen_count", 0) or 0),
+                "manual_review_count": int(chess_pgn_summary.get("manual_review_count", 0) or 0),
+            },
+        },
+        "images": [],
+        "chapters": chapters,
+        "extra_artifacts": _scan_chess_pgn_extra_artifacts(
+            chess_pgn_records,
+            source_title=str(metadata.get("title") or Path(pdf_path).stem),
+        ),
+        "audit": {
+            "status": "passed_with_warnings",
+            "image_policy": "skipped_embedded_images",
+            "skipped_embedded_image_count": skipped_image_count,
+            "warning": "Raster board images were skipped to keep large chess notation collections generatable.",
+        },
+    }
+
+
+def _chess_notation_line_items_from_page(page: fitz.Page, page_num: int) -> list[TextLineItem]:
+    raw_lines: list[dict[str, Any]] = []
+    span_index = 0
+    page_width = float(page.rect.width or 0.0)
+    text_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_MEDIABOX_CLIP, sort=True)
+    for block in text_dict.get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            raw_line_segments = []
+            for span in line.get("spans", []):
+                raw_text = span.get("text", "")
+                if not str(raw_text or "").strip():
+                    span_index += 1
+                    continue
+                x0, y0, _x1, _y1 = span.get("bbox", (0.0, 0.0, 0.0, 0.0))
+                raw_line_segments.append(
+                    {
+                        "index": span_index,
+                        "text": raw_text,
+                        "font_name": span.get("font", "") or "",
+                        "font_size": span.get("size", 12),
+                        "x0": x0,
+                        "x1": _x1,
+                        "y0": y0,
+                    }
+                )
+                span_index += 1
+            if raw_line_segments:
+                for segment_group in _split_chess_notation_raw_line_segments(raw_line_segments, page_width=page_width):
+                    raw_lines.append({"segments": segment_group})
+    return _build_line_items(raw_lines, set())
+
+
+def _split_chess_notation_raw_line_segments(
+    segments: list[dict[str, Any]],
+    *,
+    page_width: float,
+) -> list[list[dict[str, Any]]]:
+    if len(segments) < 2 or page_width <= 0:
+        return [segments]
+    midpoint = page_width * 0.52
+    left = [segment for segment in segments if _segment_center_x(segment) < midpoint]
+    right = [segment for segment in segments if _segment_center_x(segment) >= midpoint]
+    if not left or not right:
+        return [segments]
+    if _segment_group_text(left).strip() and _segment_group_text(right).strip():
+        return [left, right]
+    return [segments]
+
+
+def _segment_center_x(segment: dict[str, Any]) -> float:
+    return (float(segment.get("x0", 0.0) or 0.0) + float(segment.get("x1", 0.0) or 0.0)) / 2.0
+
+
+def _segment_group_text(segments: list[dict[str, Any]]) -> str:
+    return " ".join(str(segment.get("text") or "") for segment in segments).strip()
+
+
+def _chess_notation_page_html_parts(
+    line_items: list[TextLineItem],
+    *,
+    page_num: int,
+    body_lines: list[str] | None = None,
+) -> list[str]:
+    html_parts: list[str] = []
+    if not line_items:
+        return html_parts
+
+    page_label = ""
+    for index, item in enumerate(line_items[:3]):
+        text = _clean_chess_notation_line(item.text)
+        if _is_number_only(text):
+            page_label = text
+            break
+    marker = f'<span id="book-page-{html_module.escape(page_label or str(page_num + 1))}" class="page-marker"></span>'
+    if body_lines is None:
+        body_lines = _chess_notation_body_lines(line_items)
+    if not body_lines:
+        return []
+    html_parts.append(marker)
+    html_parts.append(
+        f'<pre class="chess-notation-page chess-notation-text" data-page="{page_num + 1}"><code>'
+        + html_module.escape("\n".join(body_lines))
+        + "</code></pre>"
+    )
+    return html_parts
+
+
+def _chess_notation_body_lines(line_items: list[TextLineItem]) -> list[str]:
+    body_lines: list[str] = []
+    for index, item in enumerate(_order_chess_notation_lines_for_reading(line_items)):
+        text = _clean_chess_notation_line(item.text)
+        if not text:
+            continue
+        if index <= 2 and _is_number_only(text):
+            continue
+        if _is_single_board_coordinate_line(text) or _looks_like_board_coordinate_noise(text):
+            continue
+        body_lines.append(text)
+    return body_lines
+
+
+def _order_chess_notation_lines_for_reading(line_items: list[TextLineItem]) -> list[TextLineItem]:
+    if len(line_items) < 12:
+        return line_items
+    x_values = [item.x0 for item in line_items if item.x1 > item.x0]
+    if not x_values:
+        return line_items
+    min_x = min(x_values)
+    max_x = max(item.x1 for item in line_items if item.x1 > item.x0)
+    if max_x - min_x < 220:
+        return line_items
+    midpoint = min_x + (max_x - min_x) / 2.0
+    left = [item for item in line_items if (item.x0 + item.x1) / 2.0 < midpoint]
+    right = [item for item in line_items if (item.x0 + item.x1) / 2.0 >= midpoint]
+    if min(len(left), len(right)) < 4:
+        return line_items
+    return sorted(left, key=lambda item: (item.y, item.x0, item.start_index)) + sorted(
+        right,
+        key=lambda item: (item.y, item.x0, item.start_index),
+    )
+
+
+def _chess_notation_line_count(line_items: list[TextLineItem]) -> int:
+    count = 0
+    for text in _chess_notation_body_lines(line_items):
+        if text and _is_notation_heavy_line(text):
+            count += 1
+    return count
+
+
+BOARD_FILES_INLINE_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9])a\s+b\s+c\s+d\s+e\s+f\s+g\s+h(?![A-Za-z0-9])"
+)
+BOARD_FILES_PREFIX_ECO_RE = re.compile(
+    r"(?i)^\s*a\s+b\s+c\s+d\s+e\s+f\s+g\s+h(?=\s*\d{1,5}\s+[A-E][0-9]{2}\b)"
+)
+BOARD_RANK_GRID_RE = re.compile(r"(?<![\d.])(?:[1-8]\s+){3,}[1-8](?![\d.])")
+
+
+def _clean_chess_notation_line(text: str) -> str:
+    cleaned = WHITESPACE_RE.sub(" ", strip_emails(text or "")).strip()
+    cleaned = normalize_ocr_text_for_pgn(cleaned)
+    cleaned = cleaned.strip(" |")
+    if "a b c d e f g h" in cleaned.lower():
+        cleaned = BOARD_FILES_PREFIX_ECO_RE.sub("", cleaned)
+        cleaned = BOARD_FILES_INLINE_RE.sub(" ", cleaned)
+    if any(char in cleaned for char in ",.;:!?"):
+        cleaned = CLEAN_PUNCT_SPACE_RE.sub(r"\1", cleaned)
+        cleaned = CLEAN_PUNCT_JOIN_RE.sub(r"\1 \2", cleaned)
+        cleaned = re.sub(r"\b(\d{1,3})\.\s+\.\.\s*", r"\1...", cleaned)
+        cleaned = re.sub(r"(?<=\d)\.\s+(?=\d)", ".", cleaned)
+        cleaned = re.sub(r"\b(\d{1,3}\.\.\.)\s+([KQRBNOa-h])", r"\1\2", cleaned)
+    if any(char in cleaned for char in "12345678") and " " in cleaned:
+        cleaned = BOARD_RANK_GRID_RE.sub(" ", cleaned)
+        cleaned = CLEAN_DECIMAL_RE.sub(r"\1.\2", cleaned)
+        cleaned = CLEAN_MOVE_NUMBER_RE.sub(r"\1\2", cleaned)
+    if "  " in cleaned or "\t" in cleaned:
+        cleaned = MULTISPACE_RE.sub(" ", cleaned)
+    return cleaned
+
+
+def _looks_like_board_coordinate_noise(text: str) -> bool:
+    tokens = re.findall(r"[A-Za-z0-9]+", text or "")
+    compact = re.sub(r"\s+", "", text or "")
+    if compact and set(compact) <= set("12345678") and len(compact) >= 2:
+        return True
+    if len(tokens) < 4:
+        return False
+    lowered = [token.lower() for token in tokens]
+    if all(token in set("abcdefgh") for token in lowered):
+        return True
+    if all(token in set("12345678") for token in lowered):
+        return True
+    if all(token and set(token) <= set("12345678") and len(token) <= 2 for token in lowered):
+        return True
+    return False
+
+
+def _is_single_board_coordinate_line(text: str) -> bool:
+    normalized = re.sub(r"\s+", "", text or "").lower()
+    return normalized in set("abcdefgh12345678")
+
+
+def _looks_like_chess_game_metadata_line(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", text or "").strip()
+    if not normalized:
+        return False
+    if re.search(r"\b[A-E][0-9]{2}\b", normalized):
+        return True
+    if re.search(r"(?i)\b(?:white|black|variation|attack|defen[cs]e|gambit|blitz|rapid|classical|titled)\b", normalized):
+        return True
+    if re.search(r"\b(?:[12][0-9]{3}|[0-9]{4})\b", normalized) and "," in normalized:
+        return True
+    return False
 
 
 def _extract_paragraph_text(html_fragment: str) -> Optional[str]:
@@ -1199,6 +1566,7 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
 
             if page_pgn_records:
                 page_pgn_records = attach_fen_candidates_to_pgn_records(page_pgn_records, page_fen_values)
+                page_pgn_records = annotate_records_with_replayed_fens(page_pgn_records)
                 chess_pgn_records.extend(page_pgn_records)
                 html_parts.extend(
                     render_chess_pgn_html_parts(
@@ -1239,6 +1607,7 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
 
         toc = [(1, chapter["title"], index + 1) for index, chapter in enumerate(chapters) if chapter.get("title")]
         manual_review_count = len([record for record in chess_fen_records if record.get("requires_review")])
+        chess_pgn_records = merge_chess_pgn_continuation_records(chess_pgn_records)
         chess_pgn_summary = summarize_chess_pgn_records(chess_pgn_records)
         ocr_quality = {
             "status": "passed_with_warnings",
@@ -2788,30 +3157,35 @@ def _scan_chess_ocr_html_parts(ocr_record: dict[str, Any], *, page_num: int) -> 
 
 
 def _scan_chess_pgn_extra_artifacts(records: list, *, source_title: str) -> list[dict[str, Any]]:
-    accepted_records = [record for record in records if getattr(record, "pgn", "").strip()]
-    if not accepted_records:
+    record_list = [record for record in records if getattr(record, "pgn", "").strip()]
+    if not record_list:
         return []
-    pgn_text = build_combined_pgn(accepted_records)
+    pgn_text = build_combined_pgn(record_list)
     html_text = build_pgn_download_html(
-        accepted_records,
-        title=f"{source_title or 'Chess'} - PGN",
+        record_list,
+        title=f"{source_title or 'Chess'} - PGN and FEN",
     )
-    return [
-        {
-            "key": "chess_pgn",
-            "filename": "chess_games.pgn",
-            "content_type": "application/x-chess-pgn; charset=utf-8",
-            "data": pgn_text.encode("utf-8"),
-            "label": "PGN",
-        },
+    artifacts: list[dict[str, Any]] = []
+    if pgn_text.strip():
+        artifacts.append(
+            {
+                "key": "chess_pgn",
+                "filename": "chess_games.pgn",
+                "content_type": "application/x-chess-pgn; charset=utf-8",
+                "data": pgn_text.encode("utf-8"),
+                "label": "PGN",
+            }
+        )
+    artifacts.append(
         {
             "key": "chess_pgn_html",
             "filename": "chess_games.html",
             "content_type": "text/html; charset=utf-8",
             "data": html_text.encode("utf-8"),
-            "label": "HTML PGN",
-        },
-    ]
+            "label": "HTML PGN/FEN",
+        }
+    )
+    return artifacts
 
 
 def _encode_scan_chess_diagram_crop(image: Image.Image, config: ConversionConfig) -> tuple[bytes, int, int]:

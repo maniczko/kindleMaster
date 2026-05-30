@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,9 +8,15 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import fitz
+from PIL import Image
 
 from premium_reflow import PublicationTable, _build_chapter_drafts, _publication_table_to_html, _select_positioned_outline_chapter_entries
-from publication_analysis import _choose_profile, analyze_publication
+from publication_analysis import (
+    _choose_profile,
+    _detect_chess_notation_collection,
+    _large_document_sparse_sample_pages,
+    analyze_publication,
+)
 from publication_pipeline import _normalize_section_title_candidate
 
 
@@ -127,6 +134,98 @@ class PublicationAnalysisTests(unittest.TestCase):
         self.assertEqual(profile, "magazine_reflow")
         self.assertEqual(ui_profile, "magazine")
         self.assertIn("multi-column", reason)
+
+    def test_chess_notation_collection_routes_to_book_before_magazine(self) -> None:
+        profile, ui_profile, reason = _choose_profile(
+            preferred_profile="auto-premium",
+            total_pages=400,
+            has_toc=False,
+            has_tables=False,
+            has_diagrams=False,
+            has_meaningful_images=True,
+            estimated_columns=2,
+            layout_heavy=True,
+            text_heavy=False,
+            text_page_ratio=0.98,
+            scanned_page_ratio=0.0,
+            legacy_strategy="layout_fixed",
+            numbered_section_count=0,
+            has_chess_notation_collection=True,
+        )
+
+        self.assertEqual(profile, "book_reflow")
+        self.assertEqual(ui_profile, "book")
+        self.assertIn("notacji-first", reason)
+
+    def test_detect_chess_notation_collection_from_san_rich_samples(self) -> None:
+        samples = [
+            "1 D00 Player A 2500 Player B 2490 Titled blitz 1.Nc3 d5 2.d4 Nf6 3.Bf4 c5 4.e3 cxd4 5.exd4",
+            "2 B13 White,Name 2400 Black,Name 2380 Caro-Kann Exchange Variation 1.e4 c6 2.d4 d5 3.exd5 cxd5 4.c4",
+            "3 D01 Jobava London Attack 1.d4 d5 2.Nc3 Nf6 3.Bf4 e6 4.e3 Bb4 5.Bd3 O-O",
+            "Plain front matter",
+        ]
+
+        self.assertTrue(
+            _detect_chess_notation_collection(
+                samples,
+                total_pages=400,
+                text_page_ratio=0.98,
+                image_page_ratio=0.75,
+                scanned_page_ratio=0.0,
+            )
+        )
+        self.assertFalse(
+            _detect_chess_notation_collection(
+                ["Quarterly business magazine with photos and two columns."],
+                total_pages=400,
+                text_page_ratio=0.98,
+                image_page_ratio=0.75,
+                scanned_page_ratio=0.0,
+            )
+        )
+
+    def test_large_chess_notation_analysis_uses_sparse_sampling(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = Path(temp_dir) / "large-jobava-like.pdf"
+            image_buffer = io.BytesIO()
+            Image.new("RGB", (8, 8), "white").save(image_buffer, format="PNG")
+            image_bytes = image_buffer.getvalue()
+            doc = fitz.open()
+            for page_index in range(48):
+                page = doc.new_page(width=612, height=792)
+                page.insert_textbox(
+                    fitz.Rect(72, 72, 520, 360),
+                    "\n".join(
+                        [
+                            (
+                                f"{page_index + 1} D00 Player,A 2500 Player,B 2490 Titled blitz "
+                                "1.Nc3 d5 2.d4 Nf6 3.Bf4 c5 4.e3 cxd4 5.exd4"
+                            )
+                            for _ in range(8)
+                        ]
+                    ),
+                    fontsize=10,
+                )
+                page.insert_image(fitz.Rect(72, 128, 90, 146), stream=image_bytes)
+            doc.save(str(pdf_path))
+            doc.close()
+
+            with (
+                patch("publication_analysis.LARGE_DOCUMENT_SAMPLE_ANALYSIS_MIN_PAGES", 40),
+                patch("publication_analysis.detect_toolchain", return_value={}),
+            ):
+                analysis = analyze_publication(str(pdf_path))
+
+        self.assertEqual(analysis.profile, "book_reflow")
+        self.assertIn("chess-notation-collection", analysis.detected_features)
+        self.assertIn("sampled-analysis", analysis.detected_features)
+
+    def test_large_document_sparse_sample_pages_keep_front_matter_and_tail(self) -> None:
+        pages = _large_document_sparse_sample_pages(400)
+
+        self.assertTrue(set(range(24)).issubset(set(pages)))
+        self.assertIn(399, pages)
+        self.assertLess(len(pages), 60)
 
     def test_analyze_publication_detects_numbered_report_outline_without_pdf_bookmarks(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

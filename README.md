@@ -33,6 +33,7 @@ The supported toolchain matrix lives in [docs/toolchain-matrix.md](docs/toolchai
 - `docs/text-artifact-rate.md` documents reader-facing text artifact rate thresholds used by quality reports.
 - `docs/sprint3-ai-quality-intelligence.md` documents the AI OCR cleanup and AI TOC detection contract, including fallback, confidence, and cost reporting.
 - `docs/sprint4-ui-modernization.md` documents the React/Vite UI shell, `/app` route, shadcn-style primitives, and migration rule.
+- `docs/deployment-vercel-railway.md` documents the split Vercel frontend + Railway backend deployment.
 - `reference_inputs/golden_epub_expectations.json` defines golden EPUB feature expectations for representative conversion classes.
 - `docs/source-of-truth-matrix.md` mirrors the control-plane authority model for status, Linear, reports, and release truth.
 - `docs/independent-audit-mode.md` explains standalone EPUB artifact audit versus full project status.
@@ -74,6 +75,8 @@ docker run --rm -it -v ${PWD}:/workspace -w /workspace kindlemaster-toolchain py
 ```
 
 The same image is wired through `.devcontainer/devcontainer.json`. Details live in [docs/local-bootstrap-toolchain.md](docs/local-bootstrap-toolchain.md).
+
+For hosted testing, use the split deployment described in [docs/deployment-vercel-railway.md](docs/deployment-vercel-railway.md): Vercel serves the React UI and Railway runs the Dockerized conversion API.
 
 The async HTTP flow keeps the existing `/convert/start -> /convert/status/<job_id> -> /convert/download/<job_id>` contract and now also exposes normalized quality state at `GET /convert/quality/<job_id>`. `GET /convert/status/<job_id>` includes the same payload under `quality_state` plus a `quality_state_url`.
 

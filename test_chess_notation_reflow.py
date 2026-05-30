@@ -1,0 +1,98 @@
+from __future__ import annotations
+
+import io
+import tempfile
+import unittest
+from pathlib import Path
+
+import fitz
+from PIL import Image
+
+from converter import CHESS_REFLOW_CSS, ConversionConfig
+from publication_pipeline import _fragment_to_blocks
+from pymupdf_chess_extractor import (
+    _clean_chess_notation_line,
+    _is_single_board_coordinate_line,
+    _looks_like_board_coordinate_noise,
+    extract_chess_notation_pdf_reflow,
+)
+
+
+class ChessNotationReflowTests(unittest.TestCase):
+    def test_large_collection_extractor_preserves_notation_and_skips_raster_boards(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = Path(temp_dir) / "jobava-sample.pdf"
+            image_buffer = io.BytesIO()
+            Image.new("RGB", (120, 120), "white").save(image_buffer, format="PNG")
+            board_bytes = image_buffer.getvalue()
+
+            doc = fitz.open()
+            page = doc.new_page(width=612, height=792)
+            page.insert_text((36, 36), "1", fontsize=9)
+            page.insert_text((72, 72), "D00 Aravindh,Chithambaram VR. 2731 Praggnanandhaa,R 2758", fontsize=10)
+            page.insert_text((72, 96), "Jobava London Attack", fontsize=10)
+            page.insert_text((72, 128), "1.Nc3 d5 2.d4 Nf6 3.Bf4 c5 4.e3 cxd4 5.exd4", fontsize=10)
+            page.insert_text((72, 152), "a b c d e f g h", fontsize=8)
+            page.insert_image(fitz.Rect(72, 190, 192, 310), stream=board_bytes)
+            doc.save(pdf_path)
+            doc.close()
+
+            content = extract_chess_notation_pdf_reflow(str(pdf_path), ConversionConfig(), {})
+
+        html = "\n".join(content["chapters"][0]["html_parts"])
+        self.assertEqual(content["method"], "chess-notation-text-reflow")
+        self.assertEqual(content["images"], [])
+        self.assertIn("chess-notation-text", html)
+        self.assertIn("1.Nc3 d5 2.d4 Nf6", html)
+        self.assertIn('class="chess-pgn"', html)
+        self.assertIn("Final FEN:", html)
+        self.assertNotIn("chess_games.pgn", html)
+        self.assertNotIn("a b c d e f g h", html)
+        self.assertEqual(content["metadata"]["skipped_embedded_image_count"], 1)
+        self.assertEqual(content["metadata"]["chess_pgn"]["valid_pgn_count"], 1)
+        self.assertEqual(content["metadata"]["chess_pgn"]["derived_final_fen_count"], 1)
+        self.assertEqual(
+            sorted(artifact["key"] for artifact in content["extra_artifacts"]),
+            ["chess_pgn", "chess_pgn_html"],
+        )
+
+    def test_xml_fragment_parser_preserves_multi_token_classes(self) -> None:
+        marker_blocks = _fragment_to_blocks('<span id="book-page-12" class="page-marker"></span>', page_index=11)
+        notation_blocks = _fragment_to_blocks(
+            '<pre class="chess-notation-page chess-notation-text" data-page="12"><code>1.Nc3 d5</code></pre>',
+            page_index=11,
+        )
+
+        self.assertEqual(marker_blocks[0].block_type, "page_marker")
+        self.assertEqual(notation_blocks[0].style_class, "chess-notation-page chess-notation-text")
+
+    def test_notation_cleanup_removes_inline_board_coordinate_fragments(self) -> None:
+        self.assertEqual(_clean_chess_notation_line("a b c d e f g h1 D00"), "1 D00")
+        self.assertEqual(_clean_chess_notation_line("1 a b c d e f g h 1"), "1 1")
+        self.assertTrue(_looks_like_board_coordinate_noise("65 65"))
+        self.assertTrue(_looks_like_board_coordinate_noise("8 8 7 7"))
+        self.assertTrue(_is_single_board_coordinate_line("a"))
+        self.assertTrue(_is_single_board_coordinate_line("8"))
+        self.assertFalse(_looks_like_board_coordinate_noise("15.Bxg6 hxg6"))
+
+    def test_notation_cleanup_decodes_chessbase_private_symbols_for_epub_text(self) -> None:
+        cleaned = _clean_chess_notation_line(
+            "14...Bxd3\ue02e -0.68/21 15.Qxd3 \ue027b2 [\ue020 28.Rxc8]"
+        )
+
+        self.assertIn("14...Bxd3\u2a71 -0.68/21", cleaned)
+        self.assertIn("15.Qxd3 Bb2", cleaned)
+        self.assertIn("\u2312 28.Rxc8", cleaned)
+        self.assertFalse(any(0xE000 <= ord(char) <= 0xF8FF for char in cleaned))
+
+    def test_chess_notation_css_uses_high_contrast_text(self) -> None:
+        self.assertIn(".chess-notation-text", CHESS_REFLOW_CSS)
+        self.assertIn(".chess-pgn-text", CHESS_REFLOW_CSS)
+        self.assertIn("color: #111", CHESS_REFLOW_CSS)
+        notation_section = CHESS_REFLOW_CSS.split(".chess-notation-page", 1)[1]
+        self.assertNotIn("color: #666", notation_section)
+        self.assertNotIn("color: #999", notation_section)
+
+
+if __name__ == "__main__":
+    unittest.main()

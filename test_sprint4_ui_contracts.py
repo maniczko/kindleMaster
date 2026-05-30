@@ -20,6 +20,7 @@ class Sprint4UiContractsTests(unittest.TestCase):
 
         self.assertEqual(package["scripts"]["dev:ui"], "vite --host 127.0.0.1 --port 5173")
         self.assertEqual(package["scripts"]["build:ui"], "vite build")
+        self.assertEqual(package["scripts"]["build:ui:vercel"], "vite build --mode vercel")
         self.assertEqual(package["scripts"]["test:ui"], "vitest run --config vitest.config.js --dir frontend/src")
         self.assertEqual(package["scripts"]["test:e2e"], "python kindlemaster.py test --suite runtime")
         self.assertIn("@supabase/supabase-js", package["dependencies"])
@@ -133,6 +134,28 @@ class Sprint4UiContractsTests(unittest.TestCase):
                 self.assertEqual(saved["conversion"]["default_profile"], "magazine")
                 self.assertEqual(saved["email_delivery"]["default_recipient"], "reader@kindle.com")
                 self.assertNotIn("password", Path(profile_path).read_text(encoding="utf-8"))
+
+    def test_premium_react_shell_supports_configured_cross_origin_api_clients(self) -> None:
+        client = app.test_client()
+        with patch.dict(
+            os.environ,
+            {
+                "KINDLEMASTER_ALLOWED_ORIGINS": "https://kindlemaster.vercel.app",
+                "KINDLEMASTER_ALLOW_LOCAL_DEV_CORS": "0",
+            },
+        ):
+            response = client.options(
+                "/convert/jobs",
+                headers={
+                    "Origin": "https://kindlemaster.vercel.app",
+                    "Access-Control-Request-Headers": "Authorization, Content-Type",
+                },
+            )
+
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(response.headers["Access-Control-Allow-Origin"], "https://kindlemaster.vercel.app")
+        self.assertIn("Authorization", response.headers["Access-Control-Allow-Headers"])
+        self.assertNotEqual(response.headers["Access-Control-Allow-Origin"], "*")
 
     def test_smtp_registered_secret_counts_as_configured_without_exposing_secret(self) -> None:
         client = app.test_client()

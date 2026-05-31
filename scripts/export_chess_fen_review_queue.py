@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import html
 import json
 import mimetypes
 import shutil
@@ -74,6 +75,7 @@ def export_chess_fen_review_queue(
     )
     manual_draft_rows = _build_manual_verification_draft(selected)
     deterministic_suggestion_count = sum(1 for row in manual_draft_rows if row.get("deterministic_suggested_fen"))
+    review_sheet_path = target / "manual_review_sheet.html"
 
     summary = {
         "status": "ok",
@@ -93,6 +95,7 @@ def export_chess_fen_review_queue(
         "manual_verification_draft_count": len(manual_draft_rows),
         "deterministic_suggestion_count": deterministic_suggestion_count,
         "manual_verification_draft_path": str(target / "manual_verification_draft.jsonl"),
+        "manual_review_sheet_path": str(review_sheet_path),
         "queue": selected,
     }
     (target / "queue.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -106,6 +109,10 @@ def export_chess_fen_review_queue(
     )
     (target / "manual_verification_draft.jsonl").write_text(
         "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in manual_draft_rows),
+        encoding="utf-8",
+    )
+    review_sheet_path.write_text(
+        _manual_review_sheet_html(summary, manual_draft_rows),
         encoding="utf-8",
     )
     (target / "openai_review_prompt.md").write_text(_review_prompt(summary), encoding="utf-8")
@@ -408,6 +415,78 @@ def _diagram_index_from_filename(filename: str) -> int | str:
     return ""
 
 
+def _manual_review_sheet_html(summary: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+    cards = "\n".join(_manual_review_card(row) for row in rows)
+    return "\n".join(
+        [
+            "<!doctype html>",
+            "<html lang=\"en\">",
+            "<head>",
+            "<meta charset=\"utf-8\">",
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
+            "<title>KindleMaster Chess FEN Review</title>",
+            "<style>",
+            "body{margin:0;background:#f6efe5;color:#1d241c;font-family:Georgia,'Times New Roman',serif;}",
+            "main{max-width:1180px;margin:0 auto;padding:32px 20px 56px;}",
+            "h1{font-size:34px;margin:0 0 8px;} .meta{color:#5f675d;margin:0 0 24px;}",
+            ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px;}",
+            ".card{background:#fffaf2;border:1px solid #dfcdb7;border-radius:18px;padding:14px;box-shadow:0 18px 50px rgba(47,38,24,.10);}",
+            ".card img{width:100%;aspect-ratio:1/1;object-fit:contain;background:#efe7d8;border-radius:12px;border:1px solid #ead8c2;}",
+            ".tag{display:inline-block;margin:10px 8px 8px 0;padding:4px 9px;border-radius:999px;background:#e8f5e9;color:#116a31;font-weight:700;font-size:12px;}",
+            ".tag.review{background:#fff1d6;color:#9a4b00}.tag.mismatch{background:#ffe7e1;color:#a8361e}",
+            "dl{display:grid;grid-template-columns:96px 1fr;gap:6px 10px;margin:10px 0 0;font-size:13px;}dt{font-weight:700;color:#5f675d;}dd{margin:0;word-break:break-word;}",
+            "code{font-family:'Cascadia Mono','Courier New',monospace;font-size:12px;color:#20251f;background:#f1eadf;padding:2px 4px;border-radius:5px;}",
+            "textarea{width:100%;box-sizing:border-box;min-height:54px;margin-top:10px;border:1px solid #d8c5ae;border-radius:10px;background:#fffdf8;padding:8px;font-family:'Cascadia Mono','Courier New',monospace;font-size:12px;}",
+            "</style>",
+            "</head>",
+            "<body><main>",
+            "<h1>Chess FEN Manual Review</h1>",
+            f"<p class=\"meta\">{_html(summary.get('exported_count'))} crops, {_html(summary.get('deterministic_suggestion_count'))} deterministic suggestions. Review-only: copying into <code>fen</code> still requires human verification.</p>",
+            "<section class=\"grid\">",
+            cards,
+            "</section>",
+            "</main></body></html>",
+        ]
+    )
+
+
+def _manual_review_card(row: dict[str, Any]) -> str:
+    suggestion = str(row.get("deterministic_suggested_fen") or "")
+    original = str(row.get("original_candidate_fen") or "")
+    crop = str(row.get("crop_path") or "")
+    tags = [
+        "<span class=\"tag review\">needs manual FEN</span>",
+        "<span class=\"tag\">suggestion</span>" if suggestion else "<span class=\"tag review\">no safe suggestion</span>",
+    ]
+    if not row.get("candidate_matches_review_crop"):
+        tags.append("<span class=\"tag mismatch\">candidate mismatch</span>")
+    return "\n".join(
+        [
+            "<article class=\"card\">",
+            f"<img src=\"{_attr(crop)}\" alt=\"{_attr(row.get('id'))}\">" if crop else "",
+            "".join(tags),
+            "<dl>",
+            f"<dt>ID</dt><dd><code>{_html(row.get('id'))}</code></dd>",
+            f"<dt>Page</dt><dd>{_html(row.get('page'))}</dd>",
+            f"<dt>Crop</dt><dd><code>{_html(crop)}</code></dd>",
+            f"<dt>Suggested</dt><dd><code>{_html(suggestion or '-')}</code></dd>",
+            f"<dt>Original</dt><dd><code>{_html(original or '-')}</code></dd>",
+            f"<dt>Warnings</dt><dd>{_html(', '.join(str(item) for item in row.get('deterministic_warnings') or []) or '-')}</dd>",
+            "</dl>",
+            f"<textarea aria-label=\"Verified FEN for {_attr(row.get('id'))}\" placeholder=\"Paste verified FEN here after checking the crop\">{_html(suggestion)}</textarea>",
+            "</article>",
+        ]
+    )
+
+
+def _html(value: Any) -> str:
+    return html.escape(str(value if value is not None else ""), quote=False)
+
+
+def _attr(value: Any) -> str:
+    return html.escape(str(value if value is not None else ""), quote=True)
+
+
 def _image_data_url(path: Path, *, max_bytes: int) -> str:
     data = path.read_bytes()
     if len(data) > max(1, int(max_bytes)):
@@ -511,6 +590,7 @@ def _review_prompt(summary: dict[str, Any]) -> str:
             "- `crops/`: matching board crops.",
             f"- `openai_label_assist_requests.jsonl`: {summary.get('openai_request_count', 0)} optional OpenAI Responses API request bodies.",
             f"- `manual_verification_draft.jsonl`: {summary.get('manual_verification_draft_count', 0)} rows to fill after checking crops.",
+            "- `manual_review_sheet.html`: browser-friendly crop contact sheet for manual labeling.",
             "",
             "If a row contains `review_crop_*` fields, treat them as the",
             "deterministic reading of the actual exported crop. If",

@@ -116,6 +116,9 @@ class ChessFenRecognitionTests(unittest.TestCase):
             draft_path = Path(summary["manual_verification_draft_path"])
             draft_path_exists = draft_path.exists()
             draft_rows = [json.loads(line) for line in draft_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            review_sheet_path = Path(summary["manual_review_sheet_path"])
+            review_sheet_exists = review_sheet_path.exists()
+            review_sheet_html = review_sheet_path.read_text(encoding="utf-8") if review_sheet_exists else ""
 
         self.assertEqual(summary["diagram_count"], 1)
         self.assertEqual(summary["manual_review_count"], 1)
@@ -130,6 +133,10 @@ class ChessFenRecognitionTests(unittest.TestCase):
         self.assertEqual(draft_rows[0]["label_status"], "needs_manual_fen")
         self.assertFalse(draft_rows[0]["accepted_for_corpus"])
         self.assertEqual(draft_rows[0]["fen"], "")
+        self.assertTrue(review_sheet_exists)
+        self.assertIn("Chess FEN Manual Review", review_sheet_html)
+        self.assertIn("scan_chess_p012_01.png", review_sheet_html)
+        self.assertIn("needs manual FEN", review_sheet_html)
         self.assertEqual(summary["reason_counts"], {"invalid_king_count": 1})
 
     def test_scan_chess_candidate_cache_version_covers_expanded_recovery(self) -> None:

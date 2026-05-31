@@ -100,17 +100,27 @@ class ChessFenRecognitionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             report_path = Path(temp_dir) / "premium.json"
             output_dir = Path(temp_dir) / "queue"
+            crop_source_dir = Path(temp_dir) / "source_crops"
+            crop_source_dir.mkdir()
+            (crop_source_dir / "scan_chess_p012_01.png").write_bytes(b"fake-png-for-review-queue")
             report_path.write_text(json.dumps({"cases": [case]}, ensure_ascii=False), encoding="utf-8")
 
             summary = export_chess_fen_review_queue(
                 report_path,
                 output_dir=output_dir,
                 max_items=10,
+                crop_source_dirs=[crop_source_dir],
             )
+            copied_crop = output_dir / "crops" / "scan_chess_p012_01.png"
+            copied_crop_exists = copied_crop.exists()
 
         self.assertEqual(summary["diagram_count"], 1)
         self.assertEqual(summary["manual_review_count"], 1)
         self.assertEqual(summary["exported_count"], 1)
+        self.assertEqual(summary["crop_file_count"], 1)
+        self.assertEqual(summary["missing_crop_count"], 0)
+        self.assertTrue(copied_crop_exists)
+        self.assertIn("crop_source", summary["queue"][0])
         self.assertEqual(summary["reason_counts"], {"invalid_king_count": 1})
 
     def test_scan_chess_candidate_cache_version_covers_expanded_recovery(self) -> None:

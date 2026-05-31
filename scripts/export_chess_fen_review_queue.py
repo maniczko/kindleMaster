@@ -8,7 +8,7 @@ import shutil
 import sys
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -27,6 +27,7 @@ def export_chess_fen_review_queue(
     max_items: int = 64,
     template_dir: str | Path | None = None,
     min_confidence: float = 0.70,
+    crop_source_dirs: Iterable[str | Path] | None = None,
     openai_model: str = DEFAULT_OPENAI_CHESS_FEN_REVIEW_MODEL,
     openai_max_image_bytes: int = DEFAULT_OPENAI_REVIEW_MAX_IMAGE_BYTES,
 ) -> dict[str, Any]:
@@ -51,7 +52,13 @@ def export_chess_fen_review_queue(
     target = Path(output_dir)
     crops_dir = target / "crops"
     crops_dir.mkdir(parents=True, exist_ok=True)
-    _copy_review_crops(epub_path, selected, crops_dir)
+    source_dirs = _resolve_crop_source_dirs(report_path, crop_source_dirs)
+    crop_copy_stats = _copy_review_crops(
+        epub_path,
+        selected,
+        crops_dir,
+        crop_source_dirs=source_dirs,
+    )
     _attach_review_crop_recognition(
         selected,
         crops_dir=crops_dir,
@@ -74,6 +81,9 @@ def export_chess_fen_review_queue(
         "fen_count": int(chess_fen.get("fen_count") or 0),
         "manual_review_count": len(review_records),
         "exported_count": len(selected),
+        "crop_file_count": crop_copy_stats["copied_count"],
+        "missing_crop_count": crop_copy_stats["missing_count"],
+        "crop_source_dirs": [str(path) for path in source_dirs],
         "reason_counts": _count_reasons(review_records),
         "openai_policy": "label_assist_review_only_no_epub_mutation",
         "openai_request_count": len(openai_requests),
@@ -153,20 +163,102 @@ def _review_sort_key(item: dict[str, Any]) -> tuple[int, float, int, str]:
     return (priority, -float(item.get("confidence") or 0.0), int(item.get("page") or 0), str(item.get("filename") or ""))
 
 
-def _copy_review_crops(epub_path: Path, selected: list[dict[str, Any]], crops_dir: Path) -> None:
-    if not epub_path.is_file():
-        return
+def _resolve_crop_source_dirs(
+    report_path: Path,
+    crop_source_dirs: Iterable[str | Path] | None,
+) -> list[Path]:
+    explicit = [Path(path) for path in (crop_source_dirs or []) if str(path).strip()]
+    defaults = [
+        report_path.parent / "crops",
+        Path("reference_inputs/chess_fen/crops"),
+        Path("reports/chess_fen/review_queue_latest/crops"),
+        Path("reports/chess_fen/review_queue"),
+        Path("reports/chess_fen/fundamenty_crops"),
+    ]
+    seen: set[str] = set()
+    resolved: list[Path] = []
+    for path in [*explicit, *defaults]:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        resolved.append(path)
+    return resolved
+
+
+def _copy_review_crops(
+    epub_path: Path,
+    selected: list[dict[str, Any]],
+    crops_dir: Path,
+    *,
+    crop_source_dirs: Iterable[Path] = (),
+) -> dict[str, int]:
     wanted = {str(item.get("filename") or "") for item in selected if item.get("filename")}
     if not wanted:
-        return
-    with zipfile.ZipFile(epub_path) as archive:
-        by_name = {Path(name).name: name for name in archive.namelist()}
-        for filename in wanted:
-            source_name = by_name.get(filename)
-            if not source_name:
+        return {"copied_count": 0, "missing_count": 0}
+
+    copied: set[str] = set()
+    for filename in sorted(wanted):
+        existing = crops_dir / filename
+        if existing.is_file():
+            copied.add(filename)
+            _mark_crop_source(selected, filename, f"existing:{existing}")
+
+    if epub_path.is_file():
+        with zipfile.ZipFile(epub_path) as archive:
+            by_name = {Path(name).name: name for name in archive.namelist()}
+            for filename in wanted - copied:
+                source_name = by_name.get(filename)
+                if not source_name:
+                    continue
+                with archive.open(source_name) as src, (crops_dir / filename).open("wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                copied.add(filename)
+                _mark_crop_source(selected, filename, f"epub:{epub_path}")
+
+    missing = wanted - copied
+    if missing:
+        fallback_index = _index_crop_sources(crop_source_dirs, missing)
+        for filename in sorted(missing):
+            source = fallback_index.get(filename)
+            if not source:
                 continue
-            with archive.open(source_name) as src, (crops_dir / filename).open("wb") as dst:
-                shutil.copyfileobj(src, dst)
+            destination = crops_dir / filename
+            if source.resolve() != destination.resolve():
+                shutil.copyfile(source, destination)
+            copied.add(filename)
+            _mark_crop_source(selected, filename, str(source))
+
+    return {"copied_count": len(copied), "missing_count": len(wanted - copied)}
+
+
+def _index_crop_sources(source_dirs: Iterable[Path], filenames: set[str]) -> dict[str, Path]:
+    index: dict[str, Path] = {}
+    remaining = set(filenames)
+    for source_dir in source_dirs:
+        if not remaining or not source_dir.exists() or not source_dir.is_dir():
+            continue
+        for filename in sorted(list(remaining)):
+            direct = source_dir / filename
+            if direct.is_file():
+                index[filename] = direct
+                remaining.remove(filename)
+        if not remaining:
+            break
+        for candidate in source_dir.rglob("*.png"):
+            name = candidate.name
+            if name in remaining and candidate.is_file():
+                index[name] = candidate
+                remaining.remove(name)
+                if not remaining:
+                    break
+    return index
+
+
+def _mark_crop_source(selected: list[dict[str, Any]], filename: str, source: str) -> None:
+    for item in selected:
+        if str(item.get("filename") or "") == filename:
+            item["crop_source"] = source
 
 
 def _attach_review_crop_recognition(
@@ -397,6 +489,12 @@ def main() -> int:
     parser.add_argument("--max-items", type=int, default=64)
     parser.add_argument("--template-dir", default="")
     parser.add_argument("--min-confidence", type=float, default=0.70)
+    parser.add_argument(
+        "--crop-source-dir",
+        action="append",
+        default=[],
+        help="Additional directory to search for existing crop PNGs; can be repeated.",
+    )
     parser.add_argument("--openai-model", default=DEFAULT_OPENAI_CHESS_FEN_REVIEW_MODEL)
     parser.add_argument("--openai-max-image-bytes", type=int, default=DEFAULT_OPENAI_REVIEW_MAX_IMAGE_BYTES)
     args = parser.parse_args()
@@ -406,6 +504,7 @@ def main() -> int:
         max_items=args.max_items,
         template_dir=args.template_dir or None,
         min_confidence=args.min_confidence,
+        crop_source_dirs=args.crop_source_dir,
         openai_model=args.openai_model,
         openai_max_image_bytes=args.openai_max_image_bytes,
     )

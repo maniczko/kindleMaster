@@ -39,9 +39,10 @@ def export_chess_fen_review_queue(
     report_path = Path(smoke_report)
     payload = json.loads(report_path.read_text(encoding="utf-8"))
     case = _select_chess_case(payload)
-    chess_fen = (case.get("quality_report") or {}).get("chess_fen") or {}
+    chess_fen = _case_chess_fen_summary(case)
     records = list(chess_fen.get("records") or [])
-    epub_path = Path(str(case.get("output_epub") or ""))
+    epub_path_value = str(case.get("output_epub") or case.get("final_epub") or "").strip()
+    epub_path = Path(epub_path_value) if epub_path_value else Path("__missing_epub_artifact__")
 
     review_records = [_review_item(record) for record in records if record.get("requires_review")]
     review_records.sort(key=_review_sort_key)
@@ -95,12 +96,21 @@ def export_chess_fen_review_queue(
 def _select_chess_case(payload: dict[str, Any]) -> dict[str, Any]:
     cases = list(payload.get("cases") or [])
     for case in cases:
-        chess_fen = (case.get("quality_report") or {}).get("chess_fen") or {}
+        chess_fen = _case_chess_fen_summary(case)
         if chess_fen.get("diagram_count"):
             return case
     if cases:
         return cases[0]
     raise ValueError("Smoke report does not contain cases.")
+
+
+def _case_chess_fen_summary(case: dict[str, Any]) -> dict[str, Any]:
+    """Return the chess FEN report from smoke or premium-corpus payloads."""
+    for container_key in ("quality_report", "quality"):
+        summary = (case.get(container_key) or {}).get("chess_fen") or {}
+        if summary:
+            return summary
+    return {}
 
 
 def _review_item(record: dict[str, Any]) -> dict[str, Any]:
@@ -144,7 +154,7 @@ def _review_sort_key(item: dict[str, Any]) -> tuple[int, float, int, str]:
 
 
 def _copy_review_crops(epub_path: Path, selected: list[dict[str, Any]], crops_dir: Path) -> None:
-    if not epub_path.exists():
+    if not epub_path.is_file():
         return
     wanted = {str(item.get("filename") or "") for item in selected if item.get("filename")}
     if not wanted:

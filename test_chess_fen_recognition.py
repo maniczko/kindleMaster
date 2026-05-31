@@ -67,9 +67,52 @@ from pymupdf_chess_extractor import (
     _scan_chess_recognition_cache_path,
     _scan_image_for_board_candidates,
 )
+from scripts.export_chess_fen_review_queue import (
+    _case_chess_fen_summary,
+    export_chess_fen_review_queue,
+)
 
 
 class ChessFenRecognitionTests(unittest.TestCase):
+    def test_review_queue_accepts_premium_corpus_quality_chess_fen(self) -> None:
+        case = {
+            "quality": {
+                "chess_fen": {
+                    "diagram_count": 1,
+                    "fen_count": 0,
+                    "records": [
+                        {
+                            "page": 12,
+                            "filename": "scan_chess_p012_01.png",
+                            "placement": "8/8/8/8/8/8/8/8",
+                            "confidence": 0.4,
+                            "warnings": ["white_king_count_invalid", "black_king_count_invalid"],
+                            "requires_review": True,
+                            "bbox": [0, 0, 10, 10],
+                            "method": "image-template-board",
+                        }
+                    ],
+                }
+            }
+        }
+        self.assertEqual(_case_chess_fen_summary(case)["diagram_count"], 1)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            report_path = Path(temp_dir) / "premium.json"
+            output_dir = Path(temp_dir) / "queue"
+            report_path.write_text(json.dumps({"cases": [case]}, ensure_ascii=False), encoding="utf-8")
+
+            summary = export_chess_fen_review_queue(
+                report_path,
+                output_dir=output_dir,
+                max_items=10,
+            )
+
+        self.assertEqual(summary["diagram_count"], 1)
+        self.assertEqual(summary["manual_review_count"], 1)
+        self.assertEqual(summary["exported_count"], 1)
+        self.assertEqual(summary["reason_counts"], {"invalid_king_count": 1})
+
     def test_scan_chess_candidate_cache_version_covers_expanded_recovery(self) -> None:
         self.assertGreaterEqual(SCAN_CHESS_PAGE_CANDIDATE_CACHE_VERSION, 17)
 

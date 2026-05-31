@@ -138,9 +138,58 @@ class ChessFenRecognitionTests(unittest.TestCase):
         self.assertIn("scan_chess_p012_01.png", review_sheet_html)
         self.assertIn("needs manual FEN", review_sheet_html)
         self.assertEqual(summary["reason_counts"], {"invalid_king_count": 1})
+        self.assertEqual(
+            summary["review_priority_counts"],
+            {
+                "ready_for_human_acceptance": 0,
+                "candidate_matches_review_crop": 0,
+                "needs_manual_fen": 1,
+            },
+        )
+        self.assertIn("build_chess_fen_label_aids.py", summary["label_aids_command"])
+        self.assertIn("promote_chess_fen_label_draft.py", summary["label_promote_command"])
+        self.assertIn("build_chess_piece_templates.py", summary["template_build_command"])
+        self.assertIn("evaluate_chess_fen_corpus.py", summary["profile_eval_command"])
+        self.assertEqual(summary["next_commands"]["label_promote_command"], summary["label_promote_command"])
 
     def test_scan_chess_candidate_cache_version_covers_expanded_recovery(self) -> None:
         self.assertGreaterEqual(SCAN_CHESS_PAGE_CANDIDATE_CACHE_VERSION, 17)
+
+    def test_review_queue_manual_draft_prioritizes_safe_deterministic_suggestions(self) -> None:
+        from scripts.export_chess_fen_review_queue import _build_manual_verification_draft
+
+        rows = _build_manual_verification_draft(
+            [
+                {
+                    "id": "needs_full_manual_label",
+                    "page": 2,
+                    "filename": "scan_chess_p002_01.png",
+                    "crop_path": "crops/scan_chess_p002_01.png",
+                    "candidate_fen": "",
+                    "candidate_placement": "8/8/8/8/8/8/8/8",
+                    "review_crop_fen": "",
+                    "review_crop_requires_review": True,
+                    "review_crop_confidence": 0.12,
+                    "candidate_matches_review_crop": False,
+                },
+                {
+                    "id": "safe_deterministic_label",
+                    "page": 1,
+                    "filename": "scan_chess_p001_01.png",
+                    "crop_path": "crops/scan_chess_p001_01.png",
+                    "candidate_fen": "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+                    "candidate_placement": "4k3/8/8/8/8/8/8/4K3",
+                    "review_crop_fen": "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+                    "review_crop_requires_review": False,
+                    "review_crop_confidence": 0.91,
+                    "candidate_matches_review_crop": True,
+                },
+            ]
+        )
+
+        self.assertEqual(rows[0]["id"], "safe_deterministic_label")
+        self.assertEqual(rows[0]["deterministic_suggested_fen"], "4k3/8/8/8/8/8/8/4K3 w - - 0 1")
+        self.assertEqual(rows[1]["id"], "needs_full_manual_label")
 
     def test_scan_chess_recognition_cache_version_covers_recognizer_acceptance_changes(self) -> None:
         self.assertGreaterEqual(SCAN_CHESS_RECOGNITION_CACHE_VERSION, 6)

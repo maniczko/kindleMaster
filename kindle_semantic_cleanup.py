@@ -1987,6 +1987,9 @@ def _is_introductory_publication_heading(text: str) -> bool:
 
     key = _canonical_heading_text(text)
     return key in {
+        "content",
+        "contents",
+        "table of contents",
         "executive summary",
         "summary",
         "introduction",

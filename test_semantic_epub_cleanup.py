@@ -27,6 +27,7 @@ from kindle_semantic_cleanup import (
     _expand_semantic_blocks,
     _get_spine_xhtml_paths,
     _inject_problem_solution_links,
+    _is_introductory_publication_heading,
     _locate_opf,
     _looks_like_training_book,
     _manual_review_from_heading_decisions,
@@ -43,6 +44,10 @@ from kindle_semantic_cleanup import (
 
 
 class SemanticEpubCleanupTests(unittest.TestCase):
+    def test_generic_content_heading_does_not_challenge_metadata_title(self):
+        self.assertTrue(_is_introductory_publication_heading("Content"))
+        self.assertTrue(_is_introductory_publication_heading("Table of Contents"))
+
     def _build_epub_bytes(self, files: dict[str, bytes | str]) -> bytes:
         output = io.BytesIO()
         with zipfile.ZipFile(output, "w") as archive:

@@ -72,6 +72,8 @@ def export_chess_fen_review_queue(
         model=openai_model,
         max_image_bytes=openai_max_image_bytes,
     )
+    manual_draft_rows = _build_manual_verification_draft(selected)
+    deterministic_suggestion_count = sum(1 for row in manual_draft_rows if row.get("deterministic_suggested_fen"))
 
     summary = {
         "status": "ok",
@@ -88,6 +90,9 @@ def export_chess_fen_review_queue(
         "openai_policy": "label_assist_review_only_no_epub_mutation",
         "openai_request_count": len(openai_requests),
         "openai_requests_path": str(target / "openai_label_assist_requests.jsonl"),
+        "manual_verification_draft_count": len(manual_draft_rows),
+        "deterministic_suggestion_count": deterministic_suggestion_count,
+        "manual_verification_draft_path": str(target / "manual_verification_draft.jsonl"),
         "queue": selected,
     }
     (target / "queue.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -97,6 +102,10 @@ def export_chess_fen_review_queue(
     )
     (target / "openai_label_assist_requests.jsonl").write_text(
         "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in openai_requests),
+        encoding="utf-8",
+    )
+    (target / "manual_verification_draft.jsonl").write_text(
+        "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in manual_draft_rows),
         encoding="utf-8",
     )
     (target / "openai_review_prompt.md").write_text(_review_prompt(summary), encoding="utf-8")
@@ -363,6 +372,42 @@ def _build_openai_label_assist_requests(
     return requests
 
 
+def _build_manual_verification_draft(selected: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in selected:
+        deterministic_fen = str(item.get("review_crop_fen") or "").strip()
+        deterministic_is_publishable = bool(deterministic_fen and item.get("review_crop_requires_review") is False)
+        rows.append(
+            {
+                "id": str(item.get("id") or ""),
+                "page": item.get("page"),
+                "diagram_index": _diagram_index_from_filename(str(item.get("filename") or "")),
+                "crop_path": str(item.get("crop_path") or ""),
+                "fen": "",
+                "deterministic_suggested_fen": deterministic_fen if deterministic_is_publishable else "",
+                "deterministic_confidence": item.get("review_crop_confidence"),
+                "deterministic_warnings": item.get("review_crop_warnings") or [],
+                "original_candidate_fen": item.get("candidate_fen") or "",
+                "original_candidate_placement": item.get("candidate_placement") or "",
+                "candidate_matches_review_crop": bool(item.get("candidate_matches_review_crop")),
+                "label_status": "needs_manual_fen",
+                "verified_by": "",
+                "verified_at": "",
+                "accepted_for_corpus": False,
+                "notes": "Review-only draft. Copy a checked FEN into fen, then fill verified_by and verified_at before promotion.",
+            }
+        )
+    return rows
+
+
+def _diagram_index_from_filename(filename: str) -> int | str:
+    stem = Path(filename).stem
+    suffix = stem.rsplit("_", 1)[-1] if "_" in stem else ""
+    if suffix.isdigit():
+        return int(suffix)
+    return ""
+
+
 def _image_data_url(path: Path, *, max_bytes: int) -> str:
     data = path.read_bytes()
     if len(data) > max(1, int(max_bytes)):
@@ -465,6 +510,7 @@ def _review_prompt(summary: dict[str, Any]) -> str:
             f"- `queue.jsonl`: {summary.get('exported_count', 0)} prioritized cases.",
             "- `crops/`: matching board crops.",
             f"- `openai_label_assist_requests.jsonl`: {summary.get('openai_request_count', 0)} optional OpenAI Responses API request bodies.",
+            f"- `manual_verification_draft.jsonl`: {summary.get('manual_verification_draft_count', 0)} rows to fill after checking crops.",
             "",
             "If a row contains `review_crop_*` fields, treat them as the",
             "deterministic reading of the actual exported crop. If",

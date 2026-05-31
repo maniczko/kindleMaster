@@ -110,6 +110,9 @@ def _promote_row(
         fen = str(row.get("ai_suggested_fen") or "").strip()
         source = "ai_suggested_fen_after_human_acceptance"
     if not fen:
+        fen = str(row.get("deterministic_suggested_fen") or "").strip()
+        source = "deterministic_suggested_fen_after_human_acceptance"
+    if not fen:
         return None, "fen_missing"
     is_valid, warnings = validate_fen(fen)
     if not is_valid:
@@ -130,6 +133,7 @@ def _promote_row(
             "label_source": source,
             "ai_assisted": bool(source.startswith("ai_") or row.get("ai_suggested_fen")),
             "ai_confidence": row.get("ai_confidence", 0.0),
+            "deterministic_confidence": row.get("deterministic_confidence", 0.0),
             "notes": "Verified from board crop after label-assist; deterministic profile gates still required.",
         },
         "",

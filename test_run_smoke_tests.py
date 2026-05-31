@@ -174,6 +174,7 @@ class RunSmokeTestsStatusTests(unittest.TestCase):
     def test_non_strict_epub_release_failure_is_accepted_when_source_validates(self):
         row = {
             "id": "scan_probe_epub",
+            "input_type": "epub",
             "release_strict": False,
             "validation": {"summary": {"status": "passed"}},
             "release_audit": {"decision": "fail"},
@@ -193,8 +194,64 @@ class RunSmokeTestsStatusTests(unittest.TestCase):
         self.assertTrue(benchmark["release_audit_accepted"])
         self.assertEqual(
             benchmark["release_audit_acceptance_reason"],
-            "accepted_p2_non_strict_probe_source_validation_passed",
+            "accepted_non_strict_probe_source_validation_passed",
         )
+        self.assertEqual(benchmark["fallback_mode"], "source-epub")
+        self.assertEqual(benchmark["metrics_missing"], [])
+
+    def test_non_strict_epub_release_review_is_accepted_when_final_candidate_is_ready(self):
+        row = {
+            "id": "scan_probe_epub",
+            "input_type": "epub",
+            "release_strict": False,
+            "validation": {"summary": {"status": "passed"}},
+            "release_audit": {
+                "decision": "pass_with_review",
+                "premium_scoring": {
+                    "release_verdict": "release_ready",
+                    "kindle_ready": True,
+                    "premium_ready": True,
+                    "issues": [],
+                    "issue_counts": {},
+                },
+                "quality_selection": {
+                    "status": "rejected",
+                    "selected_candidate": "pre_recovery",
+                    "rejected_candidate": "recovered",
+                },
+                "gates": {
+                    "C": {
+                        "manual_review": [
+                            {
+                                "kind": "quality_selection",
+                                "reason": "recovery-quality-regression",
+                            }
+                        ]
+                    },
+                    "F": {
+                        "manual_review": [
+                            {
+                                "kind": "quality_selection",
+                                "reason": "metadata-quality-regression",
+                            }
+                        ]
+                    },
+                },
+            },
+            "size_gate": {"status": "passed", "inspection": {"image_count": 0}},
+            "epub_size_bytes": 4321,
+        }
+
+        summary = _build_smoke_summary([row])
+        benchmark = _build_case_benchmark(row=row, elapsed_seconds=2.0)
+
+        self.assertEqual(_effective_case_validation_status(row), "passed")
+        self.assertEqual(summary["overall_status"], "passed")
+        self.assertEqual(summary["warning_cases"], 0)
+        self.assertEqual(benchmark["release_audit_status"], "passed_with_warnings")
+        self.assertTrue(benchmark["release_audit_accepted"])
+        self.assertEqual(benchmark["fallback_mode"], "source-epub")
+        self.assertEqual(benchmark["metrics_missing"], [])
 
     def test_benchmark_surfaces_duration_and_profile_hints_for_slow_cases(self):
         row = {

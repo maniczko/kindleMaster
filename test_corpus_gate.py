@@ -473,6 +473,41 @@ class CorpusGateTests(unittest.TestCase):
         self.assertEqual(payload["overall_status"], "passed")
         self.assertEqual(payload["effective_premium_status"], "passed")
 
+    def test_standard_gate_passes_for_clean_partial_premium_scope_covered_by_smoke(self) -> None:
+        smoke_payload = {
+            "summary": {
+                "cases_run": 4,
+                "overall_status": "passed",
+            }
+        }
+        premium_payload = {
+            "overall_status": "passed_with_warnings",
+            "overall": {
+                "converted_case_count": 4,
+                "analysis_only_case_count": 0,
+                "grade_counts": {"pass": 4},
+                "blocker_counts": {},
+                "warning_counts": {},
+                "accepted_warning_counts": {},
+                "overall_status": "passed_with_warnings",
+                "proof_scope": "partial",
+                "source_mode": "manifest-backed",
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            reports_root = Path(temp_dir) / "reports"
+            output_root = Path(temp_dir) / "output"
+            with patch("scripts.run_corpus_gate.run_smoke_tests", return_value=smoke_payload):
+                with patch("scripts.run_corpus_gate.run_premium_corpus_smoke", return_value=premium_payload):
+                    payload = run_corpus_gate(
+                        output_root=output_root,
+                        reports_root=reports_root,
+                    )
+
+        self.assertEqual(payload["overall_status"], "passed")
+        self.assertEqual(payload["effective_premium_status"], "passed")
+
     def test_corpus_gate_markdown_surfaces_derived_summary_for_status_readers(self) -> None:
         smoke_payload = {
             "summary": {

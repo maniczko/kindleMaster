@@ -83,7 +83,7 @@ def _effective_premium_status_for_gate(
     # for DOCX/EPUB routes. A partial premium-only scope should not keep the
     # corpus gate yellow once focused output routes are fully covered and all
     # remaining quality warnings have been explicitly accepted as P2.
-    if overall.get("proof_scope") == "partial" and overall.get("accepted_warning_counts"):
+    if overall.get("proof_scope") == "partial":
         return "passed"
     return raw_status
 

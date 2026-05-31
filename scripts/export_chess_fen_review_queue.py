@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import argparse
 import base64
+import html
 import json
 import mimetypes
 import shutil
 import sys
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -27,6 +28,7 @@ def export_chess_fen_review_queue(
     max_items: int = 64,
     template_dir: str | Path | None = None,
     min_confidence: float = 0.70,
+    crop_source_dirs: Iterable[str | Path] | None = None,
     openai_model: str = DEFAULT_OPENAI_CHESS_FEN_REVIEW_MODEL,
     openai_max_image_bytes: int = DEFAULT_OPENAI_REVIEW_MAX_IMAGE_BYTES,
 ) -> dict[str, Any]:
@@ -39,9 +41,10 @@ def export_chess_fen_review_queue(
     report_path = Path(smoke_report)
     payload = json.loads(report_path.read_text(encoding="utf-8"))
     case = _select_chess_case(payload)
-    chess_fen = (case.get("quality_report") or {}).get("chess_fen") or {}
+    chess_fen = _case_chess_fen_summary(case)
     records = list(chess_fen.get("records") or [])
-    epub_path = Path(str(case.get("output_epub") or ""))
+    epub_path_value = str(case.get("output_epub") or case.get("final_epub") or "").strip()
+    epub_path = Path(epub_path_value) if epub_path_value else Path("__missing_epub_artifact__")
 
     review_records = [_review_item(record) for record in records if record.get("requires_review")]
     review_records.sort(key=_review_sort_key)
@@ -50,7 +53,13 @@ def export_chess_fen_review_queue(
     target = Path(output_dir)
     crops_dir = target / "crops"
     crops_dir.mkdir(parents=True, exist_ok=True)
-    _copy_review_crops(epub_path, selected, crops_dir)
+    source_dirs = _resolve_crop_source_dirs(report_path, crop_source_dirs)
+    crop_copy_stats = _copy_review_crops(
+        epub_path,
+        selected,
+        crops_dir,
+        crop_source_dirs=source_dirs,
+    )
     _attach_review_crop_recognition(
         selected,
         crops_dir=crops_dir,
@@ -64,6 +73,9 @@ def export_chess_fen_review_queue(
         model=openai_model,
         max_image_bytes=openai_max_image_bytes,
     )
+    manual_draft_rows = _build_manual_verification_draft(selected)
+    deterministic_suggestion_count = sum(1 for row in manual_draft_rows if row.get("deterministic_suggested_fen"))
+    review_sheet_path = target / "manual_review_sheet.html"
 
     summary = {
         "status": "ok",
@@ -73,10 +85,17 @@ def export_chess_fen_review_queue(
         "fen_count": int(chess_fen.get("fen_count") or 0),
         "manual_review_count": len(review_records),
         "exported_count": len(selected),
+        "crop_file_count": crop_copy_stats["copied_count"],
+        "missing_crop_count": crop_copy_stats["missing_count"],
+        "crop_source_dirs": [str(path) for path in source_dirs],
         "reason_counts": _count_reasons(review_records),
         "openai_policy": "label_assist_review_only_no_epub_mutation",
         "openai_request_count": len(openai_requests),
         "openai_requests_path": str(target / "openai_label_assist_requests.jsonl"),
+        "manual_verification_draft_count": len(manual_draft_rows),
+        "deterministic_suggestion_count": deterministic_suggestion_count,
+        "manual_verification_draft_path": str(target / "manual_verification_draft.jsonl"),
+        "manual_review_sheet_path": str(review_sheet_path),
         "queue": selected,
     }
     (target / "queue.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -88,6 +107,14 @@ def export_chess_fen_review_queue(
         "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in openai_requests),
         encoding="utf-8",
     )
+    (target / "manual_verification_draft.jsonl").write_text(
+        "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in manual_draft_rows),
+        encoding="utf-8",
+    )
+    review_sheet_path.write_text(
+        _manual_review_sheet_html(summary, manual_draft_rows),
+        encoding="utf-8",
+    )
     (target / "openai_review_prompt.md").write_text(_review_prompt(summary), encoding="utf-8")
     return summary
 
@@ -95,12 +122,21 @@ def export_chess_fen_review_queue(
 def _select_chess_case(payload: dict[str, Any]) -> dict[str, Any]:
     cases = list(payload.get("cases") or [])
     for case in cases:
-        chess_fen = (case.get("quality_report") or {}).get("chess_fen") or {}
+        chess_fen = _case_chess_fen_summary(case)
         if chess_fen.get("diagram_count"):
             return case
     if cases:
         return cases[0]
     raise ValueError("Smoke report does not contain cases.")
+
+
+def _case_chess_fen_summary(case: dict[str, Any]) -> dict[str, Any]:
+    """Return the chess FEN report from smoke or premium-corpus payloads."""
+    for container_key in ("quality_report", "quality"):
+        summary = (case.get(container_key) or {}).get("chess_fen") or {}
+        if summary:
+            return summary
+    return {}
 
 
 def _review_item(record: dict[str, Any]) -> dict[str, Any]:
@@ -143,20 +179,102 @@ def _review_sort_key(item: dict[str, Any]) -> tuple[int, float, int, str]:
     return (priority, -float(item.get("confidence") or 0.0), int(item.get("page") or 0), str(item.get("filename") or ""))
 
 
-def _copy_review_crops(epub_path: Path, selected: list[dict[str, Any]], crops_dir: Path) -> None:
-    if not epub_path.exists():
-        return
+def _resolve_crop_source_dirs(
+    report_path: Path,
+    crop_source_dirs: Iterable[str | Path] | None,
+) -> list[Path]:
+    explicit = [Path(path) for path in (crop_source_dirs or []) if str(path).strip()]
+    defaults = [
+        report_path.parent / "crops",
+        Path("reference_inputs/chess_fen/crops"),
+        Path("reports/chess_fen/review_queue_latest/crops"),
+        Path("reports/chess_fen/review_queue"),
+        Path("reports/chess_fen/fundamenty_crops"),
+    ]
+    seen: set[str] = set()
+    resolved: list[Path] = []
+    for path in [*explicit, *defaults]:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        resolved.append(path)
+    return resolved
+
+
+def _copy_review_crops(
+    epub_path: Path,
+    selected: list[dict[str, Any]],
+    crops_dir: Path,
+    *,
+    crop_source_dirs: Iterable[Path] = (),
+) -> dict[str, int]:
     wanted = {str(item.get("filename") or "") for item in selected if item.get("filename")}
     if not wanted:
-        return
-    with zipfile.ZipFile(epub_path) as archive:
-        by_name = {Path(name).name: name for name in archive.namelist()}
-        for filename in wanted:
-            source_name = by_name.get(filename)
-            if not source_name:
+        return {"copied_count": 0, "missing_count": 0}
+
+    copied: set[str] = set()
+    for filename in sorted(wanted):
+        existing = crops_dir / filename
+        if existing.is_file():
+            copied.add(filename)
+            _mark_crop_source(selected, filename, f"existing:{existing}")
+
+    if epub_path.is_file():
+        with zipfile.ZipFile(epub_path) as archive:
+            by_name = {Path(name).name: name for name in archive.namelist()}
+            for filename in wanted - copied:
+                source_name = by_name.get(filename)
+                if not source_name:
+                    continue
+                with archive.open(source_name) as src, (crops_dir / filename).open("wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                copied.add(filename)
+                _mark_crop_source(selected, filename, f"epub:{epub_path}")
+
+    missing = wanted - copied
+    if missing:
+        fallback_index = _index_crop_sources(crop_source_dirs, missing)
+        for filename in sorted(missing):
+            source = fallback_index.get(filename)
+            if not source:
                 continue
-            with archive.open(source_name) as src, (crops_dir / filename).open("wb") as dst:
-                shutil.copyfileobj(src, dst)
+            destination = crops_dir / filename
+            if source.resolve() != destination.resolve():
+                shutil.copyfile(source, destination)
+            copied.add(filename)
+            _mark_crop_source(selected, filename, str(source))
+
+    return {"copied_count": len(copied), "missing_count": len(wanted - copied)}
+
+
+def _index_crop_sources(source_dirs: Iterable[Path], filenames: set[str]) -> dict[str, Path]:
+    index: dict[str, Path] = {}
+    remaining = set(filenames)
+    for source_dir in source_dirs:
+        if not remaining or not source_dir.exists() or not source_dir.is_dir():
+            continue
+        for filename in sorted(list(remaining)):
+            direct = source_dir / filename
+            if direct.is_file():
+                index[filename] = direct
+                remaining.remove(filename)
+        if not remaining:
+            break
+        for candidate in source_dir.rglob("*.png"):
+            name = candidate.name
+            if name in remaining and candidate.is_file():
+                index[name] = candidate
+                remaining.remove(name)
+                if not remaining:
+                    break
+    return index
+
+
+def _mark_crop_source(selected: list[dict[str, Any]], filename: str, source: str) -> None:
+    for item in selected:
+        if str(item.get("filename") or "") == filename:
+            item["crop_source"] = source
 
 
 def _attach_review_crop_recognition(
@@ -261,6 +379,114 @@ def _build_openai_label_assist_requests(
     return requests
 
 
+def _build_manual_verification_draft(selected: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in selected:
+        deterministic_fen = str(item.get("review_crop_fen") or "").strip()
+        deterministic_is_publishable = bool(deterministic_fen and item.get("review_crop_requires_review") is False)
+        rows.append(
+            {
+                "id": str(item.get("id") or ""),
+                "page": item.get("page"),
+                "diagram_index": _diagram_index_from_filename(str(item.get("filename") or "")),
+                "crop_path": str(item.get("crop_path") or ""),
+                "fen": "",
+                "deterministic_suggested_fen": deterministic_fen if deterministic_is_publishable else "",
+                "deterministic_confidence": item.get("review_crop_confidence"),
+                "deterministic_warnings": item.get("review_crop_warnings") or [],
+                "original_candidate_fen": item.get("candidate_fen") or "",
+                "original_candidate_placement": item.get("candidate_placement") or "",
+                "candidate_matches_review_crop": bool(item.get("candidate_matches_review_crop")),
+                "label_status": "needs_manual_fen",
+                "verified_by": "",
+                "verified_at": "",
+                "accepted_for_corpus": False,
+                "notes": "Review-only draft. Copy a checked FEN into fen, then fill verified_by and verified_at before promotion.",
+            }
+        )
+    return rows
+
+
+def _diagram_index_from_filename(filename: str) -> int | str:
+    stem = Path(filename).stem
+    suffix = stem.rsplit("_", 1)[-1] if "_" in stem else ""
+    if suffix.isdigit():
+        return int(suffix)
+    return ""
+
+
+def _manual_review_sheet_html(summary: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+    cards = "\n".join(_manual_review_card(row) for row in rows)
+    return "\n".join(
+        [
+            "<!doctype html>",
+            "<html lang=\"en\">",
+            "<head>",
+            "<meta charset=\"utf-8\">",
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
+            "<title>KindleMaster Chess FEN Review</title>",
+            "<style>",
+            "body{margin:0;background:#f6efe5;color:#1d241c;font-family:Georgia,'Times New Roman',serif;}",
+            "main{max-width:1180px;margin:0 auto;padding:32px 20px 56px;}",
+            "h1{font-size:34px;margin:0 0 8px;} .meta{color:#5f675d;margin:0 0 24px;}",
+            ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px;}",
+            ".card{background:#fffaf2;border:1px solid #dfcdb7;border-radius:18px;padding:14px;box-shadow:0 18px 50px rgba(47,38,24,.10);}",
+            ".card img{width:100%;aspect-ratio:1/1;object-fit:contain;background:#efe7d8;border-radius:12px;border:1px solid #ead8c2;}",
+            ".tag{display:inline-block;margin:10px 8px 8px 0;padding:4px 9px;border-radius:999px;background:#e8f5e9;color:#116a31;font-weight:700;font-size:12px;}",
+            ".tag.review{background:#fff1d6;color:#9a4b00}.tag.mismatch{background:#ffe7e1;color:#a8361e}",
+            "dl{display:grid;grid-template-columns:96px 1fr;gap:6px 10px;margin:10px 0 0;font-size:13px;}dt{font-weight:700;color:#5f675d;}dd{margin:0;word-break:break-word;}",
+            "code{font-family:'Cascadia Mono','Courier New',monospace;font-size:12px;color:#20251f;background:#f1eadf;padding:2px 4px;border-radius:5px;}",
+            "textarea{width:100%;box-sizing:border-box;min-height:54px;margin-top:10px;border:1px solid #d8c5ae;border-radius:10px;background:#fffdf8;padding:8px;font-family:'Cascadia Mono','Courier New',monospace;font-size:12px;}",
+            "</style>",
+            "</head>",
+            "<body><main>",
+            "<h1>Chess FEN Manual Review</h1>",
+            f"<p class=\"meta\">{_html(summary.get('exported_count'))} crops, {_html(summary.get('deterministic_suggestion_count'))} deterministic suggestions. Review-only: copying into <code>fen</code> still requires human verification.</p>",
+            "<section class=\"grid\">",
+            cards,
+            "</section>",
+            "</main></body></html>",
+        ]
+    )
+
+
+def _manual_review_card(row: dict[str, Any]) -> str:
+    suggestion = str(row.get("deterministic_suggested_fen") or "")
+    original = str(row.get("original_candidate_fen") or "")
+    crop = str(row.get("crop_path") or "")
+    tags = [
+        "<span class=\"tag review\">needs manual FEN</span>",
+        "<span class=\"tag\">suggestion</span>" if suggestion else "<span class=\"tag review\">no safe suggestion</span>",
+    ]
+    if not row.get("candidate_matches_review_crop"):
+        tags.append("<span class=\"tag mismatch\">candidate mismatch</span>")
+    return "\n".join(
+        [
+            "<article class=\"card\">",
+            f"<img src=\"{_attr(crop)}\" alt=\"{_attr(row.get('id'))}\">" if crop else "",
+            "".join(tags),
+            "<dl>",
+            f"<dt>ID</dt><dd><code>{_html(row.get('id'))}</code></dd>",
+            f"<dt>Page</dt><dd>{_html(row.get('page'))}</dd>",
+            f"<dt>Crop</dt><dd><code>{_html(crop)}</code></dd>",
+            f"<dt>Suggested</dt><dd><code>{_html(suggestion or '-')}</code></dd>",
+            f"<dt>Original</dt><dd><code>{_html(original or '-')}</code></dd>",
+            f"<dt>Warnings</dt><dd>{_html(', '.join(str(item) for item in row.get('deterministic_warnings') or []) or '-')}</dd>",
+            "</dl>",
+            f"<textarea aria-label=\"Verified FEN for {_attr(row.get('id'))}\" placeholder=\"Paste verified FEN here after checking the crop\">{_html(suggestion)}</textarea>",
+            "</article>",
+        ]
+    )
+
+
+def _html(value: Any) -> str:
+    return html.escape(str(value if value is not None else ""), quote=False)
+
+
+def _attr(value: Any) -> str:
+    return html.escape(str(value if value is not None else ""), quote=True)
+
+
 def _image_data_url(path: Path, *, max_bytes: int) -> str:
     data = path.read_bytes()
     if len(data) > max(1, int(max_bytes)):
@@ -363,6 +589,8 @@ def _review_prompt(summary: dict[str, Any]) -> str:
             f"- `queue.jsonl`: {summary.get('exported_count', 0)} prioritized cases.",
             "- `crops/`: matching board crops.",
             f"- `openai_label_assist_requests.jsonl`: {summary.get('openai_request_count', 0)} optional OpenAI Responses API request bodies.",
+            f"- `manual_verification_draft.jsonl`: {summary.get('manual_verification_draft_count', 0)} rows to fill after checking crops.",
+            "- `manual_review_sheet.html`: browser-friendly crop contact sheet for manual labeling.",
             "",
             "If a row contains `review_crop_*` fields, treat them as the",
             "deterministic reading of the actual exported crop. If",
@@ -387,6 +615,12 @@ def main() -> int:
     parser.add_argument("--max-items", type=int, default=64)
     parser.add_argument("--template-dir", default="")
     parser.add_argument("--min-confidence", type=float, default=0.70)
+    parser.add_argument(
+        "--crop-source-dir",
+        action="append",
+        default=[],
+        help="Additional directory to search for existing crop PNGs; can be repeated.",
+    )
     parser.add_argument("--openai-model", default=DEFAULT_OPENAI_CHESS_FEN_REVIEW_MODEL)
     parser.add_argument("--openai-max-image-bytes", type=int, default=DEFAULT_OPENAI_REVIEW_MAX_IMAGE_BYTES)
     args = parser.parse_args()
@@ -396,6 +630,7 @@ def main() -> int:
         max_items=args.max_items,
         template_dir=args.template_dir or None,
         min_confidence=args.min_confidence,
+        crop_source_dirs=args.crop_source_dir,
         openai_model=args.openai_model,
         openai_max_image_bytes=args.openai_max_image_bytes,
     )

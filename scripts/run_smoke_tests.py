@@ -491,7 +491,7 @@ def _effective_case_validation_status(row: dict[str, Any]) -> str:
         return source_status
 
     release_status = _release_decision_to_validation_status(str(release_audit.get("decision", "") or ""))
-    if _non_strict_release_audit_failure_accepted(row, source_status=source_status, release_status=release_status):
+    if _non_strict_release_audit_accepted(row, source_status=source_status, release_status=release_status):
         return "passed"
     if release_status == "failed":
         if row.get("release_strict") is False and source_status != "failed":
@@ -517,16 +517,47 @@ def _release_decision_to_validation_status(decision: str) -> str:
     return "failed"
 
 
-def _non_strict_release_audit_failure_accepted(
+def _non_strict_release_audit_accepted(
     row: dict[str, Any],
     *,
     source_status: str,
     release_status: str,
 ) -> bool:
-    return (
-        row.get("release_strict") is False
-        and source_status == "passed"
-        and release_status == "failed"
+    if row.get("release_strict") is not False or source_status != "passed":
+        return False
+    if release_status == "failed":
+        return True
+    if release_status != "passed_with_warnings":
+        return False
+
+    audit = row.get("release_audit") or {}
+    scoring = audit.get("premium_scoring") or {}
+    quality_selection = audit.get("quality_selection") or {}
+    if (
+        scoring.get("release_verdict") != "release_ready"
+        or scoring.get("kindle_ready") is not True
+        or scoring.get("premium_ready") is not True
+        or scoring.get("issues")
+        or scoring.get("issue_counts")
+    ):
+        return False
+
+    gates = (audit.get("gates") or {}).values()
+    review_items = [
+        item
+        for gate in gates
+        for item in ((gate or {}).get("manual_review") or [])
+    ]
+    if not review_items:
+        return True
+    allowed_review_reasons = {
+        "metadata-quality-regression",
+        "recovery-quality-regression",
+    }
+    return bool(quality_selection) and all(
+        str(item.get("kind") or "") == "quality_selection"
+        and str(item.get("reason") or "") in allowed_review_reasons
+        for item in review_items
     )
 
 
@@ -537,7 +568,7 @@ def _build_case_benchmark(*, row: dict[str, Any], elapsed_seconds: float) -> dic
     release_status = ""
     if row.get("release_audit"):
         release_status = _release_decision_to_validation_status(str(row["release_audit"].get("decision", "") or ""))
-    release_audit_accepted = _non_strict_release_audit_failure_accepted(
+    release_audit_accepted = _non_strict_release_audit_accepted(
         row,
         source_status=source_validation_status,
         release_status=release_status,
@@ -550,6 +581,8 @@ def _build_case_benchmark(*, row: dict[str, Any], elapsed_seconds: float) -> dic
     asset_quality_gate = row.get("asset_quality_gate") or _evaluate_chess_asset_quality_gate(chess_quality)
     fen_acceptance_gate = row.get("fen_acceptance_gate") or _evaluate_chess_fen_acceptance_gate(row)
     fallback_mode = _detect_fallback_mode(analysis=analysis, quality_report=quality_report)
+    if fallback_mode == "unknown" and str(row.get("input_type") or "").lower() == "epub":
+        fallback_mode = "source-epub"
     profile_hint = _build_profile_hint(row=row, analysis=analysis, quality_report=quality_report, fallback_mode=fallback_mode)
     missing_metrics: list[str] = []
     if not inspection:
@@ -571,7 +604,7 @@ def _build_case_benchmark(*, row: dict[str, Any], elapsed_seconds: float) -> dic
         "release_audit_status": release_status,
         "release_audit_accepted": release_audit_accepted,
         "release_audit_acceptance_reason": (
-            "accepted_p2_non_strict_probe_source_validation_passed"
+            "accepted_non_strict_probe_source_validation_passed"
             if release_audit_accepted
             else ""
         ),

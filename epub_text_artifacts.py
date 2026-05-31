@@ -31,6 +31,15 @@ TECHNICAL_PLACEHOLDER_RE = re.compile(
     r"(?i)(?:__KM_PROTECTED_\d+__|\bTODO\b|\bFIXME\b)"
 )
 LAYOUT_PLACEHOLDER_RE = re.compile(r"(?i)\b(?:Object|State)\s+\d+\b|\bRank\s*=\s*\d+\s*\*\s*\d+\b")
+CHESS_TECHNICAL_TEXT_CLASSES = {
+    "chess-notation-text",
+    "chess-pgn-text",
+    "chess-pgn-review-text",
+    "diagram-fen",
+    "diagram-fen-code",
+    "scan-chess-ocr-marker",
+    "notation-heavy",
+}
 KNOWN_CAMEL_DOMAIN_TOKENS = {
     "OrderRequest",
     "OrderResponse",
@@ -171,7 +180,21 @@ def _extract_visible_text(raw: bytes) -> str:
     soup = BeautifulSoup(raw, "html.parser")
     for node in soup(["script", "style", "svg", "math"]):
         node.decompose()
+    for node in soup.find_all(class_=lambda value: _has_chess_technical_class(value)):
+        node.decompose()
     return soup.get_text(" ", strip=True)
+
+
+def _has_chess_technical_class(value: object) -> bool:
+    if not value:
+        return False
+    if isinstance(value, str):
+        classes = value.split()
+    elif isinstance(value, (list, tuple, set)):
+        classes = [str(item) for item in value]
+    else:
+        classes = [str(value)]
+    return any(item in CHESS_TECHNICAL_TEXT_CLASSES for item in classes)
 
 
 def _analyze_text(document_path: str, text: str) -> TextArtifactMetrics:

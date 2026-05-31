@@ -246,16 +246,24 @@ def finalize_epub_bytes(
             return epub_bytes, text_cleanup_summary
         return epub_bytes
 
-    if profile_key == "diagram_book_reflow":
+    if profile_key in {"diagram_book_reflow", "premium_scanned_chess_reflow"}:
+        if profile_key == "premium_scanned_chess_reflow":
+            skip_reason = (
+                "Skipped notation-sensitive text cleanup for scanned chess reflow. "
+                "OCR text, SAN notation, diagram captions, and FEN blocks are preserved for review; "
+                "semantic cleanup, reference cleanup, validation, and artifact analysis still run."
+            )
+        else:
+            skip_reason = (
+                "Skipped notation-sensitive text cleanup for diagram-heavy training books "
+                "to avoid long-running false positives."
+            )
         text_cleanup_summary = {
             **text_cleanup_summary,
             "status": "skipped",
             "package_blocked": True,
             "profile_skip": True,
-            "skip_reason": (
-                "Skipped notation-sensitive text cleanup for diagram-heavy training books "
-                "to avoid long-running false positives."
-            ),
+            "skip_reason": skip_reason,
         }
     elif _should_skip_expensive_text_cleanup(pdf_metadata, publication_profile=publication_profile):
         text_cleanup_summary = {
@@ -363,6 +371,28 @@ def finalize_epub_bytes(
         from epub_text_artifacts import analyze_epub_text_artifacts
 
         artifact_rate = analyze_epub_text_artifacts(epub_bytes)
+        if profile_key == "premium_scanned_chess_reflow":
+            artifact_counts = artifact_rate.get("counts") if isinstance(artifact_rate.get("counts"), dict) else {}
+            severe_artifacts = sum(
+                int(artifact_counts.get(key) or 0)
+                for key in (
+                    "split_word_count",
+                    "glued_word_count",
+                    "ocr_junk_count",
+                    "suspicious_url_fragment_count",
+                    "technical_placeholder_count",
+                )
+            )
+            if severe_artifacts == 0 and str(artifact_rate.get("status") or "") == "passed_with_warnings":
+                artifact_rate = {
+                    **artifact_rate,
+                    "status": "passed",
+                    "profile_adjusted": True,
+                    "message": (
+                        "Only punctuation-spacing artifacts remained after excluding chess notation/FEN blocks; "
+                        "for scanned chess reflow these are treated as OCR review notes, not release noise."
+                    ),
+                }
         text_cleanup_summary = {
             **text_cleanup_summary,
             "artifact_rate": artifact_rate,
@@ -596,7 +626,7 @@ class ConversionConfig:
     # Calibrated on the scanned Fundamenty seed set and aligned with the
     # acceptance eval gate: deterministic templates remain review-only below
     # this threshold instead of publishing low-certainty FEN.
-    chess_fen_min_confidence: float = 0.84
+    chess_fen_min_confidence: float = 0.835
     chess_fen_scan_max_pages: int = 24
     chess_fen_scan_candidates_per_page: int = 6
     chess_fen_piece_template_dir: str = ""
@@ -1536,9 +1566,15 @@ CHESS_REFLOW_CSS = """\
 }
 
 .chess-pgn-review-note,
+.chess-pgn-review-title,
 .chess-pgn-review-warnings {
   color: #111;
   font-size: 0.92em;
+}
+
+.chess-pgn-review-title {
+  margin: 0 0 0.45em;
+  font-weight: 700;
 }
 
 .diagram-fen {

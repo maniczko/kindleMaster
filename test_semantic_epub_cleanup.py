@@ -27,6 +27,7 @@ from kindle_semantic_cleanup import (
     _expand_semantic_blocks,
     _get_spine_xhtml_paths,
     _inject_problem_solution_links,
+    _is_introductory_publication_heading,
     _locate_opf,
     _looks_like_training_book,
     _manual_review_from_heading_decisions,
@@ -43,6 +44,10 @@ from kindle_semantic_cleanup import (
 
 
 class SemanticEpubCleanupTests(unittest.TestCase):
+    def test_generic_content_heading_does_not_challenge_metadata_title(self):
+        self.assertTrue(_is_introductory_publication_heading("Content"))
+        self.assertTrue(_is_introductory_publication_heading("Table of Contents"))
+
     def _build_epub_bytes(self, files: dict[str, bytes | str]) -> bytes:
         output = io.BytesIO()
         with zipfile.ZipFile(output, "w") as archive:
@@ -108,6 +113,61 @@ class SemanticEpubCleanupTests(unittest.TestCase):
         with zipfile.ZipFile(io.BytesIO(repacked), "r") as archive:
             self.assertEqual(archive.read("mimetype"), b"application/epub+zip")
             self.assertIn("EPUB/content.opf", archive.namelist())
+
+    def test_scanned_chess_reflow_does_not_promote_ocr_captions_to_headings(self):
+        epub_bytes = self._build_epub_bytes(
+            {
+                "mimetype": "application/epub+zip",
+                "META-INF/container.xml": """<?xml version="1.0"?>
+<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
+  <rootfiles><rootfile full-path="EPUB/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>""",
+                "EPUB/content.opf": """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Fundamenty</dc:title>
+    <dc:creator>Unknown</dc:creator>
+    <dc:language>pl</dc:language>
+    <dc:identifier id="bookid">urn:test:fundamenty</dc:identifier>
+  </metadata>
+  <manifest>
+    <item id="chapter-1" href="chapter_001.xhtml" media-type="application/xhtml+xml"/>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+  </manifest>
+  <spine>
+    <itemref idref="chapter-1"/>
+    <itemref idref="nav"/>
+  </spine>
+</package>""",
+                "EPUB/chapter_001.xhtml": """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>1. Mating motifs</title></head>
+<body>
+  <h1>1. Mating motifs</h1>
+  <p>Diagram 1-9 Vv Di: 1+ M.Gerusel - G.Sosonko 1GR Bad Lauterberg 1977 6</p>
+  <p>5 &gt; Ex. 6-7&lt; xk A DEX. 6-10 ke &amp; Vv ' {</p>
+  <p class="chess-notation-text notation-heavy">1...Qe2+! 2.Kh1 Rxh2!!</p>
+</body></html>""",
+                "EPUB/nav.xhtml": """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<body><nav epub:type="toc"><ol><li><a href="chapter_001.xhtml">1. Mating motifs</a></li></ol></nav></body></html>""",
+            }
+        )
+
+        cleaned_epub, report = finalize_epub_for_kindle(
+            epub_bytes,
+            title="Fundamenty",
+            author="Unknown",
+            language="pl",
+            publication_profile="premium_scanned_chess_reflow",
+            return_report=True,
+            report_mode="rich",
+        )
+
+        with zipfile.ZipFile(io.BytesIO(cleaned_epub), "r") as archive:
+            chapter = archive.read("EPUB/chapter_001.xhtml").decode("utf-8")
+
+        self.assertNotIn("<h3", chapter)
+        self.assertNotEqual(report["gates"]["C"]["status"], "fail")
 
     def test_finalize_epub_demotes_numeric_image_page_fragment_from_spine_and_toc(self):
         epub_bytes = self._build_epub_bytes(

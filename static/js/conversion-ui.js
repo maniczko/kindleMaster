@@ -202,6 +202,7 @@
     let busyMessage = "Przetwarzam dokument.";
     let recentConversions = [];
     let libraryItems = [];
+    let documentLoadToken = 0;
     const BASE_CONVERSION_POLL_INTERVAL_MS = 1500;
     const MAX_CONVERSION_POLL_INTERVAL_MS = 5000;
     const CONVERSION_REQUEST_TIMEOUT_MS = 15000;
@@ -624,6 +625,7 @@
     }
 
     async function loadPdf(file) {
+      const loadToken = ++documentLoadToken;
       setStatus("Wczytuje PDF i renderuje wybrana strone...", "info");
       selectedFile = file;
       selectedSourceType = "pdf";
@@ -656,10 +658,13 @@
 
       await renderCurrentPage();
       updateExportModeLabel();
-      setStatus("PDF gotowy. Mozesz przechodzic miedzy stronami i rysowac kadr.", "success");
+      if (loadToken === documentLoadToken) {
+        setStatus("PDF gotowy. Mozesz przechodzic miedzy stronami i rysowac kadr.", "success");
+      }
     }
 
     async function loadDocx(file) {
+      const loadToken = ++documentLoadToken;
       setStatus("Wczytuje DOCX i przygotowuje tryb analizy strukturalnej...", "info");
       selectedFile = file;
       selectedSourceType = "docx";
@@ -674,7 +679,9 @@
       fileSize.textContent = formatBytes(file.size);
       updateCurrentFileState(file, "docx");
       showDocxPreviewState();
-      setStatus("DOCX gotowy. Podglad stron jest wylaczony, ale analiza i konwersja EPUB sa dostepne.", "success");
+      if (loadToken === documentLoadToken) {
+        setStatus("DOCX gotowy. Podglad stron jest wylaczony, ale analiza i konwersja EPUB sa dostepne.", "success");
+      }
     }
 
     function rerenderForZoom(statusMessage) {
@@ -1336,6 +1343,7 @@
 
     async function convertPdfToEpub() {
       if (!selectedFile) { setStatus("Najpierw wgraj dokument.", "error"); return; }
+      documentLoadToken += 1;
       setBusy(true);
       let conversionJobStarted = false;
       try {

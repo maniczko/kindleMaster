@@ -2020,7 +2020,7 @@ def _record_review_html(record: ChessPgnRecord) -> str:
     return (
         '<section class="chess-pgn-review" '
         f'id="{safe_id}" data-pgn-status="{status}" data-pgn-confidence="{confidence:.3f}">'
-        f"<h2>PGN do weryfikacji: {safe_title}</h2>"
+        f'<p class="chess-pgn-review-title"><strong>PGN do weryfikacji: {safe_title}</strong></p>'
         f'<p class="chess-pgn-review-note">Nie publikuje PGN/FEN automatycznie: {reason}</p>'
         f"{warning_markup}"
         f'<pre class="chess-pgn-review-text"><code>{html.escape(raw)}</code></pre>'

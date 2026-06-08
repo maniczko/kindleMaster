@@ -508,9 +508,11 @@ def _extract_pdf_metadata(pdf_path: str) -> dict[str, object]:
                     author = filename_author
                     metadata_inference["author"].append("filename-author")
                 else:
-                    author = str(inferred.get("author", "") or "") or "Unknown"
+                    author = str(inferred.get("author", "") or "") or "Unknown Author"
                     if inferred.get("author"):
                         metadata_inference["author"].append("text-author")
+            if not author:
+                author = "Unknown Author"
         if publisher:
             metadata_inference["publisher"].append("text-publisher")
         subjects = list(inferred.get("subjects", []) or [])
@@ -537,7 +539,7 @@ def _extract_pdf_metadata(pdf_path: str) -> dict[str, object]:
         print(f"Warning: Could not extract PDF metadata: {error}")
         return {
             "title": file_stem,
-            "author": "Unknown",
+            "author": "Unknown Author",
             "creator": "",
             "publisher": "",
             "description": "",

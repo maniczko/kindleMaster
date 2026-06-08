@@ -16,6 +16,15 @@ from ml_feedback import (
 
 
 Analyzer = Callable[[str], Any]
+QUALITY_COVERAGE_MIN_ACCEPTED = 10
+QUALITY_COVERAGE_CLASSES = (
+    "magazine",
+    "dense_handbook",
+    "business_report",
+    "scan_ocr",
+    "diagram_chess",
+    "docx_rich",
+)
 
 
 def build_ml_datasets(
@@ -50,6 +59,9 @@ def build_ml_datasets(
         if not isinstance(case, Mapping):
             continue
         case_id = str(case.get("id", "") or "").strip()
+        if str(case.get("ml_training") or "").strip().lower() == "full_corpus_only":
+            skipped.append({"case_id": case_id, "reason": "full_corpus_only"})
+            continue
         input_type = str(case.get("input_type", "") or "").strip().lower()
         if input_type not in {"pdf", "docx"}:
             skipped.append({"case_id": case_id, "reason": f"unsupported_input_type:{input_type or 'unknown'}"})
@@ -103,6 +115,7 @@ def build_ml_datasets(
     label_counts = dict(Counter(example["label"] for example in route_examples))
     missing_classes = [label for label in ROUTE_LABELS if label_counts.get(label, 0) <= 0]
     completeness_status = "ready" if not missing_classes else "insufficient_data"
+    quality_coverage = _quality_coverage_summary(quality_feedback_examples)
     completeness = {
         "status": completeness_status,
         "route_example_count": len(route_examples),
@@ -112,6 +125,8 @@ def build_ml_datasets(
         "magazine_quality_example_count": len(magazine_quality_examples),
         "quality_feedback_example_count": len(quality_feedback_examples),
         "quality_feedback_role_counts": dict(Counter(example.get("dataset_role", "unknown") for example in quality_feedback_examples)),
+        "quality_coverage_status": quality_coverage["status"],
+        "quality_coverage": quality_coverage,
         "heading_reference_example_count": len(heading_reference_examples),
         "route_label_counts": label_counts,
         "missing_route_classes": missing_classes,
@@ -196,6 +211,88 @@ def _review_example(item: Mapping[str, Any], *, source: str, report_path: Path, 
             "reason": str(item.get("reason", "") or ""),
         },
     }
+
+
+def _quality_coverage_summary(examples: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    rows = [dict(example) for example in examples if isinstance(example, Mapping)]
+    buckets: dict[str, dict[str, Any]] = {
+        name: {
+            "example_count": 0,
+            "accepted_count": 0,
+            "final_label_counts": {},
+            "gap_to_minimum": QUALITY_COVERAGE_MIN_ACCEPTED,
+            "status": "insufficient_data",
+        }
+        for name in QUALITY_COVERAGE_CLASSES
+    }
+    unclassified_count = 0
+    for row in rows:
+        classes = _quality_example_classes(row)
+        if not classes:
+            unclassified_count += 1
+        for class_name in classes:
+            if class_name not in buckets:
+                continue
+            bucket = buckets[class_name]
+            bucket["example_count"] += 1
+            if str(row.get("feedback_status", "") or "").lower() == "accepted":
+                bucket["accepted_count"] += 1
+            label = str(row.get("final_label", "") or "unknown")
+            label_counts = dict(bucket.get("final_label_counts") or {})
+            label_counts[label] = int(label_counts.get(label, 0)) + 1
+            bucket["final_label_counts"] = label_counts
+    gaps: list[dict[str, Any]] = []
+    for class_name, bucket in buckets.items():
+        gap = max(0, QUALITY_COVERAGE_MIN_ACCEPTED - int(bucket["accepted_count"]))
+        bucket["gap_to_minimum"] = gap
+        bucket["status"] = "ready" if gap == 0 else "insufficient_data"
+        if gap:
+            gaps.append(
+                {
+                    "class": class_name,
+                    "accepted_count": bucket["accepted_count"],
+                    "required_count": QUALITY_COVERAGE_MIN_ACCEPTED,
+                    "gap": gap,
+                }
+            )
+    return {
+        "status": "ready" if not gaps else "insufficient_data",
+        "minimum_accepted_per_class": QUALITY_COVERAGE_MIN_ACCEPTED,
+        "classes": buckets,
+        "gaps": gaps,
+        "example_count": len(rows),
+        "unclassified_count": unclassified_count,
+        "accepted_example_count": sum(1 for row in rows if str(row.get("feedback_status", "") or "").lower() == "accepted"),
+        "online_learning": False,
+    }
+
+
+def _quality_example_classes(row: Mapping[str, Any]) -> list[str]:
+    markers = " ".join(
+        [
+            str(row.get("dataset_role", "") or ""),
+            str(row.get("document_class", "") or ""),
+            str(row.get("input_type", "") or ""),
+            str(row.get("route_label", "") or ""),
+            " ".join(str(tag) for tag in row.get("issue_tags", []) or []),
+            " ".join(str(value) for value in (row.get("route") or {}).values()) if isinstance(row.get("route"), Mapping) else "",
+            str(row.get("source_path", "") or ""),
+        ]
+    ).lower()
+    classes: list[str] = []
+    if "magazine" in markers:
+        classes.append("magazine")
+    if any(token in markers for token in ("dense_handbook", "dense", "handbook", "business_guide")):
+        classes.append("dense_handbook")
+    if any(token in markers for token in ("business_report", "document_like_report", "report")):
+        classes.append("business_report")
+    if any(token in markers for token in ("scan", "scanned", "ocr")):
+        classes.append("scan_ocr")
+    if any(token in markers for token in ("diagram", "chess")):
+        classes.append("diagram_chess")
+    if str(row.get("input_type", "") or "").lower() == "docx" or "docx" in markers:
+        classes.append("docx_rich")
+    return list(dict.fromkeys(classes))
 
 
 def _walk_payload(value: Any, *, prefix: str = "") -> Iterable[tuple[str, Any]]:

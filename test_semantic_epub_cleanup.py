@@ -16,26 +16,36 @@ from epub_package_ops import (
 )
 from epub_premium_scoring import score_epub_premium_quality
 from kindle_semantic_cleanup import (
+    _classify_reading_flow_document,
     _build_curated_toc_entries,
     _detect_cleanup_scope,
     _dominant_publication_heading,
     _extract_epub,
     _extract_reference_entries_from_block,
+    _filter_ocr_page_fallback_files_from_non_linear,
+    _filter_unreachable_non_linear_hrefs,
+    _is_clean_reading_profile,
+    _is_learning_mode_profile,
     _build_nav_xhtml,
     _build_toc_ncx,
     _derive_package_metadata,
     _expand_semantic_blocks,
+    _matches_ai_note_label,
     _get_spine_xhtml_paths,
     _inject_problem_solution_links,
     _is_introductory_publication_heading,
     _locate_opf,
+    _looks_like_inline_ai_note_text,
     _looks_like_training_book,
     _manual_review_from_heading_decisions,
     _normalize_existing_table_html,
     _normalize_text_light,
+    _plan_clean_reading_flow,
+    _publication_profile_key,
     _pack_epub,
     _process_chapter,
     _rebuild_toc_entries_from_final_chapters,
+    _strip_inline_ai_note_blocks,
     _repair_exercise_chapter,
     _should_include_in_toc,
     _snapshot_package_metadata,
@@ -56,6 +66,55 @@ class SemanticEpubCleanupTests(unittest.TestCase):
                 compress_type = zipfile.ZIP_STORED if archive_path == "mimetype" else zipfile.ZIP_DEFLATED
                 archive.writestr(archive_path, payload, compress_type=compress_type)
         return output.getvalue()
+
+    def test_ocr_page_fallback_chapters_stay_linear(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            keep_linear = root / "chapter_018.xhtml"
+            keep_scanned_board_linear = root / "chapter_020.xhtml"
+            keep_non_linear = root / "chapter_019.xhtml"
+            keep_linear.write_text(
+                '<html xmlns="http://www.w3.org/1999/xhtml"><body><figure class="ocr-page-fallback"><img src="images/ocr_page_17.jpeg"/></figure></body></html>',
+                encoding="utf-8",
+            )
+            keep_scanned_board_linear.write_text(
+                '<html xmlns="http://www.w3.org/1999/xhtml"><body><figure class="chess-diagram scanned-board"><img class="chess-diagram" src="images/scanned_board_p20_1.png"/></figure></body></html>',
+                encoding="utf-8",
+            )
+            keep_non_linear.write_text(
+                '<html xmlns="http://www.w3.org/1999/xhtml"><body><p>Low information page fragment.</p></body></html>',
+                encoding="utf-8",
+            )
+
+            filtered = _filter_ocr_page_fallback_files_from_non_linear(
+                [keep_linear, keep_non_linear, keep_scanned_board_linear],
+                {"chapter_018.xhtml", "chapter_019.xhtml", "chapter_020.xhtml"},
+            )
+
+            self.assertEqual(filtered, {"chapter_019.xhtml"})
+
+    def test_unreachable_non_linear_hrefs_are_filtered_for_epubcheck(self):
+        with TemporaryDirectory() as temp_dir:
+            package_dir = Path(temp_dir)
+            (package_dir / "chapter_001.xhtml").write_text(
+                '<html xmlns="http://www.w3.org/1999/xhtml"><body><a href="chapter_002.xhtml">Reachable extra</a></body></html>',
+                encoding="utf-8",
+            )
+            (package_dir / "chapter_002.xhtml").write_text(
+                '<html xmlns="http://www.w3.org/1999/xhtml"><body><p>Reachable.</p></body></html>',
+                encoding="utf-8",
+            )
+            (package_dir / "chapter_003.xhtml").write_text(
+                '<html xmlns="http://www.w3.org/1999/xhtml"><body><p>Unreachable.</p></body></html>',
+                encoding="utf-8",
+            )
+
+            filtered = _filter_unreachable_non_linear_hrefs(
+                package_dir,
+                {"chapter_002.xhtml", "chapter_003.xhtml"},
+            )
+
+            self.assertEqual(filtered, {"chapter_002.xhtml"})
 
     def test_package_ops_compat_exports_round_trip_package_primitives(self):
         epub_bytes = self._build_epub_bytes(
@@ -2164,7 +2223,7 @@ class SemanticEpubCleanupTests(unittest.TestCase):
             )
 
         self.assertEqual(title, "Easy Exercises")
-        self.assertEqual(author, "Unknown")
+        self.assertEqual(author, "Unknown Author")
         self.assertEqual(language, "en")
 
     def test_looks_like_training_book_requires_structure_not_specific_title(self):
@@ -2181,6 +2240,199 @@ class SemanticEpubCleanupTests(unittest.TestCase):
             looks_like_training = _looks_like_training_book([chapter_001], title="The Woodpecker Method")
 
         self.assertFalse(looks_like_training)
+
+    def test_publication_profile_helpers_normalize_and_classify(self):
+        self.assertEqual(_is_clean_reading_profile("kindle_clean_reading"), True)
+        self.assertEqual(_is_clean_reading_profile("Magazine_Clean_Reading"), True)
+        self.assertEqual(_is_learning_mode_profile("learning_mode"), True)
+        self.assertEqual(_publication_profile_key(" Kindle-Reading_01 "), "kindle_reading_01")
+
+    def test_ai_note_helpers_classify_label_and_inline_markers(self):
+        self.assertTrue(_matches_ai_note_label("Definicje"))
+        self.assertTrue(_matches_ai_note_label("Men are souring on - Definicje"))
+        self.assertFalse(_matches_ai_note_label("Regular Section"))
+
+        self.assertTrue(_looks_like_inline_ai_note_text("notatka AI"))
+        self.assertFalse(_looks_like_inline_ai_note_text("Random inline text"))
+        self.assertFalse(_looks_like_inline_ai_note_text(""))
+
+    def test_classify_reading_flow_document_covers_cover_empty_caption_and_front_matter(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cover_path = root / "cover.xhtml"
+            cover_path.write_text(
+                """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <body><h1>Cover</h1></body>
+</html>""",
+                encoding="utf-8",
+            )
+            empty_path = root / "chapter_001.xhtml"
+            empty_path.write_text(
+                """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <body></body>
+</html>""",
+                encoding="utf-8",
+            )
+            caption_path = root / "chapter_002.xhtml"
+            caption_path.write_text(
+                """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <body><p>Image caption stub</p><img src="figure.png"/></body>
+</html>""",
+                encoding="utf-8",
+            )
+            front_matter_path = root / "chapter_003.xhtml"
+            front_matter_path.write_text(
+                """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <body><h1>Contents</h1><p>Short contents list.</p></body>
+</html>""",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(_classify_reading_flow_document(cover_path).kind, "cover")
+            self.assertEqual(_classify_reading_flow_document(empty_path).kind, "empty")
+            self.assertEqual(_classify_reading_flow_document(caption_path).kind, "caption")
+            self.assertEqual(_classify_reading_flow_document(front_matter_path).kind, "front_matter")
+
+    def test_classify_reading_flow_document_uses_ai_label_hit_threshold(self):
+        with TemporaryDirectory() as temp_dir:
+            chapter_path = Path(temp_dir) / "chapter_001.xhtml"
+            chapter_path.write_text(
+                """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <body>
+    <h1>Analysis notes</h1>
+    <p>Definicje i architektura are two AI note markers in this section.
+       Co to jest and how this ties into implementation.</p>
+  </body>
+</html>""",
+                encoding="utf-8",
+            )
+
+            result = _classify_reading_flow_document(chapter_path)
+            self.assertEqual(result.kind, "ai_note")
+
+    def test_strip_inline_ai_note_blocks_respects_pl_architektura_exemption(self):
+        with TemporaryDirectory() as temp_dir:
+            chapter_path = Path(temp_dir) / "chapter_001.xhtml"
+            chapter_path.write_text(
+                """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <body><h2>Architektura</h2><p>Przykład treści.</p></body>
+</html>""",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(_strip_inline_ai_note_blocks(chapter_path, source_language="pl"), [])
+
+    def test_strip_inline_ai_note_blocks_removes_inline_note_for_non_pl_sources(self):
+        with TemporaryDirectory() as temp_dir:
+            chapter_path = Path(temp_dir) / "chapter_001.xhtml"
+            chapter_path.write_text(
+                """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <body>
+    <h2>Regular heading</h2>
+    <p>This is a random intro paragraph.</p>
+    <p>Notatka AI should be removed in non-PL mode.</p>
+  </body>
+</html>""",
+                encoding="utf-8",
+            )
+
+            removed = _strip_inline_ai_note_blocks(chapter_path, source_language="en")
+            self.assertEqual(len(removed), 1)
+            self.assertEqual(removed[0]["kind"], "ai_note_block")
+
+    def test_strip_and_plan_clean_reading_flow_records_inline_ai_note_blocks(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            chapter_article = root / "chapter_001.xhtml"
+            chapter_article.write_text(
+                """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <body>
+    <h1>Regular article</h1>
+    <h2>Definicje</h2>
+    <p>This is a real article body that should stay in the cleaned spine.</p>
+    <h3>Section</h3>
+    <p>Kept content.</p>
+  </body>
+                </html>""",
+                encoding="utf-8",
+            )
+            chapter_article_for_strip = root / "chapter_raw_notes.xhtml"
+            chapter_article_for_strip.write_text(chapter_article.read_text(encoding="utf-8"), encoding="utf-8")
+            chapter_caption = root / "chapter_002.xhtml"
+            chapter_caption.write_text(
+                """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <body><img src="figure.png"/></body>
+                </html>""",
+                encoding="utf-8",
+            )
+
+            removed = _strip_inline_ai_note_blocks(chapter_article_for_strip, source_language="en")
+            self.assertEqual(len(removed), 1)
+            self.assertEqual(removed[0]["kind"], "ai_note_block")
+
+            active_paths, report = _plan_clean_reading_flow(
+                [chapter_article, chapter_caption],
+                language="en",
+                publication_profile="kindle_clean_reading",
+            )
+
+            self.assertEqual(len(active_paths), 1)
+            self.assertIn("removed_count", report["summary"])
+            self.assertIn("inline_ai_note_block_count", report["summary"])
+            self.assertEqual(report["summary"]["inline_ai_note_block_count"], 1)
+
+    def test_plan_clean_reading_flow_skips_when_not_in_clean_mode(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            chapter = root / "chapter_001.xhtml"
+            chapter.write_text(
+                """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body><p>Regular prose for classic mode.</p></body></html>""",
+                encoding="utf-8",
+            )
+
+            active_paths, report = _plan_clean_reading_flow(
+                [chapter],
+                language="en",
+                publication_profile=None,
+            )
+
+            self.assertEqual(len(active_paths), 1)
+            self.assertEqual(report["status"], "skipped")
+
+    def test_plan_clean_reading_flow_fallback_to_largest_when_all_removed(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            chapter_a = root / "chapter_001.xhtml"
+            chapter_b = root / "chapter_002.xhtml"
+            chapter_a.write_text(
+                """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body><img src="a.png"/></body></html>""",
+                encoding="utf-8",
+            )
+            chapter_b.write_text(
+                """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body><img src="b.png"/></body></html>""",
+                encoding="utf-8",
+            )
+
+            active_paths, report = _plan_clean_reading_flow(
+                [chapter_a, chapter_b],
+                language="en",
+                publication_profile="kindle_clean_reading",
+            )
+
+            self.assertEqual(len(active_paths), 1)
+            self.assertEqual(report["summary"]["removed_count"], 1)
 
     def test_normalize_text_repairs_generic_registered_mark_mojibake(self):
         self.assertEqual(_normalize_text_light("ACME\u0139\u02dd Guide"), "ACME\u00ae Guide")

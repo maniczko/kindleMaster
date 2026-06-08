@@ -138,6 +138,29 @@ The governance evidence lanes are refreshed by:
 - `python kindlemaster.py test --suite quick` -> `reports/governance/quick.json`
 - `python kindlemaster.py test --suite release` -> `reports/governance/release.json`
 
+## Coverage
+
+Use this workflow for reliable local coverage (without recursive `kindlemaster.py` subprocesses):
+
+```powershell
+python -m coverage erase
+python scripts/run_test_coverage.py --suite quick
+```
+
+To run the CI-style core conversion coverage gate locally:
+
+```powershell
+python -m coverage erase
+python scripts/run_test_coverage.py --suite core --include="converter.py,docx_conversion.py,text_cleanup_engine.py,text_normalization.py,kindle_semantic_cleanup.py,epub_validation.py" --fail-under=45
+```
+
+To keep focus on the two files from the recent regression area:
+
+```powershell
+python -m coverage erase
+python scripts/run_test_coverage.py --suite custom test_app_runtime_services.py test_epub_validation.py --include="app_runtime_services.py,epub_validation.py"
+```
+
 Use [docs/independent-audit-mode.md](docs/independent-audit-mode.md) when evaluating one EPUB artifact independently from the whole-project status surface.
 
 ## Troubleshooting

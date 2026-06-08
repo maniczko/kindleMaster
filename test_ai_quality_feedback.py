@@ -36,6 +36,16 @@ class AIQualityFeedbackTests(unittest.TestCase):
                 "should_create_fixture": True,
                 "recommended_actions": ["review_toc_segmentation_heuristics"],
             },
+            "magazine_review": {
+                "truncated_titles": [
+                    {
+                        "href": "chapter.xhtml",
+                        "label": "AI as a Mentor in",
+                        "suggested_title": "AI as a Mentor",
+                        "confidence": 0.88,
+                    }
+                ]
+            },
         }
         with tempfile.TemporaryDirectory() as temp_dir:
             result = maybe_record_ai_quality_feedback(
@@ -54,6 +64,9 @@ class AIQualityFeedbackTests(unittest.TestCase):
         self.assertEqual(result["status"], "recorded")
         self.assertEqual(line["original_filename"], "book.epub")
         self.assertFalse(line["self_modifying_code_allowed"])
+        self.assertTrue(line["evidence_only"])
+        self.assertFalse(line["conversion_feedback"]["online_learning"])
+        self.assertEqual(line["issue_candidates"][0]["type"], "truncated_titles")
         self.assertEqual(snapshot["learning_signals"]["candidate_fix_count"], 3)
 
 

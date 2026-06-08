@@ -267,6 +267,25 @@ DENSE_TABLE_DIAGRAM_ARTIFACT_LABELS = {
     "step",
 }
 
+DENSE_REPEATED_MICRO_HEADING_LABELS = {
+    "description",
+    "definition",
+    "effectiveness measures",
+    "elements",
+    "guidelines and tools",
+    "inputs",
+    "limitations",
+    "outputs",
+    "preparation",
+    "purpose",
+    "session",
+    "stakeholders",
+    "strengths",
+    "techniques",
+    "usage considerations",
+    "wrap-up",
+}
+
 GENERIC_TABLE_SUBHEADING_KEYS = {
     "definicje",
     "definitions",
@@ -2106,9 +2125,16 @@ def _looks_like_dense_procedural_or_mapping_artifact(text: str) -> bool:
         return False
     if re.fullmatch(r"(?i)step\s+\d+\.?", normalized):
         return True
+    if re.match(
+        r"(?i)^\d+\.\s+(?:define|identify|select|describe|evaluate|determine|document|perform|prepare|review|conduct|analyze|analyse)\b.{24,}$",
+        normalized,
+    ):
+        return True
     if re.match(r"^\d+\.\s+[A-Z][^:]{3,80}:\s+.{16,}$", normalized):
         return True
     if len(re.findall(r"\b\d+(?:\.\d+){1,3}\.?\s+[A-Z][A-Za-z]+", normalized)) >= 2:
+        return True
+    if len(re.findall(r"\b\d{1,2}(?:\.\d+){0,3}\.?\s+[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)?", normalized)) >= 2:
         return True
     if re.match(r"(?i)^description\s+[A-Z][A-Za-z]+\s+[A-Z][A-Za-z]+\s+\w+\.?$", normalized):
         return True
@@ -2125,6 +2151,9 @@ def _looks_like_dense_micro_heading_noise(node: Tag, text: str) -> bool:
     normalized = _normalize_text(text).strip(" .:;")
     lowered = normalized.lower()
     if re.fullmatch(r"\.\d+\s+(?:strengths|limitations|description)", lowered):
+        return True
+    dense_key = re.sub(r"^\.\d+\s+", "", lowered).strip(" .:;")
+    if dense_key in DENSE_REPEATED_MICRO_HEADING_LABELS:
         return True
     if re.fullmatch(r"\d+(?:\.\d+){1,2}\s+\d+(?:\.\d+){2,3}", normalized):
         return True
@@ -2376,6 +2405,8 @@ def _should_include_dense_handbook_heading(
     if _looks_like_dense_table_or_diagram_artifact_heading(text):
         return False
     if _looks_like_dense_procedural_or_mapping_artifact(text):
+        return False
+    if _looks_like_dense_micro_heading_noise(_candidate_stub_tag(candidate), text):
         return False
     if level == 3 and not (_looks_like_numbered_heading(text) or len(text.split()) >= 3):
         return False

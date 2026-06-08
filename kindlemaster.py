@@ -46,12 +46,14 @@ QUICK_TESTS = [
     "test_chess_notation_regression.py",
     "test_chess_notation_reflow.py",
     "test_chess_pgn_extraction.py",
+    "test_scanned_chess_detector.py",
     "test_converter_publication_budget.py",
     "test_fixed_layout_render_budget.py",
     "test_converter_fixed_layout_budget_enforcement.py",
     "test_ml_features.py",
     "test_ml_route_model.py",
     "test_ml_datasets.py",
+    "test_ml_training_reporting.py",
     "test_ml_quality_verifier.py",
     "test_publication_analysis.py",
     "test_publication_pipeline.py",
@@ -122,7 +124,9 @@ RUNTIME_TESTS = [
 
 DISCOVER_ONLY_TESTS = [
     "test_conversion_api_contracts.py",
+    "test_converter_coverage_boost.py",
     "test_converter_metadata_cover.py",
+    "test_kindle_semantic_cleanup_coverage_boost.py",
     "test_full_magazine.py",
     "test_integration.py",
     "test_local_hostname_contract.py",
@@ -212,6 +216,22 @@ def main() -> int:
     ml_dataset.add_argument("--output-dir", default="reports/ml/datasets")
     ml_dataset.add_argument("--feedback-log", action="append", default=[])
 
+    ml_import = ml_subparsers.add_parser("import-reference", help="Import new reference_inputs PDF/DOCX files into manifest and ML labels.")
+    ml_import.add_argument("--manifest", default="reference_inputs/manifest.json")
+    ml_import.add_argument("--labels", default="reference_inputs/ml_labels.json")
+    ml_import.add_argument("--input-type", action="append", choices=("pdf", "docx"), default=[])
+    ml_import.add_argument("--dry-run", action="store_true")
+
+    ml_sample = ml_subparsers.add_parser("sample-reference", help="Create fast ML/corpus samples from large reference PDFs.")
+    ml_sample.add_argument("--manifest", default="reference_inputs/manifest.json")
+    ml_sample.add_argument("--labels", default="reference_inputs/ml_labels.json")
+    ml_sample.add_argument("--input-type", action="append", choices=("pdf",), default=[])
+    ml_sample.add_argument("--output-dir", default="reference_inputs/pdf_samples")
+    ml_sample.add_argument("--max-pages", type=int, default=80)
+    ml_sample.add_argument("--min-pages", type=int, default=150)
+    ml_sample.add_argument("--min-size-bytes", type=int, default=20 * 1024 * 1024)
+    ml_sample.add_argument("--dry-run", action="store_true")
+
     ml_feedback = ml_subparsers.add_parser("feedback", help="Log or export local conversion feedback without online learning.")
     ml_feedback.add_argument("--report-json", default="")
     ml_feedback.add_argument("--log", default="reports/ml/feedback/conversion_feedback.jsonl")
@@ -219,7 +239,7 @@ def main() -> int:
     ml_feedback.add_argument("--output", default="")
     ml_feedback.add_argument("--case-id", default="")
     ml_feedback.add_argument("--feedback-status", choices=("accepted", "needs_review", "rejected"), default="needs_review")
-    ml_feedback.add_argument("--quality-label", choices=("unknown", "good", "usable", "poor", "blocked"), default="unknown")
+    ml_feedback.add_argument("--quality-label", choices=("unknown", "premium", "good", "usable", "poor", "blocked"), default="unknown")
     ml_feedback.add_argument("--quality-score", default=None)
     ml_feedback.add_argument("--route-label", default="")
     ml_feedback.add_argument("--issue-tag", action="append", default=[])
@@ -411,6 +431,7 @@ def main() -> int:
                 strict_premium=bool(args.strict_premium),
                 timeout_seconds=int(args.timeout_seconds or 0),
                 command=command,
+                reports_dir=args.reports_dir,
                 captured_stdout=error.stdout,
                 captured_stderr=error.stderr,
             )
@@ -485,6 +506,32 @@ def _maybe_install_git_hooks(*, runtime_only: bool) -> dict[str, Any]:
 
 
 def _run_ml(args: argparse.Namespace) -> int:
+    if args.ml_command == "import-reference":
+        from scripts.import_reference_inputs import import_reference_inputs
+
+        payload = import_reference_inputs(
+            manifest_path=args.manifest,
+            labels_path=args.labels,
+            input_types=tuple(args.input_type or ("pdf", "docx")),
+            dry_run=args.dry_run,
+        )
+        _print_json(payload)
+        return 0
+    if args.ml_command == "sample-reference":
+        from scripts.sample_reference_inputs import sample_reference_inputs
+
+        payload = sample_reference_inputs(
+            manifest_path=args.manifest,
+            labels_path=args.labels,
+            input_types=tuple(args.input_type or ("pdf",)),
+            output_dir=args.output_dir,
+            max_pages=args.max_pages,
+            min_pages=args.min_pages,
+            min_size_bytes=args.min_size_bytes,
+            dry_run=args.dry_run,
+        )
+        _print_json(payload)
+        return 0
     if args.ml_command == "dataset":
         from scripts.build_ml_datasets import build_ml_datasets
 
@@ -517,7 +564,7 @@ def _run_ml(args: argparse.Namespace) -> int:
             report_path=args.report,
         )
         _print_json(payload)
-        return 0 if payload.get("status") == "trained" else 1
+        return 0 if payload.get("status") in {"trained", "training_unavailable"} else 1
     if args.ml_command == "evaluate":
         from scripts.train_route_classifier import evaluate_route_classifier
 
@@ -528,7 +575,7 @@ def _run_ml(args: argparse.Namespace) -> int:
         )
         _print_json(payload)
         return 0 if payload.get("status") != "failed" else 1
-    _print_json({"status": "failed", "error": "Missing ml subcommand. Use dataset, feedback, feedback-export, train, or evaluate."})
+    _print_json({"status": "failed", "error": "Missing ml subcommand. Use import-reference, sample-reference, dataset, feedback, feedback-export, train, or evaluate."})
     return 1
 
 
@@ -989,9 +1036,13 @@ def _audit_timeout_payload(
     strict_premium: bool,
     timeout_seconds: int,
     command: Sequence[str],
+    reports_dir: str,
     captured_stdout: bytes | str | None,
     captured_stderr: bytes | str | None,
 ) -> dict[str, Any]:
+    stage_evidence = _read_audit_stage_evidence(Path(reports_dir))
+    completed_stages = list(stage_evidence.get("completed_stages") or ["audit_subprocess_started"])
+    failed_stage = str(stage_evidence.get("current_stage") or "release_audit")
     return {
         "status": "incomplete",
         "decision": "pass_with_review",
@@ -999,8 +1050,9 @@ def _audit_timeout_payload(
         "epub_path": epub_path,
         "strict_premium": strict_premium,
         "timeout_seconds": timeout_seconds,
-        "completed_stages": ["audit_subprocess_started"],
-        "failed_stage": "release_audit",
+        "completed_stages": completed_stages,
+        "failed_stage": failed_stage,
+        "stage_evidence": stage_evidence,
         "issues": [
             {
                 "severity": "review",
@@ -1013,6 +1065,15 @@ def _audit_timeout_payload(
         "captured_stdout_tail": _decode_tail(captured_stdout),
         "captured_stderr_tail": _decode_tail(captured_stderr),
     }
+
+
+def _read_audit_stage_evidence(reports_dir: Path) -> dict[str, Any]:
+    stage_path = reports_dir / "release_audit_stage_report.json"
+    try:
+        payload = json.loads(stage_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _decode_tail(value: bytes | str | None, *, limit: int = 4000) -> str:

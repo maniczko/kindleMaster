@@ -133,6 +133,7 @@ class PublicationQualityReport:
     page_marker_count: int = 0
     detected_figures: int = 0
     detected_diagrams: int = 0
+    detected_scanned_board_count: int = 0
     detected_tables: int = 0
     fallback_pages: list[int] = field(default_factory=list)
     fallback_sections: list[str] = field(default_factory=list)
@@ -180,6 +181,7 @@ class PublicationQualityReport:
             "page_marker_count": self.page_marker_count,
             "detected_figures": self.detected_figures or self.figure_count,
             "detected_diagrams": self.detected_diagrams or self.diagram_count,
+            "detected_scanned_board_count": self.detected_scanned_board_count,
             "detected_tables": self.detected_tables or self.table_count,
             "fallback_pages": self.fallback_pages,
             "fallback_sections": self.fallback_sections,

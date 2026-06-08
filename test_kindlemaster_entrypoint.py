@@ -458,6 +458,49 @@ class KindleMasterEntrypointTests(unittest.TestCase):
         )
         print_mock.assert_called_once_with(payload)
 
+    def test_ml_sample_reference_command_routes_to_sampler(self) -> None:
+        payload = {"status": "dry_run", "created_count": 2}
+        with patch("scripts.sample_reference_inputs.sample_reference_inputs", return_value=payload) as sample_mock:
+            with patch.object(kindlemaster, "_print_json") as print_mock:
+                with patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "kindlemaster.py",
+                        "ml",
+                        "sample-reference",
+                        "--manifest",
+                        "manifest.json",
+                        "--labels",
+                        "labels.json",
+                        "--input-type",
+                        "pdf",
+                        "--output-dir",
+                        "reference_inputs/pdf_samples",
+                        "--max-pages",
+                        "60",
+                        "--min-pages",
+                        "120",
+                        "--min-size-bytes",
+                        "1000",
+                        "--dry-run",
+                    ],
+                ):
+                    exit_code = kindlemaster.main()
+
+        self.assertEqual(exit_code, 0)
+        sample_mock.assert_called_once_with(
+            manifest_path="manifest.json",
+            labels_path="labels.json",
+            input_types=("pdf",),
+            output_dir="reference_inputs/pdf_samples",
+            max_pages=60,
+            min_pages=120,
+            min_size_bytes=1000,
+            dry_run=True,
+        )
+        print_mock.assert_called_once_with(payload)
+
     def test_ml_feedback_command_logs_and_exports_without_training(self) -> None:
         logged = {"status": "logged", "record_id": "fb_1"}
         exported = {"status": "exported", "route_example_count": 1}

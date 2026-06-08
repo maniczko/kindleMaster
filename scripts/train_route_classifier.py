@@ -17,16 +17,33 @@ def train_route_classifier(
     model_path: str | Path = "models/route_classifier_v1.json",
     report_path: str | Path = "reports/ml/route_classifier_v1.metrics.json",
 ) -> dict[str, Any]:
-    try:
-        from sklearn.linear_model import LogisticRegression
-        from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, recall_score
-        from sklearn.preprocessing import StandardScaler
-    except Exception as error:
-        return {
-            "status": "failed",
+    sklearn = _import_sklearn_training_dependencies()
+    if sklearn.get("status") != "available":
+        rows = _load_jsonl(Path(dataset_path))
+        usable = [row for row in rows if row.get("label") in ROUTE_LABELS and isinstance(row.get("features"), Mapping)]
+        label_counts = Counter(row["label"] for row in usable)
+        payload = {
+            "status": "training_unavailable",
             "error": "scikit-learn is required for training. Install developer dependencies with python kindlemaster.py bootstrap.",
-            "exception": str(error),
+            "exception": sklearn.get("exception", ""),
+            "dependency": "scikit-learn",
+            "install_command": "python kindlemaster.py bootstrap",
+            "dataset_path": str(dataset_path),
+            "example_count": len(usable),
+            "label_counts": dict(label_counts),
+            "model_path": str(model_path),
+            "report_path": str(report_path),
+            "online_learning": False,
         }
+        _write_report(report_path, payload)
+        return payload
+
+    LogisticRegression = sklearn["LogisticRegression"]
+    accuracy_score = sklearn["accuracy_score"]
+    confusion_matrix = sklearn["confusion_matrix"]
+    f1_score = sklearn["f1_score"]
+    recall_score = sklearn["recall_score"]
+    StandardScaler = sklearn["StandardScaler"]
 
     rows = _load_jsonl(Path(dataset_path))
     usable = [row for row in rows if row.get("label") in ROUTE_LABELS and isinstance(row.get("features"), Mapping)]
@@ -44,7 +61,7 @@ def train_route_classifier(
     y = [row["label"] for row in usable]
     scaler = StandardScaler()
     x_scaled = scaler.fit_transform(x)
-    classifier = LogisticRegression(max_iter=1000, multi_class="auto", class_weight="balanced")
+    classifier = LogisticRegression(max_iter=1000, class_weight="balanced")
     classifier.fit(x_scaled, y)
     predictions = classifier.predict(x_scaled)
     classes = [str(item) for item in classifier.classes_]
@@ -134,30 +151,97 @@ def evaluate_route_classifier(
         return payload
     predictions = []
     correct = 0
+    expected_label_counts: Counter[str] = Counter()
+    predicted_label_counts: Counter[str] = Counter()
+    correct_by_label: Counter[str] = Counter()
+    document_class_counts: Counter[str] = Counter()
+    document_class_correct: Counter[str] = Counter()
+    confusion_counts: Counter[str] = Counter()
     for row in usable:
         prediction = predict_route(row["features"], model=model)
         predicted = str(prediction.get("profile", "") or "")
         expected = str(row.get("label", "") or "")
-        correct += int(predicted == expected)
+        is_correct = predicted == expected
+        correct += int(is_correct)
+        expected_label_counts[expected] += 1
+        predicted_label_counts[predicted] += 1
+        correct_by_label[expected] += int(is_correct)
+        document_class = str(row.get("document_class", "") or "unknown")
+        document_class_counts[document_class] += 1
+        document_class_correct[document_class] += int(is_correct)
+        confusion_counts[f"{expected}->{predicted}"] += 1
         predictions.append(
             {
                 "case_id": row.get("case_id", ""),
+                "document_class": document_class,
                 "expected": expected,
                 "predicted": predicted,
                 "confidence": prediction.get("confidence", 0.0),
                 "features_hash": row.get("features_hash", ""),
+                "correct": is_correct,
             }
         )
+    per_label = {
+        label: {
+            "expected_count": expected_label_counts[label],
+            "predicted_count": predicted_label_counts.get(label, 0),
+            "correct_count": correct_by_label.get(label, 0),
+            "recall": round(correct_by_label.get(label, 0) / max(expected_label_counts[label], 1), 6),
+        }
+        for label in sorted(expected_label_counts)
+    }
+    per_document_class = {
+        label: {
+            "example_count": document_class_counts[label],
+            "correct_count": document_class_correct.get(label, 0),
+            "accuracy": round(document_class_correct.get(label, 0) / max(document_class_counts[label], 1), 6),
+        }
+        for label in sorted(document_class_counts)
+    }
+    misclassification_warnings = [
+        {
+            "code": "route_model_misclassification",
+            "expected": prediction["expected"],
+            "predicted": prediction["predicted"],
+            "case_id": prediction["case_id"],
+            "document_class": prediction["document_class"],
+            "confidence": prediction["confidence"],
+        }
+        for prediction in predictions
+        if not prediction["correct"]
+    ]
     payload = {
         "status": "evaluated",
         "dataset_path": str(dataset_path),
         "model_path": str(model_path),
         "example_count": len(usable),
         "accuracy": round(correct / max(len(usable), 1), 6),
+        "per_label": per_label,
+        "per_document_class": per_document_class,
+        "confusion_counts": dict(sorted(confusion_counts.items())),
+        "warnings": misclassification_warnings,
         "predictions": predictions,
     }
     _write_report(report_path, payload)
     return payload
+
+
+def _import_sklearn_training_dependencies() -> dict[str, Any]:
+    try:
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, recall_score
+        from sklearn.preprocessing import StandardScaler
+    except Exception as error:
+        return {"status": "unavailable", "exception": str(error)}
+    return {
+        "status": "available",
+        "LogisticRegression": LogisticRegression,
+        "accuracy_score": accuracy_score,
+        "confusion_matrix": confusion_matrix,
+        "f1_score": f1_score,
+        "recall_score": recall_score,
+        "StandardScaler": StandardScaler,
+    }
 
 
 def _load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -200,7 +284,7 @@ def main() -> int:
     if args.command == "train":
         payload = train_route_classifier(dataset_path=args.dataset, model_path=args.model, report_path=args.report)
         print(json.dumps(payload, ensure_ascii=False, indent=2))
-        return 0 if payload.get("status") == "trained" else 1
+        return 0 if payload.get("status") in {"trained", "training_unavailable"} else 1
     if args.command == "evaluate":
         payload = evaluate_route_classifier(dataset_path=args.dataset, model_path=args.model, report_path=args.report)
         print(json.dumps(payload, ensure_ascii=False, indent=2))

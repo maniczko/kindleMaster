@@ -44,6 +44,13 @@
       "notes": "Long handbook with deep semantics and moderate imagery.",
       "updated_at": "2026-04-21"
     },
+    "book_reference": {
+      "warn_bytes": 25165824,
+      "hard_bytes": 31457280,
+      "baseline_cases": ["predictable_winners_stuart_e_jackson_pdf", "predictable_winners_stuart_e_jackson_pdf_sample_80p"],
+      "notes": "General book/reference corpus inputs imported for ML route learning.",
+      "updated_at": "2026-06-08"
+    },
     "diagram_training_book": {
       "warn_bytes": 10485760,
       "hard_bytes": 12582912,

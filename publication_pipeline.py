@@ -88,6 +88,9 @@ AUTO_OCR_WITHOUT_FORCE_MAX_PAGES = 120
 AUTO_OCR_WITHOUT_FORCE_MAX_BYTES = 40 * 1024 * 1024
 
 
+DEFAULT_UNKNOWN_AUTHOR = "Unknown Author"
+
+
 def build_publication_document(pdf_path: str, config, analysis: PublicationAnalysis) -> PublicationDocument:
     from converter import _extract_pdf_metadata, extract_pdf_with_pymupdf
 
@@ -95,7 +98,7 @@ def build_publication_document(pdf_path: str, config, analysis: PublicationAnaly
     pdf_metadata["source_page_count"] = analysis.page_count
     file_stem = Path(pdf_path).stem
     title = _sanitize_publication_title(pdf_metadata.get("title") or file_stem, file_stem=file_stem) or file_stem
-    author = _sanitize_publication_author(pdf_metadata.get("author") or "Unknown")
+    author = _sanitize_publication_author(pdf_metadata.get("author") or DEFAULT_UNKNOWN_AUTHOR)
     cover_metadata = _infer_cover_metadata(pdf_path)
     if cover_metadata.get("title") and _is_weak_publication_title(title, file_stem=file_stem):
         title = cover_metadata["title"]
@@ -203,11 +206,11 @@ def _sanitize_publication_title(value: str | None, *, file_stem: str = "") -> st
 def _sanitize_publication_author(value: str | None) -> str:
     text = (value or "").strip()
     if not text:
-        return "Unknown"
+        return "Unknown Author"
     if _looks_technical_publication_author(text):
-        return "Unknown"
+        return DEFAULT_UNKNOWN_AUTHOR
     text = re.sub(r"\s+", " ", text).strip()
-    return text or "Unknown"
+    return text or "Unknown Author"
 
 
 def _looks_technical_publication_title(value: str, *, file_stem: str = "") -> bool:
@@ -245,7 +248,12 @@ def _is_weak_publication_title(value: str | None, *, file_stem: str = "") -> boo
 
 def _is_weak_publication_author(value: str | None) -> bool:
     normalized = re.sub(r"\s+", " ", (value or "").strip())
-    return not normalized or normalized == "Unknown" or _looks_technical_publication_author(normalized)
+    return (
+        not normalized
+        or normalized == DEFAULT_UNKNOWN_AUTHOR
+        or normalized == "Unknown"
+        or _looks_technical_publication_author(normalized)
+    )
 
 
 def _infer_cover_metadata(pdf_path: str) -> dict[str, str]:
@@ -392,6 +400,7 @@ def publication_from_content(
     asset_figure_count = sum(1 for asset in all_assets if not asset.get("is_chess"))
     asset_diagram_count = sum(1 for asset in all_assets if asset.get("is_chess"))
     content_metadata = content.get("metadata") or {}
+    scanned_board_count = int(content_metadata.get("detected_scanned_board_count", 0) or 0)
     table_summary = content_metadata.get("table_summary") or {}
     content_audit = content.get("audit") or {}
     source_table_count = int(content_metadata.get("source_table_count", 0) or table_count)
@@ -403,7 +412,8 @@ def publication_from_content(
         table_count=table_count,
         page_marker_count=page_marker_count,
         detected_figures=max(figure_count, asset_figure_count),
-        detected_diagrams=max(diagram_count, asset_diagram_count, int(analysis.has_diagrams)),
+        detected_diagrams=max(diagram_count, asset_diagram_count, scanned_board_count, int(analysis.has_diagrams)),
+        detected_scanned_board_count=scanned_board_count,
         detected_tables=table_count,
         fallback_pages=fallback_pages,
         fallback_sections=[sections[idx - 1].title for idx in fallback_pages if 0 < idx <= len(sections)],
@@ -578,11 +588,26 @@ def _build_scanned_content(pdf_path: str, config, pdf_metadata: dict) -> dict:
             full_ocr_result = None
             reason_codes: list[str] = []
             if check_ocrmypdf_ready():
-                full_ocr_result = run_ocr_on_pdf(pdf_path, language=config.ocr_language, dpi=300)
+                selected_language, language_benchmark = _benchmark_scanned_chess_ocr_language(pdf_path, config)
+                full_ocr_result = run_ocr_on_pdf(pdf_path, language=selected_language, dpi=300)
                 if full_ocr_result.engine_used == "ocrmypdf" and full_ocr_result.success_rate >= 0.5:
+                    ocr_content = _build_content_from_ocr(full_ocr_result, config, pdf_metadata)
+                    scanned_board_count = _inject_scanned_chess_boards(pdf_path, ocr_content)
+                    page_image_fallback_count = _preserve_weak_ocr_page_images(
+                        ocr_content,
+                        full_ocr_result,
+                        preserve_all_pages=_should_preserve_scanned_reference_pages(pdf_path, full_ocr_result),
+                    )
                     return _with_ocr_quality(
-                        _build_content_from_ocr(full_ocr_result, config, pdf_metadata),
-                        _ocr_quality_from_result(full_ocr_result, reason_codes=["ocrmypdf_full_document"]),
+                        ocr_content,
+                        _ocr_quality_from_result(
+                            full_ocr_result,
+                            reason_codes=["ocrmypdf_full_document"],
+                            page_image_fallback_count=page_image_fallback_count,
+                            language_benchmark=language_benchmark,
+                            selected_language=selected_language,
+                            detected_scanned_board_count=scanned_board_count,
+                        ),
                     )
             else:
                 reason_codes.append("ocrmypdf_unavailable")
@@ -591,12 +616,27 @@ def _build_scanned_content(pdf_path: str, config, pdf_metadata: dict) -> dict:
             chapters = list(baseline_content.get("chapters", []))
             if not chapters:
                 if full_ocr_result is None:
-                    full_ocr_result = run_ocr_on_pdf(pdf_path, language=config.ocr_language, dpi=300)
+                    selected_language, language_benchmark = _benchmark_scanned_chess_ocr_language(pdf_path, config)
+                    full_ocr_result = run_ocr_on_pdf(pdf_path, language=selected_language, dpi=300)
+                else:
+                    selected_language = config.ocr_language
+                    language_benchmark = {}
+                ocr_content = _build_content_from_ocr(full_ocr_result, config, pdf_metadata)
+                scanned_board_count = _inject_scanned_chess_boards(pdf_path, ocr_content)
+                page_image_fallback_count = _preserve_weak_ocr_page_images(
+                    ocr_content,
+                    full_ocr_result,
+                    preserve_all_pages=_should_preserve_scanned_reference_pages(pdf_path, full_ocr_result),
+                )
                 return _with_ocr_quality(
-                    _build_content_from_ocr(full_ocr_result, config, pdf_metadata),
+                    ocr_content,
                     _ocr_quality_from_result(
                         full_ocr_result,
                         reason_codes=[*reason_codes, "pymupdf_empty_text", "full_document_ocr_fallback"],
+                        page_image_fallback_count=page_image_fallback_count,
+                        language_benchmark=language_benchmark,
+                        selected_language=selected_language,
+                        detected_scanned_board_count=scanned_board_count,
                     ),
                 )
 
@@ -618,7 +658,9 @@ def _build_scanned_content(pdf_path: str, config, pdf_metadata: dict) -> dict:
                 ocr_pages = 0
                 low_confidence_pages = 0
                 empty_ocr_pages = 0
+                page_image_fallback_count = 0
                 hybrid_images = list(baseline_content.get("images", []))
+                selected_language, language_benchmark = _benchmark_scanned_chess_ocr_language(pdf_path, config)
 
                 for chapter in chapters:
                     page_num = int(chapter.get("page_num", -1))
@@ -633,12 +675,29 @@ def _build_scanned_content(pdf_path: str, config, pdf_metadata: dict) -> dict:
                     ocr_page = run_ocr_on_page(
                         doc[page_num],
                         page_num=page_num,
-                        language=config.ocr_language,
+                        language=selected_language,
                         dpi=300,
                         engine=selected_engine,
                     )
                     if len((ocr_page.text or "").strip()) < 80:
                         empty_ocr_pages += 1
+                        img_filename = f"ocr_page_{page_num}.jpeg"
+                        image_asset = {
+                            "filename": img_filename,
+                            "data": ocr_page.image_data,
+                            "extension": "jpeg",
+                            "page": page_num,
+                            "ocr_text": ocr_page.text,
+                            "confidence": ocr_page.confidence,
+                            "fallback_role": "ocr_empty_page_reference",
+                        }
+                        hybrid_images.append(image_asset)
+                        chapter.setdefault("images", []).append(image_asset)
+                        chapter["html_parts"] = [
+                            f'<figure class="figure illustration ocr-page-fallback"><img src="images/{img_filename}" alt="Strona referencyjna po OCR"/></figure>'
+                        ]
+                        chapter["_fallback_mode"] = "ocr-page-image"
+                        page_image_fallback_count += 1
                         continue
 
                     ocr_confidence = ocr_page.confidence
@@ -657,16 +716,19 @@ def _build_scanned_content(pdf_path: str, config, pdf_metadata: dict) -> dict:
                             "page": page_num,
                             "ocr_text": ocr_page.text,
                             "confidence": ocr_confidence,
+                            "fallback_role": "low_confidence_ocr_reference",
                         }
                         hybrid_images.append(image_asset)
                         chapter.setdefault("images", []).append(image_asset)
                         chapter["html_parts"].append(
-                            f'<figure class="figure illustration"><img src="images/{img_filename}" alt="Strona referencyjna po OCR"/></figure>'
+                            f'<figure class="figure illustration ocr-page-fallback"><img src="images/{img_filename}" alt="Strona referencyjna po OCR"/></figure>'
                         )
+                        page_image_fallback_count += 1
 
                 baseline_content["images"] = _merge_content_assets(hybrid_images)
                 if ocr_pages:
                     baseline_content["method"] = f"{baseline_content.get('method', 'pymupdf')}-hybrid-ocr"
+                scanned_board_count = _inject_scanned_chess_boards(pdf_path, baseline_content)
                 hybrid_reason_codes = [*reason_codes]
                 if ocr_pages:
                     hybrid_reason_codes.append("hybrid_ocr_fallback")
@@ -685,8 +747,14 @@ def _build_scanned_content(pdf_path: str, config, pdf_metadata: dict) -> dict:
                         "fallback_reason": hybrid_reason_codes[0] if hybrid_reason_codes else "",
                         "engine": selected_engine,
                         "hybrid_ocr_page_count": ocr_pages,
+                        "recognized_page_count": ocr_pages,
                         "low_confidence_page_count": low_confidence_pages,
                         "empty_ocr_page_count": empty_ocr_pages,
+                        "page_image_fallback_count": page_image_fallback_count,
+                        "scan_chess_image_preservation": page_image_fallback_count > 0,
+                        "detected_scanned_board_count": scanned_board_count,
+                        "selected_language": selected_language,
+                        "language_benchmark": language_benchmark,
                         "manual_review_count": low_confidence_pages + empty_ocr_pages,
                         "message": "Hybrid OCR completed with review flags." if hybrid_reason_codes else "OCR quality passed.",
                     },
@@ -751,16 +819,27 @@ def _with_ocr_quality(content: dict, ocr_quality: dict) -> dict:
     return content
 
 
-def _ocr_quality_from_result(ocr_result, *, reason_codes: list[str]) -> dict:
+def _ocr_quality_from_result(
+    ocr_result,
+    *,
+    reason_codes: list[str],
+    page_image_fallback_count: int = 0,
+    language_benchmark: dict | None = None,
+    selected_language: str = "",
+    detected_scanned_board_count: int = 0,
+) -> dict:
     pages = list(getattr(ocr_result, "pages", []) or [])
     low_confidence_pages = sum(1 for page in pages if float(getattr(page, "confidence", 0.0) or 0.0) < 0.62)
     empty_ocr_pages = sum(1 for page in pages if len(str(getattr(page, "text", "") or "").strip()) < 80)
+    recognized_pages = sum(1 for page in pages if len(str(getattr(page, "text", "") or "").strip()) >= 80)
     codes = list(reason_codes)
     if low_confidence_pages:
         codes.append("low_ocr_confidence")
     if empty_ocr_pages:
         codes.append("empty_ocr_page")
-    status = "passed_with_warnings" if low_confidence_pages or empty_ocr_pages else "passed"
+    if page_image_fallback_count:
+        codes.append("page_image_fallback")
+    status = "passed_with_warnings" if low_confidence_pages or empty_ocr_pages or page_image_fallback_count else "passed"
     return {
         "status": status,
         "quality_gate_status": status,
@@ -769,11 +848,235 @@ def _ocr_quality_from_result(ocr_result, *, reason_codes: list[str]) -> dict:
         "engine": str(getattr(ocr_result, "engine_used", "") or ""),
         "success_rate": round(float(getattr(ocr_result, "success_rate", 0.0) or 0.0), 3),
         "page_count": int(getattr(ocr_result, "total_pages", len(pages)) or len(pages)),
+        "recognized_page_count": recognized_pages,
         "low_confidence_page_count": low_confidence_pages,
         "empty_ocr_page_count": empty_ocr_pages,
+        "page_image_fallback_count": page_image_fallback_count,
+        "scan_chess_image_preservation": page_image_fallback_count > 0,
+        "detected_scanned_board_count": int(detected_scanned_board_count or 0),
+        "selected_language": selected_language,
+        "language_benchmark": language_benchmark or {},
         "manual_review_count": low_confidence_pages + empty_ocr_pages,
         "message": "OCR quality passed." if status == "passed" else "OCR quality needs review.",
     }
+
+
+def _benchmark_scanned_chess_ocr_language(pdf_path: str, config) -> tuple[str, dict]:
+    if not _looks_like_scanned_chess_source(pdf_path):
+        return config.ocr_language, {}
+    try:
+        import ocr_module
+
+        doc = fitz.open(pdf_path)
+        try:
+            page_indices = _select_ocr_language_benchmark_pages(doc, max_pages=4)
+            if not page_indices:
+                return config.ocr_language, {}
+            engine = ocr_module.get_best_available_engine()
+            if engine == "none":
+                return config.ocr_language, {}
+            candidates = ["eng", "pol+eng", "eng+pol"]
+            results: list[dict] = []
+            for language in candidates:
+                page_scores = []
+                for page_index in page_indices:
+                    result = ocr_module.run_ocr_on_page(
+                        doc[page_index],
+                        page_num=page_index,
+                        language=language,
+                        dpi=180,
+                        engine=engine,
+                    )
+                    text = str(result.text or "")
+                    notation_tokens = len(re.findall(r"\b(?:[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[+#]?|O-O(?:-O)?|0-0(?:-0)?|\d+\.)\b", text))
+                    word_count = len(re.findall(r"\w+", text))
+                    page_scores.append(
+                        {
+                            "page": page_index,
+                            "confidence": round(float(result.confidence or 0.0), 3),
+                            "word_count": word_count,
+                            "notation_token_count": notation_tokens,
+                        }
+                    )
+                avg_confidence = sum(item["confidence"] for item in page_scores) / max(len(page_scores), 1)
+                notation_count = sum(item["notation_token_count"] for item in page_scores)
+                word_count = sum(item["word_count"] for item in page_scores)
+                score = round(avg_confidence * 0.6 + min(notation_count / 80.0, 1.0) * 0.3 + min(word_count / 900.0, 1.0) * 0.1, 3)
+                results.append(
+                    {
+                        "language": language,
+                        "score": score,
+                        "avg_confidence": round(avg_confidence, 3),
+                        "notation_token_count": notation_count,
+                        "word_count": word_count,
+                        "pages": page_scores,
+                    }
+                )
+            results.sort(key=lambda item: item["score"], reverse=True)
+            selected = str(results[0]["language"]) if results else config.ocr_language
+            return selected, {
+                "mode": "sample",
+                "engine": engine,
+                "candidate_languages": candidates,
+                "selected_language": selected,
+                "pages": page_indices,
+                "results": results,
+            }
+        finally:
+            doc.close()
+    except Exception as exc:
+        return config.ocr_language, {"mode": "sample", "status": "unavailable", "error": exc.__class__.__name__}
+
+
+def _select_ocr_language_benchmark_pages(doc: fitz.Document, *, max_pages: int) -> list[int]:
+    page_count = len(doc)
+    if page_count <= 0:
+        return []
+    candidates = [0, page_count // 4, page_count // 2, (page_count * 3) // 4, page_count - 1]
+    selected: list[int] = []
+    for index in candidates:
+        if 0 <= index < page_count and index not in selected:
+            selected.append(index)
+        if len(selected) >= max_pages:
+            break
+    return selected
+
+
+def _looks_like_scanned_chess_source(pdf_path: str) -> bool:
+    name = str(pdf_path or "").lower()
+    return any(token in name for token in ("chess", "tactic", "tactics", "woodpecker", "jobava", "fundament"))
+
+
+def _inject_scanned_chess_boards(pdf_path: str, content: dict) -> int:
+    if not _looks_like_scanned_chess_source(pdf_path):
+        return 0
+    try:
+        detector = globals().get("detect_scanned_chess_boards")
+        if detector is None:
+            from scanned_chess_detector import detect_scanned_chess_boards as detector
+
+        chapters = [chapter for chapter in list(content.get("chapters", []) or []) if isinstance(chapter, dict)]
+        pages = sorted(
+            {
+                int(chapter.get("page_num", -1))
+                for chapter in chapters
+                if int(chapter.get("page_num", -1)) >= 2 and _chapter_has_scanned_board_context(chapter)
+            }
+        )
+        boards = detector(pdf_path, pages=pages)
+    except Exception:
+        boards = []
+    if not boards:
+        metadata = dict(content.get("metadata") or {})
+        metadata["detected_scanned_board_count"] = 0
+        content["metadata"] = metadata
+        return 0
+
+    chapters_by_page = {
+        int(chapter.get("page_num", -1)): chapter
+        for chapter in list(content.get("chapters", []) or [])
+        if isinstance(chapter, dict)
+    }
+    images = list(content.get("images", []) or [])
+    injected = 0
+    for board in boards:
+        chapter = chapters_by_page.get(board.page)
+        if chapter is None:
+            continue
+        asset = {
+            "filename": board.filename,
+            "data": board.image_data,
+            "extension": "png",
+            "page": board.page,
+            "bbox": board.bbox,
+            "confidence": board.confidence,
+            "width": board.width,
+            "height": board.height,
+            "is_chess": True,
+            "source_type": board.source_type,
+        }
+        images.append(asset)
+        chapter.setdefault("images", []).append(asset)
+        figure = (
+            '<figure class="chess-diagram scanned-board">'
+            f'<img class="chess-diagram" src="images/{html_module.escape(board.filename)}" '
+            'alt="Diagram szachowy ze skanu"/>'
+            "</figure>"
+        )
+        html_parts = list(chapter.get("html_parts", []) or [])
+        if figure not in html_parts:
+            chapter["html_parts"] = [*html_parts, figure]
+            injected += 1
+
+    content["images"] = _merge_content_assets(images)
+    metadata = dict(content.get("metadata") or {})
+    metadata["detected_scanned_board_count"] = injected
+    content["metadata"] = metadata
+    return injected
+
+
+def _chapter_has_scanned_board_context(chapter: dict) -> bool:
+    text = _chapter_plain_text(chapter).lower()
+    if not text:
+        return False
+    if re.search(r"\b(?:ex\.|exercise|exercises|diagram|points?|mate)\b", text):
+        return True
+    notation_tokens = re.findall(r"\b(?:[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[+#]?|O-O(?:-O)?|0-0(?:-0)?|\d+\.)\b", text)
+    return len(notation_tokens) >= 8
+
+
+def _should_preserve_scanned_reference_pages(pdf_path: str, ocr_result) -> bool:
+    pages = list(getattr(ocr_result, "pages", []) or [])
+    if not pages:
+        return False
+    empty_pages = sum(1 for page in pages if len(str(getattr(page, "text", "") or "").strip()) < 80)
+    low_confidence_pages = sum(1 for page in pages if float(getattr(page, "confidence", 0.0) or 0.0) < 0.62)
+    weak_ratio = (empty_pages + low_confidence_pages) / max(len(pages), 1)
+    name = str(pdf_path or "").lower()
+    training_signal = any(token in name for token in ("chess", "tactic", "tactics", "woodpecker", "jobava", "fundament"))
+    return bool(training_signal and weak_ratio >= 0.25)
+
+
+def _preserve_weak_ocr_page_images(content: dict, ocr_result, *, preserve_all_pages: bool = False) -> int:
+    pages = {int(getattr(page, "page_num", -1)): page for page in list(getattr(ocr_result, "pages", []) or [])}
+    chapters = list(content.get("chapters", []) or [])
+    images = list(content.get("images", []) or [])
+    fallback_count = 0
+    for chapter in chapters:
+        if not isinstance(chapter, dict):
+            continue
+        page_num = int(chapter.get("page_num", -1))
+        page = pages.get(page_num)
+        if page is None:
+            continue
+        text = str(getattr(page, "text", "") or "").strip()
+        confidence = float(getattr(page, "confidence", 0.0) or 0.0)
+        should_preserve = preserve_all_pages or len(text) < 80 or confidence < 0.62
+        if not should_preserve:
+            continue
+        img_filename = f"ocr_page_{page_num}.jpeg"
+        image_asset = {
+            "filename": img_filename,
+            "data": getattr(page, "image_data", b""),
+            "extension": "jpeg",
+            "page": page_num,
+            "ocr_text": text,
+            "confidence": confidence,
+            "fallback_role": "scan_chess_image_preservation" if preserve_all_pages else "weak_ocr_page_reference",
+        }
+        images.append(image_asset)
+        chapter.setdefault("images", []).append(image_asset)
+        figure = f'<figure class="figure illustration ocr-page-fallback"><img src="images/{img_filename}" alt="Strona referencyjna po OCR"/></figure>'
+        html_parts = list(chapter.get("html_parts", []) or [])
+        if not html_parts or len(text) < 80:
+            chapter["html_parts"] = [figure]
+        elif figure not in html_parts:
+            chapter["html_parts"] = [*html_parts, figure]
+        chapter["_fallback_mode"] = "ocr-page-image-preserved"
+        fallback_count += 1
+    if fallback_count:
+        content["images"] = _merge_content_assets(images)
+    return fallback_count
 
 
 def _chapter_plain_text(chapter: dict) -> str:
@@ -1010,8 +1313,14 @@ def _node_to_block(node, page_index: int) -> PublicationBlock:
         )
     if name == "figure":
         image = node.find("img")
+        class_blob = " ".join(
+            [
+                css_class or "",
+                " ".join(image.get("class", [])) if image and isinstance(image.get("class"), list) else (image.get("class", "") if image else ""),
+            ]
+        )
         return PublicationBlock(
-            block_type="figure",
+            block_type="diagram" if ("chess-diagram" in class_blob or "scanned-board" in class_blob) else "figure",
             text=text,
             raw_html=str(node),
             page_index=page_index,

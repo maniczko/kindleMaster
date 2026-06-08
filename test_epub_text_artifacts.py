@@ -105,6 +105,24 @@ class EpubTextArtifactTests(unittest.TestCase):
 
         self.assertEqual(payload["counts"]["punctuation_spacing_count"], 0)
 
+    def test_dense_handbook_structural_numbering_is_not_reader_artifact(self) -> None:
+        dense_text = " ".join(
+            [
+                "Business analysis requirements stakeholder solution evaluation strategy analysis techniques appendix glossary.",
+                "Figure 3.1.1: Plan Business Analysis Approach Input/Output Diagram Elements .1 Planning Approach.",
+                "The planning approach describes how plans will be altered if changes are required.",
+                "Guidelines and Tools .2 Description The description explains the task in greater detail.",
+            ]
+            * 80
+        )
+        epub_bytes = _epub_with_documents({"chapter_001.xhtml": f"<p>{dense_text}</p>"})
+
+        payload = analyze_epub_text_artifacts(epub_bytes)
+
+        self.assertEqual(payload["counts"]["punctuation_spacing_count"], 0)
+        self.assertGreater(payload["ignored_counts"]["structural_punctuation_review_count"], 0)
+        self.assertEqual(payload["status"], "passed")
+
     def test_chess_technical_blocks_are_excluded_from_prose_artifact_rate(self) -> None:
         epub_bytes = _epub_with_documents(
             {
@@ -125,6 +143,36 @@ class EpubTextArtifactTests(unittest.TestCase):
         self.assertEqual(payload["counts"]["punctuation_spacing_count"], 0)
         self.assertEqual(payload["counts"]["split_word_count"], 0)
         self.assertGreater(payload["word_count"], 0)
+
+    def test_dense_handbook_still_counts_real_reader_artifacts(self) -> None:
+        dense_text = " ".join(
+            [
+                "Business analysis requirements stakeholder solution evaluation strategy analysis techniques appendix glossary.",
+                "Broken pro- ject text and BusinessAnalysisPlanning without spacing .",
+            ]
+            * 40
+        )
+        epub_bytes = _epub_with_documents({"chapter_001.xhtml": f"<p>{dense_text}</p>"})
+
+        payload = analyze_epub_text_artifacts(epub_bytes)
+
+        self.assertGreater(payload["counts"]["split_word_count"], 0)
+        self.assertGreater(payload["counts"]["glued_word_count"], 0)
+        self.assertGreater(payload["counts"]["punctuation_spacing_count"], 0)
+
+    def test_artifact_cache_does_not_change_or_share_payload(self) -> None:
+        epub_bytes = _epub_with_documents(
+            {
+                "chapter_001.xhtml": "<p>Broken pro- ject text and BusinessAnalysisPlanning without spacing .</p>",
+            }
+        )
+
+        first = analyze_epub_text_artifacts(epub_bytes)
+        first["counts"]["split_word_count"] = 999
+        second = analyze_epub_text_artifacts(epub_bytes)
+
+        self.assertNotEqual(second["counts"]["split_word_count"], 999)
+        self.assertGreater(second["counts"]["split_word_count"], 0)
 
     def test_cockpit_promotes_failed_artifact_rate(self) -> None:
         groups = build_quality_cockpit_issue_groups(

@@ -4,6 +4,7 @@ import argparse
 import io
 import json
 import tempfile
+import time
 import zipfile
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -79,6 +80,7 @@ SUSPICIOUS_HEADING_MARKERS = (
     "strona ",
     "www.",
 )
+UNKNOWN_AUTHOR_FALLBACK = "Unknown Author"
 
 
 @dataclass
@@ -93,6 +95,7 @@ class RecoveryPaths:
     epubcheck: Path
     premium_scoring: Path
     quality_selection: Path
+    stage_report: Path
     release_report: Path
     manual_review_queue: Path
 
@@ -114,15 +117,24 @@ def run_epub_publishing_quality_recovery(
         raise FileNotFoundError(source_path)
 
     paths = _prepare_output_paths(output_dir=Path(output_dir), reports_dir=Path(reports_dir))
+    audit_started = time.perf_counter()
+    completed_stages: list[str] = []
+    _write_stage_report(paths, started=audit_started, completed_stages=completed_stages, current_stage="read_source")
     original_bytes = source_path.read_bytes()
     original_inventory = _inventory_epub(original_bytes, label="baseline")
+    completed_stages.append("baseline_inventory")
+    _write_stage_report(paths, started=audit_started, completed_stages=completed_stages, current_stage="epubcheck_baseline")
     baseline_epubcheck = run_epubcheck(original_bytes)
+    completed_stages.append("epubcheck_baseline")
+    _write_stage_report(paths, started=audit_started, completed_stages=completed_stages, current_stage="gate_inventory")
     gates: dict[str, dict[str, Any]] = {}
     manual_review: list[dict[str, Any]] = []
     quality_selection_stages: list[dict[str, Any]] = []
 
     gates["A"] = _evaluate_gate_a(original_inventory)
     manual_review.extend(gates["A"].get("manual_review", []))
+    completed_stages.append("gate_inventory")
+    _write_stage_report(paths, started=audit_started, completed_stages=completed_stages, current_stage="metadata_phase")
 
     working_bytes = original_bytes
     metadata_diff: dict[str, Any] = {"before": original_inventory["metadata"], "after": original_inventory["metadata"], "changes": []}
@@ -183,6 +195,8 @@ def run_epub_publishing_quality_recovery(
             baseline_epubcheck=baseline_epubcheck,
         )
         manual_review.extend(gates["B"].get("manual_review", []))
+        completed_stages.append("metadata_phase")
+        _write_stage_report(paths, started=audit_started, completed_stages=completed_stages, current_stage="heading_toc_recovery")
 
         pre_recovery_bytes = working_bytes
         pre_recovery_epubcheck = metadata_epubcheck
@@ -241,6 +255,8 @@ def run_epub_publishing_quality_recovery(
         manual_review.extend(gates["C"].get("manual_review", []))
         manual_review.extend(gates["D"].get("manual_review", []))
         manual_review.extend(gates["E"].get("manual_review", []))
+        completed_stages.append("heading_toc_recovery")
+        _write_stage_report(paths, started=audit_started, completed_stages=completed_stages, current_stage="gate_release")
     else:
         gates.setdefault("B", _failed_gate("B", "Inventory gate failed; metadata phase skipped."))
 
@@ -257,11 +273,15 @@ def run_epub_publishing_quality_recovery(
         epubcheck=final_epubcheck,
         manual_review=manual_review,
     )
+    completed_stages.append("gate_release")
+    _write_stage_report(paths, started=audit_started, completed_stages=completed_stages, current_stage="strict_premium_scoring")
 
     recommendation = gates["F"]["status"]
     working_bytes = working_bytes or original_bytes
     quality_selection = _build_quality_selection_report(quality_selection_stages)
     premium_scoring = score_epub_premium_quality(working_bytes, epubcheck=final_epubcheck)
+    completed_stages.append("strict_premium_scoring")
+    _write_stage_report(paths, started=audit_started, completed_stages=completed_stages, current_stage="write_reports")
     if strict_premium:
         gates["G"] = _evaluate_gate_g(premium_scoring)
         if gates["G"]["status"] == "fail":
@@ -313,6 +333,8 @@ def run_epub_publishing_quality_recovery(
         ),
         encoding="utf-8",
     )
+    completed_stages.append("write_reports")
+    _write_stage_report(paths, started=audit_started, completed_stages=completed_stages, current_stage="", status="completed")
 
     return {
         "decision": recommendation,
@@ -325,6 +347,7 @@ def run_epub_publishing_quality_recovery(
             "epubcheck": str(paths.epubcheck),
             "premium_scoring": str(paths.premium_scoring),
             "quality_selection": str(paths.quality_selection),
+            "stage_report": str(paths.stage_report),
             "release_report": str(paths.release_report),
             "manual_review_queue": str(paths.manual_review_queue),
         },
@@ -371,14 +394,14 @@ def _run_metadata_phase(
         description_seed = expected_description or _extract_description_from_chapters(
             chapter_paths,
             title=title,
-            author=author or "Unknown",
+            author=author or UNKNOWN_AUTHOR_FALLBACK,
         )
         toc_entries = before_inventory["toc"].get("entries", [])
 
         _update_opf_metadata(
             opf_path,
             title=title,
-            author=author or "Unknown",
+            author=author or UNKNOWN_AUTHOR_FALLBACK,
             language=language,
             chapter_paths=chapter_paths,
             toc_entries=toc_entries,
@@ -423,6 +446,7 @@ def _run_recovery_phases(
 
         working_bytes = epub_bytes
         language_hint = expected_language or "en"
+        semantic_cleaned = False
         try:
             cleanup_result = clean_epub_text_package(
                 working_bytes,
@@ -433,6 +457,7 @@ def _run_recovery_phases(
                 publication_profile=publication_profile,
             )
             working_bytes = cleanup_result.epub_bytes
+            semantic_cleaned = True
         except Exception:
             pass
 
@@ -442,6 +467,7 @@ def _run_recovery_phases(
             author_hint=expected_author,
             language_hint=language_hint,
             publication_profile=publication_profile,
+            already_semantic_cleaned=semantic_cleaned,
         )
         final_bytes = heading_result.epub_bytes
         final_inventory = _inventory_epub(final_bytes, label="final")
@@ -496,7 +522,7 @@ def _run_recovery_phases(
                 raw_description_candidate = _extract_description_from_chapters(
                     [chapter_path],
                     title=expected_title or source_path.stem,
-                    author=raw_author_candidate or expected_author or "Unknown",
+                    author=raw_author_candidate or expected_author or UNKNOWN_AUTHOR_FALLBACK,
                 )
             if len(raw_language_samples) < 6:
                 raw_language_samples.append(_extract_text_sample(chapter_path))
@@ -506,7 +532,7 @@ def _run_recovery_phases(
                 repeated_counts=repeated_counts,
                 keep_first_seen=keep_first_seen,
                 title=expected_title or source_path.stem,
-                author=expected_author or raw_author_candidate or "Unknown",
+                author=expected_author or raw_author_candidate or UNKNOWN_AUTHOR_FALLBACK,
                 language=expected_language or "en",
                 publication_profile=publication_profile,
             )
@@ -556,7 +582,7 @@ def _run_recovery_phases(
             current="",
             fallback=chapter_title_hint or source_path.stem,
         )
-        author_hint = expected_author or raw_author_candidate or "Unknown"
+        author_hint = expected_author or raw_author_candidate or UNKNOWN_AUTHOR_FALLBACK
         language_hint = _pick_language_value(expected_language, "en")
         if cleanup_scope == "training-book":
             package_overrides = _repair_training_book_package(
@@ -723,6 +749,27 @@ def _dedupe_texts(values: list[str]) -> list[str]:
     return deduped
 
 
+def _write_stage_report(
+    paths: RecoveryPaths,
+    *,
+    started: float,
+    completed_stages: list[str],
+    current_stage: str,
+    status: str = "running",
+) -> None:
+    payload = {
+        "status": status,
+        "completed_stages": list(completed_stages),
+        "current_stage": current_stage,
+        "last_completed_stage": completed_stages[-1] if completed_stages else "",
+        "elapsed_seconds": round(time.perf_counter() - started, 3),
+    }
+    try:
+        paths.stage_report.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def _prepare_output_paths(*, output_dir: Path, reports_dir: Path) -> RecoveryPaths:
     output_dir.mkdir(parents=True, exist_ok=True)
     reports_dir.mkdir(parents=True, exist_ok=True)
@@ -737,6 +784,7 @@ def _prepare_output_paths(*, output_dir: Path, reports_dir: Path) -> RecoveryPat
         epubcheck=reports_dir / "epubcheck.json",
         premium_scoring=reports_dir / "premium_scoring.json",
         quality_selection=reports_dir / "quality_selection.json",
+        stage_report=reports_dir / "release_audit_stage_report.json",
         release_report=reports_dir / "release_report.md",
         manual_review_queue=reports_dir / "manual_review_queue.md",
     )
@@ -1194,7 +1242,7 @@ def _pick_author_value(*, requested: str, current: str, chapter_paths) -> str:
     if current and not _is_placeholder_author(current):
         return current
     recovered = _extract_author_from_chapters(chapter_paths)
-    return recovered or "Unknown"
+    return recovered or "Unknown Author"
 
 
 def _pick_language_value(requested: str, current: str) -> str:

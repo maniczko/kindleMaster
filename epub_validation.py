@@ -48,8 +48,21 @@ def validate_epub_bytes(epub_bytes: bytes, *, label: str = "<memory>") -> dict[s
     document_stats = {
         "documents_parsed": 0,
         "documents_with_duplicate_ids": 0,
+        "manifest_duplicate_id_count": 0,
         "links_checked": 0,
+        "internal_href_with_fragment_count": 0,
+        "internal_href_without_fragment_count": 0,
+        "internal_href_missing_document_count": 0,
+        "internal_href_missing_fragment_count": 0,
         "external_links_checked": 0,
+        "manifest_item_count": 0,
+        "manifest_targets_missing_count": 0,
+        "navigation_document_count": 0,
+        "spine_item_count": 0,
+        "spine_linear_item_count": 0,
+        "spine_non_linear_item_count": 0,
+        "spine_duplicate_targets": 0,
+        "spine_unknown_manifest_references": 0,
         "non_linear_spine_targets": 0,
         "unreachable_non_linear_spine_targets": 0,
     }
@@ -201,6 +214,7 @@ def validate_epub_bytes(epub_bytes: bytes, *, label: str = "<memory>") -> dict[s
             archive_names=set(names),
             package_errors=package_errors,
             package_warnings=package_warnings,
+            document_stats=document_stats,
         )
         _validate_spine(
             opf_tree,
@@ -208,6 +222,7 @@ def validate_epub_bytes(epub_bytes: bytes, *, label: str = "<memory>") -> dict[s
             manifest_targets=manifest_targets,
             package_errors=package_errors,
             package_warnings=package_warnings,
+            document_stats=document_stats,
         )
         if nav_target is None and not any(item["media_type"] == "application/x-dtbncx+xml" for item in manifest_by_id.values()):
             package_errors.append("Package is missing a navigation document or NCX entry.")
@@ -331,19 +346,29 @@ def _extract_manifest(
     archive_names: set[str],
     package_errors: list[str],
     package_warnings: list[str],
+    document_stats: dict[str, int],
 ) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, str]], str | None]:
     opf_dir = PurePosixPath(opf_path).parent
     manifest_by_id: dict[str, dict[str, str]] = {}
     manifest_targets: dict[str, dict[str, str]] = {}
     nav_target: str | None = None
+    has_navigation_file = False
+    manifest_targets_missing = 0
+    manifest_duplicate_ids = 0
+    seen_manifest_ids: set[str] = set()
     for item in opf_tree.xpath("//*[local-name()='manifest']/*[local-name()='item']"):
         item_id = (item.get("id") or "").strip()
         href = (item.get("href") or "").strip()
-        media_type = (item.get("media-type") or "").strip()
+        media_type = (item.get("media-type") or "").strip().lower()
         properties = (item.get("properties") or "").strip()
         if not item_id or not href:
             package_errors.append("Manifest item is missing id or href.")
             continue
+        if item_id in seen_manifest_ids:
+            package_errors.append(f"Manifest contains duplicate id: {item_id}")
+            manifest_duplicate_ids += 1
+            continue
+        seen_manifest_ids.add(item_id)
         resolved = _normalize_archive_path(str(opf_dir / href))
         entry = {
             "id": item_id,
@@ -356,8 +381,11 @@ def _extract_manifest(
         manifest_targets[resolved] = entry
         if resolved not in archive_names:
             package_errors.append(f"Manifest target missing from archive: {resolved}")
+            manifest_targets_missing += 1
         if "nav" in properties.split():
             nav_target = resolved
+        if media_type == "application/x-dtbncx+xml":
+            has_navigation_file = True
     if not manifest_by_id:
         package_errors.append("Manifest is empty.")
     if nav_target is None:
@@ -370,6 +398,10 @@ def _extract_manifest(
             nav_target = nav_candidates[0]
         else:
             package_warnings.append("Navigation document was not marked with the 'nav' property.")
+    document_stats["manifest_item_count"] = len(manifest_by_id)
+    document_stats["manifest_duplicate_id_count"] = manifest_duplicate_ids
+    document_stats["manifest_targets_missing_count"] = manifest_targets_missing
+    document_stats["navigation_document_count"] = 1 if nav_target or has_navigation_file else 0
     return manifest_by_id, manifest_targets, nav_target
 
 
@@ -380,12 +412,16 @@ def _validate_spine(
     manifest_targets: dict[str, dict[str, str]],
     package_errors: list[str],
     package_warnings: list[str],
+    document_stats: dict[str, int],
 ) -> None:
     itemrefs = opf_tree.xpath("//*[local-name()='spine']/*[local-name()='itemref']")
     if not itemrefs:
         package_errors.append("Spine is empty.")
         return
     spine_targets: list[str] = []
+    spine_linear_count = 0
+    spine_non_linear_count = 0
+    spine_unknown_manifest_references = 0
     for itemref in itemrefs:
         idref = (itemref.get("idref") or "").strip()
         if not idref:
@@ -394,7 +430,12 @@ def _validate_spine(
         manifest_item = manifest_by_id.get(idref)
         if manifest_item is None:
             package_errors.append(f"Spine references unknown manifest id: {idref}")
+            spine_unknown_manifest_references += 1
             continue
+        if (itemref.get("linear") or "yes").strip().lower() == "no":
+            spine_non_linear_count += 1
+        else:
+            spine_linear_count += 1
         spine_targets.append(manifest_item["resolved_path"])
     if not spine_targets:
         package_errors.append("Spine does not resolve to any content documents.")
@@ -403,6 +444,11 @@ def _validate_spine(
     for target in spine_targets:
         if target not in manifest_targets:
             package_errors.append(f"Resolved spine target missing from manifest: {target}")
+    document_stats["spine_unknown_manifest_references"] = spine_unknown_manifest_references
+    document_stats["spine_item_count"] = len(itemrefs)
+    document_stats["spine_linear_item_count"] = spine_linear_count
+    document_stats["spine_non_linear_item_count"] = spine_non_linear_count
+    document_stats["spine_duplicate_targets"] = len(spine_targets) - len(set(spine_targets))
 
 
 def _validate_non_linear_spine_reachability(
@@ -507,19 +553,27 @@ def _validate_internal_links(
 ) -> None:
     known_documents = set(manifest_targets)
     for current_path, payload in document_index.items():
+        if PurePosixPath(current_path).name.lower() == "nav.xhtml":
+            continue
         for ref in payload["refs"]:
             value = ref["value"]
             if not value or _is_external_href(value) or value.startswith("mailto:") or value.startswith("data:"):
                 continue
             document_stats["links_checked"] += 1
             target_doc, fragment = _resolve_href_target(current_path, value)
+            if fragment:
+                document_stats["internal_href_with_fragment_count"] += 1
+            else:
+                document_stats["internal_href_without_fragment_count"] += 1
             if target_doc not in known_documents:
                 internal_errors.append(f"{current_path}: missing target document for {value!r}")
+                document_stats["internal_href_missing_document_count"] += 1
                 continue
             if fragment:
                 target_ids = (document_index.get(target_doc) or {}).get("ids", set())
                 if fragment not in target_ids:
                     internal_errors.append(f"{current_path}: fragment #{fragment} not found in {target_doc}")
+                    document_stats["internal_href_missing_fragment_count"] += 1
             elif PurePosixPath(target_doc).suffix.lower() not in {
                 ".xhtml",
                 ".html",
@@ -556,11 +610,17 @@ def _validate_external_href(
         return
     if _BROKEN_ENCODING_TAIL_RE.search(href):
         external_errors.append(f"{path}: external URL looks truncated by broken percent-encoding: {href!r}")
-    extracted = _TLD_EXTRACT(host)
-    if not extracted.suffix and host.lower() != "localhost" and not _IPV4_RE.match(host):
-        external_errors.append(f"{path}: external URL host looks unresolved: {href!r}")
     if " " in href:
         external_errors.append(f"{path}: external URL contains whitespace: {href!r}")
+    try:
+        if "." not in host and host.lower() != "localhost" and not _IPV4_RE.match(host):
+            external_errors.append(f"{path}: external URL host looks unresolved: {href!r}")
+            return
+        extracted = _TLD_EXTRACT(host)
+        if not extracted.suffix and host.lower() != "localhost" and not _IPV4_RE.match(host):
+            external_errors.append(f"{path}: external URL host looks unresolved: {href!r}")
+    except Exception as exc:
+        external_warnings.append(f"{path}: could not validate external host for {href!r}: {exc}")
 
 
 def _resolve_href_target(current_path: str, href: str) -> tuple[str, str]:

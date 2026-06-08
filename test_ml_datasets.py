@@ -8,9 +8,109 @@ from types import SimpleNamespace
 
 from ml_feedback import append_conversion_feedback_from_report, export_feedback_datasets
 from scripts.build_ml_datasets import build_ml_datasets
+from scripts.import_reference_inputs import import_reference_inputs
+from scripts.sample_reference_inputs import sample_reference_inputs
 
 
 class MlDatasetBuilderTests(unittest.TestCase):
+    def test_reference_importer_adds_new_pdf_once_with_weak_label(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            input_root = root / "reference_inputs" / "pdf"
+            input_root.mkdir(parents=True)
+            pdf_path = input_root / "New Chess Workbook.pdf"
+            pdf_path.write_bytes(b"%PDF-test")
+            (root / "reference_inputs" / "manifest.json").write_text(
+                json.dumps({"version": 2, "root_dir": ".", "cases": []}),
+                encoding="utf-8",
+            )
+            (root / "reference_inputs" / "ml_labels.json").write_text(
+                json.dumps({"version": 1, "classes": ["diagram_book_reflow"], "cases": {}}),
+                encoding="utf-8",
+            )
+
+            first_payload = import_reference_inputs(repo_root=root, input_types=("pdf",))
+            second_payload = import_reference_inputs(repo_root=root, input_types=("pdf",))
+
+            manifest = json.loads((root / "reference_inputs" / "manifest.json").read_text(encoding="utf-8"))
+            labels = json.loads((root / "reference_inputs" / "ml_labels.json").read_text(encoding="utf-8"))
+            case = manifest["cases"][0]
+            label = labels["cases"][case["id"]]
+
+            self.assertEqual(first_payload["imported_count"], 1)
+            self.assertEqual(second_payload["imported_count"], 0)
+            self.assertEqual(second_payload["skipped"][0]["reason"], "already_in_manifest")
+            self.assertEqual(len(manifest["cases"]), 1)
+            self.assertEqual(case["document_class"], "diagram_training_book")
+            self.assertEqual(label["route_label"], "diagram_book_reflow")
+            self.assertEqual(label["label_quality"], "weak")
+
+    def test_reference_sampler_creates_sample_case_and_preserves_source_pdf(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            input_root = root / "reference_inputs" / "pdf"
+            input_root.mkdir(parents=True)
+            source_path = input_root / "Large Book.pdf"
+            original_bytes = b"source-pdf-bytes"
+            source_path.write_bytes(original_bytes)
+            manifest = {
+                "version": 2,
+                "root_dir": ".",
+                "cases": [
+                    {
+                        "id": "large_book_pdf",
+                        "document_class": "book_reference",
+                        "input_type": "pdf",
+                        "language": "en",
+                        "target_path": "reference_inputs/pdf/Large Book.pdf",
+                        "size_bytes": len(original_bytes),
+                    }
+                ],
+            }
+            labels = {"version": 1, "cases": {"large_book_pdf": {"route_label": "book_reflow", "label_quality": "weak"}}}
+            (root / "reference_inputs" / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (root / "reference_inputs" / "ml_labels.json").write_text(json.dumps(labels), encoding="utf-8")
+
+            def fake_write_sample(_source: Path, sample: Path, *, max_pages: int) -> None:
+                sample.write_bytes(f"sample-{max_pages}".encode("ascii"))
+
+            from unittest.mock import patch
+
+            with (
+                patch("scripts.sample_reference_inputs._read_pdf_page_count", return_value=320),
+                patch("scripts.sample_reference_inputs._write_pdf_sample", side_effect=fake_write_sample),
+            ):
+                payload = sample_reference_inputs(repo_root=root, max_pages=80, min_pages=150)
+
+            updated_manifest = json.loads((root / "reference_inputs" / "manifest.json").read_text(encoding="utf-8"))
+            updated_labels = json.loads((root / "reference_inputs" / "ml_labels.json").read_text(encoding="utf-8"))
+            source_case = updated_manifest["cases"][0]
+            sample_case = updated_manifest["cases"][1]
+            sample_label = updated_labels["cases"][sample_case["id"]]
+
+            self.assertEqual(payload["created_count"], 1)
+            self.assertEqual(source_path.read_bytes(), original_bytes)
+            self.assertEqual(source_case["ml_training"], "full_corpus_only")
+            self.assertEqual(source_case["sample_case_id"], sample_case["id"])
+            self.assertEqual(sample_case["sample_of"], "large_book_pdf")
+            self.assertEqual(sample_case["sample_pages"], 80)
+            self.assertEqual(sample_case["target_path"], "reference_inputs/pdf_samples/large_book_sample_80p.pdf")
+            self.assertEqual(sample_label["route_label"], "book_reflow")
+            self.assertEqual(sample_label["label_quality"], "weak_sample")
+            self.assertTrue((root / sample_case["target_path"]).exists())
+
+    def test_manifest_pdf_docx_ml_cases_have_labels(self) -> None:
+        manifest = json.loads(Path("reference_inputs/manifest.json").read_text(encoding="utf-8"))
+        labels = json.loads(Path("reference_inputs/ml_labels.json").read_text(encoding="utf-8"))
+        label_cases = labels.get("cases", {})
+        missing = [
+            case.get("id")
+            for case in manifest.get("cases", [])
+            if case.get("input_type") in {"pdf", "docx"} and case.get("id") not in label_cases
+        ]
+
+        self.assertEqual(missing, [])
+
     def test_builder_emits_route_jsonl_and_explicit_skip_reasons(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -74,6 +174,64 @@ class MlDatasetBuilderTests(unittest.TestCase):
             self.assertEqual(payload["status"], "insufficient_data")
             self.assertIn("missing_input", {item["reason"] for item in payload["skipped"]})
             self.assertIn("unsupported_input_type:epub", {item["reason"] for item in payload["skipped"]})
+
+    def test_builder_skips_full_corpus_only_cases_when_sample_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "inputs").mkdir()
+            (root / "inputs" / "full.pdf").write_bytes(b"%PDF-full")
+            (root / "inputs" / "sample.pdf").write_bytes(b"%PDF-sample")
+            manifest = {
+                "cases": [
+                    {
+                        "id": "full_case",
+                        "input_type": "pdf",
+                        "target_path": "inputs/full.pdf",
+                        "ml_training": "full_corpus_only",
+                    },
+                    {
+                        "id": "sample_case",
+                        "input_type": "pdf",
+                        "target_path": "inputs/sample.pdf",
+                        "sample_of": "full_case",
+                    },
+                ]
+            }
+            labels = {"cases": {"full_case": {"route_label": "book_reflow"}, "sample_case": {"route_label": "book_reflow"}}}
+            (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (root / "labels.json").write_text(json.dumps(labels), encoding="utf-8")
+
+            payload = build_ml_datasets(
+                manifest_path="manifest.json",
+                labels_path="labels.json",
+                reports_root="reports",
+                output_dir="reports/ml/datasets",
+                repo_root=root,
+                pdf_analyzer=lambda _path: SimpleNamespace(
+                    profile="book_reflow",
+                    confidence=0.91,
+                    page_count=4,
+                    text_pages=4,
+                    scanned_pages=0,
+                    image_pages=0,
+                    has_toc=True,
+                    has_tables=False,
+                    has_diagrams=False,
+                    has_meaningful_images=False,
+                    estimated_columns=1,
+                    heading_density=0.4,
+                    font_consistency=0.9,
+                    layout_heavy=False,
+                    text_heavy=True,
+                ),
+            )
+            route_lines = (root / "reports" / "ml" / "datasets" / "route_examples.jsonl").read_text(
+                encoding="utf-8"
+            ).splitlines()
+
+            self.assertEqual(payload["route_example_count"], 1)
+            self.assertEqual(json.loads(route_lines[0])["case_id"], "sample_case")
+            self.assertIn("full_corpus_only", {item["reason"] for item in payload["skipped"]})
 
     def test_feedback_log_extends_route_dataset_without_training(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -185,6 +343,8 @@ class MlDatasetBuilderTests(unittest.TestCase):
             self.assertEqual(dataset_payload["feedback_record_count"], 1)
             self.assertEqual(dataset_payload["feedback_route_example_count"], 1)
             self.assertEqual(dataset_payload["magazine_quality_example_count"], 1)
+            self.assertEqual(dataset_payload["quality_coverage"]["classes"]["magazine"]["accepted_count"], 1)
+            self.assertEqual(dataset_payload["quality_coverage"]["classes"]["magazine"]["gap_to_minimum"], 9)
             self.assertFalse(dataset_payload["feedback_skipped"])
             self.assertEqual(len(route_lines), 1)
             self.assertEqual(len(feedback_lines), 1)
@@ -198,6 +358,7 @@ class MlDatasetBuilderTests(unittest.TestCase):
             quality_example = json.loads(magazine_quality_lines[0])
             self.assertEqual(quality_example["quality_label"], "usable")
             self.assertEqual(quality_example["final_label"], "usable")
+            self.assertEqual(quality_example["feedback_status"], "accepted")
             self.assertEqual(quality_example["issue_tags"], ["layout", "toc"])
             self.assertEqual(quality_example["output_metrics"]["premium_score"], 7.4)
             self.assertEqual(quality_example["output_metrics"]["artifact_rate_per_1000_words"], 1.25)
@@ -299,6 +460,8 @@ class MlDatasetBuilderTests(unittest.TestCase):
             rows = {json.loads(line)["case_id"]: json.loads(line) for line in lines}
 
             self.assertEqual(payload["magazine_quality_example_count"], 2)
+            self.assertEqual(payload["quality_coverage"]["classes"]["magazine"]["accepted_count"], 2)
+            self.assertEqual(payload["quality_coverage_status"], "insufficient_data")
             self.assertEqual(rows["legacy_good_magazine"]["quality_label"], "good")
             self.assertEqual(rows["legacy_good_magazine"]["final_label"], "premium")
             self.assertEqual(rows["explicit_premium_magazine"]["quality_label"], "premium")

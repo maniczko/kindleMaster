@@ -160,6 +160,62 @@ class OpenAIQualityProviderTests(unittest.TestCase):
         self.assertLessEqual(len(sent_context["article_map"][0]["title"]), 180)
         self.assertEqual(calls[0]["text"]["format"]["type"], "json_schema")
 
+    def test_dense_handbook_review_uses_compact_bounded_context(self) -> None:
+        calls = []
+
+        def fake_transport(_url, _headers, payload, _timeout):
+            calls.append(payload)
+            return {
+                "output_text": json.dumps(
+                    {
+                        "confidence": 0.83,
+                        "toc_debris": [
+                            {"href": "chapter.xhtml#step", "label": "Step 1.", "evidence": "procedural debris", "confidence": 0.8},
+                            {"href": "invented.xhtml", "label": "Invented", "evidence": "bad href", "confidence": 0.99},
+                        ],
+                        "heading_noise": [],
+                        "text_artifact_reviews": [
+                            {
+                                "fragment_index": 0,
+                                "before": "ignored by sanitizer",
+                                "classification": "legal_structure",
+                                "evidence": ".1 Purpose is a dense handbook label",
+                                "confidence": 0.77,
+                            }
+                        ],
+                        "oversized_chapters": [],
+                        "suggested_fixture_tags": ["dense_handbook_toc_noise"],
+                    }
+                )
+            }
+
+        provider = OpenAIQualityProvider(
+            OpenAIQualityConfig(api_key="sk-test", max_input_chars=1800),
+            transport=fake_transport,
+        )
+        result = provider.review_dense_handbook(
+            {
+                "epub_bytes": "FULL_EPUB_BYTES_SHOULD_NOT_LEAK",
+                "pdf_bytes": "FULL_PDF_BYTES_SHOULD_NOT_LEAK",
+                "toc_entries": [{"label": "Step 1.", "href": "chapter.xhtml#step", "level": 2}],
+                "heading_noise_samples": [{"label": ".1 Strengths", "href": "chapter.xhtml#strengths"}],
+                "text_artifact_fragments": [{"index": 0, "text": "X" * 5000}],
+                "chapter_stats": [{"href": "chapter.xhtml", "title": "Techniques", "word_count": 41000}],
+                "premium_issues": [{"code": "dense_handbook_toc_noise", "message": "M" * 1000}],
+            }
+        )
+        sent_user_content = calls[0]["input"][1]["content"]
+        sent_context = json.loads(sent_user_content)
+
+        self.assertEqual(result["confidence"], 0.83)
+        self.assertEqual(result["toc_debris"], [{"href": "chapter.xhtml#step", "label": "Step 1.", "evidence": "procedural debris", "confidence": 0.8}])
+        self.assertEqual(result["text_artifact_reviews"][0]["before"], sent_context["text_artifact_fragments"][0]["text"])
+        self.assertLessEqual(len(sent_user_content), 1800)
+        self.assertNotIn("FULL_EPUB_BYTES_SHOULD_NOT_LEAK", sent_user_content)
+        self.assertNotIn("FULL_PDF_BYTES_SHOULD_NOT_LEAK", sent_user_content)
+        self.assertLessEqual(len(sent_context["text_artifact_fragments"][0]["text"]), 420)
+        self.assertEqual(calls[0]["text"]["format"]["type"], "json_schema")
+
 
 if __name__ == "__main__":
     unittest.main()

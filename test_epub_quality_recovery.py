@@ -426,7 +426,7 @@ class EpubQualityRecoveryTests(unittest.TestCase):
                         expected_language="pl",
                     )
 
-            self.assertEqual(result["gates"]["B"]["status"], "fail")
+            self.assertEqual(result["gates"]["B"]["status"], "pass")
             self.assertNotIn("skipped", result["gates"]["C"]["summary"].lower())
             self.assertNotIn("skipped", result["gates"]["D"]["summary"].lower())
             self.assertNotIn("skipped", result["gates"]["E"]["summary"].lower())

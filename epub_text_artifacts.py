@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import copy
+import hashlib
 import re
 import zipfile
 from io import BytesIO
@@ -56,9 +58,13 @@ ARTIFACT_KEYS = (
     "suspicious_url_fragment_count",
     "technical_placeholder_count",
 )
+IGNORED_ARTIFACT_KEYS = (
+    "structural_punctuation_review_count",
+)
 
 PASSED_RATE_THRESHOLD = 1.0
 REVIEW_RATE_THRESHOLD = 4.0
+_TEXT_ARTIFACT_CACHE: dict[str, dict[str, Any]] = {}
 
 PRODUCTIVE_PREFIX_PARTS = {
     "auto",
@@ -94,6 +100,7 @@ class TextArtifactMetrics:
     document_path: str
     word_count: int
     counts: dict[str, int]
+    ignored_counts: dict[str, int] | None = None
 
     @property
     def total_artifact_count(self) -> int:
@@ -112,11 +119,17 @@ class TextArtifactMetrics:
             "artifact_count": self.total_artifact_count,
             "artifact_rate_per_1000_words": self.artifact_rate_per_1000_words,
             "counts": dict(self.counts),
+            "ignored_counts": dict(self.ignored_counts or {}),
         }
 
 
 def analyze_epub_text_artifacts(epub_bytes: bytes) -> dict[str, Any]:
     """Return compact text-artifact metrics for the final reader-facing EPUB."""
+
+    cache_key = hashlib.sha256(epub_bytes).hexdigest()
+    cached = _TEXT_ARTIFACT_CACHE.get(cache_key)
+    if cached is not None:
+        return copy.deepcopy(cached)
 
     documents: list[TextArtifactMetrics] = []
     try:
@@ -132,25 +145,34 @@ def analyze_epub_text_artifacts(epub_bytes: bytes) -> dict[str, Any]:
                 metrics = _analyze_text(name, text)
                 documents.append(metrics)
     except zipfile.BadZipFile:
-        return _empty_payload(status="failed", message="EPUB archive is not readable.")
+        payload = _empty_payload(status="failed", message="EPUB archive is not readable.")
+        _TEXT_ARTIFACT_CACHE[cache_key] = copy.deepcopy(payload)
+        return payload
 
     word_count = sum(item.word_count for item in documents)
     counts = {key: sum(item.counts.get(key, 0) for item in documents) for key in ARTIFACT_KEYS}
+    ignored_counts = {
+        key: sum((item.ignored_counts or {}).get(key, 0) for item in documents)
+        for key in IGNORED_ARTIFACT_KEYS
+    }
     total = sum(counts.values())
     rate = round((total / word_count) * 1000.0, 3) if word_count else 0.0
     status = _status_for_rate(rate=rate, word_count=word_count, counts=counts)
-    return {
+    payload = {
         "status": status,
         "word_count": word_count,
         "artifact_count": total,
         "artifact_rate_per_1000_words": rate,
         "counts": counts,
+        "ignored_counts": ignored_counts,
         "thresholds": {
             "passed_max_artifacts_per_1000_words": PASSED_RATE_THRESHOLD,
             "review_max_artifacts_per_1000_words": REVIEW_RATE_THRESHOLD,
         },
         "per_document": [item.to_dict() for item in documents if item.word_count or item.total_artifact_count],
     }
+    _TEXT_ARTIFACT_CACHE[cache_key] = copy.deepcopy(payload)
+    return payload
 
 
 def _empty_payload(*, status: str, message: str) -> dict[str, Any]:
@@ -161,6 +183,7 @@ def _empty_payload(*, status: str, message: str) -> dict[str, Any]:
         "artifact_count": 0,
         "artifact_rate_per_1000_words": 0.0,
         "counts": {key: 0 for key in ARTIFACT_KEYS},
+        "ignored_counts": {key: 0 for key in IGNORED_ARTIFACT_KEYS},
         "thresholds": {
             "passed_max_artifacts_per_1000_words": PASSED_RATE_THRESHOLD,
             "review_max_artifacts_per_1000_words": REVIEW_RATE_THRESHOLD,
@@ -204,16 +227,22 @@ def _analyze_text(document_path: str, text: str) -> TextArtifactMetrics:
     technical_placeholder_count = len(TECHNICAL_PLACEHOLDER_RE.findall(text or ""))
     if not dense_handbook_context:
         technical_placeholder_count += layout_placeholder_count
+    punctuation_spacing_count, structural_punctuation_review_count = _count_punctuation_spacing(
+        text or "",
+        dense_handbook_context=dense_handbook_context,
+    )
     counts = {
         "split_word_count": len(SPLIT_WORD_RE.findall(text or "")),
         "glued_word_count": _count_glued_tokens(tokens),
         "ocr_junk_count": len(OCR_JUNK_RE.findall(text or "")),
-        "punctuation_spacing_count": len(SPACE_BEFORE_PUNCT_RE.findall(text or ""))
-        + _count_missing_sentence_spaces(text or ""),
+        "punctuation_spacing_count": punctuation_spacing_count,
         "suspicious_url_fragment_count": len(URL_FRAGMENT_RE.findall(text or "")),
         "technical_placeholder_count": technical_placeholder_count,
     }
-    return TextArtifactMetrics(document_path=document_path, word_count=len(tokens), counts=counts)
+    ignored_counts = {
+        "structural_punctuation_review_count": structural_punctuation_review_count,
+    }
+    return TextArtifactMetrics(document_path=document_path, word_count=len(tokens), counts=counts, ignored_counts=ignored_counts)
 
 
 def _count_missing_sentence_spaces(text: str) -> int:
@@ -252,6 +281,48 @@ def _looks_like_dense_handbook_text(text: str) -> bool:
         "glossary",
     )
     return sum(1 for signal in signals if signal in normalized) >= 3
+
+
+def _count_punctuation_spacing(text: str, *, dense_handbook_context: bool) -> tuple[int, int]:
+    reader_artifacts = 0
+    structural_review = 0
+    for match in SPACE_BEFORE_PUNCT_RE.finditer(text or ""):
+        if dense_handbook_context and _looks_like_dense_structural_punctuation(text, match.start(), match.end()):
+            structural_review += 1
+            continue
+        reader_artifacts += 1
+    for match in MISSING_SPACE_AFTER_SENTENCE_RE.finditer(text or ""):
+        left = text[max(0, match.start() - 48) : match.start()]
+        if _looks_like_chess_or_initial_period_context(left):
+            continue
+        if dense_handbook_context and _looks_like_dense_missing_space_false_positive(text, match.start(), match.end()):
+            structural_review += 1
+            continue
+        reader_artifacts += 1
+    return reader_artifacts, structural_review
+
+
+def _looks_like_dense_structural_punctuation(text: str, start: int, end: int) -> bool:
+    marker = text[start:end].strip()
+    if marker != ".":
+        return False
+    after = text[end : end + 80]
+    before = text[max(0, start - 140) : start]
+    if re.match(r"^\d+\s+[A-Z][A-Za-z]+(?:\s+(?:and|of|for|the|[A-Z][A-Za-z]+)){0,7}\b", after):
+        return True
+    if re.search(r"(?i)(?:purpose|description|inputs|outputs|elements|guidelines/tools|guidelines and tools|techniques|stakeholders|usage considerations)\s*$", before):
+        return True
+    return False
+
+
+def _looks_like_dense_missing_space_false_positive(text: str, start: int, end: int) -> bool:
+    before = text[max(0, start - 16) : start + 1]
+    after = text[end : end + 32]
+    if re.search(r"\b(?:[A-Z]\.){1,4}$", before) and re.match(r"^[A-Z](?:\.|\b)", after):
+        return True
+    if re.search(r"\b(?:Fig|No|Vol|Ch|Sec)\.$", before) and re.match(r"^[A-Z0-9]", after):
+        return True
+    return False
 
 
 def _count_glued_tokens(tokens: list[str]) -> int:

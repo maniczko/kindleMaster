@@ -819,6 +819,64 @@ describe("Premium React shell", () => {
     expect(screen.queryByLabelText("Informacje o aktywnym zadaniu")).not.toBeInTheDocument();
   });
 
+  it("downloads HTML PGN/FEN from file details artifact actions", async () => {
+    const user = userEvent.setup();
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/convert/artifact/job-chess/chess_pgn_html") {
+        return {
+          ok: true,
+          headers: { get: (name: string) => (name.toLowerCase() === "content-disposition" ? 'attachment; filename="chess_games.html"' : "") },
+          blob: async () => new Blob(["<html>chess</html>"], { type: "text/html" }),
+        };
+      }
+      if (url.startsWith("/convert/jobs")) {
+        return {
+          ok: true,
+          json: async () => ({
+            jobs: [
+              {
+                job_id: "job-chess",
+                filename: "chess.pdf",
+                status: "ready",
+                source_type: "pdf",
+                download_url: "/convert/download/job-chess",
+                artifacts: {
+                  chess_pgn_html: {
+                    filename: "chess_games.html",
+                    download_url: "/convert/artifact/job-chess/chess_pgn_html",
+                    content_type: "text/html",
+                  },
+                },
+                quality_state: { release_verdict: "ready_with_review", premium_ready: false },
+              },
+            ],
+          }),
+        };
+      }
+      if (url === "/user/profile") {
+        return { ok: true, json: async () => ({ success: true, profile: defaultProfile }) };
+      }
+      if (url === "/convert/delivery/config") {
+        return { ok: true, json: async () => ({ success: true, delivery: { configured: false } }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    const anchorClickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Biblioteka" }));
+    await user.click(await screen.findByRole("button", { name: "chess.pdf" }));
+    await user.click(await screen.findByRole("link", { name: /HTML PGN\/FEN/ }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith("/convert/artifact/job-chess/chess_pgn_html", expect.objectContaining({ cache: "no-store" }));
+    });
+    expect(URL.createObjectURL).toHaveBeenCalled();
+    expect(anchorClickSpy).toHaveBeenCalled();
+    anchorClickSpy.mockRestore();
+  });
+
   it("compresses the saved source PDF from file details", async () => {
     const user = userEvent.setup();
     let resolveCompression: ((response: Response) => void) | null = null;

@@ -965,7 +965,8 @@ def _rebuild_jobs_from_smoke_epubs(existing: dict[str, dict]) -> tuple[list[dict
 
 
 def _import_local_artifact_history() -> dict:
-    root = Path(app.root_path) / "output" / "artifacts"
+    configured_root = os.environ.get("KINDLEMASTER_ARTIFACT_ROOT")
+    root = Path(configured_root) if configured_root else Path(app.root_path) / "output" / "artifacts"
 
     existing = _CONVERSION_JOB_STORE.snapshot()
     imported = 0
@@ -1043,10 +1044,16 @@ def _resolve_local_artifact_path(artifact: dict | None) -> Path | None:
         resolved = path.resolve()
     except OSError:
         return None
+    configured_artifact_root = os.environ.get("KINDLEMASTER_ARTIFACT_ROOT")
     allowed_roots = [
         (Path(app.root_path) / "output" / "artifacts").resolve(),
         Path(UPLOAD_DIR).resolve(),
     ]
+    if configured_artifact_root:
+        try:
+            allowed_roots.append(Path(configured_artifact_root).resolve())
+        except OSError:
+            pass
     if not any(_is_path_under(resolved, root) for root in allowed_roots):
         return None
     if not resolved.is_file():

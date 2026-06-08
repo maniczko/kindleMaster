@@ -2595,6 +2595,7 @@ function FileDetailsWorkspace({
   const [deliveryError, setDeliveryError] = React.useState("");
   const [deliveryDiagnostics, setDeliveryDiagnostics] = React.useState<Record<string, unknown> | null>(null);
   const [deliveryBusy, setDeliveryBusy] = React.useState(false);
+  const [artifactDownloadError, setArtifactDownloadError] = React.useState("");
   const [detailsCompressionBusy, setDetailsCompressionBusy] = React.useState(false);
   const [detailsCompressionStatus, setDetailsCompressionStatus] = React.useState("");
   const [detailsCompressedPdfResult, setDetailsCompressedPdfResult] = React.useState<PdfCompressionResultPayload | null>(null);
@@ -2615,6 +2616,7 @@ function FileDetailsWorkspace({
     setDetailsCompressedPdfResult(null);
     setDetailsCompressionBusy(false);
     setDetailsCompressionStatus("");
+    setArtifactDownloadError("");
     setCropWorkspaceOpen(false);
   }, [job?.job_id]);
   React.useEffect(() => {
@@ -2711,6 +2713,19 @@ function FileDetailsWorkspace({
       setRepairError(caught instanceof Error ? caught.message : "Naprawa EPUB nie powiodła się.");
     } finally {
       setRepairBusy(false);
+    }
+  }
+
+  async function downloadArtifact(event: React.MouseEvent<HTMLAnchorElement>, artifact: { label: string; href: string }) {
+    event.preventDefault();
+    if (!artifact.href) return;
+    setArtifactDownloadError("");
+    try {
+      await triggerBrowserDownload(artifact.href, apiFetch);
+    } catch (caught) {
+      setArtifactDownloadError(
+        caught instanceof Error ? caught.message : `Nie udalo sie pobrac artefaktu ${artifact.label}.`,
+      );
     }
   }
 
@@ -2864,7 +2879,12 @@ function FileDetailsWorkspace({
             {artifactRows.length ? (
               <div className="km-artifact-list">
                 {artifactRows.map((artifact) => (
-                  <a href={artifact.href} key={artifact.label}>
+                  <a
+                    href={artifact.href}
+                    key={artifact.label}
+                    onClick={(event) => void downloadArtifact(event, artifact)}
+                    download
+                  >
                     <Download data-icon="inline-start" aria-hidden="true" />
                     {artifact.label}
                   </a>
@@ -2873,6 +2893,7 @@ function FileDetailsWorkspace({
             ) : (
               <div className="km-empty-state">Brak artefaktów do pobrania.</div>
             )}
+            {artifactDownloadError ? <p className="km-delivery-error">{artifactDownloadError}</p> : null}
           </CardContent>
         </Card>
 
@@ -3456,7 +3477,7 @@ async function triggerBrowserDownload(url: string, fetcher: (input: RequestInfo 
   if (!url || typeof document === "undefined") return;
   const response = await fetcher(url, { cache: "no-store" });
   if (!response.ok) {
-    throw new Error(`Nie udało się pobrać EPUB (${response.status}).`);
+    throw new Error(`Nie udało się pobrać artefaktu (${response.status}).`);
   }
   const blob = await response.blob();
   const objectUrl = URL.createObjectURL(blob);

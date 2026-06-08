@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import io
 import json
@@ -4438,6 +4438,214 @@ def _labeled_board_png_and_templates(board: list[list[str]]) -> tuple[bytes, dic
     output = io.BytesIO()
     image.save(output, format="PNG")
     return output.getvalue(), templates
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class ScanChessPreprocessingTests(unittest.TestCase):
+    def test_notation_diagram_number_prefers_nearest_caption(self) -> None:
+        from types import SimpleNamespace
+
+        from pymupdf_chess_extractor import _nearest_chess_notation_diagram_number
+
+        line_items = [
+            SimpleNamespace(text="Diagram 1-1", y=40.0, x0=20.0, x1=180.0),
+            SimpleNamespace(text="Diagram 1-2 A. Yusupov", y=118.0, x0=210.0, x1=430.0),
+            SimpleNamespace(text="Diagram 1-3", y=420.0, x0=20.0, x1=180.0),
+        ]
+
+        self.assertEqual(
+            _nearest_chess_notation_diagram_number(line_items, (220.0, 140.0, 390.0, 310.0)),
+            "1-2",
+        )
+
+    def test_scan_chess_preprocessed_variants_select_highest_confidence(self) -> None:
+        from types import SimpleNamespace
+        from unittest import mock
+
+        from PIL import Image, ImageDraw
+
+        from converter import ConversionConfig
+        from pymupdf_chess_extractor import _recognize_scan_chess_preprocessed_variants
+
+        crop = Image.new("L", (160, 160), 240)
+        draw = ImageDraw.Draw(crop)
+        for index in range(9):
+            pos = index * 20
+            draw.line((pos, 0, pos, 160), fill=20, width=2)
+            draw.line((0, pos, 160, pos), fill=20, width=2)
+
+        confidences = iter([0.31, 0.88, 0.62, 0.44])
+
+        def fake_recognize(*args, **kwargs):
+            confidence = next(confidences)
+            return SimpleNamespace(confidence=confidence, board_detected=True)
+
+        with mock.patch("pymupdf_chess_extractor.recognize_chess_position_from_image", side_effect=fake_recognize):
+            result, selected_variant, metadata = _recognize_scan_chess_preprocessed_variants(
+                crop,
+                config=ConversionConfig(),
+                piece_templates={"K": [Image.new("L", (12, 12), 0)]},
+                bbox=(0.0, 0.0, 160.0, 160.0),
+            )
+
+        self.assertEqual(selected_variant, "autocontrast")
+        self.assertAlmostEqual(result.confidence, 0.88)
+        self.assertEqual(metadata["selected_preprocess_variant"], "autocontrast")
+        self.assertEqual(metadata["display_variant_used"], "reader_enhanced")
+
+    def test_scan_chess_preprocessed_variants_keep_original_when_best(self) -> None:
+        from types import SimpleNamespace
+        from unittest import mock
+
+        from PIL import Image
+
+        from converter import ConversionConfig
+        from pymupdf_chess_extractor import _recognize_scan_chess_preprocessed_variants
+
+        crop = Image.new("L", (160, 160), 220)
+        confidences = iter([0.91, 0.72, 0.70, 0.45])
+
+        def fake_recognize(*args, **kwargs):
+            return SimpleNamespace(confidence=next(confidences), board_detected=True)
+
+        with mock.patch("pymupdf_chess_extractor.recognize_chess_position_from_image", side_effect=fake_recognize):
+            result, selected_variant, metadata = _recognize_scan_chess_preprocessed_variants(
+                crop,
+                config=ConversionConfig(),
+                piece_templates={"K": [Image.new("L", (12, 12), 0)]},
+            )
+
+        self.assertEqual(selected_variant, "original")
+        self.assertAlmostEqual(result.confidence, 0.91)
+        self.assertEqual(metadata["selected_preprocess_variant"], "original")
+
+    def test_notation_diagram_record_uses_full_fen_recognizer(self) -> None:
+        from unittest import mock
+
+        from converter import ConversionConfig
+        from pymupdf_chess_extractor import _chess_notation_diagram_records_from_page
+
+        page = Image.new("RGB", (240, 240), "white")
+        draw = ImageDraw.Draw(page)
+        cell = 20
+        for row in range(8):
+            for col in range(8):
+                fill = 235 if (row + col) % 2 == 0 else 130
+                draw.rectangle(
+                    (40 + col * cell, 40 + row * cell, 40 + (col + 1) * cell, 40 + (row + 1) * cell),
+                    fill=fill,
+                    outline="black",
+                )
+        page_data = _image_bytes(page)
+        candidate = ChessFenResult(
+            confidence=0.73,
+            bbox=(40.0, 40.0, 200.0, 200.0),
+            method="image-page-board-candidate",
+            requires_review=True,
+            board_detected=True,
+        )
+        recognition = ChessFenResult(
+            fen="8/8/8/8/8/8/7k/7K w - - 0 1",
+            placement="8/8/8/8/8/8/7k/7K",
+            confidence=0.91,
+            method="image-template-board",
+            warnings=["side_to_move_inferred"],
+            requires_review=False,
+            board_detected=True,
+        )
+
+        with mock.patch(
+            "pymupdf_chess_extractor._page_image_data_for_scan_chess",
+            return_value=page_data,
+        ), mock.patch(
+            "pymupdf_chess_extractor.detect_board_candidates_in_page_image",
+            return_value=[candidate],
+        ), mock.patch(
+            "pymupdf_chess_extractor._recognize_scan_chess_candidate_bbox",
+            return_value=recognition,
+        ), mock.patch(
+            "pymupdf_chess_extractor._recognize_scan_chess_preprocessed_variants",
+            return_value=(None, "original", {}),
+        ):
+            records = _chess_notation_diagram_records_from_page(
+                object(),
+                0,
+                config=ConversionConfig(chess_fen_min_confidence=0.835),
+                piece_templates={"K": [Image.new("L", (10, 10), 0)]},
+                line_items=[],
+            )
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["fen"], recognition.fen)
+        self.assertEqual(records[0]["placement"], recognition.placement)
+        self.assertFalse(records[0]["requires_review"])
+        self.assertEqual(records[0]["selected_preprocess_variant"], "full_page_bbox_recognition")
+        self.assertEqual(records[0]["display_variant_used"], "reader_enhanced")
+        self.assertGreater(records[0]["fen_confidence"], 0.8)
+
+    def test_notation_diagram_record_keeps_low_confidence_fen_in_review(self) -> None:
+        from unittest import mock
+
+        from converter import ConversionConfig
+        from pymupdf_chess_extractor import _chess_notation_diagram_records_from_page
+
+        page = Image.new("RGB", (240, 240), "white")
+        draw = ImageDraw.Draw(page)
+        cell = 20
+        for row in range(8):
+            for col in range(8):
+                fill = 235 if (row + col) % 2 == 0 else 130
+                draw.rectangle(
+                    (40 + col * cell, 40 + row * cell, 40 + (col + 1) * cell, 40 + (row + 1) * cell),
+                    fill=fill,
+                    outline="black",
+                )
+        page_data = _image_bytes(page)
+        candidate = ChessFenResult(
+            confidence=0.68,
+            bbox=(40.0, 40.0, 200.0, 200.0),
+            method="image-page-board-candidate",
+            requires_review=True,
+            board_detected=True,
+        )
+        recognition = ChessFenResult(
+            placement="8/8/8/8/8/8/7k/7K",
+            confidence=0.52,
+            method="image-template-board",
+            warnings=["piece_template_confidence_below_threshold"],
+            requires_review=True,
+            board_detected=True,
+        )
+
+        with mock.patch(
+            "pymupdf_chess_extractor._page_image_data_for_scan_chess",
+            return_value=page_data,
+        ), mock.patch(
+            "pymupdf_chess_extractor.detect_board_candidates_in_page_image",
+            return_value=[candidate],
+        ), mock.patch(
+            "pymupdf_chess_extractor._recognize_scan_chess_candidate_bbox",
+            return_value=recognition,
+        ), mock.patch(
+            "pymupdf_chess_extractor._recognize_scan_chess_preprocessed_variants",
+            return_value=(None, "original", {}),
+        ):
+            records = _chess_notation_diagram_records_from_page(
+                object(),
+                0,
+                config=ConversionConfig(chess_fen_min_confidence=0.835),
+                piece_templates={"K": [Image.new("L", (10, 10), 0)]},
+                line_items=[],
+            )
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["fen"], "")
+        self.assertTrue(records[0]["requires_review"])
+        self.assertIn("piece_template_confidence_below_threshold", records[0]["warnings"])
+        self.assertEqual(records[0]["display_variant_used"], "reader_enhanced")
 
 
 if __name__ == "__main__":

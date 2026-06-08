@@ -8,6 +8,7 @@ import io
 import json
 import mimetypes
 import os
+import re
 import shutil
 import threading
 import uuid
@@ -1028,6 +1029,28 @@ def _import_local_artifact_history() -> dict:
 
 def _ensure_local_artifact_history_loaded() -> dict:
     return _import_local_artifact_history()
+
+
+def _restore_local_artifact_job_by_id(job_id: str) -> dict | None:
+    safe_job_id = str(job_id or "").strip()
+    if not safe_job_id or not re.fullmatch(r"[A-Za-z0-9_.-]+", safe_job_id):
+        return None
+
+    configured_root = os.environ.get("KINDLEMASTER_ARTIFACT_ROOT")
+    root = (Path(configured_root) if configured_root else Path(app.root_path) / "output" / "artifacts").resolve()
+    job_dir = (root / safe_job_id).resolve()
+    if not _is_path_under(job_dir, root) or not job_dir.is_dir():
+        return None
+
+    job = _rebuild_job_from_local_artifact_dir(job_dir)
+    if job is None:
+        return None
+    try:
+        _CONVERSION_JOB_STORE.create(job)
+    except Exception:
+        existing = _get_conversion_job(safe_job_id)
+        return existing if existing else job
+    return _get_conversion_job(safe_job_id) or job
 
 
 def _is_path_under(path: Path, root: Path) -> bool:
@@ -4166,6 +4189,8 @@ def convert_artifact_download(job_id: str, artifact_key: str):
         # local store before deciding the artifact is missing.
         _merge_cloud_jobs_into_store_for_request(limit=MAX_CONVERSION_JOB_HISTORY_LIMIT)
         job = _get_conversion_job(job_id)
+    if not job:
+        job = _restore_local_artifact_job_by_id(job_id)
     if not job:
         return _json_error(
             "Nie znaleziono zadania konwersji.",

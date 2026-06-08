@@ -183,7 +183,7 @@ def finalize_epub_bytes(
 ) -> bytes | tuple[bytes, dict]:
     """Run final Kindle-friendly cleanup on reflowable EPUB output."""
     title = (pdf_metadata or {}).get("title") or Path(original_filename).stem
-    author = (pdf_metadata or {}).get("author") or "Unknown"
+    author = (pdf_metadata or {}).get("author") or UNKNOWN_AUTHOR_FALLBACK
     profile_key = (publication_profile or "").strip().lower()
     text_cleanup_summary = {
         "auto_fix_count": 0,
@@ -1971,12 +1971,12 @@ def build_epub(content: dict, config: ConversionConfig, original_filename: str, 
     Uses PDF metadata for title, author, etc.
     """
     if pdf_metadata is None:
-        pdf_metadata = {"title": Path(original_filename).stem, "author": "Unknown"}
+        pdf_metadata = {"title": Path(original_filename).stem, "author": UNKNOWN_AUTHOR_FALLBACK}
     
     title = pdf_metadata.get("title") or Path(original_filename).stem
-    author = pdf_metadata.get("author") or "Unknown"
+    author = pdf_metadata.get("author") or UNKNOWN_AUTHOR_FALLBACK
     if _metadata_author_is_weak(author):
-        author = "Unknown"
+        author = UNKNOWN_AUTHOR_FALLBACK
 
     book = epub.EpubBook()
     book.set_identifier(uuid.uuid4().hex)
@@ -2298,7 +2298,7 @@ def build_epub(content: dict, config: ConversionConfig, original_filename: str, 
         cover_page = epub.EpubHtml(title="Okładka", file_name="cover.xhtml", lang=config.language)
         author_html = (
             f'<p class="cover-subtitle">{html_module.escape(author)}</p>'
-            if author and author != "Unknown"
+            if author and author != UNKNOWN_AUTHOR_FALLBACK
             else ""
         )
         cover_page.content = (
@@ -2657,7 +2657,7 @@ def convert_pdf_to_epub_with_report(
                 "document": None,
                 "document_summary": {
                     "title": pdf_metadata.get("title") or Path(original_filename).stem,
-                    "author": pdf_metadata.get("author") or "Unknown",
+                    "author": pdf_metadata.get("author") or UNKNOWN_AUTHOR_FALLBACK,
                     "language": config.language,
                     "profile": analysis.profile,
                     "layout_mode": "fixed-layout",
@@ -2756,7 +2756,7 @@ def convert_pdf_to_epub_with_report(
             "document": None,
             "document_summary": {
                 "title": pdf_metadata.get("title") or Path(original_filename).stem,
-                "author": pdf_metadata.get("author") or "Unknown",
+                "author": pdf_metadata.get("author") or UNKNOWN_AUTHOR_FALLBACK,
                 "language": config.language,
                 "profile": "legacy-fallback",
                 "layout_mode": "reflowable",
@@ -2924,3 +2924,4 @@ def _parse_pdf2htmlex_output(result: dict, config: ConversionConfig) -> dict:
         "images": images,
         "method": "pdf2htmlEX_parsed",
     }
+UNKNOWN_AUTHOR_FALLBACK = "Unknown Author"

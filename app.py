@@ -10,6 +10,7 @@ import os
 import threading
 import uuid
 import tempfile
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
@@ -18,7 +19,9 @@ from app_runtime_services import (
     DEFAULT_DEBUG,
     DEFAULT_PORT,
     LOCALHOST,
+    build_conversion_metadata,
     ConversionRequest,
+    ConversionQualityGateError,
     ConversionJobStore,
     build_conversion_job_record,
     build_conversion_quality_state,
@@ -129,6 +132,7 @@ def _json_error(
     phase: str,
     job_id: str | None = None,
     retryable: bool = False,
+    extra: dict | None = None,
 ):
     payload = build_json_error_payload(
         message,
@@ -137,6 +141,8 @@ def _json_error(
         job_id=job_id,
         retryable=retryable,
     )
+    if extra:
+        payload.update(extra)
     response = jsonify(payload)
     response.status_code = status_code
     apply_no_store_headers(response.headers)
@@ -356,6 +362,8 @@ def _build_replayable_conversion_command(
     force_ocr: bool,
     language: str,
     heading_repair_enabled: bool,
+    route_model_mode: str = "shadow",
+    quality_gate_mode: str = "draft",
 ) -> ReplayableCommand:
     return ReplayableCommand(
         name="convert",
@@ -366,6 +374,8 @@ def _build_replayable_conversion_command(
             "force_ocr": force_ocr,
             "language": language,
             "heading_repair_enabled": heading_repair_enabled,
+            "route_model_mode": route_model_mode,
+            "quality_gate_mode": quality_gate_mode,
         },
         context={
             "job_id": job_id,
@@ -933,6 +943,42 @@ def _attach_output_size_metadata(metadata: dict, output_size_bytes: int) -> dict
     )
 
 
+def _build_quality_gate_failure_metadata(
+    error: ConversionQualityGateError,
+    *,
+    source_type: str,
+    profile: str,
+    heading_repair_enabled: bool,
+) -> dict:
+    validation_report = error.validation_report
+    if not isinstance(validation_report, Mapping):
+        validation_report = {}
+    quality_report = dict(validation_report)
+    quality_report["quality_gate_mode"] = str(error.mode or "draft")
+    return build_conversion_metadata(
+        result={
+            "analysis": {
+                "profile": profile,
+                "confidence": 0.0,
+            },
+            "quality_report": quality_report,
+            "document_summary": {},
+        },
+        detected_source_type=source_type,
+        heading_repair_enabled=bool(heading_repair_enabled),
+        heading_repair_report={
+            "status": "applied" if heading_repair_enabled else "skipped",
+            "release_status": "unavailable",
+            "toc_entries_before": 0,
+            "toc_entries_after": 0,
+            "headings_removed": 0,
+            "manual_review_count": 0,
+            "epubcheck_status": "unavailable",
+            "error": "",
+        },
+    )
+
+
 def _normalize_temp_artifact_path(path_value: str | None) -> str:
     if not path_value:
         return ""
@@ -1158,6 +1204,18 @@ def _spawn_conversion_job(
         except Exception as error:
             if not _worker_can_finish_job(job_id):
                 return
+            error_code = "conversion_failed"
+            message = "Konwersja nie powiodla sie."
+            metadata: dict = {}
+            if isinstance(error, ConversionQualityGateError):
+                error_code = error.error_code
+                message = "Walidacja EPUB zakończyła się niepowodzeniem."
+                metadata = _build_quality_gate_failure_metadata(
+                    error,
+                    source_type=source_type,
+                    profile=profile,
+                    heading_repair_enabled=heading_repair_enabled,
+                )
             sentry_event_id = capture_conversion_exception(
                 error,
                 context=_conversion_sentry_context(
@@ -1170,17 +1228,18 @@ def _spawn_conversion_job(
                 job_id,
                 RuntimeJobStatus.FAILED,
                 error=str(error),
-                message="Konwersja nie powiodla sie.",
+                message=message,
             )
             _set_conversion_job(
                 job_id,
                 status="failed",
-                message="Konwersja nie powiodla sie.",
+                message=message,
+                metadata=metadata,
                 runtime=runtime_metadata,
                 artifact_storage=_artifact_storage_status(),
                 output_size_bytes=0,
                 error=str(error),
-                error_code="conversion_failed",
+                error_code=error_code,
                 sentry_event_id=sentry_event_id,
                 progress=progress_reporter.terminal_progress("failed", "Konwersja nie powiodła się."),
             )
@@ -1190,8 +1249,8 @@ def _spawn_conversion_job(
                 job_id=job_id,
                 phase="conversion",
                 status="failed",
-                error_code="conversion_failed",
-                safe_message="Konwersja nie powiodla sie.",
+                error_code=error_code,
+                safe_message=message,
                 source_type=source_type,
                 output_size_bytes=0,
                 exception_class=error.__class__.__name__,
@@ -1313,6 +1372,23 @@ def convert():
         )
         _apply_conversion_headers(response, payload["metadata"])
         return response
+    except ConversionQualityGateError as error:
+        capture_conversion_exception(
+            error,
+            context=_conversion_sentry_context(
+                job_id=job_id,
+                source_type=source_type,
+                profile=profile,
+            ),
+        )
+        return _json_error(
+            f"Walidacja EPUB zakończyła sie niepowodzeniem: {str(error)}",
+            error_code=error.error_code,
+            status_code=422,
+            phase="quality_gate",
+            retryable=False,
+            extra={"validation_details": dict(error.validation_report), "quality_gate_mode": error.mode},
+        )
     except Exception as e:
         capture_conversion_exception(
             e,
@@ -1390,6 +1466,8 @@ def convert_start():
             force_ocr=force_ocr,
             language=language,
             heading_repair_enabled=heading_repair_enabled,
+            route_model_mode=route_model_mode,
+            quality_gate_mode=quality_gate_mode,
         ),
     )
     job_record = build_conversion_job_record(
@@ -1555,7 +1633,10 @@ def convert_status(job_id: str):
     download_state = _build_job_download_state(job_id, job)
     download_url = download_state.download_url
     conversion_payload = None
-    if job.get("status") == "ready":
+    if job.get("status") == "ready" or (
+        job.get("status") == "failed"
+        and str(job.get("error_code", "") or "") == ConversionQualityGateError.error_code
+    ):
         conversion_payload = dict(job.get("metadata", {}) or {})
         output_size_bytes = _read_output_size_bytes(job)
         if output_size_bytes is not None and "output_size_bytes" not in conversion_payload:

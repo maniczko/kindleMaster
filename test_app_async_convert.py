@@ -114,6 +114,8 @@ class AppAsyncConvertTests(unittest.TestCase):
                     "profile": "auto-premium",
                     "ocr": "false",
                     "language": "pl",
+                    "route_model_mode": "shadow",
+                    "quality_gate_mode": "strict",
                     "heading_repair": "true",
                 },
                 content_type="multipart/form-data",
@@ -126,6 +128,9 @@ class AppAsyncConvertTests(unittest.TestCase):
         self.assertEqual(payload["poll_after_ms"], app_module.DEFAULT_CONVERSION_POLL_INTERVAL_MS)
         self.assertEqual(payload["runtime"]["provider"], "local")
         self.assertEqual(payload["runtime"]["replay"]["command"]["name"], "convert")
+        replay_kwargs = payload["runtime"]["replay"]["command"]["kwargs"]
+        self.assertEqual(replay_kwargs["route_model_mode"], "shadow")
+        self.assertEqual(replay_kwargs["quality_gate_mode"], "strict")
         self.assertEqual(payload["artifacts"]["input"]["kind"], "input")
         self.assertIn(payload["artifacts"]["input"]["status"], {"stored", "unavailable", "failed"})
         job_id = payload["job_id"]
@@ -302,6 +307,94 @@ class AppAsyncConvertTests(unittest.TestCase):
         self.assertIsNone(payload["conversion"])
         self.assertIsNone(payload["download_url"])
         self.assertEqual(payload["poll_after_ms"], 0)
+
+    def test_convert_status_surfaces_quality_gate_failure_conversion_payload(self) -> None:
+        job_id = "failed-quality-gate-job"
+        created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        with app_module._CONVERSION_JOBS_LOCK:
+            app_module._CONVERSION_JOBS[job_id] = {
+                "job_id": job_id,
+                "status": "failed",
+                "message": "Walidacja EPUB zakończyła się niepowodzeniem.",
+                "source_type": "docx",
+                "filename": "quality-gate.docx",
+                "created_at": created_at,
+                "updated_at": created_at,
+                "output_path": "",
+                "download_name": "quality-gate.epub",
+                "metadata": {
+                    "source_type": "docx",
+                    "profile": "docx_reflow",
+                    "validation": "passed_with_warnings",
+                    "validation_tool": "epub_validation",
+                    "validation_details": {
+                        "core_warning_count": 2,
+                        "core_warning_messages": [
+                            "Manifest integrity ratio is 0.5000, below minimum 1.0.",
+                            "Internal hrefs reference missing fragments at ratio 0.0000, below minimum 0.75.",
+                        ],
+                    },
+                    "quality_gate_mode": "strict",
+                },
+                "output_size_bytes": 0,
+                "error": "Core EPUB structure warnings blocked conversion in strict mode. Details: ...",
+                "error_code": "conversion_quality_gate_failed",
+                "quality_gate_mode": "strict",
+            }
+        self.cleanup_job_ids.append(job_id)
+
+        response = self.client.get(f"/convert/status/{job_id}")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["status"], "failed")
+        self.assertEqual(payload["error_code"], "conversion_quality_gate_failed")
+        self.assertIsNotNone(payload["conversion"])
+        self.assertEqual(payload["conversion"]["quality_gate_mode"], "strict")
+        self.assertEqual(payload["conversion"]["validation"], "passed_with_warnings")
+        self.assertGreater(len(payload["conversion"].get("validation_details", {}).get("core_warning_messages", [])), 0)
+        self.assertIsNone(payload["download_url"])
+        self.assertEqual(payload["poll_after_ms"], 0)
+
+    def test_convert_quality_report_available_for_quality_gate_failure(self) -> None:
+        job_id = "failed-quality-gate-report"
+        created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        with app_module._CONVERSION_JOBS_LOCK:
+            app_module._CONVERSION_JOBS[job_id] = {
+                "job_id": job_id,
+                "status": "failed",
+                "message": "Walidacja EPUB zakończyła się niepowodzeniem.",
+                "source_type": "pdf",
+                "filename": "quality-gate.pdf",
+                "created_at": created_at,
+                "updated_at": created_at,
+                "output_path": "",
+                "download_name": "quality-gate.epub",
+                "metadata": {
+                    "source_type": "pdf",
+                    "profile": "book_reflow",
+                    "validation": "passed_with_warnings",
+                    "validation_tool": "epub_validation",
+                    "validation_details": {
+                        "core_blocker_count": 0,
+                        "core_warning_count": 1,
+                        "core_warning_messages": ["Manifest integrity ratio is 0.5000, below minimum 1.0."],
+                    },
+                    "quality_gate_mode": "strict",
+                },
+                "output_size_bytes": 0,
+                "error": "Core EPUB structure warnings blocked conversion in strict mode. Details: Manifest integrity ratio is 0.5000, below minimum 1.0.",
+                "error_code": "conversion_quality_gate_failed",
+            }
+        self.cleanup_job_ids.append(job_id)
+
+        response = self.client.get(f"/convert/report/{job_id}.json")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["success"], True)
+        self.assertEqual(payload["job"]["job_id"], job_id)
+        self.assertEqual(payload["job"]["status"], "failed")
+        self.assertEqual(payload["quality_state"]["quality_gate_mode"], "strict")
+        self.assertEqual(payload["quality_state"]["validation"]["status"], "passed_with_warnings")
 
     def test_convert_jobs_lists_ready_running_and_failed_summaries(self) -> None:
         now = datetime.now(UTC)

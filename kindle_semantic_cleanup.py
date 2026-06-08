@@ -1525,6 +1525,10 @@ def finalize_epub_for_kindle(
                 chess_palette_colors=chess_palette_colors,
             )
             _write_default_css(root_dir)
+            non_linear_spine_files = _filter_ocr_page_fallback_files_from_non_linear(
+                chapter_list,
+                non_linear_spine_files,
+            )
             toc_entries = _rebuild_toc_entries_from_final_chapters(
                 chapter_list,
                 fallback_entries=toc_entries,
@@ -7729,6 +7733,10 @@ def _repair_generic_package(
                 cleanup_scope=cleanup_scope,
                 language=resolved_language,
             )
+    non_linear_spine_files = _filter_ocr_page_fallback_files_from_non_linear(
+        chapter_paths,
+        non_linear_spine_files,
+    )
     if non_linear_spine_files:
         resolved_toc_entries.extend(
             _build_non_linear_reachability_toc_entries(
@@ -8331,6 +8339,22 @@ def _detect_generic_page_fragment_files(chapter_paths) -> set[str]:
     }
 
 
+def _filter_ocr_page_fallback_files_from_non_linear(chapter_paths, non_linear_files) -> set[str]:
+    resolved = {str(name) for name in (non_linear_files or []) if str(name)}
+    if not resolved:
+        return set()
+    for chapter_path in chapter_paths:
+        if chapter_path.name not in resolved:
+            continue
+        try:
+            text = chapter_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if "ocr-page-fallback" in text or "scanned-board" in text:
+            resolved.discard(chapter_path.name)
+    return resolved
+
+
 def _looks_like_generic_page_fragment_document(chapter_path: Path) -> bool:
     if chapter_path.name == "cover.xhtml":
         return False
@@ -8872,7 +8896,7 @@ def _derive_package_metadata(
                 resolved_author = re.sub(r"\s+(?:Copyright|All rights reserved).*$", "", resolved_author, flags=re.IGNORECASE).strip()
                 break
     if not resolved_author or _is_placeholder_author(resolved_author):
-        resolved_author = "Unknown"
+        resolved_author = "Unknown Author"
 
     for chapter_path in chapter_paths[:6]:
         soup = BeautifulSoup(chapter_path.read_text(encoding="utf-8"), "xml")
@@ -9032,7 +9056,7 @@ def _trim_trailing_nonessential_figures(section: Tag) -> bool:
 
         caption = node.find("figcaption")
         caption_text = _normalize_text(caption.get_text(" ", strip=True)) if caption is not None else ""
-        classes = set(node.get("class") or [])
+        classes = set(_class_list(node))
         signature = (image.get("src", ""), caption_text)
         previous_figure_count = sum(1 for child in direct_children[:-1] if child.name == "figure")
         earlier_signatures = figure_signatures[:previous_figure_count]
@@ -9531,7 +9555,7 @@ def _update_opf_metadata(
     resolved_author = _normalize_text(author)
     resolved_language = _canonicalize_language(language)
     if _is_placeholder_author(resolved_author):
-        resolved_author = "Unknown"
+        resolved_author = "Unknown Author"
     resolved_description = _resolve_package_description(
         metadata,
         chapter_paths=chapter_paths,
@@ -9598,6 +9622,7 @@ def _reorder_opf_spine(
     itemref_by_idref = {itemref.get("idref", ""): itemref for itemref in itemrefs if itemref.get("idref")}
     ordered_idrefs: list[str] = []
     non_linear_hrefs = {str(name) for name in (non_linear_files or []) if str(name)}
+    non_linear_hrefs = _filter_unreachable_non_linear_hrefs(opf_path.parent, non_linear_hrefs)
     non_linear_idrefs: list[str] = []
     cover_id = href_to_id.get("cover.xhtml", "")
     nav_id = href_to_id.get("nav.xhtml", "")
@@ -9677,6 +9702,22 @@ def _write_default_css(root_dir: Path) -> None:
     css_path = root_dir / "EPUB" / "style" / "default.css"
     if css_path.exists():
         css_path.write_text(KINDLE_CSS, encoding="utf-8")
+
+
+def _filter_unreachable_non_linear_hrefs(package_dir: Path, non_linear_hrefs: set[str]) -> set[str]:
+    if not non_linear_hrefs:
+        return set()
+    referenced: set[str] = set()
+    for xhtml_path in package_dir.glob("*.xhtml"):
+        try:
+            soup = BeautifulSoup(xhtml_path.read_text(encoding="utf-8", errors="ignore"), "xml")
+        except Exception:
+            continue
+        for link in soup.find_all(["a", "area"]):
+            href = str(link.get("href") or "").split("#", 1)[0]
+            if href:
+                referenced.add(href)
+    return {href for href in non_linear_hrefs if href in referenced}
 
 
 def _pack_epub(root_dir: Path) -> bytes:

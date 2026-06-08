@@ -481,6 +481,7 @@ def quality_feedback_examples_from_feedback(
                 "quality_label": quality_label,
                 "final_label": final_label,
                 "label": final_label,
+                "feedback_status": str(feedback.get("status", "") or ""),
                 "quality_score": _optional_float(feedback.get("quality_score")),
                 "issue_tags": issue_tags,
                 "route_label": _clean_route_label(feedback.get("route_label", "")),

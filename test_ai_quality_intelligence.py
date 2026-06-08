@@ -124,6 +124,26 @@ class FakeMagazineReviewProvider:
         }
 
 
+class FakeDenseHandbookReviewProvider:
+    name = "fake-dense-review"
+
+    def review_dense_handbook(self, context):
+        self.context = context
+        return {
+            "provider": self.name,
+            "confidence": 0.84,
+            "estimated_cost_usd": 0.02,
+            "toc_debris": [
+                {"href": "chapter_001.xhtml#step", "label": "Step 1.", "evidence": "procedural TOC", "confidence": 0.82},
+                {"href": "invented.xhtml", "label": "Invented", "evidence": "bad href", "confidence": 1.0},
+            ],
+            "heading_noise": [],
+            "text_artifact_reviews": [{"fragment_index": 999, "before": "nope", "classification": "ocr", "evidence": "bad index", "confidence": 1.0}],
+            "oversized_chapters": [{"href": "chapter_001.xhtml", "title": "Techniques", "evidence": "large chapter", "confidence": 0.8}],
+            "suggested_fixture_tags": ["dense_handbook_toc_noise"],
+        }
+
+
 class AIQualityIntelligenceTests(unittest.TestCase):
     def test_clean_book_skips_ai_and_preserves_deterministic_output(self) -> None:
         epub_bytes = _build_epub(
@@ -252,6 +272,45 @@ class AIQualityIntelligenceTests(unittest.TestCase):
         self.assertEqual(report["magazine_review"]["ocr_cleanup_candidates"], [])
         self.assertIn("article_map", provider.context)
         self.assertLessEqual(report["magazine_review"]["context_summary"]["bounded_context_chars"], 10000)
+
+    def test_dense_handbook_review_runs_on_compact_context_without_rewriting_epub(self) -> None:
+        epub_bytes = _build_epub(
+            chapters={
+                "chapter_001.xhtml": "<h1>Techniques</h1><h2 id='step'>Step 1.</h2><p>Business analysis requirements strategy analysis solution evaluation appendix glossary techniques text.</p>",
+            },
+            nav_entries=[("Step 1.", "chapter_001.xhtml#step")],
+            title="Dense Handbook",
+        )
+        provider = FakeDenseHandbookReviewProvider()
+
+        report = evaluate_ai_quality_intelligence(
+            epub_bytes,
+            providers=AIQualityProviders(dense_handbook_review=provider),
+            premium_scoring={
+                "premium_score": 6.0,
+                "release_verdict": "release_blocked",
+                "issues": [{"code": "dense_handbook_toc_noise", "severity": "review"}],
+                "metrics": {
+                    "dense_handbook_navigation_summary": {
+                        "toc_noise_count": 1,
+                        "heading_noise_count": 1,
+                        "heading_noise_samples": ["Step 1."],
+                    },
+                    "text_artifacts": {"artifact_rate_per_1000_words": 5.0},
+                },
+            },
+        )
+
+        self.assertTrue(report["deterministic_output_preserved"])
+        self.assertFalse(report["dense_handbook_review"]["output_epub_changed"])
+        self.assertEqual(report["dense_handbook_review"]["status"], "reported")
+        self.assertEqual(
+            report["dense_handbook_review"]["toc_debris"],
+            [{"href": "chapter_001.xhtml#step", "label": "Step 1.", "evidence": "procedural TOC", "confidence": 0.82}],
+        )
+        self.assertEqual(report["dense_handbook_review"]["text_artifact_reviews"], [])
+        self.assertEqual(report["dense_handbook_review"]["suggested_fixture_tags"], ["dense_handbook_toc_noise"])
+        self.assertLessEqual(report["dense_handbook_review"]["context_summary"]["bounded_context_chars"], 10000)
 
 
 if __name__ == "__main__":

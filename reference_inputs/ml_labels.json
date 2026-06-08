@@ -59,6 +59,61 @@
       "route_label": "docx_reflow",
       "label_quality": "generated",
       "notes": "DOCX fallback-sectioning seed."
+    },
+    "876908532_chess_notes_the_jobava_london_game_collectioin_d01_2025_1990pages_pdf": {
+      "route_label": "diagram_book_reflow",
+      "label_quality": "weak",
+      "notes": "Auto-inferred diagram/training route from filename. Review after first corpus run."
+    },
+    "predictable_winners_stuart_e_jackson_pdf": {
+      "route_label": "book_reflow",
+      "label_quality": "weak",
+      "notes": "Auto-inferred book route fallback. Review after first analysis if this is layout-heavy or scanned."
+    },
+    "fundamenty_1_1_pdf": {
+      "route_label": "diagram_book_reflow",
+      "label_quality": "weak",
+      "notes": "Auto-inferred diagram/training route from filename. Review after first corpus run."
+    },
+    "tactits_pdf": {
+      "route_label": "diagram_book_reflow",
+      "label_quality": "weak",
+      "notes": "Auto-inferred diagram/training route from filename. Review after first corpus run."
+    },
+    "the_woodpecker_method_pdfdrive_pdf": {
+      "route_label": "diagram_book_reflow",
+      "label_quality": "weak",
+      "notes": "Auto-inferred diagram/training route from filename. Review after first corpus run."
+    },
+    "dense_business_guide_pdf_sample_80p": {
+      "route_label": "book_reflow",
+      "label_quality": "weak_sample",
+      "notes": "Sample inherits route label from dense_business_guide_pdf; review before promotion to curated training data."
+    },
+    "876908532_chess_notes_the_jobava_london_game_collectioin_d01_2025_1990pages_pdf_sample_80p": {
+      "route_label": "diagram_book_reflow",
+      "label_quality": "weak_sample",
+      "notes": "Sample inherits route label from 876908532_chess_notes_the_jobava_london_game_collectioin_d01_2025_1990pages_pdf; review before promotion to curated training data."
+    },
+    "predictable_winners_stuart_e_jackson_pdf_sample_80p": {
+      "route_label": "book_reflow",
+      "label_quality": "weak_sample",
+      "notes": "Sample inherits route label from predictable_winners_stuart_e_jackson_pdf; review before promotion to curated training data."
+    },
+    "fundamenty_1_1_pdf_sample_80p": {
+      "route_label": "diagram_book_reflow",
+      "label_quality": "weak_sample",
+      "notes": "Sample inherits route label from fundamenty_1_1_pdf; review before promotion to curated training data."
+    },
+    "tactits_pdf_sample_80p": {
+      "route_label": "diagram_book_reflow",
+      "label_quality": "weak_sample",
+      "notes": "Sample inherits route label from tactits_pdf; review before promotion to curated training data."
+    },
+    "the_woodpecker_method_pdfdrive_pdf_sample_80p": {
+      "route_label": "diagram_book_reflow",
+      "label_quality": "weak_sample",
+      "notes": "Sample inherits route label from the_woodpecker_method_pdfdrive_pdf; review before promotion to curated training data."
     }
   }
 }

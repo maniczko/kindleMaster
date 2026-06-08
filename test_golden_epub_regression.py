@@ -15,7 +15,7 @@ def _build_epub(
     path: Path,
     *,
     title: str = "Golden Probe",
-    creator: str = "KindleMaster",
+    creator: str = "Golden Author",
     language: str = "en",
     nav_labels: list[str] | None = None,
     body: str = "",

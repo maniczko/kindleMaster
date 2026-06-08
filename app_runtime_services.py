@@ -48,6 +48,23 @@ class ConversionOutcome:
     metadata: dict[str, Any]
 
 
+class ConversionQualityGateError(RuntimeError):
+    """Raised when hard structural validation blocks EPUB output."""
+
+    error_code = "conversion_quality_gate_failed"
+
+    def __init__(
+        self,
+        message: str,
+        validation_report: Mapping[str, Any],
+        mode: str,
+        *args: Any,
+    ) -> None:
+        super().__init__(message, *args)
+        self.validation_report = dict(validation_report)
+        self.mode = mode
+
+
 def detect_supported_source_type(filename: str | None) -> str | None:
     suffix = Path(str(filename or "")).suffix.lower()
     if suffix not in SUPPORTED_SOURCE_SUFFIXES:
@@ -397,6 +414,12 @@ def _quality_gate_epubcheck_payload(
     quality_report: Mapping[str, Any],
     heading_repair_report: Mapping[str, Any],
 ) -> dict[str, Any]:
+    if str(quality_report.get("validation_source", "") or "").strip().lower() == "epub_validation":
+        return {
+            "status": str(quality_report.get("validation_status", "unavailable") or "unavailable"),
+            "messages": list(quality_report.get("validation_messages", []) or []),
+            "tool": str(quality_report.get("validation_tool", "unknown") or "unknown"),
+        }
     heading_status = str(heading_repair_report.get("status", "") or "").strip().lower()
     heading_epubcheck = str(heading_repair_report.get("epubcheck_status", "") or "").strip()
     if heading_status == "applied" and heading_epubcheck:
@@ -412,12 +435,359 @@ def _quality_gate_epubcheck_payload(
     }
 
 
+def _safe_ratio(numerator: float, denominator: float) -> float:
+    if denominator <= 0:
+        return 0.0
+    value = float(numerator) / float(denominator)
+    if value != value:
+        return 0.0
+    if value < 0:
+        return 0.0
+    if value > 1:
+        return 1.0
+    return value
+
+
+def _normalize_quality_gate_mode(value: str) -> str:
+    normalized = str(value or "draft").strip().lower()
+    if normalized in {"draft", "strict", "off"}:
+        return normalized
+    return "draft"
+
+
+def _build_core_structure_thresholds(mode: str) -> dict[str, Any]:
+    normalized_mode = _normalize_quality_gate_mode(mode)
+    if normalized_mode == "strict":
+        return {
+            "manifest_integrity_ratio_min": 1.0,
+            "navigation_document_min_count": 1,
+            "spine_item_min_count": 1,
+            "internal_href_document_coverage_min": 0.97,
+            "internal_href_fragment_coverage_min": 0.9,
+            "href_error_max_ratio": 0.0,
+            "spine_linear_ratio_min": 0.05,
+            "spine_duplicate_ratio_max": 0.0,
+        }
+    return {
+        "manifest_integrity_ratio_min": 1.0,
+        "navigation_document_min_count": 1,
+        "spine_item_min_count": 1,
+        "internal_href_document_coverage_min": 0.9,
+        "internal_href_fragment_coverage_min": 0.75,
+        "href_error_max_ratio": 0.15,
+        "spine_linear_ratio_min": 0.05,
+        "spine_duplicate_ratio_max": 0.0,
+    }
+
+
+def _extract_core_structure_gate(
+    validation_report: Mapping[str, Any],
+    *,
+    quality_gate_mode: str = "draft",
+) -> dict[str, Any]:
+    package = _to_mapping_payload(validation_report.get("package") or {})
+    internal_links = _to_mapping_payload(validation_report.get("internal_links") or {})
+    external_links = _to_mapping_payload(validation_report.get("external_links") or {})
+    document_stats = _to_mapping_payload(validation_report.get("document_stats") or {})
+
+    package_errors = [str(item) for item in (package.get("errors") or []) if str(item).strip()]
+    package_warnings = [str(item) for item in (package.get("warnings") or []) if str(item).strip()]
+    internal_errors = [str(item) for item in (internal_links.get("errors") or []) if str(item).strip()]
+    internal_warnings = [str(item) for item in (internal_links.get("warnings") or []) if str(item).strip()]
+    external_errors = [str(item) for item in (external_links.get("errors") or []) if str(item).strip()]
+    external_warnings = [str(item) for item in (external_links.get("warnings") or []) if str(item).strip()]
+
+    manifest_item_count = int(document_stats.get("manifest_item_count", 0) or 0)
+    manifest_targets_missing_count = int(document_stats.get("manifest_targets_missing_count", 0) or 0)
+    manifest_duplicate_id_count = int(document_stats.get("manifest_duplicate_id_count", 0) or 0)
+    navigation_document_count = int(document_stats.get("navigation_document_count", 0) or 0)
+    spine_item_count = int(document_stats.get("spine_item_count", 0) or 0)
+    spine_linear_item_count = int(document_stats.get("spine_linear_item_count", 0) or 0)
+    spine_non_linear_item_count = int(document_stats.get("spine_non_linear_item_count", 0) or 0)
+    spine_duplicate_targets = int(document_stats.get("spine_duplicate_targets", 0) or 0)
+    spine_unknown_manifest_references = int(document_stats.get("spine_unknown_manifest_references", 0) or 0)
+    non_linear_spine_targets = int(document_stats.get("non_linear_spine_targets", 0) or 0)
+    unreachable_non_linear_spine_targets = int(document_stats.get("unreachable_non_linear_spine_targets", 0) or 0)
+    documents_parsed = int(document_stats.get("documents_parsed", 0) or 0)
+    documents_with_duplicate_ids = int(document_stats.get("documents_with_duplicate_ids", 0) or 0)
+    links_checked = int(document_stats.get("links_checked", 0) or 0)
+    internal_href_with_fragment_count = int(document_stats.get("internal_href_with_fragment_count", 0) or 0)
+    internal_href_without_fragment_count = int(document_stats.get("internal_href_without_fragment_count", 0) or 0)
+    internal_href_missing_document_count = int(document_stats.get("internal_href_missing_document_count", 0) or 0)
+    internal_href_missing_fragment_count = int(document_stats.get("internal_href_missing_fragment_count", 0) or 0)
+    external_links_checked = int(document_stats.get("external_links_checked", 0) or 0)
+    broken_internal_href_count = len(internal_errors)
+    broken_external_href_count = len(external_errors)
+    broken_href_count = broken_internal_href_count + broken_external_href_count
+    internal_fragment_coverage = _safe_ratio(
+        max(0, internal_href_with_fragment_count - internal_href_missing_fragment_count),
+        max(1, internal_href_with_fragment_count),
+    )
+    internal_target_coverage = _safe_ratio(
+        max(0, links_checked - internal_href_missing_document_count - internal_href_missing_fragment_count),
+        max(1, links_checked),
+    )
+
+    blockers: list[str] = []
+    warnings: list[str] = []
+
+    if manifest_targets_missing_count > 0:
+        blockers.append(f"Manifest points to {manifest_targets_missing_count} missing archive item(s).")
+    if manifest_duplicate_id_count > 0:
+        blockers.append(f"Manifest has {manifest_duplicate_id_count} duplicate id(s).")
+    if manifest_item_count == 0:
+        blockers.append("Manifest is empty.")
+    if navigation_document_count == 0:
+        blockers.append("Navigation document (nav/NCX) is missing.")
+    if spine_item_count == 0:
+        blockers.append("Spine has no reading-order items.")
+    if spine_unknown_manifest_references > 0:
+        blockers.append(f"Spine references {spine_unknown_manifest_references} unknown manifest id(s).")
+    if spine_duplicate_targets > 0:
+        blockers.append(f"Spine has {spine_duplicate_targets} duplicate target(s).")
+    if broken_internal_href_count > 0:
+        blockers.append(f"Found {broken_internal_href_count} broken internal href target(s).")
+    if internal_href_missing_fragment_count > 0:
+        blockers.append(f"Found {internal_href_missing_fragment_count} internal hrefs with missing fragment id(s).")
+    if internal_href_missing_document_count > 0:
+        blockers.append(f"Found {internal_href_missing_document_count} internal hrefs with missing target document(s).")
+
+    if non_linear_spine_targets and unreachable_non_linear_spine_targets == non_linear_spine_targets:
+        warnings.append("All non-linear spine targets are unreachable.")
+    if documents_with_duplicate_ids > 0 and documents_parsed > 0 and _safe_ratio(documents_with_duplicate_ids, documents_parsed) > 0.35:
+        warnings.append("High ratio of documents with duplicate IDs.")
+    if links_checked > 0 and _safe_ratio(broken_internal_href_count, links_checked) > 0.15:
+        warnings.append("High ratio of broken href checks.")
+    if spine_item_count > 0 and _safe_ratio(spine_linear_item_count, spine_item_count) < 0.1 and spine_non_linear_item_count > 0:
+        warnings.append("Spine contains a low ratio of linear reading-order items.")
+    if external_links_checked > 0 and external_warnings:
+        warnings.append("External links contain warnings.")
+
+    readability = {
+        "manifest_integrity_ratio": _safe_ratio(
+            manifest_item_count,
+            manifest_item_count + manifest_targets_missing_count,
+        ),
+        "spine_linear_ratio": _safe_ratio(spine_linear_item_count, spine_item_count),
+        "spine_non_linear_ratio": _safe_ratio(spine_non_linear_item_count, spine_item_count),
+        "spine_duplicate_ratio": _safe_ratio(spine_duplicate_targets, spine_item_count),
+        "href_error_rate": _safe_ratio(broken_internal_href_count, links_checked),
+        "href_error_ratio_percent": round(_safe_ratio(broken_internal_href_count, links_checked) * 100.0, 4),
+        "internal_href_document_coverage": internal_target_coverage,
+        "internal_href_document_coverage_percent": round(internal_target_coverage * 100.0, 4),
+        "internal_href_fragment_coverage": internal_fragment_coverage,
+        "internal_href_fragment_coverage_percent": round(internal_fragment_coverage * 100.0, 4),
+        "internal_href_with_fragment_ratio": _safe_ratio(internal_href_with_fragment_count, links_checked),
+        "internal_href_without_fragment_ratio": _safe_ratio(internal_href_without_fragment_count, links_checked),
+        "duplicate_id_ratio": _safe_ratio(documents_with_duplicate_ids, documents_parsed),
+        "external_href_error_rate": _safe_ratio(broken_external_href_count, external_links_checked),
+    }
+
+    normalized_mode = _normalize_quality_gate_mode(quality_gate_mode)
+    strict_gate = normalized_mode == "strict"
+    thresholds = _build_core_structure_thresholds(normalized_mode)
+
+    if readability["manifest_integrity_ratio"] < float(thresholds["manifest_integrity_ratio_min"]):
+        message = (
+            f"Manifest integrity ratio is {readability['manifest_integrity_ratio']:.4f}, "
+            f"below minimum {thresholds['manifest_integrity_ratio_min']}."
+        )
+        if strict_gate:
+            blockers.append(message)
+        else:
+            warnings.append(message)
+
+    if links_checked > 0 and readability["internal_href_document_coverage"] < float(thresholds["internal_href_document_coverage_min"]):
+        message = (
+            f"Internal hrefs reference missing documents at ratio {readability['internal_href_document_coverage']:.4f}, "
+            f"below minimum {thresholds['internal_href_document_coverage_min']}."
+        )
+        if strict_gate:
+            blockers.append(message)
+        else:
+            warnings.append(message)
+
+    if (
+        internal_href_with_fragment_count > 0
+        and readability["internal_href_fragment_coverage"] < float(thresholds["internal_href_fragment_coverage_min"])
+    ):
+        message = (
+            f"Internal hrefs reference missing fragments at ratio {readability['internal_href_fragment_coverage']:.4f}, "
+            f"below minimum {thresholds['internal_href_fragment_coverage_min']}."
+        )
+        if strict_gate:
+            blockers.append(message)
+        else:
+            warnings.append(message)
+
+    if links_checked > 0 and readability["href_error_rate"] > float(thresholds["href_error_max_ratio"]):
+        message = (
+            f"Internal href error ratio is {readability['href_error_rate']:.4f}, "
+            f"above maximum {thresholds['href_error_max_ratio']}."
+        )
+        if strict_gate:
+            blockers.append(message)
+        else:
+            warnings.append(message)
+
+    if readability["spine_linear_ratio"] < float(thresholds["spine_linear_ratio_min"]) and spine_non_linear_item_count > 0:
+        message = (
+            f"Linear-spine ratio is {readability['spine_linear_ratio']:.4f}, "
+            f"below minimum {thresholds['spine_linear_ratio_min']}."
+        )
+        if strict_gate:
+            blockers.append(message)
+        else:
+            warnings.append(message)
+
+    if readability["spine_duplicate_ratio"] > float(thresholds["spine_duplicate_ratio_max"]):
+        message = (
+            f"Spine duplicate ratio is {readability['spine_duplicate_ratio']:.4f}, "
+            f"above maximum {thresholds['spine_duplicate_ratio_max']}."
+        )
+        if strict_gate:
+            blockers.append(message)
+        else:
+            warnings.append(message)
+
+    return {
+        "status": "blocked" if blockers else ("warning" if warnings else "passed"),
+        "blockers": blockers,
+        "warnings": warnings,
+        "readability": readability,
+        "thresholds": {
+            **{key: value for key, value in thresholds.items()},
+        },
+        "metrics": {
+            "manifest_item_count": manifest_item_count,
+            "manifest_targets_missing_count": manifest_targets_missing_count,
+            "manifest_duplicate_id_count": manifest_duplicate_id_count,
+            "documents_parsed": documents_parsed,
+            "documents_with_duplicate_ids": documents_with_duplicate_ids,
+            "navigation_document_count": navigation_document_count,
+            "spine_item_count": spine_item_count,
+            "spine_linear_item_count": spine_linear_item_count,
+            "spine_non_linear_item_count": spine_non_linear_item_count,
+            "spine_duplicate_targets": spine_duplicate_targets,
+            "spine_unknown_manifest_references": spine_unknown_manifest_references,
+            "links_checked": links_checked,
+            "external_links_checked": external_links_checked,
+            "internal_href_with_fragment_count": internal_href_with_fragment_count,
+            "internal_href_without_fragment_count": internal_href_without_fragment_count,
+            "internal_href_missing_document_count": internal_href_missing_document_count,
+            "internal_href_missing_fragment_count": internal_href_missing_fragment_count,
+            "broken_internal_href_count": broken_internal_href_count,
+            "broken_external_href_count": broken_external_href_count,
+            "broken_href_count": broken_href_count,
+            "non_linear_spine_targets": non_linear_spine_targets,
+            "unreachable_non_linear_spine_targets": unreachable_non_linear_spine_targets,
+        },
+        "counts": {
+            "package_error_count": len(package_errors),
+            "package_warning_count": len(package_warnings),
+            "internal_error_count": len(internal_errors),
+            "internal_warning_count": len(internal_warnings),
+            "external_error_count": len(external_errors),
+            "external_warning_count": len(external_warnings),
+        },
+        "quality_gate_mode": normalized_mode,
+    }
+
+
+def _build_core_validation_summary(validation_report: Mapping[str, Any]) -> dict[str, Any]:
+    package = _to_mapping_payload(validation_report.get("package") or {})
+    internal_links = _to_mapping_payload(validation_report.get("internal_links") or {})
+    external_links = _to_mapping_payload(validation_report.get("external_links") or {})
+    document_stats = _to_mapping_payload(validation_report.get("document_stats") or {})
+    summary = _to_mapping_payload(validation_report.get("summary") or {})
+
+    package_errors = list(package.get("errors") or [])
+    package_warnings = list(package.get("warnings") or [])
+    internal_errors = list(internal_links.get("errors") or [])
+    internal_warnings = list(internal_links.get("warnings") or [])
+    external_errors = list(external_links.get("errors") or [])
+    external_warnings = list(external_links.get("warnings") or [])
+
+    summary_status = str(summary.get("status", "failed") or "failed").lower()
+    structural_errors = len(package_errors) + len(internal_errors) + len(external_errors)
+    structural_warnings = len(package_warnings) + len(internal_warnings) + len(external_warnings)
+    structural_status = "failed" if structural_errors > 0 else ("passed_with_warnings" if structural_warnings > 0 else "passed")
+
+    validation_messages: list[str] = []
+    if structural_status == "failed":
+        validation_messages.append("Core EPUB structural validation failed.")
+    if summary_status == "failed" and str(summary.get("epubcheck_status", "passed")).lower() == "failed":
+        validation_messages.append(
+            f"EPUBCheck failed: {summary.get('error_count', 0)} errors and {summary.get('warning_count', 0)} warnings."
+        )
+    validation_messages.extend(package_errors[:2])
+    validation_messages.extend(internal_errors[:2])
+    validation_messages.extend(external_errors[:2])
+
+    spine_error_count = sum(1 for message in package_errors if "Spine" in str(message))
+    navigation_error_count = sum(
+        1 for message in package_errors + package_warnings if "navigation" in str(message).lower() or "nav" in str(message).lower()
+    )
+    core_structure_gate = _extract_core_structure_gate(
+        validation_report,
+        quality_gate_mode=_normalize_quality_gate_mode(str(validation_report.get("quality_gate_mode", "draft"))),
+    )
+    summary_status = str(validation_report.get("summary", {}).get("status", "failed") or "failed").strip().lower()
+    structural_status = str(
+        (
+            "failed" if structural_errors > 0 else
+            "passed_with_warnings" if structural_warnings > 0 else
+            "passed"
+        )
+    )
+    if summary_status == "failed":
+        effective_validation_status = "failed"
+    elif summary_status == "passed_with_warnings" and structural_status == "passed":
+        effective_validation_status = "passed_with_warnings"
+    else:
+        effective_validation_status = structural_status
+
+    return {
+        "validation_source": "epub_validation",
+        "validation_tool": "epub_validation",
+        "validation_status": effective_validation_status,
+        "validation_messages": validation_messages[:METADATA_MESSAGE_LIMIT],
+        "epubcheck_status": str(summary.get("epubcheck_status", "unavailable")),
+        "error_count": max(int(structural_errors or 0), int(summary.get("error_count", 0) or 0)),
+        "warning_count": max(int(structural_warnings or 0), int(summary.get("warning_count", 0) or 0)),
+        "package_error_count": len(package_errors),
+        "package_warning_count": len(package_warnings),
+        "internal_link_error_count": len(internal_errors),
+        "internal_link_warning_count": len(internal_warnings),
+        "external_link_error_count": len(external_errors),
+        "external_link_warning_count": len(external_warnings),
+        "broken_href_error_count": len(internal_errors) + len(external_errors),
+        "duplicate_id_error_count": int(document_stats.get("documents_with_duplicate_ids", 0) or 0),
+        "documents_parsed": int(document_stats.get("documents_parsed", 0) or 0),
+        "documents_with_duplicate_ids": int(document_stats.get("documents_with_duplicate_ids", 0) or 0),
+        "links_checked": int(document_stats.get("links_checked", 0) or 0),
+        "external_links_checked": int(document_stats.get("external_links_checked", 0) or 0),
+        "non_linear_spine_targets": int(document_stats.get("non_linear_spine_targets", 0) or 0),
+        "unreachable_non_linear_spine_targets": int(document_stats.get("unreachable_non_linear_spine_targets", 0) or 0),
+        "spine_error_count": spine_error_count,
+        "navigation_error_count": navigation_error_count,
+        "core_structure_gate": core_structure_gate,
+        "core_readability": core_structure_gate.get("readability", {}),
+        "core_readability_ratio": _safe_ratio(
+            int(document_stats.get("manifest_item_count", 0) or 0),
+            int(document_stats.get("manifest_item_count", 0) or 0) + int(document_stats.get("manifest_targets_missing_count", 0) or 0),
+        ),
+        "validation_document_stats": document_stats,
+    }
+
+
 def _apply_runtime_quality_gate(
     *,
     result: dict[str, Any],
     epub_bytes: bytes,
     request: ConversionRequest,
     heading_repair_report: Mapping[str, Any],
+    allow_heading_repair_fallback: bool = False,
 ) -> dict[str, Any]:
     mode = str(request.quality_gate_mode or "draft").strip().lower()
     if mode == "off":
@@ -434,6 +804,108 @@ def _apply_runtime_quality_gate(
     updated_result = dict(result)
     quality_report = _to_mapping_payload(updated_result.get("quality_report", {}) or {})
     analysis = _to_mapping_payload(updated_result.get("analysis", {}) or {})
+
+    from epub_validation import validate_epub_bytes
+
+    validation_result = validate_epub_bytes(epub_bytes, label="runtime_converted_epub")
+    validation_result["quality_gate_mode"] = mode
+    quality_report.update(_build_core_validation_summary(validation_result))
+    validation_status = str(quality_report.get("validation_status", "unavailable") or "unavailable")
+    core_structure_gate = _to_mapping_payload(quality_report.get("core_structure_gate") or {})
+    core_blockers = [str(item) for item in core_structure_gate.get("blockers", []) if str(item).strip()]
+    core_warnings = [str(item) for item in core_structure_gate.get("warnings", []) if str(item).strip()]
+    core_blocker_count = len(core_blockers)
+    core_warning_count = len(core_warnings)
+    quality_report["core_blocker_count"] = core_blocker_count
+    quality_report["core_warning_count"] = core_warning_count
+    quality_report["core_blocker_messages"] = core_blockers
+    quality_report["core_warning_messages"] = core_warnings
+    core_blockers_present = len(core_blockers) > 0
+    core_warnings_present = len(core_warnings) > 0
+
+    if core_blockers_present and _core_blockers_are_non_linear_reachability(core_blockers):
+        try:
+            from kindle_semantic_cleanup import finalize_epub_for_kindle
+
+            summary = _to_mapping_payload(updated_result.get("document_summary") or {})
+            repaired_epub_bytes = finalize_epub_for_kindle(
+                epub_bytes,
+                title=str(summary.get("title") or updated_result.get("title") or request.original_filename.rsplit(".", 1)[0]),
+                author=str(summary.get("author") or updated_result.get("author") or "Unknown Author"),
+                language=str(summary.get("language") or request.language or "pl"),
+                publication_profile=str(analysis.get("profile") or ""),
+            )
+            repaired_validation = validate_epub_bytes(repaired_epub_bytes, label="runtime_semantic_repaired_epub")
+            repaired_validation["quality_gate_mode"] = mode
+            repaired_summary = _build_core_validation_summary(repaired_validation)
+            repaired_core_gate = _to_mapping_payload(repaired_summary.get("core_structure_gate") or {})
+            repaired_blockers = [
+                str(item) for item in repaired_core_gate.get("blockers", []) if str(item).strip()
+            ]
+            if not repaired_blockers:
+                epub_bytes = repaired_epub_bytes
+                updated_result["_runtime_epub_bytes"] = repaired_epub_bytes
+                quality_report.update(repaired_summary)
+                quality_report["runtime_semantic_repair"] = {
+                    "status": "applied",
+                    "reason": "non_linear_reachability",
+                }
+                validation_status = str(quality_report.get("validation_status", "unavailable") or "unavailable")
+                core_structure_gate = _to_mapping_payload(quality_report.get("core_structure_gate") or {})
+                core_blockers = [
+                    str(item) for item in core_structure_gate.get("blockers", []) if str(item).strip()
+                ]
+                core_warnings = [
+                    str(item) for item in core_structure_gate.get("warnings", []) if str(item).strip()
+                ]
+                core_blocker_count = len(core_blockers)
+                core_warning_count = len(core_warnings)
+                quality_report["core_blocker_count"] = core_blocker_count
+                quality_report["core_warning_count"] = core_warning_count
+                quality_report["core_blocker_messages"] = core_blockers
+                quality_report["core_warning_messages"] = core_warnings
+                core_blockers_present = len(core_blockers) > 0
+                core_warnings_present = len(core_warnings) > 0
+        except Exception as error:
+            quality_report["runtime_semantic_repair"] = {
+                "status": "failed",
+                "reason": "non_linear_reachability",
+                "error": error.__class__.__name__,
+            }
+
+    if mode == "strict":
+        block_gate = (
+            core_blockers_present
+            or str(core_structure_gate.get("status", "")).strip().lower() == "warning"
+            or validation_status in {"failed", "passed_with_warnings"}
+        )
+    else:
+        block_gate = core_blockers_present
+    if mode == "strict" and str(core_structure_gate.get("status", "")).strip().lower() == "blocked":
+        block_gate = True
+    if block_gate:
+        if allow_heading_repair_fallback:
+            quality_report["heading_repair_fallback"] = True
+            quality_report["quality_gate_status"] = "degraded"
+            updated_result["quality_report"] = quality_report
+            return updated_result
+        if core_blockers_present:
+            message_suffix = "; ".join(core_blockers)
+            block_message = f"Core EPUB structure blocked conversion: {message_suffix}"
+        elif core_warnings_present:
+            warnings = list(core_warnings)
+            warning_text = "; ".join([str(item) for item in warnings if str(item).strip()])
+            block_message = f"Core EPUB structure warnings blocked conversion in {mode} mode." + (
+                f" Details: {warning_text}" if warning_text else ""
+            )
+        else:
+            block_message = f"Core EPUB validation failed: {quality_report.get('error_count', 0)} structural error(s)."
+        raise ConversionQualityGateError(
+            block_message,
+            validation_report=_to_mapping_payload(quality_report),
+            mode=mode,
+        )
+
     epubcheck_payload = _quality_gate_epubcheck_payload(
         quality_report=quality_report,
         heading_repair_report=heading_repair_report,
@@ -441,18 +913,14 @@ def _apply_runtime_quality_gate(
     if str(heading_repair_report.get("status", "") or "").strip().lower() == "applied":
         heading_epubcheck = str(heading_repair_report.get("epubcheck_status", "") or "").strip().lower()
         if heading_epubcheck == "passed":
-            quality_report["validation_status"] = "passed"
-            quality_report["validation_tool"] = "epubcheck"
-            quality_report["validation_messages"] = []
-            quality_report["epubcheck_status"] = "passed"
-            quality_report["error_count"] = 0
             stale_warnings = []
             for warning in list(quality_report.get("warnings", []) or []):
                 warning_text = str(warning)
                 if "EPUBCheck" in warning_text or "epubcheck" in warning_text.lower():
                     continue
                 stale_warnings.append(warning)
-            quality_report["warnings"] = stale_warnings
+            if stale_warnings:
+                quality_report["warnings"] = stale_warnings
     premium_scoring = score_epub_premium_quality(epub_bytes, epubcheck=epubcheck_payload)
     magazine_quality = _to_mapping_payload(quality_report.get("magazine_premium_quality") or {})
     if magazine_quality:
@@ -479,6 +947,17 @@ def _apply_runtime_quality_gate(
     quality_report["quality_gate_mode"] = mode
     updated_result["quality_report"] = quality_report
     return updated_result
+
+
+def _core_blockers_are_non_linear_reachability(core_blockers: list[str]) -> bool:
+    if not core_blockers:
+        return False
+    return all(
+        "non-linear spine content is unreachable" in blocker.lower()
+        or "non-linear content must be reachable" in blocker.lower()
+        or "broken internal href target" in blocker.lower()
+        for blocker in core_blockers
+    )
 
 
 def _runtime_epubcheck_payload_from_quality_report(quality_report: Mapping[str, Any]) -> dict[str, Any]:
@@ -588,13 +1067,33 @@ def _build_validation_details_payload(quality_report: Mapping[str, Any]) -> dict
             "epubcheck_status",
             "validation_status",
             "validation_tool",
+            "validation_source",
             "validation_messages",
             "error_count",
             "warning_count",
             "internal_link_error_count",
+            "internal_link_warning_count",
             "external_link_error_count",
+            "external_link_warning_count",
             "broken_href_error_count",
             "duplicate_id_error_count",
+            "package_error_count",
+            "package_warning_count",
+            "spine_error_count",
+            "navigation_error_count",
+            "documents_parsed",
+            "documents_with_duplicate_ids",
+            "links_checked",
+            "external_links_checked",
+            "non_linear_spine_targets",
+            "unreachable_non_linear_spine_targets",
+            "core_structure_gate",
+            "core_readability",
+            "core_readability_ratio",
+            "core_blocker_count",
+            "core_blocker_messages",
+            "core_warning_count",
+            "core_warning_messages",
             "size_budget_inspection",
         ),
         list_limit=METADATA_MESSAGE_LIMIT,
@@ -966,12 +1465,20 @@ def run_document_conversion(
             stage_label="Audyt premium",
             percent_estimate=82,
         )
+    normalized_quality_gate_mode = _normalize_quality_gate_mode(request.quality_gate_mode)
     result = _apply_runtime_quality_gate(
         result=result,
         epub_bytes=epub_bytes,
         request=request,
         heading_repair_report=heading_repair_report,
+        allow_heading_repair_fallback=(
+            normalized_quality_gate_mode != "strict"
+            and str(heading_repair_report.get("status", "")).strip().lower() == "failed"
+        ),
     )
+    repaired_runtime_epub_bytes = result.pop("_runtime_epub_bytes", None)
+    if isinstance(repaired_runtime_epub_bytes, bytes):
+        epub_bytes = repaired_runtime_epub_bytes
     metadata = build_conversion_metadata(
         result=result,
         detected_source_type=detected_source_type,

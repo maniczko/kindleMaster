@@ -123,6 +123,32 @@ class PremiumCorpusSmokeTests(unittest.TestCase):
         self.assertIn("unexpected_language", warning_codes)
         self.assertEqual(_derive_case_grade(blockers, warnings), "fail")
 
+    def test_inspect_epub_flags_unknown_author_placeholder(self):
+        epub_bytes = self._build_epub_bytes(
+            {
+                "mimetype": "application/epub+zip",
+                "META-INF/container.xml": """<?xml version="1.0" encoding="utf-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="EPUB/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>
+""",
+                "EPUB/content.opf": """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>OCR stress scan</dc:title>
+    <dc:creator>Unknown Author</dc:creator>
+    <dc:language>en</dc:language>
+  </metadata>
+</package>
+""",
+            }
+        )
+
+        stats = inspect_epub(epub_bytes)
+
+        self.assertEqual(stats["package_creator"], "Unknown Author")
+        self.assertTrue(stats["metadata_placeholder_creator"])
+
     def test_reference_cleanup_gate_failures_are_release_blockers(self) -> None:
         blockers = _build_case_blockers(
             quality={

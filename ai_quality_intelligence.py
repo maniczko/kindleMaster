@@ -19,6 +19,7 @@ from epub_premium_scoring import score_epub_premium_quality
 
 DEFAULT_TEXT_CONTEXT_LIMIT = 12_000
 DEFAULT_MAGAZINE_REVIEW_CONTEXT_LIMIT = 10_000
+DEFAULT_DENSE_HANDBOOK_REVIEW_CONTEXT_LIMIT = 10_000
 MAX_MAGAZINE_REVIEW_TOC_ENTRIES = 60
 MAX_MAGAZINE_REVIEW_ARTICLES = 40
 MAX_MAGAZINE_REVIEW_FRAGMENTS = 16
@@ -28,6 +29,8 @@ BENIGN_AI_SKIP_REASONS = {
     "deterministic-confidence-high",
     "magazine-signals-not-detected",
     "magazine-review-provider-unavailable",
+    "dense-handbook-signals-not-detected",
+    "dense-handbook-review-provider-unavailable",
     "no-suspicious-fragments",
 }
 
@@ -39,11 +42,19 @@ class MagazineReviewProvider(Protocol):
         raise NotImplementedError
 
 
+class DenseHandbookReviewProvider(Protocol):
+    name: str
+
+    def review_dense_handbook(self, context: dict[str, Any]) -> Mapping[str, Any]:
+        raise NotImplementedError
+
+
 @dataclass(frozen=True)
 class AIQualityProviders:
     ocr_cleanup: AIOcrCleanupProvider | None = None
     toc_detection: AiTocProvider | None = None
     magazine_review: MagazineReviewProvider | None = None
+    dense_handbook_review: DenseHandbookReviewProvider | None = None
 
 
 def evaluate_ai_quality_intelligence(
@@ -92,11 +103,19 @@ def evaluate_ai_quality_intelligence(
         scoring=scoring,
         magazine_context=magazine_context or {},
     )
+    dense_handbook_review = _evaluate_dense_handbook_review(
+        provider=_resolve_dense_handbook_review_provider(provider_bundle),
+        epub_bytes=epub_bytes,
+        visible_text=visible_text,
+        toc_entries=toc_entries,
+        scoring=scoring,
+    )
 
     estimated_cost = round(
         float(ocr_result.estimated_cost or 0.0)
         + float((toc_result.audit or {}).get("estimated_cost_usd", 0.0) or 0.0)
-        + float((magazine_review or {}).get("estimated_cost_usd", 0.0) or 0.0),
+        + float((magazine_review or {}).get("estimated_cost_usd", 0.0) or 0.0)
+        + float((dense_handbook_review or {}).get("estimated_cost_usd", 0.0) or 0.0),
         6,
     )
     accepted_ai_change_count = int(ocr_result.changed_fragment_count or 0) + len(
@@ -107,6 +126,7 @@ def evaluate_ai_quality_intelligence(
         str(ocr_result.fallback_reason or ""),
         str(toc_result.audit.get("fallback_reason", "") or ""),
         str((magazine_review or {}).get("fallback_reason", "") or ""),
+        str((dense_handbook_review or {}).get("fallback_reason", "") or ""),
     )
     learning_signals = _learning_signals(
         accepted_ai_change_count=accepted_ai_change_count,
@@ -123,6 +143,7 @@ def evaluate_ai_quality_intelligence(
             ocr_fragments=len(ocr_result.fragments),
             toc_status=str(toc_result.audit.get("status", "") or ""),
             magazine_status=str((magazine_review or {}).get("status", "") or ""),
+            dense_handbook_status=str((dense_handbook_review or {}).get("status", "") or ""),
         ),
         "before_quality_score": before_score,
         "after_quality_score": before_score,
@@ -131,10 +152,12 @@ def evaluate_ai_quality_intelligence(
             "ocr_cleanup": ocr_result.provider,
             "toc_detection": str(toc_result.audit.get("provider", "none") or "none"),
             "magazine_review": str((magazine_review or {}).get("provider", "none") or "none"),
+            "dense_handbook_review": str((dense_handbook_review or {}).get("provider", "none") or "none"),
         },
         "confidence": {
             "toc": toc_result.audit.get("confidence", 0.0),
             "magazine_review": (magazine_review or {}).get("confidence", 0.0),
+            "dense_handbook_review": (dense_handbook_review or {}).get("confidence", 0.0),
             "ocr_fragments": [
                 {"index": item.index, "confidence": item.confidence, "accepted": item.accepted}
                 for item in ocr_result.fragments[:20]
@@ -153,6 +176,7 @@ def evaluate_ai_quality_intelligence(
             "audit": toc_result.audit,
         },
         "magazine_review": magazine_review,
+        "dense_handbook_review": dense_handbook_review,
         "learning_signals": learning_signals,
     }
 
@@ -212,9 +236,74 @@ def _evaluate_magazine_review(
     }
 
 
+def _evaluate_dense_handbook_review(
+    *,
+    provider: object | None,
+    epub_bytes: bytes,
+    visible_text: str,
+    toc_entries: list[dict[str, Any]],
+    scoring: dict[str, Any],
+) -> dict[str, Any]:
+    if not _should_run_dense_handbook_review(scoring=scoring, toc_entries=toc_entries):
+        return {
+            "status": "skipped",
+            "provider": _provider_name(provider),
+            "fallback_reason": "dense-handbook-signals-not-detected",
+            "output_epub_changed": False,
+            **_empty_dense_handbook_review_fields(),
+        }
+    if provider is None or not hasattr(provider, "review_dense_handbook"):
+        return {
+            "status": "skipped",
+            "provider": _provider_name(provider),
+            "fallback_reason": "dense-handbook-review-provider-unavailable",
+            "output_epub_changed": False,
+            **_empty_dense_handbook_review_fields(),
+        }
+    context = _build_dense_handbook_review_context(
+        epub_bytes=epub_bytes,
+        visible_text=visible_text,
+        toc_entries=toc_entries,
+        scoring=scoring,
+    )
+    try:
+        raw = provider.review_dense_handbook(context)  # type: ignore[attr-defined]
+    except Exception as exc:
+        return {
+            "status": "fallback",
+            "provider": _provider_name(provider),
+            "fallback_reason": f"provider-failed:{exc.__class__.__name__}",
+            "output_epub_changed": False,
+            **_empty_dense_handbook_review_fields(),
+        }
+    sanitized = _sanitize_dense_handbook_review_output(raw, context)
+    return {
+        "status": "reported",
+        **sanitized,
+        "provider": str(raw.get("provider") or _provider_name(provider)) if isinstance(raw, Mapping) else _provider_name(provider),
+        "estimated_cost_usd": _safe_float(raw.get("estimated_cost_usd")) if isinstance(raw, Mapping) else 0.0,
+        "metadata": dict(raw.get("metadata") or {}) if isinstance(raw, Mapping) and isinstance(raw.get("metadata"), Mapping) else {},
+        "input_policy": "compact_fragments_metrics_only",
+        "context_summary": _dense_handbook_context_summary(context),
+        "output_epub_changed": False,
+    }
+
+
 def _resolve_magazine_review_provider(provider_bundle: AIQualityProviders) -> object | None:
     for candidate in (provider_bundle.magazine_review, provider_bundle.toc_detection, provider_bundle.ocr_cleanup):
         if candidate is not None and callable(getattr(candidate, "review_magazine", None)):
+            return candidate
+    return None
+
+
+def _resolve_dense_handbook_review_provider(provider_bundle: AIQualityProviders) -> object | None:
+    for candidate in (
+        provider_bundle.dense_handbook_review,
+        provider_bundle.magazine_review,
+        provider_bundle.toc_detection,
+        provider_bundle.ocr_cleanup,
+    ):
+        if candidate is not None and callable(getattr(candidate, "review_dense_handbook", None)):
             return candidate
     return None
 
@@ -232,6 +321,23 @@ def _should_run_magazine_review(
         return True
     issues = [str(item.get("code", "")) for item in scoring.get("issues", []) if isinstance(item, dict)]
     return any(code.startswith("magazine_") or code in {"toc_lead_used_as_title", "toc_non_content_entry"} for code in issues)
+
+
+def _should_run_dense_handbook_review(
+    *,
+    scoring: dict[str, Any],
+    toc_entries: list[dict[str, Any]],
+) -> bool:
+    metrics = scoring.get("metrics") if isinstance(scoring.get("metrics"), dict) else {}
+    dense_summary = metrics.get("dense_handbook_navigation_summary") if isinstance(metrics.get("dense_handbook_navigation_summary"), dict) else {}
+    if dense_summary:
+        return True
+    issues = [str(item.get("code", "")) for item in scoring.get("issues", []) if isinstance(item, dict)]
+    if any(code.startswith("dense_handbook_") for code in issues):
+        return True
+    if len(toc_entries) >= 35 and any(str(entry.get("label", "")).strip().lower().startswith("step ") for entry in toc_entries):
+        return True
+    return False
 
 
 def _build_magazine_review_context(
@@ -269,6 +375,46 @@ def _build_magazine_review_context(
         },
     }
     return _bound_magazine_context(context, DEFAULT_MAGAZINE_REVIEW_CONTEXT_LIMIT)
+
+
+def _build_dense_handbook_review_context(
+    *,
+    epub_bytes: bytes,
+    visible_text: str,
+    toc_entries: list[dict[str, Any]],
+    scoring: dict[str, Any],
+) -> dict[str, Any]:
+    metrics = scoring.get("metrics") if isinstance(scoring.get("metrics"), dict) else {}
+    dense_summary = metrics.get("dense_handbook_navigation_summary") if isinstance(metrics.get("dense_handbook_navigation_summary"), dict) else {}
+    text_artifacts = metrics.get("text_artifacts") if isinstance(metrics.get("text_artifacts"), dict) else {}
+    suspicious = select_suspicious_fragments(visible_text)
+    context = {
+        "context_version": "dense-handbook-review-v1",
+        "toc_entries": _compact_toc_entries(toc_entries),
+        "heading_noise_samples": [
+            {"index": index, "label": sample, "href": "", "level": 0, "evidence": "dense navigation summary"}
+            for index, sample in enumerate((dense_summary.get("heading_noise_samples") or [])[:MAX_MAGAZINE_REVIEW_FRAGMENTS])
+        ],
+        "text_artifact_fragments": [
+            {
+                "index": item.index,
+                "text": _clip_context_text(item.text, MAX_MAGAZINE_REVIEW_TEXT_CHARS),
+                "artifact_counts": dict(item.artifact_counts),
+            }
+            for item in suspicious[:MAX_MAGAZINE_REVIEW_FRAGMENTS]
+        ],
+        "chapter_stats": _extract_dense_chapter_stats(epub_bytes),
+        "premium_issues": _compact_premium_issues(scoring.get("issues")),
+        "metrics": {
+            "premium_score": scoring.get("premium_score"),
+            "release_verdict": scoring.get("release_verdict"),
+            "toc_noise_count": dense_summary.get("toc_noise_count", 0),
+            "heading_noise_count": dense_summary.get("heading_noise_count", 0),
+            "artifact_rate_per_1000_words": text_artifacts.get("artifact_rate_per_1000_words"),
+            "ignored_text_artifacts": text_artifacts.get("ignored_counts", {}),
+        },
+    }
+    return _bound_dense_handbook_context(context, DEFAULT_DENSE_HANDBOOK_REVIEW_CONTEXT_LIMIT)
 
 
 def _extract_magazine_article_context(epub_bytes: bytes) -> dict[str, Any]:
@@ -326,6 +472,36 @@ def _extract_magazine_article_context(epub_bytes: bytes) -> dict[str, Any]:
 
     image_metrics["per_article"] = image_metrics["per_article"][:MAX_MAGAZINE_REVIEW_ARTICLES]
     return {"article_map": article_map, "flow_fragments": flow_fragments, "image_metrics": image_metrics}
+
+
+def _extract_dense_chapter_stats(epub_bytes: bytes) -> list[dict[str, Any]]:
+    stats: list[dict[str, Any]] = []
+    try:
+        with zipfile.ZipFile(BytesIO(epub_bytes), "r") as archive:
+            for name in sorted(archive.namelist()):
+                if not name.lower().endswith((".xhtml", ".html")) or "nav" in PurePosixPath(name).name.lower():
+                    continue
+                soup = BeautifulSoup(archive.read(name), "html.parser")
+                for node in soup(["script", "style", "svg", "math"]):
+                    node.decompose()
+                headings = soup.find_all(["h1", "h2", "h3"])
+                title = ""
+                for heading in headings:
+                    title = _clip_context_text(heading.get_text(" ", strip=True), 180)
+                    if title:
+                        break
+                text = " ".join((soup.body or soup).get_text(" ", strip=True).split())
+                stats.append(
+                    {
+                        "href": PurePosixPath(name).name,
+                        "title": title or PurePosixPath(name).name,
+                        "word_count": len(re.findall(r"\b[^\W\d_]{2,}\b", text, re.UNICODE)),
+                        "heading_count": len(headings),
+                    }
+                )
+    except (KeyError, zipfile.BadZipFile, OSError):
+        return stats
+    return sorted(stats, key=lambda item: int(item.get("word_count") or 0), reverse=True)[:MAX_MAGAZINE_REVIEW_ARTICLES]
 
 
 def _read_manifest(opf_soup: BeautifulSoup) -> dict[str, dict[str, str]]:
@@ -514,6 +690,19 @@ def _empty_magazine_review_fields() -> dict[str, Any]:
     }
 
 
+def _empty_dense_handbook_review_fields() -> dict[str, Any]:
+    return {
+        "toc_debris": [],
+        "heading_noise": [],
+        "text_artifact_reviews": [],
+        "oversized_chapters": [],
+        "suggested_fixture_tags": [],
+        "confidence": 0.0,
+        "estimated_cost_usd": 0.0,
+        "context_summary": {},
+    }
+
+
 def _sanitize_magazine_review_output(raw: Any, context: dict[str, Any]) -> dict[str, Any]:
     payload = raw if isinstance(raw, Mapping) else {}
     allowed_hrefs = _allowed_magazine_hrefs(context)
@@ -539,6 +728,87 @@ def _sanitize_magazine_review_output(raw: Any, context: dict[str, Any]) -> dict[
         "suggested_fixture_tags": _sanitize_fixture_tags(payload.get("suggested_fixture_tags")),
         "confidence": _clamp_confidence(payload.get("confidence")),
     }
+
+
+def _sanitize_dense_handbook_review_output(raw: Any, context: dict[str, Any]) -> dict[str, Any]:
+    payload = raw if isinstance(raw, Mapping) else {}
+    allowed_hrefs = _allowed_dense_hrefs(context)
+    fragment_text_by_index = _dense_fragment_text_by_index(context)
+    return {
+        "toc_debris": _sanitize_dense_href_items(payload.get("toc_debris"), allowed_hrefs=allowed_hrefs),
+        "heading_noise": _sanitize_dense_href_items(payload.get("heading_noise"), allowed_hrefs=allowed_hrefs),
+        "text_artifact_reviews": _sanitize_dense_artifact_items(
+            payload.get("text_artifact_reviews"),
+            fragment_text_by_index=fragment_text_by_index,
+        ),
+        "oversized_chapters": _sanitize_dense_chapter_items(payload.get("oversized_chapters"), allowed_hrefs=allowed_hrefs),
+        "suggested_fixture_tags": _sanitize_fixture_tags(payload.get("suggested_fixture_tags")),
+        "confidence": _clamp_confidence(payload.get("confidence")),
+    }
+
+
+def _sanitize_dense_href_items(value: Any, *, allowed_hrefs: set[str]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for item in _iter_mappings(value):
+        href = _allowed_href(item.get("href"), allowed_hrefs) if allowed_hrefs else _clip_context_text(item.get("href"), 240)
+        label = _clip_context_text(item.get("label") or item.get("title"), 180)
+        if allowed_hrefs and str(item.get("href") or "").strip() and not href:
+            continue
+        if not label:
+            continue
+        items.append(
+            {
+                "href": href,
+                "label": label,
+                "evidence": _clip_context_text(item.get("evidence") or item.get("reason"), MAX_MAGAZINE_REVIEW_TEXT_CHARS),
+                "confidence": _clamp_confidence(item.get("confidence")),
+            }
+        )
+        if len(items) >= MAX_MAGAZINE_REVIEW_FRAGMENTS:
+            break
+    return items
+
+
+def _sanitize_dense_artifact_items(value: Any, *, fragment_text_by_index: dict[int, str]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for item in _iter_mappings(value):
+        index = _coerce_int(item.get("fragment_index") if "fragment_index" in item else item.get("index"), -1)
+        if index not in fragment_text_by_index:
+            continue
+        items.append(
+            {
+                "fragment_index": index,
+                "before": fragment_text_by_index[index],
+                "classification": _clip_context_text(item.get("classification"), 80),
+                "evidence": _clip_context_text(item.get("evidence") or item.get("reason"), MAX_MAGAZINE_REVIEW_TEXT_CHARS),
+                "confidence": _clamp_confidence(item.get("confidence")),
+            }
+        )
+        if len(items) >= MAX_MAGAZINE_REVIEW_FRAGMENTS:
+            break
+    return items
+
+
+def _sanitize_dense_chapter_items(value: Any, *, allowed_hrefs: set[str]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for item in _iter_mappings(value):
+        href = _allowed_href(item.get("href"), allowed_hrefs) if allowed_hrefs else _clip_context_text(item.get("href"), 240)
+        title = _clip_context_text(item.get("title") or item.get("label"), 180)
+        if allowed_hrefs and str(item.get("href") or "").strip() and not href:
+            continue
+        if not title:
+            continue
+        items.append(
+            {
+                "href": href,
+                "title": title,
+                "evidence": _clip_context_text(item.get("evidence") or item.get("reason"), MAX_MAGAZINE_REVIEW_TEXT_CHARS),
+                "confidence": _clamp_confidence(item.get("confidence")),
+            }
+        )
+        if len(items) >= MAX_MAGAZINE_REVIEW_FRAGMENTS:
+            break
+    return items
 
 
 def _sanitize_href_review_items(value: Any, *, allowed_hrefs: set[str]) -> list[dict[str, Any]]:
@@ -666,9 +936,28 @@ def _allowed_magazine_hrefs(context: dict[str, Any]) -> set[str]:
     return hrefs
 
 
+def _allowed_dense_hrefs(context: dict[str, Any]) -> set[str]:
+    hrefs: set[str] = set()
+    for key in ("toc_entries", "heading_noise_samples", "chapter_stats"):
+        for item in _iter_mappings(context.get(key)):
+            href = str(item.get("href") or "").strip()
+            if href:
+                hrefs.add(href)
+    return hrefs
+
+
 def _fragment_text_by_index(context: dict[str, Any]) -> dict[int, str]:
     fragments: dict[int, str] = {}
     for item in _iter_mappings(context.get("suspicious_fragments")):
+        index = _coerce_int(item.get("index"), -1)
+        if index >= 0:
+            fragments[index] = _clip_context_text(item.get("text"), MAX_MAGAZINE_REVIEW_TEXT_CHARS)
+    return fragments
+
+
+def _dense_fragment_text_by_index(context: dict[str, Any]) -> dict[int, str]:
+    fragments: dict[int, str] = {}
+    for item in _iter_mappings(context.get("text_artifact_fragments")):
         index = _coerce_int(item.get("index"), -1)
         if index >= 0:
             fragments[index] = _clip_context_text(item.get("text"), MAX_MAGAZINE_REVIEW_TEXT_CHARS)
@@ -691,6 +980,17 @@ def _magazine_context_summary(context: dict[str, Any]) -> dict[str, Any]:
         "flow_fragment_count": len(context.get("flow_fragments") or []),
         "premium_issue_count": len(context.get("premium_issues") or []),
         "total_images": image_metrics.get("total_images", 0),
+        "bounded_context_chars": _json_length(context),
+    }
+
+
+def _dense_handbook_context_summary(context: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "toc_entry_count": len(context.get("toc_entries") or []),
+        "heading_noise_sample_count": len(context.get("heading_noise_samples") or []),
+        "text_artifact_fragment_count": len(context.get("text_artifact_fragments") or []),
+        "chapter_stat_count": len(context.get("chapter_stats") or []),
+        "premium_issue_count": len(context.get("premium_issues") or []),
         "bounded_context_chars": _json_length(context),
     }
 
@@ -722,6 +1022,36 @@ def _bound_magazine_context(context: dict[str, Any], limit: int) -> dict[str, An
         "premium_issues": [],
         "suspicious_fragments": [],
         "flow_fragments": [],
+        "metrics": {},
+    }
+
+
+def _bound_dense_handbook_context(context: dict[str, Any], limit: int) -> dict[str, Any]:
+    bounded = dict(context)
+    bounded["context_truncated"] = False
+    if _json_length(bounded) <= limit:
+        return bounded
+    bounded["context_truncated"] = True
+    for key in ("premium_issues", "text_artifact_fragments", "heading_noise_samples", "chapter_stats", "toc_entries"):
+        items = list(bounded.get(key) or [])
+        while items and _json_length(bounded) > limit:
+            items.pop()
+            bounded[key] = items
+    if _json_length(bounded) <= limit:
+        return bounded
+    for text_limit in (220, 120, 60):
+        bounded = _clip_context_strings(bounded, text_limit)
+        bounded["context_truncated"] = True
+        if _json_length(bounded) <= limit:
+            return bounded
+    return {
+        "context_version": "dense-handbook-review-v1",
+        "context_truncated": True,
+        "toc_entries": [],
+        "heading_noise_samples": [],
+        "text_artifact_fragments": [],
+        "chapter_stats": [],
+        "premium_issues": [],
         "metrics": {},
     }
 
@@ -842,12 +1172,15 @@ def _overall_status(
     ocr_fragments: int,
     toc_status: str,
     magazine_status: str,
+    dense_handbook_status: str,
 ) -> str:
     if accepted_ai_change_count:
         return "accepted_pending_application"
     if fallback_reasons:
         return "fallback"
     if magazine_status == "reported":
+        return "reported"
+    if dense_handbook_status == "reported":
         return "reported"
     if ocr_fragments == 0 and toc_status == "skipped":
         return "skipped"

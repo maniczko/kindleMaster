@@ -7,8 +7,11 @@ import zipfile
 from epub_premium_scoring import build_magazine_premium_quality_contract
 from publication_model import PublicationAnalysis, PublicationDocument, PublicationQualityReport
 from publication_pipeline import (
+    _benchmark_scanned_chess_ocr_language,
+    _inject_scanned_chess_boards,
     _looks_like_cover_masthead_line,
     _ocr_quality_from_result,
+    _preserve_weak_ocr_page_images,
     _should_coalesce_page_chapters_with_pdf_outline,
     finalize_publication_epub,
     publication_from_content,
@@ -272,7 +275,168 @@ class PublicationPipelineTests(unittest.TestCase):
         self.assertIn("empty_ocr_page", payload["reason_codes"])
         self.assertEqual(payload["low_confidence_page_count"], 1)
         self.assertEqual(payload["empty_ocr_page_count"], 1)
+        self.assertEqual(payload["recognized_page_count"], 1)
+        self.assertEqual(payload["page_image_fallback_count"], 0)
+        self.assertFalse(payload["scan_chess_image_preservation"])
         self.assertEqual(payload["manual_review_count"], 2)
+
+    def test_ocr_quality_reports_page_image_fallback_preservation(self) -> None:
+        class Page:
+            def __init__(self, text: str, confidence: float) -> None:
+                self.text = text
+                self.confidence = confidence
+
+        class Result:
+            pages = [
+                Page("Readable OCR text " * 10, 0.91),
+                Page("", 0.0),
+            ]
+            engine_used = "ocrmypdf"
+            total_pages = 2
+            success_rate = 0.5
+
+        payload = _ocr_quality_from_result(
+            Result(),
+            reason_codes=["ocrmypdf_full_document"],
+            page_image_fallback_count=1,
+        )
+
+        self.assertEqual(payload["status"], "passed_with_warnings")
+        self.assertIn("page_image_fallback", payload["reason_codes"])
+        self.assertEqual(payload["recognized_page_count"], 1)
+        self.assertEqual(payload["page_image_fallback_count"], 1)
+        self.assertTrue(payload["scan_chess_image_preservation"])
+
+    def test_scanned_chess_board_injection_adds_diagram_metric(self) -> None:
+        class Board:
+            page = 0
+            bbox = (10.0, 20.0, 130.0, 140.0)
+            confidence = 0.82
+            filename = "scanned_board_p1_1.png"
+            image_data = b"png"
+            width = 240
+            height = 240
+            source_type = "scanned_board"
+
+        content = {
+            "chapters": [{"title": "Page 1", "page_num": 0, "html_parts": ["<p>1. e4 e5</p>"], "images": []}],
+            "images": [],
+        }
+
+        import publication_pipeline
+
+        original = publication_pipeline.detect_scanned_chess_boards if hasattr(publication_pipeline, "detect_scanned_chess_boards") else None
+        try:
+            publication_pipeline.detect_scanned_chess_boards = lambda *_args, **_kwargs: [Board()]
+            count = _inject_scanned_chess_boards("fundamenty_1_1_sample_80p.pdf", content)
+        finally:
+            if original is None:
+                delattr(publication_pipeline, "detect_scanned_chess_boards")
+            else:
+                publication_pipeline.detect_scanned_chess_boards = original
+
+        self.assertEqual(count, 1)
+        self.assertIn("chess-diagram scanned-board", content["chapters"][0]["html_parts"][-1])
+        self.assertTrue(content["images"][0]["is_chess"])
+
+        document = publication_from_content(
+            content,
+            _analysis(profile="scanned_reflow", is_scanned=True, has_text_layer=False),
+            title="Fundamenty",
+            author="QA",
+            language="pl",
+        )
+
+        self.assertEqual(document.quality_report.detected_scanned_board_count, 1)
+        self.assertGreaterEqual(document.quality_report.detected_diagrams, 1)
+
+    def test_ocr_language_benchmark_selects_best_sample_language(self) -> None:
+        class Config:
+            ocr_language = "pol"
+
+        class Result:
+            def __init__(self, text: str, confidence: float) -> None:
+                self.text = text
+                self.confidence = confidence
+
+        class Page:
+            pass
+
+        class Doc:
+            def __len__(self) -> int:
+                return 2
+
+            def __getitem__(self, index: int) -> Page:
+                return Page()
+
+            def close(self) -> None:
+                pass
+
+        import publication_pipeline
+
+        original_fitz_open = publication_pipeline.fitz.open
+        original_import = __import__
+
+        class OcrModule:
+            @staticmethod
+            def get_best_available_engine() -> str:
+                return "tesseract"
+
+            @staticmethod
+            def run_ocr_on_page(_page, *, page_num: int, language: str, dpi: int, engine: str) -> Result:
+                if language == "eng":
+                    return Result("1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 " * 3, 0.91)
+                return Result("krótki tekst", 0.55)
+
+        def fake_import(name, *args, **kwargs):
+            if name == "ocr_module":
+                return OcrModule
+            return original_import(name, *args, **kwargs)
+
+        try:
+            publication_pipeline.fitz.open = lambda *_args, **_kwargs: Doc()
+            import builtins
+
+            builtins.__import__ = fake_import
+            selected, benchmark = _benchmark_scanned_chess_ocr_language("fundamenty_1_1_sample_80p.pdf", Config())
+        finally:
+            publication_pipeline.fitz.open = original_fitz_open
+            import builtins
+
+            builtins.__import__ = original_import
+
+        self.assertEqual(selected, "eng")
+        self.assertEqual(benchmark["mode"], "sample")
+        self.assertEqual(benchmark["selected_language"], "eng")
+
+    def test_weak_ocr_page_preservation_adds_reference_image_without_empty_text(self) -> None:
+        class Page:
+            page_num = 0
+            text = ""
+            confidence = 0.0
+            image_data = b"jpeg-bytes"
+
+        class Result:
+            pages = [Page()]
+
+        content = {
+            "chapters": [
+                {
+                    "title": "Scan page",
+                    "page_num": 0,
+                    "html_parts": [],
+                    "images": [],
+                }
+            ],
+            "images": [],
+        }
+
+        fallback_count = _preserve_weak_ocr_page_images(content, Result())
+
+        self.assertEqual(fallback_count, 1)
+        self.assertIn("ocr-page-fallback", content["chapters"][0]["html_parts"][0])
+        self.assertEqual(content["chapters"][0]["_fallback_mode"], "ocr-page-image-preserved")
+        self.assertEqual(content["images"][0]["fallback_role"], "weak_ocr_page_reference")
 
     def test_ocr_quality_is_carried_into_quality_report(self) -> None:
         analysis = _analysis(profile="scanned_reflow", is_scanned=True, has_text_layer=False)

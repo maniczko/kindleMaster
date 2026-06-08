@@ -119,6 +119,40 @@ class EpubHeadingRepairTests(unittest.TestCase):
             self.assertFalse(_is_clean_navigation_heading_text(label, level=2), label)
         self.assertTrue(_is_clean_navigation_heading_text("Business Analysis Key Concepts", level=1))
 
+    def test_dense_handbook_toc_builder_drops_procedural_and_mapping_debris(self):
+        headings = [
+            {"level": 1, "text": "Techniques", "id": "techniques"},
+            {"level": 2, "text": "10.1 Acceptance and Evaluation Criteria", "id": "acceptance"},
+            {"level": 2, "text": "Game", "id": "game"},
+            {"level": 2, "text": "Step 1.", "id": "step-1"},
+            {
+                "level": 2,
+                "text": "1. Define Problem Statement: clearly describe the decision problem to be analyzed.",
+                "id": "define-problem",
+            },
+            {"level": 2, "text": "6. Strategy Analysis 7. Requirements", "id": "appendix-map"},
+            {"level": 3, "text": ".1 Strengths", "id": "strengths"},
+            {"level": 3, "text": ".2 Limitations", "id": "limitations"},
+            {"level": 3, "text": ".1 Elements", "id": "elements"},
+        ]
+        headings.extend(
+            {"level": 3, "text": f"Reusable Review Label {index}", "id": f"review-{index}"}
+            for index in range(180)
+        )
+
+        toc_entries = _build_toc_entries_from_scan({"chapter_011.xhtml": headings})
+        labels = {item["text"] for item in toc_entries}
+
+        self.assertIn("Techniques", labels)
+        self.assertIn("10.1 Acceptance and Evaluation Criteria", labels)
+        self.assertNotIn("Game", labels)
+        self.assertNotIn("Step 1.", labels)
+        self.assertNotIn("1. Define Problem Statement: clearly describe the decision problem to be analyzed.", labels)
+        self.assertNotIn("6. Strategy Analysis 7. Requirements", labels)
+        self.assertNotIn(".1 Strengths", labels)
+        self.assertNotIn(".2 Limitations", labels)
+        self.assertNotIn(".1 Elements", labels)
+
     def test_repair_epub_headings_and_toc_rebuilds_navigation_without_source_bookmarks(self):
         chapter_source = """<?xml version="1.0" encoding="utf-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml">

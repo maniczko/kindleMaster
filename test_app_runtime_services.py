@@ -12,11 +12,15 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from app_runtime_services import (
+    ConversionOutcome,
     ConversionJobStore,
     ConversionRequest,
+    ConversionQualityGateError,
     build_conversion_metadata,
+    build_conversion_summary,
     build_local_app_url,
     build_conversion_job_record,
+    enrich_conversion_metadata_with_output_size,
     detect_supported_source_type,
     pick_epubcheck_error,
     resolve_debug_mode,
@@ -64,7 +68,7 @@ def _minimal_epub_bytes(*, language: str = "en", title: str = "Quality Sample", 
         )
         archive.writestr(
             "OEBPS/nav.xhtml",
-            f"""<!doctype html>
+            f"""<?xml version="1.0" encoding="UTF-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="{language}">
 <head><title>{title}</title></head>
 <body><nav epub:type="toc"><ol><li><a href="chapter1.xhtml">Introduction</a></li></ol></nav></body>
@@ -72,13 +76,87 @@ def _minimal_epub_bytes(*, language: str = "en", title: str = "Quality Sample", 
         )
         archive.writestr(
             "OEBPS/chapter1.xhtml",
-            f"""<!doctype html>
+            f"""<?xml version="1.0" encoding="UTF-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml" lang="{language}">
 <head><title>Introduction</title></head>
 <body>{chapter_body}</body>
 </html>""",
         )
     return buffer.getvalue()
+
+
+def _build_runtime_validation_report(
+    *,
+    validation_status: str = "passed",
+    manifest_item_count: int = 2,
+    manifest_targets_missing_count: int = 0,
+    manifest_duplicate_id_count: int = 0,
+    navigation_document_count: int = 1,
+    spine_item_count: int = 1,
+    spine_linear_item_count: int = 1,
+    spine_non_linear_item_count: int = 0,
+    spine_duplicate_targets: int = 0,
+    spine_unknown_manifest_references: int = 0,
+    links_checked: int = 4,
+    external_links_checked: int = 0,
+    documents_parsed: int = 1,
+    documents_with_duplicate_ids: int = 0,
+    package_errors: list[str] | None = None,
+    internal_errors: list[str] | None = None,
+    external_errors: list[str] | None = None,
+    package_warnings: list[str] | None = None,
+    internal_warnings: list[str] | None = None,
+    external_warnings: list[str] | None = None,
+    internal_href_with_fragment_count: int = 0,
+    internal_href_without_fragment_count: int = 0,
+    internal_href_missing_document_count: int = 0,
+    internal_href_missing_fragment_count: int = 0,
+) -> dict[str, Any]:
+    return {
+        "package": {
+            "status": "failed" if package_errors else "passed" if validation_status == "passed" else "passed_with_warnings",
+            "errors": list(package_errors or []),
+            "warnings": list(package_warnings or []),
+        },
+        "internal_links": {
+            "status": "failed" if internal_errors else "passed" if validation_status == "passed" else "passed_with_warnings",
+            "errors": list(internal_errors or []),
+            "warnings": list(internal_warnings or []),
+        },
+        "external_links": {
+            "status": "failed" if external_errors else "passed" if validation_status == "passed" else "passed_with_warnings",
+            "errors": list(external_errors or []),
+            "warnings": list(external_warnings or []),
+        },
+        "metadata": {"title": "Quality Sample", "creator": "KindleMaster QA", "language": "en"},
+        "document_stats": {
+            "documents_parsed": documents_parsed,
+            "documents_with_duplicate_ids": documents_with_duplicate_ids,
+            "links_checked": links_checked,
+            "external_links_checked": external_links_checked,
+            "internal_href_with_fragment_count": internal_href_with_fragment_count,
+            "internal_href_without_fragment_count": internal_href_without_fragment_count,
+            "internal_href_missing_document_count": internal_href_missing_document_count,
+            "internal_href_missing_fragment_count": internal_href_missing_fragment_count,
+            "manifest_item_count": manifest_item_count,
+            "manifest_targets_missing_count": manifest_targets_missing_count,
+            "manifest_duplicate_id_count": manifest_duplicate_id_count,
+            "navigation_document_count": navigation_document_count,
+            "spine_item_count": spine_item_count,
+            "spine_linear_item_count": spine_linear_item_count,
+            "spine_non_linear_item_count": spine_non_linear_item_count,
+            "spine_duplicate_targets": spine_duplicate_targets,
+            "spine_unknown_manifest_references": spine_unknown_manifest_references,
+            "non_linear_spine_targets": 0,
+            "unreachable_non_linear_spine_targets": 0,
+        },
+        "summary": {
+            "status": validation_status,
+            "error_count": len(package_errors or []) + len(internal_errors or []) + len(external_errors or []),
+            "warning_count": len(package_warnings or []) + len(internal_warnings or []) + len(external_warnings or []),
+            "epubcheck_status": "passed",
+        },
+    }
 
 
 class AppRuntimeServicesTests(unittest.TestCase):
@@ -169,6 +247,28 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertEqual(reloaded_jobs["job-running"]["error_code"], "application_restart")
         self.assertIn("Uruchom konwersje ponownie", reloaded_jobs["job-running"]["error"])
         self.assertEqual(reloaded_jobs["job-running"]["source_path"], "")
+
+    def test_conversion_job_store_load_handles_invalid_json_and_invalid_shape_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store_path = Path(temp_dir) / "jobs.json"
+
+            store_path.write_text("{broken", encoding="utf-8")
+            invalid_json_store = ConversionJobStore({}, threading.Lock(), persistence_path=store_path)
+            invalid_json_result = invalid_json_store.load()
+
+            store_path.write_text('{"jobs": []}', encoding="utf-8")
+            malformed_store = ConversionJobStore({}, threading.Lock(), persistence_path=store_path)
+            invalid_shape_result = malformed_store.load()
+
+        self.assertFalse(invalid_json_result["loaded"])
+        self.assertEqual(invalid_json_result["job_count"], 0)
+        self.assertEqual(invalid_json_result["interrupted_jobs"], 0)
+        self.assertIn("Expecting", invalid_json_result["error"])
+
+        self.assertFalse(invalid_shape_result["loaded"])
+        self.assertEqual(invalid_shape_result["job_count"], 0)
+        self.assertEqual(invalid_shape_result["interrupted_jobs"], 0)
+        self.assertEqual(invalid_shape_result["error"], "Invalid job store shape.")
 
     def test_resolve_server_port_and_debug_mode_use_safe_env_defaults(self) -> None:
         self.assertEqual(resolve_server_port({}), 5001)
@@ -275,6 +375,530 @@ class AppRuntimeServicesTests(unittest.TestCase):
                 ("running", "Uruchamiam audyt premium EPUB..."),
             ],
         )
+
+    def test_run_document_conversion_blocks_invalid_epub_from_draft_quality_gate(self) -> None:
+        convert_impl = Mock(
+            return_value={
+                "epub_bytes": b"not-an-epub",
+                "source_type": "pdf",
+                "analysis": {
+                    "profile": "book_reflow",
+                    "confidence": 0.91,
+                    "legacy_strategy": "text_reflowable",
+                },
+                "quality_report": {
+                    "validation_status": "passed",
+                    "validation_tool": "epubcheck",
+                    "warnings": [],
+                    "high_risk_pages": [],
+                    "high_risk_sections": [],
+                },
+                "document_summary": {
+                    "title": "Broken input",
+                    "author": "KindleMaster QA",
+                    "layout_mode": "reflowable",
+                    "section_count": 0,
+                    "asset_count": 0,
+                },
+            }
+        )
+        heading_repair_impl = Mock()
+
+        with self.assertRaises(ConversionQualityGateError) as error_context:
+            run_document_conversion(
+                ConversionRequest(
+                    source_path="broken.pdf",
+                    source_type="pdf",
+                    original_filename="broken.pdf",
+                    profile="auto-premium",
+                    language="en",
+                ),
+                convert_impl=convert_impl,
+                heading_repair_impl=heading_repair_impl,
+            )
+
+        self.assertEqual(error_context.exception.error_code, "conversion_quality_gate_failed")
+        self.assertEqual(error_context.exception.mode, "draft")
+        self.assertIn("Core EPUB", str(error_context.exception))
+
+    def test_run_document_conversion_blocks_core_structure_failures(self) -> None:
+        convert_impl = Mock(
+            return_value={
+                "epub_bytes": _minimal_epub_bytes(),
+                "source_type": "pdf",
+                "analysis": {
+                    "profile": "book_reflow",
+                    "confidence": 0.92,
+                    "legacy_strategy": "text_reflowable",
+                },
+                "quality_report": {
+                    "validation_status": "passed",
+                    "validation_tool": "epubcheck",
+                    "warnings": [],
+                    "high_risk_pages": [],
+                    "high_risk_sections": [],
+                },
+                "document_summary": {
+                    "title": "Missing Spine/Nav",
+                    "author": "KindleMaster QA",
+                    "language": "en",
+                    "layout_mode": "reflowable",
+                    "section_count": 1,
+                    "asset_count": 0,
+                },
+            }
+        )
+        heading_repair_impl = Mock()
+
+        with patch(
+            "epub_validation.validate_epub_bytes",
+            return_value=_build_runtime_validation_report(
+                manifest_item_count=2,
+                manifest_targets_missing_count=0,
+                navigation_document_count=0,
+                spine_item_count=0,
+            ),
+        ):
+            with self.assertRaises(ConversionQualityGateError) as error_context:
+                run_document_conversion(
+                    ConversionRequest(
+                        source_path="broken.pdf",
+                        source_type="pdf",
+                        original_filename="broken.pdf",
+                        profile="auto-premium",
+                        language="en",
+                    ),
+                    convert_impl=convert_impl,
+                    heading_repair_impl=heading_repair_impl,
+                )
+
+        self.assertEqual(error_context.exception.error_code, "conversion_quality_gate_failed")
+        self.assertEqual(error_context.exception.mode, "draft")
+        self.assertIn("Core EPUB structure blocked conversion", str(error_context.exception))
+        self.assertGreaterEqual(len(error_context.exception.validation_report.get("core_blocker_messages", [])), 2)
+        self.assertEqual(error_context.exception.validation_report.get("core_blocker_count"), 2)
+
+    def test_run_document_conversion_allows_core_warnings_in_draft_mode(self) -> None:
+        convert_impl = Mock(
+            return_value={
+                "epub_bytes": _minimal_epub_bytes(),
+                "source_type": "pdf",
+                "analysis": {
+                    "profile": "book_reflow",
+                    "confidence": 0.92,
+                    "legacy_strategy": "text_reflowable",
+                },
+                "quality_report": {
+                    "validation_status": "passed",
+                    "validation_tool": "epubcheck",
+                    "warnings": [],
+                    "high_risk_pages": [],
+                    "high_risk_sections": [],
+                },
+                "document_summary": {
+                    "title": "Core warnings",
+                    "author": "KindleMaster QA",
+                    "language": "en",
+                    "layout_mode": "reflowable",
+                    "section_count": 1,
+                    "asset_count": 0,
+                },
+            }
+        )
+        heading_repair_impl = Mock()
+
+        with patch(
+            "epub_validation.validate_epub_bytes",
+            return_value=_build_runtime_validation_report(
+                manifest_item_count=3,
+                manifest_targets_missing_count=0,
+                navigation_document_count=1,
+                spine_item_count=2,
+                external_warnings=["External resource requires manual review."],
+                external_links_checked=1,
+            ),
+        ):
+            outcome = run_document_conversion(
+                ConversionRequest(
+                    source_path="broken.pdf",
+                    source_type="pdf",
+                    original_filename="broken.pdf",
+                    profile="auto-premium",
+                    language="en",
+                    quality_gate_mode="draft",
+                ),
+                convert_impl=convert_impl,
+                heading_repair_impl=heading_repair_impl,
+            )
+
+        quality_report = outcome.result["quality_report"]
+        self.assertEqual(quality_report["validation_status"], "passed_with_warnings")
+        self.assertEqual(quality_report["core_warning_count"], 1)
+        self.assertEqual(quality_report["core_structure_gate"]["status"], "warning")
+
+    def test_run_document_conversion_blocks_core_warnings_in_strict_mode(self) -> None:
+        convert_impl = Mock(
+            return_value={
+                "epub_bytes": _minimal_epub_bytes(),
+                "source_type": "pdf",
+                "analysis": {
+                    "profile": "book_reflow",
+                    "confidence": 0.92,
+                    "legacy_strategy": "text_reflowable",
+                },
+                "quality_report": {
+                    "validation_status": "passed",
+                    "validation_tool": "epubcheck",
+                    "warnings": [],
+                    "high_risk_pages": [],
+                    "high_risk_sections": [],
+                },
+                "document_summary": {
+                    "title": "Core warnings",
+                    "author": "KindleMaster QA",
+                    "language": "en",
+                    "layout_mode": "reflowable",
+                    "section_count": 1,
+                    "asset_count": 0,
+                },
+            }
+        )
+        heading_repair_impl = Mock()
+
+        with patch(
+            "epub_validation.validate_epub_bytes",
+            return_value=_build_runtime_validation_report(
+                manifest_item_count=3,
+                manifest_targets_missing_count=0,
+                navigation_document_count=1,
+                spine_item_count=2,
+                external_warnings=["External resource requires manual review."],
+                external_links_checked=1,
+            ),
+        ):
+            with self.assertRaises(ConversionQualityGateError) as error_context:
+                run_document_conversion(
+                    ConversionRequest(
+                        source_path="broken.pdf",
+                        source_type="pdf",
+                        original_filename="broken.pdf",
+                        profile="auto-premium",
+                        language="en",
+                        quality_gate_mode="strict",
+                    ),
+                    convert_impl=convert_impl,
+                    heading_repair_impl=heading_repair_impl,
+                )
+
+        self.assertEqual(error_context.exception.error_code, "conversion_quality_gate_failed")
+        self.assertEqual(error_context.exception.mode, "strict")
+        self.assertIn("Core EPUB structure warnings blocked conversion", str(error_context.exception))
+        self.assertEqual(error_context.exception.validation_report.get("core_warning_count"), 1)
+
+    def test_run_document_conversion_blocks_strict_mode_when_href_readability_falls_below_threshold(self) -> None:
+        convert_impl = Mock(
+            return_value={
+                "epub_bytes": _minimal_epub_bytes(),
+                "source_type": "pdf",
+                "analysis": {
+                    "profile": "book_reflow",
+                    "confidence": 0.94,
+                    "legacy_strategy": "text_reflowable",
+                },
+                "quality_report": {
+                    "validation_status": "passed",
+                    "validation_tool": "epubcheck",
+                    "warnings": [],
+                    "high_risk_pages": [],
+                    "high_risk_sections": [],
+                },
+                "document_summary": {
+                    "title": "Strict readability",
+                    "author": "KindleMaster QA",
+                    "language": "en",
+                    "layout_mode": "reflowable",
+                    "section_count": 1,
+                    "asset_count": 0,
+                },
+            }
+        )
+        heading_repair_impl = Mock()
+
+        with patch(
+            "epub_validation.validate_epub_bytes",
+            return_value=_build_runtime_validation_report(
+                links_checked=12,
+                internal_href_with_fragment_count=12,
+                internal_href_without_fragment_count=0,
+                internal_href_missing_document_count=0,
+                internal_href_missing_fragment_count=0,
+                spine_item_count=2,
+                spine_linear_item_count=0,
+                spine_non_linear_item_count=2,
+            ),
+        ):
+            with self.assertRaises(ConversionQualityGateError) as error_context:
+                run_document_conversion(
+                    ConversionRequest(
+                        source_path="broken.pdf",
+                        source_type="pdf",
+                        original_filename="broken.pdf",
+                        profile="auto-premium",
+                        language="en",
+                        quality_gate_mode="strict",
+                    ),
+                    convert_impl=convert_impl,
+                    heading_repair_impl=heading_repair_impl,
+                )
+
+        self.assertEqual(error_context.exception.error_code, "conversion_quality_gate_failed")
+        self.assertEqual(error_context.exception.mode, "strict")
+        self.assertIn(
+            "Linear-spine ratio is",
+            " ".join(error_context.exception.validation_report.get("core_blocker_messages", [])),
+        )
+        self.assertEqual(error_context.exception.validation_report.get("core_blocker_count"), 1)
+
+    def test_run_document_conversion_blocks_strict_mode_when_epubcheck_fails_in_summary(self) -> None:
+        convert_impl = Mock(
+            return_value={
+                "epub_bytes": _minimal_epub_bytes(),
+                "source_type": "pdf",
+                "analysis": {
+                    "profile": "book_reflow",
+                    "confidence": 0.94,
+                    "legacy_strategy": "text_reflowable",
+                },
+                "quality_report": {
+                    "validation_status": "passed",
+                    "validation_tool": "epubcheck",
+                    "warnings": [],
+                    "high_risk_pages": [],
+                    "high_risk_sections": [],
+                },
+                "document_summary": {
+                    "title": "EPUBCheck summary fail",
+                    "author": "KindleMaster QA",
+                    "language": "en",
+                    "layout_mode": "reflowable",
+                    "section_count": 1,
+                    "asset_count": 0,
+                },
+            }
+        )
+        heading_repair_impl = Mock()
+
+        strict_report = _build_runtime_validation_report(
+            links_checked=4,
+            internal_href_with_fragment_count=0,
+            internal_href_without_fragment_count=0,
+            internal_href_missing_document_count=0,
+            internal_href_missing_fragment_count=0,
+        )
+        strict_report["summary"] = dict(strict_report.get("summary") or {})
+        strict_report["summary"]["status"] = "failed"
+        strict_report["summary"]["epubcheck_status"] = "failed"
+        strict_report["summary"]["error_count"] = 2
+        strict_report["summary"]["warning_count"] = 0
+
+        with patch("epub_validation.validate_epub_bytes", return_value=strict_report):
+            with self.assertRaises(ConversionQualityGateError) as error_context:
+                run_document_conversion(
+                    ConversionRequest(
+                        source_path="broken.pdf",
+                        source_type="pdf",
+                        original_filename="broken.pdf",
+                        profile="auto-premium",
+                        language="en",
+                        quality_gate_mode="strict",
+                    ),
+                    convert_impl=convert_impl,
+                    heading_repair_impl=heading_repair_impl,
+                )
+
+        self.assertEqual(error_context.exception.error_code, "conversion_quality_gate_failed")
+        self.assertEqual(error_context.exception.mode, "strict")
+        self.assertIn("Core EPUB validation failed", str(error_context.exception))
+        self.assertEqual(error_context.exception.validation_report.get("error_count"), 2)
+
+    def test_run_document_conversion_blocks_duplicate_manifest_ids_in_core_gate(self) -> None:
+        convert_impl = Mock(
+            return_value={
+                "epub_bytes": _minimal_epub_bytes(),
+                "source_type": "pdf",
+                "analysis": {
+                    "profile": "book_reflow",
+                    "confidence": 0.92,
+                    "legacy_strategy": "text_reflowable",
+                },
+                "quality_report": {
+                    "validation_status": "passed",
+                    "validation_tool": "epubcheck",
+                    "warnings": [],
+                    "high_risk_pages": [],
+                    "high_risk_sections": [],
+                },
+                "document_summary": {
+                    "title": "Duplicate manifest id",
+                    "author": "KindleMaster QA",
+                    "language": "en",
+                    "layout_mode": "reflowable",
+                    "section_count": 1,
+                    "asset_count": 0,
+                },
+            }
+        )
+        heading_repair_impl = Mock()
+
+        with patch(
+            "epub_validation.validate_epub_bytes",
+            return_value=_build_runtime_validation_report(
+                manifest_duplicate_id_count=1,
+                manifest_item_count=2,
+            ),
+        ):
+            with self.assertRaises(ConversionQualityGateError) as error_context:
+                run_document_conversion(
+                    ConversionRequest(
+                        source_path="broken.pdf",
+                        source_type="pdf",
+                        original_filename="broken.pdf",
+                        profile="auto-premium",
+                        language="en",
+                        quality_gate_mode="draft",
+                    ),
+                    convert_impl=convert_impl,
+                    heading_repair_impl=heading_repair_impl,
+                )
+
+        self.assertEqual(error_context.exception.error_code, "conversion_quality_gate_failed")
+        self.assertEqual(error_context.exception.mode, "draft")
+        self.assertIn("Manifest has 1 duplicate id(s).", error_context.exception.validation_report.get("core_blocker_messages", []))
+
+    def test_run_document_conversion_blocks_unknown_spine_manifest_references(self) -> None:
+        convert_impl = Mock(
+            return_value={
+                "epub_bytes": _minimal_epub_bytes(),
+                "source_type": "pdf",
+                "analysis": {
+                    "profile": "book_reflow",
+                    "confidence": 0.92,
+                    "legacy_strategy": "text_reflowable",
+                },
+                "quality_report": {
+                    "validation_status": "passed",
+                    "validation_tool": "epubcheck",
+                    "warnings": [],
+                    "high_risk_pages": [],
+                    "high_risk_sections": [],
+                },
+                "document_summary": {
+                    "title": "Unknown spine idref",
+                    "author": "KindleMaster QA",
+                    "language": "en",
+                    "layout_mode": "reflowable",
+                    "section_count": 1,
+                    "asset_count": 0,
+                },
+            }
+        )
+        heading_repair_impl = Mock()
+
+        with patch(
+            "epub_validation.validate_epub_bytes",
+            return_value=_build_runtime_validation_report(
+                spine_unknown_manifest_references=1,
+                spine_item_count=1,
+                manifest_item_count=1,
+            ),
+        ):
+            with self.assertRaises(ConversionQualityGateError) as error_context:
+                run_document_conversion(
+                    ConversionRequest(
+                        source_path="broken.pdf",
+                        source_type="pdf",
+                        original_filename="broken.pdf",
+                        profile="auto-premium",
+                        language="en",
+                        quality_gate_mode="draft",
+                    ),
+                    convert_impl=convert_impl,
+                    heading_repair_impl=heading_repair_impl,
+                )
+
+        self.assertEqual(error_context.exception.error_code, "conversion_quality_gate_failed")
+        self.assertEqual(error_context.exception.mode, "draft")
+        self.assertIn(
+            "Spine references 1 unknown manifest id(s).",
+            error_context.exception.validation_report.get("core_blocker_messages", []),
+        )
+
+    def test_run_document_conversion_records_core_readability_metrics(self) -> None:
+        convert_impl = Mock(
+            return_value={
+                "epub_bytes": _minimal_epub_bytes(),
+                "source_type": "pdf",
+                "analysis": {
+                    "profile": "magazine_reflow",
+                    "confidence": 0.85,
+                    "legacy_strategy": "text_reflowable",
+                },
+                "quality_report": {
+                    "validation_status": "passed",
+                    "validation_tool": "epubcheck",
+                    "warnings": [],
+                    "high_risk_pages": [],
+                    "high_risk_sections": [],
+                },
+                "document_summary": {
+                    "title": "Good Structure",
+                    "author": "KindleMaster QA",
+                    "language": "en",
+                    "layout_mode": "reflowable",
+                    "section_count": 1,
+                    "asset_count": 0,
+                },
+            }
+        )
+        heading_repair_impl = Mock()
+
+        with patch(
+            "epub_validation.validate_epub_bytes",
+            return_value=_build_runtime_validation_report(
+                manifest_item_count=3,
+                manifest_targets_missing_count=0,
+                navigation_document_count=1,
+                spine_item_count=2,
+                spine_linear_item_count=2,
+                spine_non_linear_item_count=0,
+                links_checked=8,
+                documents_parsed=4,
+            ),
+        ), patch("epub_premium_scoring.score_epub_premium_quality", return_value={"premium_score": 9.2, "status": "passed", "technical_valid": True}), patch(
+            "ml_quality_verifier.build_ai_quality_verification",
+            return_value={"status": "passed", "score": 9.0, "features_hash": "abc"},
+        ):
+            outcome = run_document_conversion(
+                ConversionRequest(
+                    source_path="sample.pdf",
+                    source_type="pdf",
+                    original_filename="sample.pdf",
+                    profile="auto-premium",
+                    language="en",
+                    quality_gate_mode="draft",
+                    feedback_enabled=False,
+                ),
+                convert_impl=convert_impl,
+                heading_repair_impl=heading_repair_impl,
+            )
+
+        validation_details = outcome.metadata["validation_details"]
+        core_gate = validation_details["core_structure_gate"]
+        self.assertEqual(core_gate["status"], "passed")
+        self.assertEqual(core_gate["blockers"], [])
+        self.assertEqual(validation_details["core_readability"]["manifest_integrity_ratio"], 1.0)
+        self.assertEqual(validation_details["core_readability"]["href_error_rate"], 0.0)
+        self.assertIn("internal_href_document_coverage", validation_details["core_readability"])
 
     def test_run_document_conversion_keeps_pre_heading_epub_when_heading_repair_worsens_quality(self) -> None:
         base_epub = _minimal_epub_bytes(title="Runtime Quality Selection")
@@ -605,6 +1229,48 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertEqual(len(metadata["validation_details"]["validation_messages"]), 12)
         self.assertEqual(len(metadata["validation_details"]["size_budget_inspection"]["largest_assets"]), 12)
 
+    def test_build_conversion_summary_includes_quality_state_and_output_size(self) -> None:
+        outcome = ConversionOutcome(
+            result={
+                "epub_bytes": b"removed",
+                "quality_report": {"validation_status": "passed", "validation_tool": "epubcheck"},
+                "analysis": {"profile": "book_reflow"},
+                "document_summary": {"section_count": 1, "asset_count": 2, "title": "Probe"},
+            },
+            epub_bytes=b"final-epub",
+            heading_repair_report={"status": "skipped", "release_status": "unavailable", "toc_entries_before": 0},
+            detected_source_type="pdf",
+            download_name="book.epub",
+            metadata={"validation": "passed"},
+        )
+        summary = build_conversion_summary(
+            outcome,
+            filename="book.pdf",
+            output_size_bytes=32 * 1024 * 1024,
+            download_url="https://localhost/download/book.epub",
+        )
+
+        self.assertNotIn("epub_bytes", summary)
+        self.assertEqual(summary["download_name"], "book.epub")
+        self.assertIn("quality_state", summary)
+        self.assertEqual(summary["metadata"]["output_size_bytes"], 32 * 1024 * 1024)
+        self.assertEqual(summary["output_size_bytes"], 32 * 1024 * 1024)
+
+    def test_enrich_conversion_metadata_with_output_size_adds_warning_when_oversized(self) -> None:
+        base_metadata = {
+            "warnings": 12,
+            "warning_list": [f"existing-{index}" for index in range(12)],
+        }
+        summary = enrich_conversion_metadata_with_output_size(base_metadata, 30 * 1024 * 1024)
+
+        self.assertEqual(summary["output_size_bytes"], 30 * 1024 * 1024)
+        self.assertEqual(len(summary["warning_list"]), 12)
+        self.assertEqual(
+            summary["warning_list"][-1],
+            "EPUB ma 30.0 MB. Na Kindle pobranie i otwarcie moze byc wolniejsze.",
+        )
+        self.assertEqual(summary["warnings"], 12)
+
     def test_run_document_conversion_skips_heading_repair_for_diagram_book_profile(self) -> None:
         convert_impl = Mock(
             return_value={
@@ -642,6 +1308,7 @@ class AppRuntimeServicesTests(unittest.TestCase):
                 profile="auto-premium",
                 language="en",
                 heading_repair_enabled=True,
+                quality_gate_mode="off",
             ),
             convert_impl=convert_impl,
             heading_repair_impl=heading_repair_impl,
@@ -693,6 +1360,7 @@ class AppRuntimeServicesTests(unittest.TestCase):
                 original_filename="sample.docx",
                 profile="auto-premium",
                 language="pl",
+                quality_gate_mode="off",
             ),
             convert_impl=convert_impl,
             heading_repair_impl=heading_repair_impl,
@@ -763,6 +1431,7 @@ class AppRuntimeServicesTests(unittest.TestCase):
                 force_ocr=True,
                 heading_repair_enabled=True,
                 text_cleanup_domain_dictionary_path="docs/domain-dictionary-example.json",
+                quality_gate_mode="off",
             ),
             convert_impl=convert_impl,
             heading_repair_impl=heading_repair_impl,
@@ -778,8 +1447,7 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertEqual(outcome.metadata["render_budget_class"], "fixed_layout_dense")
         self.assertEqual(outcome.metadata["heading_repair"]["status"], "applied")
         self.assertEqual(outcome.metadata["strategy"], "layout_fixed")
-        self.assertEqual(outcome.result["quality_report"]["validation_status"], "passed")
-        self.assertEqual(outcome.result["quality_report"]["epubcheck_status"], "passed")
+        self.assertEqual(outcome.result["quality_report"]["validation_status"], "passed_with_warnings")
         self.assertTrue(heading_repair_impl.call_args.kwargs["already_semantic_cleaned"])
 
     def test_run_document_conversion_marks_heading_repair_exception_as_failed_and_keeps_base_epub(self) -> None:
@@ -817,6 +1485,7 @@ class AppRuntimeServicesTests(unittest.TestCase):
                 profile="auto-premium",
                 language="pl",
                 heading_repair_enabled=True,
+                quality_gate_mode="off",
             ),
             convert_impl=convert_impl,
             heading_repair_impl=heading_repair_impl,
@@ -827,6 +1496,111 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertIn("repair exploded", outcome.heading_repair_report["error"])
         self.assertEqual(outcome.metadata["heading_repair"]["status"], "failed")
         self.assertIn("repair exploded", outcome.metadata["heading_repair"]["error"])
+
+    def test_run_document_conversion_records_feedback_failure(self) -> None:
+        convert_impl = Mock(
+            return_value={
+                "epub_bytes": b"base-epub",
+                "analysis": {
+                    "profile": "book_reflow",
+                    "confidence": 0.91,
+                    "legacy_strategy": "text_reflowable",
+                },
+                "quality_report": {
+                    "validation_status": "passed",
+                    "validation_tool": "epubcheck",
+                    "warnings": [],
+                    "high_risk_pages": [],
+                    "high_risk_sections": [],
+                },
+                "document_summary": {
+                    "title": "Feedback",
+                    "author": "KindleMaster QA",
+                    "layout_mode": "reflowable",
+                    "section_count": 1,
+                    "asset_count": 0,
+                },
+            }
+        )
+        heading_repair_impl = Mock()
+        fake_ml_feedback = SimpleNamespace(
+            append_conversion_feedback_event=Mock(side_effect=RuntimeError("feedback sink is unavailable"))
+        )
+
+        with patch.dict("sys.modules", {"ml_feedback": fake_ml_feedback}):
+            outcome = run_document_conversion(
+                ConversionRequest(
+                    source_path="sample.pdf",
+                    source_type="pdf",
+                    original_filename="sample.pdf",
+                    profile="auto-premium",
+                    language="pl",
+                    heading_repair_enabled=False,
+                    quality_gate_mode="off",
+                ),
+                convert_impl=convert_impl,
+                heading_repair_impl=heading_repair_impl,
+            )
+
+        self.assertEqual(outcome.metadata["ml_feedback"]["status"], "failed")
+        self.assertIn("feedback sink is unavailable", outcome.metadata["ml_feedback"]["error"])
+        self.assertEqual(outcome.metadata["feedback_learning"]["status"], "failed")
+        self.assertIn("feedback sink is unavailable", outcome.metadata["feedback_learning"]["error"])
+
+    def test_run_document_conversion_uses_document_summary_profile_for_heading_repair(self) -> None:
+        convert_impl = Mock(
+            return_value={
+                "epub_bytes": b"base-epub",
+                "analysis": {},
+                "quality_report": {
+                    "validation_status": "passed",
+                    "validation_tool": "epubcheck",
+                    "warnings": [],
+                    "high_risk_pages": [],
+                    "high_risk_sections": [],
+                },
+                "document_summary": {
+                    "profile": "magazine_reflow",
+                    "title": "Profile fallback",
+                    "author": "KindleMaster QA",
+                    "layout_mode": "reflowable",
+                    "section_count": 3,
+                    "asset_count": 1,
+                },
+            }
+        )
+        heading_repair_impl = Mock(
+            return_value=SimpleNamespace(
+                epub_bytes=b"repaired-epub",
+                summary={
+                    "release_status": "pass",
+                    "toc_entries_before": 1,
+                    "toc_entries_after": 1,
+                    "headings_removed": 0,
+                    "manual_review_count": 0,
+                    "epubcheck_status": "passed",
+                },
+                epubcheck={"status": "passed", "messages": []},
+            )
+        )
+
+        outcome = run_document_conversion(
+            ConversionRequest(
+                source_path="sample.pdf",
+                source_type="pdf",
+                original_filename="sample.pdf",
+                profile="auto-premium",
+                language="en",
+                heading_repair_enabled=True,
+                quality_gate_mode="off",
+                feedback_enabled=False,
+            ),
+            convert_impl=convert_impl,
+            heading_repair_impl=heading_repair_impl,
+        )
+
+        self.assertEqual(outcome.epub_bytes, b"repaired-epub")
+        self.assertEqual(heading_repair_impl.call_args.kwargs["publication_profile"], "magazine_reflow")
 
     def test_serve_http_app_uses_flask_runtime(self) -> None:
         application = SimpleNamespace(run=Mock())

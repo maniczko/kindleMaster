@@ -24,6 +24,11 @@ MAX_MAGAZINE_FRAGMENTS = 24
 MAX_MAGAZINE_ISSUES = 24
 MAX_MAGAZINE_IMAGE_ROWS = 40
 MAX_MAGAZINE_TEXT_CHARS = 420
+MAX_DENSE_TOC_ENTRIES = 80
+MAX_DENSE_HEADINGS = 40
+MAX_DENSE_FRAGMENTS = 16
+MAX_DENSE_CHAPTER_STATS = 24
+MAX_DENSE_TEXT_CHARS = 420
 
 QUALITY_ENABLE_KEYS = ("KINDLEMASTER_OPENAI_QUALITY", "KINDLEMASTER_AI_QUALITY_OPENAI")
 ENV_FILES = (".env.local", ".env")
@@ -147,6 +152,31 @@ class OpenAIQualityProvider:
         result = self._call(payload)
         parsed = _extract_json(result)
         review = _sanitize_magazine_review(parsed, compact_context)
+        review["estimated_cost_usd"] = _estimated_cost(result)
+        review["provider"] = self.name
+        review["metadata"] = {
+            "model": self.config.model,
+            "usage": result.get("usage", {}),
+        }
+        return review
+
+    def review_dense_handbook(self, context: dict[str, Any]) -> dict[str, Any]:
+        compact_context = _compact_dense_handbook_review_context(context, self.config.max_input_chars)
+        payload = self._responses_payload(
+            name="kindlemaster_dense_handbook_review",
+            schema=_dense_handbook_review_schema(),
+            instructions=(
+                "You are a conservative EPUB dense-handbook quality reviewer. Use only compact evidence provided: "
+                "TOC entries, heading-noise samples, text-artifact snippets, chapter stats, and premium issues. "
+                "Do not ask for or infer from full EPUB/PDF bytes. Return evidence only; never propose byte rewrites. "
+                "Only reuse hrefs and fragment indexes that appear in the context. Flag likely TOC debris, heading "
+                "noise, real OCR artifacts, and overly large navigation sections. Return JSON only."
+            ),
+            user_payload=compact_context,
+        )
+        result = self._call(payload)
+        parsed = _extract_json(result)
+        review = _sanitize_dense_handbook_review(parsed, compact_context)
         review["estimated_cost_usd"] = _estimated_cost(result)
         review["provider"] = self.name
         review["metadata"] = {
@@ -423,6 +453,63 @@ def _magazine_review_schema() -> dict[str, Any]:
     }
 
 
+def _dense_handbook_review_schema() -> dict[str, Any]:
+    href_item = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "href": {"type": "string"},
+            "label": {"type": "string"},
+            "evidence": {"type": "string"},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        },
+        "required": ["href", "label", "evidence", "confidence"],
+    }
+    fragment_item = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "fragment_index": {"type": "integer", "minimum": 0},
+            "before": {"type": "string"},
+            "classification": {"type": "string"},
+            "evidence": {"type": "string"},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        },
+        "required": ["fragment_index", "before", "classification", "evidence", "confidence"],
+    }
+    chapter_item = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "href": {"type": "string"},
+            "title": {"type": "string"},
+            "evidence": {"type": "string"},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        },
+        "required": ["href", "title", "evidence", "confidence"],
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "toc_debris": {"type": "array", "items": href_item},
+            "heading_noise": {"type": "array", "items": href_item},
+            "text_artifact_reviews": {"type": "array", "items": fragment_item},
+            "oversized_chapters": {"type": "array", "items": chapter_item},
+            "suggested_fixture_tags": {"type": "array", "items": {"type": "string"}},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        },
+        "required": [
+            "toc_debris",
+            "heading_noise",
+            "text_artifact_reviews",
+            "oversized_chapters",
+            "suggested_fixture_tags",
+            "confidence",
+        ],
+    }
+
+
 def _compact_scoring(scoring: Any) -> dict[str, Any]:
     if not isinstance(scoring, dict):
         return {}
@@ -451,6 +538,23 @@ def _compact_magazine_review_context(context: dict[str, Any], max_chars: int) ->
     return _trim_json_payload(payload, max(600, int(max_chars or DEFAULT_MAX_INPUT_CHARS)))
 
 
+def _compact_dense_handbook_review_context(context: dict[str, Any], max_chars: int) -> dict[str, Any]:
+    source = context if isinstance(context, dict) else {}
+    payload = {
+        "context_version": "dense-handbook-review-v1",
+        "context_truncated": False,
+        "toc_entries": _compact_dense_toc_entries(source.get("toc_entries")),
+        "heading_noise_samples": _compact_dense_heading_samples(source.get("heading_noise_samples")),
+        "text_artifact_fragments": _compact_magazine_fragments(
+            source.get("text_artifact_fragments") or source.get("suspicious_fragments")
+        ),
+        "chapter_stats": _compact_dense_chapter_stats(source.get("chapter_stats")),
+        "premium_issues": _compact_magazine_issues(source.get("premium_issues") or source.get("issues")),
+        "metrics": _compact_dense_metrics(source.get("metrics")),
+    }
+    return _trim_json_payload(payload, max(600, int(max_chars or DEFAULT_MAX_INPUT_CHARS)))
+
+
 def _compact_magazine_toc_entries(value: Any) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
     for index, item in enumerate(_iter_dicts(value)):
@@ -465,6 +569,73 @@ def _compact_magazine_toc_entries(value: Any) -> list[dict[str, Any]]:
         if len(entries) >= MAX_MAGAZINE_TOC_ENTRIES:
             break
     return entries
+
+
+def _compact_dense_toc_entries(value: Any) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for index, item in enumerate(_iter_dicts(value)):
+        entries.append(
+            {
+                "index": _coerce_int(item.get("index"), index),
+                "label": _clip_text_field(item.get("label") or item.get("title"), 180),
+                "href": _clip_text_field(item.get("href"), 240),
+                "level": _coerce_int(item.get("level"), 1),
+            }
+        )
+        if len(entries) >= MAX_DENSE_TOC_ENTRIES:
+            break
+    return entries
+
+
+def _compact_dense_heading_samples(value: Any) -> list[dict[str, Any]]:
+    samples: list[dict[str, Any]] = []
+    for index, item in enumerate(_iter_dicts(value)):
+        samples.append(
+            {
+                "index": _coerce_int(item.get("index"), index),
+                "label": _clip_text_field(item.get("label") or item.get("text") or item.get("title"), 180),
+                "href": _clip_text_field(item.get("href") or item.get("file"), 240),
+                "level": _coerce_int(item.get("level"), 0),
+                "evidence": _clip_text_field(item.get("evidence") or item.get("reason"), MAX_DENSE_TEXT_CHARS),
+            }
+        )
+        if len(samples) >= MAX_DENSE_HEADINGS:
+            break
+    if samples:
+        return samples
+    for index, text in enumerate(_compact_string_list(value, limit=MAX_DENSE_HEADINGS, chars=180)):
+        samples.append({"index": index, "label": text, "href": "", "level": 0, "evidence": ""})
+    return samples
+
+
+def _compact_dense_chapter_stats(value: Any) -> list[dict[str, Any]]:
+    stats: list[dict[str, Any]] = []
+    for index, item in enumerate(_iter_dicts(value)):
+        stats.append(
+            {
+                "index": _coerce_int(item.get("index"), index),
+                "href": _clip_text_field(item.get("href") or item.get("file"), 240),
+                "title": _clip_text_field(item.get("title") or item.get("label"), 180),
+                "word_count": _coerce_int(item.get("word_count"), 0),
+                "heading_count": _coerce_int(item.get("heading_count"), 0),
+            }
+        )
+        if len(stats) >= MAX_DENSE_CHAPTER_STATS:
+            break
+    return stats
+
+
+def _compact_dense_metrics(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {
+        "premium_score": value.get("premium_score"),
+        "release_verdict": value.get("release_verdict"),
+        "toc_noise_count": _coerce_int(value.get("toc_noise_count"), 0),
+        "heading_noise_count": _coerce_int(value.get("heading_noise_count"), 0),
+        "artifact_rate_per_1000_words": value.get("artifact_rate_per_1000_words"),
+        "largest_chapter_words": _coerce_int(value.get("largest_chapter_words"), 0),
+    }
 
 
 def _compact_magazine_articles(value: Any) -> list[dict[str, Any]]:
@@ -608,6 +779,86 @@ def _sanitize_magazine_review(parsed: dict[str, Any], context: dict[str, Any]) -
     }
 
 
+def _sanitize_dense_handbook_review(parsed: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    allowed_hrefs = _allowed_dense_hrefs(context)
+    fragment_text_by_index = _fragment_text_by_index({"suspicious_fragments": context.get("text_artifact_fragments")})
+    return {
+        "toc_debris": _sanitize_dense_href_list(parsed.get("toc_debris"), allowed_hrefs=allowed_hrefs),
+        "heading_noise": _sanitize_dense_href_list(parsed.get("heading_noise"), allowed_hrefs=allowed_hrefs),
+        "text_artifact_reviews": _sanitize_dense_artifact_reviews(
+            parsed.get("text_artifact_reviews"),
+            fragment_text_by_index=fragment_text_by_index,
+        ),
+        "oversized_chapters": _sanitize_dense_chapter_reviews(parsed.get("oversized_chapters"), allowed_hrefs=allowed_hrefs),
+        "suggested_fixture_tags": _sanitize_fixture_tags(parsed.get("suggested_fixture_tags")),
+        "confidence": _clamp(parsed.get("confidence")),
+    }
+
+
+def _sanitize_dense_href_list(value: Any, *, allowed_hrefs: set[str]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for item in _iter_dicts(value):
+        href = _clean_allowed_href(item.get("href"), allowed_hrefs) if allowed_hrefs else _clip_text_field(item.get("href"), 240)
+        label = _clip_text_field(item.get("label") or item.get("title"), 180)
+        if allowed_hrefs and str(item.get("href") or "").strip() and not href:
+            continue
+        if not label:
+            continue
+        items.append(
+            {
+                "href": href,
+                "label": label,
+                "evidence": _clip_text_field(item.get("evidence") or item.get("reason"), 360),
+                "confidence": _clamp(item.get("confidence")),
+            }
+        )
+        if len(items) >= MAX_DENSE_FRAGMENTS:
+            break
+    return items
+
+
+def _sanitize_dense_artifact_reviews(value: Any, *, fragment_text_by_index: dict[int, str]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for item in _iter_dicts(value):
+        index = _coerce_int(item.get("fragment_index") if "fragment_index" in item else item.get("index"), -1)
+        if index not in fragment_text_by_index:
+            continue
+        items.append(
+            {
+                "fragment_index": index,
+                "before": fragment_text_by_index[index],
+                "classification": _clip_text_field(item.get("classification"), 80),
+                "evidence": _clip_text_field(item.get("evidence") or item.get("reason"), 360),
+                "confidence": _clamp(item.get("confidence")),
+            }
+        )
+        if len(items) >= MAX_DENSE_FRAGMENTS:
+            break
+    return items
+
+
+def _sanitize_dense_chapter_reviews(value: Any, *, allowed_hrefs: set[str]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for item in _iter_dicts(value):
+        href = _clean_allowed_href(item.get("href"), allowed_hrefs) if allowed_hrefs else _clip_text_field(item.get("href"), 240)
+        title = _clip_text_field(item.get("title") or item.get("label"), 180)
+        if allowed_hrefs and str(item.get("href") or "").strip() and not href:
+            continue
+        if not title:
+            continue
+        items.append(
+            {
+                "href": href,
+                "title": title,
+                "evidence": _clip_text_field(item.get("evidence") or item.get("reason"), 360),
+                "confidence": _clamp(item.get("confidence")),
+            }
+        )
+        if len(items) >= MAX_DENSE_FRAGMENTS:
+            break
+    return items
+
+
 def _sanitize_href_evidence_list(value: Any, *, allowed_hrefs: set[str]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for item in _iter_dicts(value):
@@ -726,6 +977,16 @@ def _sanitize_fixture_tags(value: Any) -> list[str]:
 def _allowed_magazine_hrefs(context: dict[str, Any]) -> set[str]:
     allowed: set[str] = set()
     for key in ("toc_entries", "article_map", "flow_fragments"):
+        for item in _iter_dicts(context.get(key)):
+            href = str(item.get("href") or "").strip()
+            if href:
+                allowed.add(href)
+    return allowed
+
+
+def _allowed_dense_hrefs(context: dict[str, Any]) -> set[str]:
+    allowed: set[str] = set()
+    for key in ("toc_entries", "heading_noise_samples", "chapter_stats"):
         for item in _iter_dicts(context.get(key)):
             href = str(item.get("href") or "").strip()
             if href:

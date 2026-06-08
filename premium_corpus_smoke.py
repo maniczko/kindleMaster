@@ -120,7 +120,7 @@ ANALYSIS_ONLY: list[CorpusCase] = [
 ]
 
 PLACEHOLDER_TITLE_RE = re.compile(r"^(?:emvc|executive summary|unknown|untitled|legacy)$", re.IGNORECASE)
-PLACEHOLDER_AUTHOR_RE = re.compile(r"^(?:unknown|python-docx|legacy)$", re.IGNORECASE)
+PLACEHOLDER_AUTHOR_RE = re.compile(r"^(?:unknown(?:\s+author)?|python-docx|legacy|kindlemaster)$", re.IGNORECASE)
 VISIBLE_JUNK_PATTERNS = {
     "unresolved_url_label": re.compile(r"Unresolved URL:", re.IGNORECASE),
     "manual_review_label": re.compile(r"Link requires manual review\.", re.IGNORECASE),

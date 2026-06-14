@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,23 @@ KNOWN_BAD_EXPECTED_FENS = {
 }
 
 
+@dataclass(frozen=True)
+class FenValidationIssue:
+    code: str
+    severity: str
+    message: str
+
+
+@dataclass(frozen=True)
+class FenValidationResult:
+    input: str
+    normalized_fen: str | None
+    is_syntax_valid: bool
+    is_legal_position: bool
+    errors: list[FenValidationIssue]
+    warnings: list[FenValidationIssue]
+
+
 def crop_sha256(path: str | Path) -> str:
     crop_path = Path(path)
     digest = hashlib.sha256()
@@ -55,6 +73,165 @@ def crop_sha256(path: str | Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def normalize_fen_whitespace(value: str) -> str:
+    return " ".join(str(value or "").strip().split())
+
+
+def validate_fen_detailed(fen: str) -> FenValidationResult:
+    normalized = normalize_fen_whitespace(fen)
+    errors: list[FenValidationIssue] = []
+    parts = normalized.split() if normalized else []
+    syntax_codes = {
+        "fen_must_have_six_fields",
+        "placement_must_have_eight_ranks",
+        "rank_digit_invalid",
+        "rank_width_invalid",
+        "invalid_rank_count",
+        "invalid_rank_width",
+        "invalid_rank_digit",
+        "invalid_piece",
+        "placement_contains_invalid_piece",
+        "side_to_move_invalid",
+        "castling_invalid",
+        "castling_order_invalid",
+        "en_passant_invalid",
+        "move_counters_invalid",
+        "fullmove_number_invalid",
+    }
+
+    def add(code: str, message: str) -> None:
+        errors.append(FenValidationIssue(code=code, severity="error", message=message))
+
+    if len(parts) != 6:
+        add("fen_must_have_six_fields", "FEN must contain exactly six fields.")
+
+    placement = parts[0] if parts else ""
+    ranks = placement.split("/") if placement else []
+    if len(ranks) != 8:
+        add("invalid_rank_count", "Board placement must contain exactly eight ranks.")
+
+    white_kings = 0
+    black_kings = 0
+    for rank_index, rank in enumerate(ranks):
+        width = 0
+        last_was_digit = False
+        for char in rank:
+            if char.isdigit():
+                value = int(char)
+                if value < 1 or value > 8 or last_was_digit:
+                    add("invalid_rank_digit", "Empty square digits must be between 1 and 8 and not repeated.")
+                width += value
+                last_was_digit = True
+                continue
+            if char not in PIECE_CHARS:
+                add("invalid_piece", f"Unsupported FEN piece character: {char!r}.")
+                width += 1
+                last_was_digit = False
+                continue
+            if char == "K":
+                white_kings += 1
+            elif char == "k":
+                black_kings += 1
+            if rank_index in {0, 7} and char in {"P", "p"}:
+                add("pawn_on_back_rank", "Pawns cannot appear on the first or eighth rank.")
+            width += 1
+            last_was_digit = False
+        if width != 8:
+            add("invalid_rank_width", "Each FEN rank must describe exactly eight squares.")
+
+    if white_kings == 0:
+        add("missing_white_king", "Position must contain exactly one white king.")
+    elif white_kings > 1:
+        add("too_many_white_kings", "Position cannot contain more than one white king.")
+    if black_kings == 0:
+        add("missing_black_king", "Position must contain exactly one black king.")
+    elif black_kings > 1:
+        add("too_many_black_kings", "Position cannot contain more than one black king.")
+
+    if len(parts) >= 2 and parts[1] not in {"w", "b"}:
+        add("side_to_move_invalid", "Active color must be w or b.")
+
+    if len(parts) >= 3:
+        castling = parts[2]
+        if castling != "-":
+            if not castling or any(char not in "KQkq" for char in castling):
+                add("castling_invalid", "Castling rights must contain only KQkq or '-'.")
+            else:
+                ordered = "".join(sorted(castling, key="KQkq".index))
+                if ordered != castling or len(set(castling)) != len(castling):
+                    add("castling_order_invalid", "Castling rights must be unique and ordered as KQkq.")
+
+    if len(parts) >= 4 and parts[3] != "-":
+        en_passant = parts[3]
+        if len(en_passant) != 2 or en_passant[0] not in "abcdefgh" or en_passant[1] not in "36":
+            add("en_passant_invalid", "En passant target must be '-' or a square on rank 3 or 6.")
+
+    if len(parts) >= 5 and (not parts[4].isdigit()):
+        add("move_counters_invalid", "Halfmove clock must be an integer >= 0.")
+
+    if len(parts) >= 6:
+        if not parts[5].isdigit():
+            add("move_counters_invalid", "Fullmove number must be an integer >= 1.")
+        elif int(parts[5]) < 1:
+            add("fullmove_number_invalid", "Fullmove number must be an integer >= 1.")
+
+    syntax_errors = [issue for issue in errors if issue.code in syntax_codes]
+    return FenValidationResult(
+        input=fen,
+        normalized_fen=normalized if not errors else None,
+        is_syntax_valid=not syntax_errors,
+        is_legal_position=not errors,
+        errors=errors,
+        warnings=[],
+    )
+
+
+def evaluate_diagram_acceptance(candidate: dict[str, Any]) -> dict[str, Any]:
+    raw_fen = str(candidate.get("raw_fen") or candidate.get("rawFen") or candidate.get("fen") or "")
+    confidence = candidate.get("confidence") if isinstance(candidate.get("confidence"), dict) else {}
+    mean = float(confidence.get("mean") or 0.0)
+    min_occupied = float(confidence.get("min_occupied", confidence.get("minOccupied", 0.0)) or 0.0)
+    orientation = float(confidence.get("orientation") or 0.0)
+    context_match = candidate.get("context_match", candidate.get("contextMatch"))
+    validation = validate_fen_detailed(raw_fen)
+    reasons: list[str] = []
+
+    if mean < 0.75:
+        reasons.append("mean_confidence_below_reject_threshold")
+    if not validation.is_syntax_valid or not validation.is_legal_position or validation.errors:
+        reasons.append("invalid_fen")
+    if "invalid_fen" in reasons or "mean_confidence_below_reject_threshold" in reasons:
+        return {
+            "status": "rejected",
+            "normalized_fen": None,
+            "reasons": reasons,
+            "validation": validation,
+        }
+
+    if mean < 0.97:
+        reasons.append("mean_confidence_below_auto_threshold")
+    if min_occupied < 0.90:
+        reasons.append("occupied_square_confidence_below_auto_threshold")
+    if orientation < 0.98:
+        reasons.append("orientation_confidence_below_auto_threshold")
+    if context_match is False:
+        reasons.append("context_mismatch")
+
+    if reasons:
+        return {
+            "status": "manual_review_required",
+            "normalized_fen": validation.normalized_fen,
+            "reasons": reasons,
+            "validation": validation,
+        }
+    return {
+        "status": "auto_verified",
+        "normalized_fen": validation.normalized_fen,
+        "reasons": ["all_auto_verify_gates_passed"],
+        "validation": validation,
+    }
 
 
 def fen_to_cells(fen_or_placement: str) -> list[str]:

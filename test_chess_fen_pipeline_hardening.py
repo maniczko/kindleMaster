@@ -5,7 +5,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from chess_fen_hardening import crop_sha256, render_square_diff_text, square_level_fen_diff
+from chess_fen_hardening import (
+    crop_sha256,
+    evaluate_diagram_acceptance,
+    render_square_diff_text,
+    square_level_fen_diff,
+    validate_fen_detailed,
+)
 from openai_chess_fen_reviewer import OpenAIChessFenReviewer, _review_schema
 from scripts.audit_chess_fen_false_positives import audit_chess_fen_false_positives
 from scripts.promote_chess_fen_label_draft import promote_chess_fen_label_draft
@@ -13,6 +19,97 @@ from scripts.validate_chess_fen_labels import validate_chess_fen_labels
 
 
 class ChessFenPipelineHardeningTests(unittest.TestCase):
+    STARTING_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+
+    def test_detailed_fen_validation_accepts_and_normalizes_starting_position(self) -> None:
+        result = validate_fen_detailed(f"  {self.STARTING_FEN.replace(' ', '   ')}  ")
+
+        self.assertTrue(result.is_syntax_valid)
+        self.assertTrue(result.is_legal_position)
+        self.assertEqual(result.normalized_fen, self.STARTING_FEN)
+        self.assertEqual(result.errors, [])
+
+    def test_detailed_fen_validation_rejects_core_syntax_and_domain_errors(self) -> None:
+        cases = {
+            "invalid_rank_count": "8/8/8/8/8/8/8 w - - 0 1",
+            "invalid_rank_width": "9/8/8/8/8/8/8/4K2k w - - 0 1",
+            "invalid_piece": "rnbqkbnx/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "missing_white_king": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQ1BNR w KQkq - 0 1",
+            "missing_black_king": "rnbq1bnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "too_many_white_kings": "rnbqkbnr/pppppppp/8/8/8/8/PPPPKPPP/RNBQKBNR w KQkq - 0 1",
+            "pawn_on_back_rank": "p3k3/8/8/8/8/8/8/4K3 w - - 0 1",
+            "side_to_move_invalid": f"{self.STARTING_FEN.split()[0]} x KQkq - 0 1",
+            "castling_invalid": f"{self.STARTING_FEN.split()[0]} w KX - 0 1",
+            "castling_order_invalid": f"{self.STARTING_FEN.split()[0]} w QKkq - 0 1",
+            "en_passant_invalid": f"{self.STARTING_FEN.split()[0]} w KQkq e4 0 1",
+            "move_counters_invalid": f"{self.STARTING_FEN.split()[0]} w KQkq - -1 1",
+            "fullmove_number_invalid": f"{self.STARTING_FEN.split()[0]} w KQkq - 0 0",
+        }
+
+        for expected_code, fen in cases.items():
+            with self.subTest(expected_code=expected_code):
+                result = validate_fen_detailed(fen)
+                codes = {issue.code for issue in result.errors}
+                self.assertIn(expected_code, codes)
+                self.assertIsNone(result.normalized_fen)
+
+    def test_diagram_acceptance_auto_verifies_only_valid_high_confidence_fen(self) -> None:
+        result = evaluate_diagram_acceptance(
+            {
+                "id": "diagram-1",
+                "raw_fen": self.STARTING_FEN,
+                "confidence": {"mean": 0.99, "min_occupied": 0.95, "orientation": 0.99},
+                "context_match": True,
+            }
+        )
+
+        self.assertEqual(result["status"], "auto_verified")
+        self.assertEqual(result["normalized_fen"], self.STARTING_FEN)
+        self.assertEqual(result["reasons"], ["all_auto_verify_gates_passed"])
+
+    def test_diagram_acceptance_routes_low_confidence_or_context_mismatch_to_review(self) -> None:
+        result = evaluate_diagram_acceptance(
+            {
+                "id": "diagram-1",
+                "raw_fen": self.STARTING_FEN,
+                "confidence": {"mean": 0.96, "min_occupied": 0.89, "orientation": 0.97},
+                "context_match": False,
+            }
+        )
+
+        self.assertEqual(result["status"], "manual_review_required")
+        self.assertEqual(
+            set(result["reasons"]),
+            {
+                "mean_confidence_below_auto_threshold",
+                "occupied_square_confidence_below_auto_threshold",
+                "orientation_confidence_below_auto_threshold",
+                "context_mismatch",
+            },
+        )
+        self.assertEqual(result["normalized_fen"], self.STARTING_FEN)
+
+    def test_diagram_acceptance_rejects_invalid_fen_and_very_low_confidence(self) -> None:
+        invalid = evaluate_diagram_acceptance(
+            {
+                "id": "diagram-1",
+                "raw_fen": "8/8/8/8/8/8/8 w - - 0 1",
+                "confidence": {"mean": 0.99, "min_occupied": 0.95, "orientation": 0.99},
+            }
+        )
+        low_confidence = evaluate_diagram_acceptance(
+            {
+                "id": "diagram-2",
+                "raw_fen": self.STARTING_FEN,
+                "confidence": {"mean": 0.74, "min_occupied": 0.95, "orientation": 0.99},
+            }
+        )
+
+        self.assertEqual(invalid["status"], "rejected")
+        self.assertIn("invalid_fen", invalid["reasons"])
+        self.assertEqual(low_confidence["status"], "rejected")
+        self.assertIn("mean_confidence_below_reject_threshold", low_confidence["reasons"])
+
     def test_square_level_diff_reports_known_bad_e5_rook_vs_pawn(self) -> None:
         expected = "6k1/p4p1p/3p1p2/2p1r3/2PnrqN1/P6P/1P1Q1PP1/3R1RK1 b - - 0 1"
         candidate = "rnbq1rk1/pppp1ppp/2n2n2/1B2p3/3P1N2/2N2Q2/PPP1PPPP/R1B1K2R w KQ - 0 1"

@@ -847,7 +847,7 @@ Supported first-class commands:
 - `ml` with `dataset`, `train`, and `evaluate` subcommands
 - `test`
 - `audit`
-- `chess-study` with `run-all`, `audit-current`, `extract-structure`, `segment-pages`, `detect-diagrams`, `recognize-fen`, `extract-pgn`, `link-exercises`, `validate`, `render`, `fen-review`, `build-fen-templates`, `evaluate-fen-profile`, `pgn-review`, `quality-dashboard`, `ai-fen-candidates`, `ai-pgn-candidates`, and `ai-quality-eval` subcommands; use `--quality-profile smoke|default|masterkindle` for study-export gates
+- `chess-study` with `run-all`, `audit-current`, `extract-structure`, `segment-pages`, `detect-diagrams`, `recognize-fen`, `extract-pgn`, `link-exercises`, `validate`, `render`, `fen-review`, `build-fen-templates`, `evaluate-fen-profile`, `pgn-review`, `quality-dashboard`, `ai-fen-candidates`, `ai-pgn-candidates`, `ai-quality-eval`, `quality-baseline`, `preprocess-boards`, `build-square-dataset`, `train-fen-classifier`, `evaluate-fen-classifier`, `recognize-fen-local`, `evaluate-fen-ensemble`, `calibrate-fen-confidence`, and `export-fen-corpus-manifest` subcommands; use `--quality-profile smoke|default|masterkindle` for study-export gates
 
 For `chess-study`, optimize the final study export for semantic reading order, diagram/FEN recognition, and PGN/comment extraction. Exact PDF visual layout and full page-image rendering are audit/debug aids only; use `--render-pages` explicitly when page images are needed.
 - `workflow` with `baseline` and `verify` subcommands

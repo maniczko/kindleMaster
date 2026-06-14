@@ -106,6 +106,18 @@ python kindlemaster.py workflow baseline path\to\input.pdf --change-area referen
 python kindlemaster.py workflow verify path\to\input.pdf --run-id <run_id>
 ```
 
+Chess-study FEN quality loop commands are also available under the same entrypoint:
+
+```powershell
+python kindlemaster.py chess-study quality-baseline --out output\yusupov_study
+python kindlemaster.py chess-study preprocess-boards --out output\yusupov_study
+python kindlemaster.py chess-study build-square-dataset --out output\yusupov_study --labels output\yusupov_study\review\fen_verified_labels.jsonl
+python kindlemaster.py chess-study train-fen-classifier --out output\yusupov_study
+python kindlemaster.py chess-study recognize-fen-local --out output\yusupov_study
+python kindlemaster.py chess-study evaluate-fen-ensemble --out output\yusupov_study
+python kindlemaster.py chess-study export-fen-corpus-manifest --out output\yusupov_study
+```
+
 `python kindlemaster.py test --suite full` is a diagnostic all-discovery lane. It delegates to `unittest discover -p test*.py`, so it also runs tests intentionally kept out of the explicit `quick`, `release`, `corpus`, `browser`, and `runtime` suite registry.
 
 `python kindlemaster.py test --suite release` uses the local `standard` corpus proof by default. GitHub READY sets `KINDLEMASTER_RELEASE_PROOF_PROFILE=ci` so clean runners can enforce release units and bounded corpus evidence without pretending to have the full local OCR/PDF premium toolchain.

@@ -6,6 +6,7 @@ import csv
 import hashlib
 import io
 import json
+import math
 import re
 import shutil
 import zipfile
@@ -16,7 +17,7 @@ from typing import Any, Iterable
 
 import fitz
 from bs4 import BeautifulSoup
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 
 from chess_position_recognizer import validate_fen
 from scripts.audit_chess_html import audit_chess_html
@@ -941,6 +942,394 @@ def evaluate_chess_fen_profile(
     return payload
 
 
+def build_chess_quality_baseline(out_dir: str | Path) -> dict[str, Any]:
+    """Freeze the current chess-study quality state as a machine-readable baseline."""
+    out = Path(out_dir)
+    reports_dir = out / "reports"
+    review_dir = out / "review"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    dashboard = build_chess_quality_dashboard(out)
+    artifact_paths = {
+        "ai_fen_candidates": review_dir / "ai_fen_candidates.jsonl",
+        "fen_verified_labels": review_dir / "fen_verified_labels.jsonl",
+        "pgn_lattice": review_dir / "pgn_lattice_review.jsonl",
+        "glyph_clusters": review_dir / "deepseek_glyph_clusters.json",
+        "fen_profile_eval": reports_dir / "fen_profile_eval.json",
+        "pgn_lattice_eval": reports_dir / "pgn_lattice_eval.json",
+    }
+    artifacts = {
+        key: {
+            "path": str(path),
+            "exists": path.is_file(),
+            "size_bytes": path.stat().st_size if path.is_file() else 0,
+            "sha256": _file_sha256(path) if path.is_file() else "",
+        }
+        for key, path in artifact_paths.items()
+    }
+    payload = {
+        "schema": "kindlemaster.chess_quality_baseline.v1",
+        "status": "ok",
+        "counts": {
+            "pages": int(dashboard.get("pages") or 0),
+            "diagrams_total": int(dashboard.get("diagrams_total") or 0),
+            "fen_accepted": int(dashboard.get("fen_accepted") or 0),
+            "fen_needs_review": int(dashboard.get("fen_needs_review") or 0),
+            "pgn_total": int(dashboard.get("pgn_total") or 0),
+            "accepted_pgn": int(dashboard.get("accepted_pgn") or 0),
+            "pgn_needs_review": int(dashboard.get("pgn_needs_review") or 0),
+            "ai_fen_candidates": int(dashboard.get("ai_fen_candidates") or 0),
+            "ai_pgn_candidates": int(dashboard.get("ai_pgn_candidates") or 0),
+        },
+        "artifacts": artifacts,
+        "policy": "Baseline is evidence only; generated output remains reproducible and is not a Git source of truth.",
+    }
+    _write_json(reports_dir / "chess_quality_baseline.json", payload)
+    return payload
+
+
+def preprocess_chess_board_crops(
+    out_dir: str | Path,
+    *,
+    limit: int = 0,
+    labels_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Normalize diagram crops into square board images for downstream FEN work."""
+    out = Path(out_dir)
+    reports_dir = out / "reports"
+    review_dir = out / "review"
+    normalized_dir = out / "assets" / "normalized_boards"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    review_dir.mkdir(parents=True, exist_ok=True)
+    normalized_dir.mkdir(parents=True, exist_ok=True)
+
+    records = _board_preprocess_sources(out, labels_path=labels_path)
+    if limit and limit > 0:
+        records = records[: int(limit)]
+
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        rows.append(_preprocess_board_record(record, out, normalized_dir))
+
+    _write_jsonl(out / "data" / "board_preprocess.jsonl", rows)
+    (review_dir / "board_preprocess_review.html").write_text(
+        _board_preprocess_review_html(rows),
+        encoding="utf-8",
+    )
+    ok_count = len([row for row in rows if row.get("status") == "ok"])
+    payload = {
+        "schema": "kindlemaster.board_preprocess.v1",
+        "status": "ok" if rows else "failed",
+        "source_count": len(records),
+        "normalized_count": ok_count,
+        "failure_count": len(rows) - ok_count,
+        "normalized_rate": round(ok_count / max(1, len(rows)), 4),
+        "normalized_dir": str(normalized_dir),
+        "review_html": str(review_dir / "board_preprocess_review.html"),
+        "data_path": str(out / "data" / "board_preprocess.jsonl"),
+        "accepted_fen_changed": 0,
+        "policy": "Preprocessing creates evidence and normalized images only; it never marks FEN accepted.",
+    }
+    _write_json(reports_dir / "board_preprocess_eval.json", payload)
+    build_chess_quality_dashboard(out)
+    return payload
+
+
+def build_fen_square_dataset(
+    labels_path: str | Path,
+    *,
+    out_dir: str | Path,
+    fold_count: int = 5,
+    holdout_fold: int = 0,
+) -> dict[str, Any]:
+    """Build a 64-square supervised dataset from verified FEN labels."""
+    out = Path(out_dir)
+    reports_dir = out / "reports"
+    data_dir = out / "data"
+    squares_root = out / "assets" / "squares"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    squares_root.mkdir(parents=True, exist_ok=True)
+
+    labels = _promote_verified_fen_labels(Path(labels_path), out)
+    rows: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for label in labels:
+        crop_path = Path(str(label.get("crop_path") or ""))
+        diagram_id = str(label.get("diagram_id") or crop_path.stem)
+        try:
+            board = _normalize_board_image(crop_path)
+            cells = _fen_placement_to_cells(str(label.get("fen") or "").split()[0])
+        except Exception as exc:
+            skipped.append({"diagram_id": diagram_id, "crop_path": str(crop_path), "reason": str(exc)})
+            continue
+        split = _dataset_split(diagram_id, fold_count=fold_count, holdout_fold=holdout_fold)
+        for index, cell in enumerate(_split_board_into_squares(board)):
+            square_name = _square_name(index)
+            class_name = cells[index] or "empty"
+            target_dir = squares_root / split / class_name
+            target_dir.mkdir(parents=True, exist_ok=True)
+            filename = f"{_safe_filename(diagram_id)}_{square_name}.png"
+            target_path = target_dir / filename
+            cell.save(target_path, format="PNG")
+            rows.append(
+                {
+                    "schema": "kindlemaster.fen_square_sample.v1",
+                    "diagram_id": diagram_id,
+                    "square": square_name,
+                    "square_index": index,
+                    "class": class_name,
+                    "split": split,
+                    "image_path": str(target_path),
+                    "source_crop": str(crop_path),
+                    "fen": label.get("fen"),
+                    "page": int(label.get("page") or 0),
+                    "label_source": label.get("source") or str(labels_path),
+                    "board_sha256": _image_sha256(board),
+                }
+            )
+
+    dataset_path = data_dir / "fen_square_dataset.jsonl"
+    _write_jsonl(dataset_path, rows)
+    class_counts = _count_by(rows, "class")
+    split_counts = _count_by(rows, "split")
+    payload = {
+        "schema": "kindlemaster.fen_square_dataset.v1",
+        "status": "ok" if rows else "failed",
+        "labels_path": str(labels_path),
+        "verified_label_count": len(labels),
+        "board_count": len({row["diagram_id"] for row in rows}),
+        "sample_count": len(rows),
+        "class_counts": class_counts,
+        "split_counts": split_counts,
+        "fold_count": max(2, int(fold_count or 5)),
+        "holdout_fold": int(holdout_fold or 0),
+        "dataset_path": str(dataset_path),
+        "squares_root": str(squares_root),
+        "skipped": skipped,
+        "policy": "Holdout split is assigned by diagram id and must not be used for training.",
+    }
+    _write_json(reports_dir / "fen_square_dataset_summary.json", payload)
+    build_chess_quality_dashboard(out)
+    return payload
+
+
+def train_fen_square_classifier(
+    out_dir: str | Path,
+    *,
+    dataset_path: str | Path | None = None,
+    model_name: str = "chess_fen_square_v1",
+) -> dict[str, Any]:
+    """Train a lightweight local square classifier profile from dataset samples.
+
+    This v1 uses deterministic feature centroids so it has no heavyweight runtime
+    dependency. A later optional trainer can replace the JSON profile with ONNX
+    while keeping the same report/model-card contract.
+    """
+    out = Path(out_dir)
+    reports_dir = out / "reports"
+    models_dir = out / "models"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    models_dir.mkdir(parents=True, exist_ok=True)
+    source = Path(dataset_path) if dataset_path else out / "data" / "fen_square_dataset.jsonl"
+    rows = _read_jsonl_rows(source)
+    train_rows = [row for row in rows if row.get("split") == "train"]
+    centroids = _train_centroid_classifier(train_rows)
+    model_path = models_dir / f"{_safe_filename(model_name)}.json"
+    model = {
+        "schema": "kindlemaster.fen_square_classifier.v1",
+        "model_type": "feature_centroid",
+        "model_name": model_name,
+        "dataset_path": str(source),
+        "class_centroids": centroids,
+        "feature_names": ["mean", "stddev", "dark_ratio", "edge_density"],
+        "onnx_available": False,
+        "policy": "This model produces candidates only; ensemble validation controls accepted FEN.",
+    }
+    _write_json(model_path, model)
+    eval_payload = _evaluate_square_classifier(rows, model)
+    eval_payload.update(
+        {
+            "schema": "kindlemaster.fen_square_model_eval.v1",
+            "status": "ok" if centroids else "failed",
+            "model_path": str(model_path),
+            "model_type": "feature_centroid",
+            "onnx_path": "",
+            "onnx_available": False,
+        }
+    )
+    _write_json(reports_dir / "fen_square_model_eval.json", eval_payload)
+    _write_square_confusion_csv(reports_dir / "fen_square_confusion_matrix.csv", eval_payload.get("confusion") or {})
+    _write_json(
+        models_dir / f"{_safe_filename(model_name)}.model-card.json",
+        _fen_model_card(out, source, model_path, eval_payload),
+    )
+    build_chess_quality_dashboard(out)
+    return eval_payload
+
+
+def recognize_fen_local(
+    out_dir: str | Path,
+    *,
+    model_path: str | Path | None = None,
+    limit: int = 0,
+) -> dict[str, Any]:
+    """Run local square-classifier inference and write review-only FEN predictions."""
+    out = Path(out_dir)
+    review_dir = out / "review"
+    reports_dir = out / "reports"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    resolved_model = Path(model_path) if model_path else out / "models" / "chess_fen_square_v1.json"
+    if not resolved_model.is_file():
+        payload = {
+            "schema": "kindlemaster.fen_model_runtime_eval.v1",
+            "status": "needs_review",
+            "reason": "model_missing",
+            "model_path": str(resolved_model),
+            "prediction_count": 0,
+            "accepted_fen_changed": 0,
+            "policy": "Missing local model is a clean fallback to review; no accepted FEN changes.",
+        }
+        _write_json(reports_dir / "fen_model_runtime_eval.json", payload)
+        _write_jsonl(review_dir / "fen_model_predictions.jsonl", [])
+        return payload
+
+    model = json.loads(resolved_model.read_text(encoding="utf-8"))
+    sources = _board_preprocess_sources(out, labels_path=None)
+    if limit and limit > 0:
+        sources = sources[: int(limit)]
+    rows: list[dict[str, Any]] = []
+    for source in sources:
+        rows.append(_predict_fen_for_source(source, out, model))
+    _write_jsonl(review_dir / "fen_model_predictions.jsonl", rows)
+    valid_count = len([row for row in rows if row.get("deterministic_validation", {}).get("valid")])
+    payload = {
+        "schema": "kindlemaster.fen_model_runtime_eval.v1",
+        "status": "ok",
+        "model_path": str(resolved_model),
+        "prediction_count": len(rows),
+        "deterministic_valid": valid_count,
+        "high_confidence_count": len([row for row in rows if float(row.get("global_confidence") or 0.0) >= 0.92]),
+        "accepted_fen_changed": 0,
+        "predictions_path": str(review_dir / "fen_model_predictions.jsonl"),
+        "policy": "Local predictions are candidates; accepted FEN requires ensemble validation.",
+    }
+    _write_json(reports_dir / "fen_model_runtime_eval.json", payload)
+    build_chess_quality_dashboard(out)
+    return payload
+
+
+def evaluate_fen_ensemble(
+    out_dir: str | Path,
+    *,
+    min_confidence: float = 0.92,
+) -> dict[str, Any]:
+    """Evaluate deterministic FEN acceptance candidates from local/model/template evidence."""
+    out = Path(out_dir)
+    reports_dir = out / "reports"
+    review_dir = out / "review"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    review_dir.mkdir(parents=True, exist_ok=True)
+    predictions = _read_jsonl_rows(review_dir / "fen_model_predictions.jsonl")
+    labels = _read_jsonl_rows(review_dir / "fen_verified_labels.jsonl")
+    verified_by_id = {str(row.get("diagram_id") or ""): row for row in labels}
+    accepted: list[dict[str, Any]] = []
+    conflicts: list[dict[str, Any]] = []
+    for prediction in predictions:
+        verdict = _fen_ensemble_verdict(prediction, verified_by_id, min_confidence=min_confidence)
+        if verdict["status"] == "accepted_candidate":
+            accepted.append(verdict)
+        else:
+            conflicts.append(verdict)
+    _write_jsonl(review_dir / "fen_ensemble_conflicts.jsonl", conflicts)
+    (review_dir / "fen_ensemble_conflicts.html").write_text(
+        _fen_ensemble_conflicts_html(conflicts),
+        encoding="utf-8",
+    )
+    payload = {
+        "schema": "kindlemaster.fen_ensemble_eval.v1",
+        "status": "passed" if accepted else "needs_review",
+        "prediction_count": len(predictions),
+        "accepted_candidate_count": len(accepted),
+        "conflict_count": len(conflicts),
+        "min_confidence": float(min_confidence),
+        "accepted_fen_changed": 0,
+        "policy": "Ensemble produces accepted candidates only; final export updates require the existing strict FEN gate.",
+        "accepted_candidates": accepted,
+        "top_conflict_reasons": _top_counts(reason for row in conflicts for reason in row.get("reasons") or []),
+    }
+    _write_json(reports_dir / "fen_ensemble_eval.json", payload)
+    build_chess_quality_dashboard(out)
+    return payload
+
+
+def calibrate_fen_confidence(out_dir: str | Path) -> dict[str, Any]:
+    out = Path(out_dir)
+    reports_dir = out / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    predictions = _read_jsonl_rows(out / "review" / "fen_model_predictions.jsonl")
+    labels = _read_jsonl_rows(out / "review" / "fen_verified_labels.jsonl")
+    label_by_id = {str(row.get("diagram_id") or ""): str(row.get("fen") or "") for row in labels}
+    buckets: dict[str, dict[str, int]] = {}
+    for row in predictions:
+        confidence = float(row.get("global_confidence") or 0.0)
+        bucket = f"{int(confidence * 10) / 10:.1f}"
+        stats = buckets.setdefault(bucket, {"total": 0, "exact": 0})
+        stats["total"] += 1
+        if label_by_id.get(str(row.get("diagram_id") or "")) == str(row.get("fen_candidate") or ""):
+            stats["exact"] += 1
+    reliability = {
+        key: {
+            **value,
+            "accuracy": round(value["exact"] / max(1, value["total"]), 4),
+        }
+        for key, value in sorted(buckets.items())
+    }
+    profile = {
+        "schema": "kindlemaster.fen_confidence_profile.v1",
+        "auto_accept": 0.97,
+        "rule_review": 0.90,
+        "manual_review": 0.0,
+        "false_accepted_target": 0,
+        "reliability": reliability,
+        "policy": "Thresholds are conservative until enough verified holdout evidence exists.",
+    }
+    _write_json(out / "models" / "fen_confidence_profile.json", profile)
+    _write_json(reports_dir / "fen_confidence_calibration.json", profile)
+    return profile
+
+
+def export_fen_corpus_manifest(out_dir: str | Path) -> dict[str, Any]:
+    out = Path(out_dir)
+    data_dir = out / "data"
+    reports_dir = out / "reports"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    paths = [
+        out / "review" / "fen_verified_labels.jsonl",
+        data_dir / "fen_square_dataset.jsonl",
+        reports_dir / "fen_square_dataset_summary.json",
+        reports_dir / "fen_square_model_eval.json",
+        reports_dir / "fen_ensemble_eval.json",
+    ]
+    payload = {
+        "schema": "kindlemaster.fen_corpus_manifest.v1",
+        "status": "ok",
+        "artifacts": [
+            {
+                "path": str(path),
+                "exists": path.is_file(),
+                "size_bytes": path.stat().st_size if path.is_file() else 0,
+                "sha256": _file_sha256(path) if path.is_file() else "",
+            }
+            for path in paths
+        ],
+        "policy": "Manifest provides reproducibility without requiring generated artifacts to be committed.",
+    }
+    _write_json(data_dir / "fen_corpus_manifest.json", payload)
+    return payload
+
+
 def build_chess_pgn_review(
     out_dir: str | Path,
     *,
@@ -1200,6 +1589,13 @@ def build_chess_quality_dashboard(out_dir: str | Path) -> dict[str, Any]:
     fen_eval = _read_optional_json(reports_dir / "fen_profile_eval.json")
     pgn_eval = _read_optional_json(reports_dir / "pgn_lattice_eval.json")
     ai_eval = _read_optional_json(reports_dir / "ai_assisted_quality_eval.json")
+    baseline = _read_optional_json(reports_dir / "chess_quality_baseline.json")
+    preprocess_eval = _read_optional_json(reports_dir / "board_preprocess_eval.json")
+    dataset_eval = _read_optional_json(reports_dir / "fen_square_dataset_summary.json")
+    model_eval = _read_optional_json(reports_dir / "fen_square_model_eval.json")
+    runtime_eval = _read_optional_json(reports_dir / "fen_model_runtime_eval.json")
+    ensemble_eval = _read_optional_json(reports_dir / "fen_ensemble_eval.json")
+    confidence_eval = _read_optional_json(reports_dir / "fen_confidence_calibration.json")
     pages = _quality_dashboard_pages(book, diagrams, pgn_records)
     summary = {
         "schema": "kindlemaster.chess_quality_dashboard.v1",
@@ -1214,6 +1610,19 @@ def build_chess_quality_dashboard(out_dir: str | Path) -> dict[str, Any]:
         "fen_profile_status": fen_eval.get("status") or "not_run",
         "pgn_lattice_status": pgn_eval.get("status") or "not_run",
         "ai_assisted_status": ai_eval.get("status") or "not_run",
+        "baseline_status": baseline.get("status") or "not_run",
+        "board_preprocess_status": preprocess_eval.get("status") or "not_run",
+        "normalized_boards": int(preprocess_eval.get("normalized_count") or 0),
+        "fen_square_dataset_status": dataset_eval.get("status") or "not_run",
+        "fen_square_samples": int(dataset_eval.get("sample_count") or 0),
+        "fen_square_boards": int(dataset_eval.get("board_count") or 0),
+        "fen_model_status": model_eval.get("status") or "not_run",
+        "fen_model_square_accuracy": model_eval.get("square_accuracy", 0),
+        "fen_local_prediction_status": runtime_eval.get("status") or "not_run",
+        "fen_local_predictions": int(runtime_eval.get("prediction_count") or 0),
+        "fen_ensemble_status": ensemble_eval.get("status") or "not_run",
+        "fen_ensemble_accepted_candidates": int(ensemble_eval.get("accepted_candidate_count") or 0),
+        "fen_confidence_profile_status": confidence_eval.get("schema") and "ok" or "not_run",
         "ai_fen_candidates": (ai_eval.get("ai_fen") or {}).get("ai_suggested", 0),
         "ai_pgn_candidates": (ai_eval.get("ai_pgn") or {}).get("ai_suggested_pgn", 0),
         "targets": {
@@ -1258,6 +1667,9 @@ def _write_iteration_status(out_dir: Path, dashboard: dict[str, Any]) -> None:
     fen_build = _read_optional_json(reports_dir / "fen_template_build.json")
     fen_eval = _read_optional_json(reports_dir / "fen_profile_eval.json")
     pgn_eval = _read_optional_json(reports_dir / "pgn_lattice_eval.json")
+    dataset_eval = _read_optional_json(reports_dir / "fen_square_dataset_summary.json")
+    model_eval = _read_optional_json(reports_dir / "fen_square_model_eval.json")
+    ensemble_eval = _read_optional_json(reports_dir / "fen_ensemble_eval.json")
     verified = int(fen_eval.get("promoted_label_count") or fen_build.get("promoted_label_count") or 0)
     blocked_tokens = int(pgn_eval.get("fragments_blocked_by_unmapped_tokens") or 0)
     lines = [
@@ -1272,6 +1684,9 @@ def _write_iteration_status(out_dir: Path, dashboard: dict[str, Any]) -> None:
         f"- PGN unmapped token blockers: `{blocked_tokens}`.",
         f"- FEN profile status: `{dashboard.get('fen_profile_status')}`.",
         f"- PGN lattice status: `{dashboard.get('pgn_lattice_status')}`.",
+        f"- Square dataset: `{dataset_eval.get('status') or 'not_run'}` with `{dataset_eval.get('sample_count', 0)}` samples.",
+        f"- Local FEN model: `{model_eval.get('status') or 'not_run'}` square accuracy `{model_eval.get('square_accuracy', 0)}`.",
+        f"- FEN ensemble: `{ensemble_eval.get('status') or 'not_run'}` accepted candidates `{ensemble_eval.get('accepted_candidate_count', 0)}`.",
         "",
         "## Gates",
         "",
@@ -6030,6 +6445,488 @@ def _safe_filename(value: str) -> str:
 def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
+
+
+def _board_preprocess_sources(out_dir: Path, *, labels_path: str | Path | None) -> list[dict[str, Any]]:
+    if labels_path:
+        labels = _promote_verified_fen_labels(Path(labels_path), out_dir)
+        return [
+            {
+                "diagram_id": row.get("diagram_id") or Path(str(row.get("crop_path") or "")).stem,
+                "page": int(row.get("page") or 0),
+                "crop_path": str(row.get("crop_path") or ""),
+                "crop_rel_path": _relative_to_out(out_dir, Path(str(row.get("crop_path") or ""))),
+                "caption": row.get("diagram_id") or "",
+                "fen": row.get("fen") or "",
+                "source": "verified_label",
+            }
+            for row in labels
+        ]
+    book = _load_source_book(out_dir)
+    diagrams = _source_book_diagrams(book)
+    if diagrams:
+        return [
+            {
+                "diagram_id": diagram.get("id") or diagram.get("diagram_id") or f"diagram_{index:04d}",
+                "page": int(diagram.get("page") or 0),
+                "crop_path": str(out_dir / str(diagram.get("image_path") or "")),
+                "crop_rel_path": str(diagram.get("image_path") or ""),
+                "caption": diagram.get("caption") or diagram.get("label") or "",
+                "fen": diagram.get("fen") or diagram.get("fen_candidate") or "",
+                "confidence": diagram.get("confidence") or 0.0,
+                "source": "book_diagram",
+            }
+            for index, diagram in enumerate(diagrams)
+            if str(diagram.get("image_path") or "")
+        ]
+    diagram_dir = out_dir / "assets" / "diagrams"
+    return [
+        {
+            "diagram_id": path.stem,
+            "page": _safe_int(re.search(r"p(\d+)", path.stem).group(1)) if re.search(r"p(\d+)", path.stem) else 0,
+            "crop_path": str(path),
+            "crop_rel_path": _relative_to_out(out_dir, path),
+            "caption": path.stem,
+            "fen": "",
+            "confidence": 0.0,
+            "source": "diagram_asset",
+        }
+        for path in sorted(diagram_dir.glob("*.*"))
+        if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
+    ]
+
+
+def _preprocess_board_record(record: dict[str, Any], out_dir: Path, normalized_dir: Path) -> dict[str, Any]:
+    diagram_id = _safe_filename(str(record.get("diagram_id") or "diagram"))
+    crop_path = Path(str(record.get("crop_path") or ""))
+    row: dict[str, Any] = {
+        "schema": "kindlemaster.board_preprocess_row.v1",
+        "diagram_id": diagram_id,
+        "page": int(record.get("page") or 0),
+        "caption": str(record.get("caption") or ""),
+        "source_crop": str(crop_path),
+        "source_crop_rel": str(record.get("crop_rel_path") or _relative_to_out(out_dir, crop_path)),
+        "status": "failed",
+        "confidence": 0.0,
+        "failure_reason": "",
+        "normalized_board": "",
+        "normalized_board_rel": "",
+        "transform_matrix": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+        "variants": [],
+        "accepted_fen_changed": 0,
+    }
+    if not crop_path.is_file():
+        row["failure_reason"] = "source_crop_missing"
+        return row
+    try:
+        variants = _board_normalization_variants(crop_path)
+        normalized = variants["normalized_8x8"]
+        target = normalized_dir / f"{diagram_id}.png"
+        normalized.save(target, format="PNG")
+        with Image.open(crop_path) as source_image:
+            image_size = list(source_image.size)
+        row.update(
+            {
+                "status": "ok",
+                "confidence": _board_normalization_confidence(normalized),
+                "failure_reason": "",
+                "normalized_board": str(target),
+                "normalized_board_rel": _relative_to_out(out_dir, target),
+                "variants": sorted(variants.keys()),
+                "image_size": image_size,
+            }
+        )
+        return row
+    except Exception as exc:
+        row["failure_reason"] = type(exc).__name__ + ": " + str(exc)
+        return row
+
+
+def _board_normalization_variants(crop_path: Path) -> dict[str, Image.Image]:
+    image = Image.open(crop_path).convert("RGB")
+    square = _center_square(image)
+    tight = ImageOps.autocontrast(square.convert("L")).convert("RGB")
+    inner = _inner_grid_crop(square)
+    normalized = ImageOps.autocontrast(inner.convert("L")).resize((256, 256), Image.Resampling.LANCZOS).convert("RGB")
+    return {
+        "original": image.copy(),
+        "tight": tight.resize((256, 256), Image.Resampling.LANCZOS),
+        "inner-grid": inner.resize((256, 256), Image.Resampling.LANCZOS),
+        "remove-coordinates": inner.resize((256, 256), Image.Resampling.LANCZOS),
+        "center-square": square.resize((256, 256), Image.Resampling.LANCZOS),
+        "normalized_8x8": normalized,
+    }
+
+
+def _normalize_board_image(crop_path: Path) -> Image.Image:
+    return _board_normalization_variants(crop_path)["normalized_8x8"]
+
+
+def _center_square(image: Image.Image) -> Image.Image:
+    width, height = image.size
+    side = min(width, height)
+    left = max(0, (width - side) // 2)
+    top = max(0, (height - side) // 2)
+    return image.crop((left, top, left + side, top + side))
+
+
+def _inner_grid_crop(image: Image.Image) -> Image.Image:
+    width, height = image.size
+    margin = max(0, int(min(width, height) * 0.035))
+    if width - margin * 2 < 32 or height - margin * 2 < 32:
+        return image.copy()
+    return image.crop((margin, margin, width - margin, height - margin))
+
+
+def _board_normalization_confidence(image: Image.Image) -> float:
+    gray = image.convert("L")
+    pixels = list(gray.resize((32, 32)).tobytes())
+    if not pixels:
+        return 0.0
+    mean = sum(pixels) / len(pixels)
+    variance = sum((pixel - mean) ** 2 for pixel in pixels) / len(pixels)
+    contrast = min(1.0, math.sqrt(variance) / 80.0)
+    dark_ratio = len([pixel for pixel in pixels if pixel < 128]) / len(pixels)
+    balance = max(0.0, 1.0 - abs(dark_ratio - 0.5) * 1.6)
+    return round(max(0.05, min(0.99, 0.55 * contrast + 0.45 * balance)), 4)
+
+
+def _split_board_into_squares(board: Image.Image, *, size: int = 64) -> list[Image.Image]:
+    normalized = board.resize((size * 8, size * 8), Image.Resampling.LANCZOS).convert("RGB")
+    cells: list[Image.Image] = []
+    for rank in range(8):
+        for file_index in range(8):
+            x0 = file_index * size
+            y0 = rank * size
+            cells.append(normalized.crop((x0, y0, x0 + size, y0 + size)))
+    return cells
+
+
+def _fen_placement_to_cells(placement: str) -> list[str]:
+    cells: list[str] = []
+    rows = str(placement or "").split("/")
+    if len(rows) != 8:
+        raise ValueError("FEN placement must contain 8 ranks")
+    for row in rows:
+        width = 0
+        for char in row:
+            if char.isdigit():
+                value = int(char)
+                cells.extend([""] * value)
+                width += value
+            elif char in "KQRBNPkqrbnp":
+                cells.append(char)
+                width += 1
+            else:
+                raise ValueError(f"invalid FEN placement char: {char}")
+        if width != 8:
+            raise ValueError("FEN rank must contain 8 files")
+    if len(cells) != 64:
+        raise ValueError("FEN placement must contain 64 cells")
+    return cells
+
+
+def _cells_to_placement(cells: list[str]) -> str:
+    ranks: list[str] = []
+    for rank in range(8):
+        empty = 0
+        parts: list[str] = []
+        for file_index in range(8):
+            piece = cells[rank * 8 + file_index]
+            if not piece:
+                empty += 1
+                continue
+            if empty:
+                parts.append(str(empty))
+                empty = 0
+            parts.append(piece)
+        if empty:
+            parts.append(str(empty))
+        ranks.append("".join(parts) or "8")
+    return "/".join(ranks)
+
+
+def _square_name(index: int) -> str:
+    file_index = index % 8
+    rank_index = index // 8
+    return f"{chr(ord('a') + file_index)}{8 - rank_index}"
+
+
+def _dataset_split(diagram_id: str, *, fold_count: int, holdout_fold: int) -> str:
+    folds = max(2, int(fold_count or 5))
+    fold = int(hashlib.sha256(str(diagram_id).encode("utf-8")).hexdigest()[:8], 16) % folds
+    if fold == int(holdout_fold or 0) % folds:
+        return "holdout"
+    if fold == (int(holdout_fold or 0) + 1) % folds:
+        return "val"
+    return "train"
+
+
+def _square_features(image: Image.Image) -> list[float]:
+    gray = ImageOps.autocontrast(image.convert("L")).resize((32, 32), Image.Resampling.LANCZOS)
+    pixels = [float(pixel) for pixel in gray.tobytes()]
+    mean = sum(pixels) / max(1, len(pixels)) / 255.0
+    variance = sum((pixel / 255.0 - mean) ** 2 for pixel in pixels) / max(1, len(pixels))
+    dark_ratio = len([pixel for pixel in pixels if pixel < 120]) / max(1, len(pixels))
+    edge = 0.0
+    width, height = gray.size
+    for y in range(height - 1):
+        for x in range(width - 1):
+            edge += abs(gray.getpixel((x, y)) - gray.getpixel((x + 1, y)))
+            edge += abs(gray.getpixel((x, y)) - gray.getpixel((x, y + 1)))
+    edge_density = edge / max(1, (width - 1) * (height - 1) * 2 * 255)
+    return [round(mean, 6), round(math.sqrt(variance), 6), round(dark_ratio, 6), round(edge_density, 6)]
+
+
+def _train_centroid_classifier(rows: list[dict[str, Any]]) -> dict[str, list[float]]:
+    grouped: dict[str, list[list[float]]] = {}
+    for row in rows:
+        image_path = Path(str(row.get("image_path") or ""))
+        if not image_path.is_file():
+            continue
+        label = str(row.get("class") or "empty")
+        grouped.setdefault(label, []).append(_square_features(Image.open(image_path)))
+    centroids: dict[str, list[float]] = {}
+    for label, vectors in grouped.items():
+        if not vectors:
+            continue
+        width = len(vectors[0])
+        centroids[label] = [round(sum(vector[index] for vector in vectors) / len(vectors), 6) for index in range(width)]
+    return centroids
+
+
+def _predict_square_class(image: Image.Image, model: dict[str, Any]) -> dict[str, Any]:
+    centroids = model.get("class_centroids") or {}
+    if not centroids:
+        return {"class": "", "confidence": 0.0, "probabilities": {}, "entropy": 1.0}
+    features = _square_features(image)
+    distances = {
+        label: math.sqrt(sum((features[index] - float(values[index])) ** 2 for index in range(min(len(features), len(values)))))
+        for label, values in centroids.items()
+    }
+    scores = {label: math.exp(-distance * 8.0) for label, distance in distances.items()}
+    total = sum(scores.values()) or 1.0
+    probabilities = {label: score / total for label, score in scores.items()}
+    best = max(probabilities.items(), key=lambda item: item[1])
+    entropy = -sum(prob * math.log(max(prob, 1e-9)) for prob in probabilities.values()) / max(1e-9, math.log(max(2, len(probabilities))))
+    return {
+        "class": "" if best[0] == "empty" else best[0],
+        "label": best[0],
+        "confidence": round(float(best[1]), 4),
+        "probabilities": {key: round(value, 4) for key, value in sorted(probabilities.items())},
+        "entropy": round(float(entropy), 4),
+    }
+
+
+def _evaluate_square_classifier(rows: list[dict[str, Any]], model: dict[str, Any]) -> dict[str, Any]:
+    eval_rows = [row for row in rows if row.get("split") in {"val", "holdout"}]
+    if not eval_rows:
+        eval_rows = rows
+    confusion: dict[str, dict[str, int]] = {}
+    correct = 0
+    total = 0
+    for row in eval_rows:
+        path = Path(str(row.get("image_path") or ""))
+        if not path.is_file():
+            continue
+        expected = str(row.get("class") or "empty")
+        predicted = str(_predict_square_class(Image.open(path), model).get("label") or "empty")
+        confusion.setdefault(expected, {})
+        confusion[expected][predicted] = confusion[expected].get(predicted, 0) + 1
+        correct += int(expected == predicted)
+        total += 1
+    return {
+        "sample_count": total,
+        "exact_square_count": correct,
+        "square_accuracy": round(correct / max(1, total), 4),
+        "confusion": confusion,
+        "per_class_accuracy": {
+            label: round(values.get(label, 0) / max(1, sum(values.values())), 4)
+            for label, values in sorted(confusion.items())
+        },
+    }
+
+
+def _predict_fen_for_source(source: dict[str, Any], out_dir: Path, model: dict[str, Any]) -> dict[str, Any]:
+    diagram_id = str(source.get("diagram_id") or "diagram")
+    crop_path = Path(str(source.get("crop_path") or ""))
+    row: dict[str, Any] = {
+        "schema": "kindlemaster.fen_model_prediction.v1",
+        "diagram_id": diagram_id,
+        "page": int(source.get("page") or 0),
+        "source_crop": str(crop_path),
+        "status": "needs_review",
+        "fen_candidate": "",
+        "placement": "",
+        "global_confidence": 0.0,
+        "mean_entropy": 1.0,
+        "squares": [],
+        "deterministic_validation": {"valid": False, "warnings": ["not_run"]},
+    }
+    if not crop_path.is_file():
+        row["deterministic_validation"] = {"valid": False, "warnings": ["source_crop_missing"]}
+        return row
+    try:
+        board = _normalize_board_image(crop_path)
+        square_results = [_predict_square_class(square, model) for square in _split_board_into_squares(board)]
+        cells = [str(result.get("class") or "") for result in square_results]
+        placement = _cells_to_placement(cells)
+        side = _infer_side_to_move(str(source.get("caption") or "")) or "w"
+        fen = f"{placement} {side if side in {'w', 'b'} else 'w'} - - 0 1"
+        valid, warnings = validate_fen(fen)
+        confidences = [float(result.get("confidence") or 0.0) for result in square_results]
+        entropies = [float(result.get("entropy") or 1.0) for result in square_results]
+        row.update(
+            {
+                "status": "deterministic_valid" if valid and not warnings else "needs_review",
+                "fen_candidate": fen,
+                "placement": placement,
+                "global_confidence": round(sum(confidences) / max(1, len(confidences)), 4),
+                "mean_entropy": round(sum(entropies) / max(1, len(entropies)), 4),
+                "squares": [
+                    {
+                        "square": _square_name(index),
+                        "class": result.get("label") or "empty",
+                        "piece": result.get("class") or "",
+                        "confidence": result.get("confidence"),
+                        "entropy": result.get("entropy"),
+                    }
+                    for index, result in enumerate(square_results)
+                ],
+                "deterministic_validation": {"valid": bool(valid and not warnings), "warnings": warnings},
+            }
+        )
+    except Exception as exc:
+        row["deterministic_validation"] = {"valid": False, "warnings": [type(exc).__name__ + ": " + str(exc)]}
+    return row
+
+
+def _fen_ensemble_verdict(
+    prediction: dict[str, Any],
+    verified_by_id: dict[str, dict[str, Any]],
+    *,
+    min_confidence: float,
+) -> dict[str, Any]:
+    diagram_id = str(prediction.get("diagram_id") or "")
+    fen = str(prediction.get("fen_candidate") or "")
+    reasons: list[str] = []
+    validation = prediction.get("deterministic_validation") or {}
+    if not validation.get("valid"):
+        reasons.append("deterministic_validation_failed")
+    if float(prediction.get("global_confidence") or 0.0) < float(min_confidence):
+        reasons.append("confidence_below_threshold")
+    label = verified_by_id.get(diagram_id)
+    if label and str(label.get("fen") or "") != fen:
+        reasons.append("verified_label_disagrees")
+    if not label:
+        reasons.append("no_verified_label_for_ensemble_acceptance")
+    return {
+        "diagram_id": diagram_id,
+        "fen_candidate": fen,
+        "global_confidence": prediction.get("global_confidence"),
+        "status": "accepted_candidate" if not reasons else "needs_review",
+        "reasons": reasons,
+        "source": "local_model_ensemble",
+        "accepted_fen_changed": 0,
+    }
+
+
+def _board_preprocess_review_html(rows: list[dict[str, Any]]) -> str:
+    cards = "\n".join(
+        f"""<article>
+  <h2>{html.escape(str(row.get('diagram_id') or 'diagram'))}</h2>
+  <p>Page {html.escape(str(row.get('page') or ''))} · status <b>{html.escape(str(row.get('status') or ''))}</b> · confidence {float(row.get('confidence') or 0.0):.3f}</p>
+  <img src="../{html.escape(str(row.get('source_crop_rel') or ''), quote=True)}" alt="source">
+  {f'<img src="../{html.escape(str(row.get("normalized_board_rel") or ""), quote=True)}" alt="normalized">' if row.get('normalized_board_rel') else ''}
+  <p>{html.escape(str(row.get('failure_reason') or ''))}</p>
+</article>"""
+        for row in rows
+    )
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Board Preprocess Review</title>
+<style>body{{font-family:Georgia,serif;background:#efe4d3;color:#21170f}}main{{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:1rem;padding:1rem}}article{{background:#fff8ec;border:1px solid #d8c4a8;border-radius:16px;padding:1rem}}img{{max-width:100%;background:white;border:1px solid #d8c4a8;margin:.35rem 0}}</style></head>
+<body><header><h1>Board Preprocess Review</h1><p>{len(rows)} crop(s), evidence only.</p></header><main>{cards}</main></body></html>"""
+
+
+def _fen_ensemble_conflicts_html(rows: list[dict[str, Any]]) -> str:
+    cards = "\n".join(
+        f"<article><h2>{html.escape(str(row.get('diagram_id') or 'diagram'))}</h2><p>{html.escape(', '.join(row.get('reasons') or []))}</p><code>{html.escape(str(row.get('fen_candidate') or ''))}</code></article>"
+        for row in rows
+    )
+    return f"<!doctype html><html><head><meta charset='utf-8'><title>FEN Ensemble Conflicts</title></head><body><h1>FEN Ensemble Conflicts</h1>{cards or '<p>No conflicts.</p>'}</body></html>"
+
+
+def _write_square_confusion_csv(path: Path, confusion: dict[str, dict[str, int]]) -> None:
+    rows = [
+        {"expected": expected, "predicted": predicted, "count": count}
+        for expected, values in confusion.items()
+        for predicted, count in values.items()
+    ]
+    _write_csv(path, rows)
+
+
+def _fen_model_card(out_dir: Path, dataset_path: Path, model_path: Path, eval_payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema": "kindlemaster.fen_model_card.v1",
+        "model_path": str(model_path),
+        "dataset_path": str(dataset_path),
+        "dataset_sha256": _file_sha256(dataset_path) if dataset_path.is_file() else "",
+        "model_sha256": _file_sha256(model_path) if model_path.is_file() else "",
+        "eval": {
+            "status": eval_payload.get("status"),
+            "sample_count": eval_payload.get("sample_count"),
+            "square_accuracy": eval_payload.get("square_accuracy"),
+        },
+        "git_commit": _current_git_commit(),
+        "policy": "Model card links the local model to dataset evidence and validation status.",
+    }
+
+
+def _count_by(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        value = str(row.get(key) or "")
+        counts[value] = counts.get(value, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _relative_to_out(out_dir: Path, path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(out_dir.resolve())).replace("\\", "/")
+    except Exception:
+        return str(path).replace("\\", "/")
+
+
+def _image_sha256(image: Image.Image) -> str:
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return hashlib.sha256(buffer.getvalue()).hexdigest()
+
+
+def _file_sha256(path: Path) -> str:
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return ""
+
+
+def _current_git_commit() -> str:
+    try:
+        import subprocess
+
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return result.stdout.strip() if result.returncode == 0 else ""
+    except Exception:
+        return ""
 
 
 def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:

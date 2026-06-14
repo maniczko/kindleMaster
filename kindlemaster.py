@@ -50,6 +50,8 @@ QUICK_TESTS = [
     "test_chess_html_audit.py",
     "test_chess_diagram_detection.py",
     "test_chess_glyph_diagnostics.py",
+    "test_chess_fen_model_pipeline.py",
+    "test_chess_study_data_contracts.py",
     "test_pdf_layout_preview.py",
     "test_deepseek_quality_provider.py",
     "test_chess_study_structure.py",
@@ -296,6 +298,15 @@ def main() -> int:
         "ai-fen-candidates",
         "ai-pgn-candidates",
         "ai-quality-eval",
+        "quality-baseline",
+        "preprocess-boards",
+        "build-square-dataset",
+        "train-fen-classifier",
+        "evaluate-fen-classifier",
+        "recognize-fen-local",
+        "evaluate-fen-ensemble",
+        "calibrate-fen-confidence",
+        "export-fen-corpus-manifest",
     ]:
         stage_parser = chess_study_subparsers.add_parser(command_name, help=f"Run chess-study {command_name}.")
         stage_parser.add_argument("--pdf", default="")
@@ -338,6 +349,8 @@ def main() -> int:
         stage_parser.add_argument("--dry-run", action="store_true", help="For AI-assisted chess-study commands, write request manifests without live API calls.")
         stage_parser.add_argument("--ai-limit", type=int, default=0, help="Limit AI-assisted FEN candidate rows; 0 means all rows.")
         stage_parser.add_argument("--ai-pgn-limit", type=int, default=30, help="Limit AI-assisted PGN repair rows.")
+        stage_parser.add_argument("--model-path", default="", help="Optional local FEN model path for classifier/inference commands.")
+        stage_parser.add_argument("--min-confidence", type=float, default=0.92, help="Minimum local/ensemble confidence for review gates.")
 
     workflow_parser = subparsers.add_parser(
         "workflow",
@@ -539,20 +552,28 @@ def _run_chess_study(args: argparse.Namespace) -> int:
         build_ai_assisted_quality_eval,
         build_ai_fen_candidates,
         build_ai_pgn_candidates,
+        build_chess_quality_baseline,
+        build_fen_square_dataset,
         build_study_exercises,
         build_study_final_test,
         build_study_pgn,
         build_study_positions,
+        calibrate_fen_confidence,
         detect_study_diagrams,
+        evaluate_fen_ensemble,
         evaluate_chess_fen_profile,
+        export_fen_corpus_manifest,
         extract_study_structure,
         extract_study_notation_fragments,
         ingest_study_pdf,
+        preprocess_chess_board_crops,
+        recognize_fen_local,
         render_qa_html,
         render_semantic_source_reader,
         render_study_html,
         run_chess_study_export,
         segment_study_pages,
+        train_fen_square_classifier,
         validate_study_export,
     )
 
@@ -662,6 +683,42 @@ def _run_chess_study(args: argparse.Namespace) -> int:
         )
     elif args.chess_study_command == "ai-quality-eval":
         payload = build_ai_assisted_quality_eval(config.out)
+    elif args.chess_study_command == "quality-baseline":
+        payload = build_chess_quality_baseline(config.out)
+    elif args.chess_study_command == "preprocess-boards":
+        payload = preprocess_chess_board_crops(
+            config.out,
+            labels_path=args.labels or None,
+            limit=args.review_sample_limit,
+        )
+    elif args.chess_study_command == "build-square-dataset":
+        if not str(args.labels or "").strip():
+            _print_json({"status": "failed", "error": "Provide --labels for build-square-dataset."})
+            return 1
+        payload = build_fen_square_dataset(
+            args.labels,
+            out_dir=config.out,
+            fold_count=args.fold_count,
+            holdout_fold=args.holdout_fold,
+        )
+    elif args.chess_study_command in {"train-fen-classifier", "evaluate-fen-classifier"}:
+        payload = train_fen_square_classifier(
+            config.out,
+            dataset_path=args.labels or None,
+            model_name=Path(args.model_path).stem if str(args.model_path or "").strip() else "chess_fen_square_v1",
+        )
+    elif args.chess_study_command == "recognize-fen-local":
+        payload = recognize_fen_local(
+            config.out,
+            model_path=args.model_path or None,
+            limit=args.review_sample_limit,
+        )
+    elif args.chess_study_command == "evaluate-fen-ensemble":
+        payload = evaluate_fen_ensemble(config.out, min_confidence=args.min_confidence)
+    elif args.chess_study_command == "calibrate-fen-confidence":
+        payload = calibrate_fen_confidence(config.out)
+    elif args.chess_study_command == "export-fen-corpus-manifest":
+        payload = export_fen_corpus_manifest(config.out)
     elif args.chess_study_command == "audit-current":
         if not config.html:
             _print_json({"status": "failed", "error": "Provide --html for audit-current."})

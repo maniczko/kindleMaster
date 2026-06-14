@@ -50,6 +50,9 @@ QUICK_TESTS = [
     "test_chess_html_audit.py",
     "test_chess_diagram_detection.py",
     "test_chess_glyph_diagnostics.py",
+    "test_chess_fen_square_diff.py",
+    "test_chess_fen_accepted_audit.py",
+    "test_chess_fen_pipeline_hardening.py",
     "test_chess_fen_model_pipeline.py",
     "test_chess_study_data_contracts.py",
     "test_pdf_layout_preview.py",
@@ -210,7 +213,15 @@ def main() -> int:
     corpus_parser.add_argument("--proof-profile", choices=("standard", "full", "ci"), default="standard")
     corpus_parser.add_argument("--smoke-case", action="append", default=[])
     corpus_parser.add_argument("--premium-case", action="append", default=[])
-    corpus_parser.add_argument("--fen-min-profile-count", type=int, default=1)
+    corpus_parser.add_argument(
+        "--fen-min-profile-count",
+        type=int,
+        default=None,
+        help=(
+            "Override the FEN profile-count gate. By default standard/full corpus proof requires "
+            "2 scanned chess FEN profiles; CI proof remains bounded at 1."
+        ),
+    )
     corpus_parser.add_argument("--fen-min-seed-label-count", type=int, default=20)
 
     status_parser = subparsers.add_parser("status", help="Generate a derived project status from existing evidence artifacts.")

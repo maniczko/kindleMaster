@@ -43,6 +43,22 @@ This keeps release-score blockers visible for bad TOC quality, ad/sponsored frag
 
 GitHub Actions runs the release lane with `KINDLEMASTER_RELEASE_PROOF_PROFILE=ci`. This keeps the external READY gate deterministic on clean runners that do not have the full local premium PDF/OCR toolchain. The CI profile still runs release units, corpus units, standard smoke evidence, and one dense/report premium conversion case, but it does not claim the full local standard corpus proof. Local release-candidate work should continue to use the default `standard` profile.
 
+## Chess FEN Corpus Gate
+
+The local `standard` and `full` corpus proof profiles use the release-grade chess FEN corpus gate by default:
+
+```powershell
+python kindlemaster.py corpus --proof-profile standard
+```
+
+That route requires at least two real scanned chess FEN profiles, at least 20 manually verified seed labels per profile, exact FEN accuracy at or above the configured threshold, and `false_positive_count == 0`. Use an explicit override only for bounded diagnostics, not for release claims:
+
+```powershell
+python kindlemaster.py corpus --proof-profile standard --fen-min-profile-count 1
+```
+
+The CI profile remains intentionally bounded at one FEN profile because clean GitHub runners may lack the full local OCR/PDF corpus. A green CI release lane is therefore CI evidence, not proof of release-grade chess FEN generalization.
+
 ## Sprint 2 Runtime/Storage Gate
 
 The quick suite now includes contract tests for the local-first runtime job

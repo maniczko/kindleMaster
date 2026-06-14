@@ -116,11 +116,12 @@ python kindlemaster.py chess-study train-fen-classifier --out output\yusupov_stu
 python kindlemaster.py chess-study recognize-fen-local --out output\yusupov_study
 python kindlemaster.py chess-study evaluate-fen-ensemble --out output\yusupov_study
 python kindlemaster.py chess-study export-fen-corpus-manifest --out output\yusupov_study
+python scripts\audit_chess_fen_false_positives.py output\yusupov_study\review\ai_fen_candidates.jsonl output\yusupov_study\review\fen_verified_labels.jsonl --output output\yusupov_study\reports\fen_false_positive_audit.json
 ```
 
 `python kindlemaster.py test --suite full` is a diagnostic all-discovery lane. It delegates to `unittest discover -p test*.py`, so it also runs tests intentionally kept out of the explicit `quick`, `release`, `corpus`, `browser`, and `runtime` suite registry.
 
-`python kindlemaster.py test --suite release` uses the local `standard` corpus proof by default. GitHub READY sets `KINDLEMASTER_RELEASE_PROOF_PROFILE=ci` so clean runners can enforce release units and bounded corpus evidence without pretending to have the full local OCR/PDF premium toolchain.
+`python kindlemaster.py test --suite release` uses the local `standard` corpus proof by default. The standard/full proof profiles require release-grade chess FEN corpus evidence: at least two scanned FEN profiles, at least 20 manually verified seed labels per profile, exact FEN accuracy above the configured threshold, and `false_positive_count == 0`. GitHub READY sets `KINDLEMASTER_RELEASE_PROOF_PROFILE=ci` so clean runners can enforce release units and bounded corpus evidence without pretending to have the full local OCR/PDF premium toolchain.
 
 Use `workflow baseline/verify` when you are fixing a real defect and need the standard engineering loop:
 `reproduce -> isolate -> fix -> validate -> compare before/after`.

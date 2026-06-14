@@ -1416,12 +1416,19 @@ def build_ai_fen_candidates(
     rows: list[dict[str, Any]] = []
     disagreements: list[dict[str, Any]] = []
     verified_queue: list[dict[str, Any]] = []
+    verified_fen_by_diagram = _load_verified_fen_labels_by_diagram(review_dir / "fen_verified_labels.jsonl")
     for diagram in diagrams:
-        row = _ai_fen_candidate_row(out, diagram, provider=provider, dry_run=dry_run)
+        row = _ai_fen_candidate_row(
+            out,
+            diagram,
+            provider=provider,
+            dry_run=dry_run,
+            verified_fen_by_diagram=verified_fen_by_diagram,
+        )
         rows.append(row)
         if row.get("status") == "ai_cv_conflict":
             disagreements.append(row)
-        if row.get("status") in {"ai_cv_agree", "deterministic_valid"}:
+        if row.get("status") in {"ai_cv_agree", "verified_label_agree"}:
             verified_queue.append(_ai_verified_candidate_queue_row(row))
 
     _write_jsonl(review_dir / "ai_fen_candidates.jsonl", rows)
@@ -1436,7 +1443,8 @@ def build_ai_fen_candidates(
         "ai_suggested": len([row for row in rows if row.get("ai_fen_candidate")]),
         "ai_cv_agree": len([row for row in rows if row.get("status") == "ai_cv_agree"]),
         "ai_cv_conflict": len(disagreements),
-        "deterministic_valid": len([row for row in rows if row.get("deterministic_validation", {}).get("valid")]),
+        "ai_validated_candidate_count": len([row for row in rows if row.get("deterministic_validation", {}).get("valid")]),
+        "deterministic_valid": len([row for row in rows if row.get("status") == "deterministic_valid"]),
         "verified_candidate_queue_count": len(verified_queue),
         "accepted_fen_changed": 0,
         "policy": "AI FEN candidates are review evidence only; accepted FEN still requires deterministic template/validation gates.",
@@ -1596,6 +1604,7 @@ def build_chess_quality_dashboard(out_dir: str | Path) -> dict[str, Any]:
     runtime_eval = _read_optional_json(reports_dir / "fen_model_runtime_eval.json")
     ensemble_eval = _read_optional_json(reports_dir / "fen_ensemble_eval.json")
     confidence_eval = _read_optional_json(reports_dir / "fen_confidence_calibration.json")
+    false_positive_audit = _read_optional_json(reports_dir / "fen_false_positive_audit.json")
     pages = _quality_dashboard_pages(book, diagrams, pgn_records)
     summary = {
         "schema": "kindlemaster.chess_quality_dashboard.v1",
@@ -1623,6 +1632,8 @@ def build_chess_quality_dashboard(out_dir: str | Path) -> dict[str, Any]:
         "fen_ensemble_status": ensemble_eval.get("status") or "not_run",
         "fen_ensemble_accepted_candidates": int(ensemble_eval.get("accepted_candidate_count") or 0),
         "fen_confidence_profile_status": confidence_eval.get("schema") and "ok" or "not_run",
+        "fen_false_positive_audit_status": false_positive_audit.get("status") or "not_run",
+        "fen_false_positive_findings": int(false_positive_audit.get("finding_count") or 0),
         "ai_fen_candidates": (ai_eval.get("ai_fen") or {}).get("ai_suggested", 0),
         "ai_pgn_candidates": (ai_eval.get("ai_pgn") or {}).get("ai_suggested_pgn", 0),
         "targets": {
@@ -2062,6 +2073,18 @@ def _read_jsonl_rows(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _load_verified_fen_labels_by_diagram(path: Path) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    for row in _read_jsonl_rows(path):
+        if str(row.get("label_status") or "").strip().lower() != "verified":
+            continue
+        diagram_id = str(row.get("diagram_id") or row.get("id") or "").strip()
+        fen = str(row.get("fen") or row.get("manual_fen") or "").strip()
+        if diagram_id and fen:
+            labels[diagram_id] = fen
+    return labels
+
+
 def _accepted_source_fen_index(diagrams: list[dict[str, Any]]) -> dict[str, str]:
     index: dict[str, str] = {}
     for diagram in diagrams:
@@ -2253,7 +2276,14 @@ def _pgn_unmapped_token_blockers(rows: list[dict[str, Any]], glyph_mapping: dict
     }
 
 
-def _ai_fen_candidate_row(out_dir: Path, diagram: dict[str, Any], *, provider: Any | None, dry_run: bool) -> dict[str, Any]:
+def _ai_fen_candidate_row(
+    out_dir: Path,
+    diagram: dict[str, Any],
+    *,
+    provider: Any | None,
+    dry_run: bool,
+    verified_fen_by_diagram: dict[str, str] | None = None,
+) -> dict[str, Any]:
     diagram_id = str(diagram.get("id") or diagram.get("diagram_id") or f"diagram_{len(str(diagram))}")
     crop_path = _diagram_crop_path(out_dir, diagram)
     image_bytes = crop_path.read_bytes() if crop_path.is_file() and not dry_run else b""
@@ -2326,7 +2356,19 @@ def _ai_fen_candidate_row(out_dir: Path, diagram: dict[str, Any], *, provider: A
     if local_fen:
         local_valid, local_warnings = validate_fen(local_fen)
         local_valid = local_valid and not local_warnings
-    status = _ai_fen_status(result, validation, local_fen=local_fen, local_valid=local_valid)
+    verified_fen = str((verified_fen_by_diagram or {}).get(diagram_id) or "").strip()
+    verified_valid = False
+    if verified_fen:
+        verified_valid, verified_warnings = validate_fen(verified_fen)
+        verified_valid = verified_valid and not verified_warnings
+    status = _ai_fen_status(
+        result,
+        validation,
+        local_fen=local_fen,
+        local_valid=local_valid,
+        verified_fen=verified_fen,
+        verified_valid=verified_valid,
+    )
     return {
         "schema": "kindlemaster.ai_fen_candidate.v1",
         "diagram_id": diagram_id,
@@ -2349,6 +2391,8 @@ def _ai_fen_candidate_row(out_dir: Path, diagram: dict[str, Any], *, provider: A
         "reason": str(result.get("reason") or ""),
         "local_fen_candidate": local_fen,
         "local_template_agrees": bool(local_valid and local_fen == normalized_ai_fen),
+        "verified_fen_candidate": verified_fen,
+        "verified_label_agrees": bool(verified_valid and verified_fen == normalized_ai_fen),
         "deterministic_validation": validation,
         "estimated_cost_usd": float(result.get("estimated_cost_usd") or 0.0),
         "accepted_changed": False,
@@ -2415,18 +2459,30 @@ def _validate_ai_fen_candidate(
     }
 
 
-def _ai_fen_status(result: dict[str, Any], validation: dict[str, Any], *, local_fen: str, local_valid: bool) -> str:
+def _ai_fen_status(
+    result: dict[str, Any],
+    validation: dict[str, Any],
+    *,
+    local_fen: str,
+    local_valid: bool,
+    verified_fen: str = "",
+    verified_valid: bool = False,
+) -> str:
     ai_fen = str(result.get("fen") or "").strip()
     if str(result.get("status") or "") == "request_manifest":
         return "ai_suggested"
     if not ai_fen or not validation.get("valid"):
         return "needs_review"
+    if verified_fen and verified_valid and verified_fen != ai_fen:
+        return "ai_cv_conflict"
+    if verified_fen and verified_valid and verified_fen == ai_fen:
+        return "verified_label_agree"
     if local_fen and local_valid and local_fen != ai_fen:
         return "ai_cv_conflict"
     if local_fen and local_valid and local_fen == ai_fen:
         return "ai_cv_agree"
     if float(result.get("confidence") or 0.0) >= 0.80 and not bool(result.get("needs_review", True)):
-        return "deterministic_valid"
+        return "ai_validated_candidate"
     return "ai_suggested"
 
 
@@ -2718,7 +2774,7 @@ def _quality_dashboard_html(summary: dict[str, Any]) -> str:
     body {{ margin:0; font-family:Georgia,'Times New Roman',serif; background:#f2e6d2; color:#21170f; }}
     header {{ padding:1rem 1.25rem; background:#24170f; color:#fff8ec; position:sticky; top:0; }}
     main {{ padding:1rem; overflow:auto; }}
-    .scorebar {{ display:grid; grid-template-columns:repeat(8,minmax(0,1fr)); gap:.75rem; margin:1rem 0; }}
+    .scorebar {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:.75rem; margin:1rem 0; }}
     .score {{ background:#fff8ec; border:1px solid #d8c4a8; border-radius:16px; padding:.75rem; }}
     .score span {{ display:block; color:#735f49; font-size:.76rem; text-transform:uppercase; font-weight:900; }}
     .score strong {{ font-size:1.45rem; }}
@@ -2743,6 +2799,7 @@ def _quality_dashboard_html(summary: dict[str, Any]) -> str:
       {_score_tile('AI status', summary.get('ai_assisted_status'))}
       {_score_tile('AI FEN', summary.get('ai_fen_candidates'))}
       {_score_tile('AI PGN', summary.get('ai_pgn_candidates'))}
+      {_score_tile('FEN false-positive audit', summary.get('fen_false_positive_audit_status'))}
     </section>
     <table>
       <thead><tr><th>Page</th><th>Diagrams</th><th>FEN accepted/review</th><th>PGN accepted/review</th><th>Top blockers</th></tr></thead>

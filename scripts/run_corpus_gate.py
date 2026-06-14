@@ -44,6 +44,9 @@ CI_PREMIUM_FILTERS = [
     "document-like-report",
 ]
 
+RELEASE_GRADE_FEN_MIN_PROFILE_COUNT = 2
+BOUNDED_CI_FEN_MIN_PROFILE_COUNT = 1
+
 
 def _derive_corpus_gate_status(*statuses: str, smoke_status: str = "", premium_status: str = "") -> str:
     merged = {status for status in (*statuses, smoke_status, premium_status) if status}
@@ -124,6 +127,14 @@ def _default_premium_filters_for_profile(proof_profile: str) -> list[str]:
     if proof_profile == "ci":
         return list(CI_PREMIUM_FILTERS)
     return list(STANDARD_PREMIUM_FILTERS)
+
+
+def _fen_min_profile_count_for_proof_profile(proof_profile: str, explicit_value: int | None) -> int:
+    if explicit_value is not None:
+        return max(0, int(explicit_value))
+    if proof_profile == "ci":
+        return BOUNDED_CI_FEN_MIN_PROFILE_COUNT
+    return RELEASE_GRADE_FEN_MIN_PROFILE_COUNT
 
 
 def _case_validation_status(row: dict[str, Any]) -> str:
@@ -344,6 +355,7 @@ def _build_corpus_gate_markdown(payload: dict[str, Any]) -> str:
         f"- Premium accepted P2 warnings: `{json.dumps((premium.get('overall') or {}).get('accepted_warning_counts', {}), ensure_ascii=False)}`",
         f"- FEN evaluated profiles: `{fen_corpus.get('evaluated_case_count', 0)}`",
         f"- FEN missing profiles: `{fen_corpus.get('missing_profile_count', 0)}`",
+        f"- FEN min profiles required: `{fen_corpus.get('min_profile_count', payload.get('fen_min_profile_count', 0))}`",
         f"- FEN min seed labels/profile: `{fen_corpus.get('default_min_seed_label_count', 0)}`",
         f"- FEN valid seed labels: `{sum(int(((case.get('label_validation') or {}).get('valid_label_count') or 0)) for case in fen_corpus.get('cases', []))}`",
         f"- FEN overall exact accuracy: `{fen_corpus.get('overall_exact_fen_accuracy', 0)}`",
@@ -403,7 +415,7 @@ def run_corpus_gate(
     premium_output_md: str | Path | None = None,
     smoke_case_filters: list[str] | None = None,
     premium_case_filters: list[str] | None = None,
-    fen_min_profile_count: int = 1,
+    fen_min_profile_count: int | None = None,
     fen_min_seed_label_count: int = 20,
 ) -> dict[str, Any]:
     gate_started = time.perf_counter()
@@ -420,6 +432,10 @@ def run_corpus_gate(
         proof_profile=proof_profile,
         explicit_filters=premium_case_filters,
         standard_filters=_default_premium_filters_for_profile(proof_profile),
+    )
+    resolved_fen_min_profile_count = _fen_min_profile_count_for_proof_profile(
+        proof_profile,
+        fen_min_profile_count,
     )
 
     smoke_output_dir = resolved_output_root / "smoke"
@@ -451,7 +467,7 @@ def run_corpus_gate(
         min_confidence=DEFAULT_CHESS_FEN_EVAL_MIN_CONFIDENCE,
         default_min_exact_accuracy=0.90,
         default_min_seed_label_count=fen_min_seed_label_count,
-        min_profile_count=fen_min_profile_count,
+        min_profile_count=resolved_fen_min_profile_count,
         output_path=fen_corpus_json_path,
     )
     premium_status = premium.get("overall_status")
@@ -477,6 +493,8 @@ def run_corpus_gate(
     payload = {
         "overall_status": overall_status,
         "proof_profile": proof_profile,
+        "fen_min_profile_count": resolved_fen_min_profile_count,
+        "fen_min_profile_count_source": "explicit" if fen_min_profile_count is not None else "proof_profile_default",
         "smoke": smoke,
         "premium_corpus": premium,
         "fen_corpus": fen_corpus,
@@ -590,7 +608,7 @@ def main() -> int:
     parser.add_argument("--proof-profile", choices=("standard", "full", "ci"), default="standard")
     parser.add_argument("--smoke-case", action="append", default=[])
     parser.add_argument("--premium-case", action="append", default=[])
-    parser.add_argument("--fen-min-profile-count", type=int, default=1)
+    parser.add_argument("--fen-min-profile-count", type=int, default=None)
     parser.add_argument("--fen-min-seed-label-count", type=int, default=20)
     args = parser.parse_args()
 

@@ -659,13 +659,77 @@ class ChessStudyPipelineTests(unittest.TestCase):
             source_book = json.loads((out / "data" / "book.json").read_text(encoding="utf-8"))
 
             self.assertEqual(payload["accepted_fen_changed"], 0)
-            self.assertEqual(payload["deterministic_valid"], 1)
-            self.assertEqual(rows[0]["status"], "deterministic_valid")
+            self.assertEqual(payload["ai_validated_candidate_count"], 1)
+            self.assertEqual(payload["deterministic_valid"], 0)
+            self.assertEqual(payload["verified_candidate_queue_count"], 0)
+            self.assertEqual(rows[0]["status"], "ai_validated_candidate")
             self.assertTrue(rows[0]["deterministic_validation"]["valid"])
-            self.assertEqual(queue_rows[0]["label_status"], "draft")
+            self.assertEqual(queue_rows, [])
             self.assertEqual(source_book["pages"][0]["diagrams"][0]["validation_status"], "needs-human-review")
             self.assertTrue((out / "reports" / "ai_fen_candidates_eval.json").is_file())
             self.assertTrue((out / "reports" / "ai_cost_report.json").is_file())
+
+    def test_ai_fen_candidate_conflicts_with_verified_label_stays_review_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            out = root / "out"
+            crop = out / "assets" / "diagrams" / "p010_d002.png"
+            crop.parent.mkdir(parents=True)
+            Image.new("RGB", (96, 96), "white").save(crop)
+            (out / "data").mkdir(parents=True)
+            (out / "review").mkdir(parents=True)
+            (out / "data" / "book.json").write_text(
+                json.dumps(
+                    {
+                        "pages": [
+                            {
+                                "page": 10,
+                                "diagrams": [
+                                    {
+                                        "id": "p010_d002",
+                                        "page": 10,
+                                        "caption": "Diagram p010_d002",
+                                        "image_path": "assets/diagrams/p010_d002.png",
+                                        "validation_status": "needs-human-review",
+                                        "fen": "",
+                                    }
+                                ],
+                            }
+                        ],
+                        "pgn_records": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (out / "review" / "fen_verified_labels.jsonl").write_text(
+                json.dumps(
+                    {
+                        "diagram_id": "p010_d002",
+                        "fen": "6k1/p4p1p/3p1p2/2p1r3/2PnrqN1/P6P/1P1Q1PP1/3R1RK1 b - - 0 1",
+                        "crop_path": str(crop),
+                        "label_status": "verified",
+                        "verified_by": "unit-test",
+                        "verified_at": "2026-06-14",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            payload = build_ai_fen_candidates(out, provider=_FakeFenProvider())
+            rows = [
+                json.loads(line)
+                for line in (out / "review" / "ai_fen_candidates.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            queue_text = (out / "review" / "ai_verified_candidate_queue.jsonl").read_text(encoding="utf-8")
+
+        self.assertEqual(payload["ai_cv_conflict"], 1)
+        self.assertEqual(payload["verified_candidate_queue_count"], 0)
+        self.assertEqual(rows[0]["status"], "ai_cv_conflict")
+        self.assertNotEqual(rows[0]["ai_fen_candidate"], rows[0]["verified_fen_candidate"])
+        self.assertFalse(rows[0]["verified_label_agrees"])
+        self.assertEqual(queue_text, "")
 
     def test_ai_fen_candidates_dry_run_writes_request_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

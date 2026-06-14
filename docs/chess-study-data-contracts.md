@@ -20,8 +20,72 @@ Required fields:
 - `label_status`: `verified`.
 - `crop_path` or `crop_rel_path`: source diagram crop.
 - `side_to_move` or `manual_side_to_move`: `w`, `b`, or blank when encoded in FEN.
+- `verification_source`: `human_visual` for new labels. Legacy rows with
+  manual-grid-review provenance are treated as `legacy_human_visual` until
+  migrated.
+- `human_verified`: `true` for new labels.
+- `crop_sha256`: SHA-256 of the exact crop reviewed by the human.
+- `square_diff_ack` or `square_diff_reviewed`: `true` after the human reviewed
+  the 64-square diff/candidate comparison.
 
 Rows with `draft`, `rejected`, `false_positive`, or invalid FEN are ignored.
+AI-only values such as `ai_suggested_fen`, `ai_approved`, `arbiter_approved`,
+or high confidence are never verification proof.
+
+## FEN Profile/Corpus Gate Contract
+
+Profile readiness is a separate gate after label validation. A manifest-ready
+FEN profile requires:
+
+- only verified human-reviewed labels;
+- at least 20 valid seed labels per profile for release-grade proof;
+- deterministic template/evaluator status `passed`;
+- exact FEN accuracy at or above the configured threshold;
+- `false_positive_count == 0`;
+- no review-only label artifact such as `candidate_labels_review.jsonl` or
+  `manual_label_template.jsonl` as the seed source.
+
+Release-grade corpus proof (`standard` and `full`) requires at least two real
+scanned chess FEN profiles. A one-profile gate is allowed only as an explicit
+bounded diagnostic override or the GitHub CI proof profile, which is evidence
+only and does not claim release-grade FEN generalization.
+
+## Square Diff Contract
+
+Square-diff rows compare two FEN placements in board order (`a8` through `h1`).
+
+Required fields:
+
+- `square`: algebraic square, for example `e5`.
+- `expected_piece`: `empty,K,Q,R,B,N,P,k,q,r,b,n,p`.
+- `actual_piece`: `empty,K,Q,R,B,N,P,k,q,r,b,n,p`.
+- `reason`: `piece_mismatch`, `missing_piece`, or `extra_piece`.
+
+Known false-positive fixtures, such as `p010_d002`, must stay in the regression
+set. For that case, a candidate that places a black pawn on `e5` is invalid
+because the manually verified crop has a black rook on `e5`.
+
+## AI FEN Evidence Contract
+
+AI review artifacts are evidence only.
+
+Allowed AI fields:
+
+- candidate FEN or suggested FEN;
+- confidence;
+- uncertain or ambiguous squares;
+- reviewer notes;
+- `review_opinion`: `supports_candidate`, `flags_candidate`, or `uncertain`.
+
+Forbidden authority fields:
+
+- `verified`;
+- `accepted`;
+- `accepted_for_corpus=true`;
+- direct mutation of `fen` in verified label files.
+
+Legacy `approved` fields from review providers are compatibility signals only
+and must be interpreted as `review_opinion`, never as corpus verification.
 
 ## Board Preprocess Contract
 

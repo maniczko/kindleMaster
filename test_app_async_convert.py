@@ -28,7 +28,9 @@ class AppAsyncConvertTests(unittest.TestCase):
             app_module._CONVERSION_JOBS.clear()
 
     def tearDown(self) -> None:
-        for job in app_module._CONVERSION_JOBS.values():
+        for job_id, job in app_module._CONVERSION_JOBS.items():
+            if job_id not in self.cleanup_job_ids:
+                continue
             for artifact in (job.get("artifacts", {}) or {}).values():
                 if not isinstance(artifact, dict) or artifact.get("provider") != "local":
                     continue
@@ -631,6 +633,52 @@ class AppAsyncConvertTests(unittest.TestCase):
         requested_url = urlopen_mock.call_args.args[0].full_url
         self.assertEqual(requested_url, "https://signed.example.invalid/chess_games.html")
 
+    def test_rebuild_local_history_keeps_pdf_layout_preview_separate_from_chess_html(self) -> None:
+        job_id = "ready-layout-preview-history"
+        job_dir = Path(app_module.app.root_path) / "output" / "artifacts" / job_id
+        report_dir = job_dir / "report"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        quality_path = report_dir / f"{job_id}.quality.json"
+        chess_html_path = report_dir / "chess_games.html"
+        glyph_diagnostics_path = report_dir / "chess_glyph_diagnostics.json"
+        preview_path = report_dir / "pdf_layout_preview.html"
+        quality_path.write_text(
+            json.dumps(
+                {
+                    "job": {
+                        "job_id": job_id,
+                        "status": "ready",
+                        "filename": "layout.pdf",
+                        "download_name": "layout.epub",
+                    },
+                    "quality_state": {"message": "ready"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        chess_html_path.write_text("<html><body>PGN/FEN</body></html>", encoding="utf-8")
+        glyph_diagnostics_path.write_text('{"diagnostic_count":1}', encoding="utf-8")
+        preview_path.write_text('<html><body><section class="pdf-page"></section></body></html>', encoding="utf-8")
+        self.cleanup_paths.extend([str(quality_path), str(chess_html_path), str(glyph_diagnostics_path), str(preview_path)])
+
+        rebuilt = app_module._rebuild_job_from_local_artifact_dir(job_dir)
+
+        self.assertIsNotNone(rebuilt)
+        artifacts = rebuilt["artifacts"]
+        self.assertEqual(artifacts["chess_pgn_html"]["filename"], "chess_games.html")
+        self.assertEqual(artifacts["chess_glyph_diagnostics"]["filename"], "chess_glyph_diagnostics.json")
+        self.assertEqual(
+            artifacts["chess_glyph_diagnostics"]["download_url"],
+            f"/convert/artifact/{job_id}/chess_glyph_diagnostics",
+        )
+        self.assertEqual(artifacts["chess_glyph_diagnostics"]["label"], "Chess glyph diagnostics")
+        self.assertEqual(artifacts["pdf_layout_preview"]["filename"], "pdf_layout_preview.html")
+        self.assertEqual(
+            artifacts["pdf_layout_preview"]["download_url"],
+            f"/convert/artifact/{job_id}/pdf_layout_preview",
+        )
+        self.assertEqual(artifacts["pdf_layout_preview"]["label"], "PDF layout preview")
+
     def test_convert_artifact_serves_local_input_inline_with_source_header(self) -> None:
         job_id = "local-input-artifact"
         input_artifact = app_module._store_artifact_bytes(
@@ -658,6 +706,82 @@ class AppAsyncConvertTests(unittest.TestCase):
         self.assertEqual(response.data, b"%PDF-1.4\nlocal input")
         self.assertEqual(response.headers["X-KindleMaster-Artifact-Source"], "local")
         self.assertNotIn("attachment", response.headers.get("Content-Disposition", ""))
+
+    def test_convert_artifact_serves_pdf_layout_preview_in_app_shell(self) -> None:
+        job_id = "local-preview-artifact"
+        preview_artifact = app_module._store_artifact_bytes(
+            job_id=job_id,
+            kind=app_module.ArtifactKind.REPORT,
+            filename="pdf_layout_preview.html",
+            data=b'<html><body><section class="pdf-page"></section></body></html>',
+        )
+        preview_artifact["content_type"] = "text/html; charset=utf-8"
+        self.cleanup_paths.append(str(preview_artifact["location"]))
+        created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        job = app_module.build_conversion_job_record(
+            job_id=job_id,
+            source_path="",
+            source_type="pdf",
+            filename="layout.pdf",
+            created_at=created_at,
+        )
+        job.update({"status": "ready", "artifacts": {"pdf_layout_preview": preview_artifact}})
+        app_module._CONVERSION_JOB_STORE.create(job)
+        self.cleanup_job_ids.append(job_id)
+
+        response = self.client.get(f"/convert/artifact/{job_id}/pdf_layout_preview")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"KindleMaster", response.data)
+        self.assertIn(b'data-km-view="pdf-layout-preview"', response.data)
+        self.assertIn(b"pdf-page", response.data)
+        self.assertIn(b"srcdoc=", response.data)
+        self.assertIn("text/html", response.headers.get("Content-Type", ""))
+        self.assertNotIn("attachment", response.headers.get("Content-Disposition", ""))
+        self.assertEqual(response.headers["X-KindleMaster-Artifact-Source"], "local-shell")
+
+    def test_convert_artifact_rehydrates_pdf_layout_preview_shell_from_local_history(self) -> None:
+        job_id = "local-preview-rehydrated"
+        job_dir = Path(app_module.app.root_path) / "output" / "artifacts" / job_id
+        report_dir = job_dir / "report"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        quality_path = report_dir / f"{job_id}.quality.json"
+        preview_path = report_dir / "pdf_layout_preview.html"
+        quality_path.write_text(
+            json.dumps(
+                {
+                    "job": {
+                        "job_id": job_id,
+                        "status": "ready",
+                        "filename": "layout-after-restart.pdf",
+                        "download_name": "layout-after-restart.epub",
+                    },
+                    "quality_state": {"message": "ready"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        preview_path.write_text('<html><body><section class="pdf-page"></section></body></html>', encoding="utf-8")
+        self.cleanup_paths.extend([str(quality_path), str(preview_path)])
+
+        response = self.client.get(f"/convert/artifact/{job_id}/pdf_layout_preview")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'data-km-view="pdf-layout-preview"', response.data)
+        self.assertIn(b"pdf-page", response.data)
+        self.assertNotIn("attachment", response.headers.get("Content-Disposition", ""))
+        self.assertEqual(response.headers["X-KindleMaster-Artifact-Source"], "local-shell")
+
+    def test_legacy_index_uses_static_asset_cache_busting(self) -> None:
+        with patch.dict(os.environ, {"KINDLEMASTER_ENABLE_LEGACY_UI": "1"}):
+            response = self.client.get("/legacy")
+
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn("css/app-shell.css?v=", html)
+        self.assertIn("js/conversion-ui.js?v=", html)
+        self.assertIn("js/quality-cockpit.js?v=", html)
+        self.assertIn("js/library.js?v=", html)
 
     def test_convert_artifact_uses_local_input_fallback_before_remote(self) -> None:
         job_id = "fallback-input-artifact"

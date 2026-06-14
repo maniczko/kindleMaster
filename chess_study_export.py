@@ -1,0 +1,6404 @@
+from __future__ import annotations
+
+import html
+import base64
+import csv
+import hashlib
+import io
+import json
+import re
+import shutil
+import zipfile
+from dataclasses import dataclass, field
+from datetime import date
+from pathlib import Path
+from typing import Any, Iterable
+
+import fitz
+from bs4 import BeautifulSoup
+from PIL import Image, ImageDraw
+
+from chess_position_recognizer import validate_fen
+from scripts.audit_chess_html import audit_chess_html
+from scripts.chess_diagram_detection import detect_chess_diagrams
+
+
+STUDY_STATUSES = {
+    "accepted",
+    "needs_review",
+    "missing_fen",
+    "missing_pgn",
+    "illegal_pgn",
+    "low_confidence",
+    "unlinked_solution",
+}
+
+QUALITY_PROFILES = {"smoke", "default", "masterkindle"}
+QUALITY_THRESHOLDS = {
+    "smoke": {
+        "pages": 1,
+        "page_images": 0,
+        "pages_with_extractable_text": 0,
+        "copyable_text_characters": 0,
+        "diagrams_total": 0,
+        "notation_fragments_total": 0,
+        "accepted_pgn": 0,
+    },
+    "default": {
+        "pages": 1,
+        "page_images": 0,
+        "pages_with_extractable_text": 1,
+        "copyable_text_characters": 1,
+        "diagrams_total": 0,
+        "notation_fragments_total": 0,
+        "accepted_pgn": 0,
+    },
+    "masterkindle": {
+        "pages": 266,
+        "page_images": 266,
+        "pages_with_extractable_text": 260,
+        "copyable_text_characters": 250_000,
+        "diagrams_total": 540,
+        "fen_accepted": 520,
+        "notation_fragments_total": 560,
+        "accepted_pgn": 1,
+    },
+}
+
+YUSUPOV_CHAPTERS = [
+    (1, "Mating motifs"),
+    (2, "Mating motifs 2"),
+    (3, "Basic opening principles"),
+    (4, "Simple pawn endings"),
+    (5, "Double check"),
+    (6, "The value of the pieces"),
+    (7, "The discovered attack"),
+    (8, "Centralizing the pieces"),
+    (9, "Mate in two moves"),
+    (10, "The opposition"),
+    (11, "The pin"),
+    (12, "The double attack"),
+    (13, "Realizing a material advantage"),
+    (14, "Open files and Outposts"),
+    (15, "Combinations"),
+    (16, "Queen against pawn"),
+    (17, "Stalemate motifs"),
+    (18, "Forced variations"),
+    (19, "Combinations involving promotion"),
+    (20, "Weak points"),
+    (21, "Pawn combinations"),
+    (22, "The wrong bishop"),
+    (23, "Smothered mate"),
+    (24, "Gambits"),
+]
+
+FINAL_TEST_RE = re.compile(r"\bfinal\s+test\b", re.IGNORECASE)
+APPENDIX_PATTERNS = {
+    "index_of_composers_and_analysts": re.compile(r"index\s+of\s+composers\s+and\s+analysts", re.IGNORECASE),
+    "index_of_games": re.compile(r"index\s+of\s+games", re.IGNORECASE),
+    "recommended_books": re.compile(r"recommended\s+books", re.IGNORECASE),
+}
+EXERCISE_LABEL_RE = re.compile(r"\bEx\.\s*(?P<chapter>\d{1,2})[-.](?P<number>\d{1,2})\b", re.IGNORECASE)
+FINAL_LABEL_RE = re.compile(r"\bF[-.]\s*(?P<number>\d{1,2})\b", re.IGNORECASE)
+UNMAPPED_CHESS_GLYPH_WARNING = "unmapped_chess_glyphs"
+NOTATION_GLYPH_DIAGNOSTIC_LIMIT = 500
+NOTATION_GLYPH_SAMPLE_LIMIT = 50
+SUSPECT_NOTATION_GLYPH_RE = re.compile(
+    r"(?:\ufffd|@|[a-z]{1,3}[ldht][a-h][1-8]|[a-z]{1,3}x[a-h][1-8]|[a-z][ldht]\d)",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class ChessStudyConfig:
+    pdf: Path
+    html: Path | None
+    out: Path
+    diagram_pages: int = 0
+    diagram_page_ranges: str = ""
+    diagram_dpi: int = 160
+    min_grid_confidence: float = 0.50
+    max_candidates_per_page: int = 6
+    quality_profile: str = "default"
+    render_pages: bool = False
+    ocr_fallback: bool = False
+    strict_thresholds: bool = False
+    low_confidence_diagram_review: bool = False
+    low_confidence_min_grid_confidence: float = 0.30
+    low_confidence_max_candidates_per_page: int = 12
+    glyph_context_pages: str = ""
+    review_sample_limit: int = 0
+    diagram_review_labels: Path | None = None
+    glyph_mapping_file: Path | None = None
+    diagram_alignment_review: bool = False
+
+
+@dataclass(frozen=True)
+class StudyLayoutElement:
+    type: str
+    page: int
+    bbox: list[float]
+    reading_order: int
+    source_kind: str
+    text: str = ""
+    ref_id: str = ""
+    status: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": self.type,
+            "page": self.page,
+            "bbox": list(self.bbox),
+            "reading_order": self.reading_order,
+            "source_kind": self.source_kind,
+            "text": self.text,
+            "ref_id": self.ref_id,
+            "status": self.status,
+        }
+
+
+@dataclass(frozen=True)
+class StudyTextBlock:
+    page: int
+    block_index: int
+    line_index: int
+    span_index: int
+    reading_order: int
+    text: str
+    normalized_text: str
+    bbox: list[float]
+    font: str = ""
+    size: float = 0.0
+    type: str = "text"
+    glyph_diagnostics: list[dict[str, Any]] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "page": self.page,
+            "block_index": self.block_index,
+            "line_index": self.line_index,
+            "span_index": self.span_index,
+            "reading_order": self.reading_order,
+            "type": self.type,
+            "text": self.text,
+            "normalized_text": self.normalized_text,
+            "bbox": list(self.bbox),
+            "font": self.font,
+            "size": round(float(self.size or 0.0), 3),
+            "glyph_diagnostics": list(self.glyph_diagnostics),
+        }
+
+
+@dataclass(frozen=True)
+class StudyPage:
+    page: int
+    pdf_page_index: int
+    width: float
+    height: float
+    page_image: str
+    raw_text: str
+    normalized_text: str
+    paragraphs: list[str]
+    blocks: list[StudyTextBlock]
+    elements: list[StudyLayoutElement] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "page": self.page,
+            "pdf_page_index": self.pdf_page_index,
+            "width": round(float(self.width or 0.0), 3),
+            "height": round(float(self.height or 0.0), 3),
+            "page_image": self.page_image,
+            "raw_text": self.raw_text,
+            "normalized_text": self.normalized_text,
+            "paragraphs": list(self.paragraphs),
+            "blocks": [block.to_dict() for block in self.blocks],
+            "elements": [element.to_dict() for element in self.elements],
+        }
+
+
+@dataclass(frozen=True)
+class StudyDiagram:
+    id: str
+    page: int
+    visual_order_on_page: int
+    bbox: list[float]
+    label: str
+    side_to_move: str
+    fen: str
+    fen_candidate: str
+    status: str
+    confidence: float
+    source_crop: str
+    rendered_svg: str
+    rendered_png: str
+    review_reason: str
+    warnings: list[str]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "page": self.page,
+            "visual_order_on_page": self.visual_order_on_page,
+            "bbox": list(self.bbox),
+            "label": self.label,
+            "side_to_move": self.side_to_move,
+            "fen": self.fen,
+            "fen_candidate": self.fen_candidate,
+            "status": self.status,
+            "confidence": round(float(self.confidence or 0.0), 3),
+            "source_crop": self.source_crop,
+            "rendered_svg": self.rendered_svg,
+            "rendered_png": self.rendered_png,
+            "review_reason": self.review_reason,
+            "warnings": list(self.warnings),
+        }
+
+
+@dataclass(frozen=True)
+class StudyNotationFragment:
+    id: str
+    page: int
+    diagram_id: str
+    source_page: int
+    source_diagram: str
+    raw_text: str
+    normalized_text: str
+    comments: list[str]
+    pgn: str
+    status: str
+    warnings: list[str]
+    bbox: list[float] = field(default_factory=list)
+    glyph_diagnostics: list[dict[str, Any]] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "page": self.page,
+            "diagram_id": self.diagram_id,
+            "source_page": self.source_page,
+            "source_diagram": self.source_diagram,
+            "raw_text": self.raw_text,
+            "normalized_text": self.normalized_text,
+            "comments": list(self.comments),
+            "pgn": self.pgn,
+            "status": self.status,
+            "warnings": list(self.warnings),
+            "bbox": list(self.bbox),
+            "glyph_diagnostics": list(self.glyph_diagnostics),
+        }
+
+
+@dataclass(frozen=True)
+class StudyPosition:
+    id: str
+    type: str
+    chapter_no: int | None
+    label: str
+    diagram_page: int
+    solution_page: int | None
+    side_to_move: str
+    fen: str
+    solution_pgn: str
+    points: int | None
+    status: str
+    warnings: list[str]
+    source_crop: str
+    rendered_diagram: str
+
+
+@dataclass(frozen=True)
+class StudyAuditSummary:
+    profile: str
+    status: str
+    pages: int
+    page_images: int
+    pages_with_extractable_text: int
+    copyable_text_characters: int
+    diagrams_total: int
+    fen_accepted: int
+    notation_fragments_total: int
+    notation_glyph_diagnostics: int
+    unmapped_notation_fragments: int
+    accepted_pgn: int
+
+
+def run_chess_study_export(
+    pdf: str | Path,
+    *,
+    html_path: str | Path | None = None,
+    out_dir: str | Path = "output/yusupov_study",
+    diagram_pages: int = 0,
+    diagram_page_ranges: str = "",
+    diagram_dpi: int = 160,
+    min_grid_confidence: float = 0.50,
+    max_candidates_per_page: int = 6,
+    quality_profile: str = "default",
+    render_pages: bool = False,
+    ocr_fallback: bool = False,
+    strict_thresholds: bool = False,
+    low_confidence_diagram_review: bool = False,
+    low_confidence_min_grid_confidence: float = 0.30,
+    low_confidence_max_candidates_per_page: int = 12,
+    glyph_context_pages: str = "",
+    review_sample_limit: int = 0,
+    diagram_review_labels: str | Path | None = None,
+    glyph_mapping_file: str | Path | None = None,
+    diagram_alignment_review: bool = False,
+) -> dict[str, Any]:
+    normalized_profile = _normalize_quality_profile(quality_profile)
+    effective_render_pages = bool(render_pages) or normalized_profile == "masterkindle"
+    config = ChessStudyConfig(
+        pdf=Path(pdf),
+        html=_resolve_html_input(html_path) if html_path else None,
+        out=Path(out_dir),
+        diagram_pages=diagram_pages,
+        diagram_page_ranges=diagram_page_ranges,
+        diagram_dpi=diagram_dpi,
+        min_grid_confidence=min_grid_confidence,
+        max_candidates_per_page=max_candidates_per_page,
+        quality_profile=normalized_profile,
+        render_pages=effective_render_pages,
+        ocr_fallback=ocr_fallback,
+        strict_thresholds=strict_thresholds,
+        low_confidence_diagram_review=low_confidence_diagram_review,
+        low_confidence_min_grid_confidence=low_confidence_min_grid_confidence,
+        low_confidence_max_candidates_per_page=low_confidence_max_candidates_per_page,
+        glyph_context_pages=glyph_context_pages,
+        review_sample_limit=review_sample_limit,
+        diagram_review_labels=Path(diagram_review_labels) if diagram_review_labels else None,
+        glyph_mapping_file=Path(glyph_mapping_file) if glyph_mapping_file else None,
+        diagram_alignment_review=diagram_alignment_review,
+    )
+    _ensure_output_dirs(config.out)
+
+    page_model = ingest_study_pdf(config)
+    current_audit = audit_current_html(config) if config.html else _empty_current_audit()
+    structure = extract_study_structure(config.pdf, config.out, html_path=config.html)
+    segments = segment_study_pages(config.pdf, structure, config.out, html_path=config.html)
+    diagrams = detect_study_diagrams(config)
+    positions = build_study_positions(diagrams, segments, config.out)
+    notation_fragments = extract_study_notation_fragments(
+        page_model,
+        positions,
+        config.out,
+        glyph_context_pages=config.glyph_context_pages,
+        glyph_mapping_file=config.glyph_mapping_file,
+    )
+    pgn_payload = build_study_pgn(positions, config.out, notation_fragments=notation_fragments)
+    exercises = build_study_exercises(positions, config.out)
+    final_test = build_study_final_test(positions, config.out)
+    qa_report = validate_study_export(
+        config,
+        current_audit=current_audit,
+        structure=structure,
+        segments=segments,
+        diagrams=diagrams,
+        positions=positions,
+        page_model=page_model,
+        notation_fragments=notation_fragments,
+        pgn_payload=pgn_payload,
+        exercises=exercises,
+        final_test=final_test,
+    )
+    render_study_html(
+        config.out,
+        structure=structure,
+        positions=positions,
+        qa_report=qa_report,
+        page_model=page_model,
+        notation_fragments=notation_fragments,
+    )
+    render_qa_html(config.out, qa_report)
+    if config.html and config.html.is_file():
+        rebuild_chess_source_html_export(
+            config.html,
+            config.out,
+            pdf_path=config.pdf,
+            qa_report=qa_report,
+        )
+    return qa_report
+
+
+def rebuild_chess_source_html_export(
+    html_path: str | Path,
+    out_dir: str | Path,
+    *,
+    pdf_path: str | Path | None = None,
+    qa_report: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Rebuild a semantic, asset-backed study reader from the PDF-layout HTML artifact.
+
+    The source HTML is treated as evidence only: extracted text, diagram crops, page
+    order and review records. FEN/PGN values are accepted only after deterministic
+    validation; otherwise the reader shows a clean review state.
+    """
+    source = Path(html_path)
+    out = Path(out_dir)
+    data_dir = out / "data"
+    reports_dir = out / "reports"
+    diagram_dir = out / "assets" / "diagrams"
+    page_preview_dir = out / "assets" / "pages-preview"
+    for directory in [out, data_dir, reports_dir, diagram_dir, page_preview_dir]:
+        directory.mkdir(parents=True, exist_ok=True)
+
+    soup = BeautifulSoup(source.read_text(encoding="utf-8", errors="replace"), "html.parser")
+    pages = _extract_source_html_pages(soup, diagram_dir=diagram_dir, page_preview_dir=page_preview_dir)
+    pgn_records = _extract_source_html_pgn_records(soup)
+    _link_source_pgn_records_to_pages(pgn_records, pages)
+    chapters = _source_html_chapters(pages)
+    accepted_pgn = [record for record in pgn_records if record.get("status") == "accepted"]
+    games_pgn = "\n\n".join(str(record.get("pgn") or "").strip() for record in accepted_pgn if record.get("pgn")).strip()
+    (data_dir / "games.pgn").write_text(games_pgn + ("\n" if games_pgn else ""), encoding="utf-8")
+
+    book_payload = {
+        "schema": "kindlemaster.semantic_chess_html.v1",
+        "source_html": str(source),
+        "source_pdf": str(pdf_path or ""),
+        "title": "Build Up Your Chess - The Fundamentals",
+        "chapters": chapters,
+        "pages": pages,
+        "pgn_records": pgn_records,
+        "summary": _source_html_summary(pages, pgn_records, source, pdf_path=pdf_path, qa_report=qa_report),
+    }
+    diagrams_payload = {
+        "schema": "kindlemaster.semantic_chess_diagrams.v1",
+        "diagrams": [diagram for page in pages for diagram in page.get("diagrams", [])],
+        "summary": {
+            "total": sum(len(page.get("diagrams", [])) for page in pages),
+            "fen_accepted": sum(
+                1
+                for page in pages
+                for diagram in page.get("diagrams", [])
+                if diagram.get("validation_status") == "accepted"
+            ),
+        },
+    }
+    _write_json(data_dir / "book.json", book_payload)
+    _write_json(data_dir / "diagrams.json", diagrams_payload)
+    _write_source_html_reports(book_payload, diagrams_payload, reports_dir)
+    (out / "styles.css").write_text(_semantic_source_styles_css(), encoding="utf-8")
+    (out / "app.js").write_text(_semantic_source_app_js(), encoding="utf-8")
+    (out / "index.html").write_text(_semantic_source_index_html(book_payload), encoding="utf-8")
+    return book_payload
+
+
+def _extract_source_html_pages(soup: BeautifulSoup, *, diagram_dir: Path, page_preview_dir: Path) -> list[dict[str, Any]]:
+    pages: list[dict[str, Any]] = []
+    page_nodes = soup.select(".chess-book-page, .pdf-page, section[data-page]")
+    if not page_nodes:
+        page_nodes = [soup]
+    for page_index, node in enumerate(page_nodes, start=1):
+        page_number = _source_page_number(node, fallback=page_index)
+        page_record: dict[str, Any] = {
+            "page": page_number,
+            "source_order": page_index,
+            "page_preview": _extract_source_page_preview(node, page_number=page_number, out_dir=page_preview_dir),
+            "text_blocks": _extract_source_text_blocks(node, page_number=page_number),
+            "text_chunks": [],
+            "diagrams": [],
+            "pgn_records": [],
+        }
+        page_record["text_chunks"] = _source_text_chunks(page_record["text_blocks"])
+        page_record["diagrams"] = _extract_source_diagrams(node, page_number=page_number, out_dir=diagram_dir)
+        pages.append(page_record)
+    return pages
+
+
+def _extract_source_page_preview(node: Any, *, page_number: int, out_dir: Path) -> str:
+    image = node.select_one("img.book-page-bg")
+    if not image:
+        return ""
+    return _save_data_uri_asset(
+        str(image.get("src") or ""),
+        out_dir,
+        filename_stem=f"page_{page_number:03d}",
+        default_ext=".jpg",
+        relative_prefix="assets/pages-preview",
+    )
+
+
+def _extract_source_text_blocks(node: Any, *, page_number: int) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    for index, block in enumerate(node.select(".book-text")):
+        text = _scrub_local_links(block.get_text(" ", strip=True))
+        if not text or _is_technical_audit_text(text):
+            continue
+        bbox = _source_style_box(str(block.get("style") or ""))
+        blocks.append(
+            {
+                "id": f"text-p{page_number:03d}-{index + 1:04d}",
+                "page": page_number,
+                "reading_order": _source_reading_order(block, fallback=index),
+                "bbox": bbox,
+                "text": text,
+                "kind": _source_text_kind(text),
+            }
+        )
+    blocks.sort(key=_source_order_key)
+    return blocks
+
+
+def _extract_source_diagrams(node: Any, *, page_number: int, out_dir: Path) -> list[dict[str, Any]]:
+    diagrams: list[dict[str, Any]] = []
+    captions = [
+        block
+        for block in _extract_source_text_blocks(node, page_number=page_number)
+        if re.search(r"\b(?:Diagram|Ex\.)\s*\d{1,2}[-.]\d{1,2}\b", block.get("text", ""), re.IGNORECASE)
+    ]
+    for index, diagram in enumerate(node.select(".book-diagram"), start=1):
+        image = diagram.select_one("img")
+        bbox = _source_style_box(str(diagram.get("style") or ""))
+        diagram_id = f"p{page_number:03d}_d{index:03d}"
+        image_path = _save_data_uri_asset(
+            str(image.get("src") or "") if image else "",
+            out_dir,
+            filename_stem=diagram_id,
+            default_ext=".png",
+            relative_prefix="assets/diagrams",
+        )
+        alt = _scrub_local_links(str(image.get("alt") or "")) if image else ""
+        caption = _nearest_source_caption(bbox, captions) or alt or f"Diagram on page {page_number}"
+        fen_candidate = _extract_fen_candidate_from_node(diagram)
+        fen_status = _source_fen_status(fen_candidate, image_path=image_path)
+        diagrams.append(
+            {
+                "id": diagram_id,
+                "page": page_number,
+                "reading_order": _source_reading_order(diagram, fallback=10_000 + index),
+                "bbox": bbox,
+                "caption": caption,
+                "alt": alt,
+                "image_path": image_path,
+                "fen": fen_candidate if fen_status["validation_status"] == "accepted" else "",
+                "fen_candidate": fen_candidate,
+                "confidence": fen_status["confidence"],
+                "side_to_move": _infer_side_to_move(caption),
+                "validation_status": fen_status["validation_status"],
+                "review_reason": fen_status["review_reason"],
+            }
+        )
+    diagrams.sort(key=_source_order_key)
+    return diagrams
+
+
+def _extract_source_html_pgn_records(soup: BeautifulSoup) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for index, node in enumerate(soup.select(".book-pgn-record"), start=1):
+        page_node = node.find_parent(class_="chess-book-page") or node.find_parent(attrs={"data-page": True})
+        source_page = _source_page_number(page_node, fallback=1) if page_node else 1
+        raw_text = _scrub_local_links(node.get_text(" ", strip=True))
+        visible_text = _visible_review_notation_text(raw_text)
+        label_match = re.search(r"\b(?:Diagram|Ex\.)\s*\d{1,2}[-.]\d{1,2}\b", raw_text, flags=re.IGNORECASE)
+        label = label_match.group(0).replace(" .", ".") if label_match else f"Notation {index}"
+        pgn_candidate = _extract_embedded_pgn_candidate(node)
+        accepted = bool(pgn_candidate and _pgn_has_required_headers(pgn_candidate) and _pgn_has_source_page(pgn_candidate) and _pgn_replay_clean(pgn_candidate))
+        warnings = _source_pgn_warnings(raw_text, pgn_candidate, accepted=accepted)
+        records.append(
+            {
+                "id": f"pgn_{index:04d}",
+                "source_page": source_page,
+                "logical_page": source_page,
+                "reading_order": _source_reading_order(node, fallback=20_000 + index),
+                "bbox": _source_style_box(str(node.get("style") or "")),
+                "label": label,
+                "raw_text": raw_text,
+                "visible_review_text": visible_text,
+                "pgn": pgn_candidate if accepted else "",
+                "status": "accepted" if accepted else "needs-human-review",
+                "warnings": warnings,
+            }
+        )
+    return records
+
+
+def _link_source_pgn_records_to_pages(records: list[dict[str, Any]], pages: list[dict[str, Any]]) -> None:
+    pages_by_number = {int(page.get("page") or 0): page for page in pages}
+    caption_page_by_label: dict[str, int] = {}
+    for page in pages:
+        for block in page.get("text_blocks", []) or []:
+            for label in re.findall(r"\b(?:Diagram|Ex\.)\s*\d{1,2}[-.]\d{1,2}\b", str(block.get("text") or ""), re.IGNORECASE):
+                caption_page_by_label[_normalize_source_label(label)] = int(page.get("page") or 0)
+    for record in records:
+        label_page = caption_page_by_label.get(_normalize_source_label(str(record.get("label") or "")))
+        if label_page:
+            record["logical_page"] = label_page
+        page = pages_by_number.get(int(record.get("logical_page") or 0)) or pages_by_number.get(int(record.get("source_page") or 0))
+        if page is not None:
+            page.setdefault("pgn_records", []).append(record)
+
+
+def _source_html_chapters(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    chapters: list[dict[str, Any]] = [
+        {"id": "preface", "title": "Preface", "start_page": _first_source_page_matching(pages, r"\bPreface\b") or 1},
+        {"id": "introduction", "title": "Introduction", "start_page": _first_source_page_matching(pages, r"\bIntroduction\b") or 1},
+    ]
+    for chapter_no, title in YUSUPOV_CHAPTERS:
+        page = _first_source_page_matching(pages, rf"\b{chapter_no}\s+{re.escape(title)}\b|Chapter\s+{chapter_no}\b")
+        chapters.append(
+            {
+                "id": f"chapter-{chapter_no:02d}",
+                "chapter_no": chapter_no,
+                "title": title,
+                "start_page": page,
+            }
+        )
+    chapters.extend(
+        [
+            {"id": "exercises", "title": "Exercises", "start_page": _first_source_page_matching(pages, r"\bExercises\b")},
+            {"id": "solutions", "title": "Solutions", "start_page": _first_source_page_matching(pages, r"\bSolutions\b")},
+            {"id": "appendices", "title": "Appendices", "start_page": _first_source_page_matching(pages, r"\bIndex of Games\b|Recommended Books")},
+            {"id": "index", "title": "Index", "start_page": _first_source_page_matching(pages, r"\bIndex\b")},
+        ]
+    )
+    return chapters
+
+
+def _source_html_summary(
+    pages: list[dict[str, Any]],
+    pgn_records: list[dict[str, Any]],
+    source: Path,
+    *,
+    pdf_path: str | Path | None,
+    qa_report: dict[str, Any] | None,
+) -> dict[str, Any]:
+    diagrams = [diagram for page in pages for diagram in page.get("diagrams", [])]
+    accepted_fen = [diagram for diagram in diagrams if diagram.get("validation_status") == "accepted"]
+    accepted_pgn = [record for record in pgn_records if record.get("status") == "accepted"]
+    source_text = source.read_text(encoding="utf-8", errors="replace")
+    pdf_pages = 0
+    if pdf_path and Path(pdf_path).is_file():
+        try:
+            with fitz.open(Path(pdf_path)) as document:
+                pdf_pages = int(document.page_count)
+        except Exception:
+            pdf_pages = 0
+    return {
+        "source_html": str(source),
+        "source_pdf": str(pdf_path or ""),
+        "source_html_bytes": source.stat().st_size if source.is_file() else 0,
+        "pdf_pages": pdf_pages,
+        "html_pages": len(pages),
+        "missing_pages": _missing_page_numbers(pdf_pages, pages),
+        "text_blocks": sum(len(page.get("text_blocks", [])) for page in pages),
+        "diagrams_total": len(diagrams),
+        "fen_accepted": len(accepted_fen),
+        "fen_needs_review": len(diagrams) - len(accepted_fen),
+        "pgn_total": len(pgn_records),
+        "accepted_pgn": len(accepted_pgn),
+        "pgn_needs_review": len(pgn_records) - len(accepted_pgn),
+        "copy_fen_buttons": len(accepted_fen),
+        "copy_pgn_buttons": len(accepted_pgn),
+        "localhost_links_removed": source_text.count("localhost") + source_text.count("127.0.0.1"),
+        "base64_images_extracted": source_text.count("data:image"),
+        "qa_status": (qa_report or {}).get("status", ""),
+        "status_policy": "accepted_requires_deterministic_validation",
+    }
+
+
+def _write_source_html_reports(book: dict[str, Any], diagrams_payload: dict[str, Any], reports_dir: Path) -> None:
+    summary = dict(book.get("summary") or {})
+    diagrams = list(diagrams_payload.get("diagrams") or [])
+    pgn_records = list(book.get("pgn_records") or [])
+    lines = [
+        "# Conversion Audit",
+        "",
+        "## Summary",
+        "",
+        f"- Source HTML: `{summary.get('source_html')}`",
+        f"- Source PDF: `{summary.get('source_pdf')}`",
+        f"- PDF pages: `{summary.get('pdf_pages')}`",
+        f"- HTML pages: `{summary.get('html_pages')}`",
+        f"- Missing pages: `{summary.get('missing_pages')}`",
+        f"- Text blocks: `{summary.get('text_blocks')}`",
+        f"- Diagrams: `{summary.get('diagrams_total')}`",
+        f"- FEN accepted: `{summary.get('fen_accepted')}`",
+        f"- FEN needs review: `{summary.get('fen_needs_review')}`",
+        f"- PGN records: `{summary.get('pgn_total')}`",
+        f"- PGN accepted: `{summary.get('accepted_pgn')}`",
+        f"- PGN needs review: `{summary.get('pgn_needs_review')}`",
+        f"- Localhost links removed: `{summary.get('localhost_links_removed')}`",
+        f"- Base64 images extracted: `{summary.get('base64_images_extracted')}`",
+        "",
+        "## Main blockers",
+        "",
+        "- FEN is accepted only after deterministic board recognition and `python-chess` validation.",
+        "- PGN is accepted only after parser/replay validation.",
+        "- OCR/glyph noise remains in review reports until manually mapped and retested.",
+        "",
+        "## Review items",
+        "",
+    ]
+    for diagram in diagrams[:80]:
+        if diagram.get("validation_status") != "accepted":
+            lines.append(f"- FEN review `{diagram.get('id')}` page {diagram.get('page')}: {diagram.get('review_reason')}")
+    for record in pgn_records[:80]:
+        if record.get("status") != "accepted":
+            lines.append(f"- PGN review `{record.get('id')}` page {record.get('logical_page')}: {', '.join(record.get('warnings') or [])}")
+    (reports_dir / "conversion-audit.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _write_csv(reports_dir / "fen-review.csv", diagrams)
+    _write_csv(reports_dir / "pgn-review.csv", pgn_records)
+    ocr_lines = ["# OCR Issues", ""]
+    blockers: dict[str, int] = {}
+    for record in pgn_records:
+        for warning in record.get("warnings") or []:
+            blockers[str(warning)] = blockers.get(str(warning), 0) + 1
+    for warning, count in sorted(blockers.items(), key=lambda item: (-item[1], item[0])):
+        ocr_lines.append(f"- `{warning}`: {count}")
+    (reports_dir / "ocr-issues.md").write_text("\n".join(ocr_lines) + "\n", encoding="utf-8")
+
+
+def build_chess_fen_manual_review(
+    out_dir: str | Path,
+    *,
+    html_path: str | Path | None = None,
+    pdf_path: str | Path | None = None,
+    review_sample_limit: int = 0,
+    page_ranges: str = "",
+    min_count: int = 0,
+) -> dict[str, Any]:
+    """Create a manual FEN labeling queue from the semantic source HTML export.
+
+    The queue is intentionally evidence-only. Manual labels are promoted by
+    `build_chess_fen_templates`, not by this review page.
+    """
+    out = Path(out_dir)
+    if not (out / "data" / "book.json").is_file():
+        if not html_path:
+            return {
+                "status": "failed",
+                "error": "data/book.json missing; provide --html to rebuild the semantic source export first.",
+                "out_dir": str(out),
+            }
+        rebuild_chess_source_html_export(html_path, out, pdf_path=pdf_path)
+    book = _load_source_book(out)
+    diagrams = _source_book_diagrams(book)
+    all_diagrams = list(diagrams)
+    page_filter = _parse_page_filter(page_ranges)
+    auto_extended_pages: list[int] = []
+    if page_filter is not None:
+        diagrams = [diagram for diagram in diagrams if int(diagram.get("page") or 0) in page_filter]
+        if int(min_count or 0) > 0 and len(diagrams) < int(min_count or 0):
+            diagrams, auto_extended_pages = _extend_fen_review_batch(
+                diagrams,
+                all_diagrams,
+                page_filter=page_filter,
+                min_count=int(min_count or 0),
+            )
+    if review_sample_limit and review_sample_limit > 0:
+        diagrams = diagrams[: int(review_sample_limit)]
+    rows = [_fen_manual_review_row(diagram, out) for diagram in diagrams]
+
+    review_dir = out / "review"
+    reports_dir = out / "reports"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    _write_jsonl(review_dir / "fen_manual_draft.jsonl", rows)
+    _write_csv(review_dir / "fen_manual_draft.csv", rows)
+    (review_dir / "fen_manual_review.html").write_text(_fen_manual_review_html(rows), encoding="utf-8")
+    summary = {
+        "status": "ok",
+        "schema": "kindlemaster.fen_manual_review.v1",
+        "diagram_count": len(rows),
+        "page_ranges": str(page_ranges or ""),
+        "min_count": int(min_count or 0),
+        "auto_extended_pages": auto_extended_pages,
+        "sampled_pages": sorted({int(row.get("page") or 0) for row in rows if int(row.get("page") or 0)}),
+        "source_book": str(out / "data" / "book.json"),
+        "review_html": str(review_dir / "fen_manual_review.html"),
+        "draft_jsonl": str(review_dir / "fen_manual_draft.jsonl"),
+        "policy": "manual_fen labels are evidence until promoted and evaluated; accepted FEN still requires deterministic validation.",
+    }
+    _write_json(reports_dir / "fen_review_queue.json", summary)
+    build_chess_quality_dashboard(out)
+    return summary
+
+
+def _extend_fen_review_batch(
+    selected: list[dict[str, Any]],
+    all_diagrams: list[dict[str, Any]],
+    *,
+    page_filter: set[int],
+    min_count: int,
+) -> tuple[list[dict[str, Any]], list[int]]:
+    """Extend a page-range sample with later diagrams without duplicating rows."""
+    if len(selected) >= min_count:
+        return selected, []
+    selected_ids = {str(item.get("id") or item.get("diagram_id") or "") for item in selected}
+    max_page = max(page_filter) if page_filter else 0
+    extended = list(selected)
+    added_pages: set[int] = set()
+    for diagram in all_diagrams:
+        page = int(diagram.get("page") or 0)
+        diagram_id = str(diagram.get("id") or diagram.get("diagram_id") or "")
+        if page <= max_page or page in page_filter or diagram_id in selected_ids:
+            continue
+        extended.append(diagram)
+        selected_ids.add(diagram_id)
+        if page:
+            added_pages.add(page)
+        if len(extended) >= min_count:
+            break
+    return extended, sorted(added_pages)
+
+
+def build_chess_fen_templates(
+    labels_path: str | Path,
+    *,
+    out_dir: str | Path,
+    profile: str = "study_manual_verified",
+    template_output_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    """Promote verified manual FEN labels and build deterministic templates."""
+    from scripts.build_chess_piece_templates import build_templates_from_labels
+
+    out = Path(out_dir)
+    reports_dir = out / "reports"
+    review_dir = out / "review"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    review_dir.mkdir(parents=True, exist_ok=True)
+    labels = _promote_verified_fen_labels(Path(labels_path), out)
+    promoted_path = review_dir / "fen_verified_labels.jsonl"
+    _write_jsonl(promoted_path, labels)
+    target = Path(template_output_dir) if template_output_dir else out / "assets" / "fen_templates" / _safe_filename(profile)
+    if labels:
+        template_summary = build_templates_from_labels(promoted_path, output_dir=target)
+    else:
+        target.mkdir(parents=True, exist_ok=True)
+        template_summary = {
+            "status": "failed",
+            "labels_path": str(promoted_path),
+            "output_dir": str(target),
+            "boards_processed": 0,
+            "template_count": 0,
+            "reason": "no_verified_valid_fen_labels",
+        }
+    summary = {
+        "status": "ok" if labels and template_summary.get("status") == "ok" else "failed",
+        "schema": "kindlemaster.fen_template_build.v1",
+        "profile": profile,
+        "labels_path": str(labels_path),
+        "promoted_labels_path": str(promoted_path),
+        "promoted_label_count": len(labels),
+        "template_output_dir": str(target),
+        "template_summary": template_summary,
+        "policy": "only verified manual FEN labels with valid crops are promoted into template training.",
+    }
+    _write_json(reports_dir / "fen_template_build.json", summary)
+    build_chess_quality_dashboard(out)
+    return summary
+
+
+def evaluate_chess_fen_profile(
+    labels_path: str | Path,
+    *,
+    out_dir: str | Path,
+    profile: str = "study_manual_verified",
+    fold_count: int = 5,
+    holdout_fold: int = 0,
+) -> dict[str, Any]:
+    """Run holdout evaluation after promoting verified labels.
+
+    The imported evaluator builds templates from the train split only, so the
+    holdout rows cannot leak into template construction.
+    """
+    from scripts.evaluate_chess_fen_profile_holdout import evaluate_chess_fen_profile_holdout
+
+    out = Path(out_dir)
+    reports_dir = out / "reports"
+    review_dir = out / "review"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    review_dir.mkdir(parents=True, exist_ok=True)
+    promoted_labels = _promote_verified_fen_labels(Path(labels_path), out)
+    promoted_path = review_dir / "fen_verified_labels.jsonl"
+    _write_jsonl(promoted_path, promoted_labels)
+    output_path = reports_dir / "fen_profile_eval.json"
+    if promoted_labels:
+        payload = evaluate_chess_fen_profile_holdout(
+            promoted_path,
+            fold_count=fold_count,
+            holdout_fold=holdout_fold,
+            output_path=output_path,
+        )
+    else:
+        payload = {
+            "status": "failed",
+            "labels_path": str(labels_path),
+            "profile": profile,
+            "promoted_label_count": 0,
+            "fold_count": max(2, int(fold_count)),
+            "holdout_fold": int(holdout_fold),
+            "reasons": ["no_verified_valid_fen_labels"],
+            "policy": "templates_built_from_train_split_only",
+        }
+        _write_json(output_path, payload)
+    payload["profile"] = profile
+    payload["promoted_labels_path"] = str(promoted_path)
+    payload["promoted_label_count"] = len(promoted_labels)
+    _write_json(output_path, payload)
+    _write_diagram_alignment_notes(out, payload)
+    build_chess_quality_dashboard(out)
+    return payload
+
+
+def build_chess_pgn_review(
+    out_dir: str | Path,
+    *,
+    glyph_mapping_file: str | Path | None = None,
+) -> dict[str, Any]:
+    """Build a chess-aware PGN review/lattice report from source HTML records."""
+    out = Path(out_dir)
+    if not (out / "data" / "book.json").is_file():
+        return {
+            "status": "failed",
+            "error": "data/book.json missing; run chess-study run-all/rebuild first or provide --html to fen-review.",
+            "out_dir": str(out),
+        }
+    book = _load_source_book(out)
+    records = list(book.get("pgn_records") or [])
+    accepted_fen_by_source = _accepted_source_fen_index(_source_book_diagrams(book))
+    glyph_mapping = _load_ocr_glyph_mapping(glyph_mapping_file)
+    lattice_rows = [
+        _pgn_lattice_row_from_record(record, glyph_mapping, accepted_fen_by_source=accepted_fen_by_source)
+        for record in records
+    ]
+    accepted = [row for row in lattice_rows if row.get("status") == "accepted"]
+    review_rows = [row for row in lattice_rows if row.get("status") != "accepted"]
+    diagnostics = _pgn_lattice_diagnostics(lattice_rows)
+    candidates = _build_glyph_mapping_candidates(diagnostics)
+
+    review_dir = out / "review"
+    reports_dir = out / "reports"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(review_dir / "glyph_mapping_candidates.json", candidates)
+    _write_json(review_dir / "glyph_mapping_manual.json", _glyph_mapping_manual_seed(candidates, glyph_mapping))
+    _write_json(review_dir / "unmapped_token_blockers.json", _pgn_unmapped_token_blockers(lattice_rows, glyph_mapping))
+    (review_dir / "glyph_mapping_review.html").write_text(_glyph_mapping_review_html(candidates), encoding="utf-8")
+    _write_jsonl(review_dir / "pgn_lattice_review.jsonl", lattice_rows)
+    _write_csv(review_dir / "pgn_lattice_review.csv", lattice_rows)
+    _write_pgn_replay_blockers_top10(out, lattice_rows)
+
+    games_pgn = "\n\n".join(str(row.get("pgn") or "").strip() for row in accepted if row.get("pgn")).strip()
+    (out / "data" / "games.pgn").write_text(games_pgn + ("\n" if games_pgn else ""), encoding="utf-8")
+    payload = {
+        "status": "ok",
+        "schema": "kindlemaster.pgn_lattice_eval.v1",
+        "pgn_total": len(lattice_rows),
+        "accepted_pgn": len(accepted),
+        "pgn_needs_review": len(review_rows),
+        "ocr_token_mappings_loaded": int(glyph_mapping.get("accepted_count") or 0),
+        "ocr_token_mappings_applied": sum(int(row.get("ocr_token_mappings_applied") or 0) for row in lattice_rows),
+        "fragments_blocked_by_unmapped_tokens": len([row for row in lattice_rows if row.get("unmapped_token_blockers")]),
+        "top_blockers": _top_counts(warning for row in lattice_rows for warning in row.get("warnings") or []),
+        "policy": "PGN accepted only when manual mappings remove token blockers and python-chess parser/replay passes.",
+    }
+    _write_json(reports_dir / "pgn_lattice_eval.json", payload)
+    build_chess_quality_dashboard(out)
+    return payload
+
+
+def build_ai_fen_candidates(
+    out_dir: str | Path,
+    *,
+    limit: int = 0,
+    dry_run: bool = False,
+    provider: Any | None = None,
+) -> dict[str, Any]:
+    """Generate review-only AI FEN candidates from extracted diagram crops."""
+    out = Path(out_dir)
+    review_dir = out / "review"
+    reports_dir = out / "reports"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    book = _load_source_book(out)
+    diagrams = _source_book_diagrams(book)
+    if limit and limit > 0:
+        diagrams = diagrams[:limit]
+
+    if provider is None and not dry_run:
+        try:
+            from openai_chess_fen_reviewer import build_openai_chess_fen_reviewer_from_env
+
+            provider = build_openai_chess_fen_reviewer_from_env(cwd=Path.cwd())
+        except Exception:
+            provider = None
+
+    rows: list[dict[str, Any]] = []
+    disagreements: list[dict[str, Any]] = []
+    verified_queue: list[dict[str, Any]] = []
+    for diagram in diagrams:
+        row = _ai_fen_candidate_row(out, diagram, provider=provider, dry_run=dry_run)
+        rows.append(row)
+        if row.get("status") == "ai_cv_conflict":
+            disagreements.append(row)
+        if row.get("status") in {"ai_cv_agree", "deterministic_valid"}:
+            verified_queue.append(_ai_verified_candidate_queue_row(row))
+
+    _write_jsonl(review_dir / "ai_fen_candidates.jsonl", rows)
+    _write_jsonl(review_dir / "ai_fen_disagreements.jsonl", disagreements)
+    _write_jsonl(review_dir / "ai_verified_candidate_queue.jsonl", verified_queue)
+    payload = {
+        "status": "ok",
+        "schema": "kindlemaster.ai_fen_candidates.v1",
+        "mode": "review_only",
+        "dry_run": bool(dry_run),
+        "diagram_count": len(rows),
+        "ai_suggested": len([row for row in rows if row.get("ai_fen_candidate")]),
+        "ai_cv_agree": len([row for row in rows if row.get("status") == "ai_cv_agree"]),
+        "ai_cv_conflict": len(disagreements),
+        "deterministic_valid": len([row for row in rows if row.get("deterministic_validation", {}).get("valid")]),
+        "verified_candidate_queue_count": len(verified_queue),
+        "accepted_fen_changed": 0,
+        "policy": "AI FEN candidates are review evidence only; accepted FEN still requires deterministic template/validation gates.",
+    }
+    _write_json(reports_dir / "ai_fen_candidates_eval.json", payload)
+    _write_ai_cost_report(out)
+    build_chess_quality_dashboard(out)
+    return payload
+
+
+def build_ai_pgn_candidates(
+    out_dir: str | Path,
+    *,
+    glyph_mapping_file: str | Path | None = None,
+    limit: int = 30,
+    dry_run: bool = False,
+    deepseek_provider: Any | None = None,
+    pgn_provider: Any | None = None,
+) -> dict[str, Any]:
+    """Generate review-only DeepSeek/GPT PGN repair candidates."""
+    out = Path(out_dir)
+    review_dir = out / "review"
+    reports_dir = out / "reports"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    if not (review_dir / "pgn_lattice_review.jsonl").is_file():
+        build_chess_pgn_review(out, glyph_mapping_file=glyph_mapping_file)
+    lattice_rows = _read_jsonl_rows(review_dir / "pgn_lattice_review.jsonl")
+    candidates_payload = _read_optional_json(review_dir / "glyph_mapping_candidates.json")
+    cluster_payload = _deepseek_pgn_cluster_payload(
+        out,
+        lattice_rows,
+        candidates_payload,
+        provider=deepseek_provider,
+        dry_run=dry_run,
+    )
+    _write_json(review_dir / "deepseek_glyph_clusters.json", cluster_payload)
+
+    if pgn_provider is None and not dry_run:
+        try:
+            from openai_chess_pgn_reviewer import build_openai_chess_pgn_reviewer_from_env
+
+            pgn_provider = build_openai_chess_pgn_reviewer_from_env(cwd=Path.cwd())
+        except Exception:
+            pgn_provider = None
+
+    selected = _select_ai_pgn_rows(lattice_rows, limit=max(0, int(limit or 0)))
+    pgn_rows = [
+        _ai_pgn_candidate_row(row, provider=pgn_provider, dry_run=dry_run)
+        for row in selected
+    ]
+    _write_jsonl(review_dir / "ai_pgn_candidates.jsonl", pgn_rows)
+    _write_jsonl(review_dir / "gpt_pgn_repair_candidates.jsonl", pgn_rows)
+    payload = {
+        "status": "ok",
+        "schema": "kindlemaster.ai_pgn_candidates.v1",
+        "mode": "review_only",
+        "dry_run": bool(dry_run),
+        "records_considered": len(lattice_rows),
+        "records_sent_for_gpt_repair": len(pgn_rows),
+        "deepseek_cluster_status": cluster_payload.get("status"),
+        "ai_suggested_pgn": len([row for row in pgn_rows if row.get("candidate_pgn")]),
+        "deterministic_replay_clean": len([row for row in pgn_rows if row.get("deterministic_replay_clean")]),
+        "accepted_pgn_changed": 0,
+        "policy": "AI PGN candidates are review evidence only; strict PGN export still requires local parser/replay gates.",
+    }
+    _write_json(reports_dir / "ai_pgn_candidates_eval.json", payload)
+    _write_ai_cost_report(out)
+    build_chess_quality_dashboard(out)
+    return payload
+
+
+def build_ai_assisted_quality_eval(out_dir: str | Path) -> dict[str, Any]:
+    out = Path(out_dir)
+    reports_dir = out / "reports"
+    review_dir = out / "review"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    dashboard = build_chess_quality_dashboard(out)
+    ai_fen = _read_optional_json(reports_dir / "ai_fen_candidates_eval.json")
+    ai_pgn = _read_optional_json(reports_dir / "ai_pgn_candidates_eval.json")
+    deepseek_clusters = _read_optional_json(review_dir / "deepseek_glyph_clusters.json")
+    payload = {
+        "status": "ok",
+        "schema": "kindlemaster.ai_assisted_quality_eval.v1",
+        "mode": "evidence_only",
+        "dashboard": {
+            "diagrams_total": dashboard.get("diagrams_total", 0),
+            "fen_accepted": dashboard.get("fen_accepted", 0),
+            "pgn_total": dashboard.get("pgn_total", 0),
+            "accepted_pgn": dashboard.get("accepted_pgn", 0),
+        },
+        "ai_fen": {
+            "status": ai_fen.get("status") or "not_run",
+            "diagram_count": ai_fen.get("diagram_count", 0),
+            "ai_suggested": ai_fen.get("ai_suggested", 0),
+            "ai_cv_agree": ai_fen.get("ai_cv_agree", 0),
+            "ai_cv_conflict": ai_fen.get("ai_cv_conflict", 0),
+            "verified_candidate_queue_count": ai_fen.get("verified_candidate_queue_count", 0),
+        },
+        "ai_pgn": {
+            "status": ai_pgn.get("status") or "not_run",
+            "records_sent_for_gpt_repair": ai_pgn.get("records_sent_for_gpt_repair", 0),
+            "ai_suggested_pgn": ai_pgn.get("ai_suggested_pgn", 0),
+            "deterministic_replay_clean": ai_pgn.get("deterministic_replay_clean", 0),
+        },
+        "deepseek": {
+            "status": deepseek_clusters.get("status") or "not_run",
+            "cluster_count": deepseek_clusters.get("cluster_count", 0),
+            "candidate_mapping_count": deepseek_clusters.get("candidate_mapping_count", 0),
+        },
+        "accepted_changed_by_ai": False,
+        "policy": "AI may shorten review, but accepted FEN/PGN remains controlled by deterministic validators.",
+    }
+    _write_json(reports_dir / "ai_assisted_quality_eval.json", payload)
+    _write_ai_cost_report(out)
+    build_chess_quality_dashboard(out)
+    return payload
+
+
+def render_semantic_source_reader(out_dir: str | Path) -> dict[str, Any]:
+    out = Path(out_dir)
+    book = _load_source_book(out)
+    if not book:
+        return {
+            "status": "failed",
+            "error": "data/book.json missing; run chess-study run-all/rebuild from source HTML first.",
+            "out_dir": str(out),
+        }
+    (out / "styles.css").write_text(_semantic_source_styles_css(), encoding="utf-8")
+    (out / "app.js").write_text(_semantic_source_app_js(), encoding="utf-8")
+    (out / "index.html").write_text(_semantic_source_index_html(book), encoding="utf-8")
+    page_count = len([page for page in book.get("pages") or [] if _semantic_source_page_elements(page)])
+    return {
+        "status": "ok",
+        "schema": "kindlemaster.semantic_source_reader.v1",
+        "index_html": str(out / "index.html"),
+        "rendered_pages_with_content": page_count,
+        "layout": "logical_study_blocks",
+        "policy": "index.html is the default semantic reader; PDF preview is only an optional details/link.",
+    }
+
+
+def build_chess_quality_dashboard(out_dir: str | Path) -> dict[str, Any]:
+    out = Path(out_dir)
+    reports_dir = out / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    book = _load_source_book(out) if (out / "data" / "book.json").is_file() else {}
+    diagrams = _source_book_diagrams(book)
+    pgn_records = list(book.get("pgn_records") or [])
+    fen_eval = _read_optional_json(reports_dir / "fen_profile_eval.json")
+    pgn_eval = _read_optional_json(reports_dir / "pgn_lattice_eval.json")
+    ai_eval = _read_optional_json(reports_dir / "ai_assisted_quality_eval.json")
+    pages = _quality_dashboard_pages(book, diagrams, pgn_records)
+    summary = {
+        "schema": "kindlemaster.chess_quality_dashboard.v1",
+        "status": "ok",
+        "pages": len(list(book.get("pages") or [])),
+        "diagrams_total": len(diagrams),
+        "fen_accepted": len([item for item in diagrams if item.get("validation_status") == "accepted"]),
+        "fen_needs_review": len([item for item in diagrams if item.get("validation_status") != "accepted"]),
+        "pgn_total": len(pgn_records),
+        "accepted_pgn": int(pgn_eval.get("accepted_pgn") or len([item for item in pgn_records if item.get("status") == "accepted"])),
+        "pgn_needs_review": int(pgn_eval.get("pgn_needs_review") or len([item for item in pgn_records if item.get("status") != "accepted"])),
+        "fen_profile_status": fen_eval.get("status") or "not_run",
+        "pgn_lattice_status": pgn_eval.get("status") or "not_run",
+        "ai_assisted_status": ai_eval.get("status") or "not_run",
+        "ai_fen_candidates": (ai_eval.get("ai_fen") or {}).get("ai_suggested", 0),
+        "ai_pgn_candidates": (ai_eval.get("ai_pgn") or {}).get("ai_suggested_pgn", 0),
+        "targets": {
+            "7/10": "50-100 accepted FEN and several accepted PGN",
+            "8/10": "majority of diagrams accepted",
+            "9/10": ">90% FEN accepted and >70% PGN accepted without false accepted records",
+        },
+        "pages_detail": pages,
+    }
+    _write_json(reports_dir / "chess_quality_dashboard.json", summary)
+    (reports_dir / "chess_quality_dashboard.html").write_text(_quality_dashboard_html(summary), encoding="utf-8")
+    _write_iteration_status(out, summary)
+    return summary
+
+
+def _load_source_book(out_dir: Path) -> dict[str, Any]:
+    book_path = out_dir / "data" / "book.json"
+    if not book_path.is_file():
+        return {}
+    try:
+        return json.loads(book_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _source_book_diagrams(book: dict[str, Any]) -> list[dict[str, Any]]:
+    diagrams: list[dict[str, Any]] = []
+    for page in book.get("pages") or []:
+        for diagram in page.get("diagrams") or []:
+            if not isinstance(diagram, dict):
+                continue
+            diagrams.append({**diagram, "page": int(diagram.get("page") or page.get("page") or 0)})
+    diagrams.sort(key=_source_order_key)
+    return diagrams
+
+
+def _write_iteration_status(out_dir: Path, dashboard: dict[str, Any]) -> None:
+    review_dir = out_dir / "review"
+    reports_dir = out_dir / "reports"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    fen_review = _read_optional_json(reports_dir / "fen_review_queue.json")
+    fen_build = _read_optional_json(reports_dir / "fen_template_build.json")
+    fen_eval = _read_optional_json(reports_dir / "fen_profile_eval.json")
+    pgn_eval = _read_optional_json(reports_dir / "pgn_lattice_eval.json")
+    verified = int(fen_eval.get("promoted_label_count") or fen_build.get("promoted_label_count") or 0)
+    blocked_tokens = int(pgn_eval.get("fragments_blocked_by_unmapped_tokens") or 0)
+    lines = [
+        "# Chess Study Iteration Status",
+        "",
+        "## Current Metrics",
+        "",
+        f"- FEN review batch: `{fen_review.get('diagram_count', 0)}` diagram(s), ranges `{fen_review.get('page_ranges') or 'all'}`.",
+        f"- Verified FEN labels promoted: `{verified}`.",
+        f"- FEN accepted: `{dashboard.get('fen_accepted', 0)}` / `{dashboard.get('diagrams_total', 0)}`.",
+        f"- PGN accepted: `{dashboard.get('accepted_pgn', 0)}` / `{dashboard.get('pgn_total', 0)}`.",
+        f"- PGN unmapped token blockers: `{blocked_tokens}`.",
+        f"- FEN profile status: `{dashboard.get('fen_profile_status')}`.",
+        f"- PGN lattice status: `{dashboard.get('pgn_lattice_status')}`.",
+        "",
+        "## Gates",
+        "",
+        f"- Gate 1 Dataset: `{'PASS' if verified >= 30 else 'BLOCKED'}` - requires >=30 verified FEN labels.",
+        f"- Gate 2 Template: `{'PASS' if fen_eval.get('status') == 'passed' else 'BLOCKED'}` - requires holdout pass.",
+        f"- Gate 3 PGN: `{'PASS' if int(dashboard.get('accepted_pgn') or 0) > 0 else 'BLOCKED'}` - requires parser/replay accepted PGN.",
+        "",
+        "## Agent Next Actions",
+        "",
+        "- Agent A: fill verified FEN labels in `review/fen_manual_review.html` and export JSONL.",
+        "- Agent B: run template build and holdout once verified labels exist.",
+        "- Agent C: review `review/diagram_alignment_notes.jsonl` after holdout.",
+        "- Agent D: confirm OCR token mappings in `review/glyph_mapping_manual.json`.",
+        "- Agent E: inspect `review/pgn_replay_blockers_top10.md` after PGN review.",
+        "- Agent F: inspect `reports/chess_quality_dashboard.html` after each iteration.",
+        "",
+        "Policy: no agent may increase accepted counts by directly editing JSON statuses.",
+    ]
+    (review_dir / "iteration_status.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_diagram_alignment_notes(out_dir: Path, fen_eval: dict[str, Any]) -> None:
+    review_dir = out_dir / "review"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    cases = list(fen_eval.get("holdout_cases") or [])
+    rows: list[dict[str, Any]] = []
+    if not cases:
+        rows.append(
+            {
+                "status": "pending",
+                "reason": "holdout_not_run_or_no_failure_cases",
+                "recommended_action": "collect_verified_fen_labels_then_run_evaluate_fen_profile",
+            }
+        )
+    for case in cases:
+        warnings = [str(item) for item in case.get("warnings") or []]
+        reason = _diagram_alignment_reason(case, warnings)
+        rows.append(
+            {
+                "diagram_id": case.get("id") or "",
+                "crop_path": case.get("crop_path") or "",
+                "expected_fen": case.get("expected_fen") or "",
+                "actual_fen": case.get("actual_fen") or "",
+                "matched": bool(case.get("matched")),
+                "false_positive": bool(case.get("false_positive")),
+                "confidence": case.get("confidence", 0.0),
+                "warnings": warnings,
+                "failure_reason": reason,
+                "recommended_alignment": _recommended_alignment_for_reason(reason),
+                "manual_note": "",
+            }
+        )
+    _write_jsonl(review_dir / "diagram_alignment_notes.jsonl", rows)
+
+
+def _diagram_alignment_reason(case: dict[str, Any], warnings: list[str]) -> str:
+    joined = " ".join(warnings).lower()
+    if case.get("false_positive"):
+        return "false_positive"
+    if "coordinate" in joined or "border" in joined:
+        return "coordinates_included"
+    if "tight" in joined or "cropped" in joined or "missing_edge" in joined:
+        return "crop_too_tight"
+    if "wide" in joined or "margin" in joined:
+        return "crop_too_wide"
+    if "center" in joined or "off_center" in joined:
+        return "board_not_centered"
+    if "template" in joined or "conflict" in joined:
+        return "template_conflict"
+    if "low_confidence" in warnings or float(case.get("confidence") or 0.0) < 0.5:
+        return "piece_glyph_low_quality"
+    if not case.get("actual_fen"):
+        return "board_not_detected"
+    if case.get("expected_fen") and case.get("actual_fen") and case.get("expected_fen") != case.get("actual_fen"):
+        return "template_conflict"
+    return "uncertain_alignment_or_template_issue"
+
+
+def _recommended_alignment_for_reason(reason: str) -> str:
+    return {
+        "false_positive": "exclude_from_strict_dataset",
+        "crop_too_wide": "try_tight_or_inner_grid_crop",
+        "crop_too_tight": "try_expand_or_center_square_crop",
+        "board_not_centered": "try_center_square_crop",
+        "coordinates_included": "try_remove_coordinates_or_inner_grid_crop",
+        "template_conflict": "compare_crop_vs_render_and_add_piece_templates",
+        "piece_glyph_low_quality": "review_template_coverage_or_ml_square_classifier",
+        "board_not_detected": "try_expanded_crop_or_center_square",
+        "uncertain_alignment_or_template_issue": "manual_crop_review",
+    }.get(reason, "manual_crop_review")
+
+
+def _write_pgn_replay_blockers_top10(out_dir: Path, rows: list[dict[str, Any]]) -> None:
+    review_dir = out_dir / "review"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    candidates = [row for row in rows if row.get("status") != "accepted"]
+    candidates.sort(key=_pgn_blocker_rank)
+    lines = [
+        "# PGN Replay Blockers Top 10",
+        "",
+        "This report is evidence-only. It does not mark PGN accepted.",
+        "",
+    ]
+    if not candidates:
+        lines.append("No PGN replay blockers found.")
+    for index, row in enumerate(candidates[:10], start=1):
+        replay = _pgn_replay_failure_summary(str(row.get("pgn_candidate") or ""))
+        warnings = ", ".join(str(item) for item in row.get("warnings") or [])
+        tokens = ", ".join(str(item) for item in row.get("unmapped_token_blockers") or [])
+        lines.extend(
+            [
+                f"## {index}. {row.get('record_id') or 'unknown'} - page {row.get('page')}",
+                "",
+                f"- Label: `{row.get('label') or ''}`",
+                f"- Status: `{row.get('status')}`",
+                f"- Warnings: `{warnings}`",
+                f"- Unmapped tokens: `{tokens}`",
+                f"- Replay failure: `{replay}`",
+                "",
+                "Raw text:",
+                "",
+                f"```text\n{row.get('raw_text') or ''}\n```",
+                "",
+                "Normalized text:",
+                "",
+                f"```text\n{row.get('normalized_text') or ''}\n```",
+                "",
+                "PGN candidate:",
+                "",
+                f"```pgn\n{_bounded_text(str(row.get('pgn_candidate') or ''), limit=1200)}\n```",
+                "",
+            ]
+        )
+    (review_dir / "pgn_replay_blockers_top10.md").write_text("\n".join(lines), encoding="utf-8")
+
+
+def _pgn_blocker_rank(row: dict[str, Any]) -> tuple[int, int, int, int, str]:
+    warnings = set(str(item) for item in row.get("warnings") or [])
+    blockers = list(row.get("unmapped_token_blockers") or [])
+    text = f"{row.get('normalized_text') or ''} {row.get('raw_text') or ''}"
+    move_like = re.search(
+        r"\b\d{1,3}\.(?:\.\.)?\s*(?:O-O(?:-O)?|0-0(?:-0)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8]|[a-h]x[a-h][1-8])",
+        text,
+    )
+    no_move_penalty = 0 if move_like else 1
+    hard_score = sum(
+        1
+        for key in [
+            "unmapped_ocr_tokens",
+            UNMAPPED_CHESS_GLYPH_WARNING,
+            "pgn_replay_errors",
+            "side_to_move_mismatch",
+            "move_number_jump",
+            "move_number_regression",
+        ]
+        if key in warnings
+    )
+    return (no_move_penalty, hard_score, len(blockers), len(warnings), str(row.get("record_id") or ""))
+
+
+def _pgn_replay_failure_summary(pgn_text: str) -> str:
+    value = str(pgn_text or "").strip()
+    if not value:
+        return "empty_pgn_candidate"
+    try:
+        import logging
+        import chess.pgn  # type: ignore[import-not-found]
+
+        logger = logging.getLogger("chess.pgn")
+        was_disabled = logger.disabled
+        logger.disabled = True
+        try:
+            game = chess.pgn.read_game(io.StringIO(value))
+        finally:
+            logger.disabled = was_disabled
+        if game is None:
+            return "parser_returned_no_game"
+        errors = getattr(game, "errors", None)
+        if errors:
+            return _bounded_text(str(errors[0]), limit=160)
+        board = game.board()
+        move_count = 0
+        for move in game.mainline_moves():
+            if move not in board.legal_moves:
+                return f"illegal_move_at_ply_{move_count + 1}:{move}"
+            board.push(move)
+            move_count += 1
+        if move_count <= 0:
+            return "no_mainline_moves"
+        return "replay_clean"
+    except Exception as exc:
+        return _bounded_text(type(exc).__name__ + ": " + str(exc), limit=160)
+
+
+def _fen_manual_review_row(diagram: dict[str, Any], out_dir: Path) -> dict[str, Any]:
+    image_rel = str(diagram.get("image_path") or "")
+    crop_path = (out_dir / image_rel).resolve() if image_rel else Path("")
+    fen = str(diagram.get("fen") or "").strip()
+    candidate = str(diagram.get("fen_candidate") or "").strip()
+    return {
+        "diagram_id": str(diagram.get("id") or diagram.get("diagram_id") or ""),
+        "page": int(diagram.get("page") or 0),
+        "reading_order": int(diagram.get("reading_order") or 0),
+        "bbox": diagram.get("bbox") or [0, 0, 0, 0],
+        "caption": str(diagram.get("caption") or ""),
+        "crop_path": str(crop_path) if image_rel else "",
+        "crop_rel_path": image_rel,
+        "current_fen": fen,
+        "fen_candidate": candidate,
+        "manual_fen": "",
+        "side_to_move": str(diagram.get("side_to_move") or "unknown"),
+        "manual_side_to_move": "",
+        "confidence": float(diagram.get("confidence") or 0.0),
+        "validation_status": str(diagram.get("validation_status") or "needs-human-review"),
+        "review_reason": str(diagram.get("review_reason") or "manual_fen_required"),
+        "manual_label": "needs_manual_fen",
+        "label_status": "draft",
+        "verified_by": "",
+        "verified_at": "",
+        "notes": "",
+    }
+
+
+def _fen_manual_review_html(rows: list[dict[str, Any]]) -> str:
+    cards = "\n".join(_fen_manual_review_card(row) for row in rows) or "<p>No diagram crops found.</p>"
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FEN Manual Review</title>
+  <style>
+    :root {{ --ink:#21170f; --paper:#fff8ec; --line:#d8c4a8; --accent:#8a4516; }}
+    * {{ box-sizing:border-box; }}
+    body {{ margin:0; font-family:Georgia,'Times New Roman',serif; color:var(--ink); background:#f0e3cf; }}
+    header {{ position:sticky; top:0; z-index:2; padding:1rem 1.25rem; color:#fff8ec; background:#24170f; box-shadow:0 12px 30px rgba(0,0,0,.18); }}
+    main {{ max-width:1180px; margin:0 auto; padding:1rem; }}
+    .grid {{ display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:1rem; }}
+    article {{ background:var(--paper); border:1px solid var(--line); border-radius:18px; padding:1rem; box-shadow:0 12px 32px rgba(64,39,12,.08); }}
+    img {{ width:100%; aspect-ratio:1; object-fit:contain; background:#fff; border:1px solid var(--line); border-radius:12px; }}
+    label {{ display:block; margin:.55rem 0 .2rem; font-weight:800; }}
+    input, select, textarea {{ width:100%; border:1px solid var(--line); border-radius:10px; padding:.45rem .55rem; font:inherit; background:#fffdf8; }}
+    code {{ overflow-wrap:anywhere; }}
+    .meta {{ color:#735f49; font-size:.9rem; }}
+    .actions {{ display:flex; flex-wrap:wrap; gap:.5rem; margin:.85rem 0; }}
+    button {{ border:0; border-radius:999px; padding:.55rem .8rem; background:var(--accent); color:#fff8ec; font-weight:900; cursor:pointer; }}
+    pre {{ white-space:pre-wrap; background:#fffdf8; border:1px solid var(--line); border-radius:12px; padding:.75rem; max-height:14rem; overflow:auto; }}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>FEN Manual Review</h1>
+    <p>{len(rows)} diagram crop(s). Fill manual FEN only after human verification; export JSONL and use build-fen-templates.</p>
+    <div class="actions"><button type="button" id="export-jsonl">Export filled JSONL</button></div>
+  </header>
+  <main><section class="grid">{cards}</section><pre id="export-preview" aria-live="polite"></pre></main>
+  <script>
+  const cards = [...document.querySelectorAll('[data-row]')];
+  function rowFromCard(card) {{
+    const seed = JSON.parse(card.dataset.row);
+    seed.manual_fen = card.querySelector('[name="manual_fen"]').value.trim();
+    seed.manual_side_to_move = card.querySelector('[name="manual_side_to_move"]').value.trim();
+    seed.manual_label = card.querySelector('[name="manual_label"]').value;
+    seed.label_status = card.querySelector('[name="label_status"]').value;
+    seed.notes = card.querySelector('[name="notes"]').value.trim();
+    return seed;
+  }}
+  document.getElementById('export-jsonl').addEventListener('click', () => {{
+    const jsonl = cards.map(rowFromCard).map(row => JSON.stringify(row)).join('\\n') + '\\n';
+    document.getElementById('export-preview').textContent = jsonl;
+    const blob = new Blob([jsonl], {{type:'application/x-ndjson'}});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'fen_manual_draft.filled.jsonl'; a.click();
+    URL.revokeObjectURL(url);
+  }});
+  </script>
+</body>
+</html>"""
+
+
+def _fen_manual_review_card(row: dict[str, Any]) -> str:
+    data = html.escape(json.dumps(row, ensure_ascii=False), quote=True)
+    image = html.escape(str(row.get("crop_rel_path") or ""), quote=True)
+    return f"""<article data-row="{data}">
+  <h2>{html.escape(str(row.get('caption') or row.get('diagram_id') or 'Diagram'))}</h2>
+  <p class="meta">Page {int(row.get('page') or 0)} · confidence {float(row.get('confidence') or 0.0):.3f}</p>
+  <img src="../{image}" alt="{html.escape(str(row.get('caption') or row.get('diagram_id') or 'Diagram'), quote=True)}">
+  <p class="meta">Current candidate: <code>{html.escape(str(row.get('fen_candidate') or ''))}</code></p>
+  <label>Manual FEN</label><input name="manual_fen" placeholder="8/8/8/8/8/8/8/4K2k w - - 0 1">
+  <label>Side to move</label><select name="manual_side_to_move"><option value="">unknown</option><option value="w">white</option><option value="b">black</option></select>
+  <label>Label</label><select name="manual_label"><option>needs_manual_fen</option><option>correct_diagram</option><option>cropped_diagram</option><option>false_positive</option><option>uncertain</option></select>
+  <label>Status</label><select name="label_status"><option>draft</option><option>verified</option><option>rejected</option></select>
+  <label>Notes</label><textarea name="notes" rows="3"></textarea>
+</article>"""
+
+
+def _promote_verified_fen_labels(labels_path: Path, out_dir: Path) -> list[dict[str, Any]]:
+    rows = _read_jsonl_rows(labels_path)
+    promoted: list[dict[str, Any]] = []
+    for row in rows:
+        status = str(row.get("label_status") or row.get("status") or "").strip().lower()
+        manual_label = str(row.get("manual_label") or row.get("label") or "").strip().lower()
+        if status not in {"verified", "accepted", "promoted"}:
+            continue
+        if manual_label not in {"correct_diagram", "cropped_diagram"}:
+            continue
+        fen = str(row.get("manual_fen") or row.get("fen") or row.get("current_fen") or "").strip()
+        if not fen:
+            continue
+        valid, warnings = validate_fen(fen)
+        if not valid or warnings:
+            continue
+        manual_side = str(row.get("manual_side_to_move") or row.get("side_to_move") or "").strip().lower()
+        if manual_side in {"white", "w"}:
+            manual_side = "w"
+        elif manual_side in {"black", "b"}:
+            manual_side = "b"
+        else:
+            manual_side = ""
+        fen_side = fen.split()[1] if len(fen.split()) >= 2 else ""
+        if manual_side and fen_side and manual_side != fen_side:
+            continue
+        crop_path = _resolve_review_crop_path(row, out_dir)
+        if not crop_path.is_file():
+            continue
+        promoted.append(
+            {
+                "diagram_id": row.get("diagram_id") or row.get("id") or crop_path.stem,
+                "fen": fen,
+                "crop_path": str(crop_path),
+                "page": _safe_int(row.get("page")),
+                "source": str(labels_path),
+                "label_status": "verified",
+                "manual_label": manual_label or "correct_diagram",
+                "manual_side_to_move": manual_side or fen_side,
+                "verified_by": str(
+                    row.get("verified_by")
+                    or row.get("reviewer")
+                    or row.get("verification_source")
+                    or "verified_label_import"
+                ),
+                "verified_at": str(row.get("verified_at") or row.get("reviewed_at") or date.today().isoformat()),
+                "notes": row.get("notes") or row.get("reviewer_note") or "",
+            }
+        )
+    return promoted
+
+
+def _resolve_review_crop_path(row: dict[str, Any], out_dir: Path) -> Path:
+    crop_value = str(row.get("crop_path") or "").strip()
+    if crop_value:
+        crop_path = Path(crop_value)
+        if crop_path.is_file():
+            return crop_path
+    rel_value = str(row.get("crop_rel_path") or row.get("image_path") or "").strip()
+    return (out_dir / rel_value) if rel_value else Path("")
+
+
+def _read_jsonl_rows(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def _accepted_source_fen_index(diagrams: list[dict[str, Any]]) -> dict[str, str]:
+    index: dict[str, str] = {}
+    for diagram in diagrams:
+        if str(diagram.get("validation_status") or diagram.get("status") or "") != "accepted":
+            continue
+        fen = str(diagram.get("fen") or "").strip()
+        if not fen:
+            continue
+        valid, warnings = validate_fen(fen)
+        if not valid or warnings:
+            continue
+        for key in [
+            diagram.get("id"),
+            diagram.get("diagram_id"),
+            diagram.get("caption"),
+            diagram.get("label"),
+        ]:
+            normalized = _normalize_source_label(str(key or ""))
+            if normalized:
+                index[normalized] = fen
+    return index
+
+
+def _record_source_fen(record: dict[str, Any], accepted_fen_by_source: dict[str, str]) -> str:
+    for key in [
+        record.get("diagram_id"),
+        record.get("source_diagram"),
+        record.get("label"),
+        record.get("id"),
+    ]:
+        normalized = _normalize_source_label(str(key or ""))
+        if normalized and normalized in accepted_fen_by_source:
+            return accepted_fen_by_source[normalized]
+    return ""
+
+
+def _record_requires_source_fen(record: dict[str, Any]) -> bool:
+    value = " ".join(
+        str(record.get(key) or "")
+        for key in ["diagram_id", "source_diagram", "label", "raw_text", "visible_review_text"]
+    )
+    return bool(re.search(r"\b(?:Diagram|Ex\.)\s*\d{1,2}[-.]\d{1,2}\b", value, flags=re.IGNORECASE))
+
+
+def _pgn_lattice_row_from_record(
+    record: dict[str, Any],
+    glyph_mapping: dict[str, Any],
+    *,
+    accepted_fen_by_source: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    raw_text = str(record.get("visible_review_text") or record.get("raw_text") or "")
+    normalized = _normalize_notation_text(raw_text)
+    mapped, mapping_result = _apply_ocr_glyph_mapping(normalized, glyph_mapping)
+    source_fen = _record_source_fen(record, accepted_fen_by_source or {})
+    requires_source_fen = _record_requires_source_fen(record)
+    candidate = str(record.get("pgn") or "").strip()
+    if not candidate:
+        candidate = _build_notation_pgn_candidate(
+            mapped,
+            page=int(record.get("logical_page") or record.get("source_page") or 0),
+            source_diagram=str(record.get("label") or record.get("id") or ""),
+            fen=source_fen,
+            comments=[],
+        )
+    inherited_warnings = [str(item) for item in record.get("warnings") or []]
+    blockers = list(mapping_result.get("unmapped_tokens") or [])
+    warnings = [warning for warning in inherited_warnings if warning != UNMAPPED_CHESS_GLYPH_WARNING or blockers]
+    if blockers:
+        warnings.append("unmapped_ocr_tokens")
+    if not _pgn_has_required_headers(candidate):
+        warnings.append("pgn_missing_required_headers")
+    if not _pgn_has_source_page(candidate):
+        warnings.append("pgn_missing_source_page")
+    if requires_source_fen and not source_fen:
+        warnings.append("source_fen_not_accepted")
+    if source_fen and not _pgn_has_setup_fen(candidate):
+        warnings.append("pgn_missing_setup_fen")
+    if not _pgn_replay_clean(candidate):
+        warnings.append("pgn_replay_errors")
+    blocking = {
+        "move_number_jump",
+        "move_number_regression",
+        "side_to_move_mismatch",
+        "pgn_missing_or_not_embedded",
+        "pgn_missing_required_headers",
+        "pgn_missing_source_page",
+        "pgn_missing_setup_fen",
+        "pgn_replay_errors",
+        "source_fen_not_accepted",
+        "unmapped_ocr_tokens",
+        UNMAPPED_CHESS_GLYPH_WARNING,
+    }
+    status = "accepted" if not (set(warnings) & blocking) else "needs_review"
+    return {
+        "record_id": record.get("id"),
+        "page": int(record.get("logical_page") or record.get("source_page") or 0),
+        "label": record.get("label") or "",
+        "raw_text": _bounded_text(raw_text, limit=600),
+        "normalized_text": _bounded_text(mapped, limit=600),
+        "pgn": candidate if status == "accepted" else "",
+        "pgn_candidate": candidate,
+        "status": status,
+        "warnings": sorted(set(warnings or ["needs_manual_pgn_review"])),
+        "ocr_token_mappings_applied": int(mapping_result.get("applied_count") or 0),
+        "unmapped_token_blockers": blockers,
+        "requires_source_fen": requires_source_fen,
+        "source_fen": source_fen,
+        "validation_status": "validated" if status == "accepted" else "not_validated",
+    }
+
+
+def _pgn_lattice_diagnostics(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    diagnostics: list[dict[str, Any]] = []
+    for row in rows:
+        tokens = list(row.get("unmapped_token_blockers") or [])
+        if not tokens:
+            tokens = _glyph_mapping_tokens(str(row.get("raw_text") or ""))
+        for token in tokens:
+            diagnostics.append(
+                {
+                    "warning": UNMAPPED_CHESS_GLYPH_WARNING,
+                    "source": "pgn-lattice-review",
+                    "page": row.get("page"),
+                    "font_name": "ocr-only",
+                    "raw_text": token,
+                    "context": row.get("raw_text"),
+                    "codepoints": [_codepoint_label(char) for char in str(token)],
+                    "bbox": [0, 0, 0, 0],
+                    "reasons": ["ocr_token_blocker"],
+                }
+            )
+    return diagnostics
+
+
+def _glyph_mapping_manual_seed(candidates: dict[str, Any], glyph_mapping: dict[str, Any]) -> dict[str, Any]:
+    accepted = glyph_mapping.get("accepted") or {}
+    mappings: list[dict[str, Any]] = []
+    for token, row in accepted.items():
+        mappings.append(
+            {
+                "token": token,
+                "replacement": row.get("replacement") or "",
+                "scope": row.get("scope") or "ocr_only",
+                "status": "accepted",
+                "examples": row.get("examples") or [],
+                "reviewer_note": row.get("reviewer_note") or "",
+            }
+        )
+    for candidate in candidates.get("candidates") or []:
+        token = str(candidate.get("token") or "")
+        if not token or token in accepted:
+            continue
+        mappings.append(
+            {
+                "token": token,
+                "replacement": "",
+                "scope": "ocr_only",
+                "status": "draft",
+                "examples": candidate.get("examples") or [],
+                "reviewer_note": "",
+            }
+        )
+        if len(mappings) >= 120:
+            break
+    return {
+        "schema": "kindlemaster.ocr_glyph_mapping.v1",
+        "instructions": "Only status=accepted mappings affect PGN candidates. Parser/replay still decides accepted PGN.",
+        "mappings": mappings,
+    }
+
+
+def _pgn_unmapped_token_blockers(rows: list[dict[str, Any]], glyph_mapping: dict[str, Any]) -> dict[str, Any]:
+    blocked = [
+        {
+            "record_id": row.get("record_id"),
+            "page": row.get("page"),
+            "label": row.get("label"),
+            "unmapped_token_blockers": row.get("unmapped_token_blockers") or [],
+            "raw_text": row.get("raw_text"),
+        }
+        for row in rows
+        if row.get("unmapped_token_blockers")
+    ]
+    return {
+        "blocker_count": len(blocked),
+        "raw_glyph_context_mode": "ocr_only",
+        "ocr_token_mappings_loaded": int(glyph_mapping.get("accepted_count") or 0),
+        "fragments": blocked[:500],
+    }
+
+
+def _ai_fen_candidate_row(out_dir: Path, diagram: dict[str, Any], *, provider: Any | None, dry_run: bool) -> dict[str, Any]:
+    diagram_id = str(diagram.get("id") or diagram.get("diagram_id") or f"diagram_{len(str(diagram))}")
+    crop_path = _diagram_crop_path(out_dir, diagram)
+    image_bytes = crop_path.read_bytes() if crop_path.is_file() and not dry_run else b""
+    image_sha = _file_sha256(crop_path) if crop_path.is_file() else ""
+    context = {
+        "diagram_id": diagram_id,
+        "page": int(diagram.get("page") or 0),
+        "caption": str(diagram.get("caption") or diagram.get("label") or ""),
+        "bbox": diagram.get("bbox") or [0, 0, 0, 0],
+        "side_to_move_hint": str(diagram.get("side_to_move") or "unknown"),
+        "image_mime_type": _image_mime_type(crop_path),
+        "image_data": image_bytes,
+        "has_image": crop_path.is_file(),
+    }
+    result: dict[str, Any]
+    if dry_run:
+        result = {
+            "status": "request_manifest",
+            "provider": "openai-chess-fen-reviewer",
+            "model": "",
+            "fen": "",
+            "side_to_move": "unknown",
+            "confidence": 0.0,
+            "needs_review": True,
+            "reason": "dry_run_request_manifest",
+            "estimated_cost_usd": 0.0,
+        }
+    elif provider is None:
+        result = {
+            "status": "needs_review",
+            "provider": "none",
+            "model": "",
+            "fen": "",
+            "side_to_move": "unknown",
+            "confidence": 0.0,
+            "needs_review": True,
+            "reason": "openai_fen_provider_not_configured",
+            "estimated_cost_usd": 0.0,
+        }
+    else:
+        try:
+            result = dict(provider.propose_chess_fen_from_crop(context))
+        except Exception as exc:
+            result = {
+                "status": "needs_review",
+                "provider": getattr(provider, "name", "openai-chess-fen-reviewer"),
+                "model": getattr(provider, "model", ""),
+                "fen": "",
+                "side_to_move": "unknown",
+                "confidence": 0.0,
+                "needs_review": True,
+                "reason": f"provider_error:{type(exc).__name__}:{exc}",
+                "estimated_cost_usd": 0.0,
+            }
+    raw_ai_fen = str(result.get("fen") or "").strip()
+    normalized_ai_fen, normalization_warnings = _normalize_ai_fen_candidate(
+        raw_ai_fen,
+        side_to_move=str(result.get("side_to_move") or "unknown"),
+    )
+    result = {**result, "fen": normalized_ai_fen}
+    validation = _validate_ai_fen_candidate(
+        normalized_ai_fen,
+        out_dir,
+        diagram_id=diagram_id,
+        side_to_move=str(result.get("side_to_move") or "unknown"),
+        extra_warnings=normalization_warnings,
+    )
+    local_fen = str(diagram.get("fen") or diagram.get("fen_candidate") or "").strip()
+    local_valid = False
+    if local_fen:
+        local_valid, local_warnings = validate_fen(local_fen)
+        local_valid = local_valid and not local_warnings
+    status = _ai_fen_status(result, validation, local_fen=local_fen, local_valid=local_valid)
+    return {
+        "schema": "kindlemaster.ai_fen_candidate.v1",
+        "diagram_id": diagram_id,
+        "page": int(diagram.get("page") or 0),
+        "caption": str(diagram.get("caption") or diagram.get("label") or ""),
+        "bbox": diagram.get("bbox") or [0, 0, 0, 0],
+        "crop_path": str(crop_path) if crop_path else "",
+        "image_sha256": image_sha,
+        "input_image_uploaded": bool(image_bytes),
+        "provider": result.get("provider") or "none",
+        "model": result.get("model") or "",
+        "status": status,
+        "ai_fen_candidate": normalized_ai_fen,
+        "ai_fen_raw": raw_ai_fen,
+        "ai_fen_normalization_warnings": normalization_warnings,
+        "side_to_move": str(result.get("side_to_move") or "unknown"),
+        "confidence": float(result.get("confidence") or 0.0),
+        "uncertain_squares": list(result.get("uncertain_squares") or []),
+        "needs_review": bool(result.get("needs_review", True)),
+        "reason": str(result.get("reason") or ""),
+        "local_fen_candidate": local_fen,
+        "local_template_agrees": bool(local_valid and local_fen == normalized_ai_fen),
+        "deterministic_validation": validation,
+        "estimated_cost_usd": float(result.get("estimated_cost_usd") or 0.0),
+        "accepted_changed": False,
+        "policy": "review_only_ai_candidate_never_sets_accepted",
+    }
+
+
+def _normalize_ai_fen_candidate(fen: str, *, side_to_move: str) -> tuple[str, list[str]]:
+    value = str(fen or "").strip()
+    if not value:
+        return "", []
+    parts = value.split()
+    if len(parts) == 6:
+        return value, []
+    warnings: list[str] = []
+    if len(parts) == 1 and "/" in parts[0]:
+        side = side_to_move if side_to_move in {"w", "b"} else "w"
+        if side_to_move not in {"w", "b"}:
+            warnings.append("side_to_move_unknown_placeholder")
+        warnings.append("ai_returned_piece_placement_only")
+        return f"{parts[0]} {side} - - 0 1", warnings
+    warnings.append("ai_fen_not_six_fields")
+    return value, warnings
+
+
+def _validate_ai_fen_candidate(
+    fen: str,
+    out_dir: Path,
+    *,
+    diagram_id: str,
+    side_to_move: str,
+    extra_warnings: list[str] | None = None,
+) -> dict[str, Any]:
+    value = str(fen or "").strip()
+    warnings: list[str] = list(extra_warnings or [])
+    if not value:
+        return {"valid": False, "warnings": ["fen_missing"], "rendered": {}, "king_count": 0}
+    if len(value.split()) != 6:
+        warnings.append("fen_must_have_6_fields")
+    valid, fen_warnings = validate_fen(value)
+    warnings.extend(str(item) for item in fen_warnings)
+    king_count = 0
+    try:
+        import chess  # type: ignore[import-not-found]
+
+        board = chess.Board(value)
+        king_count = sum(1 for piece in board.piece_map().values() if piece.piece_type == chess.KING)
+        if king_count != 2:
+            warnings.append("fen_must_have_two_kings")
+    except Exception as exc:
+        valid = False
+        warnings.append(f"python_chess_error:{type(exc).__name__}")
+    fen_side = value.split()[1] if len(value.split()) >= 2 else ""
+    if side_to_move in {"w", "b"} and fen_side and side_to_move != fen_side:
+        warnings.append("side_to_move_mismatch")
+    rendered = _render_valid_fen_assets(value, out_dir, diagram_id=f"{diagram_id}_ai") if valid and not warnings else {}
+    if valid and not rendered:
+        warnings.append("render_missing")
+    return {
+        "valid": bool(valid and not warnings),
+        "warnings": sorted(set(warnings)),
+        "king_count": king_count,
+        "rendered": rendered,
+    }
+
+
+def _ai_fen_status(result: dict[str, Any], validation: dict[str, Any], *, local_fen: str, local_valid: bool) -> str:
+    ai_fen = str(result.get("fen") or "").strip()
+    if str(result.get("status") or "") == "request_manifest":
+        return "ai_suggested"
+    if not ai_fen or not validation.get("valid"):
+        return "needs_review"
+    if local_fen and local_valid and local_fen != ai_fen:
+        return "ai_cv_conflict"
+    if local_fen and local_valid and local_fen == ai_fen:
+        return "ai_cv_agree"
+    if float(result.get("confidence") or 0.0) >= 0.80 and not bool(result.get("needs_review", True)):
+        return "deterministic_valid"
+    return "ai_suggested"
+
+
+def _ai_verified_candidate_queue_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema": "kindlemaster.ai_verified_candidate_queue.v1",
+        "diagram_id": row.get("diagram_id"),
+        "page": row.get("page"),
+        "crop_path": row.get("crop_path"),
+        "ai_fen_candidate": row.get("ai_fen_candidate"),
+        "side_to_move": row.get("side_to_move"),
+        "confidence": row.get("confidence"),
+        "status": row.get("status"),
+        "label_status": "draft",
+        "manual_fen": "",
+        "manual_label": "needs_manual_fen",
+        "policy": "human verification required before template promotion",
+    }
+
+
+def _deepseek_pgn_cluster_payload(
+    out_dir: Path,
+    lattice_rows: list[dict[str, Any]],
+    candidates_payload: dict[str, Any],
+    *,
+    provider: Any | None,
+    dry_run: bool,
+) -> dict[str, Any]:
+    context = {
+        "schema": "kindlemaster.pgn_glyph_cluster_context.v1",
+        "candidate_count": candidates_payload.get("candidate_count", 0),
+        "candidates": list(candidates_payload.get("candidates") or [])[:80],
+        "near_accepted_rows": _select_ai_pgn_rows(lattice_rows, limit=20),
+        "blocker_summary": _top_counts(warning for row in lattice_rows for warning in row.get("warnings") or []),
+    }
+    if provider is None and not dry_run:
+        try:
+            from deepseek_quality_provider import build_deepseek_audit_provider_from_env
+
+            provider = build_deepseek_audit_provider_from_env(cwd=Path.cwd())
+        except Exception:
+            provider = None
+    if dry_run:
+        parsed = {
+            "status": "request_manifest",
+            "token_clusters": context["candidates"],
+            "candidate_mappings": [],
+            "near_accepted_records": context["near_accepted_rows"],
+            "next_review_actions": ["run without --dry-run after enabling KINDLEMASTER_DEEPSEEK_AUDIT"],
+        }
+        provider_name = "deepseek-audit"
+        model = ""
+    elif provider is None:
+        parsed = {
+            "status": "needs_review",
+            "token_clusters": context["candidates"],
+            "candidate_mappings": [],
+            "near_accepted_records": context["near_accepted_rows"],
+            "next_review_actions": ["enable DeepSeek audit provider or review glyph_mapping_candidates.json manually"],
+            "warnings": ["deepseek_provider_not_configured"],
+        }
+        provider_name = "none"
+        model = ""
+    else:
+        try:
+            parsed = dict(provider.review_pgn_glyph_clusters(context))
+        except Exception as exc:
+            parsed = {
+                "status": "failed",
+                "error": f"{type(exc).__name__}: {exc}",
+                "token_clusters": context["candidates"],
+                "candidate_mappings": [],
+                "near_accepted_records": context["near_accepted_rows"],
+            }
+        provider_name = getattr(provider, "name", "deepseek-audit")
+        model = getattr(getattr(provider, "config", None), "model", "")
+    mappings = list(parsed.get("candidate_mappings") or parsed.get("suspected_mappings") or [])
+    return {
+        "schema": "kindlemaster.deepseek_glyph_clusters.v1",
+        "status": parsed.get("status") or "reviewed",
+        "mode": "evidence_only",
+        "provider": provider_name,
+        "model": model,
+        "cluster_count": len(parsed.get("token_clusters") or parsed.get("glyph_clusters") or context["candidates"]),
+        "candidate_mapping_count": len(mappings),
+        "token_clusters": list(parsed.get("token_clusters") or parsed.get("glyph_clusters") or context["candidates"])[:120],
+        "candidate_mappings": mappings[:120],
+        "near_accepted_records": list(parsed.get("near_accepted_records") or context["near_accepted_rows"])[:30],
+        "next_review_actions": list(parsed.get("next_review_actions") or parsed.get("next_measurements") or []),
+        "warnings": list(parsed.get("warnings") or []),
+        "evidence_only": True,
+        "requires_human_confirmation": True,
+        "mutates_output": False,
+    }
+
+
+def _select_ai_pgn_rows(rows: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    candidates = [row for row in rows if row.get("status") != "accepted"]
+    candidates.sort(key=_pgn_blocker_rank)
+    return candidates[:limit] if limit else candidates
+
+
+def _ai_pgn_candidate_row(row: dict[str, Any], *, provider: Any | None, dry_run: bool) -> dict[str, Any]:
+    if dry_run:
+        result = {
+            "status": "request_manifest",
+            "provider": "openai-chess-pgn-reviewer",
+            "model": "",
+            "candidate_pgn": "",
+            "confidence": 0.0,
+            "reason": "dry_run_request_manifest",
+            "warnings": [],
+            "estimated_cost_usd": 0.0,
+        }
+    elif provider is None:
+        result = {
+            "status": "needs_review",
+            "provider": "none",
+            "model": "",
+            "candidate_pgn": "",
+            "confidence": 0.0,
+            "reason": "openai_pgn_provider_not_configured",
+            "warnings": ["openai_pgn_provider_not_configured"],
+            "estimated_cost_usd": 0.0,
+        }
+    else:
+        try:
+            result = dict(provider.propose_pgn_repair(row))
+        except Exception as exc:
+            result = {
+                "status": "needs_review",
+                "provider": getattr(provider, "name", "openai-chess-pgn-reviewer"),
+                "model": getattr(provider, "model", ""),
+                "candidate_pgn": "",
+                "confidence": 0.0,
+                "reason": f"provider_error:{type(exc).__name__}:{exc}",
+                "warnings": ["openai_pgn_provider_error"],
+                "estimated_cost_usd": 0.0,
+            }
+    candidate = str(result.get("candidate_pgn") or "")
+    replay_clean = _pgn_replay_clean(candidate)
+    return {
+        "schema": "kindlemaster.ai_pgn_candidate.v1",
+        "record_id": row.get("record_id"),
+        "page": row.get("page"),
+        "label": row.get("label") or "",
+        "provider": result.get("provider") or "none",
+        "model": result.get("model") or "",
+        "status": "deterministic_valid" if replay_clean else str(result.get("status") or "needs_review"),
+        "raw_text": row.get("raw_text") or "",
+        "normalized_text": row.get("normalized_text") or "",
+        "source_fen": row.get("source_fen") or "",
+        "requires_source_fen": bool(row.get("requires_source_fen")),
+        "candidate_pgn": candidate,
+        "confidence": float(result.get("confidence") or 0.0),
+        "reason": str(result.get("reason") or ""),
+        "warnings": sorted(set([*(row.get("warnings") or []), *(result.get("warnings") or [])])),
+        "deterministic_replay_clean": bool(replay_clean),
+        "accepted_changed": False,
+        "estimated_cost_usd": float(result.get("estimated_cost_usd") or 0.0),
+        "policy": "review_only_ai_candidate_never_updates_games_pgn",
+    }
+
+
+def _write_ai_cost_report(out_dir: Path) -> None:
+    reports_dir = out_dir / "reports"
+    review_dir = out_dir / "review"
+    rows: list[dict[str, Any]] = []
+    for path in [
+        review_dir / "ai_fen_candidates.jsonl",
+        review_dir / "ai_pgn_candidates.jsonl",
+        review_dir / "gpt_pgn_repair_candidates.jsonl",
+    ]:
+        for row in _read_jsonl_rows(path):
+            rows.append(
+                {
+                    "artifact": str(path.relative_to(out_dir)) if path.is_relative_to(out_dir) else str(path),
+                    "provider": row.get("provider") or "",
+                    "model": row.get("model") or "",
+                    "estimated_cost_usd": float(row.get("estimated_cost_usd") or 0.0),
+                }
+            )
+    payload = {
+        "schema": "kindlemaster.ai_cost_report.v1",
+        "status": "ok",
+        "total_estimated_cost_usd": round(sum(float(row.get("estimated_cost_usd") or 0.0) for row in rows), 6),
+        "calls": rows,
+        "note": "Costs are zero unless providers return usage/pricing metadata; use provider dashboards for billing truth.",
+    }
+    _write_json(reports_dir / "ai_cost_report.json", payload)
+
+
+def _diagram_crop_path(out_dir: Path, diagram: dict[str, Any]) -> Path:
+    for key in ["source_crop", "image_path", "crop_rel_path", "crop_path"]:
+        value = str(diagram.get(key) or "").strip()
+        if not value:
+            continue
+        path = Path(value)
+        if path.is_file():
+            return path
+        candidate = out_dir / value
+        if candidate.is_file():
+            return candidate
+    return Path("")
+
+
+def _file_sha256(path: Path) -> str:
+    if not path.is_file():
+        return ""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _image_mime_type(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if suffix == ".webp":
+        return "image/webp"
+    return "image/png"
+
+
+def _top_counts(values: Iterable[str], *, limit: int = 12) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
+    for value in values:
+        key = str(value or "").strip()
+        if not key:
+            continue
+        counts[key] = counts.get(key, 0) + 1
+    return [
+        {"key": key, "count": count}
+        for key, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:limit]
+    ]
+
+
+def _read_optional_json(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _quality_dashboard_pages(
+    book: dict[str, Any],
+    diagrams: list[dict[str, Any]],
+    pgn_records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    diagrams_by_page: dict[int, list[dict[str, Any]]] = {}
+    pgn_by_page: dict[int, list[dict[str, Any]]] = {}
+    for diagram in diagrams:
+        diagrams_by_page.setdefault(int(diagram.get("page") or 0), []).append(diagram)
+    for record in pgn_records:
+        pgn_by_page.setdefault(int(record.get("logical_page") or record.get("source_page") or 0), []).append(record)
+    details: list[dict[str, Any]] = []
+    for page in book.get("pages") or []:
+        page_number = int(page.get("page") or 0)
+        page_diagrams = diagrams_by_page.get(page_number, [])
+        page_pgn = pgn_by_page.get(page_number, [])
+        details.append(
+            {
+                "page": page_number,
+                "diagrams": len(page_diagrams),
+                "fen_accepted": len([item for item in page_diagrams if item.get("validation_status") == "accepted"]),
+                "fen_review": len([item for item in page_diagrams if item.get("validation_status") != "accepted"]),
+                "pgn": len(page_pgn),
+                "pgn_accepted": len([item for item in page_pgn if item.get("status") == "accepted"]),
+                "pgn_review": len([item for item in page_pgn if item.get("status") != "accepted"]),
+                "top_blockers": _top_counts((warning for item in page_pgn for warning in item.get("warnings") or []), limit=5),
+            }
+        )
+    return details
+
+
+def _quality_dashboard_html(summary: dict[str, Any]) -> str:
+    rows = "\n".join(_quality_dashboard_row(row) for row in summary.get("pages_detail") or [])
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chess Quality Dashboard</title>
+  <style>
+    body {{ margin:0; font-family:Georgia,'Times New Roman',serif; background:#f2e6d2; color:#21170f; }}
+    header {{ padding:1rem 1.25rem; background:#24170f; color:#fff8ec; position:sticky; top:0; }}
+    main {{ padding:1rem; overflow:auto; }}
+    .scorebar {{ display:grid; grid-template-columns:repeat(8,minmax(0,1fr)); gap:.75rem; margin:1rem 0; }}
+    .score {{ background:#fff8ec; border:1px solid #d8c4a8; border-radius:16px; padding:.75rem; }}
+    .score span {{ display:block; color:#735f49; font-size:.76rem; text-transform:uppercase; font-weight:900; }}
+    .score strong {{ font-size:1.45rem; }}
+    table {{ width:100%; border-collapse:collapse; background:#fffaf0; }}
+    th, td {{ border:1px solid #d8c4a8; padding:.45rem .55rem; vertical-align:top; }}
+    th {{ background:#f1dec2; text-align:left; position:sticky; top:5.5rem; }}
+    code {{ overflow-wrap:anywhere; }}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Chess Quality Dashboard</h1>
+    <p>Evidence dashboard for FEN/PGN quality. Accepted still means deterministic validation, not AI confidence.</p>
+  </header>
+  <main>
+    <section class="scorebar">
+      {_score_tile('Diagrams', summary.get('diagrams_total'))}
+      {_score_tile('FEN accepted', summary.get('fen_accepted'))}
+      {_score_tile('PGN accepted', summary.get('accepted_pgn'))}
+      {_score_tile('FEN eval', summary.get('fen_profile_status'))}
+      {_score_tile('PGN lattice', summary.get('pgn_lattice_status'))}
+      {_score_tile('AI status', summary.get('ai_assisted_status'))}
+      {_score_tile('AI FEN', summary.get('ai_fen_candidates'))}
+      {_score_tile('AI PGN', summary.get('ai_pgn_candidates'))}
+    </section>
+    <table>
+      <thead><tr><th>Page</th><th>Diagrams</th><th>FEN accepted/review</th><th>PGN accepted/review</th><th>Top blockers</th></tr></thead>
+      <tbody>{rows}</tbody>
+    </table>
+  </main>
+</body>
+</html>"""
+
+
+def _quality_dashboard_row(row: dict[str, Any]) -> str:
+    blockers = ", ".join(f"{item.get('key')} ({item.get('count')})" for item in row.get("top_blockers") or [])
+    return (
+        "<tr>"
+        f"<td>{int(row.get('page') or 0)}</td>"
+        f"<td>{int(row.get('diagrams') or 0)}</td>"
+        f"<td>{int(row.get('fen_accepted') or 0)} / {int(row.get('fen_review') or 0)}</td>"
+        f"<td>{int(row.get('pgn_accepted') or 0)} / {int(row.get('pgn_review') or 0)}</td>"
+        f"<td><code>{html.escape(blockers)}</code></td>"
+        "</tr>"
+    )
+
+
+def _semantic_source_index_html(book: dict[str, Any]) -> str:
+    summary = dict(book.get("summary") or {})
+    chapters = list(book.get("chapters") or [])
+    pages = _semantic_pages_with_logical_pgn(book)
+    toc = "\n".join(
+        f'<li><a href="#page-{int(chapter.get("start_page") or 1):03d}">{html.escape(str(chapter.get("title") or chapter.get("id") or ""))}</a></li>'
+        for chapter in chapters
+        if int(chapter.get("start_page") or 0)
+    )
+    flow_html = _semantic_source_book_flow_html(pages)
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="styles.css">
+  <title>{html.escape(str(book.get('title') or 'Chess Study Reader'))}</title>
+</head>
+<body>
+  <header class="app-header">
+    <p class="eyebrow">MasterKindle study reader</p>
+    <h1>{html.escape(str(book.get('title') or 'Chess Study Reader'))}</h1>
+    <p class="lede">Logical chess-study reader rebuilt from source order: prose, diagrams, FEN/PGN review, and notation stay together without reproducing the PDF page layout 1:1.</p>
+    <section class="scorebar" aria-label="Conversion summary">
+      {_score_tile('Pages', summary.get('html_pages'))}
+      {_score_tile('Diagrams', summary.get('diagrams_total'))}
+      {_score_tile('FEN accepted', summary.get('fen_accepted'))}
+      {_score_tile('PGN accepted', summary.get('accepted_pgn'))}
+      {_score_tile('Needs review', int(summary.get('fen_needs_review') or 0) + int(summary.get('pgn_needs_review') or 0))}
+    </section>
+  </header>
+  <div class="layout">
+    <aside class="sidebar">
+      <nav aria-label="Table of contents">
+        <h2>Contents</h2>
+        <ol>{toc}</ol>
+      </nav>
+      <section class="filters" aria-label="Filters">
+        <h2>Filters</h2>
+        <label><input type="checkbox" data-filter="diagram" checked> Diagrams</label>
+        <label><input type="checkbox" data-filter="pgn" checked> PGN</label>
+        <label><input type="checkbox" data-filter="review" checked> Review</label>
+        <label><input type="checkbox" data-reader-mode> Reader mode</label>
+      </section>
+      <p class="report-link"><a href="reports/conversion-audit.md">Conversion audit</a></p>
+    </aside>
+    <main class="book-flow" id="book">{flow_html}</main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
+"""
+
+
+def _semantic_source_book_flow_html(pages: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for page in pages:
+        if not _semantic_source_page_elements(page):
+            continue
+        parts.extend(_semantic_source_flow_blocks_for_page(page))
+    return "\n".join(parts) or '<p class="empty-page">No extractable reader content found.</p>'
+
+
+def _semantic_source_flow_blocks_for_page(page: dict[str, Any]) -> list[str]:
+    page_number = int(page.get("page") or 0)
+    elements = _semantic_source_page_elements(page)
+    blocks = _semantic_source_study_blocks(page, elements)
+    rendered: list[str] = []
+    for index, block in enumerate(blocks):
+        if not rendered:
+            rendered.append(f'<span class="page-anchor" id="page-{page_number:03d}" aria-label="Source page {page_number}"></span>')
+        rendered.append(_semantic_source_study_block_html({**block, "block_index_on_page": index}))
+    return rendered
+
+
+def _semantic_pages_with_logical_pgn(book: dict[str, Any]) -> list[dict[str, Any]]:
+    pages = [dict(page) for page in book.get("pages") or []]
+    by_page: dict[int, list[dict[str, Any]]] = {}
+    for record in book.get("pgn_records") or []:
+        if not isinstance(record, dict):
+            continue
+        page_number = int(record.get("logical_page") or record.get("source_page") or 0)
+        if page_number <= 0:
+            continue
+        by_page.setdefault(page_number, []).append(record)
+    for page in pages:
+        page_number = int(page.get("page") or 0)
+        existing_ids = {str(record.get("id") or "") for record in page.get("pgn_records") or [] if isinstance(record, dict)}
+        logical_records = [record for record in by_page.get(page_number, []) if str(record.get("id") or "") not in existing_ids]
+        if logical_records:
+            page["pgn_records"] = [*(page.get("pgn_records") or []), *logical_records]
+    return pages
+
+
+def _semantic_source_reader_section_html(page: dict[str, Any]) -> str:
+    page_number = int(page.get("page") or 0)
+    elements = _semantic_source_page_elements(page)
+    blocks = _semantic_source_study_blocks(page, elements)
+    block_html = "\n".join(_semantic_source_study_block_html(block) for block in blocks)
+    return f"""<section class="study-page" id="page-{page_number:03d}" data-page="{page_number}">
+  <header class="page-heading">
+    <span>Source page {page_number}</span>
+    <a href="{html.escape(str(page.get('page_preview') or ''), quote=True)}" class="page-preview-link">PDF preview</a>
+  </header>
+  {block_html}
+</section>"""
+
+
+def _semantic_source_study_blocks(page: dict[str, Any], elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    label_blocks = _semantic_label_anchored_blocks(page)
+    if label_blocks:
+        return label_blocks
+    blocks: list[dict[str, Any]] = []
+    prose_buffer: list[dict[str, Any]] = []
+    active: dict[str, Any] | None = None
+
+    def flush_active() -> None:
+        nonlocal active
+        if active is not None:
+            blocks.append(active)
+            active = None
+
+    def flush_prose() -> None:
+        nonlocal prose_buffer
+        if prose_buffer:
+            blocks.append({"kind": "prose", "page": int(page.get("page") or 0), "prose": prose_buffer})
+            prose_buffer = []
+
+    for element in elements:
+        kind = str(element.get("kind") or "")
+        if kind == "text":
+            if active is not None and len(active.get("prose_after") or []) < 3:
+                active.setdefault("prose_after", []).append(element)
+            else:
+                prose_buffer.append(element)
+            continue
+        if kind == "diagram":
+            flush_prose()
+            flush_active()
+            active = {
+                "kind": "study",
+                "page": int(page.get("page") or 0),
+                "diagram": element,
+                "pgn": None,
+                "prose_before": [],
+                "prose_after": [],
+                "preview": page.get("page_preview") or "",
+            }
+            continue
+        if kind == "pgn":
+            flush_prose()
+            if active is None:
+                active = {
+                    "kind": "study",
+                    "page": int(page.get("page") or 0),
+                    "diagram": None,
+                    "pgn": element,
+                    "prose_before": [],
+                    "prose_after": [],
+                    "preview": page.get("page_preview") or "",
+                }
+            elif active.get("pgn") is None:
+                active["pgn"] = element
+            else:
+                flush_active()
+                active = {
+                    "kind": "study",
+                    "page": int(page.get("page") or 0),
+                    "diagram": None,
+                    "pgn": element,
+                    "prose_before": [],
+                    "prose_after": [],
+                    "preview": page.get("page_preview") or "",
+                }
+            continue
+    flush_active()
+    flush_prose()
+    return blocks
+
+
+def _semantic_label_anchored_blocks(page: dict[str, Any]) -> list[dict[str, Any]]:
+    text_chunks = [dict(item) for item in page.get("text_chunks", []) or [] if isinstance(item, dict)]
+    diagrams = [dict(item) for item in page.get("diagrams", []) or [] if isinstance(item, dict)]
+    records = [dict(item) for item in page.get("pgn_records", []) or [] if isinstance(item, dict) and _semantic_record_has_reader_value(item)]
+    if not diagrams and not records:
+        return []
+    diagram_by_label = {
+        _normalize_source_label(str(item.get("caption") or item.get("label") or item.get("id") or "")): item
+        for item in diagrams
+    }
+    record_by_label = {
+        _normalize_source_label(str(item.get("label") or item.get("visible_review_text") or item.get("raw_text") or "")): item
+        for item in records
+    }
+    anchors: list[dict[str, Any]] = []
+    used_labels: set[str] = set()
+    for index, chunk in enumerate(text_chunks):
+        label = _semantic_first_diagram_label(str(chunk.get("text") or ""))
+        if not label:
+            continue
+        normalized = _normalize_source_label(label)
+        if normalized in used_labels:
+            continue
+        used_labels.add(normalized)
+        anchors.append(
+            {
+                "label": label,
+                "normalized": normalized,
+                "index": index,
+                "order": int(chunk.get("reading_order") or index),
+                "diagram": diagram_by_label.get(normalized),
+                "pgn": record_by_label.get(normalized),
+            }
+        )
+    if not anchors:
+        return []
+    blocks: list[dict[str, Any]] = []
+    first_anchor = anchors[0]["index"]
+    if first_anchor > 0:
+        blocks.append({"kind": "prose", "page": int(page.get("page") or 0), "prose": text_chunks[:first_anchor]})
+    for anchor_index, anchor in enumerate(anchors):
+        start = int(anchor["index"])
+        end = int(anchors[anchor_index + 1]["index"]) if anchor_index + 1 < len(anchors) else len(text_chunks)
+        body = text_chunks[start:end]
+        blocks.append(
+            {
+                "kind": "study",
+                "page": int(page.get("page") or 0),
+                "diagram": anchor.get("diagram"),
+                "pgn": anchor.get("pgn"),
+                "prose_before": body[:1],
+                "prose_after": body[1:],
+                "preview": page.get("page_preview") or "",
+            }
+        )
+    for diagram in diagrams:
+        normalized = _normalize_source_label(str(diagram.get("caption") or diagram.get("label") or diagram.get("id") or ""))
+        if normalized and normalized in used_labels:
+            continue
+        blocks.append(
+            {
+                "kind": "study",
+                "page": int(page.get("page") or 0),
+                "diagram": diagram,
+                "pgn": record_by_label.get(normalized),
+                "prose_before": [],
+                "prose_after": [],
+                "preview": page.get("page_preview") or "",
+            }
+        )
+        used_labels.add(normalized)
+    for record in records:
+        normalized = _normalize_source_label(str(record.get("label") or record.get("visible_review_text") or record.get("raw_text") or ""))
+        if normalized and normalized in used_labels:
+            continue
+        blocks.append(
+            {
+                "kind": "study",
+                "page": int(page.get("page") or 0),
+                "diagram": None,
+                "pgn": record,
+                "prose_before": [],
+                "prose_after": [],
+                "preview": page.get("page_preview") or "",
+            }
+        )
+    return blocks
+
+
+def _semantic_first_diagram_label(text: str) -> str:
+    match = re.search(r"\bDiagram\s+\d{1,2}[-.]\d{1,2}\b", str(text or ""), flags=re.IGNORECASE)
+    if not match:
+        return ""
+    value = match.group(0)
+    return re.sub(r"\s+", " ", value).replace(".", "-")
+
+
+def _semantic_source_study_block_html(block: dict[str, Any]) -> str:
+    if block.get("kind") == "prose":
+        prose = "\n".join(_semantic_source_text_html(item) for item in block.get("prose") or [])
+        page = int(block.get("page") or 0)
+        return f"""<section class="flow-prose" data-kind="prose" data-page="{page}">
+  {prose}
+</section>"""
+    diagram = block.get("diagram")
+    pgn = block.get("pgn")
+    page = int(block.get("page") or 0)
+    status = _semantic_block_status(diagram, pgn)
+    title = _semantic_block_title(diagram, pgn, page)
+    before = "\n".join(_semantic_source_text_html(item) for item in block.get("prose_before") or [])
+    after = "\n".join(_semantic_source_text_html(item) for item in block.get("prose_after") or [])
+    diagram_html = _semantic_source_diagram_panel_html(diagram) if diagram else '<div class="diagram-panel missing">Diagram not matched</div>'
+    notation_html = _semantic_source_pgn_panel_html(pgn) if pgn else '<p class="muted">No PGN fragment matched to this diagram yet.</p>'
+    return f"""<article class="study-block" data-kind="study-block" data-status="{html.escape(status, quote=True)}" data-page="{page}">
+  <header class="study-block-header">
+    <div>
+      <p class="eyebrow"><a href="#page-{page:03d}">Page {page}</a> · study block</p>
+      <h2>{html.escape(title)}</h2>
+    </div>
+    <span class="review-badge {html.escape(status, quote=True)}">{html.escape(_friendly_status(status))}</span>
+  </header>
+  <div class="study-block-grid">
+    {diagram_html}
+    <div class="study-content">
+      {before}
+      {after}
+      {notation_html}
+    </div>
+  </div>
+</article>"""
+
+
+def _semantic_source_text_html(element: dict[str, Any]) -> str:
+    text = html.escape(str(element.get("text") or ""))
+    if not text:
+        return ""
+    tag = "h3" if element.get("kind") == "heading" or element.get("text_kind") == "heading" else "p"
+    return f'<{tag} class="reader-text" data-order="{int(element.get("reading_order") or 0)}">{text}</{tag}>'
+
+
+def _semantic_block_title(diagram: dict[str, Any] | None, pgn: dict[str, Any] | None, page: int) -> str:
+    if diagram:
+        return str(diagram.get("caption") or diagram.get("id") or f"Study position page {page}")
+    if pgn:
+        return str(pgn.get("label") or pgn.get("id") or f"Notation page {page}")
+    return f"Study block page {page}"
+
+
+def _semantic_block_status(diagram: dict[str, Any] | None, pgn: dict[str, Any] | None) -> str:
+    statuses = [
+        str((diagram or {}).get("validation_status") or ""),
+        str((pgn or {}).get("status") or ""),
+    ]
+    return "accepted" if statuses and all(status == "accepted" for status in statuses if status) else "needs-human-review"
+
+
+def _semantic_source_page_html(page: dict[str, Any]) -> str:
+    page_number = int(page.get("page") or 0)
+    elements = _semantic_source_page_elements(page)
+    element_html = "\n".join(_semantic_source_element_html(element) for element in elements)
+    if not element_html:
+        element_html = '<p class="empty-page">No extractable reader content on this page.</p>'
+    return f"""<article class="chapter-page" id="page-{page_number:03d}" data-page="{page_number}">
+  <header class="page-heading">
+    <span>Source page {page_number}</span>
+    <a href="{html.escape(str(page.get('page_preview') or ''), quote=True)}" class="page-preview-link">PDF preview</a>
+  </header>
+  {element_html}
+</article>"""
+
+
+def _semantic_source_page_elements(page: dict[str, Any]) -> list[dict[str, Any]]:
+    elements: list[dict[str, Any]] = []
+    diagrams = [diagram for diagram in page.get("diagrams", []) or [] if isinstance(diagram, dict)]
+    for chunk in page.get("text_chunks", []) or []:
+        elements.append({"kind": "text", **chunk})
+    for diagram in diagrams:
+        elements.append({"kind": "diagram", **diagram})
+    for record in page.get("pgn_records", []) or []:
+        if _semantic_record_has_reader_value(record):
+            elements.append({"kind": "pgn", **record, "reading_order": _semantic_pgn_reading_order(record, diagrams)})
+    elements.sort(key=_source_order_key)
+    return elements
+
+
+def _semantic_pgn_reading_order(record: dict[str, Any], diagrams: list[dict[str, Any]]) -> int:
+    label = _normalize_source_label(str(record.get("label") or record.get("visible_review_text") or record.get("raw_text") or ""))
+    for diagram in diagrams:
+        diagram_label = _normalize_source_label(str(diagram.get("caption") or diagram.get("label") or diagram.get("id") or ""))
+        if label and diagram_label and (label == diagram_label or label in diagram_label or diagram_label in label):
+            return int(diagram.get("reading_order") or 0) + 1
+    return int(record.get("reading_order") or 0)
+
+
+def _semantic_record_has_reader_value(record: dict[str, Any]) -> bool:
+    if str(record.get("pgn") or "").strip():
+        return True
+    text = str(record.get("visible_review_text") or record.get("raw_text") or "")
+    if re.search(r"\b(?:Diagram|Ex\.)\s*\d{1,2}[-.]\d{1,2}\b", text, flags=re.IGNORECASE):
+        return True
+    if _looks_like_notation_text(text):
+        return True
+    return False
+
+
+def _semantic_source_element_html(element: dict[str, Any]) -> str:
+    kind = str(element.get("kind") or "")
+    if kind == "diagram":
+        return _semantic_source_diagram_html(element)
+    if kind == "pgn":
+        return _semantic_source_pgn_html(element)
+    text = html.escape(str(element.get("text") or ""))
+    tag = "h2" if element.get("kind") == "heading" or element.get("text_kind") == "heading" else "p"
+    return f'<{tag} class="reader-text" data-order="{int(element.get("reading_order") or 0)}">{text}</{tag}>'
+
+
+def _semantic_source_diagram_panel_html(diagram: dict[str, Any]) -> str:
+    return f'<div class="diagram-panel" data-kind="diagram">{_semantic_source_diagram_html(diagram)}</div>'
+
+
+def _semantic_source_pgn_panel_html(record: dict[str, Any]) -> str:
+    return f'<div class="notation-panel" data-kind="pgn">{_semantic_source_pgn_html(record)}</div>'
+
+
+def _semantic_source_diagram_html(diagram: dict[str, Any]) -> str:
+    status = str(diagram.get("validation_status") or "needs-human-review")
+    fen = str(diagram.get("fen") or "")
+    fen_candidate = str(diagram.get("fen_candidate") or "")
+    copy_html = (
+        f'<button type="button" class="copy-button" data-copy-value="{html.escape(fen, quote=True)}">Copy FEN</button>'
+        if fen and status == "accepted"
+        else ""
+    )
+    candidate_html = ""
+    if not fen and fen_candidate:
+        candidate_html = f"""<div class="candidate">
+  <span>FEN candidate requires review</span>
+  <code>{html.escape(fen_candidate)}</code>
+</div>"""
+    return f"""<figure class="diagram-card" id="{html.escape(str(diagram.get('id') or ''), quote=True)}" data-kind="diagram" data-status="{html.escape(status, quote=True)}">
+  <header class="card-header">
+    <h3>{html.escape(str(diagram.get('caption') or diagram.get('id') or 'Diagram'))}</h3>
+    <span class="source-ref">Page {int(diagram.get('page') or 0)}</span>
+    <span class="review-badge {html.escape(status, quote=True)}">{html.escape(_friendly_status(status))}</span>
+  </header>
+  <div class="diagram-grid">
+    <div class="board-placeholder" data-fen="{html.escape(fen, quote=True)}">{_fen_board_placeholder(fen)}</div>
+    <div class="diagram-meta">
+      <p>Side to move: <strong>{html.escape(str(diagram.get('side_to_move') or 'unknown'))}</strong></p>
+      <p class="review-reason">{html.escape(str(diagram.get('review_reason') or 'Awaiting deterministic FEN recognition.'))}</p>
+      {candidate_html}
+      {f'<pre class="fen"><code>{html.escape(fen)}</code></pre>' if fen else ''}
+      {copy_html}
+      <details class="original-diagram">
+        <summary>Show original diagram image</summary>
+        <img src="{html.escape(str(diagram.get('image_path') or ''), quote=True)}" alt="{html.escape(str(diagram.get('caption') or diagram.get('id') or 'Diagram'), quote=True)}">
+      </details>
+    </div>
+  </div>
+</figure>"""
+
+
+def _semantic_source_pgn_html(record: dict[str, Any]) -> str:
+    status = str(record.get("status") or "needs-human-review")
+    pgn = str(record.get("pgn") or "")
+    body = (
+        f'<pre class="pgn"><code>{html.escape(pgn)}</code></pre><button type="button" class="copy-button" data-copy-value="{html.escape(pgn, quote=True)}">Copy PGN</button>'
+        if status == "accepted" and pgn
+        else f'<details class="review-details"><summary>Notation needs human review</summary><p>{html.escape(str(record.get("visible_review_text") or ""))}</p></details>'
+    )
+    warnings = ", ".join(str(item) for item in record.get("warnings") or [])
+    return f"""<section class="pgn-card" id="{html.escape(str(record.get('id') or ''), quote=True)}" data-kind="pgn" data-status="{html.escape(status, quote=True)}">
+  <header class="card-header">
+    <h3>{html.escape(str(record.get('label') or 'PGN / solution'))}</h3>
+    <span class="source-ref">Page {int(record.get('logical_page') or record.get('source_page') or 0)}</span>
+    <span class="review-badge {html.escape(status, quote=True)}">{html.escape(_friendly_status(status))}</span>
+  </header>
+  {body}
+  {f'<p class="warnings">Blocked by: {html.escape(warnings)}</p>' if warnings else ''}
+</section>"""
+
+
+def _semantic_source_styles_css() -> str:
+    return """:root {
+  --ink:#201713; --muted:#756450; --paper:#fffaf1; --surface:#fff5e4; --wash:#efe3d1;
+  --line:#dac8ad; --accent:#8a4516; --ok:#146b3a; --warn:#a76100; --bad:#9a1b1b;
+}
+* { box-sizing:border-box; }
+body { margin:0; font-family:Georgia, 'Times New Roman', serif; color:var(--ink); background:linear-gradient(180deg,#f4ead8,#eadbc4); line-height:1.6; }
+a { color:var(--accent); }
+.app-header { max-width:1180px; margin:0 auto; padding:2rem 1rem 1rem; }
+.eyebrow { margin:0 0 .35rem; color:var(--accent); font-size:.78rem; font-weight:900; letter-spacing:.08em; text-transform:uppercase; }
+h1 { margin:.1rem 0 .6rem; font-size:clamp(2rem,5vw,4.4rem); line-height:1; }
+.lede { max-width:70ch; color:var(--muted); font-size:1.06rem; }
+.scorebar { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:.75rem; margin-top:1.2rem; }
+.score { background:var(--paper); border:1px solid var(--line); border-radius:18px; padding:.8rem .9rem; box-shadow:0 10px 30px rgba(47,30,9,.06); }
+.score span { display:block; color:var(--muted); font-size:.76rem; font-weight:900; letter-spacing:.05em; text-transform:uppercase; }
+.score strong { display:block; margin-top:.15rem; font-size:1.45rem; line-height:1.1; }
+.layout { max-width:1240px; margin:0 auto; display:grid; grid-template-columns:260px minmax(0,1fr); gap:1.25rem; padding:0 1rem 3rem; }
+.sidebar { position:sticky; top:1rem; align-self:start; max-height:calc(100vh - 2rem); overflow:auto; background:#24170f; color:#fff8ed; border-radius:22px; padding:1rem; }
+.sidebar a, .sidebar label { color:#fff8ed; display:block; margin:.45rem 0; text-decoration:none; }
+.sidebar ol { padding-left:1.25rem; }
+.filters { border-top:1px solid rgba(255,255,255,.2); margin-top:1rem; padding-top:.75rem; }
+.book-flow { min-width:0; max-width:940px; }
+.page-anchor { display:block; position:relative; top:-1rem; height:1px; overflow:hidden; }
+.flow-meta { color:var(--muted); font-size:.84rem; font-weight:800; margin:0 0 .3rem; }
+.flow-prose { max-width:76ch; margin:0 0 1rem; padding:.2rem 0 .2rem 1rem; border-left:3px solid rgba(138,69,22,.18); }
+.chapter-page { background:var(--paper); border:1px solid var(--line); border-radius:24px; padding:1.25rem; margin:0 0 1.2rem; box-shadow:0 18px 45px rgba(55,34,12,.09); }
+.page-heading { display:flex; justify-content:space-between; gap:1rem; align-items:center; border-bottom:1px solid var(--line); padding-bottom:.7rem; margin-bottom:.9rem; color:var(--muted); font-weight:800; }
+.study-block { background:var(--paper); border:1px solid var(--line); border-radius:24px; padding:1.15rem; margin:0 0 1.15rem; box-shadow:0 18px 45px rgba(55,34,12,.09); }
+.study-block-header { display:flex; justify-content:space-between; gap:1rem; align-items:flex-start; border-bottom:1px solid var(--line); margin-bottom:1rem; padding-bottom:.75rem; }
+.study-block-header h2 { margin:.1rem 0 0; font-size:clamp(1.35rem,2.5vw,2rem); line-height:1.12; }
+.study-block-grid { display:grid; grid-template-columns:minmax(260px,300px) minmax(0,1fr); gap:1rem; align-items:start; }
+.study-content { min-width:0; }
+.study-prose-only { background:rgba(255,250,241,.72); border:1px solid var(--line); border-radius:18px; padding:.75rem 1rem; margin:0 0 .8rem; }
+.reader-text { max-width:74ch; margin:.55rem 0; overflow-wrap:anywhere; }
+h2.reader-text { margin-top:1.4rem; color:#5c3215; font-size:1.45rem; }
+.diagram-panel { min-width:0; }
+.diagram-panel.missing { min-height:12rem; display:grid; place-items:center; border:1px dashed var(--line); border-radius:18px; color:var(--muted); background:#fffdf8; }
+.notation-panel { min-width:0; }
+.diagram-card, .pgn-card { border:1px solid var(--line); border-radius:20px; background:var(--surface); padding:1rem; margin:0 0 1rem; }
+.diagram-panel .diagram-card { margin-bottom:0; }
+.card-header { display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; justify-content:space-between; margin-bottom:.75rem; }
+.card-header h3 { margin:0; font-size:1.2rem; }
+.source-ref { color:var(--muted); font-size:.92rem; }
+.review-badge { border:1px solid var(--line); border-radius:999px; padding:.18rem .55rem; font-size:.82rem; font-weight:900; }
+.review-badge.accepted { color:var(--ok); border-color:rgba(20,107,58,.35); }
+.review-badge.needs-human-review, .review-badge.needs_review { color:var(--warn); border-color:rgba(167,97,0,.35); }
+.diagram-grid { display:grid; grid-template-columns:minmax(220px,280px) minmax(0,1fr); gap:1rem; align-items:start; }
+.diagram-panel .diagram-grid { grid-template-columns:1fr; }
+.board-placeholder { min-height:220px; display:grid; place-items:center; border:1px dashed var(--line); border-radius:16px; background:#fffdf8; color:var(--muted); text-align:center; padding:1rem; }
+.mini-board { width:min(240px,100%); aspect-ratio:1; display:grid; grid-template-columns:repeat(8,1fr); border:1px solid var(--line); color:var(--ink); }
+.mini-board span { display:grid; place-items:center; font-family:Georgia,serif; font-weight:900; }
+.mini-board span:nth-child(16n+1), .mini-board span:nth-child(16n+3), .mini-board span:nth-child(16n+5), .mini-board span:nth-child(16n+7),
+.mini-board span:nth-child(16n+10), .mini-board span:nth-child(16n+12), .mini-board span:nth-child(16n+14), .mini-board span:nth-child(16n+16) { background:#b58863; }
+.mini-board span:nth-child(16n+2), .mini-board span:nth-child(16n+4), .mini-board span:nth-child(16n+6), .mini-board span:nth-child(16n+8),
+.mini-board span:nth-child(16n+9), .mini-board span:nth-child(16n+11), .mini-board span:nth-child(16n+13), .mini-board span:nth-child(16n+15) { background:#f0d9b5; }
+.diagram-meta { min-width:0; }
+.candidate code, pre { display:block; max-width:100%; overflow-wrap:anywhere; word-break:break-word; white-space:pre-wrap; background:#f2e4cd; border:1px solid #e3d1b6; border-radius:12px; padding:.7rem; }
+.copy-button { min-height:44px; border:1px solid var(--line); border-radius:999px; background:#fffaf1; color:var(--accent); padding:.5rem .9rem; font-weight:900; cursor:pointer; }
+.copy-button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visible { outline:3px solid #b96920; outline-offset:3px; }
+.original-diagram summary, .review-details summary { cursor:pointer; min-height:44px; font-weight:900; color:var(--accent); }
+.original-diagram img { max-width:100%; height:auto; border-radius:10px; border:1px solid var(--line); background:#fff; }
+.pdf-context { margin-top:.85rem; border-top:1px solid var(--line); padding-top:.5rem; }
+.pdf-context summary { cursor:pointer; min-height:44px; font-weight:900; color:var(--accent); }
+.pdf-context img { max-width:100%; height:auto; border-radius:14px; border:1px solid var(--line); background:#fff; }
+.warnings, .review-reason { color:var(--muted); }
+body.hide-diagram [data-kind=\"diagram\"], body.hide-pgn [data-kind=\"pgn\"], body.hide-review [data-status=\"needs-human-review\"] { display:none; }
+body.reader-mode .page-preview-link, body.reader-mode .warnings { display:none; }
+.empty-page { color:var(--muted); font-style:italic; }
+@media (max-width: 940px) { .layout { grid-template-columns:1fr; } .sidebar { position:relative; top:auto; max-height:none; } .scorebar { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (max-width: 840px) { .study-block-grid { grid-template-columns:1fr; } }
+@media (max-width: 720px) { .layout,.app-header { padding-left:.85rem; padding-right:.85rem; } .scorebar,.diagram-grid { grid-template-columns:1fr; } .chapter-page,.study-block { border-radius:0; margin-left:-.85rem; margin-right:-.85rem; } .flow-prose { padding-left:.75rem; } .study-block-header { display:block; } }
+"""
+
+
+def _semantic_source_app_js() -> str:
+    return """document.addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-copy-value]');
+  if (!button) return;
+  const value = button.getAttribute('data-copy-value') || '';
+  if (!value.trim()) return;
+  await navigator.clipboard.writeText(value);
+  const previous = button.textContent;
+  button.textContent = 'Copied';
+  setTimeout(() => { button.textContent = previous; }, 1200);
+});
+
+document.querySelectorAll('[data-filter]').forEach((input) => {
+  input.addEventListener('change', () => {
+    document.body.classList.toggle(`hide-${input.dataset.filter}`, !input.checked);
+  });
+});
+
+const readerMode = document.querySelector('[data-reader-mode]');
+if (readerMode) {
+  readerMode.addEventListener('change', () => {
+    document.body.classList.toggle('reader-mode', readerMode.checked);
+  });
+}
+"""
+
+
+def _score_tile(label: str, value: Any) -> str:
+    return f'<div class="score"><span>{html.escape(label)}</span><strong>{html.escape(str(value))}</strong></div>'
+
+
+def _source_page_number(node: Any, *, fallback: int) -> int:
+    if not node:
+        return fallback
+    value = node.get("data-page") or node.get("data-page-number") or node.get("id") or ""
+    match = re.search(r"\d+", str(value))
+    return int(match.group(0)) if match else fallback
+
+
+def _source_reading_order(node: Any, *, fallback: int) -> int:
+    value = node.get("data-reading-order") if node else None
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return int(fallback)
+
+
+def _source_style_box(style: str) -> list[float]:
+    values: dict[str, float] = {}
+    for key, value in re.findall(r"([a-zA-Z-]+)\s*:\s*(-?\d+(?:\.\d+)?)px", str(style or "")):
+        values[key.lower()] = round(float(value), 3)
+    return [
+        values.get("left", 0.0),
+        values.get("top", 0.0),
+        values.get("width", 0.0),
+        values.get("height", 0.0),
+    ]
+
+
+def _source_order_key(item: dict[str, Any]) -> tuple[int, int, float, float]:
+    bbox = list(item.get("bbox") or [0, 0, 0, 0])
+    x = float(bbox[0] if len(bbox) > 0 else 0.0)
+    y = float(bbox[1] if len(bbox) > 1 else 0.0)
+    return (int(item.get("page") or 0), int(item.get("reading_order") or 0), y, x)
+
+
+def _save_data_uri_asset(
+    src: str,
+    out_dir: Path,
+    *,
+    filename_stem: str,
+    default_ext: str,
+    relative_prefix: str,
+) -> str:
+    value = str(src or "").strip()
+    if not value:
+        return ""
+    if not value.startswith("data:image/"):
+        return "" if "localhost" in value or "127.0.0.1" in value else value
+    match = re.match(r"data:(image/[A-Za-z0-9.+-]+);base64,(.*)", value, flags=re.DOTALL)
+    if not match:
+        return ""
+    mime = match.group(1).lower()
+    ext = {
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+    }.get(mime, default_ext)
+    target = out_dir / f"{_safe_filename(filename_stem)}{ext}"
+    try:
+        target.write_bytes(base64.b64decode(match.group(2), validate=False))
+    except Exception:
+        return ""
+    return str(Path(relative_prefix) / target.name).replace("\\", "/")
+
+
+def _source_text_chunks(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    chunks: list[dict[str, Any]] = []
+    current: list[dict[str, Any]] = []
+
+    def flush() -> None:
+        if not current:
+            return
+        text = _normalize_book_text(" ".join(str(item.get("text") or "") for item in current))
+        current.clear()
+        if not text or _is_reader_noise_text(text) or _is_technical_audit_text(text):
+            return
+        first = current_first
+        chunks.append(
+            {
+                "id": f"chunk-p{int(first.get('page') or 0):03d}-{len(chunks) + 1:04d}",
+                "page": int(first.get("page") or 0),
+                "reading_order": int(first.get("reading_order") or 0),
+                "bbox": list(first.get("bbox") or [0, 0, 0, 0]),
+                "text": text,
+                "text_kind": _source_text_kind(text),
+            }
+        )
+
+    current_first: dict[str, Any] = {}
+    for block in blocks:
+        text = str(block.get("text") or "").strip()
+        if not text or _is_reader_noise_text(text):
+            continue
+        is_heading = _source_text_kind(text) == "heading"
+        if is_heading:
+            flush()
+            chunks.append(
+                {
+                    "id": f"heading-p{int(block.get('page') or 0):03d}-{len(chunks) + 1:04d}",
+                    "page": int(block.get("page") or 0),
+                    "reading_order": int(block.get("reading_order") or 0),
+                    "bbox": list(block.get("bbox") or [0, 0, 0, 0]),
+                    "text": text,
+                    "text_kind": "heading",
+                }
+            )
+            continue
+        if not current:
+            current_first = block
+        current.append(block)
+        joined = " ".join(str(item.get("text") or "") for item in current)
+        if len(joined) >= 420 or re.search(r"[.!?)]$", text):
+            flush()
+    flush()
+    return chunks
+
+
+def _source_text_kind(text: str) -> str:
+    value = str(text or "").strip()
+    if re.match(r"^(?:Chapter\s+)?\d{1,2}\s+[A-Z][A-Za-z ,'-]{3,}$", value):
+        return "heading"
+    if re.match(r"^(?:Preface|Introduction|Exercises|Solutions|Final Test|Index|Recommended Books)$", value, re.IGNORECASE):
+        return "heading"
+    return "text"
+
+
+def _nearest_source_caption(bbox: list[float], captions: list[dict[str, Any]]) -> str:
+    if not captions:
+        return ""
+    x, y = (float(bbox[0] if len(bbox) > 0 else 0.0), float(bbox[1] if len(bbox) > 1 else 0.0))
+    best = min(
+        captions,
+        key=lambda item: abs(float((item.get("bbox") or [0, 0])[1]) - y) + abs(float((item.get("bbox") or [0, 0])[0]) - x) * 0.25,
+    )
+    return str(best.get("text") or "")
+
+
+def _extract_fen_candidate_from_node(node: Any) -> str:
+    values = [
+        node.get("data-fen") if node else "",
+        node.get("data-fen-candidate") if node else "",
+        node.get("fen") if node else "",
+    ]
+    text = node.get_text(" ", strip=True) if node else ""
+    values.append(text)
+    fen_re = re.compile(r"\b(?:[pnbrqkPNBRQK1-8]+/){7}[pnbrqkPNBRQK1-8]+\s+[wb]\s+(?:K?Q?k?q?|-)\s+(?:[a-h][36]|-)\s+\d+\s+\d+\b")
+    for value in values:
+        match = fen_re.search(str(value or ""))
+        if match:
+            return match.group(0)
+    return ""
+
+
+def _source_fen_status(fen: str, *, image_path: str) -> dict[str, Any]:
+    value = str(fen or "").strip()
+    if not value:
+        return {
+            "validation_status": "needs-human-review",
+            "confidence": 0.0,
+            "review_reason": "FEN recognition is not available for this extracted diagram crop yet.",
+        }
+    valid, warnings = validate_fen(value)
+    if valid and not warnings and image_path:
+        return {"validation_status": "accepted", "confidence": 1.0, "review_reason": ""}
+    return {
+        "validation_status": "needs-human-review",
+        "confidence": 0.25 if value else 0.0,
+        "review_reason": "; ".join(warnings or ["FEN candidate failed deterministic validation."]),
+    }
+
+
+def _infer_side_to_move(text: str) -> str:
+    value = str(text or "").lower()
+    if "black to move" in value or "black" in value and "move" in value:
+        return "black"
+    if "white to move" in value or "white" in value and "move" in value:
+        return "white"
+    return "unknown"
+
+
+def _extract_embedded_pgn_candidate(node: Any) -> str:
+    if not node:
+        return ""
+    for selector in ["pre code", "pre", "code.language-pgn", ".pgn"]:
+        child = node.select_one(selector)
+        if child:
+            candidate = child.get_text("\n", strip=True)
+            if "[Event" in candidate:
+                return candidate
+    text = node.get_text("\n", strip=True)
+    return text if "[Event" in text and "[Result" in text else ""
+
+
+def _source_pgn_warnings(raw_text: str, pgn: str, *, accepted: bool) -> list[str]:
+    warnings: list[str] = []
+    if accepted:
+        return warnings
+    if not pgn:
+        warnings.append("pgn_missing_or_not_embedded")
+    elif not _pgn_has_required_headers(pgn):
+        warnings.append("pgn_missing_required_headers")
+    elif not _pgn_replay_clean(pgn):
+        warnings.append("pgn_replay_errors")
+    value = str(raw_text or "")
+    for token in ["unmapped_chess_glyphs", "move_number_jump", "move_number_regression", "side_to_move_mismatch", "pgn_replay_errors"]:
+        if token in value:
+            warnings.append(token)
+    if _contains_unmapped_notation_glyphs(value):
+        warnings.append(UNMAPPED_CHESS_GLYPH_WARNING)
+    return sorted(set(warnings or ["needs_manual_pgn_review"]))
+
+
+def _normalize_source_label(value: str) -> str:
+    return re.sub(r"\s+", "", str(value or "").lower().replace(".", ""))
+
+
+def _first_source_page_matching(pages: list[dict[str, Any]], pattern: str) -> int | None:
+    regex = re.compile(pattern, re.IGNORECASE)
+    for page in pages:
+        text = " ".join(str(block.get("text") or "") for block in page.get("text_blocks", []) or [])
+        if regex.search(text):
+            return int(page.get("page") or 0)
+    return None
+
+
+def _missing_page_numbers(pdf_pages: int, pages: list[dict[str, Any]]) -> list[int]:
+    if not pdf_pages:
+        return []
+    present = {int(page.get("page") or 0) for page in pages}
+    return [page for page in range(1, int(pdf_pages) + 1) if page not in present]
+
+
+def _visible_review_notation_text(raw_text: str) -> str:
+    text = str(raw_text or "")
+    text = re.sub(r"\bDo weryfikacji\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"PGN requires review; strict export is blocked\.?", "", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"\b(?:move_number_jump|move_number_regression|pgn_replay_errors|side_to_move_mismatch|unmapped_chess_glyphs)(?:,\s*)?",
+        "",
+        text,
+    )
+    return _normalize_book_text(text).strip()
+
+
+def _scrub_local_links(value: str) -> str:
+    return re.sub(r"https?://(?:localhost|127\.0\.0\.1)(?::\d+)?\S*", "", str(value or ""))
+
+
+def _friendly_status(value: str) -> str:
+    normalized = str(value or "").replace("_", "-")
+    if normalized == "accepted":
+        return "Validated"
+    if normalized in {"needs-human-review", "needs-review"}:
+        return "Needs human review"
+    return normalized.replace("-", " ").title()
+
+
+def _fen_board_placeholder(fen: str) -> str:
+    if not fen:
+        return "<span>Board render waits for a validated FEN.</span>"
+    rows = str(fen).split()[0].split("/")
+    pieces = {"p": "p", "n": "n", "b": "b", "r": "r", "q": "q", "k": "k"}
+    cells: list[str] = []
+    for row in rows:
+        for char in row:
+            if char.isdigit():
+                cells.extend([""] * int(char))
+            else:
+                cells.append(pieces.get(char.lower(), char))
+    if len(cells) != 64:
+        return "<span>Validated FEN</span>"
+    items = "".join(f'<span>{html.escape(cell)}</span>' for cell in cells)
+    return f'<div class="mini-board" aria-label="FEN board">{items}</div>'
+
+
+
+def ingest_study_pdf(config: ChessStudyConfig) -> dict[str, Any]:
+    """Build the page/text source model used by renderers and QA gates."""
+    pages: list[StudyPage] = []
+    page_image_count = 0
+    render_dpi = max(72, int(config.diagram_dpi or 160))
+    page_image_dir = config.out / "assets" / "page_images"
+    page_image_dir.mkdir(parents=True, exist_ok=True)
+    page_image_cache_hits = 0
+    page_image_cache_misses = 0
+    html_pages_by_number = {
+        int(page.get("page_number") or 0): page
+        for page in (_html_page_texts(config.html) if config.html and config.html.is_file() else [])
+    }
+    pdf_mtime = config.pdf.stat().st_mtime if config.pdf.is_file() else 0.0
+
+    with fitz.open(config.pdf) as document:
+        for page_index, page in enumerate(document):
+            page_number = page_index + 1
+            page_image = ""
+            if config.render_pages:
+                page_image, cache_status = _render_pdf_page_image(
+                    page,
+                    page_number=page_number,
+                    dpi=render_dpi,
+                    out_dir=page_image_dir,
+                    source_pdf=str(config.pdf),
+                    source_mtime=pdf_mtime,
+                )
+                if page_image:
+                    page_image_count += 1
+                if cache_status == "hit":
+                    page_image_cache_hits += 1
+                if cache_status == "miss":
+                    page_image_cache_misses += 1
+            blocks = _study_text_blocks(page, page_number=page_number)
+            html_page = html_pages_by_number.get(page_number) or {}
+            html_blocks = _html_study_text_blocks(html_page, page_number=page_number, start_order=len(blocks))
+            if html_blocks and _should_apply_html_text_assist(blocks, html_blocks):
+                blocks = [*blocks, *html_blocks]
+                blocks.sort(key=lambda item: (item.bbox[1] if len(item.bbox) > 1 else 0.0, item.bbox[0] if item.bbox else 0.0, item.reading_order))
+            raw_text = "\n".join(block.text for block in blocks).strip()
+            normalized_text = _normalize_book_text(raw_text)
+            paragraphs = _paragraphs_from_blocks(blocks)
+            elements = _layout_elements_from_text_blocks(blocks, page_number=page_number)
+            pages.append(
+                StudyPage(
+                    page=page_number,
+                    pdf_page_index=page_index,
+                    width=float(page.rect.width or 0.0),
+                    height=float(page.rect.height or 0.0),
+                    page_image=page_image,
+                    raw_text=raw_text,
+                    normalized_text=normalized_text,
+                    paragraphs=paragraphs,
+                    blocks=blocks,
+                    elements=elements,
+                )
+            )
+
+    page_dicts = [page.to_dict() for page in pages]
+    summary = {
+        "source_pdf": str(config.pdf),
+        "profile": config.quality_profile,
+        "page_count": len(page_dicts),
+        "page_images": page_image_count,
+        "page_image_cache_hits": page_image_cache_hits,
+        "page_image_cache_misses": page_image_cache_misses,
+        "pages_with_extractable_text": len([page for page in page_dicts if str(page.get("normalized_text") or "").strip()]),
+        "copyable_text_characters": sum(len(str(page.get("normalized_text") or "")) for page in page_dicts),
+        "ocr_fallback_requested": bool(config.ocr_fallback),
+        "ocr_fallback_applied": False,
+    }
+    payload = {"summary": summary, "pages": page_dicts}
+    _write_jsonl(config.out / "pages.jsonl", page_dicts)
+    _write_jsonl(
+        config.out / "book_text.jsonl",
+        [
+            {
+                "page": page["page"],
+                "text_normalized": page["normalized_text"],
+                "paragraphs": page["paragraphs"],
+                "block_count": len(page.get("blocks") or []),
+            }
+            for page in page_dicts
+        ],
+    )
+    (config.out / "book_text.md").write_text(_book_text_markdown(page_dicts), encoding="utf-8")
+    _write_json(config.out / "pages_summary.json", summary)
+    return payload
+
+
+def audit_current_html(config: ChessStudyConfig) -> dict[str, Any]:
+    reports_dir = config.out / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    report = audit_chess_html(
+        config.pdf,
+        config.html or "",
+        output=reports_dir / "current_audit.json",
+    )
+    final_status = "ACCEPTABLE_AS_FINAL"
+    if (
+        int(report.get("pgn", {}).get("accepted", 0) or 0) <= 0
+        or int(report.get("fen", {}).get("total", 0) or 0) <= 0
+        or report.get("critical_errors")
+    ):
+        final_status = "NOT_ACCEPTABLE_AS_FINAL"
+    report["final_html_status"] = final_status
+    (reports_dir / "current_audit.md").write_text(_current_audit_markdown(report), encoding="utf-8")
+    return report
+
+
+def extract_study_structure(
+    pdf_path: str | Path,
+    out_dir: str | Path,
+    *,
+    html_path: str | Path | None = None,
+) -> dict[str, Any]:
+    pdf = Path(pdf_path)
+    out = Path(out_dir)
+    pages = _merged_page_texts(pdf, Path(html_path) if html_path else None)
+    toc_numbers = _yusupov_toc_numbers_from_html(Path(html_path)) if html_path else []
+    toc_structure = _structure_from_toc_numbers(toc_numbers)
+    title_hits = toc_structure.get("chapter_starts") or _chapter_title_hits(pages)
+    chapters: list[dict[str, Any]] = []
+    for index, (chapter_no, title) in enumerate(YUSUPOV_CHAPTERS):
+        start_page = title_hits.get(chapter_no)
+        next_starts = [
+            title_hits[next_no]
+            for next_no, _ in YUSUPOV_CHAPTERS[index + 1 :]
+            if title_hits.get(next_no) is not None
+        ]
+        end_page = (min(next_starts) - 1) if start_page is not None and next_starts else None
+        chapters.append(
+            {
+                "chapter_no": chapter_no,
+                "title": title,
+                "start_book_page": start_page,
+                "end_book_page": end_page,
+                "expected_exercises": 12,
+            }
+        )
+    final_test_page = toc_structure.get("final_test") or _first_matching_page(pages, FINAL_TEST_RE)
+    appendices = toc_structure.get("appendices") or {
+        key: _first_matching_page(pages, pattern)
+        for key, pattern in APPENDIX_PATTERNS.items()
+    }
+    page_map = [{"pdf_page_index": item["index"], "book_page_number": item["page_number"]} for item in pages]
+    structure = {
+        "source_pdf": str(pdf),
+        "structure_text_source": "html_toc_assist" if toc_structure else ("pdf+html_ocr_assist" if html_path else "pdf_text"),
+        "pdf_page_count": len(pages),
+        "chapters": chapters,
+        "final_test": {"start_book_page": final_test_page},
+        "appendices": appendices,
+        "page_map": page_map,
+        "validation": _validate_structure(chapters, final_test_page, appendices),
+    }
+    _write_json(out / "chapters.json", structure)
+    return structure
+
+
+def segment_study_pages(
+    pdf_path: str | Path,
+    structure: dict[str, Any],
+    out_dir: str | Path,
+    *,
+    html_path: str | Path | None = None,
+) -> dict[str, Any]:
+    pages = _merged_page_texts(Path(pdf_path), Path(html_path) if html_path else None, include_blocks=True)
+    chapters = list(structure.get("chapters") or [])
+    final_start = _safe_int((structure.get("final_test") or {}).get("start_book_page"))
+    appendices = [value for value in (structure.get("appendices") or {}).values() if _safe_int(value)]
+    first_appendix = min([_safe_int(value) for value in appendices] or [0])
+    segments: list[dict[str, Any]] = []
+    for page in pages:
+        book_page = int(page["page_number"])
+        text = str(page.get("text") or "")
+        chapter = _chapter_for_book_page(book_page, chapters)
+        labels = sorted(set(_normalize_ex_label(match) for match in EXERCISE_LABEL_RE.finditer(text)))
+        final_labels = sorted(set(f"F-{match.group('number')}" for match in FINAL_LABEL_RE.finditer(text)))
+        page_type = _classify_page_type(text, book_page, chapter, final_start=final_start, first_appendix=first_appendix)
+        blocks = _segment_blocks_from_page(page, labels=labels, final_labels=final_labels)
+        segments.append(
+            {
+                "page": book_page,
+                "pdf_page_index": page["index"],
+                "book_page": book_page,
+                "chapter_no": chapter.get("chapter_no") if chapter else None,
+                "page_type": page_type,
+                "exercise_labels": labels,
+                "final_test_labels": final_labels,
+                "blocks": blocks,
+            }
+        )
+    payload = {"page_count": len(segments), "pages": segments}
+    _write_json(Path(out_dir) / "page_segments.json", payload)
+    return payload
+
+
+def detect_study_diagrams(config: ChessStudyConfig) -> dict[str, Any]:
+    manual_labels = _load_diagram_review_labels(config.diagram_review_labels)
+    manifest = detect_chess_diagrams(
+        config.pdf,
+        output_dir=config.out,
+        dpi=config.diagram_dpi,
+        pages=config.diagram_pages,
+        page_ranges=config.diagram_page_ranges,
+        max_candidates_per_page=config.max_candidates_per_page,
+        min_grid_confidence=config.min_grid_confidence,
+        include_low_confidence_review_candidates=config.low_confidence_diagram_review,
+        low_confidence_min_grid_confidence=config.low_confidence_min_grid_confidence,
+        low_confidence_max_candidates_per_page=config.low_confidence_max_candidates_per_page,
+        review_sample_limit=config.review_sample_limit,
+    )
+    source_dir = config.out / "diagrams" / "source"
+    crop_dir = config.out / "assets" / "diagram_crops"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    crop_dir.mkdir(parents=True, exist_ok=True)
+    normalized: list[dict[str, Any]] = []
+    for item in manifest.get("diagrams", []) or []:
+        record = dict(item)
+        _apply_diagram_manual_label(record, manual_labels)
+        image_path = Path(str(record.get("image_path") or ""))
+        target_name = f"{record.get('diagram_id') or image_path.stem}.webp"
+        target = source_dir / target_name
+        crop_target = crop_dir / target_name
+        if image_path.is_file():
+            shutil.copyfile(image_path, target)
+            shutil.copyfile(image_path, crop_target)
+            record["legacy_source_crop"] = str(Path("diagrams") / "source" / target_name).replace("\\", "/")
+            record["source_crop"] = str(Path("assets") / "diagram_crops" / target_name).replace("\\", "/")
+        else:
+            record["source_crop"] = ""
+            record["status"] = "needs_review"
+            record["reason"] = record.get("reason") or "source_crop_missing"
+        rendered = _render_valid_fen_assets(
+            str(record.get("fen") or ""),
+            config.out,
+            diagram_id=str(record.get("diagram_id") or image_path.stem or target_name),
+        )
+        record["rendered_svg"] = rendered.get("svg", "")
+        record["rendered_png"] = rendered.get("png", "")
+        record["rendered_diagram"] = record["rendered_svg"] or record["rendered_png"]
+        record["visual_order_on_page"] = _visual_order_for_diagram(record, normalized)
+        record["review_reason"] = record.get("reason") or ""
+        normalized.append(record)
+    low_confidence = []
+    for item in manifest.get("low_confidence_review_candidates", []) or []:
+        record = dict(item)
+        _apply_diagram_manual_label(record, manual_labels)
+        low_confidence.append(record)
+    if config.diagram_alignment_review or manual_labels:
+        alignment_payload = _write_diagram_alignment_review(config.out, [*normalized, *low_confidence])
+    else:
+        alignment_payload = _empty_diagram_alignment_payload(config.out)
+    label_counts = _diagram_manual_label_counts([*normalized, *low_confidence])
+    strict_after_review = len([item for item in normalized if item.get("manual_label") != "false_positive"])
+    payload = {
+        **manifest,
+        "diagrams": normalized,
+        "low_confidence_review_candidates": low_confidence,
+        "manual_label_counts": label_counts,
+        "diagram_labels_imported": sum(label_counts.values()),
+        "correct_diagrams": label_counts.get("correct_diagram", 0),
+        "cropped_diagrams": label_counts.get("cropped_diagram", 0),
+        "false_positive_diagrams": label_counts.get("false_positive", 0),
+        "uncertain_diagrams": label_counts.get("uncertain", 0),
+        "strict_diagram_count_after_review": strict_after_review,
+        "alignment_review": alignment_payload,
+        "alignment_improved_count": int(alignment_payload.get("alignment_improved_count") or 0),
+        "source_crop_dir": str(source_dir),
+        "diagram_crop_dir": str(crop_dir),
+        "rendered_svg_dir": str(config.out / "assets" / "diagram_svg"),
+        "rendered_png_dir": str(config.out / "assets" / "diagram_png"),
+    }
+    _write_json(config.out / "chess_diagrams.json", payload)
+    _write_jsonl(config.out / "diagrams.jsonl", [_study_diagram_record(record).to_dict() for record in normalized])
+    _write_csv(config.out / "diagrams.csv", [_study_diagram_record(record).to_dict() for record in normalized])
+    return payload
+
+
+def build_study_positions(diagrams: dict[str, Any], segments: dict[str, Any], out_dir: str | Path) -> dict[str, Any]:
+    pages_by_number = {int(page.get("page") or 0): page for page in segments.get("pages", []) or []}
+    positions: list[dict[str, Any]] = []
+    for index, diagram in enumerate(diagrams.get("diagrams", []) or [], start=1):
+        if diagram.get("manual_label") == "false_positive":
+            continue
+        page_number = int(diagram.get("page") or 0)
+        page = pages_by_number.get(page_number) or {}
+        label = _best_label_for_diagram(diagram, page, fallback_index=index)
+        chapter_no = page.get("chapter_no")
+        item_type = "final_test" if str(label).startswith("F-") or page.get("page_type") == "final_test" else "exercise"
+        fen = str(diagram.get("fen") or "").strip()
+        status, warnings = _position_status_from_diagram(diagram, fen=fen)
+        position_id = _position_id(item_type=item_type, chapter_no=chapter_no, label=label, fallback_index=index)
+        positions.append(
+            {
+                "id": position_id,
+                "type": item_type,
+                "chapter_no": chapter_no,
+                "chapter_title": _chapter_title(chapter_no),
+                "label": label,
+                "diagram_page": page_number,
+                "solution_page": None,
+                "side_to_move": "white" if diagram.get("side_to_move") == "w" else "black",
+                "bbox": _bbox4(diagram.get("bbox") or []),
+                "visual_order_on_page": diagram.get("visual_order_on_page"),
+                "stars": None,
+                "fen": fen,
+                "fen_candidate": str(diagram.get("fen_candidate") or ""),
+                "solution_pgn": "",
+                "points": None,
+                "theme": "",
+                "status": status,
+                "warnings": warnings,
+                "critical_warnings": _critical_warnings(status, warnings),
+                "source_crop": diagram.get("source_crop") or "",
+                "rendered_diagram": diagram.get("rendered_diagram") or "",
+                "rendered_svg": diagram.get("rendered_svg") or "",
+                "rendered_png": diagram.get("rendered_png") or "",
+                "diagram_confidence": diagram.get("confidence"),
+                "fen_confidence": diagram.get("fen_confidence"),
+                "validation_status": "validated" if status == "accepted" else "not_validated",
+                "ai_candidate": None,
+                "ai_confidence": None,
+                "ai_reason": "",
+            }
+        )
+    payload = {"positions": positions, "status_counts": _count_by_status(positions)}
+    _write_json(Path(out_dir) / "positions.json", payload)
+    return payload
+
+
+def extract_study_notation_fragments(
+    page_model: dict[str, Any],
+    positions: dict[str, Any],
+    out_dir: str | Path,
+    *,
+    glyph_context_pages: str = "",
+    glyph_mapping_file: str | Path | None = None,
+) -> dict[str, Any]:
+    positions_by_page = _positions_by_page(positions)
+    glyph_context_page_set = _parse_page_filter(glyph_context_pages)
+    glyph_mapping = _load_ocr_glyph_mapping(glyph_mapping_file)
+    fragments: list[dict[str, Any]] = []
+    mapping_application_count = 0
+    blocked_fragment_count = 0
+    for page in page_model.get("pages", []) or []:
+        page_number = int(page.get("page") or 0)
+        page_positions = positions_by_page.get(page_number, [])
+        blocks = [block for block in page.get("blocks", []) or [] if _looks_like_notation_text(str(block.get("normalized_text") or block.get("text") or ""))]
+        if not blocks:
+            continue
+        raw_text = " ".join(str(block.get("text") or "") for block in blocks)
+        normalized_text = _normalize_notation_text(raw_text)
+        bbox = _union_bboxes([block.get("bbox") or [] for block in blocks])
+        glyph_diagnostics = _notation_glyph_diagnostics_from_blocks(
+            blocks,
+            page_number=page_number,
+            fallback_text=raw_text,
+        )
+        if _needs_raw_glyph_context(glyph_diagnostics) and _page_filter_allows(glyph_context_page_set, page_number):
+            glyph_diagnostics = _merge_glyph_diagnostics(
+                glyph_diagnostics,
+                _rawdict_glyph_context_for_page(
+                    page,
+                    page_number=page_number,
+                    fallback_text=raw_text,
+                ),
+            )
+        mapped_text, mapping_result = _apply_ocr_glyph_mapping(normalized_text, glyph_mapping)
+        mapping_application_count += int(mapping_result.get("applied_count") or 0)
+        blockers = list(mapping_result.get("unmapped_tokens") or [])
+        if blockers:
+            blocked_fragment_count += 1
+        linked_position = page_positions[0] if page_positions else {}
+        source_diagram = str(linked_position.get("id") or "")
+        fragment_id = f"n_p{page_number:03d}_{len(fragments) + 1:03d}"
+        comments = _comments_from_notation_context(page, blocks)
+        pgn = _build_notation_pgn_candidate(
+            mapped_text,
+            page=page_number,
+            source_diagram=source_diagram,
+            fen=str(linked_position.get("fen") or ""),
+            comments=comments,
+        )
+        warnings: list[str] = []
+        if not _pgn_has_required_headers(pgn):
+            warnings.append("pgn_missing_required_headers")
+        if not _pgn_replay_clean(pgn):
+            warnings.append("pgn_replay_failed")
+        if any(warning in str(linked_position.get("critical_warnings") or "") for warning in ["unmapped_chess_glyphs"]):
+            warnings.append("linked_position_has_critical_warning")
+        if blockers:
+            warnings.append("unmapped_ocr_tokens")
+        if glyph_diagnostics or _contains_unmapped_notation_glyphs(mapped_text):
+            warnings.append(UNMAPPED_CHESS_GLYPH_WARNING)
+        if not blockers and mapping_result.get("applied_count") and not _contains_unmapped_notation_glyphs(mapped_text):
+            warnings = [warning for warning in warnings if warning != UNMAPPED_CHESS_GLYPH_WARNING]
+            glyph_diagnostics = _mark_glyph_diagnostics_mapped(glyph_diagnostics, mapping_result)
+        status = "accepted" if not warnings and source_diagram else "needs_review"
+        fragments.append(
+            StudyNotationFragment(
+                id=fragment_id,
+                page=page_number,
+                diagram_id=source_diagram,
+                source_page=page_number,
+                source_diagram=source_diagram,
+                raw_text=raw_text,
+                normalized_text=mapped_text,
+                comments=comments,
+                pgn=pgn,
+                status=status,
+                warnings=sorted(set(warnings)),
+                bbox=bbox,
+                glyph_diagnostics=glyph_diagnostics[:NOTATION_GLYPH_SAMPLE_LIMIT],
+            ).to_dict()
+        )
+        fragments[-1]["ocr_token_mappings_applied"] = int(mapping_result.get("applied_count") or 0)
+        fragments[-1]["unmapped_token_blockers"] = blockers
+        fragments[-1]["raw_glyph_context_mode"] = _raw_glyph_context_mode(fragments[-1])
+    payload = {
+        "fragment_count": len(fragments),
+        "accepted_count": len([item for item in fragments if item.get("status") == "accepted"]),
+        "needs_review_count": len([item for item in fragments if item.get("status") != "accepted"]),
+        "ocr_token_mappings_loaded": int(glyph_mapping.get("accepted_count") or 0),
+        "ocr_token_mappings_applied": mapping_application_count,
+        "fragments_blocked_by_unmapped_tokens": blocked_fragment_count,
+        "raw_glyph_context_mode": _raw_glyph_context_mode_for_fragments(fragments),
+        "fragments": fragments,
+    }
+    _write_jsonl(Path(out_dir) / "notation_fragments.jsonl", fragments)
+    _write_csv(Path(out_dir) / "notation_fragments.csv", fragments)
+    _write_notation_glyph_diagnostics(Path(out_dir), fragments)
+    _write_glyph_mapping_template_and_blockers(Path(out_dir), fragments, glyph_mapping)
+    return payload
+
+
+def build_study_pgn(
+    positions: dict[str, Any],
+    out_dir: str | Path,
+    *,
+    notation_fragments: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    accepted_fragments = [
+        item
+        for item in (notation_fragments or {}).get("fragments", []) or []
+        if item.get("status") == "accepted"
+        and _pgn_has_required_headers(str(item.get("pgn") or ""))
+        and _pgn_has_source_page(str(item.get("pgn") or ""))
+        and _pgn_replay_clean(str(item.get("pgn") or ""))
+        and UNMAPPED_CHESS_GLYPH_WARNING not in (item.get("warnings") or [])
+        and not _fragment_has_raw_context_gap(item)
+    ]
+    accepted_positions = [
+        item
+        for item in positions.get("positions", []) or []
+        if item.get("status") == "accepted"
+        and _pgn_has_required_headers(str(item.get("solution_pgn") or ""))
+        and _pgn_has_source_page(str(item.get("solution_pgn") or ""))
+        and _pgn_replay_clean(str(item.get("solution_pgn") or ""))
+    ]
+    pgn_values = [str(item["pgn"]).strip() for item in accepted_fragments]
+    pgn_values.extend(str(item["solution_pgn"]).strip() for item in accepted_positions)
+    pgn_text = "\n\n".join(value for value in pgn_values if value).strip()
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    (Path(out_dir) / "book.pgn").write_text(pgn_text + ("\n" if pgn_text else ""), encoding="utf-8")
+    (Path(out_dir) / "games_with_comments.pgn").write_text(pgn_text + ("\n" if pgn_text else ""), encoding="utf-8")
+    return {
+        "accepted_pgn_count": len(accepted_fragments) + len(accepted_positions),
+        "pgn_records": [*accepted_fragments, *accepted_positions],
+    }
+
+
+def build_study_exercises(positions: dict[str, Any], out_dir: str | Path) -> dict[str, Any]:
+    exercises = [item for item in positions.get("positions", []) or [] if item.get("type") == "exercise"]
+    payload = {"exercise_count": len(exercises), "exercises": exercises}
+    _write_json(Path(out_dir) / "exercises.json", payload)
+    return payload
+
+
+def build_study_final_test(positions: dict[str, Any], out_dir: str | Path) -> dict[str, Any]:
+    items = [item for item in positions.get("positions", []) or [] if item.get("type") == "final_test"]
+    payload = {"type": "final_test", "position_count": len(items), "positions": items}
+    _write_json(Path(out_dir) / "final_test.json", payload)
+    return payload
+
+
+def validate_study_export(
+    config: ChessStudyConfig,
+    *,
+    current_audit: dict[str, Any],
+    structure: dict[str, Any],
+    segments: dict[str, Any],
+    diagrams: dict[str, Any],
+    positions: dict[str, Any],
+    page_model: dict[str, Any] | None = None,
+    notation_fragments: dict[str, Any] | None = None,
+    pgn_payload: dict[str, Any],
+    exercises: dict[str, Any],
+    final_test: dict[str, Any],
+) -> dict[str, Any]:
+    position_list = list(positions.get("positions") or [])
+    page_summary = (page_model or {}).get("summary") or {}
+    notation_payload = notation_fragments or {"fragments": []}
+    problems: list[dict[str, Any]] = []
+    structure_validation = structure.get("validation") or {}
+    for error in structure_validation.get("errors", []) or []:
+        problems.append({"severity": "critical", "code": error, "area": "structure"})
+    for item in position_list:
+        if item.get("status") == "accepted":
+            fen = str(item.get("fen") or "")
+            valid, warnings = validate_fen(fen)
+            if not valid or warnings:
+                problems.append({"severity": "critical", "code": "accepted_fen_invalid", "position_id": item.get("id")})
+            if not item.get("source_crop"):
+                problems.append({"severity": "critical", "code": "accepted_fen_missing_crop", "position_id": item.get("id")})
+            if not item.get("rendered_diagram"):
+                problems.append({"severity": "critical", "code": "accepted_fen_missing_render", "position_id": item.get("id")})
+            if str(item.get("solution_pgn") or "").strip() and not _pgn_replay_clean(str(item.get("solution_pgn") or "")):
+                problems.append({"severity": "critical", "code": "accepted_pgn_invalid", "position_id": item.get("id")})
+            if str(item.get("solution_pgn") or "").strip() and not _pgn_has_source_page(str(item.get("solution_pgn") or "")):
+                problems.append({"severity": "critical", "code": "accepted_pgn_missing_source_page", "position_id": item.get("id")})
+            if item.get("critical_warnings"):
+                problems.append({"severity": "critical", "code": "accepted_has_critical_warning", "position_id": item.get("id")})
+        if item.get("type") == "exercise" and not item.get("solution_page"):
+            problems.append({"severity": "review", "code": "unlinked_solution", "position_id": item.get("id")})
+    for fragment in notation_payload.get("fragments") or []:
+        if not isinstance(fragment, dict) or fragment.get("status") != "accepted":
+            continue
+        fragment_id = fragment.get("id")
+        pgn = str(fragment.get("pgn") or "")
+        warnings = [str(warning) for warning in (fragment.get("warnings") or [])]
+        if UNMAPPED_CHESS_GLYPH_WARNING in warnings:
+            problems.append({"severity": "critical", "code": "accepted_notation_has_unmapped_glyphs", "fragment_id": fragment_id})
+        if _fragment_has_raw_context_gap(fragment):
+            problems.append({"severity": "critical", "code": "accepted_notation_missing_raw_glyph_context", "fragment_id": fragment_id})
+        if not _pgn_has_required_headers(pgn):
+            problems.append({"severity": "critical", "code": "accepted_notation_missing_required_headers", "fragment_id": fragment_id})
+        if not _pgn_has_source_page(pgn):
+            problems.append({"severity": "critical", "code": "accepted_notation_missing_source_page", "fragment_id": fragment_id})
+        if not _pgn_replay_clean(pgn):
+            problems.append({"severity": "critical", "code": "accepted_notation_pgn_invalid", "fragment_id": fragment_id})
+    critical = [problem for problem in problems if problem.get("severity") == "critical"]
+    review = [problem for problem in problems if problem.get("severity") == "review"]
+    status = "FAIL" if critical else ("PASS_WITH_REVIEW_ITEMS" if review or _count_review_positions(position_list) else "PASS")
+    notation_status_counts = _count_by_status(
+        [item for item in notation_payload.get("fragments") or [] if isinstance(item, dict)]
+    )
+    notation_diagnostics = [
+        diagnostic
+        for item in notation_payload.get("fragments") or []
+        if isinstance(item, dict)
+        for diagnostic in item.get("glyph_diagnostics") or []
+        if isinstance(diagnostic, dict)
+    ][:NOTATION_GLYPH_DIAGNOSTIC_LIMIT]
+    glyph_mapping_candidate_payload = _build_glyph_mapping_candidates(notation_diagnostics)
+    glyph_mapping_candidate_count = int(glyph_mapping_candidate_payload.get("candidate_count") or 0)
+    strict_diagram_count = int(
+        diagrams.get("strict_diagram_count_after_review")
+        if diagrams.get("strict_diagram_count_after_review") is not None
+        else diagrams.get("diagram_count") or len(diagrams.get("diagrams") or [])
+    )
+    summary = {
+        "pages": structure.get("pdf_page_count", 0),
+        "chapters": len([chapter for chapter in structure.get("chapters", []) if chapter.get("start_book_page")]),
+        "expected_chapters": len(YUSUPOV_CHAPTERS),
+        "final_test_detected": bool((structure.get("final_test") or {}).get("start_book_page")),
+        "diagrams_detected": strict_diagram_count,
+        "fens_accepted": len([item for item in position_list if item.get("status") == "accepted" and item.get("fen")]),
+        "fens_needs_review": len([item for item in position_list if item.get("status") in {"needs_review", "low_confidence"}]),
+        "fens_missing": len([item for item in position_list if item.get("status") == "missing_fen"]),
+        "pgn_accepted": int(pgn_payload.get("accepted_pgn_count") or 0),
+        "pgn_needs_review": len([item for item in position_list if not item.get("solution_pgn")]),
+        "pgn_illegal": 0,
+        "missing_exercise_links": len([problem for problem in problems if problem.get("code") == "unlinked_solution"]),
+        "validation_status": status,
+        "quality_profile": config.quality_profile,
+        "glyph_context_pages": config.glyph_context_pages,
+        "review_sample_limit": config.review_sample_limit,
+        "page_images": int(page_summary.get("page_images") or 0),
+        "pages_with_extractable_text": int(page_summary.get("pages_with_extractable_text") or 0),
+        "copyable_text_characters": int(page_summary.get("copyable_text_characters") or 0),
+        "diagrams_total": strict_diagram_count,
+        "strict_diagrams_total": strict_diagram_count,
+        "low_confidence_review_candidates": int(
+            diagrams.get("low_confidence_review_count")
+            or len(diagrams.get("low_confidence_review_candidates") or [])
+        ),
+        "diagram_labels_imported": int(diagrams.get("diagram_labels_imported") or 0),
+        "correct_diagrams": int(diagrams.get("correct_diagrams") or 0),
+        "cropped_diagrams": int(diagrams.get("cropped_diagrams") or 0),
+        "false_positive_diagrams": int(diagrams.get("false_positive_diagrams") or 0),
+        "uncertain_diagrams": int(diagrams.get("uncertain_diagrams") or 0),
+        "alignment_improved_count": int(diagrams.get("alignment_improved_count") or 0),
+        "sampled_diagram_pages": list(diagrams.get("sampled_pages") or []),
+        "strict_diagrams_sampled": strict_diagram_count,
+        "low_confidence_candidates_sampled": int(
+            diagrams.get("low_confidence_review_count")
+            or len(diagrams.get("low_confidence_review_candidates") or [])
+        ),
+        "fen_accepted": len([item for item in position_list if item.get("status") == "accepted" and item.get("fen")]),
+        "fen_status_counts": _count_by_status(position_list),
+        "notation_fragments_total": int(notation_payload.get("fragment_count") or len(notation_payload.get("fragments") or [])),
+        "notation_status_counts": notation_status_counts,
+        "notation_glyph_diagnostics": sum(
+            len(item.get("glyph_diagnostics") or [])
+            for item in notation_payload.get("fragments") or []
+            if isinstance(item, dict)
+        ),
+        "glyph_mapping_candidate_count": glyph_mapping_candidate_count,
+        "ocr_token_mappings_loaded": int(notation_payload.get("ocr_token_mappings_loaded") or 0),
+        "ocr_token_mappings_applied": int(notation_payload.get("ocr_token_mappings_applied") or 0),
+        "fragments_blocked_by_unmapped_tokens": int(notation_payload.get("fragments_blocked_by_unmapped_tokens") or 0),
+        "raw_glyph_context_mode": notation_payload.get("raw_glyph_context_mode") or "unknown",
+        "raw_glyph_context_available": any(
+            str(diagnostic.get("source") or "").startswith("pymupdf-rawdict")
+            for diagnostic in notation_diagnostics
+        ),
+        "raw_glyph_context_gap_fragments": len(
+            [
+                item
+                for item in notation_payload.get("fragments") or []
+                if isinstance(item, dict) and _fragment_has_raw_context_gap(item)
+            ]
+        ),
+        "unmapped_notation_fragments": len(
+            [
+                item
+                for item in notation_payload.get("fragments") or []
+                if isinstance(item, dict) and UNMAPPED_CHESS_GLYPH_WARNING in (item.get("warnings") or [])
+            ]
+        ),
+        "accepted_pgn": int(pgn_payload.get("accepted_pgn_count") or 0),
+        "ordering": "page-y-x-reading_order",
+        "localhost_links": 0,
+        "build_status": status,
+    }
+    if int(summary.get("unmapped_notation_fragments") or 0):
+        problems.append(
+            {
+                "severity": "review",
+                "code": UNMAPPED_CHESS_GLYPH_WARNING,
+                "area": "notation",
+                "count": int(summary.get("unmapped_notation_fragments") or 0),
+            }
+        )
+    threshold_problems = _quality_threshold_problems(config, summary)
+    problems.extend(threshold_problems)
+    critical = [problem for problem in problems if problem.get("severity") == "critical"]
+    review = [problem for problem in problems if problem.get("severity") == "review"]
+    status = "FAIL" if critical else ("PASS_WITH_REVIEW_ITEMS" if review or _count_review_positions(position_list) else "PASS")
+    summary["validation_status"] = status
+    summary["build_status"] = status
+    report = {
+        "status": status,
+        "summary": summary,
+        "problems": problems,
+        "current_audit_status": current_audit.get("final_html_status") or current_audit.get("status"),
+        "status_policy": "accepted_requires_deterministic_validation",
+        "quality_profile": config.quality_profile,
+    }
+    _write_json(config.out / "qa_report.json", report)
+    render_audit_artifacts(config.out, report)
+    return report
+
+
+def render_study_html(
+    out_dir: str | Path,
+    *,
+    structure: dict[str, Any],
+    positions: dict[str, Any],
+    qa_report: dict[str, Any],
+    page_model: dict[str, Any] | None = None,
+    notation_fragments: dict[str, Any] | None = None,
+) -> Path:
+    out = Path(out_dir)
+    position_list = list(positions.get("positions") or [])
+    status_options = sorted(STUDY_STATUSES)
+    chapters = list(structure.get("chapters") or [])
+    body_cards = "\n".join(_position_card_html(item) for item in position_list) or "<p>No positions detected yet.</p>"
+    chapter_links = "\n".join(
+        f'<a href="#chapter-{chapter["chapter_no"]}">{chapter["chapter_no"]}. {html.escape(chapter["title"])}</a>'
+        for chapter in chapters
+    )
+    filters = "\n".join(
+        f'<label><input type="checkbox" data-status-filter value="{status}" checked> {status}</label>'
+        for status in status_options
+    )
+    html_text = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Build Up Your Chess - Study Export</title>
+  <style>
+    :root {{ --ink:#1d1711; --paper:#fbf5ea; --line:#d8c8b1; --accent:#9a4f19; --ok:#147a3d; --warn:#a15c00; }}
+    body {{ margin:0; font-family: Georgia, 'Times New Roman', serif; background:#efe4d3; color:var(--ink); }}
+    .shell {{ display:grid; grid-template-columns:260px minmax(0,1fr) 280px; min-height:100vh; }}
+    aside {{ position:sticky; top:0; height:100vh; overflow:auto; padding:1rem; background:#201810; color:#fff8ed; }}
+    aside a, aside label {{ display:block; color:#fff8ed; margin:.45rem 0; text-decoration:none; }}
+    main {{ padding:1.25rem; }}
+    .summary, .card {{ background:var(--paper); border:1px solid var(--line); border-radius:18px; box-shadow:0 16px 40px rgba(58,38,17,.10); }}
+    .summary {{ padding:1rem; margin-bottom:1rem; display:flex; flex-wrap:wrap; gap:.5rem; }}
+    .pill {{ border:1px solid var(--line); border-radius:999px; padding:.32rem .65rem; background:#fffaf2; font-weight:700; }}
+    .card {{ display:grid; grid-template-columns:280px minmax(0,1fr); gap:1rem; padding:1rem; margin:1rem 0; }}
+    .diagram {{ background:#fffaf2; border-radius:14px; padding:.75rem; text-align:center; }}
+    .diagram img {{ max-width:100%; height:auto; border-radius:6px; }}
+    .status {{ font-weight:900; color:var(--warn); }}
+    .status.accepted {{ color:var(--ok); }}
+    code, pre {{ font-family: 'Courier New', monospace; }}
+    pre {{ white-space:pre-wrap; background:#f6eddd; padding:.75rem; border-radius:12px; }}
+    button {{ border:1px solid var(--line); border-radius:999px; background:#fff8ed; padding:.42rem .75rem; font-weight:800; cursor:pointer; }}
+    .debug {{ display:none; }}
+    body.show-debug .debug {{ display:block; }}
+    @media(max-width:960px) {{ .shell {{ grid-template-columns:1fr; }} aside {{ position:relative; height:auto; }} .card {{ grid-template-columns:1fr; }} }}
+  </style>
+</head>
+<body>
+<div class="shell">
+  <aside>
+    <h2>Chapters</h2>
+    {chapter_links}
+    <h2>Filters</h2>
+    {filters}
+    <button type="button" id="debugToggle">Debug view</button>
+    <p><a href="qa_report.html">QA report</a></p>
+  </aside>
+  <main>
+    <h1>Build Up Your Chess - Study Export</h1>
+    {_summary_html(qa_report)}
+    <section id="positions">{body_cards}</section>
+  </main>
+  <aside>
+    <h2>QA</h2>
+    <pre>{html.escape(json.dumps(_html_safe_summary(qa_report), ensure_ascii=False, indent=2))}</pre>
+  </aside>
+</div>
+<script>
+document.addEventListener('click', function(event) {{
+  var button = event.target.closest('[data-copy-target]');
+  if (!button) return;
+  var target = document.getElementById(button.getAttribute('data-copy-target'));
+  if (!target) return;
+  navigator.clipboard.writeText(target.innerText || target.textContent || '');
+}});
+document.getElementById('debugToggle').addEventListener('click', function() {{ document.body.classList.toggle('show-debug'); }});
+document.querySelectorAll('[data-status-filter]').forEach(function(input) {{
+  input.addEventListener('change', function() {{
+    var active = Array.from(document.querySelectorAll('[data-status-filter]:checked')).map(function(node) {{ return node.value; }});
+    document.querySelectorAll('[data-position-status]').forEach(function(card) {{
+      card.style.display = active.indexOf(card.getAttribute('data-position-status')) >= 0 ? '' : 'none';
+    }});
+  }});
+}});
+</script>
+</body>
+</html>
+"""
+    path = out / "index.html"
+    path.write_text(html_text, encoding="utf-8")
+    _render_standalone_html(
+        out,
+        structure=structure,
+        positions=positions,
+        qa_report=qa_report,
+        page_model=page_model or {"pages": []},
+        notation_fragments=notation_fragments or {"fragments": []},
+    )
+    _render_kindle_html(
+        out,
+        structure=structure,
+        positions=positions,
+        qa_report=qa_report,
+        page_model=page_model or {"pages": []},
+        notation_fragments=notation_fragments or {"fragments": []},
+    )
+    return path
+
+
+def render_qa_html(out_dir: str | Path, qa_report: dict[str, Any]) -> Path:
+    out = Path(out_dir)
+    rows = "\n".join(
+        f"<tr><td>{html.escape(str(problem.get('severity')))}</td><td>{html.escape(str(problem.get('code')))}</td><td>{html.escape(str(problem.get('position_id', '')))}</td></tr>"
+        for problem in qa_report.get("problems", [])
+    )
+    text = f"""<!doctype html><html><head><meta charset="utf-8"><title>Chess Study QA</title>
+<style>body{{font-family:Georgia,serif;margin:2rem;background:#fbf5ea;color:#1d1711}}table{{border-collapse:collapse;width:100%}}td,th{{border:1px solid #d8c8b1;padding:.5rem}}pre{{background:#f6eddd;padding:1rem;border-radius:12px}}</style>
+</head><body><h1>Chess Study QA</h1><h2>Status: {html.escape(str(qa_report.get('status')))}</h2>
+<pre>{html.escape(json.dumps(qa_report.get('summary', {}), ensure_ascii=False, indent=2))}</pre>
+<table><thead><tr><th>Severity</th><th>Code</th><th>Position</th></tr></thead><tbody>{rows}</tbody></table>
+</body></html>"""
+    path = out / "qa_report.html"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def render_audit_artifacts(out_dir: str | Path, qa_report: dict[str, Any]) -> None:
+    out = Path(out_dir)
+    summary = qa_report.get("summary") or {}
+    _write_json(out / "audit_summary.json", {"status": qa_report.get("status"), **summary})
+    lines = [
+        "# Chess Study Audit Report",
+        "",
+        f"- Status: `{qa_report.get('status')}`",
+        f"- Quality profile: `{qa_report.get('quality_profile') or summary.get('quality_profile')}`",
+        f"- Glyph context pages: `{summary.get('glyph_context_pages')}`",
+        f"- Review sample limit: `{summary.get('review_sample_limit')}`",
+        f"- Pages: `{summary.get('pages')}`",
+        f"- Page images: `{summary.get('page_images')}`",
+        f"- Pages with text: `{summary.get('pages_with_extractable_text')}`",
+        f"- Copyable text characters: `{summary.get('copyable_text_characters')}`",
+        f"- Diagrams: `{summary.get('diagrams_total')}`",
+        f"- Strict diagrams: `{summary.get('strict_diagrams_total')}`",
+        f"- Low-confidence review candidates: `{summary.get('low_confidence_review_candidates')}`",
+        f"- Diagram labels imported: `{summary.get('diagram_labels_imported')}`",
+        f"- Correct diagrams: `{summary.get('correct_diagrams')}`",
+        f"- Cropped diagrams: `{summary.get('cropped_diagrams')}`",
+        f"- False-positive diagrams: `{summary.get('false_positive_diagrams')}`",
+        f"- Uncertain diagrams: `{summary.get('uncertain_diagrams')}`",
+        f"- Alignment improved count: `{summary.get('alignment_improved_count')}`",
+        f"- Sampled diagram pages: `{summary.get('sampled_diagram_pages')}`",
+        f"- Strict diagrams sampled: `{summary.get('strict_diagrams_sampled')}`",
+        f"- Low-confidence candidates sampled: `{summary.get('low_confidence_candidates_sampled')}`",
+        f"- Accepted FEN: `{summary.get('fen_accepted')}`",
+        f"- FEN status counts: `{summary.get('fen_status_counts')}`",
+        f"- Notation fragments: `{summary.get('notation_fragments_total')}`",
+        f"- Notation status counts: `{summary.get('notation_status_counts')}`",
+        f"- Notation glyph diagnostics: `{summary.get('notation_glyph_diagnostics')}`",
+        f"- Glyph mapping candidate count: `{summary.get('glyph_mapping_candidate_count')}`",
+        f"- OCR token mappings loaded: `{summary.get('ocr_token_mappings_loaded')}`",
+        f"- OCR token mappings applied: `{summary.get('ocr_token_mappings_applied')}`",
+        f"- Fragments blocked by unmapped tokens: `{summary.get('fragments_blocked_by_unmapped_tokens')}`",
+        f"- Raw glyph context mode: `{summary.get('raw_glyph_context_mode')}`",
+        f"- Raw glyph context available: `{summary.get('raw_glyph_context_available')}`",
+        f"- Raw glyph context gap fragments: `{summary.get('raw_glyph_context_gap_fragments')}`",
+        f"- Unmapped notation fragments: `{summary.get('unmapped_notation_fragments')}`",
+        f"- Accepted PGN: `{summary.get('accepted_pgn')}`",
+        f"- Ordering: `{summary.get('ordering')}`",
+        f"- Build status: `{summary.get('build_status')}`",
+        "",
+        "## Problems",
+        "",
+    ]
+    problems = qa_report.get("problems") or []
+    if not problems:
+        lines.append("- None")
+    else:
+        for problem in problems:
+            lines.append(
+                f"- `{problem.get('severity')}` `{problem.get('code')}` "
+                f"{problem.get('position_id') or problem.get('metric') or problem.get('area') or ''}"
+            )
+    (out / "audit_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _render_standalone_html(
+    out: Path,
+    *,
+    structure: dict[str, Any],
+    positions: dict[str, Any],
+    qa_report: dict[str, Any],
+    page_model: dict[str, Any],
+    notation_fragments: dict[str, Any],
+) -> Path:
+    page_cards = "\n".join(
+        _study_page_html(page, positions=positions, notation_fragments=notation_fragments, include_page_image=True)
+        for page in page_model.get("pages", []) or []
+    )
+    if not page_cards:
+        page_cards = "<p>No page model available.</p>"
+    text = _study_html_document(
+        title="Build Up Your Chess - Standalone Audit",
+        body=f"""
+<header class="hero">
+  <p class="eyebrow">MasterKindle audit view</p>
+  <h1>Build Up Your Chess - Standalone Audit</h1>
+  {_summary_html(qa_report)}
+</header>
+<main class="book-flow">{page_cards}</main>
+""",
+        qa_report=qa_report,
+    )
+    path = out / "standalone.html"
+    path.write_text(text, encoding="utf-8")
+    audit_path = out / "standalone_audit.html"
+    audit_path.write_text(text, encoding="utf-8")
+    return path
+
+
+def _render_kindle_html(
+    out: Path,
+    *,
+    structure: dict[str, Any],
+    positions: dict[str, Any],
+    qa_report: dict[str, Any],
+    page_model: dict[str, Any],
+    notation_fragments: dict[str, Any],
+) -> Path:
+    chapters = list(structure.get("chapters") or [])
+    toc = "\n".join(
+        f'<li><a href="#chapter-{int(chapter.get("chapter_no") or 0):02d}">{html.escape(str(chapter.get("title") or ""))}</a></li>'
+        for chapter in chapters
+    )
+    page_cards = "\n".join(
+        _study_page_html(page, positions=positions, notation_fragments=notation_fragments, include_page_image=False)
+        for page in page_model.get("pages", []) or []
+    )
+    text = _study_html_document(
+        title="Build Up Your Chess - Kindle Study",
+        body=f"""
+<header class="hero">
+  <p class="eyebrow">Kindle study edition</p>
+  <h1>Build Up Your Chess - Study Reader</h1>
+  <p class="hero-copy">Semantic reading order with diagrams, notation, and review status kept together for study.</p>
+  {_study_reader_scorebar_html(qa_report)}
+  {_study_reader_audit_summary_html(qa_report)}
+</header>
+<nav class="toc" aria-label="Chapters"><ol>{toc}</ol></nav>
+<main class="book-flow">{page_cards or '<p>No page text available.</p>'}</main>
+""",
+        qa_report=qa_report,
+    )
+    path = out / "kindle.html"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def _study_html_document(*, title: str, body: str, qa_report: dict[str, Any]) -> str:
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>{html.escape(title)}</title>
+  <style>
+    :root {{ --ink:#201713; --paper:#fffaf0; --paper-soft:#fff7e8; --wash:#efe2cd; --line:#d8c5aa; --muted:#76634e; --ok:#176b3a; --warn:#985b00; --bad:#9b1c1c; --accent:#7a3e13; }}
+    * {{ box-sizing:border-box; }}
+    body {{ margin:0; font-family:Georgia, 'Times New Roman', serif; line-height:1.55; color:var(--ink); background:var(--wash); }}
+    a {{ color:#7a3e13; }}
+    .hero {{ max-width:1120px; margin:0 auto; padding:2rem 1rem 1rem; }}
+    .hero-copy {{ max-width:62ch; margin:.25rem 0 1.1rem; color:var(--muted); font-size:1.05rem; }}
+    .eyebrow {{ margin:0 0 .35rem; color:#8a4a18; font-weight:800; letter-spacing:.06em; text-transform:uppercase; font-size:.8rem; }}
+    h1 {{ margin:.1rem 0 1rem; font-size:clamp(2rem, 5vw, 4rem); line-height:1.02; }}
+    h2, h3 {{ line-height:1.18; }}
+    .summary {{ display:flex; flex-wrap:wrap; gap:.45rem; margin:1rem 0; }}
+    .pill {{ display:inline-flex; align-items:center; min-height:2rem; border:1px solid var(--line); border-radius:999px; padding:.25rem .62rem; background:#fffdf7; font-weight:700; font-size:.9rem; }}
+    .scorebar {{ display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:.75rem; margin:1rem 0; }}
+    .score {{ background:var(--paper); border:1px solid var(--line); border-radius:18px; padding:.85rem .95rem; }}
+    .score-label {{ display:block; color:var(--muted); font-size:.78rem; font-weight:800; letter-spacing:.04em; text-transform:uppercase; }}
+    .score-value {{ display:block; margin-top:.15rem; font-size:1.35rem; font-weight:900; line-height:1.1; }}
+    .audit-summary {{ margin:.75rem 0 0; border:1px solid var(--line); border-radius:16px; background:rgba(255,250,240,.72); padding:0 .9rem; }}
+    .audit-summary summary {{ color:var(--accent); }}
+    .audit-grid {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:.45rem; padding:0 0 .9rem; }}
+    .audit-grid span {{ color:var(--muted); font-size:.88rem; overflow-wrap:anywhere; }}
+    .toc, .book-flow {{ max-width:1120px; margin:0 auto; padding:0 1rem 2rem; }}
+    .toc {{ background:#fff6e8; border:1px solid var(--line); border-radius:20px; padding:1rem 1.25rem; margin-bottom:1rem; }}
+    .page {{ background:var(--paper); border:1px solid var(--line); border-radius:22px; padding:1.25rem; margin:1.25rem 0; box-shadow:0 18px 42px rgba(61, 38, 12, .10); }}
+    .study-page {{ background:linear-gradient(180deg, #fffaf0 0%, #fff4e2 100%); box-shadow:0 10px 30px rgba(61,38,12,.07); }}
+    .page-header {{ display:flex; justify-content:space-between; gap:1rem; align-items:baseline; border-bottom:1px solid var(--line); margin-bottom:1rem; }}
+    .page-header span {{ color:var(--muted); font-size:.92rem; }}
+    .page-image img, .diagram-card img {{ max-width:100%; height:auto; border-radius:10px; border:1px solid var(--line); background:#fff; }}
+    .book-elements {{ max-width:82ch; }}
+    .book-text-block, .study-prose {{ margin:.65rem 0; max-width:68ch; }}
+    .book-heading {{ margin:1rem 0 .45rem; color:#5d3418; }}
+    .diagram-card, .notation-fragment {{ border:1px solid var(--line); border-radius:16px; padding:.9rem; background:#fffdf7; margin:1rem 0; }}
+    .study-block {{ max-width:100%; background:var(--paper-soft); }}
+    .study-block-grid {{ display:grid; grid-template-columns:minmax(220px, 280px) minmax(0, 1fr); gap:1rem; align-items:start; }}
+    .study-diagram {{ min-width:0; }}
+    .study-content {{ min-width:0; }}
+    .study-meta {{ display:flex; flex-wrap:wrap; gap:.45rem; align-items:center; margin:.25rem 0 .75rem; color:var(--muted); font-size:.9rem; }}
+    .study-notation, .study-review {{ min-width:0; }}
+    .diagram-compare {{ display:grid; grid-template-columns:1fr; gap:.75rem; align-items:start; }}
+    .diagram-compare figure {{ margin:0; }}
+    .diagram-compare figcaption {{ font-size:.86rem; color:var(--muted); margin:.25rem 0; }}
+    code.fen {{ display:block; overflow-wrap:anywhere; background:#f5ead8; border:1px solid #e5d5bd; border-radius:10px; padding:.55rem; }}
+    pre.pgn {{ background:#f1e2c9; }}
+    .status {{ display:inline-flex; border-radius:999px; padding:.2rem .55rem; border:1px solid var(--line); font-weight:800; }}
+    .status.accepted {{ color:var(--ok); }}
+    .status.needs_review, .status.missing_fen, .status.missing_pgn, .status.low_confidence, .status.unlinked_solution {{ color:var(--warn); }}
+    .status.illegal_pgn {{ color:var(--bad); }}
+    pre, code {{ font-family:'Courier New', monospace; }}
+    pre {{ white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; max-width:100%; background:#f5ead8; border-radius:12px; padding:.75rem; border:1px solid #e5d5bd; }}
+    summary {{ cursor:pointer; font-weight:800; min-height:2.75rem; display:flex; align-items:center; }}
+    @media(max-width:840px) {{ .scorebar {{ grid-template-columns:repeat(2, minmax(0, 1fr)); }} .study-block-grid {{ grid-template-columns:1fr; }} }}
+    @media(max-width:720px) {{ .page {{ border-radius:0; margin:0 0 1rem; }} .page-header {{ display:block; }} .scorebar {{ grid-template-columns:1fr; }} .toc, .book-flow, .hero {{ padding-left:.85rem; padding-right:.85rem; }} }}
+  </style>
+</head>
+<body data-audit-status="{html.escape(str(qa_report.get('status') or ''), quote=True)}">
+{body}
+</body>
+</html>"""
+
+
+def _study_page_html(
+    page: dict[str, Any],
+    *,
+    positions: dict[str, Any],
+    notation_fragments: dict[str, Any],
+    include_page_image: bool,
+) -> str:
+    page_number = int(page.get("page") or 0)
+    page_positions = [item for item in positions.get("positions", []) or [] if int(item.get("diagram_page") or 0) == page_number]
+    page_fragments = [item for item in notation_fragments.get("fragments", []) or [] if int(item.get("page") or 0) == page_number]
+    image_html = ""
+    if include_page_image and page.get("page_image"):
+        image_html = f"""<details class="page-image"><summary>Source PDF page image</summary><img src="{html.escape(str(page.get('page_image')), quote=True)}" alt="PDF page {page_number}"></details>"""
+    position_by_id = {str(item.get("id") or ""): item for item in page_positions}
+    fragment_by_id = {str(item.get("id") or ""): item for item in page_fragments}
+    layout_elements = _page_layout_elements_for_render(page, page_positions=page_positions, page_fragments=page_fragments)
+    element_html = "\n".join(
+        _study_layout_element_html(element, position_by_id=position_by_id, fragment_by_id=fragment_by_id)
+        for element in layout_elements
+    )
+    if not element_html:
+        element_html = "<p>No extractable text on this page.</p>"
+    chapter = _chapter_anchor_for_page(page_number, positions)
+    return f"""<section class="page study-page" data-page="{page_number}" {chapter}>
+  <div class="page-header"><h2>Page {page_number}</h2><span>{len(page_positions)} diagrams / {len(page_fragments)} notation fragments</span></div>
+  {image_html}
+  <section class="book-elements">{element_html}</section>
+</section>"""
+
+
+def _page_layout_elements_for_render(
+    page: dict[str, Any],
+    *,
+    page_positions: list[dict[str, Any]],
+    page_fragments: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    page_number = int(page.get("page") or 0)
+    elements: list[dict[str, Any]] = []
+    for element in page.get("elements") or []:
+        item = _coerce_layout_element(element)
+        if item.get("type") == "notation":
+            continue
+        elements.append(item)
+    base_order = len(elements) + 1
+    for index, position in enumerate(page_positions):
+        elements.append(
+            {
+                "type": "diagram",
+                "page": page_number,
+                "bbox": _bbox4(position.get("bbox") or []),
+                "reading_order": base_order + index,
+                "source_kind": "diagram-detector",
+                "ref_id": str(position.get("id") or ""),
+                "status": str(position.get("status") or "needs_review"),
+                "text": str(position.get("label") or position.get("id") or "Diagram"),
+            }
+        )
+    base_order += len(page_positions)
+    for index, fragment in enumerate(page_fragments):
+        elements.append(
+            {
+                "type": "notation",
+                "page": page_number,
+                "bbox": _bbox4(fragment.get("bbox") or []),
+                "reading_order": base_order + index,
+                "source_kind": "pgn-normalizer",
+                "ref_id": str(fragment.get("id") or ""),
+                "status": str(fragment.get("status") or "needs_review"),
+                "text": str(fragment.get("normalized_text") or fragment.get("raw_text") or ""),
+            }
+        )
+    return sort_study_layout_elements(elements)
+
+
+def _study_layout_element_html(
+    element: dict[str, Any],
+    *,
+    position_by_id: dict[str, dict[str, Any]],
+    fragment_by_id: dict[str, dict[str, Any]],
+) -> str:
+    element_type = str(element.get("type") or "text")
+    source_kind = html.escape(str(element.get("source_kind") or "unknown"), quote=True)
+    reading_order = html.escape(str(element.get("reading_order") or "0"), quote=True)
+    if element_type == "diagram":
+        return _study_position_article(position_by_id.get(str(element.get("ref_id") or ""), element))
+    if element_type == "notation":
+        return _study_notation_article(fragment_by_id.get(str(element.get("ref_id") or ""), element))
+    text = html.escape(str(element.get("text") or ""))
+    if not text:
+        return ""
+    if element_type == "heading":
+        return f'<h3 class="book-heading" data-source-kind="{source_kind}" data-reading-order="{reading_order}">{text}</h3>'
+    if _is_reader_noise_text(str(element.get("text") or "")):
+        return ""
+    return f'<p class="book-text-block study-prose" data-source-kind="{source_kind}" data-reading-order="{reading_order}">{text}</p>'
+
+
+def _study_position_article(item: dict[str, Any]) -> str:
+    status = str(item.get("status") or "needs_review")
+    fen = str(item.get("fen") or "")
+    pgn = str(item.get("solution_pgn") or "")
+    crop = str(item.get("source_crop") or "")
+    rendered = str(item.get("rendered_diagram") or item.get("rendered_svg") or item.get("rendered_png") or "")
+    label = html.escape(str(item.get("label") or item.get("id") or "Diagram"))
+    source_page = html.escape(str(item.get("diagram_page") or ""))
+    side_to_move = html.escape(str(item.get("side_to_move") or "unknown"))
+    crop_html = (
+        f'<figure><figcaption>Diagram crop</figcaption><img src="{html.escape(crop, quote=True)}" alt="{html.escape(str(item.get("id") or "diagram"))} crop"></figure>'
+        if crop
+        else "<figure><figcaption>Diagram crop</figcaption><p>No crop available.</p></figure>"
+    )
+    rendered_html = (
+        f'<figure><figcaption>Rendered FEN</figcaption><img src="{html.escape(rendered, quote=True)}" alt="{html.escape(str(item.get("id") or "diagram"))} rendered FEN"></figure>'
+        if rendered
+        else ""
+    )
+    fen_html = (
+        f'<p><strong>FEN</strong></p><code class="fen book-fen">{html.escape(fen)}</code>'
+        if fen and status == "accepted"
+        else '<p class="study-review">FEN needs review or is missing.</p>'
+    )
+    pgn_html = (
+        f'<p><strong>PGN</strong></p><pre class="pgn book-pgn-record">{html.escape(pgn)}</pre>'
+        if pgn and status == "accepted" and _pgn_replay_clean(pgn)
+        else '<p class="study-review">PGN needs review or is missing.</p>'
+    )
+    rendered_block = rendered_html if rendered_html else ""
+    return f"""<article class="study-block diagram-card" data-status="{html.escape(status, quote=True)}" data-diagram-id="{html.escape(str(item.get("id") or ""), quote=True)}">
+  <div class="study-block-grid">
+    <aside class="study-diagram">
+      <div class="diagram-compare">{crop_html}{rendered_block}</div>
+    </aside>
+    <div class="study-content">
+      <h3>{label}</h3>
+      <p class="study-meta"><span class="status {html.escape(status, quote=True)}">{html.escape(status)}</span><span>Page {source_page}</span><span>{side_to_move} to move</span></p>
+      {fen_html}
+      {pgn_html}
+    </div>
+  </div>
+</article>"""
+
+
+def _study_notation_article(item: dict[str, Any]) -> str:
+    status = str(item.get("status") or "needs_review")
+    pgn = str(item.get("pgn") or "")
+    raw = str(item.get("raw_text") or "")
+    body = (
+        f'<pre class="pgn book-pgn-record">{html.escape(pgn)}</pre>'
+        if status == "accepted" and pgn and _pgn_replay_clean(pgn)
+        else f'<pre class="notation-source">{html.escape(raw)}</pre>'
+    )
+    review_class = "study-review" if status != "accepted" else ""
+    return f"""<details class="study-block study-notation notation-fragment {review_class}" data-status="{html.escape(status, quote=True)}">
+  <summary>Notation fragment {html.escape(str(item.get("id") or ""))} - {html.escape(status)}</summary>
+  <p><strong>Source page:</strong> {html.escape(str(item.get("source_page") or ""))}</p>
+  {body}
+</details>"""
+
+def _position_card_html(item: dict[str, Any]) -> str:
+    safe_id = html.escape(str(item.get("id") or "position"), quote=True)
+    status = str(item.get("status") or "needs_review")
+    crop = str(item.get("source_crop") or "")
+    rendered = str(item.get("rendered_diagram") or item.get("rendered_svg") or item.get("rendered_png") or "")
+    fen = str(item.get("fen") or "")
+    pgn = str(item.get("solution_pgn") or "")
+    crop_html = f'<img src="{html.escape(crop, quote=True)}" alt="{safe_id} source crop">' if crop else "<p>No source crop</p>"
+    rendered_html = f'<img src="{html.escape(rendered, quote=True)}" alt="{safe_id} rendered FEN">' if rendered else "<p>No rendered FEN diagram</p>"
+    fen_html = (
+        f'<p><button data-copy-target="fen-{safe_id}">Copy FEN</button></p><pre id="fen-{safe_id}">{html.escape(fen)}</pre>'
+        if fen and status == "accepted"
+        else "<p>FEN: needs review or missing.</p>"
+    )
+    pgn_html = (
+        f'<p><button data-copy-target="pgn-{safe_id}">Copy PGN</button></p><pre id="pgn-{safe_id}">{html.escape(pgn)}</pre>'
+        if pgn and status == "accepted" and _pgn_replay_clean(pgn)
+        else "<p>PGN: needs review or missing.</p>"
+    )
+    return f"""<article class="card" data-position-status="{html.escape(status, quote=True)}">
+  <div class="diagram">{crop_html}<hr>{rendered_html}</div>
+  <div>
+    <h2>{html.escape(str(item.get("chapter_title") or "Unassigned"))} - {html.escape(str(item.get("label") or item.get("id")))}</h2>
+    <p>Source page: {html.escape(str(item.get("diagram_page") or ""))}</p>
+    <p>Solution page: {html.escape(str(item.get("solution_page") or "unlinked"))}</p>
+    <p>Side to move: {html.escape(str(item.get("side_to_move") or "unknown"))}</p>
+    <p>Status: <span class="status {html.escape(status, quote=True)}">{html.escape(status)}</span></p>
+    {fen_html}
+    {pgn_html}
+    <div class="debug"><h3>Warnings</h3><pre>{html.escape(json.dumps(item.get("warnings", []), ensure_ascii=False, indent=2))}</pre></div>
+  </div>
+</article>"""
+
+
+def _study_reader_scorebar_html(qa_report: dict[str, Any]) -> str:
+    summary = _html_safe_summary(qa_report)
+    values = [
+        ("Pages", summary.get("pages")),
+        ("Diagrams", f"{summary.get('diagrams_total', 0)} / review {summary.get('low_confidence_review_candidates', 0)}"),
+        ("FEN", f"{summary.get('fen_accepted', summary.get('fens_accepted', 0))} accepted"),
+        ("PGN", f"{summary.get('accepted_pgn', summary.get('pgn_accepted', 0))} accepted"),
+    ]
+    items = "".join(
+        f'<div class="score"><span class="score-label">{html.escape(str(label))}</span><span class="score-value">{html.escape(str(value))}</span></div>'
+        for label, value in values
+    )
+    return f'<section class="scorebar" aria-label="Study export summary">{items}</section>'
+
+
+def _study_reader_audit_summary_html(qa_report: dict[str, Any]) -> str:
+    summary = _html_safe_summary(qa_report)
+    rows = "".join(
+        f"<span><strong>{html.escape(str(key))}:</strong> {html.escape(str(value))}</span>"
+        for key, value in summary.items()
+    )
+    return f"""<details class="audit-summary">
+  <summary>Audit metrics</summary>
+  <div class="audit-grid">{rows}</div>
+</details>"""
+
+
+def _summary_html(qa_report: dict[str, Any]) -> str:
+    summary = _html_safe_summary(qa_report)
+    return '<section class="summary">' + "".join(
+        f'<span class="pill">{html.escape(str(key))}: {html.escape(str(value))}</span>'
+        for key, value in summary.items()
+    ) + "</section>"
+
+
+def _html_safe_summary(qa_report: dict[str, Any]) -> dict[str, Any]:
+    summary = dict(qa_report.get("summary") or {})
+    if "localhost_links" in summary:
+        summary["local_link_count"] = summary.pop("localhost_links")
+    return summary
+
+
+def _ensure_output_dirs(out: Path) -> None:
+    for child in [
+        out,
+        out / "reports",
+        out / "assets" / "page_images",
+        out / "assets" / "diagram_crops",
+        out / "assets" / "diagram_svg",
+        out / "assets" / "diagram_png",
+        out / "diagrams" / "source",
+        out / "diagrams" / "rendered",
+        out / "logs",
+        out / "review",
+    ]:
+        child.mkdir(parents=True, exist_ok=True)
+
+
+def _normalize_quality_profile(value: str) -> str:
+    normalized = str(value or "default").strip().lower()
+    return normalized if normalized in QUALITY_PROFILES else "default"
+
+
+def _render_pdf_page_image(
+    page: fitz.Page,
+    *,
+    page_number: int,
+    dpi: int,
+    out_dir: Path,
+    source_pdf: str,
+    source_mtime: float,
+) -> tuple[str, str]:
+    filename = f"page_{page_number:03d}.webp"
+    target = out_dir / filename
+    metadata_path = out_dir / f"page_{page_number:03d}.json"
+    expected_metadata = {
+        "version": 2,
+        "source_pdf": source_pdf,
+        "source_mtime": round(float(source_mtime or 0.0), 6),
+        "page_number": int(page_number),
+        "dpi": int(dpi),
+        "width": round(float(page.rect.width or 0.0), 3),
+        "height": round(float(page.rect.height or 0.0), 3),
+        "format": "webp",
+        "quality": 72,
+        "method": 2,
+    }
+    if target.is_file() and metadata_path.is_file():
+        try:
+            current_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            current_metadata = {}
+        if all(current_metadata.get(key) == value for key, value in expected_metadata.items()):
+            return str(Path("assets") / "page_images" / filename).replace("\\", "/"), "hit"
+    try:
+        zoom = max(72, int(dpi)) / 72.0
+        pixmap = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+        mode = "RGB" if pixmap.n < 4 else "RGBA"
+        image = Image.frombytes(mode, (pixmap.width, pixmap.height), pixmap.samples)
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+        image.save(target, format="WEBP", quality=72, method=2)
+        metadata_path.write_text(json.dumps(expected_metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+        return str(Path("assets") / "page_images" / filename).replace("\\", "/"), "miss"
+    except Exception:
+        return "", "error"
+
+
+def _study_text_blocks(page: fitz.Page, *, page_number: int) -> list[StudyTextBlock]:
+    rawdict_blocks = _study_text_blocks_from_rawdict(page, page_number=page_number)
+    if rawdict_blocks:
+        return rawdict_blocks
+    return _study_text_blocks_from_dict(page, page_number=page_number)
+
+
+def _study_text_blocks_from_rawdict(page: fitz.Page, *, page_number: int) -> list[StudyTextBlock]:
+    try:
+        raw = page.get_text("rawdict") or {}
+    except Exception:
+        return []
+    blocks: list[StudyTextBlock] = []
+    reading_order = 0
+    for block_index, block in enumerate(raw.get("blocks", []) or []):
+        if block.get("type") != 0:
+            continue
+        for line_index, line in enumerate(block.get("lines", []) or []):
+            for span_index, span in enumerate(line.get("spans", []) or []):
+                chars = _rawdict_span_chars(span)
+                text = "".join(str(char.get("char") or "") for char in chars)
+                normalized = _normalize_book_text(text)
+                if not normalized:
+                    continue
+                bbox = [round(float(value), 3) for value in (span.get("bbox") or line.get("bbox") or block.get("bbox") or [0, 0, 0, 0])[:4]]
+                block_type = "notation" if _looks_like_notation_text(normalized) else "text"
+                diagnostics = _study_span_glyph_diagnostics(
+                    page_number=page_number,
+                    block_index=block_index,
+                    line_index=line_index,
+                    span_index=span_index,
+                    text=text,
+                    normalized_text=normalized,
+                    font=str(span.get("font") or ""),
+                    size=float(span.get("size") or 0.0),
+                    bbox=bbox,
+                    chars=chars,
+                    block_type=block_type,
+                )
+                blocks.append(
+                    StudyTextBlock(
+                        page=page_number,
+                        block_index=block_index,
+                        line_index=line_index,
+                        span_index=span_index,
+                        reading_order=reading_order,
+                        text=text,
+                        normalized_text=normalized,
+                        bbox=bbox,
+                        font=str(span.get("font") or ""),
+                        size=float(span.get("size") or 0.0),
+                        type=block_type,
+                        glyph_diagnostics=diagnostics,
+                    )
+                )
+                reading_order += 1
+    return _sorted_study_text_blocks(blocks)
+
+
+def _study_text_blocks_from_dict(page: fitz.Page, *, page_number: int) -> list[StudyTextBlock]:
+    raw = page.get_text("dict") or {}
+    blocks: list[StudyTextBlock] = []
+    reading_order = 0
+    for block_index, block in enumerate(raw.get("blocks", []) or []):
+        if block.get("type") != 0:
+            continue
+        for line_index, line in enumerate(block.get("lines", []) or []):
+            for span_index, span in enumerate(line.get("spans", []) or []):
+                text = str(span.get("text") or "")
+                normalized = _normalize_book_text(text)
+                if not normalized:
+                    continue
+                bbox = [round(float(value), 3) for value in (span.get("bbox") or line.get("bbox") or block.get("bbox") or [0, 0, 0, 0])[:4]]
+                blocks.append(
+                    StudyTextBlock(
+                        page=page_number,
+                        block_index=block_index,
+                        line_index=line_index,
+                        span_index=span_index,
+                        reading_order=reading_order,
+                        text=text,
+                        normalized_text=normalized,
+                        bbox=bbox,
+                        font=str(span.get("font") or ""),
+                        size=float(span.get("size") or 0.0),
+                        type="notation" if _looks_like_notation_text(normalized) else "text",
+                        glyph_diagnostics=_synthetic_span_glyph_diagnostics(
+                            page_number=page_number,
+                            block_index=block_index,
+                            line_index=line_index,
+                            span_index=span_index,
+                            text=text,
+                            normalized_text=normalized,
+                            font=str(span.get("font") or ""),
+                            bbox=bbox,
+                            source="dict-no-raw-chars",
+                        ),
+                    )
+                )
+                reading_order += 1
+    return _sorted_study_text_blocks(blocks)
+
+
+def _sorted_study_text_blocks(blocks: list[StudyTextBlock]) -> list[StudyTextBlock]:
+    blocks.sort(key=lambda item: (item.bbox[1] if len(item.bbox) > 1 else 0.0, item.bbox[0] if item.bbox else 0.0, item.reading_order))
+    return [
+        StudyTextBlock(**{**block.to_dict(), "reading_order": index})
+        for index, block in enumerate(blocks)
+    ]
+
+
+def _rawdict_span_chars(span: dict[str, Any]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for char_index, char in enumerate(span.get("chars", []) or []):
+        value = str(char.get("c") or "")
+        bbox = [round(float(part), 3) for part in (char.get("bbox") or [0, 0, 0, 0])[:4]]
+        origin = [round(float(part), 3) for part in (char.get("origin") or [])[:2]]
+        result.append(
+            {
+                "char_index": char_index,
+                "char": value,
+                "codepoint": _codepoint_label(value),
+                "bbox": bbox,
+                "origin": origin,
+            }
+        )
+    return result
+
+
+def _study_span_glyph_diagnostics(
+    *,
+    page_number: int,
+    block_index: int,
+    line_index: int,
+    span_index: int,
+    text: str,
+    normalized_text: str,
+    font: str,
+    size: float,
+    bbox: list[float],
+    chars: list[dict[str, Any]],
+    block_type: str,
+) -> list[dict[str, Any]]:
+    reasons = _unmapped_notation_glyph_reasons(text)
+    if not reasons:
+        return []
+    if block_type != "notation" and not _looks_like_notation_text(normalized_text):
+        return []
+    return [
+        {
+            "warning": UNMAPPED_CHESS_GLYPH_WARNING,
+            "source": "pymupdf-rawdict",
+            "page": page_number,
+            "block_index": block_index,
+            "line_index": line_index,
+            "span_index": span_index,
+            "font_name": font,
+            "font_size": round(float(size or 0.0), 3),
+            "bbox": list(bbox),
+            "raw_text": _bounded_text(text),
+            "normalized_text": _bounded_text(normalized_text),
+            "context": _bounded_text(text, limit=120),
+            "codepoints": [_codepoint_label(char.get("char")) for char in chars if str(char.get("char") or "")],
+            "chars": chars[:80],
+            "reasons": reasons,
+            "mapping_status": "unmapped",
+        }
+    ]
+
+
+def _synthetic_span_glyph_diagnostics(
+    *,
+    page_number: int,
+    block_index: int,
+    line_index: int,
+    span_index: int,
+    text: str,
+    normalized_text: str,
+    font: str,
+    bbox: list[float],
+    source: str,
+) -> list[dict[str, Any]]:
+    reasons = _unmapped_notation_glyph_reasons(text)
+    if not reasons:
+        return []
+    return [
+        {
+            "warning": UNMAPPED_CHESS_GLYPH_WARNING,
+            "source": source,
+            "page": page_number,
+            "block_index": block_index,
+            "line_index": line_index,
+            "span_index": span_index,
+            "font_name": font,
+            "bbox": list(bbox),
+            "raw_text": _bounded_text(text),
+            "normalized_text": _bounded_text(normalized_text),
+            "context": _bounded_text(text, limit=120),
+            "codepoints": [_codepoint_label(char) for char in text],
+            "chars": [],
+            "reasons": [*reasons, "raw_char_context_unavailable"],
+            "mapping_status": "unmapped",
+        }
+    ]
+
+
+def _html_study_text_blocks(html_page: dict[str, Any], *, page_number: int, start_order: int = 0) -> list[StudyTextBlock]:
+    result: list[StudyTextBlock] = []
+    blocks = list(html_page.get("blocks") or [])
+    if not blocks and html_page.get("text"):
+        blocks = [{"text": html_page.get("text"), "bbox": [0, 0, 0, 0], "block_index": 0, "line_index": 0}]
+    for index, block in enumerate(blocks):
+        text = str(block.get("text") or "")
+        normalized = _normalize_book_text(text)
+        if not normalized or _is_technical_audit_text(normalized):
+            continue
+        bbox = [round(float(value), 3) for value in (block.get("bbox") or [0, 0, 0, 0])[:4]]
+        result.append(
+            StudyTextBlock(
+                page=page_number,
+                block_index=int(block.get("block_index") or index),
+                line_index=int(block.get("line_index") or 0),
+                span_index=0,
+                reading_order=start_order + index,
+                text=text,
+                normalized_text=normalized,
+                bbox=bbox,
+                font="html-assist",
+                size=0.0,
+                type="notation" if _looks_like_notation_text(normalized) else "text",
+                glyph_diagnostics=_synthetic_span_glyph_diagnostics(
+                    page_number=page_number,
+                    block_index=int(block.get("block_index") or index),
+                    line_index=int(block.get("line_index") or 0),
+                    span_index=0,
+                    text=text,
+                    normalized_text=normalized,
+                    font="html-assist",
+                    bbox=bbox,
+                    source="html-assist-no-raw-glyph-context",
+                ),
+            )
+        )
+    return result
+
+
+def _should_apply_html_text_assist(pdf_blocks: list[StudyTextBlock], html_blocks: list[StudyTextBlock]) -> bool:
+    if not html_blocks:
+        return False
+    pdf_chars = sum(len(block.normalized_text) for block in pdf_blocks)
+    html_chars = sum(len(block.normalized_text) for block in html_blocks)
+    if pdf_chars == 0:
+        return True
+    return html_chars > pdf_chars * 2
+
+
+def _normalize_book_text(text: str) -> str:
+    value = str(text or "").replace("\u00ad", "")
+    value = re.sub(r"\s+", " ", value).strip()
+    return value
+
+
+def _is_technical_audit_text(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return False
+    lower = value.lower()
+    technical_tokens = [
+        "unmapped_chess_glyphs",
+        "pgn_replay_errors",
+        "move_number_jump",
+        "move_number_regression",
+        "side_to_move_mismatch",
+        "quality_threshold_not_met",
+        "status_policy",
+    ]
+    token_hits = sum(1 for token in technical_tokens if token in lower)
+    snake_case_hits = len(re.findall(r"\b[a-z]+(?:_[a-z0-9]+){2,}\b", lower))
+    if token_hits >= 2:
+        return True
+    if token_hits >= 1 and snake_case_hits >= 3:
+        return True
+    if snake_case_hits >= 8 and not re.search(
+        r"\b(?:diagram|chapter|ex\.|white|black|king|queen|rook|bishop|knight|pawn)\b",
+        lower,
+    ):
+        return True
+    return False
+
+
+def _paragraphs_from_blocks(blocks: list[StudyTextBlock]) -> list[str]:
+    paragraphs: list[str] = []
+    current: list[str] = []
+    previous_y: float | None = None
+    for block in blocks:
+        y = float(block.bbox[1] if len(block.bbox) > 1 else 0.0)
+        if previous_y is not None and y - previous_y > max(10.0, float(block.size or 0.0) * 1.8) and current:
+            paragraphs.append(_normalize_book_text(" ".join(current)))
+            current = []
+        current.append(block.normalized_text)
+        previous_y = y
+    if current:
+        paragraphs.append(_normalize_book_text(" ".join(current)))
+    return [paragraph for paragraph in paragraphs if paragraph]
+
+
+def _layout_elements_from_text_blocks(blocks: list[StudyTextBlock], *, page_number: int) -> list[StudyLayoutElement]:
+    elements: list[StudyLayoutElement] = []
+    for index, block in enumerate(blocks):
+        text = str(block.normalized_text or block.text or "").strip()
+        if not text:
+            continue
+        element_type = _text_block_layout_type(block)
+        source_kind = "html-assist" if block.font == "html-assist" else "pdf-text-layer"
+        ref_id = f"p{page_number:03d}_b{block.block_index}_l{block.line_index}_s{block.span_index}"
+        elements.append(
+            StudyLayoutElement(
+                type=element_type,
+                page=page_number,
+                bbox=_bbox4(block.bbox),
+                reading_order=index,
+                source_kind=source_kind,
+                text=text,
+                ref_id=ref_id,
+                status="source",
+            )
+        )
+    return [
+        StudyLayoutElement(
+            type=str(item.get("type") or "text"),
+            page=int(item.get("page") or page_number),
+            bbox=_bbox4(item.get("bbox") or []),
+            reading_order=index,
+            source_kind=str(item.get("source_kind") or "pdf-text-layer"),
+            text=str(item.get("text") or ""),
+            ref_id=str(item.get("ref_id") or ""),
+            status=str(item.get("status") or "source"),
+        )
+        for index, item in enumerate(sort_study_layout_elements(elements))
+    ]
+
+
+def sort_study_layout_elements(
+    elements: Iterable[dict[str, Any] | StudyLayoutElement],
+    *,
+    line_tolerance: float = 3.0,
+) -> list[dict[str, Any]]:
+    """Sort mixed text/diagram/notation elements in stable PDF reading order."""
+    normalized = [_coerce_layout_element(element) for element in elements]
+    tolerance = max(1.0, float(line_tolerance or 3.0))
+
+    def sort_key(item: dict[str, Any]) -> tuple[int, int, float, int]:
+        bbox = _bbox4(item.get("bbox") or [])
+        y_bucket = int(round(float(bbox[1] or 0.0) / tolerance))
+        return (
+            int(item.get("page") or 0),
+            y_bucket,
+            float(bbox[0] or 0.0),
+            int(item.get("reading_order") or 0),
+        )
+
+    return sorted(normalized, key=sort_key)
+
+
+def _coerce_layout_element(element: dict[str, Any] | StudyLayoutElement) -> dict[str, Any]:
+    if isinstance(element, StudyLayoutElement):
+        return element.to_dict()
+    item = dict(element)
+    item["bbox"] = _bbox4(item.get("bbox") or [])
+    item["page"] = int(item.get("page") or 0)
+    item["reading_order"] = int(item.get("reading_order") or 0)
+    item["type"] = str(item.get("type") or "text")
+    item["source_kind"] = str(item.get("source_kind") or "unknown")
+    return item
+
+
+def _text_block_layout_type(block: StudyTextBlock) -> str:
+    text = str(block.normalized_text or block.text or "").strip()
+    if block.type == "notation" or _looks_like_notation_text(text):
+        return "notation"
+    if FINAL_TEST_RE.search(text) or any(pattern.search(text) for pattern in APPENDIX_PATTERNS.values()):
+        return "heading"
+    if EXERCISE_LABEL_RE.search(text) or FINAL_LABEL_RE.search(text):
+        return "heading"
+    if len(text) <= 90 and re.search(r"\b(?:chapter|diagram|exercises?)\b", text, re.IGNORECASE):
+        return "heading"
+    return "text"
+
+
+def _is_reader_noise_text(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return True
+    if len(value) <= 3 and re.fullmatch(r"[a-h1-8*.,:;!?\-]+", value, flags=re.IGNORECASE):
+        return True
+    if len(value) <= 6 and re.fullmatch(r"[a-z]{0,2}\W+[a-z0-9]{0,2}", value, flags=re.IGNORECASE):
+        return True
+    compact = re.sub(r"\s+", "", value)
+    alpha_count = len(re.findall(r"[A-Za-z]", compact))
+    if len(compact) <= 2 and alpha_count == len(compact):
+        return True
+    if len(compact) <= 6 and alpha_count <= 2 and re.search(r"[^A-Za-z0-9]", compact):
+        return True
+    return False
+
+
+def _bbox4(value: Any) -> list[float]:
+    values: list[float] = []
+    if isinstance(value, (list, tuple)):
+        for item in value[:4]:
+            try:
+                values.append(float(item))
+            except (TypeError, ValueError):
+                values.append(0.0)
+    while len(values) < 4:
+        values.append(0.0)
+    return values[:4]
+
+
+def _union_bboxes(values: Iterable[Any]) -> list[float]:
+    boxes = [_bbox4(value) for value in values if value]
+    boxes = [box for box in boxes if any(box)]
+    if not boxes:
+        return [0.0, 0.0, 0.0, 0.0]
+    x0 = min(box[0] for box in boxes)
+    y0 = min(box[1] for box in boxes)
+    x1 = max(box[2] for box in boxes)
+    y1 = max(box[3] for box in boxes)
+    return [x0, y0, x1, y1]
+
+
+def _book_text_markdown(pages: list[dict[str, Any]]) -> str:
+    lines = ["# Book Text", ""]
+    for page in pages:
+        lines.append(f"## Page {page.get('page')}")
+        lines.append("")
+        paragraphs = page.get("paragraphs") or []
+        if not paragraphs:
+            lines.append("_No extractable text._")
+        else:
+            for paragraph in paragraphs:
+                lines.append(str(paragraph))
+                lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _study_diagram_record(record: dict[str, Any]) -> StudyDiagram:
+    return StudyDiagram(
+        id=str(record.get("diagram_id") or record.get("id") or ""),
+        page=int(record.get("page") or 0),
+        visual_order_on_page=int(record.get("visual_order_on_page") or 0),
+        bbox=[float(value) for value in (record.get("bbox") or [0, 0, 0, 0])[:4]],
+        label=str(record.get("label") or record.get("diagram_id") or ""),
+        side_to_move=str(record.get("side_to_move") or "w"),
+        fen=str(record.get("fen") or ""),
+        fen_candidate=str(record.get("fen_candidate") or ""),
+        status=str(record.get("status") or "needs_review"),
+        confidence=float(record.get("confidence") or 0.0),
+        source_crop=str(record.get("source_crop") or ""),
+        rendered_svg=str(record.get("rendered_svg") or ""),
+        rendered_png=str(record.get("rendered_png") or ""),
+        review_reason=str(record.get("review_reason") or record.get("reason") or ""),
+        warnings=[str(warning) for warning in record.get("warnings") or []],
+    )
+
+
+def _visual_order_for_diagram(record: dict[str, Any], previous: list[dict[str, Any]]) -> int:
+    page = int(record.get("page") or 0)
+    return len([item for item in previous if int(item.get("page") or 0) == page]) + 1
+
+
+def _render_valid_fen_assets(fen: str, out_dir: Path, *, diagram_id: str) -> dict[str, str]:
+    valid, warnings = validate_fen(fen)
+    if not valid or warnings:
+        return {}
+    try:
+        import chess
+
+        chess.Board(fen)
+    except Exception:
+        return {}
+    svg_rel = _render_fen_svg(fen, out_dir, diagram_id=diagram_id)
+    png_rel = _render_fen_png(fen, out_dir, diagram_id=diagram_id)
+    return {"svg": svg_rel, "png": png_rel}
+
+
+def _render_fen_svg(fen: str, out_dir: Path, *, diagram_id: str) -> str:
+    placement = fen.split()[0]
+    board = _placement_to_board(placement)
+    size = 256
+    cell = size // 8
+    piece_map = {
+        "K": "K", "Q": "Q", "R": "R", "B": "B", "N": "N", "P": "P",
+        "k": "k", "q": "q", "r": "r", "b": "b", "n": "n", "p": "p",
+    }
+    parts = [
+        '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img">',
+        '<rect width="256" height="256" fill="#f1d9b5"/>',
+    ]
+    for row in range(8):
+        for col in range(8):
+            fill = "#f5e6c8" if (row + col) % 2 == 0 else "#8b5a34"
+            x = col * cell
+            y = row * cell
+            parts.append(f'<rect x="{x}" y="{y}" width="{cell}" height="{cell}" fill="{fill}"/>')
+            piece = board[row][col]
+            if piece:
+                color = "#15110d" if piece.islower() else "#fffaf0"
+                stroke = "#15110d" if piece.isupper() else "#fffaf0"
+                parts.append(
+                    f'<text x="{x + cell / 2}" y="{y + cell * .68}" text-anchor="middle" '
+                    f'font-family="Georgia,serif" font-size="22" font-weight="700" '
+                    f'fill="{color}" stroke="{stroke}" stroke-width=".45">{piece_map[piece]}</text>'
+                )
+    parts.append("</svg>")
+    target_dir = out_dir / "assets" / "diagram_svg"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{_safe_filename(diagram_id)}.svg"
+    (target_dir / filename).write_text("\n".join(parts), encoding="utf-8")
+    return str(Path("assets") / "diagram_svg" / filename).replace("\\", "/")
+
+
+def _render_fen_png(fen: str, out_dir: Path, *, diagram_id: str) -> str:
+    board = _placement_to_board(fen.split()[0])
+    size = 256
+    cell = size // 8
+    image = Image.new("RGB", (size, size), "#f1d9b5")
+    draw = ImageDraw.Draw(image)
+    for row in range(8):
+        for col in range(8):
+            fill = "#f5e6c8" if (row + col) % 2 == 0 else "#8b5a34"
+            x0 = col * cell
+            y0 = row * cell
+            draw.rectangle([x0, y0, x0 + cell, y0 + cell], fill=fill)
+            piece = board[row][col]
+            if piece:
+                draw.text((x0 + 11, y0 + 8), piece, fill="#15110d" if piece.islower() else "#fffaf0")
+    target_dir = out_dir / "assets" / "diagram_png"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{_safe_filename(diagram_id)}.png"
+    image.save(target_dir / filename, format="PNG")
+    return str(Path("assets") / "diagram_png" / filename).replace("\\", "/")
+
+
+def _placement_to_board(placement: str) -> list[list[str]]:
+    board: list[list[str]] = []
+    for rank in placement.split("/"):
+        row: list[str] = []
+        for char in rank:
+            if char.isdigit():
+                row.extend([""] * int(char))
+            else:
+                row.append(char)
+        row = row[:8] + [""] * max(0, 8 - len(row))
+        board.append(row)
+    while len(board) < 8:
+        board.append([""] * 8)
+    return board[:8]
+
+
+def _positions_by_page(positions: dict[str, Any]) -> dict[int, list[dict[str, Any]]]:
+    result: dict[int, list[dict[str, Any]]] = {}
+    for item in positions.get("positions", []) or []:
+        page = int(item.get("diagram_page") or 0)
+        result.setdefault(page, []).append(item)
+    return result
+
+
+def _looks_like_notation_text(text: str) -> bool:
+    value = str(text or "")
+    return bool(re.search(r"\b\d{1,3}\.(?:\.\.)?\s*[@\ufffdA-Za-zKQRBN0O][@A-Za-z0-9=+#xO\-]*", value))
+
+
+def _normalize_notation_text(text: str) -> str:
+    value = _normalize_book_text(text)
+    replacements = {
+        "0-0-0": "O-O-O",
+        "0-0": "O-O",
+        "0-O": "O-O",
+        "O-0": "O-O",
+        "\u2654": "K",
+        "\u2655": "Q",
+        "\u2656": "R",
+        "\u2657": "B",
+        "\u2658": "N",
+        "\u2659": "",
+        "\u265a": "K",
+        "\u265b": "Q",
+        "\u265c": "R",
+        "\u265d": "B",
+        "\u265e": "N",
+        "\u265f": "",
+    }
+    for source, target in replacements.items():
+        value = value.replace(source, target)
+    return value
+
+
+def _contains_unmapped_notation_glyphs(text: str) -> bool:
+    return bool(_unmapped_notation_glyph_reasons(text))
+
+
+def _unmapped_notation_glyph_reasons(text: str) -> list[str]:
+    value = str(text or "")
+    reasons: list[str] = []
+    if "\ufffd" in value:
+        reasons.append("replacement_character")
+    if any(0xE000 <= ord(char) <= 0xF8FF for char in value):
+        reasons.append("private_use_area")
+    if "@" in value and _looks_like_notation_text(value):
+        reasons.append("at_sign_in_notation")
+    if SUSPECT_NOTATION_GLYPH_RE.search(value) and _looks_like_notation_text(value):
+        reasons.append("suspicious_mojibake_notation_token")
+    return sorted(set(reasons))
+
+
+def _notation_glyph_diagnostics_from_blocks(
+    blocks: list[dict[str, Any]],
+    *,
+    page_number: int,
+    fallback_text: str,
+) -> list[dict[str, Any]]:
+    diagnostics: list[dict[str, Any]] = []
+    for block in blocks:
+        for item in block.get("glyph_diagnostics") or []:
+            if not isinstance(item, dict):
+                continue
+            diagnostics.append({**item, "page": int(item.get("page") or page_number)})
+            if len(diagnostics) >= NOTATION_GLYPH_DIAGNOSTIC_LIMIT:
+                return diagnostics
+    if not diagnostics and _contains_unmapped_notation_glyphs(fallback_text):
+        diagnostics.append(
+            {
+                "warning": UNMAPPED_CHESS_GLYPH_WARNING,
+                "source": "notation-fragment-fallback",
+                "page": page_number,
+                "font_name": "unknown",
+                "bbox": [0, 0, 0, 0],
+                "raw_text": _bounded_text(fallback_text),
+                "normalized_text": _bounded_text(_normalize_notation_text(fallback_text)),
+                "context": _bounded_text(fallback_text, limit=120),
+                "codepoints": [_codepoint_label(char) for char in fallback_text[:120]],
+                "chars": [],
+                "reasons": [*_unmapped_notation_glyph_reasons(fallback_text), "source_block_context_unavailable"],
+                "mapping_status": "unmapped",
+            }
+        )
+    return diagnostics[:NOTATION_GLYPH_DIAGNOSTIC_LIMIT]
+
+
+def _needs_raw_glyph_context(diagnostics: list[dict[str, Any]]) -> bool:
+    if not diagnostics:
+        return False
+    has_rawdict = any(str(item.get("source") or "") == "pymupdf-rawdict" for item in diagnostics)
+    has_unavailable = any("raw_char_context_unavailable" in (item.get("reasons") or []) for item in diagnostics)
+    return has_unavailable and not has_rawdict
+
+
+def _rawdict_glyph_context_for_page(
+    page: dict[str, Any],
+    *,
+    page_number: int,
+    fallback_text: str,
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    fallback_tokens = set(_glyph_mapping_tokens(fallback_text))
+    for block in page.get("blocks") or []:
+        if str(block.get("font") or "") == "html-assist":
+            continue
+        diagnostics = [item for item in block.get("glyph_diagnostics") or [] if isinstance(item, dict)]
+        if diagnostics:
+            for item in diagnostics:
+                result.append({**item, "page": int(item.get("page") or page_number), "linked_from_html_assist": True})
+                if len(result) >= NOTATION_GLYPH_SAMPLE_LIMIT:
+                    return result
+            continue
+        text = str(block.get("text") or block.get("normalized_text") or "")
+        if not text or not _looks_like_notation_text(text):
+            continue
+        block_tokens = set(_glyph_mapping_tokens(text))
+        if fallback_tokens and block_tokens and not (fallback_tokens & block_tokens):
+            continue
+        chars = [
+            {
+                "char_index": index,
+                "char": char,
+                "codepoint": _codepoint_label(char),
+                "bbox": list(block.get("bbox") or [0, 0, 0, 0]),
+                "origin": [],
+            }
+            for index, char in enumerate(text[:80])
+        ]
+        result.append(
+            {
+                "warning": UNMAPPED_CHESS_GLYPH_WARNING,
+                "source": "pymupdf-rawdict-page-context",
+                "page": page_number,
+                "block_index": int(block.get("block_index") or 0),
+                "line_index": int(block.get("line_index") or 0),
+                "span_index": int(block.get("span_index") or 0),
+                "font_name": str(block.get("font") or "unknown"),
+                "font_size": round(float(block.get("size") or 0.0), 3),
+                "bbox": list(block.get("bbox") or [0, 0, 0, 0]),
+                "raw_text": _bounded_text(text),
+                "normalized_text": _bounded_text(str(block.get("normalized_text") or text)),
+                "context": _bounded_text(text, limit=120),
+                "codepoints": [_codepoint_label(char) for char in text[:120]],
+                "chars": chars,
+                "reasons": [*_unmapped_notation_glyph_reasons(text), "rawdict_page_context"],
+                "mapping_status": "unmapped",
+                "linked_from_html_assist": True,
+            }
+        )
+        if len(result) >= NOTATION_GLYPH_SAMPLE_LIMIT:
+            break
+    return result
+
+
+def _merge_glyph_diagnostics(first: list[dict[str, Any]], second: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for item in [*first, *second]:
+        key = (
+            item.get("source"),
+            item.get("page"),
+            item.get("block_index"),
+            item.get("line_index"),
+            item.get("span_index"),
+            item.get("raw_text"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+        if len(merged) >= NOTATION_GLYPH_DIAGNOSTIC_LIMIT:
+            break
+    return merged
+
+
+def _parse_page_filter(value: str) -> set[int] | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    selected: set[int] = set()
+    for part in text.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        if "-" in token:
+            start_text, end_text = token.split("-", 1)
+            start = _safe_int(start_text)
+            end = _safe_int(end_text)
+            if not start or not end:
+                continue
+            if end < start:
+                start, end = end, start
+            selected.update(range(start, end + 1))
+        else:
+            page = _safe_int(token)
+            if page:
+                selected.add(page)
+    return selected
+
+
+def _page_filter_allows(page_filter: set[int] | None, page_number: int) -> bool:
+    return page_filter is None or int(page_number) in page_filter
+
+
+def _write_notation_glyph_diagnostics(out_dir: Path, fragments: list[dict[str, Any]]) -> None:
+    review_dir = out_dir / "review"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    diagnostics: list[dict[str, Any]] = []
+    for fragment in fragments:
+        for item in fragment.get("glyph_diagnostics") or []:
+            if not isinstance(item, dict):
+                continue
+            diagnostics.append(
+                {
+                    **item,
+                    "fragment_id": fragment.get("id"),
+                    "fragment_status": fragment.get("status"),
+                    "fragment_warnings": fragment.get("warnings") or [],
+                }
+            )
+            if len(diagnostics) >= NOTATION_GLYPH_DIAGNOSTIC_LIMIT:
+                break
+        if len(diagnostics) >= NOTATION_GLYPH_DIAGNOSTIC_LIMIT:
+            break
+    font_counts: dict[str, int] = {}
+    reason_counts: dict[str, int] = {}
+    page_counts: dict[str, int] = {}
+    rawdict_context_count = 0
+    raw_context_unavailable_count = 0
+    for item in diagnostics:
+        font = str(item.get("font_name") or "unknown")
+        font_counts[font] = font_counts.get(font, 0) + 1
+        page = str(item.get("page") or "unknown")
+        page_counts[page] = page_counts.get(page, 0) + 1
+        if str(item.get("source") or "").startswith("pymupdf-rawdict"):
+            rawdict_context_count += 1
+        for reason in item.get("reasons") or []:
+            reason_key = str(reason)
+            reason_counts[reason_key] = reason_counts.get(reason_key, 0) + 1
+            if reason_key == "raw_char_context_unavailable":
+                raw_context_unavailable_count += 1
+    glyph_mapping_candidates = _build_glyph_mapping_candidates(diagnostics)
+    payload = {
+        "diagnostic_count": len(diagnostics),
+        "evidence_only": True,
+        "requires_human_confirmation": True,
+        "policy": "Build deterministic font->glyph->SAN maps only from verified glyph context; AI suggestions cannot mark PGN accepted.",
+        "font_counts": font_counts,
+        "page_counts": page_counts,
+        "reason_counts": reason_counts,
+        "rawdict_context_count": rawdict_context_count,
+        "raw_context_unavailable_count": raw_context_unavailable_count,
+        "raw_glyph_context_available": rawdict_context_count > 0,
+        "glyph_mapping_candidate_count": int(glyph_mapping_candidates.get("candidate_count") or 0),
+        "samples": diagnostics[:NOTATION_GLYPH_SAMPLE_LIMIT],
+    }
+    _write_json(out_dir / "notation_glyph_diagnostics.json", payload)
+    _write_jsonl(out_dir / "notation_glyph_diagnostics.jsonl", diagnostics)
+    _write_json(review_dir / "glyph_mapping_candidates.json", glyph_mapping_candidates)
+    (review_dir / "glyph_mapping_review.html").write_text(
+        _glyph_mapping_review_html(glyph_mapping_candidates),
+        encoding="utf-8",
+    )
+    _write_optional_deepseek_glyph_audit(out_dir, payload, glyph_mapping_candidates)
+
+
+def _build_glyph_mapping_candidates(diagnostics: list[dict[str, Any]]) -> dict[str, Any]:
+    clusters: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in diagnostics:
+        font = str(item.get("font_name") or "unknown")
+        tokens = _glyph_mapping_tokens(str(item.get("raw_text") or item.get("context") or ""))
+        if not tokens:
+            tokens = ["<whole-span>"]
+        for token in tokens:
+            key = (font, token)
+            cluster = clusters.setdefault(
+                key,
+                {
+                    "font_name": font,
+                    "token": token,
+                    "count": 0,
+                    "pages": set(),
+                    "reasons": set(),
+                    "codepoints": set(),
+                    "examples": [],
+                    "mapping_status": "candidate_requires_human_confirmation",
+                    "ai_candidate": None,
+                    "ai_confidence": None,
+                    "ai_reason": "",
+                },
+            )
+            cluster["count"] += 1
+            if item.get("page"):
+                cluster["pages"].add(int(item.get("page") or 0))
+            for reason in item.get("reasons") or []:
+                cluster["reasons"].add(str(reason))
+            for codepoint in item.get("codepoints") or []:
+                if codepoint:
+                    cluster["codepoints"].add(str(codepoint))
+            if len(cluster["examples"]) < 5:
+                cluster["examples"].append(
+                    {
+                        "page": item.get("page"),
+                        "source": item.get("source"),
+                        "context": item.get("context") or item.get("raw_text"),
+                        "bbox": item.get("bbox") or [0, 0, 0, 0],
+                    }
+                )
+    candidates = []
+    for cluster in clusters.values():
+        candidates.append(
+            {
+                **cluster,
+                "pages": sorted(page for page in cluster["pages"] if page),
+                "reasons": sorted(cluster["reasons"]),
+                "codepoints": sorted(cluster["codepoints"]),
+            }
+        )
+    candidates.sort(key=lambda item: (-int(item.get("count") or 0), str(item.get("font_name") or ""), str(item.get("token") or "")))
+    return {
+        "evidence_only": True,
+        "requires_human_confirmation": True,
+        "mutates_output": False,
+        "policy": "Use these clusters only to design deterministic font/token/glyph mappings with regression tests.",
+        "candidate_count": len(candidates),
+        "candidates": candidates[:200],
+    }
+
+
+def _glyph_mapping_tokens(text: str) -> list[str]:
+    value = str(text or "")
+    tokens: list[str] = []
+    for match in re.finditer(r"[^\s{}()\[\],;:]+", value):
+        token = match.group(0).strip()
+        if not token:
+            continue
+        if (
+            "\ufffd" in token
+            or "@" in token
+            or ">" in token
+            or "%" in token
+            or SUSPECT_NOTATION_GLYPH_RE.search(token)
+        ):
+            tokens.append(token[:80])
+    return tokens[:20]
+
+
+def _glyph_mapping_review_html(payload: dict[str, Any]) -> str:
+    candidates = list(payload.get("candidates") or [])
+    rows = "\n".join(_glyph_mapping_candidate_row(candidate) for candidate in candidates) or "<tr><td colspan=\"7\">No glyph mapping candidates.</td></tr>"
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chess Glyph Mapping Review</title>
+  <style>
+    body {{ margin:0; font-family:Georgia, 'Times New Roman', serif; background:#f0e4d0; color:#21170f; }}
+    header {{ padding:1rem 1.25rem; background:#24180f; color:#fff7ea; position:sticky; top:0; }}
+    main {{ padding:1rem; overflow:auto; }}
+    table {{ border-collapse:collapse; width:100%; background:#fffaf0; }}
+    th, td {{ border:1px solid #d7c4aa; padding:.45rem .55rem; vertical-align:top; }}
+    th {{ background:#f2dec1; text-align:left; }}
+    code {{ font-family:'Courier New', monospace; }}
+    pre {{ white-space:pre-wrap; max-width:46rem; margin:0; }}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Chess Glyph Mapping Review</h1>
+    <p>{len(candidates)} candidate cluster(s). Evidence only; do not use as accepted PGN without deterministic mapping and regression tests.</p>
+  </header>
+  <main>
+    <table>
+      <thead><tr><th>Font</th><th>Token</th><th>Count</th><th>Pages</th><th>Reasons</th><th>Codepoints</th><th>Examples</th></tr></thead>
+      <tbody>{rows}</tbody>
+    </table>
+  </main>
+</body>
+</html>"""
+
+
+def _glyph_mapping_candidate_row(candidate: dict[str, Any]) -> str:
+    examples = "\n\n".join(str(example.get("context") or "") for example in (candidate.get("examples") or [])[:3])
+    return (
+        "<tr>"
+        f"<td>{html.escape(str(candidate.get('font_name') or ''))}</td>"
+        f"<td><code>{html.escape(str(candidate.get('token') or ''))}</code></td>"
+        f"<td>{html.escape(str(candidate.get('count') or 0))}</td>"
+        f"<td>{html.escape(', '.join(str(page) for page in candidate.get('pages') or []))}</td>"
+        f"<td>{html.escape(', '.join(str(reason) for reason in candidate.get('reasons') or []))}</td>"
+        f"<td><code>{html.escape(', '.join(str(codepoint) for codepoint in candidate.get('codepoints') or []))}</code></td>"
+        f"<td><pre>{html.escape(examples)}</pre></td>"
+        "</tr>"
+    )
+
+
+def _write_optional_deepseek_glyph_audit(out_dir: Path, glyph_payload: dict[str, Any], mapping_candidates: dict[str, Any]) -> None:
+    try:
+        from deepseek_quality_provider import build_deepseek_audit_payload, build_deepseek_audit_provider_from_env
+
+        provider = build_deepseek_audit_provider_from_env(cwd=Path.cwd())
+        if provider is None:
+            return
+        audit = build_deepseek_audit_payload(
+            provider=provider,
+            source_title="chess-study glyph mapping review",
+            glyph_payload={**glyph_payload, "glyph_mapping_candidates": mapping_candidates},
+            records=[],
+            diagrams=[],
+            conversion_quality={},
+        )
+        if audit:
+            _write_json(out_dir / "deepseek_audit.json", audit)
+    except Exception as exc:
+        _write_json(
+            out_dir / "deepseek_audit.json",
+            {
+                "provider": "deepseek-audit",
+                "mode": "evidence_only",
+                "status": "failed",
+                "error": str(exc),
+                "mutates_output": False,
+            },
+        )
+
+
+def _load_ocr_glyph_mapping(path: str | Path | None) -> dict[str, Any]:
+    mapping_path = Path(path) if path else None
+    if mapping_path is None or not mapping_path.is_file():
+        return {
+            "source": str(mapping_path or ""),
+            "accepted_count": 0,
+            "draft_count": 0,
+            "rejected_count": 0,
+            "accepted": {},
+        }
+    try:
+        payload = json.loads(mapping_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {
+            "source": str(mapping_path),
+            "accepted_count": 0,
+            "draft_count": 0,
+            "rejected_count": 0,
+            "accepted": {},
+            "load_error": "invalid_json",
+        }
+    rows = payload.get("mappings") if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        rows = []
+    accepted: dict[str, dict[str, Any]] = {}
+    counts = {"accepted": 0, "draft": 0, "rejected": 0}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        token = str(row.get("token") or "").strip()
+        replacement = str(row.get("replacement") or "").strip()
+        status = str(row.get("status") or "draft").strip().lower()
+        scope = str(row.get("scope") or "ocr_only").strip().lower()
+        if status not in counts:
+            status = "draft"
+        counts[status] += 1
+        if status != "accepted" or not token or not replacement:
+            continue
+        if scope not in {"ocr_only", "html-assist", "all", "global"}:
+            continue
+        accepted[token] = {
+            "token": token,
+            "replacement": replacement,
+            "scope": scope,
+            "status": status,
+            "examples": row.get("examples") or [],
+            "reviewer_note": row.get("reviewer_note") or row.get("reviewer_notes") or "",
+        }
+    return {
+        "source": str(mapping_path),
+        "accepted_count": len(accepted),
+        "draft_count": counts["draft"],
+        "rejected_count": counts["rejected"],
+        "accepted": accepted,
+    }
+
+
+def _apply_ocr_glyph_mapping(text: str, mapping: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    mapped = str(text or "")
+    applied: list[dict[str, Any]] = []
+    accepted = mapping.get("accepted") or {}
+    for token, row in sorted(accepted.items(), key=lambda item: (-len(str(item[0])), str(item[0]))):
+        token_text = str(token or "")
+        replacement = str((row or {}).get("replacement") or "")
+        if not token_text or not replacement or token_text not in mapped:
+            continue
+        count = mapped.count(token_text)
+        mapped = mapped.replace(token_text, replacement)
+        applied.append(
+            {
+                "token": token_text,
+                "replacement": replacement,
+                "count": count,
+                "scope": (row or {}).get("scope") or "ocr_only",
+            }
+        )
+    blockers = sorted(set(_glyph_mapping_tokens(mapped)))
+    return (
+        mapped,
+        {
+            "applied_count": sum(int(item.get("count") or 0) for item in applied),
+            "applied": applied,
+            "unmapped_tokens": blockers,
+        },
+    )
+
+
+def _mark_glyph_diagnostics_mapped(
+    diagnostics: list[dict[str, Any]],
+    mapping_result: dict[str, Any],
+) -> list[dict[str, Any]]:
+    applied = list(mapping_result.get("applied") or [])
+    marked: list[dict[str, Any]] = []
+    for item in diagnostics:
+        if not isinstance(item, dict):
+            continue
+        marked.append(
+            {
+                **item,
+                "mapping_status": "manual_ocr_mapped",
+                "ocr_mapping_applied": applied,
+                "validation_status": "mapped_candidate_requires_pgn_replay",
+            }
+        )
+    return marked
+
+
+def _raw_glyph_context_mode(fragment: dict[str, Any]) -> str:
+    diagnostics = [item for item in fragment.get("glyph_diagnostics") or [] if isinstance(item, dict)]
+    if not diagnostics:
+        return "unknown"
+    has_rawdict = any(str(item.get("source") or "").startswith("pymupdf-rawdict") for item in diagnostics)
+    has_unavailable = any("raw_char_context_unavailable" in (item.get("reasons") or []) for item in diagnostics)
+    has_fallback = any(
+        str(item.get("source") or "") in {"notation-fragment-fallback", "html-assist"}
+        or "source_block_context_unavailable" in (item.get("reasons") or [])
+        for item in diagnostics
+    )
+    if has_rawdict and (has_unavailable or has_fallback):
+        return "mixed"
+    if has_rawdict:
+        return "rawdict"
+    if has_unavailable or has_fallback:
+        return "ocr_only"
+    return "unknown"
+
+
+def _raw_glyph_context_mode_for_fragments(fragments: list[dict[str, Any]]) -> str:
+    modes = {str(item.get("raw_glyph_context_mode") or _raw_glyph_context_mode(item)) for item in fragments if isinstance(item, dict)}
+    modes.discard("unknown")
+    if not modes:
+        return "unknown"
+    if len(modes) > 1:
+        return "mixed"
+    return next(iter(modes))
+
+
+def _write_glyph_mapping_template_and_blockers(
+    out_dir: Path,
+    fragments: list[dict[str, Any]],
+    glyph_mapping: dict[str, Any],
+) -> None:
+    review_dir = out_dir / "review"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    diagnostics: list[dict[str, Any]] = []
+    blockers: list[dict[str, Any]] = []
+    for fragment in fragments:
+        if not isinstance(fragment, dict):
+            continue
+        for item in fragment.get("glyph_diagnostics") or []:
+            if isinstance(item, dict):
+                diagnostics.append({**item, "fragment_id": fragment.get("id")})
+        token_blockers = list(fragment.get("unmapped_token_blockers") or [])
+        if token_blockers or UNMAPPED_CHESS_GLYPH_WARNING in (fragment.get("warnings") or []):
+            blockers.append(
+                {
+                    "fragment_id": fragment.get("id"),
+                    "page": fragment.get("page"),
+                    "status": fragment.get("status"),
+                    "warnings": fragment.get("warnings") or [],
+                    "unmapped_token_blockers": token_blockers,
+                    "raw_glyph_context_mode": fragment.get("raw_glyph_context_mode") or "unknown",
+                    "raw_text": _bounded_text(str(fragment.get("raw_text") or ""), limit=400),
+                    "normalized_text": _bounded_text(str(fragment.get("normalized_text") or ""), limit=400),
+                }
+            )
+    candidate_payload = _build_glyph_mapping_candidates(diagnostics[:NOTATION_GLYPH_DIAGNOSTIC_LIMIT])
+    accepted_tokens = set((glyph_mapping.get("accepted") or {}).keys())
+    mappings: list[dict[str, Any]] = []
+    for candidate in candidate_payload.get("candidates") or []:
+        token = str(candidate.get("token") or "")
+        if not token or token in accepted_tokens:
+            continue
+        mappings.append(
+            {
+                "token": token,
+                "replacement": "",
+                "scope": "ocr_only",
+                "status": "draft",
+                "examples": candidate.get("examples") or [],
+                "reviewer_note": "",
+            }
+        )
+        if len(mappings) >= 100:
+            break
+    template = {
+        "schema": "kindlemaster.ocr_glyph_mapping.v1",
+        "evidence_only": True,
+        "instructions": "Fill replacement and set status=accepted only after manual confirmation; draft/rejected mappings never affect PGN.",
+        "mappings": mappings,
+    }
+    _write_json(review_dir / "glyph_mapping_manual.template.json", template)
+    _write_json(
+        review_dir / "unmapped_token_blockers.json",
+        {
+            "blocker_count": len(blockers),
+            "raw_glyph_context_mode": _raw_glyph_context_mode_for_fragments(fragments),
+            "ocr_token_mappings_loaded": int(glyph_mapping.get("accepted_count") or 0),
+            "fragments": blockers[:500],
+        },
+    )
+
+
+def _load_diagram_review_labels(path: Path | None) -> dict[str, dict[str, Any]]:
+    if path is None or not path.is_file():
+        return {}
+    labels: dict[str, dict[str, Any]] = {}
+    if path.suffix.lower() == ".csv":
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            for row in csv.DictReader(handle):
+                diagram_id = str(row.get("diagram_id") or "").strip()
+                label = str(row.get("manual_label") or "").strip()
+                if diagram_id and label:
+                    labels[diagram_id] = {**row, "manual_label": label, "label_source": str(path)}
+        return labels
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        diagram_id = str(row.get("diagram_id") or "").strip()
+        label = str(row.get("manual_label") or "").strip()
+        if diagram_id and label:
+            labels[diagram_id] = {**row, "manual_label": label, "label_source": str(path)}
+    return labels
+
+
+def _apply_diagram_manual_label(record: dict[str, Any], labels: dict[str, dict[str, Any]]) -> None:
+    diagram_id = str(record.get("diagram_id") or record.get("id") or "")
+    row = labels.get(diagram_id)
+    if not row:
+        return
+    label = str(row.get("manual_label") or "").strip()
+    allowed = {"correct_diagram", "false_positive", "cropped_diagram", "uncertain"}
+    if label not in allowed:
+        return
+    record["manual_label"] = label
+    record["manual_label_source"] = row.get("label_source") or ""
+    record["manual_reviewer_notes"] = row.get("reviewer_notes") or row.get("notes") or ""
+    if label == "false_positive":
+        record["fen"] = ""
+        record["fen_candidate"] = ""
+        record["status"] = "needs_review"
+        record["reason"] = "manual_false_positive"
+        record["review_only"] = True
+        record["warnings"] = sorted(set([*list(record.get("warnings") or []), "manual_false_positive"]))
+    elif label == "cropped_diagram":
+        record["status"] = "needs_review"
+        record["reason"] = record.get("reason") or "manual_cropped_diagram"
+        record["warnings"] = sorted(set([*list(record.get("warnings") or []), "manual_cropped_diagram"]))
+    elif label == "uncertain":
+        record["status"] = "needs_review"
+        record["reason"] = record.get("reason") or "manual_uncertain_diagram"
+        record["warnings"] = sorted(set([*list(record.get("warnings") or []), "manual_uncertain_diagram"]))
+
+
+def _diagram_manual_label_counts(records: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for record in records:
+        label = str(record.get("manual_label") or "")
+        if label:
+            counts[label] = counts.get(label, 0) + 1
+    return counts
+
+
+def _empty_diagram_alignment_payload(out_dir: Path) -> dict[str, Any]:
+    return {
+        "enabled": False,
+        "html": str(out_dir / "review" / "diagram_alignment_review.html"),
+        "candidate_count": 0,
+        "alignment_improved_count": 0,
+    }
+
+
+def _write_diagram_alignment_review(out_dir: Path, records: list[dict[str, Any]]) -> dict[str, Any]:
+    review_dir = out_dir / "review"
+    asset_dir = out_dir / "assets" / "diagram_alignment"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    asset_dir.mkdir(parents=True, exist_ok=True)
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        if record.get("manual_label") not in {"correct_diagram", "cropped_diagram"}:
+            continue
+        source_path = Path(str(record.get("image_path") or ""))
+        if not source_path.is_file():
+            continue
+        variants = _diagram_alignment_variants(source_path, asset_dir, str(record.get("diagram_id") or source_path.stem))
+        rows.append(
+            {
+                "diagram_id": record.get("diagram_id"),
+                "manual_label": record.get("manual_label"),
+                "page": record.get("page"),
+                "bbox": record.get("bbox") or [0, 0, 0, 0],
+                "source": record.get("image_href") or record.get("source_crop") or "",
+                "variants": variants,
+            }
+        )
+    html_path = review_dir / "diagram_alignment_review.html"
+    html_path.write_text(_diagram_alignment_review_html(rows), encoding="utf-8")
+    return {
+        "enabled": True,
+        "html": str(html_path),
+        "candidate_count": len(rows),
+        "alignment_improved_count": 0,
+    }
+
+
+def _diagram_alignment_variants(source_path: Path, asset_dir: Path, diagram_id: str) -> list[dict[str, str]]:
+    variants: list[dict[str, str]] = []
+    try:
+        image = Image.open(source_path).convert("RGB")
+    except Exception:
+        return variants
+    width, height = image.size
+    boxes = {
+        "tight": _image_crop_box(width, height, 0.03),
+        "inner-grid": _image_crop_box(width, height, 0.08),
+        "remove-coordinates": _image_crop_box(width, height, 0.12),
+        "center-square": _center_square_box(width, height),
+    }
+    for variant, box in boxes.items():
+        crop = image.crop(box)
+        filename = f"{_safe_filename(diagram_id)}-{variant}.webp"
+        target = asset_dir / filename
+        crop.save(target, format="WEBP", quality=88, method=6)
+        variants.append({"variant": variant, "href": str(Path("assets") / "diagram_alignment" / filename).replace("\\", "/")})
+    expanded = Image.new("RGB", (max(1, int(width * 1.1)), max(1, int(height * 1.1))), "white")
+    expanded.paste(image, ((expanded.width - width) // 2, (expanded.height - height) // 2))
+    filename = f"{_safe_filename(diagram_id)}-expand.webp"
+    target = asset_dir / filename
+    expanded.save(target, format="WEBP", quality=88, method=6)
+    variants.append({"variant": "expand", "href": str(Path("assets") / "diagram_alignment" / filename).replace("\\", "/")})
+    return variants
+
+
+def _image_crop_box(width: int, height: int, margin_ratio: float) -> tuple[int, int, int, int]:
+    dx = int(width * margin_ratio)
+    dy = int(height * margin_ratio)
+    return (min(dx, width - 1), min(dy, height - 1), max(width - dx, 1), max(height - dy, 1))
+
+
+def _center_square_box(width: int, height: int) -> tuple[int, int, int, int]:
+    side = min(width, height)
+    left = max(0, (width - side) // 2)
+    top = max(0, (height - side) // 2)
+    return (left, top, left + side, top + side)
+
+
+def _diagram_alignment_review_html(rows: list[dict[str, Any]]) -> str:
+    cards = "\n".join(_diagram_alignment_card(row) for row in rows) or "<p>No manually labeled diagrams available for alignment review.</p>"
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Diagram Alignment Review</title>
+  <style>
+    body {{ margin:0; font-family:Georgia, 'Times New Roman', serif; background:#efe3d0; color:#21170f; }}
+    header {{ padding:1rem 1.25rem; background:#24180f; color:#fff7ea; }}
+    main {{ display:grid; grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); gap:1rem; padding:1rem; }}
+    article {{ background:#fffaf0; border:1px solid #d7c4aa; border-radius:16px; padding:1rem; }}
+    img {{ max-width:100%; border:1px solid #d7c4aa; border-radius:10px; background:white; }}
+    figure {{ margin:.5rem 0; }}
+    figcaption {{ font-weight:700; }}
+  </style>
+</head>
+<body>
+  <header><h1>Diagram Alignment Review</h1><p>{len(rows)} manually labeled diagram(s). Evidence only; accepted FEN still requires deterministic validation.</p></header>
+  <main>{cards}</main>
+</body>
+</html>"""
+
+
+def _diagram_alignment_card(row: dict[str, Any]) -> str:
+    variants = "\n".join(
+        f'<figure><figcaption>{html.escape(str(item.get("variant") or ""))}</figcaption><img src="../{html.escape(str(item.get("href") or ""), quote=True)}" alt="{html.escape(str(row.get("diagram_id") or ""), quote=True)} {html.escape(str(item.get("variant") or ""), quote=True)}"></figure>'
+        for item in row.get("variants") or []
+    )
+    source = str(row.get("source") or "")
+    source_html = f'<figure><figcaption>source</figcaption><img src="../{html.escape(source, quote=True)}" alt="{html.escape(str(row.get("diagram_id") or ""), quote=True)} source"></figure>' if source else ""
+    return f"""<article>
+  <h2>{html.escape(str(row.get("diagram_id") or "diagram"))}</h2>
+  <p>Page {html.escape(str(row.get("page") or ""))}, label {html.escape(str(row.get("manual_label") or ""))}</p>
+  {source_html}
+  {variants}
+</article>"""
+
+
+def _codepoint_label(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    return " ".join(f"U+{ord(char):04X}" for char in text)
+
+
+def _bounded_text(value: str, *, limit: int = 240) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)] + "…"
+
+
+def _comments_from_notation_context(page: dict[str, Any], notation_blocks: list[dict[str, Any]]) -> list[str]:
+    notation_orders = {int(block.get("reading_order") or -1) for block in notation_blocks}
+    comments: list[str] = []
+    for block in page.get("blocks", []) or []:
+        order = int(block.get("reading_order") or -1)
+        text = str(block.get("normalized_text") or block.get("text") or "")
+        if order in notation_orders or _looks_like_notation_text(text):
+            continue
+        if len(text) >= 20 and re.search(r"[A-Za-z]", text):
+            comments.append(text)
+        if len(comments) >= 3:
+            break
+    return comments
+
+
+def _build_notation_pgn_candidate(
+    notation: str,
+    *,
+    page: int,
+    source_diagram: str,
+    fen: str,
+    comments: list[str],
+) -> str:
+    move_text = _extract_move_text(notation)
+    headers = [
+        f'[Event "Source page {page}"]',
+        '[Site "?"]',
+        '[Date "????.??.??"]',
+        '[Round "?"]',
+        '[White "?"]',
+        '[Black "?"]',
+        '[Result "*"]',
+        f'[SourcePage "{page}"]',
+        f'[SourceDiagram "{source_diagram or "?"}"]',
+    ]
+    if fen:
+        headers.extend(['[SetUp "1"]', f'[FEN "{fen}"]'])
+    comment_text = " ".join(_pgn_comment(comment) for comment in comments[:2])
+    body_parts = [part for part in [comment_text, move_text, "*"] if part]
+    return "\n".join(headers) + "\n\n" + " ".join(body_parts).strip()
+
+
+def _extract_move_text(value: str) -> str:
+    text = str(value or "")
+    match = re.search(r"\b\d{1,3}\.(?:\.\.)?.*", text)
+    if not match:
+        return ""
+    move_text = match.group(0)
+    move_text = re.sub(r"\s+", " ", move_text).strip()
+    move_text = re.sub(r"\[[^\]]+\]", "", move_text)
+    return move_text
+
+
+def _pgn_comment(value: str) -> str:
+    clean = str(value or "").replace("{", "(").replace("}", ")").strip()
+    return f"{{{clean}}}" if clean else ""
+
+
+def _pgn_has_required_headers(pgn_text: str) -> bool:
+    value = str(pgn_text or "")
+    required = ["Event", "Site", "Date", "White", "Black", "Result", "SourcePage"]
+    return all(re.search(rf'^\[{name}\s+"[^"]*"\]', value, flags=re.MULTILINE) for name in required)
+
+
+def _pgn_has_source_page(pgn_text: str) -> bool:
+    return bool(re.search(r'^\[SourcePage\s+"[^"]+"\]', str(pgn_text or ""), flags=re.MULTILINE))
+
+
+def _pgn_has_setup_fen(pgn_text: str) -> bool:
+    value = str(pgn_text or "")
+    return bool(
+        re.search(r'^\[SetUp\s+"1"\]', value, flags=re.MULTILINE)
+        and re.search(r'^\[FEN\s+"[^"]+"\]', value, flags=re.MULTILINE)
+    )
+
+
+def _fragment_has_raw_context_gap(fragment: dict[str, Any]) -> bool:
+    ocr_only_manual_mapping_covers_gap = (
+        str(fragment.get("raw_glyph_context_mode") or "") == "ocr_only"
+        and int(fragment.get("ocr_token_mappings_applied") or 0) > 0
+        and not list(fragment.get("unmapped_token_blockers") or [])
+        and UNMAPPED_CHESS_GLYPH_WARNING not in (fragment.get("warnings") or [])
+    )
+    for diagnostic in fragment.get("glyph_diagnostics") or []:
+        if not isinstance(diagnostic, dict):
+            continue
+        if "raw_char_context_unavailable" in (diagnostic.get("reasons") or []):
+            if ocr_only_manual_mapping_covers_gap:
+                continue
+            return True
+    return False
+
+
+def _quality_threshold_problems(config: ChessStudyConfig, summary: dict[str, Any]) -> list[dict[str, Any]]:
+    profile = _normalize_quality_profile(config.quality_profile)
+    thresholds = QUALITY_THRESHOLDS[profile]
+    severity = "critical" if profile == "masterkindle" or config.strict_thresholds else "review"
+    metric_map = {
+        "pages": "pages",
+        "page_images": "page_images",
+        "pages_with_extractable_text": "pages_with_extractable_text",
+        "copyable_text_characters": "copyable_text_characters",
+        "diagrams_total": "diagrams_total",
+        "fen_accepted": "fen_accepted",
+        "notation_fragments_total": "notation_fragments_total",
+        "accepted_pgn": "accepted_pgn",
+    }
+    problems: list[dict[str, Any]] = []
+    for threshold_key, summary_key in metric_map.items():
+        expected = int(thresholds.get(threshold_key) or 0)
+        actual = int(summary.get(summary_key) or 0)
+        if expected and actual < expected:
+            problems.append(
+                {
+                    "severity": severity,
+                    "code": "quality_threshold_not_met",
+                    "metric": summary_key,
+                    "actual": actual,
+                    "expected_min": expected,
+                    "profile": profile,
+                }
+            )
+    return problems
+
+
+def _chapter_anchor_for_page(page_number: int, positions: dict[str, Any]) -> str:
+    chapter_numbers = [
+        int(item.get("chapter_no") or 0)
+        for item in positions.get("positions", []) or []
+        if int(item.get("diagram_page") or 0) == page_number and int(item.get("chapter_no") or 0)
+    ]
+    if not chapter_numbers:
+        return ""
+    return f'id="chapter-{chapter_numbers[0]:02d}"'
+
+
+def _safe_filename(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "diagram")).strip("._")
+    return safe or "diagram"
+
+
+def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
+
+
+def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = sorted({key for row in rows for key in row.keys()})
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: _csv_cell(row.get(key)) for key in fieldnames})
+
+
+def _csv_cell(value: Any) -> Any:
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, ensure_ascii=False)
+    return value
+
+
+def _resolve_html_input(value: str | Path | None) -> Path | None:
+    if not value:
+        return None
+    path = Path(value)
+    if path.suffix.lower() != ".zip":
+        return path
+    extract_dir = path.with_suffix("")
+    extract_dir.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path) as archive:
+        html_names = [name for name in archive.namelist() if name.lower().endswith(".html")]
+        if not html_names:
+            raise ValueError(f"ZIP does not contain an HTML file: {path}")
+        archive.extract(html_names[0], extract_dir)
+        return extract_dir / html_names[0]
+
+
+def _empty_current_audit() -> dict[str, Any]:
+    return {"status": "not_provided", "final_html_status": "NOT_ACCEPTABLE_AS_FINAL"}
+
+
+def _pdf_page_texts(pdf: Path, *, include_blocks: bool = False) -> list[dict[str, Any]]:
+    pages: list[dict[str, Any]] = []
+    with fitz.open(pdf) as document:
+        for index, page in enumerate(document):
+            text = page.get_text("text") or ""
+            row: dict[str, Any] = {"index": index, "page_number": index + 1, "text": text}
+            if include_blocks:
+                row["blocks"] = _text_blocks(page)
+            pages.append(row)
+    return pages
+
+
+def _merged_page_texts(
+    pdf: Path,
+    html_path: Path | None,
+    *,
+    include_blocks: bool = False,
+) -> list[dict[str, Any]]:
+    pdf_pages = _pdf_page_texts(pdf, include_blocks=include_blocks)
+    if not html_path or not html_path.is_file():
+        return pdf_pages
+    html_pages = _html_page_texts(html_path)
+    html_by_number = {int(page.get("page_number") or 0): page for page in html_pages}
+    merged: list[dict[str, Any]] = []
+    for page in pdf_pages:
+        page_number = int(page["page_number"])
+        html_page = html_by_number.get(page_number) or {}
+        pdf_text = str(page.get("text") or "")
+        html_text = str(html_page.get("text") or "")
+        combined_text = "\n".join(part for part in [pdf_text.strip(), html_text.strip()] if part)
+        row = {**page, "text": combined_text or pdf_text}
+        if include_blocks and html_text:
+            row["blocks"] = [
+                *list(page.get("blocks") or []),
+                *list(html_page.get("blocks") or []),
+            ]
+        merged.append(row)
+    return merged
+
+
+def _html_page_texts(html_path: Path) -> list[dict[str, Any]]:
+    soup = BeautifulSoup(html_path.read_text(encoding="utf-8", errors="replace"), "html.parser")
+    page_nodes = soup.select(".chess-book-page, .pdf-page, section[data-page]")
+    if not page_nodes:
+        return [{"index": 0, "page_number": 1, "text": soup.get_text("\n", strip=True), "blocks": []}]
+    pages: list[dict[str, Any]] = []
+    for index, node in enumerate(page_nodes):
+        raw_page = node.get("data-page") or node.get("data-page-number") or str(index + 1)
+        try:
+            page_number = int(str(raw_page).strip())
+        except ValueError:
+            page_number = index + 1
+        text_blocks: list[dict[str, Any]] = []
+        for block_index, block in enumerate(node.select(".book-text, .pdf-text-span, pre, p, h1, h2, h3")):
+            text = block.get_text(" ", strip=True)
+            if not text or _is_technical_audit_text(text):
+                continue
+            text_blocks.append({"type": "text", "text": text, "bbox": [0, 0, 0, 0], "block_index": block_index, "line_index": 0})
+        text = "\n".join(block["text"] for block in text_blocks) or node.get_text("\n", strip=True)
+        if _is_technical_audit_text(text):
+            text = ""
+        pages.append({"index": page_number - 1, "page_number": page_number, "text": text, "blocks": text_blocks})
+    return pages
+
+
+def _text_blocks(page: fitz.Page) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    for block_index, block in enumerate((page.get_text("dict") or {}).get("blocks", [])):
+        if block.get("type") != 0:
+            continue
+        for line_index, line in enumerate(block.get("lines", [])):
+            text = "".join(str(span.get("text") or "") for span in line.get("spans", [])).strip()
+            if not text:
+                continue
+            bbox = line.get("bbox") or block.get("bbox") or [0, 0, 0, 0]
+            blocks.append({"type": "text", "text": text, "bbox": [float(value) for value in bbox[:4]], "block_index": block_index, "line_index": line_index})
+    return blocks
+
+
+def _chapter_title_hits(pages: list[dict[str, Any]]) -> dict[int, int | None]:
+    hits: dict[int, int | None] = {}
+    for chapter_no, title in YUSUPOV_CHAPTERS:
+        pattern = re.compile(rf"\b{chapter_no}\s+{re.escape(title)}\b|Chapter\s+{chapter_no}\b.*{re.escape(title)}", re.IGNORECASE)
+        hits[chapter_no] = _first_matching_page(pages, pattern)
+    return hits
+
+
+def _yusupov_toc_numbers_from_html(html_path: Path) -> list[int]:
+    if not html_path.is_file():
+        return []
+    soup = BeautifulSoup(html_path.read_text(encoding="utf-8", errors="replace"), "html.parser")
+    for node in soup.select(".chess-book-page, .pdf-page, section[data-page]"):
+        text = re.sub(r"\s+", " ", node.get_text(" ", strip=True))
+        if "CONTENTS" not in text.upper() or "Mating motifs" not in text:
+            continue
+        tail = text.split("CONTENTS", 1)[-1]
+        numbers = [int(value) for value in re.findall(r"\b\d{1,3}\b", tail)]
+        if len(numbers) >= 31:
+            return numbers
+    return []
+
+
+def _structure_from_toc_numbers(numbers: list[int]) -> dict[str, Any]:
+    # Expected sequence in this book: Key, Preface, Introduction, 24 chapters,
+    # Final test, and three appendix entries.
+    if len(numbers) < 31:
+        return {}
+    chapter_numbers = numbers[3:27]
+    if len(chapter_numbers) != len(YUSUPOV_CHAPTERS):
+        return {}
+    return {
+        "chapter_starts": {
+            chapter_no: chapter_numbers[index]
+            for index, (chapter_no, _title) in enumerate(YUSUPOV_CHAPTERS)
+        },
+        "final_test": numbers[27],
+        "appendices": {
+            "index_of_composers_and_analysts": numbers[28],
+            "index_of_games": numbers[29],
+            "recommended_books": numbers[30],
+        },
+    }
+
+
+def _first_matching_page(pages: list[dict[str, Any]], pattern: re.Pattern[str]) -> int | None:
+    for page in pages:
+        if pattern.search(str(page.get("text") or "")):
+            return int(page["page_number"])
+    return None
+
+
+def _validate_structure(chapters: list[dict[str, Any]], final_test_page: int | None, appendices: dict[str, Any]) -> dict[str, Any]:
+    errors: list[str] = []
+    detected = [chapter for chapter in chapters if chapter.get("start_book_page")]
+    if len(detected) != len(YUSUPOV_CHAPTERS):
+        errors.append("chapter_count_incomplete")
+    if not final_test_page:
+        errors.append("final_test_missing")
+    if not any(appendices.values()):
+        errors.append("appendices_missing")
+    ranges = [
+        (int(chapter["start_book_page"]), int(chapter["end_book_page"]))
+        for chapter in chapters
+        if chapter.get("start_book_page") and chapter.get("end_book_page")
+    ]
+    for previous, current in zip(ranges, ranges[1:]):
+        if current[0] <= previous[1]:
+            errors.append("chapter_ranges_overlap")
+            break
+    return {"status": "failed" if errors else "passed", "errors": errors}
+
+
+def _chapter_for_book_page(book_page: int, chapters: list[dict[str, Any]]) -> dict[str, Any] | None:
+    candidates = [chapter for chapter in chapters if _safe_int(chapter.get("start_book_page")) and _safe_int(chapter.get("start_book_page")) <= book_page]
+    candidates.sort(key=lambda item: _safe_int(item.get("start_book_page")), reverse=True)
+    return candidates[0] if candidates else None
+
+
+def _classify_page_type(
+    text: str,
+    book_page: int,
+    chapter: dict[str, Any] | None,
+    *,
+    final_start: int,
+    first_appendix: int,
+) -> str:
+    value = re.sub(r"\s+", " ", text or "").lower()
+    if final_start and book_page >= final_start and (not first_appendix or book_page < first_appendix):
+        return "final_test"
+    if first_appendix and book_page >= first_appendix:
+        return "appendix"
+    if not chapter:
+        return "front_matter"
+    if "solution" in value or "solutions" in value:
+        return "solutions"
+    if "scoring" in value or "points" in value:
+        return "scoring"
+    if EXERCISE_LABEL_RE.search(text):
+        return "exercises"
+    if "example" in value or "ex." in value:
+        return "examples"
+    return "chapter_lesson"
+
+
+def _segment_blocks_from_page(page: dict[str, Any], *, labels: list[str], final_labels: list[str]) -> list[dict[str, Any]]:
+    blocks = list(page.get("blocks") or [])
+    result: list[dict[str, Any]] = []
+    for block in blocks:
+        text = str(block.get("text") or "")
+        block_type = "notation" if re.search(r"\b\d{1,3}\.(?:\.\.)?\s*\S+", text) else "text"
+        if EXERCISE_LABEL_RE.search(text):
+            block_type = "exercise_label"
+        if FINAL_LABEL_RE.search(text):
+            block_type = "final_test_label"
+        result.append({**block, "type": block_type})
+    for label in labels:
+        if not any(item.get("type") == "exercise_label" and label in str(item.get("text")) for item in result):
+            result.append({"type": "exercise_label", "text": label, "bbox": [0, 0, 0, 0]})
+    for label in final_labels:
+        if not any(item.get("type") == "final_test_label" and label in str(item.get("text")) for item in result):
+            result.append({"type": "final_test_label", "text": label, "bbox": [0, 0, 0, 0]})
+    return result
+
+
+def _normalize_ex_label(match: re.Match[str]) -> str:
+    return f"Ex. {int(match.group('chapter'))}-{int(match.group('number'))}"
+
+
+def _best_label_for_diagram(diagram: dict[str, Any], page: dict[str, Any], *, fallback_index: int) -> str:
+    labels = list(page.get("exercise_labels") or [])
+    final_labels = list(page.get("final_test_labels") or [])
+    if labels:
+        return labels[min(fallback_index - 1, len(labels) - 1)]
+    if final_labels:
+        return final_labels[min(fallback_index - 1, len(final_labels) - 1)]
+    return str(diagram.get("diagram_id") or f"diagram-{fallback_index:03d}")
+
+
+def _position_status_from_diagram(diagram: dict[str, Any], *, fen: str) -> tuple[str, list[str]]:
+    warnings = [str(warning) for warning in (diagram.get("warnings") or [])]
+    if not fen:
+        return "missing_fen", sorted(set([*warnings, str(diagram.get("reason") or "fen_missing")]))
+    valid, fen_warnings = validate_fen(fen)
+    if not valid or fen_warnings:
+        return "needs_review", sorted(set([*warnings, *fen_warnings]))
+    if not diagram.get("source_crop"):
+        return "needs_review", sorted(set([*warnings, "source_crop_missing"]))
+    if not diagram.get("rendered_diagram"):
+        return "needs_review", sorted(set([*warnings, "rendered_diagram_missing"]))
+    if warnings:
+        return "needs_review", sorted(set(warnings))
+    if str(diagram.get("status") or "") != "accepted":
+        return "needs_review", sorted(set([*warnings, str(diagram.get("reason") or "fen_requires_review")]))
+    return "accepted", warnings
+
+
+def _position_id(*, item_type: str, chapter_no: Any, label: str, fallback_index: int) -> str:
+    if item_type == "final_test":
+        number = re.sub(r"\D+", "", label or "") or str(fallback_index)
+        return f"final_f_{int(number):03d}"
+    label_match = EXERCISE_LABEL_RE.search(label or "")
+    if label_match:
+        return f"ch{int(label_match.group('chapter')):02d}_ex_{int(label_match.group('number')):03d}"
+    if chapter_no:
+        return f"ch{int(chapter_no):02d}_diag_{fallback_index:03d}"
+    return f"diag_{fallback_index:03d}"
+
+
+def _chapter_title(chapter_no: Any) -> str:
+    try:
+        number = int(chapter_no)
+    except (TypeError, ValueError):
+        return ""
+    for candidate_no, title in YUSUPOV_CHAPTERS:
+        if candidate_no == number:
+            return title
+    return ""
+
+
+def _critical_warnings(status: str, warnings: list[str]) -> list[str]:
+    if status != "accepted":
+        return []
+    return [warning for warning in warnings if warning]
+
+
+def _count_by_status(items: Iterable[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in items:
+        status = str(item.get("status") or "needs_review")
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+def _count_review_positions(items: list[dict[str, Any]]) -> int:
+    return len([item for item in items if item.get("status") != "accepted"])
+
+
+def _pgn_replay_clean(pgn_text: str) -> bool:
+    value = str(pgn_text or "").strip()
+    if not value:
+        return False
+    try:
+        import io
+        import logging
+        import chess.pgn  # type: ignore[import-not-found]
+
+        logger = logging.getLogger("chess.pgn")
+        was_disabled = logger.disabled
+        logger.disabled = True
+        try:
+            game = chess.pgn.read_game(io.StringIO(value))
+        finally:
+            logger.disabled = was_disabled
+        if game is None or getattr(game, "errors", None):
+            return False
+        board = game.board()
+        move_count = 0
+        for move in game.mainline_moves():
+            if move not in board.legal_moves:
+                return False
+            board.push(move)
+            move_count += 1
+        return move_count > 0
+    except Exception:
+        return False
+
+
+def _current_audit_markdown(report: dict[str, Any]) -> str:
+    return "\n".join(
+        [
+            "# Current Chess HTML Audit",
+            "",
+            f"- Status: `{report.get('final_html_status')}`",
+            f"- PDF pages: `{report.get('pdf_pages')}`",
+            f"- HTML pages: `{report.get('html_pages')}`",
+            f"- Diagrams: `{(report.get('diagrams') or {}).get('detected')}`",
+            f"- FEN records: `{(report.get('fen') or {}).get('total')}`",
+            f"- Accepted PGN: `{(report.get('pgn') or {}).get('accepted')}`",
+            f"- Critical errors: `{', '.join(report.get('critical_errors') or [])}`",
+            "",
+        ]
+    )
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0

@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import app as app_module
+import kindlemaster as kindlemaster_module
 from app import app
 
 
@@ -75,29 +76,90 @@ class Sprint4UiContractsTests(unittest.TestCase):
         self.assertEqual(config["iconLibrary"], "lucide")
         self.assertIn("official shadcn registry config + shadcn-style local primitives", docs)
 
-    def test_flask_serves_sprint4_app_route_and_uses_it_as_root_when_built(self) -> None:
+    def test_flask_uses_sprint4_app_route_as_only_default_layout(self) -> None:
         client = app.test_client()
-        react_index = REPO_ROOT / "static" / "react" / "index.html"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            react_index = Path(tmpdir) / "index.html"
+            react_index.write_text(
+                '<!doctype html><html><head><title>React shell</title></head><body><div id="root"></div></body></html>',
+                encoding="utf-8",
+            )
+            with patch.object(app_module, "_react_shell_index_path", return_value=react_index):
+                root_response = client.get("/")
+                legacy_direct_response = client.get("/legacy")
+                app_response = client.get("/app")
 
-        legacy_response = client.get("/")
-        legacy_direct_response = client.get("/legacy")
-        app_response = client.get("/app")
-
-        if react_index.exists():
-            self.assertEqual(legacy_response.status_code, 302)
-            self.assertEqual(legacy_response.headers["Location"], "/app")
-        else:
-            self.assertEqual(legacy_response.status_code, 200)
-            self.assertIn("KindleMaster", legacy_response.get_data(as_text=True))
-        self.assertEqual(legacy_direct_response.status_code, 200)
-        self.assertIn("Lokalny panel EPUB", legacy_direct_response.get_data(as_text=True))
+        self.assertEqual(root_response.status_code, 302)
+        self.assertEqual(root_response.headers["Location"], "/app")
+        self.assertEqual(legacy_direct_response.status_code, 302)
+        self.assertEqual(legacy_direct_response.headers["Location"], "/app")
         self.assertEqual(app_response.status_code, 200)
         app_html = app_response.get_data(as_text=True)
-        self.assertTrue(
-            'id="root"' in app_html or "KindleMaster Sprint 4 UI" in app_html,
-            app_html[:300],
-        )
+        self.assertIn('id="root"', app_html)
+        self.assertEqual(app_response.headers["Cache-Control"], "no-store, max-age=0")
         self.assertEqual(client.get("/favicon.ico").status_code, 204)
+
+    def test_legacy_route_requires_explicit_debug_flag(self) -> None:
+        client = app.test_client()
+        with patch.dict(os.environ, {"KINDLEMASTER_ENABLE_LEGACY_UI": "1"}):
+            response = client.get("/legacy")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Lokalny panel EPUB", response.get_data(as_text=True))
+        self.assertEqual(response.headers["Cache-Control"], "no-store, max-age=0")
+
+    def test_app_route_fails_clearly_when_react_build_is_missing(self) -> None:
+        client = app.test_client()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            missing_index = Path(tmpdir) / "missing" / "index.html"
+            with patch.object(app_module, "_react_shell_index_path", return_value=missing_index):
+                response = client.get("/app")
+
+        self.assertEqual(response.status_code, 503)
+        html = response.get_data(as_text=True)
+        self.assertIn("KindleMaster UI build missing", html)
+        self.assertNotIn("React/Vite shell is configured", html)
+        self.assertNotIn("Lokalny panel EPUB", html)
+        self.assertEqual(response.headers["Cache-Control"], "no-store, max-age=0")
+
+    def test_react_ui_build_freshness_detects_missing_fresh_and_stale_builds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            frontend_src = repo_root / "frontend" / "src"
+            build_dir = repo_root / "static" / "react"
+            frontend_src.mkdir(parents=True)
+            build_dir.mkdir(parents=True)
+            source = frontend_src / "App.tsx"
+            package = repo_root / "package.json"
+            build_index = build_dir / "index.html"
+            source.write_text("export default function App() { return null }", encoding="utf-8")
+            package.write_text('{"scripts":{"build:ui":"vite build"}}', encoding="utf-8")
+
+            self.assertTrue(kindlemaster_module._react_ui_build_required(repo_root))
+
+            build_index.write_text('<div id="root"></div>', encoding="utf-8")
+            fresh_time = build_index.stat().st_mtime + 10
+            os.utime(build_index, (fresh_time, fresh_time))
+            self.assertFalse(kindlemaster_module._react_ui_build_required(repo_root))
+
+            stale_time = build_index.stat().st_mtime + 10
+            os.utime(source, (stale_time, stale_time))
+            self.assertTrue(kindlemaster_module._react_ui_build_required(repo_root))
+
+    def test_react_ui_build_runs_only_when_required_and_not_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            frontend_src = repo_root / "frontend" / "src"
+            frontend_src.mkdir(parents=True)
+            (frontend_src / "App.tsx").write_text("export default null", encoding="utf-8")
+            with patch("kindlemaster.subprocess.run") as run_mock:
+                run_mock.return_value.returncode = 0
+                self.assertEqual(kindlemaster_module._ensure_react_ui_build(repo_root=repo_root, skip_ui_build=False), 0)
+                run_mock.assert_called_once()
+
+            with patch("kindlemaster.subprocess.run") as run_mock:
+                self.assertEqual(kindlemaster_module._ensure_react_ui_build(repo_root=repo_root, skip_ui_build=True), 0)
+                run_mock.assert_not_called()
 
     def test_premium_react_shell_support_endpoints_have_local_fallbacks(self) -> None:
         client = app.test_client()

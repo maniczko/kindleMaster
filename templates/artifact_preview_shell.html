@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="pl" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ title }} - KindleMaster</title>
+  <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" sizes="any">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app-shell.css') }}?v={{ static_asset_version }}">
+  <style>
+    .artifact-preview-shell {
+      min-height: 100vh;
+      padding: 24px;
+      background:
+        radial-gradient(circle at 12% 12%, rgba(255, 145, 49, 0.18), transparent 28rem),
+        var(--km-bg, #111722);
+      color: var(--km-text, #f8fafc);
+    }
+    .artifact-preview-frame {
+      width: 100%;
+      min-height: calc(100vh - 220px);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 18px;
+      background: #ece7dc;
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.34);
+    }
+    .artifact-preview-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 18px 0;
+    }
+    .artifact-preview-actions a {
+      border: 1px solid rgba(255, 145, 49, 0.45);
+      border-radius: 999px;
+      color: inherit;
+      padding: 8px 12px;
+      text-decoration: none;
+      background: rgba(255, 145, 49, 0.12);
+      font-weight: 800;
+    }
+    .artifact-preview-meta {
+      color: rgba(248, 250, 252, 0.72);
+      font-size: 0.92rem;
+      max-width: 820px;
+    }
+  </style>
+</head>
+<body>
+  <main class="artifact-preview-shell" data-km-view="pdf-layout-preview">
+    <header class="topbar" data-vr-hook="km-artifact-preview-shell">
+      <div class="brand">
+        <div class="brand-kicker">Lokalny panel EPUB</div>
+        <h1>Kindle<span>Master</span></h1>
+        <p>PDF layout preview w głównym layoucie aplikacji. Adres: <code>{{ local_app_url }}</code>.</p>
+      </div>
+      <div class="system-status-pill" aria-label="Status podglądu">
+        <span aria-hidden="true"></span>
+        Artefakt audytowy
+      </div>
+    </header>
+
+    <section class="hero-card" aria-label="PDF layout preview">
+      <div class="section-title">PDF layout preview</div>
+      <h2>{{ title }}</h2>
+      <p class="artifact-preview-meta">
+        Job <code>{{ job_id }}</code>. Ten widok używa aktualnego shellu KindleMaster; surowy HTML artefaktu nie jest domyślną stroną użytkownika.
+      </p>
+      <div class="artifact-preview-actions">
+        <a href="{{ url_for('index') }}">Dashboard</a>
+        <a href="{{ url_for('index') }}#recentConversionsList">Ostatnie konwersje</a>
+        <a href="{{ url_for('convert_quality', job_id=job_id) }}" target="_blank" rel="noreferrer">Quality JSON</a>
+      </div>
+    </section>
+
+    <iframe
+      class="artifact-preview-frame"
+      title="PDF layout preview"
+      sandbox="allow-scripts allow-same-origin"
+      srcdoc="{{ preview_html|e }}"
+    ></iframe>
+  </main>
+</body>
+</html>

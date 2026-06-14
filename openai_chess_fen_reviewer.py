@@ -31,6 +31,43 @@ class OpenAIChessFenReviewer:
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
     transport: Transport | None = field(default=None, repr=False)
 
+    def propose_chess_fen_from_crop(self, context: dict[str, Any]) -> Mapping[str, Any]:
+        """Return an AI-suggested FEN candidate from a diagram crop.
+
+        This is intentionally review-only: the caller must run deterministic
+        FEN validation, render checks, and any human/template gate before an
+        output can become accepted.
+        """
+        if not self.api_key:
+            return self._candidate_disabled()
+
+        payload = self._candidate_payload(context)
+        response = self._call(payload)
+        parsed = _extract_json(response)
+        fen = str(parsed.get("fen") or "").strip()
+        side_to_move = str(parsed.get("side_to_move") or "unknown").strip().lower()
+        if side_to_move not in {"w", "b", "unknown"}:
+            side_to_move = "unknown"
+        return {
+            "status": "ai_suggested",
+            "provider": self.name,
+            "model": self.model,
+            "mode": "review_only",
+            "mutates_fen": False,
+            "fen": fen,
+            "side_to_move": side_to_move,
+            "confidence": _clamp(parsed.get("confidence")),
+            "uncertain_squares": _string_list(parsed.get("uncertain_squares")),
+            "reason": str(parsed.get("reason") or ""),
+            "needs_review": bool(parsed.get("needs_review", True)),
+            "estimated_cost_usd": _estimated_cost(response),
+            "metadata": {
+                "usage": response.get("usage", {}),
+                "response_id": str(response.get("id") or ""),
+            },
+            "changed_output": False,
+        }
+
     def review_chess_fen(self, context: dict[str, Any]) -> Mapping[str, Any]:
         candidate = dict(context.get("candidate") or {})
         candidate_fen = str(candidate.get("fen") or "")
@@ -64,6 +101,23 @@ class OpenAIChessFenReviewer:
             "changed_output": False,
         }
 
+    def _candidate_disabled(self) -> dict[str, Any]:
+        return {
+            "status": "needs_review",
+            "provider": self.name,
+            "model": self.model,
+            "mode": "review_only",
+            "mutates_fen": False,
+            "fen": "",
+            "side_to_move": "unknown",
+            "confidence": 0.0,
+            "uncertain_squares": [],
+            "reason": "live OpenAI chess FEN candidate review is opt-in and requires env configuration",
+            "needs_review": True,
+            "issues": ["live_openai_review_not_configured"],
+            "changed_output": False,
+        }
+
     def _review_disabled(self, candidate_fen: str) -> dict[str, Any]:
         return {
             "status": "reviewed",
@@ -79,6 +133,42 @@ class OpenAIChessFenReviewer:
             "issues": ["live_openai_review_not_configured"],
             "reason": "live OpenAI chess FEN review is opt-in and requires env configuration",
             "changed_output": False,
+        }
+
+    def _candidate_payload(self, context: dict[str, Any]) -> dict[str, Any]:
+        content: list[dict[str, Any]] = [
+            {
+                "type": "input_text",
+                "text": json.dumps(_compact_candidate_context(context), ensure_ascii=False),
+            }
+        ]
+        image_data = context.get("image_data")
+        if isinstance(image_data, bytes) and image_data:
+            mime_type = str(context.get("image_mime_type") or "image/png")
+            encoded = base64.b64encode(image_data).decode("ascii")
+            content.append({"type": "input_image", "image_url": f"data:{mime_type};base64,{encoded}"})
+        return {
+            "model": self.model,
+            "instructions": (
+                "You are a conservative chess diagram-to-FEN candidate generator for KindleMaster. "
+                "Inspect only the supplied board crop and metadata. Return JSON only. The fen field "
+                "must be either an empty string or a complete six-field FEN: piece placement, active "
+                "color, castling availability, en-passant target, halfmove clock, and fullmove number. "
+                "Use '-' for unavailable castling/en-passant, and '0 1' for unknown clocks. If the "
+                "side-to-move is not visible or inferable, set side_to_move='unknown', keep "
+                "needs_review=true, and still return a best-effort six-field candidate only when every "
+                "occupied square is clear. If any square is uncertain, keep needs_review=true and list "
+                "uncertain_squares. Do not claim acceptance; your output is review evidence only."
+            ),
+            "input": [{"role": "user", "content": content}],
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "kindlemaster_chess_fen_candidate",
+                    "strict": True,
+                    "schema": _candidate_schema(),
+                }
+            },
         }
 
     def _responses_payload(self, context: dict[str, Any]) -> dict[str, Any]:
@@ -218,6 +308,29 @@ def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _candidate_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "fen": {"type": "string"},
+            "side_to_move": {"type": "string", "enum": ["w", "b", "unknown"]},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "uncertain_squares": {"type": "array", "items": {"type": "string"}},
+            "reason": {"type": "string"},
+            "needs_review": {"type": "boolean"},
+        },
+        "required": [
+            "fen",
+            "side_to_move",
+            "confidence",
+            "uncertain_squares",
+            "reason",
+            "needs_review",
+        ],
+    }
+
+
 def _review_schema() -> dict[str, Any]:
     return {
         "type": "object",
@@ -240,6 +353,23 @@ def _review_schema() -> dict[str, Any]:
             "confidence",
             "notes",
         ],
+    }
+
+
+def _compact_candidate_context(context: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "diagram_id": str(context.get("diagram_id") or ""),
+        "page": context.get("page"),
+        "caption": str(context.get("caption") or "")[:160],
+        "bbox": context.get("bbox"),
+        "side_to_move_hint": str(context.get("side_to_move_hint") or "unknown"),
+        "has_image": bool(context.get("has_image") or isinstance(context.get("image_data"), bytes)),
+        "policy": "review_only_no_epub_or_pgn_mutation",
+        "output_contract": {
+            "fen": "empty string or full six-field FEN, never piece-placement-only",
+            "side_to_move": "w, b, or unknown",
+            "needs_review": "true unless every occupied square and side-to-move are clear",
+        },
     }
 
 

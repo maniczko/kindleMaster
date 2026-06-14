@@ -36,6 +36,7 @@ QUICK_TESTS = [
     "test_ai_quality_intelligence.py",
     "test_ai_quality_feedback.py",
     "test_openai_quality_provider.py",
+    "test_ai_chess_providers.py",
     "test_app_quality_state_route.py",
     "test_sentry_observability.py",
     "test_docx_conversion.py",
@@ -46,6 +47,14 @@ QUICK_TESTS = [
     "test_chess_notation_regression.py",
     "test_chess_notation_reflow.py",
     "test_chess_pgn_extraction.py",
+    "test_chess_html_audit.py",
+    "test_chess_diagram_detection.py",
+    "test_chess_glyph_diagnostics.py",
+    "test_pdf_layout_preview.py",
+    "test_deepseek_quality_provider.py",
+    "test_chess_study_structure.py",
+    "test_chess_study_pipeline.py",
+    "test_chess_study_render.py",
     "test_converter_publication_budget.py",
     "test_fixed_layout_render_budget.py",
     "test_converter_fixed_layout_budget_enforcement.py",
@@ -164,6 +173,11 @@ def main() -> int:
     serve_parser.add_argument("--port", type=int, default=None)
     serve_parser.add_argument("--debug", action="store_true")
     serve_parser.add_argument("--runtime", choices=("flask", "waitress"), default="flask")
+    serve_parser.add_argument(
+        "--skip-ui-build",
+        action="store_true",
+        help="Do not auto-build the React UI before serving; /app will fail clearly if the build is missing.",
+    )
 
     convert_parser = subparsers.add_parser("convert", help="Convert a PDF or DOCX file to EPUB.")
     convert_parser.add_argument("input_path")
@@ -261,6 +275,70 @@ def main() -> int:
         help="Stop the release audit after N seconds and return partial evidence instead of hanging.",
     )
 
+    chess_study_parser = subparsers.add_parser("chess-study", help="Build a static chess training-book study export.")
+    chess_study_subparsers = chess_study_parser.add_subparsers(dest="chess_study_command")
+    for command_name in [
+        "run-all",
+        "audit-current",
+        "extract-structure",
+        "segment-pages",
+        "detect-diagrams",
+        "recognize-fen",
+        "extract-pgn",
+        "link-exercises",
+        "validate",
+        "render",
+        "fen-review",
+        "build-fen-templates",
+        "evaluate-fen-profile",
+        "pgn-review",
+        "quality-dashboard",
+        "ai-fen-candidates",
+        "ai-pgn-candidates",
+        "ai-quality-eval",
+    ]:
+        stage_parser = chess_study_subparsers.add_parser(command_name, help=f"Run chess-study {command_name}.")
+        stage_parser.add_argument("--pdf", default="")
+        stage_parser.add_argument("--html", default="")
+        stage_parser.add_argument("--out", default="output/yusupov_study")
+        stage_parser.add_argument("--diagram-pages", type=int, default=0)
+        stage_parser.add_argument("--diagram-page-ranges", default="", help='1-based inclusive diagram sample ranges, for example "10-20,40-45". Overrides --diagram-pages when set.')
+        stage_parser.add_argument("--diagram-dpi", type=int, default=160)
+        stage_parser.add_argument("--min-grid-confidence", type=float, default=0.50)
+        stage_parser.add_argument("--max-candidates-per-page", type=int, default=6)
+        stage_parser.add_argument(
+            "--low-confidence-diagram-review",
+            action="store_true",
+            help="Add extra low-confidence diagram candidates to review artifacts only; never to accepted FEN.",
+        )
+        stage_parser.add_argument("--low-confidence-min-grid-confidence", type=float, default=0.30)
+        stage_parser.add_argument("--low-confidence-max-candidates-per-page", type=int, default=12)
+        stage_parser.add_argument("--glyph-context-pages", default="", help='Restrict raw glyph context augmentation to 1-based page ranges, for example "9-12". Empty means all pages.')
+        stage_parser.add_argument("--review-sample-limit", type=int, default=0, help="Limit rows written to review datasets; 0 writes all rows.")
+        stage_parser.add_argument("--fen-review-min-count", type=int, default=50, help="When --diagram-page-ranges is used for fen-review, extend with later diagram pages until this many rows are queued; 0 disables extension.")
+        stage_parser.add_argument("--diagram-review-labels", default="", help="CSV or JSONL manual diagram labels exported from review/diagram_review.")
+        stage_parser.add_argument("--glyph-mapping-file", default="", help="JSON file with accepted OCR token mappings for chess notation review.")
+        stage_parser.add_argument("--diagram-alignment-review", action="store_true", help="Generate crop alignment review variants for manually labeled diagrams.")
+        stage_parser.add_argument("--labels", default="", help="Verified/draft FEN labels JSONL for template build or holdout evaluation.")
+        stage_parser.add_argument("--profile", default="study_manual_verified", help="FEN template/evaluation profile name.")
+        stage_parser.add_argument("--template-output-dir", default="", help="Optional output directory for generated FEN templates.")
+        stage_parser.add_argument("--fold-count", type=int, default=5)
+        stage_parser.add_argument("--holdout-fold", type=int, default=0)
+        stage_parser.add_argument("--quality-profile", choices=("smoke", "default", "masterkindle"), default="default")
+        stage_parser.add_argument(
+            "--render-pages",
+            dest="render_pages",
+            action="store_true",
+            default=False,
+            help="Render source PDF page images for audit/debug; disabled by default for semantic study exports.",
+        )
+        stage_parser.add_argument("--no-render-pages", dest="render_pages", action="store_false")
+        stage_parser.add_argument("--ocr-fallback", action="store_true")
+        stage_parser.add_argument("--strict-thresholds", action="store_true")
+        stage_parser.add_argument("--dry-run", action="store_true", help="For AI-assisted chess-study commands, write request manifests without live API calls.")
+        stage_parser.add_argument("--ai-limit", type=int, default=0, help="Limit AI-assisted FEN candidate rows; 0 means all rows.")
+        stage_parser.add_argument("--ai-pgn-limit", type=int, default=30, help="Limit AI-assisted PGN repair rows.")
+
     workflow_parser = subparsers.add_parser(
         "workflow",
         help="Run the standard engineering workflow: reproduce, isolate, validate, and compare.",
@@ -314,7 +392,12 @@ def main() -> int:
         _print_json(prepare_reference_inputs())
         return 0
     if args.command == "serve":
-        return _run_serve(port=args.port, debug=args.debug, runtime=args.runtime)
+        return _run_serve(
+            port=args.port,
+            debug=args.debug,
+            runtime=args.runtime,
+            skip_ui_build=args.skip_ui_build,
+        )
     if args.command == "convert":
         return _run_convert(
             input_path=args.input_path,
@@ -416,6 +499,8 @@ def main() -> int:
             )
             _print_json(partial_payload)
             return RELEASE_TIMEOUT_RETURN_CODE
+    if args.command == "chess-study":
+        return _run_chess_study(args)
     if args.command == "workflow":
         from workflow_runner import run_workflow_baseline, run_workflow_verify
 
@@ -441,6 +526,215 @@ def main() -> int:
         return 1
     parser.print_help()
     return 0
+
+
+def _run_chess_study(args: argparse.Namespace) -> int:
+    from chess_study_export import (
+        ChessStudyConfig,
+        audit_current_html,
+        build_chess_fen_manual_review,
+        build_chess_fen_templates,
+        build_chess_pgn_review,
+        build_chess_quality_dashboard,
+        build_ai_assisted_quality_eval,
+        build_ai_fen_candidates,
+        build_ai_pgn_candidates,
+        build_study_exercises,
+        build_study_final_test,
+        build_study_pgn,
+        build_study_positions,
+        detect_study_diagrams,
+        evaluate_chess_fen_profile,
+        extract_study_structure,
+        extract_study_notation_fragments,
+        ingest_study_pdf,
+        render_qa_html,
+        render_semantic_source_reader,
+        render_study_html,
+        run_chess_study_export,
+        segment_study_pages,
+        validate_study_export,
+    )
+
+    if not args.chess_study_command:
+        _print_json({"status": "failed", "error": "Missing chess-study subcommand."})
+        return 1
+    pdf = Path(args.pdf) if str(args.pdf or "").strip() else _default_chess_study_pdf()
+    out = Path(args.out)
+    html_path = Path(args.html) if str(args.html or "").strip() else None
+    if args.chess_study_command == "run-all":
+        payload = run_chess_study_export(
+            pdf,
+            html_path=html_path,
+            out_dir=out,
+            diagram_pages=args.diagram_pages,
+            diagram_page_ranges=args.diagram_page_ranges,
+            diagram_dpi=args.diagram_dpi,
+            min_grid_confidence=args.min_grid_confidence,
+            max_candidates_per_page=args.max_candidates_per_page,
+            quality_profile=args.quality_profile,
+            render_pages=args.render_pages,
+            ocr_fallback=args.ocr_fallback,
+            strict_thresholds=args.strict_thresholds,
+            low_confidence_diagram_review=args.low_confidence_diagram_review,
+            low_confidence_min_grid_confidence=args.low_confidence_min_grid_confidence,
+            low_confidence_max_candidates_per_page=args.low_confidence_max_candidates_per_page,
+            glyph_context_pages=args.glyph_context_pages,
+            review_sample_limit=args.review_sample_limit,
+            diagram_review_labels=args.diagram_review_labels or None,
+            glyph_mapping_file=args.glyph_mapping_file or None,
+            diagram_alignment_review=args.diagram_alignment_review,
+        )
+        _print_json(payload)
+        return 0 if payload.get("status") != "FAIL" else 1
+
+    config = ChessStudyConfig(
+        pdf=pdf,
+        html=html_path,
+        out=out,
+        diagram_pages=args.diagram_pages,
+        diagram_page_ranges=args.diagram_page_ranges,
+        diagram_dpi=args.diagram_dpi,
+        min_grid_confidence=args.min_grid_confidence,
+        max_candidates_per_page=args.max_candidates_per_page,
+        quality_profile=args.quality_profile,
+        render_pages=args.render_pages,
+        ocr_fallback=args.ocr_fallback,
+        strict_thresholds=args.strict_thresholds,
+        low_confidence_diagram_review=args.low_confidence_diagram_review,
+        low_confidence_min_grid_confidence=args.low_confidence_min_grid_confidence,
+        low_confidence_max_candidates_per_page=args.low_confidence_max_candidates_per_page,
+        glyph_context_pages=args.glyph_context_pages,
+        review_sample_limit=args.review_sample_limit,
+        diagram_review_labels=Path(args.diagram_review_labels) if str(args.diagram_review_labels or "").strip() else None,
+        glyph_mapping_file=Path(args.glyph_mapping_file) if str(args.glyph_mapping_file or "").strip() else None,
+        diagram_alignment_review=args.diagram_alignment_review,
+    )
+    if args.chess_study_command == "fen-review":
+        payload = build_chess_fen_manual_review(
+            config.out,
+            html_path=config.html,
+            pdf_path=config.pdf,
+            review_sample_limit=config.review_sample_limit,
+            page_ranges=config.diagram_page_ranges,
+            min_count=args.fen_review_min_count,
+        )
+    elif args.chess_study_command == "build-fen-templates":
+        if not str(args.labels or "").strip():
+            _print_json({"status": "failed", "error": "Provide --labels for build-fen-templates."})
+            return 1
+        payload = build_chess_fen_templates(
+            args.labels,
+            out_dir=config.out,
+            profile=args.profile,
+            template_output_dir=args.template_output_dir or None,
+        )
+    elif args.chess_study_command == "evaluate-fen-profile":
+        if not str(args.labels or "").strip():
+            _print_json({"status": "failed", "error": "Provide --labels for evaluate-fen-profile."})
+            return 1
+        payload = evaluate_chess_fen_profile(
+            args.labels,
+            out_dir=config.out,
+            profile=args.profile,
+            fold_count=args.fold_count,
+            holdout_fold=args.holdout_fold,
+        )
+    elif args.chess_study_command == "pgn-review":
+        payload = build_chess_pgn_review(
+            config.out,
+            glyph_mapping_file=config.glyph_mapping_file,
+        )
+    elif args.chess_study_command == "quality-dashboard":
+        payload = build_chess_quality_dashboard(config.out)
+    elif args.chess_study_command == "ai-fen-candidates":
+        payload = build_ai_fen_candidates(
+            config.out,
+            limit=args.ai_limit,
+            dry_run=args.dry_run,
+        )
+    elif args.chess_study_command == "ai-pgn-candidates":
+        payload = build_ai_pgn_candidates(
+            config.out,
+            glyph_mapping_file=config.glyph_mapping_file,
+            limit=args.ai_pgn_limit,
+            dry_run=args.dry_run,
+        )
+    elif args.chess_study_command == "ai-quality-eval":
+        payload = build_ai_assisted_quality_eval(config.out)
+    elif args.chess_study_command == "audit-current":
+        if not config.html:
+            _print_json({"status": "failed", "error": "Provide --html for audit-current."})
+            return 1
+        payload = audit_current_html(config)
+    elif args.chess_study_command == "extract-structure":
+        payload = extract_study_structure(config.pdf, config.out, html_path=config.html)
+    elif args.chess_study_command == "segment-pages":
+        structure = _read_json(config.out / "chapters.json") if (config.out / "chapters.json").is_file() else extract_study_structure(config.pdf, config.out, html_path=config.html)
+        payload = segment_study_pages(config.pdf, structure, config.out, html_path=config.html)
+    elif args.chess_study_command == "detect-diagrams":
+        payload = detect_study_diagrams(config)
+    elif args.chess_study_command == "render" and (config.out / "data" / "book.json").is_file():
+        payload = render_semantic_source_reader(config.out)
+    elif args.chess_study_command in {"recognize-fen", "extract-pgn", "link-exercises", "validate", "render"}:
+        page_model = ingest_study_pdf(config)
+        structure = _read_json(config.out / "chapters.json") if (config.out / "chapters.json").is_file() else extract_study_structure(config.pdf, config.out, html_path=config.html)
+        segments = _read_json(config.out / "page_segments.json") if (config.out / "page_segments.json").is_file() else segment_study_pages(config.pdf, structure, config.out, html_path=config.html)
+        diagrams = _read_json(config.out / "chess_diagrams.json") if (config.out / "chess_diagrams.json").is_file() else detect_study_diagrams(config)
+        positions = build_study_positions(diagrams, segments, config.out)
+        notation_fragments = extract_study_notation_fragments(
+            page_model,
+            positions,
+            config.out,
+            glyph_context_pages=config.glyph_context_pages,
+            glyph_mapping_file=config.glyph_mapping_file,
+        )
+        pgn_payload = build_study_pgn(positions, config.out, notation_fragments=notation_fragments)
+        exercises = build_study_exercises(positions, config.out)
+        final_test = build_study_final_test(positions, config.out)
+        payload = validate_study_export(
+            config,
+            current_audit={"status": "not_provided", "final_html_status": "NOT_ACCEPTABLE_AS_FINAL"},
+            structure=structure,
+            segments=segments,
+            diagrams=diagrams,
+            positions=positions,
+            page_model=page_model,
+            notation_fragments=notation_fragments,
+            pgn_payload=pgn_payload,
+            exercises=exercises,
+            final_test=final_test,
+        )
+        if args.chess_study_command == "render":
+            render_study_html(
+                config.out,
+                structure=structure,
+                positions=positions,
+                qa_report=payload,
+                page_model=page_model,
+                notation_fragments=notation_fragments,
+            )
+            render_qa_html(config.out, payload)
+    else:
+        payload = {"status": "failed", "error": f"Unsupported chess-study command: {args.chess_study_command}"}
+    _print_json(payload)
+    return 0 if payload.get("status") not in {"failed", "FAIL"} else 1
+
+
+def _default_chess_study_pdf() -> Path:
+    candidates = [
+        Path("input") / "Yusupov_Build up your Chess 1_The Fundamentals(1).pdf",
+        Path.home() / "Downloads" / "Yusupov_Build up your Chess 1_The Fundamentals.pdf",
+        Path.home() / "Downloads" / "Fundamenty 1-1.pdf",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return candidates[0]
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _run_bootstrap(*, runtime_only: bool) -> int:
@@ -578,7 +872,62 @@ def _run_ml_feedback(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
-def _run_serve(*, port: int | None, debug: bool, runtime: str) -> int:
+def _react_ui_build_inputs(repo_root: Path) -> list[Path]:
+    inputs: list[Path] = []
+    frontend_root = repo_root / "frontend"
+    if frontend_root.is_dir():
+        inputs.extend(path for path in frontend_root.rglob("*") if path.is_file())
+    inputs.extend(
+        path
+        for path in [
+            repo_root / "package.json",
+            repo_root / "package-lock.json",
+            repo_root / "vite.config.ts",
+            repo_root / "vite.config.js",
+        ]
+        if path.is_file()
+    )
+    return inputs
+
+
+def _react_ui_build_required(repo_root: Path) -> bool:
+    react_index = repo_root / "static" / "react" / "index.html"
+    if not react_index.is_file():
+        return True
+    try:
+        build_mtime = react_index.stat().st_mtime
+    except OSError:
+        return True
+    for path in _react_ui_build_inputs(repo_root):
+        try:
+            if path.stat().st_mtime > build_mtime:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _skip_react_ui_build(skip_ui_build: bool) -> bool:
+    value = os.environ.get("KINDLEMASTER_SKIP_UI_BUILD", "")
+    return skip_ui_build or value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _ensure_react_ui_build(*, repo_root: Path, skip_ui_build: bool) -> int:
+    if _skip_react_ui_build(skip_ui_build):
+        return 0
+    if not _react_ui_build_required(repo_root):
+        return 0
+    print("Building KindleMaster React UI (npm run build:ui)...", flush=True)
+    completed = subprocess.run(["npm", "run", "build:ui"], check=False, cwd=repo_root)
+    return completed.returncode
+
+
+def _run_serve(*, port: int | None, debug: bool, runtime: str, skip_ui_build: bool = False) -> int:
+    repo_root = Path(__file__).resolve().parent
+    ui_build_returncode = _ensure_react_ui_build(repo_root=repo_root, skip_ui_build=skip_ui_build)
+    if ui_build_returncode != 0:
+        return ui_build_returncode
+
     from app import app
     from app_runtime_services import (
         build_local_app_url,

@@ -53,8 +53,11 @@ class ChessNotationReflowTests(unittest.TestCase):
         self.assertEqual(content["metadata"]["chess_pgn"]["derived_final_fen_count"], 1)
         self.assertEqual(
             sorted(artifact["key"] for artifact in content["extra_artifacts"]),
-            ["chess_pgn", "chess_pgn_html"],
+            ["chess_pgn", "chess_pgn_html", "pdf_layout_preview"],
         )
+        preview = next(artifact for artifact in content["extra_artifacts"] if artifact["key"] == "pdf_layout_preview")
+        self.assertEqual(preview["content_type"], "text/html; charset=utf-8")
+        self.assertIn(b'class="pdf-page"', preview["data"])
 
     def test_xml_fragment_parser_preserves_multi_token_classes(self) -> None:
         marker_blocks = _fragment_to_blocks('<span id="book-page-12" class="page-marker"></span>', page_index=11)
@@ -92,6 +95,39 @@ class ChessNotationReflowTests(unittest.TestCase):
         notation_section = CHESS_REFLOW_CSS.split(".chess-notation-page", 1)[1]
         self.assertNotIn("color: #666", notation_section)
         self.assertNotIn("color: #999", notation_section)
+
+    def test_notation_reflow_adds_layout_diagrams_to_html_artifact(self) -> None:
+        crop_path = Path("reference_inputs/chess_fen/crops/fundamenty_1_1_scan_chess_p010_runtime_01.png")
+        if not crop_path.is_file():
+            self.skipTest("reference chess crop fixture is not available")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = Path(temp_dir) / "notation-with-diagram.pdf"
+            doc = fitz.open()
+            page = doc.new_page(width=420, height=420)
+            page.insert_text((40, 34), "Diagram 1", fontsize=11)
+            page.insert_text((40, 380), "1. e4 e5 2. Nf3 Nc6 *", fontsize=11)
+            page.insert_image(fitz.Rect(50, 50, 370, 370), filename=str(crop_path))
+            doc.save(pdf_path)
+            doc.close()
+
+            content = extract_chess_notation_pdf_reflow(
+                str(pdf_path),
+                ConversionConfig(
+                    chess_diagram_dpi=120,
+                    scanned_chess_min_grid_confidence=0.30,
+                    chess_fen_piece_template_dir="",
+                ),
+                {},
+            )
+
+        artifact_keys = sorted(artifact["key"] for artifact in content["extra_artifacts"])
+        self.assertIn("chess_diagrams", artifact_keys)
+        html_artifact = next(artifact for artifact in content["extra_artifacts"] if artifact["key"] == "chess_pgn_html")
+        html = html_artifact["data"].decode("utf-8")
+        self.assertIn('class="book-element book-diagram"', html)
+        self.assertIn('data-km-view="chess-book-review"', html)
+        self.assertNotIn("localhost", html)
 
 
 if __name__ == "__main__":

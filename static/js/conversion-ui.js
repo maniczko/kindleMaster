@@ -989,6 +989,7 @@
       return {
         qualityStateUrl: payload.quality_state_url || "",
         downloadUrl: payload.download_url || (qualityState && qualityState.download_url) || "",
+        artifacts: payload.artifacts && typeof payload.artifacts === "object" ? payload.artifacts : {},
         downloadAvailable: downloadAvailableState,
         readingVerdict: qualityState && qualityState.reading_verdict ? qualityState.reading_verdict : "",
         releaseVerdict: releaseVerdictState,
@@ -1146,6 +1147,7 @@
         elapsedSeconds: jobPayload.elapsed_seconds,
         downloadUrl: normalized.downloadUrl,
         qualityStateUrl: normalized.qualityStateUrl,
+        artifacts: normalized.artifacts,
         outputSizeBytes: normalized.outputSizeBytes,
         verdict: verdict.label,
         profile: profile || "unknown",

@@ -443,6 +443,37 @@ def finalize_epub_bytes(
                     "reason": feedback_exc.__class__.__name__,
                 },
             }
+        try:
+            from deepseek_quality_provider import build_deepseek_audit_provider_from_env
+
+            deepseek_provider = build_deepseek_audit_provider_from_env()
+            if deepseek_provider is not None:
+                ai_quality_report = {
+                    **ai_quality_report,
+                    "deepseek_audit": deepseek_provider.review_conversion_quality(
+                        {
+                            "source": "conversion_quality",
+                            "original_filename": original_filename,
+                            "language": config.language,
+                            "publication_profile": publication_profile,
+                            "ai_quality": ai_quality_report,
+                            "artifact_rate": text_cleanup_summary.get("artifact_rate"),
+                        }
+                    ),
+                }
+        except Exception as deepseek_exc:
+            ai_quality_report = {
+                **ai_quality_report,
+                "deepseek_audit": {
+                    "status": "failed",
+                    "provider": "deepseek-audit",
+                    "mode": "evidence_only",
+                    "evidence_only": True,
+                    "requires_human_confirmation": True,
+                    "mutates_output": False,
+                    "error_class": deepseek_exc.__class__.__name__,
+                },
+            }
         text_cleanup_summary = {
             **text_cleanup_summary,
             "ai_quality": ai_quality_report,
@@ -637,6 +668,7 @@ class ConversionConfig:
     chess_fen_review_provider_enabled: bool = False
     chess_fen_scan_enable_sliding_probe: bool = False
     chess_notation_chapter_pages: int = 40
+    chess_notation_layout_diagram_scan_pages: int = 0  # 0 means all pages for HTML audit preview
     scanned_chess_max_pages: int = 0  # 0 means all pages for premium scanned-chess extraction
     scanned_chess_min_grid_confidence: float = 0.50
     scanned_chess_cache_enabled: bool = True
@@ -646,6 +678,10 @@ class ConversionConfig:
     scanned_chess_ocr_long_edge: int = 1800
     scanned_chess_ocr_min_confidence: float = 0.35
     scanned_chess_front_matter_ocr_pages: int = 4
+    pdf_layout_preview_enabled: bool = True
+    pdf_layout_preview_dpi: int = 96
+    pdf_layout_preview_jpeg_quality: int = 72
+    pdf_layout_preview_max_pages: int = 0  # 0 means all pages
     
     # Typography
     body_font_family: str = "Georgia, serif"
@@ -3023,7 +3059,7 @@ def convert_pdf_to_epub_with_report(
                         best_result = attempt_result
                         best_gate = size_gate
 
-                if size_gate["status"] == "passed":
+                if size_gate["status"] != "failed":
                     return _publication_response_payload(result=attempt_result, analysis=analysis)
 
             return _publication_response_payload(result=best_result, analysis=analysis)

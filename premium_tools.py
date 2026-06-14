@@ -620,6 +620,37 @@ def _detect_toolchain_uncached() -> dict:
         "Optional evidence-only reviewer for short OCR/TOC/flow samples.",
         "It never mutates EPUB bytes automatically.",
     ]
+    try:
+        from deepseek_quality_provider import deepseek_audit_configuration_status
+
+        deepseek_audit = deepseek_audit_configuration_status(cwd=Path.cwd())
+    except Exception as error:
+        deepseek_audit = {
+            "enabled": False,
+            "api_key_present": False,
+            "model": "",
+            "base_url": "",
+            "mode": "evidence_only",
+            "evidence_only": True,
+            "full_document_upload": False,
+            "mutates_output": False,
+            "error": str(error),
+        }
+    deepseek_audit_enabled = bool(deepseek_audit.get("enabled"))
+    deepseek_audit_key_present = bool(deepseek_audit.get("api_key_present"))
+    if deepseek_audit_enabled and deepseek_audit_key_present:
+        deepseek_audit_status = "supported"
+        deepseek_audit_missing: list[str] = []
+    elif deepseek_audit_enabled:
+        deepseek_audit_status = "degraded"
+        deepseek_audit_missing = ["DEEPSEEK_API_KEY"]
+    else:
+        deepseek_audit_status = "unavailable"
+        deepseek_audit_missing = ["KINDLEMASTER_DEEPSEEK_AUDIT=1"]
+    deepseek_audit_notes = [
+        "Optional audit-first reviewer for glyph, chess layout, and compact quality evidence.",
+        "It never mutates EPUB, PGN, FEN, or TOC output.",
+    ]
 
     conversion_capabilities = {
         "core_conversion": _capability_payload(
@@ -654,6 +685,13 @@ def _detect_toolchain_uncached() -> dict:
             description="Optional OpenAI reviewer for short quality samples; evidence-only and opt-in.",
             missing_requirements=openai_quality_missing,
             notes=openai_quality_notes,
+        ),
+        "deepseek_audit_review": _capability_payload(
+            support_level="optional",
+            status=deepseek_audit_status,
+            description="Optional DeepSeek audit reviewer for bounded diagnostics; evidence-only and opt-in.",
+            missing_requirements=deepseek_audit_missing,
+            notes=deepseek_audit_notes,
         ),
     }
 

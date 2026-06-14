@@ -87,9 +87,10 @@ The Vitest coverage stays contract-focused: it protects static quality-state nor
 
 ## Sprint 4 React UI Gate
 
-Sprint 4 adds a React/Vite shell at `/app`; after `npm run build:ui`, `/`
-redirects to that shell while clean checkouts without `static/react/` keep the
-legacy panel as fallback. Local UI checks are:
+Sprint 4 adds a React/Vite shell at `/app`; `python kindlemaster.py serve`
+auto-builds it when needed, and `/` redirects to that shell. Clean checkouts
+without `static/react/` must fail clearly or build the shell, not fall back to
+the legacy panel. Local UI checks are:
 
 ```powershell
 npm run build:ui

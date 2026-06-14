@@ -840,7 +840,10 @@ Supported first-class commands:
 - `prepare-reference-inputs`
 - `serve`
 - `convert`
+- `process`
 - `validate`
+- `report`
+- `review`
 - `smoke`
 - `corpus`
 - `status`
@@ -849,7 +852,7 @@ Supported first-class commands:
 - `audit`
 - `chess-study` with `run-all`, `audit-current`, `extract-structure`, `segment-pages`, `detect-diagrams`, `recognize-fen`, `extract-pgn`, `link-exercises`, `validate`, `render`, `fen-review`, `build-fen-templates`, `evaluate-fen-profile`, `pgn-review`, `quality-dashboard`, `ai-fen-candidates`, `ai-pgn-candidates`, `ai-quality-eval`, `quality-baseline`, `preprocess-boards`, `build-square-dataset`, `train-fen-classifier`, `evaluate-fen-classifier`, `recognize-fen-local`, `evaluate-fen-ensemble`, `calibrate-fen-confidence`, and `export-fen-corpus-manifest` subcommands; use `--quality-profile smoke|default|masterkindle` for study-export gates
 
-For `chess-study`, optimize the final study export for semantic reading order, diagram/FEN recognition, and PGN/comment extraction. Exact PDF visual layout and full page-image rendering are audit/debug aids only; use `--render-pages` explicitly when page images are needed.
+Use `process` as the front-door automatic chess PDF flow when the goal is one command that runs extraction, deterministic FEN/PGN validation, safe candidate mapping, canonical reports, and strict export gating. Use `report` and `review` for the derived auto-flow report and manual review index. Keep `chess-study` as the stage/debug backend for semantic reading order, diagram/FEN recognition, and PGN/comment extraction. Exact PDF visual layout and full page-image rendering are audit/debug aids only; use `--render-pages` explicitly when page images are needed.
 - `workflow` with `baseline` and `verify` subcommands
 
 Do not create new parallel top-level entrypoints for routine project operation unless there is a strong architectural reason.

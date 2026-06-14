@@ -84,7 +84,7 @@ The preferred local UI at `http://127.0.0.1:5001/` uses the Sprint 4 React shell
 
 ## Core Commands
 
-The supported first-class command set is `bootstrap`, `doctor`, `prepare-reference-inputs`, `serve`, `convert`, `validate`, `smoke`, `corpus`, `status`, `ml`, `test`, `audit`, `chess-study`, and `workflow`.
+The supported first-class command set is `bootstrap`, `doctor`, `prepare-reference-inputs`, `serve`, `convert`, `process`, `validate`, `report`, `review`, `smoke`, `corpus`, `status`, `ml`, `test`, `audit`, `chess-study`, and `workflow`.
 
 ```powershell
 python kindlemaster.py doctor
@@ -99,6 +99,10 @@ python kindlemaster.py ml train
 python kindlemaster.py ml evaluate
 python kindlemaster.py test --suite corpus
 python kindlemaster.py validate path\to\file.epub
+python kindlemaster.py process path\to\chess.pdf --out output\chess_auto --mode auto
+python kindlemaster.py validate output\chess_auto --strict
+python kindlemaster.py report output\chess_auto
+python kindlemaster.py review output\chess_auto
 python kindlemaster.py audit path\to\file.epub
 python kindlemaster.py chess-study run-all --pdf path\to\chess.pdf --html path\to\current.html --out output\yusupov_study --quality-profile default
 python kindlemaster.py chess-study run-all --pdf path\to\chess.pdf --html path\to\current.html --out output\yusupov_study_audit --quality-profile smoke --render-pages

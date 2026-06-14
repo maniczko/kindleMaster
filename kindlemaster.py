@@ -52,6 +52,7 @@ QUICK_TESTS = [
     "test_chess_glyph_diagnostics.py",
     "test_chess_fen_square_diff.py",
     "test_chess_fen_accepted_audit.py",
+    "test_chess_auto_flow.py",
     "test_chess_fen_pipeline_hardening.py",
     "test_chess_fen_model_pipeline.py",
     "test_chess_study_data_contracts.py",
@@ -195,9 +196,30 @@ def main() -> int:
     convert_parser.add_argument("--domain-dictionary", default="")
     convert_parser.add_argument("--report-json", default="")
 
-    validate_parser = subparsers.add_parser("validate", help="Run EPUB validators on one or more EPUB files.")
+    process_parser = subparsers.add_parser("process", help="Run the front-door automatic chess PDF flow.")
+    process_parser.add_argument("input_path")
+    process_parser.add_argument("--out", required=True)
+    process_parser.add_argument("--mode", choices=("auto", "auto-strict"), default="auto")
+    process_parser.add_argument("--html", default="")
+    process_parser.add_argument("--quality-profile", choices=("smoke", "default", "masterkindle"), default="default")
+    process_parser.add_argument("--render-pages", action="store_true")
+    process_parser.add_argument("--diagram-page-ranges", default="")
+    process_parser.add_argument("--glyph-mapping-file", default="")
+    process_parser.add_argument("--with-ai", action="store_true", help="Run optional AI candidate passes; AI remains review-only.")
+    process_parser.add_argument("--dry-run-ai", action="store_true", help="Write AI request manifests without live API calls.")
+    process_parser.add_argument("--ai-limit", type=int, default=0)
+    process_parser.add_argument("--ai-pgn-limit", type=int, default=30)
+
+    validate_parser = subparsers.add_parser("validate", help="Run EPUB validators or validate an auto chess output directory.")
     validate_parser.add_argument("epub_paths", nargs="+")
     validate_parser.add_argument("--reports-dir", default="reports/validators")
+    validate_parser.add_argument("--strict", action="store_true", help="For auto chess output directories, fail on unresolved FEN/PGN review items.")
+
+    report_parser = subparsers.add_parser("report", help="Build or print an auto chess flow report.")
+    report_parser.add_argument("out_dir")
+
+    review_parser = subparsers.add_parser("review", help="Build an index of auto chess manual review artifacts.")
+    review_parser.add_argument("out_dir")
 
     smoke_parser = subparsers.add_parser("smoke", help="Run curated smoke tests.")
     smoke_parser.add_argument("--mode", choices=("micro", "quick", "full"), default="quick")
@@ -434,12 +456,49 @@ def main() -> int:
             domain_dictionary=args.domain_dictionary,
             report_json=args.report_json,
         )
+    if args.command == "process":
+        from chess_auto_flow import run_auto_chess_process
+
+        payload = run_auto_chess_process(
+            args.input_path,
+            out_dir=args.out,
+            mode=args.mode,
+            html_path=args.html or None,
+            quality_profile=args.quality_profile,
+            render_pages=args.render_pages,
+            with_ai=args.with_ai,
+            dry_run_ai=args.dry_run_ai,
+            ai_limit=args.ai_limit,
+            ai_pgn_limit=args.ai_pgn_limit,
+            diagram_page_ranges=args.diagram_page_ranges,
+            glyph_mapping_file=args.glyph_mapping_file or None,
+        )
+        _print_json(payload)
+        return 1 if payload.get("strict_failed") or payload.get("status") == "AUTO_FAILED_WITH_REASON" else 0
     if args.command == "validate":
+        from chess_auto_flow import is_auto_chess_output, validate_auto_chess_output
+
+        if len(args.epub_paths) == 1 and is_auto_chess_output(args.epub_paths[0]):
+            payload = validate_auto_chess_output(args.epub_paths[0], strict=args.strict)
+            _print_json(payload)
+            return 0 if payload.get("overall_status") != "failed" else 1
         from scripts.run_epub_validators import run_epub_validators
 
         payload = run_epub_validators(args.epub_paths, reports_dir=args.reports_dir)
         _print_json(payload)
         return 0 if payload["overall_status"] != "failed" else 1
+    if args.command == "report":
+        from chess_auto_flow import report_auto_chess_output
+
+        payload = report_auto_chess_output(args.out_dir)
+        _print_json(payload)
+        return 0 if payload.get("status") not in {"AUTO_FAILED_WITH_REASON", "failed"} else 1
+    if args.command == "review":
+        from chess_auto_flow import review_auto_chess_output
+
+        payload = review_auto_chess_output(args.out_dir)
+        _print_json(payload)
+        return 0 if payload.get("status") != "failed" else 1
     if args.command == "smoke":
         from scripts.run_smoke_tests import run_smoke_tests
 

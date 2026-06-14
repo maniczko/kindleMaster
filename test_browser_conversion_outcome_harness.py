@@ -769,6 +769,10 @@ process.stdout.write(JSON.stringify({{
             _extract_function_source(template_html, "normalizeRecentConversionStatus"),
             _extract_function_source(template_html, "formatRecentConversionStatus"),
             _extract_function_source(template_html, "formatRecentConversionElapsed"),
+            _extract_function_source(template_html, "normalizeConversionArtifacts"),
+            _extract_function_source(template_html, "formatArtifactLabel"),
+            _extract_function_source(template_html, "renderArtifactAction"),
+            _extract_function_source(template_html, "renderReviewArtifactActions"),
             _extract_function_source(template_html, "normalizeRecentConversion"),
             _extract_function_source(template_html, "renderRecentConversionItem"),
         ]

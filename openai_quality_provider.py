@@ -220,7 +220,7 @@ def openai_quality_configuration_status(*, env: Mapping[str, str] | None = None,
 
 
 def _runtime_env(*, env: Mapping[str, str] | None, cwd: str | Path | None) -> dict[str, str]:
-    resolved = dict(os.environ)
+    resolved = dict(os.environ) if env is None else {}
     root = Path(cwd or Path.cwd())
     for file_name in ENV_FILES:
         resolved.update({key: value for key, value in _load_env_file(root / file_name).items() if key not in resolved})

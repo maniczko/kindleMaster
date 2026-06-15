@@ -209,6 +209,11 @@ def main() -> int:
     process_parser.add_argument("--dry-run-ai", action="store_true", help="Write AI request manifests without live API calls.")
     process_parser.add_argument("--ai-limit", type=int, default=0)
     process_parser.add_argument("--ai-pgn-limit", type=int, default=30)
+    process_parser.add_argument(
+        "--chess-fen-recognition-max-diagrams",
+        default="all",
+        help="Maximum diagrams to run through runtime FEN acceptance; 0/all means all diagrams.",
+    )
 
     validate_parser = subparsers.add_parser("validate", help="Run EPUB validators or validate an auto chess output directory.")
     validate_parser.add_argument("epub_paths", nargs="+")
@@ -470,6 +475,7 @@ def main() -> int:
             dry_run_ai=args.dry_run_ai,
             ai_limit=args.ai_limit,
             ai_pgn_limit=args.ai_pgn_limit,
+            chess_fen_recognition_max_diagrams=args.chess_fen_recognition_max_diagrams,
             diagram_page_ranges=args.diagram_page_ranges,
             glyph_mapping_file=args.glyph_mapping_file or None,
         )

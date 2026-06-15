@@ -8,6 +8,7 @@ from pathlib import Path
 from chess_fen_hardening import (
     crop_sha256,
     evaluate_diagram_acceptance,
+    machine_accept_fen,
     render_square_diff_text,
     square_level_fen_diff,
     validate_fen_detailed,
@@ -109,6 +110,56 @@ class ChessFenPipelineHardeningTests(unittest.TestCase):
         self.assertIn("invalid_fen", invalid["reasons"])
         self.assertEqual(low_confidence["status"], "rejected")
         self.assertIn("mean_confidence_below_reject_threshold", low_confidence["reasons"])
+
+    def test_machine_accept_fen_accepts_only_deterministic_valid_high_confidence_candidate(self) -> None:
+        result = machine_accept_fen(
+            {
+                "source": "deterministic",
+                "fen": self.STARTING_FEN,
+                "confidence": 0.99,
+                "warnings": [],
+            },
+            {"min_confidence": 0.90},
+        )
+
+        self.assertEqual(result["runtime_status"], "FEN_MACHINE_ACCEPTED")
+        self.assertEqual(result["selected_value"], self.STARTING_FEN)
+
+    def test_machine_accept_fen_rejects_ai_approval_and_high_confidence_without_deterministic_source(self) -> None:
+        result = machine_accept_fen(
+            {
+                "source": "ai_review_only",
+                "fen": self.STARTING_FEN,
+                "confidence": 0.99,
+                "warnings": [],
+                "ai_approved": True,
+            },
+            {"min_confidence": 0.90},
+        )
+
+        codes = {blocker["code"] for blocker in result["acceptance_blockers"]}
+        self.assertEqual(result["runtime_status"], "FEN_REVIEW_REQUIRED")
+        self.assertIn("ai_review_only_source", codes)
+        self.assertIn("non_deterministic_source", codes)
+
+    def test_machine_accept_fen_rejects_known_square_mismatch_evidence(self) -> None:
+        expected = "6k1/p4p1p/3p1p2/2p1r3/2PnrqN1/P6P/1P1Q1PP1/3R1RK1 b - - 0 1"
+        candidate = "6k1/p4p1p/3p1p2/2p1p3/2PnrqN1/P6P/1P1Q1PP1/3R1RK1 b - - 0 1"
+
+        result = machine_accept_fen(
+            {
+                "source": "deterministic",
+                "fen": candidate,
+                "confidence": 0.99,
+                "warnings": [],
+            },
+            {"min_confidence": 0.90, "expected_fen": expected},
+        )
+
+        mismatch = [blocker for blocker in result["acceptance_blockers"] if blocker["code"] == "expected_fen_square_mismatch"]
+        self.assertEqual(result["runtime_status"], "FEN_REVIEW_REQUIRED")
+        self.assertTrue(mismatch)
+        self.assertEqual(mismatch[0]["square_diffs"][0]["square"], "e5")
 
     def test_square_level_diff_reports_known_bad_e5_rook_vs_pawn(self) -> None:
         expected = "6k1/p4p1p/3p1p2/2p1r3/2PnrqN1/P6P/1P1Q1PP1/3R1RK1 b - - 0 1"

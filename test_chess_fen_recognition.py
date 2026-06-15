@@ -2954,6 +2954,8 @@ class ChessFenRecognitionTests(unittest.TestCase):
         self.assertEqual(payload["squares"][0]["square"], "a8")
         self.assertEqual(payload["squares"][0]["piece"], "r")
         self.assertGreaterEqual(payload["squares"][0]["confidence"], 0.85)
+        self.assertIn("alternatives", payload["squares"][0])
+        self.assertEqual(payload["squares"][0]["alternatives"][0]["piece"], "r")
 
     def test_image_template_rejects_text_square_without_board_pattern(self) -> None:
         board = [

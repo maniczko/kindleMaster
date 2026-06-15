@@ -50,6 +50,8 @@ class AutoChessFlowTests(unittest.TestCase):
                                     "page": 1,
                                     "image_path": "assets/diagrams/p001_d001.png",
                                     "fen": VALID_KINGS_FEN,
+                                    "confidence": 0.99,
+                                    "warnings": [],
                                     "validation_status": "accepted",
                                 }
                             ],
@@ -93,9 +95,12 @@ class AutoChessFlowTests(unittest.TestCase):
             self.assertEqual((out / "export" / "games.pgn").read_text(encoding="utf-8"), VALID_PGN)
 
             fen_payload = json.loads((out / "fen" / "fen_candidates.json").read_text(encoding="utf-8"))
-            self.assertEqual(fen_payload["items"][0]["status"], "FEN_AUTO_ACCEPTED")
+            self.assertEqual(fen_payload["items"][0]["status"], "FEN_MACHINE_ACCEPTED")
+            self.assertEqual(fen_payload["items"][0]["runtime_status"], "FEN_MACHINE_ACCEPTED")
+            self.assertEqual(fen_payload["items"][0]["corpus_status"], "not_corpus_verified")
             pgn_payload = json.loads((out / "pgn" / "pgn_candidates.json").read_text(encoding="utf-8"))
-            self.assertEqual(pgn_payload["items"][0]["status"], "PGN_AUTO_ACCEPTED")
+            self.assertEqual(pgn_payload["items"][0]["status"], "PGN_MACHINE_ACCEPTED")
+            self.assertTrue((out / "report" / "acceptance_blockers.json").is_file())
 
     def test_ai_fen_candidate_remains_review_only_without_human_or_deterministic_acceptance(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -140,9 +145,127 @@ class AutoChessFlowTests(unittest.TestCase):
             self.assertEqual(payload["status"], "MANUAL_REVIEW_AVAILABLE")
             fen_payload = json.loads((out / "fen" / "fen_candidates.json").read_text(encoding="utf-8"))
             item = fen_payload["items"][0]
-            self.assertEqual(item["status"], "FEN_VALID_POSITION")
+            self.assertEqual(item["status"], "FEN_MACHINE_VALID")
+            self.assertEqual(item["runtime_status"], "FEN_MACHINE_VALID")
             self.assertIsNone(item["selected_value"])
-            self.assertEqual(item["next_action"], "human_verify_before_export")
+            self.assertEqual(item["next_action"], "resolve_machine_acceptance_blockers_or_human_verify")
+            blocker_codes = {
+                blocker["code"]
+                for blocker in item["acceptance_blockers"]
+            }
+            self.assertIn("ai_review_only_source", blocker_codes)
+
+    def test_acceptance_blockers_report_groups_fen_and_pgn_reasons(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir)
+            _write_json(
+                out / "data" / "book.json",
+                {
+                    "pages": [
+                        {
+                            "page": 1,
+                            "diagrams": [{"diagram_id": "p001_d001", "validation_status": "needs_review"}],
+                            "pgn_records": [
+                                {
+                                    "record_id": "pgn_001",
+                                    "page": 1,
+                                    "pgn": "not a pgn",
+                                    "warnings": ["unmapped_chess_glyphs"],
+                                }
+                            ],
+                            "text_blocks": [],
+                        }
+                    ],
+                    "pgn_records": [
+                        {
+                            "record_id": "pgn_001",
+                            "page": 1,
+                            "pgn": "not a pgn",
+                            "warnings": ["unmapped_chess_glyphs"],
+                        }
+                    ],
+                },
+            )
+
+            build_auto_chess_flow_artifacts(out)
+
+            report = json.loads((out / "report" / "acceptance_blockers.json").read_text(encoding="utf-8"))
+            codes = set(report["summary"]["by_code"])
+            self.assertIn("fen_not_recognized", codes)
+            self.assertIn("unmapped_chess_glyphs", codes)
+            self.assertTrue((out / "report" / "acceptance_blockers.html").is_file())
+
+    def test_exercise_solution_pgn_requires_accepted_source_fen(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir)
+            _write_json(
+                out / "data" / "book.json",
+                {
+                    "pages": [
+                        {
+                            "page": 12,
+                            "diagrams": [
+                                {
+                                    "diagram_id": "diagram-1-1",
+                                    "label": "Diagram 1-1",
+                                    "validation_status": "needs_review",
+                                }
+                            ],
+                            "pgn_records": [
+                                {
+                                    "record_id": "solution_1_1",
+                                    "page": 12,
+                                    "label": "Ex. 1-1",
+                                    "raw_text": "Ex. 1-1 1. e4",
+                                    "pgn": VALID_PGN,
+                                    "warnings": [],
+                                }
+                            ],
+                            "text_blocks": [],
+                        }
+                    ],
+                    "pgn_records": [
+                        {
+                            "record_id": "solution_1_1",
+                            "page": 12,
+                            "label": "Ex. 1-1",
+                            "raw_text": "Ex. 1-1 1. e4",
+                            "pgn": VALID_PGN,
+                            "warnings": [],
+                        }
+                    ],
+                },
+            )
+
+            build_auto_chess_flow_artifacts(out)
+
+            pgn_payload = json.loads((out / "pgn" / "pgn_candidates.json").read_text(encoding="utf-8"))
+            item = pgn_payload["items"][0]
+            self.assertEqual(item["source_type"], "EXERCISE_SOLUTION")
+            self.assertIsNone(item["selected_value"])
+            self.assertIn("source_fen_not_machine_accepted", {error["code"] for error in item["validation_errors"]})
+
+    def test_fen_recognition_limit_zero_means_all_and_positive_limit_reports_skipped_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir)
+            diagrams = [
+                {"diagram_id": f"p001_d00{index}", "page": 1, "fen": VALID_KINGS_FEN, "confidence": 0.99}
+                for index in range(1, 4)
+            ]
+            _write_json(
+                out / "data" / "book.json",
+                {"pages": [{"page": 1, "diagrams": diagrams, "pgn_records": [], "text_blocks": []}], "pgn_records": []},
+            )
+
+            build_auto_chess_flow_artifacts(out, chess_fen_recognition_max_diagrams=2)
+
+            limited = json.loads((out / "fen" / "fen_candidates.json").read_text(encoding="utf-8"))
+            self.assertEqual(limited["summary"]["skipped_diagram_count"], 1)
+            self.assertEqual(limited["summary"]["skipped_diagram_ids"], ["p001_d003"])
+
+            build_auto_chess_flow_artifacts(out, chess_fen_recognition_max_diagrams=0)
+            unlimited = json.loads((out / "fen" / "fen_candidates.json").read_text(encoding="utf-8"))
+            self.assertEqual(unlimited["summary"]["skipped_diagram_count"], 0)
 
     def test_strict_validation_fails_when_fen_or_pgn_remain_unresolved(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

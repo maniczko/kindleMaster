@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import html
 import json
+import re
 import shutil
 from dataclasses import asdict
 from io import StringIO
 from pathlib import Path
 from typing import Any, Iterable
 
-from chess_fen_hardening import validate_fen_detailed
+from chess_fen_hardening import machine_accept_fen, validate_fen_detailed
 
 PIPELINE_STATUSES = {
     "AUTO_SUCCESS",
@@ -17,8 +18,22 @@ PIPELINE_STATUSES = {
     "MANUAL_REVIEW_AVAILABLE",
 }
 
-FEN_ACCEPTED_STATUSES = {"FEN_AUTO_ACCEPTED", "FEN_AUTO_REPAIRED"}
-PGN_ACCEPTED_STATUSES = {"PGN_AUTO_ACCEPTED", "PGN_AUTO_REPAIRED"}
+FEN_ACCEPTED_STATUSES = {
+    "FEN_AUTO_ACCEPTED",
+    "FEN_AUTO_REPAIRED",
+    "FEN_MACHINE_ACCEPTED",
+    "FEN_MACHINE_REPAIRED",
+    "FEN_CORPUS_VERIFIED",
+}
+PGN_ACCEPTED_STATUSES = {
+    "PGN_AUTO_ACCEPTED",
+    "PGN_AUTO_REPAIRED",
+    "PGN_MACHINE_ACCEPTED",
+    "PGN_MACHINE_REPAIRED",
+    "SOLUTION_LINE_ACCEPTED",
+}
+FEN_RUNTIME_ACCEPTED_STATUSES = {"FEN_MACHINE_ACCEPTED", "FEN_MACHINE_REPAIRED", "FEN_CORPUS_VERIFIED"}
+PGN_RUNTIME_ACCEPTED_STATUSES = {"PGN_MACHINE_ACCEPTED", "PGN_MACHINE_REPAIRED", "SOLUTION_LINE_ACCEPTED"}
 
 
 def run_auto_chess_process(
@@ -33,6 +48,7 @@ def run_auto_chess_process(
     dry_run_ai: bool = False,
     ai_limit: int = 0,
     ai_pgn_limit: int = 30,
+    chess_fen_recognition_max_diagrams: str | int = "all",
     diagram_page_ranges: str = "",
     glyph_mapping_file: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -80,6 +96,7 @@ def run_auto_chess_process(
             source_html=source_html,
             stage_payload=stage_payload,
             ai_payloads=ai_payloads,
+            chess_fen_recognition_max_diagrams=chess_fen_recognition_max_diagrams,
         )
     except Exception as exc:
         payload = _failed_process_payload(
@@ -104,6 +121,7 @@ def build_auto_chess_flow_artifacts(
     source_html: str | Path | None = None,
     stage_payload: dict[str, Any] | None = None,
     ai_payloads: dict[str, Any] | None = None,
+    chess_fen_recognition_max_diagrams: str | int = "all",
 ) -> dict[str, Any]:
     out = Path(out_dir)
     dirs = _ensure_auto_dirs(out)
@@ -121,8 +139,18 @@ def build_auto_chess_flow_artifacts(
     layout_payload = _canonical_layout(pages)
     text_rows = _canonical_text_rows(pages)
     diagram_payload = {"schema": "kindlemaster.auto_chess.diagrams.v1", "diagrams": diagrams}
-    fen_payload, fen_validation, fen_repairs = _canonical_fen(diagrams, ai_fen_rows, model_fen_rows)
-    pgn_payload, pgn_validation, pgn_repairs = _canonical_pgn(pgn_records, pgn_lattice_rows)
+    fen_payload, fen_validation, fen_repairs = _canonical_fen(
+        diagrams,
+        ai_fen_rows,
+        model_fen_rows,
+        max_diagrams=chess_fen_recognition_max_diagrams,
+    )
+    accepted_fen_by_source = _accepted_fen_by_source(diagrams, fen_payload)
+    pgn_payload, pgn_validation, pgn_repairs = _canonical_pgn(
+        pgn_records,
+        pgn_lattice_rows,
+        accepted_fen_by_source=accepted_fen_by_source,
+    )
     repair_payload = {
         "schema": "kindlemaster.auto_chess.repairs.v1",
         "repairs": fen_repairs + pgn_repairs,
@@ -137,6 +165,7 @@ def build_auto_chess_flow_artifacts(
         pgn_validation=pgn_validation,
         repair_payload=repair_payload,
     )
+    acceptance_blockers = _acceptance_blockers_report(fen_payload, pgn_payload)
     status = _pipeline_status(summary, mode=mode)
     report = _quality_report(
         out,
@@ -145,6 +174,7 @@ def build_auto_chess_flow_artifacts(
         source_pdf=source_pdf,
         source_html=source_html,
         summary=summary,
+        acceptance_blockers=acceptance_blockers,
         stage_payload=stage_payload or {},
         ai_payloads=ai_payloads or {},
     )
@@ -158,6 +188,8 @@ def build_auto_chess_flow_artifacts(
     _write_json(dirs["pgn"] / "pgn_candidates.json", pgn_payload)
     _write_json(dirs["pgn"] / "pgn_validation.json", pgn_validation)
     _write_json(dirs["repair"] / "repair_attempts.json", repair_payload)
+    _write_json(dirs["report"] / "acceptance_blockers.json", acceptance_blockers)
+    (dirs["report"] / "acceptance_blockers.html").write_text(_acceptance_blockers_html(acceptance_blockers), encoding="utf-8")
     _write_json(dirs["report"] / "quality_report.json", report)
     (dirs["report"] / "quality_report.html").write_text(_quality_report_html(report), encoding="utf-8")
     _copy_export_files(out, dirs["export"])
@@ -182,6 +214,8 @@ def build_auto_chess_flow_artifacts(
                 "pgn_candidates": dirs["pgn"] / "pgn_candidates.json",
                 "pgn_validation": dirs["pgn"] / "pgn_validation.json",
                 "repairs": dirs["repair"] / "repair_attempts.json",
+                "acceptance_blockers": dirs["report"] / "acceptance_blockers.json",
+                "acceptance_blockers_html": dirs["report"] / "acceptance_blockers.html",
                 "quality_report": dirs["report"] / "quality_report.json",
                 "quality_report_html": dirs["report"] / "quality_report.html",
                 "export_games_pgn": dirs["export"] / "games.pgn",
@@ -202,7 +236,7 @@ def validate_auto_chess_output(out_dir: str | Path, *, strict: bool = False) -> 
             "errors": [{"code": "output_dir_missing", "message": f"Output directory does not exist: {out}"}],
             "warnings": [],
         }
-    if not (out / "auto_chess_flow.json").is_file():
+    if not _auto_chess_artifacts_current(out):
         build_auto_chess_flow_artifacts(out)
     flow = _read_optional_json(out / "auto_chess_flow.json")
     report = _read_optional_json(out / "report" / "quality_report.json")
@@ -216,6 +250,7 @@ def validate_auto_chess_output(out_dir: str | Path, *, strict: bool = False) -> 
         "pgn/pgn_candidates.json",
         "pgn/pgn_validation.json",
         "repair/repair_attempts.json",
+        "report/acceptance_blockers.json",
         "report/quality_report.json",
         "export/games.pgn",
     ]
@@ -258,10 +293,10 @@ def validate_auto_chess_output(out_dir: str | Path, *, strict: bool = False) -> 
 
 def report_auto_chess_output(out_dir: str | Path) -> dict[str, Any]:
     out = Path(out_dir)
-    if not (out / "auto_chess_flow.json").is_file():
+    if not _auto_chess_artifacts_current(out):
         build_auto_chess_flow_artifacts(out)
     report = _read_optional_json(out / "report" / "quality_report.json")
-    if not report:
+    if not report or "acceptance_blockers_summary" not in report:
         build_auto_chess_flow_artifacts(out)
         report = _read_optional_json(out / "report" / "quality_report.json")
     return report or _read_optional_json(out / "auto_chess_flow.json")
@@ -271,7 +306,7 @@ def review_auto_chess_output(out_dir: str | Path) -> dict[str, Any]:
     out = Path(out_dir)
     review_dir = out / "review"
     review_dir.mkdir(parents=True, exist_ok=True)
-    if not (out / "auto_chess_flow.json").is_file():
+    if not _auto_chess_artifacts_current(out):
         build_auto_chess_flow_artifacts(out)
     candidates = [
         ("FEN manual review", review_dir / "fen_manual_review.html"),
@@ -280,6 +315,7 @@ def review_auto_chess_output(out_dir: str | Path) -> dict[str, Any]:
         ("PGN lattice review", review_dir / "pgn_lattice_review.csv"),
         ("Glyph mapping review", review_dir / "glyph_mapping_review.html"),
         ("PGN replay blockers", review_dir / "pgn_replay_blockers_top10.md"),
+        ("Runtime acceptance blockers", out / "report" / "acceptance_blockers.html"),
     ]
     items = [
         {"label": label, "path": str(path), "exists": path.is_file()}
@@ -304,6 +340,17 @@ def is_auto_chess_output(path: str | Path) -> bool:
         or (candidate / "data" / "book.json").is_file()
         or (candidate / "reports" / "chess_quality_dashboard.json").is_file()
     )
+
+
+def _auto_chess_artifacts_current(out: Path) -> bool:
+    report = _read_optional_json(out / "report" / "quality_report.json")
+    if not (out / "auto_chess_flow.json").is_file() or not report:
+        return False
+    if "acceptance_blockers_summary" not in report:
+        return False
+    if not (out / "report" / "acceptance_blockers.json").is_file():
+        return False
+    return True
 
 
 def _canonical_pages(pages: list[dict[str, Any]]) -> dict[str, Any]:
@@ -376,14 +423,63 @@ def _canonical_fen(
     diagrams: list[dict[str, Any]],
     ai_rows: list[dict[str, Any]],
     model_rows: list[dict[str, Any]],
+    *,
+    max_diagrams: str | int = "all",
 ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     ai_by_id = _rows_by_id(ai_rows, "diagram_id")
     model_by_id = _rows_by_id(model_rows, "diagram_id")
     candidates: list[dict[str, Any]] = []
     validation_rows: list[dict[str, Any]] = []
     repairs: list[dict[str, Any]] = []
-    for diagram in diagrams:
+    max_count = _parse_max_diagrams(max_diagrams)
+    for diagram_index, diagram in enumerate(diagrams, start=1):
         diagram_id = str(diagram.get("diagram_id") or diagram.get("id") or "")
+        if max_count > 0 and diagram_index > max_count:
+            selected = {
+                "status": "FEN_REVIEW_REQUIRED",
+                "runtime_status": "FEN_REVIEW_REQUIRED",
+                "corpus_status": "not_corpus_verified",
+                "acceptance_policy": "runtime_machine_acceptance_v1",
+                "selected_value": None,
+                "validation_errors": [{"code": "fen_recognition_limit_skipped", "message": "Diagram skipped by configured runtime FEN recognition limit."}],
+                "acceptance_blockers": [{"code": "fen_recognition_limit_skipped", "message": "Diagram skipped by configured runtime FEN recognition limit."}],
+                "acceptance_trace": {"diagram_index": diagram_index, "max_diagrams": max_count},
+                "next_action": "increase_chess_fen_recognition_max_diagrams_or_review_manually",
+            }
+            candidates.append(
+                {
+                    "id": diagram_id,
+                    "page": int(diagram.get("page") or 0),
+                    "source_image_path": diagram.get("image_path") or diagram.get("crop_path") or "",
+                    "status": selected["status"],
+                    "runtime_status": selected["runtime_status"],
+                    "corpus_status": selected["corpus_status"],
+                    "acceptance_policy": selected["acceptance_policy"],
+                    "candidate_values": [],
+                    "selected_value": None,
+                    "validation_errors": selected["validation_errors"],
+                    "acceptance_blockers": selected["acceptance_blockers"],
+                    "acceptance_trace": selected["acceptance_trace"],
+                    "repair_attempts": [],
+                    "next_action": selected["next_action"],
+                }
+            )
+            validation_rows.append(
+                {
+                    k: candidates[-1][k]
+                    for k in [
+                        "id",
+                        "page",
+                        "status",
+                        "runtime_status",
+                        "corpus_status",
+                        "validation_errors",
+                        "acceptance_blockers",
+                        "next_action",
+                    ]
+                }
+            )
+            continue
         raw_candidates = _fen_raw_candidates(diagram, ai_by_id.get(diagram_id), model_by_id.get(diagram_id))
         candidate_rows = [_fen_candidate_row(item) for item in raw_candidates]
         selected = _select_fen_status(diagram, candidate_rows)
@@ -395,15 +491,38 @@ def _canonical_fen(
                 "page": int(diagram.get("page") or 0),
                 "source_image_path": diagram.get("image_path") or diagram.get("crop_path") or "",
                 "status": selected["status"],
+                "runtime_status": selected["runtime_status"],
+                "corpus_status": selected["corpus_status"],
+                "acceptance_policy": selected["acceptance_policy"],
                 "candidate_values": candidate_rows,
                 "selected_value": selected.get("selected_value"),
                 "validation_errors": selected.get("validation_errors", []),
+                "acceptance_blockers": selected.get("acceptance_blockers", []),
+                "acceptance_trace": selected.get("acceptance_trace", {}),
                 "repair_attempts": repair_rows,
                 "next_action": selected["next_action"],
             }
         )
-        validation_rows.append({k: candidates[-1][k] for k in ["id", "page", "status", "validation_errors", "next_action"]})
+        validation_rows.append(
+            {
+                k: candidates[-1][k]
+                for k in [
+                    "id",
+                    "page",
+                    "status",
+                    "runtime_status",
+                    "corpus_status",
+                    "validation_errors",
+                    "acceptance_blockers",
+                    "next_action",
+                ]
+            }
+        )
     summary = _status_summary(candidates, accepted=FEN_ACCEPTED_STATUSES)
+    skipped = [item for item in candidates if any(blocker.get("code") == "fen_recognition_limit_skipped" for blocker in item.get("acceptance_blockers") or [])]
+    summary["recognition_limit"] = "all" if max_count <= 0 else max_count
+    summary["skipped_diagram_count"] = len(skipped)
+    summary["skipped_diagram_ids"] = [item.get("id") for item in skipped]
     payload = {"schema": "kindlemaster.auto_chess.fen_candidates.v1", "items": candidates, "summary": summary}
     validation = {"schema": "kindlemaster.auto_chess.fen_validation.v1", "items": validation_rows, "summary": summary}
     return payload, validation, repairs
@@ -418,62 +537,148 @@ def _fen_raw_candidates(
     for key, source in [("fen", "deterministic"), ("fen_candidate", "deterministic_candidate")]:
         fen = str(diagram.get(key) or "").strip()
         if fen:
-            rows.append({"source": source, "fen": fen, "authoritative": source == "deterministic"})
+            rows.append(
+                {
+                    "source": source,
+                    "fen": fen,
+                    "authoritative": source == "deterministic",
+                    "confidence": _first_float(
+                        diagram.get("confidence"),
+                        diagram.get("fen_confidence"),
+                        diagram.get("candidate_confidence"),
+                    ),
+                    "warnings": _string_list(
+                        diagram.get("warnings"),
+                        diagram.get("fen_warnings"),
+                        diagram.get("review_warnings"),
+                    ),
+                    "method": diagram.get("method") or diagram.get("recognition_method") or source,
+                    "squares": diagram.get("squares") or [],
+                }
+            )
     if ai_row:
         fen = str(ai_row.get("ai_fen_candidate") or ai_row.get("fen") or "").strip()
         if fen:
-            rows.append({"source": "ai_review_only", "fen": fen, "authoritative": False})
+            rows.append(
+                {
+                    "source": "ai_review_only",
+                    "fen": fen,
+                    "authoritative": False,
+                    "confidence": _first_float(ai_row.get("confidence"), ai_row.get("ai_confidence")),
+                    "warnings": _string_list(ai_row.get("warnings"), ai_row.get("issues")),
+                    "method": "ai_review_only",
+                }
+            )
     if model_row:
         fen = str(model_row.get("fen") or model_row.get("predicted_fen") or "").strip()
         if fen:
-            rows.append({"source": "local_model_candidate", "fen": fen, "authoritative": False})
+            rows.append(
+                {
+                    "source": "local_model_candidate",
+                    "fen": fen,
+                    "authoritative": False,
+                    "confidence": _first_float(
+                        model_row.get("confidence"),
+                        model_row.get("global_confidence"),
+                        model_row.get("score"),
+                    ),
+                    "warnings": _string_list(model_row.get("warnings")),
+                    "method": model_row.get("method") or "local_model_candidate",
+                    "squares": model_row.get("squares") or [],
+                }
+            )
     return rows
 
 
 def _fen_candidate_row(candidate: dict[str, Any]) -> dict[str, Any]:
     validation = validate_fen_detailed(str(candidate.get("fen") or ""))
+    machine = machine_accept_fen(candidate)
     return {
         "source": candidate.get("source") or "unknown",
         "value": candidate.get("fen") or "",
         "authoritative": bool(candidate.get("authoritative")),
+        "confidence": _first_float(candidate.get("confidence")),
+        "method": candidate.get("method") or candidate.get("source") or "unknown",
+        "warnings": list(candidate.get("warnings") or []),
         "deterministic_valid": validation.is_legal_position and not validation.errors,
         "normalized_value": validation.normalized_fen,
         "errors": [asdict(error) for error in validation.errors],
-        "warnings": [asdict(warning) for warning in validation.warnings],
+        "validation_warnings": [asdict(warning) for warning in validation.warnings],
+        "runtime_status": machine["runtime_status"],
+        "acceptance_policy": machine["acceptance_policy"],
+        "acceptance_blockers": machine["acceptance_blockers"],
+        "acceptance_trace": machine["acceptance_trace"],
     }
 
 
 def _select_fen_status(diagram: dict[str, Any], candidate_rows: list[dict[str, Any]]) -> dict[str, Any]:
     deterministic = next((row for row in candidate_rows if row.get("source") == "deterministic"), None)
-    if diagram.get("validation_status") == "accepted" and deterministic and deterministic.get("deterministic_valid"):
+    human_verified = _is_human_verified_record(diagram)
+    if human_verified and deterministic and deterministic.get("deterministic_valid"):
         return {
-            "status": "FEN_AUTO_ACCEPTED",
+            "status": "FEN_CORPUS_VERIFIED",
+            "runtime_status": "FEN_CORPUS_VERIFIED",
+            "corpus_status": "corpus_verified",
+            "acceptance_policy": "human_verified_exact_crop_label",
             "selected_value": deterministic.get("normalized_value"),
             "validation_errors": [],
+            "acceptance_blockers": [],
+            "acceptance_trace": {"source": deterministic.get("source"), "human_verified": True},
             "next_action": "export_allowed",
+        }
+    machine = next((row for row in candidate_rows if row.get("runtime_status") == "FEN_MACHINE_ACCEPTED"), None)
+    if machine:
+        return {
+            "status": "FEN_MACHINE_ACCEPTED",
+            "runtime_status": "FEN_MACHINE_ACCEPTED",
+            "corpus_status": "not_corpus_verified",
+            "acceptance_policy": "runtime_machine_acceptance_v1",
+            "selected_value": machine.get("normalized_value"),
+            "validation_errors": [],
+            "acceptance_blockers": [],
+            "acceptance_trace": machine.get("acceptance_trace") or {},
+            "next_action": "export_allowed_runtime_machine",
         }
     if not candidate_rows:
         return {
             "status": "FEN_FAILED",
+            "runtime_status": "FEN_FAILED",
+            "corpus_status": "not_corpus_verified",
+            "acceptance_policy": "runtime_machine_acceptance_v1",
             "selected_value": None,
             "validation_errors": [{"code": "fen_not_recognized", "message": "No FEN candidate was available."}],
+            "acceptance_blockers": [{"code": "fen_not_recognized", "message": "No FEN candidate was available."}],
+            "acceptance_trace": {},
             "next_action": "manual_review",
         }
-    errors = []
+    errors: list[dict[str, Any]] = []
+    blockers: list[dict[str, Any]] = []
     for row in candidate_rows:
         for error in row.get("errors") or []:
             errors.append({"source": row.get("source"), **error})
+        for blocker in row.get("acceptance_blockers") or []:
+            blockers.append({"source": row.get("source"), **blocker})
     if any(row.get("deterministic_valid") for row in candidate_rows):
         return {
-            "status": "FEN_VALID_POSITION",
+            "status": "FEN_MACHINE_VALID",
+            "runtime_status": "FEN_MACHINE_VALID",
+            "corpus_status": "not_corpus_verified",
+            "acceptance_policy": "runtime_machine_acceptance_v1",
             "selected_value": None,
             "validation_errors": errors,
-            "next_action": "human_verify_before_export",
+            "acceptance_blockers": blockers or [{"code": "machine_acceptance_not_proven", "message": "A valid FEN exists, but runtime machine gate did not accept it."}],
+            "acceptance_trace": {"candidate_count": len(candidate_rows)},
+            "next_action": "resolve_machine_acceptance_blockers_or_human_verify",
         }
     return {
         "status": "FEN_FAILED",
+        "runtime_status": "FEN_FAILED",
+        "corpus_status": "not_corpus_verified",
+        "acceptance_policy": "runtime_machine_acceptance_v1",
         "selected_value": None,
         "validation_errors": errors or [{"code": "fen_validation_failed", "message": "No candidate passed deterministic FEN validation."}],
+        "acceptance_blockers": blockers or [{"code": "fen_validation_failed", "message": "No candidate passed deterministic FEN validation."}],
+        "acceptance_trace": {"candidate_count": len(candidate_rows)},
         "next_action": "manual_review",
     }
 
@@ -515,8 +720,11 @@ def _repair_fen(value: str) -> str:
 def _canonical_pgn(
     records: list[dict[str, Any]],
     lattice_rows: list[dict[str, Any]],
+    *,
+    accepted_fen_by_source: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     lattice_by_id = _rows_by_id(lattice_rows, "record_id")
+    accepted_fen_by_source = accepted_fen_by_source or {}
     items: list[dict[str, Any]] = []
     repairs: list[dict[str, Any]] = []
     for index, record in enumerate(records, start=1):
@@ -524,14 +732,36 @@ def _canonical_pgn(
         pgn = str(record.get("pgn") or record.get("annotated_pgn") or "").strip()
         lattice = lattice_by_id.get(record_id) or {}
         replay = _pgn_replay_status(pgn)
+        source_type = _classify_pgn_source(record, pgn, lattice)
+        source_fen = _record_source_fen(record, accepted_fen_by_source)
+        requires_source_fen = source_type in {"EXERCISE_SOLUTION", "TACTICAL_LINE"}
         source_status = str(record.get("status") or "requires_review")
-        accepted = source_status == "accepted" and replay["valid"]
-        status = "PGN_AUTO_ACCEPTED" if accepted else _review_pgn_status(pgn, replay)
-        validation_errors = [] if accepted else _pgn_errors(record, lattice, replay)
+        blocking_errors = _pgn_errors(
+            record,
+            lattice,
+            replay,
+            source_type=source_type,
+            source_fen=source_fen,
+            requires_source_fen=requires_source_fen,
+        )
+        accepted = bool(replay["valid"] and not blocking_errors and source_status != "rejected")
+        if accepted and source_type in {"EXERCISE_SOLUTION", "TACTICAL_LINE"}:
+            status = "SOLUTION_LINE_ACCEPTED"
+        elif accepted:
+            status = "PGN_MACHINE_ACCEPTED"
+        else:
+            status = _review_pgn_status(pgn, replay, source_type=source_type)
+        runtime_status = status
+        validation_errors = [] if accepted else blocking_errors
         item = {
             "id": record_id,
             "page": int(record.get("page") or record.get("source_page") or 0),
             "status": status,
+            "runtime_status": runtime_status,
+            "corpus_status": "not_corpus_verified",
+            "acceptance_policy": "runtime_pgn_replay_acceptance_v1",
+            "source_type": source_type,
+            "source_fen": source_fen,
             "candidate_values": [
                 {
                     "source": "source_pgn",
@@ -544,6 +774,14 @@ def _canonical_pgn(
             else [],
             "selected_value": pgn if accepted else None,
             "validation_errors": validation_errors,
+            "acceptance_blockers": validation_errors,
+            "acceptance_trace": {
+                "source_status": source_status,
+                "source_type": source_type,
+                "requires_source_fen": requires_source_fen,
+                "source_fen_available": bool(source_fen),
+                "replay": replay,
+            },
             "repair_attempts": [],
             "next_action": "export_allowed" if accepted else "manual_review_or_mapping",
         }
@@ -565,23 +803,35 @@ def _canonical_pgn(
     return payload, validation, repairs
 
 
-def _review_pgn_status(pgn: str, replay: dict[str, Any]) -> str:
+def _review_pgn_status(pgn: str, replay: dict[str, Any], *, source_type: str = "UNKNOWN") -> str:
     if pgn and replay.get("parsed"):
-        return "PGN_PARSED"
+        return "PGN_MACHINE_PARSED"
     if pgn:
         return "PGN_CANDIDATE"
     return "PGN_FAILED"
 
 
-def _pgn_errors(record: dict[str, Any], lattice: dict[str, Any], replay: dict[str, Any]) -> list[dict[str, Any]]:
+def _pgn_errors(
+    record: dict[str, Any],
+    lattice: dict[str, Any],
+    replay: dict[str, Any],
+    *,
+    source_type: str = "UNKNOWN",
+    source_fen: str = "",
+    requires_source_fen: bool = False,
+) -> list[dict[str, Any]]:
     errors: list[dict[str, Any]] = []
     for warning in record.get("warnings") or lattice.get("warnings") or []:
+        if str(warning) in {"continuation_record_merged"}:
+            continue
         errors.append({"code": str(warning), "message": "Source PGN warning blocks strict export."})
     if not replay.get("valid"):
         errors.append({"code": "pgn_replay_failed", "message": replay.get("error") or "PGN parser/replay failed."})
     if lattice.get("unmapped_tokens"):
         errors.append({"code": "unmapped_ocr_tokens", "message": "OCR/glyph tokens require accepted mapping."})
-    return errors or [{"code": "pgn_requires_review", "message": "PGN record is not accepted by strict replay gate."}]
+    if source_type in {"EXERCISE_SOLUTION", "TACTICAL_LINE"} and requires_source_fen and not source_fen:
+        errors.append({"code": "source_fen_not_machine_accepted", "message": "Diagram solution lines require accepted source FEN."})
+    return errors
 
 
 def _pgn_replay_status(pgn_text: str) -> dict[str, Any]:
@@ -593,8 +843,16 @@ def _pgn_replay_status(pgn_text: str) -> dict[str, Any]:
         game = chess.pgn.read_game(StringIO(pgn_text))
         if game is None:
             return {"parsed": False, "valid": False, "error": "pgn_parser_returned_none"}
+        if getattr(game, "errors", None):
+            return {
+                "parsed": True,
+                "valid": False,
+                "error": "; ".join(str(error) for error in game.errors[:3]),
+            }
         board = game.board()
         for move in game.mainline_moves():
+            if not board.is_legal(move):
+                return {"parsed": True, "valid": False, "error": f"illegal_move:{move.uci()}"}
             board.push(move)
         return {"parsed": True, "valid": True, "error": ""}
     except Exception as exc:
@@ -614,13 +872,28 @@ def _auto_summary(
         "pages": int(dashboard.get("pages") or 0),
         "diagrams_total": int(dashboard.get("diagrams_total") or fen_summary.get("total") or 0),
         "fen_accepted": int(fen_summary.get("accepted") or dashboard.get("fen_accepted") or 0),
+        "fen_machine_accepted": int(fen_summary.get("runtime_machine_accepted") or 0),
+        "fen_corpus_verified": int(fen_summary.get("corpus_verified") or 0),
+        "fen_review_required": int(fen_summary.get("review_required") or 0),
         "fen_failed": int(fen_summary.get("failed") or 0),
+        "fen_recognition_limit": fen_summary.get("recognition_limit", "all"),
+        "fen_skipped_diagram_count": int(fen_summary.get("skipped_diagram_count") or 0),
         "pgn_total": int(dashboard.get("pgn_total") or pgn_summary.get("total") or 0),
         "accepted_pgn": int(pgn_summary.get("accepted") or dashboard.get("accepted_pgn") or 0),
+        "pgn_machine_accepted": int(pgn_summary.get("runtime_machine_accepted") or 0),
+        "pgn_review_required": int(pgn_summary.get("review_required") or 0),
         "pgn_failed": int(pgn_summary.get("failed") or 0),
         "repair_attempts": int((repair_payload.get("summary") or {}).get("attempted") or 0),
         "repairs_applied": int((repair_payload.get("summary") or {}).get("applied") or 0),
         "manual_review_items": int(fen_summary.get("failed") or 0) + int(pgn_summary.get("failed") or 0),
+        "review_required_rate": _ratio(
+            int(fen_summary.get("failed") or 0) + int(pgn_summary.get("failed") or 0),
+            int(fen_summary.get("total") or 0) + int(pgn_summary.get("total") or 0),
+        ),
+        "automatic_flow_success_rate": _ratio(
+            int(fen_summary.get("runtime_machine_accepted") or 0) + int(pgn_summary.get("runtime_machine_accepted") or 0),
+            int(fen_summary.get("total") or 0) + int(pgn_summary.get("total") or 0),
+        ),
         "ai_fen_candidates": int(dashboard.get("ai_fen_candidates") or 0),
         "ai_pgn_candidates": int(dashboard.get("ai_pgn_candidates") or 0),
     }
@@ -642,6 +915,7 @@ def _quality_report(
     source_pdf: str | Path | None,
     source_html: str | Path | None,
     summary: dict[str, Any],
+    acceptance_blockers: dict[str, Any],
     stage_payload: dict[str, Any],
     ai_payloads: dict[str, Any],
 ) -> dict[str, Any]:
@@ -658,6 +932,8 @@ def _quality_report(
         "source_html": str(source_html or ""),
         "summary": summary,
         "blockers": blockers,
+        "acceptance_blockers_summary": acceptance_blockers.get("summary") or {},
+        "acceptance_blockers_path": str(out_dir / "report" / "acceptance_blockers.json"),
         "stage_status": stage_payload.get("status") or stage_payload.get("overall_status") or "unknown",
         "ai_policy": "AI candidates are review-only and never directly accepted.",
         "ai_payloads": ai_payloads,
@@ -667,6 +943,76 @@ def _quality_report(
         },
         "next_action": _next_action(status, blockers),
     }
+
+
+def _acceptance_blockers_report(fen_payload: dict[str, Any], pgn_payload: dict[str, Any]) -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+    code_counts: dict[str, int] = {}
+    for kind, payload in [("fen", fen_payload), ("pgn", pgn_payload)]:
+        for item in payload.get("items") or []:
+            if item.get("status") in (FEN_ACCEPTED_STATUSES if kind == "fen" else PGN_ACCEPTED_STATUSES):
+                continue
+            blockers = list(item.get("acceptance_blockers") or item.get("validation_errors") or [])
+            if not blockers:
+                blockers = [{"code": f"{kind}_requires_review", "message": f"{kind.upper()} was not accepted by runtime gate."}]
+            normalized_blockers = []
+            for blocker in blockers:
+                code = str(blocker.get("code") or "unknown_blocker")
+                code_counts[code] = code_counts.get(code, 0) + 1
+                normalized_blockers.append(blocker)
+            items.append(
+                {
+                    "kind": kind,
+                    "id": item.get("id"),
+                    "page": item.get("page"),
+                    "status": item.get("status"),
+                    "runtime_status": item.get("runtime_status"),
+                    "source_type": item.get("source_type"),
+                    "next_action": item.get("next_action"),
+                    "blockers": normalized_blockers,
+                }
+            )
+    summary = {
+        "total_blocked_items": len(items),
+        "by_code": dict(sorted(code_counts.items(), key=lambda pair: (-pair[1], pair[0]))),
+    }
+    return {"schema": "kindlemaster.auto_chess.acceptance_blockers.v1", "summary": summary, "items": items}
+
+
+def _acceptance_blockers_html(report: dict[str, Any]) -> str:
+    items = report.get("items") or []
+    rows = []
+    for item in items:
+        blockers = ", ".join(str(blocker.get("code") or "") for blocker in item.get("blockers") or [])
+        rows.append(
+            "<tr>"
+            f"<td>{html.escape(str(item.get('kind') or ''))}</td>"
+            f"<td>{html.escape(str(item.get('id') or ''))}</td>"
+            f"<td>{html.escape(str(item.get('page') or ''))}</td>"
+            f"<td>{html.escape(str(item.get('runtime_status') or item.get('status') or ''))}</td>"
+            f"<td>{html.escape(str(blockers))}</td>"
+            f"<td>{html.escape(str(item.get('next_action') or ''))}</td>"
+            "</tr>"
+        )
+    table = "".join(rows) or '<tr><td colspan="6">No blockers.</td></tr>'
+    summary = report.get("summary") or {}
+    code_rows = "".join(
+        f"<li><code>{html.escape(str(code))}</code>: {html.escape(str(count))}</li>"
+        for code, count in (summary.get("by_code") or {}).items()
+    ) or "<li>No blocker codes.</li>"
+    return f"""<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Auto Chess Acceptance Blockers</title>
+<style>
+body{{font-family:Georgia,serif;margin:2rem;background:#f7f1e8;color:#21180f}}
+table{{border-collapse:collapse;width:100%;background:#fff}}
+td,th{{border:1px solid #dccbb4;padding:.45rem;vertical-align:top}}
+code{{background:#efe2d1;border-radius:5px;padding:.08rem .24rem}}
+</style>
+<h1>Auto Chess Acceptance Blockers</h1>
+<p>Blocked items: {html.escape(str(summary.get('total_blocked_items', 0)))}</p>
+<h2>By code</h2><ul>{code_rows}</ul>
+<table><thead><tr><th>Kind</th><th>ID</th><th>Page</th><th>Status</th><th>Blockers</th><th>Next action</th></tr></thead>
+<tbody>{table}</tbody></table></html>"""
 
 
 def _next_action(status: str, blockers: list[dict[str, Any]]) -> str:
@@ -717,6 +1063,75 @@ def _extract_diagrams(book: dict[str, Any], diagrams_payload: dict[str, Any]) ->
     return diagrams
 
 
+def _accepted_fen_by_source(diagrams: list[dict[str, Any]], fen_payload: dict[str, Any]) -> dict[str, str]:
+    by_id = {str(item.get("id") or ""): item for item in fen_payload.get("items") or []}
+    index: dict[str, str] = {}
+    for diagram in diagrams:
+        diagram_id = str(diagram.get("diagram_id") or diagram.get("id") or "")
+        fen_item = by_id.get(diagram_id) or {}
+        fen = str(fen_item.get("selected_value") or "").strip()
+        if not fen or fen_item.get("status") not in FEN_ACCEPTED_STATUSES:
+            continue
+        for key in [
+            diagram_id,
+            diagram.get("label"),
+            diagram.get("caption"),
+            diagram.get("source_diagram"),
+        ]:
+            normalized = _normalize_source_label(str(key or ""))
+            if normalized:
+                index[normalized] = fen
+    return index
+
+
+def _record_source_fen(record: dict[str, Any], accepted_fen_by_source: dict[str, str]) -> str:
+    for key in [
+        record.get("diagram_id"),
+        record.get("source_diagram"),
+        record.get("label"),
+        record.get("record_id"),
+        record.get("id"),
+    ]:
+        normalized = _normalize_source_label(str(key or ""))
+        if normalized and normalized in accepted_fen_by_source:
+            return accepted_fen_by_source[normalized]
+    return ""
+
+
+def _classify_pgn_source(record: dict[str, Any], pgn: str, lattice: dict[str, Any]) -> str:
+    text = " ".join(
+        str(record.get(key) or lattice.get(key) or "")
+        for key in [
+            "label",
+            "diagram_id",
+            "source_diagram",
+            "raw_text",
+            "visible_review_text",
+            "normalized_text",
+        ]
+    )
+    combined = f"{text} {pgn}".strip()
+    if re.search(r"\b(?:Ex\.?|Exercise|Solution)\s*\d{1,2}[-.]\d{1,2}\b", combined, flags=re.IGNORECASE):
+        return "EXERCISE_SOLUTION"
+    if re.search(r"\bDiagram\s*\d{1,2}[-.]\d{1,2}\b", combined, flags=re.IGNORECASE):
+        return "TACTICAL_LINE"
+    if re.search(r"^\s*\[(?:Event|White|Black|Site|Date|Result)\s+", pgn, flags=re.MULTILINE):
+        return "FULL_GAME"
+    if re.search(r"\b\d{1,3}\.(?:\.\.)?\s*\S+", combined):
+        prose_letters = len(re.findall(r"[A-Za-z]{4,}", combined))
+        move_tokens = len(re.findall(r"\b\d{1,3}\.(?:\.\.)?", combined))
+        if prose_letters > move_tokens * 3:
+            return "COMMENTARY_WITH_MOVES"
+        return "GAME_FRAGMENT"
+    return "UNKNOWN"
+
+
+def _normalize_source_label(value: str) -> str:
+    value = str(value or "").strip().lower()
+    value = re.sub(r"[^a-z0-9]+", "-", value)
+    return value.strip("-")
+
+
 def _rows_by_id(rows: Iterable[dict[str, Any]], field: str) -> dict[str, dict[str, Any]]:
     indexed: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -726,14 +1141,95 @@ def _rows_by_id(rows: Iterable[dict[str, Any]], field: str) -> dict[str, dict[st
     return indexed
 
 
+def _is_human_verified_record(record: dict[str, Any]) -> bool:
+    if record.get("human_verified") is True:
+        return True
+    source = str(record.get("verification_source") or "").strip().lower()
+    if source in {"human", "human_visual", "human_manual", "legacy_human_visual"}:
+        return True
+    return bool(record.get("verified_by") and record.get("verified_at") and record.get("label_status") == "verified")
+
+
+def _first_float(*values: Any) -> float:
+    for value in values:
+        if isinstance(value, dict):
+            value = value.get("mean", value.get("global", value.get("score")))
+        try:
+            if value is None or value == "":
+                continue
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
+def _string_list(*values: Any) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str):
+            result.append(value)
+            continue
+        if isinstance(value, dict):
+            result.extend(str(item) for item in value.values() if str(item))
+            continue
+        try:
+            result.extend(str(item) for item in value if str(item))
+        except TypeError:
+            result.append(str(value))
+    return sorted(set(result))
+
+
+def _ratio(numerator: int, denominator: int) -> float:
+    if denominator <= 0:
+        return 0.0
+    return round(float(numerator) / float(denominator), 4)
+
+
+def _parse_max_diagrams(value: str | int) -> int:
+    text = str(value or "").strip().lower()
+    if not text or text in {"0", "all", "none", "unlimited"}:
+        return 0
+    try:
+        return max(0, int(text))
+    except ValueError:
+        return 0
+
+
 def _status_summary(items: list[dict[str, Any]], *, accepted: set[str]) -> dict[str, Any]:
+    runtime_accepted = len(
+        [
+            item
+            for item in items
+            if item.get("runtime_status") in FEN_RUNTIME_ACCEPTED_STATUSES | PGN_RUNTIME_ACCEPTED_STATUSES
+            or item.get("status") in accepted
+        ]
+    )
+    corpus_verified = len([item for item in items if item.get("corpus_status") == "corpus_verified"])
+    review_required = len(
+        [
+            item
+            for item in items
+            if item.get("status") not in accepted
+            and str(item.get("runtime_status") or item.get("status") or "").endswith(("VALID", "REVIEW_REQUIRED", "PARSED", "CANDIDATE"))
+        ]
+    )
     return {
         "total": len(items),
         "accepted": len([item for item in items if item.get("status") in accepted]),
         "failed": len([item for item in items if item.get("status") not in accepted]),
+        "runtime_machine_accepted": runtime_accepted,
+        "corpus_verified": corpus_verified,
+        "review_required": review_required,
         "by_status": {
             status: len([item for item in items if item.get("status") == status])
             for status in sorted({str(item.get("status") or "") for item in items})
+            if status
+        },
+        "by_runtime_status": {
+            status: len([item for item in items if item.get("runtime_status") == status])
+            for status in sorted({str(item.get("runtime_status") or "") for item in items})
             if status
         },
     }
@@ -783,9 +1279,14 @@ def _quality_report_html(report: dict[str, Any]) -> str:
         for label, value in [
             ("Status", report.get("status")),
             ("FEN accepted", summary.get("fen_accepted")),
+            ("FEN machine", summary.get("fen_machine_accepted")),
+            ("FEN corpus", summary.get("fen_corpus_verified")),
             ("FEN failed", summary.get("fen_failed")),
             ("PGN accepted", summary.get("accepted_pgn")),
+            ("PGN machine", summary.get("pgn_machine_accepted")),
             ("PGN failed", summary.get("pgn_failed")),
+            ("Review rate", summary.get("review_required_rate")),
+            ("Auto success rate", summary.get("automatic_flow_success_rate")),
             ("Repairs attempted", summary.get("repair_attempts")),
         ]
     )

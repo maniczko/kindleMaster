@@ -48,6 +48,40 @@ KNOWN_BAD_EXPECTED_FENS = {
     "p010_d002": "6k1/p4p1p/3p1p2/2p1r3/2PnrqN1/P6P/1P1Q1PP1/3R1RK1 b - - 0 1",
 }
 
+MACHINE_ACCEPTED_FEN_SOURCES = {
+    "deterministic",
+    "deterministic_candidate",
+    "font_board",
+    "font-board",
+    "image_template",
+    "image-template",
+    "image-template-board",
+    "verified_exact_crop_label",
+}
+MACHINE_REVIEW_ONLY_FEN_SOURCES = {
+    "ai",
+    "ai_candidate",
+    "ai_review",
+    "ai_review_only",
+    "openai",
+    "openai_review",
+    "gpt",
+}
+MACHINE_BLOCKING_FEN_WARNINGS = {
+    "black_king_count_invalid",
+    "board_grid_not_detected",
+    "board_visual_pattern_not_detected",
+    "confidence_below_threshold",
+    "image_board_requires_review",
+    "partial_board_crop_without_dense_board_evidence",
+    "piece_template_confidence_below_threshold",
+    "piece_template_set_incomplete",
+    "queen_color_ambiguous_suppressed",
+    "review_crop_candidate_mismatch",
+    "sparse_position_confidence_below_threshold",
+    "white_king_count_invalid",
+}
+
 
 @dataclass(frozen=True)
 class FenValidationIssue:
@@ -232,6 +266,131 @@ def evaluate_diagram_acceptance(candidate: dict[str, Any]) -> dict[str, Any]:
         "reasons": ["all_auto_verify_gates_passed"],
         "validation": validation,
     }
+
+
+def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Evaluate whether a FEN candidate may be accepted by the runtime machine gate.
+
+    This is deliberately separate from corpus verification. It never sets
+    human/corpus fields and treats AI as review-only evidence.
+    """
+    ctx = dict(context or {})
+    source = str(candidate.get("source") or candidate.get("method") or "").strip()
+    normalized_source = source.lower().replace("_", "-")
+    fen = str(candidate.get("fen") or candidate.get("value") or candidate.get("candidate_fen") or "").strip()
+    min_confidence = float(ctx.get("min_confidence", 0.835) or 0.835)
+    confidence = _candidate_confidence(candidate, default=ctx.get("confidence"))
+    warnings = sorted({str(item) for item in candidate.get("warnings") or [] if str(item)})
+    blockers: list[dict[str, Any]] = []
+    trace: dict[str, Any] = {
+        "source": source or "unknown",
+        "confidence": confidence,
+        "min_confidence": min_confidence,
+        "warnings": warnings,
+        "policy": "runtime_machine_acceptance_only",
+    }
+
+    if not fen:
+        blockers.append({"code": "fen_candidate_missing", "message": "No FEN candidate was supplied."})
+    if any(normalized_source == item.replace("_", "-") for item in MACHINE_REVIEW_ONLY_FEN_SOURCES):
+        blockers.append({"code": "ai_review_only_source", "message": "AI FEN candidates cannot be machine accepted directly."})
+    if not source:
+        blockers.append({"code": "fen_source_missing", "message": "Candidate source is required for machine acceptance."})
+    elif not _is_machine_accepted_source(source):
+        blockers.append({"code": "non_deterministic_source", "message": f"Source {source!r} is review-only for runtime acceptance."})
+    if confidence < min_confidence:
+        blockers.append(
+            {
+                "code": "confidence_below_runtime_threshold",
+                "message": "Candidate confidence is below the runtime acceptance threshold.",
+                "confidence": confidence,
+                "min_confidence": min_confidence,
+            }
+        )
+
+    validation = validate_fen_detailed(fen)
+    trace["fen_validation"] = {
+        "is_syntax_valid": validation.is_syntax_valid,
+        "is_legal_position": validation.is_legal_position,
+        "normalized_fen": validation.normalized_fen,
+        "errors": [issue.__dict__ for issue in validation.errors],
+        "warnings": [issue.__dict__ for issue in validation.warnings],
+    }
+    for issue in validation.errors:
+        blockers.append({"code": issue.code, "message": issue.message})
+
+    python_chess_result = _python_chess_validate(fen)
+    trace["python_chess"] = python_chess_result
+    if not python_chess_result.get("valid"):
+        blockers.append(
+            {
+                "code": "python_chess_invalid_position",
+                "message": python_chess_result.get("message") or "python-chess rejected the position.",
+                "details": python_chess_result,
+            }
+        )
+
+    warning_blockers = sorted(set(warnings) & MACHINE_BLOCKING_FEN_WARNINGS)
+    for warning in warning_blockers:
+        blockers.append({"code": warning, "message": "Recognizer warning blocks runtime machine acceptance."})
+
+    expected_fen = str(ctx.get("expected_fen") or "").strip()
+    if expected_fen and fen:
+        diff = compare_fen(fen, expected_fen)
+        trace["expected_fen_diff"] = diff
+        if diff.get("placement_diffs"):
+            blockers.append(
+                {
+                    "code": "expected_fen_square_mismatch",
+                    "message": "Candidate differs from expected/manual FEN evidence.",
+                    "square_diffs": diff.get("placement_diffs"),
+                }
+            )
+
+    accepted = not blockers
+    return {
+        "status": "accepted" if accepted else "review_required",
+        "runtime_status": "FEN_MACHINE_ACCEPTED" if accepted else "FEN_REVIEW_REQUIRED",
+        "selected_value": validation.normalized_fen if accepted else None,
+        "normalized_fen": validation.normalized_fen,
+        "acceptance_blockers": blockers,
+        "acceptance_trace": trace,
+        "acceptance_policy": "runtime_machine_acceptance_v1",
+    }
+
+
+def _candidate_confidence(candidate: dict[str, Any], *, default: Any = None) -> float:
+    value = candidate.get("confidence", default)
+    if isinstance(value, dict):
+        value = value.get("mean", value.get("global", value.get("score", 0.0)))
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _is_machine_accepted_source(source: str) -> bool:
+    normalized = str(source or "").strip().lower().replace("_", "-")
+    return any(normalized == item.replace("_", "-") for item in MACHINE_ACCEPTED_FEN_SOURCES)
+
+
+def _python_chess_validate(fen: str) -> dict[str, Any]:
+    try:
+        import chess  # type: ignore
+
+        board = chess.Board(fen)
+        status = int(board.status())
+        return {
+            "valid": bool(board.is_valid()),
+            "status": status,
+            "message": "" if board.is_valid() else f"python-chess status={status}",
+        }
+    except Exception as exc:
+        return {
+            "valid": False,
+            "status": "exception",
+            "message": f"{exc.__class__.__name__}: {exc}",
+        }
 
 
 def fen_to_cells(fen_or_placement: str) -> list[str]:

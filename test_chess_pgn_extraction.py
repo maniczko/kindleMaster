@@ -5,6 +5,7 @@ import io
 import unittest
 
 from bs4 import BeautifulSoup
+import chess
 import chess.pgn
 
 from chess_pgn_extractor import (
@@ -12,6 +13,13 @@ from chess_pgn_extractor import (
     ChessBookLayoutPage,
     ChessDiagramRecord,
     ChessPgnRecord,
+    DiagramSolutionCandidate,
+    _extract_pgn_tokens,
+    _legalize_san_token_with_board,
+    _normalize_ocr_san_token,
+    _prepare_mainline_token_source,
+    _select_diagram_mainline_candidate,
+    _split_candidate_game_blocks,
     annotate_records_with_replayed_fens,
     attach_fen_candidates_to_pgn_records,
     build_combined_pgn,
@@ -167,6 +175,134 @@ class ChessPgnExtractionTests(unittest.TestCase):
         self.assertIn('[SetUp "1"]', records[0].pgn)
         self.assertIn('[FEN "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]', records[0].pgn)
         self.assertTrue(build_combined_pgn(records).endswith("\n"))
+
+    def test_attach_fen_reconstructs_wrong_side_marker_before_replay(self) -> None:
+        records = extract_chess_pgn_records_from_text(
+            "Diagram 2-2\nScan sample\n1. e5 2. Nf3 Nc6 *",
+            page_num=21,
+            source_title="Scanned page",
+            ocr_confidence=0.9,
+        )
+
+        self.assertEqual(records[0].movetext, "1. e5 2. Nf3 Nc6 *")
+        records = attach_fen_candidates_to_pgn_records(
+            records,
+            ["rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1"],
+        )
+        records = annotate_records_with_replayed_fens(records)
+
+        self.assertEqual(records[0].status, "accepted")
+        self.assertIn("1... e5 2. Nf3 Nc6 *", records[0].movetext)
+        self.assertIn("side_to_move_marker_repaired", records[0].warnings)
+        self.assertNotIn("side_to_move_mismatch", records[0].warnings)
+        self.assertNotIn("move_number_jump", records[0].warnings)
+
+    def test_board_legalizer_repairs_unique_bare_square_candidate(self) -> None:
+        board = chess.Board("8/8/8/k1P5/1n5Q/8/1N2B3/7K w - - 2 2")
+
+        repaired, warnings = _legalize_san_token_with_board("e4", board)
+
+        self.assertEqual(repaired, "Qe4")
+        self.assertIn("san_board_legalization_used", warnings)
+        self.assertIn("san_board_unique_candidate_used", warnings)
+
+    def test_board_legalizer_repairs_unique_piece_move_candidate(self) -> None:
+        board = chess.Board("8/8/8/k1P5/1n5Q/8/1N2B3/7K w - - 2 2")
+
+        repaired, warnings = _legalize_san_token_with_board("Qd8", board)
+
+        self.assertEqual(repaired, "Qd8#")
+        self.assertIn("san_board_legalization_used", warnings)
+        self.assertIn("san_board_unique_candidate_used", warnings)
+
+    def test_board_legalizer_rejects_ambiguous_piece_move_candidate(self) -> None:
+        board = chess.Board("7k/8/8/8/8/1N3N2/8/K7 w - - 0 1")
+
+        repaired, warnings = _legalize_san_token_with_board("Nd4", board)
+
+        self.assertEqual(repaired, "Nd4")
+        self.assertEqual(warnings, ["san_board_ambiguous_candidate_rejected"])
+
+    def test_board_legalizer_rejects_ambiguous_promotion_square(self) -> None:
+        board = chess.Board("k7/3P4/K7/8/8/8/8/8 w - - 0 1")
+
+        repaired, warnings = _legalize_san_token_with_board("d8", board)
+
+        self.assertEqual(repaired, "d8")
+        self.assertEqual(warnings, ["san_board_ambiguous_candidate_rejected"])
+
+    def test_attach_fen_legalizes_unique_bare_square_before_replay(self) -> None:
+        records = extract_chess_pgn_records_from_text(
+            "Diagram 2-3\nScan sample\n1. e4 Na2 *",
+            page_num=22,
+            source_title="Scanned page",
+            ocr_confidence=0.9,
+        )
+
+        records = attach_fen_candidates_to_pgn_records(
+            records,
+            ["8/8/8/k1P5/1n5Q/8/1N2B3/7K w - - 0 1"],
+        )
+        records = annotate_records_with_replayed_fens(records)
+
+        self.assertEqual(records[0].status, "accepted")
+        self.assertIn("1. Qe4 Na2 *", records[0].movetext)
+        self.assertIn("san_board_unique_candidate_used", records[0].warnings)
+        self.assertTrue(records[0].final_fen)
+
+    def test_attach_fen_legalizes_black_to_move_fragment_before_replay(self) -> None:
+        records = extract_chess_pgn_records_from_text(
+            "Diagram 2-4\nScan sample\n1... e2 2. Na3 *",
+            page_num=23,
+            source_title="Scanned page",
+            ocr_confidence=0.9,
+        )
+
+        records = attach_fen_candidates_to_pgn_records(
+            records,
+            ["7k/1n2b3/8/1N5q/K1p5/8/8/8 b - - 0 1"],
+        )
+        records = annotate_records_with_replayed_fens(records)
+
+        self.assertEqual(records[0].status, "accepted")
+        self.assertIn("1... Qe2 2. Na3 *", records[0].movetext)
+        self.assertIn("san_board_unique_candidate_used", records[0].warnings)
+
+    def test_attach_fen_legalizes_black_to_move_second_fragment_before_replay(self) -> None:
+        records = extract_chess_pgn_records_from_text(
+            "Diagram 2-5\nScan sample\n2... e2 3. Na3 *",
+            page_num=24,
+            source_title="Scanned page",
+            ocr_confidence=0.9,
+        )
+
+        records = attach_fen_candidates_to_pgn_records(
+            records,
+            ["7k/1n2b3/8/1N5q/K1p5/8/8/8 b - - 0 2"],
+        )
+        records = annotate_records_with_replayed_fens(records)
+
+        self.assertEqual(records[0].status, "accepted")
+        self.assertIn("2... Qe2 3. Na3 *", records[0].movetext)
+        self.assertIn("san_board_unique_candidate_used", records[0].warnings)
+
+    def test_attach_fen_leaves_ambiguous_promotion_square_in_review(self) -> None:
+        records = extract_chess_pgn_records_from_text(
+            "Diagram 2-6\nScan sample\n1. d8 Ka7 *",
+            page_num=25,
+            source_title="Scanned page",
+            ocr_confidence=0.9,
+        )
+
+        records = attach_fen_candidates_to_pgn_records(
+            records,
+            ["k7/3P4/K7/8/8/8/8/8 w - - 0 1"],
+        )
+        records = annotate_records_with_replayed_fens(records)
+
+        self.assertEqual(records[0].status, "requires_review")
+        self.assertIn("san_board_ambiguous_candidate_rejected", records[0].warnings)
+        self.assertIn("pgn_replay_errors", records[0].warnings)
 
     def test_summary_and_html_render_acceptance_metrics(self) -> None:
         records = annotate_records_with_replayed_fens(extract_chess_pgn_records_from_text(
@@ -539,6 +675,21 @@ class ChessPgnExtractionTests(unittest.TestCase):
         self.assertEqual(records[0].status, "accepted")
         self.assertIn("1. e4 e5 2. Nf3 Nc6", records[0].movetext)
 
+    def test_duplicate_explicit_marker_is_suppressed_without_regression(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "1. e4 1... 1... e5 2. Nf3 Nc6 *",
+                page_num=1,
+                source_title="Duplicate marker",
+                ocr_confidence=1.0,
+            )
+        )
+
+        self.assertEqual(records[0].status, "accepted")
+        self.assertIn("1. e4 e5 2. Nf3 Nc6 *", records[0].movetext)
+        self.assertIn("duplicate_marker_suppressed", records[0].warnings)
+        self.assertNotIn("move_number_regression", records[0].warnings)
+
     def test_leading_page_fragment_before_explicit_move_is_not_inferred_as_move_one(self) -> None:
         records = extract_chess_pgn_records_from_text(
             "Kf7 25.Qh5+ Ke7\n26.Qxe5 Qa1+ *",
@@ -563,6 +714,111 @@ class ChessPgnExtractionTests(unittest.TestCase):
 
         self.assertIn("1. e4 e5 2. Nf3 Nc6", records[0].movetext)
         self.assertNotIn("Ra2", records[0].movetext)
+
+    def test_black_to_move_fragment_without_fen_stays_local_and_avoids_sequence_warnings(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "11... d5 12. Rxb7 Rd7 *",
+                page_num=33,
+                source_title="Continuation fragment",
+                ocr_confidence=1.0,
+            )
+        )
+
+        self.assertEqual(records[0].status, "requires_review")
+        self.assertIn("11... d5 12. Rxb7 Rd7 *", records[0].movetext)
+        self.assertEqual(records[0].warnings, ["pgn_replay_errors"])
+
+    def test_branching_analysis_line_with_embedded_moves_is_ignored_for_mainline_replay(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "1. e4 e5\n"
+                "White also loses after 2. Bc4 Qh4+ 3. Kf1 Qxf2#\n"
+                "2. Nf3 Nc6 3. Bb5 a6 1-0",
+                page_num=1,
+                source_title="Embedded analysis prose",
+                ocr_confidence=1.0,
+            )
+        )
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].status, "accepted")
+        self.assertEqual(records[0].warnings, [])
+        self.assertIn("1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 1-0", records[0].movetext)
+        self.assertNotIn("2. Bc4", records[0].movetext)
+        self.assertNotIn("Qxf2", records[0].movetext)
+
+    def test_diagram_segment_body_starts_at_first_safe_mainline_line(self) -> None:
+        text = (
+            "Diagram 7-3\n"
+            "B13: Caro-Kann sidelines including 2...Nf6 3.g3\n"
+            "White also loses after 2. Bc4 Qh4+ 3. Kf1 Qxf2#\n"
+            "1. e4 e5 2. Nf3 Nc6 1-0\n"
+        )
+
+        candidates = _split_candidate_game_blocks(text)
+
+        self.assertEqual(len(candidates), 1)
+        self.assertTrue(candidates[0]["body"].startswith("1. e4 e5"))
+        self.assertNotIn("White also loses after", candidates[0]["body"])
+
+    def test_after_and_or_analysis_lines_do_not_trigger_move_number_regression(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "1. e4 e5 2. Nf3 Nc6\n"
+                "After 2.Bc4 comes 2...Bc5 while 2.Kg2 loses to 2...Qh4#\n"
+                "Or 3.Bc4 Nf6 4.d3 Be7\n"
+                "3. Bb5 a6 1-0",
+                page_num=1,
+                source_title="After or analysis",
+                ocr_confidence=1.0,
+            )
+        )
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].status, "accepted")
+        self.assertEqual(records[0].warnings, [])
+        self.assertIn("1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 1-0", records[0].movetext)
+        self.assertNotIn("Bc4", records[0].movetext)
+        self.assertNotIn("move_number_regression", records[0].warnings)
+        self.assertNotIn("side_to_move_mismatch", records[0].warnings)
+
+    def test_prepare_mainline_token_source_drops_branching_commentary_lines_whole(self) -> None:
+        source = (
+            "1. e4 e5 2. Nf3 Nc6\n"
+            "After 2.Bc4 comes 2...Bc5 while 2.Kg2 loses to 2...Qh4#\n"
+            "Or 3.Bc4 Nf6 4.d3 Be7\n"
+            "3. Bb5 a6\n"
+            "due to 3...Nf6 4.O-O Be7\n"
+            "1-0\n"
+        )
+
+        prepared = _prepare_mainline_token_source(source)
+
+        self.assertIn("1. e4 e5 2. Nf3 Nc6", prepared)
+        self.assertIn("3. Bb5 a6", prepared)
+        self.assertIn("1-0", prepared)
+        self.assertNotIn("After 2.Bc4", prepared)
+        self.assertNotIn("Or 3.Bc4", prepared)
+        self.assertNotIn("due to 3...Nf6", prepared)
+
+    def test_alternative_prefix_line_is_ignored_for_strict_movetext(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "1. e4 e5 2. Nf3 Nc6 3. Bb5 a6\n"
+                "Black fights for the centre. A good alternative is 3...Nf6 4.O-O Be7.\n"
+                "4. Ba4 Nf6 1-0",
+                page_num=1,
+                source_title="Alternative prefix",
+                ocr_confidence=1.0,
+            )
+        )
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].status, "accepted")
+        self.assertEqual(records[0].warnings, [])
+        self.assertIn("1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 1-0", records[0].movetext)
+        self.assertNotIn("3... Nf6 4. O-O Be7", records[0].movetext)
 
     def test_keeps_continuation_move_before_next_move_number(self) -> None:
         records = annotate_records_with_replayed_fens(
@@ -625,6 +881,42 @@ class ChessPgnExtractionTests(unittest.TestCase):
         self.assertIn('class="chess-pgn-review"', html_parts[0])
         self.assertNotIn('class="chess-pgn"', html_parts[0])
 
+    def test_fundamenty_style_branch_line_is_removed_from_strict_movetext(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "1... Ne2+ 2. Kh1\n"
+                "White also loses after 3. Ng3+ 4. Kg1, due to 4...Nxf1\n"
+                "3... Bh5 0-1",
+                page_num=1,
+                source_title="Fundamenty branch",
+                ocr_confidence=1.0,
+            )
+        )
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].status, "requires_review")
+        self.assertIn("1... Ne2+ 2. Kh1 3... Bh5 0-1", records[0].movetext)
+        self.assertNotIn("Ng3+", records[0].movetext)
+        self.assertNotIn("Nxf1", records[0].movetext)
+        self.assertNotIn("move_number_regression", records[0].warnings)
+        self.assertIn("move_number_jump", records[0].warnings)
+        self.assertIn("side_to_move_mismatch", records[0].warnings)
+
+    def test_missing_ply_conflict_stays_review_without_truncating_to_prefix(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "1. e4 e5 3. Nf3 Nc6 *",
+                page_num=1,
+                source_title="Missing ply",
+                ocr_confidence=1.0,
+            )
+        )
+
+        self.assertEqual(records[0].status, "requires_review")
+        self.assertIn("1. e4 e5 3. Nf3 Nc6 *", records[0].movetext)
+        self.assertIn("move_number_jump", records[0].warnings)
+        self.assertIn("side_to_move_mismatch", records[0].warnings)
+
     def test_invalid_zero_move_number_blocks_pgn_export(self) -> None:
         records = annotate_records_with_replayed_fens(
             extract_chess_pgn_records_from_text(
@@ -666,6 +958,364 @@ class ChessPgnExtractionTests(unittest.TestCase):
         self.assertEqual(records[0].status, "requires_review")
         self.assertIn("move_number_jump", records[0].warnings)
         self.assertEqual(build_combined_pgn(records), "")
+
+    def test_notation_collection_adjacent_games_are_split_without_headers(self) -> None:
+        records = extract_chess_pgn_records_from_text(
+            "1. e4 e5 2. Nf3 Nc6 1-0\n"
+            "1. d4 d5 2. c4 e6 *",
+            page_num=2,
+            source_title="Adjacent collection",
+            ocr_confidence=1.0,
+        )
+
+        self.assertEqual(len(records), 2)
+        self.assertIn("1. e4 e5 2. Nf3 Nc6 1-0", records[0].movetext)
+        self.assertIn("1. d4 d5 2. c4 e6 *", records[1].movetext)
+
+    def test_short_branch_only_diagram_segment_does_not_create_record(self) -> None:
+        records = extract_chess_pgn_records_from_text(
+            "Diagram 5-1\nAfter 2.Bc4 comes 2...Bc5 while 2.Kg2 loses to 2...Qh4#\n",
+            page_num=5,
+            source_title="Branch only",
+            ocr_confidence=1.0,
+        )
+
+        self.assertEqual(records, [])
+
+    def test_diagram_if_line_is_suppressed_before_strict_movetext(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "Diagram 9-1\n"
+                "1... Rxh2! 2. gxh2 0-1\n"
+                "If 1... Rh1+ then 2. Bxf7+ Kh8 3. Qh5#\n",
+                page_num=9,
+                source_title="Diagram if branch",
+                ocr_confidence=1.0,
+            )
+        )
+
+        self.assertEqual(len(records), 1)
+        self.assertIn("1... Rxh2! 2. gxh2 0-1", records[0].movetext)
+        self.assertNotIn("Rh1+", records[0].movetext)
+        self.assertIn("diagram_branch_line_suppressed", records[0].warnings)
+
+    def test_diagram_black_cannot_accept_line_does_not_create_branch_record(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "Diagram 10-2\n"
+                "1... Rxh2! 2. gxh2 0-1\n"
+                "Black cannot accept 1...gxh5 because 2. Qh7#\n",
+                page_num=10,
+                source_title="Cannot accept",
+                ocr_confidence=1.0,
+            )
+        )
+
+        self.assertEqual(len(records), 1)
+        self.assertIn("1... Rxh2! 2. gxh2 0-1", records[0].movetext)
+        self.assertNotIn("1... gxh5", records[0].movetext)
+        self.assertEqual(records[0].warnings.count("diagram_branch_line_suppressed"), 1)
+
+    def test_diagram_illustrative_variation_line_with_semicolon_is_suppressed(self) -> None:
+        records = extract_chess_pgn_records_from_text(
+            "Diagram 11-4\n"
+            "1... Rxh2! 2. gxh2 0-1\n"
+            "1... Rh1+ 2. Bxf7+; 1... gxh5 2. Qh7#\n",
+            page_num=11,
+            source_title="Illustrative variation",
+            ocr_confidence=1.0,
+        )
+
+        self.assertEqual(len(records), 1)
+        self.assertIn("1... Rxh2! 2. gxh2 0-1", records[0].movetext)
+        self.assertIn("diagram_illustrative_variation_suppressed", records[0].warnings)
+
+    def test_diagram_multi_case_block_is_split_into_local_solution_blocks(self) -> None:
+        candidates = _split_candidate_game_blocks(
+            "Diagram 47-1\n"
+            "1. Qh7+ Kxh7 2. Rh1# 1-0\n"
+            "Variation from the game\n"
+            "1... gxh5 2. Qh7#\n"
+            "A useful drawing position\n"
+            "1... Rxh2! 2. gxh2 0-1\n"
+        )
+
+        self.assertEqual(len(candidates), 2)
+        self.assertIn("1. Qh7+ Kxh7 2. Rh1# 1-0", candidates[0]["body"])
+        self.assertIn("1... Rxh2! 2. gxh2 0-1", candidates[1]["body"])
+        self.assertIn("diagram_subblock_split_used", candidates[0]["warnings"])
+        self.assertIn("diagram_multi_case_block_detected", candidates[1]["warnings"])
+
+    def test_diagram_variation_from_game_branch_is_suppressed_before_solution_selection(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "Diagram 47-2\n"
+                "1. Qh7+ Kxh7 2. Rh1# 1-0\n"
+                "Variation from the game\n"
+                "1... gxh5 2. Qh7#\n",
+                page_num=47,
+                source_title="Variation branch",
+                ocr_confidence=1.0,
+            )
+        )
+
+        self.assertEqual(len(records), 1)
+        self.assertIn("1. Qh7+ Kxh7 2. Rh1# 1-0", records[0].movetext)
+        self.assertNotIn("1... gxh5", records[0].movetext)
+        self.assertIn("diagram_branch_example_suppressed", records[0].warnings)
+        self.assertIn("diagram_subblock_split_used", records[0].warnings)
+
+    def test_diagram_or_with_black_to_play_does_not_create_new_strict_record(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "Diagram 47-3\n"
+                "1. Qh7+ Kxh7 2. Rh1# 1-0\n"
+                "Or, with Black to play\n"
+                "1... Rh1+ 2. Bxf7+ Kh8\n",
+                page_num=47,
+                source_title="Black to play branch",
+                ocr_confidence=1.0,
+            )
+        )
+
+        self.assertEqual(len(records), 1)
+        self.assertIn("1. Qh7+ Kxh7 2. Rh1# 1-0", records[0].movetext)
+        self.assertNotIn("Rh1+", records[0].movetext)
+        self.assertIn("diagram_branch_example_suppressed", records[0].warnings)
+
+    def test_diagram_main_variation_and_wins_the_queen_lines_are_suppressed(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "Diagram 47-4\n"
+                "1. Qh7+ Kxh7 2. Rh1# 1-0\n"
+                "The main variation would go 1... Rh1+ 2. Bxf7+ Kg7\n"
+                "After 2... Qh4 White wins the queen\n",
+                page_num=47,
+                source_title="Main variation prose",
+                ocr_confidence=1.0,
+            )
+        )
+
+        self.assertEqual(len(records), 1)
+        self.assertIn("1. Qh7+ Kxh7 2. Rh1# 1-0", records[0].movetext)
+        self.assertNotIn("Rh1+", records[0].movetext)
+        self.assertIn("diagram_branch_example_suppressed", records[0].warnings)
+
+    def test_diagram_resigned_in_view_of_lines_do_not_pollute_solution_line(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "Diagram 47-5\n"
+                "1... Rxh2! 2. gxh2 0-1\n"
+                "White resigned, in view of 2... Qh1#\n"
+                "Black resigned, in view of 3. Rh8#\n",
+                page_num=47,
+                source_title="Resigned prose",
+                ocr_confidence=1.0,
+            )
+        )
+
+        self.assertEqual(len(records), 1)
+        self.assertIn("1... Rxh2! 2. gxh2 0-1", records[0].movetext)
+        self.assertNotIn("Qh1#", records[0].movetext)
+        self.assertNotIn("Rh8#", records[0].movetext)
+        self.assertIn("diagram_branch_example_suppressed", records[0].warnings)
+
+    def test_split_branch_block_does_not_emit_late_ply_tail_as_new_record(self) -> None:
+        records = extract_chess_pgn_records_from_text(
+            "Diagram 9-8 1967\n"
+            "1. Nb2 Nb4\n"
+            "1... Nd4 2. Qe1#; 1... Qd4 2. Qa4#\n"
+            "2. d8#\n",
+            page_num=96,
+            source_title="Late ply tail",
+            ocr_confidence=1.0,
+        )
+
+        self.assertEqual(len(records), 1)
+        self.assertIn("1. Nb2 Nb4", records[0].movetext)
+        self.assertNotIn("2. d8#", records[0].movetext)
+
+    def test_diagram_real_black_start_is_kept_as_single_candidate(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "Diagram 12-3\n"
+                "1... Rxh2! 2. gxh2 0-1\n",
+                page_num=12,
+                source_title="Real black start",
+                ocr_confidence=1.0,
+            )
+        )
+
+        self.assertEqual(len(records), 1)
+        self.assertIn("1... Rxh2! 2. gxh2 0-1", records[0].movetext)
+        self.assertNotIn("diagram_ambiguous_block_review", records[0].warnings)
+
+    def test_diagram_threat_line_is_removed_without_polluting_movetext(self) -> None:
+        records = extract_chess_pgn_records_from_text(
+            "Diagram 13-5\n"
+            "1. Qh7+ Kxh7 2. Rh1# 1-0\n"
+            "The threat is 1... Qh2+ 2. Kxh2 Rh8#\n",
+            page_num=13,
+            source_title="Threat prose",
+            ocr_confidence=1.0,
+        )
+
+        self.assertEqual(len(records), 1)
+        self.assertIn("1. Qh7+ Kxh7 2. Rh1# 1-0", records[0].movetext)
+        self.assertNotIn("Qh2+", records[0].movetext)
+
+    def test_diagram_continuation_lines_are_kept_only_without_branch_markers(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "Diagram 14-1\n"
+                "1. Qh7+ Kxh7\n"
+                "2. Rh1+ Kg8\n"
+                "3. Rh8+ Kxh8 1-0\n",
+                page_num=14,
+                source_title="Diagram continuation",
+                ocr_confidence=1.0,
+            )
+        )
+
+        self.assertEqual(len(records), 1)
+        self.assertIn("1. Qh7+ Kxh7 2. Rh1+ Kg8 3. Rh8+ Kxh8 1-0", records[0].movetext)
+
+    def test_diagram_ambiguous_two_candidates_force_review(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "Diagram 15-7\n"
+                "1. Qh7+ Kxh7 2. Rh1# 1-0\n"
+                "1. Bxf7+ Kxf7 2. Qh5+ 1-0\n",
+                page_num=15,
+                source_title="Ambiguous diagram",
+                ocr_confidence=1.0,
+            )
+        )
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].status, "requires_review")
+        self.assertIn("diagram_ambiguous_block_review", records[0].warnings)
+
+    def test_diagram_selector_prefers_candidate_closest_to_diagram_when_quality_is_equal(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "Diagram 16-2\n"
+                "1. Qh7+ Kxh7 2. Rh1# 1-0\n"
+                "Reference line\n"
+                "1. Bxf7+ Kxf7 2. Qh5+ 1-0\n",
+                page_num=16,
+                source_title="Closer candidate",
+                ocr_confidence=1.0,
+            )
+        )
+
+        self.assertEqual(len(records), 1)
+        self.assertIn("1. Qh7+ Kxh7 2. Rh1# 1-0", records[0].movetext)
+        self.assertIn("diagram_block_selector_used", records[0].warnings)
+        self.assertIn("diagram_solution_candidate_selected", records[0].warnings)
+
+    def test_diagram_selector_prefers_later_candidate_when_earlier_one_is_branch_example(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "Diagram 17-4\n"
+                "Black cannot accept the threat.\n"
+                "1... gxh5 2. Qh7#\n"
+                "1... Rxh2! 2. gxh2 0-1\n",
+                page_num=17,
+                source_title="Later non-branch candidate",
+                ocr_confidence=1.0,
+            )
+        )
+
+        self.assertEqual(len(records), 1)
+        self.assertIn("1... Rxh2! 2. gxh2 0-1", records[0].movetext)
+        self.assertNotIn("1... gxh5 2. Qh7#", records[0].movetext)
+        self.assertIn("diagram_branch_example_suppressed", records[0].warnings)
+
+    def test_diagram_selector_prefers_result_closed_candidate_when_other_scores_match(self) -> None:
+        open_candidate = DiagramSolutionCandidate(
+            source_lines=(),
+            start_line_index=1,
+            end_line_index=1,
+            normalized_text="1. Qh7+ Kxh7 2. Rh1#",
+            raw_text="1. Qh7+ Kxh7 2. Rh1#",
+            distance_from_diagram=0,
+            branch_example_score=(0, 0, 0),
+            has_result=False,
+            has_terminal_result=False,
+            has_tactical_finish=False,
+            sequence_risk_score=(0, 0, 0),
+            halfmove_count=3,
+        )
+        closed_candidate = DiagramSolutionCandidate(
+            source_lines=(),
+            start_line_index=2,
+            end_line_index=2,
+            normalized_text="1. Qh7+ Kxh7 2. Rh1# 1-0",
+            raw_text="1. Qh7+ Kxh7 2. Rh1# 1-0",
+            distance_from_diagram=0,
+            branch_example_score=(0, 0, 0),
+            has_result=True,
+            has_terminal_result=True,
+            has_tactical_finish=False,
+            sequence_risk_score=(0, 0, 0),
+            halfmove_count=3,
+        )
+
+        selected, force_review, warnings = _select_diagram_mainline_candidate([open_candidate, closed_candidate])
+
+        self.assertIs(selected, closed_candidate)
+        self.assertFalse(force_review)
+        self.assertEqual(warnings, ())
+
+    def test_diagram_selector_rejects_nonmonotonic_candidate_even_if_it_is_closer(self) -> None:
+        nonmonotonic = DiagramSolutionCandidate(
+            source_lines=(),
+            start_line_index=1,
+            end_line_index=1,
+            normalized_text="1. Qh7+ Kxh7 4. Rh1# 1-0",
+            raw_text="1. Qh7+ Kxh7 4. Rh1# 1-0",
+            distance_from_diagram=0,
+            branch_example_score=(0, 0, 0),
+            has_result=True,
+            has_terminal_result=True,
+            sequence_risk_score=(1, 0, 0),
+            halfmove_count=3,
+        )
+        monotonic = DiagramSolutionCandidate(
+            source_lines=(),
+            start_line_index=3,
+            end_line_index=3,
+            normalized_text="1. Qh7+ Kxh7 2. Rh1# 1-0",
+            raw_text="1. Qh7+ Kxh7 2. Rh1# 1-0",
+            distance_from_diagram=2,
+            branch_example_score=(0, 0, 0),
+            has_result=True,
+            has_terminal_result=True,
+            sequence_risk_score=(0, 0, 0),
+            halfmove_count=3,
+        )
+
+        selected, force_review, warnings = _select_diagram_mainline_candidate([nonmonotonic, monotonic])
+
+        self.assertIs(selected, monotonic)
+        self.assertFalse(force_review)
+        self.assertEqual(warnings, ())
+
+    def test_diagram_mating_finish_without_explicit_result_can_be_selected_when_clean(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "Diagram 18-1\n"
+                "1. Qh7+ Kxh7 2. Rh1#\n",
+                page_num=18,
+                source_title="Mate without result",
+                ocr_confidence=1.0,
+            )
+        )
+
+        self.assertEqual(len(records), 1)
+        self.assertIn("1. Qh7+ Kxh7 2. Rh1#", records[0].movetext)
+        self.assertNotIn("diagram_ambiguous_block_review", records[0].warnings)
 
     def test_wrong_side_move_number_blocks_pgn_export(self) -> None:
         records = annotate_records_with_replayed_fens(
@@ -1139,7 +1789,9 @@ Shuvalova, P - Bodnaruk, A [Kitty Kat] 1-0 (56)) 11.Nc7 Ra7 12.a3 b6 ]
         )
 
         self.assertEqual(len(records), 1)
-        self.assertEqual(records[0].warnings, [])
+        self.assertNotIn("move_number_jump", records[0].warnings)
+        self.assertNotIn("move_number_regression", records[0].warnings)
+        self.assertNotIn("side_to_move_mismatch", records[0].warnings)
         self.assertIn("1. d4 Nf6 2. Nc3 d5", records[0].movetext)
 
     def test_opening_descriptor_prefix_is_not_exported_as_game_moves(self) -> None:
@@ -1285,9 +1937,38 @@ Shuvalova, P - Bodnaruk, A [Kitty Kat] 1-0 (56)) 11.Nc7 Ra7 12.a3 b6 ]
         )
 
         self.assertEqual(len(records), 1)
-        self.assertEqual(records[0].warnings, [])
+        self.assertNotIn("move_number_jump", records[0].warnings)
+        self.assertNotIn("move_number_regression", records[0].warnings)
+        self.assertNotIn("side_to_move_mismatch", records[0].warnings)
         self.assertIn("2. Nc3 d5 3. Bf4 c5 4. e3 cxd4 5. exd4 a6", records[0].movetext)
         self.assertNotIn("0.", records[0].movetext)
+
+    def test_san_ocr_digit_suffix_tokens_are_normalized_with_audit_warnings(self) -> None:
+        repaired = [_normalize_ocr_san_token(value) for value in ("Rxh24", "Kxh24", "Rh2#4")]
+
+        self.assertEqual([token for token, _warnings in repaired], ["Rxh2", "Kxh2", "Rh2#"])
+        for _token, warnings in repaired:
+            self.assertIn("san_ocr_token_repaired", warnings)
+            self.assertIn("san_ocr_digit_suffix_suppressed", warnings)
+
+    def test_san_ocr_digit_prefix_tokens_are_normalized_with_audit_warnings(self) -> None:
+        repaired = [_normalize_ocr_san_token(value) for value in ("1d5", "8d5N")]
+
+        self.assertEqual([token for token, _warnings in repaired], ["d5", "d5"])
+        for _token, warnings in repaired:
+            self.assertIn("san_ocr_digit_prefix_suppressed", warnings)
+            self.assertIn("san_ocr_token_repaired", warnings)
+
+    def test_ambiguous_digit_prefixed_san_candidate_is_not_promoted(self) -> None:
+        token, warnings = _normalize_ocr_san_token("2xh2")
+
+        self.assertEqual(token, "")
+        self.assertEqual(warnings, [])
+
+    def test_annotation_noise_numbers_do_not_create_fake_san_tokens(self) -> None:
+        tokens = _extract_pgn_tokens("26!? 14! 7?")
+
+        self.assertEqual(tokens, [])
 
     def test_sensor_board_error_comment_does_not_create_fake_moves(self) -> None:
         records = annotate_records_with_replayed_fens(

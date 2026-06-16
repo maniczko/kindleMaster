@@ -23,6 +23,7 @@ import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -123,6 +124,36 @@ VARIATION_START_RE = re.compile(
     r"(?:(?:Or\s+)?\d+\.(?:\.\.)?|[a-z]\)\s*\d+\.(?:\.\.)?)",
     re.IGNORECASE,
 )
+TEXT_REPAIR_MOJIBAKE_RE = re.compile(r"[ĂÂâĹËÅÃÄ]|(?:\u00ad|\xa0)")
+PDF_SPLIT_WORD_RE = re.compile(
+    r"\b([A-Za-z\u00C0-\u00FF\u0100-\u017E]{2,18})\s+([A-Za-z\u00C0-\u00FF\u0100-\u017E]{2,12})\b"
+)
+TEXT_REPAIR_SIGNAL_RE = re.compile(
+    rf"(?:{TEXT_REPAIR_MOJIBAKE_RE.pattern})|(?:{PDF_SPLIT_WORD_RE.pattern})"
+)
+CHESS_SAN_TOKEN_PATTERN = r"(?:O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?)"
+CHESS_EVAL_TOKEN_PATTERN = r"(?:\+\u2013|\u2013\+|\+=|=\+|\u00b1|\u2213)"
+CHESS_MATE_RE = re.compile(rf"({CHESS_SAN_TOKEN_PATTERN})\s+mate\b(?!\s+in\b)", re.IGNORECASE)
+CHESS_PLUS_RE = re.compile(rf"({CHESS_SAN_TOKEN_PATTERN})\s+\+(?=[!?.,;:]|\s|$)")
+CHESS_HASH_RE = re.compile(rf"({CHESS_SAN_TOKEN_PATTERN})\s+#(?=[!?.,;:]|\s|$)")
+CHESS_EVAL_SPLIT_RE = re.compile(rf"(?<=[A-Za-z0-9])([+#])\s*({CHESS_EVAL_TOKEN_PATTERN})")
+CHESS_TEXT_HASH_RE = re.compile(r"([A-Za-z]{3,})#(?=\s)")
+CHESS_WITH_HASH_RE = re.compile(r"\bwith\s+#(?=\s|[.,;:!?]|$)", re.IGNORECASE)
+CHESS_AVOID_HASH_RE = re.compile(r"\bavoid\s+#(?=\s|[.,;:!?]|$)", re.IGNORECASE)
+CHESS_BACK_RANK_HASH_RE = re.compile(r"\bback-rank\s+#(?=\s|[.,;:!?]|$)", re.IGNORECASE)
+CHESS_SMOTHERED_HASH_RE = re.compile(r"\bsmothered\s+#(?=\s|[.,;:!?]|$)", re.IGNORECASE)
+CHESS_OF_HASH_RE = re.compile(r"\bof\s+#(?=\s|[.,;:!?]|$)", re.IGNORECASE)
+CHESS_THE_HASH_RE = re.compile(r"\bthe\s+#(?=\s|[.,;:!?]|$)", re.IGNORECASE)
+CHESS_PLUS_ANNOTATION_RE = re.compile(r"\+\s+([!?])")
+CHESS_HASH_ANNOTATION_RE = re.compile(r"#\s+([!?])")
+MULTISPACE_RE = re.compile(r"\s{2,}")
+NORMALIZE_WHITESPACE_RE = re.compile(r"\s+")
+DIGIT_CAMEL_SPLIT_RE = re.compile(r"(?<=[0-9])(?=[A-Z][a-z])")
+DIGIT_MATE_SPLIT_RE = re.compile(r"(?<=[0-9])(?=mate\b)")
+PUNCT_CAPITAL_SPLIT_RE = re.compile(r"(?<=[!?])(?=[A-Z][a-z])")
+SYMBOL_CAPITAL_SPLIT_RE = re.compile(r"(?<=[\u2713\u2020\u2021])(?=[A-Z][a-z])")
+WORD_SYMBOL_SPLIT_RE = re.compile(r"(?<=\w)([\u2713\u2020\u2021])")
+PUNCTUATION_SPACE_RE = re.compile(r"\s+([,.;:!?])")
 MOJIBAKE_MAP = {
     "BABOKŽ": "BABOK®",
     "IIBAŽ": "IIBA®",
@@ -469,6 +500,7 @@ SPLIT_JOIN_STOPWORDS = {
     "it", "of", "on", "or", "the", "to", "up", "we", "w", "z", "i", "na", "do", "od",
     "o", "u", "że", "się", "czy", "nie", "oraz", "ale", "po", "za", "dla", "pod", "nad",
 }
+SPLIT_JOIN_SUFFIX_FRAGMENTS = {"ści", "sci"}
 MAGAZINE_TOC_LINE_RE = re.compile(r"^(?P<page>\d{1,3})\.\s+(?P<title>.+)$")
 MAGAZINE_SPECIAL_TITLE_RE = re.compile(
     r"(?i)^(?:galeria|gallery|reklama|advertisement|ad|materia[łl]\s+sponsorowany|material\s+sponsorowany|sponsored|sponsored\s+content|advertorial)\b"
@@ -3949,7 +3981,7 @@ def _strip_heading_artifacts(text: str, *, chapter_title: str, heading_texts: li
                 normalized = simple_leading_pattern.sub("", normalized, count=1)
 
     normalized = re.sub(r"^\d+(?:\.\d+)*\s+", "", normalized)
-    normalized = re.sub(r"\s+", " ", normalized)
+    normalized = NORMALIZE_WHITESPACE_RE.sub(" ", normalized)
     return normalized.strip()
 
 
@@ -11269,6 +11301,7 @@ def _merge_separator(previous_text: str, current_text: str) -> str:
     return " "
 
 
+@lru_cache(maxsize=16384)
 def _lexical_zipf(word: str) -> float:
     if not word or _zipf_frequency is None:
         return 0.0
@@ -11285,7 +11318,7 @@ def _should_join_split_word(left: str, right: str) -> bool:
     if len(left_clean) < 2 or len(right_clean) < 2:
         return False
     total_len = len(left_clean) + len(right_clean)
-    if total_len < 6 or total_len > 22:
+    if total_len < 5 or total_len > 22:
         return False
     left_is_stop = left_clean.lower() in SPLIT_JOIN_STOPWORDS
     right_is_stop = right_clean.lower() in SPLIT_JOIN_STOPWORDS
@@ -11302,6 +11335,10 @@ def _should_join_split_word(left: str, right: str) -> bool:
         return False
     if (left_score <= 1.8 or right_score <= 1.8) and joined_score >= 3.0:
         return True
+    if left_score == 0.0 and right_clean.lower() in SPLIT_JOIN_SUFFIX_FRAGMENTS and len(left_clean) >= 6:
+        return True
+    if left_score == 0.0 and len(right_clean) <= 4 and right_score >= 2.0 and joined_score >= 2.0:
+        return True
     if min(len(left_clean), len(right_clean)) <= 3 and joined_score >= 3.5 and joined_score >= max(left_score, right_score) - 1.4:
         return True
     if joined_score >= max(left_score, right_score) + 1.15:
@@ -11314,8 +11351,9 @@ def _should_join_split_word(left: str, right: str) -> bool:
 def _repair_pdf_split_words(text: str) -> str:
     if not text or " " not in text:
         return text
+    if not PDF_SPLIT_WORD_RE.search(text):
+        return text
 
-    pattern = re.compile(r"\b([A-Za-zÀ-ÿĀ-ž]{2,10})\s+([A-Za-zÀ-ÿĀ-ž]{2,14})\b")
     repaired = text
     for _ in range(3):
         changed = False
@@ -11328,7 +11366,7 @@ def _repair_pdf_split_words(text: str) -> str:
                 return f"{left}{right}"
             return match.group(0)
 
-        repaired = pattern.sub(_replace, repaired)
+        repaired = PDF_SPLIT_WORD_RE.sub(_replace, repaired)
         if not changed:
             break
     return repaired
@@ -11336,6 +11374,10 @@ def _repair_pdf_split_words(text: str) -> str:
 
 def _repair_text_node(node_text: str) -> str:
     repaired = node_text or ""
+    if not repaired:
+        return repaired
+    if repaired.isascii() and not TEXT_REPAIR_SIGNAL_RE.search(repaired):
+        return repaired
     if _ftfy_fix_text is not None:
         try:
             repaired = _ftfy_fix_text(repaired)
@@ -11365,33 +11407,32 @@ def _normalize_text_light(text: str) -> str:
     for broken, fixed in MOJIBAKE_MAP.items():
         normalized = normalized.replace(broken, fixed)
     normalized = REGISTERED_SUFFIX_MOJIBAKE_RE.sub(r"\g<word>®", normalized)
-    return re.sub(r"\s+", " ", normalized).strip()
+    normalized = _repair_pdf_split_words(normalized)
+    return NORMALIZE_WHITESPACE_RE.sub(" ", normalized).strip()
 
 
 def _normalize_chess_notation_text(text: str) -> str:
     normalized = text or ""
-    san_token = r"(?:O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?)"
-    eval_token = r"(?:\+\u2013|\u2013\+|\+=|=\+|\u00b1|\u2213)"
     normalized = normalized.replace("â€ ", "\u2020").replace("â€ˇ", "\u2021").replace("âś“", "\u2713")
     normalized = normalized.replace("1–0", "1-0").replace("0–1", "0-1").replace("½–½", "½-½")
     normalized = normalized.replace("0.5–0.5", "0.5-0.5")
     normalized = DAGGER_RE.sub("+", normalized)
     normalized = CHECKMARK_RE.sub(" ", normalized)
     normalized = PROMOTION_SPACING_RE.sub(r"=\1", normalized)
-    normalized = re.sub(rf"({san_token})\s+mate\b(?!\s+in\b)", r"\1#", normalized, flags=re.IGNORECASE)
-    normalized = re.sub(rf"({san_token})\s+\+(?=[!?.,;:]|\s|$)", r"\1+", normalized)
-    normalized = re.sub(rf"({san_token})\s+#(?=[!?.,;:]|\s|$)", r"\1#", normalized)
-    normalized = re.sub(rf"(?<=[A-Za-z0-9])([+#])\s*({eval_token})", r"\1 (\2)", normalized)
-    normalized = re.sub(r"([A-Za-z]{3,})#(?=\s)", r"\1 #", normalized)
-    normalized = re.sub(r"\bwith\s+#(?=\s|[.,;:!?]|$)", "with mate", normalized, flags=re.IGNORECASE)
-    normalized = re.sub(r"\bavoid\s+#(?=\s|[.,;:!?]|$)", "avoid mate", normalized, flags=re.IGNORECASE)
-    normalized = re.sub(r"\bback-rank\s+#(?=\s|[.,;:!?]|$)", "back-rank mate", normalized, flags=re.IGNORECASE)
-    normalized = re.sub(r"\bsmothered\s+#(?=\s|[.,;:!?]|$)", "smothered mate", normalized, flags=re.IGNORECASE)
-    normalized = re.sub(r"\bof\s+#(?=\s|[.,;:!?]|$)", "of mate", normalized, flags=re.IGNORECASE)
-    normalized = re.sub(r"\bthe\s+#(?=\s|[.,;:!?]|$)", "the mate", normalized, flags=re.IGNORECASE)
-    normalized = re.sub(r"\+\s+([!?])", r"+\1", normalized)
-    normalized = re.sub(r"#\s+([!?])", r"#\1", normalized)
-    normalized = re.sub(r"\s{2,}", " ", normalized)
+    normalized = CHESS_MATE_RE.sub(r"\1#", normalized)
+    normalized = CHESS_PLUS_RE.sub(r"\1+", normalized)
+    normalized = CHESS_HASH_RE.sub(r"\1#", normalized)
+    normalized = CHESS_EVAL_SPLIT_RE.sub(r"\1 (\2)", normalized)
+    normalized = CHESS_TEXT_HASH_RE.sub(r"\1 #", normalized)
+    normalized = CHESS_WITH_HASH_RE.sub("with mate", normalized)
+    normalized = CHESS_AVOID_HASH_RE.sub("avoid mate", normalized)
+    normalized = CHESS_BACK_RANK_HASH_RE.sub("back-rank mate", normalized)
+    normalized = CHESS_SMOTHERED_HASH_RE.sub("smothered mate", normalized)
+    normalized = CHESS_OF_HASH_RE.sub("of mate", normalized)
+    normalized = CHESS_THE_HASH_RE.sub("the mate", normalized)
+    normalized = CHESS_PLUS_ANNOTATION_RE.sub(r"+\1", normalized)
+    normalized = CHESS_HASH_ANNOTATION_RE.sub(r"#\1", normalized)
+    normalized = MULTISPACE_RE.sub(" ", normalized)
     return normalized
 
 
@@ -11414,14 +11455,15 @@ def _normalize_text(text: str) -> str:
         normalized = _normalize_chess_notation_text(normalized)
     normalized = EMAIL_RE.sub("", normalized)
     normalized = MEMBER_COPY_RE.sub("", normalized)
-    normalized = re.sub(r"\s+", " ", normalized)
+    normalized = _repair_pdf_split_words(normalized)
+    normalized = NORMALIZE_WHITESPACE_RE.sub(" ", normalized)
     normalized = INLINE_EVAL_RE.sub(r"\1 ", normalized)
-    normalized = re.sub(r"(?<=[0-9])(?=[A-Z][a-z])", " ", normalized)
-    normalized = re.sub(r"(?<=[0-9])(?=mate\b)", " ", normalized)
-    normalized = re.sub(r"(?<=[!?])(?=[A-Z][a-z])", " ", normalized)
-    normalized = re.sub(r"(?<=[✓†‡])(?=[A-Z][a-z])", " ", normalized)
-    normalized = re.sub(r"(?<=\w)([✓†‡])", r" \1", normalized)
-    normalized = re.sub(r"\s+([,.;:!?])", r"\1", normalized)
+    normalized = DIGIT_CAMEL_SPLIT_RE.sub(" ", normalized)
+    normalized = DIGIT_MATE_SPLIT_RE.sub(" ", normalized)
+    normalized = PUNCT_CAPITAL_SPLIT_RE.sub(" ", normalized)
+    normalized = SYMBOL_CAPITAL_SPLIT_RE.sub(" ", normalized)
+    normalized = WORD_SYMBOL_SPLIT_RE.sub(r" \1", normalized)
+    normalized = PUNCTUATION_SPACE_RE.sub(r"\1", normalized)
     return normalized.strip()
 
 
@@ -11454,13 +11496,14 @@ def _sanitize_inline_html(fragment_html: str) -> str:
     normalized = UNSAFE_INLINE_TAG_RE.sub("&lt;", normalized)
     normalized = EMAIL_RE.sub("", normalized)
     normalized = MEMBER_COPY_RE.sub("", normalized)
-    normalized = re.sub(r"[ \t\r\n]+", " ", normalized)
+    normalized = _repair_pdf_split_words(normalized)
+    normalized = NORMALIZE_WHITESPACE_RE.sub(" ", normalized)
     normalized = INLINE_EVAL_RE.sub(r"\1 ", normalized)
-    normalized = re.sub(r"(?<=[0-9])(?=[A-Z][a-z])", " ", normalized)
-    normalized = re.sub(r"(?<=[0-9])(?=mate\b)", " ", normalized)
-    normalized = re.sub(r"(?<=[!?])(?=[A-Z][a-z])", " ", normalized)
-    normalized = re.sub(r"(?<=[✓†‡])(?=[A-Z][a-z])", " ", normalized)
-    normalized = re.sub(r"\s+([,.;:!?])", r"\1", normalized)
+    normalized = DIGIT_CAMEL_SPLIT_RE.sub(" ", normalized)
+    normalized = DIGIT_MATE_SPLIT_RE.sub(" ", normalized)
+    normalized = PUNCT_CAPITAL_SPLIT_RE.sub(" ", normalized)
+    normalized = SYMBOL_CAPITAL_SPLIT_RE.sub(" ", normalized)
+    normalized = PUNCTUATION_SPACE_RE.sub(r"\1", normalized)
     return normalized.strip()
 
 

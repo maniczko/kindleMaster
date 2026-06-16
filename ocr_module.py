@@ -10,13 +10,18 @@ Priority order:
 4. PyMuPDF page rendering + text heuristics - last resort
 """
 
+import base64
+import gzip
+import hashlib
 import io
+import json
 import os
+import shutil
 import subprocess
 import tempfile
-from pathlib import Path
-from typing import Optional
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Optional
 
 from PIL import Image, ImageOps
 import fitz  # PyMuPDF
@@ -50,6 +55,137 @@ class OCRResult:
     engine_used: str  # "tesseract", "easyocr", "pymupdf_fallback"
     total_pages: int
     success_rate: float  # 0.0 to 1.0
+
+
+OCR_CACHE_VERSION = 1
+OCRMY_PDF_TEMP_PREFIX = "kindlemaster-ocrmypdf-"
+
+
+def _ocr_cache_root() -> Path:
+    configured = os.environ.get("KINDLEMASTER_OCR_CACHE_ROOT", "").strip()
+    if configured:
+        return Path(configured)
+    return Path("output") / "cache" / "ocr"
+
+
+def _cleanup_ocrmypdf_temp_output(output_pdf: Path) -> None:
+    temp_root = output_pdf.parent
+    if not temp_root.name.startswith(OCRMY_PDF_TEMP_PREFIX):
+        return
+    try:
+        shutil.rmtree(temp_root, ignore_errors=True)
+    except OSError:
+        pass
+
+
+def clear_ocr_cache(*, root: str | Path | None = None) -> None:
+    cache_root = Path(root) if root is not None else _ocr_cache_root()
+    if not cache_root.exists():
+        return
+    for cache_path in cache_root.glob("*.json.gz"):
+        try:
+            cache_path.unlink()
+        except OSError:
+            continue
+
+
+def _ocr_cache_key(pdf_path: str, *, language: str, dpi: int) -> tuple[str, dict[str, Any]]:
+    source_path = Path(pdf_path).resolve()
+    stat = source_path.stat()
+    resolved_language = resolve_ocr_language(language)
+    key_payload = {
+        "version": OCR_CACHE_VERSION,
+        "source_path": str(source_path),
+        "source_size_bytes": int(stat.st_size),
+        "source_mtime_ns": int(stat.st_mtime_ns),
+        "language": resolved_language,
+        "dpi": int(dpi),
+    }
+    key = hashlib.sha256(json.dumps(key_payload, sort_keys=True).encode("utf-8")).hexdigest()
+    return key, key_payload
+
+
+def _ocr_cache_path(pdf_path: str, *, language: str, dpi: int) -> Path:
+    key, _payload = _ocr_cache_key(pdf_path, language=language, dpi=dpi)
+    return _ocr_cache_root() / f"{key}.json.gz"
+
+
+def _serialize_ocr_result(result: OCRResult) -> dict[str, Any]:
+    return {
+        "engine_used": result.engine_used,
+        "total_pages": int(result.total_pages),
+        "success_rate": float(result.success_rate),
+        "pages": [
+            {
+                "page_num": int(page.page_num),
+                "text": str(page.text),
+                "confidence": float(page.confidence),
+                "image_width": int(page.image_width),
+                "image_height": int(page.image_height),
+                "image_data": base64.b64encode(page.image_data).decode("ascii"),
+                "words": list(page.words) if isinstance(page.words, list) else None,
+            }
+            for page in result.pages
+        ],
+    }
+
+
+def _deserialize_ocr_result(payload: dict[str, Any]) -> OCRResult:
+    pages = []
+    for page_payload in payload.get("pages", []) or []:
+        image_data = str(page_payload.get("image_data", "") or "")
+        pages.append(
+            OCRPageResult(
+                page_num=int(page_payload.get("page_num", 0) or 0),
+                text=str(page_payload.get("text", "") or ""),
+                confidence=float(page_payload.get("confidence", 0.0) or 0.0),
+                image_data=base64.b64decode(image_data.encode("ascii")) if image_data else b"",
+                image_width=int(page_payload.get("image_width", 0) or 0),
+                image_height=int(page_payload.get("image_height", 0) or 0),
+                words=list(page_payload.get("words", []) or []) or None,
+            )
+        )
+    return OCRResult(
+        pages=pages,
+        engine_used=str(payload.get("engine_used", "") or ""),
+        total_pages=int(payload.get("total_pages", len(pages)) or len(pages)),
+        success_rate=float(payload.get("success_rate", 0.0) or 0.0),
+    )
+
+
+def _read_ocr_cache(pdf_path: str, *, language: str, dpi: int) -> OCRResult | None:
+    cache_path = _ocr_cache_path(pdf_path, language=language, dpi=dpi)
+    if not cache_path.exists():
+        return None
+    try:
+        with gzip.open(cache_path, "rt", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        cache_key = payload.get("cache_key")
+        if not isinstance(cache_key, dict):
+            return None
+        _expected_key, expected_payload = _ocr_cache_key(pdf_path, language=language, dpi=dpi)
+        if cache_key != expected_payload:
+            return None
+        result_payload = payload.get("result")
+        if not isinstance(result_payload, dict):
+            return None
+        return _deserialize_ocr_result(result_payload)
+    except Exception:
+        return None
+
+
+def _write_ocr_cache(pdf_path: str, *, language: str, dpi: int, result: OCRResult) -> None:
+    cache_path = _ocr_cache_path(pdf_path, language=language, dpi=dpi)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    _cache_hash, cache_key = _ocr_cache_key(pdf_path, language=language, dpi=dpi)
+    payload = {
+        "cache_key": cache_key,
+        "result": _serialize_ocr_result(result),
+    }
+    temp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
+    with gzip.open(temp_path, "wt", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False)
+    temp_path.replace(cache_path)
 
 
 def get_best_available_engine() -> str:
@@ -159,7 +295,7 @@ def ocr_pdf_with_ocrmypdf(pdf_path: str, language: str = "pol") -> Optional[Path
     if not ocrmypdf_path:
         return None
 
-    output_dir = Path(tempfile.mkdtemp(prefix="kindlemaster-ocrmypdf-"))
+    output_dir = Path(tempfile.mkdtemp(prefix=OCRMY_PDF_TEMP_PREFIX))
     output_pdf = output_dir / "ocr_output.pdf"
     resolved_language = resolve_ocr_language(language)
     command = [
@@ -414,9 +550,18 @@ def run_ocr_on_pdf(pdf_path: str, language: str = "pol", dpi: int = 300) -> OCRR
     Returns:
         OCRResult with all pages processed
     """
+    cached_result = _read_ocr_cache(pdf_path, language=language, dpi=dpi)
+    if cached_result is not None:
+        return cached_result
+
     ocrmypdf_output = ocr_pdf_with_ocrmypdf(pdf_path, language=language)
     if ocrmypdf_output is not None:
-        return _ocr_result_from_pdf_text(str(ocrmypdf_output), engine_used="ocrmypdf", dpi=dpi)
+        try:
+            result = _ocr_result_from_pdf_text(str(ocrmypdf_output), engine_used="ocrmypdf", dpi=dpi)
+        finally:
+            _cleanup_ocrmypdf_temp_output(ocrmypdf_output)
+        _write_ocr_cache(pdf_path, language=language, dpi=dpi, result=result)
+        return result
 
     doc = fitz.open(pdf_path)
     pages_results = []
@@ -441,12 +586,14 @@ def run_ocr_on_pdf(pdf_path: str, language: str = "pol", dpi: int = 300) -> OCRR
 
     avg_success = total_confidence / len(pages_results) if pages_results else 0.0
 
-    return OCRResult(
+    result = OCRResult(
         pages=pages_results,
         engine_used=engine,
         total_pages=len(pages_results),
         success_rate=avg_success,
     )
+    _write_ocr_cache(pdf_path, language=language, dpi=dpi, result=result)
+    return result
 
 
 def install_ocr_instructions() -> str:

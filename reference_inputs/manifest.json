@@ -53,7 +53,7 @@
       "notes": "Dense handbook fixture for heading, TOC, and text-cleanup regression.",
       "source_path": "<generated-fallback:dense_business_guide_pdf>",
       "target_path": "reference_inputs/pdf/dense_business_guide.pdf",
-      "size_bytes": 5316
+      "size_bytes": 5326
     },
     {
       "id": "diagram_training_book_pdf",
@@ -66,7 +66,24 @@
       "notes": "Training/diagram-heavy PDF for layout-sensitive smoke runs.",
       "source_path": "<generated-fallback:diagram_training_book_pdf>",
       "target_path": "reference_inputs/pdf/diagram_training_book.pdf",
-      "size_bytes": 5336
+      "size_bytes": 5346
+    },
+    {
+      "id": "fundamenty_scan_chess_pdf",
+      "document_class": "diagram_training_book",
+      "input_type": "pdf",
+      "language": "pl",
+      "quick_smoke": false,
+      "release_strict": false,
+      "source": "reference_inputs/pdf/fundamenty_1_1_scan_chess.pdf",
+      "target": "reference_inputs/pdf/fundamenty_1_1_scan_chess.pdf",
+      "notes": "Image-only Polish chess training book fixture for scanned-board FEN recognition.",
+      "chess_fen_seed_labels": "reference_inputs/chess_fen/labels/fundamenty_seed_positions.jsonl",
+      "chess_fen_template_profile": "fundamenty_merida_like",
+      "chess_fen_seed_exact_accuracy_min": 0.9,
+      "source_path": "<generated-fallback:fundamenty_scan_chess_pdf>",
+      "target_path": "reference_inputs/pdf/fundamenty_1_1_scan_chess.pdf",
+      "size_bytes": 5393
     },
     {
       "id": "magazine_layout_pdf",
@@ -145,7 +162,7 @@
       "generator": "list_table_image",
       "source_path": "<generated:list_table_image>",
       "target_path": "reference_inputs/docx/list_table_image.docx",
-      "size_bytes": 38816
+      "size_bytes": 38819
     },
     {
       "id": "no_heading_document_docx",
@@ -158,7 +175,7 @@
       "generator": "no_heading_document",
       "source_path": "<generated:no_heading_document>",
       "target_path": "reference_inputs/docx/no_heading_document.docx",
-      "size_bytes": 35560
+      "size_bytes": 35563
     }
   ]
 }

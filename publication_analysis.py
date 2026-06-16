@@ -33,6 +33,7 @@ CHESS_MOVE_TOKEN_RE = re.compile(
 CHESS_GAME_META_RE = re.compile(
     r"(?i)\b(?:[A-E][0-9]{2}|blitz|rapid|classical|white|black|variation|attack|defen[cs]e|gambit|titled|chess)\b"
 )
+CHESS_DIAGRAM_CAPTION_RE = re.compile(r"(?i)\bDiagram\s+\d{1,2}\s*[-.]\s*\d{1,2}\b")
 LARGE_DOCUMENT_SAMPLE_ANALYSIS_MIN_PAGES = 360
 LARGE_DOCUMENT_SAMPLE_HEAD_PAGES = 24
 LARGE_DOCUMENT_SPARSE_SAMPLE_PAGES = 24
@@ -476,7 +477,7 @@ def _detect_chess_notation_collection(
     reading value is SAN/PGN notation text, so they need a notation-first path
     that does not rasterize every embedded board image.
     """
-    if total_pages < 40:
+    if total_pages < 8:
         return False
     if text_page_ratio < 0.65 or scanned_page_ratio >= 0.25:
         return False
@@ -485,6 +486,7 @@ def _detect_chess_notation_collection(
 
     notation_pages = 0
     meta_pages = 0
+    diagram_caption_pages = 0
     total_tokens = 0
     for text in sample_texts[:24]:
         normalized = re.sub(r"\s+", " ", text or "").strip()
@@ -493,13 +495,20 @@ def _detect_chess_notation_collection(
         tokens = CHESS_MOVE_TOKEN_RE.findall(normalized)
         token_count = len(tokens)
         total_tokens += token_count
+        if CHESS_DIAGRAM_CAPTION_RE.search(normalized):
+            diagram_caption_pages += 1
         if token_count >= 8:
             notation_pages += 1
         if token_count >= 4 and CHESS_GAME_META_RE.search(normalized):
             meta_pages += 1
 
     sampled_pages = max(1, len([text for text in sample_texts[:24] if str(text or "").strip()]))
-    return notation_pages >= 3 and meta_pages >= 2 and total_tokens >= max(24, sampled_pages * 4)
+    if notation_pages >= 3 and meta_pages >= 2 and total_tokens >= max(24, sampled_pages * 4):
+        return True
+    return (
+        diagram_caption_pages >= 2
+        and total_tokens >= max(8, sampled_pages * 2)
+    )
 
 
 def _page_text_spans(page: fitz.Page, page_num: int) -> list[SimpleNamespace]:

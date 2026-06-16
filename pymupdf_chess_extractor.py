@@ -58,6 +58,7 @@ from chess_pgn_extractor import (
     annotate_records_with_replayed_fens,
     attach_fen_candidates_to_pgn_records,
     build_combined_pgn,
+    build_exercises_pgn,
     build_pgn_download_html,
     extract_chess_pgn_records_from_text,
     merge_chess_pgn_continuation_records,
@@ -149,6 +150,16 @@ class TextLineItem:
     y: float
     x0: float = 0.0
     x1: float = 0.0
+
+
+@dataclass
+class DiagramCaptionMatch:
+    diagram_number: str
+    text: str
+    bbox: tuple[float, float, float, float]
+    distance: float
+    score: int
+    confidence: float
 
 
 def _bbox_is_inside(inner: tuple, outer: tuple, margin: float = 1.5) -> bool:
@@ -842,7 +853,7 @@ def extract_chess_notation_pdf_reflow(
         record.setdefault("source_order", source_order)
 
     chess_pgn_records = merge_chess_pgn_continuation_records(chess_pgn_records)
-    chess_pgn_summary = summarize_chess_pgn_records(chess_pgn_records)
+    chess_pgn_summary = summarize_chess_pgn_records(chess_pgn_records, diagram_records=notation_diagram_records)
     audit_metadata = dict(metadata.get("audit") or {})
     audit_metadata.update(
         {
@@ -876,6 +887,20 @@ def extract_chess_notation_pdf_reflow(
                 "diagram_count": len(notation_diagram_records) or int(chess_pgn_summary.get("candidate_game_count", 0) or 0),
                 "fen_count": len([record for record in notation_diagram_records if record.get("fen")]) + int(chess_pgn_summary.get("fen_count", 0) or 0),
                 "manual_review_count": int(chess_pgn_summary.get("manual_review_count", 0) or 0),
+                "caption_match_count": len([record for record in notation_diagram_records if int(record.get("caption_match_score") or 0) > 0]),
+                "caption_number_count": len([record for record in notation_diagram_records if str(record.get("diagram_number") or "").strip()]),
+                "caption_guided_candidate_count": len(
+                    [
+                        record
+                        for record in notation_diagram_records
+                        if "caption_guided" in str(record.get("method") or "")
+                        or "caption_guided_board_candidate" in {str(warning) for warning in (record.get("warnings") or [])}
+                    ]
+                ),
+                "board_found_near_caption_count": len([record for record in notation_diagram_records if bool(record.get("board_found_near_caption"))]),
+                "global_candidate_without_caption_count": len(
+                    [record for record in notation_diagram_records if record.get("board_detection_reason") == "global_candidate_without_caption"]
+                ),
             },
         },
         "images": [],
@@ -905,20 +930,29 @@ def _chess_notation_diagram_records_from_page(
     max_pages = int(getattr(config, "chess_notation_diagram_scan_max_pages", 260) or 0)
     if max_pages <= 0 or page_num >= max_pages:
         return []
-    max_candidates = max(1, min(int(getattr(config, "chess_fen_scan_candidates_per_page", 3) or 3), 6))
+    configured_candidates = int(getattr(config, "chess_fen_scan_candidates_per_page", 8) or 8)
+    max_candidates = max(1, min(max(configured_candidates, 8), 8))
     try:
         image_data = _page_image_data_for_scan_chess(doc, page_num)
         page_image = Image.open(io.BytesIO(image_data)).convert("RGB")
     except Exception:
         return []
     try:
-        candidates = detect_board_candidates_in_page_image(
+        candidates = list(detect_board_candidates_in_page_image(
             image_data,
             max_candidates=max_candidates,
             enable_sliding_probe=bool(getattr(config, "chess_fen_scan_enable_sliding_probe", False)),
-        )
+        ))
     except Exception:
         return []
+    candidates = _augment_notation_board_candidates_from_captions(
+        doc,
+        page_num,
+        page_image,
+        candidates,
+        line_items or [],
+        max_candidates=max_candidates,
+    )
     records: list[dict[str, Any]] = []
     for candidate_index, candidate in enumerate(candidates, start=1):
         raw_bbox = getattr(candidate, "bbox", None)
@@ -928,24 +962,31 @@ def _chess_notation_diagram_records_from_page(
             continue
         if recognition_bbox is None:
             recognition_bbox = bbox
-        crop = page_image.crop(bbox)
-        if min(crop.size) < 80 or _scan_chess_is_partial_separator_crop(crop):
+        source_crop = page_image.crop(bbox)
+        if min(source_crop.size) < 80 or _scan_chess_is_partial_separator_crop(source_crop):
             continue
-        png_data, width, height = _encode_scan_chess_diagram_crop(crop, config)
+        display_crop, crop_quality = _notation_chess_display_crop(source_crop)
+        if min(display_crop.size) < 80 or _scan_chess_is_partial_separator_crop(display_crop):
+            display_crop = source_crop
+            crop_quality["display_crop_fallback"] = True
+        png_data, width, height = _encode_scan_chess_diagram_crop(display_crop, config)
         bbox_tuple = tuple(float(value) for value in bbox)
         recognition_bbox_tuple = tuple(float(value) for value in recognition_bbox)
+        candidate_confidence = float(getattr(candidate, "confidence", 0.0) or getattr(candidate, "grid_confidence", 0.0) or 0.0)
+        raw_method = str(getattr(candidate, "method", "") or "notation-page-board-crop")
+        caption_guided_candidate = "caption_guided" in raw_method
         preprocess_metadata = _scan_chess_preprocess_metadata(
             selected_variant="original",
             display_variant="reader_enhanced",
-            confidence=float(getattr(candidate, "confidence", 0.0) or getattr(candidate, "grid_confidence", 0.0) or 0.0),
+            confidence=candidate_confidence,
         )
         candidate_payload: dict[str, Any] = {
             "fen": "",
             "placement": "",
-            "confidence": float(getattr(candidate, "confidence", 0.0) or getattr(candidate, "grid_confidence", 0.0) or 0.0),
+            "confidence": candidate_confidence,
             "side_to_move": "w",
             "bbox": tuple(float(value) for value in bbox),
-            "method": str(getattr(candidate, "method", "") or "notation-page-board-crop"),
+            "method": raw_method,
             "warnings": ["image_board_requires_review"],
             "requires_review": True,
             "board_detected": True,
@@ -970,7 +1011,7 @@ def _chess_notation_diagram_records_from_page(
                 )
                 selected_variant = "full_page_bbox_recognition"
                 preprocessed_recognition, preprocessed_variant, _preprocessed_metadata = _recognize_scan_chess_preprocessed_variants(
-                    crop,
+                    display_crop,
                     config=config,
                     bbox=bbox_tuple,
                     piece_templates=piece_templates,
@@ -997,7 +1038,19 @@ def _chess_notation_diagram_records_from_page(
             except Exception:
                 pass
         fen_value = str(candidate_payload.get("fen") or "").strip()
-        diagram_number = _nearest_chess_notation_diagram_number(line_items or [], tuple(float(value) for value in bbox))
+        caption_match = _nearest_chess_notation_diagram_caption_match(
+            line_items or [],
+            tuple(float(value) for value in bbox),
+        )
+        diagram_number = caption_match.diagram_number if caption_match else ""
+        detection_reason = (
+            "caption_guided_local_scan"
+            if caption_guided_candidate
+            else ("global_candidate_with_caption" if caption_match else "global_candidate_without_caption")
+        )
+        warnings = list(candidate_payload.get("warnings") or ([] if fen_value else ["image_board_requires_review"]))
+        if caption_guided_candidate and "caption_guided_board_candidate" not in warnings:
+            warnings.append("caption_guided_board_candidate")
         records.append(
             {
                 "page": page_num + 1,
@@ -1014,8 +1067,20 @@ def _chess_notation_diagram_records_from_page(
                 "confidence": float(candidate_payload.get("confidence", 0.0) or 0.0),
                 "requires_review": bool(candidate_payload.get("requires_review", not fen_value)),
                 "method": str(candidate_payload.get("method") or "notation-page-board-crop"),
-                "warnings": list(candidate_payload.get("warnings") or ([] if fen_value else ["image_board_requires_review"])),
+                "warnings": warnings,
                 "bbox": candidate_payload.get("bbox") or tuple(float(value) for value in bbox),
+                "recognition_bbox": recognition_bbox_tuple,
+                "source_crop_bbox": bbox_tuple,
+                "caption_text": caption_match.text if caption_match else "",
+                "caption_bbox": caption_match.bbox if caption_match else None,
+                "caption_distance": round(float(caption_match.distance), 3) if caption_match else None,
+                "caption_match_score": int(caption_match.score) if caption_match else 0,
+                "caption_confidence": round(float(caption_match.confidence), 3) if caption_match else 0.0,
+                "caption_seen": bool(caption_match),
+                "board_found_near_caption": bool(caption_match and int(caption_match.score) >= 55),
+                "board_detection_reason": detection_reason,
+                "crop_confidence": round(candidate_confidence, 3),
+                "crop_quality": crop_quality,
                 **preprocess_metadata,
             }
         )
@@ -1026,27 +1091,274 @@ def _nearest_chess_notation_diagram_number(
     line_items: list[TextLineItem],
     bbox: tuple[float, float, float, float],
 ) -> str:
+    match = _nearest_chess_notation_diagram_caption_match(line_items, bbox)
+    return match.diagram_number if match else ""
+
+
+def _nearest_chess_notation_diagram_caption_match(
+    line_items: list[TextLineItem],
+    bbox: tuple[float, float, float, float],
+) -> DiagramCaptionMatch | None:
     x0, y0, x1, y1 = bbox
     board_center_x = (float(x0) + float(x1)) / 2.0
-    matches: list[tuple[float, str]] = []
-    for item in line_items:
-        text = str(getattr(item, "text", "") or "")
-        match = re.search(r"(?i)\bdiagram\s+(\d+(?:[-.]\d+)?)", text)
-        if not match:
+    board_width = max(1.0, float(x1) - float(x0))
+    board_height = max(1.0, float(y1) - float(y0))
+    matches: list[tuple[float, DiagramCaptionMatch]] = []
+    for caption in _chess_notation_caption_candidates(line_items):
+        cap_x0, cap_y0, cap_x1, cap_y1 = caption.bbox
+        cap_center_x = (float(cap_x0) + float(cap_x1)) / 2.0
+        horizontal_distance = abs(cap_center_x - board_center_x)
+        horizontal_overlap = max(0.0, min(float(cap_x1), float(x1)) - max(float(cap_x0), float(x0)))
+        overlap_ratio = horizontal_overlap / max(1.0, min(board_width, max(1.0, float(cap_x1) - float(cap_x0))))
+        if cap_y1 <= float(y0):
+            vertical_gap = float(y0) - cap_y1
+            below_penalty = 0.0
+        elif cap_y0 >= float(y1):
+            vertical_gap = cap_y0 - float(y1)
+            below_penalty = 180.0
+        else:
+            vertical_gap = 0.0
+            below_penalty = 20.0
+        column_penalty = 0.0
+        if overlap_ratio < 0.12 and horizontal_distance > board_width * 0.75:
+            column_penalty = 120.0
+        far_penalty = 120.0 if vertical_gap > board_height * 1.35 else 0.0
+        distance = vertical_gap + (horizontal_distance * 0.18) + below_penalty + column_penalty + far_penalty
+        score = max(0, min(100, int(round(105.0 - (distance / 3.0)))))
+        confidence = round(float(score) / 100.0, 3)
+        if confidence < 0.18:
             continue
-        item_y = float(getattr(item, "y", 0.0) or 0.0)
-        item_x0 = float(getattr(item, "x0", 0.0) or 0.0)
-        item_x1 = float(getattr(item, "x1", item_x0) or item_x0)
-        item_center_x = (item_x0 + item_x1) / 2.0
-        vertical_distance = abs(item_y - float(y0))
-        horizontal_distance = abs(item_center_x - board_center_x)
-        below_penalty = 180.0 if item_y > float(y1) + 16.0 else 0.0
-        score = vertical_distance + (horizontal_distance * 0.15) + below_penalty
-        matches.append((score, match.group(1).strip()))
+        matches.append(
+            (
+                distance,
+                DiagramCaptionMatch(
+                    diagram_number=caption.diagram_number,
+                    text=caption.text,
+                    bbox=caption.bbox,
+                    distance=distance,
+                    score=score,
+                    confidence=confidence,
+                ),
+            )
+        )
     if not matches:
-        return ""
-    matches.sort(key=lambda item: item[0])
+        return None
+    matches.sort(key=lambda item: (-item[1].score, item[0], item[1].bbox[1]))
     return matches[0][1]
+
+
+def _chess_notation_caption_candidates(line_items: list[TextLineItem]) -> list[DiagramCaptionMatch]:
+    sorted_items = sorted(line_items or [], key=lambda item: (float(getattr(item, "y", 0.0) or 0.0), float(getattr(item, "x0", 0.0) or 0.0)))
+    candidates: list[DiagramCaptionMatch] = []
+    seen: set[tuple[str, int, int, int, int]] = set()
+    for index, item in enumerate(sorted_items):
+        windows: list[list[TextLineItem]] = [[item]]
+        for next_item in sorted_items[index + 1 : index + 3]:
+            if not _chess_notation_line_items_can_join_for_caption(windows[-1][-1], next_item):
+                break
+            windows.append([*windows[-1], next_item])
+        for window in windows:
+            text = " ".join(str(getattr(part, "text", "") or "").strip() for part in window).strip()
+            diagram_number = _extract_chess_notation_diagram_number_from_caption(text)
+            if not diagram_number:
+                continue
+            x0 = min(float(getattr(part, "x0", 0.0) or 0.0) for part in window)
+            x1 = max(float(getattr(part, "x1", 0.0) or 0.0) for part in window)
+            y0 = min(float(getattr(part, "y", 0.0) or 0.0) for part in window)
+            y1 = max(float(getattr(part, "y", 0.0) or 0.0) + float(getattr(part, "font_size", 12.0) or 12.0) for part in window)
+            key = (diagram_number, int(round(x0)), int(round(y0)), int(round(x1)), int(round(y1)))
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(
+                DiagramCaptionMatch(
+                    diagram_number=diagram_number,
+                    text=text,
+                    bbox=(x0, y0, x1, y1),
+                    distance=0.0,
+                    score=0,
+                    confidence=0.0,
+                )
+            )
+    return candidates
+
+
+def _chess_notation_line_items_can_join_for_caption(left: TextLineItem, right: TextLineItem) -> bool:
+    left_y = float(getattr(left, "y", 0.0) or 0.0)
+    right_y = float(getattr(right, "y", 0.0) or 0.0)
+    if abs(right_y - left_y) > 18.0:
+        return False
+    left_x0 = float(getattr(left, "x0", 0.0) or 0.0)
+    left_x1 = float(getattr(left, "x1", left_x0) or left_x0)
+    right_x0 = float(getattr(right, "x0", 0.0) or 0.0)
+    right_x1 = float(getattr(right, "x1", right_x0) or right_x0)
+    horizontal_gap = max(0.0, right_x0 - left_x1)
+    overlap = max(0.0, min(left_x1, right_x1) - max(left_x0, right_x0))
+    same_column = overlap > 8.0 or horizontal_gap < 80.0
+    return same_column
+
+
+def _extract_chess_notation_diagram_number_from_caption(text: str) -> str:
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+    direct = re.search(r"(?i)\bdiagram\s+(\d{1,2})\s*[-.]\s*(\d{1,2})\b", normalized)
+    if direct:
+        return f"{int(direct.group(1))}-{int(direct.group(2))}"
+    split = re.search(r"(?i)\bdiagram\s+\d{1,2}\s+(\d{1,2})\s*[-.]\s*(\d{1,2})\b", normalized)
+    if split:
+        return f"{int(split.group(1))}-{int(split.group(2))}"
+    spaced = re.search(r"(?i)\bdiagram\s+(\d{1,2})\s+(\d{1,2})\b", normalized)
+    if spaced:
+        return f"{int(spaced.group(1))}-{int(spaced.group(2))}"
+    return ""
+
+
+def _augment_notation_board_candidates_from_captions(
+    doc: fitz.Document,
+    page_num: int,
+    page_image: Image.Image,
+    candidates: list[ChessFenResult],
+    line_items: list[TextLineItem],
+    *,
+    max_candidates: int,
+) -> list[ChessFenResult]:
+    captions = _chess_notation_caption_candidates(line_items)
+    target_limit = max(max_candidates, min(10, max_candidates + min(2, len(captions))))
+    if not captions or len(candidates) >= target_limit:
+        return candidates
+    try:
+        page_rect = doc[page_num].rect
+        page_width = float(page_rect.width or 0.0)
+        page_height = float(page_rect.height or 0.0)
+    except Exception:
+        return candidates
+    if page_width <= 0 or page_height <= 0:
+        return candidates
+    scale_x = float(page_image.size[0]) / page_width
+    scale_y = float(page_image.size[1]) / page_height
+    if not (0.2 <= scale_x <= 6.0 and 0.2 <= scale_y <= 6.0):
+        return candidates
+    augmented = list(candidates)
+    caption_scan_count = 0
+    for caption in captions:
+        if len(augmented) >= target_limit:
+            break
+        if caption_scan_count >= 2:
+            break
+        existing_caption_numbers: set[str] = set()
+        for result in augmented:
+            if not result.bbox:
+                continue
+            existing_match = _nearest_chess_notation_diagram_caption_match(line_items, tuple(result.bbox))
+            if existing_match and existing_match.score >= 55:
+                existing_caption_numbers.add(existing_match.diagram_number)
+        if caption.diagram_number in existing_caption_numbers:
+            continue
+        cap_x0, _cap_y0, cap_x1, cap_y1 = caption.bbox
+        region_pdf = (
+            max(0.0, cap_x0 - 50.0),
+            max(0.0, cap_y1 - 8.0),
+            min(page_width, cap_x1 + 110.0),
+            min(page_height, cap_y1 + 280.0),
+        )
+        region = (
+            int(round(region_pdf[0] * scale_x)),
+            int(round(region_pdf[1] * scale_y)),
+            int(round(region_pdf[2] * scale_x)),
+            int(round(region_pdf[3] * scale_y)),
+        )
+        if region[2] - region[0] < 120 or region[3] - region[1] < 120:
+            continue
+        crop = page_image.crop(region)
+        output = io.BytesIO()
+        crop.save(output, format="PNG")
+        try:
+            local_candidates = detect_board_candidates_in_page_image(
+                output.getvalue(),
+                max_candidates=2,
+                enable_sliding_probe=False,
+            )
+        except Exception:
+            continue
+        caption_scan_count += 1
+        for local in local_candidates:
+            local_bbox = getattr(local, "bbox", None)
+            if not local_bbox:
+                continue
+            page_bbox = (
+                float(region[0]) + float(local_bbox[0]),
+                float(region[1]) + float(local_bbox[1]),
+                float(region[0]) + float(local_bbox[2]),
+                float(region[1]) + float(local_bbox[3]),
+            )
+            if any(_bbox_overlap_ratio(tuple(existing.bbox or ()), page_bbox) > 0.65 for existing in augmented if existing.bbox):
+                continue
+            augmented.append(
+                ChessFenResult(
+                    confidence=float(getattr(local, "confidence", 0.0) or 0.0),
+                    bbox=page_bbox,
+                    method=f"{getattr(local, 'method', '') or 'caption-guided-board-candidate'}:caption_guided",
+                    warnings=["caption_guided_board_candidate"],
+                    requires_review=True,
+                    board_detected=True,
+                )
+            )
+            break
+    return augmented
+
+
+def _notation_chess_display_crop(crop: Image.Image) -> tuple[Image.Image, dict[str, Any]]:
+    source = crop.convert("RGB")
+    original_width, original_height = source.size
+    quality: dict[str, Any] = {
+        "source_width": int(original_width),
+        "source_height": int(original_height),
+        "trimmed": False,
+        "squared": False,
+        "display_crop_fallback": False,
+    }
+    working = source
+    try:
+        gray = ImageOps.grayscale(source)
+        mask = gray.point(lambda pixel: 255 if pixel < 246 else 0)
+        content_bbox = mask.getbbox()
+        if content_bbox:
+            x0, y0, x1, y1 = content_bbox
+            margin = max(2, int(min(original_width, original_height) * 0.015))
+            trim_box = (
+                max(0, x0 - margin),
+                max(0, y0 - margin),
+                min(original_width, x1 + margin),
+                min(original_height, y1 + margin),
+            )
+            trim_width = trim_box[2] - trim_box[0]
+            trim_height = trim_box[3] - trim_box[1]
+            if trim_width >= 80 and trim_height >= 80:
+                area_ratio = (trim_width * trim_height) / max(1, original_width * original_height)
+                if 0.25 <= area_ratio <= 1.02:
+                    working = source.crop(trim_box)
+                    quality["trimmed"] = trim_box != (0, 0, original_width, original_height)
+                    quality["trim_box"] = tuple(int(value) for value in trim_box)
+    except Exception:
+        working = source
+    width, height = working.size
+    if min(width, height) >= 80:
+        side = min(width, height)
+        if abs(width - height) > 2 and abs(width - height) / max(width, height) <= 0.22:
+            left = max(0, (width - side) // 2)
+            top = max(0, (height - side) // 2)
+            working = working.crop((left, top, left + side, top + side))
+            quality["squared"] = True
+            quality["square_box"] = (int(left), int(top), int(left + side), int(top + side))
+    try:
+        stat = ImageStat.Stat(ImageOps.grayscale(working))
+        quality["display_width"] = int(working.size[0])
+        quality["display_height"] = int(working.size[1])
+        quality["mean_luma"] = round(float(stat.mean[0]), 3)
+        quality["contrast"] = round(float(stat.stddev[0]), 3)
+    except Exception:
+        quality["display_width"] = int(working.size[0])
+        quality["display_height"] = int(working.size[1])
+    return working, quality
 
 
 def _chess_notation_line_items_from_page(page: fitz.Page, page_num: int) -> list[TextLineItem]:
@@ -1910,7 +2222,7 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
         toc = [(1, chapter["title"], index + 1) for index, chapter in enumerate(chapters) if chapter.get("title")]
         manual_review_count = len([record for record in chess_fen_records if record.get("requires_review")])
         chess_pgn_records = merge_chess_pgn_continuation_records(chess_pgn_records)
-        chess_pgn_summary = summarize_chess_pgn_records(chess_pgn_records)
+        chess_pgn_summary = summarize_chess_pgn_records(chess_pgn_records, diagram_records=chess_fen_records)
         ocr_quality = {
             "status": "passed_with_warnings",
             "quality_gate_status": "passed_with_warnings",
@@ -3595,11 +3907,22 @@ def _scan_chess_pgn_extra_artifacts(
     source_title: str,
     diagram_records: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    record_list = [record for record in records if getattr(record, "pgn", "").strip()]
+    record_list = [
+        record
+        for record in records
+        if getattr(record, "pgn", "").strip()
+        or getattr(record, "raw_text", "").strip()
+        or getattr(record, "movetext", "").strip()
+    ]
     diagram_list = list(diagram_records or [])
     if not record_list and not diagram_list:
         return []
     pgn_text = build_combined_pgn(record_list)
+    exercises_pgn_text = build_exercises_pgn(
+        record_list,
+        diagram_records=diagram_list,
+        source_title=source_title or "Chess Exercises",
+    )
     html_text = build_pgn_download_html(
         record_list,
         title=f"{source_title or 'Chess'} - PGN and FEN",
@@ -3614,6 +3937,16 @@ def _scan_chess_pgn_extra_artifacts(
                 "content_type": "application/x-chess-pgn; charset=utf-8",
                 "data": pgn_text.encode("utf-8"),
                 "label": "PGN",
+            }
+        )
+    if exercises_pgn_text.strip():
+        artifacts.append(
+            {
+                "key": "chess_exercises_pgn",
+                "filename": "chess_exercises.pgn",
+                "content_type": "application/x-chess-pgn; charset=utf-8",
+                "data": exercises_pgn_text.encode("utf-8"),
+                "label": "Exercises PGN",
             }
         )
     artifacts.append(

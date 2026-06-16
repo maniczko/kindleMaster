@@ -63,6 +63,7 @@ EMAIL_PATTERN = re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
 MAILTO_PATTERN = re.compile(r"(?i)mailto:\s*[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}")
 HTML_PARAGRAPH_RE = re.compile(r"^<p(?P<attrs>[^>]*)>(?P<text>.*)</p>$", re.DOTALL)
 HTML_TAG_RE = re.compile(r"<[^>]+>")
+HTML_ID_ATTR_RE = re.compile(r'\bid=(["\'])(?P<id>[^"\']+)\1')
 SOLUTION_PAGE_RE = re.compile(r"Solutions page (\d+)", re.IGNORECASE)
 EXERCISE_NUMBER_RE = re.compile(r'exercise-number">(?P<num>\d+)\.</span>')
 SOLUTION_ENTRY_RE = re.compile(r"^(?P<num>\d+)\.\s+.+\s[–-]\s.+$")
@@ -98,6 +99,24 @@ def detect_source_page_label(parts: list[str]) -> Optional[str]:
             return text
         break
     return None
+
+
+def dedupe_html_ids(fragment: str) -> str:
+    """Make duplicate XHTML id attributes unique while preserving the first canonical id."""
+    if not fragment or "id=" not in fragment:
+        return fragment
+    seen: dict[str, int] = {}
+
+    def replace(match: re.Match[str]) -> str:
+        quote = match.group(1)
+        value = match.group("id")
+        count = seen.get(value, 0) + 1
+        seen[value] = count
+        if count == 1:
+            return match.group(0)
+        return f"id={quote}{value}-{count}{quote}"
+
+    return HTML_ID_ATTR_RE.sub(replace, fragment)
 
 
 def maybe_link_solution_reference(fragment: str, page_label_map: dict[str, str]) -> str:
@@ -2516,6 +2535,7 @@ def build_epub(content: dict, config: ConversionConfig, original_filename: str, 
             )
         
         html_content += "\n</body></html>"
+        html_content = dedupe_html_ids(html_content)
 
         chapter.content = html_content
         chapter.add_item(css)

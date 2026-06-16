@@ -989,6 +989,9 @@
       return {
         qualityStateUrl: payload.quality_state_url || "",
         downloadUrl: payload.download_url || (qualityState && qualityState.download_url) || "",
+        pdfLayoutPreviewUrl: window.KindleMasterArtifactLinks
+          ? window.KindleMasterArtifactLinks.artifactShellUrl(payload, "pdf_layout_preview")
+          : "",
         downloadAvailable: downloadAvailableState,
         readingVerdict: qualityState && qualityState.reading_verdict ? qualityState.reading_verdict : "",
         releaseVerdict: releaseVerdictState,
@@ -1100,6 +1103,7 @@
         verdict,
         qualityStateUrl: normalized.qualityStateUrl,
         downloadUrl: normalized.downloadUrl,
+        pdfLayoutPreviewUrl: normalized.pdfLayoutPreviewUrl,
         downloadAvailable: normalized.downloadAvailable,
         readingVerdict: normalized.readingVerdict,
         releaseVerdict: normalized.releaseVerdict,
@@ -1145,6 +1149,7 @@
         sourceType,
         elapsedSeconds: jobPayload.elapsed_seconds,
         downloadUrl: normalized.downloadUrl,
+        pdfLayoutPreviewUrl: normalized.pdfLayoutPreviewUrl,
         qualityStateUrl: normalized.qualityStateUrl,
         outputSizeBytes: normalized.outputSizeBytes,
         verdict: verdict.label,

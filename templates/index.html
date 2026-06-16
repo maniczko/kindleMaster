@@ -8,9 +8,9 @@
   <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='favicon-32x32.png') }}">
   <link rel="apple-touch-icon" href="{{ url_for('static', filename='favicon-192x192.png') }}">
   <link rel="manifest" href="{{ url_for('static', filename='site.webmanifest') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/app-shell.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app-shell.css', v=static_asset_version) }}">
 </head>
-<body>
+<body{% if pdf_layout_preview_job_id is defined and pdf_layout_preview_job_id %} data-artifact-view="pdf_layout_preview" data-artifact-job-id="{{ pdf_layout_preview_job_id }}" data-artifact-filename="{{ pdf_layout_preview_filename }}"{% endif %}>
   <div class="shell" data-vr-hook="vat-209-shell">
     <header class="topbar" data-vr-hook="km-ui3-commandbar">
       <div class="brand">
@@ -294,6 +294,39 @@
         <div class="workspace-guidance" id="workspaceGuidance">Tryb podglądu: sprawdź dokument, strony i czytelność przed konwersją.</div>
         <div class="workspace-result-summary" id="workspaceResultSummary" hidden>Wynik EPUB pojawi się tutaj po konwersji.</div>
 
+        {% if pdf_layout_preview_job_id is defined and pdf_layout_preview_job_id %}
+        <section class="layout-preview-handoff" id="layoutPreviewHandoff" data-vr-hook="km-pdf-layout-preview-handoff" data-preview-mode="{{ pdf_layout_preview_handoff.mode }}">
+          <header class="layout-preview-header">
+            <div>
+              <div class="section-title">Artefakt</div>
+              <h3>Podglad ukladu PDF</h3>
+              <p>{{ pdf_layout_preview_filename }}</p>
+            </div>
+            <span>{{ pdf_layout_preview_handoff.badge }}</span>
+          </header>
+          <div class="layout-preview-frame-shell">
+            {% if pdf_layout_preview_handoff.available %}
+            <iframe
+              class="layout-preview-frame"
+              title="Podglad ukladu PDF: {{ pdf_layout_preview_filename }}"
+              sandbox
+              referrerpolicy="no-referrer"
+              {% if pdf_layout_preview_handoff.mode == "srcdoc" %}
+              srcdoc="{{ pdf_layout_preview_handoff.srcdoc }}"
+              {% else %}
+              src="{{ pdf_layout_preview_handoff.frame_src }}"
+              {% endif %}
+            ></iframe>
+            {% else %}
+            <div class="layout-preview-empty">
+              <strong>Podglad niedostepny</strong>
+              <p>{{ pdf_layout_preview_handoff.message }}</p>
+            </div>
+            {% endif %}
+          </div>
+        </section>
+        {% endif %}
+
         <aside class="pages-panel" aria-label="Strony dokumentu">
           <div class="pages-panel-header">
             <div>
@@ -496,8 +529,9 @@
     </div>
   </div>
 
-  <script defer src="{{ url_for('static', filename='js/conversion-ui.js') }}"></script>
-  <script defer src="{{ url_for('static', filename='js/quality-cockpit.js') }}"></script>
-  <script defer src="{{ url_for('static', filename='js/library.js') }}"></script>
+  <script defer src="{{ url_for('static', filename='js/artifact-links.js', v=static_asset_version) }}"></script>
+  <script defer src="{{ url_for('static', filename='js/conversion-ui.js', v=static_asset_version) }}"></script>
+  <script defer src="{{ url_for('static', filename='js/quality-cockpit.js', v=static_asset_version) }}"></script>
+  <script defer src="{{ url_for('static', filename='js/library.js', v=static_asset_version) }}"></script>
 </body>
 </html>

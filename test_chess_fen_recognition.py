@@ -4092,7 +4092,7 @@ class ChessFenRecognitionTests(unittest.TestCase):
         from openai_chess_fen_reviewer import OpenAIChessFenReviewer, openai_chess_fen_reviewer_status
 
         with mock.patch.dict(os.environ, {}, clear=True):
-            status = openai_chess_fen_reviewer_status()
+            status = openai_chess_fen_reviewer_status(env={"OPENAI_API_KEY": ""})
 
         self.assertFalse(status["enabled"])
         self.assertFalse(status["api_key_present"])
@@ -4212,6 +4212,88 @@ class ChessFenRecognitionTests(unittest.TestCase):
         self.assertEqual(review["suggested_label"], "8/8/8/3k4/8/8/4K3/8 w - - 0 1")
         self.assertFalse(review["changed_output"])
         self.assertEqual(result.fen, "")
+
+    def test_openai_chess_repair_proposer_uses_image_schema_and_reasoning_effort(self) -> None:
+        from openai_chess_repair_proposer import OpenAIChessRepairProposer, openai_chess_repair_proposer_status
+
+        captured: dict[str, object] = {}
+
+        def fake_transport(url, headers, payload, timeout_seconds):
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["payload"] = payload
+            captured["timeout_seconds"] = timeout_seconds
+            return {
+                "id": "resp_repair_unit",
+                "output_text": json.dumps(
+                    {
+                        "fen_candidates": [
+                            {
+                                "fen": "8/8/8/3k4/8/8/4K3/8 w - - 0 1",
+                                "confidence": 0.91,
+                                "notes": "unit fen",
+                            }
+                        ],
+                        "solution_line_candidates": [
+                            {"movetext": "1. Kd3", "confidence": 0.82, "notes": "unit line"}
+                        ],
+                        "ocr_token_repairs": [
+                            {"raw": "0-0", "corrected": "O-O", "confidence": 0.99, "notes": "castle"}
+                        ],
+                        "confidence": 0.88,
+                        "requires_human_review": True,
+                        "notes": "unit proposal",
+                    }
+                ),
+                "usage": {"input_tokens": 20, "output_tokens": 12},
+            }
+
+        provider = OpenAIChessRepairProposer(
+            model="unit-repair-model",
+            mode="validated_export",
+            api_key="sk-test",
+            base_url="https://example.test/v1",
+            reasoning_effort="low",
+            transport=fake_transport,
+        )
+
+        proposal = provider.propose_chess_repair(
+            {
+                "record_id": "unit",
+                "raw_ocr_text": "Diagram 1-1\n1. Kd3",
+                "local_fen": "",
+                "image_data": b"\x89PNG\r\n\x1a\nunit",
+                "image_mime_type": "image/png",
+            }
+        )
+
+        payload = captured["payload"]
+        assert isinstance(payload, dict)
+        content = payload["input"][0]["content"]
+        self.assertEqual(captured["url"], "https://example.test/v1/responses")
+        self.assertEqual(content[0]["type"], "input_text")
+        self.assertEqual(content[1]["type"], "input_image")
+        self.assertTrue(content[1]["image_url"].startswith("data:image/png;base64,"))
+        self.assertEqual(payload["text"]["format"]["type"], "json_schema")
+        self.assertEqual(payload["reasoning"]["effort"], "low")
+        self.assertEqual(proposal["status"], "reviewed")
+        self.assertEqual(proposal["mode"], "validated_export")
+        self.assertFalse(proposal["mutates_exportable_pgn"])
+        self.assertEqual(proposal["fen_candidates"][0]["fen"], "8/8/8/3k4/8/8/4K3/8 w - - 0 1")
+        self.assertEqual(proposal["solution_line_candidates"][0]["movetext"], "1. Kd3")
+        self.assertEqual(proposal["ocr_token_repairs"][0]["corrected"], "O-O")
+
+        status = openai_chess_repair_proposer_status(
+            env={
+                "KINDLEMASTER_OPENAI_CHESS_REPAIR": "1",
+                "OPENAI_API_KEY": "sk-test",
+                "KINDLEMASTER_OPENAI_CHESS_REPAIR_MODE": "validated_export",
+            }
+        )
+        self.assertTrue(status["enabled"])
+        self.assertEqual(status["mode"], "validated_export")
+        self.assertTrue(status["requires_local_validation"])
+        self.assertFalse(status["full_document_upload"])
 
     def test_semantic_cleanup_preserves_fen_on_chess_figure(self) -> None:
         fen = "8/8/8/3k4/8/8/4K3/8 w - - 0 1"
@@ -4448,7 +4530,7 @@ class ScanChessPreprocessingTests(unittest.TestCase):
     def test_notation_diagram_number_prefers_nearest_caption(self) -> None:
         from types import SimpleNamespace
 
-        from pymupdf_chess_extractor import _nearest_chess_notation_diagram_number
+        from pymupdf_chess_extractor import _nearest_chess_notation_diagram_caption_match, _nearest_chess_notation_diagram_number
 
         line_items = [
             SimpleNamespace(text="Diagram 1-1", y=40.0, x0=20.0, x1=180.0),
@@ -4456,10 +4538,137 @@ class ScanChessPreprocessingTests(unittest.TestCase):
             SimpleNamespace(text="Diagram 1-3", y=420.0, x0=20.0, x1=180.0),
         ]
 
+        match = _nearest_chess_notation_diagram_caption_match(line_items, (220.0, 140.0, 390.0, 310.0))
+        self.assertIsNotNone(match)
+        self.assertEqual(match.diagram_number, "1-2")
+        self.assertGreaterEqual(match.score, 70)
         self.assertEqual(
             _nearest_chess_notation_diagram_number(line_items, (220.0, 140.0, 390.0, 310.0)),
             "1-2",
         )
+
+    def test_notation_diagram_caption_recovers_split_ocr_number(self) -> None:
+        from types import SimpleNamespace
+
+        from pymupdf_chess_extractor import _nearest_chess_notation_diagram_caption_match
+
+        line_items = [
+            SimpleNamespace(text="Diagram", y=80.0, x0=210.0, x1=270.0, font_size=12.0),
+            SimpleNamespace(text="1 1-2 A. Yusupov", y=80.0, x0=274.0, x1=430.0, font_size=12.0),
+            SimpleNamespace(text="Diagram 1-3", y=82.0, x0=20.0, x1=160.0, font_size=12.0),
+        ]
+
+        match = _nearest_chess_notation_diagram_caption_match(line_items, (220.0, 110.0, 390.0, 280.0))
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match.diagram_number, "1-2")
+        self.assertGreaterEqual(match.score, 70)
+
+    def test_notation_diagram_caption_penalizes_other_column(self) -> None:
+        from types import SimpleNamespace
+
+        from pymupdf_chess_extractor import _nearest_chess_notation_diagram_caption_match
+
+        line_items = [
+            SimpleNamespace(text="Diagram 2-1", y=92.0, x0=20.0, x1=170.0, font_size=12.0),
+            SimpleNamespace(text="Diagram 2-2", y=96.0, x0=225.0, x1=390.0, font_size=12.0),
+        ]
+
+        match = _nearest_chess_notation_diagram_caption_match(line_items, (230.0, 125.0, 390.0, 285.0))
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match.diagram_number, "2-2")
+
+    def test_notation_diagram_caption_recovers_noisy_diagram_1_13(self) -> None:
+        from types import SimpleNamespace
+
+        from pymupdf_chess_extractor import _nearest_chess_notation_diagram_caption_match
+
+        line_items = [
+            SimpleNamespace(
+                text="Diagram 1-13 \ufffdiiiiI Dreszer Open, Gdynia 1989",
+                y=95.0,
+                x0=30.0,
+                x1=390.0,
+                font_size=12.0,
+            )
+        ]
+
+        match = _nearest_chess_notation_diagram_caption_match(line_items, (42.0, 128.0, 202.0, 288.0))
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match.diagram_number, "1-13")
+        self.assertGreaterEqual(match.score, 70)
+
+    def test_notation_chess_display_crop_trims_caption_margin(self) -> None:
+        from PIL import Image, ImageDraw
+
+        from pymupdf_chess_extractor import _notation_chess_display_crop
+
+        image = Image.new("RGB", (260, 310), "white")
+        draw = ImageDraw.Draw(image)
+        cell = 20
+        for row in range(8):
+            for col in range(8):
+                fill = 235 if (row + col) % 2 == 0 else 130
+                draw.rectangle(
+                    (40 + col * cell, 90 + row * cell, 40 + (col + 1) * cell, 90 + (row + 1) * cell),
+                    fill=fill,
+                    outline="black",
+                )
+
+        crop, quality = _notation_chess_display_crop(image)
+
+        self.assertLess(crop.height, image.height)
+        self.assertTrue(quality["trimmed"])
+        self.assertGreaterEqual(quality["contrast"], 20)
+
+    def test_caption_guided_scan_adds_local_board_candidate(self) -> None:
+        from types import SimpleNamespace
+        from unittest import mock
+
+        from PIL import Image
+
+        from chess_position_recognizer import ChessFenResult
+        from pymupdf_chess_extractor import _augment_notation_board_candidates_from_captions
+
+        page_image = Image.new("RGB", (600, 800), "white")
+        local_candidate = ChessFenResult(
+            confidence=0.77,
+            bbox=(20.0, 30.0, 180.0, 190.0),
+            method="local-board",
+            requires_review=True,
+            board_detected=True,
+        )
+
+        class FakeDoc:
+            def __getitem__(self, index):
+                return SimpleNamespace(rect=SimpleNamespace(width=400.0, height=533.0))
+
+        with mock.patch(
+            "pymupdf_chess_extractor.detect_board_candidates_in_page_image",
+            return_value=[local_candidate],
+        ):
+            candidates = _augment_notation_board_candidates_from_captions(
+                FakeDoc(),
+                0,
+                page_image,
+                [],
+                [
+                    SimpleNamespace(
+                        text="Diagram 1-13 \ufffdiiiiI Dreszer Open",
+                        y=60.0,
+                        x0=30.0,
+                        x1=250.0,
+                        font_size=12.0,
+                    )
+                ],
+                max_candidates=1,
+            )
+
+        self.assertEqual(len(candidates), 1)
+        self.assertIn("caption_guided", candidates[0].method)
+        self.assertTrue(candidates[0].board_detected)
 
     def test_scan_chess_preprocessed_variants_select_highest_confidence(self) -> None:
         from types import SimpleNamespace
@@ -4575,10 +4784,19 @@ class ScanChessPreprocessingTests(unittest.TestCase):
                 0,
                 config=ConversionConfig(chess_fen_min_confidence=0.835),
                 piece_templates={"K": [Image.new("L", (10, 10), 0)]},
-                line_items=[],
+                line_items=[
+                    type(
+                        "Line",
+                        (),
+                        {"text": "Diagram 1-2 A. Yusupov", "y": 20.0, "x0": 40.0, "x1": 200.0, "font_size": 12.0},
+                    )()
+                ],
             )
 
         self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["diagram_number"], "1-2")
+        self.assertGreaterEqual(records[0]["caption_match_score"], 70)
+        self.assertIn("Diagram 1-2", records[0]["caption_text"])
         self.assertEqual(records[0]["fen"], recognition.fen)
         self.assertEqual(records[0]["placement"], recognition.placement)
         self.assertFalse(records[0]["requires_review"])

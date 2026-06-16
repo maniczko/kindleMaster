@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 import io
 import unittest
+from unittest.mock import patch
 
 from bs4 import BeautifulSoup
 import chess.pgn
@@ -12,7 +13,9 @@ from chess_pgn_extractor import (
     annotate_records_with_replayed_fens,
     attach_fen_candidates_to_pgn_records,
     build_combined_pgn,
+    build_exercises_pgn,
     build_pgn_download_html,
+    chess_ocr_normalization_candidates,
     extract_chess_pgn_records_from_text,
     merge_chess_pgn_continuation_records,
     normalize_ocr_text_for_pgn,
@@ -246,6 +249,327 @@ class ChessPgnExtractionTests(unittest.TestCase):
         self.assertIn("8/8/8/8/8/8/8/8 w - - 0 1", html)
         self.assertIn("Kopiuj FEN", html)
 
+    def test_exercise_html_ai_review_only_never_exports_invalid_pgn(self) -> None:
+        records = [
+            ChessPgnRecord(
+                id="review-1",
+                source_pages=[12],
+                title="Diagram 1-2 A. Yusu ov- P'Schlosser",
+                headers={},
+                movetext="",
+                pgn="",
+                confidence=0.32,
+                status="requires_review",
+                warnings=["ocr_noise"],
+                raw_text=(
+                    "Diagram 1-2\nA. Yusu ov- P'Schlosser\n"
+                    "1. ge5+- Threateninggg5tand mate 1... gd7 2.gg5t @h7"
+                ),
+            )
+        ]
+        diagram_records = [
+            {
+                "diagram_number": "1-2",
+                "page": 12,
+                "source_order": 1,
+                "caption_match_score": 95,
+                "image_data": b"\x89PNG\r\n\x1a\nsample",
+                "extension": "png",
+                "fen": "6k1/6pp/8/4Q3/8/8/6PP/6K1 w - - 0 1",
+                "confidence": 0.93,
+                "requires_review": False,
+                "selected_preprocess_variant": "autocontrast",
+                "display_variant_used": "reader_enhanced",
+            }
+        ]
+
+        with patch.dict(
+            "os.environ",
+            {
+                "KINDLEMASTER_OPENAI_CHESS_REVIEW": "1",
+                "KINDLEMASTER_OPENAI_CHESS_REVIEW_MODE": "review_only",
+                "KINDLEMASTER_OPENAI_CHESS_PREMIUM_MODEL": "gpt-test-premium",
+                "KINDLEMASTER_OPENAI_CHESS_BATCH_MODEL": "gpt-test-mini",
+            },
+            clear=False,
+        ):
+            html = build_pgn_download_html(records, title="AI review-only sample", diagram_records=diagram_records)
+
+        self.assertIn("AI suggestions / review-only", html)
+        self.assertIn("gpt-test-premium", html)
+        self.assertIn("No automatic PGN export changes", html)
+        self.assertIn("ai_review_status", html)
+        self.assertIn("sequence_status", html)
+        self.assertNotIn("Kopiuj PGN", html)
+
+    def test_ai_repair_validated_export_accepts_single_local_replay_path(self) -> None:
+        class FakeRepairProvider:
+            name = "fake-ai-repair"
+
+            def propose_chess_repair(self, context):
+                return {
+                    "status": "reviewed",
+                    "provider": self.name,
+                    "model": "unit-ai",
+                    "fen_candidates": [
+                        {
+                            "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                            "confidence": 0.93,
+                            "notes": "unit candidate",
+                        }
+                    ],
+                    "solution_line_candidates": [
+                        {"movetext": "1. e4 e5", "confidence": 0.95, "notes": "unit line"}
+                    ],
+                    "ocr_token_repairs": [],
+                    "confidence": 0.94,
+                    "requires_human_review": False,
+                    "notes": "single path",
+                    "estimated_cost_usd": 0.001,
+                }
+
+        record = ChessPgnRecord(
+            id="ai-repair-single",
+            source_pages=[1],
+            title="Diagram 1-1",
+            headers={},
+            movetext="",
+            pgn="",
+            status="requires_review",
+            warnings=["pgn_replay_errors"],
+            raw_text="Diagram 1-1\nSolution line unclear in OCR.",
+        )
+        diagram_records = [
+            {
+                "page": 1,
+                "diagram_number": "1-1",
+                "filename": "diagram_1_1.png",
+                "image_data": b"\x89PNG\r\n\x1a\nsample",
+                "extension": "png",
+                "confidence": 0.82,
+                "requires_review": True,
+            }
+        ]
+
+        with patch.dict(
+            "os.environ",
+            {
+                "KINDLEMASTER_OPENAI_CHESS_REPAIR": "1",
+                "KINDLEMASTER_OPENAI_CHESS_REPAIR_MODE": "validated_export",
+            },
+            clear=False,
+        ):
+            with patch("chess_pgn_extractor._load_ai_repair_provider", return_value=FakeRepairProvider()):
+                exercises_pgn = build_exercises_pgn([record], diagram_records=diagram_records)
+                summary = summarize_chess_pgn_records([record], diagram_records=diagram_records)
+
+        self.assertIn('[SetUp "1"]', exercises_pgn)
+        self.assertIn('[FEN "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]', exercises_pgn)
+        self.assertIn("1. e4 e5", exercises_pgn)
+        game = chess.pgn.read_game(io.StringIO(exercises_pgn))
+        self.assertIsNotNone(game)
+        self.assertFalse(game.errors)
+        self.assertEqual(summary["ai_candidate_fen_count"], 1)
+        self.assertEqual(summary["ai_candidate_line_count"], 1)
+        self.assertEqual(summary["ai_validated_solution_count"], 1)
+
+    def test_ai_repair_two_legal_paths_stays_review_without_export(self) -> None:
+        class FakeRepairProvider:
+            name = "fake-ai-repair"
+
+            def propose_chess_repair(self, context):
+                return {
+                    "status": "reviewed",
+                    "provider": self.name,
+                    "model": "unit-ai",
+                    "fen_candidates": [
+                        {
+                            "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                            "confidence": 0.92,
+                            "notes": "",
+                        }
+                    ],
+                    "solution_line_candidates": [
+                        {"movetext": "1. e4 e5", "confidence": 0.9, "notes": ""},
+                        {"movetext": "1. d4 d5", "confidence": 0.88, "notes": ""},
+                    ],
+                    "ocr_token_repairs": [],
+                    "confidence": 0.9,
+                    "requires_human_review": True,
+                    "notes": "two legal lines",
+                    "estimated_cost_usd": 0.0,
+                }
+
+        record = ChessPgnRecord(
+            id="ai-repair-ambiguous",
+            source_pages=[1],
+            title="Diagram 1-1",
+            headers={},
+            movetext="",
+            pgn="",
+            status="requires_review",
+            raw_text="Diagram 1-1\nOCR is ambiguous.",
+        )
+        diagram_records = [{"page": 1, "diagram_number": "1-1", "image_data": b"\x89PNG\r\n\x1a\nsample"}]
+
+        with patch.dict(
+            "os.environ",
+            {
+                "KINDLEMASTER_OPENAI_CHESS_REPAIR": "1",
+                "KINDLEMASTER_OPENAI_CHESS_REPAIR_MODE": "validated_export",
+            },
+            clear=False,
+        ):
+            with patch("chess_pgn_extractor._load_ai_repair_provider", return_value=FakeRepairProvider()):
+                exercises_pgn = build_exercises_pgn([record], diagram_records=diagram_records)
+                html = build_pgn_download_html([record], diagram_records=diagram_records)
+
+        self.assertEqual(exercises_pgn, "")
+        self.assertIn("validation_status:</strong> ambiguous", html)
+        self.assertIn("ai_multiple_legal_paths", html)
+
+    def test_ai_repair_illegal_san_stays_review_without_export(self) -> None:
+        class FakeRepairProvider:
+            name = "fake-ai-repair"
+
+            def propose_chess_repair(self, context):
+                return {
+                    "status": "reviewed",
+                    "provider": self.name,
+                    "model": "unit-ai",
+                    "fen_candidates": [
+                        {
+                            "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                            "confidence": 0.92,
+                            "notes": "",
+                        }
+                    ],
+                    "solution_line_candidates": [
+                        {"movetext": "1. e5", "confidence": 0.9, "notes": "illegal from start"}
+                    ],
+                    "ocr_token_repairs": [],
+                    "confidence": 0.9,
+                    "requires_human_review": True,
+                    "notes": "illegal line",
+                    "estimated_cost_usd": 0.0,
+                }
+
+        record = ChessPgnRecord(
+            id="ai-repair-illegal",
+            source_pages=[1],
+            title="Diagram 1-1",
+            headers={},
+            movetext="",
+            pgn="",
+            status="requires_review",
+            raw_text="Diagram 1-1\nNoisy solution.",
+        )
+        diagram_records = [{"page": 1, "diagram_number": "1-1", "image_data": b"\x89PNG\r\n\x1a\nsample"}]
+
+        with patch.dict(
+            "os.environ",
+            {
+                "KINDLEMASTER_OPENAI_CHESS_REPAIR": "1",
+                "KINDLEMASTER_OPENAI_CHESS_REPAIR_MODE": "validated_export",
+            },
+            clear=False,
+        ):
+            with patch("chess_pgn_extractor._load_ai_repair_provider", return_value=FakeRepairProvider()):
+                exercises_pgn = build_exercises_pgn([record], diagram_records=diagram_records)
+                html = build_pgn_download_html([record], diagram_records=diagram_records)
+
+        self.assertEqual(exercises_pgn, "")
+        self.assertIn("ai_solution_replay_failed", html)
+        self.assertIn("AI rejected candidates", html)
+
+    def test_ai_repair_missing_json_fields_stays_review_without_crash(self) -> None:
+        class FakeRepairProvider:
+            name = "fake-ai-repair"
+
+            def propose_chess_repair(self, context):
+                return {"status": "reviewed", "provider": self.name, "model": "unit-ai"}
+
+        record = ChessPgnRecord(
+            id="ai-repair-malformed",
+            source_pages=[1],
+            title="Diagram 1-1",
+            headers={},
+            movetext="",
+            pgn="",
+            status="requires_review",
+            raw_text="Diagram 1-1\nNoisy solution.",
+        )
+        diagram_records = [{"page": 1, "diagram_number": "1-1", "image_data": b"\x89PNG\r\n\x1a\nsample"}]
+
+        with patch.dict(
+            "os.environ",
+            {
+                "KINDLEMASTER_OPENAI_CHESS_REPAIR": "1",
+                "KINDLEMASTER_OPENAI_CHESS_REPAIR_MODE": "validated_export",
+            },
+            clear=False,
+        ):
+            with patch("chess_pgn_extractor._load_ai_repair_provider", return_value=FakeRepairProvider()):
+                exercises_pgn = build_exercises_pgn([record], diagram_records=diagram_records)
+                html = build_pgn_download_html([record], diagram_records=diagram_records)
+
+        self.assertEqual(exercises_pgn, "")
+        self.assertIn("validation_status:</strong> no_ai_candidates", html)
+
+    def test_ai_repair_review_only_never_changes_exercise_export(self) -> None:
+        class FakeRepairProvider:
+            name = "fake-ai-repair"
+
+            def propose_chess_repair(self, context):
+                return {
+                    "status": "reviewed",
+                    "provider": self.name,
+                    "model": "unit-ai",
+                    "fen_candidates": [
+                        {
+                            "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                            "confidence": 0.93,
+                            "notes": "",
+                        }
+                    ],
+                    "solution_line_candidates": [
+                        {"movetext": "1. e4 e5", "confidence": 0.95, "notes": ""}
+                    ],
+                    "ocr_token_repairs": [],
+                    "confidence": 0.94,
+                    "requires_human_review": False,
+                    "notes": "single path but review only",
+                    "estimated_cost_usd": 0.0,
+                }
+
+        record = ChessPgnRecord(
+            id="ai-review-only",
+            source_pages=[1],
+            title="Diagram 1-1",
+            headers={},
+            movetext="",
+            pgn="",
+            status="requires_review",
+            raw_text="Diagram 1-1\nSolution line unclear in OCR.",
+        )
+        diagram_records = [{"page": 1, "diagram_number": "1-1", "image_data": b"\x89PNG\r\n\x1a\nsample"}]
+
+        with patch.dict(
+            "os.environ",
+            {
+                "KINDLEMASTER_OPENAI_CHESS_REPAIR": "1",
+                "KINDLEMASTER_OPENAI_CHESS_REPAIR_MODE": "review_only",
+            },
+            clear=False,
+        ):
+            with patch("chess_pgn_extractor._load_ai_repair_provider", return_value=FakeRepairProvider()):
+                exercises_pgn = build_exercises_pgn([record], diagram_records=diagram_records)
+                html = build_pgn_download_html([record], diagram_records=diagram_records)
+
+        self.assertEqual(exercises_pgn, "")
+        self.assertIn("ai_suggested_but_not_validated", html)
+        self.assertIn("No automatic PGN export changes", html)
+
     def test_pgn_download_html_shows_diagram_preprocess_metadata(self) -> None:
         html = build_pgn_download_html(
             [],
@@ -380,7 +704,7 @@ class ChessPgnExtractionTests(unittest.TestCase):
         self.assertIn("display reader_enhanced", html)
         self.assertIn("recognition original", html)
 
-    def test_html_review_record_falls_back_to_source_order_when_caption_is_damaged(self) -> None:
+    def test_html_review_record_allows_low_confidence_source_order_on_different_page(self) -> None:
         review_record = ChessPgnRecord(
             id="source-order-fallback",
             source_pages=[42],
@@ -418,8 +742,49 @@ class ChessPgnExtractionTests(unittest.TestCase):
         self.assertIsNotNone(soup.select_one("section.chess-pgn-game img.chess-diagram-thumb"))
         self.assertEqual(flags["diagram_visible"], "yes")
         self.assertEqual(flags["fen_available"], "no")
-        self.assertEqual(flags["diagram_match_score"], "55")
+        self.assertEqual(flags["diagram_match_score"], "24")
+        self.assertEqual(flags["diagram_text_match_low_confidence"], "yes")
         self.assertNotIn("Kopiuj PGN", html)
+
+    def test_html_review_record_allows_source_order_on_same_page(self) -> None:
+        review_record = ChessPgnRecord(
+            id="same-page-source-order-fallback",
+            source_pages=[42],
+            title="A. Yusupov - P'Schlosser Bundesliga 1997",
+            headers={"Event": "Damaged caption"},
+            movetext="",
+            pgn="",
+            status="requires_review",
+            warnings=["pgn_replay_errors"],
+            raw_text="OCR text requires review.",
+        )
+
+        html = build_pgn_download_html(
+            [review_record],
+            diagram_records=[
+                {
+                    "page": 42,
+                    "source_order": 0,
+                    "filename": "notation_chess_p042_01.png",
+                    "image_data": b"\x89PNG\r\n\x1a\nsample",
+                    "requires_review": True,
+                    "selected_preprocess_variant": "original",
+                    "display_variant_used": "reader_enhanced",
+                }
+            ],
+        )
+        soup = BeautifulSoup(html, "html.parser")
+        flags = {
+            item.select_one(".exercise-quality-key").get_text(strip=True).rstrip(":"): item.select_one(
+                ".exercise-quality-value"
+            ).get_text(strip=True)
+            for item in soup.select(".exercise-quality-flags li")
+        }
+
+        self.assertIsNotNone(soup.select_one("section.chess-pgn-game img.chess-diagram-thumb"))
+        self.assertEqual(flags["diagram_visible"], "yes")
+        self.assertEqual(flags["fen_available"], "no")
+        self.assertEqual(flags["diagram_match_score"], "95")
 
     def test_matched_diagram_fen_feeds_exercise_candidate_validation(self) -> None:
         review_record = ChessPgnRecord(
@@ -462,6 +827,527 @@ class ChessPgnExtractionTests(unittest.TestCase):
         self.assertEqual(flags["fen_available"], "yes")
         self.assertGreater(int(flags["legal_solution_line_count"]), 0)
         self.assertIn("legal from diagram FEN", html)
+        self.assertNotIn("Kopiuj PGN", html)
+
+    def test_ocr_normalizer_generates_review_candidates_for_broken_piece_tokens(self) -> None:
+        candidates = chess_ocr_normalization_candidates("lLlg3t Yfih8 iWh5 Wlh6 @h7 It>fI \ufffdgl l:!h5#")
+        candidate_text = "\n".join(candidate["text"] for candidate in candidates)
+
+        self.assertIn("Ng3+", candidate_text)
+        self.assertIn("Qh8", candidate_text)
+        self.assertIn("Qh5", candidate_text)
+        self.assertIn("Qh6", candidate_text)
+        self.assertIn("Kh7", candidate_text)
+        self.assertIn("Kf1", candidate_text)
+        self.assertIn("Kg1", candidate_text)
+        self.assertTrue(any("ocr_candidate_symbol_map" in candidate["warnings"] for candidate in candidates))
+
+    def test_missing_primary_fen_is_reported_without_fake_export(self) -> None:
+        review_record = ChessPgnRecord(
+            id="exercise-no-fen",
+            source_pages=[8],
+            title="Diagram 8-1",
+            headers={"Event": "Diagram 8-1"},
+            movetext="",
+            pgn="",
+            status="requires_review",
+            warnings=["pgn_replay_errors"],
+            raw_text="Diagram 8-1\n1. e4 e5",
+        )
+
+        html = build_pgn_download_html(
+            [review_record],
+            diagram_records=[
+                {
+                    "page": 8,
+                    "diagram_number": "8-1",
+                    "filename": "diagram_8_1.png",
+                    "image_data": b"\x89PNG\r\n\x1a\nsample",
+                    "confidence": 0.72,
+                    "requires_review": True,
+                }
+            ],
+        )
+        soup = BeautifulSoup(html, "html.parser")
+        flags = {
+            item.select_one(".exercise-quality-key").get_text(strip=True).rstrip(":"): item.select_one(
+                ".exercise-quality-value"
+            ).get_text(strip=True)
+            for item in soup.select(".exercise-quality-flags li")
+        }
+
+        self.assertEqual(flags["diagram_visible"], "yes")
+        self.assertEqual(flags["primary_fen_status"], "no")
+        self.assertEqual(flags["missing_fen_reason"], "primary_diagram_without_fen")
+        self.assertEqual(flags["fen_available"], "no")
+        self.assertIn("PGN export blocked until legal replay", html)
+        self.assertNotIn("Kopiuj PGN", html)
+
+    def test_summary_reports_exercise_level_fen_and_solution_metrics(self) -> None:
+        review_record = ChessPgnRecord(
+            id="exercise-summary",
+            source_pages=[1],
+            title="Diagram 1-1",
+            headers={"Event": "Diagram 1-1"},
+            movetext="",
+            pgn="",
+            status="requires_review",
+            warnings=["pgn_replay_errors"],
+            raw_text="Diagram 1-1\n1. e4 e5",
+        )
+
+        summary = summarize_chess_pgn_records(
+            [review_record],
+            diagram_records=[
+                {
+                    "page": 1,
+                    "diagram_number": "1-1",
+                    "filename": "diagram_1_1.png",
+                    "image_data": b"\x89PNG\r\n\x1a\nsample",
+                    "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                    "confidence": 0.91,
+                    "requires_review": False,
+                }
+            ],
+        )
+
+        self.assertEqual(summary["fen_available_yes_count"], 1)
+        self.assertGreater(summary["candidate_solution_line_count"], 0)
+        self.assertGreater(summary["legal_solution_line_count"], 0)
+        self.assertEqual(summary["exportable_pgn_count"], 0)
+        self.assertIn("records", summary)
+        self.assertEqual(summary["exercise_export_count"], summary["legal_solution_line_count"])
+        self.assertEqual(summary["solution_replay_legal_count"], summary["legal_solution_line_count"])
+
+    def test_build_exercises_pgn_exports_legal_solution_without_polluting_games_pgn(self) -> None:
+        review_record = ChessPgnRecord(
+            id="exercise-export",
+            source_pages=[1],
+            title="Diagram 1-1",
+            headers={"Event": "Diagram 1-1", "Result": "*"},
+            movetext="",
+            pgn="",
+            status="requires_review",
+            warnings=["pgn_replay_errors"],
+            raw_text="Diagram 1-1\n1. e4 e5",
+        )
+        diagram_records = [
+            {
+                "page": 1,
+                "diagram_number": "1-1",
+                "filename": "diagram_1_1.png",
+                "image_data": b"\x89PNG\r\n\x1a\nsample",
+                "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                "confidence": 0.91,
+                "requires_review": False,
+            }
+        ]
+
+        exercises_pgn = build_exercises_pgn(
+            [review_record],
+            diagram_records=diagram_records,
+            source_title="Exercise sample",
+        )
+
+        self.assertIn('[SetUp "1"]', exercises_pgn)
+        self.assertIn('[FEN "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]', exercises_pgn)
+        self.assertIn("1. e4 e5", exercises_pgn)
+        self.assertEqual(build_combined_pgn([review_record]), "")
+        game = chess.pgn.read_game(io.StringIO(exercises_pgn))
+        self.assertIsNotNone(game)
+        self.assertFalse(game.errors)
+
+    def test_legal_external_fen_candidate_wins_over_higher_confidence_without_replay(self) -> None:
+        review_record = ChessPgnRecord(
+            id="external-fen-wins",
+            source_pages=[1],
+            title="Diagram 1-1",
+            headers={"Event": "Diagram 1-1"},
+            movetext="",
+            pgn="",
+            status="requires_review",
+            warnings=["pgn_replay_errors"],
+            raw_text="Diagram 1-1\n1. e4 e5",
+        )
+
+        html = build_pgn_download_html(
+            [review_record],
+            diagram_records=[
+                {
+                    "page": 1,
+                    "diagram_number": "1-1",
+                    "filename": "diagram_1_1.png",
+                    "image_data": b"\x89PNG\r\n\x1a\nsample",
+                    "fen": "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+                    "confidence": 0.99,
+                    "requires_review": False,
+                    "external_fen_candidates": [
+                        {
+                            "source": "linrock",
+                            "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                            "confidence": 0.86,
+                            "requires_review": False,
+                            "method": "linrock/chessboard-recognizer",
+                        }
+                    ],
+                }
+            ],
+        )
+        soup = BeautifulSoup(html, "html.parser")
+        flags = {
+            item.select_one(".exercise-quality-key").get_text(strip=True).rstrip(":"): item.select_one(
+                ".exercise-quality-value"
+            ).get_text(strip=True)
+            for item in soup.select(".exercise-quality-flags li")
+        }
+
+        self.assertEqual(flags["fen_available"], "yes")
+        self.assertEqual(flags["external_fen_candidate_count"], "1")
+        self.assertEqual(flags["fen_candidate_conflict"], "no")
+        self.assertIn("source linrock", html)
+        self.assertIn("legal_lines 1", html)
+        self.assertIn("legal from diagram FEN", html)
+
+    def test_conflicting_fen_candidates_without_legal_replay_go_to_review(self) -> None:
+        review_record = ChessPgnRecord(
+            id="fen-conflict-review",
+            source_pages=[1],
+            title="Diagram 1-1",
+            headers={"Event": "Diagram 1-1"},
+            movetext="",
+            pgn="",
+            status="requires_review",
+            warnings=["pgn_replay_errors"],
+            raw_text="Diagram 1-1\n1. Qh5",
+        )
+
+        html = build_pgn_download_html(
+            [review_record],
+            diagram_records=[
+                {
+                    "page": 1,
+                    "diagram_number": "1-1",
+                    "filename": "diagram_1_1.png",
+                    "image_data": b"\x89PNG\r\n\x1a\nsample",
+                    "fen": "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+                    "confidence": 0.92,
+                    "requires_review": False,
+                    "external_fen_candidates": [
+                        {
+                            "source": "linrock",
+                            "fen": "4k3/8/8/8/8/8/4K3/8 w - - 0 1",
+                            "confidence": 0.90,
+                            "requires_review": False,
+                        }
+                    ],
+                }
+            ],
+        )
+        soup = BeautifulSoup(html, "html.parser")
+        flags = {
+            item.select_one(".exercise-quality-key").get_text(strip=True).rstrip(":"): item.select_one(
+                ".exercise-quality-value"
+            ).get_text(strip=True)
+            for item in soup.select(".exercise-quality-flags li")
+        }
+
+        self.assertEqual(flags["fen_available"], "review")
+        self.assertEqual(flags["fen_candidate_conflict"], "yes")
+        self.assertEqual(flags["legal_solution_line_count"], "0")
+        self.assertIn("fen_candidate_conflict", html)
+
+    def test_diagram_one_two_uses_single_primary_fen_or_marks_ambiguity(self) -> None:
+        review_record = ChessPgnRecord(
+            id="diagram-one-two-primary",
+            source_pages=[12],
+            title="Diagram 1-2 A. Yusupov - P'Schlosser Bundesliga 1997",
+            headers={"Event": "Diagram 1-2"},
+            movetext="",
+            pgn="",
+            status="requires_review",
+            warnings=["pgn_replay_errors"],
+            raw_text="Diagram 1-2\n1. e4 e5",
+        )
+
+        html = build_pgn_download_html(
+            [review_record],
+            diagram_records=[
+                {
+                    "page": 12,
+                    "diagram_number": "1-2",
+                    "source_order": 0,
+                    "filename": "diagram_1_2_a.png",
+                    "image_data": b"\x89PNG\r\n\x1a\nsample",
+                    "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                    "confidence": 0.90,
+                    "requires_review": False,
+                    "selected_preprocess_variant": "autocontrast",
+                    "display_variant_used": "reader_enhanced",
+                },
+                {
+                    "page": 12,
+                    "diagram_number": "1-2",
+                    "source_order": 1,
+                    "filename": "diagram_1_2_b.png",
+                    "image_data": b"\x89PNG\r\n\x1a\nsample",
+                    "fen": "8/8/8/8/8/8/8/8 w - - 0 1",
+                    "confidence": 0.60,
+                    "requires_review": True,
+                    "selected_preprocess_variant": "threshold_bw",
+                    "display_variant_used": "reader_enhanced",
+                },
+            ],
+        )
+        soup = BeautifulSoup(html, "html.parser")
+        flags = {
+            item.select_one(".exercise-quality-key").get_text(strip=True).rstrip(":"): item.select_one(
+                ".exercise-quality-value"
+            ).get_text(strip=True)
+            for item in soup.select(".exercise-quality-flags li")
+        }
+
+        self.assertEqual(flags["diagram_visible"], "yes")
+        self.assertEqual(flags["fen_available"], "yes")
+        self.assertEqual(flags["fen_ambiguous"], "no")
+        self.assertEqual(len(soup.select(".exercise-primary-fen code.diagram-fen-code")), 1)
+        self.assertIn("Candidate FENs", html)
+        self.assertIn("display reader_enhanced", html)
+        self.assertIn("recognition autocontrast", html)
+
+    def test_non_primary_fen_does_not_make_record_ambiguous(self) -> None:
+        review_record = ChessPgnRecord(
+            id="diagram-ambiguous-fen",
+            source_pages=[4],
+            title="Diagram 2-1",
+            headers={"Event": "Diagram 2-1"},
+            movetext="",
+            pgn="",
+            status="requires_review",
+            warnings=["pgn_replay_errors"],
+            raw_text="Diagram 2-1\n1. e4 e5",
+        )
+
+        html = build_pgn_download_html(
+            [review_record],
+            diagram_records=[
+                {
+                    "page": 4,
+                    "diagram_number": "2-1",
+                    "source_order": 0,
+                    "filename": "diagram_2_1_a.png",
+                    "image_data": b"\x89PNG\r\n\x1a\nsample",
+                    "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                    "confidence": 0.90,
+                    "requires_review": False,
+                },
+                {
+                    "page": 4,
+                    "diagram_number": "2-1",
+                    "source_order": 1,
+                    "filename": "diagram_2_1_b.png",
+                    "image_data": b"\x89PNG\r\n\x1a\nsample",
+                    "fen": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+                    "confidence": 0.91,
+                    "requires_review": False,
+                },
+            ],
+        )
+        soup = BeautifulSoup(html, "html.parser")
+        flags = {
+            item.select_one(".exercise-quality-key").get_text(strip=True).rstrip(":"): item.select_one(
+                ".exercise-quality-value"
+            ).get_text(strip=True)
+            for item in soup.select(".exercise-quality-flags li")
+        }
+
+        self.assertEqual(flags["fen_available"], "yes")
+        self.assertEqual(flags["fen_ambiguous"], "no")
+        self.assertGreater(int(flags["legal_solution_line_count"]), 0)
+        self.assertIn("Candidate FENs", html)
+        self.assertIn("legal from diagram FEN", html)
+        self.assertNotIn("Kopiuj PGN", html)
+
+    def test_primary_diagram_is_not_reused_for_multiple_records(self) -> None:
+        records = [
+            ChessPgnRecord(
+                id="diagram-5-1-a",
+                source_pages=[5],
+                title="Diagram 5-1 first",
+                headers={"Event": "Diagram 5-1"},
+                movetext="",
+                pgn="",
+                status="requires_review",
+                warnings=["pgn_replay_errors"],
+                raw_text="Diagram 5-1\n1. e4 e5",
+            ),
+            ChessPgnRecord(
+                id="diagram-5-1-b",
+                source_pages=[5],
+                title="Diagram 5-1 duplicate",
+                headers={"Event": "Diagram 5-1"},
+                movetext="",
+                pgn="",
+                status="requires_review",
+                warnings=["pgn_replay_errors"],
+                raw_text="Diagram 5-1\n1. d4 d5",
+            ),
+        ]
+
+        html = build_pgn_download_html(
+            records,
+            diagram_records=[
+                {
+                    "page": 5,
+                    "diagram_number": "5-1",
+                    "source_order": 0,
+                    "filename": "diagram_5_1.png",
+                    "image_data": b"\x89PNG\r\n\x1a\nsample",
+                    "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                    "confidence": 0.90,
+                    "requires_review": False,
+                }
+            ],
+        )
+        soup = BeautifulSoup(html, "html.parser")
+        flags_by_section = []
+        for section in soup.select("section.chess-pgn-game"):
+            flags_by_section.append(
+                {
+                    item.select_one(".exercise-quality-key").get_text(strip=True).rstrip(":"): item.select_one(
+                        ".exercise-quality-value"
+                    ).get_text(strip=True)
+                    for item in section.select(".exercise-quality-flags li")
+                }
+            )
+
+        self.assertEqual([flags["diagram_visible"] for flags in flags_by_section], ["yes", "no"])
+        self.assertEqual([flags["fen_available"] for flags in flags_by_section], ["yes", "no"])
+
+    def test_sequence_diagnostics_reports_duplicates_and_inversions(self) -> None:
+        records = [
+            ChessPgnRecord(
+                id="diagram-3-7",
+                source_pages=[1],
+                title="Diagram 3-7",
+                headers={},
+                movetext="",
+                pgn="",
+                status="requires_review",
+                raw_text="Diagram 3-7",
+            ),
+            ChessPgnRecord(
+                id="diagram-3-6",
+                source_pages=[2],
+                title="Diagram 3-6",
+                headers={},
+                movetext="",
+                pgn="",
+                status="requires_review",
+                raw_text="Diagram 3-6",
+            ),
+            ChessPgnRecord(
+                id="diagram-24-2-a",
+                source_pages=[3],
+                title="Diagram 24-2",
+                headers={},
+                movetext="",
+                pgn="",
+                status="requires_review",
+                raw_text="Diagram 24-2",
+            ),
+            ChessPgnRecord(
+                id="diagram-24-2-b",
+                source_pages=[4],
+                title="Diagram 24-2",
+                headers={},
+                movetext="",
+                pgn="",
+                status="requires_review",
+                raw_text="Diagram 24-2",
+            ),
+        ]
+
+        html = build_pgn_download_html(records)
+
+        self.assertIn("Sequence diagnostics", html)
+        self.assertIn("24-2", html)
+        self.assertIn("3-7 -&gt; 3-6", html)
+
+    def test_html_records_sort_by_source_position_page_and_bbox(self) -> None:
+        late_record = ChessPgnRecord(
+            id="late-on-page",
+            source_pages=[2],
+            title="Diagram 6-2",
+            headers={},
+            movetext="",
+            pgn="",
+            status="requires_review",
+            raw_text="Diagram 6-2",
+        )
+        early_record = ChessPgnRecord(
+            id="early-on-page",
+            source_pages=[1],
+            title="Diagram 6-1",
+            headers={},
+            movetext="",
+            pgn="",
+            status="requires_review",
+            raw_text="Diagram 6-1",
+        )
+
+        html = build_pgn_download_html(
+            [late_record, early_record],
+            diagram_records=[
+                {
+                    "page": 2,
+                    "diagram_number": "6-2",
+                    "filename": "diagram_6_2.png",
+                    "bbox": (10, 20, 100, 110),
+                    "image_data": b"\x89PNG\r\n\x1a\nsample",
+                    "requires_review": True,
+                },
+                {
+                    "page": 1,
+                    "diagram_number": "6-1",
+                    "filename": "diagram_6_1.png",
+                    "bbox": (10, 200, 100, 290),
+                    "image_data": b"\x89PNG\r\n\x1a\nsample",
+                    "requires_review": True,
+                },
+            ],
+        )
+
+        self.assertLess(html.index("Diagram 6-1"), html.index("Diagram 6-2"))
+
+    def test_candidate_line_ocr_token_normalization_marks_review_variants(self) -> None:
+        review_record = ChessPgnRecord(
+            id="ocr-candidate-normalization",
+            source_pages=[1],
+            title="Diagram 4-1",
+            headers={"Event": "Diagram 4-1"},
+            movetext="",
+            pgn="",
+            status="requires_review",
+            warnings=["pgn_replay_errors"],
+            raw_text="Diagram 4-1\n1. gg5t @h7 2. l:!h5#",
+        )
+
+        html = build_pgn_download_html(
+            [review_record],
+            diagram_records=[
+                {
+                    "page": 1,
+                    "diagram_number": "4-1",
+                    "filename": "diagram_4_1.png",
+                    "image_data": b"\x89PNG\r\n\x1a\nsample",
+                    "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                    "confidence": 0.90,
+                    "requires_review": False,
+                }
+            ],
+        )
+
+        self.assertIn("ocr_candidate_normalized", html)
         self.assertNotIn("Kopiuj PGN", html)
 
     def test_exercise_record_validates_solution_from_diagram_fen(self) -> None:
@@ -678,6 +1564,81 @@ class ChessPgnExtractionTests(unittest.TestCase):
         self.assertIn("side_to_move_mismatch", records[0].warnings)
         self.assertEqual(build_combined_pgn(records), "")
 
+    def test_accepted_record_with_illegal_pgn_is_revalidated_before_export(self) -> None:
+        record = ChessPgnRecord(
+            id="accepted-but-illegal",
+            source_pages=[1],
+            title="Accepted but illegal",
+            headers={"Event": "Accepted but illegal", "Result": "*"},
+            movetext="1. e4 e5 2. Nf3 Nc6 3. Qxf7 *",
+            pgn='[Event "Accepted but illegal"]\n[Result "*"]\n\n1. e4 e5 2. Nf3 Nc6 3. Qxf7 *\n',
+            status="accepted",
+            final_fen="fake-final-fen",
+        )
+
+        summary = summarize_chess_pgn_records([record])
+
+        self.assertEqual(build_combined_pgn([record]), "")
+        self.assertEqual(summary["strict_export_count"], 0)
+        self.assertEqual(summary["manual_review_count"], 1)
+
+    def test_regex_valid_but_position_illegal_san_blocks_export_during_extraction(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "1. e4 e5 2. Nf3 Nc6 3. Qxf7 *",
+                page_num=1,
+                source_title="Illegal SAN context",
+                ocr_confidence=1.0,
+            )
+        )
+
+        self.assertEqual(records[0].status, "requires_review")
+        self.assertIn("illegal_san_token", records[0].warnings)
+        self.assertEqual(build_combined_pgn(records), "")
+
+    def test_ambiguous_san_in_position_context_requires_review_without_guessing_piece(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "1. e4 Ke7 2. Nd2 *",
+                page_num=1,
+                source_title="Ambiguous SAN context",
+                ocr_confidence=1.0,
+                fen_candidates=["4k3/8/8/8/8/5N2/4P3/4KN2 w - - 0 1"],
+            )
+        )
+
+        self.assertEqual(records[0].status, "requires_review")
+        self.assertIn("ambiguous_san_token", records[0].warnings)
+        self.assertEqual(build_combined_pgn(records), "")
+
+    def test_line_classifier_reports_metadata_comments_noise_and_san_corrections(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "Diagram 1\n"
+                "D00\n"
+                "B13: Caro-Kann: Exchange Variation\n"
+                "1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. 0-0 Be7\n"
+                "The position is equal.\n"
+                "Weighted Error Value: White=0.51/ Black=0.36\n"
+                "*",
+                page_num=1,
+                source_title="Line classifier",
+                ocr_confidence=1.0,
+            )
+        )
+        summary = summarize_chess_pgn_records(records)
+
+        self.assertEqual(records[0].headers["ECO"], "D00")
+        self.assertEqual(records[0].headers["Opening"], "Caro-Kann: Exchange Variation")
+        self.assertIn("book_comment_excluded_from_strict_movetext", records[0].warnings)
+        self.assertNotIn("The position is equal", records[0].movetext)
+        self.assertGreaterEqual(summary["line_metadata_count"], 2)
+        self.assertGreaterEqual(summary["line_comment_count"], 2)
+        self.assertGreaterEqual(summary["line_noise_count"], 1)
+        self.assertGreaterEqual(summary["san_correction_count"], 1)
+        self.assertIn("{The position is equal.}", records[0].annotated_pgn)
+        self.assertIn("{Weighted Error Value: White=0.51/ Black=0.36}", records[0].annotated_pgn)
+
     def test_splits_notation_collection_games_after_cleaned_eco_headers(self) -> None:
         text = """
         1 D00
@@ -695,6 +1656,41 @@ class ChessPgnExtractionTests(unittest.TestCase):
 
         self.assertEqual(len(records), 2)
         self.assertIn("1. Nc3 d5", records[0].pgn)
+        self.assertIn("1. d4 d5", records[1].pgn)
+
+    def test_splits_notation_collection_games_after_result_and_player_caption(self) -> None:
+        text = """
+        Carlsen,M 2833
+        Duda,J 2739
+        1.e4 e5 2.Nf3 Nc6 1-0
+        Praggnanandhaa,R 2758
+        Giri,Anish 2749
+        1.d4 d5 2.Nc3 Nf6 *
+        """
+
+        records = extract_chess_pgn_records_from_text(text, page_num=2, source_title="Collection", ocr_confidence=1.0)
+
+        self.assertEqual(len(records), 2)
+        self.assertIn("1. e4 e5", records[0].pgn)
+        self.assertIn("1. d4 d5", records[1].pgn)
+
+    def test_diagram_line_after_result_does_not_glue_next_game(self) -> None:
+        text = """
+        D00
+        Carlsen,M 2833
+        Duda,J 2739
+        1.e4 e5 2.Nf3 Nc6 1-0
+        (Diagram)
+        D00
+        Praggnanandhaa,R 2758
+        Giri,Anish 2749
+        1.d4 d5 2.Nc3 Nf6 *
+        """
+
+        records = extract_chess_pgn_records_from_text(text, page_num=2, source_title="Collection", ocr_confidence=1.0)
+
+        self.assertEqual(len(records), 2)
+        self.assertIn("1. e4 e5", records[0].pgn)
         self.assertIn("1. d4 d5", records[1].pgn)
 
     def test_notation_collection_caption_populates_pgn_headers(self) -> None:
@@ -815,6 +1811,32 @@ class ChessPgnExtractionTests(unittest.TestCase):
 
         self.assertEqual(records[0].status, "accepted")
         self.assertIn("1. g4 d5 2. Nf3 Nf6", records[0].movetext)
+
+    def test_chess_ocr_token_confusions_are_normalized_inside_san_tokens(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "l.e4 eS 2.Nf3 Nc6 *",
+                page_num=1,
+                source_title="OCR token confusions",
+                ocr_confidence=1.0,
+            )
+        )
+
+        self.assertEqual(records[0].status, "accepted")
+        self.assertIn("1. e4 e5 2. Nf3 Nc6", records[0].movetext)
+
+    def test_multiplication_capture_symbol_is_normalized_to_pgn_capture(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "1.e4 d5 2.e×d5 Nf6 *",
+                page_num=1,
+                source_title="OCR capture symbol",
+                ocr_confidence=1.0,
+            )
+        )
+
+        self.assertEqual(records[0].status, "accepted")
+        self.assertIn("2. exd5 Nf6", records[0].movetext)
 
     def test_full_first_jobava_game_is_accepted_despite_engine_evals(self) -> None:
         records = annotate_records_with_replayed_fens(
@@ -1489,6 +2511,8 @@ B13: Caro-Kann: Exchange Variation
         html = build_pgn_download_html([record], title="OCR review")
 
         self.assertIn("Original OCR fragment: Wixh7t liJ noisy OCR", html)
+        self.assertIn("Znormalizowana pr", html)
+        self.assertIn("1. Rh8+ Kxh8 *", html)
         self.assertNotIn("[Event &quot;OCR review&quot;]", html)
 
     def test_semantic_cleanup_keeps_generated_pgn_section(self) -> None:

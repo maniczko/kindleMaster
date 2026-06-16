@@ -16,7 +16,19 @@ class MlFeaturesTests(unittest.TestCase):
             has_toc=True,
             has_tables=False,
             has_diagrams=True,
+            diagram_signal_count=2,
+            chess_signal_count=1,
             has_meaningful_images=True,
+            visual_density=0.42,
+            dominant_visual_ratio=0.62,
+            text_block_density=18.5,
+            layout_entropy=0.35,
+            toc_depth=2,
+            toc_noise_score=0.2,
+            non_content_ratio=0.1,
+            ocr_confidence=0.74,
+            ocr_supported=True,
+            ocr_language_available=True,
             estimated_columns=2,
             heading_density=0.25,
             font_consistency=0.8,
@@ -32,6 +44,12 @@ class MlFeaturesTests(unittest.TestCase):
         self.assertEqual(payload["scanned_page_ratio"], 0.1)
         self.assertEqual(payload["image_page_ratio"], 0.3)
         self.assertTrue(payload["has_diagrams"])
+        self.assertEqual(payload["visual_density"], 0.42)
+        self.assertEqual(payload["dominant_visual_ratio"], 0.62)
+        self.assertEqual(payload["text_block_density"], 18.5)
+        self.assertEqual(payload["diagram_signal_count"], 2)
+        self.assertEqual(payload["chess_signal_count"], 1)
+        self.assertTrue(payload["ocr_supported"])
         self.assertEqual(route_features_hash(payload), route_features_hash(dict(reversed(payload.items()))))
 
     def test_docx_feature_payload_preserves_counts(self) -> None:

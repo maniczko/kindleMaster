@@ -9,6 +9,7 @@ ERROR_UPLOAD_FAILED = "upload_failed"
 ERROR_QUEUE_FAILED = "queue_failed"
 ERROR_CONVERSION_FAILED = "conversion_failed"
 ERROR_CONVERSION_TIMEOUT = "conversion_timeout"
+ERROR_INTERACTIVE_RUNTIME_BUDGET = "interactive_runtime_budget_exceeded"
 ERROR_APPLICATION_RESTART = "application_restart"
 ERROR_MISSING_OUTPUT = "missing_output"
 ERROR_UNSUPPORTED_REPORT_FORMAT = "unsupported_report_format"
@@ -19,6 +20,7 @@ CONVERT_ERROR_CODES = frozenset(
         ERROR_QUEUE_FAILED,
         ERROR_CONVERSION_FAILED,
         ERROR_CONVERSION_TIMEOUT,
+        ERROR_INTERACTIVE_RUNTIME_BUDGET,
         ERROR_APPLICATION_RESTART,
         ERROR_MISSING_OUTPUT,
         ERROR_UNSUPPORTED_REPORT_FORMAT,

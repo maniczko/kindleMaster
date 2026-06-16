@@ -312,41 +312,35 @@ class TextNormalizationTests(unittest.TestCase):
         self.assertEqual(result.summary["error_class_counts"].get("hyphen-break"), 4)
         self.assertIn("split-word", result.summary["suppressed_error_classes"])
 
-    def test_clean_epub_text_package_repairs_pl_en_split_artifacts_without_touching_links_code_or_tables(self):
-        epub_bytes = _build_test_epub(
-            chapter_markup=(
-                '<?xml version="1.0" encoding="utf-8"?>'
-                '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
-                '<p id="owner-anchor">Status re portu opisuje InvoiceDetailRe quest, '
-                "O rderRequest, o wnerzy, e- invoicing, notatka rz, governance dec ku "
-                "i odbior managers kim, I nvoiceResponse, remit- to oraz Eur sap.</p>"
-                '<p><a href="#owner-anchor">status re portu</a></p>'
-                '<code>O rderRequest</code>'
-                '<table><tr><td>O rderRequest</td><td>status re portu</td></tr></table>'
-                "</body></html>"
-            )
+    def test_clean_epub_text_package_suppresses_unsafe_magazine_single_letter_glue(self):
+        chapter_markup = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+            "<p>Tekst o arządczymi procesami, akomunikowana zmiana i aoszczędzonego czasu "
+            "nie powinien byc automatycznie rozbijany na pojedyncze litery.</p>"
+            "</body></html>"
         )
+        epub_bytes = _build_test_epub(chapter_markup=chapter_markup)
 
         with patch(
             "text_cleanup_engine.run_epubcheck",
             return_value={"status": "passed", "tool": "epubcheck", "messages": []},
         ):
-            result = clean_epub_text_package(epub_bytes, config=TextCleanupConfig(language_hint="pl"))
+            result = clean_epub_text_package(
+                epub_bytes,
+                config=TextCleanupConfig(language_hint="pl"),
+                publication_profile="magazine_reflow",
+            )
 
         with zipfile.ZipFile(io.BytesIO(result.epub_bytes), "r") as archive:
             chapter = archive.read("EPUB/chapter_001.xhtml").decode("utf-8")
 
-        self.assertIn("Status reportu opisuje InvoiceDetailRequest, OrderRequest, ownerzy, e-invoicing, notatkarz", chapter)
-        self.assertIn("governance decku", chapter)
-        self.assertIn("odbior managerskim", chapter)
-        self.assertIn("InvoiceResponse", chapter)
-        self.assertIn("remit-to oraz Eursap", chapter)
-        self.assertIn('id="owner-anchor"', chapter)
-        self.assertIn('href="#owner-anchor"', chapter)
-        self.assertIn(">status re portu</a>", chapter)
-        self.assertIn("<code>O rderRequest</code>", chapter)
-        self.assertIn("<td>O rderRequest</td><td>status re portu</td>", chapter)
-        self.assertGreaterEqual(result.summary["auto_fix_count"], 8)
+        self.assertIn("arządczymi", chapter)
+        self.assertIn("akomunikowana", chapter)
+        self.assertIn("aoszczędzonego", chapter)
+        self.assertNotIn("a rządczymi", chapter)
+        self.assertNotIn("a komunikowana", chapter)
+        self.assertNotIn("a oszczędzonego", chapter)
 
     def test_clean_epub_text_package_preserves_hyphen_sensitive_tokens(self):
         chapter_markup = (

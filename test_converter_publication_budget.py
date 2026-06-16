@@ -7,7 +7,11 @@ from unittest.mock import patch
 
 from publication_model import PublicationAnalysis, PublicationDocument
 
-from converter import ConversionConfig, _build_publication_pipeline_result, convert_pdf_to_epub_with_report
+from converter import (
+    ConversionConfig,
+    InteractiveRuntimeBudgetExceeded,
+    convert_pdf_to_epub_with_report,
+)
 
 
 class PublicationBudgetSelectionTests(unittest.TestCase):
@@ -240,6 +244,50 @@ class PublicationBudgetSelectionTests(unittest.TestCase):
 
         self.assertEqual(captured_attempts, ["fallback"])
         self.assertEqual(payload["quality_report"]["render_budget_attempt"], "fallback")
+
+    @patch("converter._extract_pdf_metadata", return_value={"title": "Huge Tactics", "author": "Authors"})
+    @patch("converter._build_publication_pipeline_result")
+    @patch("publication_analysis.analyze_publication")
+    def test_interactive_runtime_budget_blocks_extreme_diagram_pdf_before_build(
+        self,
+        mock_analyze_publication,
+        mock_build_publication_result,
+        _mock_extract_pdf_metadata,
+    ) -> None:
+        mock_analyze_publication.return_value = PublicationAnalysis(
+            profile="diagram_book_reflow",
+            confidence=0.88,
+            page_count=1184,
+            render_budget_class="fixed_layout_extreme",
+            has_toc=False,
+            has_tables=False,
+            has_diagrams=True,
+            has_meaningful_images=False,
+            estimated_sections=60,
+            fallback_recommendation="semantic-reflow",
+            ui_profile="book",
+            legacy_strategy="text_reflowable",
+            has_text_layer=True,
+            is_scanned=False,
+            layout_heavy=False,
+            text_heavy=True,
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            pdf_path = Path(temp_dir) / "huge-tactics.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4 huge diagram probe")
+
+            with self.assertRaises(InteractiveRuntimeBudgetExceeded) as raised:
+                convert_pdf_to_epub_with_report(
+                    str(pdf_path),
+                    config=ConversionConfig(language="en", interactive_runtime_budget=True),
+                    original_filename=pdf_path.name,
+                )
+
+        mock_build_publication_result.assert_not_called()
+        self.assertEqual(raised.exception.error_code, "interactive_runtime_budget_exceeded")
+        self.assertEqual(raised.exception.payload["page_count"], 1184)
+        self.assertIn("interactive_page_budget_exceeded", raised.exception.payload["reason_codes"])
 
 
 if __name__ == "__main__":

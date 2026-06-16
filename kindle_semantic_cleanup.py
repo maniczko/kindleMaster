@@ -236,7 +236,7 @@ TOC_HEADING_PATTERNS = (
 )
 LETTER_TOKEN_RE = re.compile(r"[A-Za-zÀ-ÿĀ-ž]+")
 FIGURE_CAPTION_RE = re.compile(
-    r"^(?:(?:Figure|Table|Diagram|Chart|Exhibit|Photo|Photos?)\s+[A-Za-z0-9.\-: ]{1,120}|(?:Rys(?:unek|\.)|Tabela|Diagram|Wykres)\s+[A-Za-z0-9.\-: ]{1,120})$",
+    r"^(?:(?:Figure|Fig\.?|Table|Diagram|Chart|Exhibit|Photo|Photos?|Pic\.?|Picture)\s+[A-Za-z0-9.\-: ]{1,120}|(?:Rys(?:unek|\.)|Tabela|Diagram|Wykres)\s+[A-Za-z0-9.\-: ]{1,120})$",
     re.IGNORECASE,
 )
 ROLE_WORD_RE = re.compile(
@@ -461,6 +461,14 @@ MAGAZINE_SPECIAL_TITLE_RE = re.compile(
 )
 MAGAZINE_PROMO_TEXT_RE = re.compile(
     r"(?i)\b(?:prenumerata|subskrypcja|zam[oó]w|oferta|partner|sponsorowan|reklama|kino na leżakach|kpo|dotacj)\b"
+)
+MAGAZINE_CONTACT_TEXT_RE = re.compile(
+    r"(?i)\b(?:https?://|www\.|facebook\s*\.|linkedin\s*\.|instagram\s*\.|youtube\s*\.|slideshare\s*\.|"
+    r"tel\.?|telefon|phone|e-?mail|kontakt)\b"
+)
+MAGAZINE_NEWSLETTER_TEXT_RE = re.compile(
+    r"(?i)\b(?:newsletter|subskryb|zapisz\s+si|zapisz\s+sie|dolacz\s+do|doĹ‚Ä…cz\s+do|"
+    r"badz\s+na\s+biezaco|bÄ…dĹş\s+na\s+bieĹĽÄ…co)\b"
 )
 MAGAZINE_BYLINE_RE = re.compile(
     r"(?i)^(?:n\s+)?(?:tekst|rozmawia|autor|autorka|ilustracja|zdj[eę]cia|fot\.?|rys\.?|oprac\.?)\b"
@@ -3730,6 +3738,24 @@ def _looks_like_table_header_heading(text: str) -> bool:
     tokens = [token.strip("()[]{}.,;:!?") for token in normalized.replace("/", " / ").split() if token.strip("()[]{}.,;:!?")]
     if len(tokens) < 5:
         return False
+    lowered_tokens = {token.lower() for token in tokens}
+    table_header_keywords = {
+        "category",
+        "definition",
+        "input",
+        "kategoria",
+        "kpi",
+        "metric",
+        "miernik",
+        "output",
+        "pułapka",
+        "pulapka",
+        "requirement",
+        "test",
+        "value",
+        "wymaganie",
+    }
+    keyword_hits = len(lowered_tokens & table_header_keywords)
     capitalized_tokens = sum(1 for token in tokens if token[:1].isupper() or token.isupper())
     long_tokens = sum(1 for token in tokens if len(token) >= 4)
     connector_tokens = sum(
@@ -3737,9 +3763,9 @@ def _looks_like_table_header_heading(text: str) -> bool:
         for token in tokens
         if token.lower() in {"i", "oraz", "to", "co", "po", "for", "and", "of", "the"}
     )
-    if "/" in normalized and capitalized_tokens >= 3 and long_tokens >= 4:
+    if "/" in normalized and keyword_hits >= 2 and capitalized_tokens >= 3 and long_tokens >= 4:
         return True
-    return capitalized_tokens >= 4 and long_tokens >= 4 and connector_tokens <= 2
+    return keyword_hits >= 2 and capitalized_tokens >= 3 and long_tokens >= 4 and connector_tokens <= 2
 
 
 def _demote_repetitive_schema_headings(blocks: list[dict]) -> list[dict]:
@@ -7854,6 +7880,12 @@ def _repair_magazine_package(
         )
         extras = _fallback_magazine_non_linear_files(chapter_infos, contents_file=str(issue_outline.get("file_name") or ""))
         extras.update(_detect_generic_page_fragment_files(chapter_paths))
+        for info in chapter_infos:
+            file_name = str(info["file_name"])
+            if file_name in extras:
+                continue
+            _demote_unsafe_magazine_primary_heading(Path(info["path"]))
+            _ensure_magazine_primary_heading(Path(info["path"]), info=info)
         if extras:
             package["spine_order"] = [
                 info["file_name"]
@@ -7894,6 +7926,12 @@ def _repair_magazine_package(
         contents_file=issue_outline["file_name"],
     )
     extras.update(_detect_generic_page_fragment_files(chapter_paths))
+    for info in chapter_infos:
+        file_name = str(info["file_name"])
+        if file_name in extras or file_name == issue_outline["file_name"]:
+            continue
+        _demote_unsafe_magazine_primary_heading(Path(info["path"]))
+        _ensure_magazine_primary_heading(Path(info["path"]), info=info)
     toc_entries = _build_magazine_toc_entries(
         issue_outline=issue_outline,
         ordered_issue_entries=ordered_issue_entries,
@@ -8105,8 +8143,13 @@ def _build_magazine_chapter_info(chapter_path: Path, *, index: int) -> dict[str,
         or title_key.startswith("materiał sponsorowany")
         or title_key.startswith("sponsored")
         or title_key.startswith("advertorial")
+        or _looks_like_magazine_sponsored_text(full_text[:800])
     ):
         special_type = "sponsored"
+    elif _looks_like_magazine_newsletter_promo(title_text or start_text, full_text):
+        special_type = "newsletter"
+    elif _looks_like_magazine_contact_heavy_text(full_text):
+        special_type = "contact"
     else:
         special_type = ""
     return {
@@ -8122,14 +8165,68 @@ def _build_magazine_chapter_info(chapter_path: Path, *, index: int) -> dict[str,
         "special_type": special_type,
         "image_count": len(soup.find_all("img")),
         "text_chars": len(full_text),
+        "word_count": len(re.findall(r"\b[^\W\d_]{2,}\b", full_text, re.UNICODE)),
+        "contact_signal_count": _count_magazine_contact_signals(full_text),
+        "is_contact_heavy": _looks_like_magazine_contact_heavy_text(full_text),
+        "is_newsletter_promo": _looks_like_magazine_newsletter_promo(title_text or start_text, full_text),
         "is_special_hint": bool(
             MAGAZINE_SPECIAL_TITLE_RE.match(title_text or start_text)
             or _looks_like_magazine_extra_title(title_key)
             or MAGAZINE_PROMO_TEXT_RE.search(full_text[:1200])
+            or _looks_like_magazine_sponsored_text(full_text[:1200])
+            or _looks_like_magazine_contact_heavy_text(full_text)
+            or _looks_like_magazine_newsletter_promo(title_text or start_text, full_text)
         ),
         "has_byline": any(candidate["kind"] == "byline" for candidate in candidates),
         "candidates": candidates,
     }
+
+
+def _count_magazine_contact_signals(text: str) -> int:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return 0
+    return len(MAGAZINE_CONTACT_TEXT_RE.findall(normalized))
+
+
+def _looks_like_magazine_contact_heavy_text(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    signal_count = _count_magazine_contact_signals(normalized)
+    word_count = len(re.findall(r"\b[^\W\d_]{2,}\b", normalized, re.UNICODE))
+    if signal_count >= 3 and word_count <= 180:
+        return True
+    return signal_count >= 5 and word_count <= 360
+
+
+def _looks_like_magazine_sponsored_text(text: str) -> bool:
+    key = _magazine_key(text)
+    if not key:
+        return False
+    return "sponsor" in key or ("materia" in key and "sponsor" in key)
+
+
+def _looks_like_magazine_newsletter_promo(title: str, text: str) -> bool:
+    blob = f"{_normalize_text(title)} {_normalize_text(text[:1000])}"
+    if not blob.strip():
+        return False
+    if MAGAZINE_NEWSLETTER_TEXT_RE.search(blob):
+        return True
+    lowered = _magazine_key(blob)
+    return "newsletter" in lowered and ("zapisz" in lowered or "subskry" in lowered)
+
+
+def _looks_like_magazine_non_content_info(info: dict[str, object]) -> bool:
+    special_type = str(info.get("special_type") or "")
+    if special_type in {"gallery", "advertisement", "sponsored", "contact", "newsletter"}:
+        return True
+    if bool(info.get("is_contact_heavy")) or bool(info.get("is_newsletter_promo")):
+        return True
+    title_key = _magazine_key(str(info.get("title") or info.get("start_text") or ""))
+    if title_key in MAGAZINE_FEATURE_SKIP_KEYS or _looks_like_magazine_extra_title(title_key):
+        return True
+    return _looks_like_magazine_image_only_stub(info)
 
 
 def _build_magazine_candidate_context(top_nodes: list[Tag], start_index: int, *, max_nodes: int = 5, max_chars: int = 320) -> str:
@@ -8232,9 +8329,7 @@ def _find_direct_magazine_match(
     for info in chapter_infos:
         if info["is_contents"]:
             continue
-        if info["special_type"] in {"gallery", "advertisement"}:
-            continue
-        if info["special_type"] == "sponsored" and not info["has_byline"]:
+        if _looks_like_magazine_non_content_info(info):
             continue
         for candidate in info["candidates"]:
             slot = (candidate["file_name"], int(candidate["node_index"]))
@@ -8275,9 +8370,7 @@ def _find_fallback_magazine_boundary(
     for info in chapter_infos:
         if info["is_contents"]:
             continue
-        if info["special_type"] in {"gallery", "advertisement"}:
-            continue
-        if info["special_type"] == "sponsored" and not info["has_byline"]:
+        if _looks_like_magazine_non_content_info(info):
             continue
         chapter_start_used = (info["file_name"], int(info["start_node_index"])) in used_slots
         for candidate in info["candidates"]:
@@ -8381,21 +8474,146 @@ def _apply_magazine_assignments(chapter_info: dict[str, object], assignments: li
         chapter_path.write_text(_serialize_soup_document(soup), encoding="utf-8")
 
 
+def _ensure_magazine_primary_heading(chapter_path: Path, *, info: dict[str, object] | None = None) -> bool:
+    try:
+        soup = BeautifulSoup(chapter_path.read_text(encoding="utf-8"), "xml")
+    except Exception:
+        return False
+    if soup.find(["h1", "h2"]):
+        return False
+    section = soup.find("section") or soup.find("body")
+    if section is None:
+        return False
+    top_nodes = [child for child in section.children if isinstance(child, Tag)]
+    title_node = soup.find("title")
+    title_text = _normalize_text(title_node.get_text(" ", strip=True)) if title_node is not None else ""
+    full_text = _normalize_text(soup.get_text(" ", strip=True))
+    heading_text = _select_magazine_primary_heading_text(title_text=title_text, top_nodes=top_nodes, full_text=full_text)
+    if not heading_text:
+        return False
+
+    used_ids = {
+        node.get("id", "")
+        for node in soup.find_all(attrs={"id": True})
+        if node.get("id", "")
+    }
+    first_text_node = next((node for node in top_nodes if _normalize_text(node.get_text(" ", strip=True))), None)
+    target_node: Tag | None = None
+    if first_text_node is not None:
+        first_text = _normalize_text(first_text_node.get_text(" ", strip=True))
+        if _title_fragments_match(first_text, heading_text) or _title_fragments_match(heading_text, first_text):
+            target_node = first_text_node
+
+    if target_node is None:
+        target_node = soup.new_tag("h1")
+        target_node.string = heading_text
+        if first_text_node is not None:
+            first_text_node.insert_before(target_node)
+        else:
+            section.insert(0, target_node)
+    else:
+        target_node.name = "h1"
+        target_node.clear()
+        target_node.string = heading_text
+
+    if not target_node.get("id"):
+        target_node["id"] = _unique_dom_id(_slugify(heading_text), used_ids, fallback="article")
+    if title_node is not None and _safe_magazine_primary_heading_text(heading_text, full_text):
+        title_node.string = heading_text
+    chapter_path.write_text(_serialize_soup_document(soup), encoding="utf-8")
+    return True
+
+
+def _demote_unsafe_magazine_primary_heading(chapter_path: Path) -> bool:
+    try:
+        soup = BeautifulSoup(chapter_path.read_text(encoding="utf-8"), "xml")
+    except Exception:
+        return False
+    headings = soup.find_all(["h1", "h2"])
+    if len(headings) != 1:
+        return False
+    heading = headings[0]
+    text = _normalize_text(heading.get_text(" ", strip=True))
+    if not text or not text[0].islower():
+        return False
+    title_node = soup.find("title")
+    title_text = _normalize_text(title_node.get_text(" ", strip=True)) if title_node is not None else ""
+    if title_text and not _title_fragments_match(text, title_text):
+        return False
+    heading.name = "p"
+    classes = _normalized_classes(_class_list(heading), fallback=["subtitle"])
+    if "subtitle" not in classes:
+        classes.append("subtitle")
+    heading["class"] = classes
+    if heading.get("id"):
+        del heading.attrs["id"]
+    chapter_path.write_text(_serialize_soup_document(soup), encoding="utf-8")
+    return True
+
+
+def _select_magazine_primary_heading_text(*, title_text: str, top_nodes: list[Tag], full_text: str) -> str:
+    candidates = [_normalize_text(title_text)]
+    for node in top_nodes[:8]:
+        text = _normalize_text(node.get_text(" ", strip=True))
+        if text and text not in candidates:
+            candidates.append(text)
+    for candidate in candidates:
+        cleaned = _clean_magazine_primary_heading_candidate(candidate)
+        if _safe_magazine_primary_heading_text(cleaned, full_text):
+            return cleaned
+    return ""
+
+
+def _clean_magazine_primary_heading_candidate(text: str) -> str:
+    normalized = _normalize_text(text).strip(" -:;,.")
+    if not normalized:
+        return ""
+    for separator in (" — ", " – ", " - "):
+        if separator not in normalized:
+            continue
+        left, right = [part.strip(" -:;,.") for part in normalized.split(separator, 1)]
+        if _looks_like_author_or_byline_fragment(right) and _looks_like_safe_short_toc_title(left):
+            return left
+    return normalized
+
+
+def _safe_magazine_primary_heading_text(text: str, full_text: str) -> bool:
+    normalized = _normalize_text(text).strip(" -:;,.")
+    if not normalized:
+        return False
+    words = normalized.split()
+    if len(words) < 2 or len(words) > 28 or len(normalized) > 180:
+        return False
+    if normalized[0].islower():
+        return False
+    if _is_magazine_byline(normalized) or _looks_like_author_line(normalized):
+        return False
+    if _looks_like_magazine_contact_heavy_text(normalized) or _looks_like_magazine_newsletter_promo(normalized, full_text):
+        return False
+    if MAGAZINE_SPECIAL_TITLE_RE.match(normalized) or MAGAZINE_PROMO_TEXT_RE.search(normalized):
+        return False
+    if normalized.endswith(".") and len(words) > 8:
+        return False
+    return _looks_like_heading_text(normalized) or len(words) <= 18
+
+
+def _looks_like_author_or_byline_fragment(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    if _is_magazine_byline(normalized) or _looks_like_author_line(normalized):
+        return True
+    words = normalized.split()
+    return 1 <= len(words) <= 5 and all(word[:1].isupper() for word in words if word[:1].isalpha())
+
+
 def _fallback_magazine_non_linear_files(chapter_infos: list[dict[str, object]], *, contents_file: str) -> set[str]:
     extras: set[str] = set()
     for info in chapter_infos:
         file_name = str(info["file_name"])
         if file_name == contents_file:
             continue
-        title_key = _magazine_key(str(info.get("title") or info.get("start_text") or ""))
-        if (
-            info.get("special_type") in {"gallery", "advertisement"}
-            or (info.get("special_type") == "sponsored" and not info.get("has_byline"))
-            or _looks_like_magazine_image_only_stub(info)
-            or bool(info.get("is_special_hint"))
-            or title_key in MAGAZINE_FEATURE_SKIP_KEYS
-            or _looks_like_magazine_extra_title(title_key)
-        ):
+        if _looks_like_magazine_non_content_info(info) or bool(info.get("is_special_hint")):
             extras.add(file_name)
     return extras
 
@@ -8492,6 +8710,9 @@ def _classify_magazine_feature_buckets(
         if file_name == contents_file:
             continue
         title = _normalize_text(str(info["title"]))
+        if _looks_like_magazine_non_content_info(info):
+            extras.add(file_name)
+            continue
         title_key = _magazine_key(title)
         if re.search(r"(?i)\b(ciąg dalszy|continued)\b", title):
             continue
@@ -9695,6 +9916,12 @@ def _reorder_opf_spine(
     non_linear_idrefs: list[str] = []
     cover_id = href_to_id.get("cover.xhtml", "")
     nav_id = href_to_id.get("nav.xhtml", "")
+    for itemref in itemrefs:
+        if str(itemref.get("linear", "yes") or "yes").lower() != "no":
+            continue
+        href = id_to_href.get(itemref.get("idref", ""), "")
+        if href and href not in {"cover.xhtml", "nav.xhtml"}:
+            non_linear_hrefs.add(href)
 
     for href in ordered_files:
         if href in excluded_files:
@@ -10194,8 +10421,18 @@ def _sanitize_toc_label_for_render(label: str) -> str:
     normalized = _normalize_text(label)
     if not normalized:
         return ""
+    if _looks_like_split_letter_toc_artifact(normalized):
+        return ""
+    if _looks_like_caption_or_source_toc_label(normalized):
+        return ""
     if len(normalized) <= 90 and len(normalized.split()) <= 12:
         return normalized
+    for separator in (" – ", " — "):
+        if separator not in normalized:
+            continue
+        candidate = normalized.split(separator, 1)[0].strip(" -:;,.!?")
+        if _looks_like_safe_short_toc_title(candidate):
+            return candidate
     for separator in ("? ", ". ", "! ", ": ", " - ", " â€“ ", " â€” "):
         if separator not in normalized:
             continue
@@ -10630,6 +10867,10 @@ def _should_include_in_toc(text: str, level: int) -> bool:
         return False
     if _looks_like_index_page_toc_label(normalized):
         return False
+    if _looks_like_split_letter_toc_artifact(normalized):
+        return False
+    if _looks_like_caption_or_source_toc_label(normalized):
+        return False
     if _looks_like_truncated_heading(normalized):
         return False
     if re.match(r"^[•·▪◦]\s*", normalized):
@@ -10695,6 +10936,37 @@ def _looks_like_table_or_diagram_artifact_toc_label(text: str) -> bool:
     if re.fullmatch(r"(?i)rank\s*(?:=|:)?\s*\d+(?:\s*[*x]\s*\d+)?", normalized):
         return True
     return False
+
+
+def _looks_like_caption_or_source_toc_label(text: str) -> bool:
+    normalized = _normalize_text(text).strip(" .:;")
+    if not normalized:
+        return False
+    if re.match(r"(?i)^(?:zrodlo|źródło|source|credit)\s*[:.-]", normalized):
+        return True
+    return _looks_like_figure_caption(normalized)
+
+
+def _looks_like_split_letter_toc_artifact(text: str) -> bool:
+    normalized = _normalize_text(text).strip(" .:;,-")
+    words = normalized.split()
+    if not 2 <= len(words) <= 4:
+        return False
+    if any(any(ch.isdigit() for ch in word) for word in words):
+        return False
+    short_lower_fragments = [
+        word
+        for word in words[1:]
+        if word.islower() and 1 < len(word) <= 3 and word.lower() not in MINOR_WORDS
+    ]
+    if not short_lower_fragments:
+        return False
+    capitalized_words = [word for word in words if word[:1].isupper() and len(word) >= 3]
+    if not capitalized_words:
+        return False
+    if len(words) == 2 and len(short_lower_fragments) == 1 and len(words[0]) <= 3:
+        return True
+    return len(short_lower_fragments) >= 1 and len(capitalized_words) >= 1
 
 
 def _looks_like_index_page_toc_label(text: str) -> bool:

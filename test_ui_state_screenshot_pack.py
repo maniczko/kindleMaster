@@ -516,7 +516,7 @@ class UiStateScreenshotPackTests(unittest.TestCase):
         if metrics["hasQualityDecision"]:
             self.assertIn("Premium score", metrics["qualityHeroText"])
             self.assertIn("Kindle-ready", metrics["qualityHeroText"])
-            self.assertIn("AI verifier", metrics["qualityHeroText"])
+            self.assertIn("Local quality policy verifier", metrics["qualityHeroText"])
         self.assertFalse(metrics["horizontalOverflow"], f"{state}/{viewport_name} has horizontal overflow: {metrics}")
 
     def _load_pdf(self, page) -> None:

@@ -4,6 +4,7 @@ import json
 import math
 from functools import lru_cache
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Mapping
 
 from ml_features import ROUTE_MODEL_FEATURE_ORDER, normalize_route_features, route_feature_vector, route_features_hash
@@ -106,6 +107,7 @@ def build_route_decision(
     model: Mapping[str, Any] | None = None,
     allow_override: bool = True,
 ) -> dict[str, Any]:
+    inference_started = perf_counter()
     normalized_mode = normalize_route_model_mode(mode)
     normalized_features = normalize_route_features(features)
     reason_codes: list[str] = []
@@ -123,6 +125,7 @@ def build_route_decision(
             model_version="",
             features=normalized_features,
             scores={},
+            inference_seconds=round(perf_counter() - inference_started, 6),
         )
 
     route_model = dict(model or load_route_model() or {})
@@ -141,6 +144,7 @@ def build_route_decision(
             model_version="",
             features=normalized_features,
             scores={},
+            inference_seconds=round(perf_counter() - inference_started, 6),
         )
 
     ml_profile = str(prediction.get("profile", "") or "")
@@ -176,6 +180,7 @@ def build_route_decision(
         model_version=str(prediction.get("model_version", "") or ""),
         features=normalized_features,
         scores=dict(prediction.get("scores") or {}),
+        inference_seconds=round(perf_counter() - inference_started, 6),
     )
 
 
@@ -227,6 +232,7 @@ def _route_decision_payload(
     model_version: str,
     features: Mapping[str, Any],
     scores: Mapping[str, Any],
+    inference_seconds: float = 0.0,
 ) -> dict[str, Any]:
     return {
         "heuristic_profile": str(heuristic_profile or ""),
@@ -239,6 +245,7 @@ def _route_decision_payload(
         "reason_codes": list(reason_codes),
         "model_version": str(model_version or ""),
         "input_features_hash": route_features_hash(features),
+        "inference_seconds": round(float(inference_seconds or 0.0), 6),
         "scores": dict(scores),
     }
 

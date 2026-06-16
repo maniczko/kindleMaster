@@ -15,7 +15,7 @@ from app_runtime_services import (
     ConversionOutcome,
     ConversionJobStore,
     ConversionRequest,
-    ConversionQualityGateError,
+    build_conversion_config,
     build_conversion_metadata,
     build_conversion_summary,
     build_local_app_url,
@@ -169,6 +169,20 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertEqual(detect_supported_source_type("SAMPLE.DOCX"), "docx")
         self.assertIsNone(detect_supported_source_type("sample.epub"))
         self.assertIsNone(detect_supported_source_type(""))
+
+    def test_build_conversion_config_propagates_interactive_runtime_budget(self) -> None:
+        config = build_conversion_config(
+            ConversionRequest(
+                source_path="sample.pdf",
+                source_type="pdf",
+                original_filename="sample.pdf",
+                profile="auto-premium",
+                language="pl",
+                interactive_runtime_budget=True,
+            )
+        )
+
+        self.assertTrue(config.interactive_runtime_budget)
 
     def test_build_local_app_url_normalizes_path_and_optional_port(self) -> None:
         self.assertEqual(build_local_app_url(5001), "http://kindlemaster.localhost:5001/")

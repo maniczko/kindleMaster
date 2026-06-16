@@ -276,6 +276,32 @@ for (const source of functionSources) {{
         self.assertIn("Uruchom konwersje ponownie", payload["error"])
         self.assertEqual(payload["fetchCalls"], 1)
 
+    def test_timed_out_status_surfaces_timeout_without_retry_loop(self) -> None:
+        payload = self._run_polling_scenario(
+            [
+                {
+                    "type": "response",
+                    "data": {
+                        "success": True,
+                        "status": "timed_out",
+                        "message": "Konwersja przekroczyla limit czasu.",
+                        "error": "Konwersja przekroczyla limit czasu. Uruchom ja ponownie po sprawdzeniu pliku zrodlowego.",
+                        "error_code": "conversion_timeout",
+                        "poll_after_ms": 0,
+                    },
+                }
+            ]
+        )
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["code"], "conversion_timeout")
+        self.assertIn("przekroczyla limit czasu", payload["error"])
+        self.assertEqual(payload["fetchCalls"], 1)
+        self.assertFalse(
+            any("Ponawiam probe" in entry["message"] for entry in payload["statusLog"]),
+            payload["statusLog"],
+        )
+
     def test_repeated_transient_failures_exhaust_retry_budget(self) -> None:
         payload = self._run_polling_scenario(
             [

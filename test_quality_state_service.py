@@ -286,6 +286,8 @@ class QualityStateServiceTests(unittest.TestCase):
         self.assertEqual(payload["premium_scoring"]["kindle_ready"], False)
         self.assertEqual(payload["ai_quality_verification"]["decision"], "block")
         self.assertEqual(payload["ai_quality_verification"]["features_hash"], "abc123")
+        self.assertEqual(payload["quality_policy_verifier"]["decision"], "block")
+        self.assertEqual(payload["trained_quality_model_status"], "policy_only_not_trained")
         self.assertIn("suspicious_metadata_author", [item["code"] for item in payload["quality_blockers"]])
         self.assertFalse(payload["send_to_kindle_ready"])
         self.assertEqual(payload["score"], 5.0)
@@ -874,6 +876,22 @@ class QualityStateServiceTests(unittest.TestCase):
         self.assertEqual(len(state.alerts), 1)
         self.assertEqual(state.alerts[0].code, "conversion_failed")
         self.assertIn("timeout", state.alerts[0].message)
+
+    def test_failed_state_preserves_specific_runtime_budget_error_code(self) -> None:
+        request = ConversionQualityStateRequest(
+            job_status="failed",
+            source_type="pdf",
+            filename="huge.pdf",
+            message="Konwersja przekroczyla interaktywny budzet czasu.",
+            error="Ten PDF ma 1184 stron i przekracza interaktywny limit.",
+            error_code="interactive_runtime_budget_exceeded",
+        )
+
+        state = assemble_quality_state(request)
+
+        self.assertEqual(state.alerts[0].code, "interactive_runtime_budget_exceeded")
+        self.assertEqual(state.quality_blockers[0]["code"], "interactive_runtime_budget_exceeded")
+        self.assertIn("offline CLI", state.quality_blockers[0]["suggested_action"])
 
     def test_timed_out_state_surfaces_timeout_blocker(self) -> None:
         request = ConversionQualityStateRequest(

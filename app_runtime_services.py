@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Callable, Mapping, MutableMapping
 
 
@@ -46,6 +47,7 @@ class ConversionRequest:
     route_model_mode: str = "shadow"
     quality_gate_mode: str = "draft"
     feedback_enabled: bool = True
+    interactive_runtime_budget: bool = False
 
 
 @dataclass(frozen=True)
@@ -337,6 +339,7 @@ def build_conversion_config(request: ConversionRequest) -> Any:
         text_cleanup_domain_dictionary_path=request.text_cleanup_domain_dictionary_path,
         route_model_mode=request.route_model_mode,
         quality_gate_mode=request.quality_gate_mode,
+        interactive_runtime_budget=request.interactive_runtime_budget,
     )
 
 
@@ -455,6 +458,16 @@ def _to_mapping_payload(value: Any) -> dict[str, Any]:
         payload = to_dict()
         return dict(payload) if isinstance(payload, Mapping) else {}
     return {}
+
+
+def _timing_value(value: Any) -> float | None:
+    try:
+        converted = float(value)
+    except (TypeError, ValueError):
+        return None
+    if converted < 0:
+        return None
+    return round(converted, 6)
 
 
 def _json_safe_metadata_value(
@@ -991,40 +1004,20 @@ def _apply_runtime_quality_gate(
         quality_report=quality_report,
         heading_repair_report=heading_repair_report,
     )
-    if str(heading_repair_report.get("status", "") or "").strip().lower() == "applied":
-        heading_epubcheck = str(heading_repair_report.get("epubcheck_status", "") or "").strip().lower()
-        if heading_epubcheck == "passed":
-            stale_warnings = []
-            for warning in list(quality_report.get("warnings", []) or []):
-                warning_text = str(warning)
-                if "EPUBCheck" in warning_text or "epubcheck" in warning_text.lower():
-                    continue
-                stale_warnings.append(warning)
-            if stale_warnings:
-                quality_report["warnings"] = stale_warnings
+    stage_timings = _to_mapping_payload(quality_report.get("stage_timings", {}) or {})
+    scoring_started = perf_counter()
     premium_scoring = score_epub_premium_quality(epub_bytes, epubcheck=epubcheck_payload)
-    magazine_quality = _to_mapping_payload(quality_report.get("magazine_premium_quality") or {})
-    if magazine_quality:
-        article_map = _to_mapping_payload(magazine_quality.get("article_map") or {})
-        if article_map:
-            article_map = refresh_magazine_article_map_from_epub(article_map, epub_bytes)
-        magazine_quality = build_magazine_premium_quality_contract(
-            premium_scoring=premium_scoring,
-            magazine_audit={"article_map": article_map},
-            validation_status=str(quality_report.get("validation_status", "") or ""),
-        )
-        premium_scoring = apply_magazine_premium_quality_to_scoring(premium_scoring, magazine_quality)
-        quality_report["magazine_premium_quality"] = magazine_quality
+    stage_timings["premium_scoring_seconds"] = round(perf_counter() - scoring_started, 6)
     quality_report["premium_scoring"] = premium_scoring
-    dense_summary = ((premium_scoring.get("metrics") or {}) or {}).get("dense_handbook_navigation_summary")
-    if isinstance(dense_summary, Mapping) and dense_summary:
-        quality_report["dense_handbook_navigation_summary"] = dict(dense_summary)
+    verifier_started = perf_counter()
     quality_report["ai_quality_verification"] = build_ai_quality_verification(
         premium_scoring=premium_scoring,
         quality_report=quality_report,
         analysis=analysis,
         quality_gate_mode=mode,
     )
+    stage_timings["quality_verifier_seconds"] = round(perf_counter() - verifier_started, 6)
+    quality_report["stage_timings"] = dict(stage_timings)
     quality_report["quality_gate_mode"] = mode
     updated_result["quality_report"] = quality_report
     return updated_result
@@ -1349,6 +1342,28 @@ def build_conversion_metadata(
     ai_quality_verification = _json_safe_metadata_value(quality_report.get("ai_quality_verification") or {})
     if isinstance(ai_quality_verification, Mapping) and ai_quality_verification:
         metadata["ai_quality_verification"] = dict(ai_quality_verification)
+        metadata["quality_policy_verifier"] = dict(ai_quality_verification)
+        training_status = str(ai_quality_verification.get("training_status", "") or "")
+        metadata["trained_quality_model_status"] = (
+            "trained"
+            if training_status.startswith("trained") or training_status == "promoted"
+            else "policy_only_not_trained"
+        )
+    route_decision = _to_mapping_payload(analysis.get("route_decision", {}) if isinstance(analysis, Mapping) else {})
+    if route_decision:
+        metadata["route_model_shadow"] = {
+            "mode": str(route_decision.get("mode", "") or ""),
+            "ml_profile": str(route_decision.get("ml_profile", "") or ""),
+            "ml_confidence": route_decision.get("ml_confidence", 0.0),
+            "selected_profile": str(route_decision.get("selected_profile", "") or ""),
+            "override_used": bool(route_decision.get("override_used")),
+            "model_version": str(route_decision.get("model_version", "") or ""),
+            "input_features_hash": str(route_decision.get("input_features_hash", "") or ""),
+            "inference_seconds": route_decision.get("inference_seconds", 0.0),
+        }
+    stage_timings = _json_safe_metadata_value(quality_report.get("stage_timings") or {})
+    if isinstance(stage_timings, Mapping) and stage_timings:
+        metadata["stage_timings"] = dict(stage_timings)
     if quality_report.get("quality_gate_mode"):
         metadata["quality_gate_mode"] = str(quality_report.get("quality_gate_mode") or "")
 
@@ -1448,6 +1463,8 @@ def run_document_conversion(
     heading_repair_impl: HeadingRepairFunction,
     status_callback: StatusCallback | None = None,
 ) -> ConversionOutcome:
+    total_started = perf_counter()
+    stage_timings: dict[str, float] = {}
     source_type = _fallback_source_type(request)
     if status_callback:
         _emit_status(
@@ -1466,16 +1483,17 @@ def run_document_conversion(
     if request.source_type:
         convert_kwargs["source_type"] = request.source_type
 
+    conversion_started = perf_counter()
     result = convert_impl(request.source_path, **convert_kwargs)
-    if status_callback:
-        _emit_status(
-            status_callback,
-            "running",
-            "Składanie artykułów i struktury EPUB...",
-            stage_id="assembling",
-            stage_label="Składanie artykułów",
-            percent_estimate=45,
-        )
+    stage_timings["conversion_seconds"] = round(perf_counter() - conversion_started, 6)
+    analysis_payload = _to_mapping_payload(result.get("analysis", {}) or {})
+    route_decision_payload = _to_mapping_payload(analysis_payload.get("route_decision", {}) or {})
+    analysis_seconds = _timing_value(analysis_payload.get("analysis_seconds"))
+    route_inference_seconds = _timing_value(route_decision_payload.get("inference_seconds"))
+    if analysis_seconds is not None:
+        stage_timings["analysis_seconds"] = analysis_seconds
+    if route_inference_seconds is not None:
+        stage_timings["route_inference_seconds"] = route_inference_seconds
     epub_bytes = result["epub_bytes"]
     pre_heading_repair_epub_bytes = epub_bytes
     heading_repair_report = _default_heading_repair_report()
@@ -1502,6 +1520,7 @@ def run_document_conversion(
                     percent_estimate=65,
                 )
             try:
+                heading_started = perf_counter()
                 heading_repair_result = heading_repair_impl(
                     epub_bytes,
                     title_hint=str((result.get("document_summary", {}) or {}).get("title", "") or ""),
@@ -1520,6 +1539,8 @@ def run_document_conversion(
                     "epubcheck_status": heading_repair_result.summary.get("epubcheck_status", "unavailable"),
                     "error": "",
                 }
+                stage_timings["heading_repair_seconds"] = round(perf_counter() - heading_started, 6)
+                stage_timings["recovery_seconds"] = stage_timings["heading_repair_seconds"]
                 if heading_repair_result.epubcheck.get("status") == "failed":
                     heading_repair_report["status"] = "failed"
                     heading_repair_report["error"] = pick_epubcheck_error(
@@ -1535,20 +1556,23 @@ def run_document_conversion(
                         heading_repair_report=heading_repair_report,
                     )
             except Exception as error:
+                stage_timings["heading_repair_seconds"] = round(perf_counter() - heading_started, 6) if "heading_started" in locals() else 0.0
+                stage_timings["recovery_seconds"] = stage_timings["heading_repair_seconds"]
                 heading_repair_report["status"] = "failed"
                 heading_repair_report["error"] = str(error)
 
     detected_source_type = str(result.get("source_type", source_type) or source_type)
-    if status_callback:
-        _emit_status(
-            status_callback,
-            "running",
-            "Uruchamiam audyt premium EPUB...",
-            stage_id="premium_audit",
-            stage_label="Audyt premium",
-            percent_estimate=82,
-        )
-    normalized_quality_gate_mode = _normalize_quality_gate_mode(request.quality_gate_mode)
+    quality_report = _to_mapping_payload(result.get("quality_report", {}) or {})
+    ocr_quality = _to_mapping_payload(quality_report.get("ocr_quality") or quality_report.get("ocr_degradation") or {})
+    for key in ("ocr_seconds", "elapsed_seconds", "duration_seconds"):
+        ocr_seconds = _timing_value(ocr_quality.get(key))
+        if ocr_seconds is not None:
+            stage_timings["ocr_seconds"] = ocr_seconds
+            break
+    existing_timings = _to_mapping_payload(quality_report.get("stage_timings", {}) or {})
+    existing_timings.update(stage_timings)
+    quality_report["stage_timings"] = existing_timings
+    result = {**result, "quality_report": quality_report}
     result = _apply_runtime_quality_gate(
         result=result,
         epub_bytes=epub_bytes,
@@ -1559,9 +1583,11 @@ def run_document_conversion(
             and str(heading_repair_report.get("status", "")).strip().lower() == "failed"
         ),
     )
-    repaired_runtime_epub_bytes = result.pop("_runtime_epub_bytes", None)
-    if isinstance(repaired_runtime_epub_bytes, bytes):
-        epub_bytes = repaired_runtime_epub_bytes
+    quality_report = _to_mapping_payload(result.get("quality_report", {}) or {})
+    final_timings = _to_mapping_payload(quality_report.get("stage_timings", {}) or {})
+    final_timings["total_runtime_seconds"] = round(perf_counter() - total_started, 6)
+    quality_report["stage_timings"] = final_timings
+    result = {**result, "quality_report": quality_report}
     metadata = build_conversion_metadata(
         result=result,
         detected_source_type=detected_source_type,

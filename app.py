@@ -41,6 +41,8 @@ from app_runtime_services import (
 from artifact_storage import ArtifactKind, build_artifact_storage
 from conversion_api_contracts import (
     ConversionDownloadState,
+    ERROR_CONVERSION_FAILED,
+    ERROR_INTERACTIVE_RUNTIME_BUDGET,
     ERROR_MISSING_OUTPUT,
     ERROR_QUEUE_FAILED,
     ERROR_UNSUPPORTED_REPORT_FORMAT,
@@ -1627,7 +1629,98 @@ def _set_conversion_job(job_id: str, **fields) -> dict | None:
 
 
 def _get_conversion_job(job_id: str) -> dict | None:
-    return _CONVERSION_JOB_STORE.get(job_id)
+    return _CONVERSION_JOB_STORE.get(job_id) or _recover_orphan_conversion_job(job_id)
+
+
+def _is_conversion_job_id(value: str | None) -> bool:
+    normalized = str(value or "").strip().lower()
+    return len(normalized) == 32 and all(char in "0123456789abcdef" for char in normalized)
+
+
+def _artifact_timestamp_label(path: str) -> str:
+    try:
+        timestamp = datetime.fromtimestamp(os.path.getmtime(path), UTC)
+    except OSError:
+        timestamp = datetime.now(UTC)
+    return timestamp.isoformat().replace("+00:00", "Z")
+
+
+def _recover_orphan_conversion_job(job_id: str) -> dict | None:
+    """Rebuild a safe terminal job state when persistence was lost mid-flow."""
+
+    if not _is_conversion_job_id(job_id):
+        return None
+    source_path = ""
+    source_type = "pdf"
+    for suffix in (".pdf", ".docx"):
+        candidate = os.path.join(UPLOAD_DIR, f"{job_id}{suffix}")
+        if os.path.exists(candidate):
+            source_path = candidate
+            source_type = suffix.lstrip(".")
+            break
+    output_path = os.path.join(UPLOAD_DIR, f"{job_id}.epub")
+    output_exists = os.path.exists(output_path)
+    if not source_path and not output_exists:
+        return None
+
+    now_label = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    artifact_label = _artifact_timestamp_label(output_path if output_exists else source_path)
+    filename = os.path.basename(source_path) if source_path else f"{job_id}.{source_type}"
+    if output_exists:
+        recovered = build_conversion_job_record(
+            job_id=job_id,
+            source_path=source_path,
+            source_type=source_type,
+            filename=filename,
+            created_at=artifact_label,
+        )
+        recovered.update(
+            {
+                "status": "ready",
+                "message": "EPUB odzyskany po utracie stanu zadania.",
+                "updated_at": now_label,
+                "output_path": output_path,
+                "download_name": f"{Path(filename).stem}.epub",
+                "metadata": {
+                    "source_type": source_type,
+                    "quality_available": False,
+                    "recovered_orphan_job": True,
+                },
+                "output_size_bytes": os.path.getsize(output_path),
+                "error": "",
+                "error_code": "",
+            }
+        )
+    else:
+        recovered = build_conversion_job_record(
+            job_id=job_id,
+            source_path=source_path,
+            source_type=source_type,
+            filename=filename,
+            created_at=artifact_label,
+        )
+        recovered.update(
+            {
+                "status": "failed",
+                "message": "Konwersja przerwana przez restart aplikacji.",
+                "updated_at": now_label,
+                "error": "Lokalna aplikacja utracila stan zadania w trakcie konwersji. Uruchom konwersje ponownie.",
+                "error_code": "application_restart",
+            }
+        )
+    _CONVERSION_JOB_STORE.create(recovered)
+    _log_conversion_event(
+        "convert.job.recovered_orphan",
+        level="warning",
+        job_id=job_id,
+        phase="recovery",
+        status=str(recovered.get("status", "") or ""),
+        error_code=str(recovered.get("error_code", "") or ""),
+        safe_message=str(recovered.get("message", "") or ""),
+        source_type=source_type,
+        output_size_bytes=int(recovered.get("output_size_bytes", 0) or 0),
+    )
+    return dict(recovered)
 
 
 def _default_user_profile() -> dict:
@@ -2827,6 +2920,7 @@ def _run_conversion_pipeline(
     route_model_mode: str = "shadow",
     quality_gate_mode: str = "draft",
     status_callback=None,
+    interactive_runtime_budget: bool = True,
 ) -> dict:
     outcome = run_document_conversion(
         ConversionRequest(
@@ -2839,6 +2933,7 @@ def _run_conversion_pipeline(
             force_ocr=force_ocr,
             language=language,
             heading_repair_enabled=heading_repair_enabled,
+            interactive_runtime_budget=interactive_runtime_budget,
         ),
         convert_impl=convert_document_to_epub_with_report,
         heading_repair_impl=repair_epub_headings_and_toc,
@@ -2951,44 +3046,19 @@ def _spawn_conversion_job(
         except Exception as error:
             if not _worker_can_finish_job(job_id):
                 return
-            error_code = "conversion_failed"
-            message = "Konwersja nie powiodla sie."
-            metadata: dict = {}
-            if isinstance(error, ConversionQualityGateError):
-                error_code = error.error_code
-                message = "Walidacja EPUB zakończyła się niepowodzeniem."
-                metadata = _build_quality_gate_failure_metadata(
-                    error,
-                    source_type=source_type,
-                    profile=profile,
-                    heading_repair_enabled=heading_repair_enabled,
-                )
-            sentry_event_id = capture_conversion_exception(
-                error,
-                context=_conversion_sentry_context(
-                    job_id=job_id,
-                    source_type=source_type,
-                    profile=profile,
-                ),
-            )
-            runtime_metadata = _update_runtime_job(
-                job_id,
-                RuntimeJobStatus.FAILED,
-                error=str(error),
-                message=message,
+            error_code = str(getattr(error, "error_code", "") or ERROR_CONVERSION_FAILED)
+            message = (
+                "Konwersja przekroczyla interaktywny budzet czasu."
+                if error_code == ERROR_INTERACTIVE_RUNTIME_BUDGET
+                else "Konwersja nie powiodla sie."
             )
             _set_conversion_job(
                 job_id,
                 status="failed",
                 message=message,
-                metadata=metadata,
-                runtime=runtime_metadata,
-                artifact_storage=_artifact_storage_status(),
                 output_size_bytes=0,
                 error=str(error),
                 error_code=error_code,
-                sentry_event_id=sentry_event_id,
-                progress=progress_reporter.terminal_progress("failed", "Konwersja nie powiodła się."),
             )
             if cloud_user_id and cloud_token:
                 _sync_conversion_job_to_supabase(
@@ -3635,18 +3705,12 @@ def convert():
             extra={"validation_details": dict(error.validation_report), "quality_gate_mode": error.mode},
         )
     except Exception as e:
-        capture_conversion_exception(
-            e,
-            context=_conversion_sentry_context(
-                job_id=job_id,
-                source_type=source_type,
-                profile=profile,
-            ),
-        )
+        error_code = str(getattr(e, "error_code", "") or ERROR_CONVERSION_FAILED)
+        status_code = 422 if error_code == ERROR_INTERACTIVE_RUNTIME_BUDGET else 500
         return _json_error(
             f"Konwersja nie powiodla sie: {str(e)}",
-            error_code="conversion_failed",
-            status_code=500,
+            error_code=error_code,
+            status_code=status_code,
             phase="conversion",
         )
     finally:
@@ -4255,6 +4319,14 @@ def convert_feedback(job_id: str):
         from ml_feedback import append_user_feedback
 
         record = append_user_feedback(job_id=job_id, feedback=payload, job=job)
+    except ValueError as error:
+        return _json_error(
+            str(error),
+            error_code="invalid_training_feedback",
+            status_code=400,
+            phase="feedback",
+            job_id=job_id,
+        )
     except Exception as error:
         return _json_error(
             f"Nie udalo sie zapisac feedbacku: {error}",
@@ -4269,6 +4341,8 @@ def convert_feedback(job_id: str):
             "job_id": job_id,
             "feedback_status": "recorded",
             "record_id": record.get("record_id", ""),
+            "include_in_training": bool((record.get("dataset") or {}).get("include_in_route_training")),
+            "dataset_reason": str((record.get("dataset") or {}).get("reason", "")),
             "online_learning": False,
         }
     )

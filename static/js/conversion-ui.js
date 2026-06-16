@@ -227,7 +227,7 @@
     const pdfRenderCanvasFactory = {
       create(width, height) {
         const canvas = document.createElement("canvas");
-        const context = canvas.getContext("2d", { willReadFrequently: true });
+        const context = canvas.getContext("2d", { alpha: false, willReadFrequently: true });
         canvas.width = width;
         canvas.height = height;
         return { canvas, context };
@@ -951,15 +951,19 @@
       const premiumScoringState = qualityState && qualityState.premium_scoring && typeof qualityState.premium_scoring === "object" ? qualityState.premium_scoring : null;
       const qualitySelectionState = qualityState && qualityState.quality_selection && typeof qualityState.quality_selection === "object" ? qualityState.quality_selection : null;
       const kindleDeliveryState = qualityState && qualityState.kindle_delivery && typeof qualityState.kindle_delivery === "object" ? qualityState.kindle_delivery : null;
+      const routeModelShadowState = qualityState && qualityState.route_model_shadow && typeof qualityState.route_model_shadow === "object" ? qualityState.route_model_shadow : null;
+      const trainedQualityModelStatusState = qualityState && qualityState.trained_quality_model_status ? qualityState.trained_quality_model_status : "";
       const aiVerifierState = qualityState && qualityState.ai_verifier && typeof qualityState.ai_verifier === "object"
         ? qualityState.ai_verifier
         : qualityState && qualityState.ai_quality_verification && typeof qualityState.ai_quality_verification === "object"
           ? qualityState.ai_quality_verification
-          : qualityState && qualityState.ai_verification && typeof qualityState.ai_verification === "object"
-            ? qualityState.ai_verification
-            : qualityState && qualityState.ai_verifier_status
-              ? { status: qualityState.ai_verifier_status }
-              : null;
+          : qualityState && qualityState.quality_policy_verifier && typeof qualityState.quality_policy_verifier === "object"
+            ? qualityState.quality_policy_verifier
+            : qualityState && qualityState.ai_verification && typeof qualityState.ai_verification === "object"
+              ? qualityState.ai_verification
+              : qualityState && qualityState.ai_verifier_status
+                ? { status: qualityState.ai_verifier_status }
+                : null;
       const issueGroupBlockers = issueGroupsState && Array.isArray(issueGroupsState.blockers)
         ? issueGroupsState.blockers
         : issueGroupsState && issueGroupsState.blockers && typeof issueGroupsState.blockers === "object" && Array.isArray(issueGroupsState.blockers.items)
@@ -1048,7 +1052,9 @@
         premiumScoring: premiumScoringState || (conversion && conversion.premium_scoring) || null,
         qualitySelection: qualitySelectionState || (conversion && conversion.quality_selection) || null,
         kindleDelivery: kindleDeliveryState || (conversion && conversion.kindle_delivery) || null,
-        aiVerifier: aiVerifierState || (conversion && (conversion.ai_verifier || conversion.ai_quality_verification || conversion.ai_verification)) || null,
+        aiVerifier: aiVerifierState || (conversion && (conversion.quality_policy_verifier || conversion.ai_verifier || conversion.ai_quality_verification || conversion.ai_verification)) || null,
+        routeModelShadow: routeModelShadowState || (conversion && conversion.route_model_shadow) || null,
+        trainedQualityModelStatus: trainedQualityModelStatusState || (conversion && conversion.trained_quality_model_status) || "",
         metadataHealth: normalizeQualityHealth(metadataHealthState || (conversion && conversion.metadata_health), "Metadane"),
         linkHealth: normalizeQualityHealth(linkHealthState || (conversion && conversion.link_health), "Linki"),
         visibleJunk: normalizeQualityHealth(visibleJunkState || (conversion && conversion.visible_junk), "Widoczne artefakty"),
@@ -1122,6 +1128,8 @@
         qualitySelection: normalized.qualitySelection,
         kindleDelivery: normalized.kindleDelivery,
         aiVerifier: normalized.aiVerifier,
+        routeModelShadow: normalized.routeModelShadow,
+        trainedQualityModelStatus: normalized.trainedQualityModelStatus,
         metadataHealth: normalized.metadataHealth,
         linkHealth: normalized.linkHealth,
         visibleJunk: normalized.visibleJunk,
@@ -1325,6 +1333,9 @@
           }
           pollDelay = nextPollDelay(pollDelay, data.poll_after_ms);
         } catch (error) {
+          if (error && error.jobStatus) {
+            throw error;
+          }
           if (!isTransientConversionNetworkError(error)) {
             throw error;
           }

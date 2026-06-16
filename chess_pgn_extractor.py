@@ -41,6 +41,76 @@ COLLECTION_NUMBERED_ECO_RE = re.compile(r"^\s*\d{1,5}\s+[A-Ea-e][0-9Oo]{2}\b")
 OPENING_DESCRIPTOR_RE = re.compile(
     r"(?i)\b(?:sidelines?|including|unusual\s+lines?|variation|attack|defen[cs]e|opening|system|lines?)\b"
 )
+BRANCHING_ANALYSIS_MARKER_RE = re.compile(
+    r"(?i)\b(?:"
+    r"white\s+also\s+loses\s+after|"
+    r"nothing\s+is\s+achieved\s+by|"
+    r"after|or|if|while|due\s+to|comes|in\s+view\s+of|on\s+account\s+of|"
+    r"loses\s+to|"
+    r"better\s+is|worse\s+is|stronger\s+than|called\s+for|might\s+work\s+better|"
+    r"instead\s+of|rather\s+than|and\s+not|anstelle\s+von|erfolgreicher\s+als|more\s+successful\s+than|"
+    r"threatens?|threatening"
+    r")\b"
+)
+STRONG_BRANCH_PREFIX_RE = re.compile(
+    r"(?i)\b(?:"
+    r"white\s+also\s+loses\s+after|"
+    r"nothing\s+is\s+achieved\s+by|"
+    r"after|or|if|while|due\s+to|comes|in\s+view\s+of|on\s+account\s+of|"
+    r"loses\s+to|"
+    r"better\s+is|worse\s+is|stronger\s+than|called\s+for|might\s+work\s+better|"
+    r"good\s+alternative\s+is|alternative\s+is|"
+    r"instead\s+of|rather\s+than|and\s+not|anstelle\s+von|erfolgreicher\s+als|more\s+successful\s+than|"
+    r"black\s+resigned|white\s+resigned"
+    r")\b"
+)
+DIAGRAM_BRANCH_MARKER_RE = re.compile(
+    r"(?i)\b(?:"
+    r"if|or|after|while|due\s+to|"
+    r"black\s+cannot\s+accept|black\s+cannot\s+decline|"
+    r"white\s+also\s+loses\s+after|"
+    r"the\s+threat\s+is|threatens?|threatening|"
+    r"in\s+view\s+of|would\s+be\s+bad|better\s+is|worse\s+is|"
+    r"rather\s+than|for\s+example|then\s+mate|and\s+then\s+mate|"
+    r"black\s+wins|white\s+wins|black\s+resigned|white\s+resigned"
+    r")\b"
+)
+DIAGRAM_ILLUSTRATIVE_VARIATION_RE = re.compile(
+    r"(?i)(?:;\s*\d{1,3}\.(?:\.\.)?\s*\S+|\([^)]*\d{1,3}\.(?:\.\.)?[^)]*\)|"
+    r"\bif\s+\d{1,3}\.(?:\.\.)?\s*\S+\s*,\s*then\b)"
+)
+DIAGRAM_SUBBLOCK_BOUNDARY_RE = re.compile(
+    r"(?i)^(?:"
+    r"a\s+useful\s+drawing\s+position|"
+    r"black\s+to\s+move\s+can\s+achieve\s+a\s+draw|"
+    r"white\s+to\s+move\s+can\s+achieve\s+a\s+draw|"
+    r"variation\s+from\s+the\s+game|"
+    r"or,?\s+with\s+black\s+to\s+play|"
+    r"the\s+main\s+variation\s+would\s+go"
+    r")\b"
+)
+DIAGRAM_INSTRUCTIONAL_PROSE_RE = re.compile(
+    r"(?i)\b(?:"
+    r"a\s+useful\s+drawing\s+position|"
+    r"black\s+to\s+move\s+can\s+achieve\s+a\s+draw|"
+    r"white\s+to\s+move\s+can\s+achieve\s+a\s+draw"
+    r")\b"
+)
+DIAGRAM_BRANCH_EXAMPLE_RE = re.compile(
+    r"(?i)\b(?:"
+    r"variation\s+from\s+the\s+game|"
+    r"or,?\s+with\s+black\s+to\s+play|"
+    r"the\s+main\s+variation\s+would\s+go|"
+    r"wins\s+the\s+queen|"
+    r"white\s+resigned,\s*in\s+view\s+of|"
+    r"black\s+resigned,\s*in\s+view\s+of|"
+    r"black\s+cannot\s+accept|"
+    r"black\s+cannot\s+decline|"
+    r"the\s+threat\s+is|"
+    r"if|or|after|while|due\s+to|in\s+view\s+of|"
+    r"would\s+be\s+bad|for\s+example"
+    r")\b"
+)
 BOARD_FILES_INLINE_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9])a\s+b\s+c\s+d\s+e\s+f\s+g\s+h(?![A-Za-z0-9])"
 )
@@ -104,6 +174,22 @@ CHESSBASE_ANNOTATION_SYMBOL_MAP = {
 
 
 @dataclass(frozen=True)
+class PgnToken:
+    kind: str
+    value: str
+    warnings: tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class ParsedPgnLine:
+    raw: str
+    normalized: str
+    kind: str
+    has_explicit_movetext: bool = False
+    has_result: bool = False
+
+
+@dataclass(frozen=True)
 class ChessPgnRecord:
     id: str
     source_pages: list[int]
@@ -120,6 +206,8 @@ class ChessPgnRecord:
     final_fen: str = ""
     fen_snapshots: list[dict[str, Any]] = field(default_factory=list)
     raw_text: str = ""
+    token_source: tuple[PgnToken, ...] = field(default_factory=tuple, repr=False, compare=False)
+    ocr_confidence_source: float = field(default=0.0, repr=False, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -139,6 +227,41 @@ class ChessPgnRecord:
             "fen_snapshots": [dict(snapshot) for snapshot in self.fen_snapshots],
             "raw_text": self.raw_text,
         }
+
+
+@dataclass(frozen=True)
+class DiagramSolutionCandidate:
+    source_lines: tuple[ParsedPgnLine, ...]
+    start_line_index: int
+    end_line_index: int
+    normalized_text: str
+    raw_text: str
+    distance_from_diagram: int = 0
+    branch_example_score: tuple[int, int, int] = (0, 0, 0)
+    has_result: bool = False
+    has_terminal_result: bool = False
+    has_tactical_finish: bool = False
+    has_branch_prefix_context: bool = False
+    has_commentary_prefix: bool = False
+    multiple_explicit_starts: bool = False
+    starts_with_black: bool = False
+    explicit_move_count: int = 0
+    continuation_line_count: int = 0
+    branch_signal_count: int = 0
+    prose_signal_count: int = 0
+    sequence_risk_score: tuple[int, int, int] = (0, 0, 0)
+    halfmove_count: int = 0
+    warnings: tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class DiagramSubBlock:
+    source_lines: tuple[ParsedPgnLine, ...]
+    start_line_index: int
+    end_line_index: int
+    anchor_line_index: int
+    kind: str
+    warnings: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -214,8 +337,9 @@ def extract_chess_pgn_records_from_text(
     for index, candidate in enumerate(candidates, start=1):
         body = _strip_opening_descriptor_prefix(candidate["body"], context=candidate["caption"])
         raw = _strip_opening_descriptor_prefix(candidate["raw"], context=candidate["caption"])
-        tokens = _extract_pgn_tokens(body)
-        movetext, result, halfmove_count, warnings = _tokens_to_movetext(tokens)
+        fen = fen_list[index - 1] if index - 1 < len(fen_list) else ""
+        tokens = tuple(_extract_pgn_tokens(body))
+        movetext, result, halfmove_count, reconstruction_warnings = _best_mainline_reconstruction(tokens, initial_fen=fen)
         if halfmove_count < 2:
             continue
         if _looks_like_opening_descriptor_only(
@@ -226,7 +350,6 @@ def extract_chess_pgn_records_from_text(
             halfmove_count=halfmove_count,
         ):
             continue
-        fen = fen_list[index - 1] if index - 1 < len(fen_list) else ""
         title = _candidate_title(candidate["caption"], fallback=f"Strona {page_num + 1}, partia {index}")
         headers = _build_headers(
             title=title,
@@ -247,9 +370,16 @@ def extract_chess_pgn_records_from_text(
             halfmove_count=halfmove_count,
             ocr_confidence=ocr_confidence,
             has_players=bool(headers.get("White", "?") != "?" or headers.get("Black", "?") != "?"),
-            warnings=warnings,
+            warnings=reconstruction_warnings,
         )
-        status = "accepted" if confidence >= 0.72 and not _blocking_pgn_warnings(warnings) else "requires_review"
+        candidate_warnings = [str(warning) for warning in candidate.get("warnings", []) if str(warning)]
+        warnings = sorted(set(candidate_warnings + list(reconstruction_warnings)))
+        force_review = bool(candidate.get("force_review"))
+        status = (
+            "accepted"
+            if confidence >= 0.72 and not force_review and not _blocking_pgn_warnings(warnings)
+            else "requires_review"
+        )
         records.append(
             ChessPgnRecord(
                 id=f"scan-chess-p{page_num + 1:03d}-g{index:02d}",
@@ -265,6 +395,8 @@ def extract_chess_pgn_records_from_text(
                 warnings=warnings,
                 fen=fen,
                 raw_text=raw,
+                token_source=tokens,
+                ocr_confidence_source=float(ocr_confidence or 0.0),
             )
         )
     return records
@@ -280,17 +412,41 @@ def attach_fen_candidates_to_pgn_records(
         if record.fen or index >= len(fen_list):
             updated.append(record)
             continue
+        token_source = _record_token_source(record)
+        movetext, result, halfmove_count, warnings = _best_mainline_reconstruction(token_source, initial_fen=fen_list[index])
         headers = dict(record.headers)
         headers["SetUp"] = "1"
         headers["FEN"] = fen_list[index]
-        pgn = _format_pgn(headers, record.movetext, record.result)
+        headers["Result"] = result or "*"
+        pgn = _format_pgn(headers, movetext, result)
         annotated_pgn = _format_annotated_pgn(
             headers,
             record.raw_text,
-            fallback_movetext=record.movetext,
-            result=record.result,
+            fallback_movetext=movetext,
+            result=result,
         )
-        updated.append(replace(record, headers=headers, pgn=pgn, annotated_pgn=annotated_pgn, fen=fen_list[index]))
+        confidence = _pgn_confidence(
+            halfmove_count=halfmove_count,
+            ocr_confidence=float(record.ocr_confidence_source or 0.0),
+            has_players=bool(headers.get("White", "?") != "?" or headers.get("Black", "?") != "?"),
+            warnings=warnings,
+        )
+        status = "accepted" if confidence >= 0.72 and not _blocking_pgn_warnings(warnings) else "requires_review"
+        updated.append(
+            replace(
+                record,
+                headers=headers,
+                movetext=movetext,
+                pgn=pgn,
+                annotated_pgn=annotated_pgn,
+                result=result,
+                warnings=warnings,
+                fen=fen_list[index],
+                token_source=token_source,
+                confidence=confidence,
+                status=status,
+            )
+        )
     return updated
 
 
@@ -933,40 +1089,30 @@ def _normalize_move_clock_artifacts(text: str) -> str:
     return "\n".join(normalize_line(line) for line in str(text or "").splitlines())
 
 
-def _split_candidate_game_blocks(text: str) -> list[dict[str, str]]:
+def _split_candidate_game_blocks(text: str) -> list[dict[str, Any]]:
     lines = [line.strip() for line in text.splitlines()]
     starts = [index for index, line in enumerate(lines) if DIAGRAM_LINE_RE.match(line)]
     if not starts:
         collection_blocks = _split_notation_collection_game_blocks(text)
         if collection_blocks:
             return collection_blocks
-        return [{"caption": "", "body": text, "raw": text}] if NOTATION_HEAVY_RE.search(text) else []
+        fallback_candidate = _build_candidate_game_block(lines, min_tokens=4)
+        return [fallback_candidate] if fallback_candidate else []
 
-    candidates: list[dict[str, str]] = []
+    candidates: list[dict[str, Any]] = []
     for pos, start in enumerate(starts):
         end = starts[pos + 1] if pos + 1 < len(starts) else len(lines)
         segment = [line for line in lines[start:end] if line]
         if not segment:
             continue
-        notation_index = next((idx for idx, line in enumerate(segment) if _line_has_pgn_tokens(line)), -1)
-        if notation_index < 0:
-            continue
-        caption_lines = segment[:notation_index]
-        body_lines = segment[notation_index:]
-        candidates.append(
-            {
-                "caption": " ".join(caption_lines).strip(),
-                "body": "\n".join(body_lines).strip(),
-                "raw": "\n".join(segment).strip(),
-            }
-        )
+        candidates.extend(_build_diagram_candidate_game_blocks(segment))
     return candidates
 
 
-def _split_notation_collection_game_blocks(text: str) -> list[dict[str, str]]:
+def _split_notation_collection_game_blocks(text: str) -> list[dict[str, Any]]:
     lines = [_clean_collection_line_for_pgn(line) for line in text.splitlines()]
     lines = [line for line in lines if line]
-    if not any(_line_has_pgn_tokens(line) for line in lines):
+    if not any(_parse_pgn_line(line).kind in {"mainline_start", "mainline_continuation", "result_only"} for line in lines):
         return []
 
     blocks: list[list[str]] = []
@@ -975,12 +1121,14 @@ def _split_notation_collection_game_blocks(text: str) -> list[dict[str, str]]:
     current_has_result = False
 
     for line in lines:
-        starts_new_game = _looks_like_collection_game_start(line)
+        parsed = _parse_pgn_line(line)
+        starts_new_game = _looks_like_collection_game_start(parsed.normalized)
+        strong_mainline_start = _line_is_strong_game_start(parsed, after_result=current_has_result)
         if (
             current
             and starts_new_game
             and (current_has_moves or current_has_result)
-            and len(current) >= 3
+            and len(current) >= 2
         ):
             blocks.append(current)
             current = []
@@ -988,38 +1136,906 @@ def _split_notation_collection_game_blocks(text: str) -> list[dict[str, str]]:
             current_has_result = False
         elif (
             current
-            and current_has_result
-            and re.match(r"^\s*1\.(?:\.\.)?\s*\S+", line)
-            and len(current) >= 3
+            and strong_mainline_start
+            and current_has_moves
         ):
             blocks.append(current)
             current = []
             current_has_moves = False
             current_has_result = False
 
-        current.append(line)
-        current_has_moves = current_has_moves or _line_has_pgn_tokens(line)
-        current_has_result = current_has_result or bool(RESULT_RE.search(line))
+        current.append(parsed.normalized or line)
+        current_has_moves = current_has_moves or parsed.kind in {"mainline_start", "mainline_continuation"}
+        current_has_result = current_has_result or parsed.has_result
 
     if current:
         blocks.append(current)
 
-    candidates: list[dict[str, str]] = []
+    candidates: list[dict[str, Any]] = []
     for block in blocks:
-        notation_index = next((idx for idx, line in enumerate(block) if _line_has_pgn_tokens(line)), -1)
-        if notation_index < 0:
-            continue
-        body = "\n".join(block[notation_index:]).strip()
-        if len(_extract_pgn_tokens(body)) < 4:
-            continue
-        candidates.append(
-            {
-                "caption": "\n".join(block[:notation_index]).strip(),
-                "body": body,
-                "raw": "\n".join(block).strip(),
-            }
-        )
+        candidate = _build_candidate_game_block(block, min_tokens=4)
+        if candidate:
+            candidates.append(candidate)
     return candidates
+
+
+def _normalize_pgn_line_for_segmentation(line: str) -> str:
+    normalized = _clean_collection_line_for_pgn(line)
+    normalized = re.sub(r"(?i)\(\s*diagram\s*\)", " ", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _line_looks_like_caption_or_metadata(line: str) -> bool:
+    sample = re.sub(r"\s+", " ", str(line or "")).strip()
+    if not sample:
+        return False
+    if _looks_like_collection_game_start(sample):
+        return True
+    if PLAYER_CAPTION_RE.search(sample):
+        return True
+    if OPENING_DESCRIPTOR_RE.search(sample):
+        return True
+    if re.fullmatch(r"\[[^\]]+\]", sample):
+        return True
+    if re.search(r"(?i)\b(?:titled|blitz|rapid|round|event|site|date|diagram)\b", sample):
+        return True
+    return bool(ECO_CODE_RE.search(sample) and not _line_has_explicit_movetext(sample))
+
+
+def _is_safe_mainline_prefix(prefix: str) -> bool:
+    sample = re.sub(r"\s+", " ", str(prefix or "")).strip()
+    if not sample:
+        return True
+    if _line_looks_like_caption_or_metadata(sample):
+        return True
+    if re.search(r"[A-Za-z]", sample):
+        return False
+    return bool(re.fullmatch(r"[\d\s\[\](){}<>\"'`~*#.:;,\-–—/|]+", sample))
+
+
+def _parse_pgn_line(line: str) -> ParsedPgnLine:
+    normalized = _normalize_pgn_line_for_segmentation(line)
+    if not normalized:
+        return ParsedPgnLine(raw=str(line or ""), normalized="", kind="noise")
+    if RESULT_RE.match(normalized):
+        return ParsedPgnLine(
+            raw=str(line or ""),
+            normalized=normalized,
+            kind="result_only",
+            has_explicit_movetext=True,
+            has_result=True,
+        )
+
+    explicit_match = _find_explicit_movetext_match(normalized)
+    explicit_markers = list(_iter_explicit_movetext_matches(normalized))
+    has_result = bool(RESULT_RE.search(normalized))
+    if _line_is_branching_analysis_reference(normalized):
+        return ParsedPgnLine(
+            raw=str(line or ""),
+            normalized=normalized,
+            kind="analysis_or_prose",
+            has_explicit_movetext=explicit_match is not None,
+            has_result=has_result,
+        )
+    if explicit_match is not None:
+        prefix = normalized[: explicit_match.start()].strip()
+        move_state = _first_explicit_move_state(normalized)
+        continuation_prefix = bool(prefix and _line_has_continuation_prefix_before_explicit(normalized))
+        if continuation_prefix:
+            kind = "mainline_start"
+        elif (
+            prefix
+            and move_state is not None
+            and _line_looks_like_caption_or_metadata(prefix)
+            and (move_state[0] > 1 or move_state[1] == "b" or _looks_like_opening_descriptor_text(normalized))
+        ):
+            kind = "analysis_or_prose"
+        elif prefix and _is_safe_mainline_prefix(prefix):
+            kind = "mainline_start"
+        elif len(explicit_markers) > 1 and prefix and _looks_like_opening_descriptor_text(normalized):
+            kind = "analysis_or_prose"
+        else:
+            kind = "mainline_start"
+        return ParsedPgnLine(
+            raw=str(line or ""),
+            normalized=normalized,
+            kind=kind,
+            has_explicit_movetext=True,
+            has_result=has_result,
+        )
+    if _line_looks_like_pgn_continuation(normalized):
+        return ParsedPgnLine(raw=str(line or ""), normalized=normalized, kind="mainline_continuation", has_result=has_result)
+    if _line_looks_like_caption_or_metadata(normalized):
+        return ParsedPgnLine(raw=str(line or ""), normalized=normalized, kind="caption_or_metadata", has_result=has_result)
+    if has_result:
+        return ParsedPgnLine(raw=str(line or ""), normalized=normalized, kind="result_only", has_result=True)
+    return ParsedPgnLine(raw=str(line or ""), normalized=normalized, kind="noise")
+
+
+def _first_explicit_move_state(line: str) -> tuple[int, str] | None:
+    match = _find_explicit_movetext_match(line)
+    if match is None:
+        return None
+    marker = re.match(r"(?P<num>\d{1,3})\.(?P<black>\.\.)?", match.group(0).strip())
+    if not marker:
+        return None
+    return int(marker.group("num")), ("b" if marker.group("black") else "w")
+
+
+def _line_is_strong_game_start(parsed: ParsedPgnLine, *, after_result: bool) -> bool:
+    if parsed.kind != "mainline_start":
+        return False
+    move_state = _first_explicit_move_state(parsed.normalized)
+    if move_state is None:
+        return False
+    match = _find_explicit_movetext_match(parsed.normalized)
+    prefix = parsed.normalized[: match.start()].strip() if match is not None else ""
+    if prefix and not _is_safe_mainline_prefix(prefix):
+        return False
+    move_num, side = move_state
+    return after_result or (move_num == 1 and side == "w")
+
+
+def _find_mainline_start_index(lines: Iterable[str]) -> int:
+    for index, line in enumerate(lines):
+        if _parse_pgn_line(line).kind == "mainline_start":
+            return index
+    return -1
+
+
+def _build_candidate_game_block(lines: Iterable[str], *, min_tokens: int = 0) -> dict[str, Any] | None:
+    raw_lines = [str(line or "").strip() for line in lines if str(line or "").strip()]
+    if not raw_lines:
+        return None
+    parsed_lines = [_parse_pgn_line(line) for line in raw_lines]
+    start_index = _find_mainline_start_index(raw_lines)
+    if start_index < 0:
+        return None
+    caption_lines = [parsed.normalized for parsed in parsed_lines[:start_index] if parsed.normalized]
+    body_lines = [parsed.normalized for parsed in parsed_lines[start_index:] if parsed.normalized]
+    body = "\n".join(body_lines).strip()
+    if not body:
+        return None
+    if min_tokens and len(_extract_pgn_tokens(body)) < min_tokens:
+        return None
+    return {
+        "caption": "\n".join(caption_lines).strip(),
+        "body": body,
+        "raw": "\n".join(raw_lines).strip(),
+    }
+
+
+def _build_diagram_candidate_game_blocks(lines: Iterable[str]) -> list[dict[str, Any]]:
+    segment = [str(line or "").strip() for line in lines if str(line or "").strip()]
+    if not segment:
+        return []
+    parsed_lines = tuple(_parse_pgn_line(line) for line in segment)
+    sub_blocks = _split_diagram_sub_blocks(parsed_lines)
+    prepared_blocks = [(sub_block, _prepare_diagram_sub_block(sub_block)) for sub_block in sub_blocks]
+    segment_warnings = {
+        warning
+        for _raw_sub_block, prepared_sub_block in prepared_blocks
+        for warning in prepared_sub_block.warnings
+    }
+    candidates: list[dict[str, Any]] = []
+    for sub_block, prepared_sub_block in prepared_blocks:
+        candidate = _build_diagram_candidate_game_block(
+            sub_block,
+            prepared_sub_block=prepared_sub_block,
+            segment_warnings=segment_warnings,
+        )
+        if candidate:
+            candidates.append(candidate)
+    return candidates
+
+
+def _build_diagram_candidate_game_block(
+    sub_block: DiagramSubBlock,
+    *,
+    prepared_sub_block: DiagramSubBlock | None = None,
+    segment_warnings: Iterable[str] = (),
+) -> dict[str, Any] | None:
+    prepared = prepared_sub_block or _prepare_diagram_sub_block(sub_block)
+    if not prepared.source_lines or prepared.kind != "solution_zone":
+        return None
+    parsed_lines = prepared.source_lines
+    candidates = _split_diagram_solution_candidates(parsed_lines, anchor_line_index=prepared.anchor_line_index)
+    if not candidates:
+        return None
+    selected, force_review, selection_warnings = _select_diagram_mainline_candidate(candidates)
+    if selected is None:
+        return None
+    start_state = _first_explicit_move_state(selected.normalized_text)
+    if (
+        "diagram_subblock_split_used" in set(segment_warnings)
+        and "diagram_branch_example_suppressed" in set(segment_warnings)
+        and start_state is not None
+        and start_state[0] > 1
+    ):
+        return None
+    caption_lines = [
+        parsed.normalized
+        for parsed in parsed_lines[: selected.start_line_index]
+        if parsed.kind in {"caption_or_metadata", "noise"} and parsed.normalized
+    ]
+    warnings = set(segment_warnings)
+    warnings.update(prepared.warnings)
+    warnings.update(selected.warnings)
+    warnings.update(_diagram_selector_audit_warnings(candidates, selected, force_review=force_review))
+    warnings.update(selection_warnings)
+    return {
+        "caption": "\n".join(caption_lines).strip(),
+        "body": selected.normalized_text,
+        "raw": "\n".join(parsed.raw for parsed in sub_block.source_lines).strip(),
+        "warnings": sorted(warnings),
+        "force_review": force_review,
+    }
+
+
+def _split_diagram_sub_blocks(lines: Iterable[ParsedPgnLine]) -> list[DiagramSubBlock]:
+    parsed_lines = tuple(lines)
+    if not parsed_lines:
+        return []
+    split_points = [0]
+    current_start = 0
+    for index in range(1, len(parsed_lines)):
+        if _line_starts_new_subdiagram_case(parsed_lines, current_start=current_start, line_index=index):
+            split_points.append(index)
+            current_start = index
+    split_points.append(len(parsed_lines))
+
+    multi_case = len(split_points) > 2
+    sub_blocks: list[DiagramSubBlock] = []
+    for start, end in zip(split_points, split_points[1:]):
+        source_lines = tuple(parsed_lines[start:end])
+        if not source_lines:
+            continue
+        warnings: set[str] = set()
+        if multi_case:
+            warnings.update({"diagram_subblock_split_used", "diagram_multi_case_block_detected"})
+        sub_blocks.append(
+            DiagramSubBlock(
+                source_lines=source_lines,
+                start_line_index=start,
+                end_line_index=end - 1,
+                anchor_line_index=start,
+                kind=_classify_diagram_sub_block(source_lines),
+                warnings=tuple(sorted(warnings)),
+            )
+        )
+    return sub_blocks
+
+
+def _prepare_diagram_sub_block(sub_block: DiagramSubBlock) -> DiagramSubBlock:
+    warnings = set(sub_block.warnings)
+    filtered_lines: list[ParsedPgnLine] = []
+    for parsed in sub_block.source_lines:
+        sample = re.sub(r"\s+", " ", parsed.normalized).strip()
+        if not sample:
+            continue
+        if _line_is_diagram_instructional_prose(sample):
+            warnings.add("diagram_instructional_prose_suppressed")
+            continue
+        if _line_is_diagram_branch_example_line(sample):
+            warnings.add("diagram_branch_example_suppressed")
+            if _diagram_line_is_illustrative_variation(sample):
+                warnings.add("diagram_illustrative_variation_suppressed")
+            elif _line_has_explicit_movetext(sample):
+                warnings.add("diagram_branch_line_suppressed")
+            continue
+        filtered_lines.append(parsed)
+
+    prepared_lines = tuple(filtered_lines)
+    prepared_kind = (
+        "branch_example_zone"
+        if sub_block.kind == "branch_example_zone"
+        else _classify_diagram_sub_block(prepared_lines)
+    )
+    return DiagramSubBlock(
+        source_lines=prepared_lines,
+        start_line_index=0,
+        end_line_index=max(-1, len(prepared_lines) - 1),
+        anchor_line_index=0,
+        kind=prepared_kind,
+        warnings=tuple(sorted(warnings)),
+    )
+
+
+def _line_starts_new_subdiagram_case(
+    parsed_lines: tuple[ParsedPgnLine, ...],
+    *,
+    current_start: int,
+    line_index: int,
+) -> bool:
+    parsed = parsed_lines[line_index]
+    sample = re.sub(r"\s+", " ", parsed.normalized).strip()
+    if not sample:
+        return False
+    if DIAGRAM_LINE_RE.match(sample):
+        return line_index > current_start
+
+    current_block = parsed_lines[current_start:line_index]
+    if not current_block:
+        return False
+    has_solution_seed = any(line.kind in {"mainline_start", "mainline_continuation", "result_only"} for line in current_block)
+    if _line_starts_new_subdiagram_boundary(sample):
+        return has_solution_seed
+    if parsed.kind != "mainline_start" or not has_solution_seed:
+        return False
+    if any(line.has_result or line.kind == "result_only" for line in current_block):
+        return True
+    if _subblock_starts_with_branch_example(current_block):
+        return not _diagram_line_extends_current_case(current_block, parsed)
+    previous = _previous_subblock_line(parsed_lines, current_start=current_start, line_index=line_index)
+    if previous is None:
+        return False
+    if _line_is_diagram_branch_example_line(previous.normalized):
+        return True
+    if previous.kind == "analysis_or_prose":
+        return not _diagram_line_extends_current_case(current_block, parsed)
+    if previous.kind in {"caption_or_metadata", "noise"} and _line_is_diagram_separator_noise(previous.normalized):
+        return not _diagram_line_extends_current_case(current_block, parsed)
+    return False
+
+
+def _line_starts_new_subdiagram_boundary(line: str) -> bool:
+    sample = re.sub(r"\s+", " ", str(line or "")).strip()
+    return bool(sample and DIAGRAM_SUBBLOCK_BOUNDARY_RE.search(sample))
+
+
+def _line_is_diagram_instructional_prose(line: str) -> bool:
+    sample = re.sub(r"\s+", " ", str(line or "")).strip()
+    return bool(sample and DIAGRAM_INSTRUCTIONAL_PROSE_RE.search(sample))
+
+
+def _line_starts_diagram_branch_example_zone(line: str) -> bool:
+    sample = re.sub(r"\s+", " ", str(line or "")).strip()
+    return bool(
+        sample
+        and re.match(
+            r"(?i)^(?:variation\s+from\s+the\s+game|or,?\s+with\s+black\s+to\s+play|"
+            r"the\s+main\s+variation\s+would\s+go|black\s+cannot\s+accept|"
+            r"black\s+cannot\s+decline|the\s+threat\s+is)\b",
+            sample,
+        )
+    )
+
+
+def _line_is_diagram_branch_example_line(line: str) -> bool:
+    sample = re.sub(r"\s+", " ", str(line or "")).strip()
+    if not sample:
+        return False
+    if _diagram_line_is_illustrative_variation(sample):
+        return True
+    if DIAGRAM_BRANCH_EXAMPLE_RE.search(sample):
+        return True
+    if _line_is_branching_analysis_reference(sample):
+        return True
+    first_match = _find_explicit_movetext_match(sample)
+    branch_match = _diagram_branch_marker_match(sample)
+    return bool(first_match and branch_match and branch_match.start() <= first_match.start())
+
+
+def _classify_diagram_sub_block(lines: Iterable[ParsedPgnLine]) -> str:
+    parsed_lines = tuple(lines)
+    if not parsed_lines:
+        return "metadata_zone"
+    first_significant = next(
+        (
+            line
+            for line in parsed_lines
+            if line.normalized and not DIAGRAM_LINE_RE.match(line.normalized)
+        ),
+        None,
+    )
+    if first_significant is not None and _line_starts_diagram_branch_example_zone(first_significant.normalized):
+        return "branch_example_zone"
+    if any(line.kind in {"mainline_start", "mainline_continuation", "result_only"} for line in parsed_lines):
+        return "solution_zone"
+    if any(_line_is_diagram_branch_example_line(line.normalized) for line in parsed_lines):
+        return "branch_example_zone"
+    if any(_line_is_diagram_instructional_prose(line.normalized) for line in parsed_lines):
+        return "instructional_prose_zone"
+    return "metadata_zone"
+
+
+def _subblock_starts_with_branch_example(lines: Iterable[ParsedPgnLine]) -> bool:
+    for parsed in lines:
+        sample = re.sub(r"\s+", " ", parsed.normalized).strip()
+        if not sample or DIAGRAM_LINE_RE.match(sample):
+            continue
+        return _line_starts_diagram_branch_example_zone(sample)
+    return False
+
+
+def _previous_subblock_line(
+    parsed_lines: tuple[ParsedPgnLine, ...],
+    *,
+    current_start: int,
+    line_index: int,
+) -> ParsedPgnLine | None:
+    for index in range(line_index - 1, current_start - 1, -1):
+        sample = re.sub(r"\s+", " ", parsed_lines[index].normalized).strip()
+        if sample:
+            return parsed_lines[index]
+    return None
+
+
+def _diagram_line_extends_current_case(
+    current_block: tuple[ParsedPgnLine, ...],
+    parsed: ParsedPgnLine,
+) -> bool:
+    current_mainline = [
+        line.normalized
+        for line in current_block
+        if line.kind in {"mainline_start", "mainline_continuation", "result_only"} and line.normalized
+    ]
+    if not current_mainline:
+        return False
+    current_text = "\n".join(current_mainline).strip()
+    if not current_text:
+        return False
+    current_risk = _sequence_risk_score_for_text(current_text)
+    combined_risk = _sequence_risk_score_for_text("\n".join([current_text, parsed.normalized]).strip())
+    return combined_risk <= current_risk
+
+
+def _line_is_diagram_separator_noise(line: str) -> bool:
+    sample = re.sub(r"\s+", " ", str(line or "")).strip()
+    if not sample:
+        return False
+    if BOARD_FILES_INLINE_RE.search(sample) or BOARD_RANK_GRID_RE.search(sample):
+        return True
+    return bool(re.fullmatch(r"[-=|/:. ]{3,}", sample))
+
+
+def _split_diagram_solution_candidates(
+    lines: Iterable[ParsedPgnLine],
+    *,
+    anchor_line_index: int = 0,
+) -> list[DiagramSolutionCandidate]:
+    parsed_lines = tuple(lines)
+    candidates: list[DiagramSolutionCandidate] = []
+    for index, _parsed in enumerate(parsed_lines):
+        if not _diagram_line_can_start_candidate(parsed_lines, start_index=index, allow_black_start=True):
+            continue
+        candidate = _build_diagram_solution_candidate(
+            parsed_lines,
+            start_index=index,
+            anchor_line_index=anchor_line_index,
+        )
+        if candidate is not None:
+            candidates.append(candidate)
+    return candidates
+
+
+def _build_diagram_solution_candidate(
+    parsed_lines: tuple[ParsedPgnLine, ...],
+    *,
+    start_index: int,
+    anchor_line_index: int = 0,
+) -> DiagramSolutionCandidate | None:
+    start_line = parsed_lines[start_index]
+    first_text, first_warnings, stop_after_first = _trim_diagram_mainline_line(start_line.normalized)
+    if not first_text:
+        return None
+
+    previous_significant_kind = _previous_diagram_significant_kind(parsed_lines, start_index)
+    has_branch_prefix_context = previous_significant_kind == "analysis_or_prose"
+    has_commentary_prefix = _diagram_line_has_commentary_prefix(start_line.normalized)
+    selected_lines: list[ParsedPgnLine] = [replace(start_line, normalized=first_text)]
+    selected_texts: list[str] = [first_text]
+    warning_set = set(first_warnings)
+    branch_signal_count = 1 if "diagram_branch_line_suppressed" in warning_set else 0
+    prose_signal_count = 0
+    continuation_line_count = 0
+    end_index = start_index
+    has_result = start_line.has_result or bool(RESULT_RE.search(first_text))
+    current_risk = _sequence_risk_score_for_text(first_text)
+    encountered_branch_or_prose = stop_after_first
+    for index in range(start_index + 1, len(parsed_lines)):
+        parsed = parsed_lines[index]
+        if continuation_line_count >= 3:
+            break
+        if parsed.kind in {"caption_or_metadata", "noise"}:
+            break
+        if parsed.kind == "analysis_or_prose":
+            encountered_branch_or_prose = True
+            prose_signal_count += 1
+            warning_set.add(
+                "diagram_illustrative_variation_suppressed"
+                if _diagram_line_is_illustrative_variation(parsed.normalized)
+                else "diagram_branch_line_suppressed"
+            )
+            break
+        if encountered_branch_or_prose:
+            break
+        if parsed.kind == "result_only":
+            selected_lines.append(parsed)
+            selected_texts.append(parsed.normalized)
+            end_index = index
+            has_result = True
+            break
+        if parsed.kind not in {"mainline_start", "mainline_continuation"}:
+            break
+        if parsed.kind == "mainline_start" and _line_is_strong_game_start(parsed, after_result=has_result):
+            break
+        trimmed, line_warnings, stop_after_line = _trim_diagram_mainline_line(parsed.normalized)
+        if not trimmed:
+            encountered_branch_or_prose = stop_after_line or bool(line_warnings)
+            if line_warnings:
+                warning_set.update(line_warnings)
+                branch_signal_count += 1
+            break
+        tentative_text = "\n".join([*selected_texts, trimmed])
+        tentative_risk = _sequence_risk_score_for_text(tentative_text)
+        if parsed.kind == "mainline_start" and tentative_risk > current_risk:
+            break
+        selected_lines.append(replace(parsed, normalized=trimmed))
+        selected_texts.append(trimmed)
+        end_index = index
+        continuation_line_count += 1
+        current_risk = tentative_risk
+        has_result = has_result or parsed.has_result or bool(RESULT_RE.search(trimmed))
+        if line_warnings:
+            warning_set.update(line_warnings)
+            branch_signal_count += 1
+        if stop_after_line:
+            encountered_branch_or_prose = True
+            break
+
+    normalized_text = "\n".join(selected_texts).strip()
+    if not normalized_text:
+        return None
+    tokens = tuple(_extract_pgn_tokens(normalized_text))
+    _, _, halfmove_count, reconstruction_warnings = _best_mainline_reconstruction(tokens)
+    explicit_move_count = sum(1 for token in tokens if token.kind == "san")
+    if explicit_move_count == 0:
+        return None
+    warning_set.update(_diagram_reconstruction_audit_warnings(reconstruction_warnings))
+    start_state = _first_explicit_move_state(first_text)
+    has_terminal_result = _diagram_candidate_has_terminal_result(tokens, selected_lines)
+    multiple_explicit_starts = _diagram_candidate_has_multiple_independent_starts(selected_lines)
+    has_tactical_finish = _diagram_candidate_has_tactical_finish(
+        tokens,
+        has_terminal_result=has_terminal_result,
+        warning_set=warning_set,
+        halfmove_count=halfmove_count,
+        parsed_lines=parsed_lines,
+        end_index=end_index,
+    )
+    branch_example_score = _diagram_branch_example_score(
+        has_branch_prefix_context=has_branch_prefix_context,
+        has_commentary_prefix=has_commentary_prefix,
+        branch_signal_count=branch_signal_count,
+        prose_signal_count=prose_signal_count,
+        multiple_explicit_starts=multiple_explicit_starts,
+        warning_set=warning_set,
+    )
+    return DiagramSolutionCandidate(
+        source_lines=tuple(selected_lines),
+        start_line_index=start_index,
+        end_line_index=end_index,
+        normalized_text=normalized_text,
+        raw_text="\n".join(parsed.raw for parsed in selected_lines).strip(),
+        distance_from_diagram=max(0, start_index - anchor_line_index),
+        branch_example_score=branch_example_score,
+        has_result=has_result,
+        has_terminal_result=has_terminal_result,
+        has_tactical_finish=has_tactical_finish,
+        has_branch_prefix_context=has_branch_prefix_context,
+        has_commentary_prefix=has_commentary_prefix,
+        multiple_explicit_starts=multiple_explicit_starts,
+        starts_with_black=bool(start_state and start_state[1] == "b"),
+        explicit_move_count=explicit_move_count,
+        continuation_line_count=continuation_line_count,
+        branch_signal_count=branch_signal_count,
+        prose_signal_count=prose_signal_count,
+        sequence_risk_score=_sequence_risk_score_from_warnings(reconstruction_warnings),
+        halfmove_count=halfmove_count,
+        warnings=tuple(sorted(warning_set)),
+    )
+
+
+def _select_diagram_mainline_candidate(
+    candidates: list[DiagramSolutionCandidate],
+) -> tuple[DiagramSolutionCandidate | None, bool, tuple[str, ...]]:
+    if not candidates:
+        return None, False, ()
+    eligible = [candidate for candidate in candidates if candidate.halfmove_count >= 2]
+    if not eligible:
+        return None, False, ()
+    ordered = sorted(eligible, key=_diagram_solution_candidate_score)
+    best = ordered[0]
+    if len(ordered) == 1:
+        return best, False, ()
+    second = ordered[1]
+    if _diagram_candidates_are_ambiguous(best, second):
+        return best, True, ("diagram_ambiguous_block_review",)
+    return best, False, ()
+
+
+def _diagram_solution_candidate_score(candidate: DiagramSolutionCandidate) -> tuple[Any, ...]:
+    return (
+        candidate.branch_example_score,
+        candidate.sequence_risk_score,
+        candidate.distance_from_diagram,
+        0 if candidate.has_terminal_result else 1,
+        0 if candidate.has_tactical_finish else 1,
+        -min(candidate.halfmove_count, 8),
+        candidate.start_line_index,
+    )
+
+
+def _diagram_candidates_are_ambiguous(
+    best: DiagramSolutionCandidate,
+    second: DiagramSolutionCandidate,
+) -> bool:
+    if best.branch_example_score != second.branch_example_score:
+        return False
+    if best.sequence_risk_score != second.sequence_risk_score:
+        return False
+    if best.has_terminal_result != second.has_terminal_result:
+        return False
+    if best.has_tactical_finish != second.has_tactical_finish:
+        return False
+    if abs(best.distance_from_diagram - second.distance_from_diagram) > 1:
+        return False
+    return abs(best.halfmove_count - second.halfmove_count) <= 2
+
+
+def _diagram_selector_audit_warnings(
+    candidates: list[DiagramSolutionCandidate],
+    selected: DiagramSolutionCandidate,
+    *,
+    force_review: bool,
+) -> tuple[str, ...]:
+    if len(candidates) <= 1:
+        return ()
+    warnings = {"diagram_block_selector_used"}
+    rejected = [candidate for candidate in candidates if candidate != selected]
+    if not force_review:
+        warnings.add("diagram_solution_candidate_selected")
+    if any(candidate.branch_example_score > selected.branch_example_score for candidate in rejected):
+        warnings.add("diagram_branch_candidate_rejected")
+    if any(candidate.sequence_risk_score > selected.sequence_risk_score for candidate in rejected):
+        warnings.add("diagram_nonmonotonic_candidate_rejected")
+    if selected.has_terminal_result and any(
+        candidate.branch_example_score == selected.branch_example_score
+        and candidate.sequence_risk_score == selected.sequence_risk_score
+        and candidate.distance_from_diagram == selected.distance_from_diagram
+        and not candidate.has_terminal_result
+        for candidate in rejected
+    ):
+        warnings.add("diagram_result_closed_candidate_preferred")
+    return tuple(sorted(warnings))
+
+
+def _previous_diagram_significant_kind(
+    parsed_lines: tuple[ParsedPgnLine, ...],
+    start_index: int,
+) -> str:
+    previous = _previous_diagram_significant_line(parsed_lines, start_index)
+    if previous is None:
+        return ""
+    if previous.normalized and _diagram_branch_marker_match(previous.normalized):
+        return "analysis_or_prose"
+    return previous.kind
+
+
+def _previous_diagram_significant_line(
+    parsed_lines: tuple[ParsedPgnLine, ...],
+    start_index: int,
+) -> ParsedPgnLine | None:
+    for index in range(start_index - 1, -1, -1):
+        sample = parsed_lines[index].normalized
+        if sample and _diagram_branch_marker_match(sample):
+            return parsed_lines[index]
+        kind = parsed_lines[index].kind
+        if kind in {"noise", "caption_or_metadata"}:
+            continue
+        return parsed_lines[index]
+    return None
+
+
+def _diagram_line_has_commentary_prefix(line: str) -> bool:
+    sample = re.sub(r"\s+", " ", str(line or "")).strip()
+    match = _find_explicit_movetext_match(sample)
+    if match is None:
+        return False
+    prefix = sample[: match.start()].strip()
+    if not prefix:
+        return False
+    if _line_looks_like_caption_or_metadata(prefix):
+        return False
+    return bool(re.search(r"[A-Za-z]", prefix))
+
+
+def _diagram_branch_example_score(
+    *,
+    has_branch_prefix_context: bool,
+    has_commentary_prefix: bool,
+    branch_signal_count: int,
+    prose_signal_count: int,
+    multiple_explicit_starts: bool,
+    warning_set: set[str],
+) -> tuple[int, int, int]:
+    return (
+        int(has_branch_prefix_context) + int(has_commentary_prefix),
+        branch_signal_count + prose_signal_count,
+        int(multiple_explicit_starts) + int("diagram_illustrative_variation_suppressed" in warning_set),
+    )
+
+
+def _diagram_candidate_has_tactical_finish(
+    tokens: tuple[PgnToken, ...],
+    *,
+    has_terminal_result: bool,
+    warning_set: set[str],
+    halfmove_count: int,
+    parsed_lines: tuple[ParsedPgnLine, ...],
+    end_index: int,
+) -> bool:
+    if has_terminal_result or halfmove_count > 6:
+        return False
+    if "diagram_branch_line_suppressed" in warning_set or "diagram_illustrative_variation_suppressed" in warning_set:
+        return False
+    last_san = next((token.value for token in reversed(tokens) if token.kind == "san"), "")
+    if not last_san or last_san[-1:] not in {"+", "#"}:
+        return False
+    for index in range(end_index + 1, len(parsed_lines)):
+        parsed = parsed_lines[index]
+        if parsed.kind in {"noise", "caption_or_metadata", "analysis_or_prose"}:
+            continue
+        if parsed.kind == "mainline_start":
+            return False
+        break
+    return True
+
+
+def _diagram_candidate_has_terminal_result(
+    tokens: tuple[PgnToken, ...],
+    selected_lines: list[ParsedPgnLine],
+) -> bool:
+    if selected_lines and selected_lines[-1].kind == "result_only":
+        return True
+    return bool(tokens and tokens[-1].kind == "result")
+
+
+def _diagram_candidate_has_multiple_independent_starts(
+    selected_lines: list[ParsedPgnLine],
+) -> bool:
+    start_states = [
+        state
+        for parsed in selected_lines
+        if parsed.kind == "mainline_start"
+        for state in [_first_explicit_move_state(parsed.normalized)]
+        if state is not None
+    ]
+    if len(start_states) <= 1:
+        return False
+    previous_num, previous_side = start_states[0]
+    for move_num, side in start_states[1:]:
+        if side != previous_side or move_num - previous_num != 1:
+            return True
+        previous_num, previous_side = move_num, side
+    return False
+
+
+def _diagram_line_can_start_candidate(
+    parsed_lines: tuple[ParsedPgnLine, ...],
+    *,
+    start_index: int,
+    allow_black_start: bool,
+) -> bool:
+    parsed = parsed_lines[start_index]
+    if parsed.kind != "mainline_start":
+        return False
+    match = _find_explicit_movetext_match(parsed.normalized)
+    if match is None:
+        return False
+    prefix = parsed.normalized[: match.start()].strip()
+    if prefix and not _is_safe_mainline_prefix(prefix):
+        return False
+    move_state = _first_explicit_move_state(parsed.normalized)
+    if move_state is None:
+        return False
+    if move_state[1] == "b" and not allow_black_start:
+        return False
+    if _diagram_line_is_illustrative_variation(parsed.normalized):
+        return False
+    branch_match = _diagram_branch_marker_match(parsed.normalized)
+    if branch_match and branch_match.start() <= match.start():
+        return False
+    previous_significant = _previous_diagram_significant_line(parsed_lines, start_index)
+    if (
+        previous_significant is not None
+        and previous_significant.kind in {"mainline_start", "mainline_continuation", "result_only"}
+        and not previous_significant.has_result
+    ):
+        previous_state = _first_explicit_move_state(previous_significant.normalized)
+        if previous_state != move_state:
+            return False
+    return True
+
+
+def _diagram_branch_marker_match(line: str) -> re.Match[str] | None:
+    return DIAGRAM_BRANCH_MARKER_RE.search(re.sub(r"\s+", " ", str(line or "")).strip())
+
+
+def _diagram_line_is_illustrative_variation(line: str) -> bool:
+    sample = re.sub(r"\s+", " ", str(line or "")).strip()
+    if not sample:
+        return False
+    if DIAGRAM_ILLUSTRATIVE_VARIATION_RE.search(sample):
+        return True
+    branch_markers = list(DIAGRAM_BRANCH_MARKER_RE.finditer(sample))
+    if len(branch_markers) >= 2:
+        return True
+    if ";" in sample and sum(1 for _ in _iter_explicit_movetext_matches(sample)) >= 2:
+        return True
+    return False
+
+
+def _trim_diagram_mainline_line(line: str) -> tuple[str, tuple[str, ...], bool]:
+    sample = re.sub(r"\s+", " ", str(line or "")).strip()
+    if not sample:
+        return "", (), False
+    if _diagram_line_is_illustrative_variation(sample):
+        return "", ("diagram_illustrative_variation_suppressed",), True
+    first_match = _find_explicit_movetext_match(sample)
+    if first_match is None:
+        return (sample, (), False) if RESULT_RE.match(sample) else ("", (), False)
+    branch_match = _diagram_branch_marker_match(sample)
+    if branch_match is None:
+        return sample, (), False
+    if branch_match.start() <= first_match.start():
+        return "", ("diagram_branch_line_suppressed",), True
+    trailing = sample[branch_match.end() :]
+    if _find_explicit_movetext_match(trailing) is not None:
+        return "", ("diagram_branch_line_suppressed",), True
+    return sample[: branch_match.start()].rstrip(" ,;:"), ("diagram_branch_line_suppressed",), True
+
+
+def _diagram_reconstruction_audit_warnings(warnings: Iterable[str]) -> tuple[str, ...]:
+    relevant = {"move_number_jump", "move_number_regression", "side_to_move_mismatch"}
+    return tuple(sorted(relevant.intersection(set(warnings))))
+
+
+def _sequence_risk_score_for_text(text: str) -> tuple[int, int, int]:
+    tokens = tuple(_extract_pgn_tokens(text))
+    _, _, _, warnings = _best_mainline_reconstruction(tokens)
+    return _sequence_risk_score_from_warnings(warnings)
+
+
+def _sequence_risk_score_from_warnings(warnings: Iterable[str]) -> tuple[int, int, int]:
+    warning_set = set(warnings)
+    return (
+        int("move_number_regression" in warning_set),
+        int("move_number_jump" in warning_set),
+        int("side_to_move_mismatch" in warning_set),
+    )
+
+
+def _split_overmixed_diagram_segment(lines: Iterable[str]) -> list[list[str]]:
+    segment = [str(line or "").strip() for line in lines if str(line or "").strip()]
+    if not segment:
+        return []
+    parsed_lines = [_parse_pgn_line(line) for line in segment]
+    start_index = _find_mainline_start_index(segment)
+    if start_index < 0:
+        return [segment]
+
+    saw_result = False
+    for index in range(start_index + 1, len(parsed_lines)):
+        parsed = parsed_lines[index]
+        if _line_is_strong_game_start(parsed, after_result=saw_result):
+            left_candidate = _build_candidate_game_block(segment[:index], min_tokens=4)
+            right_candidate = _build_candidate_game_block(segment[index:], min_tokens=4)
+            if left_candidate and right_candidate:
+                return [segment[:index], segment[index:]]
+        saw_result = saw_result or parsed.has_result
+    return [segment]
 
 
 def _looks_like_collection_game_start(line: str) -> bool:
@@ -1028,7 +2044,7 @@ def _looks_like_collection_game_start(line: str) -> bool:
         return False
     if COLLECTION_NUMBERED_ECO_RE.match(normalized):
         return True
-    return bool(COLLECTION_GAME_START_RE.match(normalized) and not _line_has_pgn_tokens(normalized))
+    return bool(COLLECTION_GAME_START_RE.match(normalized) and _find_explicit_movetext_match(normalized) is None)
 
 
 def _clean_collection_line_for_pgn(line: str) -> str:
@@ -1118,31 +2134,30 @@ def _looks_like_opening_descriptor_text(text: str) -> bool:
     return False
 
 
-def _extract_pgn_tokens(text: str) -> list[str]:
-    tokens: list[str] = []
+def _extract_pgn_tokens(text: str) -> list[PgnToken]:
+    tokens: list[PgnToken] = []
     normalized_text = _prepare_mainline_token_source(text)
     seen_movetext = False
     for line in normalized_text.splitlines() or [normalized_text]:
-        explicit_movetext = _line_has_explicit_movetext(line)
-        if not explicit_movetext and not (seen_movetext and _line_looks_like_pgn_continuation(line)):
+        scan_line = _prepare_pgn_scan_line(line, seen_movetext=seen_movetext)
+        if not scan_line:
             continue
-        already_seen_movetext = seen_movetext
+        explicit_movetext = _line_has_explicit_movetext(scan_line)
+        if not explicit_movetext and not (seen_movetext and _line_looks_like_pgn_continuation(scan_line)):
+            continue
         seen_movetext = True
-        scan_line = (
-            _movetext_scan_slice(line, allow_prefix_continuation=already_seen_movetext)
-            if explicit_movetext
-            else line
-        )
         for match in TOKEN_SCAN_RE.finditer(scan_line):
             raw = match.group(0).strip()
             if not raw:
                 continue
             if MOVE_NUMBER_RE.match(raw) or RESULT_RE.match(raw):
-                tokens.append(raw)
+                token_kind = "move" if MOVE_NUMBER_RE.match(raw) else "result"
+                tokens.append(PgnToken(token_kind, raw))
                 continue
-            san = _sanitize_san_token(raw)
+            raw = _expand_san_ocr_raw_token(scan_line, match)
+            san, token_warnings = _normalize_ocr_san_token(raw)
             if san:
-                tokens.append(san)
+                tokens.append(PgnToken("san", san, tuple(token_warnings)))
     return tokens
 
 
@@ -1168,7 +2183,37 @@ def _prepare_mainline_token_source(text: str) -> str:
         r"\g<san> ",
         prepared,
     )
-    return prepared
+    filtered_lines: list[str] = []
+    seen_mainline = False
+    for raw_line in prepared.splitlines():
+        parsed = _parse_pgn_line(raw_line)
+        if parsed.kind == "mainline_start":
+            filtered_lines.append(parsed.normalized)
+            seen_mainline = True
+            continue
+        if parsed.kind == "mainline_continuation" and seen_mainline:
+            filtered_lines.append(parsed.normalized)
+            continue
+        if parsed.kind == "result_only" and seen_mainline:
+            filtered_lines.append(parsed.normalized)
+    return "\n".join(filtered_lines)
+
+
+def _prepare_pgn_scan_line(line: str, *, seen_movetext: bool) -> str:
+    parsed = _parse_pgn_line(line)
+    sample = parsed.normalized
+    if not sample:
+        return ""
+    if parsed.kind == "mainline_start":
+        prepared = _movetext_scan_slice(sample, allow_prefix_continuation=seen_movetext)
+    elif parsed.kind == "mainline_continuation" and seen_movetext:
+        prepared = sample
+    elif parsed.kind == "result_only" and seen_movetext:
+        prepared = sample
+    else:
+        return ""
+    prepared = _strip_branching_analysis_tail(prepared)
+    return prepared.strip()
 
 
 def _strip_prose_move_references(text: str) -> str:
@@ -1280,6 +2325,37 @@ def _line_has_explicit_movetext(line: str) -> bool:
     return _find_explicit_movetext_match(sample) is not None
 
 
+def _line_is_branching_analysis_reference(line: str) -> bool:
+    sample = re.sub(r"\s+", " ", str(line or "")).strip()
+    if not sample or not _line_has_explicit_movetext(sample):
+        return False
+    first_match = _find_explicit_movetext_match(sample)
+    if first_match is None:
+        return False
+    if BRANCHING_ANALYSIS_MARKER_RE.match(sample):
+        return True
+    prefix = sample[: first_match.start()].strip()
+    if not prefix:
+        return False
+    if _line_has_explicit_movetext(prefix):
+        return True
+    return bool(STRONG_BRANCH_PREFIX_RE.search(prefix))
+
+
+def _strip_branching_analysis_tail(line: str) -> str:
+    sample = str(line or "")
+    if not sample:
+        return ""
+    first_match = _find_explicit_movetext_match(sample)
+    if first_match is None:
+        return sample
+    for match in BRANCHING_ANALYSIS_MARKER_RE.finditer(sample):
+        if match.start() <= first_match.end():
+            continue
+        return sample[: match.start()].rstrip(" ,;:")
+    return sample
+
+
 def _movetext_scan_slice(line: str, *, allow_prefix_continuation: bool = True) -> str:
     match = _find_explicit_movetext_match(line or "")
     if not match:
@@ -1325,13 +2401,28 @@ def _line_looks_like_pgn_continuation(line: str) -> bool:
     return token_chars >= max(2, sample_chars * 0.55)
 
 
-def _sanitize_san_token(raw: str) -> str:
+def _line_has_continuation_prefix_before_explicit(line: str) -> bool:
+    sample = str(line or "")
+    match = _find_explicit_movetext_match(sample)
+    if match is None:
+        return False
+    prefix = sample[: match.start()].strip()
+    return bool(prefix and _line_looks_like_pgn_continuation(prefix))
+
+
+def _expand_san_ocr_raw_token(line: str, match: re.Match[str]) -> str:
+    start, end = match.span()
+    while end < len(line) and re.match(r"[0-9Nt¢]", line[end]):
+        end += 1
+    return line[start:end].strip()
+
+
+def _canonicalize_san_candidate(raw: str) -> str:
     token = str(raw or "").strip(" \t\n\r,;:()[]{}")
     if not token:
         return ""
     token = token.replace("0-0-0", "O-O-O").replace("0-0", "O-O")
     token = token.replace("\u2020", "+").replace("\u2021", "#").replace("†", "+").replace("‡", "#")
-    token = re.sub(r"[¢t]$", "+", token)
     token = re.sub(r"\s+", "", token)
     token = re.sub(r"=\s*([QRBN])", r"=\1", token)
     if token[:1] in {"D", "£"} and re.match(r"^[D£]x?[a-h][1-8]", token):
@@ -1349,67 +2440,213 @@ def _sanitize_san_token(raw: str) -> str:
     elif token[:1] == "P" and re.match(r"^Px?[a-h][1-8]", token):
         token = token[1:]
     token = re.sub(r"([+#])[+#]+$", r"\1", token)
-    if SAN_RE.match(token):
-        return token
-    return ""
+    return token
 
 
-def _tokens_to_movetext(tokens: Iterable[str]) -> tuple[str, str, int, list[str]]:
+def _normalize_ocr_san_token(raw: str) -> tuple[str, list[str]]:
+    token = str(raw or "").strip(" \t\n\r,;:()[]{}")
+    if not token:
+        return "", []
+    token = token.replace("0-0-0", "O-O-O").replace("0-0", "O-O")
+    token = token.replace("\u2020", "+").replace("\u2021", "#").replace("†", "+").replace("‡", "#")
+    token = re.sub(r"\s+", "", token)
+    token = re.sub(r"=\s*([QRBN])", r"=\1", token)
+    canonical = _canonicalize_san_candidate(token)
+    if canonical and SAN_RE.match(canonical) and not re.match(r"^[0-9.]+", token):
+        return canonical, []
+
+    candidates: dict[str, set[str]] = {}
+    queue: list[tuple[str, tuple[str, ...]]] = [(token, tuple())]
+    seen_states: set[tuple[str, tuple[str, ...]]] = set()
+
+    def add_candidate(candidate: str, warnings: tuple[str, ...]) -> None:
+        if re.match(r"^[0-9.]+", candidate):
+            return
+        canonical = _canonicalize_san_candidate(candidate)
+        if canonical and SAN_RE.match(canonical):
+            candidates.setdefault(canonical, set()).update(warnings)
+
+    while queue:
+        current, warnings = queue.pop(0)
+        state = (current, warnings)
+        if state in seen_states:
+            continue
+        seen_states.add(state)
+        if current != token:
+            add_candidate(current, warnings)
+
+        prefix_stripped = re.sub(r"^[0-9.]+", "", current)
+        if prefix_stripped and prefix_stripped != current:
+            queue.append(
+                (
+                    prefix_stripped,
+                    (*warnings, "san_ocr_token_repaired", "san_ocr_digit_prefix_suppressed"),
+                )
+            )
+
+        if current and current[-1].isdigit():
+            queue.append(
+                (
+                    current[:-1],
+                    (*warnings, "san_ocr_token_repaired", "san_ocr_digit_suffix_suppressed"),
+                )
+            )
+
+        if re.search(r"[Nt¢]$", current):
+            queue.append(((current[:-1]), (*warnings, "san_ocr_token_repaired")))
+
+    if len(candidates) != 1:
+        return "", []
+    normalized, candidate_warnings = next(iter(candidates.items()))
+    return normalized, sorted(candidate_warnings)
+
+
+def _sanitize_san_token(raw: str) -> str:
+    normalized, _warnings = _normalize_ocr_san_token(raw)
+    return normalized
+
+
+def _record_token_source(record: ChessPgnRecord) -> tuple[PgnToken, ...]:
+    if record.token_source:
+        return tuple(record.token_source)
+    source_text = _strip_opening_descriptor_prefix(record.raw_text or record.movetext, context=record.title)
+    return tuple(_extract_pgn_tokens(source_text))
+
+
+def _initial_mainline_state_from_fen(initial_fen: str) -> tuple[int | None, str | None]:
+    fields = str(initial_fen or "").split()
+    if len(fields) < 6:
+        return None, None
+    side = fields[1].strip().lower()
+    if side not in {"w", "b"}:
+        return None, None
+    try:
+        move_number = max(1, int(fields[5]))
+    except ValueError:
+        return None, None
+    return move_number, side
+
+
+def _mainline_reconstruction_score(warnings: list[str], halfmove_count: int) -> tuple[int, int, int, int]:
+    warning_set = set(warnings)
+    nonblocking_audit_warnings = {
+        "san_board_legalization_used",
+        "san_board_unique_candidate_used",
+        "san_board_ambiguous_candidate_rejected",
+        "san_board_illegal_candidate_rejected",
+    }
+    sequence_warning_count = sum(
+        1
+        for warning in ("move_number_jump", "move_number_regression", "side_to_move_mismatch")
+        if warning in warning_set
+    )
+    blocking_warning_count = len(
+        warning_set
+        & {
+            "invalid_move_number_zero",
+            "move_number_regression",
+            "move_number_jump",
+            "side_to_move_mismatch",
+            "no_explicit_move_number",
+        }
+    )
+    return (
+        sequence_warning_count,
+        blocking_warning_count,
+        len(warning_set - nonblocking_audit_warnings),
+        -halfmove_count,
+    )
+
+
+def _reconstruct_mainline_movetext(
+    tokens: Iterable[PgnToken],
+    *,
+    initial_fen: str = "",
+) -> tuple[str, str, int, list[str]]:
     token_list = list(tokens)
     fragments: list[str] = []
     warnings: list[str] = []
-    current_move: int | None = None
-    side = "w"
     result = "*"
     halfmove_count = 0
     saw_move_number = False
+    current_move, side = _initial_mainline_state_from_fen(initial_fen)
+    pending_marker_state: tuple[int, str] | None = None
+    board = _board_from_initial_fen(initial_fen)
 
     index = 0
     while index < len(token_list):
         token = token_list[index]
+        token_value = token.value
+        warnings.extend(token.warnings)
         index += 1
-        move_match = MOVE_NUMBER_RE.match(token)
+        move_match = MOVE_NUMBER_RE.match(token_value)
         if move_match:
             saw_move_number = True
             move_num = int(move_match.group("num"))
             marker_side = "b" if move_match.group("black") else "w"
+            marker_state = (move_num, marker_side)
             if move_num <= 0:
                 warnings.append("invalid_move_number_zero")
                 continue
-            if current_move is not None:
-                if halfmove_count > 0 and move_num < current_move:
-                    warnings.append("move_number_regression")
-                elif halfmove_count > 0 and move_num > current_move:
-                    warnings.append("move_number_jump")
-                if halfmove_count > 0 and move_num == current_move and marker_side != side:
-                    warnings.append("side_to_move_mismatch")
-                elif halfmove_count > 0 and move_num != current_move:
-                    warnings.append("side_to_move_mismatch")
+            if pending_marker_state == marker_state:
+                warnings.append("duplicate_marker_suppressed")
+                continue
+            if current_move is None or side is None:
+                current_move = move_num
+                side = marker_side
+                pending_marker_state = marker_state
+                continue
+            if move_num == current_move and marker_side == side:
+                pending_marker_state = marker_state
+                continue
+            if move_num == current_move and marker_side != side:
+                warnings.append("side_to_move_marker_repaired")
+                pending_marker_state = (current_move, side)
+                continue
+            if move_num < current_move:
+                warnings.extend(["move_number_regression", "side_to_move_mismatch"])
+                current_move = move_num
+                side = marker_side
+                pending_marker_state = marker_state
+                continue
+            warnings.extend(["move_number_jump", "side_to_move_mismatch"])
             current_move = move_num
             side = marker_side
+            pending_marker_state = marker_state
             continue
-        if token in RESULT_VALUES:
-            result = "1/2-1/2" if token == "0.5-0.5" else token
+        if token_value in RESULT_VALUES:
+            result = "1/2-1/2" if token_value == "0.5-0.5" else token_value
             continue
-        if not SAN_RE.match(token):
+        if token.kind != "san" or not SAN_RE.match(token_value):
             warnings.append("invalid_san_token_skipped")
             continue
-        if current_move is None:
+        if board is not None:
+            token_value, board_warnings = _legalize_san_token_with_board(token_value, board)
+            warnings.extend(board_warnings)
+        if current_move is None or side is None:
             current_move = 1
+            side = "w"
             warnings.append("move_number_inferred")
         if _san_is_shadowed_by_explicit_same_ply_marker(token_list, index, current_move, side):
             continue
         if side == "w":
-            fragments.append(f"{current_move}. {token}")
+            fragments.append(f"{current_move}. {token_value}")
             side = "b"
         else:
             if fragments and fragments[-1].startswith(f"{current_move}. "):
-                fragments[-1] = f"{fragments[-1]} {token}"
+                fragments[-1] = f"{fragments[-1]} {token_value}"
             else:
-                fragments.append(f"{current_move}... {token}")
+                fragments.append(f"{current_move}... {token_value}")
             current_move += 1
             side = "w"
         halfmove_count += 1
+        pending_marker_state = None
+        if board is not None:
+            move = _parse_san_for_board(board, token_value)
+            if move is None:
+                board = None
+            else:
+                board.push(move)
 
     if not saw_move_number:
         warnings.append("no_explicit_move_number")
@@ -1420,17 +2657,203 @@ def _tokens_to_movetext(tokens: Iterable[str]) -> tuple[str, str, int, list[str]
     return " ".join(fragments).strip(), result, halfmove_count, sorted(set(warnings))
 
 
+def _best_mainline_reconstruction(
+    tokens: Iterable[PgnToken],
+    *,
+    initial_fen: str = "",
+) -> tuple[str, str, int, list[str]]:
+    plain = _reconstruct_mainline_movetext(tokens)
+    if not initial_fen:
+        return plain
+    fen_guided = _reconstruct_mainline_movetext(tokens, initial_fen=initial_fen)
+    plain_score = _mainline_reconstruction_score(plain[3], plain[2])
+    fen_score = _mainline_reconstruction_score(fen_guided[3], fen_guided[2])
+    if fen_score < plain_score:
+        return fen_guided
+    fen_audit_warnings = {
+        warning
+        for warning in fen_guided[3]
+        if warning.startswith("san_board_")
+    }
+    if fen_audit_warnings and fen_score[:2] <= plain_score[:2]:
+        return fen_guided
+    return plain
+
+
+def _tokens_to_movetext(tokens: Iterable[PgnToken]) -> tuple[str, str, int, list[str]]:
+    return _reconstruct_mainline_movetext(tokens)
+
+
+def _board_from_initial_fen(initial_fen: str) -> Any | None:
+    if not initial_fen:
+        return None
+    try:
+        import chess  # type: ignore[import-not-found]
+    except Exception:
+        return None
+    try:
+        return chess.Board(initial_fen)
+    except Exception:
+        return None
+
+
+def _parse_san_for_board(board: Any, token_value: str) -> Any | None:
+    try:
+        return board.parse_san(_strip_san_annotation_suffix(token_value))
+    except Exception:
+        return None
+
+
+def _strip_san_annotation_suffix(token: str) -> str:
+    return re.sub(r"[!?]+$", "", str(token or ""))
+
+
+def _san_annotation_suffix(token: str) -> str:
+    match = re.search(r"[!?]+$", str(token or ""))
+    return match.group(0) if match else ""
+
+
+def _legalize_san_token_with_board(raw_san: str, board: Any) -> tuple[str, list[str]]:
+    token = _canonicalize_san_candidate(raw_san)
+    if not token or board is None:
+        return token, []
+
+    raw_suffix = _san_annotation_suffix(token)
+    stripped_token = _strip_san_annotation_suffix(token)
+    parsed_move = _parse_san_for_board(board, stripped_token)
+    if parsed_move is not None:
+        canonical_board_san = board.san(parsed_move)
+        if canonical_board_san != stripped_token:
+            return (
+                f"{canonical_board_san}{raw_suffix}",
+                ["san_board_legalization_used", "san_board_unique_candidate_used"],
+            )
+        return token, []
+
+    candidate_sans = [
+        board.san(move)
+        for move in board.legal_moves
+        if _board_legal_san_matches_ocr(stripped_token, board.san(move))
+    ]
+    unique_candidates = sorted(set(candidate_sans))
+    if len(unique_candidates) == 1:
+        return (
+            f"{unique_candidates[0]}{raw_suffix}",
+            ["san_board_legalization_used", "san_board_unique_candidate_used"],
+        )
+    if unique_candidates:
+        return token, ["san_board_ambiguous_candidate_rejected"]
+    return token, ["san_board_illegal_candidate_rejected"]
+
+
+def _board_legal_san_matches_ocr(raw_san: str, legal_san: str) -> bool:
+    raw_shape = _board_san_shape(raw_san)
+    legal_shape = _board_san_shape(legal_san)
+    if not raw_shape or not legal_shape:
+        return False
+    if raw_shape["kind"] == "castle":
+        return raw_shape["castle"] == legal_shape.get("castle")
+    if raw_shape["kind"] == "bare_square":
+        if raw_shape["target"] != legal_shape.get("target"):
+            return False
+        if raw_shape["check_marker"] and raw_shape["check_marker"] != legal_shape.get("check_marker"):
+            return False
+        return True
+    if raw_shape["kind"] == "pawn_capture":
+        if legal_shape.get("kind") != "pawn_capture":
+            return False
+        if raw_shape["from_file"] != legal_shape.get("from_file"):
+            return False
+        if raw_shape["target"] != legal_shape.get("target"):
+            return False
+        if raw_shape["promotion"] and raw_shape["promotion"] != legal_shape.get("promotion"):
+            return False
+        if raw_shape["check_marker"] and raw_shape["check_marker"] != legal_shape.get("check_marker"):
+            return False
+        return True
+    if raw_shape["kind"] == "piece_move":
+        if legal_shape.get("kind") != "piece_move":
+            return False
+        if raw_shape["piece"] != legal_shape.get("piece"):
+            return False
+        if raw_shape["target"] != legal_shape.get("target"):
+            return False
+        if raw_shape["capture"] != legal_shape.get("capture"):
+            return False
+        if raw_shape["disambiguation"] and raw_shape["disambiguation"] != legal_shape.get("disambiguation"):
+            return False
+        if raw_shape["promotion"] and raw_shape["promotion"] != legal_shape.get("promotion"):
+            return False
+        if raw_shape["check_marker"] and raw_shape["check_marker"] != legal_shape.get("check_marker"):
+            return False
+        return True
+    return False
+
+
+def _board_san_shape(token: str) -> dict[str, Any]:
+    sample = _strip_san_annotation_suffix(_canonicalize_san_candidate(token))
+    if not sample:
+        return {}
+    if sample in {"O-O", "O-O-O"}:
+        return {"kind": "castle", "castle": sample}
+
+    check_marker = sample[-1] if sample.endswith(("+", "#")) else ""
+    if check_marker:
+        sample = sample[:-1]
+
+    promotion = ""
+    promotion_match = re.search(r"=([QRBN])$", sample)
+    if promotion_match:
+        promotion = promotion_match.group(1)
+        sample = sample[: promotion_match.start()]
+
+    if re.fullmatch(r"[a-h][1-8]", sample):
+        return {
+            "kind": "bare_square",
+            "target": sample,
+            "promotion": promotion,
+            "check_marker": check_marker,
+        }
+
+    pawn_capture = re.fullmatch(r"(?P<from_file>[a-h])x(?P<target>[a-h][1-8])", sample)
+    if pawn_capture:
+        return {
+            "kind": "pawn_capture",
+            "from_file": pawn_capture.group("from_file"),
+            "target": pawn_capture.group("target"),
+            "promotion": promotion,
+            "check_marker": check_marker,
+        }
+
+    piece_move = re.fullmatch(
+        r"(?P<piece>[KQRBN])(?P<disambiguation>[a-h]?[1-8]?)(?P<capture>x?)(?P<target>[a-h][1-8])",
+        sample,
+    )
+    if piece_move:
+        return {
+            "kind": "piece_move",
+            "piece": piece_move.group("piece"),
+            "disambiguation": piece_move.group("disambiguation"),
+            "capture": bool(piece_move.group("capture")),
+            "target": piece_move.group("target"),
+            "promotion": promotion,
+            "check_marker": check_marker,
+        }
+
+    return {}
+
+
 def _san_is_shadowed_by_explicit_same_ply_marker(
-    tokens: list[str],
+    tokens: list[PgnToken],
     start_index: int,
     current_move: int,
     side: str,
 ) -> bool:
     expected_marker_side = side
     for token in tokens[start_index : start_index + 5]:
-        if token in RESULT_VALUES:
+        if token.kind == "result":
             return False
-        move_match = MOVE_NUMBER_RE.match(token)
+        move_match = MOVE_NUMBER_RE.match(token.value)
         if not move_match:
             continue
         marker_move = int(move_match.group("num"))

@@ -4,15 +4,12 @@ import base64
 import html
 import io
 import logging
-import os
 import re
 from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Mapping, Sequence
 
 
-CHESS_FEN_MIN_CONFIDENCE = 0.835
 RESULT_VALUES = {"1-0", "0-1", "1/2-1/2", "0.5-0.5", "*"}
-UNMAPPED_CHESS_GLYPH_WARNING = "unmapped_chess_glyphs"
 MOVE_NUMBER_RE = re.compile(r"^(?P<num>\d{1,3})\.(?P<black>\.\.)?$")
 RESULT_RE = re.compile(r"^(?:1-0|0-1|1/2-1/2|0\.5-0\.5|\*)$")
 SAN_RE = re.compile(
@@ -32,8 +29,6 @@ TOKEN_SCAN_RE = re.compile(
     r"|[a-h][1-8](?:\s*=\s*[QRBN])?[+#†‡¢t]?[!?]{0,2}",
     re.IGNORECASE,
 )
-GLYPH_DIAGNOSTIC_RECORD_LIMIT = 20
-GLYPH_DIAGNOSTIC_DOCUMENT_LIMIT = 500
 DIAGRAM_LINE_RE = re.compile(r"^\s*(?:diagram|dia\.?)\s+\d+(?:[-.]\d+)?", re.IGNORECASE)
 NOTATION_HEAVY_RE = re.compile(r"\b\d{1,3}\.(?:\.\.)?\s*\S+")
 PLAYER_CAPTION_RE = re.compile(
@@ -135,8 +130,6 @@ WEIGHTED_ERROR_VALUE_RE = re.compile(r"(?im)^\s*Weighted Error Value:.*$")
 WEIGHTED_ERROR_SIDE_RE = re.compile(r"(?i)\b(?:White|Black)\s*=\s*\d+\s*\.\s*\d+\s*/?")
 OCR_HASH_ARTIFACT_RE = re.compile(r"(?i)\b0x[0-9a-f]+(?:\.\s*[0-9a-f]+)?(?:p[-+]?\d+)?[a-z]*\b")
 SENSOR_BOARD_ERROR_RE = re.compile(r"(?i)\bSensor\s+Board\s+Error\s*\([^)]*\)\??")
-MOJIBAKE_PGN_TOKEN_RE = re.compile(r"(?<!\w)[\"'`´’]?[A-Za-z]?[!;:<>]{2,}[A-Za-z0-9!?+\-=#]*")
-ANGLE_GLYPH_TOKEN_RE = re.compile(r"<[^>\s]{1,16}>")
 COMPACT_PROMOTION_RE = re.compile(
     r"\b(?P<move>[a-h](?:x[a-h])?[18])(?P<piece>[QRBN])(?=(?:[+#?!\s,.;:\]\)}]|$|=|[KQRBNP]{2,3}-[KQRBNP]{2,3}\b))"
 )
@@ -180,13 +173,6 @@ CHESSBASE_ANNOTATION_SYMBOL_MAP = {
 }
 
 
-def _coerce_float(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return float(default)
-
-
 @dataclass(frozen=True)
 class PgnToken:
     kind: str
@@ -201,6 +187,39 @@ class ParsedPgnLine:
     kind: str
     has_explicit_movetext: bool = False
     has_result: bool = False
+
+
+@dataclass(frozen=True)
+class ChessDiagramRecord:
+    filename: str
+    page: int = 0
+    confidence: float = 0.0
+    fen: str = ""
+    status: str = "review"
+    warnings: tuple[str, ...] = ()
+    image_data_uri: str = ""
+    selected_preprocess_variant: str = ""
+    display_variant_used: str = ""
+
+
+@dataclass(frozen=True)
+class ChessBookLayoutElement:
+    type: str
+    bbox: tuple[float, float, float, float]
+    reading_order: int = 0
+    text: str = ""
+    image_data_uri: str = ""
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class ChessBookLayoutPage:
+    page_index: int
+    page_number: int
+    width: float
+    height: float
+    background_image_data_uri: str = ""
+    elements: tuple[ChessBookLayoutElement, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -220,7 +239,8 @@ class ChessPgnRecord:
     final_fen: str = ""
     fen_snapshots: list[dict[str, Any]] = field(default_factory=list)
     raw_text: str = ""
-    line_classifications: list[dict[str, Any]] = field(default_factory=list)
+    token_source: tuple[PgnToken, ...] = field(default_factory=tuple, repr=False, compare=False)
+    ocr_confidence_source: float = field(default=0.0, repr=False, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -239,90 +259,6 @@ class ChessPgnRecord:
             "final_fen": self.final_fen,
             "fen_snapshots": [dict(snapshot) for snapshot in self.fen_snapshots],
             "raw_text": self.raw_text,
-            "line_classifications": [dict(item) for item in self.line_classifications],
-        }
-
-
-@dataclass(frozen=True)
-class ChessDiagramRecord:
-    id: str
-    page_index: int
-    page_number: int
-    bbox: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
-    caption: str = ""
-    image_data_uri: str = ""
-    fen_candidate: str = ""
-    nearby_text: str = ""
-    matched_record_id: str = ""
-    match_confidence: float = 0.0
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "id": self.id,
-            "page_index": self.page_index,
-            "page_number": self.page_number,
-            "bbox": list(self.bbox),
-            "caption": self.caption,
-            "image_data_uri": self.image_data_uri,
-            "fen_candidate": self.fen_candidate,
-            "nearby_text": self.nearby_text,
-            "matched_record_id": self.matched_record_id,
-            "match_confidence": round(float(self.match_confidence or 0.0), 3),
-        }
-
-
-@dataclass(frozen=True)
-class ChessBookLayoutElement:
-    type: str
-    bbox: tuple[float, float, float, float]
-    reading_order: int = 0
-    text: str = ""
-    image_data_uri: str = ""
-    record_id: str = ""
-    title: str = ""
-    status: str = ""
-    fen: str = ""
-    pgn: str = ""
-    warnings: list[str] = field(default_factory=list)
-    font_size: float = 0.0
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "type": self.type,
-            "bbox": list(self.bbox),
-            "reading_order": int(self.reading_order or 0),
-            "text": self.text,
-            "image_data_uri": self.image_data_uri,
-            "record_id": self.record_id,
-            "title": self.title,
-            "status": self.status,
-            "fen": self.fen,
-            "pgn": self.pgn,
-            "warnings": list(self.warnings or []),
-            "font_size": round(float(self.font_size or 0.0), 2),
-        }
-
-
-@dataclass(frozen=True)
-class ChessBookLayoutPage:
-    page_index: int
-    page_number: int
-    width: float
-    height: float
-    background_image_data_uri: str = ""
-    elements: list[ChessBookLayoutElement | Mapping[str, Any]] = field(default_factory=list)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "page_index": self.page_index,
-            "page_number": self.page_number,
-            "width": round(float(self.width or 0.0), 2),
-            "height": round(float(self.height or 0.0), 2),
-            "background_image_data_uri": self.background_image_data_uri,
-            "elements": [
-                element.to_dict() if isinstance(element, ChessBookLayoutElement) else dict(element)
-                for element in self.elements
-            ],
         }
 
 
@@ -453,7 +389,6 @@ def extract_chess_pgn_records_from_text(
     source_title: str = "",
     ocr_confidence: float = 0.0,
     fen_candidates: Iterable[str] | None = None,
-    glyph_diagnostics: Iterable[Mapping[str, Any]] | None = None,
 ) -> list[ChessPgnRecord]:
     normalized = normalize_ocr_text_for_pgn(text)
     if not normalized.strip():
@@ -461,49 +396,31 @@ def extract_chess_pgn_records_from_text(
 
     candidates = _split_candidate_game_blocks(normalized)
     fen_list = [str(fen or "").strip() for fen in (fen_candidates or []) if str(fen or "").strip()]
-    glyph_diagnostic_rows = _bounded_glyph_diagnostics(glyph_diagnostics or [], limit=GLYPH_DIAGNOSTIC_DOCUMENT_LIMIT)
     records: list[ChessPgnRecord] = []
     for index, candidate in enumerate(candidates, start=1):
         body = _strip_opening_descriptor_prefix(candidate["body"], context=candidate["caption"])
         raw = _strip_opening_descriptor_prefix(candidate["raw"], context=candidate["caption"])
-        line_classifications = _classify_pgn_lines(candidate["caption"], body)
-        line_warnings = _warnings_from_line_classifications(line_classifications)
-        metadata_caption = _caption_with_classified_metadata(candidate["caption"], line_classifications)
-        mainline_source = body
-        tokens = _extract_pgn_tokens(mainline_source)
-        provisional_movetext, result, provisional_halfmoves, sequence_warnings = _tokens_to_movetext(tokens)
-        if provisional_halfmoves < 2:
+        fen = fen_list[index - 1] if index - 1 < len(fen_list) else ""
+        tokens = tuple(_extract_pgn_tokens(body))
+        movetext, result, halfmove_count, reconstruction_warnings = _best_mainline_reconstruction(tokens, initial_fen=fen)
+        if halfmove_count < 2:
             continue
         if _looks_like_opening_descriptor_only(
-            caption=metadata_caption,
+            caption=candidate["caption"],
             body=body,
-            movetext=provisional_movetext,
+            movetext=movetext,
             result=result,
-            halfmove_count=provisional_halfmoves,
+            halfmove_count=halfmove_count,
         ):
             continue
-        fen = fen_list[index - 1] if index - 1 < len(fen_list) else ""
-        title = _candidate_title(metadata_caption, fallback=f"Strona {page_num + 1}, partia {index}")
+        title = _candidate_title(candidate["caption"], fallback=f"Strona {page_num + 1}, partia {index}")
         headers = _build_headers(
             title=title,
-            caption=metadata_caption,
+            caption=candidate["caption"],
             source_title=source_title,
             result=result,
             fen=fen,
         )
-        movetext, result, halfmove_count, replay_warnings, san_correction_count = _tokens_to_position_validated_movetext(
-            tokens,
-            headers=headers,
-            fallback_result=result,
-        )
-        warnings = sorted(set([*sequence_warnings, *line_warnings, *replay_warnings]))
-        line_classifications = _line_classifications_with_replay_audit(
-            line_classifications,
-            san_correction_count=san_correction_count,
-            warnings=warnings,
-        )
-        if halfmove_count < 2:
-            continue
         title = _title_from_headers(headers, fallback=title)
         pgn = _format_pgn(headers, movetext, result)
         annotated_pgn = _format_annotated_pgn(
@@ -511,15 +428,6 @@ def extract_chess_pgn_records_from_text(
             raw,
             fallback_movetext=movetext,
             result=result,
-        )
-        warnings = _with_unmapped_glyph_warning(warnings, raw, movetext, pgn, annotated_pgn)
-        record_glyph_diagnostics = (
-            _select_record_glyph_diagnostics(
-                glyph_diagnostic_rows,
-                texts=(raw, body, movetext, pgn, annotated_pgn),
-            )
-            if UNMAPPED_CHESS_GLYPH_WARNING in set(warnings)
-            else []
         )
         confidence = _pgn_confidence(
             halfmove_count=halfmove_count,
@@ -550,7 +458,8 @@ def extract_chess_pgn_records_from_text(
                 warnings=warnings,
                 fen=fen,
                 raw_text=raw,
-                line_classifications=line_classifications,
+                token_source=tokens,
+                ocr_confidence_source=float(ocr_confidence or 0.0),
             )
         )
     return records
@@ -615,26 +524,14 @@ def annotate_records_with_replayed_fens(records: Iterable[ChessPgnRecord]) -> li
     for record in records:
         replay = _replay_record_to_final_fen(record)
         warnings = sorted(set([*record.warnings, *replay["warnings"]]))
-        warnings = _with_unmapped_glyph_warning(
-            warnings,
-            record.raw_text,
-            record.movetext,
-            record.pgn,
-            record.annotated_pgn,
-        )
         status = record.status
         confidence = float(record.confidence or 0.0)
-        blocking_warnings = _blocking_pgn_warnings(warnings)
-        final_fen = replay["final_fen"]
-        fen_snapshots = replay["fen_snapshots"]
-        if blocking_warnings:
+        if _blocking_pgn_warnings(warnings):
             status = "requires_review"
             confidence = min(confidence, 0.64)
-            final_fen = ""
-            fen_snapshots = []
         if replay["final_fen"]:
             confidence = min(1.0, max(confidence, confidence + 0.08))
-            if confidence >= 0.72 and not blocking_warnings:
+            if confidence >= 0.72 and not _blocking_pgn_warnings(warnings):
                 status = "accepted"
         else:
             status = "requires_review"
@@ -642,8 +539,8 @@ def annotate_records_with_replayed_fens(records: Iterable[ChessPgnRecord]) -> li
         updated.append(
             replace(
                 record,
-                final_fen=final_fen,
-                fen_snapshots=fen_snapshots,
+                final_fen=replay["final_fen"],
+                fen_snapshots=replay["fen_snapshots"],
                 warnings=warnings,
                 status=status,
                 confidence=confidence,
@@ -693,43 +590,21 @@ def _try_merge_continuation_pair(
     headers = dict(previous.headers)
     headers["Result"] = result or "*"
     raw_text = "\n".join(value for value in (previous.raw_text, continuation.raw_text) if value)
-    glyph_diagnostics = _bounded_glyph_diagnostics(
-        [
-            *(previous.glyph_diagnostics or []),
-            *(continuation.glyph_diagnostics or []),
-        ],
-        limit=GLYPH_DIAGNOSTIC_RECORD_LIMIT,
-    )
-    combined_pgn = _format_pgn(headers, combined_movetext, result)
-    combined_annotated_pgn = _format_annotated_pgn(
-        headers,
-        raw_text,
-        fallback_movetext=combined_movetext,
-        result=result,
-    )
-    glyph_warnings = [
-        warning
-        for warning in [*previous.warnings, *continuation.warnings]
-        if warning == UNMAPPED_CHESS_GLYPH_WARNING
-    ]
-    combined_warnings = _with_unmapped_glyph_warning(
-        glyph_warnings,
-        raw_text,
-        combined_movetext,
-        combined_pgn,
-        combined_annotated_pgn,
-    )
     candidate = replace(
         previous,
         source_pages=sorted(set([*previous.source_pages, *continuation.source_pages])),
         headers=headers,
         movetext=combined_movetext,
-        pgn=combined_pgn,
-        annotated_pgn=combined_annotated_pgn,
+        pgn=_format_pgn(headers, combined_movetext, result),
+        annotated_pgn=_format_annotated_pgn(
+            headers,
+            raw_text,
+            fallback_movetext=combined_movetext,
+            result=result,
+        ),
         result=result,
         raw_text=raw_text,
-        glyph_diagnostics=glyph_diagnostics,
-        warnings=combined_warnings,
+        warnings=[],
     )
     replayed = annotate_records_with_replayed_fens([candidate])[0]
     if _blocking_pgn_warnings(replayed.warnings) or not replayed.final_fen:
@@ -873,6 +748,53 @@ def _format_exercise_solution_pgn(
     return _format_pgn(headers, movetext, result)
 
 
+def chess_ocr_normalization_candidates(text: str) -> list[dict[str, Any]]:
+    """Return conservative chess OCR normalization candidates with audit warnings."""
+    original = str(text or "")
+    if not original:
+        return []
+    candidates: list[dict[str, Any]] = []
+
+    def add_candidate(value: str, confidence: float, warnings: Sequence[str]) -> None:
+        cleaned = str(value or "").strip()
+        if not cleaned or cleaned == original:
+            return
+        if any(item["text"] == cleaned for item in candidates):
+            return
+        candidates.append(
+            {
+                "text": cleaned,
+                "confidence": round(max(0.0, min(1.0, float(confidence))), 3),
+                "warnings": sorted({str(warning) for warning in warnings if str(warning).strip()}),
+            }
+        )
+
+    base = original
+    base = re.sub(r"(?i)\b(?:lL|lI|IiJ|tLl|ltl|lLl|liJ)(?=[a-h]?[1-8]?x?[a-h][1-8]|[a-h][1-8])", "N", base)
+    base = re.sub(r"(?i)\b(?:Yfi|iW|Wl|W)(?=[a-h]?[1-8]?x?[a-h][1-8]|[a-h][1-8])", "Q", base)
+    base = re.sub(r"(?i)(?:It>|lt>|@|�)(?=[a-h]?[1-8lI])", "K", base)
+    base = re.sub(r"(?<=\b[KQRBN][a-h])I\b", "1", base)
+    base = re.sub(r"(?<=\b[KQRBN][a-h])l\b", "1", base)
+    base = re.sub(r"(?<=\b[a-h])I\b", "1", base)
+    base = re.sub(r"(?<=\b[a-h])l\b", "1", base)
+    base = re.sub(r"(?<=[a-h][1-8])t\b", "+", base)
+    base = re.sub(r"\bl:!([a-h][1-8]#?)", r"R\1", base)
+    base = re.sub(r"\bgg([1-8])([+#]?)", r"Qg\1\2", base)
+    base = re.sub(r"\bgh([1-8])([+#]?)", r"Qh\1\2", base)
+    base = re.sub(r"\bgxh([1-8])([+#]?)", r"Qxh\1\2", base)
+    add_candidate(base, 0.74, ["ocr_candidate_normalized", "ocr_candidate_symbol_map"])
+
+    if "�" in original:
+        ambiguous_base = re.sub(r"(?<=[a-h][1-8])t\b", "+", original)
+        for piece in ("Q", "R", "B", "N", "K"):
+            add_candidate(
+                re.sub(r"�(?=[a-h]?[1-8])", piece, ambiguous_base),
+                0.52,
+                ["ocr_candidate_piece_ambiguous", f"ocr_piece_candidate_{piece}"],
+            )
+    return candidates[:8]
+
+
 def _diagram_image_data_uri(record: Mapping[str, Any]) -> str:
     raw_data = record.get("image_data")
     if raw_data is None:
@@ -885,6 +807,17 @@ def _diagram_image_data_uri(record: Mapping[str, Any]) -> str:
     content_type = "image/jpeg" if extension in {"jpg", "jpeg"} else "image/png"
     encoded = base64.b64encode(bytes(raw_data)).decode("ascii")
     return f"data:{content_type};base64,{encoded}"
+
+
+def _mapping_from_record(record: Any) -> dict[str, Any]:
+    if isinstance(record, Mapping):
+        return dict(record)
+    if hasattr(record, "__dataclass_fields__"):
+        return {
+            field_name: getattr(record, field_name)
+            for field_name in getattr(record, "__dataclass_fields__", {}).keys()
+        }
+    return {}
 
 
 def _diagram_record_html(record: Mapping[str, Any], index: int) -> str:
@@ -933,21 +866,6 @@ def _diagram_record_html(record: Mapping[str, Any], index: int) -> str:
         meta_bits.append(f"recognition {html.escape(selected_variant)}")
     if display_variant:
         meta_bits.append(f"display {html.escape(display_variant)}")
-    crop_quality = record.get("crop_quality")
-    if isinstance(crop_quality, Mapping):
-        crop_bits = []
-        display_width = crop_quality.get("display_width")
-        display_height = crop_quality.get("display_height")
-        if display_width and display_height:
-            crop_bits.append(f"{display_width}x{display_height}")
-        if crop_quality.get("contrast") is not None:
-            crop_bits.append(f"contrast {float(crop_quality.get('contrast') or 0.0):.1f}")
-        if crop_quality.get("trimmed"):
-            crop_bits.append("trimmed")
-        if crop_quality.get("squared"):
-            crop_bits.append("squared")
-        if crop_bits:
-            meta_bits.append("crop " + " ".join(crop_bits))
     meta_bits.append(f"confidence {confidence:.3f}")
     meta = " | ".join(meta_bits)
     return (
@@ -964,7 +882,7 @@ def _diagram_record_html(record: Mapping[str, Any], index: int) -> str:
 
 
 def _diagram_records_html(diagram_records: Iterable[Mapping[str, Any]]) -> tuple[list[str], dict[str, int]]:
-    records = [dict(record) for record in diagram_records]
+    records = [_mapping_from_record(record) for record in diagram_records]
     fen_count = len([record for record in records if str(record.get("fen") or "").strip()])
     review_count = len([record for record in records if bool(record.get("requires_review", not record.get("fen")))])
     parts = [
@@ -997,11 +915,7 @@ def _candidate_solution_segments(text: str) -> list[str]:
     prepared = str(text or "").strip()
     if not prepared:
         return []
-    prepared = re.sub(
-        r"(?i)\b(?:if|or|due to|in view of|on account of|threatening|black resigned|white resigned|resigned|mate)\b",
-        "\n",
-        prepared,
-    )
+    prepared = re.sub(r"(?i)\b(?:if|or|due to|in view of|on account of|threatening|black resigned|white resigned)\b", "\n", prepared)
     prepared = re.sub(r"[\[\](){}]", "\n", prepared)
     prepared = re.sub(r"(?m)(?<!^)(?=\s*\d{1,3}\.\.?\s*)", "\n", prepared)
     segments = []
@@ -1013,53 +927,6 @@ def _candidate_solution_segments(text: str) -> list[str]:
             continue
         segments.append(segment)
     return segments[:12]
-
-
-def chess_ocr_normalization_candidates(text: str) -> list[dict[str, Any]]:
-    """Return conservative chess OCR normalization candidates with audit warnings."""
-    original = str(text or "")
-    if not original:
-        return []
-    candidates: list[dict[str, Any]] = []
-
-    def add_candidate(value: str, confidence: float, warnings: Sequence[str]) -> None:
-        cleaned = str(value or "").strip()
-        if not cleaned or cleaned == original:
-            return
-        if any(item["text"] == cleaned for item in candidates):
-            return
-        candidates.append(
-            {
-                "text": cleaned,
-                "confidence": round(max(0.0, min(1.0, float(confidence))), 3),
-                "warnings": sorted({str(warning) for warning in warnings if str(warning).strip()}),
-            }
-        )
-
-    base = original
-    base = re.sub(r"(?i)\b(?:lL|lI|IiJ|tLl|ltl|lLl|liJ)(?=[a-h]?[1-8]?x?[a-h][1-8]|[a-h][1-8])", "N", base)
-    base = re.sub(r"(?i)\b(?:Yfi|iW|Wl|W)(?=[a-h]?[1-8]?x?[a-h][1-8]|[a-h][1-8])", "Q", base)
-    base = re.sub(r"(?i)(?:It>|lt>|@|�)(?=[a-h]?[1-8lI])", "K", base)
-    base = re.sub(r"(?<=\b[KQRBN][a-h])I\b", "1", base)
-    base = re.sub(r"(?<=\b[KQRBN][a-h])l\b", "1", base)
-    base = re.sub(r"(?<=\b[a-h])I\b", "1", base)
-    base = re.sub(r"(?<=\b[a-h])l\b", "1", base)
-    base = re.sub(r"(?<=[a-h][1-8])t\b", "+", base)
-    base = re.sub(r"\bl:!([a-h][1-8]#?)", r"R\1", base)
-    base = re.sub(r"\bgg([1-8])([+#]?)", r"Qg\1\2", base)
-    base = re.sub(r"\bgh([1-8])([+#]?)", r"Qh\1\2", base)
-    base = re.sub(r"\bgxh([1-8])([+#]?)", r"Qxh\1\2", base)
-    add_candidate(base, 0.74, ["ocr_candidate_normalized", "ocr_candidate_symbol_map"])
-
-    if "�" in original:
-        ambiguous_base = re.sub(r"(?<=[a-h][1-8])t\b", "+", original)
-        for piece in ("Q", "R", "B", "N", "K"):
-            add_candidate(
-                re.sub(r"�(?=[a-h]?[1-8])", piece, ambiguous_base),
-                0.52,
-                ["ocr_candidate_piece_ambiguous", f"ocr_piece_candidate_{piece}"],
-            )
-    return candidates[:8]
 
 
 def _validate_candidate_line_from_fen(fen: str, movetext: str) -> dict[str, Any]:
@@ -1105,41 +972,18 @@ def _validate_candidate_line_from_fen(fen: str, movetext: str) -> dict[str, Any]
     return {"legal": True, "final_fen": board.fen(), "warnings": []}
 
 
-def _candidate_solution_segment_variants(segment: str) -> list[tuple[str, list[str]]]:
-    original = str(segment or "")
-    variants: list[tuple[str, list[str]]] = [(original, [])]
-    for candidate in chess_ocr_normalization_candidates(original):
-        variants.append((str(candidate.get("text") or ""), list(candidate.get("warnings") or [])))
-    unique: list[tuple[str, list[str]]] = []
-    seen: set[str] = set()
-    for text, warnings in variants:
-        if text in seen:
-            continue
-        seen.add(text)
-        unique.append((text, warnings))
-    return unique[:8]
-
-
-def _exercise_candidate_lines(raw_text: str, fen: str, *, extra_warnings: Sequence[str] | None = None) -> list[dict[str, Any]]:
+def _exercise_candidate_lines(raw_text: str, fen: str) -> list[dict[str, Any]]:
     lines: list[dict[str, Any]] = []
-    shared_warnings = list(extra_warnings or [])
     for segment in _candidate_solution_segments(raw_text):
-        best_line: dict[str, Any] | None = None
-        for variant_text, variant_warnings in _candidate_solution_segment_variants(segment):
-            tokens = _extract_pgn_tokens(variant_text)
-            movetext, result, halfmove_count, warnings = _tokens_to_movetext(tokens)
-            if halfmove_count <= 0:
-                continue
-            validation = _validate_candidate_line_from_fen(fen, movetext) if fen else {
-                "legal": False,
-                "final_fen": "",
-                "warnings": ["primary_fen_missing"],
-            }
-            line_warnings = sorted(set([*warnings, *variant_warnings, *shared_warnings, *validation.get("warnings", [])]))
-            candidate_line = {
+        tokens = _extract_pgn_tokens(segment)
+        movetext, result, halfmove_count, warnings = _tokens_to_movetext(tokens)
+        if halfmove_count <= 0:
+            continue
+        validation = _validate_candidate_line_from_fen(fen, movetext)
+        line_warnings = sorted(set([*warnings, *validation.get("warnings", [])]))
+        lines.append(
+            {
                 "source_text": segment,
-                "raw_text": segment,
-                "normalized_candidates": chess_ocr_normalization_candidates(segment),
                 "movetext": movetext,
                 "result": result,
                 "halfmove_count": halfmove_count,
@@ -1147,13 +991,7 @@ def _exercise_candidate_lines(raw_text: str, fen: str, *, extra_warnings: Sequen
                 "final_fen": str(validation.get("final_fen") or ""),
                 "warnings": line_warnings,
             }
-            if bool(validation.get("legal")):
-                best_line = candidate_line
-                break
-            if best_line is None or int(candidate_line.get("halfmove_count") or 0) > int(best_line.get("halfmove_count") or 0):
-                best_line = candidate_line
-        if best_line is not None:
-            lines.append(best_line)
+        )
     return lines[:8]
 
 
@@ -1167,944 +1005,50 @@ def _ocr_noise_score(text: str) -> float:
     return round(min(score, 1.0), 3)
 
 
-def _diagram_record_key(diagram: Mapping[str, Any]) -> str:
-    filename = str(diagram.get("filename") or "").strip()
-    if filename:
-        return f"file:{filename}"
-    page = str(diagram.get("page") or "").strip()
-    source_order = str(diagram.get("source_order", diagram.get("_source_order", ""))).strip()
-    bbox = diagram.get("bbox")
-    if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
-        bbox_key = ",".join(f"{_coerce_float(value):.1f}" for value in bbox)
-    else:
-        bbox_key = ""
-    return f"page:{page}|order:{source_order}|bbox:{bbox_key}"
-
-
-def _fen_has_valid_kings(fen: str) -> bool:
-    placement = str(fen or "").split(" ", 1)[0]
-    return placement.count("K") == 1 and placement.count("k") == 1
-
-
-def _fen_piece_count(fen: str) -> int:
-    placement = str(fen or "").split(" ", 1)[0]
-    return sum(1 for char in placement if char in "pnbrqkPNBRQK")
-
-
-def _fen_validation_warnings(fen: str) -> list[str]:
-    value = str(fen or "").strip()
-    if not value:
-        return ["fen_missing"]
-    parts = value.split()
-    warnings: list[str] = []
-    if len(parts) != 6:
-        warnings.append("fen_must_have_six_fields")
-    if not _fen_has_valid_kings(value):
-        warnings.append("fen_king_count_invalid")
-    try:
-        import chess  # type: ignore[import-not-found]
-
-        board = chess.Board(value)
-        if not board.is_valid():
-            warnings.append("fen_position_invalid")
-    except Exception:
-        warnings.append("fen_parse_failed")
-    return sorted(set(warnings))
-
-
-def _diagram_fen_candidate_records(
-    diagram: Mapping[str, Any],
-    *,
-    index: int,
-    primary_diagram: Mapping[str, Any],
-    record: ChessPgnRecord,
-    raw_text: str,
-) -> list[dict[str, Any]]:
-    raw_candidates: list[dict[str, Any]] = []
-
-    def add_candidate(source: str, fen: str, payload: Mapping[str, Any] | None = None) -> None:
-        fen_value = str(fen or "").strip()
-        if not fen_value:
-            return
-        data = dict(payload or {})
-        confidence = _coerce_float(
-            data.get("confidence"),
-            _coerce_float(data.get("fen_confidence"), _coerce_float(diagram.get("confidence"), _coerce_float(diagram.get("fen_confidence"), 0.0))),
-        )
-        candidate = {
-            "fen": fen_value,
-            "source": source,
-            "page": data.get("page", diagram.get("page")),
-            "diagram_number": data.get("diagram_number", diagram.get("diagram_number")),
-            "filename": data.get("filename", diagram.get("filename")),
-            "confidence": confidence,
-            "fen_confidence": _coerce_float(data.get("fen_confidence"), confidence),
-            "piece_confidence": _coerce_float(data.get("piece_confidence"), _coerce_float(diagram.get("piece_confidence"), 0.0)),
-            "grid_confidence": _coerce_float(data.get("grid_confidence"), _coerce_float(diagram.get("grid_confidence"), 0.0)),
-            "requires_review": bool(data.get("requires_review", diagram.get("requires_review"))),
-            "method": data.get("method") or diagram.get("method") or "",
-            "warnings": list(data.get("warnings") or diagram.get("warnings") or []),
-            "bbox": data.get("bbox", diagram.get("bbox")),
-            "selected_preprocess_variant": data.get("selected_preprocess_variant")
-            or data.get("recognition_variant")
-            or diagram.get("selected_preprocess_variant")
-            or diagram.get("recognition_variant")
-            or "",
-            "display_variant_used": data.get("display_variant_used")
-            or data.get("display_variant")
-            or diagram.get("display_variant_used")
-            or diagram.get("display_variant")
-            or "",
-            "match_score": int(diagram.get("_match_score") or 0),
-            "fen_match_score": int(diagram.get("_fen_match_score") or 0),
-            "source_order": int(diagram.get("_source_order", index) or 0),
-            "is_primary_diagram": bool(_diagram_record_key(diagram) == _diagram_record_key(primary_diagram)),
-        }
-        raw_candidates.append(candidate)
-
-    add_candidate("local", str(diagram.get("fen") or ""))
-    for key, source_name in (
-        ("external_fen", "external"),
-        ("linrock_fen", "linrock"),
-        ("chessboard_recognizer_fen", "linrock"),
-    ):
-        add_candidate(source_name, str(diagram.get(key) or ""), {"method": source_name})
-    for item in diagram.get("fen_candidates") or diagram.get("external_fen_candidates") or []:
-        if isinstance(item, Mapping):
-            add_candidate(str(item.get("source") or item.get("method") or "candidate"), str(item.get("fen") or ""), item)
-
-    grouped: dict[str, dict[str, Any]] = {}
-    source_sets: dict[str, set[str]] = {}
-    for candidate in raw_candidates:
-        fen = str(candidate.get("fen") or "").strip()
-        if not fen:
-            continue
-        existing = grouped.get(fen)
-        source_sets.setdefault(fen, set()).add(str(candidate.get("source") or "candidate"))
-        if existing is None or _coerce_float(candidate.get("confidence")) > _coerce_float(existing.get("confidence")):
-            grouped[fen] = candidate
-    record_fen = str(record.fen or "").strip()
-    candidates: list[dict[str, Any]] = []
-    for fen, candidate in grouped.items():
-        warnings = sorted(set([*candidate.get("warnings", []), *_fen_validation_warnings(fen)]))
-        candidate["warnings"] = warnings
-        candidate["piece_count"] = _fen_piece_count(fen)
-        candidate["recognizer_agreement_count"] = len(source_sets.get(fen, set()))
-        candidate["sources"] = sorted(source_sets.get(fen, set()))
-        candidate_lines = _exercise_candidate_lines(raw_text, fen)
-        legal_count = len([line for line in candidate_lines if line.get("legal_from_fen")])
-        candidate["legal_solution_line_count"] = legal_count
-        candidate["candidate_solution_line_count"] = len(candidate_lines)
-        candidate["score"] = _fen_candidate_score(candidate, exact_record_fen=bool(record_fen and fen == record_fen))
-        candidate["status"] = _fen_candidate_status(candidate, exact_record_fen=bool(record_fen and fen == record_fen))
-        candidates.append(candidate)
-    candidates.sort(key=lambda item: (_safe_int(item.get("score")), _coerce_float(item.get("confidence")), _safe_int(item.get("match_score"))), reverse=True)
-    return candidates
-
-
-def _fen_candidate_score(candidate: Mapping[str, Any], *, exact_record_fen: bool = False) -> int:
-    warnings = {str(warning) for warning in candidate.get("warnings") or []}
-    invalid = any(warning in warnings for warning in {"fen_missing", "fen_must_have_six_fields", "fen_king_count_invalid", "fen_position_invalid", "fen_parse_failed"})
-    if invalid:
-        return -1000
-    score = 0
-    score += int(candidate.get("match_score") or 0)
-    score += int(candidate.get("fen_match_score") or 0)
-    score += int(round(_coerce_float(candidate.get("confidence")) * 100))
-    score += min(32, _safe_int(candidate.get("piece_count")))
-    score += 24 * max(0, _safe_int(candidate.get("recognizer_agreement_count")) - 1)
-    score += 80 * _safe_int(candidate.get("legal_solution_line_count"))
-    if exact_record_fen:
-        score += 120
-    if bool(candidate.get("requires_review")):
-        score -= 30
-    return score
-
-
-def _ranked_diagram_records_for_record(
-    record: ChessPgnRecord,
-    diagram_records: Sequence[Mapping[str, Any]],
-    *,
-    record_source_order: int | None = None,
-    used_diagram_keys: set[str] | None = None,
-    page_offset: int = 0,
-) -> list[dict[str, Any]]:
-    ranked: list[tuple[int, int, int, int, float, int, dict[str, Any]]] = []
-    used = used_diagram_keys or set()
-    for fallback_source_order, diagram in enumerate(diagram_records):
-        score, fen_score = _diagram_match_score(
-            record,
-            diagram,
-            record_source_order=record_source_order,
-            fallback_source_order=fallback_source_order,
-            page_offset=page_offset,
-        )
-        if score <= 0:
-            continue
-        diagram_copy = dict(diagram)
-        if _diagram_record_key(diagram) in used and not _diagram_can_be_reused_for_record(record, diagram_copy):
-            continue
-        diagram_fen = str(diagram_copy.get("fen") or "").strip()
-        confidence = _coerce_float(diagram_copy.get("confidence"), _coerce_float(diagram_copy.get("fen_confidence"), 0.0))
-        requires_review = bool(diagram_copy.get("requires_review"))
-        effective_fen_score = fen_score
-        if diagram_fen and effective_fen_score <= 0:
-            effective_fen_score = score
-        diagram_copy["_match_score"] = score
-        diagram_copy["_fen_match_score"] = effective_fen_score if diagram_fen else 0
-        diagram_copy["_source_order"] = int(diagram_copy.get("source_order", fallback_source_order) or 0)
-        ranked.append(
-            (
-                score,
-                1 if diagram_fen else 0,
-                0 if requires_review else 1,
-                effective_fen_score,
-                confidence,
-                -fallback_source_order,
-                diagram_copy,
-            )
-        )
-    ranked.sort(key=lambda item: item[:6], reverse=True)
-    return [diagram for *_rank, diagram in ranked[:8]]
-
-
-def _diagram_can_be_reused_for_record(record: ChessPgnRecord, diagram: Mapping[str, Any]) -> bool:
-    if bool(diagram.get("allow_reuse") or diagram.get("shared_position")):
-        return True
-    record_pages = {_safe_int(page) for page in (record.source_pages or [])}
-    diagram_page = _safe_int(diagram.get("page"))
-    return bool(diagram_page and diagram_page in record_pages and _safe_int(diagram.get("caption_match_score")) >= 80)
-
-
-def _fen_candidate_status(candidate: Mapping[str, Any], *, exact_record_fen: bool = False) -> str:
-    fen = str(candidate.get("fen") or "").strip()
-    if not fen:
-        return "rejected"
-    warnings = [str(warning).lower() for warning in candidate.get("warnings") or []]
-    invalid_warning = any(
-        "invalid" in warning
-        or "king_count" in warning
-        or warning in {"fen_missing", "fen_must_have_six_fields", "fen_parse_failed"}
-        for warning in warnings
-    )
-    if invalid_warning or not _fen_has_valid_kings(fen):
-        return "rejected"
-    if exact_record_fen:
-        return "accepted"
-    if _safe_int(candidate.get("legal_solution_line_count")) > 0:
-        return "accepted"
-    confidence = _coerce_float(candidate.get("confidence"), _coerce_float(candidate.get("fen_confidence"), 0.0))
-    if bool(candidate.get("requires_review")) or int(candidate.get("fen_match_score") or 0) <= 0:
-        return "review"
-    return "accepted" if confidence >= CHESS_FEN_MIN_CONFIDENCE else "review"
-
-
-def _select_primary_diagram_and_fen(
-    record: ChessPgnRecord,
-    ranked_diagrams: Sequence[Mapping[str, Any]],
-) -> tuple[dict[str, Any], list[dict[str, Any]], str, list[dict[str, Any]], bool, str, str, int, float]:
-    primary_diagram = dict(ranked_diagrams[0]) if ranked_diagrams else {}
-    record_fen = str(record.fen or "").strip()
-    fen_candidates: list[dict[str, Any]] = []
-    raw_text = _record_full_notation_text(record)
-    for index, diagram in enumerate(ranked_diagrams):
-        fen_candidates.extend(
-            _diagram_fen_candidate_records(
-                diagram,
-                index=index,
-                primary_diagram=primary_diagram,
-                record=record,
-                raw_text=raw_text,
-            )
-        )
-
-    if not fen_candidates:
-        if record_fen:
-            return primary_diagram, list(ranked_diagrams), record_fen, [], False, "record_fen_existing", "yes", 30, 1.0
-        return primary_diagram, list(ranked_diagrams), "", [], False, "no_fen_candidates", "no", 0, 0.0
-
-    primary_fen_candidates = [candidate for candidate in fen_candidates if candidate.get("is_primary_diagram")]
-    exact_candidates = [candidate for candidate in primary_fen_candidates if record_fen and candidate["fen"] == record_fen]
-    accepted_candidates = [candidate for candidate in primary_fen_candidates if candidate.get("status") == "accepted"]
-    legal_primary_candidates = [
-        candidate for candidate in primary_fen_candidates if _safe_int(candidate.get("legal_solution_line_count")) > 0
-    ]
-    accepted_any_candidates = [candidate for candidate in fen_candidates if candidate.get("status") == "accepted"]
-    if exact_candidates:
-        primary_candidate = max(exact_candidates, key=lambda item: _safe_int(item.get("score")))
-        reason = "record_fen_exact"
-    elif legal_primary_candidates:
-        primary_candidate = max(legal_primary_candidates, key=lambda item: _safe_int(item.get("score")))
-        reason = "best_ranked_legal_replay_fen"
-    elif accepted_candidates:
-        primary_candidate = max(accepted_candidates, key=lambda item: _safe_int(item.get("score")))
-        reason = "best_ranked_accepted_fen"
-    elif accepted_any_candidates:
-        primary_candidate = max(accepted_any_candidates, key=lambda item: _safe_int(item.get("score")))
-        reason = "diagnostic_accepted_fen_from_non_primary_diagram"
-    elif primary_fen_candidates:
-        primary_candidate = max(primary_fen_candidates, key=lambda item: _safe_int(item.get("score")))
-        reason = "primary_diagram_fen_requires_review"
-    else:
-        primary_candidate = max(fen_candidates, key=lambda item: _safe_int(item.get("score")))
-        reason = "diagnostic_fen_from_non_primary_diagram"
-
-    accepted_unique_fens = {candidate["fen"] for candidate in accepted_candidates}
-    valid_primary_fens = {
-        candidate["fen"]
-        for candidate in primary_fen_candidates
-        if candidate.get("status") != "rejected"
-        and not any(str(warning) in {"fen_missing", "fen_must_have_six_fields", "fen_king_count_invalid", "fen_position_invalid", "fen_parse_failed"} for warning in candidate.get("warnings") or [])
-    }
-    ambiguous = bool(
-        len(accepted_unique_fens) > 1
-        and not exact_candidates
-        and _safe_int(primary_candidate.get("legal_solution_line_count")) <= 0
-    )
-    if len(valid_primary_fens) > 1 and _safe_int(primary_candidate.get("legal_solution_line_count")) <= 0:
-        ambiguous = True
-        reason = "fen_candidate_conflict"
-    if ambiguous:
-        reason = reason or "ambiguous_multiple_candidate_fens"
-    fen_available = "yes" if primary_candidate.get("status") == "accepted" and not ambiguous else "review"
-    return (
-        primary_diagram,
-        list(ranked_diagrams),
-        str(primary_candidate.get("fen") or ""),
-        fen_candidates,
-        ambiguous,
-        reason,
-        fen_available,
-        int(primary_candidate.get("fen_match_score") or 0),
-        _coerce_float(primary_candidate.get("confidence"), 0.0),
-    )
-
-
-def _exercise_source_position(
-    record: ChessPgnRecord,
-    primary_diagram: Mapping[str, Any],
-    *,
-    record_source_order: int | None = None,
-) -> tuple[dict[str, Any], str]:
-    record_pages = list(record.source_pages or [])
-    position = {
-        "page": primary_diagram.get("page") or (record_pages[0] if record_pages else None),
-        "bbox": primary_diagram.get("bbox"),
-        "source_order": record_source_order,
-        "diagram_source_order": primary_diagram.get("source_order", primary_diagram.get("_source_order")),
-        "diagram_number": _record_diagram_number(record),
-        "chapter": "",
-        "exercise_index": "",
-    }
-    diagram_number = str(primary_diagram.get("diagram_number") or "").strip()
-    page_matches = bool(position["page"] in record_pages) if record_pages and position["page"] is not None else False
-    if diagram_number and diagram_number == position["diagram_number"] and page_matches:
-        return position, "high"
-    if diagram_number and diagram_number == position["diagram_number"]:
-        return position, "medium"
-    if primary_diagram and record_source_order is not None:
-        return position, "medium"
-    return position, "low"
-
-
-def _exercise_sequence_status(order_confidence: str, *, primary_diagram: Mapping[str, Any], fen_available: str) -> str:
-    if order_confidence == "high" and primary_diagram and fen_available == "yes":
-        return "source_position_fen_verified"
-    if order_confidence in {"high", "medium"} and primary_diagram:
-        return "source_position_diagram_verified"
-    if order_confidence in {"high", "medium"}:
-        return "source_position_text_only"
-    return "source_position_low_confidence"
-
-
-def _primary_fen_status(fen_available: str, fen_ambiguous: bool, primary_fen: str) -> str:
-    if fen_available == "yes" and primary_fen and not fen_ambiguous:
-        return "accepted"
-    if primary_fen:
-        return "review"
-    return "no"
-
-
-def _missing_fen_reason(
-    *,
-    primary_diagram: Mapping[str, Any],
-    primary_fen: str,
-    fen_available: str,
-    fen_ambiguous: bool,
-    fen_selection_reason: str,
-) -> str:
-    if fen_available == "yes" and primary_fen and not fen_ambiguous:
-        return ""
-    if not primary_diagram:
-        return "no_primary_diagram"
-    if not primary_fen:
-        return "primary_diagram_without_fen"
-    if fen_ambiguous:
-        return "primary_fen_ambiguous"
-    if fen_available == "review":
-        return "primary_fen_requires_review"
-    return str(fen_selection_reason or "primary_fen_unavailable")
-
-
-def _ai_repair_config() -> dict[str, Any]:
-    enabled = any(
-        str(os.getenv(key, "") or "").strip().lower() in {"1", "true", "yes", "on"}
-        for key in ("KINDLEMASTER_OPENAI_CHESS_REPAIR", "KINDLEMASTER_OPENAI_CHESS_REVIEW")
-    )
-    mode = (
-        os.getenv("KINDLEMASTER_OPENAI_CHESS_REPAIR_MODE")
-        or os.getenv("KINDLEMASTER_OPENAI_CHESS_REVIEW_MODE")
-        or "review_only"
-    ).strip()
-    if mode not in {"review_only", "validated_export"}:
-        mode = "review_only"
-    premium_model = os.getenv("KINDLEMASTER_OPENAI_CHESS_PREMIUM_MODEL", "gpt-5.5").strip() or "gpt-5.5"
-    batch_model = os.getenv("KINDLEMASTER_OPENAI_CHESS_BATCH_MODEL", "gpt-5.4-mini").strip() or "gpt-5.4-mini"
-    return {
-        "enabled": enabled,
-        "mode": mode,
-        "premium_model": premium_model,
-        "batch_model": batch_model,
-    }
-
-
-def _load_ai_repair_provider(*, selected_model: str, mode: str) -> Any | None:
-    try:
-        from openai_chess_repair_proposer import build_openai_chess_repair_proposer_from_env
-    except Exception:
-        return None
-    return build_openai_chess_repair_proposer_from_env(model=selected_model, mode=mode)
-
-
-def _diagram_image_context(primary_diagram: Mapping[str, Any]) -> dict[str, Any]:
-    image_data = primary_diagram.get("image_data") or primary_diagram.get("data")
-    extension = str(primary_diagram.get("extension") or primary_diagram.get("format") or "png").strip(". ").lower()
-    if extension in {"jpg", "jpeg"}:
-        mime_type = "image/jpeg"
-    elif extension == "webp":
-        mime_type = "image/webp"
-    else:
-        mime_type = "image/png"
-    return {
-        "image_data": image_data if isinstance(image_data, bytes) else None,
-        "image_mime_type": mime_type,
-        "has_image": isinstance(image_data, bytes) and bool(image_data),
-    }
-
-
-def _build_ai_repair_context(
-    record: ChessPgnRecord,
-    *,
-    primary_diagram: Mapping[str, Any],
-    primary_fen: str,
-    fen_available: str,
-    fen_candidates: Sequence[Mapping[str, Any]],
-    candidate_lines: Sequence[Mapping[str, Any]],
-    first_solution_blocker: str,
-    missing_fen_reason: str,
-) -> dict[str, Any]:
-    image_context = _diagram_image_context(primary_diagram)
-    return {
-        "record_id": record.id,
-        "source_pages": list(record.source_pages or []),
-        "diagram_number": _record_diagram_number(record),
-        "caption": record.title,
-        "raw_ocr_text": _record_full_notation_text(record),
-        "local_fen": primary_fen,
-        "fen_available": fen_available,
-        "fen_candidates": [dict(candidate) for candidate in fen_candidates],
-        "rejected_candidate_lines": [dict(line) for line in candidate_lines if not line.get("legal_from_fen")],
-        "warnings": sorted(set([*record.warnings, missing_fen_reason, first_solution_blocker]) - {""}),
-        "blocker": first_solution_blocker or missing_fen_reason,
-        **image_context,
-    }
-
-
-def _flatten_ai_suggestions(review: Mapping[str, Any]) -> list[dict[str, Any]]:
-    suggestions: list[dict[str, Any]] = []
-    for candidate in review.get("fen_candidates") or []:
-        if isinstance(candidate, Mapping):
-            suggestions.append({"type": "fen", **dict(candidate)})
-    for candidate in review.get("solution_line_candidates") or []:
-        if isinstance(candidate, Mapping):
-            suggestions.append({"type": "solution_line", **dict(candidate)})
-    for repair in review.get("ocr_token_repairs") or []:
-        if isinstance(repair, Mapping):
-            suggestions.append({"type": "ocr_token_repair", **dict(repair)})
-    return suggestions
-
-
-def _merge_ai_repair_payload(base: Mapping[str, Any], proposal: Mapping[str, Any]) -> dict[str, Any]:
-    review = dict(base)
-    review.update(
-        {
-            "status": str(proposal.get("status") or review.get("status") or "reviewed"),
-            "provider": str(proposal.get("provider") or review.get("provider") or ""),
-            "provider_status": str(proposal.get("status") or ""),
-            "selected_model": str(proposal.get("model") or review.get("selected_model") or ""),
-            "model": str(proposal.get("model") or review.get("selected_model") or ""),
-            "fen_candidates": [dict(item) for item in proposal.get("fen_candidates") or [] if isinstance(item, Mapping)],
-            "solution_line_candidates": [
-                dict(item) for item in proposal.get("solution_line_candidates") or [] if isinstance(item, Mapping)
-            ],
-            "ocr_token_repairs": [dict(item) for item in proposal.get("ocr_token_repairs") or [] if isinstance(item, Mapping)],
-            "confidence": _coerce_float(proposal.get("confidence"), 0.0),
-            "requires_human_review": bool(proposal.get("requires_human_review", True)),
-            "notes": str(proposal.get("notes") or ""),
-            "estimated_cost_usd": _coerce_float(proposal.get("estimated_cost_usd"), 0.0),
-            "metadata": dict(proposal.get("metadata") or {}) if isinstance(proposal.get("metadata"), Mapping) else {},
-            "changed_output": False,
-            "mutates_exportable_pgn": False,
-            "requires_local_validation": True,
-        }
-    )
-    review["suggestions"] = _flatten_ai_suggestions(review)
-    return review
-
-
-def _validate_ai_repair_suggestions(
-    review: Mapping[str, Any],
-    *,
-    fallback_fen: str,
-) -> dict[str, Any]:
-    fen_rows = _ai_fen_candidate_rows(review, fallback_fen=fallback_fen)
-    line_rows = _ai_solution_candidate_rows(review)
-    rejected: list[dict[str, Any]] = []
-    valid_paths: list[dict[str, Any]] = []
-    seen_valid: set[tuple[str, str]] = set()
-
-    if not fen_rows or not line_rows:
-        return {
-            "status": "no_ai_candidates",
-            "fen_candidate_count": len(fen_rows),
-            "line_candidate_count": len(line_rows),
-            "valid_path_count": 0,
-            "validated_solution_count": 0,
-            "rejected_candidate_count": 0,
-            "valid_paths": [],
-            "rejected_paths": [],
-            "accepted_line": {},
-        }
-
-    for fen_row in fen_rows:
-        fen = str(fen_row.get("fen") or "").strip()
-        fen_warnings = _fen_validation_warnings(fen)
-        for line_row in line_rows:
-            line_text = str(line_row.get("movetext") or line_row.get("text") or "").strip()
-            if fen_warnings:
-                rejected.append(
-                    {
-                        "fen": fen,
-                        "movetext": line_text,
-                        "warnings": sorted(set(fen_warnings)),
-                        "reason": "ai_fen_invalid",
-                    }
-                )
-                continue
-            candidate_line = _candidate_line_from_ai_text(
-                line_text,
-                fen,
-                fen_source=str(fen_row.get("source") or "ai_repair"),
-                fen_confidence=_coerce_float(fen_row.get("confidence"), 0.0),
-                line_confidence=_coerce_float(line_row.get("confidence"), 0.0),
-            )
-            if bool(candidate_line.get("legal_from_fen")):
-                key = (str(candidate_line.get("fen") or ""), str(candidate_line.get("movetext") or ""))
-                if key not in seen_valid:
-                    seen_valid.add(key)
-                    valid_paths.append(candidate_line)
-            else:
-                rejected.append(
-                    {
-                        "fen": fen,
-                        "movetext": str(candidate_line.get("movetext") or line_text),
-                        "warnings": list(candidate_line.get("warnings") or []),
-                        "reason": "ai_solution_replay_failed",
-                    }
-                )
-
-    status = "validated_unique" if len(valid_paths) == 1 else ("ambiguous" if len(valid_paths) > 1 else "no_valid_path")
-    accepted_line = dict(valid_paths[0]) if len(valid_paths) == 1 else {}
-    return {
-        "status": status,
-        "fen_candidate_count": len(fen_rows),
-        "line_candidate_count": len(line_rows),
-        "valid_path_count": len(valid_paths),
-        "validated_solution_count": 1 if len(valid_paths) == 1 else 0,
-        "rejected_candidate_count": len(rejected),
-        "valid_paths": valid_paths[:8],
-        "rejected_paths": rejected[:12],
-        "accepted_line": accepted_line,
-    }
-
-
-def _ai_fen_candidate_rows(review: Mapping[str, Any], *, fallback_fen: str) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for index, item in enumerate(review.get("fen_candidates") or [], start=1):
-        if isinstance(item, Mapping):
-            fen = str(item.get("fen") or "").strip()
-            confidence = _coerce_float(item.get("confidence"), 0.0)
-            notes = str(item.get("notes") or "")
-        else:
-            fen = str(item or "").strip()
-            confidence = 0.0
-            notes = ""
-        if not fen or fen in seen:
-            continue
-        seen.add(fen)
-        rows.append(
-            {
-                "fen": fen,
-                "source": f"ai_candidate_{index}",
-                "confidence": confidence,
-                "notes": notes,
-            }
-        )
-    fallback = str(fallback_fen or "").strip()
-    if fallback and fallback not in seen:
-        rows.append({"fen": fallback, "source": "local_primary_fen", "confidence": 1.0, "notes": ""})
-    return rows[:8]
-
-
-def _ai_solution_candidate_rows(review: Mapping[str, Any]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for index, item in enumerate(review.get("solution_line_candidates") or [], start=1):
-        if isinstance(item, Mapping):
-            text = str(item.get("movetext") or item.get("text") or "").strip()
-            confidence = _coerce_float(item.get("confidence"), 0.0)
-            notes = str(item.get("notes") or "")
-        else:
-            text = str(item or "").strip()
-            confidence = 0.0
-            notes = ""
-        if not text or text in seen:
-            continue
-        seen.add(text)
-        rows.append({"movetext": text, "source": f"ai_line_{index}", "confidence": confidence, "notes": notes})
-    return rows[:8]
-
-
-def _candidate_line_from_ai_text(
-    text: str,
-    fen: str,
-    *,
-    fen_source: str,
-    fen_confidence: float,
-    line_confidence: float,
-) -> dict[str, Any]:
-    tokens = _extract_pgn_tokens(text)
-    if not tokens:
-        tokens = _extract_relaxed_ai_pgn_tokens(text)
-    movetext, result, halfmove_count, warnings = _tokens_to_movetext(tokens)
-    if halfmove_count <= 0:
-        return {
-            "source": "ai_repair",
-            "source_text": text,
-            "raw_text": text,
-            "fen": fen,
-            "fen_source": fen_source,
-            "movetext": movetext,
-            "result": result,
-            "halfmove_count": halfmove_count,
-            "legal_from_fen": False,
-            "final_fen": "",
-            "warnings": sorted(set([*warnings, "ai_solution_no_san_tokens"])),
-            "ai_candidate_confidence": line_confidence,
-            "ai_fen_confidence": fen_confidence,
-        }
-    validation = _validate_candidate_line_from_fen(fen, movetext)
-    line_warnings = sorted(set([*warnings, *validation.get("warnings", [])]))
-    if bool(validation.get("legal")):
-        line_warnings = sorted(set([*line_warnings, "ai_validated_solution"]))
-    return {
-        "source": "ai_repair",
-        "source_text": text,
-        "raw_text": text,
-        "fen": fen,
-        "fen_source": fen_source,
-        "movetext": movetext,
-        "result": result,
-        "halfmove_count": halfmove_count,
-        "legal_from_fen": bool(validation.get("legal")),
-        "final_fen": str(validation.get("final_fen") or ""),
-        "warnings": line_warnings,
-        "ai_candidate_confidence": line_confidence,
-        "ai_fen_confidence": fen_confidence,
-    }
-
-
-def _extract_relaxed_ai_pgn_tokens(text: str) -> list[str]:
-    tokens: list[str] = []
-    prepared = _prepare_mainline_token_source(text)
-    for match in TOKEN_SCAN_RE.finditer(prepared):
-        raw = match.group(0).strip()
-        if not raw:
-            continue
-        if MOVE_NUMBER_RE.match(raw) or RESULT_RE.match(raw):
-            tokens.append(raw)
-            continue
-        san = _sanitize_san_token(raw)
-        if san:
-            tokens.append(san)
-    return tokens
-
-
-def _build_ai_review_payload(
-    record: ChessPgnRecord,
-    *,
-    primary_diagram: Mapping[str, Any],
-    primary_fen: str,
-    fen_available: str,
-    fen_candidates: Sequence[Mapping[str, Any]],
-    candidate_lines: Sequence[Mapping[str, Any]],
-    legal_lines: Sequence[Mapping[str, Any]],
-    missing_fen_reason: str,
-    first_solution_blocker: str,
-) -> dict[str, Any]:
-    config = _ai_repair_config()
-    enabled = bool(config["enabled"])
-    mode = str(config["mode"])
-    premium_model = str(config["premium_model"])
-    batch_model = str(config["batch_model"])
-    has_diagram = bool(primary_diagram)
-    has_primary_fen = bool(str(primary_fen or "").strip())
-    ocr_noise = _ocr_noise_score(_record_full_notation_text(record))
-    should_review = bool(
-        has_diagram
-        or has_primary_fen
-        or missing_fen_reason
-        or ocr_noise >= 0.08
-        or (candidate_lines and not legal_lines)
-    )
-    selected_model = premium_model if has_diagram or ocr_noise >= 0.18 else batch_model
-    reasons: list[str] = []
-    if has_diagram:
-        reasons.append("primary_diagram_available")
-    if has_primary_fen:
-        reasons.append("primary_fen_available")
-    if fen_available != "yes":
-        reasons.append("fen_not_accepted")
-    if candidate_lines and not legal_lines:
-        reasons.append("candidate_lines_need_validation")
-    if ocr_noise >= 0.08:
-        reasons.append("ocr_noise")
-    base = {
-        "enabled": enabled,
-        "mode": mode,
-        "status": "queued" if enabled and should_review else ("eligible" if should_review else "not_needed"),
-        "selected_model": selected_model,
-        "model": selected_model,
-        "premium_model": premium_model,
-        "batch_model": batch_model,
-        "mutates_exportable_pgn": False,
-        "requires_local_validation": True,
-        "provider": "",
-        "provider_status": "not_configured" if enabled and should_review else "",
-        "input_summary": {
-            "has_primary_diagram": has_diagram,
-            "has_primary_fen": has_primary_fen,
-            "fen_available": fen_available,
-            "missing_fen_reason": missing_fen_reason,
-            "candidate_line_count": len(candidate_lines),
-            "legal_line_count": len(legal_lines),
-            "ocr_noise_score": ocr_noise,
-        },
-        "reasons": reasons,
-        "fen_candidates": [],
-        "solution_line_candidates": [],
-        "ocr_token_repairs": [],
-        "confidence": 0.0,
-        "requires_human_review": should_review,
-        "notes": "",
-        "estimated_cost_usd": 0.0,
-        "validation": {},
-        "ai_suggested_but_not_validated": False,
-        "suggestions": [],
-    }
-    if not enabled or not should_review:
-        return base
-    provider = _load_ai_repair_provider(selected_model=selected_model, mode=mode)
-    if provider is None:
-        return base
-    context = _build_ai_repair_context(
-        record,
-        primary_diagram=primary_diagram,
-        primary_fen=primary_fen,
-        fen_available=fen_available,
-        fen_candidates=fen_candidates,
-        candidate_lines=candidate_lines,
-        first_solution_blocker=first_solution_blocker,
-        missing_fen_reason=missing_fen_reason,
-    )
-    try:
-        proposal = provider.propose_chess_repair(context)
-    except Exception as exc:
-        failed = dict(base)
-        failed.update(
-            {
-                "status": "failed",
-                "provider": str(getattr(provider, "name", "openai-chess-repair-proposer")),
-                "provider_status": "failed",
-                "error": str(exc)[:300],
-                "notes": "AI repair provider failed; export remains local-validator only.",
-                "requires_human_review": True,
-            }
-        )
-        return failed
-    return _merge_ai_repair_payload(base, proposal if isinstance(proposal, Mapping) else {})
-
-
 def _build_exercise_record(
     record: ChessPgnRecord,
     diagram_records: Iterable[Mapping[str, Any]],
     *,
     record_source_order: int | None = None,
-    used_diagram_keys: set[str] | None = None,
-    page_offset: int = 0,
 ) -> ChessExerciseRecord:
     diagram_record_list = [dict(diagram) for diagram in diagram_records]
-    ranked_diagrams = _ranked_diagram_records_for_record(
-        record,
-        diagram_record_list,
-        record_source_order=record_source_order,
-        used_diagram_keys=used_diagram_keys,
-        page_offset=page_offset,
-    )
-    (
-        primary_diagram,
-        diagram_candidates,
-        primary_fen,
-        fen_candidates,
-        fen_ambiguous,
-        fen_selection_reason,
-        fen_available,
-        fen_match_score,
-        fen_confidence,
-    ) = _select_primary_diagram_and_fen(record, ranked_diagrams)
-    matched_diagrams = [dict(primary_diagram), *[dict(diagram) for diagram in diagram_candidates if dict(diagram) != dict(primary_diagram)]]
-    matched_diagrams = [diagram for diagram in matched_diagrams if diagram][:3]
-    diagram_match_score = max((int(diagram.get("_match_score") or 0) for diagram in ranked_diagrams), default=0)
+    matched_diagrams = [
+        dict(diagram)
+        for diagram in _matching_diagram_records_for_record(
+            record,
+            diagram_record_list,
+            record_source_order=record_source_order,
+        )
+    ]
+    fen = str(record.fen or "").strip()
+    if not fen:
+        fen = next((str(diagram.get("fen") or "").strip() for diagram in matched_diagrams if str(diagram.get("fen") or "").strip()), "")
+    fen_confidence = 0.0
+    for diagram in matched_diagrams:
+        if str(diagram.get("fen") or "").strip() == fen:
+            fen_confidence = float(diagram.get("confidence", diagram.get("fen_confidence", 0.0)) or 0.0)
+            break
+    match_scores = [
+        _diagram_match_score(record, diagram, record_source_order=record_source_order)
+        for diagram in matched_diagrams
+    ]
+    diagram_match_score = max((score for score, _fen_score in match_scores), default=0)
+    fen_match_score = max((fen_score for _score, fen_score in match_scores), default=0)
     missing_diagram_reason = ""
-    if not ranked_diagrams:
+    if not matched_diagrams:
         missing_diagram_reason = "no_diagram_candidates" if not diagram_record_list else "no_number_page_fen_or_order_match"
-    diagram_text_match_low_confidence = bool(primary_diagram and diagram_match_score < 40)
     raw_text = _record_full_notation_text(record)
-    candidate_extra_warnings: list[str] = []
-    validation_fen = primary_fen if fen_available == "yes" and not fen_ambiguous else ""
-    if fen_ambiguous:
-        candidate_extra_warnings.append("fen_ambiguous")
-    if fen_available == "review":
-        candidate_extra_warnings.append("primary_fen_requires_review")
-    candidate_lines = _exercise_candidate_lines(raw_text, validation_fen, extra_warnings=candidate_extra_warnings)
+    candidate_lines = _exercise_candidate_lines(raw_text, fen)
     legal_lines = [line for line in candidate_lines if line.get("legal_from_fen")]
-    first_solution_blocker = ""
-    if candidate_lines and not legal_lines:
-        first_solution_blocker = str((candidate_lines[0].get("warnings") or ["solution_replay_failed"])[0])
-    primary_fen_status = _primary_fen_status(fen_available, fen_ambiguous, primary_fen)
-    missing_fen_reason = _missing_fen_reason(
-        primary_diagram=primary_diagram,
-        primary_fen=primary_fen,
-        fen_available=fen_available,
-        fen_ambiguous=fen_ambiguous,
-        fen_selection_reason=fen_selection_reason,
-    )
-    ocr_normalization_candidates = chess_ocr_normalization_candidates(raw_text)[:12]
-    source_position, order_confidence = _exercise_source_position(
-        record,
-        primary_diagram,
-        record_source_order=record_source_order,
-    )
-    sequence_status = _exercise_sequence_status(order_confidence, primary_diagram=primary_diagram, fen_available=fen_available)
-    ai_review = _build_ai_review_payload(
-        record,
-        primary_diagram=primary_diagram,
-        primary_fen=primary_fen,
-        fen_available=fen_available,
-        fen_candidates=fen_candidates,
-        candidate_lines=candidate_lines,
-        legal_lines=legal_lines,
-        missing_fen_reason=missing_fen_reason,
-        first_solution_blocker=first_solution_blocker,
-    )
-    ai_validation = _validate_ai_repair_suggestions(ai_review, fallback_fen=validation_fen or primary_fen)
-    ai_review["validation"] = ai_validation
-    ai_review["ai_suggested_but_not_validated"] = bool(
-        ai_review.get("mode") == "review_only" and int(ai_validation.get("valid_path_count") or 0) > 0
-    )
-    ai_validated_lines: list[dict[str, Any]] = []
-    if (
-        ai_review.get("mode") == "validated_export"
-        and not legal_lines
-        and int(ai_validation.get("valid_path_count") or 0) == 1
-        and isinstance(ai_validation.get("accepted_line"), Mapping)
-    ):
-        ai_validated_lines = [dict(ai_validation.get("accepted_line") or {})]
-    effective_candidate_lines = list(candidate_lines)
-    for line in ai_validated_lines:
-        if line and not any(
-            str(existing.get("fen") or primary_fen) == str(line.get("fen") or "")
-            and str(existing.get("movetext") or "") == str(line.get("movetext") or "")
-            for existing in effective_candidate_lines
-        ):
-            effective_candidate_lines.append(line)
-    effective_legal_lines = [dict(line) for line in legal_lines]
-    for line in ai_validated_lines:
-        if line and not any(
-            str(existing.get("fen") or primary_fen) == str(line.get("fen") or "")
-            and str(existing.get("movetext") or "") == str(line.get("movetext") or "")
-            for existing in effective_legal_lines
-        ):
-            effective_legal_lines.append(line)
-    ai_warning_flags = []
-    if ai_review.get("status") == "failed":
-        ai_warning_flags.append("ai_repair_failed")
-    if ai_review.get("ai_suggested_but_not_validated"):
-        ai_warning_flags.append("ai_suggested_but_not_validated")
-    if int(ai_validation.get("valid_path_count") or 0) > 1:
-        ai_warning_flags.append("ai_multiple_legal_paths")
-    if int(ai_validation.get("rejected_candidate_count") or 0) > 0:
-        ai_warning_flags.append("ai_rejected_candidate")
     quality_flags = {
-        "diagram_visible": bool(primary_diagram),
-        "fen_available": fen_available,
-        "fen_ambiguous": fen_ambiguous,
-        "fen_selection_reason": fen_selection_reason,
-        "primary_fen_status": primary_fen_status,
-        "missing_fen_reason": missing_fen_reason,
-        "primary_diagram_present": bool(primary_diagram),
+        "diagram_visible": bool(matched_diagrams),
+        "fen_available": bool(fen),
         "missing_diagram_reason": missing_diagram_reason,
         "diagram_candidate_count": len(diagram_record_list),
         "diagram_match_score": diagram_match_score,
-        "diagram_text_match_low_confidence": diagram_text_match_low_confidence,
-        "primary_caption_match_score": int(primary_diagram.get("caption_match_score") or 0) if primary_diagram else 0,
-        "primary_board_detection_reason": str(primary_diagram.get("board_detection_reason") or "") if primary_diagram else "",
         "fen_match_score": fen_match_score,
-        "external_fen_candidate_count": len(
-            [
-                candidate
-                for candidate in fen_candidates
-                if any(str(source).lower() in {"external", "linrock", "chessboard-recognizer"} for source in candidate.get("sources") or [candidate.get("source")])
-            ]
-        ),
-        "fen_candidate_conflict": fen_selection_reason == "fen_candidate_conflict",
-        "source_position": source_position,
-        "order_confidence": order_confidence,
-        "sequence_status": sequence_status,
-        "ai_review_status": str(ai_review.get("status") or ""),
-        "ai_review_model": str(ai_review.get("selected_model") or ""),
-        "ai_review_mode": str(ai_review.get("mode") or ""),
-        "ai_candidate_fen_count": int(ai_validation.get("fen_candidate_count") or 0),
-        "ai_candidate_line_count": int(ai_validation.get("line_candidate_count") or 0),
-        "ai_validated_solution_count": int(ai_validation.get("validated_solution_count") or 0),
-        "ai_rejected_candidate_count": int(ai_validation.get("rejected_candidate_count") or 0),
-        "ai_estimated_cost_usd": _coerce_float(ai_review.get("estimated_cost_usd"), 0.0),
-        "ai_suggested_but_not_validated": bool(ai_review.get("ai_suggested_but_not_validated")),
-        "solution_line_count": len(effective_candidate_lines),
-        "legal_solution_line_count": len(effective_legal_lines),
-        "first_solution_blocker": first_solution_blocker,
-        "ocr_normalization_candidate_count": len(ocr_normalization_candidates),
+        "solution_line_count": len(candidate_lines),
+        "legal_solution_line_count": len(legal_lines),
         "ocr_noise_score": _ocr_noise_score(raw_text),
         "exportable_pgn": _is_exportable_pgn_record(record),
     }
@@ -2112,16 +1056,12 @@ def _build_exercise_record(
         set(
             [
                 *record.warnings,
-                *[warning for line in effective_candidate_lines for warning in (line.get("warnings") or [])],
-                *ai_warning_flags,
-                *(["diagram_text_match_low_confidence"] if diagram_text_match_low_confidence else []),
-                *(["fen_candidate_conflict"] if fen_selection_reason == "fen_candidate_conflict" else []),
-                *(["solution_replay_failed"] if candidate_lines and not effective_legal_lines else []),
+                *[warning for line in candidate_lines for warning in (line.get("warnings") or [])],
             ]
         )
     )
     status = "legal_pgn_verified" if quality_flags["exportable_pgn"] else "requires_review"
-    if effective_legal_lines and not quality_flags["exportable_pgn"]:
+    if legal_lines and not quality_flags["exportable_pgn"]:
         status = "candidate_solution_verified"
     return ChessExerciseRecord(
         id=record.id,
@@ -2129,158 +1069,14 @@ def _build_exercise_record(
         diagram_number=_record_diagram_number(record),
         caption=record.title,
         diagram_records=matched_diagrams,
-        fen_candidate=primary_fen if fen_available == "yes" else "",
+        fen_candidate=fen,
         fen_confidence=fen_confidence,
         raw_ocr_text=raw_text,
-        candidate_lines=effective_candidate_lines,
-        legal_line_candidates=effective_legal_lines,
+        candidate_lines=candidate_lines,
+        legal_line_candidates=legal_lines,
         status=status,
         warnings=warnings,
         quality_flags=quality_flags,
-        primary_diagram=dict(primary_diagram),
-        diagram_candidates=[dict(diagram) for diagram in diagram_candidates],
-        primary_fen=primary_fen,
-        fen_candidates=[dict(candidate) for candidate in fen_candidates],
-        fen_ambiguous=fen_ambiguous,
-        fen_selection_reason=fen_selection_reason,
-        source_position=source_position,
-        order_confidence=order_confidence,
-        ai_review=ai_review,
-        sequence_status=sequence_status,
-        primary_fen_status=primary_fen_status,
-        missing_fen_reason=missing_fen_reason,
-        ocr_normalization_candidates=ocr_normalization_candidates,
-        ai_review_suggestions=[dict(item) for item in (ai_review.get("suggestions") or [])],
-        legal_solution_lines=effective_legal_lines,
-    )
-
-
-def _build_exercise_records(
-    records: Sequence[ChessPgnRecord],
-    diagram_records: Sequence[Mapping[str, Any]],
-) -> list[ChessExerciseRecord]:
-    used_diagram_keys: set[str] = set()
-    exercises: list[ChessExerciseRecord] = []
-    page_offset = _infer_diagram_page_offset(records, diagram_records)
-    for record_source_order, record in enumerate(records):
-        exercise = _build_exercise_record(
-            record,
-            diagram_records,
-            record_source_order=record_source_order,
-            used_diagram_keys=used_diagram_keys,
-            page_offset=page_offset,
-        )
-        if exercise.primary_diagram and not bool(exercise.quality_flags.get("diagram_text_match_low_confidence")):
-            used_diagram_keys.add(_diagram_record_key(exercise.primary_diagram))
-        exercises.append(exercise)
-    return exercises
-
-
-def _infer_diagram_page_offset(
-    records: Sequence[ChessPgnRecord],
-    diagram_records: Sequence[Mapping[str, Any]],
-) -> int:
-    record_pages = [
-        _safe_int(record.source_pages[0])
-        for record in records
-        if record.source_pages and _safe_int(record.source_pages[0]) > 0
-    ]
-    diagram_pages = [
-        _safe_int(diagram.get("page"))
-        for diagram in diagram_records
-        if _safe_int(diagram.get("page")) > 0
-    ]
-    if len(record_pages) < 5 or len(diagram_pages) < 5:
-        return 0
-    offset = min(diagram_pages) - min(record_pages)
-    return offset if -20 <= offset <= 80 else 0
-
-
-def _exercise_sort_key(record: ChessPgnRecord, exercise: ChessExerciseRecord, original_index: int) -> tuple[int, float, float, int, int]:
-    position = exercise.source_position or {}
-    raw_page = position.get("page")
-    page = _safe_int(raw_page) if raw_page is not None else 0
-    if page <= 0 and record.source_pages:
-        page = _safe_int(record.source_pages[0])
-    bbox = position.get("bbox")
-    if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
-        y = _coerce_float(bbox[1], 999999.0)
-        x = _coerce_float(bbox[0], 999999.0)
-    else:
-        y = 999999.0
-        x = 999999.0
-    source_order = _safe_int(position.get("source_order")) if position.get("source_order") is not None else original_index
-    return (page if page > 0 else 999999, y, x, source_order, original_index)
-
-
-def _diagram_number_sort_key(value: str) -> tuple[int, int] | None:
-    match = re.match(r"^\s*(\d+)(?:[-.](\d+))?\s*$", str(value or ""))
-    if not match:
-        return None
-    return int(match.group(1)), int(match.group(2) or 0)
-
-
-def _sequence_diagnostics_for_records(records: Sequence[ChessPgnRecord]) -> dict[str, Any]:
-    seen: dict[str, int] = {}
-    duplicates: list[str] = []
-    inversions: list[dict[str, str]] = []
-    gaps: list[str] = []
-    previous_key: tuple[int, int] | None = None
-    previous_number = ""
-    chapter_last: dict[int, int] = {}
-    for record in records:
-        number = _record_diagram_number(record)
-        if not number:
-            continue
-        seen[number] = seen.get(number, 0) + 1
-        if seen[number] == 2:
-            duplicates.append(number)
-        key = _diagram_number_sort_key(number)
-        if key is None:
-            continue
-        if previous_key is not None and key < previous_key:
-            inversions.append({"from": previous_number, "to": number})
-        chapter, index = key
-        if chapter in chapter_last and index > chapter_last[chapter] + 1:
-            gaps.append(f"{chapter}-{chapter_last[chapter] + 1}..{chapter}-{index - 1}")
-        chapter_last[chapter] = max(chapter_last.get(chapter, 0), index)
-        previous_key = key
-        previous_number = number
-    confidence = "high"
-    if duplicates or inversions:
-        confidence = "low"
-    elif gaps:
-        confidence = "medium"
-    return {
-        "sequence_duplicates": duplicates[:20],
-        "sequence_inversions": inversions[:20],
-        "sequence_gaps": gaps[:20],
-        "order_confidence": confidence,
-    }
-
-
-def _sequence_diagnostics_html(diagnostics: Mapping[str, Any]) -> str:
-    duplicates = [str(value) for value in diagnostics.get("sequence_duplicates") or []]
-    inversions = [dict(value) for value in diagnostics.get("sequence_inversions") or []]
-    gaps = [str(value) for value in diagnostics.get("sequence_gaps") or []]
-    confidence = str(diagnostics.get("order_confidence") or "low")
-    def list_markup(items: Sequence[str]) -> str:
-        if not items:
-            return "<p>none</p>"
-        return "<ul>" + "".join(f"<li>{html.escape(item)}</li>" for item in items[:20]) + "</ul>"
-
-    inversion_labels = [f"{item.get('from', '')} -> {item.get('to', '')}" for item in inversions]
-    return (
-        '<section class="sequence-diagnostics">'
-        "<h2>Sequence diagnostics</h2>"
-        f"<p>order_confidence: {html.escape(confidence)}</p>"
-        "<h3>duplicates</h3>"
-        f"{list_markup(duplicates)}"
-        "<h3>inversions</h3>"
-        f"{list_markup(inversion_labels)}"
-        "<h3>gaps</h3>"
-        f"{list_markup(gaps)}"
-        "</section>"
     )
 
 
@@ -2288,84 +1084,40 @@ def build_pgn_download_html(
     records: Iterable[ChessPgnRecord],
     *,
     title: str = "Chess PGN",
+    diagram_records: Iterable[Mapping[str, Any]] | None = None,
     diagrams: Iterable[ChessDiagramRecord | Mapping[str, Any]] | None = None,
     book_layout_pages: Iterable[ChessBookLayoutPage | Mapping[str, Any]] | None = None,
     pdf_preview_href: str = "pdf_layout_preview",
 ) -> str:
     record_list = list(records)
-    diagram_list = list(diagram_records or [])
+    _unused_layout_pages = book_layout_pages
+    _unused_preview_href = pdf_preview_href
+    diagram_list = list(diagram_records or diagrams or [])
     diagram_parts, diagram_summary = _diagram_records_html(diagram_list)
-    exercise_list = _build_exercise_records(record_list, diagram_list)
-    exercise_summary = summarize_chess_exercise_records(exercise_list)
-    ordered_items = sorted(
-        list(enumerate(zip(record_list, exercise_list))),
-        key=lambda item: _exercise_sort_key(item[1][0], item[1][1], item[0]),
-    )
-    ordered_records = [record for _original_index, (record, _exercise) in ordered_items]
-    sequence_diagnostics = _sequence_diagnostics_for_records(ordered_records)
-    accepted_records = [record for record in record_list if record.status == "accepted" and record.pgn.strip()]
-    exportable_records = [record for record in record_list if _is_exportable_pgn_record(record)]
+    accepted_records = [record for record in record_list if _is_exportable_pgn_record(record)]
     review_records = [record for record in record_list if not _is_exportable_pgn_record(record)]
     full_notation_records = [record for record in record_list if (record.raw_text or record.movetext or "").strip()]
     body = [
         f"<p>Accepted PGN records: {len(accepted_records)}</p>",
-        f"<p>Exported strict PGN records: {len(exportable_records)}</p>",
         f"<p>Manual review records: {len(review_records)}</p>",
         f"<p>Full notation records: {len(full_notation_records)}</p>",
         f"<p>Detected chess diagrams: {diagram_summary['diagram_count']}</p>",
         f"<p>Detected diagram FEN: {diagram_summary['diagram_fen_count']}</p>",
         f"<p>Diagram FEN review records: {diagram_summary['diagram_review_count']}</p>",
-        f"<p>Exercise FEN available: {exercise_summary['fen_available_yes_count']}</p>",
-        f"<p>Candidate solution lines: {exercise_summary['candidate_solution_line_count']}</p>",
-        f"<p>Legal solution lines: {exercise_summary['legal_solution_line_count']}</p>",
-        f"<p>Exercise export lines: {exercise_summary['exercise_export_count']}</p>",
-        f"<p>External FEN candidates: {exercise_summary['external_fen_candidate_count']}</p>",
-        f"<p>FEN candidate conflicts: {exercise_summary['fen_candidate_conflict_count']}</p>",
-        f"<p>Solution replay legal: {exercise_summary['solution_replay_legal_count']}</p>",
-        f"<p>AI review queued: {exercise_summary['ai_review_queued_count']}</p>",
-        f"<p>AI candidate FENs: {exercise_summary['ai_candidate_fen_count']}</p>",
-        f"<p>AI candidate lines: {exercise_summary['ai_candidate_line_count']}</p>",
-        f"<p>AI validated solutions: {exercise_summary['ai_validated_solution_count']}</p>",
-        f"<p>AI rejected candidates: {exercise_summary['ai_rejected_candidate_count']}</p>",
-        f"<p>AI estimated cost USD: {exercise_summary['ai_estimated_cost_usd']:.6f}</p>",
-        f"<p>Exportable PGN records: {exercise_summary['exportable_pgn_count']}</p>",
-        f"<p>HTML order confidence: {html.escape(str(sequence_diagnostics.get('order_confidence') or 'low'))}</p>",
-        _sequence_diagnostics_html(sequence_diagnostics),
+        "<p>HTML order: source PDF order preserved.</p>",
         *diagram_parts,
         "<h2>Games in source order</h2>",
     ]
     if not record_list:
         body.append("<p>No PGN-like records were detected.</p>")
-    for _original_index, (record, exercise) in ordered_items:
+    for record_source_order, record in enumerate(record_list):
         body.append(
             _record_download_html(
                 record,
                 diagram_records=diagram_list,
-                record_source_order=_original_index,
-                exercise=exercise,
+                record_source_order=record_source_order,
             )
         )
-    elif diagram_list:
-        body = _layout_aware_pgn_html_body(
-            record_list,
-            diagram_list,
-            accepted_count=len(accepted_records),
-            review_count=len(review_records),
-            full_notation_count=len(full_notation_records),
-            pdf_preview_href=pdf_preview_href,
-        )
-    else:
-        body = [
-            f"<p>Accepted PGN records: {len(accepted_records)}</p>",
-            f"<p>Manual review records: {len(review_records)}</p>",
-            f"<p>Full notation records: {len(full_notation_records)}</p>",
-            "<p>HTML order: source PDF order preserved.</p>",
-            "<h2>Games in source order</h2>",
-        ]
-        if not record_list:
-            body.append("<p>No PGN-like records were detected.</p>")
-        for record in record_list:
-            body.append(_record_download_html(record))
     return (
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
         f"<title>{html.escape(title)}</title>"
@@ -2384,118 +1136,17 @@ def build_pgn_download_html(
         ".exercise-quality-key{font-weight:800;color:#725b3f}.exercise-candidate-lines{margin:1rem 0;padding:1rem;border-left:4px solid #c9b89f;background:#fffaf2;border-radius:12px}"
         ".exercise-candidate-line{margin:.8rem 0;padding:.75rem;border-radius:10px;border:1px solid #d8c8b1}.candidate-line-legal{background:#f1fbf4}.candidate-line-review{background:#fff7e8}"
         ".candidate-line-warnings{color:#8a4b00;font-weight:700}.candidate-line-text{margin:.4rem 0}"
-        ".candidate-line-blocker{color:#8a4b00;font-weight:800}.fen-candidate-score{font-weight:800;color:#096b31}"
         ".diagram-fen{margin:.6rem 0;color:#141414}.diagram-fen code{font-family:monospace}"
-        ".exercise-primary-diagram,.exercise-primary-fen,.exercise-fen-candidates,.exercise-diagram-candidates,.sequence-diagnostics{margin:1rem 0;padding:1rem;border:1px solid #d8c8b1;border-radius:14px;background:#fffdf8}"
-        ".exercise-fen-candidate{border-top:1px solid #eadbc5;padding-top:.75rem}.exercise-fen-candidate:first-of-type{border-top:0}"
-        ".exercise-ocr-normalization{margin:1rem 0;padding:1rem;border:1px solid #eadbc5;border-radius:14px;background:#fffaf2}"
-        ".exercise-ocr-candidate{border-top:1px solid #eadbc5;padding-top:.75rem}.exercise-ocr-candidate:first-of-type{border-top:0}"
         ".copy-pgn-button{border:1px solid #c9b89f;border-radius:999px;background:#fff8ed;color:#141414;"
         "font-weight:700;padding:.45rem .8rem;cursor:pointer;margin:.4rem 0 .65rem}"
         ".chess-full-notation h3{margin-bottom:.2rem}.chess-review-reason{color:#725b3f;font-weight:700}"
-        ".chess-glyph-audit-note{color:#725b3f;font-size:.92rem;font-weight:700}"
-        ".chess-review-summary{display:flex;flex-wrap:wrap;gap:.55rem;margin:1rem 0 1.4rem}"
-        ".chess-review-summary span{border:1px solid #d8c8b1;border-radius:999px;padding:.35rem .7rem;background:#fff8ed;font-weight:700}"
-        ".chess-page-group{border-top:2px solid #cdb790;padding-top:1rem}.chess-page-group h2{margin:.1rem 0 1rem}"
-        ".chess-review-card{display:grid;grid-template-columns:minmax(190px,300px) minmax(0,1fr);gap:1.2rem;align-items:start;"
-        "border:1px solid #d8c8b1;border-radius:18px;padding:1rem;background:#fffdf8;box-shadow:0 8px 24px rgba(89,63,30,.08)}"
-        ".chess-diagram-panel{background:#f7efe2;border-radius:14px;padding:.8rem;text-align:center}.chess-diagram-panel figure{margin:0}"
-        ".chess-review-diagram{max-width:100%;height:auto;display:block;margin:0 auto;border-radius:4px}"
-        ".chess-diagram-caption{font-weight:800;margin:.55rem 0 .25rem}.chess-diagram-meta{font-size:.86rem;color:#725b3f;margin:.25rem 0}"
-        ".chess-diagram-placeholder{border:1px dashed #c9b89f;border-radius:12px;padding:1rem;color:#725b3f;background:#fff8ed;font-weight:700}"
-        ".chess-notation-panel .chess-pgn-game{border-top:0;margin:0;padding-top:0}.chess-notation-panel h2{margin-top:0}"
-        ".chess-pdf-preview-link{display:inline-block;margin:.25rem 0 1rem;color:#7a3d12;font-weight:800}.chess-unmatched-diagrams{background:#fff8ed;border:1px dashed #c9b89f;border-radius:16px;padding:1rem}"
-        ".chess-book-review{margin:0;background:#e7ded1;color:#1d1711}.chess-book-review>h1{max-width:1180px;margin:1.5rem auto .75rem;padding:0 1rem}"
-        ".chess-book-toolbar{position:sticky;top:0;z-index:30;display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;padding:.75rem 1rem;background:rgba(29,23,17,.94);color:#fff8ed;box-shadow:0 10px 30px rgba(0,0,0,.22)}"
-        ".chess-book-toolbar span{border:1px solid rgba(255,248,237,.24);border-radius:999px;padding:.28rem .65rem;font-size:.82rem;font-weight:800}.chess-book-toolbar button{border:1px solid rgba(255,248,237,.35);border-radius:999px;background:#fff8ed;color:#2b2118;font-weight:800;padding:.38rem .7rem;cursor:pointer}"
-        ".chess-book-stack{display:flex;flex-direction:column;align-items:center;gap:1.5rem;padding:1rem 1rem 2.5rem}.chess-book-page{position:relative;background:#fff;overflow:hidden;box-shadow:0 24px 58px rgba(48,35,21,.30);transform-origin:top center;max-width:calc(100vw - 2rem)}"
-        ".book-page-bg{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;user-select:none;pointer-events:none}.book-element{position:absolute;box-sizing:border-box}.book-text{white-space:pre-wrap;line-height:1.1;color:rgba(22,18,14,.84);background:rgba(255,252,246,.55);border-radius:3px;padding:1px 2px}.book-diagram{margin:0;display:flex;align-items:center;justify-content:center;background:rgba(255,252,246,.78);border:1px solid rgba(90,70,44,.18)}"
-        ".book-diagram img{display:block;max-width:100%;max-height:100%;object-fit:contain}.book-fen{font-family:'Courier New',monospace;font-size:10px;line-height:1.25;background:rgba(255,248,224,.92);border:1px solid rgba(145,96,22,.35);border-radius:6px;padding:3px 5px;color:#322315;overflow:hidden}.book-pgn-record,.book-review-warning{background:rgba(255,252,246,.95);border:1px solid #d1b58b;border-left:5px solid #a55d1d;border-radius:10px;padding:.45rem .55rem;box-shadow:0 10px 22px rgba(55,36,15,.16);overflow:hidden}.book-pgn-record.accepted{border-left-color:#1f8f4d}.book-pgn-record.review{border-left-color:#c47211}.book-pgn-status{display:inline-block;border-radius:999px;padding:.1rem .45rem;font-size:.72rem;font-weight:900;background:#fff0d8;color:#7b4300}.book-pgn-record.accepted .book-pgn-status{background:#e3f7ea;color:#0d6b36}.book-pgn-title{font-weight:900;font-size:.86rem;margin:.25rem 0}.book-pgn-record pre{font-size:10px;line-height:1.25;margin:.3rem 0 0;padding:.35rem;border-radius:6px;max-height:95px;overflow:auto}.book-review-warning{border-left-color:#b91c1c;color:#4b1a13}.book-page-label{position:absolute;left:.5rem;top:.5rem;z-index:4;border-radius:999px;padding:.16rem .5rem;background:rgba(255,255,255,.86);color:#5b4227;font-size:10px;font-weight:900}"
-        ".hide-pdf-bg .book-page-bg{opacity:0}.hide-recognized-text .book-text{display:none}.hide-pgn-fen .book-pgn-record,.hide-pgn-fen .book-fen{display:none}.hide-review-warnings .book-review-warning{display:none}@media(max-width:780px){.chess-book-page{transform:scale(.72);margin-bottom:-28%}.chess-book-toolbar{font-size:.9rem}}"
-        ".copy-pgn-button:focus,.copy-fen-button:focus{outline:2px solid #b85c24;outline-offset:2px}@media(max-width:780px){.chess-review-card{grid-template-columns:1fr}}"
-        "</style>"
-        "</head><body"
-        + (" class=\"chess-book-review\"" if book_page_list else "")
-        + ">"
+        ".copy-pgn-button:focus{outline:2px solid #b85c24;outline-offset:2px}</style>"
+        "</head><body>"
         f"<h1>{html.escape(title)}</h1>"
         + "\n".join(body)
         + _copy_pgn_script()
-        + (_book_layout_script() if book_page_list else "")
         + "</body></html>\n"
     )
-
-
-def summarize_chess_exercise_records(exercises: Iterable[ChessExerciseRecord | Mapping[str, Any]]) -> dict[str, Any]:
-    rows = [exercise.to_dict() if isinstance(exercise, ChessExerciseRecord) else dict(exercise) for exercise in exercises]
-    fen_available_yes = [
-        row for row in rows if str((row.get("quality_flags") or {}).get("fen_available") or "").strip() == "yes"
-    ]
-    exercise_fen_rows = [row for row in rows if str(row.get("primary_fen") or row.get("fen_candidate") or "").strip()]
-    candidate_lines = [line for row in rows for line in (row.get("candidate_lines") or [])]
-    legal_lines = [line for row in rows for line in (row.get("legal_solution_lines") or row.get("legal_line_candidates") or [])]
-    ai_reviews = [dict(row.get("ai_review") or {}) for row in rows]
-    ai_validations = [
-        dict(review.get("validation") or {})
-        for review in ai_reviews
-        if isinstance(review.get("validation"), Mapping)
-    ]
-    fen_candidates = [candidate for row in rows for candidate in (row.get("fen_candidates") or [])]
-    return {
-        "exercise_record_count": len(rows),
-        "exercise_fen_count": len(exercise_fen_rows),
-        "fen_available_yes_count": len(fen_available_yes),
-        "candidate_solution_line_count": len(candidate_lines),
-        "legal_solution_line_count": len(legal_lines),
-        "solution_replay_legal_count": len(legal_lines),
-        "exercise_export_count": len(legal_lines),
-        "external_fen_candidate_count": len(
-            [
-                candidate
-                for candidate in fen_candidates
-                if any(
-                    str(source).lower() in {"external", "linrock", "chessboard-recognizer"}
-                    for source in (candidate.get("sources") or [candidate.get("source")])
-                )
-            ]
-        ),
-        "fen_candidate_conflict_count": len(
-            [
-                row
-                for row in rows
-                if str(row.get("fen_selection_reason") or (row.get("quality_flags") or {}).get("fen_selection_reason") or "")
-                == "fen_candidate_conflict"
-            ]
-        ),
-        "ai_review_queued_count": len([review for review in ai_reviews if review.get("status") == "queued"]),
-        "ai_candidate_fen_count": sum(len(review.get("fen_candidates") or []) for review in ai_reviews),
-        "ai_candidate_line_count": sum(len(review.get("solution_line_candidates") or []) for review in ai_reviews),
-        "ai_validated_solution_count": sum(int(validation.get("validated_solution_count") or 0) for validation in ai_validations),
-        "ai_rejected_candidate_count": sum(int(validation.get("rejected_candidate_count") or 0) for validation in ai_validations),
-        "ai_estimated_cost_usd": round(sum(_coerce_float(review.get("estimated_cost_usd"), 0.0) for review in ai_reviews), 6),
-        "ai_review_validated_count": sum(int(validation.get("validated_solution_count") or 0) for validation in ai_validations),
-        "exportable_pgn_count": len(
-            [row for row in rows if bool((row.get("quality_flags") or {}).get("exportable_pgn"))]
-        ),
-        "missing_fen_reasons": dict(
-            sorted(
-                {
-                    reason: len(
-                        [
-                            row
-                            for row in rows
-                            if str(row.get("missing_fen_reason") or (row.get("quality_flags") or {}).get("missing_fen_reason") or "")
-                            == reason
-                        ]
-                    )
-                    for reason in {
-                        str(row.get("missing_fen_reason") or (row.get("quality_flags") or {}).get("missing_fen_reason") or "")
-                        for row in rows
-                        if str(row.get("missing_fen_reason") or (row.get("quality_flags") or {}).get("missing_fen_reason") or "")
-                    }
-                }.items()
-            )
-        ),
-    }
 
 
 def summarize_chess_pgn_records(
@@ -2503,59 +1154,19 @@ def summarize_chess_pgn_records(
     *,
     diagram_records: Iterable[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    record_items = list(records)
-    rows = [record.to_dict() if isinstance(record, ChessPgnRecord) else dict(record) for record in record_items]
-    exercise_summary: dict[str, Any] = {}
-    if diagram_records is not None and all(isinstance(record, ChessPgnRecord) for record in record_items):
-        exercise_summary = summarize_chess_exercise_records(
-            _build_exercise_records(
-                [record for record in record_items if isinstance(record, ChessPgnRecord)],
-                [dict(item) for item in diagram_records],
-            )
-        )
+    _unused_diagram_records = diagram_records
+    rows = [record.to_dict() if isinstance(record, ChessPgnRecord) else dict(record) for record in records]
     candidate_count = len(rows)
     accepted = [row for row in rows if row.get("status") == "accepted" and row.get("pgn")]
-    exportable_records = [
-        record for record in record_items if isinstance(record, ChessPgnRecord) and _is_exportable_pgn_record(record)
-    ]
-    exportable_ids = {record.id for record in exportable_records}
-    exportable_row_count = len(exportable_records)
-    if not all(isinstance(record, ChessPgnRecord) for record in record_items):
-        exportable_row_count = len(
-            [
-                row
-                for row in rows
-                if bool(row.get("exportable_pgn"))
-                or (
-                    row.get("status") == "accepted"
-                    and row.get("pgn")
-                    and row.get("final_fen")
-                    and not _blocking_pgn_warnings(row.get("warnings") or [])
-                )
-            ]
-        )
-    if all(isinstance(record, ChessPgnRecord) for record in record_items):
-        review = [
-            row
-            for row in rows
-            if row.get("status") != "accepted" or (row.get("id") and row.get("id") not in exportable_ids)
-        ]
-    else:
-        review = [row for row in rows if row.get("status") != "accepted"]
+    review = [row for row in rows if row.get("status") != "accepted"]
     fen_rows = [row for row in rows if row.get("fen") or row.get("final_fen") or row.get("fen_snapshots")]
-    coverage = (exportable_row_count / candidate_count) if candidate_count else 0.0
-    sequence_diagnostics = (
-        _sequence_diagnostics_for_records([record for record in record_items if isinstance(record, ChessPgnRecord)])
-        if all(isinstance(record, ChessPgnRecord) for record in record_items)
-        else {}
-    )
+    coverage = (len(accepted) / candidate_count) if candidate_count else 0.0
     warning_counts: dict[str, int] = {}
     for row in rows:
         for warning in row.get("warnings") or []:
             warning_key = str(warning or "").strip()
             if warning_key:
                 warning_counts[warning_key] = warning_counts.get(warning_key, 0) + 1
-    line_counts = _line_classification_counts(rows)
     continuation_fragment_count = len(
         [
             row
@@ -2563,50 +1174,22 @@ def summarize_chess_pgn_records(
             if (_first_movetext_number(str(row.get("movetext") or "")) or 0) > 1
         ]
     )
-    summary = {
-        "status": "passed" if coverage >= 0.50 and exportable_row_count else ("requires_review" if candidate_count else "not_detected"),
+    return {
+        "status": "passed" if coverage >= 0.50 and accepted else ("requires_review" if candidate_count else "not_detected"),
         "candidate_game_count": candidate_count,
         "valid_pgn_count": len(accepted),
         "legal_pgn_count": len(accepted),
-        "strict_export_count": exportable_row_count,
-        "exported_pgn_count": exportable_row_count,
         "fen_count": len(fen_rows),
         "derived_final_fen_count": len([row for row in rows if row.get("final_fen")]),
         "manual_review_count": len(review),
         "continuation_fragment_count": continuation_fragment_count,
         "warning_counts": dict(sorted(warning_counts.items())),
-        "line_move_count": line_counts["move"],
-        "line_comment_count": line_counts["comment"],
-        "line_metadata_count": line_counts["metadata"],
-        "line_noise_count": line_counts["noise"],
-        "line_review_count": line_counts["review"],
-        "san_correction_count": line_counts["san_correction_count"],
         "full_notation_count": len([row for row in rows if str(row.get("raw_text") or row.get("movetext") or "").strip()]),
         "html_source_order_preserved": True,
-        "sequence_diagnostics": sequence_diagnostics,
         "coverage": round(coverage, 4),
         "acceptance_min": 0.50,
         "records": rows[:100],
     }
-    summary.update(exercise_summary)
-    if exercise_summary:
-        summary["fen_count"] = max(int(summary.get("fen_count", 0) or 0), int(exercise_summary.get("exercise_fen_count", 0) or 0))
-    return summary
-
-
-def _line_classification_counts(rows: Sequence[Mapping[str, Any]]) -> dict[str, int]:
-    counts = {"move": 0, "comment": 0, "metadata": 0, "noise": 0, "review": 0, "san_correction_count": 0}
-    for row in rows:
-        for item in row.get("line_classifications") or []:
-            if not isinstance(item, Mapping):
-                continue
-            kind = str(item.get("kind") or "").strip()
-            if kind in counts:
-                counts[kind] += 1
-            if kind != "metadata":
-                counts["metadata"] += _safe_int(item.get("metadata_count"))
-            counts["san_correction_count"] += _safe_int(item.get("san_correction_count"))
-    return counts
 
 
 def _first_movetext_number(movetext: str) -> int | None:
@@ -2625,7 +1208,6 @@ def normalize_ocr_text_for_pgn(text: str) -> str:
     normalized = _normalize_chessbase_private_symbols(normalized)
     normalized = _normalize_german_piece_notation(normalized)
     normalized = _normalize_move_clock_artifacts(normalized)
-    normalized = _normalize_chess_ocr_token_confusions(normalized)
     normalized = normalized.replace("\u2013", "-").replace("\u2014", "-")
     normalized = normalized.replace("\u2020", "+").replace("\u2021", "#")
     normalized = normalized.replace("Â˝", "1/2").replace("\u00bd", "1/2")
@@ -2643,30 +1225,6 @@ def normalize_ocr_text_for_pgn(text: str) -> str:
     normalized = re.sub(r"(?<=\d)\s+\.\s+\.\s+\.", "...", normalized)
     normalized = re.sub(r"(?<=\d)\s+\.", ".", normalized)
     return normalized
-
-
-def _normalize_chess_ocr_token_confusions(text: str) -> str:
-    """Repair high-confidence OCR confusions only inside PGN-shaped tokens."""
-    normalized = str(text or "")
-    normalized = re.sub(r"(?<![A-Za-z0-9])[lI](?=\.(?:\.\.)?\s*)", "1", normalized)
-    normalized = re.sub(r"(?<![A-Za-z0-9])S(?=\.(?:\.\.)?\s*)", "5", normalized)
-    normalized = re.sub(
-        r"(?P<prefix>(?<![A-Za-z0-9])(?:[KQRBN]?[a-h]?[1-8]?|[a-h]))\u00d7(?=[a-h][1-8lIS])",
-        r"\g<prefix>x",
-        normalized,
-    )
-
-    def replace_rank(match: re.Match[str]) -> str:
-        rank = match.group("rank")
-        repaired = "1" if rank in {"l", "I"} else "5"
-        return f"{match.group('prefix')}{repaired}{match.group('suffix')}"
-
-    san_rank_confusion = re.compile(
-        r"(?P<prefix>(?<![A-Za-z0-9])(?:[KQRBN]?[a-h]?[1-8]?x?|[a-h]x?)[a-h])"
-        r"(?P<rank>[lIS])"
-        r"(?P<suffix>(?:=[QRBN])?[+#?!]{0,2})(?![A-Za-z0-9])"
-    )
-    return san_rank_confusion.sub(replace_rank, normalized)
 
 
 def _normalize_chessbase_private_symbols(text: str) -> str:
@@ -2766,18 +1324,12 @@ def _split_notation_collection_game_blocks(text: str) -> list[dict[str, Any]]:
     current_has_result = False
 
     for line in lines:
-        if _looks_like_diagram_boundary(line):
-            if current and current_has_result:
-                blocks.append(current)
-                current = []
-                current_has_moves = False
-                current_has_result = False
-            continue
-        starts_new_game = _looks_like_collection_game_start(line)
-        starts_player_caption = _looks_like_player_caption_boundary(line)
+        parsed = _parse_pgn_line(line)
+        starts_new_game = _looks_like_collection_game_start(parsed.normalized)
+        strong_mainline_start = _line_is_strong_game_start(parsed, after_result=current_has_result)
         if (
             current
-            and (starts_new_game or starts_player_caption)
+            and starts_new_game
             and (current_has_moves or current_has_result)
             and len(current) >= 2
         ):
@@ -3698,20 +2250,6 @@ def _looks_like_collection_game_start(line: str) -> bool:
     return bool(COLLECTION_GAME_START_RE.match(normalized) and _find_explicit_movetext_match(normalized) is None)
 
 
-def _looks_like_diagram_boundary(line: str) -> bool:
-    sample = re.sub(r"\s+", " ", str(line or "")).strip()
-    return bool(DIAGRAM_LINE_RE.match(sample) or re.fullmatch(r"(?i)\(?\s*diagram\s*\)?", sample))
-
-
-def _looks_like_player_caption_boundary(line: str) -> bool:
-    sample = re.sub(r"\s+", " ", str(line or "")).strip()
-    if not sample or _line_has_pgn_tokens(sample):
-        return False
-    if PLAYER_CAPTION_RE.search(sample):
-        return True
-    return bool(re.search(r"\b[A-Z][A-Za-z.'\u2019-]+,\s*[A-Z][A-Za-z.'\u2019-]*(?:\s+\d{3,4})?\b", sample))
-
-
 def _clean_collection_line_for_pgn(line: str) -> str:
     cleaned = normalize_ocr_text_for_pgn(line)
     cleaned = BOARD_FILES_PREFIX_ECO_RE.sub("", cleaned)
@@ -3799,176 +2337,8 @@ def _looks_like_opening_descriptor_text(text: str) -> bool:
     return False
 
 
-def _classify_pgn_lines(caption: str, body: str) -> list[dict[str, Any]]:
-    classifications: list[dict[str, Any]] = []
-    started_movetext = False
-    line_number = 0
-    for source, text in (("caption", caption), ("body", body)):
-        for raw_line in str(text or "").splitlines():
-            line_number += 1
-            cleaned = re.sub(r"\s+", " ", normalize_ocr_text_for_pgn(raw_line)).strip(" |")
-            if not cleaned:
-                continue
-            item = _classify_single_pgn_line(cleaned, source=source, line_number=line_number, started=started_movetext)
-            item["san_correction_count"] = _line_san_correction_count(raw_line)
-            classifications.append(item)
-            if item["kind"] == "move":
-                started_movetext = True
-    return classifications
-
-
-def _classify_single_pgn_line(line: str, *, source: str, line_number: int, started: bool) -> dict[str, Any]:
-    kind = "review"
-    reason = "unclassified_line"
-    if _looks_like_diagram_boundary(line) or _looks_like_pgn_board_coordinate_noise(line):
-        kind = "noise"
-        reason = "diagram_or_board_noise"
-    elif _looks_like_metadata_line(line):
-        kind = "metadata"
-        reason = "pgn_metadata"
-    elif _line_has_explicit_movetext(line) or (started and _line_looks_like_pgn_continuation(line)):
-        kind = "move"
-        reason = "explicit_or_continuation_movetext"
-    elif _looks_like_book_comment_line(line):
-        kind = "comment"
-        reason = "book_comment"
-    elif not started and not _line_has_pgn_tokens(line):
-        kind = "metadata" if source == "caption" else "noise"
-        reason = "pre_movetext_context"
-    elif started and not _line_has_pgn_tokens(line):
-        kind = "comment"
-        reason = "post_movetext_prose"
-    return {
-        "line": line,
-        "source": source,
-        "line_number": line_number,
-        "kind": kind,
-        "reason": reason,
-        "san_correction_count": _line_san_correction_count(line),
-        "metadata_count": _line_embedded_metadata_count(line),
-    }
-
-
-def _looks_like_metadata_line(line: str) -> bool:
-    sample = re.sub(r"\s+", " ", str(line or "")).strip()
-    if not sample or _line_has_explicit_movetext(sample):
-        return False
-    if _extract_opening(sample) or _extract_bracket_value(sample) or _extract_event_line(sample):
-        return True
-    if re.search(
-        r"(?i)\b(?:position|equal|winning|threat|threatening|endgame|error value|better|worse|clearly|intending|aiming|should|variation)\b",
-        sample,
-    ):
-        return False
-    if re.fullmatch(r"(?:\d{1,5}\s+)?[A-Ea-e][0-9Oo]{2}", sample):
-        return True
-    if _extract_player_rows(sample):
-        return True
-    return False
-
-
-def _looks_like_book_comment_line(line: str) -> bool:
-    sample = re.sub(r"\s+", " ", str(line or "")).strip()
-    if not sample:
-        return False
-    if WEIGHTED_ERROR_VALUE_RE.search(sample) or WEIGHTED_ERROR_SIDE_RE.search(sample):
-        return True
-    if ENGINE_EVAL_RE.search(sample) or BARE_ENGINE_EVAL_RE.search(sample):
-        return True
-    if re.search(
-        r"(?i)\b(?:position|equal|winning|threat|threatening|endgame|error value|better|worse|clearly|intending|aiming|should|variation)\b",
-        sample,
-    ):
-        return True
-    return bool(re.search(r"[A-Za-z]{4,}", sample) and not _line_has_pgn_tokens(sample))
-
-
-def _line_san_correction_count(line: str) -> int:
-    sample = str(line or "")
-    count = 0
-    count += len(re.findall(r"\bO-O(?:-O)?\b", sample))
-    count += len(re.findall(r"\b0-0(?:-0)?\b", sample))
-    count += len(re.findall(r"[a-h]\u00d7[a-h][1-8lIS]", sample))
-    count += len(re.findall(r"[†‡]", sample))
-    count += len(re.findall(r"=\s+[QRBN]\b", sample))
-    count += len(re.findall(r"(?<![A-Za-z0-9])[lIS](?=\.(?:\.\.)?\s*)", sample))
-    return count
-
-
-def _line_embedded_metadata_count(line: str) -> int:
-    sample = re.sub(r"\s+", " ", str(line or "")).strip()
-    count = 0
-    if _extract_eco_code(sample):
-        count += 1
-    if _extract_opening(sample):
-        count += 1
-    if _extract_bracket_value(sample) or _extract_event_line(sample):
-        count += 1
-    return count
-
-
-def _classified_mainline_source(body: str, classifications: Sequence[Mapping[str, Any]]) -> str:
-    move_lines = [
-        str(item.get("line") or "")
-        for item in classifications
-        if item.get("source") == "body" and item.get("kind") == "move"
-    ]
-    if move_lines:
-        return "\n".join(move_lines)
-    return body
-
-
-def _caption_with_classified_metadata(caption: str, classifications: Sequence[Mapping[str, Any]]) -> str:
-    metadata_lines = [
-        str(item.get("line") or "")
-        for item in classifications
-        if item.get("kind") == "metadata" and str(item.get("line") or "").strip()
-    ]
-    values = [str(caption or "").strip(), *metadata_lines]
-    seen: set[str] = set()
-    merged: list[str] = []
-    for value in values:
-        for line in str(value or "").splitlines() or [value]:
-            cleaned = re.sub(r"\s+", " ", line or "").strip()
-            if cleaned and cleaned not in seen:
-                seen.add(cleaned)
-                merged.append(cleaned)
-    return "\n".join(merged)
-
-
-def _warnings_from_line_classifications(classifications: Sequence[Mapping[str, Any]]) -> list[str]:
-    warnings: list[str] = []
-    for item in classifications:
-        if item.get("kind") == "review":
-            warnings.append("line_requires_review")
-        if item.get("kind") == "comment" and item.get("source") == "body":
-            warnings.append("book_comment_excluded_from_strict_movetext")
-    return sorted(set(warnings))
-
-
-def _line_classifications_with_replay_audit(
-    classifications: Sequence[Mapping[str, Any]],
-    *,
-    san_correction_count: int,
-    warnings: Sequence[str],
-) -> list[dict[str, Any]]:
-    rows = [dict(item) for item in classifications]
-    rows.append(
-        {
-            "line": "",
-            "source": "runtime",
-            "line_number": 0,
-            "kind": "review" if _blocking_pgn_warnings(warnings) else "move",
-            "reason": "position_replay_audit",
-            "san_correction_count": int(san_correction_count or 0),
-            "warnings": list(warnings),
-        }
-    )
-    return rows
-
-
-def _extract_pgn_tokens(text: str) -> list[str]:
-    tokens: list[str] = []
+def _extract_pgn_tokens(text: str) -> list[PgnToken]:
+    tokens: list[PgnToken] = []
     normalized_text = _prepare_mainline_token_source(text)
     seen_movetext = False
     for line in normalized_text.splitlines() or [normalized_text]:
@@ -4490,85 +2860,190 @@ def _reconstruct_mainline_movetext(
     return " ".join(fragments).strip(), result, halfmove_count, sorted(set(warnings))
 
 
-def _tokens_to_position_validated_movetext(
-    tokens: Iterable[str],
+def _best_mainline_reconstruction(
+    tokens: Iterable[PgnToken],
     *,
-    headers: Mapping[str, str],
-    fallback_result: str = "*",
-) -> tuple[str, str, int, list[str], int]:
-    token_list = list(tokens)
-    movetext, result, halfmove_count, sequence_warnings = _tokens_to_movetext(token_list)
-    san_correction_count = _token_san_correction_count(token_list)
-    if halfmove_count <= 0:
-        return movetext, result, halfmove_count, sequence_warnings, san_correction_count
-    if not _has_replayable_initial_context(token_list, headers):
-        return movetext, result, halfmove_count, sorted(set(sequence_warnings)), san_correction_count
-
-    validation = _validate_pgn_text_for_export(_format_pgn(headers, movetext, result or fallback_result))
-    if not _blocking_pgn_warnings(sequence_warnings) and not _blocking_pgn_warnings(validation["warnings"]):
-        return movetext, result, halfmove_count, sorted(set(sequence_warnings)), san_correction_count
-    context_warnings = _position_context_warnings_for_movetext(movetext, headers)
-    return (
-        movetext,
-        result,
-        halfmove_count,
-        sorted(set([*sequence_warnings, *validation["warnings"], *context_warnings])),
-        san_correction_count,
-    )
+    initial_fen: str = "",
+) -> tuple[str, str, int, list[str]]:
+    plain = _reconstruct_mainline_movetext(tokens)
+    if not initial_fen:
+        return plain
+    fen_guided = _reconstruct_mainline_movetext(tokens, initial_fen=initial_fen)
+    plain_score = _mainline_reconstruction_score(plain[3], plain[2])
+    fen_score = _mainline_reconstruction_score(fen_guided[3], fen_guided[2])
+    if fen_score < plain_score:
+        return fen_guided
+    fen_audit_warnings = {
+        warning
+        for warning in fen_guided[3]
+        if warning.startswith("san_board_")
+    }
+    if fen_audit_warnings and fen_score[:2] <= plain_score[:2]:
+        return fen_guided
+    return plain
 
 
-def _token_san_correction_count(tokens: Sequence[str]) -> int:
-    count = 0
-    for token in tokens:
-        if token in RESULT_VALUES or MOVE_NUMBER_RE.match(token):
-            continue
-        san = _sanitize_san_token(token)
-        if san and san != token:
-            count += 1
-    return count
+def _tokens_to_movetext(tokens: Iterable[PgnToken]) -> tuple[str, str, int, list[str]]:
+    return _reconstruct_mainline_movetext(tokens)
 
 
-def _has_replayable_initial_context(tokens: Sequence[str], headers: Mapping[str, str]) -> bool:
-    if str(headers.get("FEN") or "").strip():
-        return True
-    for token in tokens:
-        move_match = MOVE_NUMBER_RE.match(token)
-        if not move_match:
-            continue
-        try:
-            return int(move_match.group("num")) == 1 and not move_match.group("black")
-        except ValueError:
-            return False
-    return False
-
-
-def _position_context_warnings_for_movetext(movetext: str, headers: Mapping[str, str]) -> list[str]:
+def _board_from_initial_fen(initial_fen: str) -> Any | None:
+    if not initial_fen:
+        return None
     try:
         import chess  # type: ignore[import-not-found]
     except Exception:
-        return ["python_chess_unavailable"]
-
+        return None
     try:
-        fen = str(headers.get("FEN") or "").strip()
-        board = chess.Board(fen) if fen else chess.Board()
+        return chess.Board(initial_fen)
     except Exception:
-        return ["initial_fen_invalid"]
-    warnings: list[str] = []
-    token_list = _extract_pgn_tokens(movetext)
-    index = 0
-    while index < len(token_list):
-        token = token_list[index]
-        index += 1
-        if MOVE_NUMBER_RE.match(token) or token in RESULT_VALUES:
-            continue
-        try:
-            move = board.parse_san(token)
-        except Exception as exc:
-            warning = "ambiguous_san_token" if "ambiguous" in exc.__class__.__name__.lower() else "illegal_san_token"
-            warnings.append(warning)
-            break
-        board.push(move)
-    return sorted(set(warnings))
+        return None
+
+
+def _parse_san_for_board(board: Any, token_value: str) -> Any | None:
+    try:
+        return board.parse_san(_strip_san_annotation_suffix(token_value))
+    except Exception:
+        return None
+
+
+def _strip_san_annotation_suffix(token: str) -> str:
+    return re.sub(r"[!?]+$", "", str(token or ""))
+
+
+def _san_annotation_suffix(token: str) -> str:
+    match = re.search(r"[!?]+$", str(token or ""))
+    return match.group(0) if match else ""
+
+
+def _legalize_san_token_with_board(raw_san: str, board: Any) -> tuple[str, list[str]]:
+    token = _canonicalize_san_candidate(raw_san)
+    if not token or board is None:
+        return token, []
+
+    raw_suffix = _san_annotation_suffix(token)
+    stripped_token = _strip_san_annotation_suffix(token)
+    parsed_move = _parse_san_for_board(board, stripped_token)
+    if parsed_move is not None:
+        canonical_board_san = board.san(parsed_move)
+        if canonical_board_san != stripped_token:
+            return (
+                f"{canonical_board_san}{raw_suffix}",
+                ["san_board_legalization_used", "san_board_unique_candidate_used"],
+            )
+        return token, []
+
+    candidate_sans = [
+        board.san(move)
+        for move in board.legal_moves
+        if _board_legal_san_matches_ocr(stripped_token, board.san(move))
+    ]
+    unique_candidates = sorted(set(candidate_sans))
+    if len(unique_candidates) == 1:
+        return (
+            f"{unique_candidates[0]}{raw_suffix}",
+            ["san_board_legalization_used", "san_board_unique_candidate_used"],
+        )
+    if unique_candidates:
+        return token, ["san_board_ambiguous_candidate_rejected"]
+    return token, ["san_board_illegal_candidate_rejected"]
+
+
+def _board_legal_san_matches_ocr(raw_san: str, legal_san: str) -> bool:
+    raw_shape = _board_san_shape(raw_san)
+    legal_shape = _board_san_shape(legal_san)
+    if not raw_shape or not legal_shape:
+        return False
+    if raw_shape["kind"] == "castle":
+        return raw_shape["castle"] == legal_shape.get("castle")
+    if raw_shape["kind"] == "bare_square":
+        if raw_shape["target"] != legal_shape.get("target"):
+            return False
+        if raw_shape["check_marker"] and raw_shape["check_marker"] != legal_shape.get("check_marker"):
+            return False
+        return True
+    if raw_shape["kind"] == "pawn_capture":
+        if legal_shape.get("kind") != "pawn_capture":
+            return False
+        if raw_shape["from_file"] != legal_shape.get("from_file"):
+            return False
+        if raw_shape["target"] != legal_shape.get("target"):
+            return False
+        if raw_shape["promotion"] and raw_shape["promotion"] != legal_shape.get("promotion"):
+            return False
+        if raw_shape["check_marker"] and raw_shape["check_marker"] != legal_shape.get("check_marker"):
+            return False
+        return True
+    if raw_shape["kind"] == "piece_move":
+        if legal_shape.get("kind") != "piece_move":
+            return False
+        if raw_shape["piece"] != legal_shape.get("piece"):
+            return False
+        if raw_shape["target"] != legal_shape.get("target"):
+            return False
+        if raw_shape["capture"] != legal_shape.get("capture"):
+            return False
+        if raw_shape["disambiguation"] and raw_shape["disambiguation"] != legal_shape.get("disambiguation"):
+            return False
+        if raw_shape["promotion"] and raw_shape["promotion"] != legal_shape.get("promotion"):
+            return False
+        if raw_shape["check_marker"] and raw_shape["check_marker"] != legal_shape.get("check_marker"):
+            return False
+        return True
+    return False
+
+
+def _board_san_shape(token: str) -> dict[str, Any]:
+    sample = _strip_san_annotation_suffix(_canonicalize_san_candidate(token))
+    if not sample:
+        return {}
+    if sample in {"O-O", "O-O-O"}:
+        return {"kind": "castle", "castle": sample}
+
+    check_marker = sample[-1] if sample.endswith(("+", "#")) else ""
+    if check_marker:
+        sample = sample[:-1]
+
+    promotion = ""
+    promotion_match = re.search(r"=([QRBN])$", sample)
+    if promotion_match:
+        promotion = promotion_match.group(1)
+        sample = sample[: promotion_match.start()]
+
+    if re.fullmatch(r"[a-h][1-8]", sample):
+        return {
+            "kind": "bare_square",
+            "target": sample,
+            "promotion": promotion,
+            "check_marker": check_marker,
+        }
+
+    pawn_capture = re.fullmatch(r"(?P<from_file>[a-h])x(?P<target>[a-h][1-8])", sample)
+    if pawn_capture:
+        return {
+            "kind": "pawn_capture",
+            "from_file": pawn_capture.group("from_file"),
+            "target": pawn_capture.group("target"),
+            "promotion": promotion,
+            "check_marker": check_marker,
+        }
+
+    piece_move = re.fullmatch(
+        r"(?P<piece>[KQRBN])(?P<disambiguation>[a-h]?[1-8]?)(?P<capture>x?)(?P<target>[a-h][1-8])",
+        sample,
+    )
+    if piece_move:
+        return {
+            "kind": "piece_move",
+            "piece": piece_move.group("piece"),
+            "disambiguation": piece_move.group("disambiguation"),
+            "capture": bool(piece_move.group("capture")),
+            "target": piece_move.group("target"),
+            "promotion": promotion,
+            "check_marker": check_marker,
+        }
+
+    return {}
 
 
 def _san_is_shadowed_by_explicit_same_ply_marker(
@@ -4796,7 +3271,7 @@ def _normalize_chessbase_pgn_extensions(text: str) -> str:
 
 def _wrap_weighted_error_value_comments(text: str) -> str:
     return re.sub(
-        r"(?is)Weighted Error Value:\s*.*?(?=(?:\s+(?:1-0|0-1|1/2-1/2|0\.5-0\.5|\*)\s*$)|$)",
+        r"(?is)Weighted Error Value:\s*.*?(?=(?:\s+(?:1-0|0-1|1/2-1/2|0\.5-0\.5|\*)\b)|$)",
         lambda match: _comment_token(re.sub(r"\s+", " ", match.group(0)).strip()),
         text or "",
     )
@@ -5300,35 +3775,20 @@ def _blocking_pgn_warnings(warnings: Iterable[str]) -> bool:
             "pgn_replay_failed",
             "pgn_replay_errors",
             "pgn_no_legal_moves",
-            "initial_fen_invalid",
-            "illegal_san_token",
-            "ambiguous_san_token",
-            "line_requires_review",
         }
     )
 
 
 def _is_exportable_pgn_record(record: ChessPgnRecord) -> bool:
-    if not (
+    return bool(
         record.pgn.strip()
         and record.status == "accepted"
         and record.final_fen
         and not _blocking_pgn_warnings(record.warnings)
-    ):
-        return False
-    strict_validation = _validate_pgn_text_for_export(record.pgn)
-    if _blocking_pgn_warnings(strict_validation["warnings"]):
-        return False
-    export_validation = _validate_pgn_text_for_export(_record_export_pgn(record))
-    return not _blocking_pgn_warnings(export_validation["warnings"])
+    )
 
 
 def _record_export_pgn(record: ChessPgnRecord) -> str:
-    if any(
-        _detect_unmapped_pgn_glyphs(text)
-        for text in (record.raw_text, record.movetext, record.pgn, record.annotated_pgn)
-    ):
-        return ""
     annotated = str(getattr(record, "annotated_pgn", "") or "").strip()
     if annotated and _pgn_parse_clean(annotated):
         return annotated
@@ -5336,29 +3796,43 @@ def _record_export_pgn(record: ChessPgnRecord) -> str:
 
 
 def _pgn_parse_clean(pgn_text: str) -> bool:
-    return not _blocking_pgn_warnings(_validate_pgn_text_for_export(pgn_text)["warnings"])
-
-
-def _validate_pgn_text_for_export(pgn_text: str) -> dict[str, Any]:
-    text = str(pgn_text or "").strip()
-    if not text:
-        return {"final_fen": "", "fen_snapshots": [], "warnings": ["pgn_parse_failed"]}
     try:
         import chess.pgn  # type: ignore[import-not-found]
     except Exception:
-        return {"final_fen": "", "fen_snapshots": [], "warnings": ["python_chess_unavailable"]}
+        return False
     try:
         pgn_logger = logging.getLogger("chess.pgn")
         was_disabled = pgn_logger.disabled
         pgn_logger.disabled = True
         try:
-            game = chess.pgn.read_game(io.StringIO(text))
+            game = chess.pgn.read_game(io.StringIO(pgn_text or ""))
+        finally:
+            pgn_logger.disabled = was_disabled
+    except Exception:
+        return False
+    return bool(game is not None and not getattr(game, "errors", None))
+
+
+def _replay_record_to_final_fen(record: ChessPgnRecord) -> dict[str, Any]:
+    try:
+        import chess.pgn  # type: ignore[import-not-found]
+    except Exception:
+        return {"final_fen": "", "fen_snapshots": [], "warnings": ["python_chess_unavailable"]}
+
+    try:
+        pgn_logger = logging.getLogger("chess.pgn")
+        was_disabled = pgn_logger.disabled
+        pgn_logger.disabled = True
+        try:
+            game = chess.pgn.read_game(io.StringIO(record.pgn or ""))
         finally:
             pgn_logger.disabled = was_disabled
     except Exception:
         return {"final_fen": "", "fen_snapshots": [], "warnings": ["pgn_parse_failed"]}
     if game is None:
         return {"final_fen": "", "fen_snapshots": [], "warnings": ["pgn_parse_failed"]}
+
+    warnings: list[str] = []
     if getattr(game, "errors", None):
         return {"final_fen": "", "fen_snapshots": [], "warnings": ["pgn_replay_errors"]}
     try:
@@ -5366,23 +3840,23 @@ def _validate_pgn_text_for_export(pgn_text: str) -> dict[str, Any]:
         halfmove_index = 0
         for move in game.mainline_moves():
             if move not in board.legal_moves:
-                return {"final_fen": "", "fen_snapshots": [], "warnings": ["pgn_replay_failed"]}
+                warnings.append("pgn_replay_failed")
+                return {"final_fen": "", "fen_snapshots": [], "warnings": sorted(set(warnings))}
             board.push(move)
             halfmove_index += 1
     except Exception:
         return {"final_fen": "", "fen_snapshots": [], "warnings": ["pgn_replay_failed"]}
+
     if halfmove_index <= 0:
-        return {"final_fen": "", "fen_snapshots": [], "warnings": ["pgn_no_legal_moves"]}
+        warnings.append("pgn_no_legal_moves")
+        return {"final_fen": "", "fen_snapshots": [], "warnings": sorted(set(warnings))}
+
     final_fen = board.fen()
     return {
         "final_fen": final_fen,
         "fen_snapshots": [{"label": "final", "ply": halfmove_index, "fen": final_fen}],
-        "warnings": [],
+        "warnings": sorted(set(warnings)),
     }
-
-
-def _replay_record_to_final_fen(record: ChessPgnRecord) -> dict[str, Any]:
-    return _validate_pgn_text_for_export(record.pgn)
 
 
 def _record_fen_html(record: ChessPgnRecord) -> str:
@@ -5421,11 +3895,18 @@ def _matching_diagram_records_for_record(
     *,
     record_source_order: int | None = None,
 ) -> list[Mapping[str, Any]]:
-    return _ranked_diagram_records_for_record(
-        record,
-        list(diagram_records),
-        record_source_order=record_source_order,
-    )[:3]
+    ranked: list[tuple[int, int, Mapping[str, Any]]] = []
+    for source_order, diagram in enumerate(diagram_records):
+        score, _fen_score = _diagram_match_score(
+            record,
+            diagram,
+            record_source_order=record_source_order,
+            fallback_source_order=source_order,
+        )
+        if score:
+            ranked.append((score, -source_order, diagram))
+    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [diagram for _, _, diagram in ranked[:3]]
 
 
 def _diagram_match_score(
@@ -5434,7 +3915,6 @@ def _diagram_match_score(
     *,
     record_source_order: int | None = None,
     fallback_source_order: int | None = None,
-    page_offset: int = 0,
 ) -> tuple[int, int]:
     record_fen = str(record.fen or "").strip()
     record_diagram_number = _record_diagram_number(record)
@@ -5442,24 +3922,16 @@ def _diagram_match_score(
     diagram_fen = str(diagram.get("fen") or "").strip()
     diagram_number = str(diagram.get("diagram_number") or "").strip()
     diagram_page = _safe_int(diagram.get("page"))
-    caption_match_score = _safe_int(diagram.get("caption_match_score"))
-    offset_record_pages = {page + int(page_offset or 0) for page in record_pages if page > 0}
-    same_page = bool(diagram_page and (diagram_page in record_pages or diagram_page in offset_record_pages))
     score = 0
     fen_score = 0
-    exact_diagram_number = bool(record_diagram_number and diagram_number and record_diagram_number == diagram_number)
-    if exact_diagram_number:
+    if record_diagram_number and diagram_number and record_diagram_number == diagram_number:
         score += 100
-    if same_page:
+    if diagram_page in record_pages:
         score += 40
-    if same_page and caption_match_score >= 70:
-        score += min(18, max(0, caption_match_score - 60))
-    elif exact_diagram_number and caption_match_score >= 55:
-        score += 8
     if record_fen and diagram_fen == record_fen:
         score += 30
         fen_score += 30
-    if record_source_order is not None and same_page:
+    if record_source_order is not None:
         raw_source_order = diagram.get("source_order")
         if raw_source_order is not None and str(raw_source_order).strip() != "":
             diagram_source_order = _safe_int(raw_source_order)
@@ -5473,64 +3945,20 @@ def _diagram_match_score(
                 score += 55
             elif distance == 1:
                 score += 18
-    elif record_source_order is not None and not exact_diagram_number:
-        raw_source_order = diagram.get("source_order")
-        if raw_source_order is not None and str(raw_source_order).strip() != "":
-            diagram_source_order = _safe_int(raw_source_order)
-        elif fallback_source_order is not None:
-            diagram_source_order = int(fallback_source_order)
-        else:
-            diagram_source_order = -1
-        if diagram_source_order >= 0:
-            distance = abs(int(record_source_order) - diagram_source_order)
-            if distance == 0:
-                score += 24
-            elif distance == 1:
-                score += 12
-            elif distance == 2:
-                score += 6
     return score, fen_score
 
 
 def _exercise_quality_flags_html(exercise: ChessExerciseRecord) -> str:
     flags = exercise.quality_flags
-    fen_available = flags.get("fen_available")
-    if isinstance(fen_available, bool):
-        fen_available_value = "yes" if fen_available else "no"
-    else:
-        fen_available_value = str(fen_available or "no")
     rows = [
         ("diagram_visible", "yes" if flags.get("diagram_visible") else "no"),
-        ("fen_available", fen_available_value),
-        ("fen_ambiguous", "yes" if flags.get("fen_ambiguous") else "no"),
-        ("fen_selection_reason", str(flags.get("fen_selection_reason") or "")),
-        ("primary_fen_status", str(flags.get("primary_fen_status") or exercise.primary_fen_status or "no")),
-        ("missing_fen_reason", str(flags.get("missing_fen_reason") or exercise.missing_fen_reason or "")),
-        ("primary_diagram_present", "yes" if flags.get("primary_diagram_present") else "no"),
+        ("fen_available", "yes" if flags.get("fen_available") else "no"),
         ("missing_diagram_reason", str(flags.get("missing_diagram_reason") or "")),
         ("diagram_candidate_count", str(flags.get("diagram_candidate_count", 0))),
         ("diagram_match_score", str(flags.get("diagram_match_score", 0))),
-        ("diagram_text_match_low_confidence", "yes" if flags.get("diagram_text_match_low_confidence") else "no"),
-        ("primary_caption_match_score", str(flags.get("primary_caption_match_score", 0))),
-        ("primary_board_detection_reason", str(flags.get("primary_board_detection_reason") or "")),
         ("fen_match_score", str(flags.get("fen_match_score", 0))),
-        ("external_fen_candidate_count", str(flags.get("external_fen_candidate_count", 0))),
-        ("fen_candidate_conflict", "yes" if flags.get("fen_candidate_conflict") else "no"),
-        ("order_confidence", str(flags.get("order_confidence") or exercise.order_confidence or "low")),
-        ("sequence_status", str(flags.get("sequence_status") or exercise.sequence_status or "review")),
-        ("ai_review_status", str(flags.get("ai_review_status") or "")),
-        ("ai_review_model", str(flags.get("ai_review_model") or "")),
-        ("ai_review_mode", str(flags.get("ai_review_mode") or "")),
-        ("ai_candidate_fen_count", str(flags.get("ai_candidate_fen_count", 0))),
-        ("ai_candidate_line_count", str(flags.get("ai_candidate_line_count", 0))),
-        ("ai_validated_solution_count", str(flags.get("ai_validated_solution_count", 0))),
-        ("ai_rejected_candidate_count", str(flags.get("ai_rejected_candidate_count", 0))),
-        ("ai_estimated_cost_usd", f"{float(flags.get('ai_estimated_cost_usd', 0.0) or 0.0):.6f}"),
-        ("ai_suggested_but_not_validated", "yes" if flags.get("ai_suggested_but_not_validated") else "no"),
         ("solution_line_count", str(flags.get("solution_line_count", 0))),
         ("legal_solution_line_count", str(flags.get("legal_solution_line_count", 0))),
-        ("first_solution_blocker", str(flags.get("first_solution_blocker") or "")),
-        ("ocr_normalization_candidate_count", str(flags.get("ocr_normalization_candidate_count", 0))),
         ("ocr_noise_score", f"{float(flags.get('ocr_noise_score', 0.0) or 0.0):.3f}"),
         ("exportable_pgn", "yes" if flags.get("exportable_pgn") else "no"),
     ]
@@ -5540,239 +3968,6 @@ def _exercise_quality_flags_html(exercise: ChessExerciseRecord) -> str:
         for key, value in rows
     )
     return f'<ul class="exercise-quality-flags">{items}</ul>'
-
-
-def _exercise_ai_review_html(exercise: ChessExerciseRecord) -> str:
-    review = dict(exercise.ai_review or {})
-    if not review:
-        return ""
-    mode = str(review.get("mode") or "review_only")
-    status = str(review.get("status") or "not_needed")
-    model = str(review.get("selected_model") or "")
-    reasons = [str(reason) for reason in review.get("reasons") or [] if str(reason).strip()]
-    queued = bool(review.get("enabled")) and status == "queued"
-    validation = dict(review.get("validation") or {}) if isinstance(review.get("validation"), Mapping) else {}
-    suggested_but_not_validated = bool(review.get("ai_suggested_but_not_validated"))
-    reason_markup = ""
-    if reasons:
-        reason_markup = (
-            '<ul class="ai-review-reasons">'
-            + "".join(f"<li>{html.escape(reason)}</li>" for reason in reasons[:8])
-            + "</ul>"
-        )
-    fen_markup = ""
-    fen_candidates = [dict(item) for item in review.get("fen_candidates") or [] if isinstance(item, Mapping)]
-    if fen_candidates:
-        fen_rows = []
-        for index, candidate in enumerate(fen_candidates[:6], start=1):
-            fen_rows.append(
-                '<section class="ai-review-candidate">'
-                f"<h4>AI FEN candidate {index}</h4>"
-                f'<p class="diagram-fen"><code class="diagram-fen-code">{html.escape(str(candidate.get("fen") or ""))}</code></p>'
-                f"<p>confidence {float(candidate.get('confidence') or 0.0):.3f}</p>"
-                f"<p>{html.escape(str(candidate.get('notes') or ''))}</p>"
-                "</section>"
-            )
-        fen_markup = (
-            '<details class="ai-review-fen-candidates" open>'
-            + f"<summary>AI FEN candidates ({len(fen_candidates)})</summary>"
-            + "".join(fen_rows)
-            + "</details>"
-        )
-    line_markup = ""
-    line_candidates = [dict(item) for item in review.get("solution_line_candidates") or [] if isinstance(item, Mapping)]
-    if line_candidates:
-        line_rows = []
-        for index, candidate in enumerate(line_candidates[:6], start=1):
-            line_rows.append(
-                '<section class="ai-review-candidate">'
-                f"<h4>AI solution line {index} | confidence {float(candidate.get('confidence') or 0.0):.3f}</h4>"
-                f'<pre class="candidate-line-text"><code>{html.escape(str(candidate.get("movetext") or ""))}</code></pre>'
-                f"<p>{html.escape(str(candidate.get('notes') or ''))}</p>"
-                "</section>"
-            )
-        line_markup = (
-            '<details class="ai-review-line-candidates" open>'
-            + f"<summary>AI solution line candidates ({len(line_candidates)})</summary>"
-            + "".join(line_rows)
-            + "</details>"
-        )
-    repair_markup = ""
-    repairs = [dict(item) for item in review.get("ocr_token_repairs") or [] if isinstance(item, Mapping)]
-    if repairs:
-        repair_items = "".join(
-            "<li>"
-            + html.escape(str(item.get("raw") or ""))
-            + " -> "
-            + html.escape(str(item.get("corrected") or ""))
-            + f" ({float(item.get('confidence') or 0.0):.3f})"
-            + "</li>"
-            for item in repairs[:10]
-        )
-        repair_markup = (
-            '<details class="ai-review-token-repairs">'
-            + f"<summary>AI OCR token repairs ({len(repairs)})</summary>"
-            + f"<ul>{repair_items}</ul>"
-            + "</details>"
-        )
-    validation_markup = ""
-    if validation:
-        valid_paths = [dict(item) for item in validation.get("valid_paths") or [] if isinstance(item, Mapping)]
-        rejected_paths = [dict(item) for item in validation.get("rejected_paths") or [] if isinstance(item, Mapping)]
-        valid_markup = ""
-        if valid_paths:
-            valid_markup = "".join(
-                '<section class="ai-review-valid-path">'
-                f"<h4>Validated path {index}</h4>"
-                f'<p class="diagram-fen"><code class="diagram-fen-code">{html.escape(str(path.get("fen") or ""))}</code></p>'
-                f'<pre class="candidate-line-text"><code>{html.escape(str(path.get("movetext") or ""))}</code></pre>'
-                "</section>"
-                for index, path in enumerate(valid_paths[:4], start=1)
-            )
-        rejected_markup = ""
-        if rejected_paths:
-            rejected_markup = "".join(
-                '<section class="ai-review-rejected-path">'
-                f"<h4>Rejected AI path {index}</h4>"
-                f'<p class="diagram-fen"><code class="diagram-fen-code">{html.escape(str(path.get("fen") or ""))}</code></p>'
-                f'<pre class="candidate-line-text"><code>{html.escape(str(path.get("movetext") or ""))}</code></pre>'
-                f'<p class="candidate-line-warnings">{html.escape(", ".join(str(w) for w in path.get("warnings") or []))}</p>'
-                "</section>"
-                for index, path in enumerate(rejected_paths[:6], start=1)
-            )
-        first_blocker = ""
-        if int(validation.get("valid_path_count") or 0) > 1:
-            first_blocker = "ai_multiple_legal_paths"
-        elif rejected_paths:
-            first = rejected_paths[0]
-            first_blocker = str(first.get("reason") or ((first.get("warnings") or [""])[0]) or "")
-        validation_markup = (
-            '<details class="ai-review-validation" open>'
-            + "<summary>Local validation of AI suggestions</summary>"
-            + f"<p><strong>validation_status:</strong> {html.escape(str(validation.get('status') or ''))}</p>"
-            + f"<p><strong>valid_path_count:</strong> {int(validation.get('valid_path_count') or 0)}</p>"
-            + f"<p><strong>rejected_candidate_count:</strong> {int(validation.get('rejected_candidate_count') or 0)}</p>"
-            + f"<p><strong>first_blocker:</strong> {html.escape(first_blocker)}</p>"
-            + valid_markup
-            + rejected_markup
-            + "</details>"
-        )
-    mutation_note = (
-        "Validated export is enabled, but only a single local python-chess replay path may affect exercises PGN."
-        if mode == "validated_export"
-        else "No automatic PGN export changes; local replay validator remains authoritative."
-    )
-    suggested_note = (
-        '<p><strong>ai_suggested_but_not_validated:</strong> true</p>'
-        if suggested_but_not_validated
-        else ""
-    )
-    return (
-        '<section class="exercise-ai-review">'
-        "<h3>AI suggestions / review-only repair audit</h3>"
-        f"<p><strong>Status:</strong> {html.escape(status)}"
-        + (" - queued for reviewer" if queued else "")
-        + "</p>"
-        f"<p><strong>Mode:</strong> {html.escape(mode)}</p>"
-        f"<p><strong>Model:</strong> {html.escape(model or 'not selected')}</p>"
-        f"<p>{html.escape(mutation_note)}</p>"
-        f"<p><strong>Confidence:</strong> {float(review.get('confidence') or 0.0):.3f}</p>"
-        f"<p><strong>Estimated cost USD:</strong> {float(review.get('estimated_cost_usd') or 0.0):.6f}</p>"
-        f"<p><strong>Notes:</strong> {html.escape(str(review.get('notes') or ''))}</p>"
-        f"{suggested_note}"
-        + reason_markup
-        + fen_markup
-        + line_markup
-        + repair_markup
-        + validation_markup
-        + "</section>"
-    )
-
-
-def _exercise_diagram_html(exercise: ChessExerciseRecord) -> str:
-    if not exercise.primary_diagram:
-        return ""
-    primary = (
-        '<div class="exercise-primary-diagram">'
-        "<h3>Primary diagram</h3>"
-        + _diagram_record_html(exercise.primary_diagram, 1)
-        + "</div>"
-    )
-    candidate_diagrams = [
-        dict(diagram)
-        for diagram in exercise.diagram_candidates
-        if dict(diagram) != dict(exercise.primary_diagram)
-    ]
-    if not candidate_diagrams:
-        return primary
-    candidate_markup = "".join(_diagram_record_html(diagram, index) for index, diagram in enumerate(candidate_diagrams[:5], start=2))
-    return (
-        primary
-        + '<details class="exercise-diagram-candidates">'
-        + f"<summary>Candidate diagrams ({len(candidate_diagrams)})</summary>"
-        + candidate_markup
-        + "</details>"
-    )
-
-
-def _exercise_fen_summary_html(exercise: ChessExerciseRecord) -> str:
-    candidates = [dict(candidate) for candidate in exercise.fen_candidates]
-    primary = str(exercise.primary_fen or "").strip()
-    primary_status = "review" if exercise.fen_ambiguous else ("accepted" if exercise.quality_flags.get("fen_available") == "yes" else "review")
-    primary_markup = (
-        '<div class="exercise-primary-fen">'
-        "<h3>Primary FEN</h3>"
-        f'<p><span class="diagram-fen-label">status:</span> {html.escape(primary_status)}</p>'
-        f'<p><span class="diagram-fen-label">fen_ambiguous:</span> {html.escape("true" if exercise.fen_ambiguous else "false")}</p>'
-        f'<p><span class="diagram-fen-label">fen_selection_reason:</span> {html.escape(exercise.fen_selection_reason or "")}</p>'
-    )
-    if primary:
-        primary_markup += f'<p class="diagram-fen"><code class="diagram-fen-code">{html.escape(primary)}</code></p>'
-        primary_markup += f"<p>confidence {float(exercise.fen_confidence or 0.0):.3f}</p>"
-    else:
-        primary_markup += "<p>Primary FEN unavailable.</p>"
-    primary_markup += "</div>"
-    if not candidates:
-        return primary_markup
-    candidate_rows = []
-    for index, candidate in enumerate(candidates[:8], start=1):
-        warnings = [str(warning) for warning in candidate.get("warnings") or [] if str(warning).strip()]
-        warning_markup = ""
-        if warnings:
-            warning_markup = '<p class="candidate-line-warnings">' + html.escape(", ".join(warnings[:6])) + "</p>"
-        meta = " | ".join(
-            bit
-            for bit in [
-                f"source {','.join(str(source) for source in candidate.get('sources') or [candidate.get('source')] if source)}",
-                f"page {candidate.get('page')}" if candidate.get("page") else "",
-                f"status {candidate.get('status') or 'review'}",
-                f"score {candidate.get('score', 0)}",
-                f"match {candidate.get('match_score', 0)}",
-                f"fen_match {candidate.get('fen_match_score', 0)}",
-                f"pieces {candidate.get('piece_count', 0)}",
-                f"legal_lines {candidate.get('legal_solution_line_count', 0)}",
-                f"agreement {candidate.get('recognizer_agreement_count', 1)}",
-                f"confidence {float(candidate.get('confidence') or 0.0):.3f}",
-                f"recognition {candidate.get('selected_preprocess_variant')}" if candidate.get("selected_preprocess_variant") else "",
-                f"display {candidate.get('display_variant_used')}" if candidate.get("display_variant_used") else "",
-            ]
-            if bit
-        )
-        candidate_rows.append(
-            '<section class="exercise-fen-candidate">'
-            f"<h4>Candidate FEN {index}</h4>"
-            f'<p class="chess-diagram-fen-meta">{html.escape(meta)}</p>'
-            f'<p class="diagram-fen"><code class="diagram-fen-code">{html.escape(str(candidate.get("fen") or ""))}</code></p>'
-            f"{warning_markup}"
-            "</section>"
-        )
-    return (
-        primary_markup
-        + '<details class="exercise-fen-candidates" open>'
-        + f"<summary>Candidate FENs ({len(candidates)})</summary>"
-        + "".join(candidate_rows)
-        + "</details>"
-    )
 
 
 def _exercise_candidate_lines_html(exercise: ChessExerciseRecord) -> str:
@@ -5792,11 +3987,6 @@ def _exercise_candidate_lines_html(exercise: ChessExerciseRecord) -> str:
         warning_markup = ""
         if warnings:
             warning_markup = '<p class="candidate-line-warnings">' + html.escape(", ".join(warnings[:8])) + "</p>"
-        blocker_markup = (
-            f'<p class="candidate-line-blocker">first_blocker: {html.escape(warnings[0])}</p>'
-            if warnings and not legal
-            else ""
-        )
         final_fen = str(line.get("final_fen") or "").strip()
         final_fen_markup = (
             f'<p class="diagram-fen"><span class="diagram-fen-label">Final FEN:</span> '
@@ -5809,7 +3999,6 @@ def _exercise_candidate_lines_html(exercise: ChessExerciseRecord) -> str:
             f"<h4>Candidate line {index}: {html.escape(status)}</h4>"
             f'<pre class="candidate-line-text"><code>{html.escape(str(line.get("movetext") or ""))}</code></pre>'
             f"{final_fen_markup}"
-            f"{blocker_markup}"
             f"{warning_markup}"
             "</section>"
         )
@@ -5821,45 +4010,14 @@ def _exercise_candidate_lines_html(exercise: ChessExerciseRecord) -> str:
     )
 
 
-def _exercise_ocr_normalization_html(exercise: ChessExerciseRecord) -> str:
-    candidates = [dict(candidate) for candidate in exercise.ocr_normalization_candidates]
-    if not candidates:
-        return (
-            '<div class="exercise-ocr-normalization">'
-            "<h3>OCR normalization candidates</h3>"
-            "<p>No OCR normalization candidates were generated.</p>"
-            "</div>"
-        )
-    rows = []
-    for index, candidate in enumerate(candidates[:6], start=1):
-        warnings = [str(warning) for warning in candidate.get("warnings") or [] if str(warning).strip()]
-        warning_markup = ""
-        if warnings:
-            warning_markup = '<p class="candidate-line-warnings">' + html.escape(", ".join(warnings[:8])) + "</p>"
-        rows.append(
-            '<section class="exercise-ocr-candidate">'
-            f"<h4>OCR candidate {index} | confidence {float(candidate.get('confidence') or 0.0):.3f}</h4>"
-            f'<pre class="candidate-line-text"><code>{html.escape(str(candidate.get("text") or ""))}</code></pre>'
-            f"{warning_markup}"
-            "</section>"
-        )
-    return (
-        '<div class="exercise-ocr-normalization">'
-        "<h3>OCR normalization candidates</h3>"
-        + "".join(rows)
-        + "</div>"
-    )
-
-
 def _record_download_html(
     record: ChessPgnRecord,
     *,
     diagram_records: Iterable[Mapping[str, Any]] = (),
     record_source_order: int | None = None,
-    exercise: ChessExerciseRecord | None = None,
 ) -> str:
     exportable = _is_exportable_pgn_record(record)
-    exercise = exercise or _build_exercise_record(record, diagram_records, record_source_order=record_source_order)
+    exercise = _build_exercise_record(record, diagram_records, record_source_order=record_source_order)
     safe_title = html.escape(record.title or record.id)
     safe_section_id = html.escape(record.id, quote=True)
     safe_pgn_id = html.escape(f"{record.id}-pgn", quote=True)
@@ -5867,12 +4025,11 @@ def _record_download_html(
     status_label = "Legalny PGN/FEN" if exportable else "Do weryfikacji"
     status_markup = f'<p class="chess-pgn-status">{status_label}</p>'
     fen_markup = _record_fen_html(record) if exportable else ""
-    matched_diagram_markup = _exercise_diagram_html(exercise)
-    exercise_fen_markup = _exercise_fen_summary_html(exercise)
+    matched_diagram_markup = "".join(
+        _diagram_record_html(diagram, index)
+        for index, diagram in enumerate(exercise.diagram_records, start=1)
+    )
     quality_markup = _exercise_quality_flags_html(exercise)
-    line_audit_markup = _record_line_classification_html(record)
-    ai_review_markup = _exercise_ai_review_html(exercise)
-    ocr_normalization_markup = _exercise_ocr_normalization_html(exercise)
     candidate_markup = _exercise_candidate_lines_html(exercise)
     pgn_markup = ""
     if exportable:
@@ -5884,17 +4041,9 @@ def _record_download_html(
             "</div>"
         )
     else:
-        normalized_attempt = _record_normalized_attempt_text(record)
-        safe_attempt_id = html.escape(f"{record.id}-normalized-attempt", quote=True)
         pgn_markup = (
             f'<p class="chess-review-reason">Nie eksportuję strict PGN/FEN automatycznie: '
-            f"{html.escape(_record_review_reason(record.warnings))}. "
-            "PGN export blocked until legal replay.</p>"
-            '<div class="chess-normalized-attempt">'
-            "<h3>Znormalizowana próba PGN</h3>"
-            f'<button type="button" class="copy-pgn-button" data-copy-target="{safe_attempt_id}">Kopiuj próbę</button>'
-            f'<pre id="{safe_attempt_id}" class="chess-normalized-attempt-text"><code>{html.escape(normalized_attempt)}</code></pre>'
-            "</div>"
+            f"{html.escape(_record_review_reason(record.warnings))}</p>"
         )
     full_notation = _record_full_notation_text(record)
     raw_heading = "Pełna notacja z książki" if exportable else "Tekst OCR z książki, wymaga korekty"
@@ -5910,11 +4059,7 @@ def _record_download_html(
         f"<h2>{safe_title}</h2>"
         f"{status_markup}"
         f"{quality_markup}"
-        f"{line_audit_markup if not exportable else ''}"
         f"{matched_diagram_markup}"
-        f"{exercise_fen_markup}"
-        f"{ai_review_markup}"
-        f"{ocr_normalization_markup}"
         f"{full_markup}"
         f"{candidate_markup}"
         f"{fen_markup}"
@@ -5931,18 +4076,8 @@ def _record_full_notation_text(record: ChessPgnRecord) -> str:
     for candidate in candidates:
         cleaned = str(candidate or "").strip()
         if cleaned:
-            if _detect_unmapped_pgn_glyphs(cleaned) or _detect_unmapped_pgn_glyphs(record.raw_text):
-                return "Notacja wymaga weryfikacji: wykryto nierozpoznany glyph."
             return cleaned
     return "Brak rozpoznanej notacji."
-
-
-def _record_normalized_attempt_text(record: ChessPgnRecord) -> str:
-    for candidate in (record.movetext, record.pgn, record.annotated_pgn):
-        cleaned = str(candidate or "").strip()
-        if cleaned:
-            return cleaned
-    return "Brak znormalizowanej proby PGN."
 
 
 def _copy_pgn_script() -> str:
@@ -5970,38 +4105,6 @@ def _copy_pgn_script() -> str:
     )
 
 
-def _record_line_classification_html(record: ChessPgnRecord) -> str:
-    rows = [dict(item) for item in record.line_classifications if dict(item).get("line") or dict(item).get("warnings")]
-    if not rows:
-        return ""
-    rendered_rows = []
-    for item in rows[:40]:
-        warnings = ", ".join(str(warning) for warning in item.get("warnings") or [] if str(warning).strip())
-        meta = " | ".join(
-            bit
-            for bit in [
-                str(item.get("source") or ""),
-                f"line {item.get('line_number')}" if item.get("line_number") else "",
-                str(item.get("reason") or ""),
-                f"warnings {warnings}" if warnings else "",
-            ]
-            if bit
-        )
-        rendered_rows.append(
-            '<section class="chess-line-classification-row">'
-            f"<h4>{html.escape(str(item.get('kind') or 'review'))}</h4>"
-            f'<p class="chess-line-classification-meta">{html.escape(meta)}</p>'
-            f'<pre><code>{html.escape(str(item.get("line") or ""))}</code></pre>'
-            "</section>"
-        )
-    return (
-        '<details class="chess-line-classification" open>'
-        f"<summary>Line classification audit ({len(rows)})</summary>"
-        + "".join(rendered_rows)
-        + "</details>"
-    )
-
-
 def _record_review_html(record: ChessPgnRecord) -> str:
     safe_title = html.escape(record.title or record.id)
     safe_id = html.escape(record.id, quote=True)
@@ -6009,8 +4112,6 @@ def _record_review_html(record: ChessPgnRecord) -> str:
     confidence = float(record.confidence or 0.0)
     warnings = list(record.warnings or [])
     reason = html.escape(_record_review_reason(warnings))
-    pages = ", ".join(str(page) for page in record.source_pages if page)
-    page_markup = f'<p class="chess-pgn-review-pages">Strony źródłowe: {html.escape(pages)}</p>' if pages else ""
     warning_markup = ""
     if warnings:
         items = "".join(f"<li>{html.escape(warning)}</li>" for warning in warnings[:12])
@@ -6018,28 +4119,19 @@ def _record_review_html(record: ChessPgnRecord) -> str:
     raw = (record.raw_text or record.movetext or "").strip()
     if not raw:
         raw = "Brak surowego fragmentu notacji."
-    normalized_attempt = _record_normalized_attempt_text(record)
-    line_audit_markup = _record_line_classification_html(record)
     return (
         '<section class="chess-pgn-review" '
         f'id="{safe_id}" data-pgn-status="{status}" data-pgn-confidence="{confidence:.3f}">'
         f'<p class="chess-pgn-review-title"><strong>PGN do weryfikacji: {safe_title}</strong></p>'
         f'<p class="chess-pgn-review-note">Nie publikuje PGN/FEN automatycznie: {reason}</p>'
-        f"{page_markup}"
         f"{warning_markup}"
-        '<p class="chess-pgn-review-subtitle"><strong>Raw OCR</strong></p>'
         f'<pre class="chess-pgn-review-text"><code>{html.escape(raw)}</code></pre>'
-        '<p class="chess-pgn-review-subtitle"><strong>Znormalizowana próba</strong></p>'
-        f'<pre class="chess-pgn-review-normalized"><code>{html.escape(normalized_attempt)}</code></pre>'
-        f"{line_audit_markup}"
         "</section>"
     )
 
 
 def _record_review_reason(warnings: Iterable[str]) -> str:
     warning_set = set(warnings or [])
-    if UNMAPPED_CHESS_GLYPH_WARNING in warning_set:
-        return "wykryto nierozpoznany glyph albo token mojibake w zrodle PGN."
     if "invalid_move_number_zero" in warning_set:
         return "wystepuje niedozwolony numer ruchu 0."
     if "move_number_regression" in warning_set:
@@ -6052,30 +4144,9 @@ def _record_review_reason(warnings: Iterable[str]) -> str:
         return "legalny replay PGN zglosil blad."
     if "pgn_replay_failed" in warning_set:
         return "nie udalo sie legalnie odtworzyc partii."
-    if "illegal_san_token" in warning_set:
-        return "ruch wyglada jak SAN, ale jest nielegalny w aktualnej pozycji."
-    if "ambiguous_san_token" in warning_set:
-        return "ruch SAN jest niejednoznaczny w aktualnej pozycji."
-    if "line_requires_review" in warning_set:
-        return "co najmniej jedna linia nie jest bezpiecznie klasyfikowalna jako ruch, komentarz, metadata albo szum."
-    if "diagram_text_match_low_confidence" in warning_set:
-        return "diagram zostal dopasowany tylko po niskiej pewnosci kolejnosci zrodla."
-    if "fen_candidate_conflict" in warning_set:
-        return "kandydaci FEN sa sprzeczni i nie ma legalnego replayu rozstrzygajacego wybor."
-    if "solution_replay_failed" in warning_set:
-        return "kandydacka linia rozwiazania nie replayuje sie legalnie od wybranego FEN."
     if "python_chess_unavailable" in warning_set:
         return "brak lokalnej biblioteki python-chess do walidacji."
     return "confidence jest ponizej progu albo rekord wymaga recznej kontroli."
-
-
-def _record_review_display_text(record: ChessPgnRecord) -> str:
-    raw = (record.raw_text or record.movetext or "").strip()
-    if not raw:
-        return "Brak surowego fragmentu notacji."
-    if _detect_unmapped_pgn_glyphs(raw):
-        return "Notacja wymaga weryfikacji: wykryto nierozpoznany glyph. Surowy tekst pozostaje w raporcie audytowym."
-    return raw
 
 
 def _safe_int(value: Any) -> int:
@@ -6083,10 +4154,3 @@ def _safe_int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
-
-
-def _safe_float(value: Any) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0

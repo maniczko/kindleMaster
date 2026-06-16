@@ -4,6 +4,7 @@ import html
 import json
 import re
 import shutil
+import time
 from dataclasses import asdict
 from io import StringIO
 from pathlib import Path
@@ -63,41 +64,90 @@ def run_auto_chess_process(
         build_ai_assisted_quality_eval,
         build_ai_fen_candidates,
         build_ai_pgn_candidates,
+        build_chess_pgn_review,
+        build_chess_quality_dashboard,
+        evaluate_fen_ensemble,
+        preprocess_chess_board_crops,
+        recognize_fen_local,
+        render_semantic_source_reader,
         run_chess_study_export,
     )
+    from chess_fen_ml_acceptance import build_fen_beam_candidates, build_runtime_template_candidates
+    from chess_pgn_auto_repair import repair_and_accept_pgn_records
 
     out = Path(out_dir)
     pdf = Path(pdf_path)
     source_html = Path(html_path) if html_path else None
+    stages: list[dict[str, Any]] = []
     try:
-        stage_payload = run_chess_study_export(
-            pdf,
-            html_path=source_html,
-            out_dir=out,
-            quality_profile=quality_profile,
-            render_pages=render_pages,
-            diagram_page_ranges=diagram_page_ranges,
-            glyph_mapping_file=glyph_mapping_file,
+        stage_payload = _run_auto_stage(
+            "run_chess_study_export",
+            lambda: run_chess_study_export(
+                pdf,
+                html_path=source_html,
+                out_dir=out,
+                quality_profile=quality_profile,
+                render_pages=render_pages,
+                diagram_page_ranges=diagram_page_ranges,
+                glyph_mapping_file=glyph_mapping_file,
+            ),
+            stages,
         )
+        _run_auto_stage("preprocess_chess_board_crops", lambda: preprocess_chess_board_crops(out), stages)
+        _run_auto_stage("recognize_fen_local", lambda: recognize_fen_local(out), stages)
+        _run_auto_stage("evaluate_fen_ensemble", lambda: evaluate_fen_ensemble(out), stages)
+        _run_auto_stage("generate_fen_template_candidates", lambda: build_runtime_template_candidates(out), stages)
+        _run_auto_stage("generate_fen_beam_candidates", lambda: build_fen_beam_candidates(out), stages)
+        _run_auto_stage(
+            "build_auto_chess_flow_artifacts_before_apply",
+            lambda: build_auto_chess_flow_artifacts(
+                out,
+                mode=mode,
+                source_pdf=pdf,
+                source_html=source_html,
+                stage_payload={"stages": stages},
+                ai_payloads={},
+                chess_fen_recognition_max_diagrams=chess_fen_recognition_max_diagrams,
+            ),
+            stages,
+        )
+        _run_auto_stage("apply_runtime_accepted_fen", lambda: apply_runtime_accepted_fen(out), stages)
+        _run_auto_stage("build_chess_pgn_review", lambda: build_chess_pgn_review(out, glyph_mapping_file=glyph_mapping_file), stages)
+        _run_auto_stage("repair_and_accept_pgn_records", lambda: repair_and_accept_pgn_records(out), stages)
+        _run_auto_stage("apply_runtime_accepted_pgn", lambda: apply_runtime_accepted_pgn(out), stages)
+        _run_auto_stage("rebuild_semantic_export", lambda: render_semantic_source_reader(out), stages)
+        _run_auto_stage("build_chess_quality_dashboard", lambda: build_chess_quality_dashboard(out), stages)
         ai_payloads: dict[str, Any] = {}
         if with_ai:
-            ai_payloads["fen"] = build_ai_fen_candidates(out, limit=ai_limit, dry_run=dry_run_ai)
-            ai_payloads["pgn"] = build_ai_pgn_candidates(
-                out,
-                glyph_mapping_file=Path(glyph_mapping_file) if glyph_mapping_file else None,
-                limit=ai_pgn_limit,
-                dry_run=dry_run_ai,
+            ai_payloads["fen"] = _run_auto_stage(
+                "build_ai_fen_candidates",
+                lambda: build_ai_fen_candidates(out, limit=ai_limit, dry_run=dry_run_ai),
+                stages,
             )
-            ai_payloads["quality"] = build_ai_assisted_quality_eval(out)
+            ai_payloads["pgn"] = _run_auto_stage(
+                "build_ai_pgn_candidates",
+                lambda: build_ai_pgn_candidates(
+                    out,
+                    glyph_mapping_file=Path(glyph_mapping_file) if glyph_mapping_file else None,
+                    limit=ai_pgn_limit,
+                    dry_run=dry_run_ai,
+                ),
+                stages,
+            )
+            ai_payloads["quality"] = _run_auto_stage("build_ai_assisted_quality_eval", lambda: build_ai_assisted_quality_eval(out), stages)
         payload = build_auto_chess_flow_artifacts(
             out,
             mode=mode,
             source_pdf=pdf,
             source_html=source_html,
-            stage_payload=stage_payload,
+            stage_payload={"initial_export": stage_payload, "stages": stages},
             ai_payloads=ai_payloads,
             chess_fen_recognition_max_diagrams=chess_fen_recognition_max_diagrams,
         )
+        payload["stage_results"] = stages
+        _run_auto_stage("validate_auto_chess_output", lambda: validate_auto_chess_output(out, strict=mode == "auto-strict"), stages)
+        payload["stage_results"] = stages
+        _write_json(out / "auto_chess_flow.json", payload)
     except Exception as exc:
         payload = _failed_process_payload(
             out,
@@ -111,6 +161,39 @@ def run_auto_chess_process(
         payload = {**payload, "status": "AUTO_FAILED_WITH_REASON", "strict_failed": True}
         _write_json(Path(out_dir) / "auto_chess_flow.json", payload)
     return payload
+
+
+def _run_auto_stage(name: str, fn: Any, stages: list[dict[str, Any]]) -> dict[str, Any]:
+    started = time.perf_counter()
+    try:
+        payload = fn() or {}
+        if not isinstance(payload, dict):
+            payload = {"result": payload}
+        elapsed = round(time.perf_counter() - started, 4)
+        stage = {
+            "name": name,
+            "status": payload.get("status") or "ok",
+            "counts": _stage_counts(payload),
+            "applied_count": int(payload.get("applied_count") or payload.get("accepted_fen_changed") or payload.get("accepted_pgn_changed") or 0),
+            "failure_reasons": _stage_failure_reasons(payload),
+            "output_artifacts": _stage_artifacts(payload),
+            "elapsed_seconds": elapsed,
+        }
+        stages.append(stage)
+        return payload
+    except Exception as exc:
+        elapsed = round(time.perf_counter() - started, 4)
+        stage = {
+            "name": name,
+            "status": "failed",
+            "counts": {},
+            "applied_count": 0,
+            "failure_reasons": [f"{exc.__class__.__name__}: {exc}"],
+            "output_artifacts": {},
+            "elapsed_seconds": elapsed,
+        }
+        stages.append(stage)
+        return {"status": "failed", "error": stage["failure_reasons"][0]}
 
 
 def build_auto_chess_flow_artifacts(
@@ -133,6 +216,8 @@ def build_auto_chess_flow_artifacts(
     pgn_records = list(book.get("pgn_records") or [])
     ai_fen_rows = _read_jsonl(out / "review" / "ai_fen_candidates.jsonl")
     model_fen_rows = _read_jsonl(out / "review" / "fen_model_predictions.jsonl")
+    beam_fen_rows = _read_jsonl(out / "review" / "fen_beam_candidates.jsonl")
+    ensemble_eval = _read_optional_json(out / "reports" / "fen_ensemble_eval.json")
     pgn_lattice_rows = _read_jsonl(out / "review" / "pgn_lattice_review.jsonl")
 
     page_payload = _canonical_pages(pages)
@@ -143,6 +228,8 @@ def build_auto_chess_flow_artifacts(
         diagrams,
         ai_fen_rows,
         model_fen_rows,
+        beam_fen_rows,
+        ensemble_eval,
         max_diagrams=chess_fen_recognition_max_diagrams,
     )
     accepted_fen_by_source = _accepted_fen_by_source(diagrams, fen_payload)
@@ -333,6 +420,26 @@ def review_auto_chess_output(out_dir: str | Path) -> dict[str, Any]:
     return payload
 
 
+def apply_runtime_accepted_fen(out_dir: str | Path) -> dict[str, Any]:
+    from chess_fen_ml_acceptance import apply_runtime_accepted_fen as _apply
+
+    return _apply(out_dir)
+
+
+def apply_runtime_accepted_pgn(out_dir: str | Path) -> dict[str, Any]:
+    from chess_pgn_auto_repair import apply_runtime_accepted_pgn as _apply
+
+    payload = _apply(out_dir)
+    try:
+        from chess_study_export import build_chess_quality_dashboard, render_semantic_source_reader
+
+        render_semantic_source_reader(Path(out_dir))
+        build_chess_quality_dashboard(Path(out_dir))
+    except Exception:
+        pass
+    return payload
+
+
 def is_auto_chess_output(path: str | Path) -> bool:
     candidate = Path(path)
     return candidate.is_dir() and (
@@ -340,6 +447,73 @@ def is_auto_chess_output(path: str | Path) -> bool:
         or (candidate / "data" / "book.json").is_file()
         or (candidate / "reports" / "chess_quality_dashboard.json").is_file()
     )
+
+
+def _apply_fen_to_diagram(diagram: dict[str, Any], accepted: dict[str, dict[str, Any]]) -> bool:
+    diagram_id = str(diagram.get("diagram_id") or diagram.get("id") or "")
+    item = accepted.get(diagram_id)
+    if not item:
+        return False
+    selected = str(item.get("selected_value") or "").strip()
+    if not selected:
+        return False
+    diagram["fen"] = selected
+    diagram["fen_candidate"] = selected
+    diagram["validation_status"] = "accepted"
+    diagram["status"] = "accepted"
+    diagram["runtime_status"] = item.get("runtime_status") or "FEN_MACHINE_ACCEPTED"
+    diagram["review_reason"] = ""
+    diagram["acceptance_trace"] = item.get("acceptance_trace") or {}
+    return True
+
+
+def _stage_counts(payload: dict[str, Any]) -> dict[str, Any]:
+    keys = [
+        "pages",
+        "diagrams_total",
+        "diagram_count",
+        "prediction_count",
+        "candidate_count",
+        "accepted_count",
+        "accepted_pgn",
+        "pgn_total",
+        "record_count",
+        "applied_count",
+        "machine_accepted_candidate_count",
+    ]
+    counts: dict[str, Any] = {}
+    for key in keys:
+        if key in payload:
+            counts[key] = payload.get(key)
+    summary = payload.get("summary")
+    if isinstance(summary, dict):
+        for key in keys:
+            if key in summary and key not in counts:
+                counts[key] = summary.get(key)
+    return counts
+
+
+def _stage_failure_reasons(payload: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    for key in ["error", "reason"]:
+        if payload.get(key):
+            reasons.append(str(payload.get(key)))
+    for key in ["top_blockers", "top_conflict_reasons"]:
+        for row in payload.get(key) or []:
+            label = row.get("key") or row.get("code")
+            if label:
+                reasons.append(str(label))
+    return reasons[:20]
+
+
+def _stage_artifacts(payload: dict[str, Any]) -> dict[str, str]:
+    artifacts: dict[str, str] = {}
+    for key, value in payload.items():
+        if key.endswith("_path") or key.endswith("_html") or key.endswith("_dir") or key in {"index_html", "predictions_path", "data_path"}:
+            artifacts[key] = str(value)
+    if isinstance(payload.get("artifacts"), dict):
+        artifacts.update({str(k): str(v) for k, v in payload["artifacts"].items()})
+    return artifacts
 
 
 def _auto_chess_artifacts_current(out: Path) -> bool:
@@ -423,11 +597,15 @@ def _canonical_fen(
     diagrams: list[dict[str, Any]],
     ai_rows: list[dict[str, Any]],
     model_rows: list[dict[str, Any]],
+    beam_rows: list[dict[str, Any]] | None = None,
+    ensemble_eval: dict[str, Any] | None = None,
     *,
     max_diagrams: str | int = "all",
 ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     ai_by_id = _rows_by_id(ai_rows, "diagram_id")
     model_by_id = _rows_by_id(model_rows, "diagram_id")
+    beam_by_id = _rows_by_id(beam_rows or [], "diagram_id")
+    ensemble_by_id = _rows_by_id(list((ensemble_eval or {}).get("accepted_candidates") or []), "diagram_id")
     candidates: list[dict[str, Any]] = []
     validation_rows: list[dict[str, Any]] = []
     repairs: list[dict[str, Any]] = []
@@ -480,7 +658,13 @@ def _canonical_fen(
                 }
             )
             continue
-        raw_candidates = _fen_raw_candidates(diagram, ai_by_id.get(diagram_id), model_by_id.get(diagram_id))
+        raw_candidates = _fen_raw_candidates(
+            diagram,
+            ai_by_id.get(diagram_id),
+            model_by_id.get(diagram_id),
+            beam_by_id.get(diagram_id),
+            ensemble_by_id.get(diagram_id),
+        )
         candidate_rows = [_fen_candidate_row(item) for item in raw_candidates]
         selected = _select_fen_status(diagram, candidate_rows)
         repair_rows = _fen_repair_rows(diagram_id, raw_candidates)
@@ -532,6 +716,8 @@ def _fen_raw_candidates(
     diagram: dict[str, Any],
     ai_row: dict[str, Any] | None,
     model_row: dict[str, Any] | None,
+    beam_row: dict[str, Any] | None = None,
+    ensemble_row: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for key, source in [("fen", "deterministic"), ("fen_candidate", "deterministic_candidate")]:
@@ -569,8 +755,38 @@ def _fen_raw_candidates(
                     "method": "ai_review_only",
                 }
             )
+    for deterministic_row in [beam_row, ensemble_row]:
+        if deterministic_row:
+            fen = str(
+                deterministic_row.get("fen")
+                or deterministic_row.get("fen_candidate")
+                or deterministic_row.get("selected_value")
+                or ""
+            ).strip()
+            if fen:
+                evidence = deterministic_row.get("evidence") or deterministic_row.get("acceptance_trace") or {}
+                rows.append(
+                    {
+                        "source": "deterministic_ensemble",
+                        "fen": fen,
+                        "authoritative": False,
+                        "confidence": _first_float(
+                            deterministic_row.get("confidence"),
+                            deterministic_row.get("global_confidence"),
+                            deterministic_row.get("score"),
+                        ),
+                        "warnings": _string_list(deterministic_row.get("warnings")),
+                        "method": "deterministic_ensemble",
+                        "squares": deterministic_row.get("squares") or [],
+                        "evidence": evidence,
+                        "source_crop_hash": deterministic_row.get("source_crop_hash") or evidence.get("source_crop_hash") or "",
+                        "score_margin_to_second_candidate": deterministic_row.get("score_margin_to_second_candidate")
+                        or evidence.get("score_margin_to_second_candidate"),
+                        "changed_squares": deterministic_row.get("changed_squares") or [],
+                    }
+                )
     if model_row:
-        fen = str(model_row.get("fen") or model_row.get("predicted_fen") or "").strip()
+        fen = str(model_row.get("fen") or model_row.get("predicted_fen") or model_row.get("fen_candidate") or "").strip()
         if fen:
             rows.append(
                 {

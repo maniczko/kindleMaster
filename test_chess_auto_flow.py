@@ -10,7 +10,16 @@ from pathlib import Path
 from unittest.mock import patch
 
 import kindlemaster
-from chess_auto_flow import build_auto_chess_flow_artifacts, validate_auto_chess_output
+from chess_auto_flow import (
+    apply_runtime_accepted_fen,
+    apply_runtime_accepted_pgn,
+    build_auto_chess_flow_artifacts,
+    run_auto_chess_process,
+    validate_auto_chess_output,
+)
+from chess_fen_beam_search import build_deterministic_ensemble_fen
+from chess_fen_hardening import fen_to_cells
+from chess_pgn_auto_repair import repair_and_accept_pgn_records
 
 
 VALID_KINGS_FEN = "4k3/8/8/8/8/8/8/4K3 w - - 0 1"
@@ -30,6 +39,27 @@ VALID_PGN = """[Event "Synthetic"]
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _squares_from_fen(fen: str, *, confidence: float = 0.99) -> list[dict]:
+    rows: list[dict] = []
+    for index, piece in enumerate(fen_to_cells(fen)):
+        square = f"{'abcdefgh'[index % 8]}{'87654321'[index // 8]}"
+        label = piece or "empty"
+        rows.append(
+            {
+                "square": square,
+                "class": label,
+                "piece": piece,
+                "confidence": confidence,
+                "alternatives": [
+                    {"class": label, "piece": piece, "confidence": confidence, "source": "model_centroid"},
+                    {"class": "empty", "piece": "", "confidence": 0.01, "source": "model_centroid"},
+                    {"class": "P", "piece": "P", "confidence": 0.005, "source": "model_centroid"},
+                ],
+            }
+        )
+    return rows
 
 
 class AutoChessFlowTests(unittest.TestCase):
@@ -155,6 +185,100 @@ class AutoChessFlowTests(unittest.TestCase):
             }
             self.assertIn("ai_review_only_source", blocker_codes)
 
+    def test_deterministic_ensemble_candidate_can_be_machine_accepted_but_local_model_stays_blocked(self) -> None:
+        model_prediction = {
+            "diagram_id": "p001_d001",
+            "fen_candidate": VALID_KINGS_FEN,
+            "global_confidence": 0.97,
+            "deterministic_validation": {"valid": True, "warnings": []},
+            "squares": _squares_from_fen(VALID_KINGS_FEN, confidence=0.97),
+        }
+
+        ensemble = build_deterministic_ensemble_fen(
+            {"diagram_id": "p001_d001", "image_path": "assets/diagrams/p001_d001.png"},
+            model_prediction,
+            None,
+            {"source_crop_hash": "abc123"},
+        )
+
+        self.assertEqual(ensemble["source"], "deterministic_ensemble")
+        self.assertEqual(ensemble["fen"], VALID_KINGS_FEN)
+        self.assertGreaterEqual(ensemble["confidence"], 0.97)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir)
+            _write_json(
+                out / "data" / "book.json",
+                {
+                    "pages": [
+                        {
+                            "page": 1,
+                            "diagrams": [{"diagram_id": "p001_d001", "image_path": "assets/diagrams/p001_d001.png"}],
+                            "pgn_records": [],
+                            "text_blocks": [],
+                        }
+                    ],
+                    "pgn_records": [],
+                },
+            )
+            (out / "review").mkdir(parents=True)
+            (out / "review" / "fen_model_predictions.jsonl").write_text(json.dumps(model_prediction) + "\n", encoding="utf-8")
+            (out / "review" / "fen_beam_candidates.jsonl").write_text(json.dumps(ensemble) + "\n", encoding="utf-8")
+
+            build_auto_chess_flow_artifacts(out)
+
+            fen_payload = json.loads((out / "fen" / "fen_candidates.json").read_text(encoding="utf-8"))
+            item = fen_payload["items"][0]
+            sources = {candidate["source"]: candidate["runtime_status"] for candidate in item["candidate_values"]}
+            self.assertEqual(sources["local_model_candidate"], "FEN_REVIEW_REQUIRED")
+            self.assertEqual(sources["deterministic_ensemble"], "FEN_MACHINE_ACCEPTED")
+            self.assertEqual(item["selected_value"], VALID_KINGS_FEN)
+
+    def test_apply_runtime_accepted_fen_updates_book_and_diagram_data(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir)
+            diagram = {
+                "id": "p001_d001",
+                "page": 1,
+                "image_path": "assets/diagrams/p001_d001.png",
+                "fen": "",
+                "fen_candidate": "",
+                "validation_status": "needs-human-review",
+                "review_reason": "missing",
+            }
+            _write_json(
+                out / "data" / "book.json",
+                {
+                    "pages": [{"page": 1, "diagrams": [dict(diagram)], "pgn_records": [], "text_blocks": []}],
+                    "pgn_records": [],
+                },
+            )
+            _write_json(out / "data" / "diagrams.json", {"schema": "test", "diagrams": [dict(diagram)]})
+            _write_json(
+                out / "fen" / "fen_candidates.json",
+                {
+                    "items": [
+                        {
+                            "id": "p001_d001",
+                            "status": "FEN_MACHINE_ACCEPTED",
+                            "runtime_status": "FEN_MACHINE_ACCEPTED",
+                            "selected_value": VALID_KINGS_FEN,
+                            "acceptance_trace": {"source": "deterministic_ensemble"},
+                        }
+                    ]
+                },
+            )
+
+            result = apply_runtime_accepted_fen(out)
+
+            self.assertEqual(result["applied_count"], 1)
+            book = json.loads((out / "data" / "book.json").read_text(encoding="utf-8"))
+            diagrams = json.loads((out / "data" / "diagrams.json").read_text(encoding="utf-8"))
+            self.assertEqual(book["pages"][0]["diagrams"][0]["fen"], VALID_KINGS_FEN)
+            self.assertEqual(book["pages"][0]["diagrams"][0]["validation_status"], "accepted")
+            self.assertEqual(diagrams["diagrams"][0]["runtime_status"], "FEN_MACHINE_ACCEPTED")
+            self.assertTrue((out / "reports" / "fen_apply_runtime_acceptance.json").is_file())
+
     def test_acceptance_blockers_report_groups_fen_and_pgn_reasons(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             out = Path(temp_dir)
@@ -245,6 +369,53 @@ class AutoChessFlowTests(unittest.TestCase):
             self.assertIsNone(item["selected_value"])
             self.assertIn("source_fen_not_machine_accepted", {error["code"] for error in item["validation_errors"]})
 
+    def test_solution_line_from_accepted_fen_is_replayed_and_exported(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir)
+            _write_json(
+                out / "data" / "book.json",
+                {
+                    "pages": [
+                        {
+                            "page": 1,
+                            "diagrams": [
+                                {
+                                    "id": "diagram-1",
+                                    "diagram_id": "diagram-1",
+                                    "label": "Diagram 1-1",
+                                    "fen": VALID_KINGS_FEN,
+                                    "validation_status": "accepted",
+                                    "runtime_status": "FEN_MACHINE_ACCEPTED",
+                                }
+                            ],
+                            "pgn_records": [],
+                            "text_blocks": [],
+                        }
+                    ],
+                    "pgn_records": [
+                        {
+                            "record_id": "solution_1",
+                            "label": "Diagram 1-1",
+                            "raw_text": "Diagram 1-1 1. Kd2",
+                            "visible_review_text": "1. Kd2",
+                            "warnings": [],
+                        }
+                    ],
+                },
+            )
+
+            repair = repair_and_accept_pgn_records(out)
+            apply = apply_runtime_accepted_pgn(out)
+
+            self.assertEqual(repair["accepted_count"], 1)
+            self.assertEqual(apply["applied_count"], 1)
+            games = (out / "data" / "games.pgn").read_text(encoding="utf-8")
+            self.assertIn('[SetUp "1"]', games)
+            self.assertIn(f'[FEN "{VALID_KINGS_FEN}"]', games)
+            self.assertIn("1. Kd2", games)
+            updated = json.loads((out / "data" / "book.json").read_text(encoding="utf-8"))
+            self.assertEqual(updated["pgn_records"][0]["runtime_status"], "SOLUTION_LINE_ACCEPTED")
+
     def test_fen_recognition_limit_zero_means_all_and_positive_limit_reports_skipped_ids(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             out = Path(temp_dir)
@@ -303,6 +474,47 @@ class AutoChessFlowTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             run_mock.assert_called_once()
             self.assertIn("MANUAL_REVIEW_AVAILABLE", stdout.getvalue())
+
+    def test_run_auto_chess_process_executes_full_backend_chain(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir)
+
+            def fake_export(*_args, **_kwargs):
+                _write_json(
+                    out / "data" / "book.json",
+                    {"pages": [{"page": 1, "diagrams": [], "pgn_records": [], "text_blocks": []}], "pgn_records": []},
+                )
+                return {"status": "ok", "pages": 1}
+
+            patches = [
+                patch("chess_study_export.run_chess_study_export", side_effect=fake_export),
+                patch("chess_study_export.preprocess_chess_board_crops", return_value={"status": "ok", "normalized_count": 0}),
+                patch("chess_study_export.recognize_fen_local", return_value={"status": "ok", "prediction_count": 0}),
+                patch("chess_study_export.evaluate_fen_ensemble", return_value={"status": "needs_review", "accepted_candidate_count": 0}),
+                patch("chess_fen_ml_acceptance.build_runtime_template_candidates", return_value={"status": "needs_review", "template_candidate_count": 0}),
+                patch("chess_fen_ml_acceptance.build_fen_beam_candidates", return_value={"status": "needs_review", "candidate_count": 0}),
+                patch("chess_auto_flow.apply_runtime_accepted_fen", return_value={"status": "ok", "applied_count": 0}),
+                patch("chess_study_export.build_chess_pgn_review", return_value={"status": "ok", "pgn_total": 0}),
+                patch("chess_pgn_auto_repair.repair_and_accept_pgn_records", return_value={"status": "ok", "accepted_count": 0}),
+                patch("chess_auto_flow.apply_runtime_accepted_pgn", return_value={"status": "ok", "applied_count": 0}),
+                patch("chess_study_export.render_semantic_source_reader", return_value={"status": "ok"}),
+                patch("chess_study_export.build_chess_quality_dashboard", return_value={"status": "ok"}),
+            ]
+            stack = contextlib.ExitStack()
+            with stack:
+                for item in patches:
+                    stack.enter_context(item)
+                payload = run_auto_chess_process("study.pdf", out_dir=out, mode="auto")
+
+            stage_names = [stage["name"] for stage in payload["stage_results"]]
+            self.assertIn("preprocess_chess_board_crops", stage_names)
+            self.assertIn("generate_fen_template_candidates", stage_names)
+            self.assertIn("generate_fen_beam_candidates", stage_names)
+            self.assertIn("apply_runtime_accepted_fen", stage_names)
+            self.assertIn("repair_and_accept_pgn_records", stage_names)
+            self.assertIn("validate_auto_chess_output", stage_names)
+            for stage in payload["stage_results"]:
+                self.assertIn("elapsed_seconds", stage)
 
 
 if __name__ == "__main__":

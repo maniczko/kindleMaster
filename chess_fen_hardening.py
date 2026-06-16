@@ -51,6 +51,7 @@ KNOWN_BAD_EXPECTED_FENS = {
 MACHINE_ACCEPTED_FEN_SOURCES = {
     "deterministic",
     "deterministic_candidate",
+    "deterministic_ensemble",
     "font_board",
     "font-board",
     "image_template",
@@ -78,7 +79,10 @@ MACHINE_BLOCKING_FEN_WARNINGS = {
     "piece_template_set_incomplete",
     "queen_color_ambiguous_suppressed",
     "review_crop_candidate_mismatch",
+    "score_margin_below_threshold",
+    "no_square_alternatives",
     "sparse_position_confidence_below_threshold",
+    "template_profile_not_ready",
     "white_king_count_invalid",
 }
 
@@ -308,6 +312,9 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
             }
         )
 
+    if normalized_source == "deterministic-ensemble":
+        blockers.extend(_deterministic_ensemble_contract_blockers(candidate, ctx, trace))
+
     validation = validate_fen_detailed(fen)
     trace["fen_validation"] = {
         "is_syntax_valid": validation.is_syntax_valid,
@@ -372,6 +379,91 @@ def _candidate_confidence(candidate: dict[str, Any], *, default: Any = None) -> 
 def _is_machine_accepted_source(source: str) -> bool:
     normalized = str(source or "").strip().lower().replace("_", "-")
     return any(normalized == item.replace("_", "-") for item in MACHINE_ACCEPTED_FEN_SOURCES)
+
+
+def _deterministic_ensemble_contract_blockers(
+    candidate: dict[str, Any],
+    context: dict[str, Any],
+    trace: dict[str, Any],
+) -> list[dict[str, Any]]:
+    evidence = candidate.get("evidence") if isinstance(candidate.get("evidence"), dict) else {}
+    min_score_margin = float(context.get("min_score_margin", 0.025) or 0.025)
+    score_margin = _candidate_score_margin(candidate, evidence)
+    source_crop_hash = str(candidate.get("source_crop_hash") or evidence.get("source_crop_hash") or "").strip()
+    local_model_evidence = bool(evidence.get("local_model_candidate"))
+    template_evidence = bool(evidence.get("template_candidate"))
+    square_alternatives_checked = bool(evidence.get("square_alternatives_checked"))
+    python_chess_valid = bool(evidence.get("python_chess_valid"))
+    validate_fen_passed = bool(
+        evidence.get("validate_fen_detailed_passed")
+        or (isinstance(candidate.get("deterministic_validation"), dict) and candidate["deterministic_validation"].get("valid"))
+    )
+    blockers: list[dict[str, Any]] = []
+    trace["deterministic_ensemble_evidence"] = {
+        "python_chess_valid": python_chess_valid,
+        "validate_fen_detailed_passed": validate_fen_passed,
+        "score_margin_to_second_candidate": score_margin,
+        "min_score_margin": min_score_margin,
+        "source_crop_hash_present": bool(source_crop_hash),
+        "local_model_candidate": local_model_evidence,
+        "template_candidate": template_evidence,
+        "square_alternatives_checked": square_alternatives_checked,
+    }
+    if not python_chess_valid:
+        blockers.append(
+            {
+                "code": "python_chess_evidence_missing",
+                "message": "Deterministic ensemble candidates must carry positive python-chess validation evidence.",
+            }
+        )
+    if not validate_fen_passed:
+        blockers.append(
+            {
+                "code": "validate_fen_evidence_missing",
+                "message": "Deterministic ensemble candidates must carry validate_fen_detailed evidence.",
+            }
+        )
+    if not source_crop_hash:
+        blockers.append(
+            {
+                "code": "source_crop_hash_missing",
+                "message": "Deterministic ensemble candidates require crop-backed hash evidence.",
+            }
+        )
+    if not square_alternatives_checked:
+        blockers.append(
+            {
+                "code": "square_alternatives_not_checked",
+                "message": "Deterministic ensemble candidates require checked per-square alternatives.",
+            }
+        )
+    if not (local_model_evidence or template_evidence):
+        blockers.append(
+            {
+                "code": "no_template_or_model_agreement",
+                "message": "Deterministic ensemble candidates require local model or template evidence.",
+            }
+        )
+    if score_margin < min_score_margin:
+        blockers.append(
+            {
+                "code": "score_margin_too_low",
+                "message": "Best deterministic ensemble candidate is too close to the runner-up.",
+                "score_margin_to_second_candidate": score_margin,
+                "min_score_margin": min_score_margin,
+            }
+        )
+    return blockers
+
+
+def _candidate_score_margin(candidate: dict[str, Any], evidence: dict[str, Any]) -> float:
+    for value in [candidate.get("score_margin_to_second_candidate"), evidence.get("score_margin_to_second_candidate")]:
+        try:
+            if value is not None:
+                return float(value)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
 
 
 def _python_chess_validate(fen: str) -> dict[str, Any]:

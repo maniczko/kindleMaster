@@ -125,6 +125,50 @@ class ChessFenPipelineHardeningTests(unittest.TestCase):
         self.assertEqual(result["runtime_status"], "FEN_MACHINE_ACCEPTED")
         self.assertEqual(result["selected_value"], self.STARTING_FEN)
 
+    def test_machine_accept_fen_requires_full_deterministic_ensemble_evidence(self) -> None:
+        result = machine_accept_fen(
+            {
+                "source": "deterministic_ensemble",
+                "fen": self.STARTING_FEN,
+                "confidence": 0.99,
+                "warnings": [],
+                "evidence": {
+                    "python_chess_valid": True,
+                    "score_margin_to_second_candidate": 0.50,
+                },
+            },
+            {"min_confidence": 0.90},
+        )
+
+        codes = {blocker["code"] for blocker in result["acceptance_blockers"]}
+        self.assertEqual(result["runtime_status"], "FEN_REVIEW_REQUIRED")
+        self.assertIn("source_crop_hash_missing", codes)
+        self.assertIn("square_alternatives_not_checked", codes)
+        self.assertIn("no_template_or_model_agreement", codes)
+
+    def test_machine_accept_fen_accepts_deterministic_ensemble_with_full_evidence_contract(self) -> None:
+        result = machine_accept_fen(
+            {
+                "source": "deterministic_ensemble",
+                "fen": self.STARTING_FEN,
+                "confidence": 0.99,
+                "warnings": [],
+                "source_crop_hash": "sha256:abc123",
+                "evidence": {
+                    "python_chess_valid": True,
+                    "validate_fen_detailed_passed": True,
+                    "score_margin_to_second_candidate": 0.50,
+                    "local_model_candidate": True,
+                    "template_candidate": False,
+                    "square_alternatives_checked": True,
+                },
+            },
+            {"min_confidence": 0.90, "min_score_margin": 0.05},
+        )
+
+        self.assertEqual(result["runtime_status"], "FEN_MACHINE_ACCEPTED")
+        self.assertEqual(result["selected_value"], self.STARTING_FEN)
+
     def test_machine_accept_fen_rejects_ai_approval_and_high_confidence_without_deterministic_source(self) -> None:
         result = machine_accept_fen(
             {

@@ -6775,6 +6775,34 @@ def _predict_square_class(image: Image.Image, model: dict[str, Any]) -> dict[str
     }
 
 
+def _square_prediction_alternatives(result: dict[str, Any], *, top_n: int = 3) -> list[dict[str, Any]]:
+    probabilities = result.get("probabilities") if isinstance(result.get("probabilities"), dict) else {}
+    rows: list[dict[str, Any]] = []
+    for label, probability in sorted(probabilities.items(), key=lambda item: float(item[1] or 0.0), reverse=True)[: max(1, top_n)]:
+        label_text = str(label or "empty")
+        piece = "" if label_text == "empty" else label_text
+        rows.append(
+            {
+                "class": label_text,
+                "piece": piece if piece in "KQRBNPkqrbnp" else "",
+                "confidence": round(float(probability or 0.0), 4),
+                "source": "model_centroid",
+            }
+        )
+    if not rows:
+        label_text = str(result.get("label") or "empty")
+        piece = "" if label_text == "empty" else str(result.get("class") or "")
+        rows.append(
+            {
+                "class": label_text,
+                "piece": piece if piece in "KQRBNPkqrbnp" else "",
+                "confidence": round(float(result.get("confidence") or 0.0), 4),
+                "source": "model_centroid",
+            }
+        )
+    return rows
+
+
 def _evaluate_square_classifier(rows: list[dict[str, Any]], model: dict[str, Any]) -> dict[str, Any]:
     eval_rows = [row for row in rows if row.get("split") in {"val", "holdout"}]
     if not eval_rows:
@@ -6847,12 +6875,16 @@ def _predict_fen_for_source(source: dict[str, Any], out_dir: Path, model: dict[s
                         "piece": result.get("class") or "",
                         "confidence": result.get("confidence"),
                         "entropy": result.get("entropy"),
+                        "alternatives": _square_prediction_alternatives(result, top_n=3),
+                        "source": "model_centroid",
                     }
                     for index, result in enumerate(square_results)
                 ],
                 "deterministic_validation": {"valid": bool(valid and not warnings), "warnings": warnings},
             }
         )
+        if any(not square.get("alternatives") for square in row.get("squares") or []):
+            row.setdefault("warnings", []).append("no_square_alternatives")
     except Exception as exc:
         row["deterministic_validation"] = {"valid": False, "warnings": [type(exc).__name__ + ": " + str(exc)]}
     return row

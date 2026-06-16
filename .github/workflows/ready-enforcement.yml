@@ -13,7 +13,10 @@ concurrency:
 
 env:
   GOVERNANCE_COVERAGE_FAIL_UNDER: "75"
-  CORE_CONVERSION_COVERAGE_FAIL_UNDER: "45"
+  CORE_CONVERSION_COVERAGE_FAIL_UNDER: "70"
+  CONVERTER_COVERAGE_FAIL_UNDER: "60"
+  TEXT_NORMALIZATION_COVERAGE_FAIL_UNDER: "65"
+  SEMANTIC_CLEANUP_COVERAGE_FAIL_UNDER: "70"
 
 jobs:
   ready-governance:
@@ -55,7 +58,7 @@ jobs:
         run: python -m pip check
 
       - name: Run static-quality gate
-        run: python -m ruff check --select E9,F63,F7,F82 --output-format=github kindlemaster.py premium_tools.py scripts test_agent_config_contracts.py test_github_ready_enforcement.py test_kindlemaster_entrypoint.py test_project_status.py test_skill_contracts.py test_skill_guardrails.py
+        run: python -m ruff check --select E9,F63,F7,F82 --output-format=github kindlemaster.py github_issue_orchestration.py premium_tools.py scripts test_agent_config_contracts.py test_github_issue_orchestration.py test_github_ready_enforcement.py test_kindlemaster_entrypoint.py test_project_status.py test_skill_contracts.py test_skill_guardrails.py
 
       - name: Run dependency security audit
         if: ${{ matrix.security_audit }}
@@ -64,16 +67,14 @@ jobs:
       - name: Run governance coverage threshold
         run: |
           python -c "from pathlib import Path; Path('reports/coverage').mkdir(parents=True, exist_ok=True)"
-          python -m coverage run -m unittest test_agent_config_contracts.py test_github_ready_enforcement.py test_kindlemaster_entrypoint.py test_project_status.py test_skill_contracts.py test_skill_guardrails.py
-          python -m coverage report --include="kindlemaster.py,scripts/generate_project_status.py" --fail-under=${{ env.GOVERNANCE_COVERAGE_FAIL_UNDER }}
+          python -m coverage run -m unittest test_agent_config_contracts.py test_github_issue_orchestration.py test_github_ready_enforcement.py test_kindlemaster_entrypoint.py test_project_status.py test_skill_contracts.py test_skill_guardrails.py
+          python -m coverage report --include="kindlemaster.py,github_issue_orchestration.py,scripts/generate_project_status.py" --fail-under=${{ env.GOVERNANCE_COVERAGE_FAIL_UNDER }}
           python -m coverage xml -o reports/coverage/coverage-${{ matrix.os }}-py${{ matrix.python-version }}.xml
 
       - name: Run core conversion coverage threshold
         if: ${{ matrix.core_coverage }}
         run: |
-          python -m coverage erase
-          python -m coverage run --source=converter,docx_conversion,text_cleanup_engine,text_normalization,kindle_semantic_cleanup,epub_validation -m unittest test_docx_conversion.py test_converter_text_cleanup.py test_text_normalization.py test_epub_validation.py
-          python -m coverage report --fail-under=${{ env.CORE_CONVERSION_COVERAGE_FAIL_UNDER }}
+          python kindlemaster.py test --suite quality-critical
           python -m coverage xml -o reports/coverage/core-conversion-coverage-${{ matrix.os }}-py${{ matrix.python-version }}.xml
 
       - name: Upload governance artifacts
@@ -138,6 +139,7 @@ jobs:
             pnpm install --frozen-lockfile
             if node -e "const scripts=require('./package.json').scripts||{}; process.exit(scripts['test:contracts:regression'] ? 0 : 1)"; then
               pnpm run test:contracts:regression
+              pnpm run test:coverage
             else
               echo "::notice::Node workspace found, but package.json has no test:contracts:regression script."
               echo "Expected hook: pnpm run test:contracts:regression"
@@ -150,6 +152,7 @@ jobs:
             fi
             if node -e "const scripts=require('./package.json').scripts||{}; process.exit(scripts['test:contracts:regression'] ? 0 : 1)"; then
               npm run test:contracts:regression
+              npm run test:coverage
             else
               echo "::notice::Node workspace found, but package.json has no test:contracts:regression script."
               echo "Expected hook: pnpm run test:contracts:regression"

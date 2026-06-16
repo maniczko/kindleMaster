@@ -28,6 +28,7 @@ SUPPORTED_SOURCE_SUFFIXES = frozenset({".pdf", ".docx"})
 METADATA_LIST_LIMIT = 20
 METADATA_MESSAGE_LIMIT = 12
 METADATA_DEPTH_LIMIT = 4
+ARTIFACT_RECOVERY_LIMIT = 200
 
 ConvertFunction = Callable[..., dict[str, Any]]
 HeadingRepairFunction = Callable[..., Any]
@@ -143,15 +144,26 @@ class ConversionJobStore:
         self._lock = lock
         self._persistence_path = Path(persistence_path) if persistence_path else None
         self._active_statuses = set(active_statuses or {"queued", "running", "repairing_headings"})
+        self._persistence_fingerprint: tuple[int, int] | None = None
 
     @property
     def persistence_path(self) -> Path | None:
         return self._persistence_path
 
-    def load(self) -> dict[str, Any]:
+    def _read_persistence_fingerprint(self) -> tuple[int, int] | None:
+        if not self._persistence_path:
+            return None
+        try:
+            stat_result = self._persistence_path.stat()
+        except OSError:
+            return None
+        return (int(stat_result.st_mtime_ns), int(stat_result.st_size))
+
+    def load(self, *, preserve_active_in_memory: bool = False) -> dict[str, Any]:
         if not self._persistence_path or not self._persistence_path.exists():
             return {"loaded": False, "job_count": 0, "interrupted_jobs": 0, "error": ""}
 
+        source_fingerprint = self._read_persistence_fingerprint()
         try:
             payload = json.loads(self._persistence_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
@@ -164,12 +176,25 @@ class ConversionJobStore:
         interrupted_jobs = 0
         loaded_jobs: dict[str, dict[str, Any]] = {}
         now = _utc_now_label()
+        active_in_memory: dict[str, dict[str, Any]] = {}
+        if preserve_active_in_memory:
+            with self._lock:
+                active_in_memory = {
+                    job_id: dict(job)
+                    for job_id, job in self._jobs.items()
+                    if str(job.get("status", "") or "").strip().lower() in self._active_statuses
+                }
         for raw_job_id, raw_job in raw_jobs.items():
             if not isinstance(raw_job, Mapping):
                 continue
             job = dict(raw_job)
             job_id = str(job.get("job_id") or raw_job_id).strip()
             if not job_id:
+                continue
+            if job.get("recovered_from_artifacts") and not _runtime_original_filename({"runtime": job.get("runtime", {})}):
+                continue
+            if job_id in active_in_memory:
+                loaded_jobs[job_id] = active_in_memory[job_id]
                 continue
             job["job_id"] = job_id
             status = str(job.get("status", "") or "").strip().lower()
@@ -189,10 +214,69 @@ class ConversionJobStore:
         with self._lock:
             self._jobs.update(loaded_jobs)
 
+        self._persistence_fingerprint = source_fingerprint
         if interrupted_jobs:
             self.persist()
 
         return {"loaded": True, "job_count": len(loaded_jobs), "interrupted_jobs": interrupted_jobs, "error": ""}
+
+    def reload_if_changed(self) -> dict[str, Any]:
+        current_fingerprint = self._read_persistence_fingerprint()
+        if current_fingerprint is None:
+            return {"reloaded": False, "loaded": False, "job_count": 0, "interrupted_jobs": 0, "error": ""}
+        if current_fingerprint == self._persistence_fingerprint:
+            return {"reloaded": False, "loaded": True, "job_count": len(self.snapshot()), "interrupted_jobs": 0, "error": ""}
+        result = self.load(preserve_active_in_memory=True)
+        result["reloaded"] = bool(result.get("loaded"))
+        return result
+
+    def recover_from_artifacts(
+        self,
+        artifact_root: str | os.PathLike[str],
+        *,
+        limit: int = ARTIFACT_RECOVERY_LIMIT,
+    ) -> dict[str, Any]:
+        """Recover terminal local jobs when the lightweight job index was lost.
+
+        The artifact tree stores runtime logs and quality reports independently
+        from the temp job index. This method treats those reports as evidence,
+        but never overwrites in-memory jobs or invents missing output files.
+        """
+
+        root = Path(artifact_root)
+        if not root.exists() or not root.is_dir():
+            return {"recovered": False, "job_count": 0, "error": "artifact_root_missing"}
+
+        with self._lock:
+            existing_job_ids = set(self._jobs)
+
+        recovered_jobs: dict[str, dict[str, Any]] = {}
+        for job_dir in sorted(
+            (path for path in root.iterdir() if path.is_dir()),
+            key=lambda path: _path_mtime_ns(path),
+            reverse=True,
+        ):
+            if len(recovered_jobs) >= max(1, int(limit)):
+                break
+            job_id = job_dir.name
+            if job_id in existing_job_ids or job_id in recovered_jobs:
+                continue
+            recovered = _recover_conversion_job_from_artifact_dir(job_dir)
+            if recovered:
+                recovered_jobs[job_id] = recovered
+
+        if not recovered_jobs:
+            return {"recovered": False, "job_count": 0, "error": ""}
+
+        with self._lock:
+            for job_id, job in recovered_jobs.items():
+                self._jobs.setdefault(job_id, job)
+        persist_result = self.persist()
+        return {
+            "recovered": True,
+            "job_count": len(recovered_jobs),
+            "error": persist_result.get("error", ""),
+        }
 
     def create(self, job: Mapping[str, Any]) -> dict[str, Any]:
         job_id = str(job.get("job_id", "") or "").strip()
@@ -244,6 +328,7 @@ class ConversionJobStore:
             temp_path = self._persistence_path.with_suffix(self._persistence_path.suffix + ".tmp")
             temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             temp_path.replace(self._persistence_path)
+            self._persistence_fingerprint = self._read_persistence_fingerprint()
         except OSError as error:
             return {"persisted": False, "job_count": len(snapshot), "error": str(error)}
         return {"persisted": True, "job_count": len(snapshot), "error": ""}
@@ -251,6 +336,222 @@ class ConversionJobStore:
 
 def _utc_now_label() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _path_mtime_ns(path: Path) -> int:
+    try:
+        return int(path.stat().st_mtime_ns)
+    except OSError:
+        return 0
+
+
+def _read_json_mapping(path: Path | None) -> dict[str, Any]:
+    if not path:
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _first_matching_file(root: Path, subdir: str, pattern: str) -> Path | None:
+    directory = root / subdir
+    if not directory.is_dir():
+        return None
+    files = sorted(directory.glob(pattern), key=lambda path: _path_mtime_ns(path), reverse=True)
+    return files[0] if files else None
+
+
+def _content_type_for_artifact(path: Path, kind: str) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".epub":
+        return "application/epub+zip"
+    if suffix == ".pdf":
+        return "application/pdf"
+    if suffix == ".json":
+        return "application/json"
+    if suffix in {".md", ".markdown"}:
+        return "text/markdown"
+    if kind == "log":
+        return "application/json"
+    return "application/octet-stream"
+
+
+def _local_artifact_record(*, job_id: str, kind: str, path: Path) -> dict[str, Any]:
+    retention_days = {"input": 7, "output": 30, "report": 90, "log": 14}.get(kind, 30)
+    return {
+        "provider": "local",
+        "status": "stored",
+        "kind": kind,
+        "job_id": job_id,
+        "filename": path.name,
+        "location": str(path),
+        "size_bytes": path.stat().st_size,
+        "content_type": _content_type_for_artifact(path, kind),
+        "retention": {"days": retention_days, "expires_at": ""},
+        "signed_url": {
+            "available": False,
+            "url": "",
+            "expires_in_seconds": 0,
+            "reason": "local_storage",
+        },
+        "error": "",
+    }
+
+
+def _runtime_original_filename(runtime_log: Mapping[str, Any]) -> str:
+    runtime = runtime_log.get("runtime")
+    if not isinstance(runtime, Mapping):
+        return ""
+    replay = runtime.get("replay")
+    if not isinstance(replay, Mapping):
+        return ""
+    command = replay.get("command")
+    if not isinstance(command, Mapping):
+        return ""
+    kwargs = command.get("kwargs")
+    if not isinstance(kwargs, Mapping):
+        return ""
+    return str(kwargs.get("original_filename", "") or "").strip()
+
+
+def _runtime_kwargs(runtime_log: Mapping[str, Any]) -> Mapping[str, Any]:
+    runtime = runtime_log.get("runtime")
+    if not isinstance(runtime, Mapping):
+        return {}
+    replay = runtime.get("replay")
+    if not isinstance(replay, Mapping):
+        return {}
+    command = replay.get("command")
+    if not isinstance(command, Mapping):
+        return {}
+    kwargs = command.get("kwargs")
+    return kwargs if isinstance(kwargs, Mapping) else {}
+
+
+def _existing_artifact_location(record: Any) -> str:
+    if not isinstance(record, Mapping):
+        return ""
+    location = str(record.get("location", "") or "").strip()
+    if not location:
+        return ""
+    try:
+        return location if Path(location).is_file() else ""
+    except OSError:
+        return ""
+
+
+def _recover_conversion_job_from_artifact_dir(job_dir: Path) -> dict[str, Any] | None:
+    job_id = job_dir.name
+    runtime_path = _first_matching_file(job_dir, "log", "*.runtime.json")
+    report_json_path = _first_matching_file(job_dir, "report", "*.quality.json")
+    output_path = _first_matching_file(job_dir, "output", "*.epub")
+    input_path = _first_matching_file(job_dir, "input", "*")
+    report_markdown_path = _first_matching_file(job_dir, "report", "*.quality.md")
+
+    runtime_log = _read_json_mapping(runtime_path)
+    report_payload = _read_json_mapping(report_json_path)
+    quality_state = report_payload.get("quality_state")
+    quality_state = dict(quality_state) if isinstance(quality_state, Mapping) else {}
+    report_job = report_payload.get("job")
+    report_job = dict(report_job) if isinstance(report_job, Mapping) else {}
+    runtime = runtime_log.get("runtime")
+    runtime = dict(runtime) if isinstance(runtime, Mapping) else {}
+    runtime_kwargs = _runtime_kwargs(runtime_log)
+
+    original_from_runtime = _runtime_original_filename(runtime_log)
+    if not original_from_runtime:
+        return None
+    original_filename = original_from_runtime or str(report_job.get("filename", "") or "").strip()
+    if not original_filename:
+        return None
+
+    status = str(runtime_log.get("status") or report_job.get("status") or "ready").strip().lower()
+    if status not in {"ready", "failed", "timed_out"}:
+        return None
+
+    source_type = str(runtime_kwargs.get("source_type") or report_job.get("source_type") or "").strip().lower()
+    if not source_type:
+        source_type = Path(original_filename).suffix.lower().lstrip(".") or "pdf"
+
+    artifacts = dict(quality_state.get("artifacts", {}) or {}) if isinstance(quality_state.get("artifacts"), Mapping) else {}
+    if input_path and input_path.is_file():
+        artifacts["input"] = _local_artifact_record(job_id=job_id, kind="input", path=input_path)
+    if output_path and output_path.is_file():
+        artifacts["output"] = _local_artifact_record(job_id=job_id, kind="output", path=output_path)
+    else:
+        artifacts.pop("output", None)
+    if report_json_path and report_json_path.is_file():
+        artifacts["report_json"] = _local_artifact_record(job_id=job_id, kind="report", path=report_json_path)
+    if report_markdown_path and report_markdown_path.is_file():
+        artifacts["report_markdown"] = _local_artifact_record(job_id=job_id, kind="report", path=report_markdown_path)
+    if runtime_path and runtime_path.is_file():
+        artifacts["log"] = _local_artifact_record(job_id=job_id, kind="log", path=runtime_path)
+
+    if output_path and output_path.is_file():
+        resolved_output_path = str(output_path)
+        output_size_bytes = output_path.stat().st_size
+        download_name = output_path.name
+    else:
+        output_record = artifacts.get("output")
+        resolved_output_path = _existing_artifact_location(output_record)
+        output_size_bytes = int(report_job.get("output_size_bytes") or quality_state.get("output_size_bytes") or 0)
+        download_name = Path(original_filename).with_suffix(".epub").name
+
+    metadata: dict[str, Any] = {}
+    for key in (
+        "summary",
+        "premium_scoring",
+        "quality_selection",
+        "auto_repair",
+        "ai_quality",
+        "ai_quality_verification",
+        "heading_repair",
+        "validation",
+        "metadata_summary",
+    ):
+        value = quality_state.get(key)
+        if isinstance(value, Mapping):
+            metadata[key] = dict(value)
+    if runtime_kwargs.get("profile"):
+        metadata["profile"] = str(runtime_kwargs.get("profile") or "")
+    if runtime_kwargs.get("language"):
+        metadata["language"] = str(runtime_kwargs.get("language") or "")
+
+    created_at = str(runtime.get("created_at") or report_job.get("created_at") or datetime.fromtimestamp(_path_mtime_ns(job_dir) / 1_000_000_000, UTC).isoformat().replace("+00:00", "Z"))
+    updated_at = str(runtime.get("updated_at") or report_job.get("updated_at") or created_at)
+
+    if quality_state:
+        quality_state["download_url"] = f"/convert/download/{job_id}" if resolved_output_path else ""
+        quality_state["download_available"] = bool(resolved_output_path)
+        quality_state["download_ready"] = bool(resolved_output_path)
+
+    return {
+        "job_id": job_id,
+        "status": status,
+        "message": str(runtime.get("message") or report_job.get("message") or "Odtworzono wpis Biblioteki z lokalnych artefaktow."),
+        "source_type": source_type,
+        "filename": original_filename,
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "source_path": str(input_path) if input_path and input_path.is_file() else "",
+        "output_path": resolved_output_path,
+        "download_name": download_name,
+        "metadata": metadata,
+        "quality_state_snapshot": quality_state,
+        "runtime": runtime,
+        "progress": {},
+        "artifacts": artifacts,
+        "artifact_storage": dict(runtime_log.get("artifact_storage", {}) or {"provider": "local", "status": "available", "reason": ""}),
+        "output_size_bytes": output_size_bytes,
+        "auto_repair": dict(quality_state.get("auto_repair", {}) or {}) if isinstance(quality_state.get("auto_repair"), Mapping) else {},
+        "email_delivery": {},
+        "error": "",
+        "error_code": "",
+        "sentry_event_id": "",
+        "recovered_from_artifacts": True,
+    }
 
 
 def build_local_app_url(port: int | str | None = None, *, path: str = "/") -> str:
@@ -1339,6 +1640,9 @@ def build_conversion_metadata(
     quality_selection = _json_safe_metadata_value(quality_report.get("quality_selection") or {})
     if isinstance(quality_selection, Mapping) and quality_selection:
         metadata["quality_selection"] = dict(quality_selection)
+    auto_repair = _json_safe_metadata_value(quality_report.get("auto_repair") or {})
+    if isinstance(auto_repair, Mapping) and auto_repair:
+        metadata["auto_repair"] = dict(auto_repair)
     ai_quality_verification = _json_safe_metadata_value(quality_report.get("ai_quality_verification") or {})
     if isinstance(ai_quality_verification, Mapping) and ai_quality_verification:
         metadata["ai_quality_verification"] = dict(ai_quality_verification)
@@ -1381,7 +1685,197 @@ def build_conversion_quality_state(
         payload,
         download_url=download_url,
     )
-    return assemble_quality_state_dict(request)
+    quality_state = assemble_quality_state_dict(request)
+    auto_repair = _json_safe_metadata_value(
+        request.conversion_metadata.get("auto_repair") or payload.get("auto_repair") or {}
+    )
+    if isinstance(auto_repair, Mapping) and auto_repair:
+        quality_state["auto_repair"] = dict(auto_repair)
+    return quality_state
+
+
+def _build_pending_delivery_quality_state(
+    *,
+    metadata: Mapping[str, Any],
+    request: ConversionRequest,
+    epub_bytes: bytes,
+) -> dict[str, Any]:
+    return build_conversion_quality_state(
+        {
+            "status": "ready",
+            "source_type": _fallback_source_type(request),
+            "filename": request.original_filename,
+            "message": "EPUB gotowy do naprawy dostawy.",
+            "metadata": dict(metadata),
+            "output_size_bytes": len(epub_bytes),
+            "output_path": "__pending_delivery_repair__.epub",
+            "output_path_exists": True,
+        },
+        download_url="/convert/download/__pending_delivery_repair__",
+    )
+
+
+def _delivery_repair_trigger_codes(quality_state: Mapping[str, Any]) -> set[str]:
+    blockers = quality_state.get("send_to_kindle_blockers")
+    if not isinstance(blockers, list):
+        return set()
+    return {
+        str(item.get("code") or "")
+        for item in blockers
+        if isinstance(item, Mapping) and str(item.get("code") or "")
+    }
+
+
+def _safe_delivery_repair_needed(
+    *,
+    quality_state: Mapping[str, Any],
+    quality_report: Mapping[str, Any],
+    epub_bytes: bytes,
+) -> bool:
+    trigger_codes = _delivery_repair_trigger_codes(quality_state)
+    if trigger_codes.intersection(
+        {
+            "kindle_delivery_progressive_jpeg",
+            "kindle_delivery_validation_failed",
+            "kindle_delivery_release_not_ready",
+        }
+    ):
+        return True
+    quality_blocker_codes = {
+        str(item.get("code") or "").lower()
+        for item in quality_state.get("quality_blockers", []) or []
+        if isinstance(item, Mapping)
+    }
+    if any(
+        token in code
+        for code in quality_blocker_codes
+        for token in ("metadata", "toc", "nav", "spine", "manifest", "epubcheck", "package")
+    ):
+        return True
+    validation_status = str(quality_report.get("validation_status") or quality_report.get("epubcheck_status") or "").lower()
+    if validation_status and validation_status not in {
+        "passed",
+        "pass",
+        "ok",
+        "passed_with_warnings",
+        "warnings",
+        "warning",
+        "unavailable",
+        "skipped",
+    }:
+        return True
+    try:
+        from epub_delivery_repair import has_progressive_jpeg
+
+        return has_progressive_jpeg(epub_bytes)
+    except Exception:
+        return False
+
+
+def _apply_delivery_auto_repair(
+    *,
+    result: dict[str, Any],
+    epub_bytes: bytes,
+    request: ConversionRequest,
+    detected_source_type: str,
+    heading_repair_report: Mapping[str, Any],
+    status_callback: StatusCallback | None,
+) -> tuple[dict[str, Any], bytes, dict[str, Any]]:
+    from epub_delivery_repair import empty_auto_repair_payload, repair_epub_for_delivery
+
+    mode = str(request.quality_gate_mode or "draft").strip().lower()
+    if mode == "off":
+        return result, epub_bytes, empty_auto_repair_payload(status="skipped", reason="quality_gate_off")
+
+    quality_report = _to_mapping_payload(result.get("quality_report", {}) or {})
+    pre_metadata = build_conversion_metadata(
+        result=result,
+        detected_source_type=detected_source_type,
+        heading_repair_enabled=request.heading_repair_enabled,
+        heading_repair_report=dict(heading_repair_report),
+    )
+    pre_quality_state = _build_pending_delivery_quality_state(
+        metadata=pre_metadata,
+        request=request,
+        epub_bytes=epub_bytes,
+    )
+    before_blockers = [
+        dict(item)
+        for item in pre_quality_state.get("send_to_kindle_blockers", []) or []
+        if isinstance(item, Mapping)
+    ]
+    if pre_quality_state.get("send_to_kindle_ready") is True:
+        payload = empty_auto_repair_payload(status="skipped", reason="already_send_to_kindle_ready")
+        payload["before_blockers"] = before_blockers
+        payload["after_blockers"] = before_blockers
+        return result, epub_bytes, payload
+
+    if not _safe_delivery_repair_needed(
+        quality_state=pre_quality_state,
+        quality_report=quality_report,
+        epub_bytes=epub_bytes,
+    ):
+        payload = empty_auto_repair_payload(status="skipped", reason="no_safe_repair_trigger")
+        payload["before_blockers"] = before_blockers
+        payload["after_blockers"] = before_blockers
+        return result, epub_bytes, payload
+
+    if status_callback:
+        _emit_status(
+            status_callback,
+            "running",
+            "Uruchamiam bezpieczną naprawę EPUB do wysyłki Kindle...",
+            stage_id="auto_repair",
+            stage_label="Naprawa dostawy",
+            percent_estimate=88,
+        )
+
+    document_summary = _to_mapping_payload(result.get("document_summary", {}) or {})
+    repair_result = repair_epub_for_delivery(
+        epub_bytes,
+        title_hint=str(document_summary.get("title") or ""),
+        author_hint=str(document_summary.get("author") or ""),
+        language_hint=request.language,
+        publication_profile=_resolved_publication_profile(request=request, result=result),
+        expected_description=str(document_summary.get("description") or ""),
+        strict_premium=False,
+    )
+    selected_epub_bytes = repair_result.epub_bytes if repair_result.status == "applied" else epub_bytes
+    repair_payload = repair_result.to_public_dict(before_blockers=before_blockers)
+
+    updated_result = dict(result)
+    updated_quality_report = _to_mapping_payload(updated_result.get("quality_report", {}) or {})
+    updated_quality_report["auto_repair"] = repair_payload
+    updated_result["quality_report"] = updated_quality_report
+
+    if repair_result.status == "applied":
+        updated_result = _apply_runtime_quality_gate(
+            result=updated_result,
+            epub_bytes=selected_epub_bytes,
+            request=request,
+            heading_repair_report=heading_repair_report,
+        )
+
+    post_metadata = build_conversion_metadata(
+        result=updated_result,
+        detected_source_type=detected_source_type,
+        heading_repair_enabled=request.heading_repair_enabled,
+        heading_repair_report=dict(heading_repair_report),
+    )
+    post_quality_state = _build_pending_delivery_quality_state(
+        metadata=post_metadata,
+        request=request,
+        epub_bytes=selected_epub_bytes,
+    )
+    repair_payload["after_blockers"] = [
+        dict(item)
+        for item in post_quality_state.get("send_to_kindle_blockers", []) or []
+        if isinstance(item, Mapping)
+    ]
+    updated_quality_report = _to_mapping_payload(updated_result.get("quality_report", {}) or {})
+    updated_quality_report["auto_repair"] = repair_payload
+    updated_result["quality_report"] = updated_quality_report
+    return updated_result, selected_epub_bytes, repair_payload
 
 
 def _emit_status(callback: StatusCallback, status: str, message: str, **progress_fields: Any) -> None:
@@ -1583,11 +2077,14 @@ def run_document_conversion(
             and str(heading_repair_report.get("status", "")).strip().lower() == "failed"
         ),
     )
-    quality_report = _to_mapping_payload(result.get("quality_report", {}) or {})
-    final_timings = _to_mapping_payload(quality_report.get("stage_timings", {}) or {})
-    final_timings["total_runtime_seconds"] = round(perf_counter() - total_started, 6)
-    quality_report["stage_timings"] = final_timings
-    result = {**result, "quality_report": quality_report}
+    result, epub_bytes, _auto_repair_report = _apply_delivery_auto_repair(
+        result=result,
+        epub_bytes=epub_bytes,
+        request=request,
+        detected_source_type=detected_source_type,
+        heading_repair_report=heading_repair_report,
+        status_callback=status_callback,
+    )
     metadata = build_conversion_metadata(
         result=result,
         detected_source_type=detected_source_type,

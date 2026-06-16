@@ -407,10 +407,14 @@ def _write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
 
 
 def _load_json(path: Path) -> Any:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    for encoding in ("utf-8", "utf-8-sig", "utf-16"):
+        try:
+            return json.loads(path.read_text(encoding=encoding))
+        except UnicodeError:
+            continue
+        except (OSError, json.JSONDecodeError):
+            return None
+    return None
 
 
 def _resolve_path(root: Path, path: str | Path) -> Path:

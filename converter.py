@@ -26,6 +26,7 @@ import hashlib
 import shutil
 import tempfile
 import subprocess
+import time
 import html as html_module
 import zipfile
 from pathlib import Path
@@ -217,6 +218,8 @@ def finalize_epub_bytes(
     return_details: bool = False,
 ) -> bytes | tuple[bytes, dict]:
     """Run final Kindle-friendly cleanup on reflowable EPUB output."""
+    overall_started = time.perf_counter()
+    timing_breakdown = _new_finalize_timing_breakdown()
     title = (pdf_metadata or {}).get("title") or Path(original_filename).stem
     author = (pdf_metadata or {}).get("author") or UNKNOWN_AUTHOR_FALLBACK
     profile_key = (publication_profile or "").strip().lower()
@@ -231,31 +234,7 @@ def finalize_epub_bytes(
         "status": "unavailable",
     }
 
-    if _is_chess_notation_collection_metadata(pdf_metadata):
-        text_cleanup_summary = {
-            **text_cleanup_summary,
-            "status": "skipped",
-            "profile_skip": True,
-            "bounded_long_form_skip": True,
-            "skip_reason": (
-                "Skipped expensive semantic/text cleanup for a large chess notation collection. "
-                "SAN/PGN-like notation is preserved verbatim and EPUBCheck still runs in the publication gate."
-            ),
-            "semantic_cleanup": {
-                "status": "skipped",
-                "quality_gate_status": "skipped",
-                "message": "Large chess notation collection uses notation-first fast finalization.",
-            },
-            "reference_cleanup": {
-                "status": "skipped",
-                "quality_gate_status": "skipped",
-                "message": "Reference repair is not applicable to notation-first chess collections.",
-            },
-        }
-        if return_details:
-            return epub_bytes, text_cleanup_summary
-        return epub_bytes
-
+    stage_started = time.perf_counter()
     if profile_key == "diagram_book_reflow":
         text_cleanup_summary = {
             **text_cleanup_summary,
@@ -308,7 +287,9 @@ def finalize_epub_bytes(
                 "status": "failed",
                 "warnings": [f"Text cleanup failed: {exc}"],
             }
+    _record_finalize_timing(timing_breakdown, "text_cleanup", stage_started)
 
+    stage_started = time.perf_counter()
     try:
         from kindle_semantic_cleanup import finalize_epub_for_kindle
 
@@ -341,7 +322,9 @@ def finalize_epub_bytes(
     except Exception as exc:
         print(f"Warning: Kindle semantic cleanup failed: {exc}")
         semantic_reference_cleanup = {}
+    _record_finalize_timing(timing_breakdown, "semantic_cleanup", stage_started)
 
+    stage_started = time.perf_counter()
     try:
         from epub_reference_repair import repair_epub_reference_sections
 
@@ -365,7 +348,9 @@ def finalize_epub_bytes(
             **text_cleanup_summary,
             "reference_cleanup": semantic_reference_cleanup,
         }
+    _record_finalize_timing(timing_breakdown, "reference_repair", stage_started)
 
+    stage_started = time.perf_counter()
     try:
         from epub_text_artifacts import analyze_epub_text_artifacts
 
@@ -406,7 +391,9 @@ def finalize_epub_bytes(
                 "message": f"Artifact rate analysis failed: {exc.__class__.__name__}",
             },
         }
+    _record_finalize_timing(timing_breakdown, "artifact_scan", stage_started)
 
+    stage_started = time.perf_counter()
     try:
         from ai_quality_intelligence import AIQualityProviders, evaluate_ai_quality_intelligence
         from openai_quality_provider import build_openai_quality_provider_from_env
@@ -455,10 +442,31 @@ def finalize_epub_bytes(
                 "deterministic_output_preserved": True,
             },
         }
+    _record_finalize_timing(timing_breakdown, "ai_quality", stage_started)
 
+    timing_breakdown["total"] = round(time.perf_counter() - overall_started, 4)
+    text_cleanup_summary = {
+        **text_cleanup_summary,
+        "timing_breakdown": timing_breakdown,
+    }
     if return_details:
         return epub_bytes, text_cleanup_summary
     return epub_bytes
+
+
+def _new_finalize_timing_breakdown() -> dict[str, float]:
+    return {
+        "text_cleanup": 0.0,
+        "semantic_cleanup": 0.0,
+        "reference_repair": 0.0,
+        "artifact_scan": 0.0,
+        "ai_quality": 0.0,
+        "total": 0.0,
+    }
+
+
+def _record_finalize_timing(timing_breakdown: dict[str, float], stage: str, started: float) -> None:
+    timing_breakdown[stage] = round(time.perf_counter() - started, 4)
 
 
 def _should_skip_expensive_text_cleanup(pdf_metadata: dict | None, *, publication_profile: str | None) -> bool:
@@ -539,6 +547,9 @@ def _compact_semantic_cleanup_report(semantic_report: object) -> dict:
         "toc_rebuild": _phase_status_payload(phases.get("toc_rebuild")),
         "structural_integrity": _phase_status_payload(phases.get("structural_integrity")),
     }
+    semantic_timing = _compact_timing_breakdown(semantic_report.get("timing_breakdown"))
+    if semantic_timing:
+        compact["timing_breakdown"] = semantic_timing
     blockers = release_gate.get("blockers")
     warnings = release_gate.get("warnings")
     if isinstance(blockers, list) and blockers:
@@ -581,6 +592,18 @@ def _phase_status_payload(phase: object) -> dict:
     if payload["manual_review_count"]:
         payload["message"] = f"{payload['manual_review_count']} item(s) require manual review."
     return payload
+
+
+def _compact_timing_breakdown(payload: object) -> dict[str, float]:
+    if not isinstance(payload, dict):
+        return {}
+    compact: dict[str, float] = {}
+    for key, value in payload.items():
+        try:
+            compact[str(key)] = round(max(0.0, float(value or 0.0)), 4)
+        except (TypeError, ValueError):
+            continue
+    return compact
 
 
 def _compact_semantic_mapping(payload: dict) -> dict:

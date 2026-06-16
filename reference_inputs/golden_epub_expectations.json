@@ -6,6 +6,9 @@
       "id": "dense_business_guide_pdf",
       "document_class": "dense_business_guide",
       "input_type": "pdf",
+      "required": false,
+      "requires_real_fixture": true,
+      "minimum_artifact_size_bytes": 250000,
       "artifact_candidates": ["dense_business_guide_pdf.epub"],
       "expectations": {
         "language": "en",
@@ -32,6 +35,64 @@
       }
     },
     {
+      "id": "allegro_finance_report_pdf",
+      "document_class": "finance_report",
+      "input_type": "pdf",
+      "language": "pl",
+      "required": false,
+      "notes": "Local-only real finance/report case. Put generated EPUBs under KINDLEMASTER_GOLDEN_ROOT; do not commit the source PDF or result EPUB.",
+      "artifact_candidates": [
+        "allegro_finance_report_pdf.epub",
+        "allegro_finance_report_pdf/final.epub"
+      ],
+      "before_artifact_candidates": [
+        "baseline/allegro_finance_report_pdf.epub",
+        "allegro_finance_report_pdf/before.epub"
+      ],
+      "expectations": {
+        "language": "pl",
+        "allowed_validation_statuses": ["passed", "passed_with_warnings", "unavailable"],
+        "min_xhtml_count": 1,
+        "min_nav_entries": 1,
+        "max_artifact_rate_per_1000_words": 5.0,
+        "max_table_columns": 20,
+        "metadata_no_placeholders": true
+      }
+    },
+    {
+      "id": "economist_issue_pdf",
+      "document_class": "magazine_issue",
+      "input_type": "pdf",
+      "language": "en",
+      "required": false,
+      "notes": "Local-only real magazine issue case. Store artifacts under KINDLEMASTER_GOLDEN_ROOT; expectations catch noisy page-number TOC and weak magazine structure.",
+      "artifact_candidates": [
+        "economist_issue_pdf.epub",
+        "economist_issue_pdf/final.epub"
+      ],
+      "before_artifact_candidates": [
+        "baseline/economist_issue_pdf.epub",
+        "economist_issue_pdf/before.epub"
+      ],
+      "expectations": {
+        "language": "en",
+        "allowed_validation_statuses": ["passed", "passed_with_warnings", "unavailable"],
+        "min_xhtml_count": 10,
+        "min_nav_entries": 20,
+        "min_image_count": 1,
+        "max_artifact_rate_per_1000_words": 2.0,
+        "metadata_no_placeholders": true,
+        "forbidden_toc_patterns": [
+          "^\\d{1,4}$",
+          "^contents$",
+          "^(?:input|output|task|activity|key|external|data|process)$",
+          "^object\\s+\\d+$",
+          "^state\\s+\\d+$",
+          "^rank\\s*="
+        ]
+      }
+    },
+    {
       "id": "ocr_stress_scan_pdf",
       "document_class": "scanned_ocr",
       "input_type": "pdf",
@@ -49,6 +110,9 @@
       "id": "magazine_layout_pdf",
       "document_class": "magazine_multicolumn",
       "input_type": "pdf",
+      "required": false,
+      "requires_real_fixture": true,
+      "minimum_artifact_size_bytes": 250000,
       "artifact_candidates": ["magazine_layout_pdf.epub"],
       "expectations": {
         "language": "pl",
@@ -63,6 +127,9 @@
       "id": "diagram_training_book_pdf",
       "document_class": "diagram_training_book",
       "input_type": "pdf",
+      "required": false,
+      "requires_real_fixture": true,
+      "minimum_artifact_size_bytes": 250000,
       "artifact_candidates": ["diagram_training_book_pdf.epub"],
       "expectations": {
         "language": "en",

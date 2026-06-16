@@ -164,18 +164,27 @@ class BrowserPrivacyDiagnosticsTests(unittest.TestCase):
                 }
                 """
             )
-            page.set_input_files("#fileInput", str(SAMPLE_PDF))
-            with page.expect_download(timeout=120000) as download_info:
-                page.locator("#convertEpubButton").click()
-            download = download_info.value
             page.wait_for_function(
                 """() => {
-                  const element = document.querySelector('#statusText');
-                  return !!element && (element.textContent || '').includes('EPUB wygenerowany');
+                  const text = document.body ? document.body.innerText || "" : "";
+                  return text.includes("Nowa konwersja") || text.includes("Kontynuuj lokalnie");
                 }""",
-                timeout=120000,
+                timeout=15000,
             )
-            status_text = page.locator("#statusText").text_content() or ""
+            local_button = page.locator('[data-testid="continue-locally-button"]')
+            if local_button.count():
+                local_button.click()
+            page.wait_for_function(
+                """() => {
+                  const text = document.body ? document.body.innerText || "" : "";
+                  return text.includes("Nowa konwersja");
+                }""",
+                timeout=15000,
+            )
+            page.locator('[data-testid="conversion-file-input"]').set_input_files(str(SAMPLE_PDF))
+            page.locator('[data-testid="start-conversion-button"]').click()
+            page.locator('[data-testid="file-details-view"]').wait_for(state="visible", timeout=120000)
+            status_text = page.evaluate("() => document.body ? document.body.innerText || '' : ''")
             relevant_failed_requests = [
                 request_url
                 for request_url in failed_requests
@@ -194,7 +203,7 @@ class BrowserPrivacyDiagnosticsTests(unittest.TestCase):
                 {
                     "status": "executed",
                     "classification": classification,
-                    "download": download.suggested_filename,
+                    "download": "not_auto_downloaded",
                     "status_text": status_text,
                     "storage_probe": storage_probe,
                     "privacy_warning_count": len(privacy_warnings),

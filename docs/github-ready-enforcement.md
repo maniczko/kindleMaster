@@ -20,12 +20,13 @@ It defines three stable checks:
 Local READY lanes:
 
 - `python kindlemaster.py test --suite quick`
+- `python kindlemaster.py test --suite quality-critical`
 - `python kindlemaster.py test --suite release`
 
 GitHub mirrors them as:
 
-- `ready-governance` -> developer bootstrap, Python matrix, static-quality, dependency, security, and coverage governance
-- `ready-quick` -> `python kindlemaster.py test --suite quick`, Sprint 1 QA regression tests, and the optional Node contract hook
+- `ready-governance` -> developer bootstrap, Python matrix, static-quality, dependency, security, governance coverage, and quality-critical conversion coverage
+- `ready-quick` -> `python kindlemaster.py test --suite quick`, Sprint 1 QA regression tests, Node contract tests, and Vitest coverage
 - `ready-release` -> `python kindlemaster.py test --suite release` with `KINDLEMASTER_RELEASE_PROOF_PROFILE=ci`
 - `ready-gate` -> aggregate branch-protection check that fails unless governance, quick, and release lanes pass
 
@@ -79,17 +80,17 @@ This repo includes a minimal root Node workspace for static UI/API contract regr
 
 ```powershell
 npm run test:contracts:regression
+npm run test:coverage
 ```
 
-The package also exposes `npm run test:js` and `npm run test:contract` for local use. If the workspace later migrates to pnpm for Sprint 2+ frontend work, keep the equivalent `pnpm run test:contracts:regression` hook so the READY workflow remains stable.
+The package also exposes `npm run test:js` and `npm run test:contract` for local use. If the workspace later migrates to pnpm for Sprint 2+ frontend work, keep the equivalent `pnpm run test:contracts:regression` and `pnpm run test:coverage` hooks so the READY workflow remains stable.
 
-The Vitest coverage stays contract-focused: it protects static quality-state normalization and the Sprint 4 React shell without making browser automation part of the quick READY lane.
+The Vitest coverage stays contract-focused: it protects static quality-state normalization and the React shell without making browser automation part of the quick READY lane.
 
 ## Sprint 4 React UI Gate
 
-Sprint 4 adds a React/Vite shell at `/app`; after `npm run build:ui`, `/`
-redirects to that shell while clean checkouts without `static/react/` keep the
-legacy panel as fallback. Local UI checks are:
+The React/Vite shell is served at `/` and `/app`, with the legacy panel kept at
+`/legacy` as rollback. Local UI checks are:
 
 ```powershell
 npm run build:ui
@@ -106,14 +107,15 @@ tests plus the React UI contract tests. Browser/runtime coverage remains in
 
 - Python compatibility: Python 3.12, 3.13, and 3.14 on Ubuntu, plus a Windows canary on Python 3.14.
 - Static-quality: `ruff` runs correctness-focused rules only (`E9,F63,F7,F82`) over governance/control-plane files so legacy conversion style debt does not block unrelated work.
+- GitHub issue orchestration: `test_github_issue_orchestration.py` protects the issue contract, label policy, gate mapping, and `python kindlemaster.py orchestrate` routing.
 - Agent config contracts: `test_agent_config_contracts.py` keeps Codex config, local hooks, Claude examples, and agent readiness checks aligned.
 - Dependency consistency: `python -m pip check` runs on every matrix entry.
 - Security audit: `pip-audit` runs once on the Ubuntu Python 3.14 lane against `requirements.txt` and `requirements-dev.txt` with a 60-second network timeout.
-- Coverage threshold: deterministic governance/control-plane paths (`kindlemaster.py` and `scripts/generate_project_status.py`) run through `coverage` with `GOVERNANCE_COVERAGE_FAIL_UNDER=75`.
-- Core conversion coverage: selected conversion modules run through `coverage` once on Ubuntu Python 3.14 with `CORE_CONVERSION_COVERAGE_FAIL_UNDER=45`.
+- Coverage threshold: deterministic governance/control-plane paths (`kindlemaster.py`, `github_issue_orchestration.py`, and `scripts/generate_project_status.py`) run through `coverage` with `GOVERNANCE_COVERAGE_FAIL_UNDER=75`.
+- Quality-critical conversion coverage: `python kindlemaster.py test --suite quality-critical` runs selected conversion, semantic cleanup, delivery repair, and release recovery tests once on Ubuntu Python 3.14 with `CORE_CONVERSION_COVERAGE_FAIL_UNDER=70`, `CONVERTER_COVERAGE_FAIL_UNDER=60`, `TEXT_NORMALIZATION_COVERAGE_FAIL_UNDER=65`, and `SEMANTIC_CLEANUP_COVERAGE_FAIL_UNDER=70`.
 - Artifact upload: governance artifacts, quick READY evidence, and release READY evidence are uploaded through `actions/upload-artifact@v4`.
 
-The core conversion coverage threshold is intentionally modest because the current corpus gate is still being stabilized. Raise it only after broader corpus blockers are green.
+The per-file `converter.py` threshold is intentionally lower than the total gate because the orchestrator is broad. It is now enforced at 60% after adding targeted conversion orchestration regressions.
 
 ## Reference Inputs In Clean CI
 

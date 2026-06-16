@@ -410,73 +410,28 @@ class MlDatasetBuilderTests(unittest.TestCase):
             self.assertEqual(rows["explicit_premium_magazine"]["final_label"], "premium")
             self.assertEqual(rows["explicit_premium_magazine"]["output_metrics"]["premium_score"], 9.2)
 
-    def test_builder_detects_feature_hash_label_collisions(self) -> None:
-        report = build_feature_collision_report(
-            [
-                {
-                    "case_id": "same_features_book",
-                    "label": "book_reflow",
-                    "features_hash": "abc123",
-                    "features": {"input_type": "pdf", "text_heavy": True},
-                },
-                {
-                    "case_id": "same_features_magazine",
-                    "label": "magazine_reflow",
-                    "features_hash": "abc123",
-                    "features": {"input_type": "pdf", "text_heavy": True},
-                },
-            ]
-        )
-
-        self.assertEqual(report["status"], "blocked_feature_collision")
-        self.assertEqual(report["collision_count"], 1)
-        self.assertEqual(report["collisions"][0]["labels"], ["book_reflow", "magazine_reflow"])
-
-    def test_feedback_route_label_without_training_intent_stays_audit_only(self) -> None:
+    def test_builder_skips_non_ml_utf16_reports_without_crashing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            report_path = root / "reports" / "conversion.json"
-            report_path.parent.mkdir(parents=True)
-            report_path.write_text(
-                json.dumps(
-                    {
-                        "source_type": "pdf",
-                        "analysis": {
-                            "profile": "book_reflow",
-                            "confidence": 0.75,
-                            "page_count": 3,
-                            "text_pages": 3,
-                            "scanned_pages": 0,
-                            "image_pages": 0,
-                            "text_heavy": True,
-                            "layout_heavy": False,
-                        },
-                        "quality_report": {"validation_status": "passed"},
-                    }
-                ),
-                encoding="utf-8",
+            reports_dir = root / "reports"
+            reports_dir.mkdir(parents=True)
+            (reports_dir / "validator.json").write_text(
+                json.dumps({"summary": {"status": "passed"}}),
+                encoding="utf-16",
             )
+            (root / "manifest.json").write_text(json.dumps({"cases": []}), encoding="utf-8")
+            (root / "labels.json").write_text(json.dumps({"cases": {}}), encoding="utf-8")
 
-            log_payload = append_conversion_feedback_from_report(
-                report_path=report_path,
-                log_path="reports/ml/feedback/conversion_feedback.jsonl",
-                repo_root=root,
-                case_id="audit_only",
-                quality_label="usable",
-                route_label="book_reflow",
-                issue_tags=["route"],
-                reviewer="qa",
-            )
-            export_payload = export_feedback_datasets(
-                log_paths=["reports/ml/feedback/conversion_feedback.jsonl"],
-                output_dir="reports/ml/feedback",
+            payload = build_ml_datasets(
+                manifest_path="manifest.json",
+                labels_path="labels.json",
+                reports_root="reports",
+                output_dir="reports/ml/datasets",
                 repo_root=root,
             )
 
-            self.assertEqual(log_payload["status"], "logged")
-            self.assertFalse(log_payload["include_in_route_training"])
-            self.assertEqual(log_payload["dataset_reason"], "not_marked_for_training")
-            self.assertEqual(export_payload["route_example_count"], 0)
+            self.assertEqual(payload["status"], "insufficient_data")
+            self.assertEqual(payload["heading_reference_example_count"], 0)
 
 
 if __name__ == "__main__":

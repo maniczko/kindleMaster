@@ -9,8 +9,10 @@ import zipfile
 from text_normalization import (
     TextCleanupConfig,
     clean_epub_text_package,
+    normalize_html_fragment,
     normalize_epub_text_package,
     normalize_text,
+    normalize_xhtml_document,
     ocr_text_to_html_parts,
 )
 
@@ -51,6 +53,78 @@ class TextNormalizationTests(unittest.TestCase):
         self.assertIn("API\u2010 KEY", normalized)
         self.assertIn("OpenAI\u2010 GPT", normalized)
 
+    def test_normalize_text_empty_and_preserve_edges_contract(self):
+        self.assertEqual(normalize_text(""), "")
+        self.assertEqual(normalize_text(" hello world ", preserve_edges=True), " hello world ")
+        self.assertEqual(normalize_text(" hello / ", preserve_edges=True), " hello /")
+
+    def test_normalize_html_fragment_plain_text_linkifies_external_refs(self):
+        normalized = normalize_html_fragment("See www.example.com/docs, doi:10.1000/xyz.")
+
+        self.assertIn('<a href="https://www.example.com/docs">https://www.example.com/docs</a>', normalized)
+        self.assertIn('<a href="https://doi.org/10.1000/xyz">https://doi.org/10.1000/xyz</a>', normalized)
+
+    def test_normalize_html_fragment_skips_code_and_anchor_text_but_normalizes_href(self):
+        normalized = normalize_html_fragment(
+            '<p>Visit thewebsite today.This is bad ! <code>thewebsite</code> '
+            '<a href="www.example.com /docs">label</a></p>'
+        )
+
+        self.assertIn("Visit the website today. This is bad!", normalized)
+        self.assertIn("<code>thewebsite</code>", normalized)
+        self.assertIn('<a href="https://www.example.com/docs">label</a>', normalized)
+
+    def test_normalize_html_fragment_repairs_split_anchor_url_across_inline_nodes(self):
+        normalized = normalize_html_fragment(
+            '<p><a href="https://example.com">https://example.com</a> '
+            "<span>/docs</span><wbr/>?q=1 tail</p>"
+        )
+
+        self.assertIn(
+            '<a href="https://example.com/docs?q=1">https://example.com/docs?q=1</a>',
+            normalized,
+        )
+        self.assertNotIn("<wbr", normalized)
+        self.assertIn("tail", normalized)
+
+    def test_normalize_html_fragment_does_not_consume_blocked_url_continuations(self):
+        with_br = normalize_html_fragment(
+            '<p><a href="https://example.com">https://example.com</a><br/>/docs</p>'
+        )
+        with_second_anchor = normalize_html_fragment(
+            '<p><a href="https://example.com">https://example.com</a>'
+            '<a href="https://other.example">/docs</a></p>'
+        )
+
+        self.assertIn('<a href="https://example.com">https://example.com</a>', with_br)
+        self.assertNotIn('href="https://example.com/docs"', with_br)
+        self.assertIn('<a href="https://example.com">https://example.com</a>', with_second_anchor)
+        self.assertNotIn('href="https://example.com/docs"', with_second_anchor)
+
+    def test_normalize_xhtml_document_processes_body_and_skips_page_markers(self):
+        document = (
+            '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+            "<p>See www.example.com/docs</p>"
+            '<span class="page-marker">Page 1 thewebsite</span>'
+            "<code>thewebsite</code>"
+            '<a href="doi:10. 1000 /xyz">DOI</a>'
+            "</body></html>"
+        )
+
+        normalized = normalize_xhtml_document(document)
+
+        self.assertIn('<a href="https://www.example.com/docs">https://www.example.com/docs</a>', normalized)
+        self.assertIn('<span class="page-marker">Page 1 thewebsite</span>', normalized)
+        self.assertIn("<code>thewebsite</code>", normalized)
+        self.assertIn('<a href="https://doi.org/10.1000/xyz">DOI</a>', normalized)
+
+    def test_normalize_xhtml_document_returns_input_for_non_html_or_missing_body(self):
+        plain = "See www.example.com/docs"
+        missing_body = "<html><head><title>Only head</title></head></html>"
+
+        self.assertEqual(normalize_xhtml_document(plain), plain)
+        self.assertEqual(normalize_xhtml_document(missing_body), missing_body)
+
     def test_ocr_text_to_html_parts_splits_merged_paragraphs(self):
         source = (
             "Pierwszy akapit jest wystarczajaco dlugi, aby wygladac jak normalna tresc i konczy sie kropka.\n"
@@ -65,6 +139,23 @@ class TextNormalizationTests(unittest.TestCase):
         self.assertEqual(html_parts[0], "<p>Pierwszy akapit jest wystarczajaco dlugi, aby wygladac jak normalna tresc i konczy sie kropka.</p>")
         self.assertEqual(html_parts[1], "<p>Drugi akapit zaczyna nowa mysl z wielkiej litery i tez ma wystarczajaco duzo slow.</p>")
         self.assertEqual(html_parts[2], "<h2>Rozdzial 2</h2>")
+
+    def test_ocr_text_to_html_parts_promotes_safe_title_and_splits_list_like_lines(self):
+        source = (
+            "Executive Summary\n\n"
+            "1 Introduction\n"
+            "This paragraph is deliberately long and complete.\n"
+            "- First bullet\n"
+            "1. Numbered item"
+        )
+
+        html_parts = ocr_text_to_html_parts(source)
+
+        self.assertEqual(html_parts[0], "<h1>Executive Summary</h1>")
+        self.assertEqual(html_parts[1], "<h3>1 Introduction</h3>")
+        self.assertIn("<p>This paragraph is deliberately long and complete.</p>", html_parts)
+        self.assertIn("<p>- First bullet</p>", html_parts)
+        self.assertIn("<p>1. Numbered item</p>", html_parts)
 
     def test_ocr_text_to_html_parts_does_not_promote_sponsored_or_value_lines_to_headings(self):
         html_parts = ocr_text_to_html_parts("Material sponsorowany - R4\n0. 2% dla debetowych\nOpis tresci pozostaje akapitem.")
@@ -662,6 +753,60 @@ class TextNormalizationTests(unittest.TestCase):
             result = clean_epub_text_package(epub_bytes, config=TextCleanupConfig(language_hint="en"))
 
         unknown_terms = {row["term"] for row in result.unknown_terms}
+        self.assertNotIn("babok", unknown_terms)
+        self.assertNotIn("cbap", unknown_terms)
+        self.assertNotIn("iiba", unknown_terms)
+        self.assertNotIn("counterplay", unknown_terms)
+        self.assertNotIn("kingside", unknown_terms)
+        self.assertNotIn("queenside", unknown_terms)
+
+    def test_clean_epub_text_package_preserves_domain_dictionary_with_runtime_terms(self):
+        chapter_markup = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+            "<h1>BABOK Guide</h1>"
+            "<h2>CBAP i IIBA</h2>"
+            "<p>BABOK wspiera CBAP i IIBA, a generalledger pozostaje terminem slownikowym.</p>"
+            "<p>Counterplay i kingside wracaja w kolejnych przykladach. "
+            "Counterplay, kingside i queenside sa chronione przez runtime evidence.</p>"
+            "</body></html>"
+        )
+        epub_bytes = _build_test_epub(chapter_markup=chapter_markup)
+
+        with TemporaryDirectory() as temp_dir:
+            dictionary_path = Path(temp_dir) / "domain.json"
+            dictionary_path.write_text(
+                json.dumps(
+                    {
+                        "terms": [
+                            {
+                                "canonical": "general ledger",
+                                "variants": ["generalledger"],
+                                "lang": "en",
+                                "protected": True,
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            with patch(
+                "text_cleanup_engine.run_epubcheck",
+                return_value={"status": "passed", "tool": "epubcheck", "messages": []},
+            ):
+                result = clean_epub_text_package(
+                    epub_bytes,
+                    config=TextCleanupConfig(language_hint="en", domain_dictionary_path=str(dictionary_path)),
+                )
+
+        with zipfile.ZipFile(io.BytesIO(result.epub_bytes), "r") as archive:
+            chapter = archive.read("EPUB/chapter_001.xhtml").decode("utf-8")
+
+        unknown_terms = {row["term"] for row in result.unknown_terms}
+        self.assertIn("general ledger", chapter)
+        self.assertGreaterEqual(result.summary["domain_dictionary_decision_count"], 1)
         self.assertNotIn("babok", unknown_terms)
         self.assertNotIn("cbap", unknown_terms)
         self.assertNotIn("iiba", unknown_terms)

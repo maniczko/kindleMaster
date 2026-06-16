@@ -25,8 +25,38 @@ class AgentConfigContractTests(unittest.TestCase):
             '[plugins."linear@openai-curated"]',
             '[plugins."build-web-apps@openai-curated"]',
             '[plugins."browser-use@openai-bundled"]',
+            '[plugins."openai-developers@openai-curated"]',
         ]:
             self.assertIn(plugin, config_text)
+
+    def test_agents_defines_plugin_auto_routing_policy_markers(self) -> None:
+        agents_text = Path("AGENTS.md").read_text(encoding="utf-8")
+
+        for marker in premium_tools.PLUGIN_ROUTING_POLICY_MARKERS:
+            self.assertIn(marker, agents_text)
+
+    def test_prompt_engineering_policy_and_repo_skill_are_present(self) -> None:
+        agents_text = Path("AGENTS.md").read_text(encoding="utf-8")
+        config_text = Path(".codex/config.toml").read_text(encoding="utf-8")
+        codex_readme = Path(".codex/README.md").read_text(encoding="utf-8")
+        root_readme = Path("README.md").read_text(encoding="utf-8")
+        repo_skill_path = Path(".codex/skills/prompt-engineer/SKILL.md")
+
+        for marker in premium_tools.PROMPT_ENGINEERING_POLICY_MARKERS:
+            self.assertIn(marker, agents_text)
+
+        self.assertTrue(repo_skill_path.exists())
+        repo_skill = repo_skill_path.read_text(encoding="utf-8")
+        for marker in premium_tools.PROMPT_ENGINEER_SKILL_MARKERS:
+            self.assertIn(marker, repo_skill)
+
+        for mirror_text in [config_text, codex_readme, root_readme]:
+            self.assertIn("prompt-engineer", mirror_text)
+            self.assertIn("Prompt -> Review -> Rewrite -> Execute", mirror_text)
+            self.assertIn("TRYB: DEBUG", mirror_text)
+            self.assertIn("TRYB: EPUB QUALITY AUDIT", mirror_text)
+            self.assertIn("agent_quality_gate", mirror_text)
+            self.assertIn("9.0", mirror_text)
 
     def test_tracked_git_hooks_define_balanced_governance_gates(self) -> None:
         pre_commit = Path(".githooks/pre-commit")
@@ -41,6 +71,7 @@ class AgentConfigContractTests(unittest.TestCase):
         self.assertIn("python -m ruff check --select E9,F63,F7,F82", pre_commit_text)
         self.assertIn("test_agent_config_contracts.py", pre_commit_text)
         self.assertIn("test_skill_contracts.py", pre_commit_text)
+        self.assertIn("test_github_issue_orchestration.py", pre_commit_text)
         self.assertIn("test_github_ready_enforcement.py", pre_commit_text)
         self.assertIn("python kindlemaster.py test --suite quick", pre_push_text)
         self.assertIn("python kindlemaster.py status", pre_push_text)
@@ -81,6 +112,11 @@ class AgentConfigContractTests(unittest.TestCase):
             skills_root = home_root / ".codex" / "skills"
             for skill_name in premium_tools.KINDLEMASTER_SKILL_NAMES:
                 (skills_root / skill_name).mkdir(parents=True)
+            (skills_root / "prompt-engineer").mkdir(parents=True)
+            (skills_root / "prompt-engineer" / "SKILL.md").write_text(
+                "\n".join(premium_tools.PROMPT_ENGINEER_SKILL_MARKERS),
+                encoding="utf-8",
+            )
 
             (repo_root / ".codex").mkdir()
             (repo_root / ".codex" / "config.toml").write_text(
@@ -102,13 +138,33 @@ class AgentConfigContractTests(unittest.TestCase):
                         "enabled = true",
                         '[plugins."browser-use@openai-bundled"]',
                         "enabled = true",
+                        '[plugins."openai-developers@openai-curated"]',
+                        "enabled = true",
                     ]
                 ),
                 encoding="utf-8",
             )
             (repo_root / ".githooks").mkdir()
-            (repo_root / ".githooks" / "pre-commit").write_text("#!/bin/sh\n", encoding="utf-8")
-            (repo_root / ".githooks" / "pre-push").write_text("#!/bin/sh\n", encoding="utf-8")
+            (repo_root / ".githooks" / "pre-commit").write_text(
+                "\n".join(
+                    [
+                        "#!/bin/sh",
+                        "python -m unittest test_agent_config_contracts.py test_skill_contracts.py test_skill_guardrails.py",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (repo_root / ".githooks" / "pre-push").write_text(
+                "\n".join(["#!/bin/sh", "python kindlemaster.py test --suite quick", "python kindlemaster.py status"]),
+                encoding="utf-8",
+            )
+            (repo_root / "AGENTS.md").write_text(
+                "\n".join(
+                    list(premium_tools.PLUGIN_ROUTING_POLICY_MARKERS)
+                    + list(premium_tools.PROMPT_ENGINEERING_POLICY_MARKERS)
+                ),
+                encoding="utf-8",
+            )
             (repo_root / ".claude").mkdir()
             (repo_root / ".claude" / "settings.local.json").write_text(
                 '{"permissions":{"allow":["Bash(python kindlemaster.py serve)","Bash(curl http://127.0.0.1:5001/)"]}}',
@@ -123,9 +179,28 @@ class AgentConfigContractTests(unittest.TestCase):
         self.assertEqual(readiness["checks"]["codex_config"]["status"], "supported")
         self.assertEqual(readiness["checks"]["playwright_mcp_pin"]["status"], "supported")
         self.assertEqual(readiness["checks"]["plugins"]["status"], "supported")
+        self.assertEqual(readiness["checks"]["plugin_routing_policy"]["status"], "supported")
+        self.assertEqual(readiness["checks"]["prompt_engineering_policy"]["status"], "supported")
+        self.assertEqual(readiness["checks"]["prompt_engineer_skill"]["status"], "supported")
         self.assertEqual(readiness["checks"]["skills"]["status"], "supported")
         self.assertEqual(readiness["checks"]["git_hooks"]["status"], "supported")
         self.assertEqual(readiness["checks"]["claude_local_settings"]["status"], "supported")
+
+        quality_gate = readiness["quality_gate"]
+        self.assertEqual(quality_gate["status"], "supported")
+        self.assertGreaterEqual(quality_gate["average_score"], 9.0)
+        self.assertEqual(quality_gate["threshold"], 9.0)
+        self.assertEqual(quality_gate["missing_actions"], [])
+        for category in [
+            "codex_config_and_tools",
+            "plugin_auto_routing",
+            "prompt_normalization_modes",
+            "installed_skills",
+            "governance_hooks",
+            "local_session_drift",
+        ]:
+            self.assertIn(category, quality_gate["categories"])
+            self.assertGreaterEqual(quality_gate["categories"][category]["score"], 9.0)
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@
       "notes": "Tiny OCR probe for the fastest conversion smoke.",
       "source_path": "<generated-fallback:ocr_probe_pdf>",
       "target_path": "reference_inputs/pdf/ocr_probe.pdf",
-      "size_bytes": 2137
+      "size_bytes": 2127
     },
     {
       "id": "ocr_stress_scan_pdf",
@@ -27,7 +27,7 @@
       "notes": "Deterministic scanned PDF with OCR-stressed image-only pages and noisy text blocks.",
       "source_path": "<generated:ocr_stress_scan>",
       "target_path": "reference_inputs/pdf/ocr_stress_scan.pdf",
-      "size_bytes": 1019552
+      "size_bytes": 1019549
     },
     {
       "id": "mixed_scan_text_pdf",
@@ -40,7 +40,7 @@
       "notes": "Generated PDF with one text-layer page and one image-only page for hybrid OCR benchmark coverage.",
       "source_path": "<generated:mixed_scan_text>",
       "target_path": "reference_inputs/pdf/mixed_scan_text.pdf",
-      "size_bytes": 341322
+      "size_bytes": 341319
     },
     {
       "id": "dense_business_guide_pdf",
@@ -53,10 +53,7 @@
       "notes": "Dense handbook fixture for heading, TOC, and text-cleanup regression.",
       "source_path": "<generated-fallback:dense_business_guide_pdf>",
       "target_path": "reference_inputs/pdf/dense_business_guide.pdf",
-      "size_bytes": 4432970,
-      "ml_training": "full_corpus_only",
-      "sample_case_id": "dense_business_guide_pdf_sample_80p",
-      "sample_target_path": "reference_inputs/pdf_samples/dense_business_guide_sample_80p.pdf"
+      "size_bytes": 5316
     },
     {
       "id": "diagram_training_book_pdf",
@@ -69,24 +66,7 @@
       "notes": "Training/diagram-heavy PDF for layout-sensitive smoke runs.",
       "source_path": "<generated-fallback:diagram_training_book_pdf>",
       "target_path": "reference_inputs/pdf/diagram_training_book.pdf",
-      "size_bytes": 5346
-    },
-    {
-      "id": "fundamenty_scan_chess_pdf",
-      "document_class": "diagram_training_book",
-      "input_type": "pdf",
-      "language": "pl",
-      "quick_smoke": false,
-      "release_strict": false,
-      "source": "reference_inputs/pdf/fundamenty_1_1_scan_chess.pdf",
-      "target": "reference_inputs/pdf/fundamenty_1_1_scan_chess.pdf",
-      "notes": "Image-only Polish chess training book fixture for scanned-board FEN recognition.",
-      "chess_fen_seed_labels": "reference_inputs/chess_fen/labels/fundamenty_seed_positions.jsonl",
-      "chess_fen_template_profile": "fundamenty_merida_like",
-      "chess_fen_seed_exact_accuracy_min": 0.9,
-      "source_path": "reference_inputs/pdf/fundamenty_1_1_scan_chess.pdf",
-      "target_path": "reference_inputs/pdf/fundamenty_1_1_scan_chess.pdf",
-      "size_bytes": 70035088
+      "size_bytes": 5336
     },
     {
       "id": "magazine_layout_pdf",
@@ -99,7 +79,7 @@
       "notes": "Magazine/business-report style PDF with layout-heavy structures.",
       "source_path": "<generated-fallback:magazine_layout_pdf>",
       "target_path": "reference_inputs/pdf/magazine_layout.pdf",
-      "size_bytes": 5281
+      "size_bytes": 5271
     },
     {
       "id": "document_like_report_pdf",
@@ -126,7 +106,7 @@
       "notes": "Small EPUB for fast validator and repair smoke.",
       "source_path": "<generated-fallback:scan_probe_epub>",
       "target_path": "reference_inputs/epub/scan_probe.epub",
-      "size_bytes": 2387
+      "size_bytes": 2820
     },
     {
       "id": "dense_business_guide_epub",
@@ -139,7 +119,7 @@
       "notes": "Representative generated EPUB for release-audit and validator smoke.",
       "source_path": "<generated-fallback:dense_business_guide_epub>",
       "target_path": "reference_inputs/epub/dense_business_guide.epub",
-      "size_bytes": 2458
+      "size_bytes": 2891
     },
     {
       "id": "simple_report_docx",
@@ -152,7 +132,7 @@
       "generator": "simple_report",
       "source_path": "<generated:simple_report>",
       "target_path": "reference_inputs/docx/simple_report.docx",
-      "size_bytes": 35615
+      "size_bytes": 35612
     },
     {
       "id": "list_table_image_docx",
@@ -165,7 +145,7 @@
       "generator": "list_table_image",
       "source_path": "<generated:list_table_image>",
       "target_path": "reference_inputs/docx/list_table_image.docx",
-      "size_bytes": 38820
+      "size_bytes": 38816
     },
     {
       "id": "no_heading_document_docx",
@@ -178,189 +158,7 @@
       "generator": "no_heading_document",
       "source_path": "<generated:no_heading_document>",
       "target_path": "reference_inputs/docx/no_heading_document.docx",
-      "size_bytes": 35563
-    },
-    {
-      "id": "876908532_chess_notes_the_jobava_london_game_collectioin_d01_2025_1990pages_pdf",
-      "document_class": "diagram_training_book",
-      "input_type": "pdf",
-      "language": "en",
-      "quick_smoke": false,
-      "release_strict": false,
-      "target": "reference_inputs/pdf/876908532-Chess-Notes-the-Jobava-London-Game-Collectioin-D01-2025-1990pages.pdf",
-      "notes": "Imported chess/training-book PDF; useful for diagram-heavy routing and Kindle structure regression.",
-      "source_path": "reference_inputs/pdf/876908532-Chess-Notes-the-Jobava-London-Game-Collectioin-D01-2025-1990pages.pdf",
-      "target_path": "reference_inputs/pdf/876908532-Chess-Notes-the-Jobava-London-Game-Collectioin-D01-2025-1990pages.pdf",
-      "size_bytes": 45404294,
-      "ml_training": "full_corpus_only",
-      "sample_case_id": "876908532_chess_notes_the_jobava_london_game_collectioin_d01_2025_1990pages_pdf_sample_80p",
-      "sample_target_path": "reference_inputs/pdf_samples/876908532_chess_notes_the_jobava_london_game_collectioin_d01_2025_1990pages_sample_80p.pdf"
-    },
-    {
-      "id": "predictable_winners_stuart_e_jackson_pdf",
-      "document_class": "book_reference",
-      "input_type": "pdf",
-      "language": "en",
-      "quick_smoke": false,
-      "release_strict": false,
-      "target": "reference_inputs/pdf/_OceanofPDF.com_Predictable_Winners_-_Stuart_E_Jackson.pdf",
-      "notes": "Imported book-like PDF reference input.",
-      "source_path": "reference_inputs/pdf/_OceanofPDF.com_Predictable_Winners_-_Stuart_E_Jackson.pdf",
-      "target_path": "reference_inputs/pdf/_OceanofPDF.com_Predictable_Winners_-_Stuart_E_Jackson.pdf",
-      "size_bytes": 12665984,
-      "ml_training": "full_corpus_only",
-      "sample_case_id": "predictable_winners_stuart_e_jackson_pdf_sample_80p",
-      "sample_target_path": "reference_inputs/pdf_samples/oceanofpdf_com_predictable_winners_stuart_e_jackson_sample_80p.pdf"
-    },
-    {
-      "id": "fundamenty_1_1_pdf",
-      "document_class": "diagram_training_book",
-      "input_type": "pdf",
-      "language": "pl",
-      "quick_smoke": false,
-      "release_strict": false,
-      "target": "reference_inputs/pdf/Fundamenty 1-1.pdf",
-      "notes": "Imported chess/training-book PDF; useful for diagram-heavy routing and Kindle structure regression.",
-      "source_path": "reference_inputs/pdf/Fundamenty 1-1.pdf",
-      "target_path": "reference_inputs/pdf/Fundamenty 1-1.pdf",
-      "size_bytes": 70035088,
-      "ml_training": "full_corpus_only",
-      "sample_case_id": "fundamenty_1_1_pdf_sample_80p",
-      "sample_target_path": "reference_inputs/pdf_samples/fundamenty_1_1_sample_80p.pdf"
-    },
-    {
-      "id": "tactits_pdf",
-      "document_class": "diagram_training_book",
-      "input_type": "pdf",
-      "language": "en",
-      "quick_smoke": false,
-      "release_strict": false,
-      "target": "reference_inputs/pdf/tactits.pdf",
-      "notes": "Imported chess/training-book PDF; useful for diagram-heavy routing and Kindle structure regression.",
-      "source_path": "reference_inputs/pdf/tactits.pdf",
-      "target_path": "reference_inputs/pdf/tactits.pdf",
-      "size_bytes": 5456704,
-      "ml_training": "full_corpus_only",
-      "sample_case_id": "tactits_pdf_sample_80p",
-      "sample_target_path": "reference_inputs/pdf_samples/tactits_sample_80p.pdf"
-    },
-    {
-      "id": "the_woodpecker_method_pdfdrive_pdf",
-      "document_class": "diagram_training_book",
-      "input_type": "pdf",
-      "language": "en",
-      "quick_smoke": false,
-      "release_strict": false,
-      "target": "reference_inputs/pdf/The Woodpecker Method ( PDFDrive ).pdf",
-      "notes": "Imported chess/training-book PDF; useful for diagram-heavy routing and Kindle structure regression.",
-      "source_path": "reference_inputs/pdf/The Woodpecker Method ( PDFDrive ).pdf",
-      "target_path": "reference_inputs/pdf/The Woodpecker Method ( PDFDrive ).pdf",
-      "size_bytes": 4110313,
-      "ml_training": "full_corpus_only",
-      "sample_case_id": "the_woodpecker_method_pdfdrive_pdf_sample_80p",
-      "sample_target_path": "reference_inputs/pdf_samples/the_woodpecker_method_pdfdrive_sample_80p.pdf"
-    },
-    {
-      "id": "dense_business_guide_pdf_sample_80p",
-      "document_class": "dense_business_guide",
-      "input_type": "pdf",
-      "language": "en",
-      "quick_smoke": false,
-      "release_strict": false,
-      "target": "reference_inputs/pdf_samples/dense_business_guide_sample_80p.pdf",
-      "notes": "Sample of dense_business_guide_pdf; first 80 pages for fast ML/corpus routing feedback.",
-      "source_path": "reference_inputs/pdf_samples/dense_business_guide_sample_80p.pdf",
-      "target_path": "reference_inputs/pdf_samples/dense_business_guide_sample_80p.pdf",
-      "size_bytes": 672425,
-      "sample_of": "dense_business_guide_pdf",
-      "sample_pages": 80,
-      "source_page_count": 514,
-      "source_size_bytes": 4432970
-    },
-    {
-      "id": "876908532_chess_notes_the_jobava_london_game_collectioin_d01_2025_1990pages_pdf_sample_80p",
-      "document_class": "diagram_training_book",
-      "input_type": "pdf",
-      "language": "en",
-      "quick_smoke": false,
-      "release_strict": false,
-      "target": "reference_inputs/pdf_samples/876908532_chess_notes_the_jobava_london_game_collectioin_d01_2025_1990pages_sample_80p.pdf",
-      "notes": "Sample of 876908532_chess_notes_the_jobava_london_game_collectioin_d01_2025_1990pages_pdf; first 80 pages for fast ML/corpus routing feedback.",
-      "source_path": "reference_inputs/pdf_samples/876908532_chess_notes_the_jobava_london_game_collectioin_d01_2025_1990pages_sample_80p.pdf",
-      "target_path": "reference_inputs/pdf_samples/876908532_chess_notes_the_jobava_london_game_collectioin_d01_2025_1990pages_sample_80p.pdf",
-      "size_bytes": 2552613,
-      "sample_of": "876908532_chess_notes_the_jobava_london_game_collectioin_d01_2025_1990pages_pdf",
-      "sample_pages": 80,
-      "source_page_count": 1990,
-      "source_size_bytes": 45404294
-    },
-    {
-      "id": "predictable_winners_stuart_e_jackson_pdf_sample_80p",
-      "document_class": "book_reference",
-      "input_type": "pdf",
-      "language": "en",
-      "quick_smoke": false,
-      "release_strict": false,
-      "target": "reference_inputs/pdf_samples/oceanofpdf_com_predictable_winners_stuart_e_jackson_sample_80p.pdf",
-      "notes": "Sample of predictable_winners_stuart_e_jackson_pdf; first 80 pages for fast ML/corpus routing feedback.",
-      "source_path": "reference_inputs/pdf_samples/oceanofpdf_com_predictable_winners_stuart_e_jackson_sample_80p.pdf",
-      "target_path": "reference_inputs/pdf_samples/oceanofpdf_com_predictable_winners_stuart_e_jackson_sample_80p.pdf",
-      "size_bytes": 2899589,
-      "sample_of": "predictable_winners_stuart_e_jackson_pdf",
-      "sample_pages": 80,
-      "source_page_count": 298,
-      "source_size_bytes": 12665984
-    },
-    {
-      "id": "fundamenty_1_1_pdf_sample_80p",
-      "document_class": "diagram_training_book",
-      "input_type": "pdf",
-      "language": "pl",
-      "quick_smoke": false,
-      "release_strict": false,
-      "target": "reference_inputs/pdf_samples/fundamenty_1_1_sample_80p.pdf",
-      "notes": "Sample of fundamenty_1_1_pdf; first 80 pages for fast ML/corpus routing feedback.",
-      "source_path": "reference_inputs/pdf_samples/fundamenty_1_1_sample_80p.pdf",
-      "target_path": "reference_inputs/pdf_samples/fundamenty_1_1_sample_80p.pdf",
-      "size_bytes": 22669593,
-      "sample_of": "fundamenty_1_1_pdf",
-      "sample_pages": 80,
-      "source_page_count": 266,
-      "source_size_bytes": 70035088
-    },
-    {
-      "id": "tactits_pdf_sample_80p",
-      "document_class": "diagram_training_book",
-      "input_type": "pdf",
-      "language": "en",
-      "quick_smoke": false,
-      "release_strict": false,
-      "target": "reference_inputs/pdf_samples/tactits_sample_80p.pdf",
-      "notes": "Sample of tactits_pdf; first 80 pages for fast ML/corpus routing feedback.",
-      "source_path": "reference_inputs/pdf_samples/tactits_sample_80p.pdf",
-      "target_path": "reference_inputs/pdf_samples/tactits_sample_80p.pdf",
-      "size_bytes": 1092131,
-      "sample_of": "tactits_pdf",
-      "sample_pages": 80,
-      "source_page_count": 1184,
-      "source_size_bytes": 5456704
-    },
-    {
-      "id": "the_woodpecker_method_pdfdrive_pdf_sample_80p",
-      "document_class": "diagram_training_book",
-      "input_type": "pdf",
-      "language": "en",
-      "quick_smoke": false,
-      "release_strict": false,
-      "target": "reference_inputs/pdf_samples/the_woodpecker_method_pdfdrive_sample_80p.pdf",
-      "notes": "Sample of the_woodpecker_method_pdfdrive_pdf; first 80 pages for fast ML/corpus routing feedback.",
-      "source_path": "reference_inputs/pdf_samples/the_woodpecker_method_pdfdrive_sample_80p.pdf",
-      "target_path": "reference_inputs/pdf_samples/the_woodpecker_method_pdfdrive_sample_80p.pdf",
-      "size_bytes": 957818,
-      "sample_of": "the_woodpecker_method_pdfdrive_pdf",
-      "sample_pages": 80,
-      "source_page_count": 394,
-      "source_size_bytes": 4110313
+      "size_bytes": 35560
     }
   ]
 }

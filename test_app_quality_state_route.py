@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import unittest
 import os
+import tempfile
 from datetime import UTC, datetime
 from unittest.mock import patch
+from pathlib import Path
 
 import app as app_module
 from app import app
@@ -15,14 +17,32 @@ class AppQualityStateRouteTests(unittest.TestCase):
         self.client = app.test_client()
         self.cleanup_job_ids: list[str] = []
         self.cleanup_paths: list[str] = []
+        self.store_temp_dir = tempfile.TemporaryDirectory()
+        self.original_conversion_job_store = app_module._CONVERSION_JOB_STORE
+        app_module._CONVERSION_JOB_STORE = app_module.ConversionJobStore(
+            app_module._CONVERSION_JOBS,
+            app_module._CONVERSION_JOBS_LOCK,
+            persistence_path=Path(self.store_temp_dir.name) / "conversion_jobs.json",
+            active_statuses=app_module.ACTIVE_CONVERSION_JOB_STATUSES,
+        )
+        with app_module._CONVERSION_JOBS_LOCK:
+            self.original_conversion_jobs = {
+                job_id: dict(job)
+                for job_id, job in app_module._CONVERSION_JOBS.items()
+            }
+            app_module._CONVERSION_JOBS.clear()
 
     def tearDown(self) -> None:
         for path in self.cleanup_paths:
             if path and os.path.exists(path):
                 os.remove(path)
         with app_module._CONVERSION_JOBS_LOCK:
-            for job_id in self.cleanup_job_ids:
-                app_module._CONVERSION_JOBS.pop(job_id, None)
+            app_module._CONVERSION_JOBS.clear()
+            app_module._CONVERSION_JOBS.update(
+                {job_id: dict(job) for job_id, job in self.original_conversion_jobs.items()}
+            )
+        app_module._CONVERSION_JOB_STORE = self.original_conversion_job_store
+        self.store_temp_dir.cleanup()
 
     def _write_output_fixture(self, job_id: str, size_bytes: int) -> str:
         output_path = os.path.join(app_module.UPLOAD_DIR, f"{job_id}.epub")
@@ -137,6 +157,8 @@ class AppQualityStateRouteTests(unittest.TestCase):
             "kindle_delivery_release_not_ready",
         )
         self.assertEqual(payload["quality_state"]["download_url"], "/convert/download/quality-ready")
+        self.assertEqual(payload["auto_repair"]["status"], "not_run")
+        self.assertEqual(payload["quality_state"]["auto_repair"]["status"], "not_run")
         self.assertTrue(payload["download_available"])
         self.assertEqual(payload["download_state"]["status"], "available")
         self.assertEqual(payload["quality_state"]["summary"]["profile"], "book_reflow")
@@ -330,6 +352,8 @@ class AppQualityStateRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         quality_state = payload["quality_state"]
+        self.assertEqual(payload["auto_repair"]["status"], "not_run")
+        self.assertEqual(quality_state["auto_repair"]["status"], "not_run")
         self.assertEqual(quality_state["summary"]["profile"], "book_reflow")
         for cockpit_key in (
             "issue_groups",

@@ -15,6 +15,7 @@
 # - serve: python kindlemaster.py serve
 # - convert: python kindlemaster.py convert path\to\input.docx --output output\result.epub
 # - quick tests: python kindlemaster.py test --suite quick
+# - quality-critical tests: python kindlemaster.py test --suite quality-critical
 # - corpus tests: python kindlemaster.py test --suite corpus
 # - derived project status: python kindlemaster.py status
 # - ML datasets: python kindlemaster.py ml dataset
@@ -31,6 +32,8 @@
 # - release audit: python kindlemaster.py audit path\to\file.epub
 # - workflow baseline: python kindlemaster.py workflow baseline path\to\input.pdf --change-area reference
 # - workflow verify: python kindlemaster.py workflow verify path\to\input.pdf --run-id <run_id>
+# - GitHub autopilot doctor: python kindlemaster.py orchestrate doctor
+# - GitHub issue sync: python kindlemaster.py orchestrate sync --issues-json reports/github/issues.json
 # - install local hooks: python scripts/install_git_hooks.py --install
 # - check local hooks: python scripts/install_git_hooks.py --check
 #
@@ -43,9 +46,27 @@
 # - generated output/ and reports/ artifacts are derived evidence, not policy authority
 # - local hooks are balanced: pre-commit runs fast governance checks, pre-push runs quick + status
 #
+# Plugin auto-routing mirror (AGENTS.md Section 34A is authoritative):
+# - Browser Use: local UI/runtime verification, screenshots, localhost freshness checks
+# - GitHub: branches, commits, PRs, CI, GitHub review, and issue-backed autopilot work
+# - Linear: optional mirror or historical VAT planning surface only when explicitly requested
+# - OpenAI Developers: OpenAI API/key/provider/Agents SDK/ai_quality work only
+# - Build Web Apps: React/Vite UI, frontend design, and browser-facing UI tests
+#
+# Prompt auto-normalization mirror (AGENTS.md Section 34B and prompt-engineer skill are authoritative):
+# - use prompt-engineer for large, ambiguous, high-impact, or under-specified prompts
+# - apply Prompt -> Review -> Rewrite -> Execute for actionable implementation prompts
+# - supported work modes: TRYB: DEBUG, TRYB: IMPLEMENT, TRYB: REVIEW, TRYB: AUDIT,
+#   TRYB: UI POLISH, TRYB: EPUB QUALITY AUDIT
+# - normalize Polish prompts to Cel, Kontekst, Zakres, Kryteria akceptacji, Walidacja, Raport końcowy
+# - do not add speculative TOML keys for this; Codex currently treats it as instruction policy
+#
 # Governance evidence mirror:
-# - doctor: reports/governance/doctor.json
+# - doctor: reports/governance/doctor.json, including agent_readiness.quality_gate.threshold = 9.0,
+#   agent_readiness.checks.agent_quality_gate, agent_readiness.checks.plugin_routing_policy,
+#   agent_readiness.checks.prompt_engineering_policy, and agent_readiness.checks.prompt_engineer_skill
 # - quick: reports/governance/quick.json
+# - quality-critical: reports/governance/quality-critical.json
 # - release: reports/governance/release.json
 # - doctor includes agent_readiness for Codex config, pinned MCP, plugins, skills, hooks, and stale local agent settings
 #
@@ -80,4 +101,7 @@ enabled = true
 enabled = true
 
 [plugins."browser-use@openai-bundled"]
+enabled = true
+
+[plugins."openai-developers@openai-curated"]
 enabled = true

@@ -1,0 +1,103 @@
+name: KindleMaster agent task
+description: Agent-executable task contract for KindleMaster work.
+title: "[KindleMaster] "
+labels:
+  - agent:ready
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for tasks that Codex can execute from GitHub Issues.
+        Add `autopilot:allowed` only when the issue is complete enough for autonomous work.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area label
+      description: Add the matching `area:*` label after issue creation.
+      options:
+        - area:app
+        - area:converter
+        - area:semantic
+        - area:text
+        - area:ui
+        - area:delivery
+        - area:auth
+        - area:corpus
+        - area:governance
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: Cel
+      description: State the concrete outcome.
+      value: |
+        ...
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Kontekst
+      description: Include technical context, current behavior, and why this matters.
+      value: |
+        ...
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Zakres
+      description: Define what is in scope and explicitly out of scope.
+      value: |
+        - ...
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Kryteria akceptacji
+      description: List observable acceptance criteria.
+      value: |
+        - ...
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Walidacja
+      description: List exact tests, smoke commands, or browser checks.
+      value: |
+        - python kindlemaster.py test --suite quick
+    validations:
+      required: true
+  - type: textarea
+    id: artifacts
+    attributes:
+      label: Oczekiwane artefakty
+      description: Reports, screenshots, PR evidence, or generated output paths.
+      value: |
+        - ...
+    validations:
+      required: false
+  - type: textarea
+    id: risks
+    attributes:
+      label: Ryzyka
+      description: Main risks, rollback signal, or unknowns.
+      value: |
+        - ...
+    validations:
+      required: false
+  - type: textarea
+    id: final-report
+    attributes:
+      label: Raport koncowy
+      description: What the implementing agent must report back.
+      value: |
+        1. What changed
+        2. Tests run
+        3. Evidence paths
+        4. Risks and next steps
+    validations:
+      required: true

@@ -917,7 +917,7 @@
         subtitle: sendToKindleLabel,
         body: `
           <div class="quality-matrix">${kindleRows}</div>
-          <div class="quality-empty">Handoff: pobierz EPUB, sprawdź verdict i wyślij przez Send to Kindle dopiero po zaakceptowaniu kontroli jakości.</div>
+          <div class="quality-empty">Send-to-Kindle SMTP: dostępne tylko dla release-ready EPUB i wyłącznie po jawnej akcji użytkownika.</div>
           ${safeSendToKindleBlockers.length ? renderCompactList(safeSendToKindleBlockers, "Brak danych", 5) : `<div class="quality-empty">Brak blockerów wysyłki.</div>`}
         `,
       });

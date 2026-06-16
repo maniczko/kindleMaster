@@ -52,9 +52,6 @@ class ReactShellBrowserSmokeTests(unittest.TestCase):
         except Exception as exc:  # pragma: no cover - environment-dependent gate
             raise unittest.SkipTest(f"Python Playwright is unavailable: {exc}") from exc
 
-        if not (REPO_ROOT / "static" / "react" / "index.html").exists():
-            raise unittest.SkipTest("React production bundle is unavailable; run `npm run build:ui` before browser smoke")
-
         cls.port = _find_free_port()
         cls.base_url = f"http://127.0.0.1:{cls.port}"
         environment = os.environ.copy()
@@ -167,7 +164,7 @@ class ReactShellBrowserSmokeTests(unittest.TestCase):
             ),
         )
         self.page.route(
-            "**/convert/jobs**",
+            "**/convert/jobs",
             lambda route: route.fulfill(
                 status=200,
                 content_type="application/json",
@@ -204,10 +201,10 @@ class ReactShellBrowserSmokeTests(unittest.TestCase):
         )
 
     def test_key_react_views_render_and_navigate_without_console_errors(self) -> None:
-        self.page.goto(f"{self.base_url}/app#library")
+        self.page.goto(f"{self.base_url}/#library")
 
         self.page.locator("h1", has_text="Biblioteka").wait_for()
-        self.page.get_by_role("button", name="browser-smoke.pdf", exact=True).wait_for()
+        self.page.get_by_role("button", name="browser-smoke.pdf").wait_for()
         self.assertEqual(self.page.locator('a:has-text("PDF")').get_attribute("href"), "/convert/preview/job-browser/input")
 
         self.page.get_by_role("button", name="Otwórz").click()

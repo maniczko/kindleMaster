@@ -18,9 +18,10 @@ Current repo-local defaults:
 - reasoning: `xhigh`
 - approval policy: `on-request`
 - multi-agent work: enabled
+- plugin enablement: GitHub, Linear as optional mirror, Build Web Apps, Browser Use, and OpenAI Developers
 - browser verification: Browser Use plugin plus pinned Playwright MCP `@playwright/mcp@0.0.70`
 - local Git hook path: `.githooks`
-- agent readiness surface: `python kindlemaster.py doctor`
+- agent readiness surface: `python kindlemaster.py doctor` reports `agent_readiness.quality_gate` and `agent_readiness.checks.agent_quality_gate`
 
 Model routing convention:
 - use `gpt-5.5` with high reasoning for conversion runtime, EPUB integrity, chess FEN/PGN, corpus/release gates, deployment architecture, and cross-module debugging,
@@ -54,15 +55,54 @@ Keep these repo conventions synchronized between `.codex/config.toml`, `README.m
 - restrictions specific to this repo,
 - release and localhost freshness expectations.
 - local hook policy and governance evidence lanes.
+- plugin auto-routing mirrors from `AGENTS.md` Section 34A.
+- prompt auto-normalization mirrors from `AGENTS.md` Section 34B and `.codex/skills/prompt-engineer/SKILL.md`.
 
 Preferred browser URL for this repo: `http://kindlemaster.localhost:5001/`.
 Loopback bind remains `127.0.0.1:5001` for runtime safety and tool fallback.
+
+## Plugin Auto-Routing Mirror
+
+`AGENTS.md` Section 34A is authoritative. In short:
+- use Browser Use for local UI/runtime verification and localhost freshness checks,
+- use GitHub for requested branch, commit, PR, CI, review, and issue-backed autopilot workflows,
+- use Linear only when explicitly requested as a mirror or historical VAT planning surface,
+- use OpenAI Developers only for OpenAI API, key setup, provider configuration, Agents SDK, ChatGPT Apps, or `ai_quality`,
+- use Build Web Apps for React/Vite UI, frontend design, and browser-facing UI tests.
+
+Do not add speculative plugin keys here unless Codex supports them as real config.
+
+## Prompt Auto-Normalization Mirror
+
+`AGENTS.md` Section 34B and the `prompt-engineer` skill are authoritative. In short:
+- use `prompt-engineer` when a prompt is large, ambiguous, high-impact, multi-step, or missing acceptance criteria, validation, scope, risks, or output format,
+- follow `Prompt -> Review -> Rewrite -> Execute` for actionable implementation prompts,
+- support explicit work modes: `TRYB: DEBUG`, `TRYB: IMPLEMENT`, `TRYB: REVIEW`, `TRYB: AUDIT`, `TRYB: UI POLISH`, and `TRYB: EPUB QUALITY AUDIT`,
+- normalize Polish prompts to `Cel`, `Kontekst`, `Zakres`, `Kryteria akceptacji`, `Walidacja`, and `Raport końcowy`,
+- skip formal rewriting for trivial requests or when the user explicitly asks not to rewrite the prompt.
+
+This is an instruction-level policy. Do not add speculative TOML keys for prompt rewriting unless Codex supports them as real runtime settings.
+
+## Agent Quality Gate
+
+`python kindlemaster.py doctor` reports `agent_readiness.quality_gate` with threshold `9.0`.
+
+The gate scores:
+- Codex config and pinned tooling,
+- plugin auto-routing,
+- prompt normalization modes,
+- installed KindleMaster skills,
+- governance hooks,
+- local session drift.
+
+If the average drops below `9.0`, repair `missing_actions` before treating the agent setup as production-ready.
 
 ## Authority Map
 
 - `kindlemaster.py` is the executable source of truth for the CLI command surface.
 - `AGENTS.md` owns the canonical human-readable control-plane source-of-truth matrix for command policy, workflow artifacts, and authoritative versus derived docs.
 - `docs/toolchain-matrix.md` owns supported local toolchain expectations for `test --suite` lanes.
+- GitHub Issues plus `.github/ISSUE_TEMPLATE/kindlemaster_task.yml` own agent-executable task truth.
 - `.codex/config.toml` owns active repo-local Codex settings only; its comments are convenience mirrors of the command surface and policy.
 - Generated files under `reports/` and `output/` are derived runtime artifacts, never governance authority.
 
@@ -77,6 +117,7 @@ python kindlemaster.py prepare-reference-inputs
 python kindlemaster.py serve
 python kindlemaster.py convert path\to\input.docx --output output\result.epub
 python kindlemaster.py test --suite quick
+python kindlemaster.py test --suite quality-critical
 python kindlemaster.py test --suite corpus
 python kindlemaster.py status
 python kindlemaster.py ml dataset
@@ -90,6 +131,8 @@ python kindlemaster.py validate path\to\file.epub
 python kindlemaster.py audit path\to\file.epub
 python kindlemaster.py workflow baseline path\to\input.pdf --change-area reference
 python kindlemaster.py workflow verify path\to\input.pdf --run-id <run_id>
+python kindlemaster.py orchestrate doctor
+python kindlemaster.py orchestrate sync --issues-json reports/github/issues.json
 python scripts/install_git_hooks.py --check
 python scripts/install_git_hooks.py --install
 ```
@@ -101,6 +144,7 @@ The standard local evidence files are generated, not hand maintained:
 ```text
 reports/governance/doctor.json
 reports/governance/quick.json
+reports/governance/quality-critical.json
 reports/governance/release.json
 ```
 

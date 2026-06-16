@@ -4,7 +4,6 @@ import io
 import tempfile
 import unittest
 import zipfile
-from pathlib import Path
 from unittest.mock import patch
 
 from epub_premium_scoring import build_magazine_premium_quality_contract
@@ -243,10 +242,14 @@ class PublicationPipelineTests(unittest.TestCase):
             quality_report=quality_report,
         )
 
-        finalized = finalize_publication_epub(
-            document,
-            _minimal_magazine_epub(["Main Feature", "Second Feature", "Third Interview"]),
-        )
+        with patch(
+            "publication_pipeline.run_epubcheck",
+            return_value={"status": "passed", "tool": "epubcheck", "messages": []},
+        ):
+            finalized = finalize_publication_epub(
+                document,
+                _minimal_magazine_epub(["Main Feature", "Second Feature", "Third Interview"]),
+            )
 
         refreshed_map = finalized.magazine_premium_quality["article_map"]
         self.assertIn(finalized.validation_status, {"passed", "unavailable"})

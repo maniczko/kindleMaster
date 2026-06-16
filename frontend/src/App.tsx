@@ -10,8 +10,6 @@ import {
   Cloud,
   Scissors,
   Download,
-  ExternalLink,
-  FileDown,
   FileText,
   Gauge,
   KeyRound,
@@ -25,7 +23,6 @@ import {
   Send,
   Settings as SettingsIcon,
   ShieldCheck,
-  Trash2,
   Upload,
   UserRound,
   Wrench,
@@ -44,15 +41,11 @@ import {
   type AccountState,
   type AuthConfigPayload,
 } from "./lib/auth";
-import { apiRequestInput, apiUrl } from "./lib/api-base";
 import { normalizeQualityState, type NormalizedQualityState, type QualityStatePayload } from "./lib/quality-state";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
-
 type JobStatus = "idle" | "queued" | "running" | "ready" | "failed";
 type ViewId = "convert" | "preview" | "library" | "details" | "settings";
-type PdfCompressionProfile = "safe" | "balanced" | "aggressive";
 type LibrarySort =
   | "updated_desc"
   | "updated_asc"
@@ -64,6 +57,7 @@ type LibrarySort =
   | "status_desc"
   | "kindle_desc"
   | "kindle_asc";
+type DeliveryAttachment = "epub" | "pdf";
 
 interface ConversionJobPayload {
   success?: boolean;
@@ -84,7 +78,6 @@ interface ConversionJobPayload {
   report_json_url?: string;
   report_markdown_url?: string;
   artifacts?: Record<string, unknown>;
-  conversion?: Record<string, unknown> | null;
   quality_state?: QualityStatePayload;
   auto_repair?: Record<string, unknown>;
   email_delivery?: Record<string, unknown>;
@@ -112,18 +105,14 @@ interface UserProfilePayload {
     default_recipient: string;
     max_attachment_bytes: number;
     secret_configured?: boolean;
-    secret_registered?: boolean;
   };
 }
 
 interface DeliveryConfigPayload {
   enabled?: boolean;
   configured?: boolean;
-  send_ready?: boolean;
   provider?: string;
   secret_configured?: boolean;
-  secret_registered?: boolean;
-  secret_env_name?: string;
   profile_configured?: boolean;
   config_source?: string;
   missing_config?: string[];
@@ -134,23 +123,6 @@ interface ImportPromptState {
   busy: boolean;
   message: string;
   error: string;
-}
-
-interface PdfCompressionResultPayload {
-  success?: boolean;
-  job_id?: string;
-  status?: string;
-  original_size_bytes?: number;
-  compressed_size_bytes?: number;
-  reduction_percent?: number;
-  quality_profile?: string;
-  method?: string;
-  warnings?: string[];
-  download_url?: string;
-  download_name?: string;
-  error?: string;
-  error_code?: string;
-  used_as_source?: boolean;
 }
 
 const profiles = [
@@ -170,10 +142,8 @@ const validViews = new Set<ViewId>(["convert", "preview", "library", "details", 
 
 const pipelineSteps = ["Wgranie", "Kolejka", "Konwersja", "Audyt", "Bramka jakości", "Artefakty"];
 const START_REQUEST_TIMEOUT_MS = 30000;
-const PDF_COMPRESSION_TIMEOUT_MS = 120000;
 const STATUS_REQUEST_TIMEOUT_MS = 30000;
 const MAX_STATUS_TRANSIENT_FAILURES = 5;
-const MAX_STATUS_POLL_ATTEMPTS = 1200;
 
 const defaultProfile: UserProfilePayload = {
   conversion: {
@@ -192,7 +162,6 @@ const defaultProfile: UserProfilePayload = {
     default_recipient: "",
     max_attachment_bytes: 52428800,
     secret_configured: false,
-    secret_registered: false,
   },
 };
 
@@ -203,9 +172,6 @@ function App() {
   const [language, setLanguage] = React.useState(defaultProfile.conversion.default_language);
   const [forceOcr, setForceOcr] = React.useState(defaultProfile.conversion.force_ocr);
   const [headingRepair, setHeadingRepair] = React.useState(defaultProfile.conversion.heading_repair);
-  const [compressionProfile, setCompressionProfile] = React.useState<PdfCompressionProfile>("balanced");
-  const [compressionBusy, setCompressionBusy] = React.useState(false);
-  const [compressedPdfResult, setCompressedPdfResult] = React.useState<PdfCompressionResultPayload | null>(null);
   const [activeJob, setActiveJob] = React.useState<ConversionJobPayload | null>(null);
   const [jobs, setJobs] = React.useState<ConversionJobPayload[]>([]);
   const [libraryQuery, setLibraryQuery] = React.useState("");
@@ -269,21 +235,9 @@ function App() {
     }
   }, [account.authenticated, account.userId]);
 
-  React.useEffect(() => {
-    const compatWindow = window as unknown as Record<string, unknown>;
-    compatWindow.setLibraryViewVisible = (visible = true) => {
-      openView(visible ? "library" : "convert");
-    };
-    compatWindow.loadConversionLibrary = async () => loadLibraryItems("/convert/library?limit=100");
-    return () => {
-      delete compatWindow.setLibraryViewVisible;
-      delete compatWindow.loadConversionLibrary;
-    };
-  });
-
   async function loadAuth() {
     try {
-      const response = await fetch(apiUrl("/auth/config"), { cache: "no-store" });
+      const response = await fetch("/auth/config", { cache: "no-store" });
       const payload = await response.json();
       const config = (payload.auth ?? {}) as AuthConfigPayload;
       setAuthConfig(config);
@@ -311,15 +265,14 @@ function App() {
 
   async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}) {
     const token = await accessTokenFromClient(authClientRef.current);
-    const resolvedInput = apiRequestInput(input);
-    if (!token) return fetch(resolvedInput, init);
+    if (!token) return fetch(input, init);
     const baseHeaders =
       init.headers instanceof Headers
         ? Object.fromEntries(init.headers.entries())
         : Array.isArray(init.headers)
           ? Object.fromEntries(init.headers)
           : { ...(init.headers as Record<string, string> | undefined) };
-    return fetch(resolvedInput, {
+    return fetch(input, {
       ...init,
       headers: {
         ...baseHeaders,
@@ -357,20 +310,6 @@ function App() {
     } catch {
       setJobs([]);
     }
-  }
-
-  async function loadLibraryItems(url: string) {
-    const response = await apiFetch(url, { cache: "no-store" });
-    const payload = await response.json();
-    const items = Array.isArray(payload.items) ? payload.items : Array.isArray(payload.jobs) ? payload.jobs : [];
-    setJobs(items.slice(0, 100));
-    return payload;
-  }
-
-  async function openLibrarySearch() {
-    const query = libraryQuery.trim();
-    await loadLibraryItems(query ? `/convert/search?q=${encodeURIComponent(query)}&limit=100` : "/convert/library?limit=100");
-    openView("library");
   }
 
   async function loadJobQualityState(job: ConversionJobPayload): Promise<ConversionJobPayload> {
@@ -538,10 +477,7 @@ function App() {
         filename: file.name,
       };
       setActiveJob(initialJob);
-      const completedJob = await pollJob(startPayload.job_id, initialJob);
-      if (normalizeJobStatus(completedJob.status) === "ready" && completedJob.download_url) {
-        await triggerBrowserDownload(completedJob.download_url, apiFetch);
-      }
+      await pollJob(startPayload.job_id, initialJob);
       setActiveView("details");
       syncHash("details");
     } catch (caught) {
@@ -622,7 +558,7 @@ function App() {
   async function pollJob(jobId: string, seed: ConversionJobPayload): Promise<ConversionJobPayload> {
     let current = seed;
     let transientFailures = 0;
-    for (let attempt = 0; attempt < MAX_STATUS_POLL_ATTEMPTS; attempt += 1) {
+    for (let attempt = 0; attempt < 240; attempt += 1) {
       await delay(attempt === 0 ? 800 : 1600);
       let response: Response;
       let payload: ConversionJobPayload;
@@ -672,49 +608,10 @@ function App() {
         source_type: payload.source_type || current.source_type,
       };
       setActiveJob(current);
-      if (payload.status === "ready") return current;
+      if (payload.status === "ready") return;
       if (payload.status === "failed") throw new Error(payload.error || payload.message || "Konwersja nie powiodła się.");
     }
     throw new Error("Konwersja trwa zbyt długo dla interaktywnego podglądu.");
-  }
-
-  async function retryConversion(job: ConversionJobPayload) {
-    if (!job.job_id) return;
-    setIsBusy(true);
-    setError("");
-    try {
-      const { response, payload } = await apiFetchJson<ConversionJobPayload>(
-        `/convert/retry/${encodeURIComponent(job.job_id)}`,
-        { method: "POST" },
-        START_REQUEST_TIMEOUT_MS,
-      );
-      if (!response.ok || !payload.success || !payload.job_id) {
-        throw new Error(payload.error || "Nie udało się ponowić konwersji.");
-      }
-      const retryJob: ConversionJobPayload = {
-        ...payload,
-        status: payload.status || "queued",
-        filename: payload.filename || job.filename,
-        source_type: payload.source_type || job.source_type,
-      };
-      setActiveJob(retryJob);
-      setActiveView("details");
-      syncHash("details");
-      await pollJob(payload.job_id, retryJob);
-    } catch (caught) {
-      const message = caught instanceof Error ? caught.message : "Nie udało się ponowić konwersji.";
-      setError(message);
-      setActiveJob((current) => ({
-        ...(current ?? job),
-        status: "failed",
-        message,
-        error: message,
-      }));
-      throw new Error(message);
-    } finally {
-      setIsBusy(false);
-      void loadJobs();
-    }
   }
 
   function openView(view: ViewId) {
@@ -754,7 +651,7 @@ function App() {
   }
 
   return (
-    <main className="km-app-shell km-premium-shell" data-vr-hook="vat-209-shell">
+    <main className="km-app-shell km-premium-shell">
       <aside className="km-sidebar" aria-label="Nawigacja KindleMaster">
         <button type="button" className="km-brand km-brand-home" aria-label="Strona główna KindleMaster" onClick={() => openView("convert")}>
           <div className="km-brand-mark">KM</div>
@@ -820,7 +717,7 @@ function App() {
         {activeView === "convert" ? (
           <ConvertView
             file={file}
-            setFile={selectConversionFile}
+            setFile={setFile}
             profile={profile}
             setProfile={setProfile}
             language={language}
@@ -829,16 +726,10 @@ function App() {
             setForceOcr={setForceOcr}
             headingRepair={headingRepair}
             setHeadingRepair={setHeadingRepair}
-            compressionProfile={compressionProfile}
-            setCompressionProfile={setCompressionProfile}
-            compressionBusy={compressionBusy}
-            compressedPdfResult={compressedPdfResult}
             isBusy={isBusy}
             canStart={canStart}
             error={error}
             startConversion={startConversion}
-            compressSelectedPdf={compressSelectedPdf}
-            useCompressedPdfForConversion={useCompressedPdfForConversion}
             openPreview={() => openView("preview")}
           />
         ) : null}
@@ -853,7 +744,6 @@ function App() {
             busy={isBusy}
             onSelect={setActiveJob}
             openDetails={openJobDetails}
-            deletePublication={deletePublication}
             libraryQuery={libraryQuery}
             onLibraryQueryChange={setLibraryQuery}
             librarySort={librarySort}
@@ -874,7 +764,6 @@ function App() {
             defaultKindleRecipient={settingsForm.email_delivery.default_recipient}
             onJobUpdate={applyJobUpdate}
             reloadJobs={loadJobs}
-            retryConversion={retryConversion}
             openLibrary={() => openView("library")}
             apiFetch={apiFetch}
           />
@@ -911,16 +800,10 @@ function ConvertView({
   setForceOcr,
   headingRepair,
   setHeadingRepair,
-  compressionProfile,
-  setCompressionProfile,
-  compressionBusy,
-  compressedPdfResult,
   isBusy,
   canStart,
   error,
   startConversion,
-  compressSelectedPdf,
-  useCompressedPdfForConversion,
   openPreview,
 }: {
   file: File | null;
@@ -933,29 +816,20 @@ function ConvertView({
   setForceOcr: (value: boolean) => void;
   headingRepair: boolean;
   setHeadingRepair: (value: boolean) => void;
-  compressionProfile: PdfCompressionProfile;
-  setCompressionProfile: (value: PdfCompressionProfile) => void;
-  compressionBusy: boolean;
-  compressedPdfResult: PdfCompressionResultPayload | null;
   isBusy: boolean;
   canStart: boolean;
   error: string;
   startConversion: () => void;
-  compressSelectedPdf: () => void;
-  useCompressedPdfForConversion: () => void;
   openPreview: () => void;
 }) {
   const canPreviewUploadedPdf = isPdfFile(file);
-  const canCompressPdf = Boolean(file && isPdfFile(file) && !isBusy && !compressionBusy);
   return (
     <section className="km-view km-convert-view">
       <div className="km-convert-single">
         <Card className="km-upload-panel">
           <CardHeader>
             <CardTitle>Nowa konwersja</CardTitle>
-            <CardDescription>
-              Wgraj dokument. KindleMaster sam dobierze profil, OCR i naprawę struktury; ręczne ustawienia są tylko dla wyjątków.
-            </CardDescription>
+            <CardDescription>Wgraj dokument, wybierz profil i sprawdź tylko te informacje, które wpływają na decyzję.</CardDescription>
           </CardHeader>
           <CardContent>
             <label className="km-drop-zone">
@@ -968,84 +842,46 @@ function ConvertView({
                 accept="application/pdf,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx"
                 onChange={(event) => setFile(event.target.files?.[0] ?? null)}
               />
-              <strong id="fileName">{file ? file.name : "Wybierz plik"}</strong>
+              <strong>{file ? file.name : "Wybierz plik"}</strong>
               <span>{file ? formatBytes(file.size) : "PDF albo DOCX"}</span>
             </label>
 
-            <details className="km-advanced-conversion">
-              <summary>Opcje zaawansowane</summary>
-              <div className="km-form-grid">
-                <label>
-                  <span>Profil</span>
-                  <select value={profile} onChange={(event) => setProfile(event.target.value)}>
-                    {profiles.map((item) => (
-                      <option value={item.value} key={item.value}>
-                        {item.label}
-                      </option>
-                    ))}
-                  </select>
-                  <small>Auto Premium analizuje dokument i wybiera trasę: książka, magazyn, skan, diagramy albo szachy.</small>
-                </label>
-                <label>
-                  <span>Język OCR</span>
-                  <select value={language} onChange={(event) => setLanguage(event.target.value)}>
-                    <option value="pl">pl</option>
-                    <option value="en">en</option>
-                  </select>
-                  <small>Używany tylko wtedy, gdy potrzebne jest OCR. Dla polskich książek zostaw „pl”.</small>
-                </label>
-              </div>
+            <div className="km-form-grid">
+              <label>
+                <span>Profil</span>
+                <select value={profile} onChange={(event) => setProfile(event.target.value)}>
+                  {profiles.map((item) => (
+                    <option value={item.value} key={item.value}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>Język OCR</span>
+                <select value={language} onChange={(event) => setLanguage(event.target.value)}>
+                  <option value="pl">pl</option>
+                  <option value="en">en</option>
+                </select>
+              </label>
+            </div>
 
-              <div className="km-switch-row">
-                <label>
-                  <input type="checkbox" checked={forceOcr} onChange={(event) => setForceOcr(event.target.checked)} />
-                  <span>
-                    Wymuś OCR
-                    <small>Włącz tylko dla skanu bez tekstu; może znacząco wydłużyć konwersję.</small>
-                  </span>
-                </label>
-                <label>
-                  <input type="checkbox" checked={headingRepair} onChange={(event) => setHeadingRepair(event.target.checked)} />
-                  <span>
-                    Naprawa nagłówków
-                    <small>Odbudowuje spis treści i hierarchię rozdziałów; domyślnie warto zostawić włączone.</small>
-                  </span>
-                </label>
-              </div>
-              <div className="km-form-grid km-compression-profile-grid">
-                <label>
-                  <span>Zmniejszanie PDF</span>
-                  <select value={compressionProfile} onChange={(event) => setCompressionProfile(event.target.value as PdfCompressionProfile)}>
-                    <option value="safe">safe - najmniejsze ryzyko</option>
-                    <option value="balanced">balanced - zalecane</option>
-                    <option value="aggressive">aggressive - najmniejszy rozmiar</option>
-                  </select>
-                  <small>Tryb agresywny może pogorszyć diagramy, OCR i drobny tekst. Dla książek szachowych zacznij od balanced.</small>
-                </label>
-              </div>
-            </details>
+            <div className="km-switch-row">
+              <label>
+                <input type="checkbox" checked={forceOcr} onChange={(event) => setForceOcr(event.target.checked)} />
+                Wymuś OCR
+              </label>
+              <label>
+                <input type="checkbox" checked={headingRepair} onChange={(event) => setHeadingRepair(event.target.checked)} />
+                Naprawa nagłówków
+              </label>
+            </div>
 
             {canPreviewUploadedPdf ? (
               <Button type="button" variant="outline" className="km-preview-inline-action" onClick={openPreview}>
                 <BookOpen data-icon="inline-start" aria-hidden="true" />
                 Podgląd PDF / kadrowanie
               </Button>
-            ) : null}
-
-            <div className="km-compression-actions">
-              <Button type="button" variant="outline" className="km-compress-button" onClick={compressSelectedPdf} disabled={!canCompressPdf}>
-                {compressionBusy ? <Loader2 data-icon="inline-start" aria-hidden="true" /> : <RefreshCw data-icon="inline-start" aria-hidden="true" />}
-                Zmniejsz wagę PDF
-              </Button>
-              <span>{file && !isPdfFile(file) ? "Dostępne tylko dla PDF." : "Opcjonalne: najpierw zmniejsz PDF, potem zdecyduj czy go użyć."}</span>
-            </div>
-
-            {compressedPdfResult ? (
-              <PdfCompressionResultCard
-                result={compressedPdfResult}
-                useCompressedPdfForConversion={useCompressedPdfForConversion}
-                compressionBusy={compressionBusy}
-              />
             ) : null}
 
             {error ? (
@@ -1060,528 +896,6 @@ function ConvertView({
             </Button>
           </CardContent>
         </Card>
-      </div>
-    </section>
-  );
-}
-
-function PdfCompressionResultCard({
-  result,
-  compressionBusy,
-  useCompressedPdfForConversion,
-  showUseAction = true,
-}: {
-  result: PdfCompressionResultPayload;
-  compressionBusy: boolean;
-  useCompressedPdfForConversion?: () => void;
-  showUseAction?: boolean;
-}) {
-  const original = Number(result.original_size_bytes || 0);
-  const compressed = Number(result.compressed_size_bytes || 0);
-  const reduction = Number(result.reduction_percent || 0);
-  const success = Boolean(result.success && result.download_url);
-  const warnings = Array.isArray(result.warnings) ? result.warnings.filter(Boolean) : [];
-  return (
-    <section className={`km-compression-result ${success ? "is-success" : "is-warning"}`} aria-live="polite">
-      <div>
-        <span className="km-compression-kicker">{success ? "PDF zmniejszony" : "PDF bez zmiany"}</span>
-        <strong>
-          {formatBytes(original)} → {formatBytes(compressed)}
-          {Number.isFinite(reduction) ? ` (${reduction > 0 ? "-" : ""}${Math.abs(reduction).toFixed(1)}%)` : ""}
-        </strong>
-        <p>
-          Profil: {result.quality_profile || "balanced"} · metoda: {result.method || "ghostscript+qpdf"}
-          {result.used_as_source ? " · mniejszy PDF ustawiony do konwersji" : ""}
-        </p>
-      </div>
-      {warnings.length ? (
-        <ul>
-          {warnings.slice(0, 3).map((warning) => (
-            <li key={warning}>{warning}</li>
-          ))}
-        </ul>
-      ) : null}
-      {success ? (
-        <div className="km-compression-result-actions">
-          <a className="km-button km-button-outline km-button-sm" href={apiUrl(result.download_url || "")}>
-            <Download data-icon="inline-start" aria-hidden="true" />
-            Pobierz mniejszy PDF
-          </a>
-          {showUseAction && useCompressedPdfForConversion ? (
-            <Button type="button" size="sm" onClick={useCompressedPdfForConversion} disabled={compressionBusy || result.used_as_source}>
-              {compressionBusy ? <Loader2 data-icon="inline-start" aria-hidden="true" /> : <CheckCircle2 data-icon="inline-start" aria-hidden="true" />}
-              Użyj mniejszego PDF do konwersji
-            </Button>
-          ) : null}
-        </div>
-      ) : null}
-    </section>
-  );
-}
-
-function PdfCompressionBusyIndicator({ message }: { message: string }) {
-  return (
-    <section className="km-compression-busy" aria-live="polite" aria-busy="true">
-      <div className="km-compression-busy-header">
-        <Loader2 aria-hidden="true" />
-        <div>
-          <span>Zmniejszanie PDF</span>
-          <strong>{message}</strong>
-        </div>
-      </div>
-      <Progress value={42} aria-label="Trwa zmniejszanie PDF" />
-      <ol>
-        <li>Pobieram zachowany PDF źródłowy z lokalnego cache lub artefaktu.</li>
-        <li>Rekoduję obrazy w profilu balanced, bez agresywnej utraty jakości.</li>
-        <li>Porządkuję plik przez qpdf i sprawdzam liczbę stron oraz finalny rozmiar.</li>
-      </ol>
-    </section>
-  );
-}
-
-type CropRectNormalized = {
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-};
-
-const A4_PDF_WIDTH = 595.28;
-const A4_PDF_HEIGHT = 841.89;
-
-function defaultCropForPreset(preset: string): CropRectNormalized | null {
-  if (preset === "a4") return { left: 0.055, top: 0.035, width: 0.89, height: 0.93 };
-  if (preset === "margins") return { left: 0.09, top: 0.075, width: 0.82, height: 0.85 };
-  return null;
-}
-
-function normalizedToPdfBox(normalized: CropRectNormalized, widthPt: number, heightPt: number) {
-  const left = normalized.left * widthPt;
-  const right = (normalized.left + normalized.width) * widthPt;
-  const top = heightPt - normalized.top * heightPt;
-  const bottom = heightPt - (normalized.top + normalized.height) * heightPt;
-  return {
-    left: Math.max(0, Math.min(left, widthPt)),
-    right: Math.max(0, Math.min(right, widthPt)),
-    bottom: Math.max(0, Math.min(bottom, heightPt)),
-    top: Math.max(0, Math.min(top, heightPt)),
-  };
-}
-
-function cropRectToStyle(rect: CropRectNormalized | null): React.CSSProperties {
-  if (!rect) return { display: "none" };
-  return {
-    display: "block",
-    left: `${rect.left * 100}%`,
-    top: `${rect.top * 100}%`,
-    width: `${rect.width * 100}%`,
-    height: `${rect.height * 100}%`,
-  };
-}
-
-export function parsePdfPageSelection(value: string, pageCount: number): { pages: number[]; error: string } {
-  const rawValue = String(value || "").trim();
-  if (!rawValue) return { pages: [], error: "" };
-  if (!Number.isFinite(pageCount) || pageCount <= 0) {
-    return { pages: [], error: "PDF nie jest jeszcze gotowy do edycji stron." };
-  }
-  const pages = new Set<number>();
-  for (const rawPart of rawValue.split(",")) {
-    const part = rawPart.trim();
-    if (!part) continue;
-    const rangeMatch = part.match(/^(\d+)\s*-\s*(\d+)$/);
-    if (rangeMatch) {
-      const start = Number(rangeMatch[1]);
-      const end = Number(rangeMatch[2]);
-      if (start > end) return { pages: [], error: `Nieprawidłowy zakres stron: ${part}.` };
-      if (start < 1 || end > pageCount) return { pages: [], error: `Zakres ${part} wykracza poza dokument (${pageCount} stron).` };
-      for (let page = start; page <= end; page += 1) pages.add(page);
-      continue;
-    }
-    if (!/^\d+$/.test(part)) return { pages: [], error: `Nie rozumiem numeru strony: ${part}.` };
-    const page = Number(part);
-    if (page < 1 || page > pageCount) return { pages: [], error: `Strona ${page} wykracza poza dokument (${pageCount} stron).` };
-    pages.add(page);
-  }
-  const sortedPages = Array.from(pages).sort((left, right) => left - right);
-  if (sortedPages.length >= pageCount) {
-    return { pages: [], error: "Nie można usunąć wszystkich stron z PDF." };
-  }
-  return { pages: sortedPages, error: "" };
-}
-
-function DetailsPdfCropWorkspace({
-  sourceUrl,
-  filename,
-  fetchPdf,
-}: {
-  sourceUrl: string;
-  filename: string;
-  fetchPdf: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-}) {
-  const [preset, setPreset] = React.useState("a4");
-  const [pageNumber, setPageNumber] = React.useState(1);
-  const [pageCount, setPageCount] = React.useState(0);
-  const [status, setStatus] = React.useState("Ładuję PDF źródłowy...");
-  const [error, setError] = React.useState("");
-  const [sourceUnavailable, setSourceUnavailable] = React.useState(false);
-  const [cropRect, setCropRect] = React.useState<CropRectNormalized | null>(() => defaultCropForPreset("a4"));
-  const [pageSize, setPageSize] = React.useState({ width: 0, height: 0 });
-  const [exportBusy, setExportBusy] = React.useState(false);
-  const [deletePagesInput, setDeletePagesInput] = React.useState("");
-  const [deleteBusy, setDeleteBusy] = React.useState(false);
-  const [dragRect, setDragRect] = React.useState<CropRectNormalized | null>(null);
-  const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
-  const previewRef = React.useRef<HTMLDivElement | null>(null);
-  const overlayRef = React.useRef<HTMLDivElement | null>(null);
-  const pdfRef = React.useRef<any>(null);
-  const pdfBytesRef = React.useRef<Uint8Array | null>(null);
-  const renderTaskRef = React.useRef<any>(null);
-  const globalCropRef = React.useRef<CropRectNormalized | null>(defaultCropForPreset("a4"));
-  const dragStartRef = React.useRef<{ x: number; y: number } | null>(null);
-
-  React.useEffect(() => {
-    let cancelled = false;
-    async function loadPdf() {
-      if (sourceUnavailable) return;
-      setStatus("Pobieram PDF źródłowy do podglądu...");
-      setError("");
-      try {
-        const response = await fetchPdf(sourceUrl, { cache: "no-store" });
-        if (!response.ok) {
-          if (response.status === 404 || response.status === 410) {
-            setSourceUnavailable(true);
-            throw new Error("Nie udało się pobrać PDF źródłowego; odśwież bibliotekę albo wgraj plik ponownie.");
-          }
-          if (response.status === 502) {
-            throw new Error("Nie udało się pobrać PDF źródłowego z magazynu artefaktów. Spróbuj ponownie lub wgraj plik jeszcze raz.");
-          }
-          throw new Error(`Nie udało się pobrać PDF (${response.status}).`);
-        }
-        const data = new Uint8Array(await response.arrayBuffer());
-        if (cancelled) return;
-        pdfBytesRef.current = data;
-        pdfRef.current = await pdfjsLib.getDocument({ data: data.slice() }).promise;
-        if (cancelled) return;
-        const totalPages = pdfRef.current.numPages || 1;
-        setPageCount(totalPages);
-        setPageNumber(1);
-        setStatus("PDF gotowy. Możesz przełączać strony i zaznaczać kadr.");
-      } catch (caught) {
-        if (!cancelled) {
-          setError(caught instanceof Error ? caught.message : "Nie udało się wyrenderować podglądu PDF.");
-          setStatus("");
-        }
-      }
-    }
-    void loadPdf();
-    return () => {
-      cancelled = true;
-      renderTaskRef.current?.cancel?.();
-      pdfRef.current?.destroy?.();
-      pdfRef.current = null;
-    };
-  }, [sourceUrl, fetchPdf, sourceUnavailable]);
-
-  React.useEffect(() => {
-    let cancelled = false;
-    async function renderPage() {
-      const pdf = pdfRef.current;
-      if (!pdf || sourceUnavailable) return;
-      setStatus(`Renderuję stronę ${pageNumber} z ${pdf.numPages || pageCount || "?"}...`);
-      setError("");
-      try {
-        const page = await pdf.getPage(pageNumber);
-        const viewportAtOne = page.getViewport({ scale: 1 });
-        const containerWidth = Math.max(420, (previewRef.current?.clientWidth || 900) - 36);
-        const scale = Math.max(0.4, Math.min(2.4, containerWidth / viewportAtOne.width));
-        const viewport = page.getViewport({ scale });
-        const deviceScale = window.devicePixelRatio || 1;
-        const canvas = canvasRef.current;
-        const context = canvas?.getContext("2d", { alpha: false }) ?? null;
-        if (!canvas || !context || cancelled) return;
-        renderTaskRef.current?.cancel?.();
-        canvas.width = Math.floor(viewport.width * deviceScale);
-        canvas.height = Math.floor(viewport.height * deviceScale);
-        canvas.style.width = `${viewport.width}px`;
-        canvas.style.height = `${viewport.height}px`;
-        context.setTransform(deviceScale, 0, 0, deviceScale, 0, 0);
-        const task = page.render({ canvasContext: context, viewport });
-        renderTaskRef.current = task;
-        await task.promise;
-        if (cancelled) return;
-        setPageSize({ width: viewportAtOne.width, height: viewportAtOne.height });
-        const savedCrop = globalCropRef.current || defaultCropForPreset(preset);
-        setCropRect(savedCrop);
-        setStatus(`Podgląd strony ${pageNumber} z ${pdf.numPages}.`);
-      } catch (caught) {
-        if (!cancelled && !(caught instanceof Error && caught.name === "RenderingCancelledException")) {
-          setError(caught instanceof Error ? caught.message : "Nie udało się wyrenderować strony PDF.");
-          setStatus("");
-        }
-      }
-    }
-    void renderPage();
-    return () => {
-      cancelled = true;
-      renderTaskRef.current?.cancel?.();
-    };
-  }, [pageNumber, pageCount, preset, sourceUnavailable]);
-
-  function setPresetAndCrop(nextPreset: string) {
-    setPreset(nextPreset);
-    const nextCrop = defaultCropForPreset(nextPreset);
-    globalCropRef.current = nextCrop;
-    setCropRect(nextCrop);
-    setDragRect(null);
-  }
-
-  function pointerPosition(event: React.PointerEvent<HTMLDivElement>) {
-    const bounds = overlayRef.current?.getBoundingClientRect();
-    if (!bounds) return { x: 0, y: 0 };
-    return {
-      x: Math.max(0, Math.min(bounds.width, event.clientX - bounds.left)),
-      y: Math.max(0, Math.min(bounds.height, event.clientY - bounds.top)),
-      width: bounds.width,
-      height: bounds.height,
-    };
-  }
-
-  function rectFromPoints(start: { x: number; y: number }, end: { x: number; y: number; width: number; height: number }): CropRectNormalized {
-    const left = Math.max(0, Math.min(start.x, end.x));
-    const top = Math.max(0, Math.min(start.y, end.y));
-    const right = Math.min(end.width, Math.max(start.x, end.x));
-    const bottom = Math.min(end.height, Math.max(start.y, end.y));
-    return {
-      left: left / end.width,
-      top: top / end.height,
-      width: Math.max(0, right - left) / end.width,
-      height: Math.max(0, bottom - top) / end.height,
-    };
-  }
-
-  function startCropDrag(event: React.PointerEvent<HTMLDivElement>) {
-    if (!pdfRef.current || exportBusy || deleteBusy) return;
-    event.preventDefault();
-    setPreset("manual");
-    const point = pointerPosition(event);
-    dragStartRef.current = { x: point.x, y: point.y };
-    setDragRect(null);
-    event.currentTarget.setPointerCapture?.(event.pointerId);
-  }
-
-  function moveCropDrag(event: React.PointerEvent<HTMLDivElement>) {
-    if (!dragStartRef.current) return;
-    event.preventDefault();
-    const point = pointerPosition(event);
-    setDragRect(rectFromPoints(dragStartRef.current, point));
-  }
-
-  function finishCropDrag(event: React.PointerEvent<HTMLDivElement>) {
-    if (!dragStartRef.current) return;
-    event.preventDefault();
-    const point = pointerPosition(event);
-    const nextCrop = rectFromPoints(dragStartRef.current, point);
-    dragStartRef.current = null;
-    setDragRect(null);
-    if (nextCrop.width < 0.015 || nextCrop.height < 0.015) {
-      setCropRect(null);
-      globalCropRef.current = null;
-      setStatus("Zaznaczenie zbyt małe. Narysuj większy prostokąt kadrowania.");
-      return;
-    }
-    globalCropRef.current = nextCrop;
-    setCropRect(nextCrop);
-    setStatus(`Kadr ustawiony na podstawie strony ${pageNumber}; zostanie użyty dla całego dokumentu.`);
-  }
-
-  async function exportCroppedPdf() {
-    if (!pdfBytesRef.current || !cropRect || !pageSize.width || !pageSize.height) {
-      setError("Najpierw zaznacz kadr na podglądzie strony.");
-      return;
-    }
-    setExportBusy(true);
-    setError("");
-    setStatus("Kadruję cały dokument PDF do A4...");
-    try {
-      const { PDFDocument } = await import("pdf-lib");
-      const sourcePdf = await PDFDocument.load(pdfBytesRef.current);
-      const outputPdf = await PDFDocument.create();
-      const sourcePages = sourcePdf.getPages();
-      if (!sourcePages.length) throw new Error("PDF nie ma stron do kadrowania.");
-      for (const sourcePage of sourcePages) {
-        const sourceWidth = sourcePage.getWidth();
-        const sourceHeight = sourcePage.getHeight();
-        const cropBox = normalizedToPdfBox(cropRect, sourceWidth, sourceHeight);
-        const cropWidth = cropBox.right - cropBox.left;
-        const cropHeight = cropBox.top - cropBox.bottom;
-        if (cropWidth <= 0 || cropHeight <= 0) throw new Error("Nieprawidłowy kadr PDF.");
-        const embeddedPage = await outputPdf.embedPage(sourcePage, cropBox);
-        const targetPage = outputPdf.addPage([A4_PDF_WIDTH, A4_PDF_HEIGHT]);
-        const scale = Math.min(A4_PDF_WIDTH / cropWidth, A4_PDF_HEIGHT / cropHeight);
-        const fittedWidth = cropWidth * scale;
-        const fittedHeight = cropHeight * scale;
-        targetPage.drawPage(embeddedPage, {
-          x: (A4_PDF_WIDTH - fittedWidth) / 2,
-          y: (A4_PDF_HEIGHT - fittedHeight) / 2,
-          xScale: scale,
-          yScale: scale,
-        });
-      }
-      const outputBytes = await outputPdf.save();
-      const blob = new Blob([outputBytes], { type: "application/pdf" });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = `${filename.replace(/\.pdf$/i, "")}-cropped.pdf`;
-      anchor.click();
-      URL.revokeObjectURL(url);
-      setStatus(`Gotowe. Przycięty PDF zawiera ${sourcePages.length} stron.`);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Nie udało się przygotować przyciętego PDF.");
-      setStatus("");
-    } finally {
-      setExportBusy(false);
-    }
-  }
-
-  async function exportPdfWithoutSelectedPages() {
-    const selection = parsePdfPageSelection(deletePagesInput, pageCount);
-    if (selection.error) {
-      setError(selection.error);
-      return;
-    }
-    if (!selection.pages.length) {
-      setError("Wpisz strony do usunięcia, np. 2,4,5 albo 1-3.");
-      return;
-    }
-    if (!pdfBytesRef.current) {
-      setError("PDF nie jest jeszcze gotowy do edycji stron.");
-      return;
-    }
-    setDeleteBusy(true);
-    setError("");
-    setStatus(`Usuwam strony: ${selection.pages.join(", ")}...`);
-    try {
-      const { PDFDocument } = await import("pdf-lib");
-      const sourcePdf = await PDFDocument.load(pdfBytesRef.current);
-      const totalPages = sourcePdf.getPageCount();
-      const verifiedSelection = parsePdfPageSelection(deletePagesInput, totalPages);
-      if (verifiedSelection.error) throw new Error(verifiedSelection.error);
-      for (const page of [...verifiedSelection.pages].sort((left, right) => right - left)) {
-        sourcePdf.removePage(page - 1);
-      }
-      const outputBytes = await sourcePdf.save();
-      const blob = new Blob([outputBytes], { type: "application/pdf" });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = `${filename.replace(/\.pdf$/i, "")}-without-pages-${verifiedSelection.pages.join("-")}.pdf`;
-      anchor.click();
-      URL.revokeObjectURL(url);
-      setStatus(`Gotowe. Usunięto strony ${verifiedSelection.pages.join(", ")}; pobrano nowy PDF.`);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Nie udało się usunąć stron z PDF.");
-      setStatus("");
-    } finally {
-      setDeleteBusy(false);
-    }
-  }
-
-  const canGoPrevious = pageNumber > 1;
-  const canGoNext = pageCount ? pageNumber < pageCount : false;
-  const activeCropRect = dragRect || cropRect;
-  const deleteSelection = parsePdfPageSelection(deletePagesInput, pageCount);
-  const editBusy = exportBusy || deleteBusy;
-  return (
-    <section id="details-pdf-crop-workspace" className="km-details-crop-workspace" aria-label="Kadrowanie PDF w nowym układzie">
-      <div className="km-details-crop-header">
-        <div>
-          <span className="km-compression-kicker">Kadrowanie PDF</span>
-          <strong>{filename}</strong>
-          <p>Podgląd i ustawienia kadrowania są dostępne bez przechodzenia do starego panelu.</p>
-        </div>
-        <a className="km-button km-button-outline km-button-sm" href={sourceUrl} target="_blank" rel="noreferrer">
-          <FileText data-icon="inline-start" aria-hidden="true" />
-          Otwórz PDF
-        </a>
-      </div>
-      <div className="km-details-crop-controls">
-        <label>
-          <span>Preset kadrowania</span>
-          <select value={preset} onChange={(event) => setPresetAndCrop(event.target.value)}>
-            <option value="a4">A4 Kindle</option>
-            <option value="margins">Usuń marginesy</option>
-            <option value="manual">Ręczny kadr</option>
-          </select>
-        </label>
-        <p>
-          Wybrany kadr zostanie zastosowany do całego PDF-a. Finalny EPUB pozostaje bez zmian, dopóki nie uruchomisz
-          kolejnej konwersji na pobranym wariancie.
-        </p>
-      </div>
-      <div className="km-details-crop-toolbar" aria-label="Nawigacja kadrowania PDF">
-        <Button type="button" variant="outline" size="sm" onClick={() => setPageNumber((page) => Math.max(1, page - 1))} disabled={!canGoPrevious || editBusy}>
-          Poprzednia strona
-        </Button>
-        <span aria-live="polite">
-          Strona {pageNumber}{pageCount ? ` z ${pageCount}` : ""}
-        </span>
-        <Button type="button" variant="outline" size="sm" onClick={() => setPageNumber((page) => page + 1)} disabled={!canGoNext || editBusy}>
-          Następna strona
-        </Button>
-        <Button type="button" size="sm" onClick={() => void exportCroppedPdf()} disabled={!cropRect || editBusy}>
-          <Scissors data-icon="inline-start" aria-hidden="true" />
-          {exportBusy ? "Kadruję cały PDF..." : "Kadruj cały PDF"}
-        </Button>
-      </div>
-      <div className="km-details-page-delete-panel" aria-label="Usuwanie stron PDF">
-        <label>
-          <span>Usuń strony z PDF</span>
-          <input
-            value={deletePagesInput}
-            onChange={(event) => setDeletePagesInput(event.target.value)}
-            placeholder="np. 2,4,5 albo 1-3"
-            disabled={editBusy || !pageCount}
-          />
-        </label>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="km-button-danger-outline"
-          onClick={() => void exportPdfWithoutSelectedPages()}
-          disabled={editBusy || !deleteSelection.pages.length || Boolean(deleteSelection.error)}
-        >
-          <Trash2 data-icon="inline-start" aria-hidden="true" />
-          {deleteBusy ? "Usuwam..." : "Pobierz PDF bez tych stron"}
-        </Button>
-        <p>
-          {deleteSelection.error
-            ? deleteSelection.error
-            : deleteSelection.pages.length
-              ? `Do usunięcia: ${deleteSelection.pages.join(", ")}. Oryginał zostaje bez zmian.`
-              : "Obsługiwane są pojedyncze strony i zakresy. Przykład: 2,4,5 albo 10-12."}
-        </p>
-      </div>
-      {status ? <p className="km-delivery-status" role="status">{status}</p> : null}
-      {error ? <p className="km-delivery-error" role="alert">{error}</p> : null}
-      <div className="km-details-crop-preview" ref={previewRef}>
-        <div className="km-details-crop-page-stage">
-          <canvas ref={canvasRef} aria-label="Podgląd strony PDF do kadrowania" />
-          <div
-            ref={overlayRef}
-            className="km-details-crop-overlay"
-            aria-label="Warstwa zaznaczania kadru"
-            role="application"
-            onPointerDown={startCropDrag}
-            onPointerMove={moveCropDrag}
-            onPointerUp={finishCropDrag}
-            onPointerCancel={finishCropDrag}
-          >
-            <div className="km-details-crop-selection" style={cropRectToStyle(activeCropRect)} />
-          </div>
-        </div>
       </div>
     </section>
   );
@@ -1739,8 +1053,8 @@ function SidebarAccountSummary({
         <button type="button" className="km-account-inline-button" onClick={openAccountStart}>
           <CheckCircle2 aria-hidden="true" />
           <span>
-            <strong>Konto</strong>
-            <small>{account.email || account.userId}</small>
+            <strong>Konto cloud</strong>
+            <small>{account.emailMasked || account.email || account.userId}</small>
           </span>
         </button>
         {authStatus ? <p className="km-auth-status">{authStatus}</p> : null}
@@ -1798,7 +1112,7 @@ function AccountPanel({
           <UserRound aria-hidden="true" />
           <span>
             <strong>Konto</strong>
-            <small>{account.email || account.userId}</small>
+            <small>{account.emailMasked || account.email || account.userId}</small>
           </span>
         </div>
         <Button variant="outline" size="sm" onClick={() => void signOut()}>
@@ -1947,7 +1261,7 @@ function PdfPreviewWorkspace({ file }: { file: File | null }) {
                 <option value="manual">Ręcznie</option>
               </select>
             </label>
-            <a className="km-button km-button-primary km-button-md" href={isPdf ? apiUrl("/legacy") : undefined} aria-disabled={!isPdf}>
+            <a className="km-button km-button-primary km-button-md" href={isPdf ? "/legacy" : undefined} aria-disabled={!isPdf}>
               Kadruj do A4
             </a>
           </div>
@@ -2188,7 +1502,6 @@ function LibraryJobRow({
   defaultKindleRecipient,
   onSelect,
   openDetails,
-  deletePublication,
   apiFetch,
 }: {
   job: ConversionJobPayload;
@@ -2196,23 +1509,18 @@ function LibraryJobRow({
   defaultKindleRecipient: string;
   onSelect: (job: ConversionJobPayload) => void;
   openDetails: (job: ConversionJobPayload) => void;
-  deletePublication: (job: ConversionJobPayload) => Promise<void>;
   apiFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 }) {
   const configuredRecipient = defaultKindleRecipient.trim();
   const [deliveryStatus, setDeliveryStatus] = React.useState("");
   const [deliveryError, setDeliveryError] = React.useState("");
   const [deliveryBusy, setDeliveryBusy] = React.useState(false);
-  const [deleteBusy, setDeleteBusy] = React.useState(false);
-  const [deleteError, setDeleteError] = React.useState("");
-  const deliveryArtifactOptions = React.useMemo(() => buildDeliveryArtifactOptions(job), [job]);
-  const [selectedDeliveryArtifact, setSelectedDeliveryArtifact] = React.useState(() => deliveryArtifactOptions[0]?.value || "epub");
   const jobStatus = normalizeJobStatus(job.status);
   const jobIsProcessing = isLibraryJobProcessing(job);
   const processingDetail = libraryProcessingDetail(job, jobStatus);
   const quality = normalizeQualityState(job.quality_state ?? null);
-  const jobLabel = jobDisplayName(job) || "zadania";
-  const sourcePreviewUrl = apiUrl(String(job.source_preview_url || "").trim());
+  const jobLabel = job.filename || job.job_id || "zadania";
+  const sourcePreviewUrl = String(job.source_preview_url || "").trim();
   const recipientConfigured = Boolean(configuredRecipient);
   const deliveryQualityWarnings = quality.sendToKindleReady === false ? formatDeliveryBlockers(quality.sendToKindleBlockers) : [];
   const canSendToKindle = Boolean(job.job_id && job.status === "ready" && deliveryConfig.configured && recipientConfigured);
@@ -2238,11 +1546,6 @@ function LibraryJobRow({
   const sendButtonTitle = deliveryQualityWarnings.length
     ? `Wyślij na ${maskVisibleEmail(configuredRecipient)}. Uwagi jakości: ${deliveryQualityWarnings.join(" ")}`
     : `Wyślij na ${maskVisibleEmail(configuredRecipient)}`;
-  React.useEffect(() => {
-    if (!deliveryArtifactOptions.some((option) => option.value === selectedDeliveryArtifact)) {
-      setSelectedDeliveryArtifact(deliveryArtifactOptions[0]?.value || "epub");
-    }
-  }, [deliveryArtifactOptions, selectedDeliveryArtifact]);
 
   async function sendToKindle(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -2255,30 +1558,17 @@ function LibraryJobRow({
       const response = await apiFetch(`/convert/delivery/${encodeURIComponent(job.job_id)}/email`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ to: configuredRecipient, artifact: selectedDeliveryArtifact }),
+        body: JSON.stringify({ to: configuredRecipient }),
       });
       const payload = await response.json();
       if (!response.ok || !payload.success) {
         throw new Error(payload.error || "Wysyłka mailowa nie powiodła się.");
       }
-      const sentLabel = deliveryArtifactOptions.find((option) => option.value === (payload.delivery?.artifact || selectedDeliveryArtifact))?.shortLabel || "plik";
-      setDeliveryStatus(`Wysłano ${sentLabel} do ${payload.delivery?.masked_recipient || "odbiorcy"}`);
+      setDeliveryStatus(`Wysłano do ${payload.delivery?.masked_recipient || "odbiorcy"}`);
     } catch (caught) {
       setDeliveryError(caught instanceof Error ? caught.message : "Wysyłka mailowa nie powiodła się.");
     } finally {
       setDeliveryBusy(false);
-    }
-  }
-
-  async function runDeletePublication() {
-    setDeleteBusy(true);
-    setDeleteError("");
-    try {
-      await deletePublication(job);
-    } catch (caught) {
-      setDeleteError(caught instanceof Error ? caught.message : "Nie udało się usunąć publikacji.");
-    } finally {
-      setDeleteBusy(false);
     }
   }
 
@@ -2300,7 +1590,7 @@ function LibraryJobRow({
         {jobIsProcessing ? (
           <span className="km-library-status is-processing" role="status" aria-live="polite">
             <Loader2 data-icon="inline-start" aria-hidden="true" />
-            <span>Przetwarzanie</span>
+            <span>Trwa przetwarzanie</span>
             <small>{processingDetail}</small>
           </span>
         ) : (
@@ -2331,21 +1621,6 @@ function LibraryJobRow({
         )}
         {canSendToKindle ? (
           <form className="km-job-send-form" onSubmit={sendToKindle}>
-            <label className="km-job-send-format">
-              <span>Format</span>
-              <select
-                value={selectedDeliveryArtifact}
-                onChange={(event) => setSelectedDeliveryArtifact(event.target.value)}
-                aria-label={`Format wysyłki dla ${jobLabel}`}
-                disabled={deliveryBusy}
-              >
-                {deliveryArtifactOptions.map((option) => (
-                  <option value={option.value} key={option.value}>
-                    {option.shortLabel}
-                  </option>
-                ))}
-              </select>
-            </label>
             <Button type="submit" size="sm" disabled={deliveryBusy || !configuredRecipient} title={sendButtonTitle}>
               {deliveryBusy ? <Loader2 data-icon="inline-start" aria-hidden="true" /> : <Send data-icon="inline-start" aria-hidden="true" />}
               Wyślij na Kindle
@@ -2365,42 +1640,22 @@ function LibraryJobRow({
           </a>
         ) : null}
         {job.download_url ? (
-          <a className="km-button km-button-outline km-button-sm km-job-action-button km-job-action-download" href={apiUrl(job.download_url)}>
-            <span className="km-action-icon" aria-hidden="true">
-              <FileDown />
-            </span>
+          <a className="km-button km-button-outline km-button-sm" href={job.download_url}>
+            <Download data-icon="inline-start" aria-hidden="true" />
             EPUB
           </a>
         ) : null}
         <Button
           variant="outline"
           size="sm"
-          className="km-job-action-button km-job-action-open"
           onClick={() => {
             onSelect(job);
             openDetails(job);
           }}
         >
-          <span className="km-action-icon" aria-hidden="true">
-            <ExternalLink />
-          </span>
+          <FileText data-icon="inline-start" aria-hidden="true" />
           Otwórz
         </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          className="km-button-danger-outline km-job-action-button km-job-action-delete"
-          onClick={() => void runDeletePublication()}
-          disabled={deleteBusy || jobIsProcessing || !job.job_id}
-          title={jobIsProcessing ? "Nie można usuwać publikacji w trakcie przetwarzania." : `Usuń publikację: ${jobLabel}`}
-          aria-label={`Usuń publikację ${jobLabel}`}
-        >
-          <span className="km-action-icon" aria-hidden="true">
-            {deleteBusy ? <Loader2 /> : <Trash2 />}
-          </span>
-          Usuń
-        </Button>
-        {deleteError ? <p className="km-delivery-error">{deleteError}</p> : null}
       </div>
     </div>
   );
@@ -2413,7 +1668,6 @@ function JobsPanel({
   busy,
   onSelect,
   openDetails,
-  deletePublication,
   libraryQuery,
   onLibraryQueryChange,
   librarySort,
@@ -2428,7 +1682,6 @@ function JobsPanel({
   busy: boolean;
   onSelect: (job: ConversionJobPayload) => void;
   openDetails: (job: ConversionJobPayload) => void;
-  deletePublication: (job: ConversionJobPayload) => Promise<void>;
   libraryQuery: string;
   onLibraryQueryChange: (value: string) => void;
   librarySort: LibrarySort;
@@ -2439,9 +1692,6 @@ function JobsPanel({
 }) {
   const visibleJobs = mergeLibraryJobsWithActiveJob(jobs, activeJob, activeJobStatus, busy);
   const filteredJobs = sortLibraryJobs(filterLibraryJobs(visibleJobs, libraryQuery), librarySort);
-  const compatibilityLibraryText = filteredJobs.length
-    ? filteredJobs.map((job) => jobDisplayName(job)).join(" ")
-    : "Brak wyników biblioteki";
   return (
     <section className="km-view">
       <Card>
@@ -2450,24 +1700,6 @@ function JobsPanel({
           <CardDescription>Ostatnie lokalne konwersje, szybkie pobranie EPUB i wysyłka na Kindle bez osobnej zakładki.</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="km-library-compat-controls" aria-label="Szybkie wyszukiwanie biblioteki">
-            <input
-              type="search"
-              value={libraryQuery}
-              onChange={(event) => onLibraryQueryChange(event.target.value)}
-              placeholder="Nazwa pliku, status albo jakość"
-              aria-label="Szybkie wyszukiwanie biblioteki"
-            />
-            <Button id="librarySearchButton" type="button" variant="outline" size="sm">
-              Szukaj
-            </Button>
-          </div>
-          <div id="recentConversionsList" className="km-screen-reader-status">
-            {compatibilityLibraryText}
-          </div>
-          <div id="libraryResultsList" className="km-screen-reader-status">
-            {compatibilityLibraryText}
-          </div>
           <div className="km-library-toolbar" aria-label="Narzędzia Biblioteki">
             <label className="km-library-control km-library-search">
               <span>
@@ -2475,13 +1707,32 @@ function JobsPanel({
                 Szukaj
               </span>
               <input
-                id="librarySearchInput"
                 type="search"
                 value={libraryQuery}
                 onChange={(event) => onLibraryQueryChange(event.target.value)}
                 placeholder="Nazwa pliku, status albo jakość"
                 aria-label="Szukaj w bibliotece"
               />
+            </label>
+            <label className="km-library-control km-library-sort">
+              <span>
+                <ArrowUpDown data-icon="inline-start" aria-hidden="true" />
+                Sortuj
+              </span>
+              <select
+                value={librarySort}
+                onChange={(event) => onLibrarySortChange(event.target.value as LibrarySort)}
+                aria-label="Sortowanie biblioteki"
+              >
+                <option value="updated_desc">Najnowsze</option>
+                <option value="updated_asc">Najstarsze</option>
+                <option value="name_asc">Nazwa A-Z</option>
+                <option value="name_desc">Nazwa Z-A</option>
+                <option value="quality_desc">Jakość malejąco</option>
+                <option value="quality_asc">Jakość rosnąco</option>
+                <option value="status_asc">Status</option>
+                <option value="kindle_desc">Kindle gotowe najpierw</option>
+              </select>
             </label>
             <span className="km-library-count" aria-live="polite">
               {filteredJobs.length} z {visibleJobs.length}
@@ -2523,7 +1774,6 @@ function JobsPanel({
                   defaultKindleRecipient={defaultKindleRecipient}
                   onSelect={onSelect}
                   openDetails={openDetails}
-                  deletePublication={deletePublication}
                   apiFetch={apiFetch}
                   key={job.job_id || job.filename}
                 />
@@ -2571,7 +1821,6 @@ function FileDetailsWorkspace({
   defaultKindleRecipient,
   onJobUpdate,
   reloadJobs,
-  retryConversion,
   openLibrary,
   apiFetch,
 }: {
@@ -2583,7 +1832,6 @@ function FileDetailsWorkspace({
   defaultKindleRecipient: string;
   onJobUpdate: (job: ConversionJobPayload) => void;
   reloadJobs: () => Promise<void>;
-  retryConversion: (job: ConversionJobPayload) => Promise<void>;
   openLibrary: () => void;
   apiFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 }) {
@@ -2595,35 +1843,18 @@ function FileDetailsWorkspace({
   const [deliveryError, setDeliveryError] = React.useState("");
   const [deliveryDiagnostics, setDeliveryDiagnostics] = React.useState<Record<string, unknown> | null>(null);
   const [deliveryBusy, setDeliveryBusy] = React.useState(false);
-  const [artifactDownloadError, setArtifactDownloadError] = React.useState("");
-  const [detailsCompressionBusy, setDetailsCompressionBusy] = React.useState(false);
-  const [detailsCompressionStatus, setDetailsCompressionStatus] = React.useState("");
-  const [detailsCompressedPdfResult, setDetailsCompressedPdfResult] = React.useState<PdfCompressionResultPayload | null>(null);
-  const [cropWorkspaceOpen, setCropWorkspaceOpen] = React.useState(false);
-  const deliveryArtifactOptions = React.useMemo(() => buildDeliveryArtifactOptions(job), [job]);
-  const [selectedDeliveryArtifact, setSelectedDeliveryArtifact] = React.useState(() => deliveryArtifactOptions[0]?.value || "epub");
+  const [deliveryArtifact, setDeliveryArtifact] = React.useState<DeliveryAttachment>("epub");
   const configuredRecipient = defaultKindleRecipient.trim();
   const autoRepair = normalizeAutoRepair(job?.auto_repair ?? job?.quality_state?.auto_repair);
-  const sourcePreviewUrl = apiUrl(String(job?.source_preview_url || "").trim());
-  const sourceArtifactUrl = artifactDownloadUrl(job, "input") || sourcePreviewUrl;
-  const isPdfSource = isPdfJob(job);
-  const sourceProxyUrl = job?.job_id && isPdfSource ? apiUrl(`/convert/artifact/${encodeURIComponent(job.job_id)}/input`) : sourceArtifactUrl;
+  const sourcePreviewUrl = String(job?.source_preview_url || "").trim();
+  const hasPdfDeliveryArtifact = Boolean(sourcePreviewUrl || jobHasPdfDeliveryArtifact(job));
   React.useEffect(() => {
     setKindleEmail(configuredRecipient);
   }, [configuredRecipient]);
   React.useEffect(() => {
     setDeliveryDiagnostics(null);
-    setDetailsCompressedPdfResult(null);
-    setDetailsCompressionBusy(false);
-    setDetailsCompressionStatus("");
-    setArtifactDownloadError("");
-    setCropWorkspaceOpen(false);
+    setDeliveryArtifact("epub");
   }, [job?.job_id]);
-  React.useEffect(() => {
-    if (!deliveryArtifactOptions.some((option) => option.value === selectedDeliveryArtifact)) {
-      setSelectedDeliveryArtifact(deliveryArtifactOptions[0]?.value || "epub");
-    }
-  }, [deliveryArtifactOptions, selectedDeliveryArtifact]);
   const recipientConfigured = Boolean(configuredRecipient);
   const deliveryBlockers = [
     ...(!job?.job_id ? ["Brak identyfikatora zadania."] : []),
@@ -2632,63 +1863,13 @@ function FileDetailsWorkspace({
     ...(recipientConfigured ? [] : ["Ustaw domyślny adres Kindle w Ustawieniach."]),
   ];
   const canSendToKindle = Boolean(job?.job_id && job.status === "ready" && deliveryConfig.configured && recipientConfigured);
+  const canSendSelectedArtifact = canSendToKindle && (deliveryArtifact === "epub" || hasPdfDeliveryArtifact);
   const artifactRows = buildArtifactRows(job, quality);
   const persistedDiagnostics =
     job?.email_delivery?.diagnostics && typeof job.email_delivery.diagnostics === "object"
       ? (job.email_delivery.diagnostics as Record<string, unknown>)
       : null;
   const activeDeliveryDiagnostics = deliveryDiagnostics ?? persistedDiagnostics;
-  const canRetryConversion = Boolean(
-    job?.job_id
-      && job.status === "failed"
-      && (job.error_code === "application_restart" || job.artifacts?.input),
-  );
-
-  async function compressJobSourcePdf() {
-    if (!job?.job_id || !isPdfSource || !sourceProxyUrl) return;
-    setDetailsCompressionBusy(true);
-    setDetailsCompressionStatus("Pobieram zachowany PDF źródłowy i przygotowuję bezpieczny profil kompresji.");
-    setRepairError("");
-    setRepairStatus("");
-    setDetailsCompressedPdfResult(null);
-    const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), PDF_COMPRESSION_TIMEOUT_MS);
-    try {
-      const formData = new FormData();
-      formData.append("profile", "balanced");
-      const response = await apiFetch(`/pdf/compress/job/${encodeURIComponent(job.job_id)}`, {
-        method: "POST",
-        body: formData,
-        signal: controller.signal,
-      });
-      const payload = (await response.json().catch(() => ({}))) as PdfCompressionResultPayload;
-      if (!response.ok) {
-        throw new Error(payload.error || "Nie udało się zmniejszyć PDF źródłowego.");
-      }
-      setDetailsCompressedPdfResult(payload);
-      setDetailsCompressionStatus("");
-    } catch (caught) {
-      setRepairError(caught instanceof Error ? caught.message : "Nie udało się zmniejszyć PDF źródłowego.");
-      setDetailsCompressionStatus("");
-    } finally {
-      window.clearTimeout(timeout);
-      setDetailsCompressionBusy(false);
-    }
-  }
-
-  async function runRetryConversion() {
-    if (!job || !canRetryConversion) return;
-    setRepairBusy(true);
-    setRepairStatus("Ponawiam rozczytanie z zachowanego pliku wejściowego...");
-    setRepairError("");
-    try {
-      await retryConversion(job);
-    } catch (caught) {
-      setRepairError(caught instanceof Error ? caught.message : "Nie udało się ponowić rozczytania.");
-    } finally {
-      setRepairBusy(false);
-    }
-  }
 
   async function runRepair() {
     if (!job?.job_id) return;
@@ -2716,22 +1897,9 @@ function FileDetailsWorkspace({
     }
   }
 
-  async function downloadArtifact(event: React.MouseEvent<HTMLAnchorElement>, artifact: { label: string; href: string }) {
-    event.preventDefault();
-    if (!artifact.href) return;
-    setArtifactDownloadError("");
-    try {
-      await triggerBrowserDownload(artifact.href, apiFetch);
-    } catch (caught) {
-      setArtifactDownloadError(
-        caught instanceof Error ? caught.message : `Nie udalo sie pobrac artefaktu ${artifact.label}.`,
-      );
-    }
-  }
-
   async function sendToKindle(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!job?.job_id || !kindleEmail.trim() || !canSendToKindle) return;
+    if (!job?.job_id || !kindleEmail.trim() || !canSendSelectedArtifact) return;
     setDeliveryBusy(true);
     setDeliveryStatus("");
     setDeliveryError("");
@@ -2739,7 +1907,7 @@ function FileDetailsWorkspace({
       const response = await apiFetch(`/convert/delivery/${encodeURIComponent(job.job_id)}/email`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ to: kindleEmail.trim(), artifact: selectedDeliveryArtifact }),
+        body: JSON.stringify({ to: kindleEmail.trim(), artifact: deliveryArtifact }),
       });
       const payload = await response.json();
       if (payload.delivery?.diagnostics && typeof payload.delivery.diagnostics === "object") {
@@ -2748,7 +1916,7 @@ function FileDetailsWorkspace({
       if (!response.ok || !payload.success) {
         throw new Error(payload.error || "Wysyłka mailowa nie powiodła się.");
       }
-      const sentArtifact = deliveryArtifactOptions.find((option) => option.value === (payload.delivery?.artifact || selectedDeliveryArtifact))?.shortLabel || "plik";
+      const sentArtifact = payload.delivery?.artifact === "pdf" || payload.delivery?.artifact === "cropped_pdf" ? "PDF" : "EPUB";
       setDeliveryStatus(`Wysłano ${sentArtifact} do ${payload.delivery?.masked_recipient || "odbiorcy"}`);
       setKindleEmail(configuredRecipient);
     } catch (caught) {
@@ -2798,52 +1966,17 @@ function FileDetailsWorkspace({
                 ["Czas konwersji", formatSeconds(job.elapsed_seconds)],
               ]}
             />
-            {isPdfSource ? (
-              <div className="km-source-action-panel" aria-label="Narzędzia PDF źródłowego">
-                <div className="km-source-action-grid">
-                  <Button type="button" variant="outline" size="md" onClick={() => void compressJobSourcePdf()} disabled={detailsCompressionBusy || !sourceProxyUrl}>
-                    {detailsCompressionBusy ? <Loader2 data-icon="inline-start" aria-hidden="true" /> : <RefreshCw data-icon="inline-start" aria-hidden="true" />}
-                    Zmniejsz rozmiar
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="md"
-                    onClick={() => setCropWorkspaceOpen((current) => !current)}
-                    disabled={!sourceProxyUrl}
-                    aria-expanded={cropWorkspaceOpen}
-                    aria-controls="details-pdf-crop-workspace"
-                  >
-                    <Scissors data-icon="inline-start" aria-hidden="true" />
-                    Kadruj
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="md"
-                    onClick={() => setCropWorkspaceOpen(true)}
-                    disabled={!sourceProxyUrl}
-                    aria-controls="details-pdf-crop-workspace"
-                  >
-                    <Trash2 data-icon="inline-start" aria-hidden="true" />
-                    Usuń strony
-                  </Button>
-                </div>
-                <p>
-                  {sourceProxyUrl
-                    ? "Operacje działają na zachowanym PDF źródłowym; finalny EPUB pozostaje bez zmian, dopóki nie uruchomisz nowej konwersji."
-                    : "Brak zachowanego PDF źródłowego dla tego zadania; kadrowanie możesz wykonać po ponownym wgraniu pliku."}
-                </p>
-                {detailsCompressionBusy ? (
-                  <PdfCompressionBusyIndicator message={detailsCompressionStatus || "Zmniejszam PDF źródłowy."} />
-                ) : null}
-                {detailsCompressedPdfResult ? (
-                  <PdfCompressionResultCard
-                    result={detailsCompressedPdfResult}
-                    compressionBusy={detailsCompressionBusy}
-                    showUseAction={false}
-                  />
-                ) : null}
+            {sourcePreviewUrl ? (
+              <div className="km-pdf-tools" aria-label="Narzędzia PDF">
+                <a className="km-button km-button-outline km-button-sm" href={sourcePreviewUrl} target="_blank" rel="noreferrer">
+                  <BookOpen data-icon="inline-start" aria-hidden="true" />
+                  Podgląd PDF
+                </a>
+                <a className="km-button km-button-outline km-button-sm" href="/legacy">
+                  <Scissors data-icon="inline-start" aria-hidden="true" />
+                  Kadruj PDF
+                </a>
+                <p>Wysyłka PDF użyje cropped PDF, jeśli został zapisany jako artefakt; inaczej wyśle PDF źródłowy.</p>
               </div>
             ) : null}
           </CardContent>
@@ -2873,18 +2006,13 @@ function FileDetailsWorkspace({
         <Card>
           <CardHeader>
             <CardTitle>Artefakty</CardTitle>
-            <CardDescription>Pobierz gotowy EPUB i dostępne artefakty konwersji.</CardDescription>
+            <CardDescription>Pobierz finalny EPUB i raporty dostępne dla tego zadania.</CardDescription>
           </CardHeader>
           <CardContent>
             {artifactRows.length ? (
               <div className="km-artifact-list">
                 {artifactRows.map((artifact) => (
-                  <a
-                    href={artifact.href}
-                    key={artifact.label}
-                    onClick={(event) => void downloadArtifact(event, artifact)}
-                    download
-                  >
+                  <a href={artifact.href} key={artifact.label}>
                     <Download data-icon="inline-start" aria-hidden="true" />
                     {artifact.label}
                   </a>
@@ -2893,23 +2021,23 @@ function FileDetailsWorkspace({
             ) : (
               <div className="km-empty-state">Brak artefaktów do pobrania.</div>
             )}
-            {artifactDownloadError ? <p className="km-delivery-error">{artifactDownloadError}</p> : null}
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader>
-            <CardTitle>Wysyłka na Kindle</CardTitle>
-            <CardDescription>Wybierz format załącznika i wyślij go na domyślny adres Kindle.</CardDescription>
+            <CardTitle>Naprawa i wysyłka</CardTitle>
+            <CardDescription>Naprawa poprawia jakość, ale SMTP może wysłać każdy wygenerowany EPUB.</CardDescription>
           </CardHeader>
           <CardContent>
+            <MetricRows
+              rows={[
+                ["Status naprawy", autoRepair.label],
+                ["Akcje", autoRepair.actions.length ? autoRepair.actions.join(", ") : "brak"],
+                ["Wybrany kandydat", autoRepair.selected || "brak"],
+              ]}
+            />
             <div className="km-details-actions">
-              {canRetryConversion ? (
-                <Button variant="outline" onClick={() => void runRetryConversion()} disabled={repairBusy || busy}>
-                  {repairBusy ? <Loader2 data-icon="inline-start" aria-hidden="true" /> : <RefreshCw data-icon="inline-start" aria-hidden="true" />}
-                  Ponów rozczytanie
-                </Button>
-              ) : null}
               <Button variant="outline" onClick={runRepair} disabled={repairBusy || job.status !== "ready"}>
                 {repairBusy ? <Loader2 data-icon="inline-start" aria-hidden="true" /> : <Wrench data-icon="inline-start" aria-hidden="true" />}
                 Napraw ponownie
@@ -2923,19 +2051,24 @@ function FileDetailsWorkspace({
                 <label className="km-send-artifact-select">
                   <span>Format załącznika</span>
                   <select
-                    value={selectedDeliveryArtifact}
-                    onChange={(event) => setSelectedDeliveryArtifact(event.target.value)}
-                    aria-label="Format wysyłki na Kindle"
+                    aria-label="Format załącznika Kindle"
+                    value={deliveryArtifact}
+                    onChange={(event) => setDeliveryArtifact(event.target.value as DeliveryAttachment)}
                     disabled={deliveryBusy}
                   >
-                    {deliveryArtifactOptions.map((option) => (
-                      <option value={option.value} key={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
+                    <option value="epub">Finalny EPUB</option>
+                    {hasPdfDeliveryArtifact ? <option value="pdf">PDF źródłowy / po kadrowaniu</option> : null}
                   </select>
                 </label>
-                <Button type="submit" disabled={deliveryBusy || !kindleEmail.trim() || !canSendToKindle}>
+                <input
+                  aria-label={`Adres Kindle dla ${job.filename || job.job_id}`}
+                  type="email"
+                  value={kindleEmail}
+                  readOnly
+                  placeholder="Ustaw adres Kindle w Ustawieniach"
+                  disabled={deliveryBusy}
+                />
+                <Button type="submit" disabled={deliveryBusy || !kindleEmail.trim() || !canSendSelectedArtifact}>
                   {deliveryBusy ? <Loader2 data-icon="inline-start" aria-hidden="true" /> : <Send data-icon="inline-start" aria-hidden="true" />}
                   Wyślij na Kindle
                 </Button>
@@ -2949,13 +2082,6 @@ function FileDetailsWorkspace({
           </CardContent>
         </Card>
       </div>
-      {isPdfSource && cropWorkspaceOpen ? (
-        <DetailsPdfCropWorkspace
-          sourceUrl={sourceProxyUrl}
-          filename={job.filename || "PDF źródłowy"}
-          fetchPdf={apiFetch}
-        />
-      ) : null}
     </section>
   );
 }
@@ -2963,7 +2089,7 @@ function FileDetailsWorkspace({
 function SmtpStatusSummary({
   deliveryConfig,
   emailProfile,
-  reloadSettings: _reloadSettings,
+  reloadSettings,
 }: {
   deliveryConfig: DeliveryConfigPayload;
   emailProfile: UserProfilePayload["email_delivery"];
@@ -2975,21 +2101,38 @@ function SmtpStatusSummary({
   const recipientReady = Boolean(emailProfile.default_recipient);
   const source = String(deliveryConfig.config_source ?? "");
   const sourceLabel = source === "env+profile" ? "profil + env" : source === "profile" ? "profil lokalny" : source === "env" ? "env" : "brak danych";
-  const secretRegistered = Boolean(deliveryConfig.secret_registered || emailProfile.secret_registered);
-  const secretLabel = deliveryConfig.secret_configured ? "sekret widoczny w env" : secretRegistered ? "sekret odnotowany" : "brak sekretu";
-  const summaryParts = [
-    profileReady ? `${emailProfile.host}:${emailProfile.port}` : "profil SMTP niepełny",
-    secretLabel,
-    recipientReady ? `Kindle: ${maskVisibleEmail(emailProfile.default_recipient)}` : "brak adresu Kindle",
-  ];
   return (
     <section className="km-smtp-summary" aria-label="Status SMTP">
       <div className="km-smtp-summary-header">
         <div>
           <Badge variant={deliveryConfig.configured ? "success" : deliveryConfig.enabled ? "warning" : "secondary"}>{statusLabel}</Badge>
-          <h3>{deliveryConfig.configured ? "Wysyłka na Kindle gotowa" : "Wysyłka na Kindle wymaga konfiguracji"}</h3>
-          <p>{summaryParts.join(" · ")}</p>
+          <h3>Wysyłka na Kindle</h3>
+          <p>Profil przechowuje tylko ustawienia niesekretne. Hasło/API key zostaje w `KINDLEMASTER_SMTP_PASSWORD`.</p>
         </div>
+        <Button variant="outline" size="sm" onClick={() => void reloadSettings()}>
+          <RefreshCw data-icon="inline-start" aria-hidden="true" />
+          Odśwież SMTP
+        </Button>
+      </div>
+      <div className="km-smtp-readiness-grid">
+        <StatusTile
+          icon={profileReady ? <CheckCircle2 aria-hidden="true" /> : <AlertTriangle aria-hidden="true" />}
+          title="Profil SMTP"
+          value={profileReady ? `${emailProfile.host}:${emailProfile.port}` : "uzupełnij host, login i nadawcę"}
+          state={profileReady ? "ready" : "warning"}
+        />
+        <StatusTile
+          icon={deliveryConfig.secret_configured ? <KeyRound aria-hidden="true" /> : <AlertTriangle aria-hidden="true" />}
+          title="Sekret"
+          value={deliveryConfig.secret_configured ? "hasło/API key jest w env" : "brakuje KINDLEMASTER_SMTP_PASSWORD"}
+          state={deliveryConfig.secret_configured ? "ready" : "warning"}
+        />
+        <StatusTile
+          icon={recipientReady ? <Send aria-hidden="true" /> : <AlertTriangle aria-hidden="true" />}
+          title="Adres Kindle"
+          value={recipientReady ? maskVisibleEmail(emailProfile.default_recipient) : "uzupełnij domyślny adres"}
+          state={recipientReady ? "ready" : "warning"}
+        />
       </div>
       <p className="km-smtp-footnote">
         Źródło: {sourceLabel}. {missing.length ? `Do uzupełnienia: ${missing.join(", ")}.` : "Konfiguracja kompletna."}
@@ -3065,16 +2208,17 @@ function SettingsPanel({
       <Card>
         <CardHeader>
           <CardTitle>Ustawienia profilu użytkownika</CardTitle>
+          <CardDescription>Po zalogowaniu ustawienia trafiają do Supabase. Hasło SMTP/API key nigdy nie trafia do profilu.</CardDescription>
         </CardHeader>
         <CardContent>
           <section className="km-settings-account" aria-label="Konto użytkownika">
             <div className="km-settings-account-copy">
               {account.authenticated ? <CheckCircle2 aria-hidden="true" /> : <UserRound aria-hidden="true" />}
               <span>
-                <strong>{account.authenticated ? "Konto" : "Tryb lokalny"}</strong>
+                <strong>{account.authenticated ? "Konto cloud" : "Tryb lokalny"}</strong>
                 <small>
                   {account.authenticated
-                    ? account.email || account.userId
+                    ? account.emailMasked || account.email || account.userId
                     : authConfigured
                       ? "Zaloguj się, aby przypisać bibliotekę i ustawienia do konta."
                       : "Supabase nie jest skonfigurowany. Aplikacja działa lokalnie."}
@@ -3100,81 +2244,67 @@ function SettingsPanel({
           <div className="km-settings-grid">
             <fieldset className="km-settings-form">
               <legend>Domyślne ustawienia konwersji</legend>
-              <div className="km-auto-conversion-card km-settings-auto-summary">
-                <div>
-                  <span className="km-eyebrow">Automatyka konwersji</span>
-                  <strong>Auto Premium dobiera profil i OCR przy starcie konwersji</strong>
-                  <p>Ręczne domyślne ustawienia zostają dostępne jako override, ale nie konkurują z głównym widokiem.</p>
-                </div>
-                <span className="km-auto-pill">Zalecane</span>
-              </div>
-
-              <details className="km-advanced-conversion km-settings-advanced-conversion">
-                <summary>Zaawansowane ustawienia konwersji</summary>
-                <div className="km-settings-advanced-body">
-                  <label>
-                    <span>Domyślny profil konwersji</span>
-                    <select
-                      aria-label="Domyślny profil konwersji"
-                      value={settingsForm.conversion.default_profile}
-                      onChange={(event) =>
-                        setSettingsForm((current) => ({
-                          ...current,
-                          conversion: { ...current.conversion, default_profile: event.target.value },
-                        }))
-                      }
-                    >
-                      {profiles.map((item) => (
-                        <option value={item.value} key={item.value}>
-                          {item.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    <span>Domyślny język OCR</span>
-                    <select
-                      aria-label="Domyślny język OCR"
-                      value={settingsForm.conversion.default_language}
-                      onChange={(event) =>
-                        setSettingsForm((current) => ({
-                          ...current,
-                          conversion: { ...current.conversion, default_language: event.target.value },
-                        }))
-                      }
-                    >
-                      <option value="pl">pl</option>
-                      <option value="en">en</option>
-                    </select>
-                  </label>
-                  <label className="km-inline-check">
-                    <input
-                      type="checkbox"
-                      checked={settingsForm.conversion.force_ocr}
-                      onChange={(event) =>
-                        setSettingsForm((current) => ({
-                          ...current,
-                          conversion: { ...current.conversion, force_ocr: event.target.checked },
-                        }))
-                      }
-                    />
-                    Domyślnie wymuszaj OCR
-                  </label>
-                  <label className="km-inline-check">
-                    <input
-                      type="checkbox"
-                      checked={settingsForm.conversion.heading_repair}
-                      onChange={(event) =>
-                        setSettingsForm((current) => ({
-                          ...current,
-                          conversion: { ...current.conversion, heading_repair: event.target.checked },
-                        }))
-                      }
-                    />
-                    Domyślnie naprawiaj nagłówki
-                  </label>
-                </div>
-              </details>
+              <label>
+                <span>Domyślny profil konwersji</span>
+                <select
+                  aria-label="Domyślny profil konwersji"
+                  value={settingsForm.conversion.default_profile}
+                  onChange={(event) =>
+                    setSettingsForm((current) => ({
+                      ...current,
+                      conversion: { ...current.conversion, default_profile: event.target.value },
+                    }))
+                  }
+                >
+                  {profiles.map((item) => (
+                    <option value={item.value} key={item.value}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>Domyślny język OCR</span>
+                <select
+                  aria-label="Domyślny język OCR"
+                  value={settingsForm.conversion.default_language}
+                  onChange={(event) =>
+                    setSettingsForm((current) => ({
+                      ...current,
+                      conversion: { ...current.conversion, default_language: event.target.value },
+                    }))
+                  }
+                >
+                  <option value="pl">pl</option>
+                  <option value="en">en</option>
+                </select>
+              </label>
+              <label className="km-inline-check">
+                <input
+                  type="checkbox"
+                  checked={settingsForm.conversion.force_ocr}
+                  onChange={(event) =>
+                    setSettingsForm((current) => ({
+                      ...current,
+                      conversion: { ...current.conversion, force_ocr: event.target.checked },
+                    }))
+                  }
+                />
+                Domyślnie wymuszaj OCR
+              </label>
+              <label className="km-inline-check">
+                <input
+                  type="checkbox"
+                  checked={settingsForm.conversion.heading_repair}
+                  onChange={(event) =>
+                    setSettingsForm((current) => ({
+                      ...current,
+                      conversion: { ...current.conversion, heading_repair: event.target.checked },
+                    }))
+                  }
+                />
+                Domyślnie naprawiaj nagłówki
+              </label>
             </fieldset>
 
             <fieldset className="km-settings-form">
@@ -3282,11 +2412,7 @@ function SettingsPanel({
                 </label>
               </div>
               <p className="km-secret-note">
-                Sekret: {deliveryConfig.secret_configured
-                  ? `widoczny w ${deliveryConfig.secret_env_name || "env"}`
-                  : settingsForm.email_delivery.secret_registered || deliveryConfig.secret_registered
-                    ? "odnotowany w profilu; wartość nie jest przechowywana w bazie"
-                    : "ustaw KINDLEMASTER_SMTP_PASSWORD przed startem serwera"}.
+                Sekret: {deliveryConfig.secret_configured ? "ustawiony w KINDLEMASTER_SMTP_PASSWORD" : "ustaw KINDLEMASTER_SMTP_PASSWORD przed startem serwera"}.
               </p>
             </fieldset>
           </div>
@@ -3400,111 +2526,6 @@ function normalizeJobStatus(status: unknown): JobStatus {
   return "idle";
 }
 
-function buildLegacyStatusText(
-  job: ConversionJobPayload | null,
-  jobStatus: JobStatus,
-  file: File | null,
-  busy: boolean,
-  error: string,
-  quality: NormalizedQualityState,
-) {
-  if (jobStatus === "ready") {
-    const sizeLabel = formatBytes(readOutputSizeBytes(job));
-    const sourceLabel = sourceTypeLabel(job, file);
-    const reviewPrefix = quality.status === "needs_review" || Boolean(job?.quality_state?.release_blocked) ? "Wymaga naprawy przed publikacją. " : "";
-    return `${reviewPrefix}EPUB wygenerowany i pobrany z ${sourceLabel}. Rozmiar: ${sizeLabel}.`;
-  }
-
-  if (jobStatus === "failed") {
-    return buildLegacyErrorStatus(job?.error || job?.message || error);
-  }
-
-  if (busy || jobStatus === "queued" || jobStatus === "running") {
-    const message = String(job?.message || "").trim();
-    return message || "Trwa konwersja EPUB...";
-  }
-
-  if (error) {
-    return buildLegacyErrorStatus(error);
-  }
-
-  if (file) {
-    return `${isPdfFile(file) ? "PDF" : "DOCX"} gotowy do konwersji.`;
-  }
-
-  return "Wybierz plik PDF albo DOCX.";
-}
-
-function buildLegacyErrorStatus(message: unknown) {
-  const rawMessage = String(message || "").trim();
-  const folded = asciiFold(rawMessage).toLowerCase();
-  if (folded.includes("restart aplikacji") || folded.includes("zrestartowana")) {
-    return "Lokalna aplikacja zostala zrestartowana albo zadanie wygaslo. Uruchom konwersje ponownie.";
-  }
-  if (folded.includes("przekroczono limit czasu")) {
-    return "Przekroczono limit czasu odpowiedzi lokalnego serwera.";
-  }
-  if (folded.includes("polaczenie z lokalnym serwerem")) {
-    return "Polaczenie z lokalnym serwerem konwersji zostalo przerwane.";
-  }
-  if (folded.includes("backend timeout")) {
-    return "Konwersja nie powiodla sie: backend timeout";
-  }
-  if (folded.includes("konwersja nie powiodla")) {
-    return rawMessage;
-  }
-  return rawMessage ? `Konwersja nie powiodla sie: ${rawMessage}` : "Konwersja nie powiodla sie.";
-}
-
-function asciiFold(value: string) {
-  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-}
-
-function sourceTypeLabel(job: ConversionJobPayload | null, file: File | null) {
-  const sourceType = String(job?.source_type || "").toLowerCase();
-  if (sourceType.includes("docx") || file?.name.toLowerCase().endsWith(".docx")) return "DOCX";
-  return "PDF";
-}
-
-function readOutputSizeBytes(job: ConversionJobPayload | null) {
-  const conversion = readRecord(job?.conversion);
-  const qualitySummary = readRecord(job?.quality_state?.summary);
-  const value = Number(job?.output_size_bytes ?? conversion.output_size_bytes ?? qualitySummary.output_size_bytes ?? 0);
-  return Number.isFinite(value) ? value : 0;
-}
-
-async function triggerBrowserDownload(url: string, fetcher: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> = fetch) {
-  if (!url || typeof document === "undefined") return;
-  const response = await fetcher(url, { cache: "no-store" });
-  if (!response.ok) {
-    throw new Error(`Nie udało się pobrać artefaktu (${response.status}).`);
-  }
-  const blob = await response.blob();
-  const objectUrl = URL.createObjectURL(blob);
-  const filename = filenameFromContentDisposition(response.headers.get("content-disposition")) || filenameFromDownloadUrl(url);
-  const anchor = document.createElement("a");
-  anchor.href = objectUrl;
-  anchor.download = filename;
-  anchor.style.display = "none";
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
-}
-
-function filenameFromContentDisposition(header: string | null) {
-  if (!header) return "";
-  const utf8Match = header.match(/filename\*=UTF-8''([^;]+)/i);
-  if (utf8Match?.[1]) return decodeURIComponent(utf8Match[1].replace(/"/g, ""));
-  const match = header.match(/filename="?([^";]+)"?/i);
-  return match?.[1]?.trim() || "";
-}
-
-function filenameFromDownloadUrl(url: string) {
-  const rawName = url.split(/[?#]/)[0]?.split("/").filter(Boolean).pop() || "kindlemaster.epub";
-  return rawName.toLowerCase().endsWith(".epub") ? rawName : `${rawName}.epub`;
-}
-
 function isLibraryJobProcessing(job: ConversionJobPayload) {
   const status = normalizeJobStatus(job.status);
   return status === "queued" || status === "running";
@@ -3604,7 +2625,6 @@ function librarySearchText(job: ConversionJobPayload) {
     qualityScore.label,
     qualityScore.value,
     job.quality_state?.release_verdict,
-    job.text_excerpt,
   ]
     .filter(Boolean)
     .join(" ")
@@ -3612,7 +2632,7 @@ function librarySearchText(job: ConversionJobPayload) {
 }
 
 function jobDisplayName(job: ConversionJobPayload) {
-  return String(job.title || job.filename || job.job_id || "").trim();
+  return String(job.filename || job.job_id || "").trim();
 }
 
 function jobUpdatedTime(job: ConversionJobPayload) {
@@ -3655,7 +2675,6 @@ function normalizeUserProfile(payload: unknown): UserProfilePayload {
       default_recipient: source.email_delivery?.default_recipient || "",
       max_attachment_bytes: Number(source.email_delivery?.max_attachment_bytes || defaultProfile.email_delivery.max_attachment_bytes),
       secret_configured: Boolean(source.email_delivery?.secret_configured),
-      secret_registered: Boolean(source.email_delivery?.secret_registered),
     },
   };
 }
@@ -3772,7 +2791,7 @@ function viewDescription(view: ViewId) {
     preview: "Sprawdź PDF w przeglądarce i przygotuj kadrowanie przed startem.",
     library: "Przeglądaj zadania, pobieraj EPUB i wysyłaj gotowe artefakty na Kindle.",
     details: "Zobacz artefakty, decyzję jakości i bezpieczną naprawę wybranego pliku.",
-    settings: "Konto, domyślna konwersja i wysyłka na Kindle.",
+    settings: "Zapisz bezpieczne ustawienia lokalne; sekret SMTP zostaje w zmiennych środowiskowych.",
   }[view];
 }
 
@@ -3883,39 +2902,35 @@ function autoRepairMessage(value: unknown) {
 
 function buildArtifactRows(job: ConversionJobPayload | null, quality: NormalizedQualityState) {
   const rows: Array<{ label: string; href: string }> = [];
-  if (job?.download_url) rows.push({ label: "Finalny EPUB", href: apiUrl(job.download_url) });
-  if (job?.source_preview_url) rows.push({ label: "PDF źródłowy", href: apiUrl(job.source_preview_url) });
-  const pgnUrl = artifactDownloadUrl(job, "chess_pgn");
-  if (pgnUrl) rows.push({ label: "PGN partii", href: pgnUrl });
-  const pgnHtmlUrl = artifactDownloadUrl(job, "chess_pgn_html");
-  if (pgnHtmlUrl) rows.push({ label: "HTML PGN/FEN", href: pgnHtmlUrl });
-  void quality;
+  if (job?.download_url) rows.push({ label: "Finalny EPUB", href: job.download_url });
+  if (job?.source_preview_url) rows.push({ label: "PDF źródłowy", href: job.source_preview_url });
+  for (const [label, href] of Object.entries(quality.reports)) {
+    if (label === "report_markdown") continue;
+    rows.push({ label: reportLabel(label), href });
+  }
   return rows;
 }
 
-function buildDeliveryArtifactOptions(job: ConversionJobPayload | null) {
-  const options: Array<{ value: string; label: string; shortLabel: string }> = [];
-  if (job?.download_url || artifactDownloadUrl(job, "output")) {
-    options.push({ value: "epub", label: "Finalny EPUB", shortLabel: "EPUB" });
-  }
-  if (artifactDownloadUrl(job, "input") || job?.source_preview_url) {
-    options.push({ value: "input", label: "PDF źródłowy", shortLabel: "PDF" });
-  }
-  if (artifactDownloadUrl(job, "chess_pgn_html")) {
-    options.push({ value: "chess_pgn_html", label: "HTML PGN/FEN", shortLabel: "HTML" });
-  }
-  return options.length ? options : [{ value: "epub", label: "Finalny EPUB", shortLabel: "EPUB" }];
+function jobHasPdfDeliveryArtifact(job: ConversionJobPayload | null) {
+  const artifacts = job?.artifacts && typeof job.artifacts === "object" ? job.artifacts : {};
+  return ["cropped_pdf", "pdf", "source_pdf", "input"].some((key) => {
+    const artifact = artifacts[key];
+    if (!artifact || typeof artifact !== "object" || Array.isArray(artifact)) return false;
+    const source = artifact as Record<string, unknown>;
+    const contentType = String(source.content_type || "").toLowerCase();
+    const filename = String(source.filename || "").toLowerCase();
+    return contentType === "application/pdf" || filename.endsWith(".pdf");
+  });
 }
 
-function artifactDownloadUrl(job: ConversionJobPayload | null, key: string) {
-  const artifacts = job?.artifacts && typeof job.artifacts === "object" ? job.artifacts : {};
-  const artifact = artifacts[key];
-  if (!artifact || typeof artifact !== "object" || Array.isArray(artifact)) return "";
-  const source = artifact as Record<string, unknown>;
-  const directUrl = String(source.download_url || "").trim();
-  if (directUrl) return apiUrl(directUrl);
-  if (!job?.job_id) return "";
-  return apiUrl(`/convert/artifact/${encodeURIComponent(job.job_id)}/${encodeURIComponent(key)}`);
+function reportLabel(label: string) {
+  return (
+    {
+      report_json: "Raport jakości JSON",
+      report_markdown: "Raport jakości Markdown",
+      download_url: "Finalny EPUB",
+    }[label] || label
+  );
 }
 
 function formatSeconds(value: unknown) {
@@ -3928,13 +2943,6 @@ function formatSeconds(value: unknown) {
 function isPdfFile(file: File | null) {
   if (!file) return false;
   return file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
-}
-
-function isPdfJob(job: ConversionJobPayload | null) {
-  if (!job) return false;
-  const sourceType = String(job.source_type || "").toLowerCase();
-  const filename = String(job.filename || "").toLowerCase();
-  return sourceType === "pdf" || filename.endsWith(".pdf");
 }
 
 function formatBytes(bytes: number) {

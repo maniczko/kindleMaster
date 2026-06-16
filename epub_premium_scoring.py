@@ -242,7 +242,13 @@ def score_epub_premium_quality(
     toc_noise = [issue for issue in toc_noise if issue is not None]
     issues.extend(toc_noise[:16])
     duplicate_toc_labels = [
-        label for label, count in Counter(_normalize_label(entry.get("label", "")) for entry in toc_entries).items() if label and count > 1
+        label
+        for label, count in Counter(
+            _normalize_label(entry.get("label", ""))
+            for entry in toc_entries
+            if not _is_standard_structural_toc_entry(entry)
+        ).items()
+        if label and count > 1
     ]
     for label in duplicate_toc_labels[:8]:
         issues.append(
@@ -1025,7 +1031,7 @@ def _toc_noise_issue(entry: dict[str, str]) -> dict[str, Any] | None:
     normalized = _normalize_label(label)
     if not normalized:
         return _issue("review", "toc_non_content_entry", "Empty TOC label.", "toc", "Remove empty navigation entries.")
-    if _is_meaningful_index_toc_label(normalized):
+    if _is_standard_structural_toc_entry(entry):
         return None
     if _matches_any(normalized, GENERIC_TOC_PATTERNS):
         return _issue(
@@ -1054,14 +1060,13 @@ def _toc_noise_issue(entry: dict[str, str]) -> dict[str, Any] | None:
     return None
 
 
-def _is_meaningful_index_toc_label(label: str) -> bool:
-    normalized = _normalize_label(label).strip(" .:;")
-    if not normalized:
-        return False
-    lowered = normalized.lower()
-    if lowered == "index":
-        return False
-    if re.fullmatch(r"(?:index|indeks)\s+(?:of\s+|[a-ząćęłńóśźż]+\s+)?[a-ząćęłńóśźż][a-ząćęłńóśźż\s&-]{2,80}", lowered):
+def _is_standard_structural_toc_entry(entry: dict[str, str]) -> bool:
+    label = _normalize_label(entry.get("label", ""))
+    href = urldefrag(str(entry.get("href", "") or ""))[0]
+    target = PurePosixPath(href).name.lower()
+    if label in {"cover", "front cover"} and (target == "cover.xhtml" or target.startswith("cover")):
+        return True
+    if label in {"contents", "table of contents", "spis tresci"}:
         return True
     return False
 

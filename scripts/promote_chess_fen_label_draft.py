@@ -11,8 +11,9 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from chess_position_recognizer import validate_fen
-from scripts.validate_chess_fen_labels import validate_chess_fen_labels
+from chess_fen_hardening import crop_sha256, has_square_diff_ack  # noqa: E402
+from chess_position_recognizer import validate_fen  # noqa: E402
+from scripts.validate_chess_fen_labels import validate_chess_fen_labels  # noqa: E402
 
 
 def promote_chess_fen_label_draft(
@@ -26,8 +27,9 @@ def promote_chess_fen_label_draft(
     """Promote manually approved FEN draft rows into validator-ready labels.
 
     Safety contract:
-    - AI suggestions are not copied to `fen` unless the caller explicitly uses
-      `--accept-ai-suggestions` or the row has `human_verified=true`.
+    - AI suggestions are never copied to `fen`; they are review evidence only.
+      `--accept-ai-suggestions` is retained as a deprecated no-op for older
+      scripts, but cannot promote AI output.
     - Every promoted FEN must pass syntax/basic validation.
     - The output still requires profile readiness/corpus gates before manifest
       promotion.
@@ -69,6 +71,7 @@ def promote_chess_fen_label_draft(
         "verified_by": verifier,
         "verified_at": resolved_verified_at,
         "accept_ai_suggestions": bool(accept_ai_suggestions),
+        "accept_ai_suggestions_policy": "deprecated_no_op_ai_never_promotes_to_verified",
         "validation": {
             "status": validation.get("status"),
             "label_count": validation.get("label_count", 0),
@@ -101,10 +104,12 @@ def _promote_row(
     human_rejected = bool(row.get("human_rejected"))
     if human_rejected:
         return None, "human_rejected"
-    if not human_verified and not accept_ai_suggestions:
+    if not human_verified:
         return None, "manual_approval_missing"
+    if not has_square_diff_ack(row):
+        return None, "square_diff_ack_missing"
 
-    fen = str(row.get("fen") or "").strip()
+    fen = str(row.get("fen") or row.get("manual_fen") or "").strip()
     source = "manual_fen"
     if not fen:
         fen = str(row.get("ai_suggested_fen") or "").strip()
@@ -118,7 +123,24 @@ def _promote_row(
     if not is_valid:
         return None, "fen_invalid:" + ",".join(warnings)
 
-    crop_path = str(row.get("crop_path") or "").strip()
+    if row.get("ai_requires_review") is True:
+        return None, "ai_review_unresolved"
+    if isinstance(row.get("ai_ambiguous_squares"), list) and row.get("ai_ambiguous_squares"):
+        return None, "ai_ambiguous_squares_unresolved"
+    if isinstance(row.get("ambiguous_squares"), list) and row.get("ambiguous_squares"):
+        return None, "ambiguous_squares_unresolved"
+    for key in ("unresolved_ambiguity", "review_required", "requires_review", "needs_review"):
+        if row.get(key) is True:
+            return None, f"review_flag_unresolved:{key}"
+
+    crop_path = str(row.get("crop_path") or row.get("source_crop_path") or "").strip()
+    if not crop_path:
+        return None, "crop_path_missing"
+    if not Path(crop_path).exists():
+        return None, "crop_path_missing_on_disk"
+    crop_hash = str(row.get("crop_sha256") or "").strip()
+    if not crop_hash:
+        crop_hash = crop_sha256(crop_path)
     return (
         {
             "id": row_id,
@@ -126,12 +148,17 @@ def _promote_row(
             "page": row.get("page"),
             "diagram_index": row.get("diagram_index"),
             "crop_path": crop_path,
+            "crop_sha256": crop_hash,
             "fen": fen,
             "verified_by": verified_by,
             "verified_at": verified_at,
+            "verification_source": "human_visual",
+            "human_verified": True,
+            "square_diff_ack": True,
+            "square_diff": row.get("square_diff") if isinstance(row.get("square_diff"), list) else [],
             "label_status": "verified",
             "label_source": source,
-            "ai_assisted": bool(source.startswith("ai_") or row.get("ai_suggested_fen")),
+            "ai_assisted": bool(row.get("ai_suggested_fen")),
             "ai_confidence": row.get("ai_confidence", 0.0),
             "deterministic_confidence": row.get("deterministic_confidence", 0.0),
             "notes": "Verified from board crop after label-assist; deterministic profile gates still required.",
@@ -157,7 +184,7 @@ def main() -> int:
     parser.add_argument(
         "--accept-ai-suggestions",
         action="store_true",
-        help="After human visual review, copy approved ai_suggested_fen values into fen.",
+        help="Deprecated no-op retained for compatibility; AI suggestions are never promoted directly.",
     )
     args = parser.parse_args()
 

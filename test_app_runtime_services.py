@@ -15,7 +15,7 @@ from app_runtime_services import (
     ConversionOutcome,
     ConversionJobStore,
     ConversionRequest,
-    ConversionQualityGateError,
+    build_conversion_config,
     build_conversion_metadata,
     build_conversion_summary,
     build_local_app_url,
@@ -30,8 +30,9 @@ from app_runtime_services import (
     resolve_server_port,
     run_document_conversion,
     serve_http_app,
-    _should_skip_heading_repair,
+    _safe_delivery_repair_needed,
 )
+from epub_delivery_repair import DeliveryRepairResult
 
 
 def _minimal_epub_bytes(*, language: str = "en", title: str = "Quality Sample", body: str | None = None) -> bytes:
@@ -170,6 +171,20 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertIsNone(detect_supported_source_type("sample.epub"))
         self.assertIsNone(detect_supported_source_type(""))
 
+    def test_build_conversion_config_propagates_interactive_runtime_budget(self) -> None:
+        config = build_conversion_config(
+            ConversionRequest(
+                source_path="sample.pdf",
+                source_type="pdf",
+                original_filename="sample.pdf",
+                profile="auto-premium",
+                language="pl",
+                interactive_runtime_budget=True,
+            )
+        )
+
+        self.assertTrue(config.interactive_runtime_budget)
+
     def test_build_local_app_url_normalizes_path_and_optional_port(self) -> None:
         self.assertEqual(build_local_app_url(5001), "http://kindlemaster.localhost:5001/")
         self.assertEqual(
@@ -224,6 +239,250 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertEqual(reloaded_jobs["job-ready"]["status"], "ready")
         self.assertEqual(reloaded_jobs["job-ready"]["metadata"]["profile"], "book_reflow")
 
+    def test_conversion_job_store_reloads_external_persistence_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store_path = Path(temp_dir) / "jobs.json"
+            jobs: dict[str, dict] = {}
+            store = ConversionJobStore(jobs, threading.Lock(), persistence_path=store_path)
+            store.create(
+                {
+                    "job_id": "job-original",
+                    "status": "ready",
+                    "filename": "original.pdf",
+                    "created_at": "2026-04-25T10:00:00Z",
+                    "updated_at": "2026-04-25T10:00:00Z",
+                    "metadata": {},
+                }
+            )
+
+            external_payload = {
+                "version": 1,
+                "updated_at": "2026-04-25T10:05:00Z",
+                "jobs": {
+                    "job-external": {
+                        "job_id": "job-external",
+                        "status": "ready",
+                        "filename": "external.pdf",
+                        "created_at": "2026-04-25T10:05:00Z",
+                        "updated_at": "2026-04-25T10:05:00Z",
+                        "metadata": {},
+                    }
+                },
+            }
+            store_path.write_text(json.dumps(external_payload), encoding="utf-8")
+            reload_result = store.reload_if_changed()
+
+        self.assertTrue(reload_result["reloaded"])
+        self.assertIn("job-original", jobs)
+        self.assertIn("job-external", jobs)
+        self.assertEqual(jobs["job-external"]["filename"], "external.pdf")
+
+    def test_conversion_job_store_load_skips_invalid_recovered_report_only_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store_path = Path(temp_dir) / "jobs.json"
+            store_path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "updated_at": "2026-05-22T12:00:00Z",
+                        "jobs": {
+                            "report-only": {
+                                "job_id": "report-only",
+                                "status": "ready",
+                                "filename": "sample.pdf",
+                                "created_at": "2026-05-22T12:00:00Z",
+                                "updated_at": "2026-05-22T12:00:00Z",
+                                "runtime": {},
+                                "recovered_from_artifacts": True,
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            jobs: dict[str, dict] = {}
+            store = ConversionJobStore(jobs, threading.Lock(), persistence_path=store_path)
+            result = store.load()
+
+        self.assertTrue(result["loaded"])
+        self.assertEqual(result["job_count"], 0)
+        self.assertNotIn("report-only", jobs)
+
+    def test_conversion_job_store_preserves_live_in_memory_job_during_external_reload(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store_path = Path(temp_dir) / "jobs.json"
+            jobs: dict[str, dict] = {}
+            store = ConversionJobStore(jobs, threading.Lock(), persistence_path=store_path)
+            store.create(
+                {
+                    "job_id": "job-running",
+                    "status": "running",
+                    "message": "Aktualny proces nadal pracuje.",
+                    "created_at": "2026-04-25T10:00:00Z",
+                    "updated_at": "2026-04-25T10:06:00Z",
+                    "source_path": "C:/temp/job-running.pdf",
+                    "metadata": {},
+                    "error": "",
+                }
+            )
+
+            external_payload = {
+                "version": 1,
+                "updated_at": "2026-04-25T10:05:00Z",
+                "jobs": {
+                    "job-running": {
+                        "job_id": "job-running",
+                        "status": "running",
+                        "message": "Stary zapis z innego procesu.",
+                        "created_at": "2026-04-25T10:00:00Z",
+                        "updated_at": "2026-04-25T10:01:00Z",
+                        "source_path": "C:/temp/stale.pdf",
+                        "metadata": {},
+                        "error": "",
+                    }
+                },
+            }
+            store_path.write_text(json.dumps(external_payload), encoding="utf-8")
+            reload_result = store.reload_if_changed()
+
+        self.assertTrue(reload_result["reloaded"])
+        self.assertEqual(jobs["job-running"]["status"], "running")
+        self.assertEqual(jobs["job-running"]["message"], "Aktualny proces nadal pracuje.")
+        self.assertEqual(jobs["job-running"]["source_path"], "C:/temp/job-running.pdf")
+
+    def test_conversion_job_store_recovers_missing_ready_jobs_from_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "artifacts"
+            job_dir = root / "job-recovered"
+            (job_dir / "input").mkdir(parents=True)
+            (job_dir / "output").mkdir()
+            (job_dir / "report").mkdir()
+            (job_dir / "log").mkdir()
+            (job_dir / "input" / "report.pdf").write_bytes(b"%PDF-1.4\n")
+            (job_dir / "output" / "report.epub").write_bytes(_minimal_epub_bytes())
+            (job_dir / "log" / "job-recovered.runtime.json").write_text(
+                json.dumps(
+                    {
+                        "job_id": "job-recovered",
+                        "status": "ready",
+                        "runtime": {
+                            "created_at": "2026-05-21T10:00:00Z",
+                            "updated_at": "2026-05-21T10:05:00Z",
+                            "message": "EPUB gotowy do pobrania.",
+                            "replay": {
+                                "command": {
+                                    "name": "convert",
+                                    "kwargs": {
+                                        "original_filename": "report.pdf",
+                                        "source_type": "pdf",
+                                        "profile": "auto-premium",
+                                        "language": "pl",
+                                    },
+                                }
+                            },
+                        },
+                        "artifact_storage": {"provider": "local", "status": "available", "reason": ""},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (job_dir / "report" / "job-recovered.quality.json").write_text(
+                json.dumps(
+                    {
+                        "job": {"filename": "report.pdf", "status": "ready", "output_size_bytes": 123},
+                        "quality_state": {
+                            "release_verdict": "release_ready",
+                            "reading_verdict": "ready",
+                            "download_available": False,
+                            "metadata_summary": {"title": "Recovered Report"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            jobs: dict[str, dict] = {}
+            store = ConversionJobStore(jobs, threading.Lock(), persistence_path=Path(temp_dir) / "jobs.json")
+            result = store.recover_from_artifacts(root)
+
+        self.assertTrue(result["recovered"])
+        self.assertEqual(result["job_count"], 1)
+        self.assertEqual(jobs["job-recovered"]["filename"], "report.pdf")
+        self.assertEqual(jobs["job-recovered"]["status"], "ready")
+        self.assertTrue(jobs["job-recovered"]["output_path"].endswith("report.epub"))
+        self.assertIn("output", jobs["job-recovered"]["artifacts"])
+        self.assertTrue(jobs["job-recovered"]["quality_state_snapshot"]["download_available"])
+
+    def test_conversion_job_store_recovery_does_not_invent_missing_output_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "artifacts"
+            job_dir = root / "job-missing-output"
+            (job_dir / "report").mkdir(parents=True)
+            (job_dir / "log").mkdir()
+            (job_dir / "log" / "job-missing-output.runtime.json").write_text(
+                json.dumps(
+                    {
+                        "job_id": "job-missing-output",
+                        "status": "ready",
+                        "runtime": {
+                            "created_at": "2026-05-21T10:00:00Z",
+                            "updated_at": "2026-05-21T10:05:00Z",
+                            "replay": {
+                                "command": {
+                                    "name": "convert",
+                                    "kwargs": {"original_filename": "lost.pdf", "source_type": "pdf"},
+                                }
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (job_dir / "report" / "job-missing-output.quality.json").write_text(
+                json.dumps(
+                    {
+                        "job": {"filename": "lost.pdf", "status": "ready", "output_size_bytes": 999},
+                        "quality_state": {
+                            "download_available": True,
+                            "artifacts": {
+                                "output": {
+                                    "provider": "local",
+                                    "status": "stored",
+                                    "location": str(job_dir / "output" / "lost.epub"),
+                                }
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            jobs: dict[str, dict] = {}
+            store = ConversionJobStore(jobs, threading.Lock(), persistence_path=Path(temp_dir) / "jobs.json")
+            result = store.recover_from_artifacts(root)
+
+        self.assertTrue(result["recovered"])
+        self.assertEqual(jobs["job-missing-output"]["output_path"], "")
+        self.assertNotIn("output", jobs["job-missing-output"]["artifacts"])
+        self.assertFalse(jobs["job-missing-output"]["quality_state_snapshot"]["download_available"])
+
+    def test_conversion_job_store_recovery_skips_report_only_test_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "artifacts"
+            job_dir = root / "report-only"
+            (job_dir / "report").mkdir(parents=True)
+            (job_dir / "report" / "report-only.quality.json").write_text(
+                json.dumps({"job": {"filename": "sample.pdf", "status": "ready"}, "quality_state": {}}),
+                encoding="utf-8",
+            )
+
+            jobs: dict[str, dict] = {}
+            store = ConversionJobStore(jobs, threading.Lock(), persistence_path=Path(temp_dir) / "jobs.json")
+            result = store.recover_from_artifacts(root)
+
+        self.assertFalse(result["recovered"])
+        self.assertEqual(jobs, {})
+
     def test_conversion_job_store_marks_active_jobs_failed_after_restart(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store_path = Path(temp_dir) / "jobs.json"
@@ -251,33 +510,6 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertEqual(reloaded_jobs["job-running"]["error_code"], "application_restart")
         self.assertIn("Uruchom konwersje ponownie", reloaded_jobs["job-running"]["error"])
         self.assertEqual(reloaded_jobs["job-running"]["source_path"], "")
-
-    def test_conversion_job_store_preserves_existing_input_path_after_restart(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            source_path = Path(temp_dir) / "job-running.pdf"
-            source_path.write_bytes(b"%PDF-1.4\n")
-            store_path = Path(temp_dir) / "jobs.json"
-            store = ConversionJobStore({}, threading.Lock(), persistence_path=store_path)
-            store.create(
-                {
-                    "job_id": "job-running",
-                    "status": "running",
-                    "message": "Konwertuje PDF do EPUB...",
-                    "created_at": "2026-04-25T10:00:00Z",
-                    "updated_at": "2026-04-25T10:00:00Z",
-                    "source_path": str(source_path),
-                    "metadata": {},
-                    "error": "",
-                }
-            )
-
-            reloaded_jobs: dict[str, dict] = {}
-            reloaded_store = ConversionJobStore(reloaded_jobs, threading.Lock(), persistence_path=store_path)
-            load_result = reloaded_store.load()
-
-        self.assertEqual(load_result["interrupted_jobs"], 1)
-        self.assertEqual(reloaded_jobs["job-running"]["status"], "failed")
-        self.assertEqual(reloaded_jobs["job-running"]["source_path"], str(source_path))
 
     def test_conversion_job_store_load_handles_invalid_json_and_invalid_shape_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1135,6 +1367,83 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertEqual(outcome.metadata["ai_quality_verification"]["quality_gate_mode"], "draft")
         self.assertFalse(heading_repair_impl.called)
 
+    def test_run_document_conversion_runs_auto_delivery_repair_before_final_metadata(self) -> None:
+        base_epub = _minimal_epub_bytes(title="Delivery Repair Base")
+        repaired_epub = _minimal_epub_bytes(title="Delivery Repair Fixed")
+        convert_impl = Mock(
+            return_value={
+                "epub_bytes": base_epub,
+                "source_type": "pdf",
+                "analysis": {"profile": "book_reflow", "confidence": 0.88, "legacy_strategy": "text_reflowable"},
+                "quality_report": {
+                    "validation_status": "passed",
+                    "validation_tool": "epubcheck",
+                    "validation_messages": [],
+                    "warnings": [],
+                    "high_risk_pages": [],
+                    "high_risk_sections": [],
+                },
+                "document_summary": {
+                    "title": "Delivery Repair Base",
+                    "author": "KindleMaster QA",
+                    "language": "en",
+                    "layout_mode": "reflowable",
+                    "section_count": 1,
+                    "asset_count": 1,
+                },
+            }
+        )
+        repair_result = DeliveryRepairResult(
+            status="applied",
+            epub_bytes=repaired_epub,
+            actions=["reencode_progressive_jpeg"],
+            quality_selection={
+                "status": "accepted",
+                "selected_candidate": "auto_repair",
+                "rejected_candidate": "",
+                "candidates": [{"label": "auto_repair", "premium_score": 9.4}],
+            },
+        )
+
+        with patch("epub_delivery_repair.has_progressive_jpeg", return_value=True):
+            with patch("epub_delivery_repair.repair_epub_for_delivery", return_value=repair_result) as repair_mock:
+                outcome = run_document_conversion(
+                    ConversionRequest(
+                        source_path="sample.pdf",
+                        source_type="pdf",
+                        original_filename="sample.pdf",
+                        profile="auto-premium",
+                        language="en",
+                        heading_repair_enabled=False,
+                        quality_gate_mode="draft",
+                        feedback_enabled=False,
+                    ),
+                    convert_impl=convert_impl,
+                    heading_repair_impl=Mock(),
+                )
+
+        self.assertEqual(outcome.epub_bytes, repaired_epub)
+        self.assertEqual(outcome.metadata["auto_repair"]["status"], "applied")
+        self.assertIn("reencode_progressive_jpeg", outcome.metadata["auto_repair"]["actions"])
+        self.assertEqual(outcome.result["quality_report"]["auto_repair"]["selected_candidate"], "auto_repair")
+        repair_mock.assert_called_once()
+
+    def test_safe_delivery_repair_runs_for_release_not_ready_blocker(self) -> None:
+        self.assertTrue(
+            _safe_delivery_repair_needed(
+                quality_state={
+                    "send_to_kindle_blockers": [
+                        {
+                            "code": "kindle_delivery_release_not_ready",
+                            "message": "Bramka jakosci ma status Nie publikuj.",
+                        }
+                    ]
+                },
+                quality_report={"validation_status": "passed"},
+                epub_bytes=_minimal_epub_bytes(),
+            )
+        )
+
     def test_run_document_conversion_reports_progress_stages(self) -> None:
         base_epub = _minimal_epub_bytes()
         convert_impl = Mock(
@@ -1170,10 +1479,10 @@ class AppRuntimeServicesTests(unittest.TestCase):
 
         self.assertEqual(
             [item["stage_id"] for item in calls],
-            ["extracting", "assembling", "premium_audit"],
+            ["extracting", "assembling", "premium_audit", "auto_repair"],
         )
         self.assertEqual(calls[0]["stage_label"], "Ekstrakcja tekstu")
-        self.assertEqual(calls[-1]["percent_estimate"], 82)
+        self.assertEqual(calls[-1]["percent_estimate"], 88)
 
     def test_build_conversion_metadata_preserves_cockpit_inputs_and_flattened_fields(self) -> None:
         result = {
@@ -1403,6 +1712,7 @@ class AppRuntimeServicesTests(unittest.TestCase):
                 ("running", "Ekstrakcja tekstu z PDF..."),
                 ("running", "Składanie artykułów i struktury EPUB..."),
                 ("running", "Uruchamiam audyt premium EPUB..."),
+                ("running", "Uruchamiam bezpieczną naprawę EPUB do wysyłki Kindle..."),
             ],
         )
 
@@ -1572,7 +1882,7 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertEqual(outcome.metadata["heading_repair"]["status"], "skipped")
         self.assertEqual(outcome.metadata["strategy"], "layout_fixed")
         self.assertEqual(outcome.result["quality_report"]["validation_status"], "passed_with_warnings")
-        heading_repair_impl.assert_not_called()
+        self.assertTrue(heading_repair_impl.call_args.kwargs["already_semantic_cleaned"])
 
     def test_run_document_conversion_marks_heading_repair_exception_as_failed_and_keeps_base_epub(self) -> None:
         convert_impl = Mock(

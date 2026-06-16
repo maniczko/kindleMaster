@@ -14,7 +14,7 @@ V2 does not require:
 
 - cloud accounts,
 - hidden credential storage,
-- automatic email delivery,
+- automatic or silent email delivery,
 - full EPUB reader UI,
 - shared team knowledge spaces,
 - annotation sync across devices.
@@ -31,27 +31,29 @@ These dependencies keep V2 workflows grounded in generated artifacts and quality
 
 ## VAT-215: Send-to-Kindle Handoff
 
-Product decision: V2 should start with a local, guided handoff package rather than storing email or cloud credentials. The first supported direction is "prepare and guide", not "send silently".
+Product decision: V2 should build on the v1 local handoff and optional explicit SMTP delivery path rather than storing cloud credentials or sending silently. The supported direction remains "prepare and guide"; credentialed delivery must stay opt-in and quality-visible, while publication-ready claims remain quality-gated.
 
 Supported V2 handoff:
 
-1. Require `release_verdict = release_ready` before showing any guided or one-click delivery action.
+1. Require `release_verdict = release_ready` before claiming an artifact is publication-ready.
 2. Package the final EPUB together with a small handoff summary that names the title, filename, size, generated time, release verdict, and quality report path.
 3. Show provider-specific instructions for the user's external delivery path, such as Amazon Send to Kindle web/app/email or Kobo/manual import.
-4. Keep the actual delivery step under user control outside KindleMaster unless a later security review approves an explicit integration.
-5. Preserve the quality report link so the user can inspect why the artifact was eligible for handoff.
+4. Keep the actual delivery step under user control. V1 SMTP delivery is allowed as an explicit user action for any generated EPUB, with quality warnings visible when the file is not `release_ready`.
+5. Preserve the quality report link so the user can inspect why the artifact was or was not eligible for a publication-ready claim.
 
 Non-release-ready outputs:
 
-- `ready_with_review`: allow download and report review, but do not present a guided delivery CTA.
-- `release_blocked` or `failed`: do not offer handoff; show blockers and recovery actions instead.
-- missing quality state: treat as review/blocker according to release policy, not as eligible for handoff.
+- `ready_with_review`: allow download, explicit SMTP send, and report review, but show warnings.
+- `release_blocked`: allow download and explicit SMTP send if an EPUB exists, but do not call it publication-ready.
+- `failed`: do not offer handoff because no valid generated output is available.
+- missing quality state: treat as review/blocker for publication claims, not as an SMTP transport blocker when a generated EPUB exists.
 
 Privacy and security constraints:
 
 - Do not store Kindle, Amazon, Kobo, SMTP, OAuth, or cloud credentials in V2 without a separate security design.
 - Do not log recipient email addresses or device identifiers by default.
 - Do not auto-send files from localhost without an explicit user action and clear destination.
+- Do not persist full recipient email addresses; store only masked recipient and non-reversible hashes for delivery evidence.
 - Keep all handoff artifacts local and derived from the final EPUB plus quality report.
 - Make external provider limits visible when known, but do not hardcode unstable service promises into release gates.
 
@@ -65,9 +67,9 @@ Failure modes to document in the eventual UI or runbook:
 
 Implementation placement:
 
-- V2.0: docs and local handoff package from the library item.
-- V2.1: optional UI action gated by `release_ready`, still user-controlled.
-- V2.2 or later: credentialed delivery only after explicit threat model, opt-in setup, and tests proving quality gates cannot be bypassed.
+- V2.0: docs, local handoff package, and the v1 explicit SMTP action from a library item.
+- V2.1: richer provider-specific instructions and delivery evidence, with `release_ready` required for publication-ready labels.
+- V2.2 or later: additional credentialed providers only after explicit threat model, opt-in setup, and tests proving publication quality gates cannot be bypassed.
 
 ## VAT-216: Notes, Highlights, and Exports
 

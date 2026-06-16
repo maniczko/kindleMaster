@@ -22,9 +22,21 @@ def frontend_source() -> str:
 
 
 class Flat2UiTemplateTests(unittest.TestCase):
-    def test_legacy_template_declares_flat_shell_sidebar_and_quality_report_hooks(self) -> None:
-        html = TEMPLATE_PATH.read_text(encoding="utf-8")
+    def test_root_prefers_react_shell_and_legacy_renders_flat_shell_hooks(self) -> None:
+        client = app.test_client()
 
+        root_response = client.get("/")
+        legacy_response = client.get("/legacy")
+
+        self.assertEqual(root_response.status_code, 200)
+        root_html = root_response.get_data(as_text=True)
+        if 'id="root"' in root_html:
+            self.assertIn("KindleMaster Pipeline", root_html)
+        else:
+            self.assertIn("Lokalny panel EPUB", root_html)
+
+        self.assertEqual(legacy_response.status_code, 200)
+        html = legacy_response.get_data(as_text=True)
         self.assertIn('class="flat-sidebar-card"', html)
         self.assertIn('data-vr-hook="km-ui3-commandbar"', html)
         self.assertIn('id="quickUploadButton"', html)
@@ -165,7 +177,7 @@ class Flat2UiTemplateTests(unittest.TestCase):
         html = frontend_source()
         readme = Path("README.md").read_text(encoding="utf-8")
 
-        self.assertIn("Handoff: pobierz EPUB", html)
+        self.assertIn("Send-to-Kindle SMTP", html)
         self.assertIn("Send to Kindle", html)
         self.assertIn("docs/send-to-kindle-handoff.md", readme)
         self.assertIn("docs/kindle-previewer-validation.md", readme)
@@ -183,6 +195,16 @@ class Flat2UiTemplateTests(unittest.TestCase):
             asset_path = STATIC_PATH / asset_name
             self.assertTrue(asset_path.exists(), f"Missing favicon asset: {asset_path}")
             self.assertGreater(asset_path.stat().st_size, 0, f"Empty favicon asset: {asset_path}")
+
+    def test_favicon_route_serves_project_icon(self) -> None:
+        response = app.test_client().get("/favicon.ico")
+
+        try:
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.mimetype, "image/x-icon")
+            self.assertGreater(len(response.data), 0)
+        finally:
+            response.close()
 
     def test_async_conversion_polling_does_not_abort_active_long_running_jobs(self) -> None:
         html = frontend_source()

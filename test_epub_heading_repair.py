@@ -1146,7 +1146,38 @@ class EpubHeadingRepairTests(unittest.TestCase):
         title = "Listening to Quiet, Learning When to Speak"
 
         self.assertFalse(_is_suspicious_final_heading_text(title, publication_profile="magazine_reflow"))
-        self.assertTrue(_is_suspicious_final_heading_text(title))
+        self.assertFalse(_is_suspicious_final_heading_text(title))
+
+    def test_repair_epub_headings_preserves_magazine_article_h1_titles(self):
+        chapter_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Listening to Quiet, Learning When to Speak</title></head>
+  <body>
+    <section>
+      <h1>Listening to Quiet, Learning When to Speak</h1>
+      <p>This magazine article has normal editorial prose after the heading, so the title should not be demoted as table noise.</p>
+    </section>
+  </body>
+</html>
+"""
+        epub_bytes = self._minimal_epub(chapter_source, nav_label="Listening to Quiet, Learning When to Speak")
+
+        with patch(
+            "epub_heading_repair.run_epubcheck",
+            return_value={"status": "passed", "tool": "epubcheck", "messages": []},
+        ):
+            result = repair_epub_headings_and_toc(
+                epub_bytes,
+                language_hint="en",
+                publication_profile="magazine_reflow",
+            )
+
+        with zipfile.ZipFile(io.BytesIO(result.epub_bytes), "r") as archive:
+            chapter = archive.read("EPUB/chapter_001.xhtml").decode("utf-8")
+
+        self.assertIn("<h1", chapter)
+        self.assertIn("Listening to Quiet, Learning When to Speak", chapter)
+        self.assertNotIn("chapter_001.xhtml", result.summary["chapters_without_h1_after"])
 
     def test_repair_epub_headings_and_toc_excludes_magazine_gallery_entries(self):
         chapter_source = """<?xml version="1.0" encoding="utf-8"?>

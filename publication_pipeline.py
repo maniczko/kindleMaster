@@ -61,6 +61,11 @@ OCR_VALUE_LINE_RE = re.compile(
     r"(?i)(?:\b\d+[.,]\s+\d+%|\b\d+[.,]?\d*\s*(?:%|PLN|USD|EUR|GBP|zł|kg|g|mg|km|m|cm|mm|MB|GB|TB|ms|s|h|pkt)\b)"
 )
 WEAK_SECTION_TITLE_RE = re.compile(r"(?i)^(?:strona|page|sekcja|section)\s+\d+[A-Za-z\-]*$")
+CHESS_PREVIEW_MOVE_RE = re.compile(
+    r"\b(?:\d{1,3}\.(?:\.\.)?|O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[+#]?|"
+    r"[a-h]x?[a-h]?[1-8](?:=[QRBN])?[+#]?|1-0|0-1|1/2-1/2)\b"
+)
+CHESS_PREVIEW_META_RE = re.compile(r"(?i)\b(?:chess|variation|gambit|opening|blitz|titled|white|black|diagram)\b")
 TRAINING_BOOK_SECTION_LABELS = {
     "front cover": "Front Cover",
     "title": "Title",
@@ -86,6 +91,9 @@ TRAINING_BOOK_SECTION_LABELS = {
 
 AUTO_OCR_WITHOUT_FORCE_MAX_PAGES = 120
 AUTO_OCR_WITHOUT_FORCE_MAX_BYTES = 40 * 1024 * 1024
+
+
+DEFAULT_UNKNOWN_AUTHOR = "Unknown Author"
 
 
 DEFAULT_UNKNOWN_AUTHOR = "Unknown Author"
@@ -130,6 +138,14 @@ def build_publication_document(pdf_path: str, config, analysis: PublicationAnaly
     else:
         content = extract_pdf_with_pymupdf(pdf_path, config, pdf_metadata)
 
+    content = _ensure_chess_pdf_layout_preview_artifact(
+        content,
+        pdf_path,
+        config,
+        analysis=analysis,
+        source_title=title,
+    )
+
     intentionally_skips_images = "chess-notation-collection" in set(analysis.detected_features or [])
     content, extractor_contract_warnings = adapt_extractor_content(
         content,
@@ -172,6 +188,72 @@ def build_publication_document(pdf_path: str, config, analysis: PublicationAnaly
     if content.get("extra_artifacts"):
         document.metadata["_extra_artifacts"] = content.get("extra_artifacts")
     return document
+
+
+def _ensure_chess_pdf_layout_preview_artifact(
+    content: dict,
+    pdf_path: str,
+    config,
+    *,
+    analysis: PublicationAnalysis,
+    source_title: str,
+) -> dict:
+    if not bool(getattr(config, "pdf_layout_preview_enabled", True)):
+        return content
+    artifacts = list(content.get("extra_artifacts") or [])
+    if any(str(artifact.get("key") or "") == "pdf_layout_preview" for artifact in artifacts if isinstance(artifact, dict)):
+        return content
+    if not _should_emit_chess_pdf_layout_preview(pdf_path, analysis):
+        return content
+    try:
+        from pymupdf_chess_extractor import _pdf_layout_preview_extra_artifacts
+
+        preview_artifacts = _pdf_layout_preview_extra_artifacts(pdf_path, config, source_title=source_title)
+    except Exception:
+        preview_artifacts = []
+    if not preview_artifacts:
+        return content
+    updated = dict(content)
+    updated["extra_artifacts"] = [*artifacts, *preview_artifacts]
+    metadata = dict(updated.get("metadata") or {})
+    audit = dict(metadata.get("audit") or {})
+    audit["pdf_layout_preview"] = {
+        "status": "emitted",
+        "source": "publication_pipeline_chess_signal",
+    }
+    metadata["audit"] = audit
+    updated["metadata"] = metadata
+    return updated
+
+
+def _should_emit_chess_pdf_layout_preview(pdf_path: str, analysis: PublicationAnalysis) -> bool:
+    profile = str(getattr(analysis, "profile", "") or "").strip().lower()
+    if profile in {"diagram_book_reflow", "premium_scanned_chess_reflow"}:
+        return True
+    detected_features = {
+        str(feature or "").strip().lower()
+        for feature in (getattr(analysis, "detected_features", []) or [])
+    }
+    if any("chess" in feature for feature in detected_features):
+        return True
+    return _pdf_has_chess_preview_text_signal(pdf_path)
+
+
+def _pdf_has_chess_preview_text_signal(pdf_path: str, *, max_pages: int = 6) -> bool:
+    try:
+        doc = fitz.open(pdf_path)
+    except Exception:
+        return False
+    try:
+        texts = [doc[page_num].get_text("text") for page_num in range(min(len(doc), max_pages))]
+    finally:
+        doc.close()
+    text = "\n".join(texts)
+    if not text.strip():
+        return False
+    move_count = len(CHESS_PREVIEW_MOVE_RE.findall(text))
+    has_meta = bool(CHESS_PREVIEW_META_RE.search(text))
+    return move_count >= 6 or (move_count >= 3 and has_meta)
 
 
 def _should_coalesce_page_chapters_with_pdf_outline(content: dict, analysis: PublicationAnalysis) -> bool:

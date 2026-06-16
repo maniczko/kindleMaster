@@ -4,19 +4,16 @@ import io
 import tempfile
 import unittest
 import zipfile
-from pathlib import Path
 from unittest.mock import patch
 
 from epub_premium_scoring import build_magazine_premium_quality_contract
 from publication_model import PublicationAnalysis, PublicationDocument, PublicationQualityReport
 from publication_pipeline import (
     _benchmark_scanned_chess_ocr_language,
-    _build_scanned_content,
     _inject_scanned_chess_boards,
     _looks_like_cover_masthead_line,
     _ocr_quality_from_result,
     _preserve_weak_ocr_page_images,
-    _should_skip_external_ocr_for_large_scan,
     _should_coalesce_page_chapters_with_pdf_outline,
     finalize_publication_epub,
     publication_from_content,
@@ -245,10 +242,14 @@ class PublicationPipelineTests(unittest.TestCase):
             quality_report=quality_report,
         )
 
-        finalized = finalize_publication_epub(
-            document,
-            _minimal_magazine_epub(["Main Feature", "Second Feature", "Third Interview"]),
-        )
+        with patch(
+            "publication_pipeline.run_epubcheck",
+            return_value={"status": "passed", "tool": "epubcheck", "messages": []},
+        ):
+            finalized = finalize_publication_epub(
+                document,
+                _minimal_magazine_epub(["Main Feature", "Second Feature", "Third Interview"]),
+            )
 
         refreshed_map = finalized.magazine_premium_quality["article_map"]
         self.assertIn(finalized.validation_status, {"passed", "unavailable"})

@@ -1,26 +1,49 @@
 from __future__ import annotations
 
+import io
 import json
 import unittest
 import zipfile
-from io import BytesIO
 from pathlib import Path
 
-import fitz
-from PIL import Image
-
-from fixed_layout_builder_v2 import (
-    demote_fixed_layout_non_content_pages,
-    inject_fixed_layout_viewports,
-    repair_fixed_layout_epub,
-    render_page_to_image,
-    resolve_fixed_layout_render_settings,
-)
+from fixed_layout_builder_v2 import repair_fixed_layout_epub_package, resolve_fixed_layout_render_settings
 from publication_analysis import _choose_render_budget_class
 from size_budget_policy import evaluate_size_budget, load_size_budget_policy
 
 
 class FixedLayoutRenderBudgetTests(unittest.TestCase):
+    def test_fixed_layout_package_repair_adds_viewport_to_nav_and_normalizes_uuid(self) -> None:
+        source = io.BytesIO()
+        with zipfile.ZipFile(source, "w") as archive:
+            archive.writestr(
+                "EPUB/content.opf",
+                '<package><metadata><dc:identifier xmlns:dc="http://purl.org/dc/elements/1.1/">'
+                "urn:uuid:6b6971a34a2e4150b7e68e915a3fddab"
+                "</dc:identifier></metadata></package>",
+            )
+            archive.writestr(
+                "EPUB/nav.xhtml",
+                '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Nav</title></head><body/></html>',
+            )
+            archive.writestr(
+                "EPUB/page_000.xhtml",
+                '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Page</title></head><body/></html>',
+            )
+
+        repaired = repair_fixed_layout_epub_package(
+            source.getvalue(),
+            {"EPUB/page_000.xhtml": (612, 792)},
+        )
+
+        with zipfile.ZipFile(io.BytesIO(repaired)) as archive:
+            opf = archive.read("EPUB/content.opf").decode("utf-8")
+            nav = archive.read("EPUB/nav.xhtml").decode("utf-8")
+            page = archive.read("EPUB/page_000.xhtml").decode("utf-8")
+
+        self.assertIn("urn:uuid:6b6971a3-4a2e-4150-b7e6-8e915a3fddab", opf)
+        self.assertIn('name="viewport" content="width=612,height=792"', nav)
+        self.assertIn('name="viewport" content="width=612,height=792"', page)
+
     def test_choose_render_budget_class_prefers_extreme_for_large_scanned_documents(self) -> None:
         budget_class = _choose_render_budget_class(
             total_pages=420,

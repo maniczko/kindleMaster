@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from ml_route_model import build_route_decision, predict_route
+from scripts.train_route_classifier import promote_route_classifier, train_route_classifier
 
 
 class MlRouteModelTests(unittest.TestCase):
@@ -84,6 +88,136 @@ class MlRouteModelTests(unittest.TestCase):
         self.assertEqual(decision["selected_profile"], "book_reflow")
         self.assertFalse(decision["override_used"])
         self.assertIn("protected-class-without-signal:diagram_book_reflow", decision["reason_codes"])
+
+    def test_train_blocks_when_dataset_readiness_is_not_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            dataset_path = root / "reports" / "ml" / "datasets" / "route_examples.jsonl"
+            report_path = root / "reports" / "ml" / "route_classifier.metrics.json"
+            dataset_path.parent.mkdir(parents=True)
+            dataset_path.write_text(
+                json.dumps(
+                    {
+                        "case_id": "only-book",
+                        "label": "book_reflow",
+                        "features": {"input_type": "pdf", "text_heavy": True, "layout_heavy": False},
+                    },
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            payload = train_route_classifier(
+                dataset_path=dataset_path,
+                report_path=report_path,
+                min_examples_per_class=2,
+            )
+
+            self.assertEqual(payload["status"], "failed")
+            self.assertEqual(payload["error"], "dataset_not_ready")
+            self.assertEqual(payload["dataset_readiness"]["status"], "insufficient_data")
+            self.assertTrue(report_path.exists())
+
+    def test_promote_blocks_low_metric_candidate_without_overwriting_runtime_model(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            candidate_path = root / "models" / "candidates" / "route_classifier_bad.json"
+            target_path = root / "models" / "route_classifier_v1.json"
+            corpus_path = root / "reports" / "corpus" / "premium_corpus_smoke_report.json"
+            candidate_path.parent.mkdir(parents=True)
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            corpus_path.parent.mkdir(parents=True)
+            target_path.write_text('{"model_version":"existing"}', encoding="utf-8")
+            corpus_path.write_text(json.dumps({"overall_status": "passed", "failed_routes": []}), encoding="utf-8")
+            candidate_path.write_text(
+                json.dumps(
+                    {
+                        "model_version": "candidate-bad",
+                        "metrics": {
+                            "accuracy": 0.4,
+                            "macro_f1": 0.4,
+                            "per_class_recall": {
+                                "scanned_reflow": 0.2,
+                                "diagram_book_reflow": 0.2,
+                            },
+                            "dataset_readiness": {"status": "ready"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            payload = promote_route_classifier(
+                candidate_path=candidate_path,
+                model_path=target_path,
+                corpus_report_path=corpus_path,
+            )
+
+            self.assertEqual(payload["status"], "blocked")
+            self.assertIn("holdout_accuracy_below_threshold", payload["metric_gates"]["failures"])
+            self.assertEqual(json.loads(target_path.read_text(encoding="utf-8"))["model_version"], "existing")
+
+    def test_promote_blocks_corpus_hard_negative_route_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            candidate_path = root / "models" / "candidates" / "route_classifier_good.json"
+            target_path = root / "models" / "route_classifier_v1.json"
+            corpus_path = root / "reports" / "corpus" / "premium_corpus_smoke_report.json"
+            candidate_path.parent.mkdir(parents=True)
+            corpus_path.parent.mkdir(parents=True)
+            candidate_path.write_text(
+                json.dumps(
+                    {
+                        "model_version": "candidate-good",
+                        "metrics": {
+                            "accuracy": 0.91,
+                            "macro_f1": 0.9,
+                            "per_class_recall": {
+                                "scanned_reflow": 0.83,
+                                "diagram_book_reflow": 0.84,
+                            },
+                            "dataset_readiness": {"status": "ready"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            corpus_path.write_text(
+                json.dumps(
+                    {
+                        "overall_status": "passed_with_warnings",
+                        "cases": [
+                            {
+                                "case_id": "magazine-fixture",
+                                "document_class": "magazine-layout",
+                                "focus_routes": ["magazine_layout_heavy"],
+                                "grade": "fail",
+                                "output_assertions": [
+                                    {
+                                        "id": "layout_output_has_visual_evidence",
+                                        "route": "magazine_layout_heavy",
+                                        "status": "failed",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            payload = promote_route_classifier(
+                candidate_path=candidate_path,
+                model_path=target_path,
+                corpus_report_path=corpus_path,
+            )
+
+            self.assertEqual(payload["status"], "blocked")
+            self.assertTrue(payload["metric_gates"]["passed"])
+            self.assertFalse(payload["corpus_gate"]["passed"])
+            self.assertEqual(payload["corpus_gate"]["hard_negative_failures"][0]["routes"], ["magazine_layout_heavy"])
+            self.assertFalse(target_path.exists())
 
 
 if __name__ == "__main__":

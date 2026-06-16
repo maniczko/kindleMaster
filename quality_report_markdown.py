@@ -17,8 +17,18 @@ def build_manual_review_markdown(payload_or_items: dict[str, Any] | list[Any] | 
     lines = ["# Manual Review Queue", ""]
     for item in items:
         if isinstance(item, dict):
+            kind = item.get("kind") or item.get("phase") or "review"
+            file_name = item.get("file") or item.get("document_path") or "unknown"
+            subject = (
+                item.get("subject")
+                or item.get("element")
+                or item.get("after")
+                or item.get("before")
+                or item.get("reason")
+                or "review item"
+            )
             lines.append(
-                f"- [{item.get('kind')}] {item.get('file')}: {item.get('subject')} ({item.get('reason')}, confidence {item.get('confidence')})"
+                f"- [{kind}] {file_name}: {subject} ({item.get('reason')}, confidence {item.get('confidence')})"
             )
         else:
             lines.append(f"- {item}")
@@ -87,6 +97,19 @@ def build_recovery_release_report_markdown(
                 f"- Kindle ready: {premium_scoring.get('kindle_ready', False)}",
                 f"- Premium ready: {premium_scoring.get('premium_ready', False)}",
                 f"- Release verdict: {premium_scoring.get('release_verdict', 'unknown')}",
+            ]
+        )
+    quality_selection = release_summary.get("quality_selection") or {}
+    if quality_selection:
+        lines.extend(
+            [
+                "",
+                "## Quality Selection",
+                f"- Status: {quality_selection.get('status', 'unknown')}",
+                f"- Selected candidate: {quality_selection.get('selected_candidate', '')}",
+                f"- Rejected candidate: {quality_selection.get('rejected_candidate', '')}",
+                f"- Selected score: {quality_selection.get('selected_score', quality_selection.get('baseline_score', 'n/a'))}",
+                f"- Rejected score: {quality_selection.get('rejected_score', quality_selection.get('candidate_score', 'n/a'))}",
             ]
         )
     lines.extend(

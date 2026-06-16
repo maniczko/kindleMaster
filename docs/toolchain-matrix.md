@@ -26,6 +26,7 @@ python kindlemaster.py ml evaluate
 | Surface | Support level | Minimal command | Required local toolchain | Degradation behavior |
 | --- | --- | --- | --- | --- |
 | `quick` | core | `python kindlemaster.py test --suite quick` | runtime bootstrap only | hard-fails if runtime Python deps are missing; includes Sprint 2 runtime job and artifact storage contract tests plus Sprint 3 AI quality contract fixtures |
+| `quality-critical` | core | `python kindlemaster.py test --suite quality-critical` | developer bootstrap with `coverage` | hard-fails if conversion total coverage is below `CORE_CONVERSION_COVERAGE_FAIL_UNDER` or if `converter.py` / `text_normalization.py` / `kindle_semantic_cleanup.py` fall below their per-file gates; writes `reports/coverage/quality-critical.json` and `reports/governance/quality-critical.json` |
 | `corpus` | core | `python kindlemaster.py test --suite corpus` | runtime bootstrap only | hard-fails if runtime Python deps are missing; writes derived corpus gate reports and benchmark summaries under `reports/corpus/` |
 | `release` | core | `python kindlemaster.py test --suite release` | runtime bootstrap only | runs bounded release-specific unit shards plus the configured corpus gate; local default is `standard`, while GitHub READY uses `KINDLEMASTER_RELEASE_PROOF_PROFILE=ci`; browser/runtime follow-ups are skipped when their optional toolchains are missing |
 | `full` | diagnostic | `python kindlemaster.py test --suite full` | runtime bootstrap plus any optional dependencies used by discovered tests | runs `unittest discover -p test*.py` across explicit and intentionally discover-only tests; use as an all-discovery diagnostic lane, not as a bounded release gate |
@@ -38,13 +39,13 @@ The GitHub READY workflow defines the external compatibility policy for CI:
 
 | Lane | OS | Python | Purpose |
 | --- | --- | --- | --- |
-| `ready-governance` | Ubuntu | Python 3.12, 3.13, and 3.14 | Supported Python matrix for static-quality, dependency consistency, and governance coverage |
+| `ready-governance` | Ubuntu | Python 3.12, 3.13, and 3.14 | Supported Python matrix for static-quality, dependency consistency, governance coverage, and quality-critical conversion coverage |
 | `ready-governance` | Windows | Python 3.14 | Windows canary for local-first operator compatibility |
-| `ready-quick` | Ubuntu | Python 3.14, Node 22 when `package.json` exists | Mirrors `python kindlemaster.py test --suite quick`, runs Sprint 1 QA regressions, and runs `npm run test:contracts:regression` from the React/Vite workspace; keep an equivalent `pnpm run test:contracts:regression` hook if the workspace later moves to pnpm |
+| `ready-quick` | Ubuntu | Python 3.14, Node 22 when `package.json` exists | Mirrors `python kindlemaster.py test --suite quick`, runs Sprint 1 QA regressions, and runs `npm run test:contracts:regression` plus `npm run test:coverage` from the React/Vite workspace; keep `pnpm run test:contracts:regression` and `pnpm run test:coverage` hooks if the workspace later moves to pnpm |
 | `ready-release` | Ubuntu | Python 3.14 | Mirrors `python kindlemaster.py test --suite release` with `KINDLEMASTER_RELEASE_PROOF_PROFILE=ci` so clean runners do not pretend to have full local OCR/PDF premium tooling |
 | `ready-gate` | Ubuntu | n/a | Stable branch-protection aggregate over governance, quick, and release lanes |
 
-Governance CI runs `ruff` with correctness-only rules (`E9,F63,F7,F82`) over governance/control-plane files, `test_agent_config_contracts.py` for agent readiness contracts, `pip check`, one `pip-audit` dependency audit on Ubuntu Python 3.14, a coverage threshold of `75` for deterministic command/status governance paths (`kindlemaster.py` and `scripts/generate_project_status.py`), and a core conversion coverage threshold of `45` on Ubuntu Python 3.14. Quick CI runs the Python quick suite, `test_sprint1_quality_gates.py`, and the Node/Vitest contract hook (`npm run test:contracts:regression`, pnpm equivalent acceptable after migration) when a Node workspace exists. Release CI uses the bounded `ci` corpus proof profile; full local release confidence still comes from the default `standard` corpus proof on an operator machine with the premium toolchain. Sprint 4 UI work additionally uses `npm run build:ui` and `npm run test:ui` locally before browser/runtime verification. Quick and release jobs upload derived `reports/` and `output/` artifacts for review.
+Governance CI runs `ruff` with correctness-only rules (`E9,F63,F7,F82`) over governance/control-plane files, `test_agent_config_contracts.py` for agent readiness contracts, `pip check`, one `pip-audit` dependency audit on Ubuntu Python 3.14, a coverage threshold of `75` for deterministic command/status governance paths (`kindlemaster.py` and `scripts/generate_project_status.py`), and `python kindlemaster.py test --suite quality-critical` with total conversion coverage at `70`, `converter.py` at `60`, `text_normalization.py` at `65`, and `kindle_semantic_cleanup.py` at `70`. Quick CI runs the Python quick suite, `test_sprint1_quality_gates.py`, the Node/Vitest contract hook (`npm run test:contracts:regression`, pnpm equivalent acceptable after migration), and `npm run test:coverage` when a Node workspace exists. Release CI uses the bounded `ci` corpus proof profile; full local release confidence still comes from the default `standard` corpus proof on an operator machine with the premium toolchain. UI work additionally uses `npm run build:ui` and `npm run test:ui` locally before browser/runtime verification. Quick and release jobs upload derived `reports/` and `output/` artifacts for review.
 
 Install Chromium for Playwright-backed surfaces with:
 
@@ -59,6 +60,7 @@ python -m playwright install chromium
 | EPUBCheck validation | optional | Java + `epubcheck.jar` | KindleMaster still runs internal validators when EPUBCheck is unavailable |
 | OCRmyPDF pipeline | optional | Tesseract + OCRmyPDF + Ghostscript + qpdf | falls back to direct Tesseract OCR when OCRmyPDF system dependencies are incomplete |
 | PDFBox helpers | optional | Java + `pdfbox-app*.jar` | used for optional extraction/diagnostic flows |
+| SMTP email delivery | optional | `KINDLEMASTER_EMAIL_DELIVERY=1` plus SMTP env vars | explicit Send-to-Kindle handoff for `release_ready` EPUBs only |
 
 ## Doctor Output
 
@@ -78,15 +80,16 @@ Key sections:
 
 - `bootstrap`: the supported Python bootstrap profiles, their missing modules, and manual follow-up steps.
 - `agent_readiness`: Codex config, pinned Playwright MCP, required plugins, KindleMaster skills, `.githooks`, and stale local agent settings.
-- `verification_surfaces`: the local status of `quick`, `corpus`, `release`, `browser`, and `runtime`.
-- `conversion_capabilities`: whether optional EPUBCheck/OCR/PDFBox enhancements are available.
+- `verification_surfaces`: the local status of `quick`, `quality-critical`, `corpus`, `release`, `browser`, and `runtime`.
+- `conversion_capabilities`: whether optional EPUBCheck/OCR/PDFBox/email enhancements are available, including `manual_steps` for missing Java/JAR/SMTP-backed tools.
 
 ## Operating Guidance
 
 1. Start with `python kindlemaster.py bootstrap` for a standard developer workstation.
 2. Run `python kindlemaster.py doctor` after machine setup changes to confirm what is actually available.
 3. Use `quick` for routine Python-only changes.
-4. Use `corpus` when you need the expanded fixture bank plus a derived corpus gate and benchmark report.
-5. Use `release` after `quick` when you want the bounded release-specific gate without making browser/runtime tooling mandatory; it reports `passed_with_warnings` when corpus/manual-review evidence is not fully clean.
-6. Use `full` only when you need a diagnostic all-discovery sweep of every `test*.py`, including tests intentionally kept out of explicit suites.
-7. Use `browser` or `runtime` only when the change area actually touches those surfaces.
+4. Use `quality-critical` when conversion, EPUB cleanup, delivery repair, or release quality logic changes and you need enforceable coverage evidence.
+5. Use `corpus` when you need the expanded fixture bank plus a derived corpus gate and benchmark report.
+6. Use `release` after `quick` when you want the bounded release-specific gate without making browser/runtime tooling mandatory; it reports `passed_with_warnings` when corpus/manual-review evidence is not fully clean.
+7. Use `full` only when you need a diagnostic all-discovery sweep of every `test*.py`, including tests intentionally kept out of explicit suites.
+8. Use `browser` or `runtime` only when the change area actually touches those surfaces.

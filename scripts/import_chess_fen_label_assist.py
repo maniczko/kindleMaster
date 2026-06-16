@@ -10,7 +10,8 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from chess_position_recognizer import validate_fen
+from chess_position_recognizer import validate_fen  # noqa: E402
+from openai_chess_fen_reviewer import FORBIDDEN_AUTHORITY_FIELDS, POLICY_ACKNOWLEDGEMENT  # noqa: E402
 
 
 def import_chess_fen_label_assist(
@@ -47,10 +48,18 @@ def import_chess_fen_label_assist(
             matched_response_count += 1
         if row_id:
             unmatched_response_ids.discard(row_id)
-        suggested_fen = str(suggestion.get("corrected_fen") or "").strip()
+        suggested_fen = str(suggestion.get("suggested_fen") or suggestion.get("corrected_fen") or "").strip()
         is_valid, fen_warnings = validate_fen(suggested_fen) if suggested_fen else (False, ["fen_missing"])
-        approved = bool(suggestion.get("approved"))
-        requires_review = bool(suggestion.get("requires_review", True))
+        issues = _normalized_ai_issues(suggestion, suggested_fen_valid=is_valid, suggested_fen=bool(suggested_fen))
+        ambiguous_squares = _string_list(suggestion.get("ambiguous_squares"))
+        approved = bool(suggestion.get("approved")) or str(suggestion.get("review_opinion") or "") == "supports_candidate"
+        requires_review = bool(suggestion.get("requires_review", True)) or bool(ambiguous_squares)
+        review_opinion = str(suggestion.get("review_opinion") or "").strip() or _review_opinion(
+            approved=approved,
+            requires_review=requires_review,
+            issues=issues,
+            ambiguous_squares=ambiguous_squares,
+        )
         if approved:
             approved_suggestion_count += 1
         if suggested_fen and not is_valid:
@@ -68,15 +77,23 @@ def import_chess_fen_label_assist(
             "fen": "",
             "ai_suggested_fen": suggested_fen if is_valid else "",
             "ai_approved": approved,
+            "ai_review_opinion": review_opinion,
             "ai_requires_review": requires_review,
             "ai_confidence": _clamp(suggestion.get("confidence")),
-            "ai_ambiguous_squares": _string_list(suggestion.get("ambiguous_squares")),
-            "ai_issues": [*_string_list(suggestion.get("issues")), *([] if is_valid or not suggested_fen else ["ai_suggested_fen_invalid"])],
+            "ai_ambiguous_squares": ambiguous_squares,
+            "ai_square_diffs": _square_diff_list(suggestion.get("square_diffs")),
+            "ai_side_to_move": _side_to_move_evidence(suggestion.get("side_to_move")),
+            "ai_cannot_verify_reason": str(suggestion.get("cannot_verify_reason") or ""),
+            "ai_evidence_level": str(suggestion.get("evidence_level") or ""),
+            "ai_crop_quality_notes": _string_list(suggestion.get("crop_quality_notes")),
+            "ai_policy_acknowledgement": str(suggestion.get("policy_acknowledgement") or ""),
+            "ai_issues": issues,
             "ai_notes": str(suggestion.get("notes") or ""),
             "ai_fen_warnings": fen_warnings if suggested_fen else [],
             "label_status": "needs_manual_fen",
             "verified_by": "",
             "verified_at": "",
+            "human_verified": False,
             "notes": "AI label-assist suggestion only. Fill fen/verified_by/verified_at manually after checking the crop.",
             "accepted_for_corpus": False,
         }
@@ -97,6 +114,11 @@ def import_chess_fen_label_assist(
         "approved_suggestion_count": approved_suggestion_count,
         "ready_for_manual_verification_count": ready_for_manual_verification_count,
         "invalid_suggestion_count": invalid_suggestion_count,
+        "ai_square_diff_count": sum(len(row.get("ai_square_diffs") or []) for row in draft_rows),
+        "ai_cannot_verify_count": sum(1 for row in draft_rows if row.get("ai_cannot_verify_reason")),
+        "ai_policy_acknowledgement_missing_count": sum(
+            1 for row in draft_rows if "ai_policy_acknowledgement_missing" in (row.get("ai_issues") or [])
+        ),
         "unmatched_response_ids": sorted(unmatched_response_ids),
         "policy": "ai_label_assist_review_only_requires_manual_verification",
         "next_actions": [
@@ -128,6 +150,8 @@ def _response_id(row: dict[str, Any]) -> str:
 
 def _parse_response(row: dict[str, Any]) -> dict[str, Any]:
     if {"approved", "corrected_fen", "requires_review"}.issubset(row):
+        return row
+    if {"review_opinion", "suggested_fen", "requires_review"}.issubset(row):
         return row
     body = row.get("body") if isinstance(row.get("body"), dict) else None
     response = row.get("response") if isinstance(row.get("response"), dict) else None
@@ -166,12 +190,69 @@ def _string_list(value: Any) -> list[str]:
     return [str(item) for item in value if str(item).strip()]
 
 
+def _square_diff_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    diffs: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        diffs.append(
+            {
+                "square": str(item.get("square") or ""),
+                "candidate_piece": str(item.get("candidate_piece") or ""),
+                "observed_piece": str(item.get("observed_piece") or item.get("manual_piece") or ""),
+                "confidence": _clamp(item.get("confidence")),
+                "reason": str(item.get("reason") or ""),
+            }
+        )
+    return diffs
+
+
+def _side_to_move_evidence(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        side = str(value.get("value") or "unknown").strip().lower()
+        evidence = str(value.get("evidence") or "none").strip().lower()
+        return {
+            "value": side if side in {"w", "b", "unknown"} else "unknown",
+            "evidence": evidence if evidence in {"marker", "caption", "inferred", "none"} else "none",
+            "confidence": _clamp(value.get("confidence")),
+        }
+    side = str(value or "unknown").strip().lower()
+    return {
+        "value": side if side in {"w", "b", "unknown"} else "unknown",
+        "evidence": "inferred" if side in {"w", "b"} else "none",
+        "confidence": 0.0,
+    }
+
+
+def _normalized_ai_issues(suggestion: dict[str, Any], *, suggested_fen_valid: bool, suggested_fen: bool) -> list[str]:
+    issues = _string_list(suggestion.get("issues"))
+    if suggested_fen and not suggested_fen_valid:
+        issues.append("ai_suggested_fen_invalid")
+    if _string_list(suggestion.get("ambiguous_squares")) and not bool(suggestion.get("requires_review", True)):
+        issues.append("ambiguous_squares_require_manual_review")
+    if str(suggestion.get("policy_acknowledgement") or "") != POLICY_ACKNOWLEDGEMENT:
+        issues.append("ai_policy_acknowledgement_missing")
+    if any(field in suggestion for field in FORBIDDEN_AUTHORITY_FIELDS):
+        issues.append("ai_authoritative_field_ignored")
+    return sorted(dict.fromkeys(issues))
+
+
 def _clamp(value: Any) -> float:
     try:
         number = float(value)
     except Exception:
         return 0.0
     return max(0.0, min(1.0, number))
+
+
+def _review_opinion(*, approved: bool, requires_review: bool, issues: list[str], ambiguous_squares: list[str]) -> str:
+    if approved and not requires_review and not issues and not ambiguous_squares:
+        return "supports_candidate"
+    if issues or ambiguous_squares:
+        return "flags_candidate"
+    return "uncertain"
 
 
 def main() -> int:

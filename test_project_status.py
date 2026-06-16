@@ -12,12 +12,13 @@ from scripts.generate_project_status import generate_project_status
 
 
 class ProjectStatusTests(unittest.TestCase):
-    def test_governance_docs_for_linear_zones_exist_and_cross_link(self) -> None:
+    def test_governance_docs_for_github_task_truth_exist_and_cross_link(self) -> None:
         required_docs = {
             "docs/conversion-pipeline.md": ["VAT-173", "python kindlemaster.py test --suite corpus"],
             "docs/source-of-truth-matrix.md": ["VAT-131", "VAT-132", "reports/project_status.json"],
             "docs/independent-audit-mode.md": ["VAT-134", "python kindlemaster.py audit"],
             "docs/local-bootstrap-toolchain.md": ["VAT-126", "python kindlemaster.py doctor"],
+            "docs/github-autopilot-orchestration.md": ["GitHub Issues", "python kindlemaster.py orchestrate", "autopilot:allowed"],
             "docs/linear-issue-template.md": ["VAT-174", "Affected conversion-quality area"],
             "docs/premium-epub-release-checklist.md": ["VAT-176", "Premium EPUB release checklist"],
             "docs/product-scope.md": ["VAT-215", "VAT-216", "docs/v2-reader-workflow-roadmap.md"],
@@ -34,8 +35,9 @@ class ProjectStatusTests(unittest.TestCase):
         readme_text = Path("README.md").read_text(encoding="utf-8")
         self.assertIn("docs/conversion-pipeline.md", readme_text)
         self.assertIn("docs/source-of-truth-matrix.md", readme_text)
+        self.assertIn("docs/github-autopilot-orchestration.md", readme_text)
         self.assertIn("docs/premium-epub-release-checklist.md", readme_text)
-        self.assertIn("docs/linear-issue-template.md", readme_text)
+        self.assertIn(".github/ISSUE_TEMPLATE/kindlemaster_task.yml", readme_text)
         self.assertIn("docs/v2-reader-workflow-roadmap.md", readme_text)
 
     def test_governance_dashboard_doc_documents_active_session_overrides(self) -> None:
@@ -53,6 +55,7 @@ class ProjectStatusTests(unittest.TestCase):
 
     def _write_vat206_governance_sources(self, repo_root: Path) -> None:
         (repo_root / ".codex").mkdir(parents=True, exist_ok=True)
+        (repo_root / ".github" / "ISSUE_TEMPLATE").mkdir(parents=True, exist_ok=True)
         (repo_root / "docs").mkdir(parents=True, exist_ok=True)
         (repo_root / "kindlemaster.py").write_text(
             """
@@ -72,6 +75,10 @@ workflow_parser = subparsers.add_parser("workflow")
 workflow_subparsers = workflow_parser.add_subparsers(dest="workflow_command")
 workflow_subparsers.add_parser("baseline")
 workflow_subparsers.add_parser("verify")
+orchestrate_parser = subparsers.add_parser("orchestrate")
+orchestrate_subparsers = orchestrate_parser.add_subparsers(dest="orchestrate_command")
+orchestrate_subparsers.add_parser("doctor")
+orchestrate_subparsers.add_parser("sync")
 """,
             encoding="utf-8",
         )
@@ -92,6 +99,10 @@ python kindlemaster.py test --suite browser
 python kindlemaster.py test --suite runtime
 python kindlemaster.py audit output.epub
 python kindlemaster.py workflow baseline input.pdf --change-area corpus
+python kindlemaster.py orchestrate doctor
+python kindlemaster.py orchestrate sync --issues-json reports/github/issues.json
+docs/github-autopilot-orchestration.md
+.github/ISSUE_TEMPLATE/kindlemaster_task.yml
 reports/project_status.json
 reports/project_status.md
 """
@@ -101,6 +112,9 @@ reports/project_status.md
                 "# AGENTS\n"
                 "- `bootstrap`\n- `doctor`\n- `prepare-reference-inputs`\n- `serve`\n- `convert`\n"
                 "- `validate`\n- `smoke`\n- `corpus`\n- `status`\n- `test`\n- `audit`\n- `workflow`\n"
+                "- `orchestrate`\nGitHub Issue autopilot task contract\n"
+                ".github/ISSUE_TEMPLATE/kindlemaster_task.yml\n"
+                "GitHub Issues are the default backlog and task truth\n"
                 "python kindlemaster.py status\nreports/project_status.json\nreports/project_status.md\n"
             ),
             encoding="utf-8",
@@ -113,8 +127,17 @@ reports/project_status.md
             (
                 "# KindleMaster Codex Project Config\n"
                 "- Generated files under `reports/` and `output/` are derived runtime artifacts, never governance authority.\n"
+                "GitHub Issues plus `.github/ISSUE_TEMPLATE/kindlemaster_task.yml`\n"
                 f"{command_mirror}"
             ),
+            encoding="utf-8",
+        )
+        (repo_root / ".github" / "ISSUE_TEMPLATE" / "kindlemaster_task.yml").write_text(
+            "agent:ready\nautopilot:allowed\nKryteria akceptacji\nWalidacja\nRaport koncowy\n",
+            encoding="utf-8",
+        )
+        (repo_root / "docs" / "github-autopilot-orchestration.md").write_text(
+            "# GitHub Autopilot\nGitHub Issues are the task truth\npython kindlemaster.py orchestrate\nautopilot:allowed\nagent:ready\n",
             encoding="utf-8",
         )
         (repo_root / "docs" / "toolchain-matrix.md").write_text(

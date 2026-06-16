@@ -532,7 +532,7 @@ process.stdout.write(JSON.stringify({{
         self.assertIn("6.8/10", html)
         self.assertIn("Kindle-ready", html)
         self.assertIn(">no<", html)
-        self.assertIn("AI verifier", html)
+        self.assertIn("Local quality policy verifier", html)
         self.assertIn("Verifier found unresolved blockers.", html)
         self.assertIn("Top 5 reasons/blockers", html)
         self.assertIn("reference_coverage_failed", html)
@@ -721,8 +721,8 @@ process.stdout.write(JSON.stringify({{
             "ai_verifier",
             "Premium score",
             "Kindle-ready",
-            "AI verifier",
-            "Top 5 reasons/blockers",
+            "Local quality policy verifier",
+            "Top 3 reasons/blockers",
             "Kolejka kontroli ręcznej",
             "Kompletność",
             "EPUB wygenerowany, ale wymaga kontroli jakości",
@@ -769,6 +769,10 @@ process.stdout.write(JSON.stringify({{
             _extract_function_source(template_html, "normalizeRecentConversionStatus"),
             _extract_function_source(template_html, "formatRecentConversionStatus"),
             _extract_function_source(template_html, "formatRecentConversionElapsed"),
+            _extract_function_source(template_html, "normalizeConversionArtifacts"),
+            _extract_function_source(template_html, "formatArtifactLabel"),
+            _extract_function_source(template_html, "renderArtifactAction"),
+            _extract_function_source(template_html, "renderReviewArtifactActions"),
             _extract_function_source(template_html, "normalizeRecentConversion"),
             _extract_function_source(template_html, "renderRecentConversionItem"),
         ]

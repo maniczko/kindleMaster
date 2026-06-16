@@ -97,6 +97,8 @@ MIN_INNER_CHECKERBOARD_CROP_GAIN = 0.16
 MIN_DOMINANT_CONTENT_CROP_SIGNAL = 0.46
 MIN_DOMINANT_CONTENT_CROP_GRID = 0.34
 MIN_EMPTY_VS_PIECE_ERROR_MARGIN = 0.003
+MIN_RECOGNITION_TRIM_GRID_CONFIDENCE = 0.34
+MIN_RECOGNITION_TRIM_SCORE_GAIN = 0.04
 _PREPARED_TEMPLATE_CACHE_LIMIT = 8
 _PREPARED_TEMPLATE_CACHE: dict[tuple[tuple[str, tuple[int, ...]], ...], dict[str, np.ndarray]] = {}
 
@@ -322,6 +324,7 @@ def recognize_chess_position_from_image(
     bbox: tuple[float, float, float, float] | None = None,
     min_confidence: float = 0.92,
     piece_templates: Mapping[str, Iterable[Any]] | None = None,
+    allow_recognition_recovery: bool = True,
 ) -> ChessFenResult:
     try:
         image = Image.open(io.BytesIO(image_data)).convert("L")
@@ -346,6 +349,7 @@ def recognize_chess_position_from_image(
             grid_confidence=grid_confidence,
             bbox=bbox,
             min_confidence=min_confidence,
+            allow_recognition_recovery=allow_recognition_recovery,
         )
         if template_result is not None:
             return template_result
@@ -365,6 +369,7 @@ def recognize_chess_position_from_image(
             grid_confidence=grid_confidence,
             bbox=bbox,
             min_confidence=min_confidence,
+            allow_recognition_recovery=allow_recognition_recovery,
         )
         if template_result is not None:
             return template_result
@@ -601,6 +606,7 @@ def _recognize_board_with_templates(
     grid_confidence: float,
     bbox: tuple[float, float, float, float] | None,
     min_confidence: float,
+    allow_recognition_recovery: bool = True,
 ) -> ChessFenResult | None:
     normalized_templates = _prepare_cached_piece_templates(piece_templates)
     if not normalized_templates:
@@ -618,39 +624,133 @@ def _recognize_board_with_templates(
     )
     result = _downgrade_low_grid_partial_board_result(result, image, grid_confidence)
 
-    if result.requires_review and any(warning.endswith("king_count_invalid") for warning in result.warnings):
-        dense_crop = _dense_board_area_crop(ImageOps.autocontrast(image.convert("L")))
-        if dense_crop is not None:
-            dense_board_detected, _dense_board_signal = _has_board_visual_pattern(dense_crop)
-            dense_grid_confidence = _estimate_board_grid_confidence(dense_crop)
-            if not dense_board_detected:
-                return result
-            dense_board, dense_confidence, dense_squares = _classify_board_cells(dense_crop, normalized_templates)
-            dense_result = _template_result_from_board(
-                dense_board,
-                dense_confidence,
-                dense_squares,
-                normalized_templates,
-                grid_confidence=dense_grid_confidence,
-                bbox=bbox,
-                min_confidence=min_confidence,
-                extra_warnings=["dense_board_area_crop_used"],
-            )
-            dense_improved_enough = (
-                dense_result.confidence >= min_confidence
-                and dense_result.confidence >= result.confidence + MIN_DENSE_CROP_CONFIDENCE_GAIN
-                and dense_grid_confidence >= grid_confidence + MIN_DENSE_CROP_GRID_GAIN
-            )
-            if (
-                not dense_result.requires_review
-                and (
-                    dense_result.confidence >= max(min_confidence, MIN_DENSE_CROP_ACCEPTANCE_CONFIDENCE)
-                    or dense_improved_enough
+    if allow_recognition_recovery:
+        repaired_result = _recover_trimmed_review_board_result(
+            image,
+            result,
+            normalized_templates,
+            grid_confidence=grid_confidence,
+            bbox=bbox,
+            min_confidence=min_confidence,
+        )
+        if repaired_result is not None:
+            return repaired_result
+
+        if result.requires_review and any(warning.endswith("king_count_invalid") for warning in result.warnings):
+            dense_crop = _dense_board_area_crop(ImageOps.autocontrast(image.convert("L")))
+            if dense_crop is not None:
+                dense_board_detected, _dense_board_signal = _has_board_visual_pattern(dense_crop)
+                dense_grid_confidence = _estimate_board_grid_confidence(dense_crop)
+                if not dense_board_detected:
+                    return result
+                dense_board, dense_confidence, dense_squares = _classify_board_cells(dense_crop, normalized_templates)
+                dense_result = _template_result_from_board(
+                    dense_board,
+                    dense_confidence,
+                    dense_squares,
+                    normalized_templates,
+                    grid_confidence=dense_grid_confidence,
+                    bbox=bbox,
+                    min_confidence=min_confidence,
+                    extra_warnings=["dense_board_area_crop_used"],
                 )
-            ):
-                return dense_result
+                dense_improved_enough = (
+                    dense_result.confidence >= min_confidence
+                    and dense_result.confidence >= result.confidence + MIN_DENSE_CROP_CONFIDENCE_GAIN
+                    and dense_grid_confidence >= grid_confidence + MIN_DENSE_CROP_GRID_GAIN
+                )
+                if (
+                    not dense_result.requires_review
+                    and (
+                        dense_result.confidence >= max(min_confidence, MIN_DENSE_CROP_ACCEPTANCE_CONFIDENCE)
+                        or dense_improved_enough
+                    )
+                ):
+                    return dense_result
 
     return result
+
+
+def _recover_trimmed_review_board_result(
+    image: Image.Image,
+    base_result: ChessFenResult,
+    normalized_templates: Mapping[str, np.ndarray],
+    *,
+    grid_confidence: float,
+    bbox: tuple[float, float, float, float] | None,
+    min_confidence: float,
+) -> ChessFenResult | None:
+    if not base_result.requires_review or not base_result.board_detected:
+        return None
+    base_warnings = {str(warning) for warning in base_result.warnings}
+    repairs_king_count = any(warning.endswith("king_count_invalid") for warning in base_warnings)
+    repairs_cross_marker = "annotation_cross_marker_suppressed" in base_warnings
+    if not repairs_king_count and not repairs_cross_marker:
+        return None
+
+    best: tuple[float, float, ChessFenResult] | None = None
+    for crop, trim_warning in _recognition_trim_variant_crops(image):
+        detected, signal = _has_board_visual_pattern(crop)
+        if not detected:
+            continue
+        variant_grid = _estimate_board_grid_confidence(crop)
+        if variant_grid < MIN_RECOGNITION_TRIM_GRID_CONFIDENCE:
+            continue
+        baseline_score = grid_confidence + (0.10 if repairs_king_count else 0.0)
+        variant_score = variant_grid + signal * 0.18
+        if variant_score < baseline_score + MIN_RECOGNITION_TRIM_SCORE_GAIN:
+            continue
+        board, template_confidence, squares = _classify_board_cells(crop, normalized_templates)
+        variant_result = _template_result_from_board(
+            board,
+            template_confidence,
+            squares,
+            normalized_templates,
+            grid_confidence=variant_grid,
+            bbox=bbox,
+            min_confidence=min_confidence,
+            extra_warnings=[trim_warning],
+        )
+        if not _trimmed_result_is_safe_upgrade(
+            base_result,
+            variant_result,
+            repairs_king_count=repairs_king_count,
+            repairs_cross_marker=repairs_cross_marker,
+            min_confidence=min_confidence,
+        ):
+            continue
+        score = float(variant_result.confidence or 0.0)
+        candidate = (score, variant_grid, variant_result)
+        if best is None or candidate[:2] > best[:2]:
+            best = candidate
+    if best is None:
+        return None
+    return best[2]
+
+
+def _trimmed_result_is_safe_upgrade(
+    base_result: ChessFenResult,
+    variant_result: ChessFenResult,
+    *,
+    repairs_king_count: bool,
+    repairs_cross_marker: bool,
+    min_confidence: float,
+) -> bool:
+    if not variant_result.fen or variant_result.requires_review:
+        return False
+    if float(variant_result.confidence or 0.0) < float(min_confidence or 0.0):
+        return False
+    base_warnings = {str(warning) for warning in base_result.warnings}
+    variant_warnings = {str(warning) for warning in variant_result.warnings}
+    repaired_king_count = repairs_king_count and not any(
+        warning.endswith("king_count_invalid") for warning in variant_warnings
+    )
+    repaired_cross_marker = repairs_cross_marker and "annotation_cross_marker_suppressed" not in variant_warnings
+    if not repaired_king_count and not repaired_cross_marker:
+        return False
+    if "sparse_position_confidence_below_threshold" in base_warnings and not repaired_king_count:
+        return False
+    return True
 
 
 def _prepare_cached_piece_templates(piece_templates: Mapping[str, Iterable[Any]]) -> dict[str, np.ndarray]:
@@ -835,7 +935,7 @@ def _classify_board_cells(
                 )
             )
             normalized_cell = _normalize_piece_cell(cell)
-            label, confidence = _match_piece_template(normalized_cell, templates)
+            label, confidence, alternatives = _match_piece_template_with_alternatives(normalized_cell, templates)
             square_warnings: list[str] = []
             if (
                 label
@@ -856,6 +956,7 @@ def _classify_board_cells(
                 "square": f"{chr(ord('a') + col)}{8 - row}",
                 "piece": label,
                 "confidence": round(float(confidence), 3),
+                "alternatives": alternatives,
             }
             if square_warnings:
                 square_record["warnings"] = square_warnings
@@ -890,6 +991,201 @@ def _normalize_board_square(image: Image.Image) -> Image.Image:
     baseline_left = max(0, (grayscale.width - side) // 2)
     baseline_top = max(0, (grayscale.height - side) // 2)
     return grayscale.crop((baseline_left, baseline_top, baseline_left + side, baseline_top + side))
+
+
+def _recognition_trim_variant_crops(image: Image.Image) -> list[tuple[Image.Image, str]]:
+    grayscale = ImageOps.autocontrast(image.convert("L"))
+    variants: list[tuple[Image.Image, str]] = []
+    for crop, warning in (
+        (_recognition_inner_border_trim_crop(grayscale), "recognition_inner_border_trim_used"),
+        (_recognition_caption_bottom_trim_crop(grayscale), "recognition_caption_bottom_trim_used"),
+        (_recognition_side_marker_trim_crop(grayscale), "recognition_side_marker_trim_used"),
+        (_recognition_corner_marker_trim_crop(grayscale), "recognition_corner_marker_trim_used"),
+    ):
+        if crop is None:
+            continue
+        if crop.size == grayscale.size:
+            continue
+        variants.append((crop, warning))
+    return variants
+
+
+def _recognition_inner_border_trim_crop(image: Image.Image) -> Image.Image | None:
+    pixels = np.array(image, dtype=np.uint8)
+    if pixels.size == 0:
+        return None
+    dark = pixels < 118
+    col_groups = _dense_projection_groups(dark.mean(axis=0), threshold=0.24)
+    row_groups = _dense_projection_groups(dark.mean(axis=1), threshold=0.24)
+    if len(col_groups) < 2 or len(row_groups) < 2:
+        return None
+    width, height = image.size
+    left_group = col_groups[0]
+    right_group = col_groups[-1]
+    top_group = row_groups[0]
+    bottom_group = row_groups[-1]
+    if left_group[0] > max(4, int(round(width * 0.04))):
+        return None
+    if top_group[0] > max(4, int(round(height * 0.04))):
+        return None
+    if right_group[1] < width - max(5, int(round(width * 0.04))):
+        return None
+    if bottom_group[1] < height - max(5, int(round(height * 0.04))):
+        return None
+    x0 = left_group[1] + 1
+    y0 = top_group[1] + 1
+    x1 = right_group[0]
+    y1 = bottom_group[0]
+    if x1 - x0 < max(64, int(round(width * 0.72))) or y1 - y0 < max(64, int(round(height * 0.72))):
+        return None
+    crop = _square_crop_around_box(image, x0, y0, x1, y1)
+    if min(crop.size) >= min(image.size) * 0.98:
+        return None
+    return crop
+
+
+def _recognition_caption_bottom_trim_crop(image: Image.Image) -> Image.Image | None:
+    width, height = image.size
+    min_axis = min(width, height)
+    if min_axis < 96:
+        return None
+    baseline_detected, baseline_signal = _has_board_visual_pattern(image)
+    baseline_grid = _estimate_board_grid_confidence(image) if baseline_detected else 0.0
+    baseline_score = baseline_signal * 2.0 + baseline_grid
+    best: tuple[float, Image.Image] | None = None
+    for ratio in (0.06, 0.08, 0.10, 0.12):
+        cut = int(round(height * ratio))
+        if cut <= 0:
+            continue
+        bottom_band = np.array(image.crop((0, height - cut, width, height)), dtype=np.uint8)
+        if bottom_band.size == 0 or float((bottom_band < 176).mean()) < 0.04:
+            continue
+        side = min(width, height - cut)
+        if side < min_axis * 0.82:
+            continue
+        left = max(0, (width - side) // 2)
+        crop = image.crop((left, 0, left + side, side))
+        detected, signal = _has_board_visual_pattern(crop)
+        if not detected:
+            continue
+        grid = _estimate_board_grid_confidence(crop)
+        score = signal * 2.0 + grid - ratio * 0.12
+        if score < baseline_score + MIN_RECOGNITION_TRIM_SCORE_GAIN:
+            continue
+        candidate = (score, crop)
+        if best is None or candidate[0] > best[0]:
+            best = candidate
+    if best is None:
+        return None
+    return best[1]
+
+
+def _recognition_corner_marker_trim_crop(image: Image.Image) -> Image.Image | None:
+    width, height = image.size
+    min_axis = min(width, height)
+    if min_axis < 96:
+        return None
+    probes = (
+        image.crop((0, 0, int(round(width * 0.24)), int(round(height * 0.24)))),
+        image.crop((int(round(width * 0.76)), 0, width, int(round(height * 0.24)))),
+    )
+    if not any(
+        probe.size and float((np.array(probe, dtype=np.uint8) < 164).mean()) >= 0.05
+        for probe in probes
+    ):
+        return None
+    baseline_detected, baseline_signal = _has_board_visual_pattern(image)
+    baseline_grid = _estimate_board_grid_confidence(image) if baseline_detected else 0.0
+    baseline_score = baseline_signal * 2.0 + baseline_grid
+    best: tuple[float, Image.Image] | None = None
+    for crop, ratio in _recognition_marker_trim_candidates(image, anchor_modes=("top_left", "top_right")):
+        if min(crop.size) < min_axis * 0.84:
+            continue
+        detected, signal = _has_board_visual_pattern(crop)
+        if not detected:
+            continue
+        grid = _estimate_board_grid_confidence(crop)
+        score = signal * 2.0 + grid - ratio * 0.10
+        if score < baseline_score + MIN_RECOGNITION_TRIM_SCORE_GAIN:
+            continue
+        candidate = (score, crop)
+        if best is None or candidate[0] > best[0]:
+            best = candidate
+    if best is None:
+        return None
+    return best[1]
+
+
+def _recognition_side_marker_trim_crop(image: Image.Image) -> Image.Image | None:
+    width, height = image.size
+    min_axis = min(width, height)
+    if min_axis < 96:
+        return None
+    left_probe = np.array(image.crop((0, 0, int(round(width * 0.16)), height)), dtype=np.uint8)
+    right_probe = np.array(image.crop((int(round(width * 0.84)), 0, width, height)), dtype=np.uint8)
+    if not any(
+        probe.size and float((probe < 164).mean()) >= 0.05
+        for probe in (left_probe, right_probe)
+    ):
+        return None
+    baseline_detected, baseline_signal = _has_board_visual_pattern(image)
+    baseline_grid = _estimate_board_grid_confidence(image) if baseline_detected else 0.0
+    baseline_score = baseline_signal * 2.0 + baseline_grid
+    best: tuple[float, Image.Image] | None = None
+    for crop, ratio in _recognition_marker_trim_candidates(image, anchor_modes=("left_side", "right_side")):
+        if min(crop.size) < min_axis * 0.84:
+            continue
+        detected, signal = _has_board_visual_pattern(crop)
+        if not detected:
+            continue
+        grid = _estimate_board_grid_confidence(crop)
+        score = signal * 2.0 + grid - ratio * 0.08
+        if score < baseline_score + MIN_RECOGNITION_TRIM_SCORE_GAIN:
+            continue
+        candidate = (score, crop)
+        if best is None or candidate[0] > best[0]:
+            best = candidate
+    if best is None:
+        return None
+    return best[1]
+
+
+def _recognition_marker_trim_candidates(
+    image: Image.Image,
+    *,
+    anchor_modes: Iterable[str],
+) -> list[tuple[Image.Image, float]]:
+    width, height = image.size
+    candidates: list[tuple[Image.Image, float]] = []
+    seen_boxes: set[tuple[int, int, int, int]] = set()
+    for ratio in (0.04, 0.06, 0.08):
+        cut_x = int(round(width * ratio))
+        cut_y = int(round(height * ratio))
+        for anchor in anchor_modes:
+            box: tuple[int, int, int, int] | None = None
+            if anchor == "right_side":
+                side = min(width - cut_x, height)
+                if side > 0:
+                    box = (0, 0, side, side)
+            elif anchor == "left_side":
+                side = min(width - cut_x, height)
+                if side > 0:
+                    box = (cut_x, 0, cut_x + side, side)
+            elif anchor == "top_right":
+                side = min(width - cut_x, height - cut_y)
+                if side > 0:
+                    box = (0, cut_y, side, cut_y + side)
+            elif anchor == "top_left":
+                side = min(width - cut_x, height - cut_y)
+                if side > 0:
+                    box = (cut_x, cut_y, cut_x + side, cut_y + side)
+            if box is None:
+                continue
+            if box in seen_boxes:
+                continue
+            seen_boxes.add(box)
+            candidates.append((image.crop(box), ratio))
+    return candidates
 
 
 def _checkerboard_inner_square_crop(image: Image.Image) -> Image.Image | None:
@@ -1173,15 +1469,27 @@ def _match_piece_template(
     cell: np.ndarray,
     templates: Mapping[str, np.ndarray],
 ) -> tuple[str, float]:
+    label, confidence, _alternatives = _match_piece_template_with_alternatives(cell, templates)
+    return label, confidence
+
+
+def _match_piece_template_with_alternatives(
+    cell: np.ndarray,
+    templates: Mapping[str, np.ndarray],
+    *,
+    top_n: int = 3,
+) -> tuple[str, float, list[dict[str, Any]]]:
     best_label = ""
     best_error = float("inf")
     second_error = float("inf")
     empty_error = float("inf")
+    label_errors: list[tuple[str, float]] = []
     for label, variants in templates.items():
         if variants.size == 0:
             continue
         errors = np.mean((variants - cell) ** 2, axis=(1, 2))
         label_best = float(errors.min())
+        label_errors.append((label, label_best))
         if label == "":
             empty_error = min(empty_error, label_best)
         if errors.size >= 2:
@@ -1200,7 +1508,15 @@ def _match_piece_template(
     confidence = max(0.0, min(1.0, 1.0 - best_error * 4.0))
     if second_error < float("inf") and second_error - best_error < 0.006:
         confidence *= 0.92
-    return best_label, confidence
+    alternatives = []
+    for label, error in sorted(label_errors, key=lambda item: (item[1], item[0]))[: max(1, int(top_n or 1))]:
+        alternatives.append(
+            {
+                "piece": label,
+                "confidence": round(max(0.0, min(1.0, 1.0 - error * 4.0)), 3),
+            }
+        )
+    return best_label, confidence, alternatives
 
 
 def _looks_like_non_piece_cross_marker(cell: np.ndarray) -> bool:

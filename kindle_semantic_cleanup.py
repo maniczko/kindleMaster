@@ -17,11 +17,13 @@ from __future__ import annotations
 import html
 import re
 import tempfile
+import time
 import unicodedata
 import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -63,6 +65,19 @@ NS = {
     "ncx": NCX_NS,
     "container": CONTAINER_NS,
 }
+SEMANTIC_TIMING_STAGES = (
+    "extract_package",
+    "inventory",
+    "chapter_processing",
+    "cross_links",
+    "reading_flow",
+    "package_repair",
+    "final_dom_passes",
+    "metadata_navigation_spine",
+    "rich_report_build",
+    "pack_epub",
+    "total",
+)
 
 PAGE_TITLE_RE = re.compile(r"^Strona \d+$", re.IGNORECASE)
 PAGE_NUMBER_RE = re.compile(r"^\d{1,4}$")
@@ -109,6 +124,36 @@ VARIATION_START_RE = re.compile(
     r"(?:(?:Or\s+)?\d+\.(?:\.\.)?|[a-z]\)\s*\d+\.(?:\.\.)?)",
     re.IGNORECASE,
 )
+TEXT_REPAIR_MOJIBAKE_RE = re.compile(r"[ĂÂâĹËÅÃÄ]|(?:\u00ad|\xa0)")
+PDF_SPLIT_WORD_RE = re.compile(
+    r"\b([A-Za-z\u00C0-\u00FF\u0100-\u017E]{2,18})\s+([A-Za-z\u00C0-\u00FF\u0100-\u017E]{2,12})\b"
+)
+TEXT_REPAIR_SIGNAL_RE = re.compile(
+    rf"(?:{TEXT_REPAIR_MOJIBAKE_RE.pattern})|(?:{PDF_SPLIT_WORD_RE.pattern})"
+)
+CHESS_SAN_TOKEN_PATTERN = r"(?:O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?)"
+CHESS_EVAL_TOKEN_PATTERN = r"(?:\+\u2013|\u2013\+|\+=|=\+|\u00b1|\u2213)"
+CHESS_MATE_RE = re.compile(rf"({CHESS_SAN_TOKEN_PATTERN})\s+mate\b(?!\s+in\b)", re.IGNORECASE)
+CHESS_PLUS_RE = re.compile(rf"({CHESS_SAN_TOKEN_PATTERN})\s+\+(?=[!?.,;:]|\s|$)")
+CHESS_HASH_RE = re.compile(rf"({CHESS_SAN_TOKEN_PATTERN})\s+#(?=[!?.,;:]|\s|$)")
+CHESS_EVAL_SPLIT_RE = re.compile(rf"(?<=[A-Za-z0-9])([+#])\s*({CHESS_EVAL_TOKEN_PATTERN})")
+CHESS_TEXT_HASH_RE = re.compile(r"([A-Za-z]{3,})#(?=\s)")
+CHESS_WITH_HASH_RE = re.compile(r"\bwith\s+#(?=\s|[.,;:!?]|$)", re.IGNORECASE)
+CHESS_AVOID_HASH_RE = re.compile(r"\bavoid\s+#(?=\s|[.,;:!?]|$)", re.IGNORECASE)
+CHESS_BACK_RANK_HASH_RE = re.compile(r"\bback-rank\s+#(?=\s|[.,;:!?]|$)", re.IGNORECASE)
+CHESS_SMOTHERED_HASH_RE = re.compile(r"\bsmothered\s+#(?=\s|[.,;:!?]|$)", re.IGNORECASE)
+CHESS_OF_HASH_RE = re.compile(r"\bof\s+#(?=\s|[.,;:!?]|$)", re.IGNORECASE)
+CHESS_THE_HASH_RE = re.compile(r"\bthe\s+#(?=\s|[.,;:!?]|$)", re.IGNORECASE)
+CHESS_PLUS_ANNOTATION_RE = re.compile(r"\+\s+([!?])")
+CHESS_HASH_ANNOTATION_RE = re.compile(r"#\s+([!?])")
+MULTISPACE_RE = re.compile(r"\s{2,}")
+NORMALIZE_WHITESPACE_RE = re.compile(r"\s+")
+DIGIT_CAMEL_SPLIT_RE = re.compile(r"(?<=[0-9])(?=[A-Z][a-z])")
+DIGIT_MATE_SPLIT_RE = re.compile(r"(?<=[0-9])(?=mate\b)")
+PUNCT_CAPITAL_SPLIT_RE = re.compile(r"(?<=[!?])(?=[A-Z][a-z])")
+SYMBOL_CAPITAL_SPLIT_RE = re.compile(r"(?<=[\u2713\u2020\u2021])(?=[A-Z][a-z])")
+WORD_SYMBOL_SPLIT_RE = re.compile(r"(?<=\w)([\u2713\u2020\u2021])")
+PUNCTUATION_SPACE_RE = re.compile(r"\s+([,.;:!?])")
 MOJIBAKE_MAP = {
     "BABOKŽ": "BABOK®",
     "IIBAŽ": "IIBA®",
@@ -236,7 +281,7 @@ TOC_HEADING_PATTERNS = (
 )
 LETTER_TOKEN_RE = re.compile(r"[A-Za-zÀ-ÿĀ-ž]+")
 FIGURE_CAPTION_RE = re.compile(
-    r"^(?:(?:Figure|Table|Diagram|Chart|Exhibit|Photo|Photos?)\s+[A-Za-z0-9.\-: ]{1,120}|(?:Rys(?:unek|\.)|Tabela|Diagram|Wykres)\s+[A-Za-z0-9.\-: ]{1,120})$",
+    r"^(?:(?:Figure|Fig\.?|Table|Diagram|Chart|Exhibit|Photo|Photos?|Pic\.?|Picture)\s+[A-Za-z0-9.\-: ]{1,120}|(?:Rys(?:unek|\.)|Tabela|Diagram|Wykres)\s+[A-Za-z0-9.\-: ]{1,120})$",
     re.IGNORECASE,
 )
 ROLE_WORD_RE = re.compile(
@@ -455,12 +500,21 @@ SPLIT_JOIN_STOPWORDS = {
     "it", "of", "on", "or", "the", "to", "up", "we", "w", "z", "i", "na", "do", "od",
     "o", "u", "że", "się", "czy", "nie", "oraz", "ale", "po", "za", "dla", "pod", "nad",
 }
+SPLIT_JOIN_SUFFIX_FRAGMENTS = {"ści", "sci"}
 MAGAZINE_TOC_LINE_RE = re.compile(r"^(?P<page>\d{1,3})\.\s+(?P<title>.+)$")
 MAGAZINE_SPECIAL_TITLE_RE = re.compile(
     r"(?i)^(?:galeria|gallery|reklama|advertisement|ad|materia[łl]\s+sponsorowany|material\s+sponsorowany|sponsored|sponsored\s+content|advertorial)\b"
 )
 MAGAZINE_PROMO_TEXT_RE = re.compile(
     r"(?i)\b(?:prenumerata|subskrypcja|zam[oó]w|oferta|partner|sponsorowan|reklama|kino na leżakach|kpo|dotacj)\b"
+)
+MAGAZINE_CONTACT_TEXT_RE = re.compile(
+    r"(?i)\b(?:https?://|www\.|facebook\s*\.|linkedin\s*\.|instagram\s*\.|youtube\s*\.|slideshare\s*\.|"
+    r"tel\.?|telefon|phone|e-?mail|kontakt)\b"
+)
+MAGAZINE_NEWSLETTER_TEXT_RE = re.compile(
+    r"(?i)\b(?:newsletter|subskryb|zapisz\s+si|zapisz\s+sie|dolacz\s+do|doĹ‚Ä…cz\s+do|"
+    r"badz\s+na\s+biezaco|bÄ…dĹş\s+na\s+bieĹĽÄ…co)\b"
 )
 MAGAZINE_BYLINE_RE = re.compile(
     r"(?i)^(?:n\s+)?(?:tekst|rozmawia|autor|autorka|ilustracja|zdj[eę]cia|fot\.?|rys\.?|oprac\.?)\b"
@@ -1278,14 +1332,19 @@ def finalize_epub_for_kindle(
     report_mode: str = "reference",
 ) -> bytes | tuple[bytes, dict[str, object]]:
     """Clean up a generated EPUB unless it is fixed-layout / pre-paginated."""
+    overall_started = time.perf_counter()
+    timing_breakdown = _new_semantic_timing_breakdown()
     rich_report_enabled = return_report and _wants_rich_finalize_report(report_mode)
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
             root_dir = Path(temp_dir)
+            stage_started = time.perf_counter()
             _extract_epub(epub_bytes, root_dir)
             opf_path = _locate_opf(root_dir)
             chapter_paths = _get_spine_xhtml_paths(opf_path)
+            _record_semantic_timing(timing_breakdown, "extract_package", stage_started)
 
+            stage_started = time.perf_counter()
             phase_report = (
                 _initialize_finalize_phase_report(
                     title=title,
@@ -1302,6 +1361,7 @@ def finalize_epub_for_kindle(
             chapter_heading_inventory_before: dict[str, list[dict[str, object]]] = {}
             heading_decisions: list[dict[str, object]] = []
             manual_review_queue: list[dict[str, object]] = []
+            pre_paginated = _is_pre_paginated(opf_path)
             if rich_report_enabled:
                 for chapter_path in chapter_paths:
                     if chapter_path.name == "cover.xhtml":
@@ -1332,10 +1392,11 @@ def finalize_epub_for_kindle(
                     spine_before=spine_before,
                     navigation_before=navigation_before,
                     chapter_count=len(chapter_paths),
-                    pre_paginated=_is_pre_paginated(opf_path),
+                    pre_paginated=pre_paginated,
                 )
+            _record_semantic_timing(timing_breakdown, "inventory", stage_started)
 
-            if _is_pre_paginated(opf_path):
+            if pre_paginated:
                 if return_report:
                     if rich_report_enabled and phase_report is not None:
                         phase_report["status"] = "skipped"
@@ -1351,7 +1412,11 @@ def finalize_epub_for_kindle(
                             "skipped",
                             warnings=["EPUB is pre-paginated; semantic finisher skipped."],
                         )
-                        return epub_bytes, phase_report
+                        return epub_bytes, _attach_semantic_timing(
+                            phase_report,
+                            timing_breakdown,
+                            overall_started,
+                        )
                     return epub_bytes, _finalize_reference_report(_empty_reference_report())
                 return epub_bytes
 
@@ -1371,10 +1436,15 @@ def finalize_epub_for_kindle(
                             "fail",
                             blockers=["Package spine does not contain XHTML reading-order documents."],
                         )
-                        return epub_bytes, phase_report
+                        return epub_bytes, _attach_semantic_timing(
+                            phase_report,
+                            timing_breakdown,
+                            overall_started,
+                        )
                     return epub_bytes, _finalize_reference_report(_empty_reference_report())
                 return epub_bytes
 
+            stage_started = time.perf_counter()
             repeated_counts = _collect_repeated_short_texts(chapter_paths)
             keep_first_seen: set[str] = set()
             processed: dict[Path, ProcessedChapter] = {}
@@ -1437,7 +1507,9 @@ def finalize_epub_for_kindle(
                 _merge_reference_report(reference_report, chapter_result.reference_report)
                 for ref in chapter_result.problem_refs:
                     problem_refs_by_chapter.setdefault(ref["problem_file"], []).append(ref)
+            _record_semantic_timing(timing_breakdown, "chapter_processing", stage_started)
 
+            stage_started = time.perf_counter()
             exercise_problem_targets: dict[str, str] = {}
             for problem_file, refs in problem_refs_by_chapter.items():
                 for ref in refs:
@@ -1457,7 +1529,9 @@ def finalize_epub_for_kindle(
                     exercise_problem_targets=exercise_problem_targets,
                 )
                 chapter_path.write_text(updated_xhtml, encoding="utf-8")
+            _record_semantic_timing(timing_breakdown, "cross_links", stage_started)
 
+            stage_started = time.perf_counter()
             chapter_list = list(processed.keys())
             cleanup_scope = _detect_cleanup_scope(
                 chapter_list,
@@ -1469,6 +1543,9 @@ def finalize_epub_for_kindle(
                 language=language,
                 publication_profile=publication_profile,
             )
+            _record_semantic_timing(timing_breakdown, "reading_flow", stage_started)
+
+            stage_started = time.perf_counter()
             if cleanup_scope == "training-book":
                 package_overrides = _repair_training_book_package(
                     chapter_list,
@@ -1516,7 +1593,9 @@ def finalize_epub_for_kindle(
                 for item in content_cleanup_phase.get("removed", [])
                 if str(item.get("file", ""))
             }
+            _record_semantic_timing(timing_breakdown, "package_repair", stage_started)
 
+            stage_started = time.perf_counter()
             for chapter_path in chapter_list:
                 if chapter_path.name == "cover.xhtml":
                     continue
@@ -1549,6 +1628,9 @@ def finalize_epub_for_kindle(
                         parent_file=spine_order[0] if spine_order else "",
                     )
                 )
+            _record_semantic_timing(timing_breakdown, "final_dom_passes", stage_started)
+
+            stage_started = time.perf_counter()
             metadata_before_update = _snapshot_package_metadata(opf_path) if rich_report_enabled else {}
             _update_opf_metadata(
                 opf_path,
@@ -1584,9 +1666,14 @@ def finalize_epub_for_kindle(
                 if rich_report_enabled
                 else {}
             )
+            _record_semantic_timing(timing_breakdown, "metadata_navigation_spine", stage_started)
+
+            stage_started = time.perf_counter()
             packed_epub = _pack_epub(root_dir)
+            _record_semantic_timing(timing_breakdown, "pack_epub", stage_started)
             if return_report:
                 if rich_report_enabled and phase_report is not None:
+                    stage_started = time.perf_counter()
                     metadata_phase = _build_metadata_phase_report(
                         before=metadata_before_update or metadata_before,
                         after=metadata_after,
@@ -1643,7 +1730,12 @@ def finalize_epub_for_kindle(
                         "content_cleanup": content_cleanup_phase.get("summary", {}),
                     }
                     phase_report["status"] = phase_report["gates"]["F"]["status"]
-                    return packed_epub, phase_report
+                    _record_semantic_timing(timing_breakdown, "rich_report_build", stage_started)
+                    return packed_epub, _attach_semantic_timing(
+                        phase_report,
+                        timing_breakdown,
+                        overall_started,
+                    )
                 return packed_epub, _finalize_reference_report(reference_report)
             return packed_epub
     except Exception as exc:
@@ -1669,7 +1761,11 @@ def finalize_epub_for_kindle(
                     "fail",
                     blockers=[f"Finalizer raised an exception: {exc}"],
                 )
-                return epub_bytes, failure_report
+                return epub_bytes, _attach_semantic_timing(
+                    failure_report,
+                    timing_breakdown,
+                    overall_started,
+                )
             return epub_bytes, _finalize_reference_report(_empty_reference_report())
         return epub_bytes
 
@@ -1724,6 +1820,24 @@ def _finalize_reference_report(report: dict[str, int] | None) -> dict[str, int]:
 
 def _wants_rich_finalize_report(report_mode: str | None) -> bool:
     return _normalize_key(report_mode or "") in {"rich", "phase", "phases", "full", "detailed"}
+
+
+def _new_semantic_timing_breakdown() -> dict[str, float]:
+    return {stage: 0.0 for stage in SEMANTIC_TIMING_STAGES}
+
+
+def _record_semantic_timing(timing_breakdown: dict[str, float], stage: str, started: float) -> None:
+    timing_breakdown[stage] = round(time.perf_counter() - started, 4)
+
+
+def _attach_semantic_timing(
+    report: dict[str, object],
+    timing_breakdown: dict[str, float],
+    overall_started: float,
+) -> dict[str, object]:
+    timing_breakdown["total"] = round(time.perf_counter() - overall_started, 4)
+    report["timing_breakdown"] = dict(timing_breakdown)
+    return report
 
 
 def _initialize_finalize_phase_report(
@@ -3730,6 +3844,24 @@ def _looks_like_table_header_heading(text: str) -> bool:
     tokens = [token.strip("()[]{}.,;:!?") for token in normalized.replace("/", " / ").split() if token.strip("()[]{}.,;:!?")]
     if len(tokens) < 5:
         return False
+    lowered_tokens = {token.lower() for token in tokens}
+    table_header_keywords = {
+        "category",
+        "definition",
+        "input",
+        "kategoria",
+        "kpi",
+        "metric",
+        "miernik",
+        "output",
+        "pułapka",
+        "pulapka",
+        "requirement",
+        "test",
+        "value",
+        "wymaganie",
+    }
+    keyword_hits = len(lowered_tokens & table_header_keywords)
     capitalized_tokens = sum(1 for token in tokens if token[:1].isupper() or token.isupper())
     long_tokens = sum(1 for token in tokens if len(token) >= 4)
     connector_tokens = sum(
@@ -3737,9 +3869,9 @@ def _looks_like_table_header_heading(text: str) -> bool:
         for token in tokens
         if token.lower() in {"i", "oraz", "to", "co", "po", "for", "and", "of", "the"}
     )
-    if "/" in normalized and capitalized_tokens >= 3 and long_tokens >= 4:
+    if "/" in normalized and keyword_hits >= 2 and capitalized_tokens >= 3 and long_tokens >= 4:
         return True
-    return capitalized_tokens >= 4 and long_tokens >= 4 and connector_tokens <= 2
+    return keyword_hits >= 2 and capitalized_tokens >= 3 and long_tokens >= 4 and connector_tokens <= 2
 
 
 def _demote_repetitive_schema_headings(blocks: list[dict]) -> list[dict]:
@@ -3849,7 +3981,7 @@ def _strip_heading_artifacts(text: str, *, chapter_title: str, heading_texts: li
                 normalized = simple_leading_pattern.sub("", normalized, count=1)
 
     normalized = re.sub(r"^\d+(?:\.\d+)*\s+", "", normalized)
-    normalized = re.sub(r"\s+", " ", normalized)
+    normalized = NORMALIZE_WHITESPACE_RE.sub(" ", normalized)
     return normalized.strip()
 
 
@@ -7854,6 +7986,12 @@ def _repair_magazine_package(
         )
         extras = _fallback_magazine_non_linear_files(chapter_infos, contents_file=str(issue_outline.get("file_name") or ""))
         extras.update(_detect_generic_page_fragment_files(chapter_paths))
+        for info in chapter_infos:
+            file_name = str(info["file_name"])
+            if file_name in extras:
+                continue
+            _demote_unsafe_magazine_primary_heading(Path(info["path"]))
+            _ensure_magazine_primary_heading(Path(info["path"]), info=info)
         if extras:
             package["spine_order"] = [
                 info["file_name"]
@@ -7894,6 +8032,7 @@ def _repair_magazine_package(
         contents_file=issue_outline["file_name"],
     )
     extras.update(_detect_generic_page_fragment_files(chapter_paths))
+    _repair_safe_magazine_primary_headings(chapter_infos, excluded_files=extras)
     toc_entries = _build_magazine_toc_entries(
         issue_outline=issue_outline,
         ordered_issue_entries=ordered_issue_entries,
@@ -7942,19 +8081,41 @@ def _build_non_linear_reachability_toc_entries(
     ordered_paths = [path for path in chapter_paths if path.name in non_linear_names]
     if not ordered_paths:
         return []
+    supplemental_parent_keys = {"table of contents", "contents", "spis tresci", "spis treĹ›ci"}
+    supplemental_parent_paths = [
+        path
+        for path in ordered_paths
+        if _normalize_key(_resolve_heading_target(path)[0]) in supplemental_parent_keys
+    ]
+    visible_paths = [
+        path
+        for path in ordered_paths
+        if _normalize_key(_resolve_heading_target(path)[0]) not in {"cover", "table of contents", "contents", "spis tresci", "spis treĹ›ci"}
+    ]
+    if not visible_paths and not supplemental_parent_paths:
+        return []
     parent_label = "Materiały dodatkowe" if _canonicalize_language(language) == "pl" else "Additional Materials"
+    child_label_prefix = "Material dodatkowy" if _canonicalize_language(language) == "pl" else "Additional Material"
     entries: list[dict] = []
-    parent_target = parent_file if parent_file in non_linear_names else ordered_paths[0].name
-    if parent_file:
+    visible_names = {path.name for path in visible_paths}
+    if parent_file in visible_names:
+        parent_target = parent_file
+    elif supplemental_parent_paths:
+        parent_target = supplemental_parent_paths[0].name
+    else:
+        parent_target = visible_paths[0].name
+    if parent_file or supplemental_parent_paths:
         entries.append({"file_name": parent_target, "id": "", "text": parent_label, "level": 1})
         child_level = 2
     else:
         child_level = 1
-    for chapter_path in ordered_paths:
+    for position, chapter_path in enumerate(visible_paths, start=1):
         label, anchor_id = _resolve_heading_target(chapter_path)
         label = _normalize_text(label) or chapter_path.stem.replace("_", " ").title()
         if _normalize_key(label) in {"cover", "table of contents", "contents", "spis tresci", "spis treści"}:
             label = chapter_path.stem.replace("_", " ").title()
+        if _is_magazine_toc_noise_label(label):
+            label = f"{child_label_prefix} {position}"
         entries.append(
             {
                 "file_name": chapter_path.name,
@@ -7964,6 +8125,90 @@ def _build_non_linear_reachability_toc_entries(
             }
         )
     return entries
+
+
+def _repair_safe_magazine_primary_headings(chapter_infos: list[dict[str, object]], *, excluded_files: set[str]) -> None:
+    for info in chapter_infos:
+        file_name = str(info.get("file_name") or "")
+        if not file_name or file_name in excluded_files or file_name == "cover.xhtml":
+            continue
+        try:
+            text_chars = int(info.get("text_chars") or 0)
+        except (TypeError, ValueError):
+            text_chars = 0
+        if text_chars < 900:
+            continue
+        title = _normalize_text(str(info.get("title") or info.get("start_text") or ""))
+        if not _looks_like_safe_magazine_primary_heading(title):
+            continue
+        _promote_matching_first_block_to_h1(Path(info["path"]), title)
+
+
+def _looks_like_safe_magazine_primary_heading(title: str) -> bool:
+    normalized = _normalize_text(title)
+    if not normalized or _is_magazine_toc_noise_label(normalized):
+        return False
+    if _looks_technical_title(normalized):
+        return False
+    words = normalized.split()
+    if not 2 <= len(words) <= 14:
+        return False
+    if len(normalized) > 100:
+        return False
+    return any(character.isalpha() for character in normalized)
+
+
+def _promote_matching_first_block_to_h1(chapter_path: Path, title: str) -> None:
+    try:
+        soup = BeautifulSoup(chapter_path.read_text(encoding="utf-8"), "xml")
+    except Exception:
+        return
+    section = soup.find("section") or soup.find("body")
+    if section is None or section.find("h1"):
+        return
+
+    existing_heading = section.find(["h2", "h3"])
+    if existing_heading is not None:
+        heading_text = _normalize_text(existing_heading.get_text(" ", strip=True))
+        if _title_fragments_match(heading_text, title) or _magazine_match_score(heading_text, title) >= 94:
+            existing_heading.name = "h1"
+            used_ids = _collect_used_dom_ids(soup, skip_node=existing_heading)
+            desired_id = existing_heading.get("id", "") or _slugify(title)
+            existing_heading["id"] = _unique_dom_id(desired_id, used_ids, fallback="section")
+            title_node = soup.find("title")
+            if title_node is not None:
+                title_node.string = title
+            chapter_path.write_text(_serialize_soup_document(soup), encoding="utf-8")
+        return
+
+    first_text_block = None
+    for node in section.children:
+        if not isinstance(node, Tag):
+            continue
+        text = _normalize_text(node.get_text(" ", strip=True))
+        if not text:
+            continue
+        first_text_block = node
+        break
+    if first_text_block is None:
+        return
+
+    first_text = _normalize_text(first_text_block.get_text(" ", strip=True))
+    if not (
+        _title_fragments_match(first_text, title)
+        or _title_fragments_match(title, first_text)
+        or _magazine_match_score(first_text, title) >= 94
+    ):
+        return
+
+    first_text_block.name = "h1"
+    used_ids = _collect_used_dom_ids(soup, skip_node=first_text_block)
+    desired_id = first_text_block.get("id", "") or _slugify(title)
+    first_text_block["id"] = _unique_dom_id(desired_id, used_ids, fallback="section")
+    title_node = soup.find("title")
+    if title_node is not None:
+        title_node.string = title
+    chapter_path.write_text(_serialize_soup_document(soup), encoding="utf-8")
 
 
 def _extract_magazine_issue_outline(chapter_paths) -> dict[str, object]:
@@ -8105,8 +8350,13 @@ def _build_magazine_chapter_info(chapter_path: Path, *, index: int) -> dict[str,
         or title_key.startswith("materiał sponsorowany")
         or title_key.startswith("sponsored")
         or title_key.startswith("advertorial")
+        or _looks_like_magazine_sponsored_text(full_text[:800])
     ):
         special_type = "sponsored"
+    elif _looks_like_magazine_newsletter_promo(title_text or start_text, full_text):
+        special_type = "newsletter"
+    elif _looks_like_magazine_contact_heavy_text(full_text):
+        special_type = "contact"
     else:
         special_type = ""
     return {
@@ -8122,14 +8372,68 @@ def _build_magazine_chapter_info(chapter_path: Path, *, index: int) -> dict[str,
         "special_type": special_type,
         "image_count": len(soup.find_all("img")),
         "text_chars": len(full_text),
+        "word_count": len(re.findall(r"\b[^\W\d_]{2,}\b", full_text, re.UNICODE)),
+        "contact_signal_count": _count_magazine_contact_signals(full_text),
+        "is_contact_heavy": _looks_like_magazine_contact_heavy_text(full_text),
+        "is_newsletter_promo": _looks_like_magazine_newsletter_promo(title_text or start_text, full_text),
         "is_special_hint": bool(
             MAGAZINE_SPECIAL_TITLE_RE.match(title_text or start_text)
             or _looks_like_magazine_extra_title(title_key)
             or MAGAZINE_PROMO_TEXT_RE.search(full_text[:1200])
+            or _looks_like_magazine_sponsored_text(full_text[:1200])
+            or _looks_like_magazine_contact_heavy_text(full_text)
+            or _looks_like_magazine_newsletter_promo(title_text or start_text, full_text)
         ),
         "has_byline": any(candidate["kind"] == "byline" for candidate in candidates),
         "candidates": candidates,
     }
+
+
+def _count_magazine_contact_signals(text: str) -> int:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return 0
+    return len(MAGAZINE_CONTACT_TEXT_RE.findall(normalized))
+
+
+def _looks_like_magazine_contact_heavy_text(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    signal_count = _count_magazine_contact_signals(normalized)
+    word_count = len(re.findall(r"\b[^\W\d_]{2,}\b", normalized, re.UNICODE))
+    if signal_count >= 3 and word_count <= 180:
+        return True
+    return signal_count >= 5 and word_count <= 360
+
+
+def _looks_like_magazine_sponsored_text(text: str) -> bool:
+    key = _magazine_key(text)
+    if not key:
+        return False
+    return "sponsor" in key or ("materia" in key and "sponsor" in key)
+
+
+def _looks_like_magazine_newsletter_promo(title: str, text: str) -> bool:
+    blob = f"{_normalize_text(title)} {_normalize_text(text[:1000])}"
+    if not blob.strip():
+        return False
+    if MAGAZINE_NEWSLETTER_TEXT_RE.search(blob):
+        return True
+    lowered = _magazine_key(blob)
+    return "newsletter" in lowered and ("zapisz" in lowered or "subskry" in lowered)
+
+
+def _looks_like_magazine_non_content_info(info: dict[str, object]) -> bool:
+    special_type = str(info.get("special_type") or "")
+    if special_type in {"gallery", "advertisement", "sponsored", "contact", "newsletter"}:
+        return True
+    if bool(info.get("is_contact_heavy")) or bool(info.get("is_newsletter_promo")):
+        return True
+    title_key = _magazine_key(str(info.get("title") or info.get("start_text") or ""))
+    if title_key in MAGAZINE_FEATURE_SKIP_KEYS or _looks_like_magazine_extra_title(title_key):
+        return True
+    return _looks_like_magazine_image_only_stub(info)
 
 
 def _build_magazine_candidate_context(top_nodes: list[Tag], start_index: int, *, max_nodes: int = 5, max_chars: int = 320) -> str:
@@ -8232,9 +8536,7 @@ def _find_direct_magazine_match(
     for info in chapter_infos:
         if info["is_contents"]:
             continue
-        if info["special_type"] in {"gallery", "advertisement"}:
-            continue
-        if info["special_type"] == "sponsored" and not info["has_byline"]:
+        if _looks_like_magazine_non_content_info(info):
             continue
         for candidate in info["candidates"]:
             slot = (candidate["file_name"], int(candidate["node_index"]))
@@ -8275,9 +8577,7 @@ def _find_fallback_magazine_boundary(
     for info in chapter_infos:
         if info["is_contents"]:
             continue
-        if info["special_type"] in {"gallery", "advertisement"}:
-            continue
-        if info["special_type"] == "sponsored" and not info["has_byline"]:
+        if _looks_like_magazine_non_content_info(info):
             continue
         chapter_start_used = (info["file_name"], int(info["start_node_index"])) in used_slots
         for candidate in info["candidates"]:
@@ -8381,21 +8681,147 @@ def _apply_magazine_assignments(chapter_info: dict[str, object], assignments: li
         chapter_path.write_text(_serialize_soup_document(soup), encoding="utf-8")
 
 
+def _ensure_magazine_primary_heading(chapter_path: Path, *, info: dict[str, object] | None = None) -> bool:
+    try:
+        soup = BeautifulSoup(chapter_path.read_text(encoding="utf-8"), "xml")
+    except Exception:
+        return False
+    if soup.find(["h1", "h2"]):
+        return False
+    section = soup.find("section") or soup.find("body")
+    if section is None:
+        return False
+    top_nodes = [child for child in section.children if isinstance(child, Tag)]
+    title_node = soup.find("title")
+    title_text = _normalize_text(title_node.get_text(" ", strip=True)) if title_node is not None else ""
+    full_text = _normalize_text(soup.get_text(" ", strip=True))
+    heading_text = _select_magazine_primary_heading_text(title_text=title_text, top_nodes=top_nodes, full_text=full_text)
+    if not heading_text:
+        return False
+
+    used_ids = {
+        node.get("id", "")
+        for node in soup.find_all(attrs={"id": True})
+        if node.get("id", "")
+    }
+    first_text_node = next((node for node in top_nodes if _normalize_text(node.get_text(" ", strip=True))), None)
+    target_node: Tag | None = None
+    if first_text_node is not None:
+        first_text = _normalize_text(first_text_node.get_text(" ", strip=True))
+        if _title_fragments_match(first_text, heading_text) or _title_fragments_match(heading_text, first_text):
+            target_node = first_text_node
+
+    if target_node is None:
+        target_node = soup.new_tag("h1")
+        target_node.string = heading_text
+        if first_text_node is not None:
+            first_text_node.insert_before(target_node)
+        else:
+            section.insert(0, target_node)
+    else:
+        target_node.name = "h1"
+        target_node.clear()
+        target_node.string = heading_text
+
+    if not target_node.get("id"):
+        target_node["id"] = _unique_dom_id(_slugify(heading_text), used_ids, fallback="article")
+    if title_node is not None and _safe_magazine_primary_heading_text(heading_text, full_text):
+        title_node.string = heading_text
+    chapter_path.write_text(_serialize_soup_document(soup), encoding="utf-8")
+    return True
+
+
+def _demote_unsafe_magazine_primary_heading(chapter_path: Path) -> bool:
+    try:
+        soup = BeautifulSoup(chapter_path.read_text(encoding="utf-8"), "xml")
+    except Exception:
+        return False
+    headings = soup.find_all(["h1", "h2"])
+    if len(headings) != 1:
+        return False
+    heading = headings[0]
+    text = _normalize_text(heading.get_text(" ", strip=True))
+    if not text or not text[0].islower():
+        return False
+    title_node = soup.find("title")
+    title_text = _normalize_text(title_node.get_text(" ", strip=True)) if title_node is not None else ""
+    if title_text and not _title_fragments_match(text, title_text):
+        return False
+    heading.name = "p"
+    classes = _normalized_classes(_class_list(heading), fallback=["subtitle"])
+    if "subtitle" not in classes:
+        classes.append("subtitle")
+    heading["class"] = classes
+    if heading.get("id"):
+        del heading.attrs["id"]
+    chapter_path.write_text(_serialize_soup_document(soup), encoding="utf-8")
+    return True
+
+
+def _select_magazine_primary_heading_text(*, title_text: str, top_nodes: list[Tag], full_text: str) -> str:
+    candidates = [_normalize_text(title_text)]
+    for node in top_nodes[:8]:
+        text = _normalize_text(node.get_text(" ", strip=True))
+        if text and text not in candidates:
+            candidates.append(text)
+    for candidate in candidates:
+        cleaned = _clean_magazine_primary_heading_candidate(candidate)
+        if _safe_magazine_primary_heading_text(cleaned, full_text):
+            return cleaned
+    return ""
+
+
+def _clean_magazine_primary_heading_candidate(text: str) -> str:
+    normalized = _normalize_text(text).strip(" -:;,.")
+    if not normalized:
+        return ""
+    for separator in (" — ", " – ", " - "):
+        if separator not in normalized:
+            continue
+        left, right = [part.strip(" -:;,.") for part in normalized.split(separator, 1)]
+        if _looks_like_author_or_byline_fragment(right) and _looks_like_safe_short_toc_title(left):
+            return left
+    return normalized
+
+
+def _safe_magazine_primary_heading_text(text: str, full_text: str) -> bool:
+    normalized = _normalize_text(text).strip(" -:;,.")
+    if not normalized:
+        return False
+    words = normalized.split()
+    if len(words) < 2 or len(words) > 28 or len(normalized) > 180:
+        return False
+    if normalized[0].islower():
+        return False
+    if _is_magazine_byline(normalized) or _looks_like_author_line(normalized):
+        return False
+    if _looks_like_magazine_contact_heavy_text(normalized) or _looks_like_magazine_newsletter_promo(normalized, full_text):
+        return False
+    if MAGAZINE_SPECIAL_TITLE_RE.match(normalized) or MAGAZINE_PROMO_TEXT_RE.search(normalized):
+        return False
+    if normalized.endswith(".") and len(words) > 8:
+        return False
+    return _looks_like_heading_text(normalized) or len(words) <= 18
+
+
+def _looks_like_author_or_byline_fragment(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    if _is_magazine_byline(normalized) or _looks_like_author_line(normalized):
+        return True
+    words = normalized.split()
+    return 1 <= len(words) <= 5 and all(word[:1].isupper() for word in words if word[:1].isalpha())
+
+
 def _fallback_magazine_non_linear_files(chapter_infos: list[dict[str, object]], *, contents_file: str) -> set[str]:
     extras: set[str] = set()
     for info in chapter_infos:
         file_name = str(info["file_name"])
         if file_name == contents_file:
+            extras.add(file_name)
             continue
-        title_key = _magazine_key(str(info.get("title") or info.get("start_text") or ""))
-        if (
-            info.get("special_type") in {"gallery", "advertisement"}
-            or (info.get("special_type") == "sponsored" and not info.get("has_byline"))
-            or _looks_like_magazine_image_only_stub(info)
-            or bool(info.get("is_special_hint"))
-            or title_key in MAGAZINE_FEATURE_SKIP_KEYS
-            or _looks_like_magazine_extra_title(title_key)
-        ):
+        if _looks_like_magazine_non_content_info(info) or bool(info.get("is_special_hint")):
             extras.add(file_name)
     return extras
 
@@ -8490,8 +8916,12 @@ def _classify_magazine_feature_buckets(
     for info in chapter_infos:
         file_name = str(info["file_name"])
         if file_name == contents_file:
+            extras.add(file_name)
             continue
         title = _normalize_text(str(info["title"]))
+        if _looks_like_magazine_non_content_info(info):
+            extras.add(file_name)
+            continue
         title_key = _magazine_key(title)
         if re.search(r"(?i)\b(ciąg dalszy|continued)\b", title):
             continue
@@ -8539,15 +8969,6 @@ def _build_magazine_toc_entries(
     toc_entries = [
         {"file_name": "cover.xhtml", "id": "", "text": "Cover", "level": 1},
     ]
-    if issue_outline["file_name"]:
-        toc_entries.append(
-            {
-                "file_name": str(issue_outline["file_name"]),
-                "id": "",
-                "text": "Table of Contents",
-                "level": 1,
-            }
-        )
 
     if front_features:
         front_features = sorted(
@@ -8564,6 +8985,8 @@ def _build_magazine_toc_entries(
             }
         )
         for item in front_features:
+            if _is_magazine_toc_noise_label(str(item.get("text") or "")):
+                continue
             toc_entries.append(
                 {
                     "file_name": item["file_name"],
@@ -8576,6 +8999,8 @@ def _build_magazine_toc_entries(
     article_entries = []
     for entry, assignment in zip(ordered_issue_entries, assignments):
         if assignment is None or not assignment.get("id"):
+            continue
+        if _is_magazine_toc_noise_label(str(assignment.get("label") or "")):
             continue
         article_entries.append(
             {
@@ -8590,6 +9015,8 @@ def _build_magazine_toc_entries(
     combined_articles: list[dict[str, object]] = []
     seen_targets: set[tuple[str, str]] = set()
     for item in article_entries + list(additional_features):
+        if _is_magazine_toc_noise_label(str(item.get("text") or "")):
+            continue
         target = (str(item["file_name"]), str(item["id"]))
         if target in seen_targets:
             continue
@@ -8620,6 +9047,18 @@ def _build_magazine_toc_entries(
             )
 
     return toc_entries
+
+
+def _is_magazine_toc_noise_label(label: str) -> bool:
+    normalized = _normalize_text(label)
+    if not normalized:
+        return True
+    key = _magazine_key(normalized)
+    if key in MAGAZINE_FEATURE_SKIP_KEYS:
+        return True
+    if _looks_like_page_fragment_label(normalized):
+        return True
+    return False
 
 
 def _sort_magazine_issue_entries(entries: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -9010,6 +9449,10 @@ def _is_placeholder_author(value: str | None) -> bool:
     if normalized in PLACEHOLDER_AUTHOR_KEYS:
         return True
     if any(token in normalized for token in TECHNICAL_AUTHOR_MARKERS):
+        return True
+    letters = [character for character in normalized if character.isalpha()]
+    digits = [character for character in normalized if character.isdigit()]
+    if digits and len(letters) <= 3 and len(normalized.split()) <= 4:
         return True
     return bool(re.search(r"(?i)\b(?:technical|generated|converter|conversion|autogenerated|codex|openai|chatgpt|ai)\b", normalized))
 
@@ -9695,6 +10138,12 @@ def _reorder_opf_spine(
     non_linear_idrefs: list[str] = []
     cover_id = href_to_id.get("cover.xhtml", "")
     nav_id = href_to_id.get("nav.xhtml", "")
+    for itemref in itemrefs:
+        if str(itemref.get("linear", "yes") or "yes").lower() != "no":
+            continue
+        href = id_to_href.get(itemref.get("idref", ""), "")
+        if href and href not in {"cover.xhtml", "nav.xhtml"}:
+            non_linear_hrefs.add(href)
 
     for href in ordered_files:
         if href in excluded_files:
@@ -10194,8 +10643,18 @@ def _sanitize_toc_label_for_render(label: str) -> str:
     normalized = _normalize_text(label)
     if not normalized:
         return ""
+    if _looks_like_split_letter_toc_artifact(normalized):
+        return ""
+    if _looks_like_caption_or_source_toc_label(normalized):
+        return ""
     if len(normalized) <= 90 and len(normalized.split()) <= 12:
         return normalized
+    for separator in (" – ", " — "):
+        if separator not in normalized:
+            continue
+        candidate = normalized.split(separator, 1)[0].strip(" -:;,.!?")
+        if _looks_like_safe_short_toc_title(candidate):
+            return candidate
     for separator in ("? ", ". ", "! ", ": ", " - ", " â€“ ", " â€” "):
         if separator not in normalized:
             continue
@@ -10630,6 +11089,10 @@ def _should_include_in_toc(text: str, level: int) -> bool:
         return False
     if _looks_like_index_page_toc_label(normalized):
         return False
+    if _looks_like_split_letter_toc_artifact(normalized):
+        return False
+    if _looks_like_caption_or_source_toc_label(normalized):
+        return False
     if _looks_like_truncated_heading(normalized):
         return False
     if re.match(r"^[•·▪◦]\s*", normalized):
@@ -10695,6 +11158,37 @@ def _looks_like_table_or_diagram_artifact_toc_label(text: str) -> bool:
     if re.fullmatch(r"(?i)rank\s*(?:=|:)?\s*\d+(?:\s*[*x]\s*\d+)?", normalized):
         return True
     return False
+
+
+def _looks_like_caption_or_source_toc_label(text: str) -> bool:
+    normalized = _normalize_text(text).strip(" .:;")
+    if not normalized:
+        return False
+    if re.match(r"(?i)^(?:zrodlo|źródło|source|credit)\s*[:.-]", normalized):
+        return True
+    return _looks_like_figure_caption(normalized)
+
+
+def _looks_like_split_letter_toc_artifact(text: str) -> bool:
+    normalized = _normalize_text(text).strip(" .:;,-")
+    words = normalized.split()
+    if not 2 <= len(words) <= 4:
+        return False
+    if any(any(ch.isdigit() for ch in word) for word in words):
+        return False
+    short_lower_fragments = [
+        word
+        for word in words[1:]
+        if word.islower() and 1 < len(word) <= 3 and word.lower() not in MINOR_WORDS
+    ]
+    if not short_lower_fragments:
+        return False
+    capitalized_words = [word for word in words if word[:1].isupper() and len(word) >= 3]
+    if not capitalized_words:
+        return False
+    if len(words) == 2 and len(short_lower_fragments) == 1 and len(words[0]) <= 3:
+        return True
+    return len(short_lower_fragments) >= 1 and len(capitalized_words) >= 1
 
 
 def _looks_like_index_page_toc_label(text: str) -> bool:
@@ -10807,6 +11301,7 @@ def _merge_separator(previous_text: str, current_text: str) -> str:
     return " "
 
 
+@lru_cache(maxsize=16384)
 def _lexical_zipf(word: str) -> float:
     if not word or _zipf_frequency is None:
         return 0.0
@@ -10823,7 +11318,7 @@ def _should_join_split_word(left: str, right: str) -> bool:
     if len(left_clean) < 2 or len(right_clean) < 2:
         return False
     total_len = len(left_clean) + len(right_clean)
-    if total_len < 6 or total_len > 22:
+    if total_len < 5 or total_len > 22:
         return False
     left_is_stop = left_clean.lower() in SPLIT_JOIN_STOPWORDS
     right_is_stop = right_clean.lower() in SPLIT_JOIN_STOPWORDS
@@ -10840,6 +11335,10 @@ def _should_join_split_word(left: str, right: str) -> bool:
         return False
     if (left_score <= 1.8 or right_score <= 1.8) and joined_score >= 3.0:
         return True
+    if left_score == 0.0 and right_clean.lower() in SPLIT_JOIN_SUFFIX_FRAGMENTS and len(left_clean) >= 6:
+        return True
+    if left_score == 0.0 and len(right_clean) <= 4 and right_score >= 2.0 and joined_score >= 2.0:
+        return True
     if min(len(left_clean), len(right_clean)) <= 3 and joined_score >= 3.5 and joined_score >= max(left_score, right_score) - 1.4:
         return True
     if joined_score >= max(left_score, right_score) + 1.15:
@@ -10852,8 +11351,9 @@ def _should_join_split_word(left: str, right: str) -> bool:
 def _repair_pdf_split_words(text: str) -> str:
     if not text or " " not in text:
         return text
+    if not PDF_SPLIT_WORD_RE.search(text):
+        return text
 
-    pattern = re.compile(r"\b([A-Za-zÀ-ÿĀ-ž]{2,10})\s+([A-Za-zÀ-ÿĀ-ž]{2,14})\b")
     repaired = text
     for _ in range(3):
         changed = False
@@ -10866,7 +11366,7 @@ def _repair_pdf_split_words(text: str) -> str:
                 return f"{left}{right}"
             return match.group(0)
 
-        repaired = pattern.sub(_replace, repaired)
+        repaired = PDF_SPLIT_WORD_RE.sub(_replace, repaired)
         if not changed:
             break
     return repaired
@@ -10874,6 +11374,10 @@ def _repair_pdf_split_words(text: str) -> str:
 
 def _repair_text_node(node_text: str) -> str:
     repaired = node_text or ""
+    if not repaired:
+        return repaired
+    if repaired.isascii() and not TEXT_REPAIR_SIGNAL_RE.search(repaired):
+        return repaired
     if _ftfy_fix_text is not None:
         try:
             repaired = _ftfy_fix_text(repaired)
@@ -10903,33 +11407,32 @@ def _normalize_text_light(text: str) -> str:
     for broken, fixed in MOJIBAKE_MAP.items():
         normalized = normalized.replace(broken, fixed)
     normalized = REGISTERED_SUFFIX_MOJIBAKE_RE.sub(r"\g<word>®", normalized)
-    return re.sub(r"\s+", " ", normalized).strip()
+    normalized = _repair_pdf_split_words(normalized)
+    return NORMALIZE_WHITESPACE_RE.sub(" ", normalized).strip()
 
 
 def _normalize_chess_notation_text(text: str) -> str:
     normalized = text or ""
-    san_token = r"(?:O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?)"
-    eval_token = r"(?:\+\u2013|\u2013\+|\+=|=\+|\u00b1|\u2213)"
     normalized = normalized.replace("â€ ", "\u2020").replace("â€ˇ", "\u2021").replace("âś“", "\u2713")
     normalized = normalized.replace("1–0", "1-0").replace("0–1", "0-1").replace("½–½", "½-½")
     normalized = normalized.replace("0.5–0.5", "0.5-0.5")
     normalized = DAGGER_RE.sub("+", normalized)
     normalized = CHECKMARK_RE.sub(" ", normalized)
     normalized = PROMOTION_SPACING_RE.sub(r"=\1", normalized)
-    normalized = re.sub(rf"({san_token})\s+mate\b(?!\s+in\b)", r"\1#", normalized, flags=re.IGNORECASE)
-    normalized = re.sub(rf"({san_token})\s+\+(?=[!?.,;:]|\s|$)", r"\1+", normalized)
-    normalized = re.sub(rf"({san_token})\s+#(?=[!?.,;:]|\s|$)", r"\1#", normalized)
-    normalized = re.sub(rf"(?<=[A-Za-z0-9])([+#])\s*({eval_token})", r"\1 (\2)", normalized)
-    normalized = re.sub(r"([A-Za-z]{3,})#(?=\s)", r"\1 #", normalized)
-    normalized = re.sub(r"\bwith\s+#(?=\s|[.,;:!?]|$)", "with mate", normalized, flags=re.IGNORECASE)
-    normalized = re.sub(r"\bavoid\s+#(?=\s|[.,;:!?]|$)", "avoid mate", normalized, flags=re.IGNORECASE)
-    normalized = re.sub(r"\bback-rank\s+#(?=\s|[.,;:!?]|$)", "back-rank mate", normalized, flags=re.IGNORECASE)
-    normalized = re.sub(r"\bsmothered\s+#(?=\s|[.,;:!?]|$)", "smothered mate", normalized, flags=re.IGNORECASE)
-    normalized = re.sub(r"\bof\s+#(?=\s|[.,;:!?]|$)", "of mate", normalized, flags=re.IGNORECASE)
-    normalized = re.sub(r"\bthe\s+#(?=\s|[.,;:!?]|$)", "the mate", normalized, flags=re.IGNORECASE)
-    normalized = re.sub(r"\+\s+([!?])", r"+\1", normalized)
-    normalized = re.sub(r"#\s+([!?])", r"#\1", normalized)
-    normalized = re.sub(r"\s{2,}", " ", normalized)
+    normalized = CHESS_MATE_RE.sub(r"\1#", normalized)
+    normalized = CHESS_PLUS_RE.sub(r"\1+", normalized)
+    normalized = CHESS_HASH_RE.sub(r"\1#", normalized)
+    normalized = CHESS_EVAL_SPLIT_RE.sub(r"\1 (\2)", normalized)
+    normalized = CHESS_TEXT_HASH_RE.sub(r"\1 #", normalized)
+    normalized = CHESS_WITH_HASH_RE.sub("with mate", normalized)
+    normalized = CHESS_AVOID_HASH_RE.sub("avoid mate", normalized)
+    normalized = CHESS_BACK_RANK_HASH_RE.sub("back-rank mate", normalized)
+    normalized = CHESS_SMOTHERED_HASH_RE.sub("smothered mate", normalized)
+    normalized = CHESS_OF_HASH_RE.sub("of mate", normalized)
+    normalized = CHESS_THE_HASH_RE.sub("the mate", normalized)
+    normalized = CHESS_PLUS_ANNOTATION_RE.sub(r"+\1", normalized)
+    normalized = CHESS_HASH_ANNOTATION_RE.sub(r"#\1", normalized)
+    normalized = MULTISPACE_RE.sub(" ", normalized)
     return normalized
 
 
@@ -10952,14 +11455,15 @@ def _normalize_text(text: str) -> str:
         normalized = _normalize_chess_notation_text(normalized)
     normalized = EMAIL_RE.sub("", normalized)
     normalized = MEMBER_COPY_RE.sub("", normalized)
-    normalized = re.sub(r"\s+", " ", normalized)
+    normalized = _repair_pdf_split_words(normalized)
+    normalized = NORMALIZE_WHITESPACE_RE.sub(" ", normalized)
     normalized = INLINE_EVAL_RE.sub(r"\1 ", normalized)
-    normalized = re.sub(r"(?<=[0-9])(?=[A-Z][a-z])", " ", normalized)
-    normalized = re.sub(r"(?<=[0-9])(?=mate\b)", " ", normalized)
-    normalized = re.sub(r"(?<=[!?])(?=[A-Z][a-z])", " ", normalized)
-    normalized = re.sub(r"(?<=[✓†‡])(?=[A-Z][a-z])", " ", normalized)
-    normalized = re.sub(r"(?<=\w)([✓†‡])", r" \1", normalized)
-    normalized = re.sub(r"\s+([,.;:!?])", r"\1", normalized)
+    normalized = DIGIT_CAMEL_SPLIT_RE.sub(" ", normalized)
+    normalized = DIGIT_MATE_SPLIT_RE.sub(" ", normalized)
+    normalized = PUNCT_CAPITAL_SPLIT_RE.sub(" ", normalized)
+    normalized = SYMBOL_CAPITAL_SPLIT_RE.sub(" ", normalized)
+    normalized = WORD_SYMBOL_SPLIT_RE.sub(r" \1", normalized)
+    normalized = PUNCTUATION_SPACE_RE.sub(r"\1", normalized)
     return normalized.strip()
 
 
@@ -10992,13 +11496,14 @@ def _sanitize_inline_html(fragment_html: str) -> str:
     normalized = UNSAFE_INLINE_TAG_RE.sub("&lt;", normalized)
     normalized = EMAIL_RE.sub("", normalized)
     normalized = MEMBER_COPY_RE.sub("", normalized)
-    normalized = re.sub(r"[ \t\r\n]+", " ", normalized)
+    normalized = _repair_pdf_split_words(normalized)
+    normalized = NORMALIZE_WHITESPACE_RE.sub(" ", normalized)
     normalized = INLINE_EVAL_RE.sub(r"\1 ", normalized)
-    normalized = re.sub(r"(?<=[0-9])(?=[A-Z][a-z])", " ", normalized)
-    normalized = re.sub(r"(?<=[0-9])(?=mate\b)", " ", normalized)
-    normalized = re.sub(r"(?<=[!?])(?=[A-Z][a-z])", " ", normalized)
-    normalized = re.sub(r"(?<=[✓†‡])(?=[A-Z][a-z])", " ", normalized)
-    normalized = re.sub(r"\s+([,.;:!?])", r"\1", normalized)
+    normalized = DIGIT_CAMEL_SPLIT_RE.sub(" ", normalized)
+    normalized = DIGIT_MATE_SPLIT_RE.sub(" ", normalized)
+    normalized = PUNCT_CAPITAL_SPLIT_RE.sub(" ", normalized)
+    normalized = SYMBOL_CAPITAL_SPLIT_RE.sub(" ", normalized)
+    normalized = PUNCTUATION_SPACE_RE.sub(r"\1", normalized)
     return normalized.strip()
 
 

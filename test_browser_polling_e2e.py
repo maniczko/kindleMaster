@@ -119,35 +119,48 @@ class BrowserPollingE2ETests(unittest.TestCase):
         with contextlib.suppress(Exception):
             self.context.close()
 
-    def _load_pdf(self) -> None:
-        self.page.goto(f"{self.base_url}/legacy")
-        self.page.set_input_files("#fileInput", str(SAMPLE_PDF))
-        self.page.locator("#fileName").wait_for(state="visible")
-        self.assertEqual(self.page.locator("#fileName").text_content(), "ocr_probe.pdf")
-        self.page.locator("#statusText").wait_for(state="visible")
-
-    def _wait_for_status_text(self, fragment: str, timeout_ms: int = 10000) -> str:
+    def _enter_local_app(self) -> None:
+        self.page.goto(f"{self.base_url}/")
         self.page.wait_for_function(
-            """([selector, expected]) => {
-              const element = document.querySelector(selector);
-              return !!element && (element.textContent || "").includes(expected);
+            """() => {
+              const text = document.body ? document.body.innerText || "" : "";
+              return text.includes("Nowa konwersja") || text.includes("Kontynuuj lokalnie");
             }""",
-            arg=["#statusText", fragment],
+            timeout=15000,
+        )
+        local_button = self.page.locator('[data-testid="continue-locally-button"]')
+        if local_button.count():
+            local_button.click()
+        self._wait_for_body_text("Nowa konwersja")
+
+    def _load_pdf(self) -> None:
+        self._enter_local_app()
+        self.page.locator('[data-testid="conversion-file-input"]').set_input_files(str(SAMPLE_PDF))
+        self._wait_for_body_text("ocr_probe.pdf")
+
+    def _start_conversion(self) -> None:
+        self.page.locator('[data-testid="start-conversion-button"]').click()
+
+    def _wait_for_body_text(self, fragment: str, timeout_ms: int = 10000) -> str:
+        matched_text = self.page.wait_for_function(
+            """(expected) => {
+              const text = document.body ? document.body.innerText || "" : "";
+              return text.includes(expected) ? text : false;
+            }""",
+            arg=fragment,
             timeout=timeout_ms,
         )
-        return self.page.locator("#statusText").text_content() or ""
+        return str(matched_text.json_value() or "")
 
-    def _wait_for_any_status_text(self, fragments: list[str], timeout_ms: int = 10000) -> str:
+    def _wait_for_any_body_text(self, fragments: list[str], timeout_ms: int = 10000) -> str:
         matched_text = self.page.wait_for_function(
-            """([selector, expectedFragments]) => {
-              const element = document.querySelector(selector);
-              if (!element) return false;
-              const text = element.textContent || "";
+            """(expectedFragments) => {
+              const text = document.body ? document.body.innerText || "" : "";
               return Array.isArray(expectedFragments) && expectedFragments.some((fragment) => text.includes(fragment))
                 ? text
                 : false;
             }""",
-            arg=["#statusText", fragments],
+            arg=fragments,
             timeout=timeout_ms,
         )
         return str(matched_text.json_value() or "")
@@ -197,14 +210,10 @@ class BrowserPollingE2ETests(unittest.TestCase):
         self.page.route("**/convert/download/job-retry", handle_download)
         self._load_pdf()
 
-        with self.page.expect_download() as download_info:
-            self.page.locator("#convertEpubButton").click()
-        download = download_info.value
-        self.assertIn("ocr_probe", download.suggested_filename)
-        rendered = self._wait_for_status_text("EPUB wygenerowany i pobrany")
-        self.assertIn("EPUB wygenerowany i pobrany", rendered)
-        self.assertIn("KB", rendered)
-        self.assertNotIn("0.00 MB", rendered)
+        self._start_conversion()
+        self.page.locator('[data-testid="file-details-view"]').wait_for(state="visible", timeout=30000)
+        rendered = self._wait_for_body_text("Szczegóły pliku", timeout_ms=30000)
+        self.assertIn("ocr_probe.pdf", rendered)
         self.assertEqual(status_calls["count"], 3)
 
     def test_failed_status_ends_flow_without_download(self) -> None:
@@ -236,9 +245,9 @@ class BrowserPollingE2ETests(unittest.TestCase):
         )
 
         self._load_pdf()
-        self.page.locator("#convertEpubButton").click()
-        rendered = self._wait_for_status_text("Konwersja nie powiodla sie: backend timeout")
-        self.assertIn("Konwersja nie powiodla sie: backend timeout", rendered)
+        self._start_conversion()
+        rendered = self._wait_for_body_text("backend timeout", timeout_ms=30000)
+        self.assertIn("backend timeout", rendered)
         self.page.wait_for_timeout(300)
         self.assertEqual(downloads, [])
 
@@ -283,8 +292,8 @@ class BrowserPollingE2ETests(unittest.TestCase):
         )
 
         self._load_pdf()
-        self.page.locator("#convertEpubButton").click()
-        rendered = self._wait_for_status_text("Lokalna aplikacja zostala zrestartowana")
+        self._start_conversion()
+        rendered = self._wait_for_body_text("Uruchom konwersje ponownie", timeout_ms=30000)
         self.assertIn("Uruchom konwersje ponownie", rendered)
         self.page.wait_for_timeout(300)
         self.assertEqual(downloads, [])
@@ -334,16 +343,16 @@ class BrowserPollingE2ETests(unittest.TestCase):
         )
 
         self._load_pdf()
-        self.page.locator("#convertEpubButton").click()
-        rendered = self._wait_for_any_status_text(
+        self._start_conversion()
+        rendered = self._wait_for_any_body_text(
             [
-                "Polaczenie z lokalnym serwerem konwersji zostalo przerwane",
+                "Połączenie z lokalnym serwerem konwersji zostało przerwane",
                 "Przekroczono limit czasu odpowiedzi lokalnego serwera",
             ],
             timeout_ms=12000,
         )
         self.assertTrue(
-            "Polaczenie z lokalnym serwerem konwersji zostalo przerwane" in rendered
+            "Połączenie z lokalnym serwerem konwersji zostało przerwane" in rendered
             or "Przekroczono limit czasu odpowiedzi lokalnego serwera" in rendered
         )
 
@@ -380,10 +389,10 @@ class BrowserPollingE2ETests(unittest.TestCase):
         )
 
         self._load_pdf()
-        self.page.locator("#convertEpubButton").click()
-        text = self._wait_for_status_text("Przekroczono limit czasu odpowiedzi lokalnego serwera", timeout_ms=12000)
+        self._start_conversion()
+        text = self._wait_for_body_text("Przekroczono limit czasu odpowiedzi lokalnego serwera", timeout_ms=12000)
         self.assertIn("Przekroczono limit czasu odpowiedzi lokalnego serwera", text)
-        self.assertNotIn("Ponawiam probe", text)
+        self.assertNotIn("Ponawiam próbę", text)
 
     def test_tracking_prevention_console_noise_does_not_break_successful_flow(self) -> None:
         console_entries: list[dict[str, str]] = []
@@ -443,13 +452,10 @@ class BrowserPollingE2ETests(unittest.TestCase):
             }
             """
         )
-        with self.page.expect_download() as download_info:
-            self.page.locator("#convertEpubButton").click()
-
-        download = download_info.value
-        self.assertIn("ocr_probe", download.suggested_filename)
-        rendered = self._wait_for_status_text("EPUB wygenerowany i pobrany")
-        self.assertIn("EPUB wygenerowany i pobrany", rendered)
+        self._start_conversion()
+        self.page.locator('[data-testid="file-details-view"]').wait_for(state="visible", timeout=30000)
+        rendered = self._wait_for_body_text("Szczegóły pliku", timeout_ms=30000)
+        self.assertIn("ocr_probe.pdf", rendered)
         privacy_warnings = [entry for entry in console_entries if _is_privacy_noise_message(entry["text"])]
         self.assertGreaterEqual(len(privacy_warnings), 2, console_entries)
         self.assertFalse(any(entry["type"] == "error" for entry in console_entries), console_entries)

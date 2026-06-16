@@ -245,27 +245,6 @@ def _analyze_text(document_path: str, text: str) -> TextArtifactMetrics:
     return TextArtifactMetrics(document_path=document_path, word_count=len(tokens), counts=counts, ignored_counts=ignored_counts)
 
 
-def _count_missing_sentence_spaces(text: str) -> int:
-    count = 0
-    for match in MISSING_SPACE_AFTER_SENTENCE_RE.finditer(text or ""):
-        left = text[max(0, match.start() - 48) : match.start()]
-        if _looks_like_chess_or_initial_period_context(left):
-            continue
-        count += 1
-    return count
-
-
-def _looks_like_chess_or_initial_period_context(left_context: str) -> bool:
-    compact = " ".join((left_context or "").split())
-    if not compact:
-        return False
-    if CHESS_OR_INITIAL_PERIOD_CONTEXT_RE.search(compact):
-        return True
-    # Algebraic chess notation commonly appears as "2.Kh1", "1...Qe2", or
-    # "5...Nxf7"; these are not sentence-boundary spacing errors.
-    return bool(re.search(r"\b\d+\.{1,3}[KQRBN]?[a-h]?[1-8]?x?[a-h]?[1-8]?$", compact))
-
-
 def _looks_like_dense_handbook_text(text: str) -> bool:
     normalized = " ".join((text or "").lower().split())
     if len(normalized) < 800:
@@ -292,9 +271,6 @@ def _count_punctuation_spacing(text: str, *, dense_handbook_context: bool) -> tu
             continue
         reader_artifacts += 1
     for match in MISSING_SPACE_AFTER_SENTENCE_RE.finditer(text or ""):
-        left = text[max(0, match.start() - 48) : match.start()]
-        if _looks_like_chess_or_initial_period_context(left):
-            continue
         if dense_handbook_context and _looks_like_dense_missing_space_false_positive(text, match.start(), match.end()):
             structural_review += 1
             continue

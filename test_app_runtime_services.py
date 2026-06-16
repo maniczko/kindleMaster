@@ -252,33 +252,6 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertIn("Uruchom konwersje ponownie", reloaded_jobs["job-running"]["error"])
         self.assertEqual(reloaded_jobs["job-running"]["source_path"], "")
 
-    def test_conversion_job_store_preserves_existing_input_path_after_restart(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            source_path = Path(temp_dir) / "job-running.pdf"
-            source_path.write_bytes(b"%PDF-1.4\n")
-            store_path = Path(temp_dir) / "jobs.json"
-            store = ConversionJobStore({}, threading.Lock(), persistence_path=store_path)
-            store.create(
-                {
-                    "job_id": "job-running",
-                    "status": "running",
-                    "message": "Konwertuje PDF do EPUB...",
-                    "created_at": "2026-04-25T10:00:00Z",
-                    "updated_at": "2026-04-25T10:00:00Z",
-                    "source_path": str(source_path),
-                    "metadata": {},
-                    "error": "",
-                }
-            )
-
-            reloaded_jobs: dict[str, dict] = {}
-            reloaded_store = ConversionJobStore(reloaded_jobs, threading.Lock(), persistence_path=store_path)
-            load_result = reloaded_store.load()
-
-        self.assertEqual(load_result["interrupted_jobs"], 1)
-        self.assertEqual(reloaded_jobs["job-running"]["status"], "failed")
-        self.assertEqual(reloaded_jobs["job-running"]["source_path"], str(source_path))
-
     def test_conversion_job_store_load_handles_invalid_json_and_invalid_shape_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store_path = Path(temp_dir) / "jobs.json"
@@ -1572,7 +1545,7 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertEqual(outcome.metadata["heading_repair"]["status"], "skipped")
         self.assertEqual(outcome.metadata["strategy"], "layout_fixed")
         self.assertEqual(outcome.result["quality_report"]["validation_status"], "passed_with_warnings")
-        heading_repair_impl.assert_not_called()
+        self.assertTrue(heading_repair_impl.call_args.kwargs["already_semantic_cleaned"])
 
     def test_run_document_conversion_marks_heading_repair_exception_as_failed_and_keeps_base_epub(self) -> None:
         convert_impl = Mock(

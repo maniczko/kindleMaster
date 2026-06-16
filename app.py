@@ -14,8 +14,6 @@ import threading
 import uuid
 import tempfile
 from collections.abc import Mapping
-import urllib.error
-import urllib.request
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote

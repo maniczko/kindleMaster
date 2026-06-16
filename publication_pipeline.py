@@ -91,6 +91,9 @@ AUTO_OCR_WITHOUT_FORCE_MAX_BYTES = 40 * 1024 * 1024
 DEFAULT_UNKNOWN_AUTHOR = "Unknown Author"
 
 
+DEFAULT_UNKNOWN_AUTHOR = "Unknown Author"
+
+
 def build_publication_document(pdf_path: str, config, analysis: PublicationAnalysis) -> PublicationDocument:
     from converter import _extract_pdf_metadata, extract_pdf_with_pymupdf
 

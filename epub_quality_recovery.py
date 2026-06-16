@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import re
 import tempfile
 import zipfile
 from collections import Counter, defaultdict
@@ -21,9 +22,11 @@ from kindle_semantic_cleanup import (
     _extract_author_from_chapters,
     _extract_description_from_chapters,
     _extract_epub,
+    _extract_magazine_issue_outline,
     _get_spine_xhtml_paths,
     _inject_problem_solution_links,
     _build_non_linear_reachability_toc_entries,
+    finalize_epub_for_kindle,
     _is_placeholder_author,
     _is_pre_paginated,
     _locate_opf,
@@ -40,6 +43,7 @@ from kindle_semantic_cleanup import (
     _strip_english_output_polish_structural_dom_artifacts,
     _strip_unresolved_fragment_links,
     _synchronize_xhtml_language,
+    _title_fragments_match,
     _update_opf_metadata,
     _write_default_css,
     _looks_technical_title,
@@ -357,9 +361,16 @@ def _run_metadata_phase(
             return epub_bytes, {"before": before_inventory["metadata"], "after": before_inventory["metadata"], "changes": []}, run_epubcheck(epub_bytes)
 
         chapter_title_hint = _extract_primary_title_from_chapters(chapter_paths)
+        current_title = before_inventory["metadata"]["primary"].get("title", "")
+        issue_title_hint = _derive_issue_title_from_source_path(source_path)
+        if not expected_title and _should_prefer_source_issue_title(
+            current_title=current_title,
+            source_issue_title=issue_title_hint,
+        ):
+            current_title = issue_title_hint
         title = _pick_metadata_value(
             requested=expected_title,
-            current=before_inventory["metadata"]["primary"].get("title", ""),
+            current=current_title,
             fallback=chapter_title_hint or source_path.stem,
         )
         author = _pick_author_value(
@@ -384,6 +395,16 @@ def _run_metadata_phase(
             toc_entries=toc_entries,
             description_seed=description_seed,
         )
+        if _metadata_phase_should_repair_magazine_nav(
+            chapter_paths,
+            toc_entries=toc_entries,
+            publication_profile=publication_profile,
+        ):
+            _repair_magazine_nav_and_safe_headings_for_audit(
+                opf_path,
+                chapter_paths=chapter_paths,
+                language=language,
+            )
         metadata_bytes = _pack_epub(root_dir)
 
     after_inventory = _inventory_epub(metadata_bytes, label="after_metadata")
@@ -405,6 +426,145 @@ def _run_metadata_phase(
                 }
             )
     return metadata_bytes, metadata_diff, run_epubcheck(metadata_bytes)
+
+
+def _metadata_phase_should_repair_magazine_nav(
+    chapter_paths: list[Path],
+    *,
+    toc_entries: list[dict[str, Any]],
+    publication_profile: str | None,
+) -> bool:
+    profile = (publication_profile or "").strip().lower()
+    if profile in {"magazine_reflow", "full_magazine", "magazine"}:
+        return True
+    if len(toc_entries or []) >= 20:
+        return True
+    try:
+        issue_outline = _extract_magazine_issue_outline(chapter_paths)
+    except Exception:
+        return False
+    return len(issue_outline.get("entries") or []) >= 8
+
+
+def _repair_magazine_nav_and_safe_headings_for_audit(
+    opf_path: Path,
+    *,
+    chapter_paths: list[Path],
+    language: str,
+) -> None:
+    _repair_magazine_nav_labels_for_audit(opf_path, language=language)
+    for chapter_path in chapter_paths:
+        _promote_safe_audit_heading(chapter_path)
+
+
+def _repair_magazine_nav_labels_for_audit(opf_path: Path, *, language: str) -> None:
+    nav_path = opf_path.parent / "nav.xhtml"
+    if not nav_path.exists():
+        return
+    parser = etree.XMLParser(recover=True)
+    try:
+        tree = etree.parse(str(nav_path), parser)
+    except Exception:
+        return
+    toc_navs = tree.getroot().xpath(
+        ".//xhtml:nav[contains(@epub:type, 'toc') or contains(@*[local-name()='type'], 'toc')]",
+        namespaces={"xhtml": XHTML_NS, "epub": "http://www.idpf.org/2007/ops"},
+    )
+    if not toc_navs:
+        return
+    changed = False
+    additional_index = 1
+    english = (language or "").strip().lower().startswith("en")
+    for anchor in list(toc_navs[0].xpath(".//xhtml:a", namespaces={"xhtml": XHTML_NS})):
+        href = (anchor.get("href") or "").strip()
+        label = " ".join("".join(anchor.itertext()).split())
+        normalized = _normalize_audit_label(label)
+        target_file, _fragment = _split_href(href)
+        if normalized in {"contents", "table of contents"}:
+            parent_li = anchor.getparent()
+            while parent_li is not None and etree.QName(parent_li).localname != "li":
+                parent_li = parent_li.getparent()
+            if parent_li is not None and parent_li.getparent() is not None:
+                parent_li.getparent().remove(parent_li)
+                changed = True
+            continue
+        if english and target_file.lower().startswith("cover") and label != "Cover":
+            _set_anchor_label(anchor, "Cover")
+            changed = True
+            continue
+        if _looks_like_audit_page_label(label):
+            _set_anchor_label(anchor, f"Additional Material {additional_index}")
+            additional_index += 1
+            changed = True
+    if changed:
+        tree.write(str(nav_path), encoding="utf-8", xml_declaration=True)
+
+
+def _promote_safe_audit_heading(chapter_path: Path) -> None:
+    parser = etree.XMLParser(recover=True)
+    try:
+        tree = etree.parse(str(chapter_path), parser)
+    except Exception:
+        return
+    root = tree.getroot()
+    headings = root.xpath(".//xhtml:h1|.//xhtml:h2|.//xhtml:h3", namespaces={"xhtml": XHTML_NS})
+    if headings:
+        return
+    text = " ".join("".join(root.itertext()).split())
+    if len(text) < 900:
+        return
+    title_nodes = root.xpath(".//xhtml:title", namespaces={"xhtml": XHTML_NS})
+    title = " ".join("".join(title_nodes[0].itertext()).split()) if title_nodes else ""
+    if not _looks_like_safe_audit_heading_title(title):
+        return
+    section_nodes = root.xpath(".//xhtml:section", namespaces={"xhtml": XHTML_NS})
+    body_nodes = root.xpath(".//xhtml:body", namespaces={"xhtml": XHTML_NS})
+    container = section_nodes[0] if section_nodes else (body_nodes[0] if body_nodes else root)
+    first_block = None
+    for child in container:
+        if not isinstance(child.tag, str):
+            continue
+        child_text = " ".join("".join(child.itertext()).split())
+        if child_text:
+            first_block = child
+            break
+    if first_block is None:
+        return
+    first_text = " ".join("".join(first_block.itertext()).split())
+    if _normalize_audit_label(first_text) != _normalize_audit_label(title):
+        return
+    first_block.tag = f"{{{XHTML_NS}}}h1"
+    if not first_block.get("id"):
+        first_block.set("id", _audit_slug(title) or "section")
+    tree.write(str(chapter_path), encoding="utf-8", xml_declaration=True)
+
+
+def _set_anchor_label(anchor: etree._Element, label: str) -> None:
+    for child in list(anchor):
+        anchor.remove(child)
+    anchor.text = label
+
+
+def _normalize_audit_label(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip().lower())
+
+
+def _looks_like_audit_page_label(value: str) -> bool:
+    normalized = (value or "").strip(" .:-")
+    return bool(re.fullmatch(r"\d{1,4}", normalized) or re.fullmatch(r"(?i)(?:page|strona)\s+\d{1,4}", normalized))
+
+
+def _looks_like_safe_audit_heading_title(value: str) -> bool:
+    normalized = " ".join((value or "").split())
+    if not normalized or _looks_like_audit_page_label(normalized) or _looks_technical_title(normalized):
+        return False
+    words = normalized.split()
+    return 2 <= len(words) <= 14 and len(normalized) <= 100 and any(character.isalpha() for character in normalized)
+
+
+def _audit_slug(value: str) -> str:
+    slug = re.sub(r"[^0-9A-Za-z]+", "-", (value or "").lower()).strip("-")
+    return slug[:80]
 
 
 def _run_recovery_phases(
@@ -435,6 +595,29 @@ def _run_recovery_phases(
             working_bytes = cleanup_result.epub_bytes
         except Exception:
             pass
+
+        if _should_run_magazine_semantic_cleanup(working_bytes, publication_profile=publication_profile):
+            semantic_title, semantic_author, semantic_language = _metadata_hints_for_semantic_cleanup(
+                working_bytes,
+                expected_title=expected_title,
+                expected_author=expected_author,
+                expected_language=language_hint,
+            )
+            try:
+                semantic_result = finalize_epub_for_kindle(
+                    working_bytes,
+                    title=semantic_title,
+                    author=semantic_author,
+                    language=semantic_language,
+                    publication_profile=publication_profile or "magazine_reflow",
+                    return_report=False,
+                )
+                if isinstance(semantic_result, tuple):
+                    working_bytes = semantic_result[0]
+                else:
+                    working_bytes = semantic_result
+            except Exception:
+                pass
 
         heading_result = repair_epub_headings_and_toc(
             working_bytes,
@@ -658,6 +841,40 @@ def _run_recovery_phases(
     return final_bytes, heading_report, toc_report, structural_report, run_epubcheck(final_bytes)
 
 
+def _should_run_magazine_semantic_cleanup(epub_bytes: bytes, *, publication_profile: str | None) -> bool:
+    profile = (publication_profile or "").strip().lower()
+    if profile in {"magazine_reflow", "full_magazine", "magazine"}:
+        return True
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root_dir = Path(temp_dir)
+            _extract_epub(epub_bytes, root_dir)
+            opf_path = _locate_opf(root_dir)
+            chapter_paths = _get_spine_xhtml_paths(opf_path)
+            issue_outline = _extract_magazine_issue_outline(chapter_paths)
+    except Exception:
+        return False
+    return len(issue_outline.get("entries") or []) >= 8
+
+
+def _metadata_hints_for_semantic_cleanup(
+    epub_bytes: bytes,
+    *,
+    expected_title: str,
+    expected_author: str,
+    expected_language: str,
+) -> tuple[str, str, str]:
+    try:
+        inventory = _inventory_epub(epub_bytes, label="pre_semantic_cleanup")
+    except Exception:
+        return expected_title, expected_author, expected_language or "en"
+    primary = inventory.get("metadata", {}).get("primary", {})
+    title = expected_title or str(primary.get("title", "") or "")
+    author = expected_author or str(primary.get("creator", "") or "")
+    language = expected_language or str(primary.get("language", "") or "") or "en"
+    return title, author, language
+
+
 def _build_rejected_recovery_heading_report(
     selection_report: dict[str, Any],
     *,
@@ -696,6 +913,8 @@ def _build_quality_selection_report(stages: list[dict[str, Any]]) -> dict[str, A
             "rejected_candidate": "",
             "selected_stage": "",
             "rejected_stage": "",
+            "selected_score": None,
+            "rejected_score": None,
             "reason_codes": [],
             "stages": [],
         }
@@ -705,12 +924,41 @@ def _build_quality_selection_report(stages: list[dict[str, Any]]) -> dict[str, A
     reason_source = rejected_stages if rejected_stages else stages
     for stage in reason_source:
         reason_codes.extend(str(code) for code in (stage.get("reason_codes") or []) if code)
+    selected_candidate = str(representative.get("selected_candidate") or representative.get("selected_stage") or "")
+    rejected_candidate = str(representative.get("rejected_candidate") or representative.get("rejected_stage") or "")
     return {
         **representative,
         "status": "rejected" if rejected_stages else "accepted",
+        "selected_score": _candidate_score_for_label(representative, selected_candidate),
+        "rejected_score": _candidate_score_for_label(representative, rejected_candidate),
         "reason_codes": _dedupe_texts(reason_codes),
         "stages": stages,
     }
+
+
+def _candidate_score_for_label(stage: dict[str, Any], label: str) -> float | None:
+    if not label:
+        return None
+    for candidate in stage.get("candidates", []) or []:
+        if str(candidate.get("label") or "") == label:
+            try:
+                return float(candidate.get("premium_score", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                return None
+    if label == stage.get("selected_candidate") and stage.get("selected_is_candidate"):
+        return _float_or_none(stage.get("candidate_score"))
+    if label == stage.get("selected_candidate"):
+        return _float_or_none(stage.get("baseline_score"))
+    if label == stage.get("rejected_candidate"):
+        return _float_or_none(stage.get("candidate_score"))
+    return None
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _dedupe_texts(values: list[str]) -> list[str]:
@@ -749,18 +997,43 @@ def _inventory_epub(epub_bytes: bytes, *, label: str) -> dict[str, Any]:
         opf_path = _locate_opf(root_dir)
         metadata = _read_metadata_snapshot(opf_path)
         spine_paths = _get_spine_xhtml_paths(opf_path)
+        all_spine_paths = _get_all_spine_xhtml_paths(opf_path)
         spine_files = [path.name for path in spine_paths]
+        all_spine_files = [path.name for path in all_spine_paths]
         headings = {path.name: _extract_heading_snapshot(path) for path in spine_paths}
-        toc = _inspect_toc(opf_path, spine_files=spine_files)
+        toc_headings = {path.name: _extract_heading_snapshot(path) for path in all_spine_paths}
+        toc = _inspect_toc(opf_path, spine_files=all_spine_files)
         structural = _inspect_structural_integrity(opf_path, spine_paths=spine_paths, toc=toc)
         return {
             "label": label,
             "metadata": metadata,
             "spine_files": spine_files,
+            "all_spine_files": all_spine_files,
             "headings": headings,
+            "toc_headings": toc_headings,
             "toc": toc,
             "structural_integrity": structural,
         }
+
+
+def _get_all_spine_xhtml_paths(opf_path: Path) -> list[Path]:
+    root = etree.parse(str(opf_path)).getroot()
+    manifest_by_id = {
+        item.get("id"): item
+        for item in root.findall(".//opf:manifest/opf:item", namespaces=NS)
+        if item.get("id")
+    }
+    paths: list[Path] = []
+    for itemref in root.findall(".//opf:spine/opf:itemref", namespaces=NS):
+        manifest_item = manifest_by_id.get(itemref.get("idref"))
+        if manifest_item is None:
+            continue
+        href = manifest_item.get("href") or ""
+        media_type = manifest_item.get("media-type") or ""
+        if media_type != "application/xhtml+xml" or href.endswith("nav.xhtml"):
+            continue
+        paths.append((opf_path.parent / href).resolve())
+    return paths
 
 
 def _read_metadata_snapshot(opf_path: Path) -> dict[str, Any]:
@@ -1033,7 +1306,8 @@ def _evaluate_gate_d(toc_report: dict[str, Any], final_inventory: dict[str, Any]
     for entry in toc_report.get("entries", []):
         if entry.get("spine_index", -1) < 0:
             blockers.append(f"TOC entry points outside spine: {entry.get('href')}")
-        target_headings = final_inventory["headings"].get(entry.get("file", ""), [])
+        target_heading_map = final_inventory.get("toc_headings") or final_inventory["headings"]
+        target_headings = target_heading_map.get(entry.get("file", ""), [])
         if entry.get("anchor") and entry["anchor"] not in {heading.get("id") for heading in target_headings}:
             blockers.append(f"TOC entry points to missing anchor: {entry.get('href')}")
     if final_inventory["structural_integrity"].get("toc_out_of_order"):
@@ -1184,6 +1458,46 @@ def _pick_metadata_value(*, requested: str, current: str, fallback: str) -> str:
     if current and not _is_placeholder_title(current):
         return current
     return fallback
+
+
+def _derive_issue_title_from_source_path(source_path: Path) -> str:
+    candidate = source_path.stem
+    candidate = re.sub(r"\s*\(\d+\)\s*$", "", candidate)
+    candidate = candidate.replace("_", " ")
+    candidate = re.sub(r"\s+", " ", candidate).strip()
+    candidate = re.sub(r"\s+,", ",", candidate)
+    candidate = re.sub(r"\s+-\s+", " - ", candidate)
+    if not _looks_like_issue_filename_title(candidate):
+        return ""
+    return candidate
+
+
+def _should_prefer_source_issue_title(*, current_title: str, source_issue_title: str) -> bool:
+    source_issue_title = (source_issue_title or "").strip()
+    current_title = (current_title or "").strip()
+    if not source_issue_title:
+        return False
+    if not current_title or _is_placeholder_title(current_title):
+        return True
+    if _title_fragments_match(current_title, source_issue_title):
+        return False
+    words = re.findall(r"[A-Za-z0-9]+", current_title)
+    current_has_issue_date = _looks_like_issue_filename_title(current_title)
+    return len(words) >= 10 and not current_has_issue_date
+
+
+def _looks_like_issue_filename_title(value: str) -> bool:
+    normalized = (value or "").strip()
+    if not normalized:
+        return False
+    month_pattern = (
+        r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+        r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b"
+    )
+    has_year = bool(re.search(r"\b(?:19|20)\d{2}\b", normalized))
+    has_month = bool(re.search(month_pattern, normalized, flags=re.IGNORECASE))
+    has_issue_marker = bool(re.search(r"\b(?:issue|edition|vol\.?|no\.?|magazine|weekly|monthly)\b", normalized, flags=re.IGNORECASE))
+    return has_year and (has_month or has_issue_marker)
 
 
 def _pick_author_value(*, requested: str, current: str, chapter_paths) -> str:

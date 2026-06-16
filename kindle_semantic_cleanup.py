@@ -17,6 +17,7 @@ from __future__ import annotations
 import html
 import re
 import tempfile
+import time
 import unicodedata
 import uuid
 from collections import Counter, defaultdict
@@ -63,6 +64,19 @@ NS = {
     "ncx": NCX_NS,
     "container": CONTAINER_NS,
 }
+SEMANTIC_TIMING_STAGES = (
+    "extract_package",
+    "inventory",
+    "chapter_processing",
+    "cross_links",
+    "reading_flow",
+    "package_repair",
+    "final_dom_passes",
+    "metadata_navigation_spine",
+    "rich_report_build",
+    "pack_epub",
+    "total",
+)
 
 PAGE_TITLE_RE = re.compile(r"^Strona \d+$", re.IGNORECASE)
 PAGE_NUMBER_RE = re.compile(r"^\d{1,4}$")
@@ -1274,14 +1288,19 @@ def finalize_epub_for_kindle(
     report_mode: str = "reference",
 ) -> bytes | tuple[bytes, dict[str, object]]:
     """Clean up a generated EPUB unless it is fixed-layout / pre-paginated."""
+    overall_started = time.perf_counter()
+    timing_breakdown = _new_semantic_timing_breakdown()
     rich_report_enabled = return_report and _wants_rich_finalize_report(report_mode)
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
             root_dir = Path(temp_dir)
+            stage_started = time.perf_counter()
             _extract_epub(epub_bytes, root_dir)
             opf_path = _locate_opf(root_dir)
             chapter_paths = _get_spine_xhtml_paths(opf_path)
+            _record_semantic_timing(timing_breakdown, "extract_package", stage_started)
 
+            stage_started = time.perf_counter()
             phase_report = (
                 _initialize_finalize_phase_report(
                     title=title,
@@ -1298,6 +1317,7 @@ def finalize_epub_for_kindle(
             chapter_heading_inventory_before: dict[str, list[dict[str, object]]] = {}
             heading_decisions: list[dict[str, object]] = []
             manual_review_queue: list[dict[str, object]] = []
+            pre_paginated = _is_pre_paginated(opf_path)
             if rich_report_enabled:
                 for chapter_path in chapter_paths:
                     if chapter_path.name == "cover.xhtml":
@@ -1327,10 +1347,11 @@ def finalize_epub_for_kindle(
                     spine_before=spine_before,
                     navigation_before=navigation_before,
                     chapter_count=len(chapter_paths),
-                    pre_paginated=_is_pre_paginated(opf_path),
+                    pre_paginated=pre_paginated,
                 )
+            _record_semantic_timing(timing_breakdown, "inventory", stage_started)
 
-            if _is_pre_paginated(opf_path):
+            if pre_paginated:
                 if return_report:
                     if rich_report_enabled and phase_report is not None:
                         phase_report["status"] = "skipped"
@@ -1346,7 +1367,11 @@ def finalize_epub_for_kindle(
                             "skipped",
                             warnings=["EPUB is pre-paginated; semantic finisher skipped."],
                         )
-                        return epub_bytes, phase_report
+                        return epub_bytes, _attach_semantic_timing(
+                            phase_report,
+                            timing_breakdown,
+                            overall_started,
+                        )
                     return epub_bytes, _finalize_reference_report(_empty_reference_report())
                 return epub_bytes
 
@@ -1366,10 +1391,15 @@ def finalize_epub_for_kindle(
                             "fail",
                             blockers=["Package spine does not contain XHTML reading-order documents."],
                         )
-                        return epub_bytes, phase_report
+                        return epub_bytes, _attach_semantic_timing(
+                            phase_report,
+                            timing_breakdown,
+                            overall_started,
+                        )
                     return epub_bytes, _finalize_reference_report(_empty_reference_report())
                 return epub_bytes
 
+            stage_started = time.perf_counter()
             repeated_counts = _collect_repeated_short_texts(chapter_paths)
             keep_first_seen: set[str] = set()
             processed: dict[Path, ProcessedChapter] = {}
@@ -1432,7 +1462,9 @@ def finalize_epub_for_kindle(
                 _merge_reference_report(reference_report, chapter_result.reference_report)
                 for ref in chapter_result.problem_refs:
                     problem_refs_by_chapter.setdefault(ref["problem_file"], []).append(ref)
+            _record_semantic_timing(timing_breakdown, "chapter_processing", stage_started)
 
+            stage_started = time.perf_counter()
             exercise_problem_targets: dict[str, str] = {}
             for problem_file, refs in problem_refs_by_chapter.items():
                 for ref in refs:
@@ -1452,7 +1484,9 @@ def finalize_epub_for_kindle(
                     exercise_problem_targets=exercise_problem_targets,
                 )
                 chapter_path.write_text(updated_xhtml, encoding="utf-8")
+            _record_semantic_timing(timing_breakdown, "cross_links", stage_started)
 
+            stage_started = time.perf_counter()
             chapter_list = list(processed.keys())
             cleanup_scope = _detect_cleanup_scope(
                 chapter_list,
@@ -1464,6 +1498,9 @@ def finalize_epub_for_kindle(
                 language=language,
                 publication_profile=publication_profile,
             )
+            _record_semantic_timing(timing_breakdown, "reading_flow", stage_started)
+
+            stage_started = time.perf_counter()
             if cleanup_scope == "training-book":
                 package_overrides = _repair_training_book_package(
                     chapter_list,
@@ -1511,7 +1548,9 @@ def finalize_epub_for_kindle(
                 for item in content_cleanup_phase.get("removed", [])
                 if str(item.get("file", ""))
             }
+            _record_semantic_timing(timing_breakdown, "package_repair", stage_started)
 
+            stage_started = time.perf_counter()
             for chapter_path in chapter_list:
                 if chapter_path.name == "cover.xhtml":
                     continue
@@ -1539,6 +1578,9 @@ def finalize_epub_for_kindle(
                         parent_file=spine_order[0] if spine_order else "",
                     )
                 )
+            _record_semantic_timing(timing_breakdown, "final_dom_passes", stage_started)
+
+            stage_started = time.perf_counter()
             metadata_before_update = _snapshot_package_metadata(opf_path) if rich_report_enabled else {}
             _update_opf_metadata(
                 opf_path,
@@ -1574,9 +1616,14 @@ def finalize_epub_for_kindle(
                 if rich_report_enabled
                 else {}
             )
+            _record_semantic_timing(timing_breakdown, "metadata_navigation_spine", stage_started)
+
+            stage_started = time.perf_counter()
             packed_epub = _pack_epub(root_dir)
+            _record_semantic_timing(timing_breakdown, "pack_epub", stage_started)
             if return_report:
                 if rich_report_enabled and phase_report is not None:
+                    stage_started = time.perf_counter()
                     metadata_phase = _build_metadata_phase_report(
                         before=metadata_before_update or metadata_before,
                         after=metadata_after,
@@ -1632,7 +1679,12 @@ def finalize_epub_for_kindle(
                         "content_cleanup": content_cleanup_phase.get("summary", {}),
                     }
                     phase_report["status"] = phase_report["gates"]["F"]["status"]
-                    return packed_epub, phase_report
+                    _record_semantic_timing(timing_breakdown, "rich_report_build", stage_started)
+                    return packed_epub, _attach_semantic_timing(
+                        phase_report,
+                        timing_breakdown,
+                        overall_started,
+                    )
                 return packed_epub, _finalize_reference_report(reference_report)
             return packed_epub
     except Exception as exc:
@@ -1658,7 +1710,11 @@ def finalize_epub_for_kindle(
                     "fail",
                     blockers=[f"Finalizer raised an exception: {exc}"],
                 )
-                return epub_bytes, failure_report
+                return epub_bytes, _attach_semantic_timing(
+                    failure_report,
+                    timing_breakdown,
+                    overall_started,
+                )
             return epub_bytes, _finalize_reference_report(_empty_reference_report())
         return epub_bytes
 
@@ -1713,6 +1769,24 @@ def _finalize_reference_report(report: dict[str, int] | None) -> dict[str, int]:
 
 def _wants_rich_finalize_report(report_mode: str | None) -> bool:
     return _normalize_key(report_mode or "") in {"rich", "phase", "phases", "full", "detailed"}
+
+
+def _new_semantic_timing_breakdown() -> dict[str, float]:
+    return {stage: 0.0 for stage in SEMANTIC_TIMING_STAGES}
+
+
+def _record_semantic_timing(timing_breakdown: dict[str, float], stage: str, started: float) -> None:
+    timing_breakdown[stage] = round(time.perf_counter() - started, 4)
+
+
+def _attach_semantic_timing(
+    report: dict[str, object],
+    timing_breakdown: dict[str, float],
+    overall_started: float,
+) -> dict[str, object]:
+    timing_breakdown["total"] = round(time.perf_counter() - overall_started, 4)
+    report["timing_breakdown"] = dict(timing_breakdown)
+    return report
 
 
 def _initialize_finalize_phase_report(
@@ -7817,6 +7891,7 @@ def _repair_magazine_package(
         contents_file=issue_outline["file_name"],
     )
     extras.update(_detect_generic_page_fragment_files(chapter_paths))
+    _repair_safe_magazine_primary_headings(chapter_infos, excluded_files=extras)
     toc_entries = _build_magazine_toc_entries(
         issue_outline=issue_outline,
         ordered_issue_entries=ordered_issue_entries,
@@ -7865,19 +7940,41 @@ def _build_non_linear_reachability_toc_entries(
     ordered_paths = [path for path in chapter_paths if path.name in non_linear_names]
     if not ordered_paths:
         return []
+    supplemental_parent_keys = {"table of contents", "contents", "spis tresci", "spis treĹ›ci"}
+    supplemental_parent_paths = [
+        path
+        for path in ordered_paths
+        if _normalize_key(_resolve_heading_target(path)[0]) in supplemental_parent_keys
+    ]
+    visible_paths = [
+        path
+        for path in ordered_paths
+        if _normalize_key(_resolve_heading_target(path)[0]) not in {"cover", "table of contents", "contents", "spis tresci", "spis treĹ›ci"}
+    ]
+    if not visible_paths and not supplemental_parent_paths:
+        return []
     parent_label = "Materiały dodatkowe" if _canonicalize_language(language) == "pl" else "Additional Materials"
+    child_label_prefix = "Material dodatkowy" if _canonicalize_language(language) == "pl" else "Additional Material"
     entries: list[dict] = []
-    parent_target = parent_file if parent_file in non_linear_names else ordered_paths[0].name
-    if parent_file:
+    visible_names = {path.name for path in visible_paths}
+    if parent_file in visible_names:
+        parent_target = parent_file
+    elif supplemental_parent_paths:
+        parent_target = supplemental_parent_paths[0].name
+    else:
+        parent_target = visible_paths[0].name
+    if parent_file or supplemental_parent_paths:
         entries.append({"file_name": parent_target, "id": "", "text": parent_label, "level": 1})
         child_level = 2
     else:
         child_level = 1
-    for chapter_path in ordered_paths:
+    for position, chapter_path in enumerate(visible_paths, start=1):
         label, anchor_id = _resolve_heading_target(chapter_path)
         label = _normalize_text(label) or chapter_path.stem.replace("_", " ").title()
         if _normalize_key(label) in {"cover", "table of contents", "contents", "spis tresci", "spis treści"}:
             label = chapter_path.stem.replace("_", " ").title()
+        if _is_magazine_toc_noise_label(label):
+            label = f"{child_label_prefix} {position}"
         entries.append(
             {
                 "file_name": chapter_path.name,
@@ -7887,6 +7984,90 @@ def _build_non_linear_reachability_toc_entries(
             }
         )
     return entries
+
+
+def _repair_safe_magazine_primary_headings(chapter_infos: list[dict[str, object]], *, excluded_files: set[str]) -> None:
+    for info in chapter_infos:
+        file_name = str(info.get("file_name") or "")
+        if not file_name or file_name in excluded_files or file_name == "cover.xhtml":
+            continue
+        try:
+            text_chars = int(info.get("text_chars") or 0)
+        except (TypeError, ValueError):
+            text_chars = 0
+        if text_chars < 900:
+            continue
+        title = _normalize_text(str(info.get("title") or info.get("start_text") or ""))
+        if not _looks_like_safe_magazine_primary_heading(title):
+            continue
+        _promote_matching_first_block_to_h1(Path(info["path"]), title)
+
+
+def _looks_like_safe_magazine_primary_heading(title: str) -> bool:
+    normalized = _normalize_text(title)
+    if not normalized or _is_magazine_toc_noise_label(normalized):
+        return False
+    if _looks_technical_title(normalized):
+        return False
+    words = normalized.split()
+    if not 2 <= len(words) <= 14:
+        return False
+    if len(normalized) > 100:
+        return False
+    return any(character.isalpha() for character in normalized)
+
+
+def _promote_matching_first_block_to_h1(chapter_path: Path, title: str) -> None:
+    try:
+        soup = BeautifulSoup(chapter_path.read_text(encoding="utf-8"), "xml")
+    except Exception:
+        return
+    section = soup.find("section") or soup.find("body")
+    if section is None or section.find("h1"):
+        return
+
+    existing_heading = section.find(["h2", "h3"])
+    if existing_heading is not None:
+        heading_text = _normalize_text(existing_heading.get_text(" ", strip=True))
+        if _title_fragments_match(heading_text, title) or _magazine_match_score(heading_text, title) >= 94:
+            existing_heading.name = "h1"
+            used_ids = _collect_used_dom_ids(soup, skip_node=existing_heading)
+            desired_id = existing_heading.get("id", "") or _slugify(title)
+            existing_heading["id"] = _unique_dom_id(desired_id, used_ids, fallback="section")
+            title_node = soup.find("title")
+            if title_node is not None:
+                title_node.string = title
+            chapter_path.write_text(_serialize_soup_document(soup), encoding="utf-8")
+        return
+
+    first_text_block = None
+    for node in section.children:
+        if not isinstance(node, Tag):
+            continue
+        text = _normalize_text(node.get_text(" ", strip=True))
+        if not text:
+            continue
+        first_text_block = node
+        break
+    if first_text_block is None:
+        return
+
+    first_text = _normalize_text(first_text_block.get_text(" ", strip=True))
+    if not (
+        _title_fragments_match(first_text, title)
+        or _title_fragments_match(title, first_text)
+        or _magazine_match_score(first_text, title) >= 94
+    ):
+        return
+
+    first_text_block.name = "h1"
+    used_ids = _collect_used_dom_ids(soup, skip_node=first_text_block)
+    desired_id = first_text_block.get("id", "") or _slugify(title)
+    first_text_block["id"] = _unique_dom_id(desired_id, used_ids, fallback="section")
+    title_node = soup.find("title")
+    if title_node is not None:
+        title_node.string = title
+    chapter_path.write_text(_serialize_soup_document(soup), encoding="utf-8")
 
 
 def _extract_magazine_issue_outline(chapter_paths) -> dict[str, object]:
@@ -8309,6 +8490,7 @@ def _fallback_magazine_non_linear_files(chapter_infos: list[dict[str, object]], 
     for info in chapter_infos:
         file_name = str(info["file_name"])
         if file_name == contents_file:
+            extras.add(file_name)
             continue
         title_key = _magazine_key(str(info.get("title") or info.get("start_text") or ""))
         if (
@@ -8397,6 +8579,7 @@ def _classify_magazine_feature_buckets(
     for info in chapter_infos:
         file_name = str(info["file_name"])
         if file_name == contents_file:
+            extras.add(file_name)
             continue
         title = _normalize_text(str(info["title"]))
         title_key = _magazine_key(title)
@@ -8446,15 +8629,6 @@ def _build_magazine_toc_entries(
     toc_entries = [
         {"file_name": "cover.xhtml", "id": "", "text": "Cover", "level": 1},
     ]
-    if issue_outline["file_name"]:
-        toc_entries.append(
-            {
-                "file_name": str(issue_outline["file_name"]),
-                "id": "",
-                "text": "Table of Contents",
-                "level": 1,
-            }
-        )
 
     if front_features:
         front_features = sorted(
@@ -8471,6 +8645,8 @@ def _build_magazine_toc_entries(
             }
         )
         for item in front_features:
+            if _is_magazine_toc_noise_label(str(item.get("text") or "")):
+                continue
             toc_entries.append(
                 {
                     "file_name": item["file_name"],
@@ -8483,6 +8659,8 @@ def _build_magazine_toc_entries(
     article_entries = []
     for entry, assignment in zip(ordered_issue_entries, assignments):
         if assignment is None or not assignment.get("id"):
+            continue
+        if _is_magazine_toc_noise_label(str(assignment.get("label") or "")):
             continue
         article_entries.append(
             {
@@ -8497,6 +8675,8 @@ def _build_magazine_toc_entries(
     combined_articles: list[dict[str, object]] = []
     seen_targets: set[tuple[str, str]] = set()
     for item in article_entries + list(additional_features):
+        if _is_magazine_toc_noise_label(str(item.get("text") or "")):
+            continue
         target = (str(item["file_name"]), str(item["id"]))
         if target in seen_targets:
             continue
@@ -8527,6 +8707,18 @@ def _build_magazine_toc_entries(
             )
 
     return toc_entries
+
+
+def _is_magazine_toc_noise_label(label: str) -> bool:
+    normalized = _normalize_text(label)
+    if not normalized:
+        return True
+    key = _magazine_key(normalized)
+    if key in MAGAZINE_FEATURE_SKIP_KEYS:
+        return True
+    if _looks_like_page_fragment_label(normalized):
+        return True
+    return False
 
 
 def _sort_magazine_issue_entries(entries: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -8917,6 +9109,10 @@ def _is_placeholder_author(value: str | None) -> bool:
     if normalized in PLACEHOLDER_AUTHOR_KEYS:
         return True
     if any(token in normalized for token in TECHNICAL_AUTHOR_MARKERS):
+        return True
+    letters = [character for character in normalized if character.isalpha()]
+    digits = [character for character in normalized if character.isdigit()]
+    if digits and len(letters) <= 3 and len(normalized.split()) <= 4:
         return True
     return bool(re.search(r"(?i)\b(?:technical|generated|converter|conversion|autogenerated|codex|openai|chatgpt|ai)\b", normalized))
 

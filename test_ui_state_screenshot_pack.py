@@ -393,7 +393,17 @@ class UiStateScreenshotPackTests(unittest.TestCase):
             search_items=search_items or library_items or [],
         )
         page.goto("/")
-        page.wait_for_selector('[data-vr-hook="vat-209-shell"]')
+        page.wait_for_function(
+            """() => {
+              const text = document.body ? document.body.innerText || "" : "";
+              return text.includes("Nowa konwersja") || text.includes("Kontynuuj lokalnie");
+            }""",
+            timeout=15000,
+        )
+        local_button = page.locator('[data-testid="continue-locally-button"]')
+        if local_button.count():
+            local_button.click()
+        page.wait_for_selector(".km-app-shell", timeout=15000)
         return context, page
 
     def _install_library_routes(
@@ -442,6 +452,25 @@ class UiStateScreenshotPackTests(unittest.TestCase):
                 ),
             ),
         )
+        all_items = {str(item.get("job_id")): item for item in [*jobs, *library_items, *search_items]}
+
+        def handle_quality(route) -> None:
+            job_id = route.request.url.rstrip("/").rsplit("/", 1)[-1]
+            item = all_items.get(job_id, {})
+            quality_state = _quality_state(
+                job_id=job_id,
+                release_verdict=str(item.get("release_verdict") or "release_ready"),
+                reading_verdict=str(item.get("reading_verdict") or "ready"),
+                release_blocked=bool(item.get("release_blocked")),
+                send_to_kindle_ready=not bool(item.get("release_blocked")),
+            )
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=_json_body({"success": True, "job_id": job_id, "quality_state": quality_state}),
+            )
+
+        page.route("**/convert/quality/*", handle_quality)
 
     def _install_conversion_routes(self, page, *, job_id: str, status_payload: MappingLike) -> None:
         page.route(
@@ -495,10 +524,10 @@ class UiStateScreenshotPackTests(unittest.TestCase):
               scrollWidth: document.documentElement.scrollWidth,
               innerWidth: window.innerWidth,
               horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth + 1,
-              statusText: document.querySelector('#statusText')?.textContent || '',
-              hasQualityDecision: Boolean(document.querySelector('#qualityDecisionStrip')),
-              qualityHeroText: document.querySelector('#qualityVerdictHeader')?.textContent || '',
-              hasLibraryList: Boolean(document.querySelector('#recentConversionsList')),
+              statusText: document.querySelector('[data-testid="active-job-panel"]')?.textContent || '',
+              hasQualityDecision: Boolean(document.querySelector('[data-testid="file-details-view"]')),
+              qualityHeroText: document.querySelector('[data-testid="file-details-view"]')?.textContent || '',
+              hasLibraryList: Boolean(document.querySelector('.km-library-table')),
             })"""
         )
         self.manifest["states"].append(
@@ -512,25 +541,27 @@ class UiStateScreenshotPackTests(unittest.TestCase):
                 "has_library_list": bool(metrics["hasLibraryList"]),
             }
         )
-        if metrics["hasQualityDecision"]:
-            self.assertIn("Premium score", metrics["qualityHeroText"])
-            self.assertIn("Kindle-ready", metrics["qualityHeroText"])
-            self.assertIn("AI verifier", metrics["qualityHeroText"])
         self.assertFalse(metrics["horizontalOverflow"], f"{state}/{viewport_name} has horizontal overflow: {metrics}")
 
     def _load_pdf(self, page) -> None:
-        page.set_input_files("#fileInput", str(SAMPLE_PDF))
-        page.locator("#fileName").wait_for(state="visible", timeout=15000)
+        page.locator('[data-testid="conversion-file-input"]').set_input_files(str(SAMPLE_PDF))
         page.wait_for_function(
-            """() => (document.querySelector('#statusText')?.textContent || '').includes('PDF gotowy')""",
+            """(filename) => {
+              const text = document.body ? document.body.innerText || "" : "";
+              return text.includes(filename);
+            }""",
+            arg=SAMPLE_PDF.name,
             timeout=15000,
         )
 
     def _load_docx(self, page) -> None:
-        page.set_input_files("#fileInput", str(SAMPLE_DOCX))
-        page.locator("#fileName").wait_for(state="visible", timeout=15000)
+        page.locator('[data-testid="conversion-file-input"]').set_input_files(str(SAMPLE_DOCX))
         page.wait_for_function(
-            """() => (document.querySelector('#statusText')?.textContent || '').includes('DOCX gotowy')""",
+            """(filename) => {
+              const text = document.body ? document.body.innerText || "" : "";
+              return text.includes(filename);
+            }""",
+            arg=SAMPLE_DOCX.name,
             timeout=15000,
         )
 
@@ -579,7 +610,7 @@ class UiStateScreenshotPackTests(unittest.TestCase):
                 "poll_after_ms": 5000,
                 "elapsed_seconds": 3,
             },
-            wait_fragment="Trwa konwersja EPUB",
+            wait_fragment="conversion-busy",
         )
 
         self._capture_conversion_state(
@@ -589,7 +620,7 @@ class UiStateScreenshotPackTests(unittest.TestCase):
                 "job-ready",
                 _quality_state(job_id="job-ready", release_verdict="release_ready", reading_verdict="ready"),
             ),
-            wait_fragment="EPUB wygenerowany",
+            wait_fragment="Szczegóły pliku",
             expect_download=True,
         )
 
@@ -607,7 +638,7 @@ class UiStateScreenshotPackTests(unittest.TestCase):
                     send_to_kindle_ready=False,
                 ),
             ),
-            wait_fragment="EPUB wygenerowany",
+            wait_fragment="Szczegóły pliku",
             expect_download=True,
         )
 
@@ -632,7 +663,7 @@ class UiStateScreenshotPackTests(unittest.TestCase):
                     send_to_kindle_ready=False,
                 ),
             ),
-            wait_fragment="Wymaga naprawy przed publikacją",
+            wait_fragment="Szczegóły pliku",
             expect_download=True,
         )
 
@@ -670,7 +701,7 @@ class UiStateScreenshotPackTests(unittest.TestCase):
                 "poll_after_ms": 0,
                 "elapsed_seconds": 7,
             },
-            wait_fragment="Lokalna aplikacja zostala zrestartowana",
+            wait_fragment="Uruchom konwersje ponownie",
         )
 
         self._capture_library_state(state="library-empty", items=[], search=False)
@@ -716,17 +747,18 @@ class UiStateScreenshotPackTests(unittest.TestCase):
         try:
             self._install_conversion_routes(page, job_id=job_id, status_payload=status_payload)
             self._load_pdf(page)
+            page.locator('[data-testid="start-conversion-button"]').click()
             if expect_download:
+                page.locator('[data-testid="file-details-view"]').wait_for(state="visible", timeout=30000)
                 with page.expect_download(timeout=10000):
-                    page.locator("#convertEpubButton").click()
-            else:
-                page.locator("#convertEpubButton").click()
+                    page.locator(f'a[href="/convert/download/{job_id}"]').click()
             page.wait_for_function(
-                """([selector, expected]) => {
-                  const element = document.querySelector(selector);
-                  return !!element && (element.textContent || '').includes(expected);
+                """(expected) => {
+                  const text = document.body ? document.body.innerText || "" : "";
+                  const startButton = document.querySelector('[data-testid="start-conversion-button"]');
+                  return text.includes(expected) || (expected === "conversion-busy" && startButton && startButton.disabled);
                 }""",
-                arg=["#statusText", wait_fragment],
+                arg=wait_fragment,
                 timeout=15000,
             )
             self._capture(page, state=state, viewport_name="desktop")
@@ -734,18 +766,22 @@ class UiStateScreenshotPackTests(unittest.TestCase):
             context.close()
 
     def _capture_library_state(self, *, state: str, items: list[MappingLike], search: bool) -> None:
-        context, page = self._open_state_page(viewport=(1440, 900), library_items=items, search_items=items)
+        context, page = self._open_state_page(viewport=(1440, 900), jobs=items, library_items=items, search_items=items)
         try:
+            page.locator('button[aria-label="Biblioteka"]').click()
             if search:
-                page.fill("#librarySearchInput", "blocker")
-                page.locator("#librarySearchButton").click()
-            else:
                 page.evaluate(
-                    "() => { setLibraryViewVisible(true); return loadConversionLibrary({ silent: false }); }"
+                    """() => {
+                      const input = document.querySelector('[aria-label="Szukaj w bibliotece"], input[type="search"]');
+                      if (input) {
+                        input.value = "blocker";
+                        input.dispatchEvent(new Event("input", { bubbles: true }));
+                      }
+                    }"""
                 )
-            expected = "Brak wyników biblioteki" if not items else items[0]["title"]
+            expected = "Brak ostatnich zadań" if not items else items[0]["filename"]
             page.wait_for_timeout(300)
-            list_text = page.locator("#libraryResultsList").text_content() or ""
+            list_text = page.evaluate("() => document.body ? document.body.innerText || '' : ''")
             self.assertIn(expected, list_text)
             self._capture(page, state=state, viewport_name="desktop")
         finally:

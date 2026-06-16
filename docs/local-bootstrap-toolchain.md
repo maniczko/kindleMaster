@@ -77,8 +77,11 @@ Use the output to classify failures:
 | `verification_surfaces.corpus` | unsupported | core environment failure |
 | `verification_surfaces.browser` | unavailable | optional browser-tooling gap |
 | `verification_surfaces.runtime` | unavailable | optional runtime-tooling gap |
-| `conversion_capabilities.epubcheck` | missing | validation degraded, not automatic EPUB failure |
+| `conversion_capabilities.epubcheck_validation` | missing | validation degraded, not automatic EPUB failure; follow its `manual_steps` for Java and `EPUBCHECK_JAR` setup |
 | `conversion_capabilities.ocr_pipeline` | degraded | OCR capability degraded, not automatic EPUB failure |
+| `conversion_capabilities.pdfbox_extraction` | missing | optional diagnostics degraded; follow its `manual_steps` for Java and `PDFBOX_JAR` setup |
+| `conversion_capabilities.email_delivery` | unavailable/degraded | optional Send-to-Kindle SMTP handoff is unavailable; follow its `manual_steps` for env-var setup |
+| `conversion_capabilities.cloud_account_library` | unavailable/degraded | optional Supabase login and durable account library are unavailable; local guest fallback still works |
 
 ## Browser and Runtime Follow-Ups
 

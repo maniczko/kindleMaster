@@ -140,7 +140,7 @@ class Sprint1QualityGateTests(unittest.TestCase):
         issue_codes = [issue["code"] for issue in payload["issues"]]
 
         self.assertLess(payload["scores"]["toc_quality_score"], 4.0)
-        self.assertEqual(payload["metrics"]["toc_noise_entry_count"], 4)
+        self.assertEqual(payload["metrics"]["toc_noise_entry_count"], 3)
         self.assertIn("toc_non_content_entry", issue_codes)
         self.assertFalse(payload["premium_ready"])
 

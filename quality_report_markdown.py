@@ -89,6 +89,19 @@ def build_recovery_release_report_markdown(
                 f"- Release verdict: {premium_scoring.get('release_verdict', 'unknown')}",
             ]
         )
+    quality_selection = release_summary.get("quality_selection") or {}
+    if quality_selection:
+        lines.extend(
+            [
+                "",
+                "## Quality Selection",
+                f"- Status: {quality_selection.get('status', 'unknown')}",
+                f"- Selected candidate: {quality_selection.get('selected_candidate', '')}",
+                f"- Rejected candidate: {quality_selection.get('rejected_candidate', '')}",
+                f"- Selected score: {quality_selection.get('selected_score', quality_selection.get('baseline_score', 'n/a'))}",
+                f"- Rejected score: {quality_selection.get('rejected_score', quality_selection.get('candidate_score', 'n/a'))}",
+            ]
+        )
     lines.extend(
         [
             "",

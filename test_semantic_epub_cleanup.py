@@ -42,7 +42,30 @@ from kindle_semantic_cleanup import (
 )
 
 
+SEMANTIC_TIMING_KEYS = {
+    "extract_package",
+    "inventory",
+    "chapter_processing",
+    "cross_links",
+    "reading_flow",
+    "package_repair",
+    "final_dom_passes",
+    "metadata_navigation_spine",
+    "rich_report_build",
+    "pack_epub",
+    "total",
+}
+
+
 class SemanticEpubCleanupTests(unittest.TestCase):
+    def assert_semantic_timing_breakdown(self, report: dict) -> None:
+        timing = report.get("timing_breakdown")
+        self.assertIsInstance(timing, dict)
+        self.assertEqual(set(timing), SEMANTIC_TIMING_KEYS)
+        for value in timing.values():
+            self.assertIsInstance(value, float)
+            self.assertGreaterEqual(value, 0.0)
+
     def _build_epub_bytes(self, files: dict[str, bytes | str]) -> bytes:
         output = io.BytesIO()
         with zipfile.ZipFile(output, "w") as archive:
@@ -108,6 +131,54 @@ class SemanticEpubCleanupTests(unittest.TestCase):
         with zipfile.ZipFile(io.BytesIO(repacked), "r") as archive:
             self.assertEqual(archive.read("mimetype"), b"application/epub+zip")
             self.assertIn("EPUB/content.opf", archive.namelist())
+
+    def test_finalize_epub_rich_report_includes_timing_for_pre_paginated_skip(self):
+        epub_bytes = self._build_epub_bytes(
+            {
+                "mimetype": "application/epub+zip",
+                "META-INF/container.xml": """<?xml version="1.0"?>
+<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
+  <rootfiles>
+    <rootfile full-path="EPUB/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>""",
+                "EPUB/content.opf": """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Fixed Probe</dc:title>
+    <dc:creator>KindleMaster QA</dc:creator>
+    <dc:language>en</dc:language>
+    <dc:identifier id="bookid">fixed-probe</dc:identifier>
+    <meta property="rendition:layout">pre-paginated</meta>
+  </metadata>
+  <manifest>
+    <item id="chapter-1" href="chapter_001.xhtml" media-type="application/xhtml+xml"/>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+  </manifest>
+  <spine>
+    <itemref idref="chapter-1"/>
+  </spine>
+</package>""",
+                "EPUB/chapter_001.xhtml": """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Fixed</title></head><body><h1>Fixed</h1></body></html>""",
+                "EPUB/nav.xhtml": """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body><nav epub:type="toc"><ol><li><a href="chapter_001.xhtml">Fixed</a></li></ol></nav></body></html>""",
+            }
+        )
+
+        cleaned_epub, report = finalize_epub_for_kindle(
+            epub_bytes,
+            title="Fixed Probe",
+            author="KindleMaster QA",
+            language="en",
+            return_report=True,
+            report_mode="rich",
+        )
+
+        self.assertEqual(cleaned_epub, epub_bytes)
+        self.assertEqual(report["status"], "skipped")
+        self.assertEqual(report["summary"]["cleanup_scope"], "pre-paginated")
+        self.assert_semantic_timing_breakdown(report)
 
     def test_finalize_epub_demotes_numeric_image_page_fragment_from_spine_and_toc(self):
         epub_bytes = self._build_epub_bytes(
@@ -1331,6 +1402,7 @@ class SemanticEpubCleanupTests(unittest.TestCase):
         self.assertGreaterEqual(content_cleanup["summary"]["inline_ai_note_block_count"], 1)
         self.assertEqual(content_cleanup["summary"]["removed_count"], 4)
         self.assertTrue({"gallery", "advertisement", "ai_note", "sponsor"}.issubset(removed_kinds))
+        self.assert_semantic_timing_breakdown(report)
 
     def test_finalize_magazine_demotes_english_ads_and_galleries_out_of_reading_spine(self):
         opf_source = """<?xml version="1.0" encoding="utf-8"?>
@@ -1444,13 +1516,142 @@ class SemanticEpubCleanupTests(unittest.TestCase):
         self.assertEqual(spine_by_idref["gallery"].get("linear"), "no")
         self.assertEqual(spine_by_idref["advert"].get("linear"), "no")
         self.assertEqual(spine_by_idref["photo_stub"].get("linear"), "no")
+        self.assertIn(">Cover<", nav_xhtml)
         self.assertIn(">Additional Materials<", nav_xhtml)
+        self.assertIn('href="chapter_001.xhtml"', nav_xhtml)
         self.assertIn('href="chapter_003.xhtml#gallery"', nav_xhtml)
         self.assertIn('href="chapter_004.xhtml#advertisement"', nav_xhtml)
+        self.assertNotIn(">Contents<", nav_xhtml)
+        self.assertNotIn("Okładka", nav_xhtml)
 
         quality = score_epub_premium_quality(cleaned_epub, epubcheck={"status": "passed", "messages": []})
         codes = [issue["code"] for issue in quality["issues"]]
         self.assertNotIn("magazine_non_content_chapter", codes)
+        self.assertNotIn("toc_non_content_entry", codes)
+
+    def test_finalize_magazine_cleans_issue_toc_and_recovers_safe_long_heading(self):
+        long_body = " ".join(
+            [
+                "This long-form article discusses institutions, political risk, and historical analogies in a clear editorial voice."
+                for _ in range(28)
+            ]
+        )
+        opf_source = """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">magazine-premium-id</dc:identifier>
+    <dc:title>Global Weekly - May 9th-15th, 2026</dc:title>
+    <dc:language>en</dc:language>
+    <dc:creator>Editorial Team</dc:creator>
+  </metadata>
+  <manifest>
+    <item id="cover" href="cover.xhtml" media-type="application/xhtml+xml"/>
+    <item id="contents" href="chapter_001.xhtml" media-type="application/xhtml+xml"/>
+    <item id="article" href="chapter_002.xhtml" media-type="application/xhtml+xml"/>
+    <item id="long_article" href="chapter_003.xhtml" media-type="application/xhtml+xml"/>
+    <item id="page_a" href="chapter_004.xhtml" media-type="application/xhtml+xml"/>
+    <item id="page_b" href="chapter_005.xhtml" media-type="application/xhtml+xml"/>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="css" href="style/default.css" media-type="text/css"/>
+    <item id="page_img" href="images/page.jpg" media-type="image/jpeg"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="cover"/>
+    <itemref idref="contents"/>
+    <itemref idref="article"/>
+    <itemref idref="long_article"/>
+    <itemref idref="page_a"/>
+    <itemref idref="page_b"/>
+  </spine>
+</package>
+"""
+        cover = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Cover</title></head><body><section><h1>Cover</h1></section></body></html>
+"""
+        contents = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Contents</title></head>
+  <body><section><h1 id="contents">Contents</h1><p class="toc-entry">12. Market Week</p><p class="toc-entry">29. Hope that Donald Trump is not a new Caligula</p></section></body>
+</html>
+"""
+        article = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Market Week</title></head>
+  <body><section><h1 id="market-week">Market Week</h1><p>Clean market analysis text with enough editorial prose to represent a real article.</p></section></body>
+</html>
+"""
+        long_article = f"""<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>Hope that Donald Trump is not a new Caligula</title></head>
+  <body><section id="section-chapter-003"><p id="hope-that-donald-trump-is-not-a-new-caligula">Hope that Donald Trump is not a new Caligula</p><p>{long_body}</p></section></body>
+</html>
+"""
+        page_fragment = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>002</title></head><body><section><h1 id="002">002</h1><img src="images/page.jpg" alt=""/></section></body></html>
+"""
+        nav_source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+  <body><nav epub:type="toc"><ol><li><a href="cover.xhtml">Okładka</a></li><li><a href="chapter_001.xhtml">Contents</a></li><li><a href="chapter_004.xhtml">002</a></li><li><a href="chapter_005.xhtml">002</a></li></ol></nav></body>
+</html>
+"""
+        toc_source = """<?xml version="1.0" encoding="utf-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><head><meta name="dtb:uid" content="magazine-premium-id"/></head><docTitle><text>Global Weekly</text></docTitle><navMap/></ncx>
+"""
+        container_source = """<?xml version="1.0" encoding="utf-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="EPUB/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>
+"""
+        epub_bytes = self._build_epub_bytes(
+            {
+                "mimetype": "application/epub+zip",
+                "META-INF/container.xml": container_source,
+                "EPUB/content.opf": opf_source,
+                "EPUB/cover.xhtml": cover,
+                "EPUB/chapter_001.xhtml": contents,
+                "EPUB/chapter_002.xhtml": article,
+                "EPUB/chapter_003.xhtml": long_article,
+                "EPUB/chapter_004.xhtml": page_fragment,
+                "EPUB/chapter_005.xhtml": page_fragment,
+                "EPUB/nav.xhtml": nav_source,
+                "EPUB/toc.ncx": toc_source,
+                "EPUB/style/default.css": "body { font-family: serif; }",
+                "EPUB/images/page.jpg": b"fake-page-image",
+            }
+        )
+
+        cleaned_epub = finalize_epub_for_kindle(
+            epub_bytes,
+            title="Global Weekly - May 9th-15th, 2026",
+            author="Editorial Team",
+            language="en",
+            publication_profile="magazine_reflow",
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            with zipfile.ZipFile(io.BytesIO(cleaned_epub), "r") as archive:
+                archive.extractall(temp_dir)
+            nav_xhtml = (Path(temp_dir) / "EPUB" / "nav.xhtml").read_text(encoding="utf-8")
+            long_article_xhtml = (Path(temp_dir) / "EPUB" / "chapter_003.xhtml").read_text(encoding="utf-8")
+            nav_soup = BeautifulSoup(nav_xhtml, "html.parser")
+            labels = [" ".join(anchor.get_text(" ", strip=True).split()) for anchor in nav_soup.find_all("a")]
+
+        self.assertIn("Cover", labels)
+        self.assertNotIn("Okładka", nav_xhtml)
+        self.assertNotIn("Contents", labels)
+        self.assertNotIn("002", labels)
+        self.assertIn('href="chapter_001.xhtml"', nav_xhtml)
+        self.assertEqual(Counter(labels)["Additional Material 1"], 1)
+        self.assertEqual(Counter(labels)["Additional Material 2"], 1)
+        self.assertIn("<h1", long_article_xhtml)
+        self.assertIn("Hope that Donald Trump is not a new Caligula", long_article_xhtml)
+
+        quality = score_epub_premium_quality(cleaned_epub, epubcheck={"status": "passed", "messages": []})
+        codes = [issue["code"] for issue in quality["issues"]]
+        self.assertNotIn("toc_duplicate_label", codes)
+        self.assertNotIn("toc_non_content_entry", codes)
+        self.assertNotIn("long_chapter_without_heading", codes)
 
     def test_finalize_epub_for_kindle_dedupes_chapter_dom_ids(self):
         opf_source = """<?xml version="1.0" encoding="utf-8"?>
@@ -2081,6 +2282,28 @@ class SemanticEpubCleanupTests(unittest.TestCase):
         self.assertEqual(title, "Easy Exercises")
         self.assertEqual(author, "Unknown")
         self.assertEqual(language, "en")
+
+    def test_derive_package_metadata_rejects_ocr_noise_author(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            chapter_001 = root / "chapter_001.xhtml"
+            chapter_001.write_text(
+                """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body><section><h1>Operational Report</h1><p>Clean report body.</p></section></body></html>
+""",
+                encoding="utf-8",
+            )
+
+            title, author, language = _derive_package_metadata(
+                [chapter_001],
+                title="Operational Report",
+                author="\u017911 \u017912",
+                language="pl",
+            )
+
+        self.assertEqual(title, "Operational Report")
+        self.assertEqual(author, "Unknown")
+        self.assertEqual(language, "pl")
 
     def test_looks_like_training_book_requires_structure_not_specific_title(self):
         with TemporaryDirectory() as temp_dir:

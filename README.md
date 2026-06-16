@@ -7,6 +7,7 @@ KindleMaster is a local-first PDF-to-EPUB and DOCX-to-EPUB conversion toolkit fo
 ```powershell
 python kindlemaster.py bootstrap
 python kindlemaster.py test --suite quick
+python kindlemaster.py test --suite quality-critical
 python kindlemaster.py test --suite corpus
 python kindlemaster.py status
 python kindlemaster.py test --suite browser
@@ -29,19 +30,29 @@ The supported toolchain matrix lives in [docs/toolchain-matrix.md](docs/toolchai
 - `docs/conversion-pipeline.md` maps the current PDF/DOCX to EPUB pipeline, responsible modules, fallback reporting, and stage-level tests.
 - `docs/conversion-profiles.md` explains the UI conversion profiles and when to use each route.
 - `docs/send-to-kindle-handoff.md` explains the manual post-conversion handoff and when an EPUB is safe to send.
+- `docs/github-autopilot-orchestration.md` defines GitHub Issues as the task truth for local Codex autopilot, including labels, issue contract, and `orchestrate` commands.
 - `docs/kindle-previewer-validation.md` defines the manual Kindle Previewer and Send to Kindle evidence checklist.
 - `docs/text-artifact-rate.md` documents reader-facing text artifact rate thresholds used by quality reports.
 - `docs/sprint3-ai-quality-intelligence.md` documents the AI OCR cleanup and AI TOC detection contract, including fallback, confidence, and cost reporting.
 - `docs/sprint4-ui-modernization.md` documents the React/Vite UI shell, `/app` route, shadcn-style primitives, and migration rule.
 - `reference_inputs/golden_epub_expectations.json` defines golden EPUB feature expectations for representative conversion classes.
-- `docs/source-of-truth-matrix.md` mirrors the control-plane authority model for status, Linear, reports, and release truth.
+- `docs/source-of-truth-matrix.md` mirrors the control-plane authority model for status, GitHub Issues, reports, and release truth.
 - `docs/independent-audit-mode.md` explains standalone EPUB artifact audit versus full project status.
 - `docs/premium-epub-release-checklist.md` is the agent-facing release-readiness checklist for premium EPUB output.
-- `docs/linear-issue-template.md` is the reusable Linear template for future conversion-quality tasks.
+- `.github/ISSUE_TEMPLATE/kindlemaster_task.yml` is the reusable GitHub Issue form for agent-executable KindleMaster tasks.
+- `docs/linear-issue-template.md` is retained for historical VAT/Linear migration only.
 - `.codex/config.toml` is authoritative only for active repo-local Codex settings; its comments are convenience mirrors, not an independent policy source.
+- `AGENTS.md` Section 34A defines the Codex plugin auto-routing policy for Browser, GitHub, Linear, OpenAI Developers, and Build Web Apps.
+- `AGENTS.md` Section 34B plus the `prompt-engineer` skill define prompt auto-normalization: complex prompts are reviewed, rewritten into the standard execution brief, and then executed.
 - Generated files under `reports/` and `output/` are derived artifacts, not governance authority.
 
-Repo-local Codex defaults are `gpt-5.5` with `xhigh` reasoning, `on-request` approvals, multi-agent support, GitHub/Linear/Build Web Apps/Browser Use plugins, and pinned Playwright MCP for browser verification.
+Repo-local Codex defaults are `gpt-5.5` with `xhigh` reasoning, `on-request` approvals, multi-agent support, GitHub/Linear-as-mirror/Build Web Apps/Browser Use/OpenAI Developers plugins, and pinned Playwright MCP for browser verification.
+
+Plugin routing summary: use Browser for local UI/runtime verification, GitHub for branches, PRs, CI, and issue-backed autopilot work, Linear only when explicitly requested as a mirror, OpenAI Developers only for OpenAI API or `ai_quality` work, and Build Web Apps for frontend/UI tasks. The detailed policy lives in `AGENTS.md`.
+
+Prompt routing summary: use `prompt-engineer` automatically for large, ambiguous, high-impact, or under-specified prompts. It follows `Prompt -> Review -> Rewrite -> Execute`; Polish implementation prompts are normalized around `Cel`, `Kontekst`, `Zakres`, `Kryteria akceptacji`, `Walidacja`, and `Raport końcowy` before execution. Explicit work modes are `TRYB: DEBUG`, `TRYB: IMPLEMENT`, `TRYB: REVIEW`, `TRYB: AUDIT`, `TRYB: UI POLISH`, and `TRYB: EPUB QUALITY AUDIT`.
+
+`python kindlemaster.py doctor` reports these contracts under `agent_readiness.quality_gate`, `agent_readiness.checks.agent_quality_gate`, `agent_readiness.checks.plugin_routing_policy`, `agent_readiness.checks.prompt_engineering_policy`, and `agent_readiness.checks.prompt_engineer_skill`. The collaboration quality threshold is `9.0`.
 
 Local Codex governance also includes tracked Git hooks under `.githooks/`. Developer bootstrap installs them automatically unless `CI=true`, `--runtime-only`, or `KINDLEMASTER_SKIP_GIT_HOOKS=1` is set. To check or repair manually:
 
@@ -77,11 +88,11 @@ The same image is wired through `.devcontainer/devcontainer.json`. Details live 
 
 The async HTTP flow keeps the existing `/convert/start -> /convert/status/<job_id> -> /convert/download/<job_id>` contract and now also exposes normalized quality state at `GET /convert/quality/<job_id>`. `GET /convert/status/<job_id>` includes the same payload under `quality_state` plus a `quality_state_url`.
 
-The Sprint 4 React shell is available at `http://127.0.0.1:5001/app` after `npm run build:ui`. During development, use `npm run dev:ui` and open `http://127.0.0.1:5173/`; Vite proxies the existing Flask API.
+The React shell is the default local UI at `http://127.0.0.1:5001/` and is also available at `/app` after `npm run build:ui`; the legacy control panel remains at `/legacy`. During development, use `npm run dev:ui` and open `http://127.0.0.1:5173/`; Vite proxies the existing Flask API.
 
 ## Core Commands
 
-The supported first-class command set is `bootstrap`, `doctor`, `prepare-reference-inputs`, `serve`, `convert`, `validate`, `smoke`, `corpus`, `status`, `ml`, `test`, `audit`, and `workflow`.
+The supported first-class command set is `bootstrap`, `doctor`, `prepare-reference-inputs`, `serve`, `convert`, `validate`, `smoke`, `corpus`, `status`, `ml`, `test`, `audit`, `workflow`, and `orchestrate`.
 
 ```powershell
 python kindlemaster.py doctor
@@ -94,14 +105,19 @@ python kindlemaster.py status
 python kindlemaster.py ml dataset
 python kindlemaster.py ml train
 python kindlemaster.py ml evaluate
+python kindlemaster.py test --suite quality-critical
 python kindlemaster.py test --suite corpus
 python kindlemaster.py validate path\to\file.epub
 python kindlemaster.py audit path\to\file.epub
 python kindlemaster.py workflow baseline path\to\input.pdf --change-area reference
 python kindlemaster.py workflow verify path\to\input.pdf --run-id <run_id>
+python kindlemaster.py orchestrate doctor
+python kindlemaster.py orchestrate sync --issues-json reports/github/issues.json
 ```
 
-`python kindlemaster.py test --suite full` is a diagnostic all-discovery lane. It delegates to `unittest discover -p test*.py`, so it also runs tests intentionally kept out of the explicit `quick`, `release`, `corpus`, `browser`, and `runtime` suite registry.
+`python kindlemaster.py test --suite quality-critical` is the coverage-enforced conversion lane. It protects the core conversion modules with total coverage plus per-file gates for `converter.py` and `kindle_semantic_cleanup.py`, while keeping `quick` bounded.
+
+`python kindlemaster.py test --suite full` is a diagnostic all-discovery lane. It delegates to `unittest discover -p test*.py`, so it also runs tests intentionally kept out of the explicit suites.
 
 `python kindlemaster.py test --suite release` uses the local `standard` corpus proof by default. GitHub READY sets `KINDLEMASTER_RELEASE_PROOF_PROFILE=ci` so clean runners can enforce release units and bounded corpus evidence without pretending to have the full local OCR/PDF premium toolchain.
 
@@ -109,6 +125,9 @@ Use `workflow baseline/verify` when you are fixing a real defect and need the st
 `reproduce -> isolate -> fix -> validate -> compare before/after`.
 
 Workflow artifacts are written under `reports/workflows/<run_id>/` and `output/workflows/<run_id>/`; `AGENTS.md` defines the required filenames and contract.
+
+Use `orchestrate` when a GitHub Issue should become an agent-executable contract:
+`doctor` validates the local governance files, `sync` reports ready/blocked issues, `claim` prepares a `codex/issue-...` branch, `execute` emits the local agent handoff payload, and `report` creates a PR-ready evidence summary.
 
 The corpus-wide proof lane writes derived reports under `reports/corpus/` and `output/corpus/`, including benchmark timing/class summaries for representative fixtures:
 - `reports/corpus/corpus_gate.json`
@@ -133,6 +152,7 @@ The derived project status lane reads existing evidence and writes:
 The governance evidence lanes are refreshed by:
 - `python kindlemaster.py doctor` -> `reports/governance/doctor.json`
 - `python kindlemaster.py test --suite quick` -> `reports/governance/quick.json`
+- `python kindlemaster.py test --suite quality-critical` -> `reports/governance/quality-critical.json`
 - `python kindlemaster.py test --suite release` -> `reports/governance/release.json`
 
 Use [docs/independent-audit-mode.md](docs/independent-audit-mode.md) when evaluating one EPUB artifact independently from the whole-project status surface.
@@ -140,6 +160,7 @@ Use [docs/independent-audit-mode.md](docs/independent-audit-mode.md) when evalua
 ## Troubleshooting
 
 - `quick` should remain Python-only. If it starts failing on browser dependencies, check that `kindlemaster.py` still excludes browser suites from `QUICK_TESTS`.
+- `quality-critical` should remain conversion-focused. If it slows down too much, remove unrelated tests rather than lowering coverage gates.
 - `corpus` is the standard rerunnable proof lane for the expanded fixture bank; it runs full smoke plus premium corpus reporting and writes derived status under `reports/corpus/`.
 - `full` is diagnostic all-discovery, not a bounded release gate. Prefer explicit suites for routine validation and use `full` when you need to expose hidden or discover-only test drift.
 - `status` reads existing evidence under `reports/` and generates one derived project status instead of another hand-maintained summary.

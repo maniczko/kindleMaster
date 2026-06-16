@@ -94,7 +94,7 @@ Every web/CLI conversion now runs the runtime gate on the final EPUB bytes after
 - `ai_quality_verification`: local policy/model verdict with confidence, model version, feature hash, and reason codes.
 - `quality_gate_mode`: `draft` by default.
 
-Default `draft` mode never blocks the file download, but it blocks release publication. The UI should show `Nie publikuj`, `send_to_kindle_ready=false`, and the download label `Pobierz szkic EPUB` until the operator reviews the report. Use `--quality-gate-mode off` only for diagnostic comparisons, not for release evidence.
+Default `draft` mode never blocks the file download or explicit SMTP transport, but it blocks release publication. The UI should show `Nie publikuj`, `send_to_kindle_ready=false`, and visible warnings until the operator reviews the report. Use `--quality-gate-mode off` only for diagnostic comparisons, not for release evidence.
 
 Use `docs/premium-warning-policy.md` when interpreting `passed_with_warnings`.
 That state is a bounded review state, not a premium release state, and must not set

@@ -403,20 +403,39 @@ class Sprint2PlaywrightRuntimeSmokeTests(unittest.TestCase):
         )
 
         self.page.goto(f"{self.base_url}/")
-        self.page.set_input_files("#fileInput", str(SAMPLE_PDF))
-        self.page.locator("#fileName").wait_for(state="visible")
-        evidence["upload_selected"] = self.page.locator("#fileName").text_content() == SAMPLE_PDF.name
+        self.page.wait_for_function(
+            """() => {
+              const text = document.body ? document.body.innerText || "" : "";
+              return text.includes("Nowa konwersja") || text.includes("Kontynuuj lokalnie");
+            }""",
+            timeout=15000,
+        )
+        local_button = self.page.locator('[data-testid="continue-locally-button"]')
+        if local_button.count():
+            local_button.click()
+        self.page.locator('[data-testid="conversion-file-input"]').set_input_files(str(SAMPLE_PDF))
+        self.page.wait_for_function(
+            """(filename) => {
+              const text = document.body ? document.body.innerText || "" : "";
+              return text.includes(filename);
+            }""",
+            arg=SAMPLE_PDF.name,
+            timeout=15000,
+        )
+        evidence["upload_selected"] = True
+
+        self.page.locator('[data-testid="start-conversion-button"]').click()
+        self.page.locator('[data-testid="file-details-view"]').wait_for(state="visible", timeout=30000)
 
         with self.page.expect_download() as download_info:
-            self.page.locator("#convertEpubButton").click()
+            self.page.locator(f'a[href="/convert/download/{job_id}"]').click()
         download = download_info.value
         self.assertIn("sprint2-smoke", download.suggested_filename)
 
-        self.page.locator('[data-vr-hook="vat-209-quality-report"]').wait_for(state="visible")
-        evidence["quality_rendered"] = self.page.locator("#qualityReportsActionsPanel").is_visible()
-        rendered_report = self.page.locator('[data-vr-hook="vat-209-quality-report"]').text_content() or ""
-        self.assertIn("Sprint 2 smoke audit warning.", rendered_report)
-        self.assertIn("JSON", rendered_report)
+        evidence["quality_rendered"] = self.page.locator('[data-testid="file-details-view"]').is_visible()
+        rendered_report = self.page.locator('[data-testid="file-details-view"]').text_content() or ""
+        self.assertIn("Decyzja jakości", rendered_report)
+        self.assertIn("Finalny EPUB", rendered_report)
 
         contract = classify_smoke_contract(
             status_payload=status_payload,

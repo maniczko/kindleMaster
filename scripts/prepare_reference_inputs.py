@@ -19,6 +19,10 @@ from docx.shared import Inches, Pt
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 
+REFERENCE_FIXTURE_AUTHOR = "Reference QA"
+REFERENCE_FIXTURE_MODIFIED = "2026-01-01T00:00:00Z"
+
+
 REFERENCE_CASES = [
     {
         "id": "ocr_probe_pdf",
@@ -235,7 +239,7 @@ def _generate_source_surrogate_pdf(case: dict[str, Any], target_path: Path) -> N
     document.set_metadata(
         {
             "title": title,
-            "author": "KindleMaster CI",
+            "author": REFERENCE_FIXTURE_AUTHOR,
             "subject": f"Generated fallback for {case.get('id', 'reference case')}",
             "creator": "KindleMaster prepare_reference_inputs",
             "producer": "PyMuPDF",
@@ -272,7 +276,10 @@ def _generate_source_surrogate_epub(case: dict[str, Any], target_path: Path) -> 
     language = str(case.get("language", "en") or "en")
     chapter = f"""<?xml version="1.0" encoding="utf-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml">
-  <head><title>{_xml_escape(title)}</title></head>
+  <head>
+    <title>{_xml_escape(title)}</title>
+    <link href="style/default.css" rel="stylesheet" type="text/css"/>
+  </head>
   <body>
     <h1 id="intro">{_xml_escape(title)}</h1>
     <p>{_xml_escape(_surrogate_body_text(case, index=1))}</p>
@@ -281,21 +288,26 @@ def _generate_source_surrogate_epub(case: dict[str, Any], target_path: Path) -> 
 """
     nav = """<?xml version="1.0" encoding="utf-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
-  <head><title>Navigation</title></head>
+  <head>
+    <title>Navigation</title>
+    <link href="style/default.css" rel="stylesheet" type="text/css"/>
+  </head>
   <body><nav epub:type="toc" id="toc"><ol><li><a href="chapter_001.xhtml#intro">Intro</a></li></ol></nav></body>
 </html>
 """
     opf = f"""<?xml version="1.0" encoding="utf-8"?>
-<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book-id">
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book-id" prefix="dcterms: http://purl.org/dc/terms/">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:identifier id="book-id">kindlemaster-generated-{_slug(str(case.get('id', 'fixture')))}</dc:identifier>
     <dc:title>{_xml_escape(title)}</dc:title>
-    <dc:creator>KindleMaster CI</dc:creator>
+    <dc:creator>{_xml_escape(REFERENCE_FIXTURE_AUTHOR)}</dc:creator>
     <dc:language>{_xml_escape(language)}</dc:language>
+    <meta property="dcterms:modified">{REFERENCE_FIXTURE_MODIFIED}</meta>
   </metadata>
   <manifest>
     <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
     <item id="chapter-001" href="chapter_001.xhtml" media-type="application/xhtml+xml"/>
+    <item id="default-css" href="style/default.css" media-type="text/css"/>
   </manifest>
   <spine>
     <itemref idref="chapter-001"/>
@@ -318,6 +330,7 @@ def _generate_source_surrogate_epub(case: dict[str, Any], target_path: Path) -> 
         archive.writestr("EPUB/content.opf", opf)
         archive.writestr("EPUB/nav.xhtml", nav)
         archive.writestr("EPUB/chapter_001.xhtml", chapter)
+        archive.writestr("EPUB/style/default.css", "body { font-family: serif; line-height: 1.5; }\n")
 
 
 def _case_title(case: dict[str, Any]) -> str:
@@ -441,7 +454,7 @@ def _build_ocr_stress_scan_pdf(target_path: Path) -> None:
         document.set_metadata(
             {
                 "title": "OCR stress scan",
-                "author": "KindleMaster QA",
+                "author": REFERENCE_FIXTURE_AUTHOR,
                 "subject": "Deterministic OCR-stressed scanned PDF fixture",
                 "keywords": "KindleMaster,OCR,scan",
                 "creator": "KindleMaster prepare_reference_inputs",
@@ -475,7 +488,7 @@ def _build_mixed_scan_text_pdf(target_path: Path) -> None:
         document.set_metadata(
             {
                 "title": "Mixed scan text benchmark",
-                "author": "KindleMaster QA",
+                "author": REFERENCE_FIXTURE_AUTHOR,
                 "subject": "Hybrid OCR benchmark fixture",
                 "keywords": "KindleMaster,OCR,scan,hybrid",
                 "creator": "KindleMaster prepare_reference_inputs",
@@ -601,7 +614,7 @@ def _draw_pdf_footer(page, page_number: int, total_pages: int) -> None:
 def _build_simple_report_docx() -> Document:
     document = Document()
     document.core_properties.title = "Raport operacyjny"
-    document.core_properties.author = "KindleMaster QA"
+    document.core_properties.author = REFERENCE_FIXTURE_AUTHOR
     title = document.add_heading("Raport operacyjny", level=1)
     title.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
     document.add_paragraph("To jest mala, uporzadkowana probka DOCX do szybkiego smoke testu.")
@@ -617,7 +630,7 @@ def _build_simple_report_docx() -> Document:
 def _build_list_table_image_docx() -> Document:
     document = Document()
     document.core_properties.title = "DOCX Rich Content Probe"
-    document.core_properties.author = "KindleMaster QA"
+    document.core_properties.author = REFERENCE_FIXTURE_AUTHOR
     document.add_heading("Rich content sample", level=1)
     document.add_paragraph("This fixture exercises semantic lists, tables, hyperlinks, and inline imagery.")
     document.add_heading("Checklist", level=2)
@@ -644,7 +657,7 @@ def _build_list_table_image_docx() -> Document:
 def _build_no_heading_docx() -> Document:
     document = Document()
     document.core_properties.title = "Dokument bez H1"
-    document.core_properties.author = "KindleMaster QA"
+    document.core_properties.author = REFERENCE_FIXTURE_AUTHOR
     intro = document.add_paragraph()
     run = intro.add_run("Dokument bez H1")
     run.bold = True

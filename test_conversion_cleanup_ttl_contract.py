@@ -15,6 +15,13 @@ class ConversionCleanupTTLContractTests(unittest.TestCase):
         self.upload_dir = Path(self.temp_dir.name)
         self.jobs_backup = {}
         self.cleanup_backup = app_module._LAST_CONVERSION_CLEANUP_AT
+        self.store_backup = app_module._CONVERSION_JOB_STORE
+        app_module._CONVERSION_JOB_STORE = app_module.ConversionJobStore(
+            app_module._CONVERSION_JOBS,
+            app_module._CONVERSION_JOBS_LOCK,
+            persistence_path=self.upload_dir / "conversion_jobs.json",
+            active_statuses=app_module.ACTIVE_CONVERSION_JOB_STATUSES,
+        )
         with app_module._CONVERSION_JOBS_LOCK:
             self.jobs_backup = dict(app_module._CONVERSION_JOBS)
             app_module._CONVERSION_JOBS.clear()
@@ -25,6 +32,7 @@ class ConversionCleanupTTLContractTests(unittest.TestCase):
             app_module._CONVERSION_JOBS.clear()
             app_module._CONVERSION_JOBS.update(self.jobs_backup)
         app_module._LAST_CONVERSION_CLEANUP_AT = self.cleanup_backup
+        app_module._CONVERSION_JOB_STORE = self.store_backup
         self.temp_dir.cleanup()
 
     def test_cleanup_hook_removes_expired_terminal_jobs_and_output_files(self) -> None:

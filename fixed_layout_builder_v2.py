@@ -23,6 +23,7 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional
 import re
+import uuid
 
 import fitz  # PyMuPDF
 from ebooklib import epub
@@ -786,26 +787,66 @@ def inject_fixed_layout_viewports(
     epub_bytes: bytes,
     page_viewports: dict[str, tuple[int, int]],
 ) -> bytes:
-    """Inject viewport meta tags into fixed-layout page XHTML files."""
+    """Backward-compatible wrapper for fixed-layout package repair."""
+    return repair_fixed_layout_epub_package(epub_bytes, page_viewports)
+
+
+def repair_fixed_layout_epub_package(
+    epub_bytes: bytes,
+    page_viewports: dict[str, tuple[int, int]],
+) -> bytes:
+    """Make fixed-layout EPUB package metadata EPUBCheck-safe.
+
+    EPUBCheck requires every XHTML document in a pre-paginated package,
+    including nav.xhtml and cover.xhtml, to declare a viewport.
+    """
     source = io.BytesIO(epub_bytes)
     output = io.BytesIO()
+    default_viewport = next(iter(page_viewports.values()), (600, 800))
 
     with zipfile.ZipFile(source, "r") as zin, zipfile.ZipFile(output, "w") as zout:
         for info in zin.infolist():
             data = zin.read(info.filename)
+            lower_name = info.filename.lower()
 
-            if info.filename in page_viewports and info.filename.endswith(".xhtml"):
+            if lower_name.endswith((".xhtml", ".html")):
                 text = data.decode("utf-8")
-                width, height = page_viewports[info.filename]
-                viewport = f'<meta name="viewport" content="width={width},height={height}"/>'
-                if 'name="viewport"' not in text and "</title>" in text:
-                    text = text.replace("</title>", f"</title>\n    {viewport}", 1)
-                    data = text.encode("utf-8")
+                width, height = page_viewports.get(info.filename, default_viewport)
+                text = _ensure_fixed_layout_viewport(text, width=width, height=height)
+                data = text.encode("utf-8")
+            elif lower_name.endswith(".opf"):
+                text = data.decode("utf-8")
+                text = _normalize_urn_uuid_identifiers(text)
+                data = text.encode("utf-8")
 
             zout.writestr(info, data)
 
     output.seek(0)
     return output.getvalue()
+
+
+def _ensure_fixed_layout_viewport(text: str, *, width: int, height: int) -> str:
+    if re.search(r"<meta\b[^>]*\bname=[\"']viewport[\"']", text, flags=re.IGNORECASE):
+        return text
+    viewport = f'<meta name="viewport" content="width={int(width)},height={int(height)}"/>'
+    if "</title>" in text:
+        return text.replace("</title>", f"</title>\n    {viewport}", 1)
+    head_match = re.search(r"<head\b[^>]*>", text, flags=re.IGNORECASE)
+    if head_match:
+        insert_at = head_match.end()
+        return f"{text[:insert_at]}\n    {viewport}{text[insert_at:]}"
+    return text
+
+
+def _normalize_urn_uuid_identifiers(text: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        raw = match.group(1)
+        try:
+            return f"urn:uuid:{uuid.UUID(hex=raw)}"
+        except ValueError:
+            return match.group(0)
+
+    return re.sub(r"urn:uuid:([0-9a-fA-F]{32})(?![0-9a-fA-F-])", replace, text)
 
 
 # ============================================================================
@@ -825,7 +866,7 @@ def build_fixed_layout_epub_v2(
     
     doc = fitz.open(pdf_path)
     book = epub.EpubBook()
-    book.set_identifier("urn:uuid:" + epub.uuid.uuid4().hex)
+    book.set_identifier(f"urn:uuid:{epub.uuid.uuid4()}")
     book.set_title(title)
     book.set_language(config.language)
     book.add_author(author)

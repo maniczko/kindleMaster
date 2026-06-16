@@ -17,9 +17,11 @@ class Sprint4UiContractsTests(unittest.TestCase):
         self.assertEqual(package["scripts"]["dev:ui"], "vite --host 127.0.0.1 --port 5173")
         self.assertEqual(package["scripts"]["build:ui"], "vite build")
         self.assertEqual(package["scripts"]["test:ui"], "vitest run --config vitest.config.js --dir frontend/src")
+        self.assertEqual(package["scripts"]["test:coverage"], "vitest run --coverage --config vitest.config.js")
         self.assertEqual(package["scripts"]["test:e2e"], "python kindlemaster.py test --suite runtime")
         self.assertIn("react", package["dependencies"])
         self.assertIn("vite", package["devDependencies"])
+        self.assertIn("@vitest/coverage-v8", package["devDependencies"])
 
     def test_react_shell_declares_shadcn_style_operational_surfaces(self) -> None:
         source = "\n".join(
@@ -31,16 +33,21 @@ class Sprint4UiContractsTests(unittest.TestCase):
                 (REPO_ROOT / "frontend" / "src" / "components" / "ui" / "dialog.tsx").read_text(encoding="utf-8"),
                 (REPO_ROOT / "frontend" / "src" / "components" / "ui" / "progress.tsx").read_text(encoding="utf-8"),
                 (REPO_ROOT / "frontend" / "src" / "components" / "ui" / "badge.tsx").read_text(encoding="utf-8"),
+                (REPO_ROOT / "frontend" / "src" / "lib" / "quality-state.ts").read_text(encoding="utf-8"),
             ]
         )
 
         for marker in (
-            "Conversion dashboard",
-            "Quality report",
-            "Artifact and download panel",
-            "Error and debug panel",
-            "Sentry event",
+            "Konwersja",
+            "Podgląd PDF i kadrowanie",
+            "Jakość",
+            "Ustawienia",
+            "Wyślij na Kindle",
+            "Status SMTP",
+            "Diagnostyka błędu",
+            "Zdarzenie Sentry",
             "quality_state",
+            "send_to_kindle_ready",
             "sendable",
             "kindle_ready",
             "premium_ready",
@@ -63,15 +70,22 @@ class Sprint4UiContractsTests(unittest.TestCase):
         self.assertEqual(config["iconLibrary"], "lucide")
         self.assertIn("official shadcn registry config + shadcn-style local primitives", docs)
 
-    def test_flask_serves_sprint4_app_route_without_breaking_legacy_root(self) -> None:
+    def test_flask_serves_react_root_and_legacy_fallback(self) -> None:
         client = app.test_client()
 
-        legacy_response = client.get("/")
+        root_response = client.get("/")
+        legacy_response = client.get("/legacy")
         app_response = client.get("/app")
 
+        self.assertEqual(root_response.status_code, 200)
         self.assertEqual(legacy_response.status_code, 200)
         self.assertEqual(app_response.status_code, 200)
-        self.assertIn("KindleMaster", legacy_response.get_data(as_text=True))
+        self.assertIn("Lokalny panel EPUB", legacy_response.get_data(as_text=True))
+        root_html = root_response.get_data(as_text=True)
+        self.assertTrue(
+            'id="root"' in root_html or "Lokalny panel EPUB" in root_html,
+            root_html[:300],
+        )
         app_html = app_response.get_data(as_text=True)
         self.assertTrue(
             'id="root"' in app_html or "KindleMaster Sprint 4 UI" in app_html,

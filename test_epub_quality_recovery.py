@@ -540,7 +540,7 @@ class EpubQualityRecoveryTests(unittest.TestCase):
     <dc:identifier id="bookid">quality-selection-id</dc:identifier>
     <dc:title>Quality Selection Sample</dc:title>
     <dc:language>en</dc:language>
-    <dc:creator>KindleMaster QA</dc:creator>
+    <dc:creator>Editorial QA</dc:creator>
     <dc:publisher>KindleMaster</dc:publisher>
     <meta property="dcterms:modified">2026-01-01T00:00:00Z</meta>
   </metadata>
@@ -656,7 +656,17 @@ class EpubQualityRecoveryTests(unittest.TestCase):
             self.assertEqual(result["quality_selection"]["rejected_stage"], "recovered")
             self.assertIn("recovery_rejected_due_to_quality_regression", result["quality_selection"]["reason_codes"])
             self.assertLess(result["quality_selection"]["candidate_score"], result["quality_selection"]["baseline_score"])
+            self.assertEqual(result["quality_selection"]["selected_score"], 9.1)
+            self.assertEqual(result["quality_selection"]["rejected_score"], 7.0)
+            self.assertNotEqual(result["decision"], "fail")
+            self.assertNotEqual(result["gates"]["D"]["status"], "fail")
+            self.assertNotEqual(result["gates"]["F"]["status"], "fail")
             self.assertTrue((reports_dir / "quality_selection.json").exists())
+            release_report = (reports_dir / "release_report.md").read_text(encoding="utf-8")
+            self.assertIn("Selected candidate: pre_recovery", release_report)
+            self.assertIn("Rejected candidate: recovered", release_report)
+            self.assertIn("Selected score: 9.1", release_report)
+            self.assertIn("Rejected score: 7.0", release_report)
             final_bytes = (output_dir / "final.epub").read_bytes()
             with zipfile.ZipFile(io.BytesIO(final_bytes), "r") as archive:
                 final_text = b"\n".join(archive.read(name) for name in archive.namelist())

@@ -12,6 +12,8 @@ from unittest.mock import patch
 
 import app as app_module
 from app import app
+from epub_delivery_repair import DeliveryRepairResult
+from supabase_auth import AuthContext
 
 
 class AppAsyncConvertTests(unittest.TestCase):
@@ -19,6 +21,14 @@ class AppAsyncConvertTests(unittest.TestCase):
         self.client = app.test_client()
         self.cleanup_paths: list[str] = []
         self.cleanup_job_ids: list[str] = []
+        self.store_temp_dir = tempfile.TemporaryDirectory()
+        self.original_conversion_job_store = app_module._CONVERSION_JOB_STORE
+        app_module._CONVERSION_JOB_STORE = app_module.ConversionJobStore(
+            app_module._CONVERSION_JOBS,
+            app_module._CONVERSION_JOBS_LOCK,
+            persistence_path=Path(self.store_temp_dir.name) / "conversion_jobs.json",
+            active_statuses=app_module.ACTIVE_CONVERSION_JOB_STATUSES,
+        )
         with app_module._CONVERSION_JOBS_LOCK:
             self.original_conversion_jobs = {
                 job_id: dict(job)
@@ -42,7 +52,8 @@ class AppAsyncConvertTests(unittest.TestCase):
             app_module._CONVERSION_JOBS.update(
                 {job_id: dict(job) for job_id, job in self.original_conversion_jobs.items()}
             )
-        app_module._CONVERSION_JOB_STORE.persist()
+        app_module._CONVERSION_JOB_STORE = self.original_conversion_job_store
+        self.store_temp_dir.cleanup()
 
     def _write_epub_fixture(self, job_id: str, body: str) -> str:
         output_path = os.path.join(app_module.UPLOAD_DIR, f"{job_id}.epub")
@@ -54,6 +65,76 @@ class AppAsyncConvertTests(unittest.TestCase):
             )
         self.cleanup_paths.append(output_path)
         return output_path
+
+    def _release_ready_metadata(self) -> dict:
+        return {
+            "source_type": "pdf",
+            "profile": "book_reflow",
+            "validation": "passed",
+            "validation_tool": "epubcheck",
+            "epubcheck_detail": {"status": "passed", "tool": "epubcheck"},
+            "toc_preview": {"status": "passed"},
+            "metadata_health": {"status": "passed"},
+            "link_health": {"status": "passed"},
+            "visible_junk": {"status": "passed"},
+            "asset_summary": {"status": "passed", "asset_budget_status": "passed"},
+            "text_cleanup": {"status": "passed"},
+            "reference_cleanup": {"status": "passed"},
+            "semantic_cleanup": {"status": "passed"},
+            "ocr_quality": {"status": "passed"},
+            "reading_order": {"status": "passed"},
+            "content_metrics": {"source_table_count": 0, "xhtml_table_count": 0},
+            "quality_gate_mode": "off",
+        }
+
+    def _register_delivery_job(
+        self,
+        job_id: str,
+        *,
+        status: str = "ready",
+        metadata: dict | None = None,
+        output_path: str | None = None,
+        output_size_bytes: int = 4096,
+    ) -> None:
+        created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        if output_path is None and status == "ready":
+            output_path = self._write_epub_fixture(job_id, "ready")
+        with app_module._CONVERSION_JOBS_LOCK:
+            app_module._CONVERSION_JOBS[job_id] = {
+                "job_id": job_id,
+                "status": status,
+                "message": "EPUB gotowy do pobrania." if status == "ready" else "Konwersja w toku.",
+                "source_type": "pdf",
+                "filename": "sample.pdf",
+                "created_at": created_at,
+                "updated_at": created_at,
+                "source_path": "",
+                "output_path": output_path or "",
+                "download_name": "sample.epub",
+                "metadata": metadata if metadata is not None else self._release_ready_metadata(),
+                "output_size_bytes": output_size_bytes,
+                "error": "",
+                "error_code": "",
+            }
+        self.cleanup_job_ids.append(job_id)
+
+    def _attach_input_pdf_artifact(self, job_id: str, *, filename: str = "source.pdf", data: bytes = b"%PDF-1.7\n") -> str:
+        artifact_dir = Path("output") / "artifacts" / job_id / "input"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        artifact_path = artifact_dir / filename
+        artifact_path.write_bytes(data)
+        with app_module._CONVERSION_JOBS_LOCK:
+            job = app_module._CONVERSION_JOBS[job_id]
+            job.setdefault("artifacts", {})["input"] = {
+                "provider": "local",
+                "kind": "input",
+                "filename": filename,
+                "content_type": "application/pdf",
+                "location": str(artifact_path),
+                "size_bytes": len(data),
+            }
+            job["source_preview_url"] = f"/convert/preview/{job_id}/input"
+        return str(artifact_path)
 
     def test_convert_start_status_and_download_roundtrip(self) -> None:
         def fake_spawn(**kwargs) -> None:
@@ -124,6 +205,7 @@ class AppAsyncConvertTests(unittest.TestCase):
         self.assertTrue(payload["success"])
         self.assertEqual(payload["status"], "queued")
         self.assertEqual(payload["poll_after_ms"], app_module.DEFAULT_CONVERSION_POLL_INTERVAL_MS)
+        self.assertEqual(payload["source_preview_url"], f"/convert/preview/{payload['job_id']}/input")
         self.assertEqual(payload["runtime"]["provider"], "local")
         self.assertEqual(payload["runtime"]["replay"]["command"]["name"], "convert")
         self.assertEqual(payload["artifacts"]["input"]["kind"], "input")
@@ -143,6 +225,7 @@ class AppAsyncConvertTests(unittest.TestCase):
         self.assertEqual(status_payload["output_size_bytes"], len(b"async-epub"))
         self.assertEqual(status_payload["poll_after_ms"], 0)
         self.assertEqual(status_payload["download_url"], f"/convert/download/{job_id}")
+        self.assertEqual(status_payload["source_preview_url"], f"/convert/preview/{job_id}/input")
         self.assertTrue(status_payload["download_available"])
         self.assertEqual(status_payload["download_state"]["status"], "available")
         self.assertEqual(status_payload["runtime"]["provider"], "local")
@@ -150,6 +233,12 @@ class AppAsyncConvertTests(unittest.TestCase):
         self.assertTrue(status_payload["quality_state"]["download_available"])
         self.assertEqual(status_payload["quality_state"]["download_state"]["status"], "available")
         self.assertIn("input", status_payload["quality_state"]["artifacts"])
+
+        jobs_response = self.client.get("/convert/jobs")
+        self.assertEqual(jobs_response.status_code, 200)
+        jobs_payload = jobs_response.get_json()
+        history_job = next(job for job in jobs_payload["jobs"] if job["job_id"] == job_id)
+        self.assertEqual(history_job["source_preview_url"], f"/convert/preview/{job_id}/input")
 
         download_response = self.client.get(f"/convert/download/{job_id}")
         self.assertEqual(download_response.status_code, 200)
@@ -159,6 +248,588 @@ class AppAsyncConvertTests(unittest.TestCase):
         self.assertEqual(download_response.headers.get("X-Render-Budget-Class"), "fixed_layout_dense")
         self.assertEqual(download_response.headers.get("X-Render-Budget-Attempt"), "fallback")
         download_response.close()
+
+        preview_response = self.client.get(f"/convert/preview/{job_id}/input")
+        self.assertEqual(preview_response.status_code, 200)
+        self.assertEqual(preview_response.data, b"%PDF-1.4\n%synthetic\n")
+        self.assertEqual(preview_response.mimetype, "application/pdf")
+        self.assertIn("inline", preview_response.headers.get("Content-Disposition", ""))
+        self.assertEqual(preview_response.headers.get("X-Source-Type"), "pdf")
+        preview_response.close()
+
+    def test_root_serves_react_shell_and_legacy_remains_available(self) -> None:
+        root_response = self.client.get("/")
+        legacy_response = self.client.get("/legacy")
+
+        self.assertEqual(root_response.status_code, 200)
+        self.assertIn("KindleMaster Pipeline", root_response.get_data(as_text=True))
+        self.assertEqual(legacy_response.status_code, 200)
+        self.assertIn("Lokalny panel EPUB", legacy_response.get_data(as_text=True))
+
+    def test_delivery_config_reports_smtp_capability_without_secrets(self) -> None:
+        with patch.dict(os.environ, {"KINDLEMASTER_EMAIL_DELIVERY": "0"}, clear=False):
+            response = self.client.get("/convert/delivery/config")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["delivery"]["provider"], "smtp")
+        self.assertFalse(payload["delivery"]["enabled"])
+        self.assertFalse(payload["delivery"]["configured"])
+        self.assertNotIn("password", json.dumps(payload).lower())
+
+    def test_auth_config_hides_supabase_service_role_key(self) -> None:
+        env = {
+            "KINDLEMASTER_AUTH_PROVIDER": "supabase",
+            "SUPABASE_URL": "https://project.supabase.co",
+            "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_public",
+            "SUPABASE_SERVICE_ROLE_KEY": "service-role-secret",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            response = self.client.get("/auth/config")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["auth"]["enabled"])
+        self.assertTrue(payload["auth"]["configured"])
+        self.assertEqual(payload["auth"]["publishable_key"], "sb_publishable_public")
+        serialized = json.dumps(payload)
+        self.assertNotIn("service-role-secret", serialized)
+        self.assertNotIn("service_role", serialized.lower())
+
+    def test_auth_me_validates_bearer_token_and_masks_email(self) -> None:
+        with patch("app.validate_bearer_token") as validate_token:
+            validate_token.return_value = AuthContext(
+                authenticated=True,
+                user_id="user-1",
+                email_masked="r***@example.com",
+            )
+            response = self.client.get("/auth/me", headers={"Authorization": "Bearer token"})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["auth"]["authenticated"])
+        self.assertEqual(payload["auth"]["user_id"], "user-1")
+        self.assertEqual(payload["auth"]["email_masked"], "r***@example.com")
+
+    def test_authenticated_convert_start_attaches_user_id_to_job(self) -> None:
+        def fake_spawn(**_kwargs) -> None:
+            return None
+
+        with patch("app.validate_bearer_token") as validate_token, patch("app._spawn_conversion_job", side_effect=fake_spawn):
+            validate_token.return_value = AuthContext(
+                authenticated=True,
+                user_id="user-1",
+                email_masked="r***@example.com",
+            )
+            response = self.client.post(
+                "/convert/start",
+                headers={"Authorization": "Bearer token"},
+                data={"file": (io.BytesIO(b"%PDF-1.4\n%synthetic\n"), "sample.pdf")},
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(response.status_code, 202)
+        job_id = response.get_json()["job_id"]
+        self.cleanup_job_ids.append(job_id)
+        job = app_module._get_conversion_job(job_id)
+        self.assertEqual(job["user_id"], "user-1")
+        self.assertEqual(job["auth"]["provider"], "supabase")
+
+    def test_cross_user_status_does_not_leak_local_job(self) -> None:
+        self._register_delivery_job("owned-job")
+        app_module._set_conversion_job("owned-job", user_id="owner-a")
+
+        with patch("app.validate_bearer_token") as validate_token:
+            validate_token.return_value = AuthContext(
+                authenticated=True,
+                user_id="owner-b",
+                email_masked="b***@example.com",
+            )
+            response = self.client.get("/convert/status/owned-job", headers={"Authorization": "Bearer token"})
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_cross_user_quality_does_not_leak_owned_local_job(self) -> None:
+        self._register_delivery_job("owned-quality-job")
+        app_module._set_conversion_job("owned-quality-job", user_id="owner-a")
+
+        with patch("app.validate_bearer_token") as validate_token:
+            validate_token.return_value = AuthContext(
+                authenticated=True,
+                user_id="owner-b",
+                email_masked="b***@example.com",
+            )
+            response = self.client.get("/convert/quality/owned-quality-job", headers={"Authorization": "Bearer token"})
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_authenticated_local_fallback_quality_keeps_ownerless_local_job_accessible(self) -> None:
+        self._register_delivery_job("fallback-ready")
+        app_module._set_conversion_job("fallback-ready", user_id="")
+
+        class FailingCloudLibrary:
+            def list_user_jobs(self, *, user_id, limit):
+                raise RuntimeError("supabase offline")
+
+            def get_user_job(self, *, user_id, job_id):
+                raise RuntimeError("supabase offline")
+
+        with patch("app.validate_bearer_token") as validate_token, patch("app._supabase_library_client", return_value=FailingCloudLibrary()):
+            validate_token.return_value = AuthContext(
+                authenticated=True,
+                user_id="user-1",
+                email_masked="r***@example.com",
+            )
+            jobs_response = self.client.get("/convert/jobs", headers={"Authorization": "Bearer token"})
+            quality_response = self.client.get("/convert/quality/fallback-ready", headers={"Authorization": "Bearer token"})
+
+        self.assertEqual(jobs_response.status_code, 200)
+        jobs_payload = jobs_response.get_json()
+        self.assertEqual(jobs_payload["library_scope"], "local_fallback")
+        self.assertIn("fallback-ready", {job["job_id"] for job in jobs_payload["jobs"]})
+        self.assertEqual(quality_response.status_code, 200)
+        quality_payload = quality_response.get_json()
+        self.assertTrue(quality_payload["success"])
+        self.assertEqual(quality_payload["job_id"], "fallback-ready")
+
+    def test_import_local_history_requires_authenticated_user_and_calls_supabase(self) -> None:
+        self._register_delivery_job("import-ready")
+
+        class FakeCloudLibrary:
+            def import_local_jobs(self, *, user_id, jobs, quality_state_builder):
+                self.user_id = user_id
+                self.jobs = jobs
+                self.quality_state_builder = quality_state_builder
+                return {"success": True, "imported": 1, "skipped": 0, "failed": 0, "failures": []}
+
+        fake_library = FakeCloudLibrary()
+        with patch("app.validate_bearer_token") as validate_token, patch("app._supabase_library_client", return_value=fake_library):
+            validate_token.return_value = AuthContext(
+                authenticated=True,
+                user_id="user-1",
+                email_masked="r***@example.com",
+            )
+            response = self.client.post("/user/library/import-local", headers={"Authorization": "Bearer token"})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["import"]["imported"], 1)
+        self.assertEqual(fake_library.user_id, "user-1")
+        self.assertIn("import-ready", fake_library.jobs)
+
+    def test_user_profile_roundtrip_stores_smtp_defaults_without_secrets(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profile_path = str(Path(temp_dir) / "profile.json")
+            secrets_path = str(Path(temp_dir) / "missing-secrets.env")
+            with patch.dict(os.environ, {"KINDLEMASTER_USER_PROFILE_PATH": profile_path, "KINDLEMASTER_ENV_FILE": secrets_path}, clear=False):
+                put_response = self.client.put(
+                    "/user/profile",
+                    json={
+                        "conversion": {
+                            "default_profile": "magazine",
+                            "default_language": "en",
+                            "heading_repair": False,
+                        },
+                        "email_delivery": {
+                            "enabled": True,
+                            "host": "smtp.example.com",
+                            "port": 587,
+                            "security": "starttls",
+                            "username": "apikey",
+                            "password": "must-not-leak",
+                            "from_address": "operator@example.com",
+                            "default_recipient": "reader@kindle.com",
+                            "max_attachment_bytes": 123456,
+                        },
+                    },
+                )
+                get_response = self.client.get("/user/profile")
+
+        self.assertEqual(put_response.status_code, 200)
+        self.assertEqual(get_response.status_code, 200)
+        payload = get_response.get_json()
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["profile"]["conversion"]["default_profile"], "magazine")
+        self.assertEqual(payload["profile"]["email_delivery"]["host"], "smtp.example.com")
+        self.assertEqual(payload["profile"]["email_delivery"]["default_recipient"], "reader@kindle.com")
+        self.assertFalse(payload["profile"]["email_delivery"]["secret_configured"])
+        serialized = json.dumps(payload)
+        self.assertNotIn("must-not-leak", serialized)
+        self.assertNotIn("password", serialized.lower())
+
+    def test_authenticated_user_profile_loads_cloud_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profile_path = str(Path(temp_dir) / "profile.json")
+            with patch.dict(os.environ, {"KINDLEMASTER_USER_PROFILE_PATH": profile_path}, clear=False):
+                with patch("app.validate_bearer_token") as validate_token, patch("app.load_cloud_user_profile") as load_cloud:
+                    validate_token.return_value = AuthContext(
+                        authenticated=True,
+                        user_id="user-1",
+                        email_masked="r***@example.com",
+                    )
+                    load_cloud.return_value = {
+                        "conversion": {"default_profile": "book", "default_language": "en", "force_ocr": False, "heading_repair": True},
+                        "email_delivery": {
+                            "enabled": True,
+                            "host": "smtp.example.com",
+                            "port": 587,
+                            "security": "starttls",
+                            "username": "apikey",
+                            "from_address": "operator@example.com",
+                            "default_recipient": "reader@kindle.com",
+                            "max_attachment_bytes": 52428800,
+                        },
+                    }
+                    response = self.client.get("/user/profile", headers={"Authorization": "Bearer token"})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["profile_scope"], "account")
+        self.assertEqual(payload["cloud_sync"]["status"], "synced")
+        self.assertEqual(payload["profile"]["email_delivery"]["default_recipient"], "reader@kindle.com")
+        load_cloud.assert_called_once()
+
+    def test_authenticated_user_profile_save_persists_to_cloud(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profile_path = str(Path(temp_dir) / "profile.json")
+            with patch.dict(os.environ, {"KINDLEMASTER_USER_PROFILE_PATH": profile_path}, clear=False):
+                with patch("app.validate_bearer_token") as validate_token, patch("app.save_cloud_user_profile") as save_cloud:
+                    validate_token.return_value = AuthContext(
+                        authenticated=True,
+                        user_id="user-1",
+                        email_masked="r***@example.com",
+                    )
+                    save_cloud.return_value = {
+                        "conversion": {"default_profile": "book", "default_language": "pl", "force_ocr": False, "heading_repair": True},
+                        "email_delivery": {
+                            "enabled": True,
+                            "host": "smtp.example.com",
+                            "port": 587,
+                            "security": "starttls",
+                            "username": "apikey",
+                            "from_address": "operator@example.com",
+                            "default_recipient": "reader@kindle.com",
+                            "max_attachment_bytes": 52428800,
+                        },
+                    }
+                    response = self.client.put(
+                        "/user/profile",
+                        headers={"Authorization": "Bearer token"},
+                        json={"email_delivery": {"enabled": True, "default_recipient": "reader@kindle.com"}},
+                    )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["profile_scope"], "account")
+        self.assertEqual(payload["cloud_sync"]["status"], "synced")
+        self.assertEqual(payload["profile"]["email_delivery"]["default_recipient"], "reader@kindle.com")
+        save_cloud.assert_called_once()
+
+    def test_release_ready_job_exposes_send_to_kindle_test_surface_before_delivery(self) -> None:
+        self._register_delivery_job("delivery-testable")
+
+        smtp_env = {
+            "KINDLEMASTER_EMAIL_DELIVERY": "1",
+            "KINDLEMASTER_SMTP_HOST": "smtp.example.com",
+            "KINDLEMASTER_SMTP_USERNAME": "apikey",
+            "KINDLEMASTER_SMTP_PASSWORD": "smtp-api-token",
+            "KINDLEMASTER_SMTP_FROM": "kindlemaster@example.com",
+        }
+        with patch.dict(os.environ, smtp_env, clear=False):
+            config_response = self.client.get("/convert/delivery/config")
+            status_response = self.client.get("/convert/status/delivery-testable")
+            quality_response = self.client.get("/convert/quality/delivery-testable")
+
+        self.assertEqual(config_response.status_code, 200)
+        config_payload = config_response.get_json()
+        self.assertTrue(config_payload["delivery"]["enabled"])
+        self.assertTrue(config_payload["delivery"]["configured"])
+        self.assertEqual(config_payload["delivery"]["provider"], "smtp")
+        self.assertNotIn("smtp-api-token", json.dumps(config_payload).lower())
+
+        self.assertEqual(status_response.status_code, 200)
+        status_payload = status_response.get_json()
+        self.assertTrue(status_payload["download_available"])
+        self.assertEqual(status_payload["email_delivery"]["status"], "not_sent")
+        self.assertTrue(status_payload["quality_state"]["send_to_kindle_ready"])
+        self.assertEqual(status_payload["quality_state"]["send_to_kindle_blockers"], [])
+
+        self.assertEqual(quality_response.status_code, 200)
+        quality_payload = quality_response.get_json()
+        self.assertEqual(quality_payload["email_delivery"]["status"], "not_sent")
+        self.assertTrue(quality_payload["quality_state"]["send_to_kindle_ready"])
+
+    def test_convert_delivery_email_sends_release_ready_epub_and_persists_masked_result(self) -> None:
+        self._register_delivery_job("delivery-ready")
+
+        with patch.dict(
+            os.environ,
+            {
+                "KINDLEMASTER_EMAIL_DELIVERY": "1",
+                "KINDLEMASTER_SMTP_HOST": "smtp.example.com",
+                "KINDLEMASTER_SMTP_USERNAME": "apikey",
+                "KINDLEMASTER_SMTP_PASSWORD": "secret",
+                "KINDLEMASTER_SMTP_FROM": "kindlemaster@example.com",
+            },
+            clear=False,
+        ):
+            with patch("email_delivery.smtplib.SMTP") as smtp_cls:
+                smtp = smtp_cls.return_value.__enter__.return_value
+                response = self.client.post(
+                    "/convert/delivery/delivery-ready/email",
+                    json={"to": "reader-device@kindle.com"},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["delivery"]["status"], "sent")
+        self.assertEqual(payload["delivery"]["masked_recipient"], "r***@kindle.com")
+        self.assertEqual(payload["delivery"]["attachment_filename"], "sample.epub")
+        diagnostics = payload["delivery"]["diagnostics"]
+        self.assertEqual(diagnostics["smtp"]["host"], "smtp.example.com")
+        self.assertTrue(diagnostics["smtp"]["accepted_by_smtp"])
+        self.assertEqual(diagnostics["message"]["content_type"], "multipart/mixed")
+        self.assertTrue(diagnostics["message"]["has_plain_text_body"])
+        self.assertTrue(diagnostics["message"]["has_date_header"])
+        self.assertTrue(diagnostics["message"]["has_message_id_header"])
+        self.assertEqual(diagnostics["attachment"]["content_type"], "application/epub+zip")
+        self.assertEqual(diagnostics["attachment"]["content_disposition"], "attachment")
+        smtp.send_message.assert_called_once()
+        stored = app_module._get_conversion_job("delivery-ready")["email_delivery"]
+        self.assertEqual(stored["status"], "sent")
+        self.assertIn("diagnostics", stored)
+        serialized = json.dumps(stored)
+        self.assertNotIn("reader-device@kindle.com", serialized)
+        self.assertNotIn("secret", serialized)
+
+        quality_response = self.client.get("/convert/quality/delivery-ready")
+        self.assertEqual(quality_response.status_code, 200)
+        self.assertEqual(quality_response.get_json()["email_delivery"]["status"], "sent")
+        self.assertIn("diagnostics", quality_response.get_json()["email_delivery"])
+
+    def test_convert_delivery_email_can_send_source_pdf_attachment(self) -> None:
+        self._register_delivery_job("delivery-pdf")
+        self._attach_input_pdf_artifact("delivery-pdf", filename="cropped-source.pdf", data=b"%PDF-1.7 cropped")
+
+        with patch.dict(
+            os.environ,
+            {
+                "KINDLEMASTER_EMAIL_DELIVERY": "1",
+                "KINDLEMASTER_SMTP_HOST": "smtp.example.com",
+                "KINDLEMASTER_SMTP_USERNAME": "apikey",
+                "KINDLEMASTER_SMTP_PASSWORD": "secret",
+                "KINDLEMASTER_SMTP_FROM": "kindlemaster@example.com",
+            },
+            clear=False,
+        ):
+            with patch("email_delivery.smtplib.SMTP") as smtp_cls:
+                smtp = smtp_cls.return_value.__enter__.return_value
+                response = self.client.post(
+                    "/convert/delivery/delivery-pdf/email",
+                    json={"to": "reader-device@kindle.com", "artifact": "pdf"},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["delivery"]["artifact"], "pdf")
+        self.assertEqual(payload["delivery"]["attachment_filename"], "cropped-source.pdf")
+        self.assertEqual(payload["delivery"]["attachment_content_type"], "application/pdf")
+        self.assertEqual(payload["delivery"]["diagnostics"]["attachment"]["content_type"], "application/pdf")
+        self.assertEqual(payload["delivery"]["quality_gate"]["artifact"], "pdf")
+        smtp.send_message.assert_called_once()
+        stored = app_module._get_conversion_job("delivery-pdf")["email_delivery"]
+        self.assertEqual(stored["artifact"], "pdf")
+        self.assertNotIn("reader-device@kindle.com", json.dumps(stored))
+
+    def test_convert_delivery_email_returns_503_when_smtp_is_disabled(self) -> None:
+        self._register_delivery_job("delivery-disabled")
+
+        with patch.dict(os.environ, {"KINDLEMASTER_EMAIL_DELIVERY": "0"}, clear=False):
+            response = self.client.post(
+                "/convert/delivery/delivery-disabled/email",
+                json={"to": "reader@kindle.com"},
+            )
+
+        self.assertEqual(response.status_code, 503)
+        payload = response.get_json()
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["error_code"], "delivery_unavailable")
+        self.assertIn("delivery", payload)
+
+    def test_convert_delivery_email_rejects_invalid_recipient(self) -> None:
+        self._register_delivery_job("delivery-invalid")
+
+        with patch.dict(
+            os.environ,
+            {
+                "KINDLEMASTER_EMAIL_DELIVERY": "1",
+                "KINDLEMASTER_SMTP_HOST": "smtp.example.com",
+                "KINDLEMASTER_SMTP_USERNAME": "apikey",
+                "KINDLEMASTER_SMTP_PASSWORD": "secret",
+                "KINDLEMASTER_SMTP_FROM": "kindlemaster@example.com",
+            },
+            clear=False,
+        ):
+            response = self.client.post(
+                "/convert/delivery/delivery-invalid/email",
+                json={"to": "not-an-email"},
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["error_code"], "invalid_delivery_request")
+
+    def test_convert_delivery_email_blocks_unknown_active_and_missing_outputs_but_not_quality_review(self) -> None:
+        unknown_response = self.client.post("/convert/delivery/missing/email", json={"to": "reader@kindle.com"})
+        self.assertEqual(unknown_response.status_code, 404)
+        self.assertEqual(unknown_response.get_json()["error_code"], "delivery_not_ready")
+
+        smtp_env = {
+            "KINDLEMASTER_EMAIL_DELIVERY": "1",
+            "KINDLEMASTER_SMTP_HOST": "smtp.example.com",
+            "KINDLEMASTER_SMTP_USERNAME": "apikey",
+            "KINDLEMASTER_SMTP_PASSWORD": "secret",
+            "KINDLEMASTER_SMTP_FROM": "kindlemaster@example.com",
+        }
+        with patch.dict(os.environ, smtp_env, clear=False):
+            self._register_delivery_job("delivery-running", status="running", output_path="")
+            running_response = self.client.post("/convert/delivery/delivery-running/email", json={"to": "reader@kindle.com"})
+            self.assertEqual(running_response.status_code, 409)
+
+            self._register_delivery_job(
+                "delivery-review",
+                metadata={**self._release_ready_metadata(), "quality_gate_mode": "draft"},
+            )
+            with patch("email_delivery.smtplib.SMTP") as smtp_cls:
+                smtp = smtp_cls.return_value.__enter__.return_value
+                review_response = self.client.post("/convert/delivery/delivery-review/email", json={"to": "reader@kindle.com"})
+            self.assertEqual(review_response.status_code, 200)
+            review_payload = review_response.get_json()
+            self.assertTrue(review_payload["success"])
+            self.assertTrue(review_payload["delivery"]["quality_gate"]["warning_only"])
+            self.assertEqual(review_payload["delivery"]["quality_gate"]["release_verdict"], "release_blocked")
+            smtp.send_message.assert_called_once()
+
+            self._register_delivery_job("delivery-missing-output", output_path="", output_size_bytes=0)
+            missing_output_response = self.client.post(
+                "/convert/delivery/delivery-missing-output/email",
+                json={"to": "reader@kindle.com"},
+            )
+        self.assertEqual(missing_output_response.status_code, 409)
+
+    def test_convert_delivery_email_maps_smtp_exception_to_502_without_recipient_leak(self) -> None:
+        self._register_delivery_job("delivery-smtp-fail")
+
+        with patch.dict(
+            os.environ,
+            {
+                "KINDLEMASTER_EMAIL_DELIVERY": "1",
+                "KINDLEMASTER_SMTP_HOST": "smtp.example.com",
+                "KINDLEMASTER_SMTP_USERNAME": "apikey",
+                "KINDLEMASTER_SMTP_PASSWORD": "secret",
+                "KINDLEMASTER_SMTP_FROM": "kindlemaster@example.com",
+            },
+            clear=False,
+        ):
+            with patch("email_delivery.smtplib.SMTP") as smtp_cls:
+                smtp_cls.return_value.__enter__.return_value.send_message.side_effect = RuntimeError("smtp down")
+                response = self.client.post(
+                    "/convert/delivery/delivery-smtp-fail/email",
+                    json={"to": "reader-device@kindle.com"},
+                )
+
+        self.assertEqual(response.status_code, 502)
+        payload = response.get_json()
+        self.assertEqual(payload["error_code"], "delivery_failed")
+        self.assertEqual(payload["delivery"]["diagnostics"]["smtp"]["response_summary"], "transport_error")
+        self.assertFalse(payload["delivery"]["diagnostics"]["smtp"]["accepted_by_smtp"])
+        self.assertEqual(payload["delivery"]["diagnostics"]["attachment"]["content_type"], "application/epub+zip")
+        self.assertNotIn("reader-device@kindle.com", json.dumps(payload))
+        stored = app_module._get_conversion_job("delivery-smtp-fail")["email_delivery"]
+        self.assertEqual(stored["status"], "failed")
+        self.assertEqual(stored["diagnostics"]["smtp"]["response_summary"], "transport_error")
+        self.assertNotIn("reader-device@kindle.com", json.dumps(stored))
+
+    def test_convert_repair_applies_safe_candidate_and_updates_quality_payload(self) -> None:
+        self._register_delivery_job(
+            "repair-ready",
+            metadata={**self._release_ready_metadata(), "quality_gate_mode": "draft"},
+        )
+        output_path = app_module._get_conversion_job("repair-ready")["output_path"]
+        with open(output_path, "rb") as handle:
+            repaired_bytes = handle.read()
+        repair_result = DeliveryRepairResult(
+            status="applied",
+            epub_bytes=repaired_bytes,
+            actions=["reencode_progressive_jpeg"],
+            quality_selection={
+                "status": "accepted",
+                "selected_candidate": "auto_repair",
+                "rejected_candidate": "",
+                "candidates": [{"label": "auto_repair", "premium_score": 9.1}],
+            },
+        )
+
+        with patch("epub_delivery_repair.repair_epub_for_delivery", return_value=repair_result):
+            response = self.client.post("/convert/repair/repair-ready")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["auto_repair"]["status"], "applied")
+        self.assertEqual(payload["selected_candidate"], "auto_repair")
+        self.assertIn("reencode_progressive_jpeg", payload["actions"])
+        stored = app_module._get_conversion_job("repair-ready")
+        self.assertEqual(stored["auto_repair"]["status"], "applied")
+        self.assertEqual(stored["metadata"]["auto_repair"]["status"], "applied")
+        quality_payload = self.client.get("/convert/quality/repair-ready").get_json()
+        self.assertEqual(quality_payload["auto_repair"]["status"], "applied")
+        self.assertEqual(quality_payload["quality_state"]["auto_repair"]["status"], "applied")
+
+    def test_convert_repair_blocks_unknown_not_ready_and_missing_output(self) -> None:
+        unknown_response = self.client.post("/convert/repair/missing-repair")
+        self.assertEqual(unknown_response.status_code, 404)
+
+        self._register_delivery_job("repair-running", status="running", output_path="")
+        running_response = self.client.post("/convert/repair/repair-running")
+        self.assertEqual(running_response.status_code, 409)
+
+        self._register_delivery_job("repair-missing-output", output_path="", output_size_bytes=0)
+        missing_output_response = self.client.post("/convert/repair/repair-missing-output")
+        self.assertEqual(missing_output_response.status_code, 409)
+
+    def test_convert_repair_keeps_original_when_candidate_is_rejected(self) -> None:
+        self._register_delivery_job(
+            "repair-rejected",
+            metadata={**self._release_ready_metadata(), "quality_gate_mode": "draft"},
+        )
+        output_path = app_module._get_conversion_job("repair-rejected")["output_path"]
+        with open(output_path, "rb") as handle:
+            original_bytes = handle.read()
+        repair_result = DeliveryRepairResult(
+            status="rejected",
+            epub_bytes=original_bytes,
+            actions=["package_recovery"],
+            quality_selection={
+                "status": "rejected",
+                "selected_candidate": "active",
+                "rejected_candidate": "auto_repair",
+                "candidates": [{"label": "active", "premium_score": 8.2}],
+            },
+            reason="quality_selection_rejected_candidate",
+        )
+
+        with patch("epub_delivery_repair.repair_epub_for_delivery", return_value=repair_result):
+            response = self.client.post("/convert/repair/repair-rejected")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["auto_repair"]["status"], "rejected")
+        self.assertEqual(payload["rejected_candidate"], "auto_repair")
+        with open(output_path, "rb") as handle:
+            self.assertEqual(handle.read(), original_bytes)
 
     def test_convert_status_returns_404_for_unknown_job(self) -> None:
         response = self.client.get("/convert/status/missing-job")
@@ -375,6 +1046,9 @@ class AppAsyncConvertTests(unittest.TestCase):
         ready_job = jobs[ready_id]
         self.assertEqual(ready_job["download_url"], f"/convert/download/{ready_id}")
         self.assertEqual(ready_job["quality_state_url"], f"/convert/quality/{ready_id}")
+        self.assertIn("quality_state", ready_job)
+        self.assertEqual(ready_job["quality_state"]["job_id"], ready_id)
+        self.assertTrue(ready_job["quality_state"]["download_available"])
         self.assertEqual(ready_job["output_size_bytes"], len(b"history-ready-epub"))
         self.assertTrue(ready_job["download_available"])
         self.assertEqual(ready_job["download_state"]["status"], "available")
@@ -462,6 +1136,52 @@ class AppAsyncConvertTests(unittest.TestCase):
         self.assertTrue(item["download_available"])
         self.assertEqual(item["download_state"]["status"], "available")
         self.assertIn("title", item["matched_fields"])
+
+    def test_history_and_library_hide_internal_ocr_probe_fixture_jobs(self) -> None:
+        now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        internal_id = "internal-ocr-probe-job"
+        visible_id = "visible-user-job"
+        with app_module._CONVERSION_JOBS_LOCK:
+            app_module._CONVERSION_JOBS[internal_id] = {
+                "job_id": internal_id,
+                "status": "ready",
+                "message": "EPUB gotowy do pobrania.",
+                "source_type": "pdf",
+                "filename": "ocr_probe.pdf",
+                "created_at": now,
+                "updated_at": now,
+                "source_path": "",
+                "output_path": "",
+                "download_name": "ocr_probe.epub",
+                "metadata": {},
+                "runtime": {"workflow": {"kwargs": {"original_filename": "ocr_probe.pdf"}}},
+                "output_size_bytes": 1024,
+                "error": "",
+            }
+            app_module._CONVERSION_JOBS[visible_id] = {
+                "job_id": visible_id,
+                "status": "ready",
+                "message": "EPUB gotowy do pobrania.",
+                "source_type": "pdf",
+                "filename": "user-report.pdf",
+                "created_at": now,
+                "updated_at": now,
+                "source_path": "",
+                "output_path": "",
+                "download_name": "user-report.epub",
+                "metadata": {"title": "User Report"},
+                "output_size_bytes": 2048,
+                "error": "",
+            }
+        self.cleanup_job_ids.extend([internal_id, visible_id])
+
+        jobs_payload = self.client.get("/convert/jobs?limit=100").get_json()
+        library_payload = self.client.get("/convert/library?limit=100").get_json()
+
+        self.assertNotIn(internal_id, {job["job_id"] for job in jobs_payload["jobs"]})
+        self.assertIn(visible_id, {job["job_id"] for job in jobs_payload["jobs"]})
+        self.assertNotIn(internal_id, {item["job_id"] for item in library_payload["items"]})
+        self.assertIn(visible_id, {item["job_id"] for item in library_payload["items"]})
 
     def test_ready_missing_output_reports_consistent_download_state_without_availability(self) -> None:
         now = datetime.now(UTC)
@@ -672,6 +1392,32 @@ class AppAsyncConvertTests(unittest.TestCase):
         self.assertFalse(jobs[reloaded_id]["download_available"])
         self.assertEqual(jobs[reloaded_id]["download_state"]["status"], "missing_output")
         self.assertNotIn("download_url", jobs[reloaded_id])
+
+    def test_cleanup_preserves_recovered_artifact_history_jobs(self) -> None:
+        now = datetime(2026, 5, 22, 12, 0, tzinfo=UTC)
+        old = (now - timedelta(days=3)).isoformat().replace("+00:00", "Z")
+        app_module._CONVERSION_JOB_STORE.create(
+            {
+                "job_id": "recovered-history",
+                "status": "ready",
+                "message": "Odtworzono wpis Biblioteki z lokalnych artefaktow.",
+                "source_type": "pdf",
+                "filename": "old-report.pdf",
+                "created_at": old,
+                "updated_at": old,
+                "source_path": "",
+                "output_path": "",
+                "download_name": "old-report.epub",
+                "metadata": {},
+                "output_size_bytes": 0,
+                "recovered_from_artifacts": True,
+            }
+        )
+
+        result = app_module._cleanup_expired_conversion_jobs(now=now, force=True)
+
+        self.assertEqual(result["removed_jobs"], 0)
+        self.assertIsNotNone(app_module._get_conversion_job("recovered-history"))
 
     def test_attach_output_size_metadata_warns_for_oversized_epub(self) -> None:
         metadata = {"warnings": 0, "warning_list": []}

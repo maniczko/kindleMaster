@@ -305,6 +305,29 @@ class MlDatasetBuilderTests(unittest.TestCase):
             self.assertEqual(rows["explicit_premium_magazine"]["final_label"], "premium")
             self.assertEqual(rows["explicit_premium_magazine"]["output_metrics"]["premium_score"], 9.2)
 
+    def test_builder_skips_non_ml_utf16_reports_without_crashing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            reports_dir = root / "reports"
+            reports_dir.mkdir(parents=True)
+            (reports_dir / "validator.json").write_text(
+                json.dumps({"summary": {"status": "passed"}}),
+                encoding="utf-16",
+            )
+            (root / "manifest.json").write_text(json.dumps({"cases": []}), encoding="utf-8")
+            (root / "labels.json").write_text(json.dumps({"cases": {}}), encoding="utf-8")
+
+            payload = build_ml_datasets(
+                manifest_path="manifest.json",
+                labels_path="labels.json",
+                reports_root="reports",
+                output_dir="reports/ml/datasets",
+                repo_root=root,
+            )
+
+            self.assertEqual(payload["status"], "insufficient_data")
+            self.assertEqual(payload["heading_reference_example_count"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,6 +11,7 @@
     "test:contract": "vitest run --config vitest.config.js --dir static/js",
     "test:ui": "vitest run --config vitest.config.js --dir frontend/src",
     "test:contracts:regression": "npm run test:contract && npm run test:ui",
+    "test:coverage": "vitest run --coverage --config vitest.config.js",
     "test:e2e": "python kindlemaster.py test --suite runtime",
     "trigger:dev": "npx trigger.dev@latest dev",
     "trigger:deploy": "npx trigger.dev@latest deploy",
@@ -24,12 +25,14 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
+    "@vitest/coverage-v8": "^4.1.7",
     "jsdom": "^29.1.1",
     "typescript": "^6.0.3",
     "vite": "^8.0.11",
     "vitest": "^4.0.0"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.106.1",
     "@trigger.dev/sdk": "^4.4.5",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

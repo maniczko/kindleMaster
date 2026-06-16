@@ -12,6 +12,11 @@ ERROR_CONVERSION_TIMEOUT = "conversion_timeout"
 ERROR_APPLICATION_RESTART = "application_restart"
 ERROR_MISSING_OUTPUT = "missing_output"
 ERROR_UNSUPPORTED_REPORT_FORMAT = "unsupported_report_format"
+ERROR_INVALID_PROFILE_REQUEST = "invalid_profile_request"
+ERROR_INVALID_DELIVERY_REQUEST = "invalid_delivery_request"
+ERROR_DELIVERY_NOT_READY = "delivery_not_ready"
+ERROR_DELIVERY_UNAVAILABLE = "delivery_unavailable"
+ERROR_DELIVERY_FAILED = "delivery_failed"
 
 CONVERT_ERROR_CODES = frozenset(
     {
@@ -22,6 +27,11 @@ CONVERT_ERROR_CODES = frozenset(
         ERROR_APPLICATION_RESTART,
         ERROR_MISSING_OUTPUT,
         ERROR_UNSUPPORTED_REPORT_FORMAT,
+        ERROR_INVALID_PROFILE_REQUEST,
+        ERROR_INVALID_DELIVERY_REQUEST,
+        ERROR_DELIVERY_NOT_READY,
+        ERROR_DELIVERY_UNAVAILABLE,
+        ERROR_DELIVERY_FAILED,
     }
 )
 

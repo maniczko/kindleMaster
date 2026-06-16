@@ -18,6 +18,7 @@ QUICK_TESTS = [
     "test_skill_contracts.py",
     "test_skill_guardrails.py",
     "test_github_ready_enforcement.py",
+    "test_github_issue_orchestration.py",
     "test_project_status.py",
     "test_pdf_runtime_flow.py",
     "test_kindlemaster_entrypoint.py",
@@ -26,6 +27,12 @@ QUICK_TESTS = [
     "test_sprint4_ui_contracts.py",
     "test_browser_conversion_outcome_harness.py",
     "test_app_async_convert.py",
+    "test_supabase_auth.py",
+    "test_supabase_library.py",
+    "test_supabase_profile.py",
+    "test_supabase_migrations.py",
+    "test_email_delivery.py",
+    "test_user_profile.py",
     "test_conversion_library.py",
     "test_app_runtime_services.py",
     "test_runtime_job_adapter.py",
@@ -69,6 +76,7 @@ QUICK_TESTS = [
     "test_text_normalization.py",
     "test_converter_text_cleanup.py",
     "test_semantic_epub_cleanup.py",
+    "test_epub_delivery_repair.py",
     "test_epub_quality_selection.py",
     "test_epub_reference_repair.py",
     "test_epub_heading_repair.py",
@@ -102,8 +110,37 @@ CORPUS_TESTS = [
     "test_golden_epub_regression.py",
 ]
 
+QUALITY_CRITICAL_TESTS = [
+    "test_docx_conversion.py",
+    "test_converter_core_paths.py",
+    "test_converter_fixed_layout_budget_enforcement.py",
+    "test_converter_text_cleanup.py",
+    "test_text_normalization.py",
+    "test_epub_validation.py",
+    "test_semantic_epub_cleanup.py",
+    "test_app_runtime_services.py",
+    "test_epub_delivery_repair.py",
+    "test_epub_quality_recovery.py",
+    "test_release_quality_recovery.py",
+]
+
+QUALITY_CRITICAL_COVERAGE_SOURCES = [
+    "converter",
+    "docx_conversion",
+    "text_cleanup_engine",
+    "text_normalization",
+    "kindle_semantic_cleanup",
+    "epub_validation",
+]
+
+QUALITY_CRITICAL_TOTAL_COVERAGE_DEFAULT = 70.0
+QUALITY_CRITICAL_CONVERTER_COVERAGE_DEFAULT = 60.0
+QUALITY_CRITICAL_TEXT_NORMALIZATION_COVERAGE_DEFAULT = 65.0
+QUALITY_CRITICAL_SEMANTIC_CLEANUP_COVERAGE_DEFAULT = 70.0
+
 BROWSER_TESTS = [
     "test_browser_polling_runtime_harness.py",
+    "test_react_shell_browser_smoke.py",
 ]
 
 RUNTIME_TESTS = [
@@ -133,6 +170,7 @@ SUITE_REGISTRY: dict[str, Sequence[str]] = {
     "quick": QUICK_TESTS,
     "release": RELEASE_TESTS,
     "corpus": CORPUS_TESTS,
+    "quality-critical": QUALITY_CRITICAL_TESTS,
     "browser": BROWSER_TESTS,
     "runtime": RUNTIME_TESTS,
 }
@@ -234,7 +272,11 @@ def main() -> int:
     ml_feedback.add_argument("--output", default="reports/ml/datasets/quality_feedback_examples.jsonl")
 
     test_parser = subparsers.add_parser("test", help="Run standard KindleMaster test suites.")
-    test_parser.add_argument("--suite", choices=("quick", "release", "full", "browser", "runtime", "corpus"), default="quick")
+    test_parser.add_argument(
+        "--suite",
+        choices=("quick", "release", "full", "browser", "runtime", "corpus", "quality-critical"),
+        default="quick",
+    )
 
     audit_parser = subparsers.add_parser("audit", help="Run release audit on an EPUB.")
     audit_parser.add_argument("epub_path")
@@ -270,6 +312,39 @@ def main() -> int:
     workflow_verify.add_argument("--run-id", required=True)
     workflow_verify.add_argument("--reports-root", default="reports/workflows")
     workflow_verify.add_argument("--output-root", default="output/workflows")
+
+    orchestrate_parser = subparsers.add_parser(
+        "orchestrate",
+        help="Validate and prepare GitHub Issue contracts for local Codex autopilot.",
+    )
+    orchestrate_parser.add_argument("--repo-root", default=".")
+    orchestrate_subparsers = orchestrate_parser.add_subparsers(dest="orchestrate_command")
+
+    orchestrate_doctor = orchestrate_subparsers.add_parser("doctor", help="Check GitHub autopilot governance files.")
+    orchestrate_doctor.add_argument("--repo-root", default=".")
+
+    orchestrate_sync = orchestrate_subparsers.add_parser("sync", help="Validate a GitHub issue JSON payload.")
+    orchestrate_sync.add_argument("--issues-json", required=True)
+    orchestrate_sync.add_argument("--output-json", default="")
+
+    orchestrate_claim = orchestrate_subparsers.add_parser("claim", help="Prepare or apply a branch claim for one issue.")
+    orchestrate_claim.add_argument("--issues-json", required=True)
+    orchestrate_claim.add_argument("--issue-number", type=int, default=None)
+    orchestrate_claim.add_argument("--output-json", default="")
+    orchestrate_claim.add_argument("--apply-branch", action="store_true")
+    orchestrate_claim.add_argument("--repo-root", default=".")
+
+    orchestrate_execute = orchestrate_subparsers.add_parser("execute", help="Build the local agent execution contract.")
+    orchestrate_execute.add_argument("--issues-json", required=True)
+    orchestrate_execute.add_argument("--issue-number", type=int, default=None)
+    orchestrate_execute.add_argument("--output-json", default="")
+
+    orchestrate_report = orchestrate_subparsers.add_parser("report", help="Build a PR/issue-ready evidence summary.")
+    orchestrate_report.add_argument("--issues-json", required=True)
+    orchestrate_report.add_argument("--issue-number", type=int, default=None)
+    orchestrate_report.add_argument("--evidence", action="append", default=[])
+    orchestrate_report.add_argument("--output-json", default="")
+    orchestrate_report.add_argument("--output-md", default="")
 
     args = parser.parse_args()
     if not args.command:
@@ -429,6 +504,20 @@ def main() -> int:
             return 0 if payload.get("status") in {"passed", "passed_with_warnings"} else 1
         workflow_parser.print_help()
         return 1
+    if args.command == "orchestrate":
+        from github_issue_orchestration import run_orchestration_command
+
+        if not args.orchestrate_command:
+            orchestrate_parser.print_help()
+            return 1
+        try:
+            payload = run_orchestration_command(args)
+        except Exception as error:
+            payload = {"status": "failed", "error": type(error).__name__, "message": str(error)}
+            _print_json(payload)
+            return 1
+        _print_json(payload)
+        return 0 if payload.get("status") in {"passed", "passed_with_warnings", "ready"} else 1
     parser.print_help()
     return 0
 
@@ -652,6 +741,8 @@ def _run_tests(suite: str) -> int:
             if completed.returncode != 0:
                 return completed.returncode
         return 0
+    if suite == "quality-critical":
+        return _run_quality_critical_suite(repo_root=repo_root)
     if suite == "release":
         return _run_release_suite(repo_root=repo_root, release_surface=verification_surfaces.get("release", {}))
     if suite == "full":
@@ -674,6 +765,148 @@ def _run_tests(suite: str) -> int:
     else:
         command = [sys.executable, "-m", "unittest", *SUITE_REGISTRY["quick"]]
     return subprocess.run(command, check=False, cwd=repo_root).returncode
+
+
+def _coverage_threshold_from_env(name: str, default: float) -> float:
+    raw_value = os.environ.get(name, "").strip()
+    if not raw_value:
+        return default
+    try:
+        return float(raw_value)
+    except ValueError:
+        return default
+
+
+def _quality_critical_coverage_payload(
+    coverage_json: dict[str, Any],
+    *,
+    total_threshold: float,
+    converter_threshold: float,
+    text_normalization_threshold: float,
+    semantic_cleanup_threshold: float,
+) -> dict[str, Any]:
+    totals = coverage_json.get("totals", {}) if isinstance(coverage_json, dict) else {}
+    files = coverage_json.get("files", {}) if isinstance(coverage_json, dict) else {}
+    total_coverage = round(float(totals.get("percent_covered", 0.0) or 0.0), 2)
+
+    file_thresholds = {
+        "converter.py": converter_threshold,
+        "text_normalization.py": text_normalization_threshold,
+        "kindle_semantic_cleanup.py": semantic_cleanup_threshold,
+    }
+    file_payload: dict[str, dict[str, float]] = {}
+    missing_actions: list[str] = []
+    if total_coverage < total_threshold:
+        missing_actions.append(f"total coverage {total_coverage}% is below {total_threshold}%")
+    for file_name, threshold in file_thresholds.items():
+        file_summary = files.get(file_name, {}).get("summary", {}) if isinstance(files, dict) else {}
+        coverage = round(float(file_summary.get("percent_covered", 0.0) or 0.0), 2)
+        file_payload[file_name] = {"coverage": coverage, "threshold": threshold}
+        if coverage < threshold:
+            missing_actions.append(f"{file_name} coverage {coverage}% is below {threshold}%")
+
+    return {
+        "suite": "quality-critical",
+        "status": "passed" if not missing_actions else "failed",
+        "thresholds": {
+            "total": total_threshold,
+            "converter.py": converter_threshold,
+            "text_normalization.py": text_normalization_threshold,
+            "kindle_semantic_cleanup.py": semantic_cleanup_threshold,
+        },
+        "total_coverage": total_coverage,
+        "files": file_payload,
+        "missing_actions": missing_actions,
+    }
+
+
+def _run_quality_critical_suite(*, repo_root: Path) -> int:
+    started = time.perf_counter()
+    coverage_dir = repo_root / "reports" / "coverage"
+    coverage_dir.mkdir(parents=True, exist_ok=True)
+    coverage_json_path = coverage_dir / "quality-critical.json"
+    total_threshold = _coverage_threshold_from_env(
+        "CORE_CONVERSION_COVERAGE_FAIL_UNDER",
+        QUALITY_CRITICAL_TOTAL_COVERAGE_DEFAULT,
+    )
+    converter_threshold = _coverage_threshold_from_env(
+        "CONVERTER_COVERAGE_FAIL_UNDER",
+        QUALITY_CRITICAL_CONVERTER_COVERAGE_DEFAULT,
+    )
+    text_normalization_threshold = _coverage_threshold_from_env(
+        "TEXT_NORMALIZATION_COVERAGE_FAIL_UNDER",
+        QUALITY_CRITICAL_TEXT_NORMALIZATION_COVERAGE_DEFAULT,
+    )
+    semantic_threshold = _coverage_threshold_from_env(
+        "SEMANTIC_CLEANUP_COVERAGE_FAIL_UNDER",
+        QUALITY_CRITICAL_SEMANTIC_CLEANUP_COVERAGE_DEFAULT,
+    )
+    commands: list[tuple[str, Sequence[str]]] = [
+        ("coverage-erase", [sys.executable, "-m", "coverage", "erase"]),
+        (
+            "quality-critical-tests",
+            [
+                sys.executable,
+                "-m",
+                "coverage",
+                "run",
+                f"--source={','.join(QUALITY_CRITICAL_COVERAGE_SOURCES)}",
+                "-m",
+                "unittest",
+                *QUALITY_CRITICAL_TESTS,
+            ],
+        ),
+        ("coverage-report", [sys.executable, "-m", "coverage", "report"]),
+        ("coverage-json", [sys.executable, "-m", "coverage", "json", "-o", str(coverage_json_path)]),
+    ]
+    step_results: list[dict[str, Any]] = []
+    for label, command in commands:
+        completed = subprocess.run(command, check=False, cwd=repo_root)
+        step_results.append({"label": label, "command": list(command), "returncode": completed.returncode})
+        if completed.returncode != 0:
+            payload = _governance_artifact_payload(
+                command="python kindlemaster.py test --suite quality-critical",
+                status="failed",
+                returncode=completed.returncode,
+                started=started,
+                notes=[f"Quality-critical failed during `{label}`."],
+                extra={"suite": "quality-critical", "failed_step": label, "steps": step_results},
+            )
+            _write_governance_artifact(lane="quality-critical", payload=payload, repo_root=repo_root)
+            _print_json(payload)
+            return completed.returncode
+
+    try:
+        coverage_json = json.loads(coverage_json_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        coverage_payload = {
+            "suite": "quality-critical",
+            "status": "failed",
+            "missing_actions": [f"Could not read coverage JSON: {exc}"],
+        }
+    else:
+        coverage_payload = _quality_critical_coverage_payload(
+            coverage_json,
+            total_threshold=total_threshold,
+            converter_threshold=converter_threshold,
+            text_normalization_threshold=text_normalization_threshold,
+            semantic_cleanup_threshold=semantic_threshold,
+        )
+    status = str(coverage_payload.get("status", "failed"))
+    returncode = 0 if status == "passed" else 1
+    payload = _governance_artifact_payload(
+        command="python kindlemaster.py test --suite quality-critical",
+        status=status,
+        returncode=returncode,
+        started=started,
+        notes=[
+            "Quality-critical suite protects core conversion coverage without slowing the quick lane.",
+        ],
+        extra={**coverage_payload, "steps": step_results, "coverage_json": str(coverage_json_path)},
+    )
+    _write_governance_artifact(lane="quality-critical", payload=payload, repo_root=repo_root)
+    _print_json(payload)
+    return returncode
 
 
 def _run_release_suite(*, repo_root: Path, release_surface: dict[str, Any]) -> int:

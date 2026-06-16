@@ -8,6 +8,7 @@ import io
 import json
 import mimetypes
 import os
+import re
 import shutil
 import threading
 import uuid
@@ -22,6 +23,8 @@ from urllib.parse import quote
 from app_runtime_services import (
     DEFAULT_DEBUG,
     DEFAULT_PORT,
+    LOCALHOST,
+    build_conversion_metadata,
     ConversionRequest,
     ConversionQualityGateError,
     ConversionJobStore,
@@ -4186,6 +4189,8 @@ def convert_artifact_download(job_id: str, artifact_key: str):
         # local store before deciding the artifact is missing.
         _merge_cloud_jobs_into_store_for_request(limit=MAX_CONVERSION_JOB_HISTORY_LIMIT)
         job = _get_conversion_job(job_id)
+    if not job:
+        job = _restore_local_artifact_job_by_id(job_id)
     if not job:
         return _json_error(
             "Nie znaleziono zadania konwersji.",

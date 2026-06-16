@@ -14,6 +14,7 @@ from scripts.run_corpus_gate import (
     CI_PREMIUM_FILTERS,
     STANDARD_PREMIUM_FILTERS,
     _build_gate_output_assertions,
+    _fen_min_profile_count_for_proof_profile,
     run_corpus_gate,
 )
 
@@ -133,11 +134,28 @@ class CorpusGateTests(unittest.TestCase):
             self.assertEqual(persisted["artifacts"]["premium_json"], str(reports_root / "premium_corpus_smoke_report.json"))
             self.assertEqual(persisted["artifacts"]["fen_corpus_json"], str(reports_root / "fen_corpus_90.json"))
             self.assertEqual(persisted["fen_corpus"]["status"], "passed")
+            self.assertEqual(persisted["fen_min_profile_count"], 2)
+            self.assertEqual(persisted["fen_min_profile_count_source"], "proof_profile_default")
             self.assertIn("benchmark", persisted)
             self.assertEqual(persisted["benchmark"]["class_count"], 2)
 
         smoke_mock.assert_called_once()
         premium_mock.assert_called_once()
+        self.fen_corpus_mock.assert_called_with(
+            "reference_inputs/manifest.json",
+            min_confidence=0.835,
+            default_min_exact_accuracy=0.90,
+            default_min_seed_label_count=20,
+            min_profile_count=2,
+            output_path=reports_root / "fen_corpus_90.json",
+        )
+
+    def test_fen_profile_count_defaults_are_release_grade_except_bounded_ci(self) -> None:
+        self.assertEqual(_fen_min_profile_count_for_proof_profile("standard", None), 2)
+        self.assertEqual(_fen_min_profile_count_for_proof_profile("full", None), 2)
+        self.assertEqual(_fen_min_profile_count_for_proof_profile("ci", None), 1)
+        self.assertEqual(_fen_min_profile_count_for_proof_profile("standard", 1), 1)
+        self.assertEqual(_fen_min_profile_count_for_proof_profile("standard", 3), 3)
 
     def test_corpus_gate_fails_when_any_underlying_gate_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -549,6 +567,7 @@ class CorpusGateTests(unittest.TestCase):
         self.assertIn(str(reports_root / "smoke" / "smoke_full.json"), markdown)
         self.assertIn(str(reports_root / "premium_corpus_smoke_report.json"), markdown)
         self.assertIn("FEN corpus status: `passed`", markdown)
+        self.assertIn("FEN min profiles required: `2`", markdown)
         self.assertIn("FEN min seed labels/profile: `20`", markdown)
         self.assertIn("FEN valid seed labels: `40`", markdown)
         self.assertIn(str(reports_root / "fen_corpus_90.json"), markdown)
@@ -592,7 +611,7 @@ class CorpusGateTests(unittest.TestCase):
             proof_profile="standard",
             smoke_case_filters=["ocr"],
             premium_case_filters=["report"],
-            fen_min_profile_count=1,
+            fen_min_profile_count=None,
             fen_min_seed_label_count=20,
         )
         print_mock.assert_called_once_with(payload)
@@ -628,7 +647,7 @@ class CorpusGateTests(unittest.TestCase):
             proof_profile="full",
             smoke_case_filters=[],
             premium_case_filters=[],
-            fen_min_profile_count=1,
+            fen_min_profile_count=None,
             fen_min_seed_label_count=20,
         )
 
@@ -663,7 +682,7 @@ class CorpusGateTests(unittest.TestCase):
             proof_profile="ci",
             smoke_case_filters=[],
             premium_case_filters=[],
-            fen_min_profile_count=1,
+            fen_min_profile_count=None,
             fen_min_seed_label_count=20,
         )
 
@@ -735,7 +754,7 @@ class CorpusGateTests(unittest.TestCase):
             proof_profile="standard",
             smoke_case_filters=[],
             premium_case_filters=[],
-            fen_min_profile_count=1,
+            fen_min_profile_count=None,
             fen_min_seed_label_count=30,
         )
 

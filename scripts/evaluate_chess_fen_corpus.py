@@ -26,7 +26,7 @@ def evaluate_chess_fen_corpus(
     min_confidence: float = DEFAULT_CHESS_FEN_EVAL_MIN_CONFIDENCE,
     default_min_exact_accuracy: float = DEFAULT_CHESS_FEN_EXACT_ACCURACY_MIN,
     default_min_seed_label_count: int = 20,
-    min_profile_count: int = 1,
+    min_profile_count: int = 2,
     output_path: str | Path | None = None,
     allow_empty: bool = False,
 ) -> dict[str, Any]:
@@ -298,7 +298,7 @@ def main() -> int:
     parser.add_argument("--min-confidence", type=float, default=DEFAULT_CHESS_FEN_EVAL_MIN_CONFIDENCE)
     parser.add_argument("--min-exact-accuracy", type=float, default=DEFAULT_CHESS_FEN_EXACT_ACCURACY_MIN)
     parser.add_argument("--min-seed-label-count", type=int, default=20)
-    parser.add_argument("--min-profile-count", type=int, default=1)
+    parser.add_argument("--min-profile-count", type=int, default=2)
     parser.add_argument("--output", default="reports/chess_fen/evals/fen_corpus_90_latest.json")
     parser.add_argument("--allow-empty", action="store_true")
     args = parser.parse_args()

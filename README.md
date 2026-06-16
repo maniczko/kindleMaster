@@ -91,11 +91,11 @@ For hosted testing, use the split deployment described in [docs/deployment-verce
 
 The async HTTP flow keeps the existing `/convert/start -> /convert/status/<job_id> -> /convert/download/<job_id>` contract and now also exposes normalized quality state at `GET /convert/quality/<job_id>`. `GET /convert/status/<job_id>` includes the same payload under `quality_state` plus a `quality_state_url`.
 
-The React shell is the default local UI at `http://127.0.0.1:5001/` and is also available at `/app` after `npm run build:ui`; the legacy control panel remains at `/legacy`. During development, use `npm run dev:ui` and open `http://127.0.0.1:5173/`; Vite proxies the existing Flask API.
+The preferred local UI at `http://127.0.0.1:5001/` uses the Sprint 4 React shell. `python kindlemaster.py serve` builds the local React shell automatically when needed; the direct route is `http://127.0.0.1:5001/app`. During development, use `npm run dev:ui` and open `http://127.0.0.1:5173/`; Vite proxies the existing Flask API. The legacy Flask panel is debug-only behind `KINDLEMASTER_ENABLE_LEGACY_UI=1`.
 
 ## Core Commands
 
-The supported first-class command set is `bootstrap`, `doctor`, `prepare-reference-inputs`, `serve`, `convert`, `validate`, `smoke`, `corpus`, `status`, `ml`, `test`, `audit`, `workflow`, and `orchestrate`.
+The supported first-class command set is `bootstrap`, `doctor`, `prepare-reference-inputs`, `serve`, `convert`, `process`, `validate`, `report`, `review`, `smoke`, `corpus`, `status`, `ml`, `test`, `audit`, `chess-study`, and `workflow`.
 
 ```powershell
 python kindlemaster.py doctor
@@ -111,18 +111,35 @@ python kindlemaster.py ml evaluate
 python kindlemaster.py test --suite quality-critical
 python kindlemaster.py test --suite corpus
 python kindlemaster.py validate path\to\file.epub
+python kindlemaster.py process path\to\chess.pdf --out output\chess_auto --mode auto
+python kindlemaster.py validate output\chess_auto --strict
+python kindlemaster.py report output\chess_auto
+python kindlemaster.py review output\chess_auto
 python kindlemaster.py audit path\to\file.epub
+python kindlemaster.py chess-study run-all --pdf path\to\chess.pdf --html path\to\current.html --out output\yusupov_study --quality-profile default
+python kindlemaster.py chess-study run-all --pdf path\to\chess.pdf --html path\to\current.html --out output\yusupov_study_audit --quality-profile smoke --render-pages
 python kindlemaster.py workflow baseline path\to\input.pdf --change-area reference
 python kindlemaster.py workflow verify path\to\input.pdf --run-id <run_id>
 python kindlemaster.py orchestrate doctor
 python kindlemaster.py orchestrate sync --issues-json reports/github/issues.json
 ```
 
-`python kindlemaster.py test --suite quality-critical` is the coverage-enforced conversion lane. It protects the core conversion modules with total coverage plus per-file gates for `converter.py` and `kindle_semantic_cleanup.py`, while keeping `quick` bounded.
+Chess-study FEN quality loop commands are also available under the same entrypoint:
 
-`python kindlemaster.py test --suite full` is a diagnostic all-discovery lane. It delegates to `unittest discover -p test*.py`, so it also runs tests intentionally kept out of the explicit suites.
+```powershell
+python kindlemaster.py chess-study quality-baseline --out output\yusupov_study
+python kindlemaster.py chess-study preprocess-boards --out output\yusupov_study
+python kindlemaster.py chess-study build-square-dataset --out output\yusupov_study --labels output\yusupov_study\review\fen_verified_labels.jsonl
+python kindlemaster.py chess-study train-fen-classifier --out output\yusupov_study
+python kindlemaster.py chess-study recognize-fen-local --out output\yusupov_study
+python kindlemaster.py chess-study evaluate-fen-ensemble --out output\yusupov_study
+python kindlemaster.py chess-study export-fen-corpus-manifest --out output\yusupov_study
+python scripts\audit_chess_fen_false_positives.py output\yusupov_study\review\ai_fen_candidates.jsonl output\yusupov_study\review\fen_verified_labels.jsonl --output output\yusupov_study\reports\fen_false_positive_audit.json
+```
 
-`python kindlemaster.py test --suite release` uses the local `standard` corpus proof by default. GitHub READY sets `KINDLEMASTER_RELEASE_PROOF_PROFILE=ci` so clean runners can enforce release units and bounded corpus evidence without pretending to have the full local OCR/PDF premium toolchain.
+`python kindlemaster.py test --suite full` is a diagnostic all-discovery lane. It delegates to `unittest discover -p test*.py`, so it also runs tests intentionally kept out of the explicit `quick`, `release`, `corpus`, `browser`, and `runtime` suite registry.
+
+`python kindlemaster.py test --suite release` uses the local `standard` corpus proof by default. The standard/full proof profiles require release-grade chess FEN corpus evidence: at least two scanned FEN profiles, at least 20 manually verified seed labels per profile, exact FEN accuracy above the configured threshold, and `false_positive_count == 0`. GitHub READY sets `KINDLEMASTER_RELEASE_PROOF_PROFILE=ci` so clean runners can enforce release units and bounded corpus evidence without pretending to have the full local OCR/PDF premium toolchain.
 
 Use `workflow baseline/verify` when you are fixing a real defect and need the standard engineering loop:
 `reproduce -> isolate -> fix -> validate -> compare before/after`.

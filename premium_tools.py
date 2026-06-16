@@ -929,47 +929,36 @@ def _detect_toolchain_uncached() -> dict:
         "It never mutates EPUB bytes automatically.",
     ]
     try:
-        from email_delivery import load_email_delivery_config
+        from deepseek_quality_provider import deepseek_audit_configuration_status
 
-        email_config = load_email_delivery_config()
-        email_delivery_missing = list(email_config.missing_config)
-        if email_config.configured:
-            email_delivery_status = "supported"
-        elif email_config.enabled:
-            email_delivery_status = "degraded"
-        else:
-            email_delivery_status = "unavailable"
-            email_delivery_missing = ["KINDLEMASTER_EMAIL_DELIVERY=1"]
-        email_delivery_notes = [
-            "SMTP delivery is optional and only sends release-ready EPUB attachments after an explicit user action.",
-            "Secrets are read from environment variables and are never reported by doctor.",
-        ]
+        deepseek_audit = deepseek_audit_configuration_status(cwd=Path.cwd())
     except Exception as error:
-        email_delivery_status = "degraded"
-        email_delivery_missing = ["email_delivery_config_error"]
-        email_delivery_notes = [f"Could not inspect email delivery configuration: {error}"]
-    try:
-        from supabase_auth import load_supabase_auth_config
-        from supabase_library import load_supabase_library_config
-
-        auth_config = load_supabase_auth_config()
-        library_config = load_supabase_library_config()
-        cloud_library_missing = sorted(set([*auth_config.missing_config, *library_config.missing_config]))
-        if auth_config.configured and library_config.configured:
-            cloud_library_status = "supported"
-        elif auth_config.enabled or library_config.enabled:
-            cloud_library_status = "degraded"
-        else:
-            cloud_library_status = "unavailable"
-            cloud_library_missing = ["KINDLEMASTER_AUTH_PROVIDER=supabase"]
-        cloud_library_notes = [
-            "Supabase Auth and private Storage provide optional account-scoped durable library history.",
-            "Service role is required only on the Flask backend and is never exposed to the React client.",
-        ]
-    except Exception as error:
-        cloud_library_status = "degraded"
-        cloud_library_missing = ["supabase_config_error"]
-        cloud_library_notes = [f"Could not inspect Supabase account library configuration: {error}"]
+        deepseek_audit = {
+            "enabled": False,
+            "api_key_present": False,
+            "model": "",
+            "base_url": "",
+            "mode": "evidence_only",
+            "evidence_only": True,
+            "full_document_upload": False,
+            "mutates_output": False,
+            "error": str(error),
+        }
+    deepseek_audit_enabled = bool(deepseek_audit.get("enabled"))
+    deepseek_audit_key_present = bool(deepseek_audit.get("api_key_present"))
+    if deepseek_audit_enabled and deepseek_audit_key_present:
+        deepseek_audit_status = "supported"
+        deepseek_audit_missing: list[str] = []
+    elif deepseek_audit_enabled:
+        deepseek_audit_status = "degraded"
+        deepseek_audit_missing = ["DEEPSEEK_API_KEY"]
+    else:
+        deepseek_audit_status = "unavailable"
+        deepseek_audit_missing = ["KINDLEMASTER_DEEPSEEK_AUDIT=1"]
+    deepseek_audit_notes = [
+        "Optional audit-first reviewer for glyph, chess layout, and compact quality evidence.",
+        "It never mutates EPUB, PGN, FEN, or TOC output.",
+    ]
 
     conversion_capabilities = {
         "core_conversion": _capability_payload(
@@ -1019,33 +1008,12 @@ def _detect_toolchain_uncached() -> dict:
             missing_requirements=openai_quality_missing,
             notes=openai_quality_notes,
         ),
-        "email_delivery": _capability_payload(
+        "deepseek_audit_review": _capability_payload(
             support_level="optional",
-            status=email_delivery_status,
-            description="Optional SMTP delivery for explicit Send-to-Kindle email handoff.",
-            missing_requirements=email_delivery_missing,
-            notes=email_delivery_notes,
-            manual_steps=[
-                "Set KINDLEMASTER_EMAIL_DELIVERY=1 and configure KINDLEMASTER_SMTP_HOST, KINDLEMASTER_SMTP_USERNAME, KINDLEMASTER_SMTP_PASSWORD, and KINDLEMASTER_SMTP_FROM.",
-                "Use KINDLEMASTER_SMTP_HOST=smtp.sendgrid.net for Twilio SendGrid SMTP, or another SMTP provider.",
-                "Re-run `python kindlemaster.py doctor` before testing `POST /convert/delivery/<job_id>/email`.",
-            ]
-            if email_delivery_status != "supported"
-            else [],
-        ),
-        "cloud_account_library": _capability_payload(
-            support_level="optional",
-            status=cloud_library_status,
-            description="Optional Supabase Auth + private Storage for account-scoped durable conversion history.",
-            missing_requirements=cloud_library_missing,
-            notes=cloud_library_notes,
-            manual_steps=[
-                "Set KINDLEMASTER_AUTH_PROVIDER=supabase, SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, SUPABASE_SERVICE_ROLE_KEY, and SUPABASE_ARTIFACT_BUCKET.",
-                "Apply supabase/migrations/202605210001_user_accounts_library.sql to the Supabase project.",
-                "Re-run `python kindlemaster.py doctor`, then log in through the React UI and import local history.",
-            ]
-            if cloud_library_status != "supported"
-            else [],
+            status=deepseek_audit_status,
+            description="Optional DeepSeek audit reviewer for bounded diagnostics; evidence-only and opt-in.",
+            missing_requirements=deepseek_audit_missing,
+            notes=deepseek_audit_notes,
         ),
     }
 

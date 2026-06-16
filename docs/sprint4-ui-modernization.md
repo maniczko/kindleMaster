@@ -4,11 +4,11 @@ Sprint 4 introduces a React/Vite UI workspace while keeping the Flask API stable
 
 ## Routes
 
-- `/` serves the React shell after `npm run build:ui`.
-- `/app` serves the same React shell for direct workspace links.
-- `/legacy` keeps the old Flask/static control panel as a rollback surface.
-- If the React build is missing, `/app` returns a small unbuilt-state page with the local commands.
-- If the React build is missing, `/` falls back to the legacy static control panel.
+- `/` always redirects to `/app`.
+- `/app` serves the React shell after `npm run build:ui`.
+- `python kindlemaster.py serve` builds the React shell automatically when `static/react/index.html` is missing or stale.
+- If the React build is missing because build was skipped or failed, `/app` returns `503` with a clear build-missing message.
+- `/legacy` redirects to `/app` by default. Set `KINDLEMASTER_ENABLE_LEGACY_UI=1` only for explicit legacy debug access.
 - `static/react/` is generated build output and is ignored by Git.
 
 ## Commands
@@ -48,4 +48,4 @@ The shared quality-state adapter consumes:
 
 ## Migration Rule
 
-Do not remove the legacy template until the React shell has browser and runtime coverage in CI. The current rollback route is `/legacy`; keep root `/` aligned with the React shell so the default local URL opens the premium console.
+Do not remove the legacy template until the Sprint 4 React route has browser and runtime coverage in CI. The root route no longer falls back to legacy; legacy access is debug-only behind `KINDLEMASTER_ENABLE_LEGACY_UI=1`.

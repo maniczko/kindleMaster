@@ -328,12 +328,175 @@ def _supabase_library_client() -> SupabaseLibraryClient:
 def _profile_with_secret_status(profile: dict) -> dict:
     from local_env import resolve_runtime_environment
 
-    environment = resolve_runtime_environment()
-    public_profile = dict(profile)
-    email_delivery = dict(public_profile.get("email_delivery", {}) or {})
-    email_delivery["secret_configured"] = bool(environment.get("KINDLEMASTER_SMTP_PASSWORD"))
-    public_profile["email_delivery"] = email_delivery
-    return public_profile
+
+def _send_local_input_artifact_fallback(job_id: str, job: dict, artifact: dict):
+    filename = str(artifact.get("filename") or job.get("filename") or f"{job_id}.pdf").strip() or f"{job_id}.pdf"
+    fallback_path = _find_local_pdf_source_fallback(filename, int(artifact.get("size_bytes") or 0))
+    if fallback_path is None:
+        return None
+    artifact.update(
+        {
+            "provider": "local",
+            "status": "stored",
+            "kind": "input",
+            "job_id": job_id,
+            "filename": filename,
+            "location": str(fallback_path),
+            "size_bytes": fallback_path.stat().st_size,
+            "content_type": "application/pdf",
+            "signed_url": {"available": False, "url": "", "expires_in_seconds": 0, "reason": "local_fallback"},
+        }
+    )
+    artifacts = dict(job.get("artifacts", {}) or {})
+    artifacts["input"] = artifact
+    job["artifacts"] = artifacts
+    _CONVERSION_JOB_STORE.create(job)
+    response = send_file(
+        io.BytesIO(fallback_path.read_bytes()),
+        mimetype="application/pdf",
+        as_attachment=False,
+        download_name=filename,
+    )
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["X-KindleMaster-Artifact-Source"] = "fallback"
+    return response
+
+
+def _artifact_should_download_as_attachment(artifact_key: str, artifact: dict) -> bool:
+    key = _safe_artifact_key(artifact_key)
+    if key in {"input", "pdf_layout_preview", "chess_pgn_html", "chess_glyph_diagnostics", "deepseek_audit"}:
+        return False
+    content_type = str(artifact.get("content_type") or "").strip().lower()
+    if key.startswith("chess_") and (content_type.startswith("text/html") or content_type.startswith("application/json")):
+        return False
+    return True
+
+
+def _render_pdf_layout_preview_shell(job_id: str, job: dict, artifact: dict, artifact_path: Path):
+    try:
+        preview_html = artifact_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        preview_html = artifact_path.read_text(encoding="utf-8", errors="replace")
+    filename = str(artifact.get("filename") or artifact_path.name or "pdf_layout_preview.html")
+    title = str(job.get("title") or job.get("filename") or filename or "PDF layout preview").strip()
+    local_app_url = build_local_app_url(
+        _resolve_request_port_label(request.host, _resolve_server_port())
+    )
+    response = app.make_response(
+        render_template(
+            "artifact_preview_shell.html",
+            title=title,
+            job_id=job_id,
+            local_app_url=local_app_url,
+            preview_html=preview_html,
+            static_asset_version=_legacy_static_asset_version(),
+        )
+    )
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["X-KindleMaster-Artifact-Source"] = "local-shell"
+    response.headers["Content-Type"] = "text/html; charset=utf-8"
+    return response
+
+
+def _render_chess_pgn_semantic_artifact(job_id: str, job: dict, artifact: dict, artifact_path: Path):
+    semantic_index = _ensure_semantic_chess_html_artifact(job_id, job, artifact_path)
+    if semantic_index is None or not semantic_index.is_file():
+        return None
+    try:
+        html_text = semantic_index.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        html_text = semantic_index.read_text(encoding="utf-8", errors="replace")
+    asset_base = f"/convert/artifact/{quote(job_id)}/chess_pgn_html_asset/"
+    html_text = _rewrite_semantic_chess_asset_urls(html_text, asset_base=asset_base)
+    response = app.make_response(html_text)
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["X-KindleMaster-Artifact-Source"] = "semantic-chess-reader"
+    response.headers["Content-Type"] = "text/html; charset=utf-8"
+    return response
+
+
+def _ensure_semantic_chess_html_artifact(job_id: str, job: dict, artifact_path: Path) -> Path | None:
+    job_dir = _artifact_job_dir_from_path(artifact_path)
+    semantic_dir = job_dir / "semantic_chess_html" if job_dir is not None else artifact_path.parent / "semantic_chess_html"
+    semantic_index = semantic_dir / "index.html"
+    try:
+        if semantic_index.is_file() and semantic_index.stat().st_mtime >= artifact_path.stat().st_mtime:
+            return semantic_index
+    except OSError:
+        pass
+    try:
+        from chess_study_export import rebuild_chess_source_html_export
+
+        source_pdf = _job_input_path(job)
+        rebuild_chess_source_html_export(
+            artifact_path,
+            semantic_dir,
+            pdf_path=source_pdf if source_pdf and source_pdf.is_file() else None,
+        )
+    except Exception:
+        return None
+    return semantic_index if semantic_index.is_file() else None
+
+
+def _rewrite_semantic_chess_asset_urls(html_text: str, *, asset_base: str) -> str:
+    replacements = {
+        'href="styles.css"': f'href="{asset_base}styles.css"',
+        "href='styles.css'": f"href='{asset_base}styles.css'",
+        'src="app.js"': f'src="{asset_base}app.js"',
+        "src='app.js'": f"src='{asset_base}app.js'",
+        'href="assets/': f'href="{asset_base}assets/',
+        "href='assets/": f"href='{asset_base}assets/",
+        'src="assets/': f'src="{asset_base}assets/',
+        "src='assets/": f"src='{asset_base}assets/",
+    }
+    for old, new in replacements.items():
+        html_text = html_text.replace(old, new)
+    return html_text
+
+
+def _artifact_job_dir_from_path(path: Path) -> Path | None:
+    resolved = path.resolve()
+    for parent in [resolved.parent, *resolved.parents]:
+        if parent.name == "report":
+            return parent.parent
+    return None
+
+
+def _job_input_path(job: dict) -> Path | None:
+    artifacts = dict(job.get("artifacts", {}) or {})
+    input_artifact = artifacts.get("input")
+    if isinstance(input_artifact, dict):
+        location = str(input_artifact.get("location") or "").strip()
+        if location:
+            return Path(location)
+    source_path = str(job.get("source_path") or "").strip()
+    return Path(source_path) if source_path else None
+
+
+def _resolve_job_source_pdf_for_compression(job_id: str, job: dict) -> tuple[Path, str, bool]:
+    artifacts = dict(job.get("artifacts", {}) or {})
+    input_artifact = artifacts.get("input")
+    if not isinstance(input_artifact, dict):
+        raise PdfCompressionFailed("No preserved source PDF artifact is available for this job.")
+
+    filename = str(input_artifact.get("filename") or job.get("filename") or f"{job_id}.pdf").strip() or f"{job_id}.pdf"
+    local_path = _resolve_local_artifact_path(input_artifact)
+    if local_path is not None:
+        return local_path, filename, False
+
+    local_fallback = _find_local_pdf_source_fallback(filename, int(input_artifact.get("size_bytes") or 0))
+    if local_fallback is not None:
+        return local_fallback, filename, False
+
+    signed_url = _signed_artifact_url(input_artifact) or str(input_artifact.get("download_url") or "").strip()
+    if not signed_url:
+        raise PdfCompressionFailed("Source PDF artifact is not locally available and has no signed URL.")
+    source_path = PDF_COMPRESS_DIR / f"{job_id}.artifact-source.pdf"
+    _download_remote_pdf_artifact(signed_url, source_path)
+    return source_path, filename, True
 
 
 def _artifact_storage_status() -> dict:
@@ -473,7 +636,10 @@ def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
     quality_json_file = _first_file(job_dir / "report", "*.quality.json")
     markdown_report_file = _first_file(job_dir / "report", "*.quality.md")
     chess_pgn_file = _first_file(job_dir / "report", "*.pgn")
-    chess_pgn_html_file = _first_file(job_dir / "report", "*.html")
+    chess_pgn_html_file = _first_file(job_dir / "report", "chess_games.html")
+    chess_glyph_diagnostics_file = _first_file(job_dir / "report", "chess_glyph_diagnostics.json")
+    deepseek_audit_file = _first_file(job_dir / "report", "deepseek_audit.json")
+    pdf_layout_preview_file = _first_file(job_dir / "report", "pdf_layout_preview.html")
     runtime_json_file = _first_file(job_dir / "log", "*.runtime.json")
     if input_file is None and output_file is None and quality_json_file is None:
         return None
@@ -546,6 +712,22 @@ def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
         artifacts["chess_pgn_html"] = _local_artifact_metadata(job_id, ArtifactKind.REPORT, chess_pgn_html_file)
         artifacts["chess_pgn_html"]["download_url"] = f"/convert/artifact/{job_id}/chess_pgn_html"
         artifacts["chess_pgn_html"]["label"] = "HTML PGN/FEN"
+    if chess_glyph_diagnostics_file is not None:
+        artifacts["chess_glyph_diagnostics"] = _local_artifact_metadata(
+            job_id,
+            ArtifactKind.REPORT,
+            chess_glyph_diagnostics_file,
+        )
+        artifacts["chess_glyph_diagnostics"]["download_url"] = f"/convert/artifact/{job_id}/chess_glyph_diagnostics"
+        artifacts["chess_glyph_diagnostics"]["label"] = "Chess glyph diagnostics"
+    if deepseek_audit_file is not None:
+        artifacts["deepseek_audit"] = _local_artifact_metadata(job_id, ArtifactKind.REPORT, deepseek_audit_file)
+        artifacts["deepseek_audit"]["download_url"] = f"/convert/artifact/{job_id}/deepseek_audit"
+        artifacts["deepseek_audit"]["label"] = "DeepSeek audit"
+    if pdf_layout_preview_file is not None:
+        artifacts["pdf_layout_preview"] = _local_artifact_metadata(job_id, ArtifactKind.REPORT, pdf_layout_preview_file)
+        artifacts["pdf_layout_preview"]["download_url"] = f"/convert/artifact/{job_id}/pdf_layout_preview"
+        artifacts["pdf_layout_preview"]["label"] = "PDF layout preview"
     if runtime_json_file is not None:
         artifacts["log"] = _local_artifact_metadata(job_id, ArtifactKind.LOG, runtime_json_file)
     job["artifacts"] = artifacts
@@ -3224,34 +3406,33 @@ def _react_shell_index_path() -> Path:
     return Path(app.root_path) / "static" / "react" / "index.html"
 
 
-def _render_legacy_index():
+def _legacy_ui_enabled() -> bool:
+    value = os.environ.get("KINDLEMASTER_ENABLE_LEGACY_UI", "")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _legacy_ui_asset_paths() -> list[Path]:
     root_path = Path(app.root_path)
-    react_index = root_path / "static" / "react" / "index.html"
-    if react_index.exists():
-        response = app.response_class(react_index.read_text(encoding="utf-8"), mimetype="text/html; charset=utf-8")
-        apply_no_store_headers(response.headers)
-        return response
-    return legacy_index()
-
-
-@app.route("/favicon.ico")
-def favicon():
-    return send_from_directory(Path(app.root_path) / "static", "favicon.ico", mimetype="image/x-icon")
-
-
-@app.route("/legacy")
-def legacy_index():
-    root_path = Path(app.root_path)
-    ui_asset_paths = [
+    return [
         root_path / "templates" / "index.html",
+        root_path / "templates" / "artifact_preview_shell.html",
         root_path / "static" / "css" / "app-shell.css",
         root_path / "static" / "js" / "conversion-ui.js",
         root_path / "static" / "js" / "quality-cockpit.js",
         root_path / "static" / "js" / "library.js",
     ]
+
+
+def _legacy_static_asset_version() -> str:
+    ui_asset_paths = _legacy_ui_asset_paths()
     updated_at_timestamp = max(
         path.stat().st_mtime for path in ui_asset_paths if path.exists()
     )
+    return str(int(updated_at_timestamp))
+
+
+def _render_legacy_index():
+    updated_at_timestamp = float(_legacy_static_asset_version())
     updated_at = datetime.fromtimestamp(updated_at_timestamp)
     local_app_url = build_local_app_url(
         _resolve_request_port_label(request.host, _resolve_server_port())
@@ -3268,19 +3449,23 @@ def legacy_index():
         "index.html",
         local_app_url=local_app_url,
         updated_at_label=updated_at_label,
+        static_asset_version=_legacy_static_asset_version(),
     )
 
 
 @app.route("/")
 def index():
-    if _react_shell_index_path().exists():
-        return redirect("/app", code=302)
-    return _render_legacy_index()
+    return redirect("/app", code=302)
 
 
 @app.route("/legacy")
 def legacy_index():
-    return _render_legacy_index()
+    if not _legacy_ui_enabled():
+        return redirect("/app", code=302)
+    response = app.make_response(_render_legacy_index())
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
 
 
 @app.route("/favicon.ico")
@@ -3294,15 +3479,26 @@ def react_app(_path: str = ""):
     """Serve the Sprint 4 React shell when the Vite build is available."""
 
     react_index = _react_shell_index_path()
-    local_app_url = build_local_app_url(
-        _resolve_request_port_label(request.host, _resolve_server_port())
-    )
     if react_index.exists():
-        return react_index.read_text(encoding="utf-8")
-    return render_template(
-        "react_app_unbuilt.html",
-        local_app_url=local_app_url,
+        response = app.make_response(react_index.read_text(encoding="utf-8"))
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Content-Type"] = "text/html; charset=utf-8"
+        return response
+    response = app.make_response(
+        "<!doctype html><html lang=\"pl\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        "<title>KindleMaster UI build missing</title></head><body>"
+        "<main><h1>KindleMaster UI build missing</h1>"
+        "<p>Uruchom <code>npm run build:ui</code> albo wystartuj serwer przez "
+        "<code>python kindlemaster.py serve</code>. Stary layout nie jest już "
+        "domyślnym fallbackiem.</p></main></body></html>"
     )
+    response.status_code = 503
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Content-Type"] = "text/html; charset=utf-8"
+    return response
 
 
 @app.route("/auth/config", methods=["GET"])
@@ -4516,6 +4712,9 @@ def convert_artifact_download(job_id: str, artifact_key: str):
     _cleanup_expired_conversion_jobs()
     job = _get_conversion_job(job_id)
     if not job:
+        _ensure_local_artifact_history_loaded()
+        job = _get_conversion_job(job_id)
+    if not job:
         # Details views may survive a local server restart while the durable job
         # history lives in Supabase. If the browser sends auth, rehydrate the
         # local store before deciding the artifact is missing.
@@ -4549,15 +4748,92 @@ def convert_artifact_download(job_id: str, artifact_key: str):
             if fallback_response is not None:
                 return fallback_response
         return _send_remote_artifact_proxy(artifact, job_id=job_id, artifact_key=key)
+    if key == "pdf_layout_preview":
+        return _render_pdf_layout_preview_shell(job_id, job, artifact, artifact_path)
+    if key == "chess_pgn_html":
+        semantic_response = _render_chess_pgn_semantic_artifact(job_id, job, artifact, artifact_path)
+        if semantic_response is not None:
+            return semantic_response
     response = send_file(
         artifact_path,
         mimetype=str(artifact.get("content_type") or mimetypes.guess_type(artifact_path.name)[0] or "application/octet-stream"),
-        as_attachment=key != "input",
+        as_attachment=_artifact_should_download_as_attachment(key, artifact),
         download_name=str(artifact.get("filename") or artifact_path.name),
     )
     response.headers["Cache-Control"] = "no-store, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["X-KindleMaster-Artifact-Source"] = "local"
+    return response
+
+
+@app.route("/convert/artifact/<job_id>/chess_pgn_html_asset/<path:asset_path>", methods=["GET"])
+def convert_chess_pgn_html_asset(job_id: str, asset_path: str):
+    _mark_timed_out_conversion_jobs()
+    _cleanup_expired_conversion_jobs()
+    job = _get_conversion_job(job_id)
+    if not job:
+        return _json_error(
+            "Nie znaleziono zadania konwersji.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="download",
+            job_id=job_id,
+        )
+    artifacts = dict(job.get("artifacts", {}) or {})
+    artifact = artifacts.get("chess_pgn_html")
+    if not isinstance(artifact, dict):
+        return _json_error(
+            "Nie znaleziono artefaktu HTML PGN/FEN.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="download",
+            job_id=job_id,
+        )
+    artifact_path = _resolve_local_artifact_path(artifact)
+    if artifact_path is None or not artifact_path.is_file():
+        return _json_error(
+            "Nie znaleziono lokalnego artefaktu HTML PGN/FEN.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="download",
+            job_id=job_id,
+        )
+    semantic_index = _ensure_semantic_chess_html_artifact(job_id, job, artifact_path)
+    if semantic_index is None:
+        return _json_error(
+            "Nie udało się przygotować semantycznego HTML PGN/FEN.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="download",
+            job_id=job_id,
+        )
+    root = semantic_index.parent.resolve()
+    requested = (root / asset_path).resolve()
+    if root not in requested.parents and requested != root:
+        return _json_error(
+            "Nieprawidłowa ścieżka artefaktu.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="download",
+            job_id=job_id,
+        )
+    if not requested.is_file():
+        return _json_error(
+            "Nie znaleziono assetu semantycznego HTML.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="download",
+            job_id=job_id,
+        )
+    response = send_file(
+        requested,
+        mimetype=mimetypes.guess_type(requested.name)[0] or "application/octet-stream",
+        as_attachment=False,
+        download_name=requested.name,
+    )
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["X-KindleMaster-Artifact-Source"] = "semantic-chess-reader-asset"
     return response
 
 

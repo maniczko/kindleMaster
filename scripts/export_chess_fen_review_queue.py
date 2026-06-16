@@ -16,6 +16,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from chess_position_recognizer import load_piece_templates, recognize_chess_position_from_image, validate_fen
+from openai_chess_fen_reviewer import POLICY_ACKNOWLEDGEMENT
 
 DEFAULT_OPENAI_CHESS_FEN_REVIEW_MODEL = "gpt-4.1-mini"
 DEFAULT_OPENAI_REVIEW_MAX_IMAGE_BYTES = 1_500_000
@@ -591,9 +592,11 @@ def _openai_label_assist_body(item: dict[str, Any], *, image_url: str, model: st
         "instructions": (
             "You are a conservative chess FEN label-assist reviewer for KindleMaster. "
             "Use only the provided board crop and deterministic evidence. Return JSON only. "
-            "Do not invent pieces, do not assume side-to-move unless evidence is explicit, "
-            "and do not approve a FEN when any occupied square is ambiguous. "
-            "Your output is review evidence only; it must not mutate EPUB output or corpus labels."
+            "Do not invent pieces, do not assume side-to-move unless marker/caption evidence is explicit, "
+            "and do not support a candidate when any occupied square is ambiguous. If you disagree with "
+            "the candidate, return square_diffs. Never output verified, accepted, accepted_for_corpus, "
+            "label_status, verified_by, or verified_at. Your output is review evidence only; it must not "
+            f"mutate EPUB output or corpus labels and must include policy_acknowledgement='{POLICY_ACKNOWLEDGEMENT}'."
         ),
         "input": [
             {
@@ -627,23 +630,60 @@ def _openai_label_assist_schema() -> dict[str, Any]:
         "additionalProperties": False,
         "properties": {
             "id": {"type": "string"},
-            "approved": {"type": "boolean"},
-            "corrected_fen": {"type": "string"},
+            "review_opinion": {"type": "string", "enum": ["supports_candidate", "flags_candidate", "uncertain", "cannot_verify"]},
+            "candidate_fen": {"type": "string"},
+            "suggested_fen": {"type": "string"},
             "requires_review": {"type": "boolean"},
             "ambiguous_squares": {"type": "array", "items": {"type": "string"}},
+            "square_diffs": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "square": {"type": "string"},
+                        "candidate_piece": {"type": "string"},
+                        "observed_piece": {"type": "string"},
+                        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["square", "candidate_piece", "observed_piece", "confidence", "reason"],
+                },
+            },
+            "side_to_move": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "value": {"type": "string", "enum": ["w", "b", "unknown"]},
+                    "evidence": {"type": "string", "enum": ["marker", "caption", "inferred", "none"]},
+                    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                },
+                "required": ["value", "evidence", "confidence"],
+            },
             "issues": {"type": "array", "items": {"type": "string"}},
             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "cannot_verify_reason": {"type": "string"},
+            "evidence_level": {"type": "string", "enum": ["clear", "ambiguous", "insufficient_crop", "missing_crop"]},
+            "crop_quality_notes": {"type": "array", "items": {"type": "string"}},
             "notes": {"type": "string"},
+            "policy_acknowledgement": {"type": "string", "enum": [POLICY_ACKNOWLEDGEMENT]},
         },
         "required": [
             "id",
-            "approved",
-            "corrected_fen",
+            "review_opinion",
+            "candidate_fen",
+            "suggested_fen",
             "requires_review",
             "ambiguous_squares",
+            "square_diffs",
+            "side_to_move",
             "issues",
             "confidence",
+            "cannot_verify_reason",
+            "evidence_level",
+            "crop_quality_notes",
             "notes",
+            "policy_acknowledgement",
         ],
     }
 
@@ -657,9 +697,12 @@ def _review_prompt(summary: dict[str, Any]) -> str:
             "",
             "Policy:",
             "- Do not mutate EPUB output directly.",
-            "- Accept a FEN only when the crop unambiguously supports every occupied square.",
+            "- Support a candidate for human review only when the crop unambiguously supports every occupied square.",
             "- If uncertain, return `requires_review=true` and explain the ambiguous squares.",
-            "- Preserve side-to-move as `w` unless caption evidence proves otherwise.",
+            "- `review_opinion=supports_candidate` is only a review opinion; it is never a verified label or permission to publish.",
+            "- Return side-to-move as `unknown` unless marker/caption evidence proves otherwise.",
+            "- Include `square_diffs` when the observed crop disagrees with the candidate FEN.",
+            f"- Always include `policy_acknowledgement`: `{POLICY_ACKNOWLEDGEMENT}`.",
             "",
             "Input files:",
             f"- `queue.jsonl`: {summary.get('exported_count', 0)} prioritized cases.",
@@ -679,10 +722,10 @@ def _review_prompt(summary: dict[str, Any]) -> str:
             "",
             "Expected JSONL response per item:",
             '```json',
-            '{"id":"...","approved":false,"corrected_fen":"","requires_review":true,"ambiguous_squares":["e4"],"notes":"..."}',
+            '{"id":"...","review_opinion":"uncertain","candidate_fen":"","suggested_fen":"","requires_review":true,"ambiguous_squares":["e4"],"square_diffs":[],"side_to_move":{"value":"unknown","evidence":"none","confidence":0},"issues":[],"confidence":0.2,"cannot_verify_reason":"","evidence_level":"ambiguous","crop_quality_notes":[],"notes":"...","policy_acknowledgement":"review_only_no_corpus_promotion"}',
             '```',
             "",
-            "Promotion rule: approved/corrected items must be added to the canonical label JSONL and pass deterministic eval before runtime publication.",
+            "Promotion rule: AI suggestions may only prefill a manual draft. A human must visually verify the crop before any corpus label or runtime publication.",
             "",
         ]
     )

@@ -47,6 +47,7 @@
       const payload = item && typeof item === "object" ? item : {};
       const downloadUrl = payload.download_url || payload.downloadUrl || "";
       const qualityStateUrl = payload.quality_state_url || payload.qualityStateUrl || "";
+      const artifacts = normalizeConversionArtifacts(payload.artifacts || {});
       const status = normalizeRecentConversionStatus(
         payload.status || (downloadUrl || qualityStateUrl || payload.verdict ? "ready" : ""),
       );
@@ -63,6 +64,7 @@
         qualityStateUrl,
         reportJsonUrl: payload.report_json_url || payload.reportJsonUrl || "",
         reportMarkdownUrl: payload.report_markdown_url || payload.reportMarkdownUrl || "",
+        artifacts,
         outputSizeBytes: coerceFiniteNumber(payload.output_size_bytes ?? payload.outputSizeBytes),
         error: payload.error || "",
         verdict: payload.release_verdict || payload.releaseVerdict || payload.verdict || "",
@@ -73,6 +75,49 @@
         profile: payload.profile || "",
         validation: payload.validation || "",
       };
+    }
+
+    function normalizeConversionArtifacts(rawArtifacts) {
+      const artifacts = rawArtifacts && typeof rawArtifacts === "object" ? rawArtifacts : {};
+      return Object.entries(artifacts).reduce((items, [key, artifact]) => {
+        if (!artifact || typeof artifact !== "object") return items;
+        const url = artifact.download_url || artifact.downloadUrl || "";
+        if (!url) return items;
+        items[key] = {
+          key,
+          url,
+          filename: artifact.filename || "",
+          label: artifact.label || formatArtifactLabel(key),
+          contentType: artifact.content_type || artifact.contentType || "",
+        };
+        return items;
+      }, {});
+    }
+
+    function formatArtifactLabel(key) {
+      const labels = {
+        pdf_layout_preview: "PDF layout preview",
+        chess_glyph_diagnostics: "Glyph diagnostics",
+        chess_pgn_html: "HTML PGN/FEN",
+        chess_pgn: "PGN",
+      };
+      return labels[key] || key.replace(/_/g, " ");
+    }
+
+    function renderArtifactAction(artifact, label = "") {
+      if (!artifact || !artifact.url) return "";
+      const text = label || artifact.label || formatArtifactLabel(artifact.key);
+      return `<a href="${escapeHtml(artifact.url)}" target="_blank" rel="noreferrer">${escapeHtml(text)}</a>`;
+    }
+
+    function renderReviewArtifactActions(artifacts) {
+      if (!artifacts || typeof artifacts !== "object") return [];
+      return [
+        renderArtifactAction(artifacts.pdf_layout_preview, "PDF layout preview"),
+        renderArtifactAction(artifacts.chess_pgn_html, "HTML PGN/FEN"),
+        renderArtifactAction(artifacts.chess_glyph_diagnostics, "Glyph diagnostics"),
+        renderArtifactAction(artifacts.chess_pgn, "PGN"),
+      ].filter(Boolean);
     }
 
     function renderRecentConversionItem(item) {
@@ -97,6 +142,7 @@
       const evidenceActions = ["ready", "failed", "blocked", "interrupted"].includes(status);
       const actions = evidenceActions ? [
         payload.downloadUrl ? `<a href="${escapeHtml(payload.downloadUrl)}">${downloadLabel}</a>` : "",
+        ...renderReviewArtifactActions(payload.artifacts),
         payload.qualityStateUrl ? `<a href="${escapeHtml(payload.qualityStateUrl)}" target="_blank" rel="noreferrer">JSON jakości</a>` : "",
         payload.reportMarkdownUrl ? `<a href="${escapeHtml(payload.reportMarkdownUrl)}" target="_blank" rel="noreferrer">Raport MD</a>` : "",
         payload.reportJsonUrl ? `<a href="${escapeHtml(payload.reportJsonUrl)}" target="_blank" rel="noreferrer">Raport JSON</a>` : "",
@@ -142,6 +188,7 @@
       ].filter(Boolean).join(" | ");
       const actions = [
         payload.downloadUrl ? `<a data-primary="true" href="${escapeHtml(payload.downloadUrl)}">${downloadLabel}</a>` : "<span>Brak EPUB</span>",
+        ...renderReviewArtifactActions(payload.artifacts),
         payload.qualityStateUrl ? `<a href="${escapeHtml(payload.qualityStateUrl)}" target="_blank" rel="noreferrer">Quality JSON</a>` : "",
         payload.reportMarkdownUrl ? `<a href="${escapeHtml(payload.reportMarkdownUrl)}" target="_blank" rel="noreferrer">Raport MD</a>` : "",
         payload.reportJsonUrl ? `<a href="${escapeHtml(payload.reportJsonUrl)}" target="_blank" rel="noreferrer">Raport JSON</a>` : "",
@@ -267,4 +314,3 @@
         renderLibraryResults([], { query, verdict });
       }
     }
-

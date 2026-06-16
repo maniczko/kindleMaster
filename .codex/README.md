@@ -123,6 +123,12 @@ python kindlemaster.py status
 python kindlemaster.py ml dataset
 python kindlemaster.py ml train
 python kindlemaster.py ml evaluate
+python kindlemaster.py process path\to\chess.pdf --out output\chess_auto --mode auto
+python kindlemaster.py validate output\chess_auto --strict
+python kindlemaster.py report output\chess_auto
+python kindlemaster.py review output\chess_auto
+python kindlemaster.py chess-study run-all --pdf path\to\chess.pdf --html path\to\current.html --out output\yusupov_study --quality-profile default
+python kindlemaster.py chess-study run-all --pdf path\to\chess.pdf --html path\to\current.html --out output\yusupov_study_audit --quality-profile smoke --render-pages
 python kindlemaster.py test --suite browser
 python kindlemaster.py test --suite runtime
 python kindlemaster.py test --suite release

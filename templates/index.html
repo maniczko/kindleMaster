@@ -8,7 +8,7 @@
   <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='favicon-32x32.png') }}">
   <link rel="apple-touch-icon" href="{{ url_for('static', filename='favicon-192x192.png') }}">
   <link rel="manifest" href="{{ url_for('static', filename='site.webmanifest') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/app-shell.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app-shell.css') }}?v={{ static_asset_version }}">
 </head>
 <body>
   <div class="shell" data-vr-hook="vat-209-shell">
@@ -496,8 +496,8 @@
     </div>
   </div>
 
-  <script defer src="{{ url_for('static', filename='js/conversion-ui.js') }}"></script>
-  <script defer src="{{ url_for('static', filename='js/quality-cockpit.js') }}"></script>
-  <script defer src="{{ url_for('static', filename='js/library.js') }}"></script>
+  <script defer src="{{ url_for('static', filename='js/conversion-ui.js') }}?v={{ static_asset_version }}"></script>
+  <script defer src="{{ url_for('static', filename='js/quality-cockpit.js') }}?v={{ static_asset_version }}"></script>
+  <script defer src="{{ url_for('static', filename='js/library.js') }}?v={{ static_asset_version }}"></script>
 </body>
 </html>

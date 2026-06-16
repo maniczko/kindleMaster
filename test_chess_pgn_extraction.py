@@ -8,6 +8,9 @@ from bs4 import BeautifulSoup
 import chess.pgn
 
 from chess_pgn_extractor import (
+    ChessBookLayoutElement,
+    ChessBookLayoutPage,
+    ChessDiagramRecord,
     ChessPgnRecord,
     annotate_records_with_replayed_fens,
     attach_fen_candidates_to_pgn_records,
@@ -678,6 +681,61 @@ class ChessPgnExtractionTests(unittest.TestCase):
         self.assertIn("side_to_move_mismatch", records[0].warnings)
         self.assertEqual(build_combined_pgn(records), "")
 
+    def test_unmapped_glyphs_block_pgn_export(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "1. e4 e5 2. Nf3 Nc6 \"'t!;>b3\" *",
+                page_num=1,
+                source_title="Glyph sample",
+                ocr_confidence=1.0,
+            )
+        )
+
+        self.assertEqual(records[0].status, "requires_review")
+        self.assertEqual(records[0].final_fen, "")
+        self.assertIn("unmapped_chess_glyphs", records[0].warnings)
+        self.assertEqual(build_combined_pgn(records), "")
+        summary = summarize_chess_pgn_records(records)
+        self.assertEqual(summary["warning_counts"]["unmapped_chess_glyphs"], 1)
+        self.assertEqual(summary["unmapped_glyphs"]["record_count"], 1)
+        self.assertGreaterEqual(summary["unmapped_glyphs"]["by_reason"]["mojibake_token"], 1)
+        self.assertEqual(summary["unmapped_glyphs"]["samples"][0]["reason"], "mojibake_token")
+
+    def test_replacement_character_blocks_pgn_export(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "1. e4 e5 2. Nf3 Nc6 \ufffd *",
+                page_num=1,
+                source_title="Replacement sample",
+                ocr_confidence=1.0,
+            )
+        )
+
+        self.assertEqual(records[0].status, "requires_review")
+        self.assertEqual(records[0].final_fen, "")
+        self.assertIn("unmapped_chess_glyphs", records[0].warnings)
+        self.assertEqual(build_combined_pgn(records), "")
+        summary = summarize_chess_pgn_records(records)
+        self.assertEqual(summary["unmapped_glyphs"]["record_count"], 1)
+        self.assertGreaterEqual(summary["unmapped_glyphs"]["by_reason"]["replacement_char"], 1)
+        self.assertIn("\\ufffd", summary["unmapped_glyphs"]["samples"][0]["sample"])
+
+    def test_raw_unmapped_glyph_blocks_parse_clean_annotated_pgn_export(self) -> None:
+        record = ChessPgnRecord(
+            id="raw-dirty",
+            source_pages=[1],
+            title="Raw dirty",
+            headers={"Event": "Raw dirty", "Result": "*"},
+            movetext="1. e4 e5 2. Nf3 Nc6 *",
+            pgn='[Event "Raw dirty"]\n[Result "*"]\n\n1. e4 e5 2. Nf3 Nc6 *\n',
+            annotated_pgn='[Event "Raw dirty"]\n[Result "*"]\n\n1. e4 e5 2. Nf3 Nc6 *\n',
+            status="accepted",
+            final_fen="r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
+            raw_text="1. e4 e5 2. Nf3 Nc6 \"'t!;>b3\" *",
+        )
+
+        self.assertEqual(build_combined_pgn([record]), "")
+
     def test_splits_notation_collection_games_after_cleaned_eco_headers(self) -> None:
         text = """
         1 D00
@@ -815,6 +873,7 @@ class ChessPgnExtractionTests(unittest.TestCase):
 
         self.assertEqual(records[0].status, "accepted")
         self.assertIn("1. g4 d5 2. Nf3 Nf6", records[0].movetext)
+        self.assertNotIn("unmapped_chess_glyphs", records[0].warnings)
 
     def test_full_first_jobava_game_is_accepted_despite_engine_evals(self) -> None:
         records = annotate_records_with_replayed_fens(
@@ -1454,6 +1513,24 @@ B13: Caro-Kann: Exchange Variation
         self.assertIn("navigator.clipboard", html)
         self.assertIn('[Event &quot;Copy sample&quot;]', html)
 
+    def test_pgn_download_html_hides_unmapped_glyphs_from_copyable_pgn(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "1. e4 e5 2. Nf3 Nc6 \"'t!;>b3\" *",
+                page_num=1,
+                source_title="Glyph sample",
+                ocr_confidence=1.0,
+            )
+        )
+
+        html = build_pgn_download_html(records, title="Glyph sample")
+        soup = BeautifulSoup(html, "html.parser")
+
+        self.assertIn("Do weryfikacji", html)
+        self.assertNotIn("\"'t!;>b3\"", html)
+        self.assertIsNone(soup.select_one(".chess-pgn-mainline"))
+        self.assertIn("nierozpoznany glyph", html)
+
     def test_pgn_download_html_shows_full_book_notation_before_strict_pgn(self) -> None:
         records = annotate_records_with_replayed_fens(
             extract_chess_pgn_records_from_text(
@@ -1472,24 +1549,200 @@ B13: Caro-Kann: Exchange Variation
 
         self.assertLess(full_index, strict_index)
 
-    def test_review_pgn_download_html_prefers_raw_ocr_over_reconstructed_pgn(self) -> None:
-        record = ChessPgnRecord(
-            id="ocr-review",
-            source_pages=[13],
-            title="OCR review",
-            headers={"Event": "OCR review", "Result": "*"},
-            movetext="1. Rh8+ Kxh8 *",
-            pgn='[Event "OCR review"]\n[Result "*"]\n\n1. Rh8+ Kxh8 *\n',
-            annotated_pgn='[Event "OCR review"]\n[Result "*"]\n\n{Wixh7t liJ noisy OCR} 1. Rh8+ Kxh8 *\n',
-            raw_text="Original OCR fragment: Wixh7t liJ noisy OCR",
-            status="requires_review",
-            warnings=["pgn_replay_errors"],
+    def test_layout_aware_pgn_html_renders_diagram_card(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "Diagram 1-2\n1. e4 e5 2. Nf3 Nc6 *",
+                page_num=0,
+                source_title="Diagram sample",
+                ocr_confidence=1.0,
+            )
+        )
+        diagram = ChessDiagramRecord(
+            id="diagram-1",
+            page_index=0,
+            page_number=1,
+            bbox=(12.0, 24.0, 132.0, 144.0),
+            caption="Diagram 1-2",
+            image_data_uri="data:image/png;base64,AA==",
+            fen_candidate="8/8/8/8/8/8/8/8 w - - 0 1",
         )
 
-        html = build_pgn_download_html([record], title="OCR review")
+        html = build_pgn_download_html(
+            records,
+            title="Diagram sample",
+            diagrams=[diagram],
+            pdf_preview_href="pdf_layout_preview",
+        )
+        soup = BeautifulSoup(html, "html.parser")
 
-        self.assertIn("Original OCR fragment: Wixh7t liJ noisy OCR", html)
-        self.assertNotIn("[Event &quot;OCR review&quot;]", html)
+        self.assertIsNotNone(soup.select_one("article.chess-review-card"))
+        self.assertIsNotNone(soup.select_one("img.chess-review-diagram"))
+        self.assertIn("Diagram 1-2", html)
+        self.assertIn("8/8/8/8/8/8/8/8 w - - 0 1", html)
+        self.assertEqual(soup.select_one("a.chess-pdf-preview-link")["href"], "pdf_layout_preview")
+
+    def test_layout_aware_review_card_keeps_unmapped_glyph_out_of_copyable_pgn(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "1. e4 e5 2. Nf3 Nc6 \"'t!;>b3\" *",
+                page_num=0,
+                source_title="Glyph diagram sample",
+                ocr_confidence=1.0,
+            )
+        )
+        diagram = ChessDiagramRecord(
+            id="diagram-glyph",
+            page_index=0,
+            page_number=1,
+            bbox=(12.0, 24.0, 132.0, 144.0),
+            caption="Diagram 1",
+            image_data_uri="data:image/png;base64,AA==",
+            matched_record_id=records[0].id,
+        )
+
+        html = build_pgn_download_html(records, title="Glyph diagram sample", diagrams=[diagram])
+        soup = BeautifulSoup(html, "html.parser")
+
+        self.assertIsNotNone(soup.select_one("img.chess-review-diagram"))
+        self.assertIn("Do weryfikacji", html)
+        self.assertNotIn("\"'t!;>b3\"", html)
+        self.assertIsNone(soup.select_one(".chess-pgn-mainline"))
+        self.assertEqual(build_combined_pgn(records), "")
+
+    def test_layout_aware_pgn_html_keeps_unmatched_diagrams_visible(self) -> None:
+        diagram = ChessDiagramRecord(
+            id="unmatched-1",
+            page_index=2,
+            page_number=3,
+            bbox=(10.0, 10.0, 120.0, 120.0),
+            caption="Ex. 5-7",
+            image_data_uri="data:image/png;base64,AA==",
+        )
+
+        html = build_pgn_download_html([], title="Unmatched sample", diagrams=[diagram])
+        soup = BeautifulSoup(html, "html.parser")
+
+        self.assertIn("Unmatched diagrams", html)
+        self.assertIn("Ex. 5-7", html)
+        self.assertIsNotNone(soup.select_one(".chess-unmatched-diagrams img.chess-review-diagram"))
+
+    def test_book_layout_pgn_html_renders_pdf_like_page_overlay(self) -> None:
+        page = ChessBookLayoutPage(
+            page_index=0,
+            page_number=1,
+            width=360,
+            height=480,
+            background_image_data_uri="data:image/jpeg;base64,AA==",
+            elements=[
+                ChessBookLayoutElement(
+                    type="text",
+                    bbox=(36, 40, 220, 54),
+                    reading_order=1,
+                    text="Diagram 1-2",
+                    font_size=11,
+                ),
+                ChessBookLayoutElement(
+                    type="diagram",
+                    bbox=(42, 70, 162, 190),
+                    reading_order=2,
+                    image_data_uri="data:image/png;base64,AA==",
+                    title="Diagram 1-2",
+                ),
+                ChessBookLayoutElement(
+                    type="fen",
+                    bbox=(42, 196, 260, 214),
+                    reading_order=3,
+                    fen="8/8/8/8/8/8/8/8 w - - 0 1",
+                ),
+                ChessBookLayoutElement(
+                    type="pgn_record",
+                    bbox=(190, 70, 338, 168),
+                    reading_order=4,
+                    record_id="game-1",
+                    title="Game 1",
+                    status="accepted",
+                    fen="8/8/8/8/8/8/8/8 w - - 0 1",
+                    pgn='[Event "Game 1"]\n[Result "*"]\n\n1. e4 e5 *',
+                ),
+            ],
+        )
+
+        soup = BeautifulSoup(
+            build_pgn_download_html([], title="Book layout", book_layout_pages=[page]),
+            "html.parser",
+        )
+
+        self.assertIsNotNone(soup.select_one('main[data-km-view="chess-book-review"]'))
+        self.assertIsNotNone(soup.select_one("section.chess-book-page"))
+        self.assertIsNotNone(soup.select_one("img.book-page-bg"))
+        self.assertIsNotNone(soup.select_one(".book-text"))
+        self.assertIsNotNone(soup.select_one(".book-diagram img"))
+        self.assertIsNotNone(soup.select_one(".book-fen"))
+        self.assertIsNotNone(soup.select_one(".book-pgn-record.accepted .chess-pgn-mainline"))
+        style = soup.select_one(".book-text")["style"]
+        self.assertIn("left:36.00px", style)
+        self.assertIn("top:40.00px", style)
+
+    def test_book_layout_preserves_reading_order_attributes(self) -> None:
+        page = ChessBookLayoutPage(
+            page_index=0,
+            page_number=1,
+            width=240,
+            height=320,
+            elements=[
+                ChessBookLayoutElement(type="text", bbox=(10, 50, 100, 62), reading_order=20, text="second"),
+                ChessBookLayoutElement(type="text", bbox=(10, 30, 100, 42), reading_order=10, text="first"),
+            ],
+        )
+
+        soup = BeautifulSoup(build_pgn_download_html([], book_layout_pages=[page]), "html.parser")
+        texts = soup.select(".book-text")
+
+        self.assertEqual([item.get_text(strip=True) for item in texts], ["first", "second"])
+        self.assertEqual([item["data-reading-order"] for item in texts], ["10", "20"])
+
+    def test_book_layout_review_record_does_not_emit_suspicious_copyable_pgn(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "1. e4 e5 2. Nf3 Nc6 \"'t!;>b3\" *",
+                page_num=0,
+                source_title="Glyph book layout",
+                ocr_confidence=1.0,
+            )
+        )
+        page = ChessBookLayoutPage(
+            page_index=0,
+            page_number=1,
+            width=360,
+            height=480,
+            elements=[
+                ChessBookLayoutElement(
+                    type="review_warning",
+                    bbox=(190, 40, 338, 66),
+                    reading_order=1,
+                    text="PGN requires review",
+                    warnings=["unmapped_chess_glyphs"],
+                ),
+                ChessBookLayoutElement(
+                    type="pgn_record",
+                    bbox=(190, 70, 338, 168),
+                    reading_order=2,
+                    record_id=records[0].id,
+                    title="Glyph record",
+                    status="requires_review",
+                    warnings=["unmapped_chess_glyphs"],
+                ),
+            ],
+        )
+        html = build_pgn_download_html(records, title="Glyph book layout", book_layout_pages=[page])
+        soup = BeautifulSoup(html, "html.parser")
+
+        self.assertIn("Do weryfikacji", html)
+        self.assertIsNotNone(soup.select_one(".book-review-warning"))
+        self.assertIsNone(soup.select_one(".chess-pgn-mainline"))
+        self.assertNotIn("\"'t!;>b3\"", html)
+        self.assertEqual(build_combined_pgn(records), "")
 
     def test_semantic_cleanup_keeps_generated_pgn_section(self) -> None:
         soup = BeautifulSoup(

@@ -6,6 +6,7 @@ import zipfile
 from collections import Counter
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from bs4 import BeautifulSoup, NavigableString
 from lxml import etree
@@ -37,6 +38,7 @@ from kindle_semantic_cleanup import (
     _locate_opf,
     _looks_like_inline_ai_note_text,
     _looks_like_training_book,
+    _lexical_zipf,
     _manual_review_from_heading_decisions,
     _normalize_existing_table_html,
     _normalize_text_light,
@@ -44,6 +46,7 @@ from kindle_semantic_cleanup import (
     _publication_profile_key,
     _pack_epub,
     _process_chapter,
+    _repair_text_node,
     _rebuild_toc_entries_from_final_chapters,
     _strip_inline_ai_note_blocks,
     _repair_exercise_chapter,
@@ -2436,6 +2439,28 @@ class SemanticEpubCleanupTests(unittest.TestCase):
 
     def test_normalize_text_repairs_generic_registered_mark_mojibake(self):
         self.assertEqual(_normalize_text_light("ACME\u0139\u02dd Guide"), "ACME\u00ae Guide")
+
+    def test_repair_text_node_skips_expensive_repairs_without_signals(self):
+        with patch("kindle_semantic_cleanup._ftfy_fix_text", side_effect=AssertionError("ftfy should be skipped")), patch(
+            "kindle_semantic_cleanup._repair_pdf_split_words",
+            side_effect=AssertionError("split-word repair should be skipped"),
+        ):
+            self.assertEqual(_repair_text_node("Scope 2026/05/01 ready."), "Scope 2026/05/01 ready.")
+
+    def test_lexical_zipf_uses_lru_cache_for_repeated_tokens(self):
+        _lexical_zipf.cache_clear()
+        calls: list[tuple[str, str]] = []
+
+        def fake_zipf(word: str, language: str) -> float:
+            calls.append((word, language))
+            return 4.2 if language == "en" else 3.8
+
+        with patch("kindle_semantic_cleanup._zipf_frequency", side_effect=fake_zipf):
+            self.assertEqual(_lexical_zipf("Handbook"), 4.2)
+            self.assertEqual(_lexical_zipf("Handbook"), 4.2)
+
+        self.assertEqual(calls, [("handbook", "pl"), ("handbook", "en")])
+        _lexical_zipf.cache_clear()
 
 
 if __name__ == "__main__":

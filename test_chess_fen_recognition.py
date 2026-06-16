@@ -28,6 +28,7 @@ from chess_position_recognizer import (
     _match_piece_template,
     _normalize_board_square,
     _normalize_piece_cell,
+    _recognition_side_marker_trim_crop,
     _recognize_board_with_templates,
     _template_result_from_board,
     ChessFenResult,
@@ -192,7 +193,7 @@ class ChessFenRecognitionTests(unittest.TestCase):
         self.assertEqual(rows[1]["id"], "needs_full_manual_label")
 
     def test_scan_chess_recognition_cache_version_covers_recognizer_acceptance_changes(self) -> None:
-        self.assertGreaterEqual(SCAN_CHESS_RECOGNITION_CACHE_VERSION, 6)
+        self.assertGreaterEqual(SCAN_CHESS_RECOGNITION_CACHE_VERSION, 8)
 
     def test_scan_chess_recognition_cache_path_is_threshold_independent(self) -> None:
         image_data = b"same-crop"
@@ -204,15 +205,39 @@ class ChessFenRecognitionTests(unittest.TestCase):
             bbox=bbox,
             min_confidence=0.84,
             piece_templates=templates,
+            allow_recognition_recovery=True,
         )
         calibrated_threshold = _scan_chess_recognition_cache_path(
             image_data,
             bbox=bbox,
             min_confidence=0.835,
             piece_templates=templates,
+            allow_recognition_recovery=True,
         )
 
         self.assertEqual(high_threshold, calibrated_threshold)
+
+    def test_scan_chess_recognition_cache_path_varies_by_recovery_mode(self) -> None:
+        image_data = b"same-crop"
+        bbox = (1.0, 2.0, 81.0, 82.0)
+        templates = {"K": [Image.new("L", (8, 8), 0)]}
+
+        base_mode = _scan_chess_recognition_cache_path(
+            image_data,
+            bbox=bbox,
+            min_confidence=0.84,
+            piece_templates=templates,
+            allow_recognition_recovery=False,
+        )
+        recovery_mode = _scan_chess_recognition_cache_path(
+            image_data,
+            bbox=bbox,
+            min_confidence=0.84,
+            piece_templates=templates,
+            allow_recognition_recovery=True,
+        )
+
+        self.assertNotEqual(base_mode, recovery_mode)
 
     def test_cached_scan_chess_result_is_recalibrated_to_current_threshold(self) -> None:
         cached = ChessFenResult(
@@ -1858,6 +1883,353 @@ class ChessFenRecognitionTests(unittest.TestCase):
         self.assertEqual(draft_rows[0]["ai_suggested_fen"], "")
         self.assertIn("ai_suggested_fen_invalid", draft_rows[0]["ai_issues"])
 
+    def test_exact_label_campaign_export_detects_stale_hash_overlap(self) -> None:
+        import json
+        import tempfile
+        import zipfile
+        from pathlib import Path
+
+        from scripts.export_verified_exact_crop_label_campaign import export_verified_exact_crop_label_campaign
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            epub_path = root / "review.epub"
+            crop_bytes = _board_png((240, 240))
+            with zipfile.ZipFile(epub_path, "w") as archive:
+                archive.writestr("EPUB/images/scan_chess_p015_01.png", crop_bytes)
+            report_path = root / "report.json"
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "output_path": str(epub_path),
+                        "quality_report": {
+                            "chess_fen": {
+                                "records": [
+                                    {
+                                        "page": 15,
+                                        "filename": "scan_chess_p015_01.png",
+                                        "fen": "",
+                                        "placement": "8/8/8/3k4/8/8/4K3/8",
+                                        "confidence": 0.832,
+                                        "side_to_move": "w",
+                                        "method": "image-template-board",
+                                        "warnings": [
+                                            "piece_template_confidence_below_threshold",
+                                            "side_to_move_inferred",
+                                        ],
+                                        "requires_review": True,
+                                    }
+                                ]
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            old_digest = __import__("hashlib").sha256(b"older-crop").hexdigest()
+            labels_path = root / "verified.jsonl"
+            labels_path.write_text(
+                json.dumps(
+                    {
+                        "id": "verified_old",
+                        "page": 15,
+                        "filename": "scan_chess_p015_01.png",
+                        "sha256": old_digest,
+                        "fen": "8/8/8/3k4/8/8/4K3/8 w - - 0 1",
+                        "verified_by": "unit-test",
+                        "verified_at": "2026-06-16",
+                        "source_crop_path": str(root / "old.png"),
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            result = export_verified_exact_crop_label_campaign(
+                report_path,
+                source_pdf=root / "Fundamenty 1-1.pdf",
+                output_dir=root / "campaign",
+                target_verified_labels=labels_path,
+            )
+            rows = [
+                json.loads(line)
+                for line in Path(result["exact_label_draft_path"]).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            crop_exists = Path(rows[0]["crop_path"]).exists()
+
+        self.assertEqual(result["review_count"], 1)
+        self.assertEqual(result["stale_exact_label_count"], 1)
+        self.assertEqual(result["new_exact_label_candidate_count"], 0)
+        self.assertEqual(rows[0]["exact_label_status"], "stale_exact_label")
+        self.assertTrue(rows[0]["stale_exact_label"])
+        self.assertEqual(rows[0]["existing_exact_fen"], "8/8/8/3k4/8/8/4K3/8 w - - 0 1")
+        self.assertEqual(rows[0]["fen"], "")
+        self.assertTrue(crop_exists)
+
+    def test_exact_label_campaign_export_prefers_stale_before_near_threshold(self) -> None:
+        import json
+        import tempfile
+        import zipfile
+        from pathlib import Path
+
+        from scripts.export_verified_exact_crop_label_campaign import export_verified_exact_crop_label_campaign
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            epub_path = root / "review.epub"
+            crop_a = _board_png((240, 240))
+            crop_b = _board_png((260, 260))
+            with zipfile.ZipFile(epub_path, "w") as archive:
+                archive.writestr("EPUB/images/scan_chess_p015_01.png", crop_a)
+                archive.writestr("EPUB/images/scan_chess_p023_01.png", crop_b)
+            report_path = root / "report.json"
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "output_path": str(epub_path),
+                        "quality_report": {
+                            "chess_fen": {
+                                "records": [
+                                    {
+                                        "page": 23,
+                                        "filename": "scan_chess_p023_01.png",
+                                        "fen": "",
+                                        "placement": "8/8/8/3k4/8/8/4K3/8",
+                                        "confidence": 0.834,
+                                        "side_to_move": "w",
+                                        "method": "image-template-board",
+                                        "warnings": [
+                                            "piece_template_confidence_below_threshold",
+                                            "side_to_move_marker_detected",
+                                        ],
+                                        "requires_review": True,
+                                    },
+                                    {
+                                        "page": 15,
+                                        "filename": "scan_chess_p015_01.png",
+                                        "fen": "",
+                                        "placement": "8/8/8/3k4/8/8/4K3/8",
+                                        "confidence": 0.810,
+                                        "side_to_move": "w",
+                                        "method": "image-template-board",
+                                        "warnings": [
+                                            "piece_template_confidence_below_threshold",
+                                            "side_to_move_inferred",
+                                        ],
+                                        "requires_review": True,
+                                    },
+                                ]
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            labels_path = root / "verified.jsonl"
+            labels_path.write_text(
+                json.dumps(
+                    {
+                        "id": "verified_old",
+                        "page": 15,
+                        "filename": "scan_chess_p015_01.png",
+                        "sha256": __import__("hashlib").sha256(b"older-crop").hexdigest(),
+                        "fen": "8/8/8/3k4/8/8/4K3/8 w - - 0 1",
+                        "verified_by": "unit-test",
+                        "verified_at": "2026-06-16",
+                        "source_crop_path": str(root / "old.png"),
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            result = export_verified_exact_crop_label_campaign(
+                report_path,
+                source_pdf=root / "Fundamenty 1-1.pdf",
+                output_dir=root / "campaign",
+                target_verified_labels=labels_path,
+            )
+            rows = [
+                json.loads(line)
+                for line in Path(result["exact_label_draft_path"]).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+
+        self.assertEqual(rows[0]["filename"], "scan_chess_p015_01.png")
+        self.assertTrue(rows[0]["stale_exact_label"])
+        self.assertTrue(rows[1]["threshold_only_candidate"])
+
+    def test_apply_verified_exact_crop_labels_requires_human_verification(self) -> None:
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from scripts.apply_verified_exact_crop_labels import apply_verified_exact_crop_labels
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            crop_path = root / "scan_chess_p015_01.png"
+            crop_path.write_bytes(_board_png((240, 240)))
+            draft_path = root / "draft.jsonl"
+            draft_path.write_text(
+                json.dumps(
+                    {
+                        "id": "exact_p015_scan_chess_p015_01",
+                        "source_pdf": "Fundamenty 1-1.pdf",
+                        "page": 15,
+                        "filename": crop_path.name,
+                        "crop_path": str(crop_path),
+                        "stale_exact_label": True,
+                        "fen": "8/8/8/3k4/8/8/4K3/8 w - - 0 1",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            result = apply_verified_exact_crop_labels(
+                draft_path,
+                target_labels=root / "verified.jsonl",
+                target_crops_dir=root / "imported",
+                reports_dir=root / "reports",
+            )
+
+        self.assertEqual(result["accepted_row_count"], 0)
+        self.assertEqual(result["skipped_rows"], 1)
+        self.assertEqual(result["skipped_details"][0]["reason"], "manual_approval_missing")
+
+    def test_apply_verified_exact_crop_labels_refreshes_stale_hash_without_removing_old_row(self) -> None:
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from scripts.apply_verified_exact_crop_labels import apply_verified_exact_crop_labels
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            crop_path = root / "scan_chess_p015_01.png"
+            crop_bytes = _board_png((240, 240))
+            crop_path.write_bytes(crop_bytes)
+            old_digest = __import__("hashlib").sha256(b"older-crop").hexdigest()
+            new_digest = __import__("hashlib").sha256(crop_bytes).hexdigest()
+            labels_path = root / "verified.jsonl"
+            labels_path.write_text(
+                json.dumps(
+                    {
+                        "id": "verified_old",
+                        "source_pdf": "reference_inputs/pdf/fundamenty_1_1_scan_chess.pdf",
+                        "page": 15,
+                        "filename": crop_path.name,
+                        "sha256": old_digest,
+                        "fen": "8/8/8/3k4/8/8/4K3/8 w - - 0 1",
+                        "verified_by": "unit-test",
+                        "verified_at": "2026-06-15",
+                        "source_crop_path": str(root / "older.png"),
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            draft_path = root / "draft.jsonl"
+            draft_path.write_text(
+                json.dumps(
+                    {
+                        "id": "exact_p015_scan_chess_p015_01",
+                        "source_pdf": "Fundamenty 1-1.pdf",
+                        "page": 15,
+                        "filename": crop_path.name,
+                        "crop_path": str(crop_path),
+                        "stale_exact_label": True,
+                        "human_verified": True,
+                        "human_rejected": False,
+                        "fen": "8/8/8/3k4/8/8/4K3/8 w - - 0 1",
+                        "verified_by": "unit-test",
+                        "verified_at": "2026-06-16",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            result = apply_verified_exact_crop_labels(
+                draft_path,
+                target_labels=labels_path,
+                target_crops_dir=root / "imported",
+                reports_dir=root / "reports",
+            )
+            merged_rows = [json.loads(line) for line in labels_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+        self.assertEqual(result["accepted_row_count"], 1)
+        self.assertEqual(result["new_hash_rows"], 1)
+        self.assertEqual(result["stale_refresh_rows"], 1)
+        self.assertEqual(result["conflict_rows"], 0)
+        digests = {row["sha256"] for row in merged_rows}
+        self.assertIn(old_digest, digests)
+        self.assertIn(new_digest, digests)
+
+    def test_apply_verified_exact_crop_labels_blocks_sha256_fen_conflict(self) -> None:
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from scripts.apply_verified_exact_crop_labels import apply_verified_exact_crop_labels
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            crop_path = root / "scan_chess_p015_01.png"
+            crop_bytes = _board_png((240, 240))
+            crop_path.write_bytes(crop_bytes)
+            digest = __import__("hashlib").sha256(crop_bytes).hexdigest()
+            labels_path = root / "verified.jsonl"
+            labels_path.write_text(
+                json.dumps(
+                    {
+                        "id": "verified_existing",
+                        "source_pdf": "Fundamenty 1-1.pdf",
+                        "page": 15,
+                        "filename": crop_path.name,
+                        "sha256": digest,
+                        "fen": "8/8/8/3k4/8/8/4K3/8 w - - 0 1",
+                        "verified_by": "unit-test",
+                        "verified_at": "2026-06-15",
+                        "source_crop_path": str(crop_path),
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            draft_path = root / "draft.jsonl"
+            draft_path.write_text(
+                json.dumps(
+                    {
+                        "id": "exact_p015_scan_chess_p015_01",
+                        "source_pdf": "Fundamenty 1-1.pdf",
+                        "page": 15,
+                        "filename": crop_path.name,
+                        "crop_path": str(crop_path),
+                        "human_verified": True,
+                        "human_rejected": False,
+                        "fen": "8/8/8/8/8/8/4K3/3k4 w - - 0 1",
+                        "verified_by": "unit-test",
+                        "verified_at": "2026-06-16",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            result = apply_verified_exact_crop_labels(
+                draft_path,
+                target_labels=labels_path,
+                target_crops_dir=root / "imported",
+                reports_dir=root / "reports",
+            )
+
+        self.assertEqual(result["accepted_row_count"], 0)
+        self.assertEqual(result["conflict_rows"], 1)
+        self.assertEqual(result["conflict_details"][0]["reason"], "sha256_fen_conflict")
+
     def test_promote_label_draft_requires_manual_approval(self) -> None:
         import json
         import tempfile
@@ -2855,6 +3227,224 @@ class ChessFenRecognitionTests(unittest.TestCase):
         self.assertFalse(result.requires_review)
         self.assertIn("dense_board_area_crop_used", result.warnings)
 
+    def test_trimmed_caption_crop_recovers_invalid_king_review(self) -> None:
+        valid_board = [
+            list("rnbqkbnr"),
+            list("pppppppp"),
+            [""] * 8,
+            [""] * 8,
+            [""] * 8,
+            [""] * 8,
+            list("PPPPPPPP"),
+            list("RNBQKBNR"),
+        ]
+        invalid_king_board = [row[:] for row in valid_board]
+        invalid_king_board[0][4] = ""
+        _, templates = _labeled_board_png_and_templates(valid_board)
+        square_records = [{"piece": "", "confidence": 0.8, "row": 0, "col": 0}]
+        image = Image.open(io.BytesIO(_board_png((320, 320)))).convert("L")
+        trimmed_crop = image.crop((0, 0, 296, 296))
+
+        with mock.patch(
+            "chess_position_recognizer._classify_board_cells",
+            side_effect=[
+                (invalid_king_board, 0.60, square_records),
+                (valid_board, 0.81, square_records),
+            ],
+        ), mock.patch(
+            "chess_position_recognizer._recognition_trim_variant_crops",
+            return_value=[(trimmed_crop, "recognition_caption_bottom_trim_used")],
+        ), mock.patch(
+            "chess_position_recognizer._has_board_visual_pattern",
+            return_value=(True, 0.88),
+        ), mock.patch(
+            "chess_position_recognizer._estimate_board_grid_confidence",
+            return_value=0.74,
+        ):
+            result = _recognize_board_with_templates(
+                image,
+                templates,
+                grid_confidence=0.56,
+                bbox=None,
+                min_confidence=0.70,
+            )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.fen, "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 1")
+        self.assertFalse(result.requires_review)
+        self.assertIn("recognition_caption_bottom_trim_used", result.warnings)
+        self.assertNotIn("white_king_count_invalid", result.warnings)
+
+    def test_trimmed_corner_marker_crop_recovers_cross_marker_review(self) -> None:
+        valid_board = [
+            list("rnbqkbnr"),
+            list("pppppppp"),
+            [""] * 8,
+            [""] * 8,
+            [""] * 8,
+            [""] * 8,
+            list("PPPPPPPP"),
+            list("RNBQKBNR"),
+        ]
+        invalid_marker_board = [row[:] for row in valid_board]
+        invalid_marker_board[7][4] = ""
+        _, templates = _labeled_board_png_and_templates(valid_board)
+        marker_square_records = [
+            {
+                "piece": "",
+                "confidence": 0.82,
+                "row": 7,
+                "col": 4,
+                "warnings": ["annotation_cross_marker_suppressed"],
+            }
+        ]
+        clean_square_records = [{"piece": "", "confidence": 0.87, "row": 0, "col": 0}]
+        image = Image.open(io.BytesIO(_board_png((320, 320)))).convert("L")
+        trimmed_crop = image.crop((0, 0, 300, 300))
+
+        with mock.patch(
+            "chess_position_recognizer._classify_board_cells",
+            side_effect=[
+                (invalid_marker_board, 0.64, marker_square_records),
+                (valid_board, 0.80, clean_square_records),
+            ],
+        ), mock.patch(
+            "chess_position_recognizer._recognition_trim_variant_crops",
+            return_value=[(trimmed_crop, "recognition_corner_marker_trim_used")],
+        ), mock.patch(
+            "chess_position_recognizer._has_board_visual_pattern",
+            return_value=(True, 0.90),
+        ), mock.patch(
+            "chess_position_recognizer._estimate_board_grid_confidence",
+            return_value=0.76,
+        ):
+            result = _recognize_board_with_templates(
+                image,
+                templates,
+                grid_confidence=0.58,
+                bbox=None,
+                min_confidence=0.70,
+            )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertFalse(result.requires_review)
+        self.assertIn("recognition_corner_marker_trim_used", result.warnings)
+        self.assertNotIn("annotation_cross_marker_suppressed", result.warnings)
+        self.assertEqual(result.fen, "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 1")
+
+    def test_side_marker_trim_crop_detects_left_and_right_marker_noise(self) -> None:
+        left_marker = Image.new("L", (320, 320), 255)
+        right_marker = Image.new("L", (320, 320), 255)
+        ImageDraw.Draw(left_marker).rectangle((0, 0, 28, 319), fill=0)
+        ImageDraw.Draw(right_marker).rectangle((292, 0, 319, 319), fill=0)
+
+        def fake_pattern(image):
+            if image.width < 320:
+                return (True, 0.93)
+            return (True, 0.84)
+
+        def fake_grid(image):
+            return 0.83 if image.width < 320 else 0.70
+
+        with mock.patch(
+            "chess_position_recognizer._has_board_visual_pattern",
+            side_effect=fake_pattern,
+        ), mock.patch(
+            "chess_position_recognizer._estimate_board_grid_confidence",
+            side_effect=fake_grid,
+        ):
+            left_crop = _recognition_side_marker_trim_crop(left_marker)
+            right_crop = _recognition_side_marker_trim_crop(right_marker)
+
+        self.assertIsNotNone(left_crop)
+        self.assertIsNotNone(right_crop)
+        assert left_crop is not None
+        assert right_crop is not None
+        self.assertLess(left_crop.width, left_marker.width)
+        self.assertLess(right_crop.width, right_marker.width)
+
+    def test_base_template_recognition_can_skip_trim_and_dense_recovery(self) -> None:
+        valid_board = [
+            list("rnbqkbnr"),
+            list("pppppppp"),
+            [""] * 8,
+            [""] * 8,
+            [""] * 8,
+            [""] * 8,
+            list("PPPPPPPP"),
+            list("RNBQKBNR"),
+        ]
+        invalid_king_board = [row[:] for row in valid_board]
+        invalid_king_board[0][4] = ""
+        _, templates = _labeled_board_png_and_templates(valid_board)
+        square_records = [{"piece": "", "confidence": 0.8, "row": 0, "col": 0}]
+        image = Image.open(io.BytesIO(_board_png((320, 320)))).convert("L")
+
+        with mock.patch(
+            "chess_position_recognizer._classify_board_cells",
+            return_value=(invalid_king_board, 0.60, square_records),
+        ), mock.patch(
+            "chess_position_recognizer._recognition_trim_variant_crops",
+            side_effect=AssertionError("trim variants should not run in base mode"),
+        ), mock.patch(
+            "chess_position_recognizer._dense_board_area_crop",
+            side_effect=AssertionError("dense crop should not run in base mode"),
+        ):
+            result = _recognize_board_with_templates(
+                image,
+                templates,
+                grid_confidence=0.56,
+                bbox=None,
+                min_confidence=0.70,
+                allow_recognition_recovery=False,
+            )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.fen, "")
+        self.assertTrue(result.requires_review)
+        self.assertTrue(any(warning.endswith("king_count_invalid") for warning in result.warnings))
+
+    def test_sparse_review_does_not_use_trimmed_crop_publication_path(self) -> None:
+        sparse_board = [
+            ["n", "", "", "", "", "", "", ""],
+            [""] * 8,
+            ["P", "", "", "", "", "", "", ""],
+            [""] * 8,
+            ["p", "", "", "", "", "K", "P", ""],
+            ["", "", "", "", "", "", "P", "k"],
+            [""] * 8,
+            [""] * 8,
+        ]
+        complete_templates = {"": [Image.new("L", (10, 10), 255)]}
+        complete_templates.update({piece: [Image.new("L", (10, 10), 0)] for piece in "KQRBNPkqrbnp"})
+        image = Image.open(io.BytesIO(_board_png((320, 320)))).convert("L")
+        square_records = [{"piece": "", "confidence": 0.83, "row": 0, "col": 0}]
+
+        with mock.patch(
+            "chess_position_recognizer._classify_board_cells",
+            return_value=(sparse_board, 0.83, square_records),
+        ), mock.patch(
+            "chess_position_recognizer._recognition_trim_variant_crops",
+            side_effect=AssertionError("trim variants should not run for sparse-only review"),
+        ), mock.patch(
+            "chess_position_recognizer._dense_board_area_crop",
+            side_effect=AssertionError("dense crop should not run for sparse-only review"),
+        ):
+            result = _recognize_board_with_templates(
+                image,
+                complete_templates,
+                grid_confidence=0.83,
+                bbox=None,
+                min_confidence=0.70,
+            )
+
+        self.assertEqual(result.fen, "")
+        self.assertTrue(result.requires_review)
+        self.assertIn("sparse_position_confidence_below_threshold", result.warnings)
+
     def test_dense_crop_fallback_rejects_non_board_crop(self) -> None:
         valid_board = [
             list("rnbqkbnr"),
@@ -3047,6 +3637,21 @@ class ChessFenRecognitionTests(unittest.TestCase):
         self.assertEqual(second.fen, recognition.fen)
         self.assertEqual(recognize_mock.call_count, 1)
 
+    def test_scan_chess_recovery_trigger_includes_cross_marker_reviews(self) -> None:
+        review = ChessFenResult(
+            fen="",
+            placement="8/8/8/8/8/8/7k/8",
+            confidence=0.79,
+            method="image-template-board",
+            warnings=["annotation_cross_marker_suppressed", "white_king_count_invalid"],
+            requires_review=True,
+            board_detected=True,
+        )
+
+        from pymupdf_chess_extractor import _scan_chess_recognition_needs_bbox_recovery
+
+        self.assertTrue(_scan_chess_recognition_needs_bbox_recovery(review))
+
     def test_scan_chess_candidate_recognition_skips_reader_probe_for_high_confidence_raw_fen(self) -> None:
         page = Image.new("RGB", (220, 220), "white")
         recognition = ChessFenResult(
@@ -3165,6 +3770,202 @@ class ChessFenRecognitionTests(unittest.TestCase):
         self.assertIn((20.0, 20.0, 180.0, 180.0), seen_bboxes)
         self.assertIn((8.0, 18.0, 198.0, 208.0), seen_bboxes)
         self.assertNotIn((16.0, 16.0, 184.0, 184.0), seen_bboxes)
+
+    def test_scan_chess_candidate_recognition_can_use_expanded_reader_bbox(self) -> None:
+        page = Image.new("RGB", (240, 240), "white")
+        raw_review = ChessFenResult(
+            placement="8/8/8/8/8/8/7k/8",
+            confidence=0.80,
+            method="image-template-board",
+            warnings=["white_king_count_invalid"],
+            requires_review=True,
+            board_detected=True,
+        )
+        exact_reader_review = ChessFenResult(
+            placement="8/8/8/8/8/8/7k/8",
+            confidence=0.81,
+            method="image-template-board",
+            warnings=["white_king_count_invalid"],
+            requires_review=True,
+            board_detected=True,
+        )
+        expanded_reader_fen = ChessFenResult(
+            fen="8/8/8/8/8/8/7k/7K w - - 0 1",
+            placement="8/8/8/8/8/8/7k/7K",
+            confidence=0.84,
+            method="image-template-board",
+            warnings=["side_to_move_inferred"],
+            requires_review=False,
+            board_detected=True,
+        )
+        seen_bboxes = []
+
+        def fake_recognize(_crop_bytes, *, bbox, **_kwargs):
+            rounded = tuple(float(value) for value in bbox)
+            seen_bboxes.append(rounded)
+            if rounded == (3.0, 13.0, 203.0, 213.0):
+                return expanded_reader_fen
+            if rounded == (8.0, 18.0, 198.0, 208.0):
+                return exact_reader_review
+            return raw_review
+
+        with mock.patch(
+            "pymupdf_chess_extractor._recognize_scan_chess_crop_with_cache",
+            side_effect=fake_recognize,
+        ):
+            result = _recognize_scan_chess_candidate_bbox(
+                page,
+                (20.0, 20.0, 180.0, 180.0),
+                config=ConversionConfig(chess_fen_min_confidence=0.70),
+                piece_templates={"K": [Image.new("L", (10, 10), 0)]},
+                min_confidence=0.70,
+                reader_bbox=(8.0, 18.0, 198.0, 208.0),
+            )
+
+        self.assertEqual(result.fen, expanded_reader_fen.fen)
+        self.assertIn("reader_expanded_crop_fen_used", result.warnings)
+        self.assertIn((20.0, 20.0, 180.0, 180.0), seen_bboxes)
+        self.assertIn((8.0, 18.0, 198.0, 208.0), seen_bboxes)
+        self.assertIn((3.0, 13.0, 203.0, 213.0), seen_bboxes)
+
+    def test_scan_chess_candidate_recognition_runs_trim_recovery_after_reader_stage(self) -> None:
+        page = Image.new("RGB", (220, 220), "white")
+        raw_review = ChessFenResult(
+            placement="8/8/8/8/8/8/7k/8",
+            confidence=0.82,
+            method="image-template-board",
+            warnings=["white_king_count_invalid"],
+            requires_review=True,
+            board_detected=True,
+        )
+        reader_review = ChessFenResult(
+            placement="8/8/8/8/8/8/7k/8",
+            confidence=0.84,
+            method="image-template-board",
+            warnings=["white_king_count_invalid"],
+            requires_review=True,
+            board_detected=True,
+        )
+        trimmed_fen = ChessFenResult(
+            fen="8/8/8/8/8/8/7k/7K w - - 0 1",
+            placement="8/8/8/8/8/8/7k/7K",
+            confidence=0.89,
+            method="image-template-board",
+            warnings=["recognition_side_marker_trim_used", "side_to_move_inferred"],
+            requires_review=False,
+            board_detected=True,
+        )
+        call_modes: list[tuple[tuple[float, float, float, float], bool]] = []
+
+        def fake_recognize(_crop_bytes, *, bbox, allow_recognition_recovery=True, **_kwargs):
+            rounded = tuple(float(value) for value in bbox)
+            call_modes.append((rounded, bool(allow_recognition_recovery)))
+            if allow_recognition_recovery:
+                return trimmed_fen
+            if rounded == (20.0, 20.0, 180.0, 180.0):
+                return raw_review
+            return reader_review
+
+        with mock.patch(
+            "pymupdf_chess_extractor._recognize_scan_chess_crop_with_cache",
+            side_effect=fake_recognize,
+        ):
+            result = _recognize_scan_chess_candidate_bbox(
+                page,
+                (20.0, 20.0, 180.0, 180.0),
+                config=ConversionConfig(chess_fen_min_confidence=0.70),
+                piece_templates={"K": [Image.new("L", (10, 10), 0)]},
+                min_confidence=0.70,
+            )
+
+        self.assertEqual(result.fen, trimmed_fen.fen)
+        self.assertEqual(call_modes, [
+            ((20.0, 20.0, 180.0, 180.0), False),
+            ((16.0, 16.0, 184.0, 184.0), False),
+            ((12.0, 12.0, 188.0, 188.0), False),
+            ((12.0, 12.0, 188.0, 188.0), True),
+        ])
+
+    def test_scan_chess_reader_visible_crop_can_publish_cross_marker_repair(self) -> None:
+        page = Image.new("RGB", (220, 220), "white")
+        raw_review = ChessFenResult(
+            placement="8/8/8/8/8/8/7k/8",
+            confidence=0.80,
+            method="image-template-board",
+            warnings=["annotation_cross_marker_suppressed"],
+            requires_review=True,
+            board_detected=True,
+        )
+        reader_fen = ChessFenResult(
+            fen="8/8/8/8/8/8/7k/7K w - - 0 1",
+            placement="8/8/8/8/8/8/7k/7K",
+            confidence=0.84,
+            method="image-template-board",
+            warnings=["side_to_move_inferred"],
+            requires_review=False,
+            board_detected=True,
+        )
+
+        def fake_recognize(_crop_bytes, *, bbox, **_kwargs):
+            if tuple(float(value) for value in bbox) == (16.0, 16.0, 184.0, 184.0):
+                return reader_fen
+            return raw_review
+
+        with mock.patch(
+            "pymupdf_chess_extractor._recognize_scan_chess_crop_with_cache",
+            side_effect=fake_recognize,
+        ):
+            result = _recognize_scan_chess_candidate_bbox(
+                page,
+                (20.0, 20.0, 180.0, 180.0),
+                config=ConversionConfig(chess_fen_min_confidence=0.70),
+                piece_templates={"K": [Image.new("L", (10, 10), 0)]},
+                min_confidence=0.70,
+            )
+
+        self.assertEqual(result.fen, reader_fen.fen)
+        self.assertIn("reader_visible_crop_fen_used", result.warnings)
+
+    def test_scan_chess_candidate_recognition_preserves_raw_recovery_signal_for_geometry_retry(self) -> None:
+        page = Image.new("RGB", (220, 220), "white")
+        raw_review = ChessFenResult(
+            placement="8/8/8/8/8/8/7k/8",
+            confidence=0.80,
+            method="image-template-board",
+            warnings=["white_king_count_invalid"],
+            requires_review=True,
+            board_detected=True,
+        )
+        cleaner_reader_review = ChessFenResult(
+            placement="8/8/8/8/8/8/7k/8",
+            confidence=0.84,
+            method="image-template-board",
+            warnings=["piece_template_confidence_below_threshold", "side_to_move_inferred"],
+            requires_review=True,
+            board_detected=True,
+        )
+
+        def fake_recognize(_crop_bytes, *, bbox, allow_recognition_recovery=True, **_kwargs):
+            rounded = tuple(float(value) for value in bbox)
+            if rounded == (20.0, 20.0, 180.0, 180.0):
+                return raw_review
+            return cleaner_reader_review
+
+        with mock.patch(
+            "pymupdf_chess_extractor._recognize_scan_chess_crop_with_cache",
+            side_effect=fake_recognize,
+        ):
+            result = _recognize_scan_chess_candidate_bbox(
+                page,
+                (20.0, 20.0, 180.0, 180.0),
+                config=ConversionConfig(chess_fen_min_confidence=0.70),
+                piece_templates={"K": [Image.new("L", (10, 10), 0)]},
+                min_confidence=0.70,
+            )
+
+        self.assertTrue(result.requires_review)
+        self.assertIn("white_king_count_invalid", result.warnings)
+        self.assertIn("piece_template_confidence_below_threshold", result.warnings)
 
     def test_scan_chess_final_rendered_crop_confirms_visible_fen(self) -> None:
         raw_review = ChessFenResult(
@@ -3431,8 +4232,10 @@ class ChessFenRecognitionTests(unittest.TestCase):
                 min_confidence=0.70,
             )
 
-        self.assertIs(result, sparse_review)
-        self.assertEqual(recognize_mock.call_count, 2)
+        self.assertEqual(result.fen, sparse_review.fen)
+        self.assertEqual(result.placement, sparse_review.placement)
+        self.assertEqual(result.warnings, sparse_review.warnings)
+        self.assertEqual(recognize_mock.call_count, 3)
 
     def test_scan_chess_reader_visible_crop_accepts_matching_sparse_position(self) -> None:
         page = Image.new("RGB", (220, 220), "white")
@@ -3553,7 +4356,9 @@ class ChessFenRecognitionTests(unittest.TestCase):
                 min_confidence=0.70,
             )
 
-        self.assertIs(result, raw_review)
+        self.assertEqual(result.fen, raw_review.fen)
+        self.assertEqual(result.placement, raw_review.placement)
+        self.assertEqual(result.warnings, raw_review.warnings)
 
     def test_scan_chess_effective_candidate_limit_preserves_two_by_three_exercise_pages(self) -> None:
         candidates = []

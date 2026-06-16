@@ -1622,7 +1622,7 @@ def _reconstruct_row_grouped_diagrams(html_parts: list[str]) -> Optional[list[st
 
 SCAN_CHESS_CACHE_VERSION = 3
 SCAN_CHESS_PAGE_CANDIDATE_CACHE_VERSION = 17
-SCAN_CHESS_RECOGNITION_CACHE_VERSION = 6
+SCAN_CHESS_RECOGNITION_CACHE_VERSION = 8
 SCAN_CHESS_SPARSE_EXACT_CONSENSUS_MIN_PIECES = 3
 SCAN_CHESS_SPARSE_EXACT_CONSENSUS_MIN_CONFIDENCE = 0.827
 SCAN_CHESS_SPARSE_EXACT_CONSENSUS_MAX_PIECES = 8
@@ -2328,7 +2328,10 @@ def _recognize_scan_chess_candidate_bbox(
     min_confidence: float,
     allow_reader_visible_crop_rescue: bool = True,
     reader_bbox: tuple[float, float, float, float] | None = None,
+    allow_explicit_trim_recovery: bool | None = None,
 ):
+    if allow_explicit_trim_recovery is None:
+        allow_explicit_trim_recovery = allow_reader_visible_crop_rescue
     clamped = _clamp_bbox(bbox, page_image.size, pad_ratio=0.0, min_pad=0.0)
     if clamped is None:
         return empty_chess_fen_result(method="image-template-board", warning="candidate_bbox_out_of_bounds", bbox=bbox)
@@ -2340,6 +2343,7 @@ def _recognize_scan_chess_candidate_bbox(
         bbox=bbox,
         min_confidence=min_confidence,
         piece_templates=piece_templates,
+        allow_recognition_recovery=False,
     )
     if (
         getattr(recognition, "fen", "")
@@ -2349,6 +2353,10 @@ def _recognize_scan_chess_candidate_bbox(
         return recognition
     if not allow_reader_visible_crop_rescue or not _scan_chess_recognition_needs_bbox_recovery(recognition):
         return recognition
+
+    best_review_result = recognition
+    best_review_crop_data = output.getvalue()
+    best_review_bbox = tuple(float(value) for value in bbox)
 
     # The reader-visible EPUB image is generated from a lightly padded bbox.
     # Use that exact prepared crop as the second deterministic probe; otherwise
@@ -2368,6 +2376,7 @@ def _recognize_scan_chess_candidate_bbox(
         bbox=tuple(float(value) for value in reader_clamped),
         min_confidence=min_confidence,
         piece_templates=piece_templates,
+        allow_recognition_recovery=False,
     )
     if _scan_chess_reader_visible_crop_publish_is_safe(
         recognition,
@@ -2383,7 +2392,89 @@ def _recognize_scan_chess_candidate_bbox(
     )
     if sparse_consensus is not None:
         return sparse_consensus
-    return recognition
+    if getattr(reader_recognition, "requires_review", True):
+        best_review_result = _prefer_scan_chess_recognition_result(best_review_result, reader_recognition)
+        if best_review_result is reader_recognition:
+            best_review_crop_data = reader_data
+            best_review_bbox = tuple(float(value) for value in reader_clamped)
+    expanded_reader_clamped = _clamp_bbox(tuple(float(value) for value in reader_clamped), page_image.size)
+    if expanded_reader_clamped is not None and tuple(expanded_reader_clamped) != tuple(reader_clamped):
+        expanded_reader_crop = page_image.crop(expanded_reader_clamped)
+        expanded_reader_data, _, _ = _encode_scan_chess_diagram_crop(expanded_reader_crop, config)
+        expanded_reader_recognition = _recognize_scan_chess_crop_with_cache(
+            expanded_reader_data,
+            bbox=tuple(float(value) for value in expanded_reader_clamped),
+            min_confidence=min_confidence,
+            piece_templates=piece_templates,
+            allow_recognition_recovery=False,
+        )
+        if _scan_chess_reader_visible_crop_publish_is_safe(
+            recognition,
+            expanded_reader_recognition,
+            min_confidence=min_confidence,
+        ):
+            return _scan_chess_result_with_warning(expanded_reader_recognition, "reader_expanded_crop_fen_used")
+        sparse_consensus = _scan_chess_sparse_exact_consensus_result(
+            recognition,
+            expanded_reader_recognition,
+            min_confidence=min_confidence,
+            warning="reader_expanded_crop_sparse_consensus_fen_used",
+        )
+        if sparse_consensus is not None:
+            return sparse_consensus
+        if getattr(expanded_reader_recognition, "requires_review", True):
+            best_review_result = _prefer_scan_chess_recognition_result(best_review_result, expanded_reader_recognition)
+            if best_review_result is expanded_reader_recognition:
+                best_review_crop_data = expanded_reader_data
+                best_review_bbox = tuple(float(value) for value in expanded_reader_clamped)
+
+    raw_recovery_warnings = {str(warning) for warning in (getattr(recognition, "warnings", []) or [])}
+    best_review_warnings = {str(warning) for warning in (getattr(best_review_result, "warnings", []) or [])}
+    trim_recovery_warnings = raw_recovery_warnings | best_review_warnings
+    if (
+        allow_explicit_trim_recovery
+        and _scan_chess_recognition_needs_bbox_recovery(best_review_result)
+        and (
+            any(warning.endswith("king_count_invalid") for warning in trim_recovery_warnings)
+            or "annotation_cross_marker_suppressed" in trim_recovery_warnings
+        )
+    ):
+        recovered_recognition = _recognize_scan_chess_crop_with_cache(
+            best_review_crop_data,
+            bbox=best_review_bbox,
+            min_confidence=min_confidence,
+            piece_templates=piece_templates,
+            allow_recognition_recovery=True,
+        )
+        if getattr(recovered_recognition, "fen", "") and not getattr(recovered_recognition, "requires_review", True):
+            return recovered_recognition
+        if getattr(recovered_recognition, "requires_review", True):
+            best_review_result = _prefer_scan_chess_recognition_result(best_review_result, recovered_recognition)
+
+    if getattr(best_review_result, "requires_review", True):
+        recovery_signal_warnings = {
+            warning
+            for warning in raw_recovery_warnings
+            if warning.endswith("king_count_invalid")
+            or warning == "annotation_cross_marker_suppressed"
+            or warning == "sparse_position_confidence_below_threshold"
+        }
+        if recovery_signal_warnings:
+            merged_warnings = sorted({*list(getattr(best_review_result, "warnings", []) or []), *recovery_signal_warnings})
+            return ChessFenResult(
+                fen=str(getattr(best_review_result, "fen", "") or ""),
+                placement=str(getattr(best_review_result, "placement", "") or ""),
+                confidence=float(getattr(best_review_result, "confidence", 0.0) or 0.0),
+                side_to_move=str(getattr(best_review_result, "side_to_move", "w") or "w"),
+                bbox=getattr(best_review_result, "bbox", None),
+                method=str(getattr(best_review_result, "method", "") or "image-template-board"),
+                warnings=merged_warnings,
+                requires_review=True,
+                board_detected=bool(getattr(best_review_result, "board_detected", False)),
+                squares=[dict(square) for square in (getattr(best_review_result, "squares", []) or []) if isinstance(square, dict)],
+            )
+
+    return best_review_result
 
 
 def _recognize_scan_chess_crop_with_cache(
@@ -2392,12 +2483,14 @@ def _recognize_scan_chess_crop_with_cache(
     bbox: tuple[float, float, float, float],
     min_confidence: float,
     piece_templates: dict,
+    allow_recognition_recovery: bool = True,
 ):
     cache_path = _scan_chess_recognition_cache_path(
         crop_bytes,
         bbox=bbox,
         min_confidence=min_confidence,
         piece_templates=piece_templates,
+        allow_recognition_recovery=allow_recognition_recovery,
     )
     try:
         if cache_path.exists():
@@ -2412,6 +2505,7 @@ def _recognize_scan_chess_crop_with_cache(
             bbox=bbox,
             min_confidence=min_confidence,
             piece_templates=piece_templates,
+            allow_recognition_recovery=allow_recognition_recovery,
         ):
             if not legacy_path.exists():
                 continue
@@ -2444,6 +2538,7 @@ def _recognize_scan_chess_crop_with_cache(
         bbox=bbox,
         min_confidence=min_confidence,
         piece_templates=piece_templates,
+        allow_recognition_recovery=allow_recognition_recovery,
     )
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2479,6 +2574,7 @@ def _scan_chess_confirm_final_rendered_crop_recognition(
         bbox=bbox,
         min_confidence=min_confidence,
         piece_templates=piece_templates,
+        allow_recognition_recovery=True,
     )
     if _scan_chess_reader_visible_crop_publish_is_safe(
         recognition,
@@ -2503,11 +2599,14 @@ def _scan_chess_recognition_cache_path(
     bbox: tuple[float, float, float, float],
     min_confidence: float,
     piece_templates: dict,
+    allow_recognition_recovery: bool = True,
 ) -> Path:
     rounded_bbox = ",".join(f"{float(value):.2f}" for value in bbox)
+    recovery_mode = "recovery" if allow_recognition_recovery else "base"
     token = "|".join(
         [
             str(SCAN_CHESS_RECOGNITION_CACHE_VERSION),
+            recovery_mode,
             _piece_templates_runtime_token(piece_templates),
             rounded_bbox,
             hashlib.sha256(crop_bytes).hexdigest(),
@@ -2523,6 +2622,7 @@ def _scan_chess_legacy_recognition_cache_paths(
     bbox: tuple[float, float, float, float],
     min_confidence: float,
     piece_templates: dict,
+    allow_recognition_recovery: bool = True,
 ) -> list[Path]:
     """Return cache paths from versions that baked the acceptance threshold in.
 
@@ -2534,6 +2634,7 @@ def _scan_chess_legacy_recognition_cache_paths(
     rounded_bbox = ",".join(f"{float(value):.2f}" for value in bbox)
     image_digest = hashlib.sha256(crop_bytes).hexdigest()
     template_token = _piece_templates_runtime_token(piece_templates)
+    recovery_mode = "recovery" if allow_recognition_recovery else "base"
     thresholds = []
     for value in (min_confidence, 0.84, 0.835, 0.85, 0.70):
         formatted = f"{float(value):.3f}"
@@ -2544,6 +2645,7 @@ def _scan_chess_legacy_recognition_cache_paths(
         token = "|".join(
             [
                 str(SCAN_CHESS_RECOGNITION_CACHE_VERSION),
+                recovery_mode,
                 template_token,
                 threshold,
                 rounded_bbox,
@@ -2573,8 +2675,17 @@ def _scan_chess_recalibrate_cached_result(result, *, min_confidence: float):
             "side_to_move_inferred",
             "side_to_move_marker_detected",
             "dense_board_area_crop_used",
+            "recognition_inner_border_trim_used",
+            "recognition_caption_bottom_trim_used",
+            "recognition_side_marker_trim_used",
+            "recognition_corner_marker_trim_used",
             "final_rendered_crop_fen_used",
             "reader_visible_crop_fen_used",
+            "reader_visible_crop_sparse_consensus_fen_used",
+            "reader_expanded_crop_fen_used",
+            "reader_expanded_crop_sparse_consensus_fen_used",
+            "final_rendered_crop_sparse_consensus_fen_used",
+            "sparse_exact_crop_consensus",
             "verified_exact_crop_label_used",
         }
         and not warning.startswith("fen:")
@@ -2749,8 +2860,10 @@ def _scan_chess_recognition_needs_bbox_recovery(recognition) -> bool:
     if not getattr(recognition, "board_detected", False):
         return False
     warnings = set(getattr(recognition, "warnings", []) or [])
-    return any(str(warning).endswith("king_count_invalid") for warning in warnings) or (
-        "sparse_position_confidence_below_threshold" in warnings
+    return (
+        any(str(warning).endswith("king_count_invalid") for warning in warnings)
+        or "annotation_cross_marker_suppressed" in warnings
+        or "sparse_position_confidence_below_threshold" in warnings
     )
 
 
@@ -2827,7 +2940,7 @@ def _scan_chess_reader_visible_crop_publish_is_safe(raw_result, reader_result, *
             and _scan_chess_reader_cells_extend_raw_without_conflict(raw_cells, reader_cells)
         )
 
-    if not any(warning.endswith("king_count_invalid") for warning in raw_warnings):
+    if not any(warning.endswith("king_count_invalid") for warning in raw_warnings) and "annotation_cross_marker_suppressed" not in raw_warnings:
         return False
     return True
 
@@ -2968,6 +3081,7 @@ def _recover_shifted_scan_chess_candidate(
             piece_templates=piece_templates,
             min_confidence=min_confidence,
             allow_reader_visible_crop_rescue=False,
+            allow_explicit_trim_recovery=False,
         )
         if not getattr(recognition, "fen", "") or getattr(recognition, "requires_review", True):
             continue
@@ -3006,6 +3120,7 @@ def _recover_expanded_scan_chess_candidate(
             piece_templates=piece_templates,
             min_confidence=min_confidence,
             allow_reader_visible_crop_rescue=False,
+            allow_explicit_trim_recovery=False,
         )
         if not getattr(recognition, "fen", "") or getattr(recognition, "requires_review", True):
             continue

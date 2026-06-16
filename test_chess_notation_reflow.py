@@ -8,14 +8,16 @@ from pathlib import Path
 import fitz
 from PIL import Image
 
-from converter import CHESS_REFLOW_CSS, ConversionConfig
+from converter import CHESS_REFLOW_CSS, ConversionConfig, dedupe_html_ids
 from publication_pipeline import _fragment_to_blocks
 from pymupdf_chess_extractor import (
     _clean_chess_notation_line,
     _is_single_board_coordinate_line,
     _looks_like_board_coordinate_noise,
+    _scan_chess_pgn_extra_artifacts,
     extract_chess_notation_pdf_reflow,
 )
+from chess_pgn_extractor import ChessPgnRecord
 
 
 class ChessNotationReflowTests(unittest.TestCase):
@@ -69,6 +71,25 @@ class ChessNotationReflowTests(unittest.TestCase):
         self.assertEqual(marker_blocks[0].block_type, "page_marker")
         self.assertEqual(notation_blocks[0].style_class, "chess-notation-page chess-notation-text")
 
+    def test_epub_chapter_html_dedupes_repeated_page_marker_ids(self) -> None:
+        html = (
+            '<html><body>'
+            '<span id="book-page-1" class="page-marker"></span>'
+            '<pre id="notation-1">A</pre>'
+            '<span id="book-page-1" class="page-marker"></span>'
+            '<span id="book-page-1" class="page-marker"></span>'
+            '<pre id="notation-1">B</pre>'
+            "</body></html>"
+        )
+
+        deduped = dedupe_html_ids(html)
+
+        self.assertIn('id="book-page-1"', deduped)
+        self.assertIn('id="book-page-1-2"', deduped)
+        self.assertIn('id="book-page-1-3"', deduped)
+        self.assertIn('id="notation-1"', deduped)
+        self.assertIn('id="notation-1-2"', deduped)
+
     def test_notation_cleanup_removes_inline_board_coordinate_fragments(self) -> None:
         self.assertEqual(_clean_chess_notation_line("a b c d e f g h1 D00"), "1 D00")
         self.assertEqual(_clean_chess_notation_line("1 a b c d e f g h 1"), "1 1")
@@ -87,6 +108,57 @@ class ChessNotationReflowTests(unittest.TestCase):
         self.assertIn("15.Qxd3 Bb2", cleaned)
         self.assertIn("\u2312 28.Rxc8", cleaned)
         self.assertFalse(any(0xE000 <= ord(char) <= 0xF8FF for char in cleaned))
+
+    def test_review_only_pgn_records_do_not_create_pgn_download_artifact(self) -> None:
+        record = ChessPgnRecord(
+            id="review-only",
+            source_pages=[1],
+            title="Review only",
+            headers={"Event": "Review only", "Result": "*"},
+            movetext="1. e4 e5 10. Qh5 *",
+            pgn='[Event "Review only"]\n[Result "*"]\n\n1. e4 e5 10. Qh5 *\n',
+            raw_text="Raw OCR: 1.e4 e5 10.Qh5 *",
+            status="requires_review",
+            warnings=["move_number_jump"],
+        )
+
+        artifacts = _scan_chess_pgn_extra_artifacts([record], source_title="Review only")
+
+        self.assertEqual([artifact["key"] for artifact in artifacts], ["chess_pgn_html"])
+        self.assertIn(b"Raw OCR: 1.e4 e5 10.Qh5", artifacts[0]["data"])
+
+    def test_legal_exercise_records_create_separate_exercises_pgn_artifact(self) -> None:
+        record = ChessPgnRecord(
+            id="exercise-only",
+            source_pages=[1],
+            title="Diagram 1-1",
+            headers={"Event": "Diagram 1-1", "Result": "*"},
+            movetext="",
+            pgn="",
+            raw_text="Diagram 1-1\n1. e4 e5",
+            status="requires_review",
+            warnings=["pgn_replay_errors"],
+        )
+
+        artifacts = _scan_chess_pgn_extra_artifacts(
+            [record],
+            source_title="Exercise only",
+            diagram_records=[
+                {
+                    "page": 1,
+                    "diagram_number": "1-1",
+                    "filename": "diagram_1_1.png",
+                    "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                    "confidence": 0.91,
+                    "requires_review": False,
+                }
+            ],
+        )
+
+        self.assertEqual([artifact["key"] for artifact in artifacts], ["chess_exercises_pgn", "chess_pgn_html"])
+        self.assertEqual(artifacts[0]["filename"], "chess_exercises.pgn")
+        self.assertIn(b'[SetUp "1"]', artifacts[0]["data"])
+        self.assertIn(b"1. e4 e5", artifacts[0]["data"])
 
     def test_chess_notation_css_uses_high_contrast_text(self) -> None:
         self.assertIn(".chess-notation-text", CHESS_REFLOW_CSS)

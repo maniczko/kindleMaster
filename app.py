@@ -148,6 +148,7 @@ MAX_CONVERSION_JOB_STALE_SECONDS = DEFAULT_CONVERSION_QUEUE_POLICY.max_stale_sec
 CONVERSION_PROGRESS_HEARTBEAT_SECONDS = 45
 CONVERSION_PROGRESS_LONG_RUNNING_SECONDS = 5 * 60
 CONVERSION_PROGRESS_STALLED_SECONDS = 2 * 60
+PDF_LAYOUT_PREVIEW_MAX_INLINE_BYTES = 10 * 1024 * 1024
 PDF_COMPRESS_JOB_RETENTION_SECONDS = 6 * 60 * 60
 PDF_COMPRESS_REMOTE_DOWNLOAD_TIMEOUT_SECONDS = 120
 PDF_COMPRESS_DIR = Path(UPLOAD_DIR) / "pdf_compress"
@@ -635,11 +636,20 @@ def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
     output_file = _first_file(job_dir / "output", "*.epub")
     quality_json_file = _first_file(job_dir / "report", "*.quality.json")
     markdown_report_file = _first_file(job_dir / "report", "*.quality.md")
-    chess_pgn_file = _first_file(job_dir / "report", "*.pgn")
-    chess_pgn_html_file = _first_file(job_dir / "report", "chess_games.html")
-    chess_glyph_diagnostics_file = _first_file(job_dir / "report", "chess_glyph_diagnostics.json")
-    deepseek_audit_file = _first_file(job_dir / "report", "deepseek_audit.json")
-    pdf_layout_preview_file = _first_file(job_dir / "report", "pdf_layout_preview.html")
+    report_pgn_files = sorted((job_dir / "report").glob("*.pgn")) if (job_dir / "report").is_dir() else []
+    chess_pgn_file = next((path for path in report_pgn_files if path.name == "chess_games.pgn"), None)
+    if chess_pgn_file is None:
+        chess_pgn_file = next((path for path in report_pgn_files if path.name != "chess_exercises.pgn"), None)
+    chess_exercises_pgn_file = next((path for path in report_pgn_files if path.name == "chess_exercises.pgn"), None)
+    report_html_files = sorted((job_dir / "report").glob("*.html")) if (job_dir / "report").is_dir() else []
+    pdf_layout_preview_file = next(
+        (path for path in report_html_files if path.name == "pdf_layout_preview.html"),
+        None,
+    )
+    chess_pgn_html_file = next(
+        (path for path in report_html_files if path.name != "pdf_layout_preview.html"),
+        None,
+    )
     runtime_json_file = _first_file(job_dir / "log", "*.runtime.json")
     if input_file is None and output_file is None and quality_json_file is None:
         return None
@@ -708,22 +718,14 @@ def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
         artifacts["chess_pgn"] = _local_artifact_metadata(job_id, ArtifactKind.REPORT, chess_pgn_file)
         artifacts["chess_pgn"]["download_url"] = f"/convert/artifact/{job_id}/chess_pgn"
         artifacts["chess_pgn"]["label"] = "PGN"
+    if chess_exercises_pgn_file is not None:
+        artifacts["chess_exercises_pgn"] = _local_artifact_metadata(job_id, ArtifactKind.REPORT, chess_exercises_pgn_file)
+        artifacts["chess_exercises_pgn"]["download_url"] = f"/convert/artifact/{job_id}/chess_exercises_pgn"
+        artifacts["chess_exercises_pgn"]["label"] = "Exercises PGN"
     if chess_pgn_html_file is not None:
         artifacts["chess_pgn_html"] = _local_artifact_metadata(job_id, ArtifactKind.REPORT, chess_pgn_html_file)
         artifacts["chess_pgn_html"]["download_url"] = f"/convert/artifact/{job_id}/chess_pgn_html"
         artifacts["chess_pgn_html"]["label"] = "HTML PGN/FEN"
-    if chess_glyph_diagnostics_file is not None:
-        artifacts["chess_glyph_diagnostics"] = _local_artifact_metadata(
-            job_id,
-            ArtifactKind.REPORT,
-            chess_glyph_diagnostics_file,
-        )
-        artifacts["chess_glyph_diagnostics"]["download_url"] = f"/convert/artifact/{job_id}/chess_glyph_diagnostics"
-        artifacts["chess_glyph_diagnostics"]["label"] = "Chess glyph diagnostics"
-    if deepseek_audit_file is not None:
-        artifacts["deepseek_audit"] = _local_artifact_metadata(job_id, ArtifactKind.REPORT, deepseek_audit_file)
-        artifacts["deepseek_audit"]["download_url"] = f"/convert/artifact/{job_id}/deepseek_audit"
-        artifacts["deepseek_audit"]["label"] = "DeepSeek audit"
     if pdf_layout_preview_file is not None:
         artifacts["pdf_layout_preview"] = _local_artifact_metadata(job_id, ArtifactKind.REPORT, pdf_layout_preview_file)
         artifacts["pdf_layout_preview"]["download_url"] = f"/convert/artifact/{job_id}/pdf_layout_preview"
@@ -3406,17 +3408,13 @@ def _react_shell_index_path() -> Path:
     return Path(app.root_path) / "static" / "react" / "index.html"
 
 
-def _legacy_ui_enabled() -> bool:
-    value = os.environ.get("KINDLEMASTER_ENABLE_LEGACY_UI", "")
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _legacy_ui_asset_paths() -> list[Path]:
+def _render_legacy_index(**context_overrides):
     root_path = Path(app.root_path)
     return [
         root_path / "templates" / "index.html",
         root_path / "templates" / "artifact_preview_shell.html",
         root_path / "static" / "css" / "app-shell.css",
+        root_path / "static" / "js" / "artifact-links.js",
         root_path / "static" / "js" / "conversion-ui.js",
         root_path / "static" / "js" / "quality-cockpit.js",
         root_path / "static" / "js" / "library.js",
@@ -3448,9 +3446,87 @@ def _render_legacy_index():
     return render_template(
         "index.html",
         local_app_url=local_app_url,
+        static_asset_version=str(int(updated_at_timestamp)),
         updated_at_label=updated_at_label,
-        static_asset_version=_legacy_static_asset_version(),
+        **context_overrides,
     )
+
+
+def _build_pdf_layout_preview_handoff(artifact: dict) -> dict:
+    artifact_path = _resolve_local_artifact_path(artifact)
+    if artifact_path is not None and artifact_path.is_file():
+        try:
+            size_bytes = artifact_path.stat().st_size
+        except OSError:
+            size_bytes = 0
+        if size_bytes > PDF_LAYOUT_PREVIEW_MAX_INLINE_BYTES:
+            return {
+                "available": False,
+                "mode": "too_large",
+                "srcdoc": "",
+                "frame_src": "",
+                "badge": "Artefakt duzy",
+                "message": "Podglad ukladu PDF jest zbyt duzy do osadzenia w shellu.",
+                "size_bytes": size_bytes,
+            }
+        try:
+            return {
+                "available": True,
+                "mode": "srcdoc",
+                "srcdoc": artifact_path.read_text(encoding="utf-8", errors="replace"),
+                "frame_src": "",
+                "badge": "Artefakt lokalny",
+                "message": "",
+                "size_bytes": size_bytes,
+            }
+        except OSError as error:
+            return {
+                "available": False,
+                "mode": "read_failed",
+                "srcdoc": "",
+                "frame_src": "",
+                "badge": "Niedostepny",
+                "message": f"Nie udalo sie wczytac podgladu ukladu PDF: {error}",
+                "size_bytes": size_bytes,
+            }
+
+    signed_url = _signed_artifact_url(artifact)
+    if signed_url.startswith(("http://", "https://")):
+        return {
+            "available": True,
+            "mode": "remote",
+            "srcdoc": "",
+            "frame_src": signed_url,
+            "badge": "Artefakt zdalny",
+            "message": "",
+            "size_bytes": int(artifact.get("size_bytes") or 0),
+        }
+
+    return {
+        "available": False,
+        "mode": "missing",
+        "srcdoc": "",
+        "frame_src": "",
+        "badge": "Niedostepny",
+        "message": "Nie znaleziono lokalnego ani zdalnego podgladu ukladu PDF.",
+        "size_bytes": int(artifact.get("size_bytes") or 0),
+    }
+
+
+def _render_pdf_layout_preview_shell(job_id: str, artifact: dict):
+    handoff = _build_pdf_layout_preview_handoff(artifact)
+    response = app.make_response(
+        _render_legacy_index(
+            pdf_layout_preview_job_id=job_id,
+            pdf_layout_preview_filename=str(artifact.get("filename") or "pdf_layout_preview.html"),
+            pdf_layout_preview_handoff=handoff,
+        )
+    )
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["X-KindleMaster-Artifact-View"] = "app-shell"
+    response.headers["X-KindleMaster-Artifact-Source"] = "app-shell"
+    return response
 
 
 @app.route("/")
@@ -4741,6 +4817,8 @@ def convert_artifact_download(job_id: str, artifact_key: str):
             phase="download",
             job_id=job_id,
         )
+    if key == "pdf_layout_preview":
+        return _render_pdf_layout_preview_shell(job_id, artifact)
     artifact_path = _resolve_local_artifact_path(artifact)
     if artifact_path is None or not artifact_path.is_file():
         if key == "input":

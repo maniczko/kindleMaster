@@ -46,6 +46,11 @@
     function normalizeRecentConversion(item) {
       const payload = item && typeof item === "object" ? item : {};
       const downloadUrl = payload.download_url || payload.downloadUrl || "";
+      const pdfLayoutPreviewUrl = payload.pdf_layout_preview_url
+        || payload.pdfLayoutPreviewUrl
+        || (window.KindleMasterArtifactLinks
+          ? window.KindleMasterArtifactLinks.artifactShellUrl(payload, "pdf_layout_preview")
+          : "");
       const qualityStateUrl = payload.quality_state_url || payload.qualityStateUrl || "";
       const artifacts = normalizeConversionArtifacts(payload.artifacts || {});
       const status = normalizeRecentConversionStatus(
@@ -61,6 +66,7 @@
         documentClass: payload.document_class || payload.documentClass || "",
         elapsedSeconds: coerceFiniteNumber(payload.elapsed_seconds ?? payload.elapsedSeconds),
         downloadUrl,
+        pdfLayoutPreviewUrl,
         qualityStateUrl,
         reportJsonUrl: payload.report_json_url || payload.reportJsonUrl || "",
         reportMarkdownUrl: payload.report_markdown_url || payload.reportMarkdownUrl || "",
@@ -142,7 +148,7 @@
       const evidenceActions = ["ready", "failed", "blocked", "interrupted"].includes(status);
       const actions = evidenceActions ? [
         payload.downloadUrl ? `<a href="${escapeHtml(payload.downloadUrl)}">${downloadLabel}</a>` : "",
-        ...renderReviewArtifactActions(payload.artifacts),
+        payload.pdfLayoutPreviewUrl ? `<a href="${escapeHtml(payload.pdfLayoutPreviewUrl)}" target="_blank" rel="noreferrer">Podglad PDF</a>` : "",
         payload.qualityStateUrl ? `<a href="${escapeHtml(payload.qualityStateUrl)}" target="_blank" rel="noreferrer">JSON jakości</a>` : "",
         payload.reportMarkdownUrl ? `<a href="${escapeHtml(payload.reportMarkdownUrl)}" target="_blank" rel="noreferrer">Raport MD</a>` : "",
         payload.reportJsonUrl ? `<a href="${escapeHtml(payload.reportJsonUrl)}" target="_blank" rel="noreferrer">Raport JSON</a>` : "",
@@ -188,7 +194,7 @@
       ].filter(Boolean).join(" | ");
       const actions = [
         payload.downloadUrl ? `<a data-primary="true" href="${escapeHtml(payload.downloadUrl)}">${downloadLabel}</a>` : "<span>Brak EPUB</span>",
-        ...renderReviewArtifactActions(payload.artifacts),
+        payload.pdfLayoutPreviewUrl ? `<a href="${escapeHtml(payload.pdfLayoutPreviewUrl)}" target="_blank" rel="noreferrer">Podglad PDF</a>` : "",
         payload.qualityStateUrl ? `<a href="${escapeHtml(payload.qualityStateUrl)}" target="_blank" rel="noreferrer">Quality JSON</a>` : "",
         payload.reportMarkdownUrl ? `<a href="${escapeHtml(payload.reportMarkdownUrl)}" target="_blank" rel="noreferrer">Raport MD</a>` : "",
         payload.reportJsonUrl ? `<a href="${escapeHtml(payload.reportJsonUrl)}" target="_blank" rel="noreferrer">Raport JSON</a>` : "",

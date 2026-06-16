@@ -1,81 +1,157 @@
 from __future__ import annotations
 
-import tempfile
+import os
+import shutil
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
 
-import fitz
-
-from converter import ConversionConfig
-from pymupdf_chess_extractor import build_pdf_layout_preview_html
-from publication_pipeline import _ensure_chess_pdf_layout_preview_artifact
+import app as app_module
+from app import app
 
 
-class PdfLayoutPreviewTests(unittest.TestCase):
-    def test_preview_renders_page_background_and_copyable_text_layer(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            pdf_path = Path(temp_dir) / "layout-preview.pdf"
-            doc = fitz.open()
-            page = doc.new_page(width=240, height=160)
-            page.insert_text((36, 48), "1. e4 e5", fontsize=12)
-            page.insert_text((36, 84), "2. Nf3 Nc6", fontsize=12)
-            doc.save(pdf_path)
-            doc.close()
+class PdfLayoutPreviewArtifactTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.client = app.test_client()
+        self.cleanup_paths: list[str] = []
+        self.cleanup_dirs: list[Path] = []
+        with app_module._CONVERSION_JOBS_LOCK:
+            self.original_conversion_jobs = {
+                job_id: dict(job)
+                for job_id, job in app_module._CONVERSION_JOBS.items()
+            }
+            app_module._CONVERSION_JOBS.clear()
 
-            html = build_pdf_layout_preview_html(
-                str(pdf_path),
-                ConversionConfig(pdf_layout_preview_dpi=72, pdf_layout_preview_jpeg_quality=70),
-                title="Preview sample",
+    def tearDown(self) -> None:
+        for path in self.cleanup_paths:
+            if path and os.path.exists(path):
+                os.remove(path)
+        for path in self.cleanup_dirs:
+            if path.exists():
+                shutil.rmtree(path)
+        with app_module._CONVERSION_JOBS_LOCK:
+            app_module._CONVERSION_JOBS.clear()
+            app_module._CONVERSION_JOBS.update(
+                {job_id: dict(job) for job_id, job in self.original_conversion_jobs.items()}
             )
+        app_module._CONVERSION_JOB_STORE.persist()
 
-        self.assertIn('class="pdf-page"', html)
-        self.assertIn('style="width:240.00px;height:160.00px"', html)
-        self.assertIn("data:image/jpeg;base64,", html)
-        self.assertIn('class="pdf-text-span"', html)
-        self.assertIn("1. e4 e5", html)
-        self.assertIn("Show text layer", html)
+    def test_pdf_layout_preview_artifact_renders_app_shell_viewer(self) -> None:
+        job_id = "pdf-layout-preview-shell"
+        raw_preview_html = b"<html><body>old standalone layout</body></html>"
+        artifact = app_module._store_artifact_bytes(
+            job_id=job_id,
+            kind=app_module.ArtifactKind.REPORT,
+            filename="pdf_layout_preview.html",
+            data=raw_preview_html,
+        )
+        self.cleanup_paths.append(str(artifact["location"]))
+        self.cleanup_dirs.append(Path(artifact["location"]).parents[1])
+        created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        job = app_module.build_conversion_job_record(
+            job_id=job_id,
+            source_path="",
+            source_type="pdf",
+            filename="layout.pdf",
+            created_at=created_at,
+        )
+        job.update(
+            {
+                "status": "ready",
+                "artifacts": {"pdf_layout_preview": artifact},
+            }
+        )
+        app_module._CONVERSION_JOB_STORE.create(job)
 
-    def test_pipeline_adds_preview_for_chess_like_book_reflow_pdf(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            pdf_path = Path(temp_dir) / "book-reflow-chess.pdf"
-            doc = fitz.open()
-            page = doc.new_page(width=360, height=240)
-            page.insert_text((36, 48), "D00 Chess opening", fontsize=12)
-            page.insert_text((36, 84), "1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 *", fontsize=12)
-            doc.save(pdf_path)
-            doc.close()
+        response = self.client.get(f"/convert/artifact/{job_id}/pdf_layout_preview")
 
-            content = _ensure_chess_pdf_layout_preview_artifact(
-                {"chapters": [], "extra_artifacts": []},
-                str(pdf_path),
-                ConversionConfig(pdf_layout_preview_dpi=72),
-                analysis=SimpleNamespace(profile="book_reflow", detected_features=[]),
-                source_title="Book reflow chess",
-            )
+        html = response.get_data(as_text=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "text/html")
+        self.assertIn('data-vr-hook="vat-209-shell"', html)
+        self.assertIn('data-vr-hook="km-pdf-layout-preview-handoff"', html)
+        self.assertIn('id="pdfCanvas"', html)
+        self.assertIn('data-artifact-view="pdf_layout_preview"', html)
+        self.assertIn('class="layout-preview-frame"', html)
+        self.assertIn("sandbox", html)
+        self.assertIn('srcdoc="', html)
+        self.assertIn("old standalone layout", html)
+        self.assertIn("app-shell.css?v=", html)
+        self.assertIn("conversion-ui.js?v=", html)
+        self.assertIn("library.js?v=", html)
+        self.assertNotIn("<html><body>old standalone layout</body></html>", html)
+        self.assertNotIn("attachment", response.headers.get("Content-Disposition", ""))
+        self.assertEqual(response.headers["X-KindleMaster-Artifact-View"], "app-shell")
 
-        artifacts = content["extra_artifacts"]
-        self.assertEqual([artifact["key"] for artifact in artifacts], ["pdf_layout_preview"])
-        self.assertIn(b'class="pdf-page"', artifacts[0]["data"])
+    def test_remote_pdf_layout_preview_is_embedded_as_sandboxed_frame(self) -> None:
+        job_id = "remote-pdf-layout-preview-shell"
+        created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        job = app_module.build_conversion_job_record(
+            job_id=job_id,
+            source_path="",
+            source_type="pdf",
+            filename="remote-layout.pdf",
+            created_at=created_at,
+        )
+        job.update(
+            {
+                "status": "ready",
+                "artifacts": {
+                    "pdf_layout_preview": {
+                        "provider": "supabase",
+                        "status": "stored",
+                        "kind": "report",
+                        "job_id": job_id,
+                        "filename": "pdf_layout_preview.html",
+                        "location": "supabase://bucket/pdf_layout_preview.html",
+                        "size_bytes": 128,
+                        "content_type": "text/html; charset=utf-8",
+                        "signed_url": {
+                            "available": True,
+                            "url": "https://signed.example.invalid/pdf_layout_preview.html",
+                            "expires_in_seconds": 900,
+                            "reason": "",
+                        },
+                    }
+                },
+            }
+        )
+        app_module._CONVERSION_JOB_STORE.create(job)
 
-    def test_pipeline_does_not_add_preview_when_disabled(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            pdf_path = Path(temp_dir) / "disabled-preview.pdf"
-            doc = fitz.open()
-            page = doc.new_page(width=360, height=240)
-            page.insert_text((36, 84), "1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 *", fontsize=12)
-            doc.save(pdf_path)
-            doc.close()
+        response = self.client.get(f"/convert/artifact/{job_id}/pdf_layout_preview")
 
-            content = _ensure_chess_pdf_layout_preview_artifact(
-                {"chapters": [], "extra_artifacts": []},
-                str(pdf_path),
-                ConversionConfig(pdf_layout_preview_enabled=False),
-                analysis=SimpleNamespace(profile="book_reflow", detected_features=[]),
-                source_title="Disabled preview",
-            )
+        html = response.get_data(as_text=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('data-vr-hook="km-pdf-layout-preview-handoff"', html)
+        self.assertIn('class="layout-preview-frame"', html)
+        self.assertIn("sandbox", html)
+        self.assertIn('src="https://signed.example.invalid/pdf_layout_preview.html"', html)
+        self.assertNotIn("attachment", response.headers.get("Content-Disposition", ""))
 
-        self.assertEqual(content["extra_artifacts"], [])
+    def test_restored_local_pdf_layout_preview_keeps_distinct_artifact_key(self) -> None:
+        job_id = "restored-pdf-layout-preview-shell"
+        job_dir = Path(app_module.app.root_path) / "output" / "artifacts" / job_id
+        report_dir = job_dir / "report"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        self.cleanup_dirs.append(job_dir)
+        (report_dir / "restored.quality.json").write_text("{}", encoding="utf-8")
+        (report_dir / "pdf_layout_preview.html").write_text(
+            "<html><body>restored old layout</body></html>",
+            encoding="utf-8",
+        )
+
+        response = self.client.get(f"/convert/artifact/{job_id}/pdf_layout_preview")
+
+        html = response.get_data(as_text=True)
+        restored_job = app_module._get_conversion_job(job_id)
+        self.assertEqual(response.status_code, 200)
+        self.assertIsInstance(restored_job, dict)
+        self.assertIn("pdf_layout_preview", restored_job["artifacts"])
+        self.assertNotIn("chess_pgn_html", restored_job["artifacts"])
+        self.assertIn('data-vr-hook="vat-209-shell"', html)
+        self.assertIn('data-vr-hook="km-pdf-layout-preview-handoff"', html)
+        self.assertIn('id="pdfCanvas"', html)
+        self.assertIn("restored old layout", html)
 
 
 if __name__ == "__main__":

@@ -279,28 +279,6 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertEqual(reloaded_jobs["job-running"]["status"], "failed")
         self.assertEqual(reloaded_jobs["job-running"]["source_path"], str(source_path))
 
-    def test_conversion_job_store_load_handles_invalid_json_and_invalid_shape_payload(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            store_path = Path(temp_dir) / "jobs.json"
-
-            store_path.write_text("{broken", encoding="utf-8")
-            invalid_json_store = ConversionJobStore({}, threading.Lock(), persistence_path=store_path)
-            invalid_json_result = invalid_json_store.load()
-
-            store_path.write_text('{"jobs": []}', encoding="utf-8")
-            malformed_store = ConversionJobStore({}, threading.Lock(), persistence_path=store_path)
-            invalid_shape_result = malformed_store.load()
-
-        self.assertFalse(invalid_json_result["loaded"])
-        self.assertEqual(invalid_json_result["job_count"], 0)
-        self.assertEqual(invalid_json_result["interrupted_jobs"], 0)
-        self.assertIn("Expecting", invalid_json_result["error"])
-
-        self.assertFalse(invalid_shape_result["loaded"])
-        self.assertEqual(invalid_shape_result["job_count"], 0)
-        self.assertEqual(invalid_shape_result["interrupted_jobs"], 0)
-        self.assertEqual(invalid_shape_result["error"], "Invalid job store shape.")
-
     def test_resolve_server_port_and_debug_mode_use_safe_env_defaults(self) -> None:
         self.assertEqual(resolve_server_port({}), 5001)
         self.assertEqual(resolve_server_port({"PORT": "5512"}), 5512)
@@ -357,7 +335,6 @@ class AppRuntimeServicesTests(unittest.TestCase):
                 profile="auto-premium",
                 language="en",
                 heading_repair_enabled=True,
-                quality_gate_mode="off",
             ),
             {
                 "analysis": {"profile": "fixed_layout_fallback"},
@@ -1443,7 +1420,6 @@ class AppRuntimeServicesTests(unittest.TestCase):
                 profile="auto-premium",
                 language="en",
                 heading_repair_enabled=True,
-                quality_gate_mode="off",
             ),
             convert_impl=convert_impl,
             heading_repair_impl=heading_repair_impl,

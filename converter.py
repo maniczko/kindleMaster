@@ -246,18 +246,7 @@ def finalize_epub_bytes(
             return epub_bytes, text_cleanup_summary
         return epub_bytes
 
-    if profile_key in {"diagram_book_reflow", "premium_scanned_chess_reflow"}:
-        if profile_key == "premium_scanned_chess_reflow":
-            skip_reason = (
-                "Skipped notation-sensitive text cleanup for scanned chess reflow. "
-                "OCR text, SAN notation, diagram captions, and FEN blocks are preserved for review; "
-                "semantic cleanup, reference cleanup, validation, and artifact analysis still run."
-            )
-        else:
-            skip_reason = (
-                "Skipped notation-sensitive text cleanup for diagram-heavy training books "
-                "to avoid long-running false positives."
-            )
+    if profile_key == "diagram_book_reflow":
         text_cleanup_summary = {
             **text_cleanup_summary,
             "status": "skipped",
@@ -637,8 +626,6 @@ class ConversionConfig:
     chess_fen_review_provider_enabled: bool = False
     chess_fen_scan_enable_sliding_probe: bool = False
     chess_notation_chapter_pages: int = 40
-    chess_notation_diagram_scan_max_pages: int = 260
-    chess_notation_fen_recognition_max_diagrams: int = 96
     scanned_chess_max_pages: int = 0  # 0 means all pages for premium scanned-chess extraction
     scanned_chess_min_grid_confidence: float = 0.50
     scanned_chess_cache_enabled: bool = True
@@ -1568,15 +1555,9 @@ CHESS_REFLOW_CSS = """\
 }
 
 .chess-pgn-review-note,
-.chess-pgn-review-title,
 .chess-pgn-review-warnings {
   color: #111;
   font-size: 0.92em;
-}
-
-.chess-pgn-review-title {
-  margin: 0 0 0.45em;
-  font-weight: 700;
 }
 
 .diagram-fen {

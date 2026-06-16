@@ -2595,7 +2595,6 @@ function FileDetailsWorkspace({
   const [deliveryError, setDeliveryError] = React.useState("");
   const [deliveryDiagnostics, setDeliveryDiagnostics] = React.useState<Record<string, unknown> | null>(null);
   const [deliveryBusy, setDeliveryBusy] = React.useState(false);
-  const [artifactDownloadError, setArtifactDownloadError] = React.useState("");
   const [detailsCompressionBusy, setDetailsCompressionBusy] = React.useState(false);
   const [detailsCompressionStatus, setDetailsCompressionStatus] = React.useState("");
   const [detailsCompressedPdfResult, setDetailsCompressedPdfResult] = React.useState<PdfCompressionResultPayload | null>(null);
@@ -2616,7 +2615,6 @@ function FileDetailsWorkspace({
     setDetailsCompressedPdfResult(null);
     setDetailsCompressionBusy(false);
     setDetailsCompressionStatus("");
-    setArtifactDownloadError("");
     setCropWorkspaceOpen(false);
   }, [job?.job_id]);
   React.useEffect(() => {

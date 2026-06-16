@@ -956,6 +956,13 @@ Current repo-local Codex defaults:
 - local governance hooks: `.githooks/pre-commit` and `.githooks/pre-push`
 - agent readiness reporting: `python kindlemaster.py doctor` includes `agent_readiness`
 
+Model routing policy:
+- default to `gpt-5.5` with `xhigh` reasoning for high-risk KindleMaster work: conversion runtime, EPUB package/spine/nav integrity, chess FEN/PGN recognition, corpus/release gates, deployment architecture, and cross-module debugging,
+- prefer a lighter/mini model for status checks, short summaries, token/cost reports, simple command lookups, and low-risk documentation-only answers when the user or runtime allows model selection,
+- prefer a mid-tier model for small single-file fixes, UI copy/layout polish with bounded scope, and report formatting when no EPUB/FEN/release invariant is at risk,
+- after any merge or large milestone, start a new thread or provide a compact handoff before continuing; do not keep carrying large historical context into simple status or planning turns,
+- if a task starts on a lighter model but discovers runtime, FEN/PGN, package integrity, or release-gate risk, escalate back to the strongest available model before editing shared code.
+
 Keep MCP and plugin entries deterministic. Do not use floating MCP versions such as `@latest`; pin versions and update them deliberately with a small verification pass.
 
 Local developer bootstrap should install hooks through:

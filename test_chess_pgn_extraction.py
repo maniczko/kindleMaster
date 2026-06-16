@@ -219,6 +219,290 @@ class ChessPgnExtractionTests(unittest.TestCase):
         self.assertNotIn("[FEN", records[0].pgn)
         self.assertIn("Final FEN:", build_pgn_download_html(records))
 
+    def test_pgn_download_html_includes_inline_diagram_fen_records(self) -> None:
+        html = build_pgn_download_html(
+            [],
+            title="Diagram FEN",
+            diagram_records=[
+                {
+                    "page": 12,
+                    "filename": "scan_chess_p012_01.png",
+                    "image_data": b"\x89PNG\r\n\x1a\nsample",
+                    "extension": "png",
+                    "fen": "8/8/8/8/8/8/8/8 w - - 0 1",
+                    "confidence": 0.91,
+                    "requires_review": False,
+                    "method": "image-template-board",
+                    "warnings": ["side_to_move_inferred"],
+                }
+            ],
+        )
+
+        self.assertIn("Detected chess diagrams / FEN", html)
+        self.assertIn("Detected chess diagrams: 1", html)
+        self.assertIn("Detected diagram FEN: 1", html)
+        self.assertIn("FEN zaakceptowany", html)
+        self.assertIn("data:image/png;base64,", html)
+        self.assertIn("8/8/8/8/8/8/8/8 w - - 0 1", html)
+        self.assertIn("Kopiuj FEN", html)
+
+    def test_pgn_download_html_shows_diagram_preprocess_metadata(self) -> None:
+        html = build_pgn_download_html(
+            [],
+            title="Diagram preprocessing",
+            diagram_records=[
+                {
+                    "page": 3,
+                    "filename": "scan_chess_p003_01.png",
+                    "image_data": b"\x89PNG\r\n\x1a\nsample",
+                    "extension": "png",
+                    "fen": "8/8/8/8/8/8/8/8 w - - 0 1",
+                    "confidence": 0.77,
+                    "requires_review": False,
+                    "method": "image-template-board",
+                    "selected_preprocess_variant": "unsharp_mask",
+                    "display_variant_used": "reader_enhanced",
+                }
+            ],
+        )
+
+        self.assertIn("recognition unsharp_mask", html)
+        self.assertIn("display reader_enhanced", html)
+
+    def test_pgn_download_html_keeps_low_confidence_diagram_fen_as_review(self) -> None:
+        review_record = ChessPgnRecord(
+            id="review-ocr",
+            source_pages=[1],
+            title="OCR review",
+            headers={"Event": "OCR review"},
+            movetext="1. e4 e5 *",
+            pgn='[Event "OCR review"]\n[SetUp "1"]\n[FEN "8/8/8/8/8/8/8/8 w - - 0 1"]\n\n1. e4 e5 *',
+            annotated_pgn='[Event "OCR review"]\n[SetUp "1"]\n[FEN "8/8/8/8/8/8/8/8 w - - 0 1"]\n\n1. e4 e5 *',
+            status="requires_review",
+            warnings=["pgn_replay_failed"],
+            raw_text="Original OCR fragment: Wixh7t liJ noisy OCR",
+        )
+
+        html = build_pgn_download_html(
+            [review_record],
+            diagram_records=[
+                {
+                    "page": 1,
+                    "filename": "scan_chess_p001_01.png",
+                    "image_data": b"\x89PNG\r\n\x1a\nsample",
+                    "confidence": 0.42,
+                    "requires_review": True,
+                    "warnings": ["image_board_requires_review"],
+                }
+            ],
+        )
+
+        self.assertIn("FEN do weryfikacji", html)
+        self.assertIn("Original OCR fragment", html)
+        self.assertIn("chess-diagram-thumb", html)
+        self.assertNotIn('[FEN "8/8/8/8/8/8/8/8 w - - 0 1"]', html)
+
+    def test_html_review_record_shows_matched_diagram_and_quality_flags(self) -> None:
+        review_record = ChessPgnRecord(
+            id="diagram-1-2",
+            source_pages=[12],
+            title="Diagram 1-2 A. Yusupov - P'Schlosser",
+            headers={"Event": "Diagram 1-2"},
+            movetext="1. ge5 *",
+            pgn='[Event "Diagram 1-2"]\n\n1. ge5 *',
+            status="requires_review",
+            warnings=["pgn_replay_errors"],
+            raw_text="Diagram 1-2\n1. ge5+- Threatening gg5t and mate.",
+        )
+
+        html = build_pgn_download_html(
+            [review_record],
+            diagram_records=[
+                {
+                    "page": 12,
+                    "diagram_number": "1-2",
+                    "filename": "scan_chess_p012_01.png",
+                    "image_data": b"\x89PNG\r\n\x1a\nsample",
+                    "fen": "8/8/8/8/8/8/8/8 w - - 0 1",
+                    "confidence": 0.84,
+                    "requires_review": False,
+                }
+            ],
+        )
+
+        self.assertIn("Tekst OCR z książki, wymaga korekty", html)
+        self.assertIn("chess-diagram-thumb", html)
+        self.assertIn("diagram_visible", html)
+        self.assertIn("fen_available", html)
+        self.assertNotIn("Kopiuj PGN", html)
+
+    def test_html_review_record_matches_diagram_number_without_page_or_fen(self) -> None:
+        review_record = ChessPgnRecord(
+            id="diagram-number-only",
+            source_pages=[99],
+            title="Diagram 1-2 A. Yusupov - P'Schlosser",
+            headers={"Event": "Diagram 1-2"},
+            movetext="",
+            pgn="",
+            status="requires_review",
+            warnings=["pgn_replay_errors"],
+            raw_text="Diagram 1-2\nOCR text requires review.",
+        )
+
+        html = build_pgn_download_html(
+            [review_record],
+            diagram_records=[
+                {
+                    "page": 1,
+                    "diagram_number": "1-2",
+                    "filename": "notation_chess_p001_01.png",
+                    "image_data": b"\x89PNG\r\n\x1a\nsample",
+                    "requires_review": True,
+                    "selected_preprocess_variant": "original",
+                    "display_variant_used": "reader_enhanced",
+                }
+            ],
+        )
+        soup = BeautifulSoup(html, "html.parser")
+        flags = {
+            item.select_one(".exercise-quality-key").get_text(strip=True).rstrip(":"): item.select_one(
+                ".exercise-quality-value"
+            ).get_text(strip=True)
+            for item in soup.select(".exercise-quality-flags li")
+        }
+
+        self.assertIsNotNone(soup.select_one("section.chess-pgn-game img.chess-diagram-thumb"))
+        self.assertEqual(flags["diagram_visible"], "yes")
+        self.assertEqual(flags["fen_available"], "no")
+        self.assertEqual(flags["missing_diagram_reason"], "")
+        self.assertGreaterEqual(int(flags["diagram_candidate_count"]), 1)
+        self.assertGreaterEqual(int(flags["diagram_match_score"]), 100)
+        self.assertIn("display reader_enhanced", html)
+        self.assertIn("recognition original", html)
+
+    def test_html_review_record_falls_back_to_source_order_when_caption_is_damaged(self) -> None:
+        review_record = ChessPgnRecord(
+            id="source-order-fallback",
+            source_pages=[42],
+            title="A. Yusupov - P'Schlosser Bundesliga 1997",
+            headers={"Event": "Damaged caption"},
+            movetext="",
+            pgn="",
+            status="requires_review",
+            warnings=["pgn_replay_errors"],
+            raw_text="OCR text requires review.",
+        )
+
+        html = build_pgn_download_html(
+            [review_record],
+            diagram_records=[
+                {
+                    "page": 1,
+                    "source_order": 0,
+                    "filename": "notation_chess_p001_01.png",
+                    "image_data": b"\x89PNG\r\n\x1a\nsample",
+                    "requires_review": True,
+                    "selected_preprocess_variant": "original",
+                    "display_variant_used": "reader_enhanced",
+                }
+            ],
+        )
+        soup = BeautifulSoup(html, "html.parser")
+        flags = {
+            item.select_one(".exercise-quality-key").get_text(strip=True).rstrip(":"): item.select_one(
+                ".exercise-quality-value"
+            ).get_text(strip=True)
+            for item in soup.select(".exercise-quality-flags li")
+        }
+
+        self.assertIsNotNone(soup.select_one("section.chess-pgn-game img.chess-diagram-thumb"))
+        self.assertEqual(flags["diagram_visible"], "yes")
+        self.assertEqual(flags["fen_available"], "no")
+        self.assertEqual(flags["diagram_match_score"], "55")
+        self.assertNotIn("Kopiuj PGN", html)
+
+    def test_matched_diagram_fen_feeds_exercise_candidate_validation(self) -> None:
+        review_record = ChessPgnRecord(
+            id="diagram-fen-candidate",
+            source_pages=[99],
+            title="Diagram 1-2 A. Yusupov - P'Schlosser",
+            headers={"Event": "Diagram 1-2"},
+            movetext="",
+            pgn="",
+            status="requires_review",
+            warnings=["pgn_replay_errors"],
+            raw_text="Diagram 1-2\n1. e4 e5",
+        )
+
+        html = build_pgn_download_html(
+            [review_record],
+            diagram_records=[
+                {
+                    "page": 1,
+                    "diagram_number": "1-2",
+                    "filename": "notation_chess_p001_01.png",
+                    "image_data": b"\x89PNG\r\n\x1a\nsample",
+                    "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                    "confidence": 0.88,
+                    "requires_review": False,
+                    "selected_preprocess_variant": "autocontrast",
+                    "display_variant_used": "reader_enhanced",
+                }
+            ],
+        )
+        soup = BeautifulSoup(html, "html.parser")
+        flags = {
+            item.select_one(".exercise-quality-key").get_text(strip=True).rstrip(":"): item.select_one(
+                ".exercise-quality-value"
+            ).get_text(strip=True)
+            for item in soup.select(".exercise-quality-flags li")
+        }
+
+        self.assertEqual(flags["diagram_visible"], "yes")
+        self.assertEqual(flags["fen_available"], "yes")
+        self.assertGreater(int(flags["legal_solution_line_count"]), 0)
+        self.assertIn("legal from diagram FEN", html)
+        self.assertNotIn("Kopiuj PGN", html)
+
+    def test_exercise_record_validates_solution_from_diagram_fen(self) -> None:
+        review_record = ChessPgnRecord(
+            id="fen-solution",
+            source_pages=[1],
+            title="Diagram 1-1",
+            headers={"Event": "Diagram 1-1"},
+            movetext="1. e4 e5 *",
+            pgn='[Event "Diagram 1-1"]\n\n1. e4 e5 *',
+            status="requires_review",
+            warnings=["pgn_replay_errors"],
+            fen="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            raw_text="Diagram 1-1\n1. e4 e5",
+        )
+
+        html = build_pgn_download_html([review_record])
+
+        self.assertIn("Candidate solution lines", html)
+        self.assertIn("legal from diagram FEN", html)
+        self.assertIn("rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2", html)
+
+    def test_variation_boundaries_do_not_merge_into_mainline(self) -> None:
+        review_record = ChessPgnRecord(
+            id="variation-boundaries",
+            source_pages=[1],
+            title="Diagram 1-4",
+            headers={"Event": "Diagram 1-4"},
+            movetext="1. e4 e5 *",
+            pgn='[Event "Diagram 1-4"]\n\n1. e4 e5 *',
+            status="requires_review",
+            warnings=["move_number_regression"],
+            fen="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            raw_text="1. e4 e5 if 1... c5 2. Nf3 or 1... e6 2. d4 in view of 2... d5",
+        )
+
+        html = build_pgn_download_html([review_record])
+
+        self.assertGreaterEqual(html.count("Candidate line"), 3)
+        self.assertIn("requires review", html)
+
     def test_ignores_bracketed_analysis_variations_for_legal_replay(self) -> None:
         records = annotate_records_with_replayed_fens(
             extract_chess_pgn_records_from_text(
@@ -1187,6 +1471,25 @@ B13: Caro-Kann: Exchange Variation
         strict_index = children.index(section.select_one("div.chess-pgn-mainline"))
 
         self.assertLess(full_index, strict_index)
+
+    def test_review_pgn_download_html_prefers_raw_ocr_over_reconstructed_pgn(self) -> None:
+        record = ChessPgnRecord(
+            id="ocr-review",
+            source_pages=[13],
+            title="OCR review",
+            headers={"Event": "OCR review", "Result": "*"},
+            movetext="1. Rh8+ Kxh8 *",
+            pgn='[Event "OCR review"]\n[Result "*"]\n\n1. Rh8+ Kxh8 *\n',
+            annotated_pgn='[Event "OCR review"]\n[Result "*"]\n\n{Wixh7t liJ noisy OCR} 1. Rh8+ Kxh8 *\n',
+            raw_text="Original OCR fragment: Wixh7t liJ noisy OCR",
+            status="requires_review",
+            warnings=["pgn_replay_errors"],
+        )
+
+        html = build_pgn_download_html([record], title="OCR review")
+
+        self.assertIn("Original OCR fragment: Wixh7t liJ noisy OCR", html)
+        self.assertNotIn("[Event &quot;OCR review&quot;]", html)
 
     def test_semantic_cleanup_keeps_generated_pgn_section(self) -> None:
         soup = BeautifulSoup(

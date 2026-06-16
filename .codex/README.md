@@ -22,6 +22,13 @@ Current repo-local defaults:
 - local Git hook path: `.githooks`
 - agent readiness surface: `python kindlemaster.py doctor`
 
+Model routing convention:
+- use `gpt-5.5` with high reasoning for conversion runtime, EPUB integrity, chess FEN/PGN, corpus/release gates, deployment architecture, and cross-module debugging,
+- use a lighter/mini model for status checks, summaries, token/cost reports, simple command lookups, and low-risk documentation-only answers when model selection is available,
+- use a mid-tier model for bounded single-file fixes, UI copy/layout polish, and report formatting when no EPUB/FEN/release invariant is at risk,
+- after a merge or large milestone, prefer a fresh thread or compact handoff to avoid carrying a large stale context into simple turns,
+- escalate back to the strongest available model whenever a lighter-model turn uncovers runtime, FEN/PGN, package integrity, or release-gate risk.
+
 ## Why this is separate from global config
 
 Global config is user-wide.

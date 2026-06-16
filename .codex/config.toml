@@ -49,6 +49,13 @@
 # - release: reports/governance/release.json
 # - doctor includes agent_readiness for Codex config, pinned MCP, plugins, skills, hooks, and stale local agent settings
 #
+# Model routing policy mirror:
+# - active default: gpt-5.5 + xhigh for conversion runtime, EPUB integrity, FEN/PGN, release/corpus, deployment architecture, and cross-module debugging
+# - use lighter/mini models for status checks, summaries, token/cost reports, simple command lookups, and low-risk documentation-only answers when runtime model selection is available
+# - use mid-tier models for bounded single-file fixes, UI copy/layout polish, and report formatting when no EPUB/FEN/release invariant is at risk
+# - after merge or large milestone, prefer a fresh thread or compact handoff so simple turns do not carry the full historical context
+# - escalate back to the strongest available model when a light-model turn uncovers runtime, FEN/PGN, package integrity, or release-gate risk
+#
 # Active settings below are intentionally small and portable. Keep speculative
 # preferences as comments unless Codex supports them as real config keys.
 

@@ -740,6 +740,12 @@ def extract_chess_notation_pdf_reflow(
     doc = fitz.open(pdf_path)
     total_pages = len(doc)
     try:
+        template_dir = _resolve_chess_piece_template_dir(config)
+        piece_templates = (
+            load_piece_templates(template_dir)
+            if getattr(config, "chess_fen_recognition_enabled", True) and template_dir
+            else {}
+        )
         chunk_pages = max(10, int(getattr(config, "chess_notation_chapter_pages", 40) or 40))
         chapters: list[dict[str, Any]] = []
         current_parts: list[str] = []
@@ -749,6 +755,11 @@ def extract_chess_notation_pdf_reflow(
         notation_line_count = 0
         skipped_image_count = 0
         chess_pgn_records: list[Any] = []
+        notation_diagram_records: list[dict[str, Any]] = []
+        notation_fen_recognition_max_diagrams = max(
+            0,
+            int(getattr(config, "chess_notation_fen_recognition_max_diagrams", 96) or 0),
+        )
         text_extraction_seconds = 0.0
         pgn_extraction_seconds = 0.0
 
@@ -800,6 +811,22 @@ def extract_chess_notation_pdf_reflow(
             line_items = _chess_notation_line_items_from_page(page, page_num)
             body_lines = _chess_notation_body_lines(line_items)
             page_parts = _chess_notation_page_html_parts(line_items, page_num=page_num, body_lines=body_lines)
+            if page_parts:
+                recognition_piece_templates = (
+                    piece_templates
+                    if notation_fen_recognition_max_diagrams <= 0
+                    or len(notation_diagram_records) < notation_fen_recognition_max_diagrams
+                    else {}
+                )
+                notation_diagram_records.extend(
+                    _chess_notation_diagram_records_from_page(
+                        doc,
+                        page_num,
+                        config=config,
+                        piece_templates=recognition_piece_templates,
+                        line_items=line_items,
+                    )
+                )
             text_extraction_seconds += time.perf_counter() - page_started
             if page_parts:
                 text_pages += 1
@@ -810,6 +837,9 @@ def extract_chess_notation_pdf_reflow(
         flush_chapter(total_pages - 1)
     finally:
         doc.close()
+
+    for source_order, record in enumerate(notation_diagram_records):
+        record.setdefault("source_order", source_order)
 
     chess_pgn_records = merge_chess_pgn_continuation_records(chess_pgn_records)
     chess_pgn_summary = summarize_chess_pgn_records(chess_pgn_records)
@@ -833,6 +863,7 @@ def extract_chess_notation_pdf_reflow(
             **metadata,
             "publication_kind": "chess-notation-collection",
             "image_policy": "embedded_board_images_skipped_for_runtime_budget",
+            "html_diagram_preview_count": len(notation_diagram_records),
             "source_page_count": total_pages,
             "text_page_count": text_pages,
             "notation_line_count": notation_line_count,
@@ -840,10 +871,10 @@ def extract_chess_notation_pdf_reflow(
             "chess_pgn": chess_pgn_summary,
             "audit": audit_metadata,
             "chess_fen": {
-                "status": "passed" if chess_pgn_summary.get("derived_final_fen_count") else "requires_review",
-                "source": "pgn_replay",
-                "diagram_count": int(chess_pgn_summary.get("candidate_game_count", 0) or 0),
-                "fen_count": int(chess_pgn_summary.get("fen_count", 0) or 0),
+                "status": "passed" if chess_pgn_summary.get("derived_final_fen_count") or notation_diagram_records else "requires_review",
+                "source": "html_diagram_preview_and_pgn_replay",
+                "diagram_count": len(notation_diagram_records) or int(chess_pgn_summary.get("candidate_game_count", 0) or 0),
+                "fen_count": len([record for record in notation_diagram_records if record.get("fen")]) + int(chess_pgn_summary.get("fen_count", 0) or 0),
                 "manual_review_count": int(chess_pgn_summary.get("manual_review_count", 0) or 0),
             },
         },
@@ -852,6 +883,7 @@ def extract_chess_notation_pdf_reflow(
         "extra_artifacts": _scan_chess_pgn_extra_artifacts(
             chess_pgn_records,
             source_title=str(metadata.get("title") or Path(pdf_path).stem),
+            diagram_records=notation_diagram_records,
         ),
         "audit": {
             "status": "passed_with_warnings",
@@ -860,6 +892,161 @@ def extract_chess_notation_pdf_reflow(
             "warning": "Raster board images were skipped to keep large chess notation collections generatable.",
         },
     }
+
+
+def _chess_notation_diagram_records_from_page(
+    doc: fitz.Document,
+    page_num: int,
+    *,
+    config: ConversionConfig,
+    piece_templates: dict | None = None,
+    line_items: list[TextLineItem] | None = None,
+) -> list[dict[str, Any]]:
+    max_pages = int(getattr(config, "chess_notation_diagram_scan_max_pages", 260) or 0)
+    if max_pages <= 0 or page_num >= max_pages:
+        return []
+    max_candidates = max(1, min(int(getattr(config, "chess_fen_scan_candidates_per_page", 3) or 3), 6))
+    try:
+        image_data = _page_image_data_for_scan_chess(doc, page_num)
+        page_image = Image.open(io.BytesIO(image_data)).convert("RGB")
+    except Exception:
+        return []
+    try:
+        candidates = detect_board_candidates_in_page_image(
+            image_data,
+            max_candidates=max_candidates,
+            enable_sliding_probe=bool(getattr(config, "chess_fen_scan_enable_sliding_probe", False)),
+        )
+    except Exception:
+        return []
+    records: list[dict[str, Any]] = []
+    for candidate_index, candidate in enumerate(candidates, start=1):
+        raw_bbox = getattr(candidate, "bbox", None)
+        bbox = _clamp_bbox(raw_bbox, page_image.size)
+        recognition_bbox = _clamp_bbox(raw_bbox, page_image.size, pad_ratio=0.0, min_pad=0.0)
+        if bbox is None:
+            continue
+        if recognition_bbox is None:
+            recognition_bbox = bbox
+        crop = page_image.crop(bbox)
+        if min(crop.size) < 80 or _scan_chess_is_partial_separator_crop(crop):
+            continue
+        png_data, width, height = _encode_scan_chess_diagram_crop(crop, config)
+        bbox_tuple = tuple(float(value) for value in bbox)
+        recognition_bbox_tuple = tuple(float(value) for value in recognition_bbox)
+        preprocess_metadata = _scan_chess_preprocess_metadata(
+            selected_variant="original",
+            display_variant="reader_enhanced",
+            confidence=float(getattr(candidate, "confidence", 0.0) or getattr(candidate, "grid_confidence", 0.0) or 0.0),
+        )
+        candidate_payload: dict[str, Any] = {
+            "fen": "",
+            "placement": "",
+            "confidence": float(getattr(candidate, "confidence", 0.0) or getattr(candidate, "grid_confidence", 0.0) or 0.0),
+            "side_to_move": "w",
+            "bbox": tuple(float(value) for value in bbox),
+            "method": str(getattr(candidate, "method", "") or "notation-page-board-crop"),
+            "warnings": ["image_board_requires_review"],
+            "requires_review": True,
+            "board_detected": True,
+        }
+        if piece_templates:
+            try:
+                min_confidence = float(getattr(config, "chess_fen_min_confidence", 0.85) or 0.85)
+                recognition = _recognize_scan_chess_candidate_bbox(
+                    page_image,
+                    recognition_bbox_tuple,
+                    config=config,
+                    piece_templates=piece_templates,
+                    min_confidence=min_confidence,
+                    reader_bbox=bbox_tuple,
+                )
+                recognition = _scan_chess_confirm_final_rendered_crop_recognition(
+                    recognition,
+                    png_data,
+                    bbox=bbox_tuple,
+                    piece_templates=piece_templates,
+                    min_confidence=min_confidence,
+                )
+                selected_variant = "full_page_bbox_recognition"
+                preprocessed_recognition, preprocessed_variant, _preprocessed_metadata = _recognize_scan_chess_preprocessed_variants(
+                    crop,
+                    config=config,
+                    bbox=bbox_tuple,
+                    piece_templates=piece_templates,
+                )
+                if preprocessed_recognition is not None:
+                    preferred = _prefer_scan_chess_recognition_result(recognition, preprocessed_recognition)
+                    if preferred is preprocessed_recognition:
+                        recognition = preprocessed_recognition
+                        selected_variant = preprocessed_variant
+                recognition = _scan_chess_apply_verified_crop_label(
+                    recognition,
+                    png_data,
+                    bbox=bbox_tuple,
+                    config=config,
+                )
+                candidate_payload = _scan_chess_fen_payload(candidate_payload, recognition)
+                preprocess_metadata = _scan_chess_preprocess_metadata(
+                    selected_variant=selected_variant,
+                    display_variant="reader_enhanced",
+                    confidence=float(candidate_payload.get("confidence", 0.0) or 0.0),
+                    piece_confidence=float(candidate_payload.get("confidence", 0.0) or 0.0),
+                    grid_confidence=float(getattr(candidate, "confidence", 0.0) or getattr(candidate, "grid_confidence", 0.0) or 0.0),
+                )
+            except Exception:
+                pass
+        fen_value = str(candidate_payload.get("fen") or "").strip()
+        diagram_number = _nearest_chess_notation_diagram_number(line_items or [], tuple(float(value) for value in bbox))
+        records.append(
+            {
+                "page": page_num + 1,
+                "diagram_number": diagram_number,
+                "filename": f"notation_chess_p{page_num + 1:03d}_{candidate_index:02d}.png",
+                "source": "notation-page-board-crop",
+                "image_data": png_data,
+                "extension": "png",
+                "width": width,
+                "height": height,
+                "fen": fen_value,
+                "placement": str(candidate_payload.get("placement") or ""),
+                "side_to_move": str(candidate_payload.get("side_to_move") or "w"),
+                "confidence": float(candidate_payload.get("confidence", 0.0) or 0.0),
+                "requires_review": bool(candidate_payload.get("requires_review", not fen_value)),
+                "method": str(candidate_payload.get("method") or "notation-page-board-crop"),
+                "warnings": list(candidate_payload.get("warnings") or ([] if fen_value else ["image_board_requires_review"])),
+                "bbox": candidate_payload.get("bbox") or tuple(float(value) for value in bbox),
+                **preprocess_metadata,
+            }
+        )
+    return records
+
+
+def _nearest_chess_notation_diagram_number(
+    line_items: list[TextLineItem],
+    bbox: tuple[float, float, float, float],
+) -> str:
+    x0, y0, x1, y1 = bbox
+    board_center_x = (float(x0) + float(x1)) / 2.0
+    matches: list[tuple[float, str]] = []
+    for item in line_items:
+        text = str(getattr(item, "text", "") or "")
+        match = re.search(r"(?i)\bdiagram\s+(\d+(?:[-.]\d+)?)", text)
+        if not match:
+            continue
+        item_y = float(getattr(item, "y", 0.0) or 0.0)
+        item_x0 = float(getattr(item, "x0", 0.0) or 0.0)
+        item_x1 = float(getattr(item, "x1", item_x0) or item_x0)
+        item_center_x = (item_x0 + item_x1) / 2.0
+        vertical_distance = abs(item_y - float(y0))
+        horizontal_distance = abs(item_center_x - board_center_x)
+        below_penalty = 180.0 if item_y > float(y1) + 16.0 else 0.0
+        score = vertical_distance + (horizontal_distance * 0.15) + below_penalty
+        matches.append((score, match.group(1).strip()))
+    if not matches:
+        return ""
+    matches.sort(key=lambda item: item[0])
+    return matches[0][1]
 
 
 def _chess_notation_line_items_from_page(page: fitz.Page, page_num: int) -> list[TextLineItem]:
@@ -3402,14 +3589,21 @@ def _scan_chess_ocr_html_parts(ocr_record: dict[str, Any], *, page_num: int) -> 
     return parts
 
 
-def _scan_chess_pgn_extra_artifacts(records: list, *, source_title: str) -> list[dict[str, Any]]:
+def _scan_chess_pgn_extra_artifacts(
+    records: list,
+    *,
+    source_title: str,
+    diagram_records: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     record_list = [record for record in records if getattr(record, "pgn", "").strip()]
-    if not record_list:
+    diagram_list = list(diagram_records or [])
+    if not record_list and not diagram_list:
         return []
     pgn_text = build_combined_pgn(record_list)
     html_text = build_pgn_download_html(
         record_list,
         title=f"{source_title or 'Chess'} - PGN and FEN",
+        diagram_records=diagram_list,
     )
     artifacts: list[dict[str, Any]] = []
     if pgn_text.strip():

@@ -626,6 +626,8 @@ class ConversionConfig:
     chess_fen_review_provider_enabled: bool = False
     chess_fen_scan_enable_sliding_probe: bool = False
     chess_notation_chapter_pages: int = 40
+    chess_notation_diagram_scan_max_pages: int = 260
+    chess_notation_fen_recognition_max_diagrams: int = 96
     scanned_chess_max_pages: int = 0  # 0 means all pages for premium scanned-chess extraction
     scanned_chess_min_grid_confidence: float = 0.50
     scanned_chess_cache_enabled: bool = True

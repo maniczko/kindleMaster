@@ -144,41 +144,6 @@ class ChessPgnRecord:
 
 
 @dataclass(frozen=True)
-class DiagramSolutionCandidate:
-    source_lines: tuple[ParsedPgnLine, ...]
-    start_line_index: int
-    end_line_index: int
-    normalized_text: str
-    raw_text: str
-    distance_from_diagram: int = 0
-    branch_example_score: tuple[int, int, int] = (0, 0, 0)
-    has_result: bool = False
-    has_terminal_result: bool = False
-    has_tactical_finish: bool = False
-    has_branch_prefix_context: bool = False
-    has_commentary_prefix: bool = False
-    multiple_explicit_starts: bool = False
-    starts_with_black: bool = False
-    explicit_move_count: int = 0
-    continuation_line_count: int = 0
-    branch_signal_count: int = 0
-    prose_signal_count: int = 0
-    sequence_risk_score: tuple[int, int, int] = (0, 0, 0)
-    halfmove_count: int = 0
-    warnings: tuple[str, ...] = field(default_factory=tuple)
-
-
-@dataclass(frozen=True)
-class DiagramSubBlock:
-    source_lines: tuple[ParsedPgnLine, ...]
-    start_line_index: int
-    end_line_index: int
-    anchor_line_index: int
-    kind: str
-    warnings: tuple[str, ...] = field(default_factory=tuple)
-
-
-@dataclass(frozen=True)
 class ChessExerciseRecord:
     id: str
     source_pages: list[int]
@@ -784,6 +749,8 @@ def build_pgn_download_html(
     diagram_records: Iterable[Mapping[str, Any]] | None = None,
 ) -> str:
     record_list = list(records)
+    diagram_list = list(diagram_records or [])
+    diagram_parts, diagram_summary = _diagram_records_html(diagram_list)
     accepted_records = [record for record in record_list if _is_exportable_pgn_record(record)]
     review_records = [record for record in record_list if not _is_exportable_pgn_record(record)]
     full_notation_records = [record for record in record_list if (record.raw_text or record.movetext or "").strip()]
@@ -791,13 +758,23 @@ def build_pgn_download_html(
         f"<p>Accepted PGN records: {len(accepted_records)}</p>",
         f"<p>Manual review records: {len(review_records)}</p>",
         f"<p>Full notation records: {len(full_notation_records)}</p>",
+        f"<p>Detected chess diagrams: {diagram_summary['diagram_count']}</p>",
+        f"<p>Detected diagram FEN: {diagram_summary['diagram_fen_count']}</p>",
+        f"<p>Diagram FEN review records: {diagram_summary['diagram_review_count']}</p>",
         "<p>HTML order: source PDF order preserved.</p>",
+        *diagram_parts,
         "<h2>Games in source order</h2>",
     ]
     if not record_list:
         body.append("<p>No PGN-like records were detected.</p>")
-    for record in record_list:
-        body.append(_record_download_html(record))
+    for record_source_order, record in enumerate(record_list):
+        body.append(
+            _record_download_html(
+                record,
+                diagram_records=diagram_list,
+                record_source_order=record_source_order,
+            )
+        )
     return (
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
         f"<title>{html.escape(title)}</title>"
@@ -806,6 +783,16 @@ def build_pgn_download_html(
         ".chess-pgn-game{border-top:1px solid #d8c8b1;padding-top:1rem}.chess-pgn-status{display:inline-block;"
         "border-radius:999px;padding:.25rem .6rem;font-weight:800;font-size:.82rem;margin:.2rem 0 .6rem}"
         ".chess-pgn-legal .chess-pgn-status{background:#e3f7ea;color:#096b31}.chess-pgn-needs-review .chess-pgn-status{background:#fff0d8;color:#8a4b00}"
+        ".chess-diagram-fen-record{border:1px solid #d8c8b1;border-radius:16px;padding:1rem;background:#fffaf2}"
+        ".chess-diagram-thumb{display:block;max-width:260px;width:100%;height:auto;border-radius:10px;border:1px solid #c9b89f;background:#fff;margin:.7rem 0}"
+        ".chess-diagram-fen-status{display:inline-block;border-radius:999px;padding:.25rem .6rem;font-weight:800;font-size:.82rem}"
+        ".fen-accepted .chess-diagram-fen-status{background:#e3f7ea;color:#096b31}.fen-review .chess-diagram-fen-status{background:#fff0d8;color:#8a4b00}"
+        ".chess-diagram-fen-meta{color:#725b3f}.diagram-fen-warnings{color:#725b3f}"
+        ".exercise-quality-flags{display:flex;flex-wrap:wrap;gap:.45rem;list-style:none;padding:0;margin:.5rem 0 1rem}"
+        ".exercise-quality-flags li{border:1px solid #d8c8b1;border-radius:999px;padding:.25rem .55rem;background:#fffaf2;font-size:.82rem}"
+        ".exercise-quality-key{font-weight:800;color:#725b3f}.exercise-candidate-lines{margin:1rem 0;padding:1rem;border-left:4px solid #c9b89f;background:#fffaf2;border-radius:12px}"
+        ".exercise-candidate-line{margin:.8rem 0;padding:.75rem;border-radius:10px;border:1px solid #d8c8b1}.candidate-line-legal{background:#f1fbf4}.candidate-line-review{background:#fff7e8}"
+        ".candidate-line-warnings{color:#8a4b00;font-weight:700}.candidate-line-text{margin:.4rem 0}"
         ".diagram-fen{margin:.6rem 0;color:#141414}.diagram-fen code{font-family:monospace}"
         ".copy-pgn-button{border:1px solid #c9b89f;border-radius:999px;background:#fff8ed;color:#141414;"
         "font-weight:700;padding:.45rem .8rem;cursor:pointer;margin:.4rem 0 .65rem}"
@@ -2379,8 +2366,135 @@ def _record_fen_html(record: ChessPgnRecord) -> str:
     return "".join(rows)
 
 
-def _record_download_html(record: ChessPgnRecord) -> str:
+def _matching_diagram_records_for_record(
+    record: ChessPgnRecord,
+    diagram_records: Iterable[Mapping[str, Any]],
+    *,
+    record_source_order: int | None = None,
+) -> list[Mapping[str, Any]]:
+    ranked: list[tuple[int, int, Mapping[str, Any]]] = []
+    for source_order, diagram in enumerate(diagram_records):
+        score, _fen_score = _diagram_match_score(
+            record,
+            diagram,
+            record_source_order=record_source_order,
+            fallback_source_order=source_order,
+        )
+        if score:
+            ranked.append((score, -source_order, diagram))
+    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [diagram for _, _, diagram in ranked[:3]]
+
+
+def _diagram_match_score(
+    record: ChessPgnRecord,
+    diagram: Mapping[str, Any],
+    *,
+    record_source_order: int | None = None,
+    fallback_source_order: int | None = None,
+) -> tuple[int, int]:
+    record_fen = str(record.fen or "").strip()
+    record_diagram_number = _record_diagram_number(record)
+    record_pages = {_safe_int(page) for page in (record.source_pages or [])}
+    diagram_fen = str(diagram.get("fen") or "").strip()
+    diagram_number = str(diagram.get("diagram_number") or "").strip()
+    diagram_page = _safe_int(diagram.get("page"))
+    score = 0
+    fen_score = 0
+    if record_diagram_number and diagram_number and record_diagram_number == diagram_number:
+        score += 100
+    if diagram_page in record_pages:
+        score += 40
+    if record_fen and diagram_fen == record_fen:
+        score += 30
+        fen_score += 30
+    if record_source_order is not None:
+        raw_source_order = diagram.get("source_order")
+        if raw_source_order is not None and str(raw_source_order).strip() != "":
+            diagram_source_order = _safe_int(raw_source_order)
+        elif fallback_source_order is not None:
+            diagram_source_order = int(fallback_source_order)
+        else:
+            diagram_source_order = -1
+        if diagram_source_order >= 0:
+            distance = abs(int(record_source_order) - diagram_source_order)
+            if distance == 0:
+                score += 55
+            elif distance == 1:
+                score += 18
+    return score, fen_score
+
+
+def _exercise_quality_flags_html(exercise: ChessExerciseRecord) -> str:
+    flags = exercise.quality_flags
+    rows = [
+        ("diagram_visible", "yes" if flags.get("diagram_visible") else "no"),
+        ("fen_available", "yes" if flags.get("fen_available") else "no"),
+        ("missing_diagram_reason", str(flags.get("missing_diagram_reason") or "")),
+        ("diagram_candidate_count", str(flags.get("diagram_candidate_count", 0))),
+        ("diagram_match_score", str(flags.get("diagram_match_score", 0))),
+        ("fen_match_score", str(flags.get("fen_match_score", 0))),
+        ("solution_line_count", str(flags.get("solution_line_count", 0))),
+        ("legal_solution_line_count", str(flags.get("legal_solution_line_count", 0))),
+        ("ocr_noise_score", f"{float(flags.get('ocr_noise_score', 0.0) or 0.0):.3f}"),
+        ("exportable_pgn", "yes" if flags.get("exportable_pgn") else "no"),
+    ]
+    items = "".join(
+        f'<li><span class="exercise-quality-key">{html.escape(key)}:</span> '
+        f'<span class="exercise-quality-value">{html.escape(value)}</span></li>'
+        for key, value in rows
+    )
+    return f'<ul class="exercise-quality-flags">{items}</ul>'
+
+
+def _exercise_candidate_lines_html(exercise: ChessExerciseRecord) -> str:
+    if not exercise.candidate_lines:
+        return (
+            '<div class="exercise-candidate-lines">'
+            "<h3>Candidate solution lines</h3>"
+            "<p>Nie znaleziono kandydackiej linii rozwiązania do legalnej walidacji.</p>"
+            "</div>"
+        )
+    rows = []
+    for index, line in enumerate(exercise.candidate_lines, start=1):
+        legal = bool(line.get("legal_from_fen"))
+        status = "legal from diagram FEN" if legal else "requires review"
+        status_class = "candidate-line-legal" if legal else "candidate-line-review"
+        warnings = [str(warning) for warning in (line.get("warnings") or []) if str(warning).strip()]
+        warning_markup = ""
+        if warnings:
+            warning_markup = '<p class="candidate-line-warnings">' + html.escape(", ".join(warnings[:8])) + "</p>"
+        final_fen = str(line.get("final_fen") or "").strip()
+        final_fen_markup = (
+            f'<p class="diagram-fen"><span class="diagram-fen-label">Final FEN:</span> '
+            f'<code class="diagram-fen-code">{html.escape(final_fen)}</code></p>'
+            if final_fen
+            else ""
+        )
+        rows.append(
+            f'<section class="exercise-candidate-line {status_class}">'
+            f"<h4>Candidate line {index}: {html.escape(status)}</h4>"
+            f'<pre class="candidate-line-text"><code>{html.escape(str(line.get("movetext") or ""))}</code></pre>'
+            f"{final_fen_markup}"
+            f"{warning_markup}"
+            "</section>"
+        )
+    return (
+        '<div class="exercise-candidate-lines">'
+        "<h3>Candidate solution lines</h3>"
+        + "".join(rows)
+        + "</div>"
+    )
+
+
+def _record_download_html(
+    record: ChessPgnRecord,
+    *,
+    diagram_records: Iterable[Mapping[str, Any]] = (),
+    record_source_order: int | None = None,
+) -> str:
     exportable = _is_exportable_pgn_record(record)
+    exercise = _build_exercise_record(record, diagram_records, record_source_order=record_source_order)
     safe_title = html.escape(record.title or record.id)
     safe_section_id = html.escape(record.id, quote=True)
     safe_pgn_id = html.escape(f"{record.id}-pgn", quote=True)
@@ -2388,6 +2502,12 @@ def _record_download_html(record: ChessPgnRecord) -> str:
     status_label = "Legalny PGN/FEN" if exportable else "Do weryfikacji"
     status_markup = f'<p class="chess-pgn-status">{status_label}</p>'
     fen_markup = _record_fen_html(record) if exportable else ""
+    matched_diagram_markup = "".join(
+        _diagram_record_html(diagram, index)
+        for index, diagram in enumerate(exercise.diagram_records, start=1)
+    )
+    quality_markup = _exercise_quality_flags_html(exercise)
+    candidate_markup = _exercise_candidate_lines_html(exercise)
     pgn_markup = ""
     if exportable:
         export_pgn = _record_export_pgn(record)
@@ -2403,9 +2523,9 @@ def _record_download_html(record: ChessPgnRecord) -> str:
             f"{html.escape(_record_review_reason(record.warnings))}</p>"
         )
     full_notation = _record_full_notation_text(record)
+    raw_heading = "Pełna notacja z książki" if exportable else "Tekst OCR z książki, wymaga korekty"
     full_markup = (
-        '<div class="chess-full-notation">'
-        "<h3>Pełna notacja z książki</h3>"
+        '<div class="chess-full-notation">'        f"<h3>{html.escape(raw_heading)}</h3>"
         f'<button type="button" class="copy-pgn-button" data-copy-target="{safe_full_id}">Kopiuj pełną notację</button>'
         f'<pre id="{safe_full_id}" class="chess-full-notation-text"><code>{html.escape(full_notation)}</code></pre>'
         "</div>"
@@ -2415,7 +2535,10 @@ def _record_download_html(record: ChessPgnRecord) -> str:
         f'<section class="{section_class}" id="{safe_section_id}">'
         f"<h2>{safe_title}</h2>"
         f"{status_markup}"
+        f"{quality_markup}"
+        f"{matched_diagram_markup}"
         f"{full_markup}"
+        f"{candidate_markup}"
         f"{fen_markup}"
         f"{pgn_markup}"
         "</section>"
@@ -2423,7 +2546,11 @@ def _record_download_html(record: ChessPgnRecord) -> str:
 
 
 def _record_full_notation_text(record: ChessPgnRecord) -> str:
-    for candidate in (record.annotated_pgn, record.pgn, record.movetext):
+    if record.status != "accepted":
+        candidates = (record.raw_text, record.movetext, record.annotated_pgn, record.pgn)
+    else:
+        candidates = (record.annotated_pgn, record.pgn, record.movetext, record.raw_text)
+    for candidate in candidates:
         cleaned = str(candidate or "").strip()
         if cleaned:
             return cleaned

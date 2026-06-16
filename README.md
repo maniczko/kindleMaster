@@ -42,7 +42,7 @@ The supported toolchain matrix lives in [docs/toolchain-matrix.md](docs/toolchai
 - `.codex/config.toml` is authoritative only for active repo-local Codex settings; its comments are convenience mirrors, not an independent policy source.
 - Generated files under `reports/` and `output/` are derived artifacts, not governance authority.
 
-Repo-local Codex defaults are `gpt-5.5` with `xhigh` reasoning, `on-request` approvals, multi-agent support, GitHub/Linear/Build Web Apps/Browser Use plugins, and pinned Playwright MCP for browser verification.
+Repo-local Codex defaults are `gpt-5.5` with `xhigh` reasoning, `on-request` approvals, multi-agent support, GitHub/Linear/Build Web Apps/Browser Use plugins, and pinned Playwright MCP for browser verification. Model routing convention: keep the strongest model for conversion runtime, EPUB integrity, chess FEN/PGN, corpus/release, deployment architecture, and cross-module debugging; use lighter models for status, summaries, token/cost reports, and low-risk documentation-only turns when model selection is available; start a fresh thread or compact handoff after large merges to avoid carrying stale context.
 
 Local Codex governance also includes tracked Git hooks under `.githooks/`. Developer bootstrap installs them automatically unless `CI=true`, `--runtime-only`, or `KINDLEMASTER_SKIP_GIT_HOOKS=1` is set. To check or repair manually:
 

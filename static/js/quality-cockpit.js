@@ -557,6 +557,8 @@
         qualitySelection = null,
         kindleDelivery = null,
         aiVerifier = null,
+        routeModelShadow = null,
+        trainedQualityModelStatus = "",
         metadataHealth = null,
         linkHealth = null,
         visibleJunk = null,
@@ -691,6 +693,7 @@
       const safeMetadataSummary = normalizeOptionalObject(metadataSummary);
       const safePremiumScoring = normalizeOptionalObject(premiumScoring);
       const safeQualitySelection = normalizeOptionalObject(qualitySelection);
+      const safeRouteModelShadow = normalizeOptionalObject(routeModelShadow);
       const safeKindleDelivery = normalizeOptionalObject(kindleDelivery);
       const safeQualityCompleteness = normalizeQualityCompleteness(qualityCompleteness);
       const safeQualityBlockers = normalizeOptionalArray(qualityBlockers);
@@ -714,6 +717,11 @@
       const kindleReadyValue = resolveKindleReadyValue(safePremiumScoring, sendToKindleReady, safeKindleDelivery);
       const kindleReadyLabel = formatYesNo(kindleReadyValue);
       const aiVerifierLabel = formatAiVerifierStatus(aiVerifier);
+      const qualityPolicyLabel = "Local quality policy verifier";
+      const routeShadowLabel = safeRouteModelShadow && safeRouteModelShadow.status !== "not_reported"
+        ? `${safeRouteModelShadow.mode || "shadow"} / ${safeRouteModelShadow.ml_profile || "no prediction"} (${formatMetricValue(safeRouteModelShadow.ml_confidence)})`
+        : "Brak danych";
+      const trainedQualityLabel = trainedQualityModelStatus || "policy_only_not_trained";
       if (dashboardVerdictMetric) {
         dashboardVerdictMetric.textContent = reportVerdict.label;
       }
@@ -731,7 +739,9 @@
         ["Wybrany EPUB", safeQualitySelection ? (safeQualitySelection.selected_candidate || safeQualitySelection.selected_stage || "Brak danych") : "Brak danych"],
         ["Odrzucony EPUB", safeQualitySelection ? (safeQualitySelection.rejected_candidate || safeQualitySelection.rejected_stage || "Brak danych") : "Brak danych"],
         ["Kindle-ready", kindleReadyLabel],
-        ["AI verifier", aiVerifierLabel],
+        [qualityPolicyLabel, aiVerifierLabel],
+        ["Route model shadow", routeShadowLabel],
+        ["Trained quality model", trainedQualityLabel],
         ["Kompletność", formatCompletenessScore(safeQualityCompleteness)],
         ["Pobranie", downloadAvailable === null ? "Brak danych" : Boolean(downloadAvailable)],
         ["Gotowość do czytania", readingVerdict || reportVerdict.label],
@@ -935,7 +945,7 @@
           <div class="quality-hero-metrics" aria-label="Kluczowe metryki jakości">
             ${renderQualityHeroMetric("Premium score", premiumScoreLabel, "target 9/10", qualityToneFromPremiumScore(safePremiumScoring))}
             ${renderQualityHeroMetric("Kindle-ready", kindleReadyLabel, "yes/no", qualityToneFromBoolean(kindleReadyValue))}
-            ${renderQualityHeroMetric("AI verifier", aiVerifierLabel, "status", qualityToneFromStatus(aiVerifier && typeof aiVerifier === "object" ? (aiVerifier.status || aiVerifier.state || aiVerifier.verdict || aiVerifier.result) : aiVerifier))}
+            ${renderQualityHeroMetric(qualityPolicyLabel, aiVerifierLabel, "offline policy; not trained ML", qualityToneFromStatus(aiVerifier && typeof aiVerifier === "object" ? (aiVerifier.status || aiVerifier.state || aiVerifier.verdict || aiVerifier.result) : aiVerifier))}
           </div>
           <div class="quality-top-reasons" id="qualityTopReasons">
             <div class="quality-panel-title"><span>Top 3 reasons/blockers</span><small>blokery najpierw</small></div>

@@ -183,6 +183,8 @@ def main() -> int:
     ml_dataset.add_argument("--reports-root", default="reports")
     ml_dataset.add_argument("--output-dir", default="reports/ml/datasets")
     ml_dataset.add_argument("--feedback-log", action="append", default=[])
+    ml_dataset.add_argument("--fail-on-collisions", action="store_true")
+    ml_dataset.add_argument("--min-examples-per-class", type=int, default=25)
 
     ml_feedback = ml_subparsers.add_parser("feedback", help="Log or export local conversion feedback without online learning.")
     ml_feedback.add_argument("--report-json", default="")
@@ -198,11 +200,13 @@ def main() -> int:
     ml_feedback.add_argument("--notes", default="")
     ml_feedback.add_argument("--reviewer", default="")
     ml_feedback.add_argument("--export-dir", default="")
+    ml_feedback.add_argument("--include-in-training", action="store_true")
 
     ml_train = ml_subparsers.add_parser("train", help="Train the local route classifier and export JSON inference weights.")
     ml_train.add_argument("--dataset", default="reports/ml/datasets/route_examples.jsonl")
-    ml_train.add_argument("--model", default="models/route_classifier_v1.json")
-    ml_train.add_argument("--report", default="reports/ml/route_classifier_v1.metrics.json")
+    ml_train.add_argument("--model", default="")
+    ml_train.add_argument("--report", default="")
+    ml_train.add_argument("--min-examples-per-class", type=int, default=25)
 
     ml_evaluate = ml_subparsers.add_parser("evaluate", help="Evaluate a JSON route model without importing scikit-learn.")
     ml_evaluate.add_argument("--dataset", default="reports/ml/datasets/route_examples.jsonl")
@@ -212,6 +216,11 @@ def main() -> int:
     ml_feedback = ml_subparsers.add_parser("feedback-export", help="Export local conversion/user feedback events into an ML JSONL dataset.")
     ml_feedback.add_argument("--feedback-log", default="reports/ml/feedback/conversion_feedback.jsonl")
     ml_feedback.add_argument("--output", default="reports/ml/datasets/quality_feedback_examples.jsonl")
+
+    ml_promote = ml_subparsers.add_parser("promote", help="Promote a candidate route model only after metric and corpus gates pass.")
+    ml_promote.add_argument("--candidate", required=True)
+    ml_promote.add_argument("--model", default="models/route_classifier_v1.json")
+    ml_promote.add_argument("--corpus-report", default="reports/corpus/premium_corpus_smoke_report.json")
 
     test_parser = subparsers.add_parser("test", help="Run standard KindleMaster test suites.")
     test_parser.add_argument("--suite", choices=("quick", "release", "full", "browser", "runtime", "corpus"), default="quick")
@@ -407,8 +416,12 @@ def _run_ml(args: argparse.Namespace) -> int:
             reports_root=args.reports_root,
             output_dir=args.output_dir,
             feedback_log_paths=args.feedback_log,
+            fail_on_collisions=args.fail_on_collisions,
+            min_examples_per_class=args.min_examples_per_class,
         )
         _print_json(payload)
+        if args.fail_on_collisions and payload.get("status") == "blocked_feature_collision":
+            return 2
         return 0 if payload.get("status") != "failed" else 1
     if args.ml_command == "feedback":
         return _run_ml_feedback(args)
@@ -426,11 +439,12 @@ def _run_ml(args: argparse.Namespace) -> int:
 
         payload = train_route_classifier(
             dataset_path=args.dataset,
-            model_path=args.model,
-            report_path=args.report,
+            model_path=args.model or None,
+            report_path=args.report or None,
+            min_examples_per_class=args.min_examples_per_class,
         )
         _print_json(payload)
-        return 0 if payload.get("status") == "trained" else 1
+        return 0 if payload.get("status") == "candidate_trained" else 1
     if args.ml_command == "evaluate":
         from scripts.train_route_classifier import evaluate_route_classifier
 
@@ -441,7 +455,17 @@ def _run_ml(args: argparse.Namespace) -> int:
         )
         _print_json(payload)
         return 0 if payload.get("status") != "failed" else 1
-    _print_json({"status": "failed", "error": "Missing ml subcommand. Use dataset, feedback, feedback-export, train, or evaluate."})
+    if args.ml_command == "promote":
+        from scripts.train_route_classifier import promote_route_classifier
+
+        payload = promote_route_classifier(
+            candidate_path=args.candidate,
+            model_path=args.model,
+            corpus_report_path=args.corpus_report,
+        )
+        _print_json(payload)
+        return 0 if payload.get("status") == "promoted" else 1
+    _print_json({"status": "failed", "error": "Missing ml subcommand. Use dataset, feedback, feedback-export, train, evaluate, or promote."})
     return 1
 
 
@@ -468,6 +492,7 @@ def _run_ml_feedback(args: argparse.Namespace) -> int:
             issue_tags=args.issue_tag,
             notes=args.notes,
             reviewer=args.reviewer,
+            include_in_training=args.include_in_training,
         )
         payload["actions"].append("log")
         payload["logged"] = logged

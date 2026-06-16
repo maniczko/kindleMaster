@@ -172,6 +172,135 @@ class SemanticEpubCleanupTests(unittest.TestCase):
         self.assertNotIn(">002<", nav_text)
         self.assertIn("Real Article", nav_text)
 
+    def test_finalize_epub_demotes_sponsored_contact_heavy_magazine_page(self):
+        epub_bytes = self._build_epub_bytes(
+            {
+                "mimetype": "application/epub+zip",
+                "META-INF/container.xml": """<?xml version="1.0"?>
+<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
+  <rootfiles><rootfile full-path="EPUB/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>""",
+                "EPUB/content.opf": """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Magazine Probe</dc:title>
+    <dc:creator>KindleMaster QA</dc:creator>
+    <dc:language>pl</dc:language>
+    <dc:identifier id="bookid">urn:test:sponsored-contact</dc:identifier>
+    <meta property="dcterms:modified">2026-01-01T00:00:00Z</meta>
+  </metadata>
+  <manifest>
+    <item id="contents" href="chapter_001.xhtml" media-type="application/xhtml+xml"/>
+    <item id="sponsored" href="chapter_002.xhtml" media-type="application/xhtml+xml"/>
+    <item id="article" href="chapter_003.xhtml" media-type="application/xhtml+xml"/>
+    <item id="gallery" href="chapter_004.xhtml" media-type="application/xhtml+xml"/>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+  </manifest>
+  <spine>
+    <itemref idref="contents"/>
+    <itemref idref="sponsored"/>
+    <itemref idref="article"/>
+    <itemref idref="gallery" linear="no"/>
+  </spine>
+</package>""",
+                "EPUB/chapter_001.xhtml": """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Spis treści</title></head><body><h1>Spis treści</h1><p>1. Real Article</p></body></html>""",
+                "EPUB/chapter_002.xhtml": """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Materiał sponsorowany - Partner</title></head><body><h1>Źródła</h1><p>Anna Tester</p><p>https://example.com tel. 123 456 789 facebook. com/sample linkedin. com/company/sample slideshare. net/sample</p></body></html>""",
+                "EPUB/chapter_003.xhtml": """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Real Article</title></head><body><p>Real Article</p><p>This is a real magazine article with enough prose to stay in the primary reading flow and provide useful reader-facing content after cleanup.</p></body></html>""",
+                "EPUB/chapter_004.xhtml": """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Galeria</title></head><body><h1>Galeria</h1></body></html>""",
+                "EPUB/nav.xhtml": """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body><nav epub:type="toc"><ol><li><a href="chapter_001.xhtml">Spis treści</a></li><li><a href="chapter_002.xhtml">Źródła</a></li><li><a href="chapter_003.xhtml">Real Article</a></li></ol></nav></body></html>""",
+            }
+        )
+
+        cleaned_epub = finalize_epub_for_kindle(
+            epub_bytes,
+            title="Magazine Probe",
+            author="KindleMaster QA",
+            language="pl",
+            publication_profile="magazine_reflow",
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            with zipfile.ZipFile(io.BytesIO(cleaned_epub), "r") as archive:
+                archive.extractall(temp_dir)
+            opf_path = Path(temp_dir) / "EPUB" / "content.opf"
+            spine_paths = _get_spine_xhtml_paths(opf_path)
+            nav_text = (Path(temp_dir) / "EPUB" / "nav.xhtml").read_text(encoding="utf-8")
+            opf_tree = etree.parse(str(opf_path))
+            itemrefs = {
+                itemref.get("idref"): itemref.get("linear", "yes")
+                for itemref in opf_tree.getroot().xpath(".//opf:itemref", namespaces={"opf": "http://www.idpf.org/2007/opf"})
+            }
+
+        self.assertEqual([path.name for path in spine_paths], ["chapter_001.xhtml", "chapter_003.xhtml"])
+        self.assertEqual(itemrefs["sponsored"], "no")
+        self.assertEqual(itemrefs["gallery"], "no")
+        self.assertNotIn("Źródła", nav_text)
+        self.assertNotIn("Materiał sponsorowany", nav_text)
+        self.assertIn("Real Article", nav_text)
+        scoring = score_epub_premium_quality(cleaned_epub, epubcheck={"status": "passed", "messages": []})
+        self.assertNotIn("magazine_non_content_chapter", {issue["code"] for issue in scoring["issues"]})
+
+    def test_finalize_epub_recovers_safe_magazine_heading_without_promoting_lowercase_continuation(self):
+        long_prose = " ".join(["This paragraph explains project delivery governance and team learning outcomes."] * 30)
+        epub_bytes = self._build_epub_bytes(
+            {
+                "mimetype": "application/epub+zip",
+                "META-INF/container.xml": """<?xml version="1.0"?>
+<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
+  <rootfiles><rootfile full-path="EPUB/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>""",
+                "EPUB/content.opf": """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Magazine Probe</dc:title>
+    <dc:creator>KindleMaster QA</dc:creator>
+    <dc:language>pl</dc:language>
+    <dc:identifier id="bookid">urn:test:magazine-heading-recovery</dc:identifier>
+    <meta property="dcterms:modified">2026-01-01T00:00:00Z</meta>
+  </metadata>
+  <manifest>
+    <item id="contents" href="chapter_001.xhtml" media-type="application/xhtml+xml"/>
+    <item id="article" href="chapter_002.xhtml" media-type="application/xhtml+xml"/>
+    <item id="continuation" href="chapter_003.xhtml" media-type="application/xhtml+xml"/>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+  </manifest>
+  <spine>
+    <itemref idref="contents"/>
+    <itemref idref="article"/>
+    <itemref idref="continuation"/>
+  </spine>
+</package>""",
+                "EPUB/chapter_001.xhtml": """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Spis treści</title></head><body><h1>Spis treści</h1><p>1. Strategic Delivery Loop</p></body></html>""",
+                "EPUB/chapter_002.xhtml": f"""<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Strategic Delivery Loop</title></head><body><p>Strategic Delivery Loop</p><p>{long_prose}</p></body></html>""",
+                "EPUB/chapter_003.xhtml": f"""<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>na papierze, gaszenie pożarów w praktyce</title></head><body><p>na papierze, gaszenie pożarów w praktyce</p><p>{long_prose}</p></body></html>""",
+                "EPUB/nav.xhtml": """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body><nav epub:type="toc"><ol><li><a href="chapter_002.xhtml">Strategic Delivery Loop</a></li></ol></nav></body></html>""",
+            }
+        )
+
+        cleaned_epub = finalize_epub_for_kindle(
+            epub_bytes,
+            title="Magazine Probe",
+            author="KindleMaster QA",
+            language="pl",
+            publication_profile="magazine_reflow",
+        )
+
+        with zipfile.ZipFile(io.BytesIO(cleaned_epub), "r") as archive:
+            article = BeautifulSoup(archive.read("EPUB/chapter_002.xhtml"), "html.parser")
+            continuation = BeautifulSoup(archive.read("EPUB/chapter_003.xhtml"), "html.parser")
+
+        self.assertEqual(article.find(["h1", "h2"]).get_text(" ", strip=True), "Strategic Delivery Loop")
+        self.assertIsNone(continuation.find(["h1", "h2"]))
+
     def test_build_nav_sanitizes_lead_like_toc_label_at_safe_boundary(self):
         nav_html = _build_nav_xhtml(
             toc_entries=[
@@ -191,6 +320,27 @@ class SemanticEpubCleanupTests(unittest.TestCase):
 
         self.assertIn(">Clean Title<", nav_html)
         self.assertNotIn("long lead paragraph", nav_html)
+
+    def test_build_nav_sanitizes_dash_subtitles_and_drops_caption_labels(self):
+        nav_html = _build_nav_xhtml(
+            toc_entries=[
+                {
+                    "file_name": "chapter_001.xhtml",
+                    "id": "",
+                    "text": "Synergia różnorodności – neuroatypowi jako niewidzialny fundament innowacji w organizacjach technologicznych",
+                    "level": 1,
+                },
+                {"file_name": "chapter_002.xhtml", "id": "", "text": "Źródło: oprogramowanie Hadrone PPM.", "level": 2},
+                {"file_name": "chapter_003.xhtml", "id": "", "text": "Pic. 3 From Hero to Leader", "level": 2},
+            ],
+            title="Sample",
+            language="pl",
+        )
+
+        self.assertIn(">Synergia różnorodności<", nav_html)
+        self.assertNotIn("neuroatypowi jako niewidzialny fundament", nav_html)
+        self.assertNotIn("Źródło:", nav_html)
+        self.assertNotIn("Pic. 3", nav_html)
 
     def test_normalize_existing_table_preserves_caption_and_removes_direct_text(self):
         soup = BeautifulSoup(
@@ -214,6 +364,12 @@ class SemanticEpubCleanupTests(unittest.TestCase):
     def test_table_or_diagram_artifact_labels_are_not_toc_entries(self):
         for label in ("Input", "Output", "Object 1", "State 3", "Rank = 1*3"):
             self.assertFalse(_should_include_in_toc(label, 2), label)
+
+    def test_split_letter_ocr_fragments_are_not_toc_entries(self):
+        for label in ("Irena Masz ko", "Vol ha Mandryk", "Cl ike Communication", "Rl ike Risks"):
+            self.assertFalse(_should_include_in_toc(label, 2), label)
+        self.assertTrue(_should_include_in_toc("AI Risks", 2))
+        self.assertTrue(_should_include_in_toc("No-code Leadership", 2))
 
     def test_transformed_table_structures_survive_chapter_cleanup(self):
         chapter_source = """<?xml version="1.0" encoding="utf-8"?>

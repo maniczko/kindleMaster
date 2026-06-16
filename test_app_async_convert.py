@@ -18,6 +18,17 @@ class AppAsyncConvertTests(unittest.TestCase):
         self.client = app.test_client()
         self.cleanup_paths: list[str] = []
         self.cleanup_job_ids: list[str] = []
+        self._store_temp_dir = tempfile.TemporaryDirectory()
+        with app_module._CONVERSION_JOBS_LOCK:
+            self._saved_jobs = dict(app_module._CONVERSION_JOBS)
+            app_module._CONVERSION_JOBS.clear()
+        self._saved_job_store = app_module._CONVERSION_JOB_STORE
+        app_module._CONVERSION_JOB_STORE = app_module.ConversionJobStore(
+            app_module._CONVERSION_JOBS,
+            app_module._CONVERSION_JOBS_LOCK,
+            persistence_path=Path(self._store_temp_dir.name) / "conversion_jobs.json",
+            active_statuses=app_module.ACTIVE_CONVERSION_JOB_STATUSES,
+        )
 
     def tearDown(self) -> None:
         for path in self.cleanup_paths:
@@ -26,6 +37,10 @@ class AppAsyncConvertTests(unittest.TestCase):
         with app_module._CONVERSION_JOBS_LOCK:
             for job_id in self.cleanup_job_ids:
                 app_module._CONVERSION_JOBS.pop(job_id, None)
+            app_module._CONVERSION_JOBS.clear()
+            app_module._CONVERSION_JOBS.update(self._saved_jobs)
+        app_module._CONVERSION_JOB_STORE = self._saved_job_store
+        self._store_temp_dir.cleanup()
 
     def _write_epub_fixture(self, job_id: str, body: str) -> str:
         output_path = os.path.join(app_module.UPLOAD_DIR, f"{job_id}.epub")
@@ -141,6 +156,23 @@ class AppAsyncConvertTests(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.get_json()["error"], "Nie znaleziono zadania konwersji.")
         self.assertEqual(response.get_json()["error_code"], "missing_output")
+
+    def test_convert_status_recovers_orphan_source_as_application_restart(self) -> None:
+        job_id = "ffffffffffffffffffffffffffffffff"
+        source_path = os.path.join(app_module.UPLOAD_DIR, f"{job_id}.pdf")
+        with open(source_path, "wb") as handle:
+            handle.write(b"%PDF-orphan")
+        self.cleanup_paths.append(source_path)
+
+        response = self.client.get(f"/convert/status/{job_id}")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["job_id"], job_id)
+        self.assertEqual(payload["status"], "failed")
+        self.assertEqual(payload["error_code"], "application_restart")
+        self.assertIn("utracila stan zadania", payload["error"])
+        self.assertFalse(payload["download_available"])
 
     def test_convert_start_returns_structured_upload_error_for_missing_file(self) -> None:
         response = self.client.post("/convert/start", data={}, content_type="multipart/form-data")

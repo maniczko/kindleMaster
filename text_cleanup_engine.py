@@ -1068,12 +1068,15 @@ def _hyphen_break_proposal(
         reason_codes.append("pl-en-lexical-merge")
     if pyphen_bonus:
         reason_codes.append("pyphen-supported")
+    if pyphen_bonus and marker != "-" and not right[:1].isupper():
+        lexical = max(lexical, 0.96)
+        language_score = max(language_score, 0.9)
     return _Proposal(
         before=f"{left}{marker}{gap}{right}",
         after=merged,
         error_class="hyphen-break",
         lexical_score=min(1.0, lexical),
-        context_score=0.95,
+        context_score=0.98 if pyphen_bonus and marker != "-" and not right[:1].isupper() else 0.95,
         language_score=language_score,
         dom_score=1.0,
         bonus_score=pyphen_bonus,
@@ -1123,6 +1126,11 @@ def _glued_word_proposal(
     if split_candidate is None:
         return None
     left, right, lexical_score, reason_codes = split_candidate
+    if config.long_document_mode and (
+        "single-letter-stopword" in reason_codes
+        or ("leading-stopword" in reason_codes and "low-whole-score" in reason_codes)
+    ):
+        return None
     leading_stopword = "leading-stopword" in reason_codes or "single-letter-stopword" in reason_codes
     low_whole_score = "low-whole-score" in reason_codes
     if low_whole_score:

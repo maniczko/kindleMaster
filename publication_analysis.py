@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import re
 from statistics import mean, median
+from time import perf_counter
 from types import SimpleNamespace
+from typing import Any
 
 import fitz
 
@@ -28,6 +30,7 @@ def analyze_publication(
     preferred_profile: str = "auto-premium",
     route_model_mode: str = "shadow",
 ) -> PublicationAnalysis:
+    analysis_started = perf_counter()
     doc = fitz.open(pdf_path)
     toc = doc.get_toc()
     total_pages = len(doc)
@@ -37,6 +40,8 @@ def analyze_publication(
     heading_scores: list[float] = []
     font_medians: list[float] = []
     column_estimates: list[int] = []
+    text_block_counts: list[int] = []
+    visual_area_ratios: list[float] = []
     meaningful_image_pages = 0
     detected_diagrams = 0
 
@@ -72,6 +77,7 @@ def analyze_publication(
             x_centers = []
             for block in page_dict.get("blocks", []):
                 if block.get("type") == 0:
+                    text_block_counts.append(1)
                     block_fonts = []
                     text_fragments = []
                     for line in block.get("lines", []):
@@ -93,6 +99,7 @@ def analyze_publication(
                 elif block.get("type") == 1:
                     x0, y0, x1, y1 = block.get("bbox", (0, 0, 0, 0))
                     area_ratio = ((x1 - x0) * (y1 - y0)) / max(page.rect.width * page.rect.height, 1)
+                    visual_area_ratios.append(max(0.0, min(area_ratio, 1.0)))
                     if 0.02 <= area_ratio <= 0.8:
                         image_blocks += 1
 
@@ -120,10 +127,25 @@ def analyze_publication(
     has_toc = bool(toc)
     has_meaningful_images = meaningful_image_pages > 0
     has_tables = False if preferred_profile == "diagram_book_reflow" else _detect_tables(pdf_path, sample_pages)
-    has_diagrams = detected_diagrams > 0 or _detect_chess_fonts(pdf_path)
+    chess_font_signal = _detect_chess_fonts(pdf_path)
+    has_diagrams = detected_diagrams > 0 or chess_font_signal
     estimated_columns = round(mean(column_estimates)) if column_estimates else 1
     heading_density = mean(heading_scores) if heading_scores else 0.0
     font_consistency = _font_consistency(font_medians)
+    sampled_page_count = max(len(sample_pages), 1)
+    visual_density = max(visual_area_ratios) if visual_area_ratios else image_page_ratio
+    dominant_visual_ratio = max(visual_area_ratios) if visual_area_ratios else 0.0
+    text_block_density = sum(text_block_counts) / sampled_page_count
+    layout_entropy = _layout_entropy(column_estimates, visual_area_ratios)
+    toc_depth = _toc_depth(toc)
+    toc_noise_score = _toc_noise_score(toc)
+    diagram_signal_count = int(detected_diagrams)
+    chess_signal_count = 1 if chess_font_signal else 0
+    ocr_confidence = 0.0 if scanned_page_ratio >= 0.35 else 1.0
+    toolchain = detect_toolchain()
+    ocr_supported = bool(((toolchain.get("conversion_capabilities") or {}).get("ocr_pipeline") or {}).get("status") == "supported")
+    tesseract_languages = (((toolchain.get("tesseract") or {}).get("languages")) or [])
+    ocr_language_available = bool({"eng", "pol"} & {str(item).lower() for item in tesseract_languages})
     estimated_sections = _estimate_sections_from_toc(toc) if toc else _estimate_sections_from_headings(heading_density, total_pages)
     legacy_strategy = (
         "ocr_fixed"
@@ -174,10 +196,22 @@ def analyze_publication(
             "text_page_ratio": text_page_ratio,
             "scanned_page_ratio": scanned_page_ratio,
             "image_page_ratio": image_page_ratio,
+            "visual_density": visual_density,
+            "dominant_visual_ratio": dominant_visual_ratio,
+            "text_block_density": text_block_density,
+            "layout_entropy": layout_entropy,
             "has_toc": has_toc,
+            "toc_depth": toc_depth,
+            "toc_noise_score": toc_noise_score,
             "has_tables": has_tables,
             "has_diagrams": has_diagrams,
+            "diagram_signal_count": diagram_signal_count,
+            "chess_signal_count": chess_signal_count,
             "has_meaningful_images": has_meaningful_images,
+            "non_content_ratio": 0.0,
+            "ocr_confidence": ocr_confidence,
+            "ocr_supported": ocr_supported,
+            "ocr_language_available": ocr_language_available,
             "estimated_columns": estimated_columns,
             "heading_density": heading_density,
             "font_consistency": font_consistency,
@@ -252,13 +286,26 @@ def analyze_publication(
         scanned_pages=scanned_pages,
         text_pages=pages_with_text,
         image_pages=pages_with_images,
+        visual_density=visual_density,
+        dominant_visual_ratio=dominant_visual_ratio,
+        text_block_density=text_block_density,
+        layout_entropy=layout_entropy,
+        toc_depth=toc_depth,
+        toc_noise_score=toc_noise_score,
+        diagram_signal_count=diagram_signal_count,
+        chess_signal_count=chess_signal_count,
+        non_content_ratio=0.0,
+        ocr_confidence=ocr_confidence,
+        ocr_supported=ocr_supported,
+        ocr_language_available=ocr_language_available,
         estimated_columns=estimated_columns,
         heading_density=heading_density,
         font_consistency=font_consistency,
         detected_features=features,
-        external_tools=detect_toolchain(),
+        external_tools=toolchain,
         profile_reason=profile_reason,
         route_decision=route_decision,
+        analysis_seconds=round(perf_counter() - analysis_started, 6),
     )
 
 
@@ -280,6 +327,37 @@ def _choose_render_budget_class(
     if total_pages >= 60 or has_meaningful_images or layout_heavy:
         return "fixed_layout_balanced"
     return "fixed_layout_safe"
+
+
+def _layout_entropy(column_estimates: list[int], visual_area_ratios: list[float]) -> float:
+    if not column_estimates and not visual_area_ratios:
+        return 0.0
+    column_variants = len({max(1, int(value)) for value in column_estimates})
+    column_signal = min(column_variants / 3.0, 1.0)
+    visual_signal = 1.0 if any(value >= 0.25 for value in visual_area_ratios) else 0.0
+    mixed_visual_signal = 1.0 if visual_area_ratios and 0 < len(visual_area_ratios) < max(len(column_estimates), 1) else 0.0
+    return max(0.0, min((column_signal * 0.5) + (visual_signal * 0.35) + (mixed_visual_signal * 0.15), 1.0))
+
+
+def _toc_depth(toc: list[list[Any]]) -> int:
+    levels = [int(row[0]) for row in toc if row and str(row[0]).isdigit()]
+    return max(levels) if levels else 0
+
+
+def _toc_noise_score(toc: list[list[Any]]) -> float:
+    if not toc:
+        return 0.0
+    noisy = 0
+    total = 0
+    for row in toc:
+        if len(row) < 2:
+            continue
+        total += 1
+        title = str(row[1] or "").strip()
+        words = title.split()
+        if not title or title.isdigit() or len(words) > 14 or len(title) > 110:
+            noisy += 1
+    return noisy / max(total, 1)
 
 
 def _estimate_columns_from_centers(x_centers: list[float], page_width: float) -> int:

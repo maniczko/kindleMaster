@@ -68,6 +68,27 @@ class QualityReportMarkdownTests(unittest.TestCase):
         self.assertIn("[heading] chapter_001.xhtml: Intro", markdown)
         self.assertIn("- legacy queue item", markdown)
 
+    def test_build_manual_review_markdown_renders_phase_based_items(self) -> None:
+        markdown = build_manual_review_markdown(
+            {
+                "summary": {"queue_size": 1},
+                "items": [
+                    {
+                        "phase": "heading_recovery",
+                        "file": "chapter_030.xhtml",
+                        "element": "h3",
+                        "after": "Recovered heading",
+                        "reason": "reconstructed-heading",
+                        "confidence": 0.72,
+                    }
+                ],
+            }
+        )
+
+        self.assertIn("[heading_recovery] chapter_030.xhtml: h3", markdown)
+        self.assertNotIn("[None]", markdown)
+        self.assertNotIn(": None", markdown)
+
     def test_build_manual_review_markdown_keeps_empty_queue_output_stable(self) -> None:
         markdown = build_manual_review_markdown({"summary": {"queue_size": 0}, "items": []})
 

@@ -4,7 +4,9 @@ from dataclasses import dataclass
 import re
 import zipfile
 from io import BytesIO
+from pathlib import PurePosixPath
 from typing import Any
+from urllib.parse import unquote, urldefrag
 
 from bs4 import BeautifulSoup
 
@@ -23,7 +25,9 @@ LOWERCASE_CONNECTOR_GLUE_WORDS = ("oraz", "czy", "ale", "dla", "pod", "nad", "pr
 OCR_JUNK_RE = re.compile(r"(?:\ufffd|\u00c4|\u0139|\u0102|\u00c3|[\u00e2][\u20ac][\u201c-\u201d])")
 SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+[,.!?;:]")
 MISSING_SPACE_AFTER_SENTENCE_RE = re.compile(r"(?<=[.!?])(?=[A-Z])")
-URL_FRAGMENT_RE = re.compile(r"(?i)(?:https?\s*:\s*/?\s*/|www\s*\.\s+|doi\s*:\s+|https?://\s+)")
+URL_FRAGMENT_RE = re.compile(
+    r"(?i)(?:https?\s+:\s*/?\s*/?|https?\s*:\s+/?\s*/?|https?\s*:\s*/\s+/|www\s*\.\s+|doi\s*:\s+|https?://\s+)"
+)
 TECHNICAL_PLACEHOLDER_RE = re.compile(
     r"(?i)(?:__KM_PROTECTED_\d+__|\bTODO\b|\bFIXME\b|\b(?:Object|State)\s+\d+\b|\bRank\s*=\s*\d+\s*\*\s*\d+\b)"
 )
@@ -50,6 +54,19 @@ PRODUCTIVE_PREFIX_PARTS = {
     "super",
     "termo",
 }
+PRODUCTIVE_COMPOUND_PREFIXES = (
+    "miedzy",
+    "między",
+    "poza",
+    "poli",
+    "ponad",
+    "post",
+    "przeciw",
+    "super",
+    "wielo",
+    "wspol",
+    "współ",
+)
 INFLECTION_LIKE_RIGHT_PARTS = (
     "aniu",
     "eniu",
@@ -101,8 +118,8 @@ def analyze_epub_text_artifacts(epub_bytes: bytes) -> dict[str, Any]:
     documents: list[TextArtifactMetrics] = []
     try:
         with zipfile.ZipFile(BytesIO(epub_bytes)) as archive:
-            for name in sorted(archive.namelist()):
-                if not _is_text_document(name):
+            for name in _reader_facing_text_documents(archive):
+                if name not in archive.namelist() or not _is_text_document(name):
                     continue
                 try:
                     raw = archive.read(name)
@@ -156,6 +173,87 @@ def _is_text_document(name: str) -> bool:
     return False
 
 
+def _reader_facing_text_documents(archive: zipfile.ZipFile) -> list[str]:
+    """Return XHTML/HTML documents that participate in the linear reading spine.
+
+    Older or synthetic fixtures may not include OPF metadata; in that case we
+    preserve the previous behavior and inspect all text-like documents.
+    """
+
+    names = set(archive.namelist())
+    try:
+        opf_path = _find_opf_member(archive)
+        if not opf_path:
+            raise ValueError("missing OPF")
+        opf = BeautifulSoup(archive.read(opf_path), "xml")
+        opf_dir = PurePosixPath(opf_path).parent
+        manifest: dict[str, dict[str, str]] = {}
+        for item in opf.find_all("item"):
+            item_id = str(item.get("id", "") or "")
+            href = str(item.get("href", "") or "")
+            media_type = str(item.get("media-type", "") or "")
+            properties = str(item.get("properties", "") or "")
+            if item_id and href:
+                manifest[item_id] = {
+                    "href": href,
+                    "media_type": media_type,
+                    "properties": properties,
+                }
+
+        spine_documents: list[str] = []
+        for itemref in opf.find_all("itemref"):
+            linear = str(itemref.get("linear", "yes") or "yes").strip().lower()
+            if linear == "no":
+                continue
+            item = manifest.get(str(itemref.get("idref", "") or "")) or {}
+            href = str(item.get("href", "") or "")
+            media_type = str(item.get("media_type", "") or "")
+            properties = str(item.get("properties", "") or "")
+            if not href or media_type != "application/xhtml+xml":
+                continue
+            if "nav" in properties.split():
+                continue
+            member = _resolve_opf_href(opf_dir, href)
+            if member in names and _is_text_document(member):
+                spine_documents.append(member)
+        if spine_documents:
+            return _dedupe_preserve_order(spine_documents)
+    except Exception:
+        pass
+    return [name for name in sorted(names) if _is_text_document(name)]
+
+
+def _find_opf_member(archive: zipfile.ZipFile) -> str:
+    try:
+        container = BeautifulSoup(archive.read("META-INF/container.xml"), "xml")
+    except KeyError:
+        return ""
+    rootfile = container.find("rootfile")
+    if rootfile is None:
+        return ""
+    return str(rootfile.get("full-path", "") or "")
+
+
+def _resolve_opf_href(opf_dir: PurePosixPath, href: str) -> str:
+    clean_href = unquote(urldefrag(href)[0])
+    if not clean_href:
+        return ""
+    if str(opf_dir) in {"", "."}:
+        return PurePosixPath(clean_href).as_posix()
+    return (opf_dir / clean_href).as_posix()
+
+
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
 def _extract_visible_text(raw: bytes) -> str:
     soup = BeautifulSoup(raw, "html.parser")
     for node in soup(["script", "style", "svg", "math"]):
@@ -187,7 +285,12 @@ def _count_glued_tokens(tokens: list[str]) -> int:
         if transitions >= 2:
             count += 1
             continue
-        if transitions == 1 and len(token) >= 14 and not token.endswith(("API", "HTTP", "URL")):
+        if (
+            transitions == 1
+            and len(token) >= 14
+            and not token.endswith(("API", "HTTP", "URL"))
+            and not _looks_like_valid_camel_case_term(token)
+        ):
             count += 1
     return count
 
@@ -201,6 +304,8 @@ def _looks_like_glued_token(token: str) -> bool:
         return False
 
     lowered = token.lower()
+    if _looks_like_productive_compound(lowered):
+        return False
     whole_score = _lexical_zipf(lowered)
     if whole_score >= 1.85:
         return False
@@ -221,6 +326,19 @@ def _looks_like_glued_token(token: str) -> bool:
         if _has_confident_connector_split(stem, whole_score=min(whole_score, _lexical_zipf(stem))):
             return True
     return False
+
+
+def _looks_like_productive_compound(token: str) -> bool:
+    if len(token) < 9:
+        return False
+    return any(token.startswith(prefix) and len(token) >= len(prefix) + 5 for prefix in PRODUCTIVE_COMPOUND_PREFIXES)
+
+
+def _looks_like_valid_camel_case_term(token: str) -> bool:
+    parts = re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?=[A-Z]|$)", token)
+    if len(parts) != 2:
+        return False
+    return all(_lexical_zipf(part.lower()) >= 2.6 for part in parts)
 
 
 def _has_confident_two_word_split(token: str, *, whole_score: float) -> bool:

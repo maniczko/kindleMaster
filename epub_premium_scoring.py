@@ -48,6 +48,8 @@ GENERIC_TOC_PATTERNS = NON_CONTENT_LABEL_PATTERNS + (
     r"\bobject\s+\d+\b",
     r"\bstate\s+\d+\b",
     r"\brank\s*=",
+    r"^(?:zrodlo|źródło|source|credit)\s*[:.-]",
+    r"^(?:pic|picture|figure|fig|rysunek|rys\.|tabela|table)\s*\.?\s+\d+\b",
 )
 LANGUAGE_LABEL_CONTAMINATION_THRESHOLD = 2
 POLISH_STRUCTURAL_LABEL_PATTERNS = (
@@ -566,7 +568,17 @@ def _metadata_issue(code: str, message: str) -> dict[str, Any]:
 
 def _classify_non_content_document(doc: _SpineDocument) -> dict[str, str] | None:
     blob = f"{doc.title} {doc.text[:600]}".lower()
-    if _matches_any(blob, NON_CONTENT_LABEL_PATTERNS):
+    title = _normalize_label(doc.title).lower()
+    contact_signal_count = len(
+        re.findall(
+            r"(?i)\b(?:https?://|www\.|facebook\s*\.|linkedin\s*\.|instagram\s*\.|youtube\s*\.|slideshare\s*\.|tel\.?|phone|e-?mail|kontakt)\b",
+            doc.text[:1200],
+        )
+    )
+    has_non_content_label = _matches_any(blob, NON_CONTENT_LABEL_PATTERNS)
+    generic_title = _matches_any(title, NON_CONTENT_LABEL_PATTERNS) and doc.word_count <= 220
+    contact_stub = contact_signal_count >= 3 and doc.word_count <= 360
+    if has_non_content_label and (generic_title or contact_stub or doc.word_count <= 180):
         return {"file": doc.file, "title": doc.title or doc.text[:80]}
     if doc.image_count >= 1 and doc.text_chars < 120 and not _is_cover_or_nav(doc.file):
         return {"file": doc.file, "title": doc.title or "image-only stub"}

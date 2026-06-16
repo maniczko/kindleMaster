@@ -35,6 +35,7 @@ Stable `error_code` values:
 | `upload_failed` | `upload` | `400`, `413` | Missing file, unsupported extension, oversized upload, or upload persistence failure. |
 | `queue_failed` | `queue` | `429`, `500`, `503` | The server accepted the request path but could not create or persist a queued job. |
 | `conversion_timeout` | `conversion` | `200` status payload or `504` start/worker failure | The job exceeded the configured conversion/watchdog budget. |
+| `interactive_runtime_budget_exceeded` | `conversion` | `200` status payload or `422` sync failure | Interactive UI refused an extreme document early instead of letting it run into the watchdog timeout. |
 | `conversion_failed` | `conversion` | `200` status payload or `500` | Conversion failed before a downloadable EPUB was available. |
 | `validation_failed` | `validation` | `200` status/quality payload or `422` if blocking at request time | EPUB validation found blocking structural issues. |
 | `missing_output` | `download` | `500` | A job reached `ready`, but its EPUB file is missing or unreadable. |

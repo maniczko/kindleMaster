@@ -17,8 +17,18 @@ def build_manual_review_markdown(payload_or_items: dict[str, Any] | list[Any] | 
     lines = ["# Manual Review Queue", ""]
     for item in items:
         if isinstance(item, dict):
+            kind = item.get("kind") or item.get("phase") or "review"
+            file_name = item.get("file") or item.get("document_path") or "unknown"
+            subject = (
+                item.get("subject")
+                or item.get("element")
+                or item.get("after")
+                or item.get("before")
+                or item.get("reason")
+                or "review item"
+            )
             lines.append(
-                f"- [{item.get('kind')}] {item.get('file')}: {item.get('subject')} ({item.get('reason')}, confidence {item.get('confidence')})"
+                f"- [{kind}] {file_name}: {subject} ({item.get('reason')}, confidence {item.get('confidence')})"
             )
         else:
             lines.append(f"- {item}")

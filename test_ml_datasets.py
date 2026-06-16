@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from ml_feedback import append_conversion_feedback_from_report, export_feedback_datasets
-from scripts.build_ml_datasets import build_ml_datasets
+from scripts.build_ml_datasets import build_feature_collision_report, build_ml_datasets
 
 
 class MlDatasetBuilderTests(unittest.TestCase):
@@ -75,7 +75,7 @@ class MlDatasetBuilderTests(unittest.TestCase):
             self.assertIn("missing_input", {item["reason"] for item in payload["skipped"]})
             self.assertIn("unsupported_input_type:epub", {item["reason"] for item in payload["skipped"]})
 
-    def test_feedback_log_extends_route_dataset_without_training(self) -> None:
+    def test_feedback_log_extends_route_dataset_when_training_intent_is_valid(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             report_path = root / "reports" / "conversion.json"
@@ -131,6 +131,8 @@ class MlDatasetBuilderTests(unittest.TestCase):
                 route_label="magazine_reflow",
                 issue_tags=["layout", "toc"],
                 notes="Operator selected magazine route for future training data.",
+                reviewer="qa",
+                include_in_training=True,
                 created_at="2026-05-11T10:00:00Z",
             )
             export_payload = export_feedback_datasets(
@@ -169,6 +171,74 @@ class MlDatasetBuilderTests(unittest.TestCase):
             self.assertEqual(route_example["feedback_status"], "accepted")
             self.assertTrue(route_example["features"]["layout_heavy"])
             self.assertFalse(route_example["features"]["text_heavy"])
+
+    def test_builder_detects_feature_hash_label_collisions(self) -> None:
+        report = build_feature_collision_report(
+            [
+                {
+                    "case_id": "same_features_book",
+                    "label": "book_reflow",
+                    "features_hash": "abc123",
+                    "features": {"input_type": "pdf", "text_heavy": True},
+                },
+                {
+                    "case_id": "same_features_magazine",
+                    "label": "magazine_reflow",
+                    "features_hash": "abc123",
+                    "features": {"input_type": "pdf", "text_heavy": True},
+                },
+            ]
+        )
+
+        self.assertEqual(report["status"], "blocked_feature_collision")
+        self.assertEqual(report["collision_count"], 1)
+        self.assertEqual(report["collisions"][0]["labels"], ["book_reflow", "magazine_reflow"])
+
+    def test_feedback_route_label_without_training_intent_stays_audit_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report_path = root / "reports" / "conversion.json"
+            report_path.parent.mkdir(parents=True)
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "source_type": "pdf",
+                        "analysis": {
+                            "profile": "book_reflow",
+                            "confidence": 0.75,
+                            "page_count": 3,
+                            "text_pages": 3,
+                            "scanned_pages": 0,
+                            "image_pages": 0,
+                            "text_heavy": True,
+                            "layout_heavy": False,
+                        },
+                        "quality_report": {"validation_status": "passed"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            log_payload = append_conversion_feedback_from_report(
+                report_path=report_path,
+                log_path="reports/ml/feedback/conversion_feedback.jsonl",
+                repo_root=root,
+                case_id="audit_only",
+                quality_label="usable",
+                route_label="book_reflow",
+                issue_tags=["route"],
+                reviewer="qa",
+            )
+            export_payload = export_feedback_datasets(
+                log_paths=["reports/ml/feedback/conversion_feedback.jsonl"],
+                output_dir="reports/ml/feedback",
+                repo_root=root,
+            )
+
+            self.assertEqual(log_payload["status"], "logged")
+            self.assertFalse(log_payload["include_in_route_training"])
+            self.assertEqual(log_payload["dataset_reason"], "not_marked_for_training")
+            self.assertEqual(export_payload["route_example_count"], 0)
 
 
 if __name__ == "__main__":

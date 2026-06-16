@@ -21,10 +21,22 @@ ROUTE_FEATURE_FIELDS = (
     "text_page_ratio",
     "scanned_page_ratio",
     "image_page_ratio",
+    "visual_density",
+    "dominant_visual_ratio",
+    "text_block_density",
+    "layout_entropy",
     "has_toc",
+    "toc_depth",
+    "toc_noise_score",
     "has_tables",
     "has_diagrams",
+    "diagram_signal_count",
+    "chess_signal_count",
     "has_meaningful_images",
+    "non_content_ratio",
+    "ocr_confidence",
+    "ocr_supported",
+    "ocr_language_available",
     "estimated_columns",
     "heading_density",
     "font_consistency",
@@ -47,10 +59,22 @@ ROUTE_MODEL_FEATURE_ORDER = (
     "text_page_ratio",
     "scanned_page_ratio",
     "image_page_ratio",
+    "visual_density",
+    "dominant_visual_ratio",
+    "text_block_density",
+    "layout_entropy",
     "has_toc",
+    "toc_depth",
+    "toc_noise_score",
     "has_tables",
     "has_diagrams",
+    "diagram_signal_count",
+    "chess_signal_count",
     "has_meaningful_images",
+    "non_content_ratio",
+    "ocr_confidence",
+    "ocr_supported",
+    "ocr_language_available",
     "estimated_columns",
     "heading_density",
     "font_consistency",
@@ -79,10 +103,22 @@ def route_feature_payload(
         "text_page_ratio": _ratio(_get_int(analysis, "text_pages"), _get_int(analysis, "page_count")),
         "scanned_page_ratio": _ratio(_get_int(analysis, "scanned_pages"), _get_int(analysis, "page_count")),
         "image_page_ratio": _ratio(_get_int(analysis, "image_pages"), _get_int(analysis, "page_count")),
+        "visual_density": _get_float(analysis, "visual_density"),
+        "dominant_visual_ratio": _get_float(analysis, "dominant_visual_ratio"),
+        "text_block_density": _get_float(analysis, "text_block_density"),
+        "layout_entropy": _get_float(analysis, "layout_entropy"),
         "has_toc": _get_bool(analysis, "has_toc"),
+        "toc_depth": _get_int(analysis, "toc_depth"),
+        "toc_noise_score": _get_float(analysis, "toc_noise_score"),
         "has_tables": _get_bool(analysis, "has_tables"),
         "has_diagrams": _get_bool(analysis, "has_diagrams"),
+        "diagram_signal_count": _get_int(analysis, "diagram_signal_count"),
+        "chess_signal_count": _get_int(analysis, "chess_signal_count"),
         "has_meaningful_images": _get_bool(analysis, "has_meaningful_images"),
+        "non_content_ratio": _get_float(analysis, "non_content_ratio"),
+        "ocr_confidence": _get_float(analysis, "ocr_confidence"),
+        "ocr_supported": _get_bool(analysis, "ocr_supported"),
+        "ocr_language_available": _get_bool(analysis, "ocr_language_available"),
         "estimated_columns": max(1, _get_int(analysis, "estimated_columns", default=1)),
         "heading_density": _get_float(analysis, "heading_density"),
         "font_consistency": _get_float(analysis, "font_consistency", default=1.0),
@@ -95,6 +131,12 @@ def route_feature_payload(
         payload["scanned_page_ratio"] = _clamp01(_get_float(analysis, "scanned_page_ratio"))
     if _get_float(analysis, "image_page_ratio", default=-1.0) >= 0:
         payload["image_page_ratio"] = _clamp01(_get_float(analysis, "image_page_ratio"))
+    if payload["visual_density"] <= 0:
+        payload["visual_density"] = payload["image_page_ratio"]
+    if payload["dominant_visual_ratio"] <= 0:
+        payload["dominant_visual_ratio"] = payload["image_page_ratio"]
+    if payload["ocr_confidence"] <= 0 and payload["text_page_ratio"] >= 0.8 and payload["scanned_page_ratio"] <= 0.1:
+        payload["ocr_confidence"] = 1.0
 
     payload.update(_docx_feature_counts(docx_counts or {}))
     return normalize_route_features(payload)
@@ -121,12 +163,23 @@ def normalize_route_features(payload: Mapping[str, Any] | None) -> dict[str, Any
     for field in ROUTE_FEATURE_FIELDS:
         if field == "input_type":
             normalized[field] = _clean_input_type(raw.get(field, "pdf"))
-        elif field.startswith("has_") or field in {"layout_heavy", "text_heavy"}:
+        elif field.startswith("has_") or field in {"layout_heavy", "text_heavy", "ocr_supported", "ocr_language_available"}:
             normalized[field] = _bool_value(raw.get(field, False))
-        elif field.endswith("_ratio") or field in {"heading_density", "font_consistency"}:
+        elif field.endswith("_ratio") or field in {
+            "heading_density",
+            "font_consistency",
+            "visual_density",
+            "dominant_visual_ratio",
+            "layout_entropy",
+            "toc_noise_score",
+            "non_content_ratio",
+            "ocr_confidence",
+        }:
             normalized[field] = round(_clamp01(_float_value(raw.get(field, 0.0))), 6)
         elif field == "estimated_columns":
             normalized[field] = max(1, _int_value(raw.get(field, 1)))
+        elif field == "text_block_density":
+            normalized[field] = round(max(0.0, _float_value(raw.get(field, 0.0))), 6)
         else:
             normalized[field] = max(0, _int_value(raw.get(field, 0)))
     return normalized

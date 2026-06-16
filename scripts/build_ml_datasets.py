@@ -11,6 +11,7 @@ from ml_feedback import load_feedback_records, route_examples_from_feedback
 
 
 Analyzer = Callable[[str], Any]
+MIN_ROUTE_EXAMPLES_PER_CLASS = 25
 
 
 def build_ml_datasets(
@@ -23,6 +24,8 @@ def build_ml_datasets(
     feedback_log_paths: Iterable[str | Path] | None = None,
     pdf_analyzer: Analyzer | None = None,
     docx_analyzer: Analyzer | None = None,
+    fail_on_collisions: bool = False,
+    min_examples_per_class: int = MIN_ROUTE_EXAMPLES_PER_CLASS,
 ) -> dict[str, Any]:
     root = Path(repo_root).resolve()
     manifest_file = _resolve_path(root, manifest_path)
@@ -85,13 +88,28 @@ def build_ml_datasets(
     feedback_route_path = output_root / "feedback_route_examples.jsonl"
     review_path = output_root / "heading_reference_examples.jsonl"
     completeness_path = output_root / "completeness_report.json"
+    collision_path = output_root / "feature_collision_report.json"
     _write_jsonl(route_path, route_examples)
     _write_jsonl(feedback_route_path, feedback_route_examples)
     _write_jsonl(review_path, heading_reference_examples)
 
     label_counts = dict(Counter(example["label"] for example in route_examples))
     missing_classes = [label for label in ROUTE_LABELS if label_counts.get(label, 0) <= 0]
-    completeness_status = "ready" if not missing_classes else "insufficient_data"
+    under_minimum_classes = [
+        {"label": label, "count": label_counts.get(label, 0), "minimum": int(min_examples_per_class)}
+        for label in ROUTE_LABELS
+        if label_counts.get(label, 0) < int(min_examples_per_class)
+    ]
+    collision_report = build_feature_collision_report(route_examples)
+    collision_path.write_text(json.dumps(collision_report, ensure_ascii=False, indent=2), encoding="utf-8")
+    readiness = build_dataset_readiness(
+        label_counts=label_counts,
+        missing_classes=missing_classes,
+        under_minimum_classes=under_minimum_classes,
+        collision_report=collision_report,
+        min_examples_per_class=min_examples_per_class,
+    )
+    completeness_status = readiness["status"]
     completeness = {
         "status": completeness_status,
         "route_example_count": len(route_examples),
@@ -101,6 +119,9 @@ def build_ml_datasets(
         "heading_reference_example_count": len(heading_reference_examples),
         "route_label_counts": label_counts,
         "missing_route_classes": missing_classes,
+        "under_minimum_route_classes": under_minimum_classes,
+        "dataset_readiness": readiness,
+        "feature_collision_report": collision_report,
         "skipped": skipped,
         "feedback_skipped": feedback_load_skipped + feedback_route_skipped,
         "outputs": {
@@ -108,12 +129,77 @@ def build_ml_datasets(
             "feedback_route_examples": str(feedback_route_path),
             "heading_reference_examples": str(review_path),
             "completeness_report": str(completeness_path),
+            "feature_collision_report": str(collision_path),
         },
         "analysis_mode": "analysis_only_no_full_conversion",
         "online_learning": False,
     }
     completeness_path.write_text(json.dumps(completeness, ensure_ascii=False, indent=2), encoding="utf-8")
+    if fail_on_collisions and readiness["status"] == "blocked_feature_collision":
+        completeness["error"] = "feature_collision"
     return completeness
+
+
+def build_feature_collision_report(examples: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    groups: dict[str, list[Mapping[str, Any]]] = {}
+    for example in examples:
+        feature_hash = str(example.get("features_hash", "") or "").strip()
+        if not feature_hash:
+            continue
+        groups.setdefault(feature_hash, []).append(example)
+
+    collisions: list[dict[str, Any]] = []
+    for feature_hash, rows in sorted(groups.items()):
+        labels = sorted({str(row.get("label", "") or "") for row in rows if row.get("label")})
+        if len(labels) <= 1:
+            continue
+        collisions.append(
+            {
+                "features_hash": feature_hash,
+                "labels": labels,
+                "case_ids": [str(row.get("case_id", "") or "") for row in rows],
+                "example_count": len(rows),
+            }
+        )
+    return {
+        "status": "blocked_feature_collision" if collisions else "passed",
+        "collision_count": len(collisions),
+        "collisions": collisions,
+    }
+
+
+def build_dataset_readiness(
+    *,
+    label_counts: Mapping[str, int],
+    missing_classes: list[str],
+    under_minimum_classes: list[Mapping[str, Any]],
+    collision_report: Mapping[str, Any],
+    min_examples_per_class: int,
+) -> dict[str, Any]:
+    reason_codes: list[str] = []
+    if int(collision_report.get("collision_count", 0) or 0) > 0:
+        reason_codes.append("feature_hash_label_collision")
+    if missing_classes:
+        reason_codes.append("missing_route_classes")
+    if under_minimum_classes:
+        reason_codes.append("under_minimum_examples_per_class")
+
+    if "feature_hash_label_collision" in reason_codes:
+        status = "blocked_feature_collision"
+    elif reason_codes:
+        status = "insufficient_data"
+    else:
+        status = "ready"
+    return {
+        "status": status,
+        "reason_codes": reason_codes,
+        "min_examples_per_class": int(min_examples_per_class),
+        "route_label_counts": dict(label_counts),
+        "missing_route_classes": list(missing_classes),
+        "under_minimum_route_classes": [dict(item) for item in under_minimum_classes],
+        "feature_collision_count": int(collision_report.get("collision_count", 0) or 0),
+        "promotion_allowed": status == "ready",
+    }
 
 
 def _run_analysis_only(
@@ -241,6 +327,8 @@ def main() -> int:
     parser.add_argument("--reports-root", default="reports")
     parser.add_argument("--output-dir", default="reports/ml/datasets")
     parser.add_argument("--feedback-log", action="append", default=[])
+    parser.add_argument("--fail-on-collisions", action="store_true")
+    parser.add_argument("--min-examples-per-class", type=int, default=MIN_ROUTE_EXAMPLES_PER_CLASS)
     args = parser.parse_args()
     payload = build_ml_datasets(
         manifest_path=args.manifest,
@@ -248,8 +336,12 @@ def main() -> int:
         reports_root=args.reports_root,
         output_dir=args.output_dir,
         feedback_log_paths=args.feedback_log,
+        fail_on_collisions=args.fail_on_collisions,
+        min_examples_per_class=args.min_examples_per_class,
     )
     print(json.dumps(payload, ensure_ascii=False, indent=2))
+    if args.fail_on_collisions and payload.get("status") == "blocked_feature_collision":
+        return 2
     return 0 if payload.get("status") != "failed" else 1
 
 

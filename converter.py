@@ -64,6 +64,16 @@ HTML_TAG_RE = re.compile(r"<[^>]+>")
 SOLUTION_PAGE_RE = re.compile(r"Solutions page (\d+)", re.IGNORECASE)
 EXERCISE_NUMBER_RE = re.compile(r'exercise-number">(?P<num>\d+)\.</span>')
 SOLUTION_ENTRY_RE = re.compile(r"^(?P<num>\d+)\.\s+.+\s[–-]\s.+$")
+INTERACTIVE_DIAGRAM_PAGE_LIMIT = 800
+INTERACTIVE_EXTREME_PAGE_LIMIT = 1000
+
+
+class InteractiveRuntimeBudgetExceeded(RuntimeError):
+    error_code = "interactive_runtime_budget_exceeded"
+
+    def __init__(self, message: str, *, payload: dict) -> None:
+        super().__init__(message)
+        self.payload = payload
 
 
 def strip_emails(text: str) -> str:
@@ -498,6 +508,7 @@ class ConversionConfig:
     enable_epubcheck: bool = True
     route_model_mode: str = "shadow"
     quality_gate_mode: str = "draft"
+    interactive_runtime_budget: bool = False
     
     # Metadata
     language: str = "pl"
@@ -716,6 +727,48 @@ def _publication_budget_attempt_order(analysis, budget_key: str) -> tuple[str, .
     if profile_name == "diagram_book_reflow" and normalized_budget_key == "diagram_book_reflow_balanced" and normalized_page_count >= 250:
         return ("fallback", "primary")
     return ("primary", "fallback")
+
+
+def _interactive_runtime_budget_violation(analysis, config: ConversionConfig) -> dict | None:
+    if not getattr(config, "interactive_runtime_budget", False):
+        return None
+
+    profile_name = normalize_budget_key(getattr(analysis, "profile", "") if not isinstance(analysis, dict) else analysis.get("profile", ""))
+    render_budget_class = normalize_budget_key(
+        getattr(analysis, "render_budget_class", "") if not isinstance(analysis, dict) else analysis.get("render_budget_class", "")
+    )
+    try:
+        page_count = int(getattr(analysis, "page_count", 0) if not isinstance(analysis, dict) else analysis.get("page_count", 0) or 0)
+    except (TypeError, ValueError):
+        page_count = 0
+
+    reason_codes: list[str] = []
+    limit = 0
+    if profile_name == "diagram_book_reflow" and page_count >= INTERACTIVE_DIAGRAM_PAGE_LIMIT:
+        limit = INTERACTIVE_DIAGRAM_PAGE_LIMIT
+        reason_codes.extend(["diagram_book_reflow", "interactive_page_budget_exceeded"])
+    elif render_budget_class == "fixed_layout_extreme" and page_count >= INTERACTIVE_EXTREME_PAGE_LIMIT:
+        limit = INTERACTIVE_EXTREME_PAGE_LIMIT
+        reason_codes.extend(["fixed_layout_extreme", "interactive_page_budget_exceeded"])
+
+    if not reason_codes:
+        return None
+
+    message = (
+        f"Ten PDF ma {page_count} stron i przekracza interaktywny limit {limit} stron dla profilu "
+        f"{profile_name or 'unknown'}. Pelna konwersja w UI zostala przerwana szybko zamiast czekac na timeout. "
+        "Uruchom konwersje jako zadanie offline/CLI albo przetestuj krotszy fragment dokumentu."
+    )
+    return {
+        "status": "blocked",
+        "error_code": InteractiveRuntimeBudgetExceeded.error_code,
+        "message": message,
+        "page_count": page_count,
+        "page_limit": limit,
+        "profile": profile_name,
+        "render_budget_class": render_budget_class,
+        "reason_codes": reason_codes,
+    }
 
 
 def _build_publication_pipeline_result(
@@ -2556,6 +2609,12 @@ def convert_pdf_to_epub_with_report(
             preferred_profile=config.profile,
             route_model_mode=config.route_model_mode,
         )
+        runtime_budget_violation = _interactive_runtime_budget_violation(analysis, config)
+        if runtime_budget_violation:
+            raise InteractiveRuntimeBudgetExceeded(
+                runtime_budget_violation["message"],
+                payload=runtime_budget_violation,
+            )
         preserve_layout = config.profile == "preserve-layout" or analysis.profile == "fixed_layout_fallback"
 
         if preserve_layout:
@@ -2675,7 +2734,7 @@ def convert_pdf_to_epub_with_report(
         )
         publication_result["quality_report"]["final_output_size_bytes"] = len(publication_result["epub_bytes"])
         return _publication_response_payload(result=publication_result, analysis=analysis)
-    except SizeBudgetExceededError:
+    except (SizeBudgetExceededError, InteractiveRuntimeBudgetExceeded):
         raise
     except Exception as exc:
         print(f"Premium pipeline failed ({exc}), falling back to legacy conversion...")

@@ -372,6 +372,8 @@ class KindleMasterEntrypointTests(unittest.TestCase):
             reports_root="reports",
             output_dir="reports/ml/datasets",
             feedback_log_paths=["reports/ml/feedback/conversion_feedback.jsonl"],
+            fail_on_collisions=False,
+            min_examples_per_class=25,
         )
         print_mock.assert_called_once_with(payload)
 
@@ -432,6 +434,7 @@ class KindleMasterEntrypointTests(unittest.TestCase):
             issue_tags=["toc"],
             notes="Looks usable.",
             reviewer="operator",
+            include_in_training=False,
         )
         export_mock.assert_called_once_with(
             log_paths=["reports/ml/feedback/conversion_feedback.jsonl"],
@@ -441,6 +444,35 @@ class KindleMasterEntrypointTests(unittest.TestCase):
         self.assertEqual(payload["status"], "completed")
         self.assertFalse(payload["online_learning"])
         self.assertEqual(payload["actions"], ["log", "export"])
+
+    def test_ml_promote_command_requires_candidate_and_uses_promotion_gate(self) -> None:
+        payload = {"status": "blocked", "error": "promotion_gates_failed"}
+        with patch("scripts.train_route_classifier.promote_route_classifier", return_value=payload) as promote_mock:
+            with patch.object(kindlemaster, "_print_json") as print_mock:
+                with patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "kindlemaster.py",
+                        "ml",
+                        "promote",
+                        "--candidate",
+                        "models/candidates/route_classifier_candidate.json",
+                        "--model",
+                        "models/route_classifier_v1.json",
+                        "--corpus-report",
+                        "reports/corpus/premium_corpus_smoke_report.json",
+                    ],
+                ):
+                    exit_code = kindlemaster.main()
+
+        self.assertEqual(exit_code, 1)
+        promote_mock.assert_called_once_with(
+            candidate_path="models/candidates/route_classifier_candidate.json",
+            model_path="models/route_classifier_v1.json",
+            corpus_report_path="reports/corpus/premium_corpus_smoke_report.json",
+        )
+        print_mock.assert_called_once_with(payload)
 
     def test_audit_command_builds_release_audit_invocation(self) -> None:
         with patch("kindlemaster.subprocess.run", return_value=SimpleNamespace(returncode=0)) as run_mock:

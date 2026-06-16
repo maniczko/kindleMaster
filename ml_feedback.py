@@ -14,6 +14,7 @@ DEFAULT_FEEDBACK_EXPORT_DIR = Path("reports/ml/feedback")
 FEEDBACK_SCHEMA_VERSION = 1
 FEEDBACK_STATUSES = ("accepted", "needs_review", "rejected")
 QUALITY_LABELS = ("unknown", "good", "usable", "poor", "blocked")
+TRAINING_QUALITY_LABELS = ("good", "usable", "poor", "blocked")
 
 
 def append_conversion_feedback_event(
@@ -67,6 +68,38 @@ def append_user_feedback(
     event_path: str | Path | None = None,
 ) -> dict[str, Any]:
     metadata = _mapping(job.get("metadata"))
+    include_in_training, validation_errors = validate_feedback_training_intent(feedback)
+    if validation_errors:
+        raise ValueError("training_feedback_invalid:" + ",".join(validation_errors))
+    route_payload = _route_summary(
+        {
+            "source_type": job.get("source_type", ""),
+            "analysis": _mapping(metadata.get("source_analysis")),
+            "quality_report": {
+                "premium_scoring": _mapping(metadata.get("premium_scoring")),
+                "quality_selection": _mapping(metadata.get("quality_selection")),
+            },
+            "document_summary": _mapping(metadata.get("document_summary")),
+        }
+    )
+    cleaned_feedback = {
+        "status": _clean_choice(feedback.get("status"), FEEDBACK_STATUSES, default="needs_review"),
+        "quality_label": _clean_choice(feedback.get("quality_label"), QUALITY_LABELS, default="unknown"),
+        "quality_score": _optional_float(feedback.get("quality_score")),
+        "route_label": _clean_route_label(feedback.get("route_label", "")),
+        "issue_tags": _clean_issue_tags(feedback.get("issue_tags") or feedback.get("tags") or []),
+        "notes": str(feedback.get("notes", "") or "").strip(),
+        "reviewer": str(feedback.get("reviewer", "") or "").strip(),
+        "include_in_training": include_in_training,
+    }
+    dataset_reason = _dataset_reason(
+        cleaned_feedback["route_label"],
+        _mapping(route_payload.get("features")),
+        include_in_training=include_in_training,
+        quality_label=cleaned_feedback["quality_label"],
+        reviewer=cleaned_feedback["reviewer"],
+        issue_tags=cleaned_feedback["issue_tags"],
+    )
     record = {
         "schema_version": FEEDBACK_SCHEMA_VERSION,
         "event_type": "user_feedback",
@@ -86,24 +119,37 @@ def append_user_feedback(
             "source_path": str(job.get("source_path", "") or ""),
             "output_path": str(job.get("output_path", "") or ""),
         },
-        "feedback": {
-            "status": _clean_choice(feedback.get("status"), FEEDBACK_STATUSES, default="needs_review"),
-            "quality_label": _clean_choice(feedback.get("quality_label"), QUALITY_LABELS, default="unknown"),
-            "quality_score": _optional_float(feedback.get("quality_score")),
-            "route_label": _clean_route_label(feedback.get("route_label", "")),
-            "issue_tags": _clean_issue_tags(feedback.get("issue_tags") or feedback.get("tags") or []),
-            "notes": str(feedback.get("notes", "") or "").strip(),
-            "reviewer": str(feedback.get("reviewer", "") or "").strip(),
-        },
+        "route": route_payload,
+        "feedback": cleaned_feedback,
         "quality": {
             "premium_score": _mapping(metadata.get("premium_scoring")).get("premium_score"),
             "premium_status": _mapping(metadata.get("premium_scoring")).get("status"),
             "quality_selection": _quality_selection_summary(_mapping(metadata.get("quality_selection"))),
             "ai_quality_verification": _mapping(metadata.get("ai_quality_verification")),
         },
+        "dataset": {
+            "include_in_route_training": include_in_training and dataset_reason == "ready",
+            "reason": dataset_reason,
+        },
     }
     append_feedback_record(record, log_path=event_path or DEFAULT_FEEDBACK_LOG_PATH)
     return record
+
+
+def validate_feedback_training_intent(feedback: Mapping[str, Any]) -> tuple[bool, list[str]]:
+    include_in_training = _bool_value(feedback.get("include_in_training", False))
+    if not include_in_training:
+        return False, []
+    errors: list[str] = []
+    if _clean_route_label(feedback.get("route_label", "")) not in ROUTE_LABELS:
+        errors.append("missing_or_invalid_route_label")
+    if _clean_choice(feedback.get("quality_label"), QUALITY_LABELS, default="unknown") not in TRAINING_QUALITY_LABELS:
+        errors.append("missing_or_invalid_quality_label")
+    if not _clean_issue_tags(feedback.get("issue_tags") or feedback.get("tags") or []):
+        errors.append("missing_issue_tags")
+    if not str(feedback.get("reviewer", "") or "").strip():
+        errors.append("missing_reviewer")
+    return include_in_training, errors
 
 
 def append_conversion_feedback_from_report(
@@ -121,6 +167,7 @@ def append_conversion_feedback_from_report(
     notes: str = "",
     reviewer: str = "",
     created_at: str | None = None,
+    include_in_training: bool | None = None,
     repo_root: str | Path = ".",
 ) -> dict[str, Any]:
     root = Path(repo_root).resolve()
@@ -155,6 +202,7 @@ def append_conversion_feedback_from_report(
         notes=notes,
         reviewer=reviewer,
         created_at=created_at,
+        include_in_training=bool(include_in_training),
     )
     append_feedback_record(record, log_path=log_path, repo_root=root)
     return {
@@ -164,6 +212,7 @@ def append_conversion_feedback_from_report(
         "case_id": record["case_id"],
         "route_label": record["feedback"]["route_label"],
         "include_in_route_training": record["dataset"]["include_in_route_training"],
+        "dataset_reason": record["dataset"]["reason"],
         "feature_hash": record["route"]["features_hash"],
     }
 
@@ -183,6 +232,7 @@ def conversion_feedback_record(
     notes: str = "",
     reviewer: str = "",
     created_at: str | None = None,
+    include_in_training: bool = False,
 ) -> dict[str, Any]:
     created = _clean_timestamp(created_at)
     conversion = _conversion_summary(
@@ -200,6 +250,7 @@ def conversion_feedback_record(
         "issue_tags": _clean_issue_tags(issue_tags or []),
         "notes": str(notes or "").strip(),
         "reviewer": str(reviewer or "").strip(),
+        "include_in_training": bool(include_in_training),
     }
     normalized_case_id = str(case_id or "").strip() or _case_id_from_report(report_payload, conversion, route)
     record_id = _record_id(
@@ -220,8 +271,24 @@ def conversion_feedback_record(
         "quality": _quality_summary(report_payload),
         "feedback": feedback,
         "dataset": {
-            "include_in_route_training": feedback["route_label"] in ROUTE_LABELS and bool(route["features"]),
-            "reason": _dataset_reason(feedback["route_label"], route["features"]),
+            "include_in_route_training": bool(include_in_training)
+            and _dataset_reason(
+                feedback["route_label"],
+                route["features"],
+                include_in_training=bool(include_in_training),
+                quality_label=feedback["quality_label"],
+                reviewer=feedback["reviewer"],
+                issue_tags=feedback["issue_tags"],
+            )
+            == "ready",
+            "reason": _dataset_reason(
+                feedback["route_label"],
+                route["features"],
+                include_in_training=bool(include_in_training),
+                quality_label=feedback["quality_label"],
+                reviewer=feedback["reviewer"],
+                issue_tags=feedback["issue_tags"],
+            ),
         },
     }
 
@@ -343,9 +410,19 @@ def route_examples_from_feedback(
     for index, record in enumerate(records):
         record_id = str(record.get("record_id", "") or f"feedback-{index}")
         feedback = _mapping(record.get("feedback"))
+        dataset = _mapping(record.get("dataset"))
         route_label = _clean_route_label(feedback.get("route_label", ""))
         route = _mapping(record.get("route"))
         features = _mapping(route.get("features"))
+        if not bool(dataset.get("include_in_route_training")):
+            skipped.append(
+                {
+                    "source": "feedback",
+                    "record_id": record_id,
+                    "reason": str(dataset.get("reason", "") or "not_marked_for_training"),
+                }
+            )
+            continue
         if route_label not in ROUTE_LABELS:
             skipped.append({"source": "feedback", "record_id": record_id, "reason": "missing_or_invalid_route_label"})
             continue
@@ -414,6 +491,7 @@ def _route_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
         "ml_confidence": round(_float_value(decision.get("ml_confidence", 0.0)), 6),
         "override_used": bool(decision.get("override_used", False)),
         "model_version": str(decision.get("model_version", "") or ""),
+        "inference_seconds": round(_float_value(decision.get("inference_seconds", 0.0)), 6),
         "reason_codes": list(decision.get("reason_codes", []) or []),
         "features": features,
         "features_hash": route_features_hash(features) if features else str(decision.get("input_features_hash", "") or ""),
@@ -455,6 +533,7 @@ def _quality_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
         "final_output_size_bytes": _int_value(quality.get("final_output_size_bytes")),
         "size_budget_status": str(quality.get("size_budget_status", "") or ""),
         "quality_selection": _quality_selection_summary(_mapping(quality.get("quality_selection"))),
+        "stage_timings": dict(_mapping(quality.get("stage_timings"))),
     }
 
 
@@ -541,11 +620,27 @@ def _record_id(
     return f"fb_{digest}"
 
 
-def _dataset_reason(route_label: str, features: Mapping[str, Any]) -> str:
+def _dataset_reason(
+    route_label: str,
+    features: Mapping[str, Any],
+    *,
+    include_in_training: bool = True,
+    quality_label: str = "unknown",
+    reviewer: str = "",
+    issue_tags: Iterable[str] | None = None,
+) -> str:
+    if not include_in_training:
+        return "not_marked_for_training"
     if route_label not in ROUTE_LABELS:
         return "missing_or_invalid_route_label"
     if not features:
         return "missing_route_features"
+    if quality_label not in TRAINING_QUALITY_LABELS:
+        return "missing_or_invalid_quality_label"
+    if not str(reviewer or "").strip():
+        return "missing_reviewer"
+    if not _clean_issue_tags(issue_tags or []):
+        return "missing_issue_tags"
     return "ready"
 
 
@@ -610,6 +705,16 @@ def _int_value(value: Any) -> int:
         return int(float(value))
     except (TypeError, ValueError):
         return 0
+
+
+def _bool_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "y"}
+    return bool(value)
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:

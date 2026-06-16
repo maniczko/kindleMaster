@@ -234,8 +234,43 @@ def finalize_epub_bytes(
         "status": "unavailable",
     }
 
-    stage_started = time.perf_counter()
-    if profile_key == "diagram_book_reflow":
+    if _is_chess_notation_collection_metadata(pdf_metadata):
+        text_cleanup_summary = {
+            **text_cleanup_summary,
+            "status": "skipped",
+            "profile_skip": True,
+            "bounded_long_form_skip": True,
+            "skip_reason": (
+                "Skipped expensive semantic/text cleanup for a large chess notation collection. "
+                "SAN/PGN-like notation is preserved verbatim and EPUBCheck still runs in the publication gate."
+            ),
+            "semantic_cleanup": {
+                "status": "skipped",
+                "quality_gate_status": "skipped",
+                "message": "Large chess notation collection uses notation-first fast finalization.",
+            },
+            "reference_cleanup": {
+                "status": "skipped",
+                "quality_gate_status": "skipped",
+                "message": "Reference repair is not applicable to notation-first chess collections.",
+            },
+        }
+        if return_details:
+            return epub_bytes, text_cleanup_summary
+        return epub_bytes
+
+    if profile_key in {"diagram_book_reflow", "premium_scanned_chess_reflow"}:
+        if profile_key == "premium_scanned_chess_reflow":
+            skip_reason = (
+                "Skipped notation-sensitive text cleanup for scanned chess reflow. "
+                "OCR text, SAN notation, diagram captions, and FEN blocks are preserved for review; "
+                "semantic cleanup, reference cleanup, validation, and artifact analysis still run."
+            )
+        else:
+            skip_reason = (
+                "Skipped notation-sensitive text cleanup for diagram-heavy training books "
+                "to avoid long-running false positives."
+            )
         text_cleanup_summary = {
             **text_cleanup_summary,
             "status": "skipped",
@@ -1667,9 +1702,15 @@ CHESS_REFLOW_CSS = """\
 }
 
 .chess-pgn-review-note,
+.chess-pgn-review-title,
 .chess-pgn-review-warnings {
   color: #111;
   font-size: 0.92em;
+}
+
+.chess-pgn-review-title {
+  margin: 0 0 0.45em;
+  font-weight: 700;
 }
 
 .diagram-fen {

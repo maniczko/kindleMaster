@@ -163,6 +163,27 @@ class EpubTextArtifactTests(unittest.TestCase):
 
         self.assertEqual(payload["counts"]["suspicious_url_fragment_count"], 1)
 
+    def test_chess_technical_blocks_are_excluded_from_prose_artifact_rate(self) -> None:
+        epub_bytes = _epub_with_documents(
+            {
+                "chapter_001.xhtml": (
+                    "<p>This normal paragraph remains in the artifact analysis.</p>"
+                    "<pre class='chess-notation-text'>"
+                    "14.c3 -0.68/21 [ 14.a4=-0.28/17 is superior. ] "
+                    "15.Bxg6= hxg6 1.Nc3 d5 2.d4 Nf6"
+                    "</pre>"
+                    "<p class='diagram-fen'>FEN: 5R2/8/5p2/4pkp1/8/2b2P2/r2BK3/8 w - - 1 55</p>"
+                    "<p class='scan-chess-ocr-marker'>OCR strony 12: wymaga kontroli.</p>"
+                ),
+            }
+        )
+
+        payload = analyze_epub_text_artifacts(epub_bytes)
+
+        self.assertEqual(payload["counts"]["punctuation_spacing_count"], 0)
+        self.assertEqual(payload["counts"]["split_word_count"], 0)
+        self.assertGreater(payload["word_count"], 0)
+
     def test_cockpit_promotes_failed_artifact_rate(self) -> None:
         groups = build_quality_cockpit_issue_groups(
             text_cleanup={

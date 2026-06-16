@@ -77,16 +77,6 @@ def export_chess_fen_review_queue(
     manual_draft_rows = _build_manual_verification_draft(selected)
     deterministic_suggestion_count = sum(1 for row in manual_draft_rows if row.get("deterministic_suggested_fen"))
     review_sheet_path = target / "manual_review_sheet.html"
-    manual_draft_path = target / "manual_verification_draft.jsonl"
-    verified_labels_path = Path("reference_inputs/chess_fen/labels/manual_verified_from_review_queue.jsonl")
-    template_profile_path = Path("reference_inputs/chess_fen/templates/manual_verified_from_review_queue")
-    label_aids_path = Path("reports/chess_fen/label_aids/latest")
-    next_commands = _next_review_commands(
-        manual_draft_path=manual_draft_path,
-        verified_labels_path=verified_labels_path,
-        template_profile_path=template_profile_path,
-        label_aids_path=label_aids_path,
-    )
 
     summary = {
         "status": "ok",
@@ -105,14 +95,8 @@ def export_chess_fen_review_queue(
         "openai_requests_path": str(target / "openai_label_assist_requests.jsonl"),
         "manual_verification_draft_count": len(manual_draft_rows),
         "deterministic_suggestion_count": deterministic_suggestion_count,
-        "manual_verification_draft_path": str(manual_draft_path),
+        "manual_verification_draft_path": str(target / "manual_verification_draft.jsonl"),
         "manual_review_sheet_path": str(review_sheet_path),
-        "review_priority_counts": _review_priority_counts(manual_draft_rows),
-        "label_aids_command": next_commands["label_aids_command"],
-        "label_promote_command": next_commands["label_promote_command"],
-        "template_build_command": next_commands["template_build_command"],
-        "profile_eval_command": next_commands["profile_eval_command"],
-        "next_commands": next_commands,
         "queue": selected,
     }
     (target / "queue.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -124,7 +108,7 @@ def export_chess_fen_review_queue(
         "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in openai_requests),
         encoding="utf-8",
     )
-    manual_draft_path.write_text(
+    (target / "manual_verification_draft.jsonl").write_text(
         "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in manual_draft_rows),
         encoding="utf-8",
     )
@@ -469,19 +453,7 @@ def _build_manual_verification_draft(selected: list[dict[str, Any]]) -> list[dic
                 "notes": "Review-only draft. Copy a checked FEN into fen, then fill verified_by and verified_at before promotion.",
             }
         )
-    rows.sort(key=_manual_draft_sort_key)
     return rows
-
-
-def _manual_draft_sort_key(row: dict[str, Any]) -> tuple[int, float, int, str]:
-    if row.get("deterministic_suggested_fen"):
-        priority = 0
-    elif row.get("candidate_matches_review_crop") and row.get("original_candidate_fen"):
-        priority = 1
-    else:
-        priority = 2
-    confidence = float(row.get("deterministic_confidence") or 0.0)
-    return (priority, -confidence, int(row.get("page") or 0), str(row.get("id") or ""))
 
 
 def _diagram_index_from_filename(filename: str) -> int | str:
@@ -710,10 +682,6 @@ def _review_prompt(summary: dict[str, Any]) -> str:
             f"- `openai_label_assist_requests.jsonl`: {summary.get('openai_request_count', 0)} optional OpenAI Responses API request bodies.",
             f"- `manual_verification_draft.jsonl`: {summary.get('manual_verification_draft_count', 0)} rows to fill after checking crops.",
             "- `manual_review_sheet.html`: browser-friendly crop contact sheet for manual labeling.",
-            f"- `label_aids_command`: `{summary.get('label_aids_command', '')}`",
-            f"- `label_promote_command`: `{summary.get('label_promote_command', '')}`",
-            f"- `template_build_command`: `{summary.get('template_build_command', '')}`",
-            f"- `profile_eval_command`: `{summary.get('profile_eval_command', '')}`",
             "",
             "If a row contains `review_crop_*` fields, treat them as the",
             "deterministic reading of the actual exported crop. If",

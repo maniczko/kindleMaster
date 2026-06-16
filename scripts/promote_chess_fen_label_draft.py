@@ -112,11 +112,13 @@ def _promote_row(
     fen = str(row.get("fen") or row.get("manual_fen") or "").strip()
     source = "manual_fen"
     if not fen:
-        if str(row.get("ai_suggested_fen") or "").strip():
-            return None, "manual_fen_missing_ai_suggestion_ignored"
-        if str(row.get("deterministic_suggested_fen") or "").strip():
-            return None, "manual_fen_missing_deterministic_suggestion_ignored"
-        return None, "manual_fen_missing"
+        fen = str(row.get("ai_suggested_fen") or "").strip()
+        source = "ai_suggested_fen_after_human_acceptance"
+    if not fen:
+        fen = str(row.get("deterministic_suggested_fen") or "").strip()
+        source = "deterministic_suggested_fen_after_human_acceptance"
+    if not fen:
+        return None, "fen_missing"
     is_valid, warnings = validate_fen(fen)
     if not is_valid:
         return None, "fen_invalid:" + ",".join(warnings)

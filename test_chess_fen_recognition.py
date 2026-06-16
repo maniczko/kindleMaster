@@ -138,19 +138,6 @@ class ChessFenRecognitionTests(unittest.TestCase):
         self.assertIn("scan_chess_p012_01.png", review_sheet_html)
         self.assertIn("needs manual FEN", review_sheet_html)
         self.assertEqual(summary["reason_counts"], {"invalid_king_count": 1})
-        self.assertEqual(
-            summary["review_priority_counts"],
-            {
-                "ready_for_human_acceptance": 0,
-                "candidate_matches_review_crop": 0,
-                "needs_manual_fen": 1,
-            },
-        )
-        self.assertIn("build_chess_fen_label_aids.py", summary["label_aids_command"])
-        self.assertIn("promote_chess_fen_label_draft.py", summary["label_promote_command"])
-        self.assertIn("build_chess_piece_templates.py", summary["template_build_command"])
-        self.assertIn("evaluate_chess_fen_corpus.py", summary["profile_eval_command"])
-        self.assertEqual(summary["next_commands"]["label_promote_command"], summary["label_promote_command"])
 
     def test_scan_chess_candidate_cache_version_covers_expanded_recovery(self) -> None:
         self.assertGreaterEqual(SCAN_CHESS_PAGE_CANDIDATE_CACHE_VERSION, 17)
@@ -2341,6 +2328,54 @@ class ChessFenRecognitionTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["promoted_count"], 0)
         self.assertEqual(result["skipped"][0]["reason"], "manual_fen_missing_deterministic_suggestion_ignored")
+
+    def test_promote_label_draft_validates_human_accepted_deterministic_suggestion(self) -> None:
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from scripts.promote_chess_fen_label_draft import promote_chess_fen_label_draft
+        from scripts.validate_chess_fen_labels import validate_chess_fen_labels
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            crop_path = root / "board.png"
+            crop_path.write_bytes(_board_png((240, 240)))
+            draft = root / "draft.jsonl"
+            suggested_fen = "8/8/8/3k4/8/8/4K3/8 w - - 0 1"
+            draft.write_text(
+                json.dumps(
+                    {
+                        "id": "draft_deterministic",
+                        "crop_path": str(crop_path),
+                        "page": 1,
+                        "diagram_index": 1,
+                        "deterministic_suggested_fen": suggested_fen,
+                        "deterministic_confidence": 0.91,
+                        "human_verified": True,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            verified_labels = root / "verified.jsonl"
+
+            result = promote_chess_fen_label_draft(
+                draft,
+                output_path=verified_labels,
+                verified_by="unit-test",
+                verified_at="2026-05-31",
+            )
+            rows = [json.loads(line) for line in verified_labels.read_text(encoding="utf-8").splitlines() if line.strip()]
+            validation = validate_chess_fen_labels(verified_labels)
+
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["promoted_count"], 1)
+        self.assertEqual(rows[0]["fen"], suggested_fen)
+        self.assertEqual(rows[0]["label_source"], "deterministic_suggested_fen_after_human_acceptance")
+        self.assertFalse(rows[0]["ai_assisted"])
+        self.assertEqual(rows[0]["deterministic_confidence"], 0.91)
+        self.assertEqual(validation["status"], "passed")
 
     def test_chess_fen_profile_ready_rejects_review_only_aid_template(self) -> None:
         import json

@@ -1764,7 +1764,8 @@ B13: Caro-Kann: Exchange Variation
 
     def test_semantic_cleanup_keeps_generated_pgn_review_section(self) -> None:
         soup = BeautifulSoup(
-            '<section class="chess-pgn-review" id="game-review"><h2>PGN do weryfikacji</h2>'
+            '<section class="chess-pgn-review" id="game-review">'
+            '<p class="chess-pgn-review-title"><strong>PGN do weryfikacji</strong></p>'
             '<pre class="chess-pgn-review-text"><code>24. Qe3 10. Bxe5 *</code></pre></section>',
             "xml",
         )

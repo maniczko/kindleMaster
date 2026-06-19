@@ -252,6 +252,7 @@ def finalize_epub_bytes(
         "epubcheck_status": "unavailable",
         "status": "unavailable",
     }
+    stage_started = time.perf_counter()
 
     if _is_chess_notation_collection_metadata(pdf_metadata):
         text_cleanup_summary = {

@@ -184,6 +184,13 @@ def analyze_publication(
     text_heavy = estimated_pages_with_text > total_pages * 0.5 and image_page_ratio <= 0.15
     has_toc = bool(toc)
     has_chess_training_outline = _has_chess_training_outline(toc)
+    has_chess_notation_collection = _detect_chess_notation_collection(
+        sample_texts,
+        total_pages=total_pages,
+        text_page_ratio=text_page_ratio,
+        image_page_ratio=image_page_ratio,
+        scanned_page_ratio=scanned_page_ratio,
+    )
     has_meaningful_images = meaningful_image_pages > 0
     has_tables = False if preferred_profile == "diagram_book_reflow" else _detect_tables(pdf_path, sample_pages)
     chess_font_signal = _detect_chess_fonts(pdf_path)
@@ -198,6 +205,7 @@ def analyze_publication(
     layout_entropy = _layout_entropy(column_estimates, visual_area_ratios)
     toc_depth = _toc_depth(toc)
     toc_noise_score = _toc_noise_score(toc)
+    numbered_section_count = len(numbered_heading_keys)
     diagram_signal_count = int(detected_diagrams)
     chess_signal_count = 1 if chess_font_signal else 0
     ocr_confidence = 0.0 if scanned_page_ratio >= 0.35 else 1.0

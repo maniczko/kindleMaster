@@ -107,8 +107,11 @@ _PREPARED_TEMPLATE_CACHE: dict[tuple[tuple[str, tuple[int, ...]], ...], dict[str
 class ChessFenResult:
     fen: str = ""
     placement: str = ""
+    full_fen: str = ""
     confidence: float = 0.0
     side_to_move: str = "w"
+    side_to_move_status: str = "unknown"
+    side_to_move_evidence: str = "none"
     bbox: tuple[float, float, float, float] | None = None
     method: str = "unavailable"
     warnings: list[str] = field(default_factory=list)
@@ -117,15 +120,30 @@ class ChessFenResult:
     squares: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
+        full_fen = self.full_fen or self.fen
+        warnings = list(self.warnings)
+        trusted_side_to_move = (
+            self.side_to_move_status == "explicit"
+            and self.side_to_move_evidence in {"marker", "caption", "verified_label", "exact_label"}
+        ) or bool({"side_to_move_marker_detected", "verified_exact_crop_label_used"} & set(warnings))
+        runtime_fen = self.fen
+        requires_review = bool(self.requires_review)
+        if "side_to_move_inferred" in warnings and not trusted_side_to_move:
+            runtime_fen = ""
+            requires_review = True
         return {
-            "fen": self.fen,
+            "fen": runtime_fen,
+            "full_fen": full_fen,
             "placement": self.placement,
+            "placement_fen": self.placement,
             "confidence": round(float(self.confidence or 0.0), 3),
             "side_to_move": self.side_to_move,
+            "side_to_move_status": self.side_to_move_status,
+            "side_to_move_evidence": self.side_to_move_evidence,
             "bbox": list(self.bbox) if self.bbox is not None else None,
             "method": self.method,
-            "warnings": list(self.warnings),
-            "requires_review": bool(self.requires_review),
+            "warnings": warnings,
+            "requires_review": requires_review,
             "board_detected": bool(self.board_detected),
             "squares": [dict(square) for square in self.squares],
         }
@@ -279,8 +297,11 @@ def recognize_font_board_from_lines(
     return ChessFenResult(
         fen=fen if confidence >= min_confidence and is_valid else "",
         placement=fen.split()[0],
+        full_fen=fen,
         confidence=confidence,
         side_to_move="b" if side_to_move == "b" else "w",
+        side_to_move_status="explicit" if side_to_move in {"w", "b"} else "inferred",
+        side_to_move_evidence="caption" if side_to_move in {"w", "b"} else "inferred",
         bbox=bbox,
         method="font-board",
         warnings=warnings,
@@ -804,8 +825,11 @@ def _downgrade_low_grid_partial_board_result(
     return ChessFenResult(
         fen="",
         placement=result.placement,
+        full_fen=result.full_fen or result.fen,
         confidence=result.confidence,
         side_to_move=result.side_to_move,
+        side_to_move_status=result.side_to_move_status,
+        side_to_move_evidence=result.side_to_move_evidence,
         bbox=result.bbox,
         method=result.method,
         warnings=warnings,
@@ -875,8 +899,11 @@ def _template_result_from_board(
     return ChessFenResult(
         fen=fen if accepted else "",
         placement=fen.split()[0],
+        full_fen=fen,
         confidence=confidence,
         side_to_move="w",
+        side_to_move_status="inferred",
+        side_to_move_evidence="inferred",
         bbox=bbox,
         method="image-template-board",
         warnings=sorted(set(warnings)),

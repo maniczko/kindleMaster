@@ -10,6 +10,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from chess_fen_workflow import MANUAL_DRAFT, with_workflow_state
 from chess_position_recognizer import validate_fen
 
 
@@ -58,28 +59,31 @@ def import_chess_fen_label_assist(
         if approved and suggested_fen and is_valid and not requires_review:
             ready_for_manual_verification_count += 1
 
-        draft_row = {
-            "id": row_id,
-            "source_pdf": row.get("source_pdf", ""),
-            "page": row.get("page"),
-            "diagram_index": row.get("diagram_index"),
-            "crop_path": row.get("crop_path", ""),
-            "aid_path": row.get("aid_path", ""),
-            "fen": "",
-            "ai_suggested_fen": suggested_fen if is_valid else "",
-            "ai_approved": approved,
-            "ai_requires_review": requires_review,
-            "ai_confidence": _clamp(suggestion.get("confidence")),
-            "ai_ambiguous_squares": _string_list(suggestion.get("ambiguous_squares")),
-            "ai_issues": [*_string_list(suggestion.get("issues")), *([] if is_valid or not suggested_fen else ["ai_suggested_fen_invalid"])],
-            "ai_notes": str(suggestion.get("notes") or ""),
-            "ai_fen_warnings": fen_warnings if suggested_fen else [],
-            "label_status": "needs_manual_fen",
-            "verified_by": "",
-            "verified_at": "",
-            "notes": "AI label-assist suggestion only. Fill fen/verified_by/verified_at manually after checking the crop.",
-            "accepted_for_corpus": False,
-        }
+        draft_row = with_workflow_state(
+            {
+                "id": row_id,
+                "source_pdf": row.get("source_pdf", ""),
+                "page": row.get("page"),
+                "diagram_index": row.get("diagram_index"),
+                "crop_path": row.get("crop_path", ""),
+                "aid_path": row.get("aid_path", ""),
+                "fen": "",
+                "ai_suggested_fen": suggested_fen if is_valid else "",
+                "ai_approved": approved,
+                "ai_requires_review": requires_review,
+                "ai_confidence": _clamp(suggestion.get("confidence")),
+                "ai_ambiguous_squares": _string_list(suggestion.get("ambiguous_squares")),
+                "ai_issues": [*_string_list(suggestion.get("issues")), *([] if is_valid or not suggested_fen else ["ai_suggested_fen_invalid"])],
+                "ai_notes": str(suggestion.get("notes") or ""),
+                "ai_fen_warnings": fen_warnings if suggested_fen else [],
+                "label_status": "needs_manual_fen",
+                "verified_by": "",
+                "verified_at": "",
+                "notes": "AI label-assist suggestion only. Fill manual_fen/verified_by/verified_at manually after checking the crop.",
+                "accepted_for_corpus": False,
+            },
+            MANUAL_DRAFT,
+        )
         draft_rows.append(draft_row)
 
     draft_path = target / "manual_verification_draft.jsonl"
@@ -101,7 +105,7 @@ def import_chess_fen_label_assist(
         "policy": "ai_label_assist_review_only_requires_manual_verification",
         "next_actions": [
             "open manual_verification_draft.jsonl",
-            "for each trusted suggestion copy ai_suggested_fen into fen after checking the crop",
+            "for each trusted suggestion write the checked value into manual_fen after checking the crop",
             "fill verified_by and verified_at",
             "run scripts/validate_chess_fen_labels.py on the verified copy",
             "run profile readiness/corpus gates before adding it to the manifest",

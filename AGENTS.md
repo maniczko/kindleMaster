@@ -840,6 +840,7 @@ Supported first-class commands:
 - `prepare-reference-inputs`
 - `serve`
 - `convert`
+- `process`
 - `validate`
 - `smoke`
 - `corpus`

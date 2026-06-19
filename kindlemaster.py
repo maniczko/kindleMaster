@@ -129,13 +129,23 @@ DISCOVER_ONLY_TESTS = [
     "test_kindle_semantic_cleanup_coverage_boost.py",
     "test_full_magazine.py",
     "test_integration.py",
+    "test_import_fen_priority_review_batch.py",
     "test_local_hostname_contract.py",
     "test_magazine_conversion.py",
+    "test_ocr_module.py",
     "test_babok_dense_handbook_quality.py",
     "test_premium_reflow.py",
     "test_premium_reflow_tables.py",
     "test_quality_report_markdown.py",
     "test_quality_reporting.py",
+    "test_chess_auto_flow.py",
+    "test_chess_fen_accepted_audit.py",
+    "test_chess_fen_pipeline_hardening.py",
+    "test_chess_fen_workflow_state_model.py",
+    "test_chess_full_automation_ready.py",
+    "test_chess_reading_order_audit.py",
+    "test_external_chessimg2pos_provider.py",
+    "test_external_pgn_extract_provider.py",
     "test_workflow_runner.py",
 ]
 
@@ -183,6 +193,11 @@ def main() -> int:
     validate_parser = subparsers.add_parser("validate", help="Run EPUB validators on one or more EPUB files.")
     validate_parser.add_argument("epub_paths", nargs="+")
     validate_parser.add_argument("--reports-dir", default="reports/validators")
+    validate_parser.add_argument("--strict", action="store_true")
+
+    process_parser = subparsers.add_parser("process", help="Run document processing preflight modes.")
+    process_parser.add_argument("input_path", nargs="?")
+    process_parser.add_argument("--mode", choices=("auto", "auto-strict", "dev"), default="auto")
 
     smoke_parser = subparsers.add_parser("smoke", help="Run curated smoke tests.")
     smoke_parser.add_argument("--mode", choices=("micro", "quick", "full"), default="quick")
@@ -198,7 +213,7 @@ def main() -> int:
     corpus_parser.add_argument("--proof-profile", choices=("standard", "full", "ci"), default="standard")
     corpus_parser.add_argument("--smoke-case", action="append", default=[])
     corpus_parser.add_argument("--premium-case", action="append", default=[])
-    corpus_parser.add_argument("--fen-min-profile-count", type=int, default=1)
+    corpus_parser.add_argument("--fen-min-profile-count", type=int, default=None)
     corpus_parser.add_argument("--fen-min-seed-label-count", type=int, default=20)
 
     status_parser = subparsers.add_parser("status", help="Generate a derived project status from existing evidence artifacts.")
@@ -348,11 +363,18 @@ def main() -> int:
             report_json=args.report_json,
         )
     if args.command == "validate":
+        if args.strict:
+            strict_preflight = _strict_python_chess_cli_preflight(command="python kindlemaster.py validate --strict")
+            if strict_preflight:
+                _print_json(strict_preflight)
+                return 1
         from scripts.run_epub_validators import run_epub_validators
 
         payload = run_epub_validators(args.epub_paths, reports_dir=args.reports_dir)
         _print_json(payload)
         return 0 if payload["overall_status"] != "failed" else 1
+    if args.command == "process":
+        return _run_process(input_path=args.input_path, mode=args.mode)
     if args.command == "smoke":
         from scripts.run_smoke_tests import run_smoke_tests
 
@@ -366,6 +388,10 @@ def main() -> int:
         _print_json(payload)
         return 0 if payload["summary"]["overall_status"] != "failed" else 1
     if args.command == "corpus":
+        strict_preflight = _strict_python_chess_cli_preflight(command="python kindlemaster.py corpus")
+        if strict_preflight:
+            _print_json(strict_preflight)
+            return 1
         from scripts.run_corpus_gate import run_corpus_gate
 
         payload = run_corpus_gate(
@@ -490,6 +516,60 @@ def _run_bootstrap(*, runtime_only: bool) -> int:
     }
     _print_json(payload)
     return 0
+
+
+def _run_process(*, input_path: str | None, mode: str) -> int:
+    if mode == "auto-strict":
+        strict_preflight = _strict_python_chess_cli_preflight(command="python kindlemaster.py process --mode auto-strict")
+        if strict_preflight:
+            if input_path:
+                strict_preflight["input_path"] = input_path
+            _print_json(strict_preflight)
+            return 1
+        payload = {
+            "command": "process",
+            "mode": mode,
+            "status": "ready",
+            "input_path": input_path or "",
+            "notes": ["Strict chess automation prerequisites are available."],
+        }
+        _print_json(payload)
+        return 0
+
+    from chess_auto_flow import non_strict_python_chess_notice
+
+    notice = non_strict_python_chess_notice()
+    status = "ready" if notice.get("status") == "ok" else "requires_review"
+    payload = {
+        "command": "process",
+        "mode": mode,
+        "status": status,
+        "input_path": input_path or "",
+        "python_chess": notice.get("python_chess", {}),
+        "warnings": notice.get("warnings", []),
+        "manual_review_required": bool(notice.get("manual_review_required")),
+        "notes": notice.get("notes", []),
+    }
+    _print_json(payload)
+    return 0
+
+
+def _strict_python_chess_cli_preflight(*, command: str) -> dict[str, Any] | None:
+    from chess_auto_flow import strict_python_chess_preflight
+
+    preflight = strict_python_chess_preflight()
+    if preflight.get("status") == "ok":
+        return None
+    return {
+        "command": command,
+        "overall_status": "failed",
+        "status": "failed",
+        "error_code": preflight.get("error_code") or "python_chess_missing",
+        "blockers": list(preflight.get("blockers") or ["python_chess_unavailable"]),
+        "missing_requirements": list(preflight.get("missing_requirements") or ["python-chess"]),
+        "python_chess": preflight.get("python_chess", {}),
+        "notes": preflight.get("notes", []),
+    }
 
 
 def _maybe_install_git_hooks(*, runtime_only: bool) -> dict[str, Any]:
@@ -702,6 +782,12 @@ def _run_tests(suite: str) -> int:
             cwd=repo_root,
         ).returncode
     if suite == "corpus":
+        strict_preflight = _strict_python_chess_cli_preflight(command="python kindlemaster.py test --suite corpus")
+        if strict_preflight:
+            strict_preflight["suite"] = "corpus"
+            strict_preflight["status"] = "unavailable"
+            _print_json(strict_preflight)
+            return 1
         commands: list[Sequence[str]] = [
             [sys.executable, "-m", "unittest", *SUITE_REGISTRY["corpus"]],
             [sys.executable, "kindlemaster.py", "corpus"],
@@ -739,6 +825,31 @@ def _run_release_suite(*, repo_root: Path, release_surface: dict[str, Any]) -> i
     started = time.perf_counter()
     release_notes = _release_suite_notes(release_surface)
     proof_profile = _release_proof_profile()
+    strict_preflight = _strict_python_chess_cli_preflight(command="python kindlemaster.py test --suite release")
+    if strict_preflight:
+        payload = {
+            "suite": "release",
+            "status": "unavailable",
+            "missing_requirements": strict_preflight.get("missing_requirements", []),
+            "blockers": strict_preflight.get("blockers", []),
+            "error_code": strict_preflight.get("error_code"),
+            "notes": [*release_notes, *strict_preflight.get("notes", [])],
+            "python_chess": strict_preflight.get("python_chess", {}),
+        }
+        _write_governance_artifact(
+            lane="release",
+            payload=_governance_artifact_payload(
+                command="python kindlemaster.py test --suite release",
+                status="failed",
+                returncode=1,
+                started=started,
+                notes=payload["notes"],
+                extra=payload,
+            ),
+            repo_root=repo_root,
+        )
+        _print_json(payload)
+        return 1
     if proof_profile != "standard":
         release_notes.append(f"Release corpus gate is using `{proof_profile}` proof profile.")
     if release_surface.get("status") == "unsupported":

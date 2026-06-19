@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import replace
 import io
 import unittest
+from unittest.mock import patch
 
 from bs4 import BeautifulSoup
 import chess
@@ -12,9 +14,11 @@ from chess_pgn_extractor import (
     ChessPgnRecord,
     DiagramSolutionCandidate,
     _extract_pgn_tokens,
+    _is_exportable_pgn_record,
     _legalize_san_token_with_board,
     _normalize_ocr_san_token,
     _prepare_mainline_token_source,
+    _record_export_pgn,
     _select_diagram_mainline_candidate,
     _split_candidate_game_blocks,
     annotate_records_with_replayed_fens,
@@ -27,6 +31,7 @@ from chess_pgn_extractor import (
     render_chess_pgn_html_parts,
     summarize_chess_pgn_records,
 )
+from external_pgn_extract_provider import PgnExtractResult
 from kindle_semantic_cleanup import _extract_logical_blocks
 
 
@@ -143,6 +148,75 @@ Black=0. 36
 
 
 class ChessPgnExtractionTests(unittest.TestCase):
+    def _accepted_record_for_export(self, record_id: str = "accepted-export") -> ChessPgnRecord:
+        board = chess.Board()
+        board.push_san("e4")
+        board.push_san("e5")
+        return ChessPgnRecord(
+            id=record_id,
+            source_pages=[1],
+            title="Export test",
+            headers={"Event": "Export test", "Result": "*"},
+            movetext="1. e4 e5 *",
+            pgn='[Event "Export test"]\n[Result "*"]\n\n1. e4 e5 *',
+            result="*",
+            confidence=0.95,
+            status="accepted",
+            warnings=[],
+            final_fen=board.fen(),
+        )
+
+    def test_pgn_extract_does_not_make_review_record_exportable(self) -> None:
+        record = replace(self._accepted_record_for_export("review-pgn-extract"), status="requires_review")
+        with patch("chess_pgn_extractor.pgn_extract_enabled", return_value=True):
+            with patch("chess_pgn_extractor.pgn_extract_mode", return_value="format_accepted"):
+                with patch("chess_pgn_extractor.run_pgn_extract") as run_mock:
+                    self.assertFalse(_is_exportable_pgn_record(record))
+                    self.assertEqual(build_combined_pgn([record]), "")
+
+        run_mock.assert_not_called()
+
+    def test_pgn_extract_format_applied_only_after_replay_match(self) -> None:
+        record = self._accepted_record_for_export("format-match")
+        formatted = (
+            '[Event "Export test"]\n'
+            '[Site "?"]\n'
+            '[Date "????.??.??"]\n'
+            '[Round "?"]\n'
+            '[White "?"]\n'
+            '[Black "?"]\n'
+            '[Result "*"]\n\n'
+            "1. e4 e5 *\n"
+        )
+        result = PgnExtractResult(available=True, returncode=0, stdout_pgn=formatted)
+        with patch("chess_pgn_extractor.pgn_extract_enabled", return_value=True):
+            with patch("chess_pgn_extractor.pgn_extract_mode", return_value="format_accepted"):
+                with patch("chess_pgn_extractor.run_pgn_extract", return_value=result):
+                    exported = _record_export_pgn(record)
+
+        self.assertEqual(exported, formatted)
+
+    def test_pgn_extract_replay_mismatch_rejects_format(self) -> None:
+        record = self._accepted_record_for_export("format-mismatch")
+        mismatched = (
+            '[Event "Export test"]\n'
+            '[Site "?"]\n'
+            '[Date "????.??.??"]\n'
+            '[Round "?"]\n'
+            '[White "?"]\n'
+            '[Black "?"]\n'
+            '[Result "*"]\n\n'
+            "1. d4 d5 *\n"
+        )
+        result = PgnExtractResult(available=True, returncode=0, stdout_pgn=mismatched)
+        with patch("chess_pgn_extractor.pgn_extract_enabled", return_value=True):
+            with patch("chess_pgn_extractor.pgn_extract_mode", return_value="format_accepted"):
+                with patch("chess_pgn_extractor.run_pgn_extract", return_value=result):
+                    exported = _record_export_pgn(record)
+
+        self.assertIn("1. e4 e5", exported)
+        self.assertNotIn("1. d4 d5", exported)
+
     def test_extracts_black_to_move_combination_as_full_pgn(self) -> None:
         text = """
         Diagram 1-3
@@ -2015,6 +2089,72 @@ Shuvalova, P - Bodnaruk, A [Kitty Kat] 1-0 (56)) 11.Nc7 Ra7 12.a3 b6 ]
         self.assertIn("1. e4 e5 *", combined)
         self.assertNotIn("(2. Qxf7)", combined)
 
+    def test_combined_pgn_adds_required_export_headers(self) -> None:
+        record = ChessPgnRecord(
+            id="missing-required-headers",
+            source_pages=[1],
+            title="Missing required headers",
+            headers={"Event": "Missing required headers", "Result": "*"},
+            movetext="1. e4 e5 *",
+            pgn='[Event "Missing required headers"]\n[Result "*"]\n\n1. e4 e5 *\n',
+            status="accepted",
+            final_fen="rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2",
+        )
+
+        combined = build_combined_pgn([record])
+
+        self.assertIn('[Result "*"]', combined)
+        self.assertIn('[Date "????.??.??"]', combined)
+        self.assertIn('[Round "?"]', combined)
+        self.assertIn('[White "?"]', combined)
+        self.assertIn('[Black "?"]', combined)
+
+    def test_combined_pgn_requires_parse_clean_export_even_for_accepted_record(self) -> None:
+        record = ChessPgnRecord(
+            id="export-python-chess-missing",
+            source_pages=[1],
+            title="Export python-chess missing",
+            headers={"Event": "Export python-chess missing", "Result": "*"},
+            movetext="1. e4 e5 *",
+            pgn='[Event "Export python-chess missing"]\n[Result "*"]\n\n1. e4 e5 *\n',
+            status="accepted",
+            final_fen="rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2",
+        )
+
+        def fake_import(name: str):
+            if name == "chess.pgn":
+                raise ImportError("missing chess.pgn")
+            return __import__(name)
+
+        with patch("chess_auto_flow.importlib.import_module", side_effect=fake_import):
+            self.assertEqual(build_combined_pgn([record]), "")
+
+    def test_missing_chess_pgn_import_blocks_replay_acceptance(self) -> None:
+        record = ChessPgnRecord(
+            id="missing-python-chess",
+            source_pages=[1],
+            title="Missing python-chess",
+            headers={"Event": "Missing python-chess", "Result": "*"},
+            movetext="1. e4 e5 *",
+            pgn='[Event "Missing python-chess"]\n[Result "*"]\n\n1. e4 e5 *\n',
+            annotated_pgn='[Event "Missing python-chess"]\n[Result "*"]\n\n1. e4 e5 *\n',
+            status="accepted",
+            confidence=0.95,
+        )
+
+        def fake_import(name: str):
+            if name == "chess.pgn":
+                raise ImportError("missing chess.pgn")
+            return __import__(name)
+
+        with patch("chess_auto_flow.importlib.import_module", side_effect=fake_import):
+            records = annotate_records_with_replayed_fens([record])
+
+        self.assertEqual(records[0].status, "requires_review")
+        self.assertEqual(records[0].final_fen, "")
+        self.assertIn("python_chess_unavailable", records[0].warnings)
+        self.assertNotIn(record.pgn.strip(), build_combined_pgn(records))
+
     def test_annotated_pgn_strips_chessbase_eval_and_time_extensions(self) -> None:
         records = annotate_records_with_replayed_fens(
             extract_chess_pgn_records_from_text(
@@ -2171,6 +2311,11 @@ B13: Caro-Kann: Exchange Variation
 
         self.assertIn("Original OCR fragment: Wixh7t liJ noisy OCR", html)
         self.assertNotIn("[Event &quot;OCR review&quot;]", html)
+        self.assertIn("Do weryfikacji", html)
+        self.assertIn("chess-review-copy-disabled", html)
+        self.assertNotIn("Kopiuj PGN", html)
+        self.assertNotIn("Kopiuj pełną notację", html)
+        self.assertNotIn('data-copy-target="ocr-review-full-notation"', html)
 
     def test_semantic_cleanup_keeps_generated_pgn_section(self) -> None:
         soup = BeautifulSoup(

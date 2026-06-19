@@ -163,6 +163,8 @@ class KindleMasterEntrypointTests(unittest.TestCase):
             "playwright": True,
             "waitress": True,
             "sklearn": True,
+            "chess": True,
+            "chess.pgn": True,
             "ocrmypdf": False,
         }
 
@@ -202,6 +204,33 @@ class KindleMasterEntrypointTests(unittest.TestCase):
         )
         self.assertEqual(toolchain["conversion_capabilities"]["ocr_pipeline"]["status"], "degraded")
         self.assertEqual(toolchain["conversion_capabilities"]["epubcheck_validation"]["status"], "unavailable")
+
+    def test_detect_toolchain_marks_release_and_corpus_unsupported_without_python_chess(self) -> None:
+        def fake_module_available(name: str) -> bool:
+            if name in {"chess", "chess.pgn"}:
+                return False
+            return True
+
+        with (
+            patch("premium_tools._module_available", side_effect=fake_module_available),
+            patch("premium_tools._command_available", return_value=False),
+            patch("premium_tools.find_java_executable", return_value=None),
+            patch("premium_tools.find_tesseract_executable", return_value=Path("C:/tools/tesseract.exe")),
+            patch("premium_tools.find_ocrmypdf_executable", return_value=None),
+            patch("premium_tools.find_qpdf_executable", return_value=None),
+            patch("premium_tools.find_ghostscript_executable", return_value=None),
+            patch("premium_tools.find_tessdata_dir", return_value=Path("C:/tools/tessdata")),
+            patch("premium_tools.list_tesseract_languages", return_value=["eng", "pol"]),
+            patch("premium_tools.find_epubcheck_jar", return_value=None),
+            patch("premium_tools.find_pdfbox_jar", return_value=None),
+            patch("premium_tools.find_playwright_chromium_executable", return_value=Path("C:/chromium/chrome.exe")),
+        ):
+            toolchain = premium_tools.detect_toolchain(refresh=True)
+
+        self.assertEqual(toolchain["verification_surfaces"]["corpus"]["status"], "unsupported")
+        self.assertEqual(toolchain["verification_surfaces"]["release"]["status"], "unsupported")
+        self.assertIn("python-chess", toolchain["verification_surfaces"]["corpus"]["missing_requirements"])
+        self.assertIn("python-chess", toolchain["verification_surfaces"]["release"]["missing_requirements"])
 
     def test_run_tests_release_skips_optional_surfaces_when_unavailable(self) -> None:
         toolchain = {
@@ -721,6 +750,106 @@ class KindleMasterEntrypointTests(unittest.TestCase):
         self.assertEqual(payload["suite"], "runtime")
         self.assertEqual(payload["status"], "unavailable")
         self.assertEqual(payload["missing_requirements"], ["Waitress", "Chromium browser"])
+
+    def test_process_auto_strict_fails_when_python_chess_is_missing(self) -> None:
+        def fake_import(name: str):
+            if name == "chess":
+                raise ImportError("missing chess")
+            return __import__(name)
+
+        with patch("chess_auto_flow.importlib.import_module", side_effect=fake_import):
+            with patch.object(sys, "argv", ["kindlemaster.py", "process", "--mode", "auto-strict"]):
+                with patch("kindlemaster._print_json") as print_json:
+                    exit_code = kindlemaster.main()
+
+        self.assertEqual(exit_code, 1)
+        payload = print_json.call_args.args[0]
+        self.assertEqual(payload["status"], "failed")
+        self.assertEqual(payload["error_code"], "python_chess_missing")
+        self.assertIn("python_chess_unavailable", payload["blockers"])
+
+    def test_process_non_strict_reports_manual_review_when_python_chess_is_missing(self) -> None:
+        def fake_import(name: str):
+            if name == "chess":
+                raise ImportError("missing chess")
+            return __import__(name)
+
+        with patch("chess_auto_flow.importlib.import_module", side_effect=fake_import):
+            with patch.object(sys, "argv", ["kindlemaster.py", "process", "--mode", "auto"]):
+                with patch("kindlemaster._print_json") as print_json:
+                    exit_code = kindlemaster.main()
+
+        self.assertEqual(exit_code, 0)
+        payload = print_json.call_args.args[0]
+        self.assertEqual(payload["status"], "requires_review")
+        self.assertTrue(payload["manual_review_required"])
+        self.assertIn("python_chess_unavailable", payload["warnings"])
+
+    def test_validate_strict_fails_before_validators_when_python_chess_is_missing(self) -> None:
+        def fake_import(name: str):
+            if name == "chess.pgn":
+                raise ImportError("missing chess.pgn")
+            return __import__(name)
+
+        with patch("chess_auto_flow.importlib.import_module", side_effect=fake_import):
+            with patch.object(sys, "argv", ["kindlemaster.py", "validate", "output.epub", "--strict"]):
+                with patch("kindlemaster._print_json") as print_json:
+                    exit_code = kindlemaster.main()
+
+        self.assertEqual(exit_code, 1)
+        payload = print_json.call_args.args[0]
+        self.assertEqual(payload["overall_status"], "failed")
+        self.assertEqual(payload["error_code"], "python_chess_pgn_missing")
+        self.assertIn("python_chess_unavailable", payload["blockers"])
+
+    def test_run_tests_corpus_reports_blocker_when_python_chess_is_missing(self) -> None:
+        def fake_import(name: str):
+            if name == "chess":
+                raise ImportError("missing chess")
+            return __import__(name)
+
+        with patch("chess_auto_flow.importlib.import_module", side_effect=fake_import):
+            with patch("kindlemaster._print_json") as print_json:
+                with patch("kindlemaster.subprocess.run") as run_mock:
+                    exit_code = _run_tests("corpus")
+
+        self.assertEqual(exit_code, 1)
+        run_mock.assert_not_called()
+        payload = print_json.call_args.args[0]
+        self.assertEqual(payload["suite"], "corpus")
+        self.assertEqual(payload["status"], "unavailable")
+        self.assertIn("python_chess_unavailable", payload["blockers"])
+
+    def test_run_tests_release_reports_blocker_when_python_chess_is_missing(self) -> None:
+        def fake_import(name: str):
+            if name == "chess.pgn":
+                raise ImportError("missing chess.pgn")
+            return __import__(name)
+
+        toolchain = {
+            "verification_surfaces": {
+                "release": {
+                    "status": "supported",
+                    "notes": ["release proof"],
+                    "optional_followups": [],
+                }
+            }
+        }
+
+        with patch("chess_auto_flow.importlib.import_module", side_effect=fake_import):
+            with patch("premium_tools.detect_toolchain", return_value=toolchain):
+                with patch("kindlemaster._print_json") as print_json:
+                    with patch("kindlemaster._write_governance_artifact"):
+                        with patch("kindlemaster._run_bounded_command") as bounded_mock:
+                            exit_code = _run_tests("release")
+
+        self.assertEqual(exit_code, 1)
+        bounded_mock.assert_not_called()
+        payload = print_json.call_args.args[0]
+        self.assertEqual(payload["suite"], "release")
+        self.assertEqual(payload["status"], "unavailable")
+        self.assertEqual(payload["error_code"], "python_chess_pgn_missing")
+        self.assertIn("python_chess_unavailable", payload["blockers"])
 
     def test_run_tests_release_appends_supported_optional_followups(self) -> None:
         toolchain = {

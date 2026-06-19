@@ -11,12 +11,14 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from chess_fen_workflow import CHESS_FEN_WORKFLOW_SCHEMA_VERSION, profile_workflow_state
 from scripts.build_chess_piece_templates import build_templates_from_labels
 from scripts.evaluate_chess_fen_recognizer import (
     DEFAULT_CHESS_FEN_EVAL_MIN_CONFIDENCE,
     DEFAULT_CHESS_FEN_EXACT_ACCURACY_MIN,
     evaluate_chess_fen_recognizer,
 )
+from scripts.evaluate_chess_fen_profile_holdout import evaluate_chess_fen_profile_holdout
 from scripts.validate_chess_fen_labels import validate_chess_fen_labels
 
 
@@ -33,6 +35,14 @@ def check_chess_fen_profile_ready(
     min_confidence: float = DEFAULT_CHESS_FEN_EVAL_MIN_CONFIDENCE,
     min_exact_accuracy: float = DEFAULT_CHESS_FEN_EXACT_ACCURACY_MIN,
     build_templates: bool = True,
+    require_holdout: bool = True,
+    holdout_eval_path: str | Path | None = None,
+    fold_count: int = 5,
+    holdout_fold: int = 0,
+    require_accepted_audit: bool = True,
+    accepted_audit_summary_path: str | Path | None = None,
+    max_critical_risk_count: int = 0,
+    max_high_risk_count: int = 0,
 ) -> dict[str, Any]:
     """Validate that a manually verified FEN profile is safe to add to corpus manifest."""
     draft_path = Path(manifest_case_path)
@@ -76,6 +86,10 @@ def check_chess_fen_profile_ready(
 
     template_summary: dict[str, Any] = {}
     evaluation: dict[str, Any] = {}
+    holdout_evaluation: dict[str, Any] = {}
+    holdout_source = ""
+    accepted_audit_summary: dict[str, Any] = {}
+    accepted_audit_source = ""
     if not issues:
         if build_templates:
             template_summary = build_templates_from_labels(labels, output_dir=templates)
@@ -97,10 +111,50 @@ def check_chess_fen_profile_ready(
                 f"improve labels/templates until exact_fen_accuracy >= {float(min_exact_accuracy):.2f} and false_positive_count == 0"
             )
 
+    if not issues and require_holdout:
+        holdout_evaluation, holdout_source = _load_or_run_holdout_evaluation(
+            labels,
+            holdout_eval_path=holdout_eval_path,
+            min_confidence=min_confidence,
+            min_exact_accuracy=min_exact_accuracy,
+            fold_count=fold_count,
+            holdout_fold=holdout_fold,
+        )
+        holdout_issues = _holdout_readiness_issues(
+            holdout_evaluation,
+            min_exact_accuracy=min_exact_accuracy,
+        )
+        if holdout_issues:
+            issues.extend(holdout_issues)
+            next_required_actions.append(
+                "provide passing holdout evidence with status=passed, exact_fen_accuracy above threshold, and false_positive_count == 0"
+            )
+
+    if not issues and require_accepted_audit:
+        accepted_audit_summary, accepted_audit_source = _load_accepted_audit_summary(
+            accepted_audit_summary_path or manifest_case.get("chess_fen_accepted_audit_summary") or ""
+        )
+        accepted_audit_issues = _accepted_audit_readiness_issues(
+            accepted_audit_summary,
+            max_critical_risk_count=max_critical_risk_count,
+            max_high_risk_count=max_high_risk_count,
+        )
+        if accepted_audit_issues:
+            issues.extend(accepted_audit_issues)
+            next_required_actions.append(
+                "provide accepted/high-confidence false-positive audit evidence with status=ok and risk counts within thresholds"
+            )
+
     status = "ready" if not issues else "failed"
+    readiness_mode = "corpus" if require_holdout and require_accepted_audit else "diagnostic"
+    accepted_for_corpus = bool(status == "ready" and require_holdout and require_accepted_audit)
     summary = {
         "status": status,
-        "accepted_for_corpus": status == "ready",
+        "schema_version": CHESS_FEN_WORKFLOW_SCHEMA_VERSION,
+        "workflow_state": profile_workflow_state(status) if accepted_for_corpus else "",
+        "accepted_for_corpus": accepted_for_corpus,
+        "release_ready": accepted_for_corpus,
+        "readiness_mode": readiness_mode,
         "manifest_case_path": str(draft_path),
         "labels_path": str(labels),
         "template_dir": str(templates),
@@ -117,10 +171,18 @@ def check_chess_fen_profile_ready(
         },
         "template_summary": template_summary,
         "evaluation": _compact_evaluation(evaluation),
+        "holdout_required": bool(require_holdout),
+        "holdout_evaluation_source": holdout_source,
+        "holdout_evaluation": _compact_holdout_evaluation(holdout_evaluation),
+        "accepted_audit_required": bool(require_accepted_audit),
+        "accepted_audit_summary_source": accepted_audit_source,
+        "accepted_audit_summary": _compact_accepted_audit_summary(accepted_audit_summary),
+        "max_critical_risk_count": int(max_critical_risk_count),
+        "max_high_risk_count": int(max_high_risk_count),
         "issues": issues,
         "next_required_actions": next_required_actions,
         "manifest_case_ready": _ready_manifest_case(manifest_case, labels, templates, required_labels, min_exact_accuracy)
-        if status == "ready"
+        if accepted_for_corpus
         else None,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -160,6 +222,163 @@ def _compact_evaluation(evaluation: dict[str, Any]) -> dict[str, Any]:
         "false_positive_count": evaluation.get("false_positive_count", 0),
         "false_positive_rate": evaluation.get("false_positive_rate", 0.0),
         "square_accuracy": evaluation.get("square_accuracy", 0.0),
+    }
+
+
+def _load_or_run_holdout_evaluation(
+    labels_path: Path,
+    *,
+    holdout_eval_path: str | Path | None,
+    min_confidence: float,
+    min_exact_accuracy: float,
+    fold_count: int,
+    holdout_fold: int,
+) -> tuple[dict[str, Any], str]:
+    if holdout_eval_path:
+        path = _resolve_repo_path(holdout_eval_path)
+        if path.exists():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8-sig"))
+            except (OSError, json.JSONDecodeError) as exc:
+                return {"status": "failed", "reasons": ["holdout_eval_load_failed"], "error": str(exc)}, str(path)
+            if not isinstance(loaded, dict):
+                return {"status": "failed", "reasons": ["holdout_eval_must_be_object"]}, str(path)
+            return loaded, str(path)
+        result = evaluate_chess_fen_profile_holdout(
+            labels_path,
+            min_confidence=min_confidence,
+            min_exact_accuracy=min_exact_accuracy,
+            fold_count=fold_count,
+            holdout_fold=holdout_fold,
+            output_path=path,
+        )
+        return result, str(path)
+    return (
+        evaluate_chess_fen_profile_holdout(
+            labels_path,
+            min_confidence=min_confidence,
+            min_exact_accuracy=min_exact_accuracy,
+            fold_count=fold_count,
+            holdout_fold=holdout_fold,
+        ),
+        "computed",
+    )
+
+
+def _holdout_readiness_issues(
+    holdout_evaluation: dict[str, Any],
+    *,
+    min_exact_accuracy: float,
+) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    metrics = _holdout_metrics(holdout_evaluation)
+    status = str(holdout_evaluation.get("status") or "")
+    exact_fen_accuracy = float(metrics.get("exact_fen_accuracy") or 0.0)
+    false_positive_count = int(metrics.get("false_positive_count") or 0)
+    if status != "passed":
+        issues.append({"code": "holdout_eval_failed", "holdout_status": status or "missing"})
+    if false_positive_count > 0:
+        issues.append({"code": "holdout_false_positive_detected", "false_positive_count": false_positive_count})
+    if exact_fen_accuracy < float(min_exact_accuracy):
+        issues.append(
+            {
+                "code": "holdout_exact_accuracy_below_minimum",
+                "exact_fen_accuracy": exact_fen_accuracy,
+                "min_exact_accuracy": float(min_exact_accuracy),
+            }
+        )
+    return issues
+
+
+def _holdout_metrics(holdout_evaluation: dict[str, Any]) -> dict[str, Any]:
+    nested = holdout_evaluation.get("holdout_eval")
+    if isinstance(nested, dict):
+        return nested
+    return holdout_evaluation
+
+
+def _compact_holdout_evaluation(holdout_evaluation: dict[str, Any]) -> dict[str, Any]:
+    if not holdout_evaluation:
+        return {}
+    metrics = _holdout_metrics(holdout_evaluation)
+    return {
+        "status": holdout_evaluation.get("status"),
+        "fold_count": holdout_evaluation.get("fold_count"),
+        "holdout_fold": holdout_evaluation.get("holdout_fold"),
+        "train_label_count": holdout_evaluation.get("train_label_count", 0),
+        "holdout_label_count": holdout_evaluation.get("holdout_label_count", metrics.get("case_count", 0)),
+        "case_count": metrics.get("case_count", 0),
+        "fen_count": metrics.get("fen_count", 0),
+        "exact_fen_count": metrics.get("exact_fen_count", 0),
+        "exact_fen_accuracy": metrics.get("exact_fen_accuracy", 0.0),
+        "false_positive_count": metrics.get("false_positive_count", 0),
+        "false_positive_rate": metrics.get("false_positive_rate", 0.0),
+        "square_accuracy": metrics.get("square_accuracy", 0.0),
+        "reasons": holdout_evaluation.get("reasons", []),
+    }
+
+
+def _load_accepted_audit_summary(path_value: str | Path) -> tuple[dict[str, Any], str]:
+    raw = str(path_value or "").strip()
+    if not raw:
+        return {"status": "missing", "reasons": ["accepted_audit_summary_missing"]}, ""
+    path = _resolve_repo_path(raw)
+    if not path.exists():
+        return {"status": "missing", "reasons": ["accepted_audit_summary_missing"], "path": str(path)}, str(path)
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"status": "failed", "reasons": ["accepted_audit_summary_load_failed"], "error": str(exc)}, str(path)
+    if not isinstance(loaded, dict):
+        return {"status": "failed", "reasons": ["accepted_audit_summary_must_be_object"]}, str(path)
+    return loaded, str(path)
+
+
+def _accepted_audit_readiness_issues(
+    audit_summary: dict[str, Any],
+    *,
+    max_critical_risk_count: int,
+    max_high_risk_count: int,
+) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    status = str(audit_summary.get("status") or "")
+    critical_risk_count = int(audit_summary.get("critical_risk_count") or 0)
+    high_risk_count = int(audit_summary.get("high_risk_count") or 0)
+    if status == "missing":
+        issues.append({"code": "accepted_audit_summary_missing", "path": str(audit_summary.get("path") or "")})
+    elif status != "ok":
+        issues.append({"code": "accepted_audit_failed", "audit_status": status or "missing"})
+    if critical_risk_count > int(max_critical_risk_count):
+        issues.append(
+            {
+                "code": "accepted_audit_critical_risk_count_exceeded",
+                "critical_risk_count": critical_risk_count,
+                "max_critical_risk_count": int(max_critical_risk_count),
+            }
+        )
+    if high_risk_count > int(max_high_risk_count):
+        issues.append(
+            {
+                "code": "accepted_audit_high_risk_count_exceeded",
+                "high_risk_count": high_risk_count,
+                "max_high_risk_count": int(max_high_risk_count),
+            }
+        )
+    return issues
+
+
+def _compact_accepted_audit_summary(audit_summary: dict[str, Any]) -> dict[str, Any]:
+    if not audit_summary:
+        return {}
+    return {
+        "status": audit_summary.get("status"),
+        "accepted_count": audit_summary.get("accepted_count", audit_summary.get("accepted_fen_count", 0)),
+        "audited_count": audit_summary.get("audited_count", audit_summary.get("accepted_count", 0)),
+        "critical_risk_count": audit_summary.get("critical_risk_count", 0),
+        "high_risk_count": audit_summary.get("high_risk_count", 0),
+        "medium_risk_count": audit_summary.get("medium_risk_count", 0),
+        "low_risk_count": audit_summary.get("low_risk_count", 0),
+        "reasons": audit_summary.get("reasons", []),
     }
 
 
@@ -206,6 +425,16 @@ def main() -> int:
     parser.add_argument("--min-confidence", type=float, default=DEFAULT_CHESS_FEN_EVAL_MIN_CONFIDENCE)
     parser.add_argument("--min-exact-accuracy", type=float, default=DEFAULT_CHESS_FEN_EXACT_ACCURACY_MIN)
     parser.add_argument("--no-build-templates", action="store_true")
+    parser.add_argument("--require-holdout", dest="require_holdout", action="store_true", default=True)
+    parser.add_argument("--no-require-holdout", dest="require_holdout", action="store_false")
+    parser.add_argument("--holdout-eval", default="")
+    parser.add_argument("--fold-count", type=int, default=5)
+    parser.add_argument("--holdout-fold", type=int, default=0)
+    parser.add_argument("--require-accepted-audit", dest="require_accepted_audit", action="store_true", default=True)
+    parser.add_argument("--no-require-accepted-audit", dest="require_accepted_audit", action="store_false")
+    parser.add_argument("--accepted-audit-summary", default="")
+    parser.add_argument("--max-critical-risk-count", type=int, default=0)
+    parser.add_argument("--max-high-risk-count", type=int, default=0)
     args = parser.parse_args()
 
     result = check_chess_fen_profile_ready(
@@ -217,6 +446,14 @@ def main() -> int:
         min_confidence=args.min_confidence,
         min_exact_accuracy=args.min_exact_accuracy,
         build_templates=not args.no_build_templates,
+        require_holdout=args.require_holdout,
+        holdout_eval_path=args.holdout_eval or None,
+        fold_count=args.fold_count,
+        holdout_fold=args.holdout_fold,
+        require_accepted_audit=args.require_accepted_audit,
+        accepted_audit_summary_path=args.accepted_audit_summary or None,
+        max_critical_risk_count=args.max_critical_risk_count,
+        max_high_risk_count=args.max_high_risk_count,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result["status"] == "ready" else 1

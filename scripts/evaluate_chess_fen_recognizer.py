@@ -72,7 +72,7 @@ def evaluate_chess_fen_recognizer(
             min_confidence=min_confidence,
         ).to_dict()
         diagnostics = _image_board_diagnostics(crop_bytes)
-        actual_fen = str(result.get("fen") or "").strip()
+        actual_fen = str(result.get("fen") or result.get("full_fen") or "").strip()
         actual_placement = str(result.get("placement") or "").strip()
         matched = bool(actual_fen and actual_fen == expected_fen)
         false_positive = bool(actual_fen and actual_fen != expected_fen)

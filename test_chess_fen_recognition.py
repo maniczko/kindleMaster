@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import unittest
+import hashlib
 from unittest import mock
 import zipfile
 from pathlib import Path
@@ -46,8 +47,10 @@ from pymupdf_chess_extractor import (
     SCAN_CHESS_PAGE_CANDIDATE_CACHE_VERSION,
     SCAN_CHESS_RECOGNITION_CACHE_VERSION,
     _clamp_bbox,
+    _scan_chess_attach_external_fen_provider,
     _infer_scan_chess_front_matter_metadata,
     _normalize_scan_chess_ocr_text,
+    _apply_scan_chess_side_to_move_evidence,
     _prefer_scan_chess_recognition_result,
     _rank_scan_chess_page_candidates_by_recognition,
     _recognize_scan_chess_candidate_bbox,
@@ -63,15 +66,33 @@ from pymupdf_chess_extractor import (
     _scan_chess_local_expansion_bboxes,
     _scan_chess_vertical_recovery_bboxes,
     _scan_chess_candidate_review_payload,
+    _scan_chess_external_provider_candidate,
     _scan_chess_ocr_html_parts,
     _scan_chess_recalibrate_cached_result,
     _scan_chess_recognition_cache_path,
+    _scan_chess_side_to_move_evidence_for_candidates,
+    _infer_scan_chess_side_to_move_from_text,
     _scan_image_for_board_candidates,
+    ScanChessSideToMoveEvidence,
 )
+from external_chessimg2pos_provider import ChessImg2PosProviderResult
 from scripts.export_chess_fen_review_queue import (
     _case_chess_fen_summary,
     export_chess_fen_review_queue,
 )
+
+
+def _verified_label_evidence(crop_bytes: bytes) -> dict[str, object]:
+    digest = hashlib.sha256(crop_bytes).hexdigest()
+    return {
+        "crop_sha256": digest,
+        "sha256": digest,
+        "human_verified": True,
+        "square_diff_ack": True,
+        "verification_source": "human_visual",
+        "verified_by": "unit-test",
+        "verified_at": "2026-05-27",
+    }
 
 
 class ChessFenRecognitionTests(unittest.TestCase):
@@ -130,7 +151,11 @@ class ChessFenRecognitionTests(unittest.TestCase):
         self.assertEqual(summary["deterministic_suggestion_count"], 0)
         self.assertTrue(copied_crop_exists)
         self.assertIn("crop_source", summary["queue"][0])
+        self.assertEqual(summary["queue"][0]["schema_version"], "kindlemaster.chess_fen_workflow.v1")
+        self.assertEqual(summary["queue"][0]["workflow_state"], "candidate_detected")
         self.assertTrue(draft_path_exists)
+        self.assertEqual(draft_rows[0]["schema_version"], "kindlemaster.chess_fen_workflow.v1")
+        self.assertEqual(draft_rows[0]["workflow_state"], "manual_draft")
         self.assertEqual(draft_rows[0]["label_status"], "needs_manual_fen")
         self.assertFalse(draft_rows[0]["accepted_for_corpus"])
         self.assertEqual(draft_rows[0]["fen"], "")
@@ -152,6 +177,336 @@ class ChessFenRecognitionTests(unittest.TestCase):
         self.assertIn("build_chess_piece_templates.py", summary["template_build_command"])
         self.assertIn("evaluate_chess_fen_corpus.py", summary["profile_eval_command"])
         self.assertEqual(summary["next_commands"]["label_promote_command"], summary["label_promote_command"])
+
+    def _external_provider_page_image(self) -> Image.Image:
+        image = Image.new("RGB", (140, 140), "white")
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((20, 20, 120, 120), outline="black", width=2)
+        return image
+
+    def _external_provider_attach(
+        self,
+        payload: dict[str, object],
+        *,
+        pgn_records: tuple[object, ...] | list[object] = (),
+    ) -> dict[str, object]:
+        return _scan_chess_attach_external_fen_provider(
+            payload,
+            crop_bytes=b"png",
+            config=ConversionConfig(),
+            page_image=self._external_provider_page_image(),
+            best_bbox=(20.0, 20.0, 120.0, 120.0),
+            reader_bbox=(16.0, 16.0, 124.0, 124.0),
+            bbox=(16.0, 16.0, 124.0, 124.0),
+            page=12,
+            selected_preprocess_variant="reader_visible",
+            display_variant_used="reader_enhanced",
+            min_confidence=0.83,
+            pgn_records=pgn_records,
+        )
+
+    def _external_candidate(
+        self,
+        *,
+        fen: str,
+        placement: str,
+        confidence: float = 0.92,
+        effective_confidence: float | None = None,
+        agreement_count: int = 0,
+        agrees_with_local_placement: bool = False,
+        agrees_with_other_external: bool = False,
+        king_structure_agreement: bool = True,
+        publishable_before_replay: bool = True,
+        replay_legal_from_fen: bool = False,
+        publishable_after_replay: bool = False,
+        variant_role: str = "best",
+        warnings: list[str] | None = None,
+    ) -> dict[str, object]:
+        return {
+            "fen": fen,
+            "placement": placement,
+            "confidence": confidence,
+            "effective_confidence": confidence if effective_confidence is None else effective_confidence,
+            "side_to_move": "w",
+            "bbox": (20.0, 20.0, 120.0, 120.0),
+            "method": "external-chessimg2pos",
+            "warnings": list(warnings or []),
+            "requires_review": not publishable_before_replay,
+            "board_detected": True,
+            "provider": "chessimg2pos",
+            "provider_version": "2026.02.27",
+            "source": "external",
+            "runtime_ms": 12,
+            "variant_role": variant_role,
+            "agreement_count": agreement_count,
+            "agrees_with_local_placement": agrees_with_local_placement,
+            "agrees_with_other_external": agrees_with_other_external,
+            "king_structure_agreement": king_structure_agreement,
+            "publishable_before_replay": publishable_before_replay,
+            "replay_legal_from_fen": replay_legal_from_fen,
+            "publishable_after_replay": publishable_after_replay,
+        }
+
+    def test_external_fen_provider_keeps_review_payload_on_multi_crop_consensus_without_replay(self) -> None:
+        payload = {
+            "fen": "",
+            "placement": "4k3/8/8/8/8/8/8/4K3",
+            "confidence": 0.61,
+            "side_to_move": "w",
+            "bbox": (0.0, 0.0, 100.0, 100.0),
+            "method": "image-template-board",
+            "warnings": ["image_board_requires_review"],
+            "requires_review": True,
+            "board_detected": True,
+        }
+        candidates = [
+            self._external_candidate(
+                fen="4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+                placement="4k3/8/8/8/8/8/8/4K3",
+                agreement_count=2,
+                agrees_with_local_placement=True,
+                agrees_with_other_external=True,
+                variant_role="best",
+            ),
+            self._external_candidate(
+                fen="4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+                placement="4k3/8/8/8/8/8/8/4K3",
+                agreement_count=2,
+                agrees_with_local_placement=True,
+                agrees_with_other_external=True,
+                effective_confidence=0.88,
+                variant_role="reader_visible",
+            ),
+        ]
+        with mock.patch("pymupdf_chess_extractor.chessimg2pos_provider_available", return_value=True), mock.patch(
+            "pymupdf_chess_extractor._scan_chess_external_provider_crop_variants",
+            return_value=[{"variant_role": "best"}, {"variant_role": "reader_visible"}],
+        ), mock.patch(
+            "pymupdf_chess_extractor._scan_chess_collect_external_fen_candidates",
+            return_value=candidates,
+        ):
+            result = self._external_provider_attach(payload)
+
+        self.assertEqual(result["fen"], "")
+        self.assertTrue(result["requires_review"])
+        self.assertIn("external_fen_provider_used", result["warnings"])
+        self.assertIn("external_fen_candidate_added", result["warnings"])
+        self.assertIn("external_fen_multi_crop_agreement", result["warnings"])
+        self.assertIn("external_fen_consensus_used", result["warnings"])
+        self.assertIn("external_fen_agrees_with_local", result["warnings"])
+        self.assertEqual(len(result["external_fen_candidates"]), 2)
+
+    def test_external_fen_provider_keeps_review_payload_on_local_placement_agreement_without_replay(self) -> None:
+        payload = {
+            "fen": "",
+            "placement": "4k3/8/8/8/8/8/8/4K3",
+            "confidence": 0.61,
+            "side_to_move": "w",
+            "bbox": (0.0, 0.0, 100.0, 100.0),
+            "method": "image-template-board",
+            "warnings": ["image_board_requires_review"],
+            "requires_review": True,
+            "board_detected": True,
+        }
+        candidates = [
+            self._external_candidate(
+                fen="4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+                placement="4k3/8/8/8/8/8/8/4K3",
+                agreement_count=1,
+                agrees_with_local_placement=True,
+                agrees_with_other_external=False,
+                variant_role="best",
+            )
+        ]
+        with mock.patch("pymupdf_chess_extractor.chessimg2pos_provider_available", return_value=True), mock.patch(
+            "pymupdf_chess_extractor._scan_chess_external_provider_crop_variants",
+            return_value=[{"variant_role": "best"}],
+        ), mock.patch(
+            "pymupdf_chess_extractor._scan_chess_collect_external_fen_candidates",
+            return_value=candidates,
+        ):
+            result = self._external_provider_attach(payload)
+
+        self.assertEqual(result["fen"], "")
+        self.assertTrue(result["requires_review"])
+        self.assertIn("external_fen_agrees_with_local", result["warnings"])
+        self.assertEqual(len(result["external_fen_candidates"]), 1)
+
+    def test_external_placement_only_candidate_is_review_only_with_inferred_side(self) -> None:
+        candidate = _scan_chess_external_provider_candidate(
+            ChessImg2PosProviderResult(
+                placement="4k3/8/8/8/8/8/8/4K3",
+                confidence=0.95,
+                effective_confidence=0.92,
+            ),
+            bbox=(0.0, 0.0, 100.0, 100.0),
+            min_confidence=0.83,
+        )
+
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertEqual(candidate["fen"], "")
+        self.assertEqual(candidate["full_fen"], "4k3/8/8/8/8/8/8/4K3 w - - 0 1")
+        self.assertTrue(candidate["requires_review"])
+        self.assertEqual(candidate["side_to_move_status"], "inferred")
+        self.assertEqual(candidate["side_to_move_evidence"], "inferred")
+        self.assertIn("side_to_move_inferred", candidate["warnings"])
+
+    def test_external_fen_provider_keeps_review_on_multi_crop_conflict_without_replay(self) -> None:
+        payload = {
+            "fen": "",
+            "placement": "",
+            "confidence": 0.61,
+            "side_to_move": "w",
+            "bbox": (0.0, 0.0, 100.0, 100.0),
+            "method": "image-template-board",
+            "warnings": ["image_board_requires_review"],
+            "requires_review": True,
+            "board_detected": True,
+        }
+        candidates = [
+            self._external_candidate(
+                fen="4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+                placement="4k3/8/8/8/8/8/8/4K3",
+                agreement_count=0,
+                king_structure_agreement=True,
+                variant_role="best",
+            ),
+            self._external_candidate(
+                fen="3rk3/8/8/8/8/8/8/4K3 w - - 0 1",
+                placement="3rk3/8/8/8/8/8/8/4K3",
+                agreement_count=0,
+                king_structure_agreement=True,
+                effective_confidence=0.88,
+                variant_role="reader_visible",
+            ),
+        ]
+        with mock.patch("pymupdf_chess_extractor.chessimg2pos_provider_available", return_value=True), mock.patch(
+            "pymupdf_chess_extractor._scan_chess_external_provider_crop_variants",
+            return_value=[{"variant_role": "best"}, {"variant_role": "reader_visible"}],
+        ), mock.patch(
+            "pymupdf_chess_extractor._scan_chess_collect_external_fen_candidates",
+            return_value=candidates,
+        ):
+            result = self._external_provider_attach(payload)
+
+        self.assertEqual(result["fen"], "")
+        self.assertTrue(result["requires_review"])
+        self.assertIn("external_fen_candidate_added", result["warnings"])
+        self.assertIn("external_fen_multi_crop_conflict", result["warnings"])
+        self.assertEqual(len(result["external_fen_candidates"]), 2)
+
+    def test_external_fen_provider_promotes_review_payload_when_replay_is_legal(self) -> None:
+        payload = {
+            "fen": "",
+            "placement": "",
+            "confidence": 0.61,
+            "side_to_move": "w",
+            "bbox": (0.0, 0.0, 100.0, 100.0),
+            "method": "image-template-board",
+            "warnings": ["image_board_requires_review"],
+            "requires_review": True,
+            "board_detected": True,
+        }
+        candidates = [
+            self._external_candidate(
+                fen="4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+                placement="4k3/8/8/8/8/8/8/4K3",
+                agreement_count=0,
+                agrees_with_local_placement=False,
+                agrees_with_other_external=False,
+                king_structure_agreement=True,
+                replay_legal_from_fen=True,
+                publishable_after_replay=True,
+                variant_role="best",
+            )
+        ]
+        with mock.patch("pymupdf_chess_extractor.chessimg2pos_provider_available", return_value=True), mock.patch(
+            "pymupdf_chess_extractor._scan_chess_external_provider_crop_variants",
+            return_value=[{"variant_role": "best"}],
+        ), mock.patch(
+            "pymupdf_chess_extractor._scan_chess_collect_external_fen_candidates",
+            return_value=candidates,
+        ):
+            result = self._external_provider_attach(payload, pgn_records=[object()])
+
+        self.assertFalse(result["requires_review"])
+        self.assertEqual(result["fen"], "4k3/8/8/8/8/8/8/4K3 w - - 0 1")
+        self.assertIn("external_fen_promoted_by_replay", result["warnings"])
+
+    def test_external_fen_provider_keeps_review_when_replay_is_illegal(self) -> None:
+        payload = {
+            "fen": "",
+            "placement": "",
+            "confidence": 0.61,
+            "side_to_move": "w",
+            "bbox": (0.0, 0.0, 100.0, 100.0),
+            "method": "image-template-board",
+            "warnings": ["image_board_requires_review"],
+            "requires_review": True,
+            "board_detected": True,
+        }
+        candidates = [
+            self._external_candidate(
+                fen="4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+                placement="4k3/8/8/8/8/8/8/4K3",
+                agreement_count=0,
+                agrees_with_local_placement=False,
+                agrees_with_other_external=False,
+                king_structure_agreement=True,
+                replay_legal_from_fen=False,
+                publishable_after_replay=False,
+                variant_role="best",
+            )
+        ]
+        with mock.patch("pymupdf_chess_extractor.chessimg2pos_provider_available", return_value=True), mock.patch(
+            "pymupdf_chess_extractor._scan_chess_external_provider_crop_variants",
+            return_value=[{"variant_role": "best"}],
+        ), mock.patch(
+            "pymupdf_chess_extractor._scan_chess_collect_external_fen_candidates",
+            return_value=candidates,
+        ):
+            result = self._external_provider_attach(payload, pgn_records=[object()])
+
+        self.assertTrue(result["requires_review"])
+        self.assertIn("external_fen_rejected_by_replay", result["warnings"])
+
+    def test_external_fen_provider_keeps_local_accepted_payload_on_conflict(self) -> None:
+        payload = {
+            "fen": "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+            "placement": "4k3/8/8/8/8/8/8/4K3",
+            "confidence": 0.84,
+            "side_to_move": "w",
+            "bbox": (0.0, 0.0, 100.0, 100.0),
+            "method": "image-template-board",
+            "warnings": [],
+            "requires_review": False,
+            "board_detected": True,
+        }
+        candidates = [
+            self._external_candidate(
+                fen="3rk3/8/8/8/8/8/8/4K3 w - - 0 1",
+                placement="3rk3/8/8/8/8/8/8/4K3",
+                agreement_count=0,
+                agrees_with_local_placement=False,
+                agrees_with_other_external=False,
+                king_structure_agreement=True,
+                variant_role="best",
+            )
+        ]
+        with mock.patch("pymupdf_chess_extractor.chessimg2pos_provider_available", return_value=True), mock.patch(
+            "pymupdf_chess_extractor._scan_chess_external_provider_crop_variants",
+            return_value=[{"variant_role": "best"}],
+        ), mock.patch(
+            "pymupdf_chess_extractor._scan_chess_collect_external_fen_candidates",
+            return_value=candidates,
+        ):
+            result = self._external_provider_attach(payload)
+
+        self.assertEqual(result["fen"], payload["fen"])
+        self.assertFalse(result["requires_review"])
+        self.assertIn("external_fen_conflicts_with_local", result["warnings"])
+        self.assertEqual(len(result["external_fen_candidates"]), 1)
 
     def test_scan_chess_candidate_cache_version_covers_expanded_recovery(self) -> None:
         self.assertGreaterEqual(SCAN_CHESS_PAGE_CANDIDATE_CACHE_VERSION, 17)
@@ -189,6 +544,8 @@ class ChessFenRecognitionTests(unittest.TestCase):
         )
 
         self.assertEqual(rows[0]["id"], "safe_deterministic_label")
+        self.assertEqual(rows[0]["schema_version"], "kindlemaster.chess_fen_workflow.v1")
+        self.assertEqual(rows[0]["workflow_state"], "manual_draft")
         self.assertEqual(rows[0]["deterministic_suggested_fen"], "4k3/8/8/8/8/8/8/4K3 w - - 0 1")
         self.assertEqual(rows[1]["id"], "needs_full_manual_label")
 
@@ -800,6 +1157,7 @@ class ChessFenRecognitionTests(unittest.TestCase):
                         "diagram_index": 1,
                         "verified_by": "unit-test",
                         "verified_at": "2026-05-27",
+                        **_verified_label_evidence(image_data),
                     }
                 )
                 + "\n",
@@ -846,6 +1204,7 @@ class ChessFenRecognitionTests(unittest.TestCase):
                         "source_pdf": "synthetic",
                         "page": 1,
                         "diagram_index": 1,
+                        **_verified_label_evidence(image_data),
                     }
                 )
                 + "\n",
@@ -901,6 +1260,7 @@ class ChessFenRecognitionTests(unittest.TestCase):
                         "diagram_index": 1,
                         "verified_by": "unit-test",
                         "verified_at": "2026-05-27",
+                        **_verified_label_evidence(image_data),
                     }
                 )
                 + "\n",
@@ -956,6 +1316,7 @@ class ChessFenRecognitionTests(unittest.TestCase):
                     "verified_by": "unit-test",
                     "verified_at": "2026-05-27",
                     "notes": "verified synthetic holdout fixture",
+                    **_verified_label_evidence(image_data),
                 }
                 for index in range(10)
             ]
@@ -1083,6 +1444,7 @@ class ChessFenRecognitionTests(unittest.TestCase):
                         "diagram_index": 1,
                         "verified_by": "unit-test",
                         "verified_at": "2026-05-27",
+                        **_verified_label_evidence(image_data),
                     }
                 )
                 + "\n",
@@ -1165,6 +1527,7 @@ class ChessFenRecognitionTests(unittest.TestCase):
                         "diagram_index": 1,
                         "verified_by": "unit-test",
                         "verified_at": "2026-05-27",
+                        **_verified_label_evidence(image_data),
                     }
                 )
                 + "\n",
@@ -1243,6 +1606,7 @@ class ChessFenRecognitionTests(unittest.TestCase):
                         "diagram_index": 1,
                         "verified_by": "unit-test",
                         "verified_at": "2026-05-27",
+                        **_verified_label_evidence(image_data),
                     }
                 )
                 + "\n",
@@ -1349,6 +1713,7 @@ class ChessFenRecognitionTests(unittest.TestCase):
                         "diagram_index": 1,
                         "verified_by": "unit-test",
                         "verified_at": "2026-05-27",
+                        **_verified_label_evidence(image_data),
                     }
                 )
                 + "\n",
@@ -1456,6 +1821,7 @@ class ChessFenRecognitionTests(unittest.TestCase):
                         "diagram_index": 1,
                         "verified_by": "unit-test",
                         "verified_at": "2026-05-27",
+                        **_verified_label_evidence(image_data),
                     }
                 )
                 + "\n",
@@ -1711,9 +2077,13 @@ class ChessFenRecognitionTests(unittest.TestCase):
         self.assertTrue(contact_sheet_exists)
         self.assertTrue(aid_exists)
         self.assertEqual(template_rows[0]["fen"], "")
+        self.assertEqual(template_rows[0]["schema_version"], "kindlemaster.chess_fen_workflow.v1")
+        self.assertEqual(template_rows[0]["workflow_state"], "manual_draft")
+        self.assertEqual(template_rows[0]["label_status"], "needs_manual_fen")
         self.assertEqual(template_rows[0]["verified_by"], "")
         self.assertEqual(validation["status"], "failed")
         self.assertEqual(validation["valid_label_count"], 0)
+        self.assertIn("review_only_workflow_state", {issue["code"] for issue in validation["issues"]})
         self.assertFalse(openai_request["accepted_for_corpus"])
         self.assertEqual(openai_request["review_policy"], "label_assist_review_only_no_corpus_promotion")
         self.assertEqual(openai_request["body"]["input"][0]["content"][1]["type"], "input_image")
@@ -1730,7 +2100,8 @@ class ChessFenRecognitionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             crop_path = root / "board.png"
-            crop_path.write_bytes(_board_png((240, 240)))
+            crop_bytes = _board_png((240, 240))
+            crop_path.write_bytes(crop_bytes)
             labels_path = root / "labels.jsonl"
             valid_record = {
                 "id": "source_path_record",
@@ -1739,6 +2110,7 @@ class ChessFenRecognitionTests(unittest.TestCase):
                 "verified_by": "unit-test",
                 "verified_at": "2026-05-28",
                 "label_status": "verified",
+                **_verified_label_evidence(crop_bytes),
             }
             invalid_record = {
                 "id": "missing_path_record",
@@ -1746,6 +2118,7 @@ class ChessFenRecognitionTests(unittest.TestCase):
                 "verified_by": "unit-test",
                 "verified_at": "2026-05-28",
                 "label_status": "verified",
+                **_verified_label_evidence(crop_bytes),
             }
             labels_path.write_text(
                 "\n".join(json.dumps(record) for record in [valid_record, invalid_record]) + "\n",
@@ -1827,6 +2200,8 @@ class ChessFenRecognitionTests(unittest.TestCase):
         self.assertEqual(result["approved_suggestion_count"], 1)
         self.assertEqual(result["ready_for_manual_verification_count"], 1)
         self.assertEqual(draft_rows[0]["fen"], "")
+        self.assertEqual(draft_rows[0]["schema_version"], "kindlemaster.chess_fen_workflow.v1")
+        self.assertEqual(draft_rows[0]["workflow_state"], "manual_draft")
         self.assertEqual(draft_rows[0]["ai_suggested_fen"], suggested_fen)
         self.assertEqual(draft_rows[0]["label_status"], "needs_manual_fen")
         self.assertEqual(draft_rows[0]["verified_by"], "")
@@ -1836,6 +2211,7 @@ class ChessFenRecognitionTests(unittest.TestCase):
         self.assertIn("verified_by_missing", issue_codes)
         self.assertIn("verified_at_missing", issue_codes)
         self.assertIn("review_only_label_status", issue_codes)
+        self.assertIn("review_only_workflow_state", issue_codes)
 
     def test_label_assist_import_rejects_invalid_ai_suggested_fen(self) -> None:
         import json
@@ -2268,13 +2644,12 @@ class ChessFenRecognitionTests(unittest.TestCase):
         self.assertEqual(result["promoted_count"], 0)
         self.assertEqual(result["skipped"][0]["reason"], "manual_approval_missing")
 
-    def test_promote_label_draft_validates_human_accepted_ai_suggestion(self) -> None:
+    def test_promote_label_draft_does_not_promote_ai_suggestion_without_manual_fen(self) -> None:
         import json
         import tempfile
         from pathlib import Path
 
         from scripts.promote_chess_fen_label_draft import promote_chess_fen_label_draft
-        from scripts.validate_chess_fen_labels import validate_chess_fen_labels
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -2293,6 +2668,7 @@ class ChessFenRecognitionTests(unittest.TestCase):
                         "ai_approved": True,
                         "ai_requires_review": False,
                         "human_verified": True,
+                        "square_diff_ack": True,
                         "ai_confidence": 0.93,
                     }
                 )
@@ -2306,28 +2682,20 @@ class ChessFenRecognitionTests(unittest.TestCase):
                 output_path=verified_labels,
                 verified_by="unit-test",
                 verified_at="2026-05-27",
+                accept_ai_suggestions=True,
             )
-            rows = [json.loads(line) for line in verified_labels.read_text(encoding="utf-8").splitlines() if line.strip()]
-            validation = validate_chess_fen_labels(verified_labels)
 
-        self.assertEqual(result["status"], "passed")
-        self.assertFalse(result["accepted_for_corpus"])
-        self.assertTrue(result["ready_for_profile_gate"])
-        self.assertEqual(result["promoted_count"], 1)
-        self.assertEqual(rows[0]["fen"], suggested_fen)
-        self.assertEqual(rows[0]["verified_by"], "unit-test")
-        self.assertEqual(rows[0]["verified_at"], "2026-05-27")
-        self.assertEqual(rows[0]["label_status"], "verified")
-        self.assertEqual(rows[0]["label_source"], "ai_suggested_fen_after_human_acceptance")
-        self.assertEqual(validation["status"], "passed")
+        self.assertEqual(result["status"], "failed")
+        self.assertFalse(result["ready_for_profile_gate"])
+        self.assertEqual(result["promoted_count"], 0)
+        self.assertEqual(result["skipped"][0]["reason"], "manual_fen_missing")
 
-    def test_promote_label_draft_validates_human_accepted_deterministic_suggestion(self) -> None:
+    def test_promote_label_draft_does_not_promote_deterministic_suggestion_without_manual_fen(self) -> None:
         import json
         import tempfile
         from pathlib import Path
 
         from scripts.promote_chess_fen_label_draft import promote_chess_fen_label_draft
-        from scripts.validate_chess_fen_labels import validate_chess_fen_labels
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -2345,6 +2713,114 @@ class ChessFenRecognitionTests(unittest.TestCase):
                         "deterministic_suggested_fen": suggested_fen,
                         "deterministic_confidence": 0.91,
                         "human_verified": True,
+                        "square_diff_ack": True,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            verified_labels = root / "verified.jsonl"
+
+            result = promote_chess_fen_label_draft(
+                draft,
+                output_path=verified_labels,
+                verified_by="unit-test",
+                verified_at="2026-05-31",
+            )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["promoted_count"], 0)
+        self.assertEqual(result["skipped"][0]["reason"], "manual_fen_missing")
+
+    def test_promote_label_draft_validates_manual_fen(self) -> None:
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from scripts.promote_chess_fen_label_draft import promote_chess_fen_label_draft
+        from scripts.validate_chess_fen_labels import validate_chess_fen_labels
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            crop_path = root / "board.png"
+            crop_path.write_bytes(_board_png((240, 240)))
+            draft = root / "draft.jsonl"
+            manual_fen = "8/8/8/3k4/8/8/4K3/8 w - - 0 1"
+            draft.write_text(
+                json.dumps(
+                    {
+                        "id": "draft_manual",
+                        "crop_path": str(crop_path),
+                        "page": 1,
+                        "diagram_index": 1,
+                        "manual_fen": manual_fen,
+                        "ai_suggested_fen": "8/8/8/8/8/8/4K3/3k4 w - - 0 1",
+                        "deterministic_suggested_fen": "8/8/8/8/8/8/4K3/3k4 w - - 0 1",
+                        "human_verified": True,
+                        "square_diff_ack": True,
+                        "verification_source": "human_visual",
+                        "ai_confidence": 0.93,
+                        "deterministic_confidence": 0.91,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            verified_labels = root / "verified.jsonl"
+
+            result = promote_chess_fen_label_draft(
+                draft,
+                output_path=verified_labels,
+                verified_by="unit-test",
+                verified_at="2026-05-31",
+                accept_ai_suggestions=True,
+            )
+            rows = [json.loads(line) for line in verified_labels.read_text(encoding="utf-8").splitlines() if line.strip()]
+            validation = validate_chess_fen_labels(verified_labels)
+
+        self.assertEqual(result["status"], "passed")
+        self.assertFalse(result["accepted_for_corpus"])
+        self.assertTrue(result["ready_for_profile_gate"])
+        self.assertEqual(result["promoted_count"], 1)
+        self.assertEqual(rows[0]["fen"], manual_fen)
+        self.assertEqual(rows[0]["schema_version"], "kindlemaster.chess_fen_workflow.v1")
+        self.assertEqual(rows[0]["workflow_state"], "validation_passed")
+        self.assertEqual(rows[0]["label_source"], "manual_fen")
+        self.assertEqual(rows[0]["verification_source"], "human_visual")
+        self.assertTrue(rows[0]["square_diff_ack"])
+        self.assertTrue(rows[0]["human_verified"])
+        self.assertTrue(rows[0]["crop_sha256"])
+        self.assertEqual(rows[0]["sha256"], rows[0]["crop_sha256"])
+        self.assertTrue(rows[0]["ai_assisted"])
+        self.assertEqual(rows[0]["deterministic_confidence"], 0.91)
+        self.assertEqual(validation["status"], "passed")
+
+    def test_promote_label_draft_accepts_explicit_fen_field(self) -> None:
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from scripts.promote_chess_fen_label_draft import promote_chess_fen_label_draft
+        from scripts.validate_chess_fen_labels import validate_chess_fen_labels
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            crop_path = root / "board.png"
+            crop_path.write_bytes(_board_png((240, 240)))
+            draft = root / "draft.jsonl"
+            explicit_fen = "8/8/8/3k4/8/8/4K3/8 w - - 0 1"
+            draft.write_text(
+                json.dumps(
+                    {
+                        "id": "draft_explicit_fen",
+                        "crop_path": str(crop_path),
+                        "page": 1,
+                        "diagram_index": 1,
+                        "fen": explicit_fen,
+                        "ai_suggested_fen": "8/8/8/8/8/8/4K3/3k4 w - - 0 1",
+                        "human_verified": True,
+                        "square_diff_ack": True,
+                        "verification_source": "human_visual",
                     }
                 )
                 + "\n",
@@ -2363,11 +2839,170 @@ class ChessFenRecognitionTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "passed")
         self.assertEqual(result["promoted_count"], 1)
-        self.assertEqual(rows[0]["fen"], suggested_fen)
-        self.assertEqual(rows[0]["label_source"], "deterministic_suggested_fen_after_human_acceptance")
-        self.assertFalse(rows[0]["ai_assisted"])
-        self.assertEqual(rows[0]["deterministic_confidence"], 0.91)
+        self.assertEqual(rows[0]["fen"], explicit_fen)
+        self.assertEqual(rows[0]["schema_version"], "kindlemaster.chess_fen_workflow.v1")
+        self.assertEqual(rows[0]["workflow_state"], "validation_passed")
+        self.assertEqual(rows[0]["label_source"], "fen")
+        self.assertEqual(rows[0]["verification_source"], "human_visual")
+        self.assertTrue(rows[0]["square_diff_ack"])
+        self.assertTrue(rows[0]["human_verified"])
+        self.assertTrue(rows[0]["crop_sha256"])
+        self.assertEqual(rows[0]["sha256"], rows[0]["crop_sha256"])
         self.assertEqual(validation["status"], "passed")
+
+    def test_promote_label_draft_rejects_missing_human_evidence_fields(self) -> None:
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from scripts.promote_chess_fen_label_draft import promote_chess_fen_label_draft
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            crop_path = root / "board.png"
+            crop_path.write_bytes(_board_png((240, 240)))
+            manual_fen = "8/8/8/3k4/8/8/4K3/8 w - - 0 1"
+
+            missing_ack = root / "missing_ack.jsonl"
+            missing_ack.write_text(
+                json.dumps(
+                    {
+                        "id": "missing_ack",
+                        "crop_path": str(crop_path),
+                        "manual_fen": manual_fen,
+                        "human_verified": True,
+                        "verification_source": "human_visual",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            missing_source = root / "missing_source.jsonl"
+            missing_source.write_text(
+                json.dumps(
+                    {
+                        "id": "missing_source",
+                        "crop_path": str(crop_path),
+                        "manual_fen": manual_fen,
+                        "human_verified": True,
+                        "square_diff_ack": True,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            ack_result = promote_chess_fen_label_draft(
+                missing_ack,
+                output_path=root / "ack_verified.jsonl",
+                verified_by="unit-test",
+                verified_at="2026-05-31",
+            )
+            source_result = promote_chess_fen_label_draft(
+                missing_source,
+                output_path=root / "source_verified.jsonl",
+                verified_by="unit-test",
+                verified_at="2026-05-31",
+            )
+
+        self.assertEqual(ack_result["skipped"][0]["reason"], "square_diff_ack_missing")
+        self.assertEqual(source_result["skipped"][0]["reason"], "verification_source_missing")
+
+    def test_promote_label_draft_rejects_crop_hash_mismatch(self) -> None:
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from scripts.promote_chess_fen_label_draft import promote_chess_fen_label_draft
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            crop_path = root / "board.png"
+            crop_path.write_bytes(_board_png((240, 240)))
+            draft = root / "draft.jsonl"
+            draft.write_text(
+                json.dumps(
+                    {
+                        "id": "hash_mismatch",
+                        "crop_path": str(crop_path),
+                        "crop_sha256": __import__("hashlib").sha256(b"other-crop").hexdigest(),
+                        "manual_fen": "8/8/8/3k4/8/8/4K3/8 w - - 0 1",
+                        "human_verified": True,
+                        "square_diff_ack": True,
+                        "verification_source": "human_visual",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            result = promote_chess_fen_label_draft(
+                draft,
+                output_path=root / "verified.jsonl",
+                verified_by="unit-test",
+                verified_at="2026-05-31",
+            )
+
+        self.assertEqual(result["promoted_count"], 0)
+        self.assertEqual(result["skipped"][0]["reason"], "crop_sha256_mismatch")
+
+    def test_validate_chess_fen_labels_requires_human_evidence_and_matching_crop_hash(self) -> None:
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from scripts.validate_chess_fen_labels import validate_chess_fen_labels
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            crop_path = root / "board.png"
+            crop_bytes = _board_png((240, 240))
+            crop_path.write_bytes(crop_bytes)
+            valid_labels = root / "valid.jsonl"
+            valid_labels.write_text(
+                json.dumps(
+                    {
+                        "id": "valid_human_label",
+                        "crop_path": str(crop_path),
+                        "crop_sha256": __import__("hashlib").sha256(crop_bytes).hexdigest(),
+                        "fen": "8/8/8/3k4/8/8/4K3/8 w - - 0 1",
+                        "human_verified": True,
+                        "square_diff_ack": True,
+                        "verification_source": "human_visual",
+                        "verified_by": "unit-test",
+                        "verified_at": "2026-05-31",
+                        "label_status": "verified",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            invalid_labels = root / "invalid.jsonl"
+            invalid_labels.write_text(
+                json.dumps(
+                    {
+                        "id": "missing_evidence",
+                        "crop_path": str(crop_path),
+                        "fen": "8/8/8/3k4/8/8/4K3/8 w - - 0 1",
+                        "verified_by": "unit-test",
+                        "verified_at": "2026-05-31",
+                        "label_status": "verified",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            valid_result = validate_chess_fen_labels(valid_labels)
+            invalid_result = validate_chess_fen_labels(invalid_labels)
+
+        self.assertEqual(valid_result["status"], "passed")
+        self.assertEqual(invalid_result["status"], "failed")
+        issue_codes = {issue["code"] for issue in invalid_result["issues"]}
+        self.assertIn("human_verified_missing", issue_codes)
+        self.assertIn("square_diff_ack_missing", issue_codes)
+        self.assertIn("verification_source_invalid", issue_codes)
+        self.assertIn("crop_sha256_missing", issue_codes)
 
     def test_chess_fen_profile_ready_rejects_review_only_aid_template(self) -> None:
         import json
@@ -2423,6 +3058,8 @@ class ChessFenRecognitionTests(unittest.TestCase):
             )
 
         self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["schema_version"], "kindlemaster.chess_fen_workflow.v1")
+        self.assertEqual(result["workflow_state"], "")
         self.assertFalse(result["accepted_for_corpus"])
         self.assertIn("review_label_artifact_path", {issue["code"] for issue in result["issues"]})
         self.assertIsNone(result["manifest_case_ready"])
@@ -2464,6 +3101,7 @@ class ChessFenRecognitionTests(unittest.TestCase):
                         "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 1",
                         "verified_by": "unit-test",
                         "verified_at": "2026-05-27",
+                        **_verified_label_evidence(image_data),
                     }
                 )
                 + "\n",
@@ -2492,86 +3130,127 @@ class ChessFenRecognitionTests(unittest.TestCase):
             )
 
         self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["workflow_state"], "")
         self.assertEqual(result["label_validation"]["valid_label_count"], 1)
         self.assertIn("seed_label_count_below_minimum", {issue["code"] for issue in result["issues"]})
         self.assertIn("valid_label_count >= 20", " ".join(result["next_required_actions"]))
 
     def test_chess_fen_profile_ready_accepts_verified_synthetic_20_label_profile(self) -> None:
-        import json
         import tempfile
-        from pathlib import Path
 
         from scripts.check_chess_fen_profile_ready import check_chess_fen_profile_ready
 
-        board = [
-            list("rnbqkbnr"),
-            list("pppppppp"),
-            [""] * 8,
-            [""] * 8,
-            [""] * 8,
-            [""] * 8,
-            list("PPPPPPPP"),
-            list("RNBQKBNR"),
-        ]
-        image_data, _ = _labeled_board_png_and_templates(board)
-
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            source_pdf = root / "second_chess.pdf"
-            source_pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
-            rows = []
-            for index in range(20):
-                crop_path = root / f"board_{index:02d}.png"
-                crop_path.write_bytes(image_data)
-                rows.append(
-                    {
-                        "id": f"second_chess_{index:03d}",
-                        "source_pdf": str(source_pdf),
-                        "page": index + 1,
-                        "diagram_index": 1,
-                        "crop_path": str(crop_path),
-                        "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 1",
-                        "verified_by": "unit-test",
-                        "verified_at": "2026-05-27",
-                    }
-                )
-            labels_path = root / "second_chess_seed_positions.jsonl"
-            labels_path.write_text(
-                "\n".join(json.dumps(row) for row in rows) + "\n",
-                encoding="utf-8",
-            )
-            manifest_case = root / "manifest_case_draft.json"
-            manifest_case.write_text(
-                json.dumps(
-                    {
-                        "id": "second_chess",
-                        "document_class": "diagram_training_book",
-                        "input_type": "pdf",
-                        "source": str(source_pdf),
-                        "target": str(source_pdf),
-                        "chess_fen_seed_labels": str(labels_path),
-                        "chess_fen_template_profile": "second_chess",
-                        "chess_fen_seed_exact_accuracy_min": 0.90,
-                    }
-                ),
-                encoding="utf-8",
-            )
+            manifest_case, labels_path = _write_profile_ready_fixture(root, label_count=20)
+            holdout_eval = _write_holdout_eval(root / "holdout_pass.json", status="passed", exact_fen_accuracy=1.0)
+            audit_summary = _write_accepted_audit_summary(root / "accepted_audit_summary.json")
 
             result = check_chess_fen_profile_ready(
                 manifest_case,
                 template_dir=root / "templates" / "second_chess",
                 min_seed_labels=20,
+                holdout_eval_path=holdout_eval,
+                accepted_audit_summary_path=audit_summary,
             )
 
         self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["schema_version"], "kindlemaster.chess_fen_workflow.v1")
+        self.assertEqual(result["workflow_state"], "profile_ready")
         self.assertTrue(result["accepted_for_corpus"])
+        self.assertTrue(result["release_ready"])
+        self.assertEqual(result["readiness_mode"], "corpus")
         self.assertEqual(result["openai_policy"], "review_only_not_used")
         self.assertEqual(result["label_validation"]["valid_label_count"], 20)
         self.assertGreaterEqual(result["evaluation"]["exact_fen_accuracy"], 0.90)
         self.assertEqual(result["evaluation"]["false_positive_count"], 0)
+        self.assertEqual(result["holdout_evaluation"]["status"], "passed")
+        self.assertEqual(result["holdout_evaluation"]["exact_fen_accuracy"], 1.0)
+        self.assertEqual(result["holdout_evaluation"]["false_positive_count"], 0)
+        self.assertEqual(result["accepted_audit_summary"]["status"], "ok")
+        self.assertEqual(result["accepted_audit_summary"]["critical_risk_count"], 0)
+        self.assertEqual(result["accepted_audit_summary"]["high_risk_count"], 0)
         self.assertIsNotNone(result["manifest_case_ready"])
         self.assertEqual(result["manifest_case_ready"]["chess_fen_seed_min_count"], 20)
         self.assertIn("chess_fen_template_dir", result["manifest_case_ready"])
+
+    def test_chess_fen_profile_ready_rejects_failed_holdout(self) -> None:
+        import tempfile
+
+        from scripts.check_chess_fen_profile_ready import check_chess_fen_profile_ready
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest_case, _ = _write_profile_ready_fixture(root, label_count=20)
+            holdout_eval = _write_holdout_eval(root / "holdout_failed.json", status="failed", exact_fen_accuracy=0.25)
+            audit_summary = _write_accepted_audit_summary(root / "accepted_audit_summary.json")
+
+            result = check_chess_fen_profile_ready(
+                manifest_case,
+                template_dir=root / "templates" / "second_chess",
+                min_seed_labels=20,
+                holdout_eval_path=holdout_eval,
+                accepted_audit_summary_path=audit_summary,
+            )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertFalse(result["accepted_for_corpus"])
+        self.assertEqual(result["workflow_state"], "")
+        self.assertIn("holdout_eval_failed", {issue["code"] for issue in result["issues"]})
+        self.assertIn("holdout_exact_accuracy_below_minimum", {issue["code"] for issue in result["issues"]})
+        self.assertIsNone(result["manifest_case_ready"])
+
+    def test_chess_fen_profile_ready_rejects_holdout_false_positives(self) -> None:
+        import tempfile
+
+        from scripts.check_chess_fen_profile_ready import check_chess_fen_profile_ready
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest_case, _ = _write_profile_ready_fixture(root, label_count=20)
+            holdout_eval = _write_holdout_eval(
+                root / "holdout_false_positive.json",
+                status="passed",
+                exact_fen_accuracy=1.0,
+                false_positive_count=1,
+            )
+            audit_summary = _write_accepted_audit_summary(root / "accepted_audit_summary.json")
+
+            result = check_chess_fen_profile_ready(
+                manifest_case,
+                template_dir=root / "templates" / "second_chess",
+                min_seed_labels=20,
+                holdout_eval_path=holdout_eval,
+                accepted_audit_summary_path=audit_summary,
+            )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertFalse(result["accepted_for_corpus"])
+        self.assertIn("holdout_false_positive_detected", {issue["code"] for issue in result["issues"]})
+
+    def test_chess_fen_profile_ready_no_holdout_is_diagnostic_only(self) -> None:
+        import tempfile
+
+        from scripts.check_chess_fen_profile_ready import check_chess_fen_profile_ready
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest_case, _ = _write_profile_ready_fixture(root, label_count=20)
+
+            result = check_chess_fen_profile_ready(
+                manifest_case,
+                template_dir=root / "templates" / "second_chess",
+                min_seed_labels=20,
+                require_holdout=False,
+                require_accepted_audit=False,
+            )
+
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["readiness_mode"], "diagnostic")
+        self.assertFalse(result["accepted_for_corpus"])
+        self.assertFalse(result["release_ready"])
+        self.assertEqual(result["workflow_state"], "")
+        self.assertIsNone(result["manifest_case_ready"])
 
     def test_font_board_candidate_extractor_creates_review_only_rows(self) -> None:
         from scripts.extract_chess_font_board_candidates import (
@@ -2706,6 +3385,7 @@ class ChessFenRecognitionTests(unittest.TestCase):
                         "source_pdf": "synthetic",
                         "page": 1,
                         "diagram_index": 1,
+                        **_verified_label_evidence(image_data),
                     }
                 )
                 + "\n",
@@ -4172,6 +4852,9 @@ class ChessFenRecognitionTests(unittest.TestCase):
 
         self.assertFalse(result.requires_review)
         self.assertEqual(result.fen, fen)
+        self.assertEqual(result.full_fen, fen)
+        self.assertEqual(result.side_to_move_status, "explicit")
+        self.assertEqual(result.side_to_move_evidence, "verified_label")
         self.assertEqual(result.confidence, 1.0)
         self.assertEqual(result.method, "verified-exact-crop-label")
         self.assertIn("verified_exact_crop_label_used", result.warnings)
@@ -5102,18 +5785,195 @@ class ChessFenRecognitionTests(unittest.TestCase):
         self.assertIn("image_board_requires_review", payload["warnings"])
 
     def test_scan_chess_side_marker_updates_fen_side_to_move(self) -> None:
+        from chess_fen_ml_acceptance import machine_accept_fen
+
         payload = {
-            "fen": "8/8/8/8/8/8/7k/7K w - - 0 1",
+            "fen": "",
+            "full_fen": "8/8/8/8/8/8/7k/7K w - - 0 1",
+            "placement": "8/8/8/8/8/8/7k/7K",
             "side_to_move": "w",
+            "side_to_move_status": "inferred",
+            "side_to_move_evidence": "inferred",
             "warnings": ["side_to_move_inferred"],
+            "requires_review": True,
         }
 
         updated = _apply_scan_chess_side_to_move_marker(payload, "b")
 
         self.assertEqual(updated["fen"], "8/8/8/8/8/8/7k/7K b - - 0 1")
+        self.assertEqual(updated["full_fen"], "8/8/8/8/8/8/7k/7K b - - 0 1")
         self.assertEqual(updated["side_to_move"], "b")
+        self.assertEqual(updated["side_to_move_status"], "explicit")
+        self.assertEqual(updated["side_to_move_evidence"], "marker")
+        self.assertFalse(updated["requires_review"])
+        self.assertTrue(machine_accept_fen(updated))
         self.assertNotIn("side_to_move_inferred", updated["warnings"])
         self.assertIn("side_to_move_marker_detected", updated["warnings"])
+
+    def test_scan_chess_caption_updates_fen_side_to_move(self) -> None:
+        from chess_fen_ml_acceptance import machine_accept_fen
+
+        payload = {
+            "fen": "",
+            "full_fen": "8/8/8/8/8/8/7k/7K w - - 0 1",
+            "placement": "8/8/8/8/8/8/7k/7K",
+            "side_to_move": "w",
+            "side_to_move_status": "inferred",
+            "side_to_move_evidence": "inferred",
+            "warnings": ["side_to_move_inferred"],
+            "requires_review": True,
+        }
+        evidence = _infer_scan_chess_side_to_move_from_text("Diagram 7. Black to move.")
+
+        self.assertIsNotNone(evidence)
+        updated = _apply_scan_chess_side_to_move_evidence(payload, evidence)
+
+        self.assertEqual(updated["fen"], "8/8/8/8/8/8/7k/7K b - - 0 1")
+        self.assertEqual(updated["full_fen"], "8/8/8/8/8/8/7k/7K b - - 0 1")
+        self.assertEqual(updated["side_to_move_status"], "explicit")
+        self.assertEqual(updated["side_to_move_evidence"], "caption")
+        self.assertFalse(updated["requires_review"])
+        self.assertTrue(machine_accept_fen(updated))
+        self.assertNotIn("side_to_move_inferred", updated["warnings"])
+        self.assertIn("side_to_move_caption_applied", updated["warnings"])
+
+    def test_scan_chess_caption_parses_polish_side_to_move(self) -> None:
+        white = _infer_scan_chess_side_to_move_from_text("Diagram 12: ruch białych")
+        black = _infer_scan_chess_side_to_move_from_text("Diagram 13: czarne na ruchu")
+
+        self.assertIsNotNone(white)
+        self.assertIsNotNone(black)
+        self.assertEqual(white.side, "w")
+        self.assertEqual(black.side, "b")
+
+    def test_scan_chess_caption_marker_conflict_stays_review(self) -> None:
+        payload = {
+            "fen": "",
+            "full_fen": "8/8/8/8/8/8/7k/7K w - - 0 1",
+            "placement": "8/8/8/8/8/8/7k/7K",
+            "side_to_move": "w",
+            "side_to_move_status": "inferred",
+            "side_to_move_evidence": "inferred",
+            "warnings": ["side_to_move_inferred"],
+            "requires_review": True,
+        }
+
+        marker = _apply_scan_chess_side_to_move_marker(payload, "w")
+        conflicted = _apply_scan_chess_side_to_move_evidence(
+            marker,
+            ScanChessSideToMoveEvidence(side="b", source="caption", raw_text="Black to move"),
+        )
+
+        self.assertEqual(conflicted["fen"], "")
+        self.assertTrue(conflicted["requires_review"])
+        self.assertIn("side_to_move_evidence_conflict", conflicted["warnings"])
+
+    def test_scan_chess_caption_conflict_does_not_override_verified_label(self) -> None:
+        payload = {
+            "fen": "8/8/8/8/8/8/7k/7K w - - 0 1",
+            "full_fen": "8/8/8/8/8/8/7k/7K w - - 0 1",
+            "placement": "8/8/8/8/8/8/7k/7K",
+            "side_to_move": "w",
+            "side_to_move_status": "explicit",
+            "side_to_move_evidence": "verified_label",
+            "warnings": ["verified_exact_crop_label_used"],
+            "requires_review": False,
+        }
+
+        updated = _apply_scan_chess_side_to_move_evidence(
+            payload,
+            ScanChessSideToMoveEvidence(side="b", source="caption", raw_text="Black to move"),
+        )
+
+        self.assertEqual(updated["fen"], payload["fen"])
+        self.assertFalse(updated["requires_review"])
+        self.assertEqual(updated["side_to_move_evidence"], "verified_label")
+        self.assertIn("side_to_move_caption_ignored_verified_label", updated["warnings"])
+        self.assertNotIn("side_to_move_evidence_conflict", updated["warnings"])
+
+    def test_scan_chess_caption_does_not_override_non_side_review_blocker(self) -> None:
+        payload = {
+            "fen": "",
+            "full_fen": "8/8/8/8/8/8/7k/7K w - - 0 1",
+            "placement": "8/8/8/8/8/8/7k/7K",
+            "side_to_move": "w",
+            "side_to_move_status": "inferred",
+            "side_to_move_evidence": "inferred",
+            "warnings": ["side_to_move_inferred", "piece_template_confidence_below_threshold"],
+            "requires_review": True,
+        }
+
+        updated = _apply_scan_chess_side_to_move_evidence(
+            payload,
+            ScanChessSideToMoveEvidence(side="b", source="caption", raw_text="Black to move"),
+        )
+
+        self.assertEqual(updated["fen"], "")
+        self.assertTrue(updated["requires_review"])
+        self.assertEqual(updated["full_fen"], "8/8/8/8/8/8/7k/7K b - - 0 1")
+        self.assertIn("piece_template_confidence_below_threshold", updated["warnings"])
+
+    def test_scan_chess_side_evidence_maps_multi_diagram_page_row_major(self) -> None:
+        candidates = [
+            {"bbox": [260, 20, 360, 120]},
+            {"bbox": [20, 20, 120, 120]},
+            {"bbox": [20, 160, 120, 260]},
+        ]
+        ocr_record = {
+            "text": "\n".join(
+                [
+                    "Ex. 1-1 A",
+                    "Ex. 1-2 Vv",
+                    "Ex. 1-3 A",
+                ]
+            )
+        }
+
+        mapped = _scan_chess_side_to_move_evidence_for_candidates(candidates, ocr_record)
+
+        self.assertEqual(mapped[1].side, "w")
+        self.assertEqual(mapped[0].side, "b")
+        self.assertEqual(mapped[2].side, "w")
+
+    def test_scan_chess_ambiguous_ocr_markers_do_not_map_to_candidates(self) -> None:
+        candidates = [
+            {"bbox": [20, 20, 120, 120]},
+            {"bbox": [260, 20, 360, 120]},
+        ]
+        ocr_record = {"text": "Ex. 1-1 A"}
+
+        self.assertEqual(_scan_chess_side_to_move_evidence_for_candidates(candidates, ocr_record), {})
+
+    def test_template_recognition_with_inferred_side_keeps_full_fen_review_only(self) -> None:
+        from chess_fen_ml_acceptance import machine_accept_fen
+
+        board = [
+            list("rnbqkbnr"),
+            list("pppppppp"),
+            [""] * 8,
+            [""] * 8,
+            [""] * 8,
+            [""] * 8,
+            list("PPPPPPPP"),
+            list("RNBQKBNR"),
+        ]
+        image_data, templates = _labeled_board_png_and_templates(board)
+
+        result = recognize_chess_position_from_image(
+            image_data,
+            piece_templates=templates,
+            min_confidence=0.80,
+        )
+        payload = result.to_dict()
+
+        self.assertEqual(result.placement, "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR")
+        self.assertEqual(payload["fen"], "")
+        self.assertEqual(payload["full_fen"], "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 1")
+        self.assertTrue(payload["requires_review"])
+        self.assertEqual(payload["side_to_move_status"], "inferred")
+        self.assertEqual(payload["side_to_move_evidence"], "inferred")
+        self.assertIn("side_to_move_inferred", payload["warnings"])
+        self.assertFalse(machine_accept_fen(payload))
 
     def test_scan_chess_side_marker_infers_outline_white_and_filled_black(self) -> None:
         candidate_bbox = (100.0, 120.0, 900.0, 1120.0)
@@ -5243,6 +6103,115 @@ def _labeled_board_png_and_templates(board: list[list[str]]) -> tuple[bytes, dic
     output = io.BytesIO()
     image.save(output, format="PNG")
     return output.getvalue(), templates
+
+
+def _write_profile_ready_fixture(root: Path, *, label_count: int) -> tuple[Path, Path]:
+    board = [
+        list("rnbqkbnr"),
+        list("pppppppp"),
+        [""] * 8,
+        [""] * 8,
+        [""] * 8,
+        [""] * 8,
+        list("PPPPPPPP"),
+        list("RNBQKBNR"),
+    ]
+    image_data, _ = _labeled_board_png_and_templates(board)
+    source_pdf = root / "second_chess.pdf"
+    source_pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
+    rows = []
+    for index in range(label_count):
+        crop_path = root / f"board_{index:02d}.png"
+        crop_path.write_bytes(image_data)
+        rows.append(
+            {
+                "id": f"second_chess_{index:03d}",
+                "source_pdf": str(source_pdf),
+                "page": index + 1,
+                "diagram_index": 1,
+                "crop_path": str(crop_path),
+                "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 1",
+                "verified_by": "unit-test",
+                "verified_at": "2026-05-27",
+                **_verified_label_evidence(image_data),
+            }
+        )
+    labels_path = root / "second_chess_seed_positions.jsonl"
+    labels_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    manifest_case = root / "manifest_case_draft.json"
+    manifest_case.write_text(
+        json.dumps(
+            {
+                "id": "second_chess",
+                "document_class": "diagram_training_book",
+                "input_type": "pdf",
+                "source": str(source_pdf),
+                "target": str(source_pdf),
+                "chess_fen_seed_labels": str(labels_path),
+                "chess_fen_template_profile": "second_chess",
+                "chess_fen_seed_exact_accuracy_min": 0.90,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return manifest_case, labels_path
+
+
+def _write_holdout_eval(
+    path: Path,
+    *,
+    status: str,
+    exact_fen_accuracy: float,
+    false_positive_count: int = 0,
+) -> Path:
+    path.write_text(
+        json.dumps(
+            {
+                "status": status,
+                "fold_count": 5,
+                "holdout_fold": 0,
+                "train_label_count": 16,
+                "holdout_label_count": 4,
+                "holdout_eval": {
+                    "status": "passed" if status == "passed" else "failed",
+                    "case_count": 4,
+                    "fen_count": 4,
+                    "exact_fen_count": int(round(4 * exact_fen_accuracy)),
+                    "exact_fen_accuracy": exact_fen_accuracy,
+                    "false_positive_count": false_positive_count,
+                    "false_positive_rate": 0.0 if false_positive_count == 0 else 0.25,
+                    "square_accuracy": 1.0,
+                },
+                "reasons": [] if status == "passed" else ["holdout_eval_failed"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _write_accepted_audit_summary(
+    path: Path,
+    *,
+    status: str = "ok",
+    critical_risk_count: int = 0,
+    high_risk_count: int = 0,
+) -> Path:
+    path.write_text(
+        json.dumps(
+            {
+                "status": status,
+                "accepted_count": 20,
+                "audited_count": 20,
+                "critical_risk_count": critical_risk_count,
+                "high_risk_count": high_risk_count,
+                "medium_risk_count": 0,
+                "low_risk_count": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
 
 
 if __name__ == "__main__":
@@ -5384,9 +6353,11 @@ class ScanChessPreprocessingTests(unittest.TestCase):
             )
 
         self.assertEqual(len(records), 1)
-        self.assertEqual(records[0]["fen"], recognition.fen)
+        self.assertEqual(records[0]["fen"], "")
+        self.assertEqual(records[0]["full_fen"], recognition.fen)
         self.assertEqual(records[0]["placement"], recognition.placement)
-        self.assertFalse(records[0]["requires_review"])
+        self.assertTrue(records[0]["requires_review"])
+        self.assertIn("side_to_move_inferred", records[0]["warnings"])
         self.assertEqual(records[0]["selected_preprocess_variant"], "full_page_bbox_recognition")
         self.assertEqual(records[0]["display_variant_used"], "reader_enhanced")
         self.assertGreater(records[0]["fen_confidence"], 0.8)

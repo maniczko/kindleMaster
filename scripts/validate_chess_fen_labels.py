@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -11,6 +12,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from chess_fen_workflow import REVIEW_ONLY_WORKFLOW_STATES
 from chess_position_recognizer import validate_fen
 
 
@@ -85,6 +87,30 @@ def _record_issues(record: dict[str, Any], *, line_number: int) -> list[dict[str
         issues.append(_issue(line_number, record_id, "crop_path_missing"))
     elif crop_path is None or not crop_path.exists():
         issues.append(_issue(line_number, record_id, "crop_path_missing_on_disk", crop_path=raw_crop_path))
+    else:
+        expected_sha256 = str(record.get("crop_sha256") or record.get("sha256") or "").strip().lower()
+        if not expected_sha256:
+            issues.append(_issue(line_number, record_id, "crop_sha256_missing"))
+        else:
+            actual_sha256 = _sha256_file(crop_path)
+            if actual_sha256 != expected_sha256:
+                issues.append(
+                    _issue(
+                        line_number,
+                        record_id,
+                        "crop_sha256_mismatch",
+                        expected_sha256=expected_sha256,
+                        actual_sha256=actual_sha256,
+                    )
+                )
+
+    if not _truthy(record.get("human_verified")):
+        issues.append(_issue(line_number, record_id, "human_verified_missing"))
+    if not _truthy(record.get("square_diff_ack")):
+        issues.append(_issue(line_number, record_id, "square_diff_ack_missing"))
+    verification_source = str(record.get("verification_source") or "").strip()
+    if verification_source != "human_visual":
+        issues.append(_issue(line_number, record_id, "verification_source_invalid", verification_source=verification_source))
 
     verified_by = str(record.get("verified_by") or "").strip()
     if not verified_by:
@@ -100,11 +126,31 @@ def _record_issues(record: dict[str, Any], *, line_number: int) -> list[dict[str
     if label_status in REVIEW_ONLY_STATUSES:
         issues.append(_issue(line_number, record_id, "review_only_label_status", label_status=label_status))
 
+    workflow_state = str(record.get("workflow_state") or "").strip()
+    if workflow_state in REVIEW_ONLY_WORKFLOW_STATES:
+        issues.append(_issue(line_number, record_id, "review_only_workflow_state", workflow_state=workflow_state))
+
     notes = str(record.get("notes") or "").strip().lower()
     if "placeholder" in notes or "fill fen manually" in notes:
         issues.append(_issue(line_number, record_id, "placeholder_notes"))
 
     return issues
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "tak"}
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _issue(line_number: int, record_id: str, code: str, **extra: Any) -> dict[str, Any]:

@@ -53,8 +53,16 @@ class ChessNotationReflowTests(unittest.TestCase):
         self.assertEqual(content["metadata"]["chess_pgn"]["derived_final_fen_count"], 1)
         self.assertEqual(
             sorted(artifact["key"] for artifact in content["extra_artifacts"]),
-            ["chess_pgn", "chess_pgn_html"],
+            [
+                "chess_pgn",
+                "chess_pgn_html",
+                "html_reading_order_report_html",
+                "html_reading_order_report_json",
+            ],
         )
+        artifact_filenames = {artifact["filename"] for artifact in content["extra_artifacts"]}
+        self.assertIn("html_reading_order_report.json", artifact_filenames)
+        self.assertIn("html_reading_order_report.html", artifact_filenames)
 
     def test_xml_fragment_parser_preserves_multi_token_classes(self) -> None:
         marker_blocks = _fragment_to_blocks('<span id="book-page-12" class="page-marker"></span>', page_index=11)

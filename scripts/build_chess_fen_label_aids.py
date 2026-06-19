@@ -19,6 +19,7 @@ from scripts.export_chess_fen_review_queue import (
     _image_data_url,
     _openai_label_assist_body,
 )
+from chess_fen_workflow import MANUAL_DRAFT, with_workflow_state
 
 FILES = "abcdefgh"
 RANKS = "87654321"
@@ -160,17 +161,22 @@ def _write_contact_sheet(records: list[dict[str, Any]], output_path: Path) -> No
 
 
 def _manual_template_row(record: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "id": record.get("id", ""),
-        "crop_path": record.get("crop_path", ""),
-        "aid_path": record.get("aid_path", ""),
-        "page": record.get("page"),
-        "diagram_index": record.get("diagram_index"),
-        "fen": "",
-        "verified_by": "",
-        "verified_at": "",
-        "notes": "Fill FEN manually from aid_path. This template is not accepted for corpus proof.",
-    }
+    return with_workflow_state(
+        {
+            "id": record.get("id", ""),
+            "crop_path": record.get("crop_path", ""),
+            "aid_path": record.get("aid_path", ""),
+            "page": record.get("page"),
+            "diagram_index": record.get("diagram_index"),
+            "fen": "",
+            "label_status": "needs_manual_fen",
+            "verified_by": "",
+            "verified_at": "",
+            "accepted_for_corpus": False,
+            "notes": "Fill FEN manually from aid_path. This template is not accepted for corpus proof.",
+        },
+        MANUAL_DRAFT,
+    )
 
 
 def _build_openai_label_aid_requests(

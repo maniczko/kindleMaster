@@ -15,6 +15,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from chess_fen_workflow import (
+    MANUAL_DRAFT,
+    candidate_workflow_state,
+    with_workflow_state,
+)
 from chess_position_recognizer import load_piece_templates, recognize_chess_position_from_image, validate_fen
 
 DEFAULT_OPENAI_CHESS_FEN_REVIEW_MODEL = "gpt-4.1-mini"
@@ -169,21 +174,24 @@ def _review_item(record: dict[str, Any]) -> dict[str, Any]:
 
     filename = str(record.get("filename") or "")
     item_id = f"p{int(record.get('page') or 0):03d}_{Path(filename).stem}"
-    return {
-        "id": item_id,
-        "page": record.get("page"),
-        "filename": filename,
-        "crop_path": f"crops/{filename}" if filename else "",
-        "confidence": round(float(record.get("confidence") or 0.0), 3),
-        "reason": reason,
-        "candidate_fen": candidate_fen if valid else "",
-        "candidate_placement": placement,
-        "fen_warnings": fen_warnings,
-        "recognizer_warnings": warnings,
-        "bbox": record.get("bbox"),
-        "method": record.get("method"),
-        "review_policy": "review_only_no_epub_mutation",
-    }
+    return with_workflow_state(
+        {
+            "id": item_id,
+            "page": record.get("page"),
+            "filename": filename,
+            "crop_path": f"crops/{filename}" if filename else "",
+            "confidence": round(float(record.get("confidence") or 0.0), 3),
+            "reason": reason,
+            "candidate_fen": candidate_fen if valid else "",
+            "candidate_placement": placement,
+            "fen_warnings": fen_warnings,
+            "recognizer_warnings": warnings,
+            "bbox": record.get("bbox"),
+            "method": record.get("method"),
+            "review_policy": "review_only_no_epub_mutation",
+        },
+        candidate_workflow_state(candidate_fen if valid else ""),
+    )
 
 
 def _review_sort_key(item: dict[str, Any]) -> tuple[int, float, int, str]:
@@ -449,24 +457,27 @@ def _build_manual_verification_draft(selected: list[dict[str, Any]]) -> list[dic
         deterministic_fen = str(item.get("review_crop_fen") or "").strip()
         deterministic_is_publishable = bool(deterministic_fen and item.get("review_crop_requires_review") is False)
         rows.append(
-            {
-                "id": str(item.get("id") or ""),
-                "page": item.get("page"),
-                "diagram_index": _diagram_index_from_filename(str(item.get("filename") or "")),
-                "crop_path": str(item.get("crop_path") or ""),
-                "fen": "",
-                "deterministic_suggested_fen": deterministic_fen if deterministic_is_publishable else "",
-                "deterministic_confidence": item.get("review_crop_confidence"),
-                "deterministic_warnings": item.get("review_crop_warnings") or [],
-                "original_candidate_fen": item.get("candidate_fen") or "",
-                "original_candidate_placement": item.get("candidate_placement") or "",
-                "candidate_matches_review_crop": bool(item.get("candidate_matches_review_crop")),
-                "label_status": "needs_manual_fen",
-                "verified_by": "",
-                "verified_at": "",
-                "accepted_for_corpus": False,
-                "notes": "Review-only draft. Copy a checked FEN into fen, then fill verified_by and verified_at before promotion.",
-            }
+            with_workflow_state(
+                {
+                    "id": str(item.get("id") or ""),
+                    "page": item.get("page"),
+                    "diagram_index": _diagram_index_from_filename(str(item.get("filename") or "")),
+                    "crop_path": str(item.get("crop_path") or ""),
+                    "fen": "",
+                    "deterministic_suggested_fen": deterministic_fen if deterministic_is_publishable else "",
+                    "deterministic_confidence": item.get("review_crop_confidence"),
+                    "deterministic_warnings": item.get("review_crop_warnings") or [],
+                    "original_candidate_fen": item.get("candidate_fen") or "",
+                    "original_candidate_placement": item.get("candidate_placement") or "",
+                    "candidate_matches_review_crop": bool(item.get("candidate_matches_review_crop")),
+                    "label_status": "needs_manual_fen",
+                    "verified_by": "",
+                    "verified_at": "",
+                    "accepted_for_corpus": False,
+                    "notes": "Review-only draft. Copy a checked FEN into fen, then fill verified_by and verified_at before promotion.",
+                },
+                MANUAL_DRAFT,
+            )
         )
     rows.sort(key=_manual_draft_sort_key)
     return rows

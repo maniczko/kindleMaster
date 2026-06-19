@@ -14,6 +14,7 @@ from scripts.run_corpus_gate import (
     CI_PREMIUM_FILTERS,
     STANDARD_PREMIUM_FILTERS,
     _build_gate_output_assertions,
+    _fen_min_profile_count_for_proof_profile,
     run_corpus_gate,
 )
 
@@ -22,16 +23,23 @@ class CorpusGateTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fen_corpus_payload = {
             "status": "passed",
-            "evaluated_case_count": 1,
+            "evaluated_case_count": 2,
             "font_board_candidate_profile_count": 0,
             "font_board_candidate_status": "not_configured",
             "font_board_candidate_failed_count": 0,
             "missing_profile_count": 0,
+            "min_profile_count": 2,
+            "min_profile_count_source": "default",
             "default_min_seed_label_count": 20,
             "overall_exact_fen_accuracy": 0.925,
             "total_false_positive_count": 0,
             "reasons": [],
             "cases": [
+                {
+                    "label_validation": {
+                        "valid_label_count": 40,
+                    }
+                },
                 {
                     "label_validation": {
                         "valid_label_count": 40,
@@ -124,6 +132,8 @@ class CorpusGateTests(unittest.TestCase):
 
             self.assertEqual(payload["overall_status"], "passed_with_warnings")
             self.assertEqual(payload["proof_profile"], "standard")
+            self.assertEqual(payload["fen_profile_count_policy"]["min_profile_count"], 2)
+            self.assertEqual(payload["fen_profile_count_policy"]["source"], "default")
             self.assertTrue((reports_root / "corpus_gate.json").exists())
             self.assertTrue((reports_root / "corpus_gate.md").exists())
 
@@ -133,6 +143,8 @@ class CorpusGateTests(unittest.TestCase):
             self.assertEqual(persisted["artifacts"]["premium_json"], str(reports_root / "premium_corpus_smoke_report.json"))
             self.assertEqual(persisted["artifacts"]["fen_corpus_json"], str(reports_root / "fen_corpus_90.json"))
             self.assertEqual(persisted["fen_corpus"]["status"], "passed")
+            self.assertEqual(persisted["fen_corpus"]["min_profile_count"], 2)
+            self.assertEqual(persisted["fen_corpus"]["min_profile_count_source"], "default")
             self.assertIn("benchmark", persisted)
             self.assertEqual(persisted["benchmark"]["class_count"], 2)
 
@@ -239,8 +251,103 @@ class CorpusGateTests(unittest.TestCase):
 
         self.assertEqual(payload["overall_status"], "passed")
         self.assertEqual(payload["proof_profile"], "full")
+        self.assertEqual(self.fen_corpus_mock.call_args.kwargs["min_profile_count"], 2)
         self.assertIsNone(smoke_mock.call_args.kwargs["case_filters"])
         self.assertIsNone(premium_mock.call_args.kwargs["case_filters"])
+
+    def test_fen_min_profile_count_policy_defaults_by_proof_profile(self) -> None:
+        self.assertEqual(_fen_min_profile_count_for_proof_profile("standard", None), 2)
+        self.assertEqual(_fen_min_profile_count_for_proof_profile("full", None), 2)
+        self.assertEqual(_fen_min_profile_count_for_proof_profile("ci", None), 1)
+        self.assertEqual(_fen_min_profile_count_for_proof_profile("standard", 1), 1)
+
+    def test_one_profile_manifest_fails_standard_with_next_actions(self) -> None:
+        self.fen_corpus_mock.return_value = {
+            "status": "passed",
+            "evaluated_case_count": 1,
+            "missing_profile_count": 0,
+            "default_min_seed_label_count": 20,
+            "overall_exact_fen_accuracy": 0.95,
+            "total_false_positive_count": 0,
+            "reasons": [],
+            "next_required_actions": [],
+            "cases": [{"label_validation": {"valid_label_count": 20}}],
+        }
+        smoke_payload = {"summary": {"overall_status": "passed", "cases_run": 2}}
+        premium_payload = {
+            "overall": {
+                "overall_status": "passed",
+                "converted_case_count": 2,
+                "analysis_only_case_count": 0,
+                "grade_counts": {"pass": 2},
+                "blocker_counts": {},
+                "warning_counts": {},
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            reports_root = Path(temp_dir) / "reports"
+            with patch("scripts.run_corpus_gate.run_smoke_tests", return_value=smoke_payload):
+                with patch("scripts.run_corpus_gate.run_premium_corpus_smoke", return_value=premium_payload):
+                    payload = run_corpus_gate(
+                        output_root=Path(temp_dir) / "output",
+                        reports_root=reports_root,
+                        proof_profile="standard",
+                    )
+            markdown = (reports_root / "corpus_gate.md").read_text(encoding="utf-8")
+
+        self.assertEqual(payload["overall_status"], "failed")
+        self.assertEqual(payload["fen_corpus"]["status"], "failed")
+        self.assertEqual(payload["fen_corpus"]["min_profile_count"], 2)
+        self.assertEqual(payload["fen_corpus"]["missing_profile_count"], 1)
+        self.assertIn("do not claim broad FEN generalization", payload["fen_corpus"]["next_required_actions"][0])
+        self.assertIn("FEN min profiles required: `2`", markdown)
+        self.assertIn("FEN evaluated profiles: `1`", markdown)
+        self.assertIn("FEN missing profiles: `1`", markdown)
+        self.assertIn("FEN next actions", markdown)
+
+    def test_explicit_fen_min_profile_count_one_marks_policy_source(self) -> None:
+        self.fen_corpus_mock.return_value = {
+            "status": "passed",
+            "evaluated_case_count": 1,
+            "missing_profile_count": 0,
+            "default_min_seed_label_count": 20,
+            "overall_exact_fen_accuracy": 0.95,
+            "total_false_positive_count": 0,
+            "reasons": [],
+            "next_required_actions": [],
+            "cases": [{"label_validation": {"valid_label_count": 20}}],
+        }
+        smoke_payload = {"summary": {"overall_status": "passed", "cases_run": 2}}
+        premium_payload = {
+            "overall": {
+                "overall_status": "passed",
+                "converted_case_count": 2,
+                "analysis_only_case_count": 0,
+                "grade_counts": {"pass": 2},
+                "blocker_counts": {},
+                "warning_counts": {},
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            reports_root = Path(temp_dir) / "reports"
+            with patch("scripts.run_corpus_gate.run_smoke_tests", return_value=smoke_payload):
+                with patch("scripts.run_corpus_gate.run_premium_corpus_smoke", return_value=premium_payload):
+                    payload = run_corpus_gate(
+                        output_root=Path(temp_dir) / "output",
+                        reports_root=reports_root,
+                        proof_profile="standard",
+                        fen_min_profile_count=1,
+                    )
+            markdown = (reports_root / "corpus_gate.md").read_text(encoding="utf-8")
+
+        self.assertEqual(payload["overall_status"], "passed")
+        self.assertEqual(payload["fen_profile_count_policy"]["min_profile_count"], 1)
+        self.assertEqual(payload["fen_profile_count_policy"]["source"], "explicit")
+        self.assertEqual(payload["fen_corpus"]["min_profile_count_source"], "explicit")
+        self.assertIn("FEN min profiles required: `1`", markdown)
+        self.assertIn("FEN min profiles source: `explicit`", markdown)
 
     def test_standard_premium_filters_raise_the_converted_slice_beyond_one_case(self) -> None:
         self.assertIn("document-like-report", STANDARD_PREMIUM_FILTERS)
@@ -549,8 +656,11 @@ class CorpusGateTests(unittest.TestCase):
         self.assertIn(str(reports_root / "smoke" / "smoke_full.json"), markdown)
         self.assertIn(str(reports_root / "premium_corpus_smoke_report.json"), markdown)
         self.assertIn("FEN corpus status: `passed`", markdown)
+        self.assertIn("FEN evaluated profiles: `2`", markdown)
+        self.assertIn("FEN min profiles required: `2`", markdown)
+        self.assertIn("FEN min profiles source: `default`", markdown)
         self.assertIn("FEN min seed labels/profile: `20`", markdown)
-        self.assertIn("FEN valid seed labels: `40`", markdown)
+        self.assertIn("FEN valid seed labels: `80`", markdown)
         self.assertIn(str(reports_root / "fen_corpus_90.json"), markdown)
 
     def test_kindlemaster_corpus_command_routes_to_standard_gate(self) -> None:
@@ -592,7 +702,7 @@ class CorpusGateTests(unittest.TestCase):
             proof_profile="standard",
             smoke_case_filters=["ocr"],
             premium_case_filters=["report"],
-            fen_min_profile_count=1,
+            fen_min_profile_count=None,
             fen_min_seed_label_count=20,
         )
         print_mock.assert_called_once_with(payload)
@@ -628,7 +738,7 @@ class CorpusGateTests(unittest.TestCase):
             proof_profile="full",
             smoke_case_filters=[],
             premium_case_filters=[],
-            fen_min_profile_count=1,
+            fen_min_profile_count=None,
             fen_min_seed_label_count=20,
         )
 
@@ -663,7 +773,7 @@ class CorpusGateTests(unittest.TestCase):
             proof_profile="ci",
             smoke_case_filters=[],
             premium_case_filters=[],
-            fen_min_profile_count=1,
+            fen_min_profile_count=None,
             fen_min_seed_label_count=20,
         )
 
@@ -735,7 +845,7 @@ class CorpusGateTests(unittest.TestCase):
             proof_profile="standard",
             smoke_case_filters=[],
             premium_case_filters=[],
-            fen_min_profile_count=1,
+            fen_min_profile_count=None,
             fen_min_seed_label_count=30,
         )
 

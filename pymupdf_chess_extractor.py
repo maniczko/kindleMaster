@@ -54,7 +54,16 @@ from chess_position_recognizer import (
     summarize_chess_fen_results,
     validate_fen,
 )
+from chess_fen_ml_acceptance import machine_accept_fen
+from external_chessimg2pos_provider import (
+    ChessImg2PosProviderResult,
+    chessimg2pos_provider_available,
+    chessimg2pos_provider_settings,
+    recognize_fen_with_chessimg2pos,
+    resolve_chessimg2pos_provider_version,
+)
 from chess_pgn_extractor import (
+    assess_fen_candidate_replay,
     annotate_records_with_replayed_fens,
     attach_fen_candidates_to_pgn_records,
     build_combined_pgn,
@@ -64,6 +73,10 @@ from chess_pgn_extractor import (
     normalize_ocr_text_for_pgn,
     render_chess_pgn_html_parts,
     summarize_chess_pgn_records,
+)
+from chess_reading_order_audit import (
+    audit_chess_reading_order,
+    render_chess_reading_order_report_html,
 )
 
 WINGDINGS_TICK = "\uf0fc"
@@ -117,6 +130,18 @@ CLEAN_PUNCT_SPACE_RE = re.compile(r"\s+([,.;:!?])")
 CLEAN_PUNCT_JOIN_RE = re.compile(r"([,.;:!?])([^\s])")
 CLEAN_DECIMAL_RE = re.compile(r"(\d)\s+\.\s+(\d)")
 CLEAN_MOVE_NUMBER_RE = re.compile(r"\b(\d{1,3}\.)\s+([KQRBNOa-h])")
+SCAN_CHESS_WHITE_TO_MOVE_RE = re.compile(
+    r"(?i)\b(?:white\s+to\s+(?:move|play)|with\s+white\s+to\s+(?:move|play)|"
+    r"białe\s+(?:na\s+ruchu|zaczynaj[ąa]|(?:mają|maja)\s+ruch)|ruch\s+białych)\b"
+)
+SCAN_CHESS_BLACK_TO_MOVE_RE = re.compile(
+    r"(?i)\b(?:black\s+to\s+(?:move|play)|with\s+black\s+to\s+(?:move|play)|"
+    r"czarne\s+(?:na\s+ruchu|zaczynaj[ąa]|(?:mają|maja)\s+ruch)|ruch\s+czarnych)\b"
+)
+SCAN_CHESS_EXERCISE_SIDE_MARKER_RE = re.compile(
+    r"(?i)\b(?:diagram|ex|fx|e|f|pr)[\s.:-]*\d{0,2}(?:[-il]\d{1,2})?"
+    r"[^A-Za-z0-9\n]{0,16}(A|Vv|vV|V|△|▲|▽|▼)\b"
+)
 
 
 @dataclass
@@ -149,6 +174,15 @@ class TextLineItem:
     y: float
     x0: float = 0.0
     x1: float = 0.0
+
+
+@dataclass(frozen=True)
+class ScanChessSideToMoveEvidence:
+    side: str
+    source: str
+    raw_text: str = ""
+    confidence: float = 1.0
+    warnings: tuple[str, ...] = ()
 
 
 def _bbox_is_inside(inner: tuple, outer: tuple, margin: float = 1.5) -> bool:
@@ -941,9 +975,13 @@ def _chess_notation_diagram_records_from_page(
         )
         candidate_payload: dict[str, Any] = {
             "fen": "",
+            "full_fen": "",
             "placement": "",
+            "placement_fen": "",
             "confidence": float(getattr(candidate, "confidence", 0.0) or getattr(candidate, "grid_confidence", 0.0) or 0.0),
             "side_to_move": "w",
+            "side_to_move_status": "unknown",
+            "side_to_move_evidence": "none",
             "bbox": tuple(float(value) for value in bbox),
             "method": str(getattr(candidate, "method", "") or "notation-page-board-crop"),
             "warnings": ["image_board_requires_review"],
@@ -987,6 +1025,20 @@ def _chess_notation_diagram_records_from_page(
                     config=config,
                 )
                 candidate_payload = _scan_chess_fen_payload(candidate_payload, recognition)
+                candidate_payload = _scan_chess_attach_external_fen_provider(
+                    candidate_payload,
+                    crop_bytes=png_data,
+                    config=config,
+                    page_image=page_image,
+                    best_bbox=recognition_bbox_tuple,
+                    reader_bbox=bbox_tuple,
+                    bbox=bbox_tuple,
+                    page=page_num + 1,
+                    selected_preprocess_variant=selected_variant,
+                    display_variant_used="reader_enhanced",
+                    min_confidence=min_confidence,
+                    pgn_records=(),
+                )
                 preprocess_metadata = _scan_chess_preprocess_metadata(
                     selected_variant=selected_variant,
                     display_variant="reader_enhanced",
@@ -1009,8 +1061,12 @@ def _chess_notation_diagram_records_from_page(
                 "width": width,
                 "height": height,
                 "fen": fen_value,
+                "full_fen": str(candidate_payload.get("full_fen") or fen_value),
                 "placement": str(candidate_payload.get("placement") or ""),
+                "placement_fen": str(candidate_payload.get("placement_fen") or candidate_payload.get("placement") or ""),
                 "side_to_move": str(candidate_payload.get("side_to_move") or "w"),
+                "side_to_move_status": str(candidate_payload.get("side_to_move_status") or ""),
+                "side_to_move_evidence": str(candidate_payload.get("side_to_move_evidence") or ""),
                 "confidence": float(candidate_payload.get("confidence", 0.0) or 0.0),
                 "requires_review": bool(candidate_payload.get("requires_review", not fen_value)),
                 "method": str(candidate_payload.get("method") or "notation-page-board-crop"),
@@ -1620,9 +1676,10 @@ def _reconstruct_row_grouped_diagrams(html_parts: list[str]) -> Optional[list[st
     return reconstructed
 
 
-SCAN_CHESS_CACHE_VERSION = 3
+SCAN_CHESS_CACHE_VERSION = 4
 SCAN_CHESS_PAGE_CANDIDATE_CACHE_VERSION = 17
 SCAN_CHESS_RECOGNITION_CACHE_VERSION = 8
+SCAN_CHESS_EXTERNAL_PROVIDER_CACHE_VERSION = 2
 SCAN_CHESS_SPARSE_EXACT_CONSENSUS_MIN_PIECES = 3
 SCAN_CHESS_SPARSE_EXACT_CONSENSUS_MIN_CONFIDENCE = 0.827
 SCAN_CHESS_SPARSE_EXACT_CONSENSUS_MAX_PIECES = 8
@@ -1736,6 +1793,7 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
             )
             chapter_images: list[dict[str, Any]] = []
             page_fen_values: list[str] = []
+            caption_side_evidence = _scan_chess_side_to_move_evidence_for_candidates(candidates, ocr_record)
             for candidate_index, candidate in enumerate(candidates, start=1):
                 bbox = _clamp_bbox(candidate.get("bbox"), page_image.size)
                 if bbox is None:
@@ -1787,6 +1845,20 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
                         non_board_rejected_count += 1
                         continue
                     candidate_payload = _scan_chess_fen_payload(candidate, recognition)
+                    candidate_payload = _scan_chess_attach_external_fen_provider(
+                        candidate_payload,
+                        crop_bytes=png_data,
+                        config=config,
+                        page_image=page_image,
+                        best_bbox=tuple(float(value) for value in recognition_bbox),
+                        reader_bbox=tuple(float(value) for value in bbox),
+                        bbox=tuple(float(value) for value in bbox),
+                        page=page_num + 1,
+                        selected_preprocess_variant=str(preprocess_metadata.get("selected_preprocess_variant") or "full_page_bbox_recognition"),
+                        display_variant_used=str(preprocess_metadata.get("display_variant_used") or "reader_enhanced"),
+                        min_confidence=float(getattr(config, "chess_fen_min_confidence", 0.85) or 0.85),
+                        pgn_records=page_pgn_records,
+                    )
                 else:
                     candidate_payload = _scan_chess_candidate_review_payload(candidate)
                 marker_side = _infer_scan_chess_side_to_move(
@@ -1795,6 +1867,9 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
                 )
                 if marker_side and bool(getattr(config, "chess_fen_apply_side_marker", False)):
                     candidate_payload = _apply_scan_chess_side_to_move_marker(candidate_payload, marker_side)
+                caption_evidence = caption_side_evidence.get(candidate_index - 1)
+                if caption_evidence is not None:
+                    candidate_payload = _apply_scan_chess_side_to_move_evidence(candidate_payload, caption_evidence)
                 diagram_total += 1
                 chess_img = {
                     "filename": filename,
@@ -2464,8 +2539,11 @@ def _recognize_scan_chess_candidate_bbox(
             return ChessFenResult(
                 fen=str(getattr(best_review_result, "fen", "") or ""),
                 placement=str(getattr(best_review_result, "placement", "") or ""),
+                full_fen=str(getattr(best_review_result, "full_fen", "") or getattr(best_review_result, "fen", "")),
                 confidence=float(getattr(best_review_result, "confidence", 0.0) or 0.0),
                 side_to_move=str(getattr(best_review_result, "side_to_move", "w") or "w"),
+                side_to_move_status=str(getattr(best_review_result, "side_to_move_status", "") or ""),
+                side_to_move_evidence=str(getattr(best_review_result, "side_to_move_evidence", "") or ""),
                 bbox=getattr(best_review_result, "bbox", None),
                 method=str(getattr(best_review_result, "method", "") or "image-template-board"),
                 warnings=merged_warnings,
@@ -2696,8 +2774,11 @@ def _scan_chess_recalibrate_cached_result(result, *, min_confidence: float):
             return ChessFenResult(
                 fen="",
                 placement=placement,
+                full_fen=str(getattr(result, "full_fen", "") or getattr(result, "fen", "")),
                 confidence=confidence,
                 side_to_move=side_to_move,
+                side_to_move_status=str(getattr(result, "side_to_move_status", "") or ("inferred" if "side_to_move_inferred" in warnings else "unknown")),
+                side_to_move_evidence=str(getattr(result, "side_to_move_evidence", "") or ("inferred" if "side_to_move_inferred" in warnings else "none")),
                 bbox=getattr(result, "bbox", None),
                 method=str(getattr(result, "method", "") or "image-template-board"),
                 warnings=recalibrated_warnings,
@@ -2712,11 +2793,16 @@ def _scan_chess_recalibrate_cached_result(result, *, min_confidence: float):
     if not valid:
         return result
     recalibrated_warnings = sorted((warnings - {"piece_template_confidence_below_threshold"}) | set(fen_warnings))
+    side_status = str(getattr(result, "side_to_move_status", "") or ("inferred" if "side_to_move_inferred" in recalibrated_warnings else "unknown"))
+    side_evidence = str(getattr(result, "side_to_move_evidence", "") or ("inferred" if "side_to_move_inferred" in recalibrated_warnings else "none"))
     return ChessFenResult(
         fen=fen,
         placement=placement,
+        full_fen=fen,
         confidence=confidence,
         side_to_move=side_to_move,
+        side_to_move_status=side_status,
+        side_to_move_evidence=side_evidence,
         bbox=getattr(result, "bbox", None),
         method=str(getattr(result, "method", "") or "image-template-board"),
         warnings=recalibrated_warnings,
@@ -2762,8 +2848,11 @@ def _scan_chess_result_from_dict(data: dict[str, Any]):
     return ChessFenResult(
         fen=str(data.get("fen") or ""),
         placement=str(data.get("placement") or ""),
+        full_fen=str(data.get("full_fen") or data.get("fen") or ""),
         confidence=float(data.get("confidence", 0.0) or 0.0),
         side_to_move=str(data.get("side_to_move") or "w"),
+        side_to_move_status=str(data.get("side_to_move_status") or ""),
+        side_to_move_evidence=str(data.get("side_to_move_evidence") or ""),
         bbox=bbox,
         method=str(data.get("method") or "image-template-board"),
         warnings=list(data.get("warnings") or []),
@@ -2799,17 +2888,15 @@ def _scan_chess_apply_verified_crop_label(
         return recognition
     placement = fen.split()[0]
     side_to_move = fen.split()[1] if len(fen.split()) >= 2 else "w"
-    carried_warnings = {
-        str(warning)
-        for warning in (getattr(recognition, "warnings", []) or [])
-        if str(warning) == "side_to_move_inferred"
-    }
-    warnings = sorted({*carried_warnings, *fen_warnings, "verified_exact_crop_label_used"})
+    warnings = sorted({*fen_warnings, "verified_exact_crop_label_used"})
     return ChessFenResult(
         fen=fen,
         placement=placement,
+        full_fen=fen,
         confidence=1.0,
         side_to_move=side_to_move,
+        side_to_move_status="explicit",
+        side_to_move_evidence="verified_label",
         bbox=bbox,
         method="verified-exact-crop-label",
         warnings=warnings,
@@ -3002,8 +3089,11 @@ def _scan_chess_sparse_exact_consensus_result(
     return ChessFenResult(
         fen=fen,
         placement=placement,
+        full_fen=fen,
         confidence=max(raw_confidence, reader_confidence),
         side_to_move=side_to_move,
+        side_to_move_status="inferred",
+        side_to_move_evidence="inferred",
         bbox=getattr(reader_result, "bbox", None) or getattr(raw_result, "bbox", None),
         method=str(getattr(reader_result, "method", "") or getattr(raw_result, "method", "") or "image-template-board"),
         warnings=warnings,
@@ -3051,8 +3141,11 @@ def _scan_chess_result_with_warning(result, warning: str):
     return ChessFenResult(
         fen=str(getattr(result, "fen", "") or ""),
         placement=str(getattr(result, "placement", "") or ""),
+        full_fen=str(getattr(result, "full_fen", "") or getattr(result, "fen", "")),
         confidence=float(getattr(result, "confidence", 0.0) or 0.0),
         side_to_move=str(getattr(result, "side_to_move", "w") or "w"),
+        side_to_move_status=str(getattr(result, "side_to_move_status", "") or ""),
+        side_to_move_evidence=str(getattr(result, "side_to_move_evidence", "") or ""),
         bbox=getattr(result, "bbox", None),
         method=str(getattr(result, "method", "") or "image-template-board"),
         warnings=warnings,
@@ -3740,6 +3833,28 @@ def _scan_chess_pgn_extra_artifacts(
             "label": "HTML PGN/FEN",
         }
     )
+    reading_order_report = audit_chess_reading_order(
+        diagram_records=diagram_list,
+        pgn_records=record_list,
+    )
+    artifacts.append(
+        {
+            "key": "html_reading_order_report_json",
+            "filename": "html_reading_order_report.json",
+            "content_type": "application/json; charset=utf-8",
+            "data": json.dumps(reading_order_report.to_dict(), ensure_ascii=False, indent=2).encode("utf-8"),
+            "label": "HTML reading-order audit",
+        }
+    )
+    artifacts.append(
+        {
+            "key": "html_reading_order_report_html",
+            "filename": "html_reading_order_report.html",
+            "content_type": "text/html; charset=utf-8",
+            "data": render_chess_reading_order_report_html(reading_order_report).encode("utf-8"),
+            "label": "HTML reading-order audit",
+        }
+    )
     return artifacts
 
 
@@ -3840,9 +3955,13 @@ def _scan_chess_candidate_review_payload(candidate: dict[str, Any]) -> dict[str,
         warnings.append("image_board_requires_review")
     return {
         "fen": "",
+        "full_fen": "",
         "placement": "",
+        "placement_fen": "",
         "confidence": float(candidate.get("confidence", 0.0) or 0.0),
         "side_to_move": "w",
+        "side_to_move_status": "unknown",
+        "side_to_move_evidence": "none",
         "bbox": candidate.get("bbox"),
         "method": str(candidate.get("method") or "image-page-board-candidate"),
         "warnings": warnings,
@@ -3851,21 +3970,720 @@ def _scan_chess_candidate_review_payload(candidate: dict[str, Any]) -> dict[str,
     }
 
 
-def _apply_scan_chess_side_to_move_marker(payload: dict[str, Any], side_to_move: str) -> dict[str, Any]:
-    side = "b" if str(side_to_move).lower().startswith("b") else "w"
+def _scan_chess_payload_with_warnings(payload: dict[str, Any], *warnings: str) -> dict[str, Any]:
     updated = dict(payload)
+    merged = {str(warning).strip() for warning in list(updated.get("warnings") or []) if str(warning).strip()}
+    merged.update(str(warning).strip() for warning in warnings if str(warning).strip())
+    updated["warnings"] = sorted(merged)
+    return updated
+
+
+def _scan_chess_attach_external_candidates(
+    payload: dict[str, Any],
+    external_candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    updated = dict(payload)
+    updated["external_fen_candidates"] = [dict(candidate) for candidate in external_candidates if isinstance(candidate, dict)]
+    return updated
+
+
+def _scan_chess_external_candidate_is_publishable(
+    candidate: dict[str, Any],
+    *,
+    min_confidence: float,
+) -> bool:
+    fen = str(candidate.get("fen") or candidate.get("full_fen") or "").strip()
+    if not fen:
+        return False
+    warnings = {str(warning).strip() for warning in list(candidate.get("warnings") or []) if str(warning).strip()}
+    if warnings & {
+        "fen_missing",
+        "fen_must_have_six_fields",
+        "fen_king_count_invalid",
+        "fen_position_invalid",
+        "fen_parse_failed",
+        "white_king_count_invalid",
+        "black_king_count_invalid",
+        "placement_must_have_eight_ranks",
+        "placement_contains_invalid_piece",
+        "rank_width_invalid",
+        "rank_digit_invalid",
+        "side_to_move_invalid",
+        "pawn_on_back_rank",
+    }:
+        return False
+    effective_confidence = float(candidate.get("effective_confidence", candidate.get("confidence", 0.0)) or 0.0)
+    if "side_to_move_inferred" in warnings:
+        return bool(candidate.get("replay_legal_from_fen", False)) and effective_confidence >= float(min_confidence or 0.0)
+    if not machine_accept_fen({**candidate, "requires_review": False}):
+        return False
+    return effective_confidence >= float(min_confidence or 0.0)
+
+
+def _scan_chess_external_provider_should_run(
+    payload: dict[str, Any],
+    *,
+    min_confidence: float,
+) -> bool:
+    if not chessimg2pos_provider_available():
+        return False
+    if not bool(payload.get("board_detected", True)):
+        return False
+    warnings = {str(warning).strip() for warning in list(payload.get("warnings") or []) if str(warning).strip()}
+    if "verified_exact_crop_label_used" in warnings:
+        return False
+    if bool(payload.get("requires_review", True)):
+        return True
+    confidence = float(payload.get("confidence", 0.0) or 0.0)
+    return confidence < float(min_confidence or 0.0) + 0.03
+
+
+def _scan_chess_external_provider_cache_path(
+    crop_bytes: bytes,
+    *,
+    provider_name: str,
+    provider_version: str,
+    provider_mode: str,
+    provider_payload_shape_version: int,
+    variant_role: str,
+    selected_preprocess_variant: str,
+    display_variant_used: str,
+) -> Path:
+    token = "|".join(
+        [
+            str(SCAN_CHESS_EXTERNAL_PROVIDER_CACHE_VERSION),
+            str(provider_name or "chessimg2pos"),
+            str(provider_version or "unknown"),
+            str(provider_mode or "auto"),
+            str(provider_payload_shape_version or 1),
+            str(variant_role or ""),
+            str(selected_preprocess_variant or ""),
+            str(display_variant_used or ""),
+            hashlib.sha256(crop_bytes).hexdigest(),
+        ]
+    )
+    digest = hashlib.sha256(token.encode("utf-8", errors="ignore")).hexdigest()[:24]
+    return Path("output") / "cache" / "scanned_chess" / "external_provider" / f"{digest}.json"
+
+
+def _scan_chess_external_provider_result_from_dict(data: dict[str, Any]) -> ChessImg2PosProviderResult:
+    return ChessImg2PosProviderResult(
+        fen=str(data.get("fen") or ""),
+        placement=str(data.get("placement") or ""),
+        confidence=float(data.get("confidence", 0.0) or 0.0),
+        provider=str(data.get("provider") or "chessimg2pos"),
+        provider_version=str(data.get("provider_version") or "unknown"),
+        method=str(data.get("method") or "external-chessimg2pos"),
+        warnings=[str(warning) for warning in (data.get("warnings") or []) if str(warning).strip()],
+        raw_response=str(data.get("raw_response") or ""),
+        runtime_ms=int(data.get("runtime_ms", 0) or 0),
+        debug_payload=dict(data.get("debug_payload") or {}),
+        squares=[dict(square) for square in (data.get("squares") or []) if isinstance(square, dict)],
+        king_squares=dict(data.get("king_squares") or {}),
+        piece_count_summary=dict(data.get("piece_count_summary") or {}),
+        placement_confidence=(
+            None if data.get("placement_confidence") is None else float(data.get("placement_confidence") or 0.0)
+        ),
+        effective_confidence=float(data.get("effective_confidence", data.get("confidence", 0.0)) or 0.0),
+        variant_role=str(data.get("variant_role") or ""),
+    )
+
+
+def _scan_chess_run_external_fen_provider(
+    crop_bytes: bytes,
+    *,
+    bbox: tuple[float, float, float, float],
+    page: int,
+    selected_preprocess_variant: str,
+    display_variant_used: str,
+    variant_role: str,
+) -> ChessImg2PosProviderResult:
+    settings = chessimg2pos_provider_settings()
+    provider_version = resolve_chessimg2pos_provider_version(settings)
+    cache_path = _scan_chess_external_provider_cache_path(
+        crop_bytes,
+        provider_name="chessimg2pos",
+        provider_version=provider_version,
+        provider_mode=str(settings.get("mode") or "auto"),
+        provider_payload_shape_version=2,
+        variant_role=variant_role,
+        selected_preprocess_variant=selected_preprocess_variant,
+        display_variant_used=display_variant_used,
+    )
+    try:
+        if cache_path.exists():
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            if cached.get("version") == SCAN_CHESS_EXTERNAL_PROVIDER_CACHE_VERSION:
+                return _scan_chess_external_provider_result_from_dict(cached.get("result") or {})
+    except Exception:
+        pass
+
+    temp_path: Path | None = None
+    cache_dir = cache_path.parent / "tmp"
+    try:
+        import tempfile
+
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            suffix=".png",
+            prefix="chessimg2pos_",
+            dir=str(cache_dir),
+            delete=False,
+        ) as handle:
+            handle.write(crop_bytes)
+            temp_path = Path(handle.name)
+        result = recognize_fen_with_chessimg2pos(
+            temp_path,
+            bbox=bbox,
+            page=page,
+            selected_preprocess_variant=selected_preprocess_variant,
+            display_variant_used=display_variant_used,
+            settings=settings,
+            variant_role=variant_role,
+        )
+    except Exception as exc:
+        result = ChessImg2PosProviderResult(
+            warnings=["external_fen_provider_failed"],
+            raw_response=str(exc),
+        )
+    finally:
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(
+            json.dumps(
+                {
+                    "version": SCAN_CHESS_EXTERNAL_PROVIDER_CACHE_VERSION,
+                    "result": result.to_dict(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+    return result
+
+
+def _scan_chess_external_provider_candidate(
+    result: ChessImg2PosProviderResult,
+    *,
+    bbox: tuple[float, float, float, float],
+    min_confidence: float,
+) -> dict[str, Any] | None:
+    fen = str(result.fen or "").strip()
+    placement = str(result.placement or "").strip()
+    warnings = {str(warning).strip() for warning in list(result.warnings or []) if str(warning).strip()}
+    placement_only = False
+    if not fen:
+        if not placement:
+            return None
+        placement_only = True
+        fen = f"{placement} w - - 0 1"
+
+    valid, fen_warnings = validate_fen(fen)
+    warnings.update(fen_warnings)
+    warnings.add("side_to_move_inferred")
+    fen_parts = fen.split()
+    if len(fen_parts) == 6:
+        placement = fen_parts[0]
+        side_to_move = fen_parts[1]
+    else:
+        side_to_move = "w"
+    canonical_fen = "" if placement_only else fen
+    requires_review = True
+    side_to_move_status = "inferred"
+    side_to_move_evidence = "inferred"
+    return {
+        "fen": canonical_fen,
+        "full_fen": fen,
+        "placement": placement,
+        "placement_fen": placement,
+        "confidence": round(float(result.confidence or 0.0), 3),
+        "effective_confidence": round(float(result.effective_confidence or result.confidence or 0.0), 3),
+        "side_to_move": side_to_move,
+        "side_to_move_status": side_to_move_status,
+        "side_to_move_evidence": side_to_move_evidence,
+        "bbox": bbox,
+        "method": str(result.method or "external-chessimg2pos"),
+        "warnings": sorted(warnings),
+        "requires_review": requires_review,
+        "board_detected": True,
+        "provider": str(result.provider or "chessimg2pos"),
+        "provider_version": str(result.provider_version or "unknown"),
+        "source": "external",
+        "raw_response": str(result.raw_response or ""),
+        "runtime_ms": int(result.runtime_ms or 0),
+        "debug_payload": dict(result.debug_payload or {}),
+        "squares": [dict(square) for square in result.squares],
+        "king_squares": dict(result.king_squares or {}),
+        "piece_count_summary": dict(result.piece_count_summary or {}),
+        "placement_confidence": result.placement_confidence,
+        "variant_role": str(result.variant_role or ""),
+    }
+
+
+def _scan_chess_external_provider_crop_variants(
+    page_image: Image.Image,
+    *,
+    best_bbox: tuple[float, float, float, float],
+    reader_bbox: tuple[float, float, float, float],
+    config: ConversionConfig,
+    selected_preprocess_variant: str,
+    display_variant_used: str,
+) -> list[dict[str, Any]]:
+    variants: list[dict[str, Any]] = []
+    seen: set[tuple[int, int, int, int]] = set()
+    for variant_role, raw_bbox in (("best", best_bbox), ("reader_visible", reader_bbox)):
+        clamped = _clamp_bbox(raw_bbox, page_image.size, pad_ratio=0.0 if variant_role == "best" else 0.025, min_pad=0.0 if variant_role == "best" else 4.0)
+        if clamped is None:
+            continue
+        bbox_key = tuple(int(value) for value in clamped)
+        if bbox_key in seen:
+            continue
+        seen.add(bbox_key)
+        crop = page_image.crop(clamped)
+        crop_data, _, _ = _encode_scan_chess_diagram_crop(crop, config)
+        variants.append(
+            {
+                "variant_role": variant_role,
+                "crop_bytes": crop_data,
+                "bbox": tuple(float(value) for value in clamped),
+                "selected_preprocess_variant": selected_preprocess_variant,
+                "display_variant_used": display_variant_used,
+            }
+        )
+    return variants[:2]
+
+
+def _scan_chess_king_structure_agreement(local_payload: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    local_placement = str(local_payload.get("placement") or "").strip()
+    candidate_placement = str(candidate.get("placement") or "").strip()
+    if not local_placement or not candidate_placement:
+        return False
+    return local_placement.count("K") == candidate_placement.count("K") and local_placement.count("k") == candidate_placement.count("k")
+
+
+def _scan_chess_collect_external_fen_candidates(
+    variants: list[dict[str, Any]],
+    *,
+    local_payload: dict[str, Any],
+    page: int,
+    min_confidence: float,
+    pgn_records: tuple[Any, ...],
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    external_placements: list[str] = []
+    local_placement = str(local_payload.get("placement") or "").strip()
+    for variant in variants:
+        result = _scan_chess_run_external_fen_provider(
+            variant["crop_bytes"],
+            bbox=tuple(variant["bbox"]),
+            page=page,
+            selected_preprocess_variant=str(variant.get("selected_preprocess_variant") or ""),
+            display_variant_used=str(variant.get("display_variant_used") or ""),
+            variant_role=str(variant.get("variant_role") or ""),
+        )
+        candidate = _scan_chess_external_provider_candidate(
+            result,
+            bbox=tuple(variant["bbox"]),
+            min_confidence=min_confidence,
+        )
+        if candidate is None:
+            continue
+        candidate["agrees_with_local_placement"] = bool(local_placement and str(candidate.get("placement") or "") == local_placement)
+        candidate["agreement_count"] = 1 if candidate["agrees_with_local_placement"] else 0
+        candidate["king_structure_agreement"] = _scan_chess_king_structure_agreement(local_payload, candidate)
+        candidate["publishable_before_replay"] = _scan_chess_external_candidate_is_publishable(candidate, min_confidence=min_confidence)
+        replay_fen = str(candidate.get("fen") or candidate.get("full_fen") or "").strip()
+        replay = assess_fen_candidate_replay(pgn_records, replay_fen) if pgn_records else {
+            "replay_legal_from_fen": False,
+            "legal_line_count": 0,
+            "best_halfmove_count": 0,
+            "final_fen": "",
+            "warnings": [],
+        }
+        candidate["replay_legal_from_fen"] = bool(replay.get("replay_legal_from_fen", False))
+        candidate["replay_legal_line_count"] = int(replay.get("legal_line_count", 0) or 0)
+        candidate["replay_best_halfmove_count"] = int(replay.get("best_halfmove_count", 0) or 0)
+        candidate["replay_final_fen"] = str(replay.get("final_fen") or "")
+        candidate["publishable_after_replay"] = bool(
+            candidate["replay_legal_from_fen"]
+            and _scan_chess_external_candidate_is_publishable(
+                {**candidate, "replay_legal_from_fen": True},
+                min_confidence=min_confidence,
+            )
+        )
+        warnings = {str(warning) for warning in list(candidate.get("warnings") or []) if str(warning).strip()}
+        warnings.update(str(warning) for warning in list(replay.get("warnings") or []) if str(warning).strip())
+        candidate["warnings"] = sorted(warnings)
+        candidates.append(candidate)
+        placement = str(candidate.get("placement") or "").strip()
+        if placement:
+            external_placements.append(placement)
+    for candidate in candidates:
+        placement = str(candidate.get("placement") or "").strip()
+        agrees_with_other_external = external_placements.count(placement) > 1 if placement else False
+        candidate["agrees_with_other_external"] = agrees_with_other_external
+        candidate["agreement_count"] = int(candidate.get("agreement_count", 0) or 0) + (1 if agrees_with_other_external else 0)
+    return candidates
+
+
+def _scan_chess_consensus_external_fen_candidate(
+    payload: dict[str, Any],
+    external_candidates: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not external_candidates:
+        return None
+    ranked = sorted(
+        external_candidates,
+        key=lambda candidate: (
+            bool(candidate.get("publishable_after_replay", False)),
+            bool(candidate.get("publishable_before_replay", False)),
+            int(candidate.get("agreement_count", 0) or 0),
+            bool(candidate.get("king_structure_agreement", False)),
+            float(candidate.get("effective_confidence", candidate.get("confidence", 0.0)) or 0.0),
+            float(candidate.get("confidence", 0.0) or 0.0),
+        ),
+        reverse=True,
+    )
+    best = ranked[0]
+    if len(ranked) > 1:
+        second = ranked[1]
+        if str(best.get("placement") or "").strip() and str(second.get("placement") or "").strip():
+            if str(best.get("placement") or "").strip() != str(second.get("placement") or "").strip():
+                best = dict(best)
+                best["warnings"] = sorted(
+                    {
+                        *list(best.get("warnings") or []),
+                        "external_fen_multi_crop_conflict",
+                    }
+                )
+    return best
+
+
+def _scan_chess_attach_external_fen_provider(
+    payload: dict[str, Any],
+    *,
+    crop_bytes: bytes,
+    config: ConversionConfig,
+    page_image: Image.Image,
+    best_bbox: tuple[float, float, float, float],
+    reader_bbox: tuple[float, float, float, float],
+    bbox: tuple[float, float, float, float],
+    page: int,
+    selected_preprocess_variant: str,
+    display_variant_used: str,
+    min_confidence: float,
+    pgn_records: tuple[Any, ...] | list[Any],
+) -> dict[str, Any]:
+    if not _scan_chess_external_provider_should_run(payload, min_confidence=min_confidence):
+        return payload
+    variants = _scan_chess_external_provider_crop_variants(
+        page_image,
+        best_bbox=best_bbox,
+        reader_bbox=reader_bbox,
+        config=config,
+        selected_preprocess_variant=selected_preprocess_variant,
+        display_variant_used=display_variant_used,
+    )
+    if not variants:
+        return payload
+    external_candidates = _scan_chess_collect_external_fen_candidates(
+        variants,
+        local_payload=payload,
+        page=page,
+        min_confidence=min_confidence,
+        pgn_records=tuple(pgn_records or ()),
+    )
+    if not external_candidates:
+        return _scan_chess_payload_with_warnings(payload, "external_fen_provider_used")
+
+    updated_payload = _scan_chess_attach_external_candidates(payload, external_candidates)
+    aggregate_warnings = {"external_fen_provider_used", "external_fen_candidate_added"}
+    if any(bool(candidate.get("agrees_with_other_external")) for candidate in external_candidates):
+        aggregate_warnings.add("external_fen_multi_crop_agreement")
+    if len({str(candidate.get("placement") or "").strip() for candidate in external_candidates if str(candidate.get("placement") or "").strip()}) > 1:
+        aggregate_warnings.add("external_fen_multi_crop_conflict")
+    consensus_candidate = _scan_chess_consensus_external_fen_candidate(payload, external_candidates)
+    if consensus_candidate is None:
+        return _scan_chess_payload_with_warnings(updated_payload, *sorted(aggregate_warnings))
+
+    if bool(consensus_candidate.get("agrees_with_local_placement")):
+        aggregate_warnings.add("external_fen_agrees_with_local")
+    else:
+        local_fen = str(payload.get("fen") or "").strip()
+        external_fen = str(consensus_candidate.get("fen") or "").strip()
+        if local_fen and external_fen and local_fen != external_fen:
+            aggregate_warnings.add("external_fen_conflicts_with_local")
+    if int(consensus_candidate.get("agreement_count", 0) or 0) > 1:
+        aggregate_warnings.add("external_fen_consensus_used")
+
+    if not bool(consensus_candidate.get("king_structure_agreement", False)):
+        aggregate_warnings.add("external_fen_rejected_by_king_structure")
+
+    if bool(consensus_candidate.get("replay_legal_from_fen", False)):
+        aggregate_warnings.add("external_fen_promoted_by_replay")
+    elif bool(consensus_candidate.get("publishable_before_replay", False)):
+        aggregate_warnings.add("external_fen_rejected_by_replay")
+
+    updated_payload = _scan_chess_payload_with_warnings(updated_payload, *sorted(aggregate_warnings))
+
+    can_promote = (
+        bool(payload.get("requires_review", True))
+        and bool(consensus_candidate.get("publishable_after_replay", False))
+        and bool(consensus_candidate.get("replay_legal_from_fen", False))
+        and bool(consensus_candidate.get("king_structure_agreement", False))
+    )
+    if not can_promote:
+        return updated_payload
+
+    promoted = dict(consensus_candidate)
+    if not str(promoted.get("fen") or "").strip():
+        promoted["fen"] = str(promoted.get("full_fen") or "").strip()
+    promoted["external_fen_candidates"] = external_candidates
+    promoted["warnings"] = sorted(
+        {
+            *list(consensus_candidate.get("warnings") or []),
+            *sorted(aggregate_warnings),
+        }
+    )
+    promoted["requires_review"] = False
+    return promoted
+
+
+def _scan_chess_payload_with_side_to_move_conflict(payload: dict[str, Any], evidence: ScanChessSideToMoveEvidence) -> dict[str, Any]:
+    updated = dict(payload)
+    warnings = set(str(warning) for warning in list(updated.get("warnings") or []))
+    warnings.update(evidence.warnings)
+    warnings.add("side_to_move_evidence_conflict")
+    if evidence.source == "caption":
+        warnings.add("side_to_move_caption_detected")
+    updated["warnings"] = sorted(warnings)
+    updated["fen"] = ""
+    updated["requires_review"] = True
+    return updated
+
+
+def _scan_chess_side_evidence_has_only_side_blocker(payload: dict[str, Any]) -> bool:
+    allowed = {
+        "side_to_move_inferred",
+        "side_to_move_marker_detected",
+        "side_to_move_caption_detected",
+        "side_to_move_caption_applied",
+        "reader_visible_crop_fen_used",
+        "reader_expanded_crop_fen_used",
+        "final_rendered_crop_fen_used",
+        "verified_exact_crop_label_used",
+        "recognition_inner_border_trim_used",
+        "recognition_caption_bottom_trim_used",
+        "recognition_corner_marker_trim_used",
+        "recognition_side_marker_trim_used",
+        "dense_board_area_crop_used",
+    }
+    warnings = {str(warning) for warning in list(payload.get("warnings") or [])}
+    return not (warnings - allowed)
+
+
+def _apply_scan_chess_side_to_move_evidence(
+    payload: dict[str, Any],
+    evidence: ScanChessSideToMoveEvidence,
+) -> dict[str, Any]:
+    side = "b" if str(evidence.side).lower().startswith("b") else "w"
+    source = str(evidence.source or "").strip() or "caption"
+    updated = dict(payload)
+    existing_status = str(updated.get("side_to_move_status") or "")
+    existing_evidence = str(updated.get("side_to_move_evidence") or "")
+    existing_side = str(updated.get("side_to_move") or "")
+    if existing_status == "explicit" and existing_evidence not in {"inferred", "none", ""} and existing_side in {"w", "b"}:
+        if existing_side != side:
+            if existing_evidence in {"verified_label", "exact_label"}:
+                warnings = set(str(warning) for warning in list(updated.get("warnings") or []))
+                warnings.update(evidence.warnings)
+                if source == "caption":
+                    warnings.add("side_to_move_caption_detected")
+                    warnings.add("side_to_move_caption_ignored_verified_label")
+                updated["warnings"] = sorted(warnings)
+                return updated
+            return _scan_chess_payload_with_side_to_move_conflict(updated, evidence)
+        warnings = set(str(warning) for warning in list(updated.get("warnings") or []))
+        warnings.update(evidence.warnings)
+        if source == "caption":
+            warnings.add("side_to_move_caption_detected")
+        updated["warnings"] = sorted(warnings)
+        return updated
     updated["side_to_move"] = side
-    fen = str(updated.get("fen") or "").strip()
+    updated["side_to_move_status"] = "explicit"
+    updated["side_to_move_evidence"] = source
+    if evidence.raw_text:
+        updated["side_to_move_evidence_text"] = str(evidence.raw_text)[:160]
+    fen = str(updated.get("fen") or updated.get("full_fen") or "").strip()
     if fen:
         parts = fen.split()
         if len(parts) == 6:
             parts[1] = side
-            updated["fen"] = " ".join(parts)
+            full_fen = " ".join(parts)
+            updated["full_fen"] = full_fen
+            updated["fen"] = full_fen
+    external_candidates = []
+    for candidate in list(updated.get("external_fen_candidates") or []):
+        if not isinstance(candidate, dict):
+            continue
+        external_candidate = dict(candidate)
+        external_candidate["side_to_move"] = side
+        external_candidate["side_to_move_status"] = "explicit"
+        external_candidate["side_to_move_evidence"] = source
+        external_fen = str(external_candidate.get("fen") or "").strip()
+        if external_fen:
+            parts = external_fen.split()
+            if len(parts) == 6:
+                parts[1] = side
+                external_candidate["fen"] = " ".join(parts)
+        external_candidates.append(external_candidate)
+    if external_candidates:
+        updated["external_fen_candidates"] = external_candidates
     warnings = [warning for warning in list(updated.get("warnings") or []) if warning != "side_to_move_inferred"]
-    if "side_to_move_marker_detected" not in warnings:
+    warnings.extend(evidence.warnings)
+    if source == "marker" and "side_to_move_marker_detected" not in warnings:
         warnings.append("side_to_move_marker_detected")
+    if source == "caption":
+        warnings.append("side_to_move_caption_detected")
+        warnings.append("side_to_move_caption_applied")
     updated["warnings"] = sorted(set(warnings))
+    if updated.get("fen"):
+        valid, fen_warnings = validate_fen(str(updated.get("fen") or ""))
+        updated["warnings"] = sorted(set(updated["warnings"]) | set(fen_warnings))
+        can_publish = (
+            valid
+            and _scan_chess_side_evidence_has_only_side_blocker(payload)
+            and machine_accept_fen({**updated, "requires_review": False})
+        )
+        if not can_publish:
+            updated["fen"] = ""
+        updated["requires_review"] = not can_publish
     return updated
+
+
+def _apply_scan_chess_side_to_move_marker(payload: dict[str, Any], side_to_move: str) -> dict[str, Any]:
+    return _apply_scan_chess_side_to_move_evidence(
+        payload,
+        ScanChessSideToMoveEvidence(
+            side="b" if str(side_to_move).lower().startswith("b") else "w",
+            source="marker",
+            warnings=("side_to_move_marker_detected",),
+        ),
+    )
+
+
+def _infer_scan_chess_side_to_move_from_text(text: str) -> ScanChessSideToMoveEvidence | None:
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not normalized:
+        return None
+    white = bool(SCAN_CHESS_WHITE_TO_MOVE_RE.search(normalized))
+    black = bool(SCAN_CHESS_BLACK_TO_MOVE_RE.search(normalized))
+    if white and black:
+        return ScanChessSideToMoveEvidence(
+            side="",
+            source="caption",
+            raw_text=normalized,
+            confidence=0.0,
+            warnings=("side_to_move_caption_ambiguous",),
+        )
+    if white:
+        return ScanChessSideToMoveEvidence(side="w", source="caption", raw_text=normalized)
+    if black:
+        return ScanChessSideToMoveEvidence(side="b", source="caption", raw_text=normalized)
+    return None
+
+
+def _scan_chess_exercise_marker_side(raw_marker: str) -> str:
+    marker = str(raw_marker or "").strip()
+    if marker in {"△", "▽"}:
+        return "w"
+    if marker in {"▲", "▼"}:
+        return "b"
+    upper = marker.upper()
+    if upper == "A":
+        return "w"
+    if upper in {"V", "VV"}:
+        return "b"
+    return ""
+
+
+def _scan_chess_exercise_side_marker_tokens(line: str) -> list[str]:
+    normalized = re.sub(r"\s+", " ", str(line or "")).strip()
+    if not normalized:
+        return []
+    if re.search(r"(?i)\ba\s+b\s+c\s+d\s+e\s+f\s+g\s+h\b", normalized):
+        return []
+    if not re.search(r"(?i)(?:\bdiagram\b|\bex\b|\bfx\b|[>D]\s*[EFPR])", normalized):
+        return []
+    if not re.search(r"\d", normalized):
+        return []
+    tokens = re.findall(r"(?<![A-Za-z])(?:A|Vv|vV|V|△|▲|▽|▼)(?![A-Za-z])", normalized)
+    return tokens
+
+
+def _scan_chess_side_to_move_evidence_from_ocr_text(text: str) -> list[ScanChessSideToMoveEvidence]:
+    evidence: list[ScanChessSideToMoveEvidence] = []
+    explicit = _infer_scan_chess_side_to_move_from_text(text)
+    if explicit is not None:
+        return [explicit]
+    for line in str(text or "").replace("\r\n", "\n").replace("\r", "\n").splitlines():
+        normalized = re.sub(r"\s+", " ", line).strip()
+        if not normalized:
+            continue
+        marker_tokens = _scan_chess_exercise_side_marker_tokens(normalized)
+        if not marker_tokens:
+            marker_tokens = [match.group(1) for match in SCAN_CHESS_EXERCISE_SIDE_MARKER_RE.finditer(normalized)]
+        for marker in marker_tokens:
+            side = _scan_chess_exercise_marker_side(marker)
+            if not side:
+                continue
+            evidence.append(
+                ScanChessSideToMoveEvidence(
+                    side=side,
+                    source="caption",
+                    raw_text=normalized,
+                    confidence=0.74,
+                    warnings=("side_to_move_caption_detected",),
+                )
+            )
+    return evidence
+
+
+def _scan_chess_side_to_move_evidence_for_candidates(
+    candidates: list[dict[str, Any]],
+    ocr_record: dict[str, Any] | None,
+) -> dict[int, ScanChessSideToMoveEvidence]:
+    if not isinstance(ocr_record, dict):
+        return {}
+    text = str(ocr_record.get("text") or "")
+    evidence = _scan_chess_side_to_move_evidence_from_ocr_text(text)
+    if not evidence:
+        return {}
+    if len(evidence) == 1 and not evidence[0].side:
+        return {}
+    if len(candidates) == 1 and len(evidence) == 1 and evidence[0].side in {"w", "b"}:
+        return {0: evidence[0]}
+    usable = [item for item in evidence if item.side in {"w", "b"}]
+    if len(usable) != len(candidates):
+        return {}
+    indexed_candidates = list(enumerate(candidates))
+    indexed_candidates.sort(
+        key=lambda item: (
+            float((item[1].get("bbox") or [0, 0, 0, 0])[1] or 0.0),
+            float((item[1].get("bbox") or [0, 0, 0, 0])[0] or 0.0),
+        )
+    )
+    return {candidate_index: usable[evidence_index] for evidence_index, (candidate_index, _candidate) in enumerate(indexed_candidates)}
 
 
 def _infer_scan_chess_side_to_move(

@@ -57,7 +57,10 @@ REQUIRED_CODEX_PLUGINS: tuple[str, ...] = (
 
 
 def _module_available(name: str) -> bool:
-    return importlib.util.find_spec(name) is not None
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, AttributeError, ValueError):
+        return False
 
 
 def _command_available(name: str) -> bool:
@@ -475,6 +478,9 @@ def _detect_toolchain_uncached() -> dict:
     playwright_chromium_path = find_playwright_chromium_executable()
     playwright_module_found = developer_requirements["packages"]["playwright"]["installed"]
     waitress_module_found = developer_requirements["packages"]["waitress"]["installed"]
+    python_chess_missing: list[str] = []
+    if not _module_available("chess") or not _module_available("chess.pgn"):
+        python_chess_missing.append("python-chess")
     ocrmypdf_ready = bool(ocrmypdf_path and tesseract_path and ghostscript_path and qpdf_path)
     browser_missing: list[str] = []
     if not playwright_module_found:
@@ -513,13 +519,17 @@ def _detect_toolchain_uncached() -> dict:
         notes=["Requires the developer bootstrap profile plus a local Chromium install."],
     )
 
+    corpus_missing = [*runtime_requirements["missing_modules"], *python_chess_missing]
     corpus_surface = _surface_payload(
         support_level="core",
-        status="supported" if runtime_requirements["ready"] else "unsupported",
+        status="supported" if runtime_requirements["ready"] and not python_chess_missing else "unsupported",
         command="python kindlemaster.py test --suite corpus",
         description="Corpus-wide smoke plus premium release-proof reports across the expanded fixture bank.",
-        missing_requirements=list(runtime_requirements["missing_modules"]),
-        notes=["Persists derived corpus gate reports under reports/corpus/ and output/corpus/."],
+        missing_requirements=corpus_missing,
+        notes=[
+            "Persists derived corpus gate reports under reports/corpus/ and output/corpus/.",
+            "Strict FEN/PGN proof requires python-chess for deterministic PGN replay.",
+        ],
     )
 
     release_optional_followups = [
@@ -539,10 +549,11 @@ def _detect_toolchain_uncached() -> dict:
         "Runs the Python release pack, quick smoke, and the corpus-wide gate.",
         "Browser and runtime follow-up suites are optional add-ons and run only when their local toolchains are available.",
     ]
-    if runtime_requirements["ready"]:
+    if runtime_requirements["ready"] and not python_chess_missing:
         release_status = "supported"
         if any(item["status"] != "supported" for item in release_optional_followups):
             release_status = "degraded"
+    release_missing = [*runtime_requirements["missing_modules"], *python_chess_missing]
 
     agent_readiness = detect_agent_readiness(repo_root=Path.cwd())
 
@@ -556,7 +567,7 @@ def _detect_toolchain_uncached() -> dict:
             status=release_status,
             command="python kindlemaster.py test --suite release",
             description="Broad Python release suite with optional browser/runtime follow-up checks.",
-            missing_requirements=list(runtime_requirements["missing_modules"]),
+            missing_requirements=release_missing,
             notes=release_notes,
             optional_followups=release_optional_followups,
         ),

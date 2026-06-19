@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
 import sys
 import time
@@ -44,6 +43,9 @@ CI_SMOKE_FILTERS = list(STANDARD_SMOKE_FILTERS)
 CI_PREMIUM_FILTERS = [
     "document-like-report",
 ]
+
+RELEASE_GRADE_FEN_MIN_PROFILE_COUNT = 2
+BOUNDED_CI_FEN_MIN_PROFILE_COUNT = 1
 
 
 def _derive_corpus_gate_status(*statuses: str, smoke_status: str = "", premium_status: str = "") -> str:
@@ -127,62 +129,12 @@ def _default_premium_filters_for_profile(proof_profile: str) -> list[str]:
     return list(STANDARD_PREMIUM_FILTERS)
 
 
-def _fen_min_profile_count_for_proof_profile(proof_profile: str, explicit_count: int | None) -> int:
-    if explicit_count is not None:
-        return max(0, int(explicit_count))
+def _fen_min_profile_count_for_proof_profile(proof_profile: str, explicit_value: int | None) -> int:
+    if explicit_value is not None:
+        return max(0, int(explicit_value))
     if proof_profile == "ci":
-        env_value = os.environ.get("KINDLEMASTER_CI_FEN_MIN_PROFILE_COUNT", "").strip()
-        if env_value:
-            try:
-                return max(0, int(env_value))
-            except ValueError:
-                return 1
-        return 1
-    if proof_profile in {"standard", "full"}:
-        return 2
-    return 1
-
-
-def _fen_min_profile_count_source(proof_profile: str, explicit_count: int | None) -> str:
-    if explicit_count is not None:
-        return "explicit"
-    if proof_profile == "ci" and os.environ.get("KINDLEMASTER_CI_FEN_MIN_PROFILE_COUNT", "").strip():
-        return "env:KINDLEMASTER_CI_FEN_MIN_PROFILE_COUNT"
-    return "default"
-
-
-def _enforce_fen_profile_count_policy(
-    fen_corpus: dict[str, Any],
-    *,
-    required_count: int,
-    source: str,
-    proof_profile: str,
-) -> dict[str, Any]:
-    updated = dict(fen_corpus)
-    evaluated_count = int(updated.get("evaluated_case_count", 0) or 0)
-    missing_count = max(0, int(required_count) - evaluated_count)
-    updated["min_profile_count"] = int(required_count)
-    updated["min_profile_count_source"] = source
-    updated["proof_profile"] = proof_profile
-    updated["missing_profile_count"] = missing_count
-    reasons = [str(reason) for reason in list(updated.get("reasons") or []) if str(reason).strip()]
-    if missing_count:
-        reason = f"manifest has {evaluated_count} chess FEN profile(s), below required minimum {required_count}"
-        if reason not in reasons:
-            reasons.append(reason)
-    updated["reasons"] = reasons
-    actions = [str(action) for action in list(updated.get("next_required_actions") or []) if str(action).strip()]
-    if missing_count:
-        action = (
-            f"add {missing_count} real scanned chess FEN profile(s) to reach min_profile_count={required_count}; "
-            "do not claim broad FEN generalization from a single committed profile"
-        )
-        if action not in actions:
-            actions.append(action)
-    updated["next_required_actions"] = actions
-    if missing_count and updated.get("status") == "passed":
-        updated["status"] = "failed"
-    return updated
+        return BOUNDED_CI_FEN_MIN_PROFILE_COUNT
+    return RELEASE_GRADE_FEN_MIN_PROFILE_COUNT
 
 
 def _case_validation_status(row: dict[str, Any]) -> str:
@@ -402,9 +354,8 @@ def _build_corpus_gate_markdown(payload: dict[str, Any]) -> str:
         f"- Premium warnings: `{json.dumps((premium.get('overall') or {}).get('warning_counts', {}), ensure_ascii=False)}`",
         f"- Premium accepted P2 warnings: `{json.dumps((premium.get('overall') or {}).get('accepted_warning_counts', {}), ensure_ascii=False)}`",
         f"- FEN evaluated profiles: `{fen_corpus.get('evaluated_case_count', 0)}`",
-        f"- FEN min profiles required: `{fen_corpus.get('min_profile_count', 0)}`",
-        f"- FEN min profiles source: `{fen_corpus.get('min_profile_count_source', 'unknown')}`",
         f"- FEN missing profiles: `{fen_corpus.get('missing_profile_count', 0)}`",
+        f"- FEN min profiles required: `{fen_corpus.get('min_profile_count', payload.get('fen_min_profile_count', 0))}`",
         f"- FEN min seed labels/profile: `{fen_corpus.get('default_min_seed_label_count', 0)}`",
         f"- FEN valid seed labels: `{sum(int(((case.get('label_validation') or {}).get('valid_label_count') or 0)) for case in fen_corpus.get('cases', []))}`",
         f"- FEN overall exact accuracy: `{fen_corpus.get('overall_exact_fen_accuracy', 0)}`",
@@ -482,8 +433,10 @@ def run_corpus_gate(
         explicit_filters=premium_case_filters,
         standard_filters=_default_premium_filters_for_profile(proof_profile),
     )
-    resolved_fen_min_profile_count = _fen_min_profile_count_for_proof_profile(proof_profile, fen_min_profile_count)
-    fen_min_profile_count_source = _fen_min_profile_count_source(proof_profile, fen_min_profile_count)
+    resolved_fen_min_profile_count = _fen_min_profile_count_for_proof_profile(
+        proof_profile,
+        fen_min_profile_count,
+    )
 
     smoke_output_dir = resolved_output_root / "smoke"
     smoke_reports_dir = resolved_reports_root / "smoke"
@@ -517,12 +470,6 @@ def run_corpus_gate(
         min_profile_count=resolved_fen_min_profile_count,
         output_path=fen_corpus_json_path,
     )
-    fen_corpus = _enforce_fen_profile_count_policy(
-        fen_corpus,
-        required_count=resolved_fen_min_profile_count,
-        source=fen_min_profile_count_source,
-        proof_profile=proof_profile,
-    )
     premium_status = premium.get("overall_status")
     if not premium_status:
         premium_status = (premium.get("overall") or {}).get("overall_status", "failed")
@@ -546,14 +493,11 @@ def run_corpus_gate(
     payload = {
         "overall_status": overall_status,
         "proof_profile": proof_profile,
+        "fen_min_profile_count": resolved_fen_min_profile_count,
+        "fen_min_profile_count_source": "explicit" if fen_min_profile_count is not None else "proof_profile_default",
         "smoke": smoke,
         "premium_corpus": premium,
         "fen_corpus": fen_corpus,
-        "fen_profile_count_policy": {
-            "min_profile_count": resolved_fen_min_profile_count,
-            "source": fen_min_profile_count_source,
-            "proof_profile": proof_profile,
-        },
         "effective_premium_status": effective_premium_status,
         "output_assertions": output_assertions,
         "output_assertion_status": output_assertion_status,

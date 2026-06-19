@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
 from datetime import date
@@ -12,9 +11,9 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from chess_fen_workflow import HUMAN_VERIFIED, VALIDATION_PASSED, with_workflow_state
-from chess_position_recognizer import validate_fen
-from scripts.validate_chess_fen_labels import validate_chess_fen_labels
+from chess_fen_hardening import crop_sha256, has_square_diff_ack  # noqa: E402
+from chess_position_recognizer import validate_fen  # noqa: E402
+from scripts.validate_chess_fen_labels import validate_chess_fen_labels  # noqa: E402
 
 
 def promote_chess_fen_label_draft(
@@ -28,10 +27,9 @@ def promote_chess_fen_label_draft(
     """Promote manually approved FEN draft rows into validator-ready labels.
 
     Safety contract:
-    - Canonical `fen` is copied only from `manual_fen` or an explicit `fen`
-      field supplied by a human in the draft.
-    - AI and deterministic suggestions remain review evidence only.
-    - `accept_ai_suggestions` is a deprecated no-op kept for CLI compatibility.
+    - AI suggestions are never copied to `fen`; they are review evidence only.
+      `--accept-ai-suggestions` is retained as a deprecated no-op for older
+      scripts, but cannot promote AI output.
     - Every promoted FEN must pass syntax/basic validation.
     - The output still requires profile readiness/corpus gates before manifest
       promotion.
@@ -61,9 +59,6 @@ def promote_chess_fen_label_draft(
     output.parent.mkdir(parents=True, exist_ok=True)
     _write_jsonl(output, promoted)
     validation = validate_chess_fen_labels(output)
-    if promoted and validation["status"] == "passed":
-        promoted = [with_workflow_state(row, VALIDATION_PASSED) for row in promoted]
-        _write_jsonl(output, promoted)
     summary = {
         "status": "passed" if promoted and validation["status"] == "passed" else "failed",
         "accepted_for_corpus": False,
@@ -76,6 +71,7 @@ def promote_chess_fen_label_draft(
         "verified_by": verifier,
         "verified_at": resolved_verified_at,
         "accept_ai_suggestions": bool(accept_ai_suggestions),
+        "accept_ai_suggestions_policy": "deprecated_no_op_ai_never_promotes_to_verified",
         "validation": {
             "status": validation.get("status"),
             "label_count": validation.get("label_count", 0),
@@ -104,82 +100,71 @@ def _promote_row(
     accept_ai_suggestions: bool,
 ) -> tuple[dict[str, Any] | None, str]:
     row_id = str(row.get("id") or "")
-    human_verified = _truthy(row.get("human_verified"))
-    human_rejected = _truthy(row.get("human_rejected"))
+    human_verified = bool(row.get("human_verified"))
+    human_rejected = bool(row.get("human_rejected"))
     if human_rejected:
         return None, "human_rejected"
     if not human_verified:
         return None, "manual_approval_missing"
+    if not has_square_diff_ack(row):
+        return None, "square_diff_ack_missing"
 
-    fen = str(row.get("manual_fen") or "").strip()
-    source = "manual_fen"
+    manual_fen = str(row.get("manual_fen") or "").strip()
+    explicit_fen = str(row.get("fen") or "").strip()
+    fen = manual_fen or explicit_fen
+    source = "manual_fen" if manual_fen else "fen"
     if not fen:
-        fen = str(row.get("fen") or "").strip()
-        source = "fen"
-    if not fen:
+        if str(row.get("ai_suggested_fen") or "").strip():
+            return None, "manual_fen_missing_ai_suggestion_ignored"
+        if str(row.get("deterministic_suggested_fen") or "").strip():
+            return None, "manual_fen_missing_deterministic_suggestion_ignored"
         return None, "manual_fen_missing"
     is_valid, warnings = validate_fen(fen)
     if not is_valid:
         return None, "fen_invalid:" + ",".join(warnings)
-    if not _truthy(row.get("square_diff_ack")):
-        return None, "square_diff_ack_missing"
-    verification_source = str(row.get("verification_source") or "").strip()
-    if verification_source != "human_visual":
-        return None, "verification_source_missing"
 
-    crop_path = str(row.get("crop_path") or "").strip()
+    if row.get("ai_requires_review") is True:
+        return None, "ai_review_unresolved"
+    if isinstance(row.get("ai_ambiguous_squares"), list) and row.get("ai_ambiguous_squares"):
+        return None, "ai_ambiguous_squares_unresolved"
+    if isinstance(row.get("ambiguous_squares"), list) and row.get("ambiguous_squares"):
+        return None, "ambiguous_squares_unresolved"
+    for key in ("unresolved_ambiguity", "review_required", "requires_review", "needs_review"):
+        if row.get(key) is True:
+            return None, f"review_flag_unresolved:{key}"
+
+    crop_path = str(row.get("crop_path") or row.get("source_crop_path") or "").strip()
     if not crop_path:
         return None, "crop_path_missing"
-    crop = Path(crop_path)
-    if not crop.exists():
+    if not Path(crop_path).exists():
         return None, "crop_path_missing_on_disk"
-    crop_sha256 = _sha256_file(crop)
-    supplied_sha256 = str(row.get("crop_sha256") or row.get("sha256") or "").strip().lower()
-    if supplied_sha256 and supplied_sha256 != crop_sha256:
-        return None, "crop_sha256_mismatch"
+    crop_hash = str(row.get("crop_sha256") or "").strip()
+    if not crop_hash:
+        crop_hash = crop_sha256(crop_path)
     return (
-        with_workflow_state(
-            {
-                "id": row_id,
-                "source_pdf": row.get("source_pdf", ""),
-                "page": row.get("page"),
-                "diagram_index": row.get("diagram_index"),
-                "crop_path": crop_path,
-                "crop_sha256": crop_sha256,
-                "sha256": crop_sha256,
-                "fen": fen,
-                "human_verified": True,
-                "square_diff_ack": True,
-                "verification_source": "human_visual",
-                "verified_by": verified_by,
-                "verified_at": verified_at,
-                "label_status": "verified",
-                "label_source": source,
-                "ai_assisted": bool(row.get("ai_suggested_fen")),
-                "ai_confidence": row.get("ai_confidence", 0.0),
-                "deterministic_confidence": row.get("deterministic_confidence", 0.0),
-                "notes": "Verified from board crop after label-assist; deterministic profile gates still required.",
-            },
-            HUMAN_VERIFIED,
-        ),
+        {
+            "id": row_id,
+            "source_pdf": row.get("source_pdf", ""),
+            "page": row.get("page"),
+            "diagram_index": row.get("diagram_index"),
+            "crop_path": crop_path,
+            "crop_sha256": crop_hash,
+            "fen": fen,
+            "verified_by": verified_by,
+            "verified_at": verified_at,
+            "verification_source": "human_visual",
+            "human_verified": True,
+            "square_diff_ack": True,
+            "square_diff": row.get("square_diff") if isinstance(row.get("square_diff"), list) else [],
+            "label_status": "verified",
+            "label_source": source,
+            "ai_assisted": bool(row.get("ai_suggested_fen")),
+            "ai_confidence": row.get("ai_confidence", 0.0),
+            "deterministic_confidence": row.get("deterministic_confidence", 0.0),
+            "notes": "Verified from board crop after label-assist; deterministic profile gates still required.",
+        },
         "",
     )
-
-
-def _truthy(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "tak"}
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -199,7 +184,7 @@ def main() -> int:
     parser.add_argument(
         "--accept-ai-suggestions",
         action="store_true",
-        help="Deprecated no-op retained for compatibility; AI suggestions are never copied into fen.",
+        help="Deprecated no-op retained for compatibility; AI suggestions are never promoted directly.",
     )
     args = parser.parse_args()
 

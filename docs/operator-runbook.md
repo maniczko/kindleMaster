@@ -39,8 +39,9 @@ python kindlemaster.py status
 | Upload rejected or oversized | `upload_failed` | Confirm extension is `.pdf` or `.docx`; check file size against the local upload cap. | Re-upload a supported file; use CLI conversion for controlled local experiments. |
 | Job never leaves `queued` | `queue_failed` if terminal, otherwise none | Check `/convert/jobs`; confirm port `5001` is served by the expected process. | Restart the local app if the worker is not progressing; re-submit the conversion. |
 | Job stays `running` or `repairing_headings` too long | `conversion_timeout` if watchdog fails it, otherwise none | Compare `elapsed_seconds`, `updated_at` in `/convert/jobs`, and server logs for phase changes. | Keep polling while `updated_at` advances; if stale, restart and re-submit. |
+| Job fails quickly for a very large PDF | `interactive_runtime_budget_exceeded` | Check page count/profile in `/convert/status/<job_id>` error; this is expected for extreme diagram/fixed-layout jobs in the browser UI. | Use a shorter sample for UI testing or run the full source as an offline CLI/batch conversion. |
 | Job failed during conversion | `conversion_failed` | Inspect `/convert/status/<job_id>` and `/convert/quality/<job_id>`; check logs by `job_id`. | Fix the input/toolchain issue, then run the job again. |
-| App restarted during active job | `app_restart` | `/convert/jobs` or `/convert/status/<job_id>` shows `failed` after restart. | Re-submit the source file; local workers are not resumable. |
+| App restarted during active job | `application_restart` | `/convert/jobs` or `/convert/status/<job_id>` shows `failed` after restart. | Re-submit the source file; local workers are not resumable. |
 | Ready job cannot download | `missing_output` | `GET /convert/download/<job_id>` returns JSON `500`; inspect temp directory only after confirming job is terminal. | Re-run conversion; do not claim output was produced unless the EPUB downloads. |
 | Quality or EPUB validation blocks release | `validation_failed` | Inspect quality blockers and validator details. | Download the EPUB if available, run validators, then repair or re-convert. |
 
@@ -91,10 +92,10 @@ Use `/convert/quality/<job_id>` to decide whether the issue is a release blocker
 Every web/CLI conversion now runs the runtime gate on the final EPUB bytes after optional heading repair. The gate writes:
 
 - `premium_scoring`: deterministic premium score, Kindle-ready flags, blockers, and top quality issues.
-- `ai_quality_verification`: local policy/model verdict with confidence, model version, feature hash, and reason codes.
+- `ai_quality_verification` / `quality_policy_verifier`: local deterministic policy verdict with confidence, model version, feature hash, and reason codes. Treat it as policy automation unless `trained_quality_model_status=trained`.
 - `quality_gate_mode`: `draft` by default.
 
-Default `draft` mode never blocks the file download, but it blocks release publication. The UI should show `Nie publikuj`, `send_to_kindle_ready=false`, and the download label `Pobierz szkic EPUB` until the operator reviews the report. Use `--quality-gate-mode off` only for diagnostic comparisons, not for release evidence.
+Default `draft` mode never blocks the file download or explicit SMTP transport, but it blocks release publication. The UI should show `Nie publikuj`, `send_to_kindle_ready=false`, and visible warnings until the operator reviews the report. Use `--quality-gate-mode off` only for diagnostic comparisons, not for release evidence.
 
 Use `docs/premium-warning-policy.md` when interpreting `passed_with_warnings`.
 That state is a bounded review state, not a premium release state, and must not set
@@ -109,15 +110,32 @@ python kindlemaster.py ml dataset
 python kindlemaster.py ml evaluate
 ```
 
+Dataset generation now writes a readiness report and a feature-collision report:
+
+```powershell
+python kindlemaster.py ml dataset --fail-on-collisions
+```
+
+Training is blocked unless `dataset_readiness.status=ready`, every main route class has enough examples, and there are zero `features_hash` collisions across different labels. `scikit-learn` is required only for training; runtime JSON inference must continue to work without it.
+
 To log local human feedback for a completed CLI conversion, first keep the conversion report:
 
 ```powershell
 python kindlemaster.py convert path\to\input.pdf --output output\book.epub --report-json reports\book-conversion.json
-python kindlemaster.py ml feedback --report-json reports\book-conversion.json --feedback-status accepted --quality-label usable --quality-score 4 --route-label book_reflow --issue-tag headings --notes "Usable after TOC review"
+python kindlemaster.py ml feedback --report-json reports\book-conversion.json --feedback-status accepted --quality-label usable --quality-score 4 --route-label book_reflow --issue-tag headings --reviewer operator --include-in-training --notes "Usable after TOC review"
 python kindlemaster.py ml dataset --feedback-log reports\ml\feedback\conversion_feedback.jsonl
 ```
 
-Feedback records are append-only JSONL under `reports/ml/feedback/conversion_feedback.jsonl` by default. They never update `models/route_classifier_v1.json` or change route selection. A feedback record becomes a route dataset row only when the operator provides a valid `--route-label` and the conversion report contains enough analysis fields to rebuild the local route feature payload.
+Feedback records are append-only JSONL under `reports/ml/feedback/conversion_feedback.jsonl` by default. They never update `models/route_classifier_v1.json` or change route selection. A feedback record becomes a route dataset row only when the operator explicitly uses `--include-in-training` and provides a valid `--route-label`, `--quality-label`, at least one `--issue-tag`, and `--reviewer`.
+
+Training and promotion are two separate steps:
+
+```powershell
+python kindlemaster.py ml train
+python kindlemaster.py ml promote --candidate models\candidates\route_classifier_YYYYMMDD_HHMMSS.json
+```
+
+`ml train` writes candidates under `models/candidates/` and model cards beside them. It never overwrites the runtime model automatically. `ml promote` blocks if holdout metrics, protected-class recall, dataset readiness, or corpus hard negatives (`magazine_layout_heavy`, `diagram_chess`) fail.
 
 For web/runtime integration, conversion-quality events are recorded automatically after metadata assembly. User feedback is recorded separately through:
 
@@ -137,7 +155,7 @@ Use `assist` only for controlled experiments:
 python kindlemaster.py convert path\to\input.pdf --output output\ml-assist.epub --route-model-mode assist
 ```
 
-Do not treat a model as release-enabling unless `reports/ml/datasets/completeness_report.json` is not `insufficient_data` and corpus output is unchanged in default `shadow` mode.
+Do not treat a model as release-enabling unless `reports/ml/datasets/completeness_report.json` is `ready`, the candidate passes promotion gates, and corpus output is unchanged in default `shadow` mode.
 
 ## Cleanup Guidance
 

@@ -151,6 +151,45 @@ class EpubQualityRecoveryTests(unittest.TestCase):
         self.assertIn("toc_non_content_entry", codes)
         self.assertIn("kindle_ready_blocked_by_quality", codes)
 
+    def test_premium_scoring_does_not_block_long_sponsored_article_as_non_content(self):
+        prose = " ".join(["Problem solving article explains governance, decisions, delivery, and team learning."] * 80)
+        opf_source = """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">sponsored-article</dc:identifier>
+    <dc:title>Magazine</dc:title>
+    <dc:language>pl</dc:language>
+    <dc:creator>Editorial Team</dc:creator>
+  </metadata>
+  <manifest>
+    <item id="chapter_1" href="chapter_001.xhtml" media-type="application/xhtml+xml"/>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+  </manifest>
+  <spine><itemref idref="chapter_1"/></spine>
+</package>
+"""
+        chapter = f"""<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Material sponsorowany - Problem Solving</title></head>
+<body><h1>Material sponsorowany - Problem Solving</h1><p>{prose}</p></body></html>
+"""
+        epub_bytes = self._build_epub_bytes(
+            {
+                "mimetype": "application/epub+zip",
+                "META-INF/container.xml": """<?xml version="1.0"?>
+<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
+  <rootfiles><rootfile full-path="EPUB/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>""",
+                "EPUB/content.opf": opf_source,
+                "EPUB/chapter_001.xhtml": chapter,
+                "EPUB/nav.xhtml": """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body><nav epub:type="toc"><ol><li><a href="chapter_001.xhtml">Material sponsorowany - Problem Solving</a></li></ol></nav></body></html>""",
+            }
+        )
+
+        payload = score_epub_premium_quality(epub_bytes, epubcheck={"status": "passed", "messages": []})
+
+        self.assertNotIn("magazine_non_content_chapter", {issue["code"] for issue in payload["issues"]})
+
     def test_premium_scoring_blocks_polish_structural_labels_in_english_epub(self):
         opf_source = """<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
@@ -540,7 +579,7 @@ class EpubQualityRecoveryTests(unittest.TestCase):
     <dc:identifier id="bookid">quality-selection-id</dc:identifier>
     <dc:title>Quality Selection Sample</dc:title>
     <dc:language>en</dc:language>
-    <dc:creator>KindleMaster QA</dc:creator>
+    <dc:creator>Editorial QA</dc:creator>
     <dc:publisher>KindleMaster</dc:publisher>
     <meta property="dcterms:modified">2026-01-01T00:00:00Z</meta>
   </metadata>
@@ -656,7 +695,17 @@ class EpubQualityRecoveryTests(unittest.TestCase):
             self.assertEqual(result["quality_selection"]["rejected_stage"], "recovered")
             self.assertIn("recovery_rejected_due_to_quality_regression", result["quality_selection"]["reason_codes"])
             self.assertLess(result["quality_selection"]["candidate_score"], result["quality_selection"]["baseline_score"])
+            self.assertEqual(result["quality_selection"]["selected_score"], 9.1)
+            self.assertEqual(result["quality_selection"]["rejected_score"], 7.0)
+            self.assertNotEqual(result["decision"], "fail")
+            self.assertNotEqual(result["gates"]["D"]["status"], "fail")
+            self.assertNotEqual(result["gates"]["F"]["status"], "fail")
             self.assertTrue((reports_dir / "quality_selection.json").exists())
+            release_report = (reports_dir / "release_report.md").read_text(encoding="utf-8")
+            self.assertIn("Selected candidate: pre_recovery", release_report)
+            self.assertIn("Rejected candidate: recovered", release_report)
+            self.assertIn("Selected score: 9.1", release_report)
+            self.assertIn("Rejected score: 7.0", release_report)
             final_bytes = (output_dir / "final.epub").read_bytes()
             with zipfile.ZipFile(io.BytesIO(final_bytes), "r") as archive:
                 final_text = b"\n".join(archive.read(name) for name in archive.namelist())

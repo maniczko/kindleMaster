@@ -103,6 +103,7 @@ def build_ai_quality_verification(
         "confidence": round(confidence, 6),
         "model_version": str(model.get("model_version", "quality-verifier-v1-bootstrap")),
         "model_type": str(model.get("model_type", "local_quality_policy")),
+        "training_status": str(model.get("training_status", "bootstrap_policy_until_feedback_dataset_is_sufficient")),
         "available": bool(model),
         "quality_gate_mode": str(quality_gate_mode or "draft"),
         "features": features,

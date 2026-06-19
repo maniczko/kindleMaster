@@ -962,7 +962,7 @@ def _classify_board_cells(
                 )
             )
             normalized_cell = _normalize_piece_cell(cell)
-            label, confidence = _match_piece_template(normalized_cell, templates)
+            label, confidence, alternatives = _match_piece_template_with_alternatives(normalized_cell, templates)
             square_warnings: list[str] = []
             if (
                 label
@@ -983,6 +983,7 @@ def _classify_board_cells(
                 "square": f"{chr(ord('a') + col)}{8 - row}",
                 "piece": label,
                 "confidence": round(float(confidence), 3),
+                "alternatives": alternatives,
             }
             if square_warnings:
                 square_record["warnings"] = square_warnings
@@ -1495,15 +1496,27 @@ def _match_piece_template(
     cell: np.ndarray,
     templates: Mapping[str, np.ndarray],
 ) -> tuple[str, float]:
+    label, confidence, _alternatives = _match_piece_template_with_alternatives(cell, templates)
+    return label, confidence
+
+
+def _match_piece_template_with_alternatives(
+    cell: np.ndarray,
+    templates: Mapping[str, np.ndarray],
+    *,
+    top_n: int = 3,
+) -> tuple[str, float, list[dict[str, Any]]]:
     best_label = ""
     best_error = float("inf")
     second_error = float("inf")
     empty_error = float("inf")
+    label_errors: list[tuple[str, float]] = []
     for label, variants in templates.items():
         if variants.size == 0:
             continue
         errors = np.mean((variants - cell) ** 2, axis=(1, 2))
         label_best = float(errors.min())
+        label_errors.append((label, label_best))
         if label == "":
             empty_error = min(empty_error, label_best)
         if errors.size >= 2:
@@ -1522,7 +1535,15 @@ def _match_piece_template(
     confidence = max(0.0, min(1.0, 1.0 - best_error * 4.0))
     if second_error < float("inf") and second_error - best_error < 0.006:
         confidence *= 0.92
-    return best_label, confidence
+    alternatives = []
+    for label, error in sorted(label_errors, key=lambda item: (item[1], item[0]))[: max(1, int(top_n or 1))]:
+        alternatives.append(
+            {
+                "piece": label,
+                "confidence": round(max(0.0, min(1.0, 1.0 - error * 4.0)), 3),
+            }
+        )
+    return best_label, confidence, alternatives
 
 
 def _looks_like_non_piece_cross_marker(cell: np.ndarray) -> bool:

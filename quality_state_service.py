@@ -448,12 +448,13 @@ class ConversionQualityStateRequest:
     filename: str = ""
     message: str = ""
     error: str = ""
-    sentry_event_id: str = ""
+    error_code: str = ""
     conversion_metadata: Mapping[str, Any] = field(default_factory=dict)
     output_size_bytes: int | None = None
     download_url: str = ""
     output_path: str = ""
     output_path_exists: bool | None = None
+    sentry_event_id: str = ""
 
     @classmethod
     def from_job_payload(
@@ -470,12 +471,13 @@ class ConversionQualityStateRequest:
             filename=_coerce_text(payload.get("filename")),
             message=_coerce_text(payload.get("message")),
             error=_coerce_text(payload.get("error")),
-            sentry_event_id=_coerce_first_text(payload.get("sentry_event_id"), conversion_metadata.get("sentry_event_id")),
+            error_code=_coerce_text(payload.get("error_code")),
             conversion_metadata=conversion_metadata,
             output_size_bytes=_coerce_optional_non_negative_int(payload.get("output_size_bytes")),
             download_url=_coerce_text(download_url or payload.get("download_url")),
             output_path=_coerce_text(payload.get("output_path")),
             output_path_exists=_coerce_optional_bool(payload.get("output_path_exists")),
+            sentry_event_id=_coerce_first_text(payload.get("sentry_event_id"), conversion_metadata.get("sentry_event_id")),
         )
 
 
@@ -536,7 +538,10 @@ class ConversionQualityState:
     quality_selection: dict[str, Any]
     ai_quality: dict[str, Any]
     ai_quality_verification: dict[str, Any]
-    ml_feedback: dict[str, Any]
+    quality_policy_verifier: dict[str, Any]
+    trained_quality_model_status: str
+    route_model_shadow: dict[str, Any]
+    stage_timings: dict[str, Any]
     quality_gate_mode: str
     issue_groups: dict[str, list[dict[str, Any]]]
     quality_completeness: QualityCompletenessState
@@ -601,7 +606,10 @@ class ConversionQualityState:
             "quality_selection": self.quality_selection,
             "ai_quality": self.ai_quality,
             "ai_quality_verification": self.ai_quality_verification,
-            "ml_feedback": self.ml_feedback,
+            "quality_policy_verifier": self.quality_policy_verifier,
+            "trained_quality_model_status": self.trained_quality_model_status,
+            "route_model_shadow": self.route_model_shadow,
+            "stage_timings": self.stage_timings,
             "quality_gate_mode": self.quality_gate_mode,
             "issue_groups": self.issue_groups,
             "quality_completeness": self.quality_completeness.to_dict(),
@@ -659,6 +667,7 @@ def _build_alerts(
     job_status: str,
     quality_available: bool,
     error: str,
+    error_code: str,
     validation: ValidationState,
     heading_repair: HeadingRepairState,
     audit: AuditState,
@@ -678,7 +687,7 @@ def _build_alerts(
         alerts.append(QualityStateAlert(level=level, code=code, message=normalized_message))
 
     if job_status == FAILED_JOB_STATUS:
-        push("error", "conversion_failed", error or "Conversion failed before quality data was available.")
+        push("error", error_code or "conversion_failed", error or "Conversion failed before quality data was available.")
     elif job_status == TIMED_OUT_JOB_STATUS:
         push("error", "conversion_timeout", error or "Conversion timed out before quality data was available.")
 
@@ -831,6 +840,7 @@ def _build_quality_blockers(
     *,
     job_status: str,
     error: str,
+    error_code: str,
     issue_groups: Mapping[str, Any] | None,
     alerts: tuple[QualityStateAlert, ...],
 ) -> tuple[dict[str, Any], ...]:
@@ -847,16 +857,22 @@ def _build_quality_blockers(
                 "suggested_action": "Retry the conversion after checking the source file and local runtime.",
             },
         )
-    elif job_status == FAILED_JOB_STATUS and "conversion_failed" not in seen_codes:
-        conversion_error = error or next((alert.message for alert in alerts if alert.code == "conversion_failed"), "")
+    elif job_status == FAILED_JOB_STATUS and (error_code or "conversion_failed") not in seen_codes:
+        blocker_code = error_code or "conversion_failed"
+        conversion_error = error or next((alert.message for alert in alerts if alert.code == blocker_code), "")
+        suggested_action = (
+            "Use a shorter sample in the browser UI or run the full document as an offline CLI/batch conversion."
+            if blocker_code == "interactive_runtime_budget_exceeded"
+            else "Fix the conversion error and run the job again."
+        )
         blockers.insert(
             0,
             {
                 "severity": "blocker",
-                "code": "conversion_failed",
+                "code": blocker_code,
                 "message": conversion_error or "Conversion failed before an EPUB was available.",
                 "source": "conversion",
-                "suggested_action": "Fix the conversion error and run the job again.",
+                "suggested_action": suggested_action,
             },
         )
     return tuple(blockers)
@@ -1582,6 +1598,18 @@ def _normalize_optional_payload(value: Any, *, reported_status: str = "reported"
     return normalized
 
 
+def _trained_quality_model_status(verifier: Mapping[str, Any]) -> str:
+    training_status = _coerce_text(verifier.get("training_status")).lower()
+    model_version = _coerce_text(verifier.get("model_version")).lower()
+    if (
+        training_status.startswith("trained")
+        or training_status == "promoted"
+        or model_version.startswith("quality-model")
+    ):
+        return "trained"
+    return "policy_only_not_trained"
+
+
 def _normalize_content_metrics_payload(value: Any) -> dict[str, Any]:
     normalized = _normalize_optional_payload(value)
     if normalized.get("status") == "not_reported":
@@ -2297,9 +2325,22 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
     ai_quality_verification = _normalize_optional_payload(
         conversion_metadata.get("ai_quality_verification") or quality_report.get("ai_quality_verification")
     )
-    ml_feedback = _normalize_optional_payload(
-        conversion_metadata.get("ml_feedback") or quality_report.get("ml_feedback")
+    quality_policy_verifier = _normalize_optional_payload(
+        conversion_metadata.get("quality_policy_verifier")
+        or conversion_metadata.get("ai_quality_verification")
+        or quality_report.get("ai_quality_verification")
     )
+    route_model_shadow = _normalize_optional_payload(
+        conversion_metadata.get("route_model_shadow")
+        or _dict_payload(conversion_metadata.get("source_analysis")).get("route_decision")
+        or quality_report.get("route_model_shadow")
+    )
+    trained_quality_model_status = _coerce_first_text(
+        conversion_metadata.get("trained_quality_model_status"),
+        quality_report.get("trained_quality_model_status"),
+        default=_trained_quality_model_status(quality_policy_verifier),
+    )
+    stage_timings = _dict_payload(conversion_metadata.get("stage_timings") or quality_report.get("stage_timings"))
     quality_gate_mode = _coerce_first_text(
         conversion_metadata.get("quality_gate_mode"),
         quality_report.get("quality_gate_mode"),
@@ -2372,6 +2413,7 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
         job_status=job_status,
         quality_available=quality_available,
         error=_coerce_text(request.error),
+        error_code=_coerce_text(request.error_code),
         validation=validation,
         heading_repair=heading_repair,
         audit=audit,
@@ -2387,6 +2429,7 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
     quality_blockers = _build_quality_blockers(
         job_status=job_status,
         error=_coerce_text(request.error),
+        error_code=_coerce_text(request.error_code),
         issue_groups=issue_groups,
         alerts=alerts,
     )
@@ -2396,7 +2439,7 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
             "code": "runtime_quality_gate_draft",
             "message": "Conversion completed in draft quality-gate mode and is not approved for publication.",
             "source": "quality_gate",
-            "suggested_action": "Review premium scoring, AI verifier output, and user feedback before promoting this EPUB.",
+            "suggested_action": "Review premium scoring, local quality policy verifier output, and user feedback before promoting this EPUB.",
         }
         if not any(item.get("code") == draft_blocker["code"] for item in quality_blockers):
             quality_blockers = (*quality_blockers, draft_blocker)
@@ -2546,7 +2589,10 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
         quality_selection=quality_selection,
         ai_quality=ai_quality,
         ai_quality_verification=ai_quality_verification,
-        ml_feedback=ml_feedback,
+        quality_policy_verifier=quality_policy_verifier,
+        trained_quality_model_status=trained_quality_model_status,
+        route_model_shadow=route_model_shadow,
+        stage_timings=stage_timings,
         quality_gate_mode=quality_gate_mode,
         issue_groups=issue_groups,
         quality_completeness=quality_completeness,

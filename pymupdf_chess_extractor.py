@@ -9,6 +9,7 @@ those and renders them as images instead.
 """
 
 import hashlib
+import base64
 import io
 import html as html_module
 import json
@@ -16,8 +17,8 @@ import re
 import time
 import zipfile
 from pathlib import Path
-from dataclasses import dataclass
-from typing import Any, Optional
+from dataclasses import dataclass, field
+from typing import Any, Mapping, Optional
 
 import fitz  # PyMuPDF
 import numpy as np
@@ -54,19 +55,15 @@ from chess_position_recognizer import (
     summarize_chess_fen_results,
     validate_fen,
 )
-from chess_fen_ml_acceptance import machine_accept_fen
-from external_chessimg2pos_provider import (
-    ChessImg2PosProviderResult,
-    chessimg2pos_provider_available,
-    chessimg2pos_provider_settings,
-    recognize_fen_with_chessimg2pos,
-    resolve_chessimg2pos_provider_version,
-)
 from chess_pgn_extractor import (
-    assess_fen_candidate_replay,
+    UNMAPPED_CHESS_GLYPH_WARNING,
+    _detect_unmapped_pgn_glyphs,
+    _detect_unmapped_pgn_glyph_details,
     annotate_records_with_replayed_fens,
     attach_fen_candidates_to_pgn_records,
+    build_chess_glyph_diagnostics_payload,
     build_combined_pgn,
+    build_exercises_pgn,
     build_pgn_download_html,
     extract_chess_pgn_records_from_text,
     merge_chess_pgn_continuation_records,
@@ -74,15 +71,12 @@ from chess_pgn_extractor import (
     render_chess_pgn_html_parts,
     summarize_chess_pgn_records,
 )
-from chess_reading_order_audit import (
-    audit_chess_reading_order,
-    render_chess_reading_order_report_html,
-)
 
 WINGDINGS_TICK = "\uf0fc"
 UNICODE_TICK = "✓"
 PARAGRAPH_TEXT_RE = re.compile(r"^<p>(.*)</p>$", re.DOTALL)
 FIGURINE_FONT_TOKENS = ("sptimefig", "spariesfig")
+CHESS_SYMBOL_FONT_TOKENS = (*FIGURINE_FONT_TOKENS, "chessbase", "chess", "figurine", "merida")
 FIGURINE_TEXT_MAP = {
     "\xa2": "K",
     "\xa3": "Q",
@@ -130,18 +124,8 @@ CLEAN_PUNCT_SPACE_RE = re.compile(r"\s+([,.;:!?])")
 CLEAN_PUNCT_JOIN_RE = re.compile(r"([,.;:!?])([^\s])")
 CLEAN_DECIMAL_RE = re.compile(r"(\d)\s+\.\s+(\d)")
 CLEAN_MOVE_NUMBER_RE = re.compile(r"\b(\d{1,3}\.)\s+([KQRBNOa-h])")
-SCAN_CHESS_WHITE_TO_MOVE_RE = re.compile(
-    r"(?i)\b(?:white\s+to\s+(?:move|play)|with\s+white\s+to\s+(?:move|play)|"
-    r"białe\s+(?:na\s+ruchu|zaczynaj[ąa]|(?:mają|maja)\s+ruch)|ruch\s+białych)\b"
-)
-SCAN_CHESS_BLACK_TO_MOVE_RE = re.compile(
-    r"(?i)\b(?:black\s+to\s+(?:move|play)|with\s+black\s+to\s+(?:move|play)|"
-    r"czarne\s+(?:na\s+ruchu|zaczynaj[ąa]|(?:mają|maja)\s+ruch)|ruch\s+czarnych)\b"
-)
-SCAN_CHESS_EXERCISE_SIDE_MARKER_RE = re.compile(
-    r"(?i)\b(?:diagram|ex|fx|e|f|pr)[\s.:-]*\d{0,2}(?:[-il]\d{1,2})?"
-    r"[^A-Za-z0-9\n]{0,16}(A|Vv|vV|V|△|▲|▽|▼)\b"
-)
+GLYPH_DIAGNOSTIC_SPAN_CHAR_LIMIT = 80
+GLYPH_DIAGNOSTIC_LINE_LIMIT = 40
 
 
 @dataclass
@@ -174,15 +158,19 @@ class TextLineItem:
     y: float
     x0: float = 0.0
     x1: float = 0.0
+    glyph_warnings: list[str] = field(default_factory=list)
+    glyph_warning_fonts: list[str] = field(default_factory=list)
+    glyph_diagnostics: list[dict[str, Any]] = field(default_factory=list)
 
 
-@dataclass(frozen=True)
-class ScanChessSideToMoveEvidence:
-    side: str
-    source: str
-    raw_text: str = ""
-    confidence: float = 1.0
-    warnings: tuple[str, ...] = ()
+@dataclass
+class DiagramCaptionMatch:
+    diagram_number: str
+    text: str
+    bbox: tuple[float, float, float, float]
+    distance: float
+    score: int
+    confidence: float
 
 
 def _bbox_is_inside(inner: tuple, outer: tuple, margin: float = 1.5) -> bool:
@@ -663,6 +651,236 @@ def _normalize_text_for_epub(text: str, font_name: str) -> str:
     return normalized
 
 
+def _page_text_dict_for_glyph_capture(page: fitz.Page, *, sort: bool = False) -> dict[str, Any]:
+    flags = fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_MEDIABOX_CLIP
+    try:
+        return page.get_text("rawdict", flags=flags, sort=sort)
+    except TypeError:
+        try:
+            return page.get_text("rawdict", flags=flags)
+        except Exception:
+            return page.get_text("dict", flags=flags, sort=sort)
+    except Exception:
+        return page.get_text("dict", flags=flags, sort=sort)
+
+
+def _pdf_text_segment_from_span(
+    span: Mapping[str, Any],
+    *,
+    page_num: int,
+    block_index: int,
+    line_index: int,
+    span_index: int,
+) -> dict[str, Any]:
+    raw_chars = _span_raw_char_entries(span)
+    raw_text = "".join(str(char.get("char") or "") for char in raw_chars)
+    if not raw_text:
+        raw_text = str(span.get("text") or "")
+    bbox = _bbox_list(span.get("bbox", (0.0, 0.0, 0.0, 0.0))) or [0.0, 0.0, 0.0, 0.0]
+    x0, y0, x1, _y1 = bbox
+    return {
+        "index": span_index,
+        "page": page_num + 1,
+        "page_index": page_num,
+        "block_index": block_index,
+        "line_index": line_index,
+        "span_index": span_index,
+        "text": raw_text,
+        "raw_chars": raw_chars,
+        "font_name": span.get("font", "") or "",
+        "font_size": span.get("size", 12),
+        "bbox": bbox,
+        "x0": x0,
+        "x1": x1,
+        "y0": y0,
+    }
+
+
+def _span_raw_char_entries(span: Mapping[str, Any]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    raw_chars = span.get("chars") or []
+    if isinstance(raw_chars, list):
+        for char_index, item in enumerate(raw_chars):
+            if not isinstance(item, Mapping):
+                char = str(item or "")
+                entries.append(_raw_char_entry(char, char_index=char_index))
+                continue
+            char = str(item.get("c") or item.get("char") or item.get("text") or "")
+            entries.append(
+                _raw_char_entry(
+                    char,
+                    char_index=char_index,
+                    bbox=item.get("bbox"),
+                    origin=item.get("origin"),
+                    synthetic=bool(item.get("synthetic", False)),
+                )
+            )
+    return entries
+
+
+def _raw_char_entry(
+    char: str,
+    *,
+    char_index: int,
+    bbox: Any = None,
+    origin: Any = None,
+    synthetic: bool = False,
+) -> dict[str, Any]:
+    glyph = char[:1] if char else ""
+    entry: dict[str, Any] = {
+        "char_index": char_index,
+        "char": glyph,
+        "codepoint": _glyph_codepoint_label(glyph),
+        "synthetic": synthetic,
+    }
+    bbox_value = _bbox_list(bbox)
+    if bbox_value:
+        entry["bbox"] = bbox_value
+    origin_value = _point_list(origin)
+    if origin_value:
+        entry["origin"] = origin_value
+    return entry
+
+
+def _glyph_codepoint_label(char: str) -> str:
+    if not char:
+        return ""
+    return f"U+{ord(char):04X}"
+
+
+def _bbox_list(value: Any) -> list[float]:
+    if not value:
+        return []
+    try:
+        values = list(value)
+    except TypeError:
+        return []
+    if len(values) < 4:
+        return []
+    return [_round_pdf_coord(item) for item in values[:4]]
+
+
+def _point_list(value: Any) -> list[float]:
+    if not value:
+        return []
+    try:
+        values = list(value)
+    except TypeError:
+        return []
+    if len(values) < 2:
+        return []
+    return [_round_pdf_coord(item) for item in values[:2]]
+
+
+def _round_pdf_coord(value: Any) -> float:
+    try:
+        return round(float(value), 3)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _normalize_chess_span_text(segment: dict[str, Any]) -> str:
+    raw_text = strip_emails(str(segment.get("text") or ""))
+    font_name = str(segment.get("font_name") or "")
+    glyph_context = _span_glyph_context(segment)
+    normalized = _normalize_text_for_epub(raw_text, font_name)
+    font_lower = font_name.lower()
+    if any(token in font_lower for token in CHESS_SYMBOL_FONT_TOKENS):
+        normalized = normalize_ocr_text_for_pgn(normalized)
+    if (
+        _detect_unmapped_pgn_glyphs(raw_text)
+        or _detect_unmapped_pgn_glyphs(glyph_context)
+        or _detect_unmapped_pgn_glyphs(normalized)
+    ):
+        warnings = set(segment.get("warnings") or [])
+        warnings.add(UNMAPPED_CHESS_GLYPH_WARNING)
+        segment["warnings"] = sorted(warnings)
+        segment["glyph_diagnostics"] = _span_glyph_diagnostics(
+            segment,
+            raw_text=raw_text,
+            glyph_context=glyph_context,
+            normalized_text=normalized,
+        )
+    return normalized
+
+
+def _span_glyph_diagnostics(
+    segment: Mapping[str, Any],
+    *,
+    raw_text: str,
+    glyph_context: str,
+    normalized_text: str,
+) -> list[dict[str, Any]]:
+    details: list[dict[str, str]] = []
+    details.extend(_detect_unmapped_pgn_glyph_details(raw_text, field="raw_text"))
+    details.extend(_detect_unmapped_pgn_glyph_details(glyph_context, field="glyph_context"))
+    details.extend(_detect_unmapped_pgn_glyph_details(normalized_text, field="normalized_text"))
+    if not details:
+        return []
+    reasons = sorted({str(detail.get("reason") or "") for detail in details if detail.get("reason")})
+    samples = [
+        {
+            "field": str(detail.get("field") or ""),
+            "reason": str(detail.get("reason") or ""),
+            "sample": str(detail.get("sample") or ""),
+        }
+        for detail in details[:12]
+    ]
+    return [
+        {
+            "page": segment.get("page"),
+            "page_index": segment.get("page_index"),
+            "block_index": segment.get("block_index"),
+            "line_index": segment.get("line_index"),
+            "span_index": segment.get("span_index", segment.get("index")),
+            "font_name": str(segment.get("font_name") or "Unknown"),
+            "font_size": _round_pdf_coord(segment.get("font_size", 0.0)),
+            "bbox": _bbox_list(segment.get("bbox")),
+            "reasons": reasons,
+            "samples": samples,
+            "raw_text": _glyph_audit_sample(raw_text),
+            "glyph_context": _glyph_audit_sample(glyph_context),
+            "normalized_text": _glyph_audit_sample(normalized_text),
+            "codepoints": _segment_codepoint_entries(segment, raw_text=raw_text),
+        }
+    ]
+
+
+def _segment_codepoint_entries(segment: Mapping[str, Any], *, raw_text: str) -> list[dict[str, Any]]:
+    raw_chars = segment.get("raw_chars") or []
+    if isinstance(raw_chars, list) and raw_chars:
+        return [
+            dict(char_entry)
+            for char_entry in raw_chars[:GLYPH_DIAGNOSTIC_SPAN_CHAR_LIMIT]
+            if isinstance(char_entry, Mapping)
+        ]
+    return [
+        {
+            "char_index": index,
+            "char": char,
+            "codepoint": _glyph_codepoint_label(char),
+        }
+        for index, char in enumerate(str(raw_text or "")[:GLYPH_DIAGNOSTIC_SPAN_CHAR_LIMIT])
+    ]
+
+
+def _span_glyph_context(segment: dict[str, Any]) -> str:
+    values: list[str] = []
+    for key in ("raw_chars", "chars", "glyphs"):
+        value = segment.get(key)
+        if not value:
+            continue
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    values.append(str(item.get("c") or item.get("char") or item.get("text") or ""))
+                else:
+                    values.append(str(item or ""))
+        else:
+            values.append(str(value))
+    return "".join(values)
+
+
 def _should_insert_space(previous_text: str, current_text: str, gap: float, font_size: float) -> bool:
     if not previous_text or not current_text:
         return False
@@ -710,17 +928,28 @@ def _build_line_items(raw_lines: list[dict], skipped_indices: set[int]) -> list[
         prev_x1 = None
         start_index = None
         max_font_size = 0.0
+        glyph_warnings: set[str] = set()
+        glyph_warning_fonts: set[str] = set()
+        glyph_diagnostics: list[dict[str, Any]] = []
 
         for segment in segments:
             font_lower = (segment["font_name"] or "").lower()
             is_figurine_segment = any(token in font_lower for token in FIGURINE_FONT_TOKENS)
-            piece = _normalize_text_for_epub(strip_emails(segment["text"]), segment["font_name"]).strip()
+            piece = _normalize_chess_span_text(segment).strip()
             if not piece:
                 continue
 
             if start_index is None:
                 start_index = segment["index"]
             max_font_size = max(max_font_size, segment["font_size"])
+            if UNMAPPED_CHESS_GLYPH_WARNING in set(segment.get("warnings") or []):
+                glyph_warnings.add(UNMAPPED_CHESS_GLYPH_WARNING)
+                glyph_warning_fonts.add(str(segment.get("font_name") or "Unknown"))
+                glyph_diagnostics.extend(
+                    diagnostic
+                    for diagnostic in (segment.get("glyph_diagnostics") or [])
+                    if isinstance(diagnostic, dict)
+                )
 
             gap = (segment["x0"] - prev_x1) if prev_x1 is not None else 0.0
             if line_text:
@@ -752,9 +981,65 @@ def _build_line_items(raw_lines: list[dict], skipped_indices: set[int]) -> list[
             y=min(float(segment.get("y0", 0.0)) for segment in segments),
             x0=min(float(segment.get("x0", 0.0)) for segment in segments),
             x1=max(float(segment.get("x1", 0.0)) for segment in segments),
+            glyph_warnings=sorted(glyph_warnings),
+            glyph_warning_fonts=sorted(glyph_warning_fonts),
+            glyph_diagnostics=glyph_diagnostics[:GLYPH_DIAGNOSTIC_LINE_LIMIT],
         ))
 
     return items
+
+
+def _empty_unmapped_glyph_span_audit() -> dict[str, Any]:
+    return {"line_count": 0, "by_font": {}, "samples": [], "diagnostics": []}
+
+
+def _merge_unmapped_glyph_span_audit(audit: dict[str, Any], line_items: list[TextLineItem], *, page_num: int) -> None:
+    by_font = dict(audit.get("by_font") or {})
+    samples = list(audit.get("samples") or [])
+    diagnostics = list(audit.get("diagnostics") or [])
+    line_count = int(audit.get("line_count", 0) or 0)
+    for item in line_items:
+        if UNMAPPED_CHESS_GLYPH_WARNING not in set(item.glyph_warnings or []):
+            continue
+        line_count += 1
+        fonts = item.glyph_warning_fonts or ["Unknown"]
+        for font in fonts:
+            key = str(font or "Unknown")
+            by_font[key] = int(by_font.get(key, 0) or 0) + 1
+        if len(samples) < 12:
+            samples.append(
+                {
+                    "page": page_num + 1,
+                    "fonts": list(fonts),
+                    "sample": _glyph_audit_sample(item.text),
+                }
+            )
+        for diagnostic in item.glyph_diagnostics or []:
+            if len(diagnostics) >= 24:
+                break
+            diagnostics.append(diagnostic)
+    audit["line_count"] = line_count
+    audit["by_font"] = dict(sorted(by_font.items()))
+    audit["samples"] = samples
+    audit["diagnostics"] = diagnostics
+
+
+def _glyph_audit_sample(text: str, *, limit: int = 120) -> str:
+    sample = WHITESPACE_RE.sub(" ", str(text or "")).strip()
+    escaped: list[str] = []
+    for char in sample[:limit]:
+        codepoint = ord(char)
+        if char == "\ufffd":
+            escaped.append("\\ufffd")
+        elif 0xE000 <= codepoint <= 0xF8FF:
+            escaped.append(f"\\u{codepoint:04x}")
+        elif 0xF0000 <= codepoint <= 0xFFFFD or 0x100000 <= codepoint <= 0x10FFFD:
+            escaped.append(f"\\U{codepoint:08x}")
+        elif codepoint < 32 or 0x7F <= codepoint <= 0x9F:
+            escaped.append(f"\\u{codepoint:04x}")
+        else:
+            escaped.append(char)
+    return "".join(escaped)
 
 
 def extract_chess_notation_pdf_reflow(
@@ -784,24 +1069,32 @@ def extract_chess_notation_pdf_reflow(
         chapters: list[dict[str, Any]] = []
         current_parts: list[str] = []
         current_text_lines: list[str] = []
+        current_glyph_diagnostics: list[dict[str, Any]] = []
         current_start = 0
         text_pages = 0
         notation_line_count = 0
         skipped_image_count = 0
         chess_pgn_records: list[Any] = []
-        notation_diagram_records: list[dict[str, Any]] = []
-        notation_fen_recognition_max_diagrams = max(
-            0,
-            int(getattr(config, "chess_notation_fen_recognition_max_diagrams", 96) or 0),
-        )
+        chess_diagram_records: list[dict[str, Any]] = []
+        chess_fen_records: list[dict[str, Any]] = []
+        book_layout_pages: list[dict[str, Any]] = []
         text_extraction_seconds = 0.0
         pgn_extraction_seconds = 0.0
+        diagram_detection_seconds = 0.0
+        unmapped_glyph_span_audit = _empty_unmapped_glyph_span_audit()
+        template_dir = _resolve_chess_piece_template_dir(config)
+        piece_templates = (
+            load_piece_templates(template_dir)
+            if getattr(config, "chess_fen_recognition_enabled", True) and template_dir
+            else {}
+        )
 
         def flush_chapter(end_page: int) -> None:
-            nonlocal current_parts, current_text_lines, current_start, chess_pgn_records, pgn_extraction_seconds
+            nonlocal current_parts, current_text_lines, current_glyph_diagnostics, current_start, chess_pgn_records, pgn_extraction_seconds
             if not current_parts:
                 current_start = end_page + 1
                 current_text_lines = []
+                current_glyph_diagnostics = []
                 return
             flush_started = time.perf_counter()
             chapter_records = annotate_records_with_replayed_fens(
@@ -810,6 +1103,7 @@ def extract_chess_notation_pdf_reflow(
                     page_num=current_start,
                     source_title=str(metadata.get("title") or Path(pdf_path).stem),
                     ocr_confidence=1.0,
+                    glyph_diagnostics=current_glyph_diagnostics,
                 )
             )
             chess_pgn_records.extend(chapter_records)
@@ -833,6 +1127,7 @@ def extract_chess_notation_pdf_reflow(
             )
             current_parts = []
             current_text_lines = []
+            current_glyph_diagnostics = []
             current_start = end_page + 1
 
         for page_num in range(total_pages):
@@ -843,22 +1138,35 @@ def extract_chess_notation_pdf_reflow(
             page_started = time.perf_counter()
             skipped_image_count += len(page.get_images(full=True))
             line_items = _chess_notation_line_items_from_page(page, page_num)
+            _merge_unmapped_glyph_span_audit(unmapped_glyph_span_audit, line_items, page_num=page_num)
             body_lines = _chess_notation_body_lines(line_items)
             page_parts = _chess_notation_page_html_parts(line_items, page_num=page_num, body_lines=body_lines)
-            if page_parts:
-                recognition_piece_templates = (
-                    piece_templates
-                    if notation_fen_recognition_max_diagrams <= 0
-                    or len(notation_diagram_records) < notation_fen_recognition_max_diagrams
-                    else {}
+            diagram_started = time.perf_counter()
+            page_diagram_records, page_fen_records = _notation_layout_diagrams_from_page(
+                page,
+                page_num,
+                config,
+                piece_templates=piece_templates,
+                nearby_text="\n".join(body_lines[:80]),
+            )
+            diagram_detection_seconds += time.perf_counter() - diagram_started
+            chess_diagram_records.extend(page_diagram_records)
+            chess_fen_records.extend(page_fen_records)
+            elements = _book_layout_text_elements_from_line_items(line_items)
+            elements.extend(
+                _book_layout_diagram_elements_from_diagrams(
+                    page_diagram_records,
+                    page_num=page_num,
+                    reading_order_start=10_000,
                 )
-                notation_diagram_records.extend(
-                    _chess_notation_diagram_records_from_page(
-                        doc,
+            )
+            if elements or page_num not in {int(page.get("page_index", -1) or -1) for page in book_layout_pages}:
+                book_layout_pages.append(
+                    _book_layout_page_from_pdf_page(
+                        page,
                         page_num,
-                        config=config,
-                        piece_templates=recognition_piece_templates,
-                        line_items=line_items,
+                        config,
+                        elements=elements,
                     )
                 )
             text_extraction_seconds += time.perf_counter() - page_started
@@ -867,16 +1175,18 @@ def extract_chess_notation_pdf_reflow(
                 notation_line_count += sum(1 for line in body_lines if _is_notation_heavy_line(line))
                 current_parts.extend(page_parts)
                 current_text_lines.extend(body_lines)
+                current_glyph_diagnostics.extend(_line_items_glyph_diagnostics(line_items))
 
         flush_chapter(total_pages - 1)
+        book_layout_pages = _ensure_book_layout_pages_cover_document(doc, book_layout_pages, config)
     finally:
         doc.close()
 
-    for source_order, record in enumerate(notation_diagram_records):
+    for source_order, record in enumerate(chess_diagram_records):
         record.setdefault("source_order", source_order)
 
     chess_pgn_records = merge_chess_pgn_continuation_records(chess_pgn_records)
-    chess_pgn_summary = summarize_chess_pgn_records(chess_pgn_records)
+    chess_pgn_summary = summarize_chess_pgn_records(chess_pgn_records, diagram_records=chess_diagram_records)
     audit_metadata = dict(metadata.get("audit") or {})
     audit_metadata.update(
         {
@@ -884,9 +1194,13 @@ def extract_chess_notation_pdf_reflow(
             "timings": {
                 "text_extraction_seconds": round(text_extraction_seconds, 4),
                 "pgn_extraction_seconds": round(pgn_extraction_seconds, 4),
+                "diagram_detection_seconds": round(diagram_detection_seconds, 4),
             },
         }
     )
+    if int(unmapped_glyph_span_audit.get("line_count", 0) or 0):
+        audit_metadata["unmapped_chess_glyph_spans"] = unmapped_glyph_span_audit
+    source_title = str(metadata.get("title") or Path(pdf_path).stem)
 
     return {
         "success": True,
@@ -897,7 +1211,7 @@ def extract_chess_notation_pdf_reflow(
             **metadata,
             "publication_kind": "chess-notation-collection",
             "image_policy": "embedded_board_images_skipped_for_runtime_budget",
-            "html_diagram_preview_count": len(notation_diagram_records),
+            "html_diagram_preview_count": len(chess_diagram_records),
             "source_page_count": total_pages,
             "text_page_count": text_pages,
             "notation_line_count": notation_line_count,
@@ -905,19 +1219,34 @@ def extract_chess_notation_pdf_reflow(
             "chess_pgn": chess_pgn_summary,
             "audit": audit_metadata,
             "chess_fen": {
-                "status": "passed" if chess_pgn_summary.get("derived_final_fen_count") or notation_diagram_records else "requires_review",
+                "status": "passed" if chess_pgn_summary.get("derived_final_fen_count") or chess_diagram_records else "requires_review",
                 "source": "html_diagram_preview_and_pgn_replay",
-                "diagram_count": len(notation_diagram_records) or int(chess_pgn_summary.get("candidate_game_count", 0) or 0),
-                "fen_count": len([record for record in notation_diagram_records if record.get("fen")]) + int(chess_pgn_summary.get("fen_count", 0) or 0),
+                "diagram_count": len(chess_diagram_records) or int(chess_pgn_summary.get("candidate_game_count", 0) or 0),
+                "fen_count": len([record for record in chess_diagram_records if record.get("fen")]) + int(chess_pgn_summary.get("fen_count", 0) or 0),
                 "manual_review_count": int(chess_pgn_summary.get("manual_review_count", 0) or 0),
+                "caption_match_count": len([record for record in chess_diagram_records if int(record.get("caption_match_score") or 0) > 0]),
+                "caption_number_count": len([record for record in chess_diagram_records if str(record.get("diagram_number") or "").strip()]),
+                "caption_guided_candidate_count": len(
+                    [
+                        record
+                        for record in chess_diagram_records
+                        if "caption_guided" in str(record.get("method") or "")
+                        or "caption_guided_board_candidate" in {str(warning) for warning in (record.get("warnings") or [])}
+                    ]
+                ),
+                "board_found_near_caption_count": len([record for record in chess_diagram_records if bool(record.get("board_found_near_caption"))]),
+                "global_candidate_without_caption_count": len(
+                    [record for record in chess_diagram_records if record.get("board_detection_reason") == "global_candidate_without_caption"]
+                ),
             },
         },
         "images": [],
         "chapters": chapters,
         "extra_artifacts": _scan_chess_pgn_extra_artifacts(
             chess_pgn_records,
-            source_title=str(metadata.get("title") or Path(pdf_path).stem),
-            diagram_records=notation_diagram_records,
+            source_title=source_title,
+            diagrams=chess_diagram_records,
+            book_layout_pages=book_layout_pages,
         ),
         "audit": {
             "status": "passed_with_warnings",
@@ -939,20 +1268,29 @@ def _chess_notation_diagram_records_from_page(
     max_pages = int(getattr(config, "chess_notation_diagram_scan_max_pages", 260) or 0)
     if max_pages <= 0 or page_num >= max_pages:
         return []
-    max_candidates = max(1, min(int(getattr(config, "chess_fen_scan_candidates_per_page", 3) or 3), 6))
+    configured_candidates = int(getattr(config, "chess_fen_scan_candidates_per_page", 8) or 8)
+    max_candidates = max(1, min(max(configured_candidates, 8), 8))
     try:
         image_data = _page_image_data_for_scan_chess(doc, page_num)
         page_image = Image.open(io.BytesIO(image_data)).convert("RGB")
     except Exception:
         return []
     try:
-        candidates = detect_board_candidates_in_page_image(
+        candidates = list(detect_board_candidates_in_page_image(
             image_data,
             max_candidates=max_candidates,
             enable_sliding_probe=bool(getattr(config, "chess_fen_scan_enable_sliding_probe", False)),
-        )
+        ))
     except Exception:
         return []
+    candidates = _augment_notation_board_candidates_from_captions(
+        doc,
+        page_num,
+        page_image,
+        candidates,
+        line_items or [],
+        max_candidates=max_candidates,
+    )
     records: list[dict[str, Any]] = []
     for candidate_index, candidate in enumerate(candidates, start=1):
         raw_bbox = getattr(candidate, "bbox", None)
@@ -962,28 +1300,31 @@ def _chess_notation_diagram_records_from_page(
             continue
         if recognition_bbox is None:
             recognition_bbox = bbox
-        crop = page_image.crop(bbox)
-        if min(crop.size) < 80 or _scan_chess_is_partial_separator_crop(crop):
+        source_crop = page_image.crop(bbox)
+        if min(source_crop.size) < 80 or _scan_chess_is_partial_separator_crop(source_crop):
             continue
-        png_data, width, height = _encode_scan_chess_diagram_crop(crop, config)
+        display_crop, crop_quality = _notation_chess_display_crop(source_crop)
+        if min(display_crop.size) < 80 or _scan_chess_is_partial_separator_crop(display_crop):
+            display_crop = source_crop
+            crop_quality["display_crop_fallback"] = True
+        png_data, width, height = _encode_scan_chess_diagram_crop(display_crop, config)
         bbox_tuple = tuple(float(value) for value in bbox)
         recognition_bbox_tuple = tuple(float(value) for value in recognition_bbox)
+        candidate_confidence = float(getattr(candidate, "confidence", 0.0) or getattr(candidate, "grid_confidence", 0.0) or 0.0)
+        raw_method = str(getattr(candidate, "method", "") or "notation-page-board-crop")
+        caption_guided_candidate = "caption_guided" in raw_method
         preprocess_metadata = _scan_chess_preprocess_metadata(
             selected_variant="original",
             display_variant="reader_enhanced",
-            confidence=float(getattr(candidate, "confidence", 0.0) or getattr(candidate, "grid_confidence", 0.0) or 0.0),
+            confidence=candidate_confidence,
         )
         candidate_payload: dict[str, Any] = {
             "fen": "",
-            "full_fen": "",
             "placement": "",
-            "placement_fen": "",
-            "confidence": float(getattr(candidate, "confidence", 0.0) or getattr(candidate, "grid_confidence", 0.0) or 0.0),
+            "confidence": candidate_confidence,
             "side_to_move": "w",
-            "side_to_move_status": "unknown",
-            "side_to_move_evidence": "none",
             "bbox": tuple(float(value) for value in bbox),
-            "method": str(getattr(candidate, "method", "") or "notation-page-board-crop"),
+            "method": raw_method,
             "warnings": ["image_board_requires_review"],
             "requires_review": True,
             "board_detected": True,
@@ -1008,7 +1349,7 @@ def _chess_notation_diagram_records_from_page(
                 )
                 selected_variant = "full_page_bbox_recognition"
                 preprocessed_recognition, preprocessed_variant, _preprocessed_metadata = _recognize_scan_chess_preprocessed_variants(
-                    crop,
+                    display_crop,
                     config=config,
                     bbox=bbox_tuple,
                     piece_templates=piece_templates,
@@ -1025,20 +1366,6 @@ def _chess_notation_diagram_records_from_page(
                     config=config,
                 )
                 candidate_payload = _scan_chess_fen_payload(candidate_payload, recognition)
-                candidate_payload = _scan_chess_attach_external_fen_provider(
-                    candidate_payload,
-                    crop_bytes=png_data,
-                    config=config,
-                    page_image=page_image,
-                    best_bbox=recognition_bbox_tuple,
-                    reader_bbox=bbox_tuple,
-                    bbox=bbox_tuple,
-                    page=page_num + 1,
-                    selected_preprocess_variant=selected_variant,
-                    display_variant_used="reader_enhanced",
-                    min_confidence=min_confidence,
-                    pgn_records=(),
-                )
                 preprocess_metadata = _scan_chess_preprocess_metadata(
                     selected_variant=selected_variant,
                     display_variant="reader_enhanced",
@@ -1049,7 +1376,19 @@ def _chess_notation_diagram_records_from_page(
             except Exception:
                 pass
         fen_value = str(candidate_payload.get("fen") or "").strip()
-        diagram_number = _nearest_chess_notation_diagram_number(line_items or [], tuple(float(value) for value in bbox))
+        caption_match = _nearest_chess_notation_diagram_caption_match(
+            line_items or [],
+            tuple(float(value) for value in bbox),
+        )
+        diagram_number = caption_match.diagram_number if caption_match else ""
+        detection_reason = (
+            "caption_guided_local_scan"
+            if caption_guided_candidate
+            else ("global_candidate_with_caption" if caption_match else "global_candidate_without_caption")
+        )
+        warnings = list(candidate_payload.get("warnings") or ([] if fen_value else ["image_board_requires_review"]))
+        if caption_guided_candidate and "caption_guided_board_candidate" not in warnings:
+            warnings.append("caption_guided_board_candidate")
         records.append(
             {
                 "page": page_num + 1,
@@ -1061,17 +1400,26 @@ def _chess_notation_diagram_records_from_page(
                 "width": width,
                 "height": height,
                 "fen": fen_value,
-                "full_fen": str(candidate_payload.get("full_fen") or fen_value),
+                "full_fen": str(candidate_payload.get("full_fen") or candidate_payload.get("fen") or ""),
                 "placement": str(candidate_payload.get("placement") or ""),
-                "placement_fen": str(candidate_payload.get("placement_fen") or candidate_payload.get("placement") or ""),
                 "side_to_move": str(candidate_payload.get("side_to_move") or "w"),
-                "side_to_move_status": str(candidate_payload.get("side_to_move_status") or ""),
-                "side_to_move_evidence": str(candidate_payload.get("side_to_move_evidence") or ""),
                 "confidence": float(candidate_payload.get("confidence", 0.0) or 0.0),
                 "requires_review": bool(candidate_payload.get("requires_review", not fen_value)),
                 "method": str(candidate_payload.get("method") or "notation-page-board-crop"),
-                "warnings": list(candidate_payload.get("warnings") or ([] if fen_value else ["image_board_requires_review"])),
+                "warnings": warnings,
                 "bbox": candidate_payload.get("bbox") or tuple(float(value) for value in bbox),
+                "recognition_bbox": recognition_bbox_tuple,
+                "source_crop_bbox": bbox_tuple,
+                "caption_text": caption_match.text if caption_match else "",
+                "caption_bbox": caption_match.bbox if caption_match else None,
+                "caption_distance": round(float(caption_match.distance), 3) if caption_match else None,
+                "caption_match_score": int(caption_match.score) if caption_match else 0,
+                "caption_confidence": round(float(caption_match.confidence), 3) if caption_match else 0.0,
+                "caption_seen": bool(caption_match),
+                "board_found_near_caption": bool(caption_match and int(caption_match.score) >= 55),
+                "board_detection_reason": detection_reason,
+                "crop_confidence": round(candidate_confidence, 3),
+                "crop_quality": crop_quality,
                 **preprocess_metadata,
             }
         )
@@ -1082,56 +1430,299 @@ def _nearest_chess_notation_diagram_number(
     line_items: list[TextLineItem],
     bbox: tuple[float, float, float, float],
 ) -> str:
+    match = _nearest_chess_notation_diagram_caption_match(line_items, bbox)
+    return match.diagram_number if match else ""
+
+
+def _nearest_chess_notation_diagram_caption_match(
+    line_items: list[TextLineItem],
+    bbox: tuple[float, float, float, float],
+) -> DiagramCaptionMatch | None:
     x0, y0, x1, y1 = bbox
     board_center_x = (float(x0) + float(x1)) / 2.0
-    matches: list[tuple[float, str]] = []
-    for item in line_items:
-        text = str(getattr(item, "text", "") or "")
-        match = re.search(r"(?i)\bdiagram\s+(\d+(?:[-.]\d+)?)", text)
-        if not match:
+    board_width = max(1.0, float(x1) - float(x0))
+    board_height = max(1.0, float(y1) - float(y0))
+    matches: list[tuple[float, DiagramCaptionMatch]] = []
+    for caption in _chess_notation_caption_candidates(line_items):
+        cap_x0, cap_y0, cap_x1, cap_y1 = caption.bbox
+        cap_center_x = (float(cap_x0) + float(cap_x1)) / 2.0
+        horizontal_distance = abs(cap_center_x - board_center_x)
+        horizontal_overlap = max(0.0, min(float(cap_x1), float(x1)) - max(float(cap_x0), float(x0)))
+        overlap_ratio = horizontal_overlap / max(1.0, min(board_width, max(1.0, float(cap_x1) - float(cap_x0))))
+        if cap_y1 <= float(y0):
+            vertical_gap = float(y0) - cap_y1
+            below_penalty = 0.0
+        elif cap_y0 >= float(y1):
+            vertical_gap = cap_y0 - float(y1)
+            below_penalty = 180.0
+        else:
+            vertical_gap = 0.0
+            below_penalty = 20.0
+        column_penalty = 0.0
+        if overlap_ratio < 0.12 and horizontal_distance > board_width * 0.75:
+            column_penalty = 120.0
+        far_penalty = 120.0 if vertical_gap > board_height * 1.35 else 0.0
+        distance = vertical_gap + (horizontal_distance * 0.18) + below_penalty + column_penalty + far_penalty
+        score = max(0, min(100, int(round(105.0 - (distance / 3.0)))))
+        confidence = round(float(score) / 100.0, 3)
+        if confidence < 0.18:
             continue
-        item_y = float(getattr(item, "y", 0.0) or 0.0)
-        item_x0 = float(getattr(item, "x0", 0.0) or 0.0)
-        item_x1 = float(getattr(item, "x1", item_x0) or item_x0)
-        item_center_x = (item_x0 + item_x1) / 2.0
-        vertical_distance = abs(item_y - float(y0))
-        horizontal_distance = abs(item_center_x - board_center_x)
-        below_penalty = 180.0 if item_y > float(y1) + 16.0 else 0.0
-        score = vertical_distance + (horizontal_distance * 0.15) + below_penalty
-        matches.append((score, match.group(1).strip()))
+        matches.append(
+            (
+                distance,
+                DiagramCaptionMatch(
+                    diagram_number=caption.diagram_number,
+                    text=caption.text,
+                    bbox=caption.bbox,
+                    distance=distance,
+                    score=score,
+                    confidence=confidence,
+                ),
+            )
+        )
     if not matches:
-        return ""
-    matches.sort(key=lambda item: item[0])
+        return None
+    matches.sort(key=lambda item: (-item[1].score, item[0], item[1].bbox[1]))
     return matches[0][1]
+
+
+def _chess_notation_caption_candidates(line_items: list[TextLineItem]) -> list[DiagramCaptionMatch]:
+    sorted_items = sorted(line_items or [], key=lambda item: (float(getattr(item, "y", 0.0) or 0.0), float(getattr(item, "x0", 0.0) or 0.0)))
+    candidates: list[DiagramCaptionMatch] = []
+    seen: set[tuple[str, int, int, int, int]] = set()
+    for index, item in enumerate(sorted_items):
+        windows: list[list[TextLineItem]] = [[item]]
+        for next_item in sorted_items[index + 1 : index + 3]:
+            if not _chess_notation_line_items_can_join_for_caption(windows[-1][-1], next_item):
+                break
+            windows.append([*windows[-1], next_item])
+        for window in windows:
+            text = " ".join(str(getattr(part, "text", "") or "").strip() for part in window).strip()
+            diagram_number = _extract_chess_notation_diagram_number_from_caption(text)
+            if not diagram_number:
+                continue
+            x0 = min(float(getattr(part, "x0", 0.0) or 0.0) for part in window)
+            x1 = max(float(getattr(part, "x1", 0.0) or 0.0) for part in window)
+            y0 = min(float(getattr(part, "y", 0.0) or 0.0) for part in window)
+            y1 = max(float(getattr(part, "y", 0.0) or 0.0) + float(getattr(part, "font_size", 12.0) or 12.0) for part in window)
+            key = (diagram_number, int(round(x0)), int(round(y0)), int(round(x1)), int(round(y1)))
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(
+                DiagramCaptionMatch(
+                    diagram_number=diagram_number,
+                    text=text,
+                    bbox=(x0, y0, x1, y1),
+                    distance=0.0,
+                    score=0,
+                    confidence=0.0,
+                )
+            )
+    return candidates
+
+
+def _chess_notation_line_items_can_join_for_caption(left: TextLineItem, right: TextLineItem) -> bool:
+    left_y = float(getattr(left, "y", 0.0) or 0.0)
+    right_y = float(getattr(right, "y", 0.0) or 0.0)
+    if abs(right_y - left_y) > 18.0:
+        return False
+    left_x0 = float(getattr(left, "x0", 0.0) or 0.0)
+    left_x1 = float(getattr(left, "x1", left_x0) or left_x0)
+    right_x0 = float(getattr(right, "x0", 0.0) or 0.0)
+    right_x1 = float(getattr(right, "x1", right_x0) or right_x0)
+    horizontal_gap = max(0.0, right_x0 - left_x1)
+    overlap = max(0.0, min(left_x1, right_x1) - max(left_x0, right_x0))
+    same_column = overlap > 8.0 or horizontal_gap < 80.0
+    return same_column
+
+
+def _extract_chess_notation_diagram_number_from_caption(text: str) -> str:
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+    direct = re.search(r"(?i)\bdiagram\s+(\d{1,2})\s*[-.]\s*(\d{1,2})\b", normalized)
+    if direct:
+        return f"{int(direct.group(1))}-{int(direct.group(2))}"
+    split = re.search(r"(?i)\bdiagram\s+\d{1,2}\s+(\d{1,2})\s*[-.]\s*(\d{1,2})\b", normalized)
+    if split:
+        return f"{int(split.group(1))}-{int(split.group(2))}"
+    spaced = re.search(r"(?i)\bdiagram\s+(\d{1,2})\s+(\d{1,2})\b", normalized)
+    if spaced:
+        return f"{int(spaced.group(1))}-{int(spaced.group(2))}"
+    return ""
+
+
+def _augment_notation_board_candidates_from_captions(
+    doc: fitz.Document,
+    page_num: int,
+    page_image: Image.Image,
+    candidates: list[ChessFenResult],
+    line_items: list[TextLineItem],
+    *,
+    max_candidates: int,
+) -> list[ChessFenResult]:
+    captions = _chess_notation_caption_candidates(line_items)
+    target_limit = max(max_candidates, min(10, max_candidates + min(2, len(captions))))
+    if not captions or len(candidates) >= target_limit:
+        return candidates
+    try:
+        page_rect = doc[page_num].rect
+        page_width = float(page_rect.width or 0.0)
+        page_height = float(page_rect.height or 0.0)
+    except Exception:
+        return candidates
+    if page_width <= 0 or page_height <= 0:
+        return candidates
+    scale_x = float(page_image.size[0]) / page_width
+    scale_y = float(page_image.size[1]) / page_height
+    if not (0.2 <= scale_x <= 6.0 and 0.2 <= scale_y <= 6.0):
+        return candidates
+    augmented = list(candidates)
+    caption_scan_count = 0
+    for caption in captions:
+        if len(augmented) >= target_limit:
+            break
+        if caption_scan_count >= 2:
+            break
+        existing_caption_numbers: set[str] = set()
+        for result in augmented:
+            if not result.bbox:
+                continue
+            existing_match = _nearest_chess_notation_diagram_caption_match(line_items, tuple(result.bbox))
+            if existing_match and existing_match.score >= 55:
+                existing_caption_numbers.add(existing_match.diagram_number)
+        if caption.diagram_number in existing_caption_numbers:
+            continue
+        cap_x0, _cap_y0, cap_x1, cap_y1 = caption.bbox
+        region_pdf = (
+            max(0.0, cap_x0 - 50.0),
+            max(0.0, cap_y1 - 8.0),
+            min(page_width, cap_x1 + 110.0),
+            min(page_height, cap_y1 + 280.0),
+        )
+        region = (
+            int(round(region_pdf[0] * scale_x)),
+            int(round(region_pdf[1] * scale_y)),
+            int(round(region_pdf[2] * scale_x)),
+            int(round(region_pdf[3] * scale_y)),
+        )
+        if region[2] - region[0] < 120 or region[3] - region[1] < 120:
+            continue
+        crop = page_image.crop(region)
+        output = io.BytesIO()
+        crop.save(output, format="PNG")
+        try:
+            local_candidates = detect_board_candidates_in_page_image(
+                output.getvalue(),
+                max_candidates=2,
+                enable_sliding_probe=False,
+            )
+        except Exception:
+            continue
+        caption_scan_count += 1
+        for local in local_candidates:
+            local_bbox = getattr(local, "bbox", None)
+            if not local_bbox:
+                continue
+            page_bbox = (
+                float(region[0]) + float(local_bbox[0]),
+                float(region[1]) + float(local_bbox[1]),
+                float(region[0]) + float(local_bbox[2]),
+                float(region[1]) + float(local_bbox[3]),
+            )
+            if any(_bbox_overlap_ratio(tuple(existing.bbox or ()), page_bbox) > 0.65 for existing in augmented if existing.bbox):
+                continue
+            augmented.append(
+                ChessFenResult(
+                    confidence=float(getattr(local, "confidence", 0.0) or 0.0),
+                    bbox=page_bbox,
+                    method=f"{getattr(local, 'method', '') or 'caption-guided-board-candidate'}:caption_guided",
+                    warnings=["caption_guided_board_candidate"],
+                    requires_review=True,
+                    board_detected=True,
+                )
+            )
+            break
+    return augmented
+
+
+def _notation_chess_display_crop(crop: Image.Image) -> tuple[Image.Image, dict[str, Any]]:
+    source = crop.convert("RGB")
+    original_width, original_height = source.size
+    quality: dict[str, Any] = {
+        "source_width": int(original_width),
+        "source_height": int(original_height),
+        "trimmed": False,
+        "squared": False,
+        "display_crop_fallback": False,
+    }
+    working = source
+    try:
+        gray = ImageOps.grayscale(source)
+        mask = gray.point(lambda pixel: 255 if pixel < 246 else 0)
+        content_bbox = mask.getbbox()
+        if content_bbox:
+            x0, y0, x1, y1 = content_bbox
+            margin = max(2, int(min(original_width, original_height) * 0.015))
+            trim_box = (
+                max(0, x0 - margin),
+                max(0, y0 - margin),
+                min(original_width, x1 + margin),
+                min(original_height, y1 + margin),
+            )
+            trim_width = trim_box[2] - trim_box[0]
+            trim_height = trim_box[3] - trim_box[1]
+            if trim_width >= 80 and trim_height >= 80:
+                area_ratio = (trim_width * trim_height) / max(1, original_width * original_height)
+                if 0.25 <= area_ratio <= 1.02:
+                    working = source.crop(trim_box)
+                    quality["trimmed"] = trim_box != (0, 0, original_width, original_height)
+                    quality["trim_box"] = tuple(int(value) for value in trim_box)
+    except Exception:
+        working = source
+    width, height = working.size
+    if min(width, height) >= 80:
+        side = min(width, height)
+        if abs(width - height) > 2 and abs(width - height) / max(width, height) <= 0.22:
+            left = max(0, (width - side) // 2)
+            top = max(0, (height - side) // 2)
+            working = working.crop((left, top, left + side, top + side))
+            quality["squared"] = True
+            quality["square_box"] = (int(left), int(top), int(left + side), int(top + side))
+    try:
+        stat = ImageStat.Stat(ImageOps.grayscale(working))
+        quality["display_width"] = int(working.size[0])
+        quality["display_height"] = int(working.size[1])
+        quality["mean_luma"] = round(float(stat.mean[0]), 3)
+        quality["contrast"] = round(float(stat.stddev[0]), 3)
+    except Exception:
+        quality["display_width"] = int(working.size[0])
+        quality["display_height"] = int(working.size[1])
+    return working, quality
 
 
 def _chess_notation_line_items_from_page(page: fitz.Page, page_num: int) -> list[TextLineItem]:
     raw_lines: list[dict[str, Any]] = []
     span_index = 0
     page_width = float(page.rect.width or 0.0)
-    text_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_MEDIABOX_CLIP, sort=True)
-    for block in text_dict.get("blocks", []):
+    text_dict = _page_text_dict_for_glyph_capture(page, sort=True)
+    for block_index, block in enumerate(text_dict.get("blocks", [])):
         if block.get("type") != 0:
             continue
-        for line in block.get("lines", []):
+        for line_index, line in enumerate(block.get("lines", [])):
             raw_line_segments = []
             for span in line.get("spans", []):
-                raw_text = span.get("text", "")
+                segment = _pdf_text_segment_from_span(
+                    span,
+                    page_num=page_num,
+                    block_index=block_index,
+                    line_index=line_index,
+                    span_index=span_index,
+                )
+                raw_text = segment.get("text", "")
                 if not str(raw_text or "").strip():
                     span_index += 1
                     continue
-                x0, y0, _x1, _y1 = span.get("bbox", (0.0, 0.0, 0.0, 0.0))
-                raw_line_segments.append(
-                    {
-                        "index": span_index,
-                        "text": raw_text,
-                        "font_name": span.get("font", "") or "",
-                        "font_size": span.get("size", 12),
-                        "x0": x0,
-                        "x1": _x1,
-                        "y0": y0,
-                    }
-                )
+                raw_line_segments.append(segment)
                 span_index += 1
             if raw_line_segments:
                 for segment_group in _split_chess_notation_raw_line_segments(raw_line_segments, page_width=page_width):
@@ -1208,6 +1799,13 @@ def _chess_notation_body_lines(line_items: list[TextLineItem]) -> list[str]:
     return body_lines
 
 
+def _line_items_glyph_diagnostics(line_items: list[TextLineItem]) -> list[dict[str, Any]]:
+    diagnostics: list[dict[str, Any]] = []
+    for item in _order_chess_notation_lines_for_reading(line_items):
+        diagnostics.extend(item.glyph_diagnostics or [])
+    return diagnostics
+
+
 def _order_chess_notation_lines_for_reading(line_items: list[TextLineItem]) -> list[TextLineItem]:
     if len(line_items) < 12:
         return line_items
@@ -1227,6 +1825,110 @@ def _order_chess_notation_lines_for_reading(line_items: list[TextLineItem]) -> l
         right,
         key=lambda item: (item.y, item.x0, item.start_index),
     )
+
+
+def _notation_layout_diagrams_from_page(
+    page: fitz.Page,
+    page_num: int,
+    config: ConversionConfig,
+    *,
+    piece_templates: dict,
+    nearby_text: str = "",
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not getattr(config, "chess_fen_recognition_enabled", True):
+        return [], []
+    max_pages = int(getattr(config, "chess_notation_layout_diagram_scan_pages", 0) or 0)
+    if max_pages > 0 and page_num >= max_pages:
+        return [], []
+    max_candidates = max(0, int(getattr(config, "chess_fen_scan_candidates_per_page", 3) or 0))
+    if max_candidates <= 0:
+        return [], []
+    dpi = max(96, min(int(getattr(config, "chess_diagram_dpi", 140) or 140), 180))
+    matrix = fitz.Matrix(dpi / 72.0, dpi / 72.0)
+    try:
+        pixmap = page.get_pixmap(matrix=matrix, alpha=False)
+        page_png = pixmap.tobytes("png")
+        page_image = Image.open(io.BytesIO(page_png)).convert("RGB")
+    except Exception:
+        return [], []
+
+    candidates = detect_board_candidates_in_page_image(
+        page_png,
+        max_candidates=max_candidates,
+        min_grid_confidence=float(getattr(config, "scanned_chess_min_grid_confidence", 0.50) or 0.50),
+        enable_sliding_probe=bool(getattr(config, "chess_fen_scan_enable_sliding_probe", False)),
+    )
+    diagrams: list[dict[str, Any]] = []
+    fen_records: list[dict[str, Any]] = []
+    seen_bboxes: list[tuple[float, float, float, float]] = []
+    for candidate_index, candidate in enumerate(candidates, start=1):
+        if not candidate.bbox:
+            continue
+        pixel_bbox = _clamp_bbox(candidate.bbox, page_image.size, pad_ratio=0.01, min_pad=2.0)
+        if pixel_bbox is None:
+            continue
+        crop = page_image.crop(pixel_bbox)
+        if min(crop.size) < 80 or _scan_chess_is_partial_separator_crop(crop):
+            continue
+        page_bbox = tuple(
+            _scale_bbox(
+                pixel_bbox,
+                source_size=page_image.size,
+                target_width=float(page.rect.width or page_image.width),
+                target_height=float(page.rect.height or page_image.height),
+            )
+        )
+        if any(_bbox_overlap_ratio(page_bbox, existing) > 0.70 for existing in seen_bboxes):
+            continue
+        seen_bboxes.append(page_bbox)
+
+        reader_crop = _resize_image_to_long_edge(
+            crop,
+            int(getattr(config, "scanned_chess_diagram_long_edge", 360) or 360),
+            resample=Image.Resampling.LANCZOS,
+        )
+        png_data, width, height = _encode_scan_chess_diagram_crop(reader_crop, config)
+        result = recognize_chess_position_from_image(
+            png_data,
+            bbox=page_bbox,
+            min_confidence=float(getattr(config, "chess_fen_min_confidence", 0.835) or 0.835),
+            piece_templates=piece_templates,
+        )
+        chess_img = {
+            "filename": f"notation_layout_p{page_num + 1:03d}_{candidate_index:02d}.png",
+            "data": png_data,
+            "extension": "png",
+            "width": width,
+            "height": height,
+            "bbox": page_bbox,
+            "page": page_num,
+            "is_chess": True,
+            "inline": True,
+            "fen_result": result.to_dict(),
+            "fen_confidence": result.confidence,
+            "fen_method": result.method,
+        }
+        if result.fen and not result.requires_review and _fen_string_is_parser_valid(result.fen):
+            chess_img["fen"] = result.fen
+        diagram_id = f"layout-chess-p{page_num + 1:03d}-d{len(diagrams) + 1:02d}"
+        diagrams.append(
+            _chess_diagram_record_from_image(
+                chess_img,
+                diagram_id=diagram_id,
+                caption=f"Strona {page_num + 1}, diagram {len(diagrams) + 1}",
+                page_num=page_num,
+                nearby_text=nearby_text,
+            )
+        )
+        fen_records.append(
+            _chess_fen_record(
+                page_num=page_num,
+                filename=chess_img["filename"],
+                result=result,
+                source="notation-layout-page-render",
+            )
+        )
+    return diagrams, fen_records
 
 
 def _chess_notation_line_count(line_items: list[TextLineItem]) -> int:
@@ -1676,10 +2378,9 @@ def _reconstruct_row_grouped_diagrams(html_parts: list[str]) -> Optional[list[st
     return reconstructed
 
 
-SCAN_CHESS_CACHE_VERSION = 4
+SCAN_CHESS_CACHE_VERSION = 3
 SCAN_CHESS_PAGE_CANDIDATE_CACHE_VERSION = 17
 SCAN_CHESS_RECOGNITION_CACHE_VERSION = 8
-SCAN_CHESS_EXTERNAL_PROVIDER_CACHE_VERSION = 2
 SCAN_CHESS_SPARSE_EXACT_CONSENSUS_MIN_PIECES = 3
 SCAN_CHESS_SPARSE_EXACT_CONSENSUS_MIN_CONFIDENCE = 0.827
 SCAN_CHESS_SPARSE_EXACT_CONSENSUS_MAX_PIECES = 8
@@ -1761,6 +2462,8 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
         chess_fen_records: list[dict[str, Any]] = []
         chess_html_diagram_records: list[dict[str, Any]] = []
         chess_pgn_records = []
+        chess_diagram_records: list[dict[str, Any]] = []
+        book_layout_pages: list[dict[str, Any]] = []
         diagram_total = 0
         raw_candidate_total = 0
         non_board_rejected_count = 0
@@ -1776,12 +2479,30 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
                 page_image = Image.open(io.BytesIO(image_data)).convert("RGB")
             except Exception:
                 continue
+            page = doc[page_num]
+            page_width = float(page.rect.width or page_image.width)
+            page_height = float(page.rect.height or page_image.height)
 
             html_parts = []
+            book_elements: list[dict[str, Any]] = []
             ocr_record = selective_ocr_pages.get(str(page_num)) or selective_ocr_pages.get(page_num)
             page_pgn_records = []
             if isinstance(ocr_record, dict):
                 html_parts.extend(_scan_chess_ocr_html_parts(ocr_record, page_num=page_num))
+                ocr_lines = [line.strip() for line in str(ocr_record.get("text") or "").splitlines() if line.strip()]
+                for line_index, line in enumerate(ocr_lines[:42]):
+                    y0 = 34.0 + line_index * 12.5
+                    if y0 > page_height - 24.0:
+                        break
+                    book_elements.append(
+                        {
+                            "type": "text",
+                            "bbox": [34.0, y0, min(page_width - 28.0, page_width * 0.72), y0 + 12.0],
+                            "reading_order": 100 + line_index,
+                            "text": line,
+                            "font_size": 9.5,
+                        }
+                    )
                 page_pgn_records = extract_chess_pgn_records_from_text(
                     str(ocr_record.get("text") or ""),
                     page_num=page_num,
@@ -1793,7 +2514,6 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
             )
             chapter_images: list[dict[str, Any]] = []
             page_fen_values: list[str] = []
-            caption_side_evidence = _scan_chess_side_to_move_evidence_for_candidates(candidates, ocr_record)
             for candidate_index, candidate in enumerate(candidates, start=1):
                 bbox = _clamp_bbox(candidate.get("bbox"), page_image.size)
                 if bbox is None:
@@ -1845,20 +2565,6 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
                         non_board_rejected_count += 1
                         continue
                     candidate_payload = _scan_chess_fen_payload(candidate, recognition)
-                    candidate_payload = _scan_chess_attach_external_fen_provider(
-                        candidate_payload,
-                        crop_bytes=png_data,
-                        config=config,
-                        page_image=page_image,
-                        best_bbox=tuple(float(value) for value in recognition_bbox),
-                        reader_bbox=tuple(float(value) for value in bbox),
-                        bbox=tuple(float(value) for value in bbox),
-                        page=page_num + 1,
-                        selected_preprocess_variant=str(preprocess_metadata.get("selected_preprocess_variant") or "full_page_bbox_recognition"),
-                        display_variant_used=str(preprocess_metadata.get("display_variant_used") or "reader_enhanced"),
-                        min_confidence=float(getattr(config, "chess_fen_min_confidence", 0.85) or 0.85),
-                        pgn_records=page_pgn_records,
-                    )
                 else:
                     candidate_payload = _scan_chess_candidate_review_payload(candidate)
                 marker_side = _infer_scan_chess_side_to_move(
@@ -1867,9 +2573,6 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
                 )
                 if marker_side and bool(getattr(config, "chess_fen_apply_side_marker", False)):
                     candidate_payload = _apply_scan_chess_side_to_move_marker(candidate_payload, marker_side)
-                caption_evidence = caption_side_evidence.get(candidate_index - 1)
-                if caption_evidence is not None:
-                    candidate_payload = _apply_scan_chess_side_to_move_evidence(candidate_payload, caption_evidence)
                 diagram_total += 1
                 chess_img = {
                     "filename": filename,
@@ -1891,6 +2594,46 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
                     page_fen_values.append(str(candidate_payload["fen"]))
                 chapter_images.append(chess_img)
                 all_images.append(chess_img)
+                diagram_caption = f"Strona {page_num + 1}, diagram {candidate_index}"
+                chess_diagram_records.append(
+                    _chess_diagram_record_from_image(
+                        chess_img,
+                        diagram_id=f"scan-chess-p{page_num + 1:03d}-d{candidate_index:02d}",
+                        caption=diagram_caption,
+                        page_num=page_num,
+                        nearby_text=str((ocr_record or {}).get("text") or ""),
+                    )
+                )
+                scaled_bbox = _scale_bbox(
+                    tuple(float(value) for value in bbox),
+                    source_size=page_image.size,
+                    target_width=page_width,
+                    target_height=page_height,
+                )
+                diagram_data_uri = "data:image/png;base64," + base64.b64encode(png_data).decode("ascii")
+                book_elements.append(
+                    {
+                        "type": "diagram",
+                        "bbox": scaled_bbox,
+                        "reading_order": 1_000 + candidate_index * 10,
+                        "title": diagram_caption,
+                        "image_data_uri": diagram_data_uri,
+                    }
+                )
+                if candidate_payload.get("fen"):
+                    book_elements.append(
+                        {
+                            "type": "fen",
+                            "bbox": [
+                                scaled_bbox[0],
+                                scaled_bbox[3] + 4.0,
+                                scaled_bbox[2],
+                                min(page_height - 8.0, scaled_bbox[3] + 30.0),
+                            ],
+                            "reading_order": 1_000 + candidate_index * 10 + 1,
+                            "fen": str(candidate_payload.get("fen") or ""),
+                        }
+                    )
                 chess_fen_records.append(
                     {
                         "page": page_num + 1,
@@ -1932,7 +2675,7 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
                     fen_note = ""
                 html_parts.append(
                     '<div class="chess-problem">'
-                    f'<p class="diagram-caption">Strona {page_num + 1}, diagram {candidate_index}</p>'
+                    f'<p class="diagram-caption">{html_module.escape(diagram_caption)}</p>'
                     f'<div class="figure chess-diagram-container"{fen_attrs}>'
                     f'<img class="chess-diagram" src="images/{html_module.escape(filename, quote=True)}" '
                     f'alt="{html_module.escape(chess_diagram_alt_text(chess_img), quote=True)}"{fen_attrs}/>'
@@ -1953,6 +2696,15 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
                 )
 
             if chapter_images:
+                if book_elements:
+                    book_layout_pages.append(
+                        _book_layout_page_from_pdf_page(
+                            page,
+                            page_num,
+                            config,
+                            elements=book_elements,
+                        )
+                    )
                 chapters.append(
                     {
                         "title": f"Strona {page_num + 1} - diagramy szachowe",
@@ -1985,7 +2737,7 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
         toc = [(1, chapter["title"], index + 1) for index, chapter in enumerate(chapters) if chapter.get("title")]
         manual_review_count = len([record for record in chess_fen_records if record.get("requires_review")])
         chess_pgn_records = merge_chess_pgn_continuation_records(chess_pgn_records)
-        chess_pgn_summary = summarize_chess_pgn_records(chess_pgn_records)
+        chess_pgn_summary = summarize_chess_pgn_records(chess_pgn_records, diagram_records=chess_fen_records)
         ocr_quality = {
             "status": "passed_with_warnings",
             "quality_gate_status": "passed_with_warnings",
@@ -2024,10 +2776,14 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
                 "chess_pgn": chess_pgn_summary,
             }
         )
-        extra_artifacts = _scan_chess_pgn_extra_artifacts(
-            chess_pgn_records,
+        book_layout_pages = _ensure_book_layout_pages_cover_document(doc, book_layout_pages, config)
+        extra_artifacts = _chess_pdf_extra_artifacts(
+            pdf_path,
+            config,
             source_title=str(metadata.get("title") or Path(pdf_path).stem),
-            diagram_records=chess_html_diagram_records,
+            pgn_records=chess_pgn_records,
+            diagrams=chess_diagram_records,
+            book_layout_pages=book_layout_pages,
         )
         return {
             "success": True,
@@ -2539,11 +3295,8 @@ def _recognize_scan_chess_candidate_bbox(
             return ChessFenResult(
                 fen=str(getattr(best_review_result, "fen", "") or ""),
                 placement=str(getattr(best_review_result, "placement", "") or ""),
-                full_fen=str(getattr(best_review_result, "full_fen", "") or getattr(best_review_result, "fen", "")),
                 confidence=float(getattr(best_review_result, "confidence", 0.0) or 0.0),
                 side_to_move=str(getattr(best_review_result, "side_to_move", "w") or "w"),
-                side_to_move_status=str(getattr(best_review_result, "side_to_move_status", "") or ""),
-                side_to_move_evidence=str(getattr(best_review_result, "side_to_move_evidence", "") or ""),
                 bbox=getattr(best_review_result, "bbox", None),
                 method=str(getattr(best_review_result, "method", "") or "image-template-board"),
                 warnings=merged_warnings,
@@ -2774,11 +3527,8 @@ def _scan_chess_recalibrate_cached_result(result, *, min_confidence: float):
             return ChessFenResult(
                 fen="",
                 placement=placement,
-                full_fen=str(getattr(result, "full_fen", "") or getattr(result, "fen", "")),
                 confidence=confidence,
                 side_to_move=side_to_move,
-                side_to_move_status=str(getattr(result, "side_to_move_status", "") or ("inferred" if "side_to_move_inferred" in warnings else "unknown")),
-                side_to_move_evidence=str(getattr(result, "side_to_move_evidence", "") or ("inferred" if "side_to_move_inferred" in warnings else "none")),
                 bbox=getattr(result, "bbox", None),
                 method=str(getattr(result, "method", "") or "image-template-board"),
                 warnings=recalibrated_warnings,
@@ -2793,16 +3543,11 @@ def _scan_chess_recalibrate_cached_result(result, *, min_confidence: float):
     if not valid:
         return result
     recalibrated_warnings = sorted((warnings - {"piece_template_confidence_below_threshold"}) | set(fen_warnings))
-    side_status = str(getattr(result, "side_to_move_status", "") or ("inferred" if "side_to_move_inferred" in recalibrated_warnings else "unknown"))
-    side_evidence = str(getattr(result, "side_to_move_evidence", "") or ("inferred" if "side_to_move_inferred" in recalibrated_warnings else "none"))
     return ChessFenResult(
         fen=fen,
         placement=placement,
-        full_fen=fen,
         confidence=confidence,
         side_to_move=side_to_move,
-        side_to_move_status=side_status,
-        side_to_move_evidence=side_evidence,
         bbox=getattr(result, "bbox", None),
         method=str(getattr(result, "method", "") or "image-template-board"),
         warnings=recalibrated_warnings,
@@ -2848,11 +3593,8 @@ def _scan_chess_result_from_dict(data: dict[str, Any]):
     return ChessFenResult(
         fen=str(data.get("fen") or ""),
         placement=str(data.get("placement") or ""),
-        full_fen=str(data.get("full_fen") or data.get("fen") or ""),
         confidence=float(data.get("confidence", 0.0) or 0.0),
         side_to_move=str(data.get("side_to_move") or "w"),
-        side_to_move_status=str(data.get("side_to_move_status") or ""),
-        side_to_move_evidence=str(data.get("side_to_move_evidence") or ""),
         bbox=bbox,
         method=str(data.get("method") or "image-template-board"),
         warnings=list(data.get("warnings") or []),
@@ -2888,15 +3630,17 @@ def _scan_chess_apply_verified_crop_label(
         return recognition
     placement = fen.split()[0]
     side_to_move = fen.split()[1] if len(fen.split()) >= 2 else "w"
-    warnings = sorted({*fen_warnings, "verified_exact_crop_label_used"})
+    carried_warnings = {
+        str(warning)
+        for warning in (getattr(recognition, "warnings", []) or [])
+        if str(warning) == "side_to_move_inferred"
+    }
+    warnings = sorted({*carried_warnings, *fen_warnings, "verified_exact_crop_label_used"})
     return ChessFenResult(
         fen=fen,
         placement=placement,
-        full_fen=fen,
         confidence=1.0,
         side_to_move=side_to_move,
-        side_to_move_status="explicit",
-        side_to_move_evidence="verified_label",
         bbox=bbox,
         method="verified-exact-crop-label",
         warnings=warnings,
@@ -3089,11 +3833,8 @@ def _scan_chess_sparse_exact_consensus_result(
     return ChessFenResult(
         fen=fen,
         placement=placement,
-        full_fen=fen,
         confidence=max(raw_confidence, reader_confidence),
         side_to_move=side_to_move,
-        side_to_move_status="inferred",
-        side_to_move_evidence="inferred",
         bbox=getattr(reader_result, "bbox", None) or getattr(raw_result, "bbox", None),
         method=str(getattr(reader_result, "method", "") or getattr(raw_result, "method", "") or "image-template-board"),
         warnings=warnings,
@@ -3141,11 +3882,8 @@ def _scan_chess_result_with_warning(result, warning: str):
     return ChessFenResult(
         fen=str(getattr(result, "fen", "") or ""),
         placement=str(getattr(result, "placement", "") or ""),
-        full_fen=str(getattr(result, "full_fen", "") or getattr(result, "fen", "")),
         confidence=float(getattr(result, "confidence", 0.0) or 0.0),
         side_to_move=str(getattr(result, "side_to_move", "w") or "w"),
-        side_to_move_status=str(getattr(result, "side_to_move_status", "") or ""),
-        side_to_move_evidence=str(getattr(result, "side_to_move_evidence", "") or ""),
         bbox=getattr(result, "bbox", None),
         method=str(getattr(result, "method", "") or "image-template-board"),
         warnings=warnings,
@@ -3797,65 +4535,614 @@ def _scan_chess_ocr_html_parts(ocr_record: dict[str, Any], *, page_num: int) -> 
     return parts
 
 
+def _chess_diagram_record_from_image(
+    chess_img: Mapping[str, Any],
+    *,
+    diagram_id: str,
+    caption: str,
+    page_num: int,
+    nearby_text: str = "",
+    matched_record_id: str = "",
+) -> dict[str, Any]:
+    image_data = chess_img.get("data")
+    image_data_uri = ""
+    if isinstance(image_data, (bytes, bytearray)):
+        extension = str(chess_img.get("extension") or "png").lower().lstrip(".") or "png"
+        mime = "image/jpeg" if extension in {"jpg", "jpeg"} else f"image/{extension}"
+        image_data_uri = f"data:{mime};base64,{base64.b64encode(bytes(image_data)).decode('ascii')}"
+    raw_page_index = chess_img.get("page_index", chess_img.get("page", chess_img.get("page_num", page_num)))
+    try:
+        page_index = int(raw_page_index)
+    except (TypeError, ValueError):
+        page_index = int(page_num)
+    fen_result = chess_img.get("fen_result") if isinstance(chess_img.get("fen_result"), Mapping) else {}
+    fen_candidate = str(chess_img.get("fen") or fen_result.get("fen") or "").strip()
+    raw_bbox = chess_img.get("bbox") or (0.0, 0.0, 0.0, 0.0)
+    try:
+        bbox = [float(value or 0.0) for value in list(raw_bbox)[:4]]
+    except (TypeError, ValueError):
+        bbox = []
+    while len(bbox) < 4:
+        bbox.append(0.0)
+    return {
+        "id": diagram_id,
+        "page_index": page_index,
+        "page_number": page_index + 1,
+        "bbox": bbox[:4],
+        "caption": caption,
+        "image_data_uri": image_data_uri,
+        "fen_candidate": fen_candidate,
+        "status": "accepted" if fen_candidate and not bool(fen_result.get("requires_review")) else "needs_review",
+        "reason": "" if fen_candidate and not bool(fen_result.get("requires_review")) else _fen_result_review_reason(fen_result),
+        "warnings": list(fen_result.get("warnings") or []),
+        "fen_confidence": float(fen_result.get("confidence", 0.0) or 0.0),
+        "fen_method": str(fen_result.get("method") or chess_img.get("fen_method") or ""),
+        "nearby_text": nearby_text,
+        "matched_record_id": matched_record_id,
+        "match_confidence": 0.0,
+    }
+
+
+def _fen_result_review_reason(fen_result: Mapping[str, Any]) -> str:
+    if not fen_result:
+        return "fen_not_recognized"
+    if not fen_result.get("board_detected", False):
+        return "board_not_detected"
+    if not str(fen_result.get("fen") or "").strip():
+        return "fen_not_recognized"
+    if fen_result.get("requires_review", True):
+        return "fen_below_acceptance_threshold"
+    return "fen_requires_review"
+
+
+def _book_layout_page_from_pdf_page(
+    page: fitz.Page,
+    page_num: int,
+    config: ConversionConfig,
+    *,
+    elements: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    dpi = max(48, min(int(getattr(config, "pdf_layout_preview_dpi", 96) or 96), 180))
+    jpeg_quality = max(45, min(int(getattr(config, "pdf_layout_preview_jpeg_quality", 72) or 72), 92))
+    return {
+        "page_index": page_num,
+        "page_number": page_num + 1,
+        "width": float(page.rect.width or 0.0),
+        "height": float(page.rect.height or 0.0),
+        "background_image_data_uri": _render_pdf_page_data_uri(
+            page,
+            scale=dpi / 72.0,
+            jpeg_quality=jpeg_quality,
+        ),
+        "elements": list(elements or []),
+    }
+
+
+def _ensure_book_layout_pages_cover_document(
+    doc: fitz.Document,
+    pages: list[Mapping[str, Any]],
+    config: ConversionConfig,
+) -> list[dict[str, Any]]:
+    pages_by_index: dict[int, dict[str, Any]] = {}
+    for page in pages:
+        try:
+            page_index = int(page.get("page_index"))
+        except (TypeError, ValueError):
+            try:
+                page_index = int(page.get("page_number")) - 1
+            except (TypeError, ValueError):
+                continue
+        if page_index < 0 or page_index >= len(doc) or page_index in pages_by_index:
+            continue
+        pages_by_index[page_index] = dict(page)
+    for page_index in range(len(doc)):
+        if page_index in pages_by_index:
+            continue
+        pages_by_index[page_index] = _book_layout_page_from_pdf_page(
+            doc[page_index],
+            page_index,
+            config,
+            elements=[],
+        )
+    return [pages_by_index[index] for index in sorted(pages_by_index)]
+
+
+def _book_layout_text_elements_from_line_items(
+    line_items: list[TextLineItem],
+    *,
+    reading_order_start: int = 0,
+) -> list[dict[str, Any]]:
+    elements: list[dict[str, Any]] = []
+    for offset, item in enumerate(_order_chess_notation_lines_for_reading(line_items), start=reading_order_start):
+        text = _clean_chess_notation_line(item.text)
+        if not text:
+            continue
+        height = max(8.0, float(item.font_size or 10.0) * 1.35)
+        elements.append(
+            {
+                "type": "text",
+                "bbox": [
+                    float(item.x0 or 0.0),
+                    float(item.y or 0.0),
+                    float(item.x1 or item.x0 or 0.0),
+                    float(item.y or 0.0) + height,
+                ],
+                "reading_order": offset,
+                "text": text,
+                "font_size": float(item.font_size or 10.0),
+                "warnings": list(item.glyph_warnings or []),
+            }
+        )
+    return elements
+
+
+def _book_layout_diagram_elements_from_diagrams(
+    diagrams: list[Mapping[str, Any]],
+    *,
+    page_num: int,
+    reading_order_start: int = 10_000,
+) -> list[dict[str, Any]]:
+    elements: list[dict[str, Any]] = []
+    page_diagrams = [
+        diagram
+        for diagram in diagrams
+        if _book_layout_diagram_page_index(diagram, fallback_page_num=page_num) == page_num
+    ]
+    for index, diagram in enumerate(
+        sorted(page_diagrams, key=lambda item: (_bbox_sort_key(item.get("bbox")), str(item.get("id") or ""))),
+        start=reading_order_start,
+    ):
+        bbox = _bbox_list(diagram.get("bbox")) or [0.0, 0.0, 1.0, 1.0]
+        elements.append(
+            {
+                "type": "diagram",
+                "bbox": bbox,
+                "reading_order": index,
+                "title": str(diagram.get("caption") or diagram.get("id") or "Chess diagram"),
+                "image_data_uri": str(diagram.get("image_data_uri") or ""),
+                "record_id": str(diagram.get("matched_record_id") or ""),
+            }
+        )
+        fen = str(diagram.get("fen_candidate") or "").strip()
+        fen_status = str(diagram.get("status") or "").strip().lower()
+        if fen and fen_status == "accepted" and _fen_string_is_parser_valid(fen):
+            elements.append(
+                {
+                    "type": "fen",
+                    "bbox": [bbox[0], bbox[3] + 4.0, bbox[2], min(bbox[3] + 30.0, bbox[3] + 4.0 + 26.0)],
+                    "reading_order": index + 1,
+                    "fen": fen,
+                    "text": fen,
+                    "record_id": str(diagram.get("matched_record_id") or ""),
+                }
+            )
+        elif fen or str(diagram.get("reason") or "").strip():
+            elements.append(
+                {
+                    "type": "review_warning",
+                    "bbox": [bbox[0], bbox[3] + 4.0, bbox[2], min(bbox[3] + 34.0, bbox[3] + 4.0 + 30.0)],
+                    "reading_order": index + 1,
+                    "text": str(diagram.get("reason") or "FEN requires review"),
+                    "warnings": list(diagram.get("warnings") or []),
+                    "record_id": str(diagram.get("matched_record_id") or ""),
+                }
+            )
+    return elements
+
+
+def _fen_string_is_parser_valid(fen: str) -> bool:
+    valid, warnings = validate_fen(fen)
+    if not valid or warnings:
+        return False
+    try:
+        import chess
+
+        chess.Board(fen)
+    except Exception:
+        return False
+    return True
+
+
+def _book_layout_diagram_page_index(diagram: Mapping[str, Any], *, fallback_page_num: int) -> int:
+    try:
+        return int(diagram.get("page_index"))
+    except (TypeError, ValueError):
+        pass
+    try:
+        return max(0, int(diagram.get("page_number")) - 1)
+    except (TypeError, ValueError):
+        return int(fallback_page_num)
+
+
+def _attach_pgn_records_to_book_layout_pages(
+    pages: list[Mapping[str, Any]],
+    records: list[Any],
+) -> list[dict[str, Any]]:
+    page_rows = [dict(page) for page in pages]
+    if not page_rows:
+        return []
+    pages_by_number = {int(page.get("page_number") or 0): page for page in page_rows}
+    record_counts_by_page: dict[int, int] = {}
+    for record in records:
+        source_pages = list(getattr(record, "source_pages", []) or [1])
+        page_number = int(source_pages[0] or 1)
+        page = pages_by_number.get(page_number)
+        if page is None:
+            continue
+        elements = list(page.get("elements") or [])
+        slot = record_counts_by_page.get(page_number, 0)
+        record_counts_by_page[page_number] = slot + 1
+        width = float(page.get("width") or 600.0)
+        height = float(page.get("height") or 800.0)
+        box_width = min(260.0, max(180.0, width * 0.40))
+        x0 = max(18.0, width - box_width - 24.0)
+        y0 = min(max(42.0, 42.0 + slot * 128.0), max(42.0, height - 150.0))
+        strict_pgn = build_combined_pgn([record]).strip()
+        status = str(getattr(record, "status", "") or "requires_review")
+        warnings = list(getattr(record, "warnings", []) or [])
+        record_id = str(getattr(record, "id", "") or f"record-{page_number}-{slot + 1}")
+        if not strict_pgn:
+            elements.append(
+                {
+                    "type": "review_warning",
+                    "bbox": [x0, max(8.0, y0 - 32.0), min(width - 12.0, x0 + box_width), max(34.0, y0 - 6.0)],
+                    "reading_order": 19_000 + slot * 2,
+                    "record_id": record_id,
+                    "text": "PGN requires review; strict export is blocked.",
+                    "warnings": warnings,
+                }
+            )
+        elements.append(
+            {
+                "type": "pgn_record",
+                "bbox": [x0, y0, min(width - 12.0, x0 + box_width), min(height - 12.0, y0 + 116.0)],
+                "reading_order": 20_000 + slot * 2,
+                "record_id": record_id,
+                "title": str(getattr(record, "title", "") or f"PGN page {page_number}")[:160],
+                "status": "accepted" if strict_pgn else status or "requires_review",
+                "fen": str(getattr(record, "final_fen", "") or getattr(record, "fen", "") or ""),
+                "pgn": strict_pgn,
+                "warnings": warnings,
+            }
+        )
+        page["elements"] = elements
+    return page_rows
+
+
+def _bbox_sort_key(value: Any) -> tuple[float, float]:
+    bbox = _bbox_list(value)
+    if not bbox:
+        return (0.0, 0.0)
+    return (bbox[1], bbox[0])
+
+
+def _scale_bbox(
+    bbox: tuple[float, float, float, float] | list[float],
+    *,
+    source_size: tuple[int, int],
+    target_width: float,
+    target_height: float,
+) -> list[float]:
+    source_width = max(1.0, float(source_size[0] or 1))
+    source_height = max(1.0, float(source_size[1] or 1))
+    scale_x = float(target_width or source_width) / source_width
+    scale_y = float(target_height or source_height) / source_height
+    x0, y0, x1, y1 = [float(value or 0.0) for value in list(bbox)[:4]]
+    return [x0 * scale_x, y0 * scale_y, x1 * scale_x, y1 * scale_y]
+
+
 def _scan_chess_pgn_extra_artifacts(
     records: list,
     *,
     source_title: str,
-    diagram_records: list[dict[str, Any]] | None = None,
+    diagrams: list[Mapping[str, Any]] | None = None,
+    diagram_records: list[Mapping[str, Any]] | None = None,
+    book_layout_pages: list[Mapping[str, Any]] | None = None,
+    deepseek_provider: Any | None = None,
 ) -> list[dict[str, Any]]:
-    record_list = [record for record in records if getattr(record, "pgn", "").strip()]
-    diagram_list = list(diagram_records or [])
+    record_list = [
+        record
+        for record in records
+        if getattr(record, "pgn", "").strip()
+        or getattr(record, "raw_text", "").strip()
+        or getattr(record, "movetext", "").strip()
+    ]
+    diagram_list = list(diagrams or diagram_records or [])
     if not record_list and not diagram_list:
         return []
     pgn_text = build_combined_pgn(record_list)
+    exercises_pgn_text = build_exercises_pgn(
+        record_list,
+        diagram_records=diagram_list,
+        source_title=source_title or "Chess Exercises",
+    )
     html_text = build_pgn_download_html(
         record_list,
         title=f"{source_title or 'Chess'} - PGN and FEN",
         diagram_records=diagram_list,
     )
     artifacts: list[dict[str, Any]] = []
-    if pgn_text.strip():
+    book_pages = list(book_layout_pages or [])
+    if record_list or diagram_list or book_pages:
+        pgn_text = build_combined_pgn(record_list)
+        html_text = build_pgn_download_html(
+            record_list,
+            title=f"{source_title or 'Chess'} - PGN and FEN",
+            diagrams=diagram_list,
+            book_layout_pages=book_pages,
+            pdf_preview_href="pdf_layout_preview",
+        )
+        if book_pages:
+            html_text = _book_layout_review_html(book_pages, title=source_title or "Chess") + html_text
+        if pgn_text.strip():
+            artifacts.append(
+                {
+                    "key": "chess_pgn",
+                    "filename": "chess_games.pgn",
+                    "content_type": "application/x-chess-pgn; charset=utf-8",
+                    "data": pgn_text.encode("utf-8"),
+                    "label": "PGN",
+                }
+            )
+        if exercises_pgn_text.strip():
+            artifacts.append(
+                {
+                    "key": "chess_exercises_pgn",
+                    "filename": "chess_exercises.pgn",
+                    "content_type": "application/x-chess-pgn; charset=utf-8",
+                    "data": exercises_pgn_text.encode("utf-8"),
+                    "label": "Exercises PGN",
+                }
+            )
         artifacts.append(
             {
-                "key": "chess_pgn",
-                "filename": "chess_games.pgn",
-                "content_type": "application/x-chess-pgn; charset=utf-8",
-                "data": pgn_text.encode("utf-8"),
-                "label": "PGN",
+                "key": "chess_pgn_html",
+                "filename": "chess_games.html",
+                "content_type": "text/html; charset=utf-8",
+                "data": html_text.encode("utf-8"),
+                "label": "HTML PGN/FEN",
             }
         )
-    artifacts.append(
-        {
-            "key": "chess_pgn_html",
-            "filename": "chess_games.html",
-            "content_type": "text/html; charset=utf-8",
-            "data": html_text.encode("utf-8"),
-            "label": "HTML PGN/FEN",
-        }
-    )
-    reading_order_report = audit_chess_reading_order(
-        diagram_records=diagram_list,
-        pgn_records=record_list,
-    )
-    artifacts.append(
-        {
-            "key": "html_reading_order_report_json",
-            "filename": "html_reading_order_report.json",
-            "content_type": "application/json; charset=utf-8",
-            "data": json.dumps(reading_order_report.to_dict(), ensure_ascii=False, indent=2).encode("utf-8"),
-            "label": "HTML reading-order audit",
-        }
-    )
-    artifacts.append(
-        {
-            "key": "html_reading_order_report_html",
-            "filename": "html_reading_order_report.html",
-            "content_type": "text/html; charset=utf-8",
-            "data": render_chess_reading_order_report_html(reading_order_report).encode("utf-8"),
-            "label": "HTML reading-order audit",
-        }
-    )
+    if diagram_list and book_pages:
+        artifacts.append(
+            {
+                "key": "chess_diagrams",
+                "filename": "chess_diagrams.json",
+                "content_type": "application/json; charset=utf-8",
+                "data": json.dumps(
+                    {"diagram_count": len(diagram_list), "records": diagram_list},
+                    ensure_ascii=False,
+                    indent=2,
+                ).encode("utf-8"),
+                "label": "Chess diagrams",
+            }
+        )
+    if book_pages:
+        artifacts.append(
+            {
+                "key": "pdf_layout_preview",
+                "filename": "pdf_layout_preview.html",
+                "content_type": "text/html; charset=utf-8",
+                "data": html_text.encode("utf-8"),
+                "label": "PDF layout preview",
+            }
+        )
+    glyph_payload = build_chess_glyph_diagnostics_payload(record_list, source_title=source_title)
+    if int(glyph_payload.get("diagnostic_count", 0) or 0):
+        artifacts.append(
+            {
+                "key": "chess_glyph_diagnostics",
+                "filename": "chess_glyph_diagnostics.json",
+                "content_type": "application/json; charset=utf-8",
+                "data": json.dumps(glyph_payload, ensure_ascii=False, indent=2).encode("utf-8"),
+                "label": "Chess glyph diagnostics",
+            }
+        )
+    provider = deepseek_provider
+    if provider is None:
+        try:
+            from deepseek_quality_provider import build_deepseek_audit_provider_from_env
+
+            provider = build_deepseek_audit_provider_from_env(cwd=Path(__file__).resolve().parent)
+        except Exception:
+            provider = None
+    if provider is not None:
+        try:
+            from deepseek_quality_provider import build_deepseek_audit_payload
+
+            deepseek_payload = build_deepseek_audit_payload(
+                provider=provider,
+                source_title=source_title,
+                glyph_payload=glyph_payload,
+                records=record_list,
+                diagrams=diagram_list,
+            )
+            if deepseek_payload:
+                artifacts.append(
+                    {
+                        "key": "deepseek_audit",
+                        "filename": "deepseek_audit.json",
+                        "content_type": "application/json; charset=utf-8",
+                        "data": json.dumps(deepseek_payload, ensure_ascii=False, indent=2).encode("utf-8"),
+                        "label": "DeepSeek audit",
+                    }
+                )
+        except Exception:
+            pass
     return artifacts
+
+
+def _chess_pdf_extra_artifacts(
+    pdf_path: str,
+    config: ConversionConfig,
+    *,
+    source_title: str,
+    pgn_records: list | None = None,
+    diagrams: list[Mapping[str, Any]] | None = None,
+    book_layout_pages: list[Mapping[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    return _scan_chess_pgn_extra_artifacts(
+        list(pgn_records or []),
+        source_title=source_title or Path(pdf_path).stem,
+        diagrams=diagrams or [],
+        book_layout_pages=book_layout_pages or [],
+    )
+
+
+def _book_layout_review_html(book_pages: list[Mapping[str, Any]], *, title: str) -> str:
+    page_markup: list[str] = []
+    for page in book_pages:
+        elements = []
+        for element in list(page.get("elements") or []):
+            if not isinstance(element, Mapping):
+                continue
+            element_type = str(element.get("type") or "text").strip()
+            class_name = (
+                "book-element book-diagram"
+                if element_type == "diagram"
+                else "book-element book-fen"
+                if element_type == "fen"
+                else "book-element book-text"
+            )
+            text = str(element.get("title") or element.get("fen") or element.get("text") or element_type)
+            elements.append(f'<div class="{class_name}">{html_module.escape(text)}</div>')
+        bg = str(page.get("background_image_data_uri") or "")
+        bg_markup = f'<img class="book-page-bg" src="{html_module.escape(bg, quote=True)}" alt="page background"/>' if bg else ""
+        page_markup.append(
+            '<section class="pdf-page">'
+            '<div class="chess-book-page">'
+            f"{bg_markup}"
+            + "".join(elements)
+            + "</div>"
+            + "</section>"
+        )
+    return (
+        '<!doctype html><html><body data-km-view="chess-book-review">'
+        f"<h1>{html_module.escape(title)}</h1>"
+        + "".join(page_markup)
+        + '<p><a href="pdf_layout_preview">pdf_layout_preview</a></p>'
+        "</body></html>\n"
+    )
+
+
+def build_pdf_layout_preview_html(pdf_path: str, config: ConversionConfig, *, title: str = "PDF layout preview") -> str:
+    dpi = max(48, min(int(getattr(config, "pdf_layout_preview_dpi", 96) or 96), 180))
+    jpeg_quality = max(45, min(int(getattr(config, "pdf_layout_preview_jpeg_quality", 72) or 72), 92))
+    max_pages = max(0, int(getattr(config, "pdf_layout_preview_max_pages", 0) or 0))
+    scale = dpi / 72.0
+    doc = fitz.open(pdf_path)
+    try:
+        page_count = len(doc) if max_pages <= 0 else min(len(doc), max_pages)
+        pages = [
+            _pdf_layout_preview_page_html(doc[page_num], page_num=page_num, scale=scale, jpeg_quality=jpeg_quality)
+            for page_num in range(page_count)
+        ]
+        source_page_count = len(doc)
+    finally:
+        doc.close()
+
+    safe_title = html_module.escape(title or "PDF layout preview")
+    return (
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        f"<title>{safe_title}</title>"
+        "<style>"
+        ":root{color:#1f2933;background:#ece7dc;}"
+        "body{margin:0;font-family:Georgia,'Times New Roman',serif;background:#ece7dc;color:#1f2933;}"
+        ".toolbar{position:sticky;top:0;z-index:10;display:flex;gap:.75rem;align-items:center;"
+        "padding:.75rem 1rem;background:rgba(255,252,246,.94);border-bottom:1px solid #d6c8b6;"
+        "box-shadow:0 8px 20px rgba(70,55,35,.12);}"
+        ".toolbar h1{font-size:1rem;margin:0 1rem 0 0;}"
+        ".toolbar button{border:1px solid #b89f7e;background:#fff8ed;border-radius:999px;padding:.45rem .8rem;"
+        "font-weight:700;cursor:pointer;color:#1f2933;}"
+        ".preview-meta{font-size:.86rem;color:#6b5b48;}"
+        ".page-stack{padding:1.5rem;display:flex;flex-direction:column;align-items:center;gap:1.5rem;}"
+        ".pdf-page{position:relative;background:#fff;box-shadow:0 18px 42px rgba(55,42,25,.24);"
+        "overflow:hidden;transform-origin:top center;}"
+        ".pdf-page-bg{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;user-select:none;pointer-events:none;}"
+        ".pdf-text-layer{position:absolute;inset:0;}"
+        ".pdf-text-span{position:absolute;white-space:pre;line-height:1;color:rgba(0,0,0,0);"
+        "font-family:serif;user-select:text;pointer-events:auto;}"
+        ".show-text-layer .pdf-text-span{color:rgba(14,41,64,.78);background:rgba(255,231,92,.18);"
+        "outline:1px solid rgba(17,94,89,.18);}"
+        ".pdf-page-label{position:absolute;left:.5rem;top:.5rem;background:rgba(255,255,255,.82);"
+        "border-radius:999px;padding:.15rem .45rem;font-size:10px;color:#604b36;}"
+        "</style></head><body>"
+        "<div class=\"toolbar\">"
+        f"<h1>{safe_title}</h1>"
+        "<button type=\"button\" id=\"toggleTextLayer\">Show text layer</button>"
+        f"<span class=\"preview-meta\">Pages: {len(pages)} / {source_page_count}</span>"
+        "</div><main class=\"page-stack\">"
+        + "\n".join(pages)
+        + "</main><script>"
+        "(function(){var button=document.getElementById('toggleTextLayer');"
+        "button&&button.addEventListener('click',function(){document.body.classList.toggle('show-text-layer');"
+        "button.textContent=document.body.classList.contains('show-text-layer')?'Hide text layer':'Show text layer';});"
+        "})();"
+        "</script></body></html>\n"
+    )
+
+
+def _pdf_layout_preview_page_html(page: fitz.Page, *, page_num: int, scale: float, jpeg_quality: int) -> str:
+    rect = page.rect
+    width = float(rect.width or 0.0)
+    height = float(rect.height or 0.0)
+    image_uri = _render_pdf_page_data_uri(page, scale=scale, jpeg_quality=jpeg_quality)
+    text_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_MEDIABOX_CLIP, sort=True)
+    spans: list[str] = []
+    for block in text_dict.get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                text = str(span.get("text") or "")
+                if not text.strip():
+                    continue
+                spans.append(_pdf_layout_preview_span_html(span))
+    return (
+        f'<section class="pdf-page" data-page="{page_num + 1}" '
+        f'style="width:{width:.2f}px;height:{height:.2f}px">'
+        f'<img class="pdf-page-bg" alt="" src="{image_uri}"/>'
+        f'<span class="pdf-page-label">Page {page_num + 1}</span>'
+        '<div class="pdf-text-layer" aria-label="Copyable PDF text layer">'
+        + "".join(spans)
+        + "</div></section>"
+    )
+
+
+def _render_pdf_page_data_uri(page: fitz.Page, *, scale: float, jpeg_quality: int) -> str:
+    pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+    image = Image.frombytes("RGB", (pixmap.width, pixmap.height), pixmap.samples)
+    output = io.BytesIO()
+    image.save(output, format="JPEG", quality=jpeg_quality, optimize=True)
+    return "data:image/jpeg;base64," + base64.b64encode(output.getvalue()).decode("ascii")
+
+
+def _pdf_layout_preview_span_html(span: dict[str, Any]) -> str:
+    bbox = span.get("bbox", (0.0, 0.0, 0.0, 0.0))
+    x0, y0, x1, y1 = [float(value or 0.0) for value in bbox]
+    size = max(1.0, float(span.get("size", 12) or 12))
+    font_family = _preview_font_family(str(span.get("font") or ""))
+    flags = int(span.get("flags", 0) or 0)
+    font_weight = "700" if flags & (1 << 4) else "400"
+    font_style = "italic" if flags & (1 << 1) else "normal"
+    style = (
+        f"left:{x0:.2f}px;top:{y0:.2f}px;width:{max(0.0, x1 - x0):.2f}px;"
+        f"height:{max(0.0, y1 - y0):.2f}px;font-size:{size:.2f}px;"
+        f"font-family:{font_family};font-weight:{font_weight};font-style:{font_style};"
+    )
+    return f'<span class="pdf-text-span" style="{style}">{html_module.escape(str(span.get("text") or ""))}</span>'
+
+
+def _preview_font_family(font_name: str) -> str:
+    font_lower = font_name.lower()
+    if any(token in font_lower for token in ("arial", "helvetica", "univers", "aptos")):
+        return "Arial,Helvetica,sans-serif"
+    if any(token in font_lower for token in ("courier", "mono", "consolas")):
+        return "'Courier New',monospace"
+    if any(token in font_lower for token in ("times", "georgia", "garamond", "serif")):
+        return "Georgia,'Times New Roman',serif"
+    return "Georgia,'Times New Roman',serif"
 
 
 def _encode_scan_chess_diagram_crop(image: Image.Image, config: ConversionConfig) -> tuple[bytes, int, int]:
@@ -3955,13 +5242,9 @@ def _scan_chess_candidate_review_payload(candidate: dict[str, Any]) -> dict[str,
         warnings.append("image_board_requires_review")
     return {
         "fen": "",
-        "full_fen": "",
         "placement": "",
-        "placement_fen": "",
         "confidence": float(candidate.get("confidence", 0.0) or 0.0),
         "side_to_move": "w",
-        "side_to_move_status": "unknown",
-        "side_to_move_evidence": "none",
         "bbox": candidate.get("bbox"),
         "method": str(candidate.get("method") or "image-page-board-candidate"),
         "warnings": warnings,
@@ -3970,720 +5253,21 @@ def _scan_chess_candidate_review_payload(candidate: dict[str, Any]) -> dict[str,
     }
 
 
-def _scan_chess_payload_with_warnings(payload: dict[str, Any], *warnings: str) -> dict[str, Any]:
+def _apply_scan_chess_side_to_move_marker(payload: dict[str, Any], side_to_move: str) -> dict[str, Any]:
+    side = "b" if str(side_to_move).lower().startswith("b") else "w"
     updated = dict(payload)
-    merged = {str(warning).strip() for warning in list(updated.get("warnings") or []) if str(warning).strip()}
-    merged.update(str(warning).strip() for warning in warnings if str(warning).strip())
-    updated["warnings"] = sorted(merged)
-    return updated
-
-
-def _scan_chess_attach_external_candidates(
-    payload: dict[str, Any],
-    external_candidates: list[dict[str, Any]],
-) -> dict[str, Any]:
-    updated = dict(payload)
-    updated["external_fen_candidates"] = [dict(candidate) for candidate in external_candidates if isinstance(candidate, dict)]
-    return updated
-
-
-def _scan_chess_external_candidate_is_publishable(
-    candidate: dict[str, Any],
-    *,
-    min_confidence: float,
-) -> bool:
-    fen = str(candidate.get("fen") or candidate.get("full_fen") or "").strip()
-    if not fen:
-        return False
-    warnings = {str(warning).strip() for warning in list(candidate.get("warnings") or []) if str(warning).strip()}
-    if warnings & {
-        "fen_missing",
-        "fen_must_have_six_fields",
-        "fen_king_count_invalid",
-        "fen_position_invalid",
-        "fen_parse_failed",
-        "white_king_count_invalid",
-        "black_king_count_invalid",
-        "placement_must_have_eight_ranks",
-        "placement_contains_invalid_piece",
-        "rank_width_invalid",
-        "rank_digit_invalid",
-        "side_to_move_invalid",
-        "pawn_on_back_rank",
-    }:
-        return False
-    effective_confidence = float(candidate.get("effective_confidence", candidate.get("confidence", 0.0)) or 0.0)
-    if "side_to_move_inferred" in warnings:
-        return bool(candidate.get("replay_legal_from_fen", False)) and effective_confidence >= float(min_confidence or 0.0)
-    if not machine_accept_fen({**candidate, "requires_review": False}):
-        return False
-    return effective_confidence >= float(min_confidence or 0.0)
-
-
-def _scan_chess_external_provider_should_run(
-    payload: dict[str, Any],
-    *,
-    min_confidence: float,
-) -> bool:
-    if not chessimg2pos_provider_available():
-        return False
-    if not bool(payload.get("board_detected", True)):
-        return False
-    warnings = {str(warning).strip() for warning in list(payload.get("warnings") or []) if str(warning).strip()}
-    if "verified_exact_crop_label_used" in warnings:
-        return False
-    if bool(payload.get("requires_review", True)):
-        return True
-    confidence = float(payload.get("confidence", 0.0) or 0.0)
-    return confidence < float(min_confidence or 0.0) + 0.03
-
-
-def _scan_chess_external_provider_cache_path(
-    crop_bytes: bytes,
-    *,
-    provider_name: str,
-    provider_version: str,
-    provider_mode: str,
-    provider_payload_shape_version: int,
-    variant_role: str,
-    selected_preprocess_variant: str,
-    display_variant_used: str,
-) -> Path:
-    token = "|".join(
-        [
-            str(SCAN_CHESS_EXTERNAL_PROVIDER_CACHE_VERSION),
-            str(provider_name or "chessimg2pos"),
-            str(provider_version or "unknown"),
-            str(provider_mode or "auto"),
-            str(provider_payload_shape_version or 1),
-            str(variant_role or ""),
-            str(selected_preprocess_variant or ""),
-            str(display_variant_used or ""),
-            hashlib.sha256(crop_bytes).hexdigest(),
-        ]
-    )
-    digest = hashlib.sha256(token.encode("utf-8", errors="ignore")).hexdigest()[:24]
-    return Path("output") / "cache" / "scanned_chess" / "external_provider" / f"{digest}.json"
-
-
-def _scan_chess_external_provider_result_from_dict(data: dict[str, Any]) -> ChessImg2PosProviderResult:
-    return ChessImg2PosProviderResult(
-        fen=str(data.get("fen") or ""),
-        placement=str(data.get("placement") or ""),
-        confidence=float(data.get("confidence", 0.0) or 0.0),
-        provider=str(data.get("provider") or "chessimg2pos"),
-        provider_version=str(data.get("provider_version") or "unknown"),
-        method=str(data.get("method") or "external-chessimg2pos"),
-        warnings=[str(warning) for warning in (data.get("warnings") or []) if str(warning).strip()],
-        raw_response=str(data.get("raw_response") or ""),
-        runtime_ms=int(data.get("runtime_ms", 0) or 0),
-        debug_payload=dict(data.get("debug_payload") or {}),
-        squares=[dict(square) for square in (data.get("squares") or []) if isinstance(square, dict)],
-        king_squares=dict(data.get("king_squares") or {}),
-        piece_count_summary=dict(data.get("piece_count_summary") or {}),
-        placement_confidence=(
-            None if data.get("placement_confidence") is None else float(data.get("placement_confidence") or 0.0)
-        ),
-        effective_confidence=float(data.get("effective_confidence", data.get("confidence", 0.0)) or 0.0),
-        variant_role=str(data.get("variant_role") or ""),
-    )
-
-
-def _scan_chess_run_external_fen_provider(
-    crop_bytes: bytes,
-    *,
-    bbox: tuple[float, float, float, float],
-    page: int,
-    selected_preprocess_variant: str,
-    display_variant_used: str,
-    variant_role: str,
-) -> ChessImg2PosProviderResult:
-    settings = chessimg2pos_provider_settings()
-    provider_version = resolve_chessimg2pos_provider_version(settings)
-    cache_path = _scan_chess_external_provider_cache_path(
-        crop_bytes,
-        provider_name="chessimg2pos",
-        provider_version=provider_version,
-        provider_mode=str(settings.get("mode") or "auto"),
-        provider_payload_shape_version=2,
-        variant_role=variant_role,
-        selected_preprocess_variant=selected_preprocess_variant,
-        display_variant_used=display_variant_used,
-    )
-    try:
-        if cache_path.exists():
-            cached = json.loads(cache_path.read_text(encoding="utf-8"))
-            if cached.get("version") == SCAN_CHESS_EXTERNAL_PROVIDER_CACHE_VERSION:
-                return _scan_chess_external_provider_result_from_dict(cached.get("result") or {})
-    except Exception:
-        pass
-
-    temp_path: Path | None = None
-    cache_dir = cache_path.parent / "tmp"
-    try:
-        import tempfile
-
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            mode="wb",
-            suffix=".png",
-            prefix="chessimg2pos_",
-            dir=str(cache_dir),
-            delete=False,
-        ) as handle:
-            handle.write(crop_bytes)
-            temp_path = Path(handle.name)
-        result = recognize_fen_with_chessimg2pos(
-            temp_path,
-            bbox=bbox,
-            page=page,
-            selected_preprocess_variant=selected_preprocess_variant,
-            display_variant_used=display_variant_used,
-            settings=settings,
-            variant_role=variant_role,
-        )
-    except Exception as exc:
-        result = ChessImg2PosProviderResult(
-            warnings=["external_fen_provider_failed"],
-            raw_response=str(exc),
-        )
-    finally:
-        if temp_path is not None:
-            try:
-                temp_path.unlink(missing_ok=True)
-            except Exception:
-                pass
-
-    try:
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(
-            json.dumps(
-                {
-                    "version": SCAN_CHESS_EXTERNAL_PROVIDER_CACHE_VERSION,
-                    "result": result.to_dict(),
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-    except Exception:
-        pass
-    return result
-
-
-def _scan_chess_external_provider_candidate(
-    result: ChessImg2PosProviderResult,
-    *,
-    bbox: tuple[float, float, float, float],
-    min_confidence: float,
-) -> dict[str, Any] | None:
-    fen = str(result.fen or "").strip()
-    placement = str(result.placement or "").strip()
-    warnings = {str(warning).strip() for warning in list(result.warnings or []) if str(warning).strip()}
-    placement_only = False
-    if not fen:
-        if not placement:
-            return None
-        placement_only = True
-        fen = f"{placement} w - - 0 1"
-
-    valid, fen_warnings = validate_fen(fen)
-    warnings.update(fen_warnings)
-    warnings.add("side_to_move_inferred")
-    fen_parts = fen.split()
-    if len(fen_parts) == 6:
-        placement = fen_parts[0]
-        side_to_move = fen_parts[1]
-    else:
-        side_to_move = "w"
-    canonical_fen = "" if placement_only else fen
-    requires_review = True
-    side_to_move_status = "inferred"
-    side_to_move_evidence = "inferred"
-    return {
-        "fen": canonical_fen,
-        "full_fen": fen,
-        "placement": placement,
-        "placement_fen": placement,
-        "confidence": round(float(result.confidence or 0.0), 3),
-        "effective_confidence": round(float(result.effective_confidence or result.confidence or 0.0), 3),
-        "side_to_move": side_to_move,
-        "side_to_move_status": side_to_move_status,
-        "side_to_move_evidence": side_to_move_evidence,
-        "bbox": bbox,
-        "method": str(result.method or "external-chessimg2pos"),
-        "warnings": sorted(warnings),
-        "requires_review": requires_review,
-        "board_detected": True,
-        "provider": str(result.provider or "chessimg2pos"),
-        "provider_version": str(result.provider_version or "unknown"),
-        "source": "external",
-        "raw_response": str(result.raw_response or ""),
-        "runtime_ms": int(result.runtime_ms or 0),
-        "debug_payload": dict(result.debug_payload or {}),
-        "squares": [dict(square) for square in result.squares],
-        "king_squares": dict(result.king_squares or {}),
-        "piece_count_summary": dict(result.piece_count_summary or {}),
-        "placement_confidence": result.placement_confidence,
-        "variant_role": str(result.variant_role or ""),
-    }
-
-
-def _scan_chess_external_provider_crop_variants(
-    page_image: Image.Image,
-    *,
-    best_bbox: tuple[float, float, float, float],
-    reader_bbox: tuple[float, float, float, float],
-    config: ConversionConfig,
-    selected_preprocess_variant: str,
-    display_variant_used: str,
-) -> list[dict[str, Any]]:
-    variants: list[dict[str, Any]] = []
-    seen: set[tuple[int, int, int, int]] = set()
-    for variant_role, raw_bbox in (("best", best_bbox), ("reader_visible", reader_bbox)):
-        clamped = _clamp_bbox(raw_bbox, page_image.size, pad_ratio=0.0 if variant_role == "best" else 0.025, min_pad=0.0 if variant_role == "best" else 4.0)
-        if clamped is None:
-            continue
-        bbox_key = tuple(int(value) for value in clamped)
-        if bbox_key in seen:
-            continue
-        seen.add(bbox_key)
-        crop = page_image.crop(clamped)
-        crop_data, _, _ = _encode_scan_chess_diagram_crop(crop, config)
-        variants.append(
-            {
-                "variant_role": variant_role,
-                "crop_bytes": crop_data,
-                "bbox": tuple(float(value) for value in clamped),
-                "selected_preprocess_variant": selected_preprocess_variant,
-                "display_variant_used": display_variant_used,
-            }
-        )
-    return variants[:2]
-
-
-def _scan_chess_king_structure_agreement(local_payload: dict[str, Any], candidate: dict[str, Any]) -> bool:
-    local_placement = str(local_payload.get("placement") or "").strip()
-    candidate_placement = str(candidate.get("placement") or "").strip()
-    if not local_placement or not candidate_placement:
-        return False
-    return local_placement.count("K") == candidate_placement.count("K") and local_placement.count("k") == candidate_placement.count("k")
-
-
-def _scan_chess_collect_external_fen_candidates(
-    variants: list[dict[str, Any]],
-    *,
-    local_payload: dict[str, Any],
-    page: int,
-    min_confidence: float,
-    pgn_records: tuple[Any, ...],
-) -> list[dict[str, Any]]:
-    candidates: list[dict[str, Any]] = []
-    external_placements: list[str] = []
-    local_placement = str(local_payload.get("placement") or "").strip()
-    for variant in variants:
-        result = _scan_chess_run_external_fen_provider(
-            variant["crop_bytes"],
-            bbox=tuple(variant["bbox"]),
-            page=page,
-            selected_preprocess_variant=str(variant.get("selected_preprocess_variant") or ""),
-            display_variant_used=str(variant.get("display_variant_used") or ""),
-            variant_role=str(variant.get("variant_role") or ""),
-        )
-        candidate = _scan_chess_external_provider_candidate(
-            result,
-            bbox=tuple(variant["bbox"]),
-            min_confidence=min_confidence,
-        )
-        if candidate is None:
-            continue
-        candidate["agrees_with_local_placement"] = bool(local_placement and str(candidate.get("placement") or "") == local_placement)
-        candidate["agreement_count"] = 1 if candidate["agrees_with_local_placement"] else 0
-        candidate["king_structure_agreement"] = _scan_chess_king_structure_agreement(local_payload, candidate)
-        candidate["publishable_before_replay"] = _scan_chess_external_candidate_is_publishable(candidate, min_confidence=min_confidence)
-        replay_fen = str(candidate.get("fen") or candidate.get("full_fen") or "").strip()
-        replay = assess_fen_candidate_replay(pgn_records, replay_fen) if pgn_records else {
-            "replay_legal_from_fen": False,
-            "legal_line_count": 0,
-            "best_halfmove_count": 0,
-            "final_fen": "",
-            "warnings": [],
-        }
-        candidate["replay_legal_from_fen"] = bool(replay.get("replay_legal_from_fen", False))
-        candidate["replay_legal_line_count"] = int(replay.get("legal_line_count", 0) or 0)
-        candidate["replay_best_halfmove_count"] = int(replay.get("best_halfmove_count", 0) or 0)
-        candidate["replay_final_fen"] = str(replay.get("final_fen") or "")
-        candidate["publishable_after_replay"] = bool(
-            candidate["replay_legal_from_fen"]
-            and _scan_chess_external_candidate_is_publishable(
-                {**candidate, "replay_legal_from_fen": True},
-                min_confidence=min_confidence,
-            )
-        )
-        warnings = {str(warning) for warning in list(candidate.get("warnings") or []) if str(warning).strip()}
-        warnings.update(str(warning) for warning in list(replay.get("warnings") or []) if str(warning).strip())
-        candidate["warnings"] = sorted(warnings)
-        candidates.append(candidate)
-        placement = str(candidate.get("placement") or "").strip()
-        if placement:
-            external_placements.append(placement)
-    for candidate in candidates:
-        placement = str(candidate.get("placement") or "").strip()
-        agrees_with_other_external = external_placements.count(placement) > 1 if placement else False
-        candidate["agrees_with_other_external"] = agrees_with_other_external
-        candidate["agreement_count"] = int(candidate.get("agreement_count", 0) or 0) + (1 if agrees_with_other_external else 0)
-    return candidates
-
-
-def _scan_chess_consensus_external_fen_candidate(
-    payload: dict[str, Any],
-    external_candidates: list[dict[str, Any]],
-) -> dict[str, Any] | None:
-    if not external_candidates:
-        return None
-    ranked = sorted(
-        external_candidates,
-        key=lambda candidate: (
-            bool(candidate.get("publishable_after_replay", False)),
-            bool(candidate.get("publishable_before_replay", False)),
-            int(candidate.get("agreement_count", 0) or 0),
-            bool(candidate.get("king_structure_agreement", False)),
-            float(candidate.get("effective_confidence", candidate.get("confidence", 0.0)) or 0.0),
-            float(candidate.get("confidence", 0.0) or 0.0),
-        ),
-        reverse=True,
-    )
-    best = ranked[0]
-    if len(ranked) > 1:
-        second = ranked[1]
-        if str(best.get("placement") or "").strip() and str(second.get("placement") or "").strip():
-            if str(best.get("placement") or "").strip() != str(second.get("placement") or "").strip():
-                best = dict(best)
-                best["warnings"] = sorted(
-                    {
-                        *list(best.get("warnings") or []),
-                        "external_fen_multi_crop_conflict",
-                    }
-                )
-    return best
-
-
-def _scan_chess_attach_external_fen_provider(
-    payload: dict[str, Any],
-    *,
-    crop_bytes: bytes,
-    config: ConversionConfig,
-    page_image: Image.Image,
-    best_bbox: tuple[float, float, float, float],
-    reader_bbox: tuple[float, float, float, float],
-    bbox: tuple[float, float, float, float],
-    page: int,
-    selected_preprocess_variant: str,
-    display_variant_used: str,
-    min_confidence: float,
-    pgn_records: tuple[Any, ...] | list[Any],
-) -> dict[str, Any]:
-    if not _scan_chess_external_provider_should_run(payload, min_confidence=min_confidence):
-        return payload
-    variants = _scan_chess_external_provider_crop_variants(
-        page_image,
-        best_bbox=best_bbox,
-        reader_bbox=reader_bbox,
-        config=config,
-        selected_preprocess_variant=selected_preprocess_variant,
-        display_variant_used=display_variant_used,
-    )
-    if not variants:
-        return payload
-    external_candidates = _scan_chess_collect_external_fen_candidates(
-        variants,
-        local_payload=payload,
-        page=page,
-        min_confidence=min_confidence,
-        pgn_records=tuple(pgn_records or ()),
-    )
-    if not external_candidates:
-        return _scan_chess_payload_with_warnings(payload, "external_fen_provider_used")
-
-    updated_payload = _scan_chess_attach_external_candidates(payload, external_candidates)
-    aggregate_warnings = {"external_fen_provider_used", "external_fen_candidate_added"}
-    if any(bool(candidate.get("agrees_with_other_external")) for candidate in external_candidates):
-        aggregate_warnings.add("external_fen_multi_crop_agreement")
-    if len({str(candidate.get("placement") or "").strip() for candidate in external_candidates if str(candidate.get("placement") or "").strip()}) > 1:
-        aggregate_warnings.add("external_fen_multi_crop_conflict")
-    consensus_candidate = _scan_chess_consensus_external_fen_candidate(payload, external_candidates)
-    if consensus_candidate is None:
-        return _scan_chess_payload_with_warnings(updated_payload, *sorted(aggregate_warnings))
-
-    if bool(consensus_candidate.get("agrees_with_local_placement")):
-        aggregate_warnings.add("external_fen_agrees_with_local")
-    else:
-        local_fen = str(payload.get("fen") or "").strip()
-        external_fen = str(consensus_candidate.get("fen") or "").strip()
-        if local_fen and external_fen and local_fen != external_fen:
-            aggregate_warnings.add("external_fen_conflicts_with_local")
-    if int(consensus_candidate.get("agreement_count", 0) or 0) > 1:
-        aggregate_warnings.add("external_fen_consensus_used")
-
-    if not bool(consensus_candidate.get("king_structure_agreement", False)):
-        aggregate_warnings.add("external_fen_rejected_by_king_structure")
-
-    if bool(consensus_candidate.get("replay_legal_from_fen", False)):
-        aggregate_warnings.add("external_fen_promoted_by_replay")
-    elif bool(consensus_candidate.get("publishable_before_replay", False)):
-        aggregate_warnings.add("external_fen_rejected_by_replay")
-
-    updated_payload = _scan_chess_payload_with_warnings(updated_payload, *sorted(aggregate_warnings))
-
-    can_promote = (
-        bool(payload.get("requires_review", True))
-        and bool(consensus_candidate.get("publishable_after_replay", False))
-        and bool(consensus_candidate.get("replay_legal_from_fen", False))
-        and bool(consensus_candidate.get("king_structure_agreement", False))
-    )
-    if not can_promote:
-        return updated_payload
-
-    promoted = dict(consensus_candidate)
-    if not str(promoted.get("fen") or "").strip():
-        promoted["fen"] = str(promoted.get("full_fen") or "").strip()
-    promoted["external_fen_candidates"] = external_candidates
-    promoted["warnings"] = sorted(
-        {
-            *list(consensus_candidate.get("warnings") or []),
-            *sorted(aggregate_warnings),
-        }
-    )
-    promoted["requires_review"] = False
-    return promoted
-
-
-def _scan_chess_payload_with_side_to_move_conflict(payload: dict[str, Any], evidence: ScanChessSideToMoveEvidence) -> dict[str, Any]:
-    updated = dict(payload)
-    warnings = set(str(warning) for warning in list(updated.get("warnings") or []))
-    warnings.update(evidence.warnings)
-    warnings.add("side_to_move_evidence_conflict")
-    if evidence.source == "caption":
-        warnings.add("side_to_move_caption_detected")
-    updated["warnings"] = sorted(warnings)
-    updated["fen"] = ""
-    updated["requires_review"] = True
-    return updated
-
-
-def _scan_chess_side_evidence_has_only_side_blocker(payload: dict[str, Any]) -> bool:
-    allowed = {
-        "side_to_move_inferred",
-        "side_to_move_marker_detected",
-        "side_to_move_caption_detected",
-        "side_to_move_caption_applied",
-        "reader_visible_crop_fen_used",
-        "reader_expanded_crop_fen_used",
-        "final_rendered_crop_fen_used",
-        "verified_exact_crop_label_used",
-        "recognition_inner_border_trim_used",
-        "recognition_caption_bottom_trim_used",
-        "recognition_corner_marker_trim_used",
-        "recognition_side_marker_trim_used",
-        "dense_board_area_crop_used",
-    }
-    warnings = {str(warning) for warning in list(payload.get("warnings") or [])}
-    return not (warnings - allowed)
-
-
-def _apply_scan_chess_side_to_move_evidence(
-    payload: dict[str, Any],
-    evidence: ScanChessSideToMoveEvidence,
-) -> dict[str, Any]:
-    side = "b" if str(evidence.side).lower().startswith("b") else "w"
-    source = str(evidence.source or "").strip() or "caption"
-    updated = dict(payload)
-    existing_status = str(updated.get("side_to_move_status") or "")
-    existing_evidence = str(updated.get("side_to_move_evidence") or "")
-    existing_side = str(updated.get("side_to_move") or "")
-    if existing_status == "explicit" and existing_evidence not in {"inferred", "none", ""} and existing_side in {"w", "b"}:
-        if existing_side != side:
-            if existing_evidence in {"verified_label", "exact_label"}:
-                warnings = set(str(warning) for warning in list(updated.get("warnings") or []))
-                warnings.update(evidence.warnings)
-                if source == "caption":
-                    warnings.add("side_to_move_caption_detected")
-                    warnings.add("side_to_move_caption_ignored_verified_label")
-                updated["warnings"] = sorted(warnings)
-                return updated
-            return _scan_chess_payload_with_side_to_move_conflict(updated, evidence)
-        warnings = set(str(warning) for warning in list(updated.get("warnings") or []))
-        warnings.update(evidence.warnings)
-        if source == "caption":
-            warnings.add("side_to_move_caption_detected")
-        updated["warnings"] = sorted(warnings)
-        return updated
     updated["side_to_move"] = side
-    updated["side_to_move_status"] = "explicit"
-    updated["side_to_move_evidence"] = source
-    if evidence.raw_text:
-        updated["side_to_move_evidence_text"] = str(evidence.raw_text)[:160]
-    fen = str(updated.get("fen") or updated.get("full_fen") or "").strip()
+    fen = str(updated.get("fen") or "").strip()
     if fen:
         parts = fen.split()
         if len(parts) == 6:
             parts[1] = side
-            full_fen = " ".join(parts)
-            updated["full_fen"] = full_fen
-            updated["fen"] = full_fen
-    external_candidates = []
-    for candidate in list(updated.get("external_fen_candidates") or []):
-        if not isinstance(candidate, dict):
-            continue
-        external_candidate = dict(candidate)
-        external_candidate["side_to_move"] = side
-        external_candidate["side_to_move_status"] = "explicit"
-        external_candidate["side_to_move_evidence"] = source
-        external_fen = str(external_candidate.get("fen") or "").strip()
-        if external_fen:
-            parts = external_fen.split()
-            if len(parts) == 6:
-                parts[1] = side
-                external_candidate["fen"] = " ".join(parts)
-        external_candidates.append(external_candidate)
-    if external_candidates:
-        updated["external_fen_candidates"] = external_candidates
+            updated["fen"] = " ".join(parts)
     warnings = [warning for warning in list(updated.get("warnings") or []) if warning != "side_to_move_inferred"]
-    warnings.extend(evidence.warnings)
-    if source == "marker" and "side_to_move_marker_detected" not in warnings:
+    if "side_to_move_marker_detected" not in warnings:
         warnings.append("side_to_move_marker_detected")
-    if source == "caption":
-        warnings.append("side_to_move_caption_detected")
-        warnings.append("side_to_move_caption_applied")
     updated["warnings"] = sorted(set(warnings))
-    if updated.get("fen"):
-        valid, fen_warnings = validate_fen(str(updated.get("fen") or ""))
-        updated["warnings"] = sorted(set(updated["warnings"]) | set(fen_warnings))
-        can_publish = (
-            valid
-            and _scan_chess_side_evidence_has_only_side_blocker(payload)
-            and machine_accept_fen({**updated, "requires_review": False})
-        )
-        if not can_publish:
-            updated["fen"] = ""
-        updated["requires_review"] = not can_publish
     return updated
-
-
-def _apply_scan_chess_side_to_move_marker(payload: dict[str, Any], side_to_move: str) -> dict[str, Any]:
-    return _apply_scan_chess_side_to_move_evidence(
-        payload,
-        ScanChessSideToMoveEvidence(
-            side="b" if str(side_to_move).lower().startswith("b") else "w",
-            source="marker",
-            warnings=("side_to_move_marker_detected",),
-        ),
-    )
-
-
-def _infer_scan_chess_side_to_move_from_text(text: str) -> ScanChessSideToMoveEvidence | None:
-    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
-    if not normalized:
-        return None
-    white = bool(SCAN_CHESS_WHITE_TO_MOVE_RE.search(normalized))
-    black = bool(SCAN_CHESS_BLACK_TO_MOVE_RE.search(normalized))
-    if white and black:
-        return ScanChessSideToMoveEvidence(
-            side="",
-            source="caption",
-            raw_text=normalized,
-            confidence=0.0,
-            warnings=("side_to_move_caption_ambiguous",),
-        )
-    if white:
-        return ScanChessSideToMoveEvidence(side="w", source="caption", raw_text=normalized)
-    if black:
-        return ScanChessSideToMoveEvidence(side="b", source="caption", raw_text=normalized)
-    return None
-
-
-def _scan_chess_exercise_marker_side(raw_marker: str) -> str:
-    marker = str(raw_marker or "").strip()
-    if marker in {"△", "▽"}:
-        return "w"
-    if marker in {"▲", "▼"}:
-        return "b"
-    upper = marker.upper()
-    if upper == "A":
-        return "w"
-    if upper in {"V", "VV"}:
-        return "b"
-    return ""
-
-
-def _scan_chess_exercise_side_marker_tokens(line: str) -> list[str]:
-    normalized = re.sub(r"\s+", " ", str(line or "")).strip()
-    if not normalized:
-        return []
-    if re.search(r"(?i)\ba\s+b\s+c\s+d\s+e\s+f\s+g\s+h\b", normalized):
-        return []
-    if not re.search(r"(?i)(?:\bdiagram\b|\bex\b|\bfx\b|[>D]\s*[EFPR])", normalized):
-        return []
-    if not re.search(r"\d", normalized):
-        return []
-    tokens = re.findall(r"(?<![A-Za-z])(?:A|Vv|vV|V|△|▲|▽|▼)(?![A-Za-z])", normalized)
-    return tokens
-
-
-def _scan_chess_side_to_move_evidence_from_ocr_text(text: str) -> list[ScanChessSideToMoveEvidence]:
-    evidence: list[ScanChessSideToMoveEvidence] = []
-    explicit = _infer_scan_chess_side_to_move_from_text(text)
-    if explicit is not None:
-        return [explicit]
-    for line in str(text or "").replace("\r\n", "\n").replace("\r", "\n").splitlines():
-        normalized = re.sub(r"\s+", " ", line).strip()
-        if not normalized:
-            continue
-        marker_tokens = _scan_chess_exercise_side_marker_tokens(normalized)
-        if not marker_tokens:
-            marker_tokens = [match.group(1) for match in SCAN_CHESS_EXERCISE_SIDE_MARKER_RE.finditer(normalized)]
-        for marker in marker_tokens:
-            side = _scan_chess_exercise_marker_side(marker)
-            if not side:
-                continue
-            evidence.append(
-                ScanChessSideToMoveEvidence(
-                    side=side,
-                    source="caption",
-                    raw_text=normalized,
-                    confidence=0.74,
-                    warnings=("side_to_move_caption_detected",),
-                )
-            )
-    return evidence
-
-
-def _scan_chess_side_to_move_evidence_for_candidates(
-    candidates: list[dict[str, Any]],
-    ocr_record: dict[str, Any] | None,
-) -> dict[int, ScanChessSideToMoveEvidence]:
-    if not isinstance(ocr_record, dict):
-        return {}
-    text = str(ocr_record.get("text") or "")
-    evidence = _scan_chess_side_to_move_evidence_from_ocr_text(text)
-    if not evidence:
-        return {}
-    if len(evidence) == 1 and not evidence[0].side:
-        return {}
-    if len(candidates) == 1 and len(evidence) == 1 and evidence[0].side in {"w", "b"}:
-        return {0: evidence[0]}
-    usable = [item for item in evidence if item.side in {"w", "b"}]
-    if len(usable) != len(candidates):
-        return {}
-    indexed_candidates = list(enumerate(candidates))
-    indexed_candidates.sort(
-        key=lambda item: (
-            float((item[1].get("bbox") or [0, 0, 0, 0])[1] or 0.0),
-            float((item[1].get("bbox") or [0, 0, 0, 0])[0] or 0.0),
-        )
-    )
-    return {candidate_index: usable[evidence_index] for evidence_index, (candidate_index, _candidate) in enumerate(indexed_candidates)}
 
 
 def _infer_scan_chess_side_to_move(
@@ -4811,6 +5395,8 @@ def extract_pdf_with_chess_support(
     chapters = []
     all_images = []
     all_chess_diagrams = []
+    chess_diagram_records: list[dict[str, Any]] = []
+    book_layout_pages: list[dict[str, Any]] = []
     chess_fen_records = []
     image_count = 0
     chess_diagram_count = 0
@@ -4847,7 +5433,7 @@ def extract_pdf_with_chess_support(
         page_height = page.rect.height
         
         # Get text blocks with full detail
-        text_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_MEDIABOX_CLIP)
+        text_dict = _page_text_dict_for_glyph_capture(page)
         
         # Collect all text spans and keep raw per-line segments so we can
         # reconstruct readable notation instead of emitting one paragraph per span.
@@ -4855,24 +5441,31 @@ def extract_pdf_with_chess_support(
         raw_lines = []
         span_index = 0
         
-        for block in text_dict.get("blocks", []):
+        for block_index, block in enumerate(text_dict.get("blocks", [])):
             if block.get("type") != 0:
                 continue
             
-            for line in block.get("lines", []):
+            for line_index, line in enumerate(block.get("lines", [])):
                 raw_line_segments = []
                 for span in line.get("spans", []):
-                    raw_text = span.get("text", "")
+                    segment = _pdf_text_segment_from_span(
+                        span,
+                        page_num=page_num,
+                        block_index=block_index,
+                        line_index=line_index,
+                        span_index=span_index,
+                    )
+                    raw_text = segment.get("text", "")
                     text = raw_text.strip()
                     if not text:
                         span_index += 1
                         continue
                     
-                    bbox = span.get("bbox", (0, 0, 0, 0))
+                    bbox = tuple(segment.get("bbox") or (0, 0, 0, 0))
                     x0, y0, x1, y1 = bbox
                     
                     # Determine CSS font family
-                    font_name = span.get("font", "Unknown")
+                    font_name = str(segment.get("font_name") or "Unknown")
                     css_family = _get_css_font_family(font_name)
                     css_color = _color_to_css(span.get("color"))
                     
@@ -4885,7 +5478,7 @@ def extract_pdf_with_chess_support(
                         width=x1 - x0,
                         height=y1 - y0,
                         font_name=font_name,
-                        font_size=span.get("size", 12),
+                        font_size=segment.get("font_size", 12),
                         is_bold=bool(span.get("flags", 0) & (1 << 4)),
                         is_italic=bool(span.get("flags", 0) & (1 << 1)),
                         color=span.get("color"),
@@ -4893,15 +5486,7 @@ def extract_pdf_with_chess_support(
                         css_font_family=css_family,
                         css_color=css_color,
                     ))
-                    raw_line_segments.append({
-                        "index": span_index,
-                        "text": raw_text,
-                        "font_name": font_name,
-                        "font_size": span.get("size", 12),
-                        "x0": x0,
-                        "x1": x1,
-                        "y0": y0,
-                    })
+                    raw_line_segments.append(segment)
                     span_index += 1
                 if raw_line_segments:
                     raw_lines.append({"segments": raw_line_segments})
@@ -4976,6 +5561,17 @@ def extract_pdf_with_chess_support(
                             )
                         chess_imgs_for_page.append(chess_img)
                         all_chess_diagrams.append(chess_img)
+                        chess_diagram_records.append(
+                            _chess_diagram_record_from_image(
+                                chess_img,
+                                diagram_id=f"text-chess-p{page_num + 1:03d}-d{region_idx + 1:02d}",
+                                caption=f"Strona {page_num + 1}, diagram {region_idx + 1}",
+                                page_num=page_num,
+                                nearby_text=" ".join(
+                                    ts.text for ts in text_spans if ts.index in region.text_span_indices
+                                ),
+                            )
+                        )
 
                         start_index = min(region.text_span_indices)
                         diagram_entries.append(
@@ -5011,6 +5607,27 @@ def extract_pdf_with_chess_support(
         line_items = _build_line_items(raw_lines, chess_text_indices)
         line_items.sort(key=lambda item: (item.y, item.start_index))
         diagram_entries.sort(key=lambda entry: (entry["sort_y"], entry["sort_x"], entry["start_index"]))
+        book_elements = _book_layout_text_elements_from_line_items(line_items)
+        page_diagram_records = [
+            record
+            for record in chess_diagram_records
+            if int(record.get("page_index", -1) or -1) == page_num
+        ]
+        book_elements.extend(
+            _book_layout_diagram_elements_from_diagrams(
+                page_diagram_records,
+                page_num=page_num,
+                reading_order_start=10_000,
+            )
+        )
+        book_layout_pages.append(
+            _book_layout_page_from_pdf_page(
+                page,
+                page_num,
+                config,
+                elements=book_elements,
+            )
+        )
         diagram_cursor = 0
 
         def insert_diagram(entry: dict) -> None:
@@ -5109,7 +5726,9 @@ def extract_pdf_with_chess_support(
             '_source_page_label': source_page_label,
         })
     
+    book_layout_pages = _ensure_book_layout_pages_cover_document(doc, book_layout_pages, config)
     doc.close()
+    source_title = str((pdf_metadata or {}).get("title") or Path(pdf_path).stem)
     
     return {
         'success': True,
@@ -5123,6 +5742,14 @@ def extract_pdf_with_chess_support(
         'method': 'pymupdf_with_chess_support',
         'layout_mode': 'reflowable',
         'text_content': any(len(ch['html_parts']) > 0 for ch in chapters),
+        'extra_artifacts': _chess_pdf_extra_artifacts(
+            pdf_path,
+            config,
+            source_title=source_title,
+            pgn_records=[],
+            diagrams=chess_diagram_records,
+            book_layout_pages=book_layout_pages,
+        ),
     }
 
 

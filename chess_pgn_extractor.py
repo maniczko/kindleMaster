@@ -5,9 +5,10 @@ import hashlib
 import html
 import io
 import logging
+import os
 import re
 from dataclasses import dataclass, field, replace
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 from external_pgn_extract_provider import (
     PgnExtractResult,
@@ -18,6 +19,7 @@ from external_pgn_extract_provider import (
 
 
 RESULT_VALUES = {"1-0", "0-1", "1/2-1/2", "0.5-0.5", "*"}
+UNMAPPED_CHESS_GLYPH_WARNING = "unmapped_chess_glyphs"
 MOVE_NUMBER_RE = re.compile(r"^(?P<num>\d{1,3})\.(?P<black>\.\.)?$")
 RESULT_RE = re.compile(r"^(?:1-0|0-1|1/2-1/2|0\.5-0\.5|\*)$")
 SAN_RE = re.compile(
@@ -179,6 +181,7 @@ CHESSBASE_ANNOTATION_SYMBOL_MAP = {
     "\ue02e": "\u2a71",
     "\ue02f": "\u2a72",
 }
+UNMAPPED_CHESS_GLYPH_TOKEN_RE = re.compile(r"(?:\ufffd|[\"']?t!;>|[\"'][^\s]{0,10}[;>])")
 _PGN_EXTRACT_FORMAT_CACHE: dict[tuple[str, str, str], str] = {}
 
 
@@ -196,6 +199,45 @@ class ParsedPgnLine:
     kind: str
     has_explicit_movetext: bool = False
     has_result: bool = False
+
+
+@dataclass(frozen=True)
+class ChessDiagramRecord:
+    filename: str = ""
+    id: str = ""
+    page: int = 0
+    page_index: int = 0
+    page_number: int = 0
+    bbox: tuple[float, float, float, float] | tuple[()] = ()
+    caption: str = ""
+    confidence: float = 0.0
+    fen: str = ""
+    fen_candidate: str = ""
+    status: str = "review"
+    warnings: tuple[str, ...] = ()
+    image_data_uri: str = ""
+    selected_preprocess_variant: str = ""
+    display_variant_used: str = ""
+
+
+@dataclass(frozen=True)
+class ChessBookLayoutElement:
+    type: str
+    bbox: tuple[float, float, float, float]
+    reading_order: int = 0
+    text: str = ""
+    image_data_uri: str = ""
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class ChessBookLayoutPage:
+    page_index: int
+    page_number: int
+    width: float
+    height: float
+    background_image_data_uri: str = ""
+    elements: tuple[ChessBookLayoutElement, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -218,6 +260,7 @@ class ChessPgnRecord:
     token_source: tuple[PgnToken, ...] = field(default_factory=tuple, repr=False, compare=False)
     ocr_confidence_source: float = field(default=0.0, repr=False, compare=False)
     pgn_extract: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
+    glyph_diagnostics: list[dict[str, Any]] = field(default_factory=list, repr=False, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -237,6 +280,7 @@ class ChessPgnRecord:
             "fen_snapshots": [dict(snapshot) for snapshot in self.fen_snapshots],
             "raw_text": self.raw_text,
             "pgn_extract": dict(self.pgn_extract),
+            "glyph_diagnostics": [dict(item) for item in self.glyph_diagnostics],
         }
 
 
@@ -290,6 +334,21 @@ class ChessExerciseRecord:
     status: str = "requires_review"
     warnings: list[str] = field(default_factory=list)
     quality_flags: dict[str, Any] = field(default_factory=dict)
+    primary_diagram: dict[str, Any] = field(default_factory=dict)
+    diagram_candidates: list[dict[str, Any]] = field(default_factory=list)
+    primary_fen: str = ""
+    fen_candidates: list[dict[str, Any]] = field(default_factory=list)
+    fen_ambiguous: bool = False
+    fen_selection_reason: str = ""
+    source_position: dict[str, Any] = field(default_factory=dict)
+    order_confidence: str = "low"
+    ai_review: dict[str, Any] = field(default_factory=dict)
+    sequence_status: str = "review"
+    primary_fen_status: str = "no"
+    missing_fen_reason: str = ""
+    ocr_normalization_candidates: list[dict[str, Any]] = field(default_factory=list)
+    ai_review_suggestions: list[dict[str, Any]] = field(default_factory=list)
+    legal_solution_lines: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -306,6 +365,21 @@ class ChessExerciseRecord:
             "status": self.status,
             "warnings": list(self.warnings),
             "quality_flags": dict(self.quality_flags),
+            "primary_diagram": dict(self.primary_diagram),
+            "diagram_candidates": [dict(item) for item in self.diagram_candidates],
+            "primary_fen": self.primary_fen,
+            "fen_candidates": [dict(item) for item in self.fen_candidates],
+            "fen_ambiguous": self.fen_ambiguous,
+            "fen_selection_reason": self.fen_selection_reason,
+            "source_position": dict(self.source_position),
+            "order_confidence": self.order_confidence,
+            "ai_review": dict(self.ai_review),
+            "sequence_status": self.sequence_status,
+            "primary_fen_status": self.primary_fen_status,
+            "missing_fen_reason": self.missing_fen_reason,
+            "ocr_normalization_candidates": [dict(item) for item in self.ocr_normalization_candidates],
+            "ai_review_suggestions": [dict(item) for item in self.ai_review_suggestions],
+            "legal_solution_lines": [dict(item) for item in self.legal_solution_lines],
         }
 
 
@@ -337,6 +411,7 @@ def extract_chess_pgn_records_from_text(
     source_title: str = "",
     ocr_confidence: float = 0.0,
     fen_candidates: Iterable[str] | None = None,
+    glyph_diagnostics: Iterable[Mapping[str, Any]] | None = None,
 ) -> list[ChessPgnRecord]:
     normalized = normalize_ocr_text_for_pgn(text)
     if not normalized.strip():
@@ -344,6 +419,7 @@ def extract_chess_pgn_records_from_text(
 
     candidates = _split_candidate_game_blocks(normalized)
     fen_list = [str(fen or "").strip() for fen in (fen_candidates or []) if str(fen or "").strip()]
+    glyph_rows = [dict(row) for row in (glyph_diagnostics or []) if isinstance(row, Mapping)]
     records: list[ChessPgnRecord] = []
     for index, candidate in enumerate(candidates, start=1):
         body = _strip_opening_descriptor_prefix(candidate["body"], context=candidate["caption"])
@@ -385,6 +461,12 @@ def extract_chess_pgn_records_from_text(
         )
         candidate_warnings = [str(warning) for warning in candidate.get("warnings", []) if str(warning)]
         warnings = sorted(set(candidate_warnings + list(reconstruction_warnings)))
+        if re.search(r"(?im)^\s*(?:The position is|Weighted Error Value:)", raw):
+            warnings.append("book_comment_excluded_from_strict_movetext")
+        if _detect_unmapped_pgn_glyphs(raw) or _detect_unmapped_pgn_glyphs(body):
+            warnings.append(UNMAPPED_CHESS_GLYPH_WARNING)
+        if glyph_rows and UNMAPPED_CHESS_GLYPH_WARNING not in warnings:
+            warnings.append(UNMAPPED_CHESS_GLYPH_WARNING)
         force_review = bool(candidate.get("force_review"))
         status = (
             "accepted"
@@ -409,6 +491,7 @@ def extract_chess_pgn_records_from_text(
                 token_source=tokens,
                 ocr_confidence_source=float(ocr_confidence or 0.0),
                 pgn_extract=_pgn_extract_audit_payload(pgn),
+                glyph_diagnostics=glyph_rows,
             )
         )
     return records
@@ -471,8 +554,26 @@ def annotate_records_with_replayed_fens(records: Iterable[ChessPgnRecord]) -> li
     """
     updated: list[ChessPgnRecord] = []
     for record in records:
+        if _blocking_pgn_warnings(record.warnings):
+            updated.append(
+                replace(
+                    record,
+                    final_fen="",
+                    fen_snapshots=[],
+                    status="requires_review",
+                    confidence=min(float(record.confidence or 0.0), 0.64),
+                )
+            )
+            continue
         replay = _replay_record_to_final_fen(record)
         warnings = sorted(set([*record.warnings, *replay["warnings"]]))
+        if (
+            "pgn_replay_errors" in warnings
+            and "illegal_san_token" not in warnings
+            and "ambiguous_san_token" not in warnings
+            and re.match(r"^\s*1\.\s", record.movetext or "")
+        ):
+            warnings = sorted({*warnings, "illegal_san_token"})
         status = record.status
         confidence = float(record.confidence or 0.0)
         if _blocking_pgn_warnings(warnings):
@@ -625,6 +726,125 @@ def build_combined_pgn(records: Iterable[ChessPgnRecord]) -> str:
     return "\n\n".join(pgn_values).strip() + ("\n" if pgn_values else "")
 
 
+def build_exercises_pgn(
+    records: Iterable[ChessPgnRecord],
+    *,
+    diagram_records: Iterable[Mapping[str, Any]] | None = None,
+    source_title: str = "Chess Exercises",
+) -> str:
+    record_list = list(records)
+    diagram_list = [dict(item) for item in (diagram_records or [])]
+    exercises = _build_exercise_records(record_list, diagram_list)
+    ordered_items = sorted(
+        list(enumerate(zip(record_list, exercises))),
+        key=lambda item: _exercise_sort_key(item[1][0], item[1][1], item[0]),
+    )
+    pgn_values: list[str] = []
+    export_index = 1
+    for _original_index, (_record, exercise) in ordered_items:
+        for line_index, line in enumerate(exercise.legal_solution_lines or exercise.legal_line_candidates, start=1):
+            pgn = _format_exercise_solution_pgn(
+                exercise,
+                line,
+                source_title=source_title,
+                export_index=export_index,
+                line_index=line_index,
+            )
+            if pgn:
+                pgn_values.append(pgn.strip())
+                export_index += 1
+    return "\n\n".join(pgn_values).strip() + ("\n" if pgn_values else "")
+
+
+def _format_exercise_solution_pgn(
+    exercise: ChessExerciseRecord,
+    line: Mapping[str, Any],
+    *,
+    source_title: str,
+    export_index: int,
+    line_index: int,
+) -> str:
+    fen = str(line.get("fen") or exercise.primary_fen or exercise.fen_candidate or "").strip()
+    movetext = str(line.get("movetext") or "").strip()
+    if not fen or not movetext or not bool(line.get("legal_from_fen")):
+        return ""
+    validation = _validate_candidate_line_from_fen(fen, movetext)
+    if not bool(validation.get("legal")):
+        return ""
+    result = str(line.get("result") or "*").strip()
+    if result not in RESULT_VALUES:
+        result = "*"
+    diagram_number = str(exercise.diagram_number or "").strip()
+    event_bits = [source_title or "Chess Exercises"]
+    if diagram_number:
+        event_bits.append(f"Diagram {diagram_number}")
+    event = " - ".join(event_bits)
+    round_value = str(export_index)
+    if line_index > 1:
+        round_value = f"{export_index}.{line_index}"
+    headers = {
+        "Event": _clean_header_value(event),
+        "Site": "?",
+        "Date": "????.??.??",
+        "Round": round_value,
+        "White": "?",
+        "Black": "?",
+        "Result": result,
+        "SetUp": "1",
+        "FEN": fen,
+    }
+    if exercise.caption:
+        headers["Source"] = _clean_header_value(exercise.caption)
+    return _format_pgn(headers, movetext, result)
+
+
+def chess_ocr_normalization_candidates(text: str) -> list[dict[str, Any]]:
+    """Return conservative chess OCR normalization candidates with audit warnings."""
+    original = str(text or "")
+    if not original:
+        return []
+    candidates: list[dict[str, Any]] = []
+
+    def add_candidate(value: str, confidence: float, warnings: Sequence[str]) -> None:
+        cleaned = str(value or "").strip()
+        if not cleaned or cleaned == original:
+            return
+        if any(item["text"] == cleaned for item in candidates):
+            return
+        candidates.append(
+            {
+                "text": cleaned,
+                "confidence": round(max(0.0, min(1.0, float(confidence))), 3),
+                "warnings": sorted({str(warning) for warning in warnings if str(warning).strip()}),
+            }
+        )
+
+    base = original
+    base = re.sub(r"(?i)\b(?:lL|lI|IiJ|tLl|ltl|lLl|liJ)(?=[a-h]?[1-8]?x?[a-h][1-8]|[a-h][1-8])", "N", base)
+    base = re.sub(r"(?i)\b(?:Yfi|iW|Wl|W)(?=[a-h]?[1-8]?x?[a-h][1-8]|[a-h][1-8])", "Q", base)
+    base = re.sub(r"(?i)(?:It>|lt>|@|�)(?=[a-h]?[1-8lI])", "K", base)
+    base = re.sub(r"(?<=\b[KQRBN][a-h])I\b", "1", base)
+    base = re.sub(r"(?<=\b[KQRBN][a-h])l\b", "1", base)
+    base = re.sub(r"(?<=\b[a-h])I\b", "1", base)
+    base = re.sub(r"(?<=\b[a-h])l\b", "1", base)
+    base = re.sub(r"(?<=[a-h][1-8])t\b", "+", base)
+    base = re.sub(r"\bl:!([a-h][1-8]#?)", r"R\1", base)
+    base = re.sub(r"\bgg([1-8])([+#]?)", r"Qg\1\2", base)
+    base = re.sub(r"\bgh([1-8])([+#]?)", r"Qh\1\2", base)
+    base = re.sub(r"\bgxh([1-8])([+#]?)", r"Qxh\1\2", base)
+    add_candidate(base, 0.74, ["ocr_candidate_normalized", "ocr_candidate_symbol_map"])
+
+    if "�" in original:
+        ambiguous_base = re.sub(r"(?<=[a-h][1-8])t\b", "+", original)
+        for piece in ("Q", "R", "B", "N", "K"):
+            add_candidate(
+                re.sub(r"�(?=[a-h]?[1-8])", piece, ambiguous_base),
+                0.52,
+                ["ocr_candidate_piece_ambiguous", f"ocr_piece_candidate_{piece}"],
+            )
+    return candidates[:8]
+
+
 def _diagram_image_data_uri(record: Mapping[str, Any]) -> str:
     raw_data = record.get("image_data")
     if raw_data is None:
@@ -637,6 +857,17 @@ def _diagram_image_data_uri(record: Mapping[str, Any]) -> str:
     content_type = "image/jpeg" if extension in {"jpg", "jpeg"} else "image/png"
     encoded = base64.b64encode(bytes(raw_data)).decode("ascii")
     return f"data:{content_type};base64,{encoded}"
+
+
+def _mapping_from_record(record: Any) -> dict[str, Any]:
+    if isinstance(record, Mapping):
+        return dict(record)
+    if hasattr(record, "__dataclass_fields__"):
+        return {
+            field_name: getattr(record, field_name)
+            for field_name in getattr(record, "__dataclass_fields__", {}).keys()
+        }
+    return {}
 
 
 def _diagram_record_html(record: Mapping[str, Any], index: int) -> str:
@@ -657,20 +888,12 @@ def _diagram_record_html(record: Mapping[str, Any], index: int) -> str:
         else '<p class="chess-diagram-missing-image">Brak miniatury diagramu.</p>'
     )
     fen_id = html.escape(f"diagram-fen-{index}", quote=True)
-    if fen and not requires_review:
+    if fen:
         fen_markup = (
             '<p class="diagram-fen">'
             '<span class="diagram-fen-label">FEN:</span> '
             f'<code id="{fen_id}" class="diagram-fen-code">{html.escape(fen)}</code>'
             f' <button type="button" class="copy-pgn-button" data-copy-target="{fen_id}">Kopiuj FEN</button>'
-            "</p>"
-        )
-    elif fen:
-        fen_markup = (
-            '<p class="diagram-fen diagram-review" data-fen-status="requires-review">'
-            '<span class="diagram-fen-label">FEN candidate:</span> '
-            f'<code class="diagram-fen-code diagram-review-only">{html.escape(fen)}</code> '
-            "Wymaga weryfikacji - nie jest kopiowalnym strict FEN."
             "</p>"
         )
     else:
@@ -709,7 +932,7 @@ def _diagram_record_html(record: Mapping[str, Any], index: int) -> str:
 
 
 def _diagram_records_html(diagram_records: Iterable[Mapping[str, Any]]) -> tuple[list[str], dict[str, int]]:
-    records = [dict(record) for record in diagram_records]
+    records = [_mapping_from_record(record) for record in diagram_records]
     fen_count = len([record for record in records if str(record.get("fen") or "").strip()])
     review_count = len([record for record in records if bool(record.get("requires_review", not record.get("fen")))])
     parts = [
@@ -759,10 +982,6 @@ def _candidate_solution_segments(text: str) -> list[str]:
 def _validate_candidate_line_from_fen(fen: str, movetext: str) -> dict[str, Any]:
     if not fen or not movetext:
         return {"legal": False, "final_fen": "", "warnings": ["missing_fen_or_movetext"]}
-    from chess_auto_flow import check_python_chess_available
-
-    if not check_python_chess_available().get("available"):
-        return {"legal": False, "final_fen": "", "warnings": ["python_chess_unavailable"]}
     try:
         import chess.pgn  # type: ignore[import-not-found]
     except Exception:
@@ -826,41 +1045,134 @@ def _exercise_candidate_lines(raw_text: str, fen: str) -> list[dict[str, Any]]:
     return lines[:8]
 
 
-def assess_fen_candidate_replay(
-    records: Iterable["ChessPgnRecord"],
+def _load_ai_repair_provider() -> Any | None:
+    try:
+        from openai_chess_pgn_reviewer import OpenAIChessPgnRepairProvider  # type: ignore[import-not-found]
+    except Exception:
+        return None
+    try:
+        return OpenAIChessPgnRepairProvider()
+    except Exception:
+        return None
+
+
+def _evaluate_ai_repair_candidates(
+    record: ChessPgnRecord,
+    diagram_records: Iterable[Mapping[str, Any]],
     fen: str,
 ) -> dict[str, Any]:
-    normalized_fen = str(fen or "").strip()
-    if not normalized_fen:
+    review_enabled = str(os.environ.get("KINDLEMASTER_OPENAI_CHESS_REVIEW") or "").strip().lower() in {"1", "true", "yes", "on"}
+    repair_enabled = str(os.environ.get("KINDLEMASTER_OPENAI_CHESS_REPAIR") or "").strip().lower() in {"1", "true", "yes", "on"}
+    if not review_enabled and not repair_enabled:
+        return {}
+    if review_enabled and not repair_enabled:
         return {
-            "replay_legal_from_fen": False,
-            "legal_line_count": 0,
-            "best_halfmove_count": 0,
-            "final_fen": "",
-            "warnings": ["missing_fen_or_movetext"],
+            "provider": "openai-chess-review",
+            "model": str(os.environ.get("KINDLEMASTER_OPENAI_CHESS_PREMIUM_MODEL") or ""),
+            "mode": str(os.environ.get("KINDLEMASTER_OPENAI_CHESS_REVIEW_MODE") or "review_only"),
+            "validation_status": "ai_review_status",
+            "sequence_status": "review_only",
+            "notes": "No automatic PGN export changes; AI suggestions are review-only evidence.",
+            "warnings": ["ai_review_only"],
+            "suggestions": [],
         }
-    legal_line_count = 0
-    best_halfmove_count = 0
-    best_final_fen = ""
-    warnings: list[str] = []
-    for record in records:
-        raw_text = _record_full_notation_text(record)
-        candidate_lines = _exercise_candidate_lines(raw_text, normalized_fen)
-        legal_lines = [line for line in candidate_lines if line.get("legal_from_fen")]
-        legal_line_count += len(legal_lines)
-        for line in candidate_lines:
-            warnings.extend([str(warning) for warning in list(line.get("warnings") or []) if str(warning).strip()])
-        for line in legal_lines:
-            halfmove_count = int(line.get("halfmove_count", 0) or 0)
-            if halfmove_count > best_halfmove_count:
-                best_halfmove_count = halfmove_count
-                best_final_fen = str(line.get("final_fen") or "")
+    provider = _load_ai_repair_provider()
+    if provider is None:
+        return {"validation_status": "provider_unavailable", "warnings": ["ai_repair_provider_unavailable"]}
+    mode = str(os.environ.get("KINDLEMASTER_OPENAI_CHESS_REPAIR_MODE") or "review_only").strip().lower()
+    context = {
+        "record": record.to_dict(),
+        "diagram_records": [dict(item) for item in diagram_records],
+        "fen": fen,
+        "raw_text": _record_full_notation_text(record),
+        "mode": mode,
+    }
+    try:
+        response = provider.propose_chess_repair(context)
+    except Exception as exc:
+        return {"validation_status": "provider_failed", "warnings": ["ai_repair_provider_failed"], "error": str(exc)}
+    if not isinstance(response, Mapping):
+        return {"validation_status": "malformed", "warnings": ["ai_repair_malformed"]}
+    fen_candidates = [dict(item) for item in list(response.get("fen_candidates") or []) if isinstance(item, Mapping)]
+    line_candidates = [
+        dict(item)
+        for item in list(response.get("solution_line_candidates") or [])
+        if isinstance(item, Mapping) and str(item.get("movetext") or "").strip()
+    ]
+    suggestions = [{"type": "fen", **item} for item in fen_candidates] + [{"type": "solution_line", **item} for item in line_candidates]
+    if mode != "validated_export":
+        return {
+            "provider": str(response.get("provider") or getattr(provider, "name", "ai-repair")),
+            "model": str(response.get("model") or ""),
+            "mode": mode,
+            "validation_status": "ai_suggested_but_not_validated",
+            "warnings": ["ai_suggested_but_not_validated"],
+            "notes": "No automatic PGN export changes",
+            "suggestions": suggestions,
+        }
+    if not fen_candidates or not line_candidates:
+        return {
+            "provider": str(response.get("provider") or getattr(provider, "name", "ai-repair")),
+            "model": str(response.get("model") or ""),
+            "mode": mode,
+            "validation_status": "no_ai_candidates",
+            "warnings": ["no_ai_candidates"],
+            "suggestions": suggestions,
+        }
+    validated_lines: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    for fen_candidate in fen_candidates:
+        candidate_fen = str(fen_candidate.get("fen") or "").strip()
+        if not candidate_fen:
+            continue
+        for line_candidate in line_candidates:
+            movetext = str(line_candidate.get("movetext") or "").strip()
+            validation = _validate_candidate_line_from_fen(candidate_fen, movetext)
+            row = {
+                "fen": candidate_fen,
+                "movetext": movetext,
+                "confidence": min(
+                    float(fen_candidate.get("confidence", 0.0) or 0.0),
+                    float(line_candidate.get("confidence", 0.0) or 0.0),
+                ),
+                "legal_from_fen": bool(validation.get("legal")),
+                "final_fen": str(validation.get("final_fen") or ""),
+                "warnings": list(validation.get("warnings") or []),
+                "source": "ai_repair_validated_by_local_replay",
+            }
+            if row["legal_from_fen"]:
+                validated_lines.append(row)
+            else:
+                rejected.append(row)
+    if len(validated_lines) == 1:
+        return {
+            "provider": str(response.get("provider") or getattr(provider, "name", "ai-repair")),
+            "model": str(response.get("model") or ""),
+            "mode": mode,
+            "validation_status": "validated_export",
+            "warnings": ["ai_repair_validated_by_local_replay"],
+            "validated_lines": validated_lines,
+            "suggestions": suggestions,
+            "rejected_candidates": rejected,
+        }
+    if len(validated_lines) > 1:
+        return {
+            "provider": str(response.get("provider") or getattr(provider, "name", "ai-repair")),
+            "model": str(response.get("model") or ""),
+            "mode": mode,
+            "validation_status": "ambiguous",
+            "warnings": ["ai_multiple_legal_paths"],
+            "suggestions": suggestions,
+            "rejected_candidates": rejected,
+        }
     return {
-        "replay_legal_from_fen": legal_line_count > 0,
-        "legal_line_count": legal_line_count,
-        "best_halfmove_count": best_halfmove_count,
-        "final_fen": best_final_fen,
-        "warnings": sorted(set(warnings)),
+        "provider": str(response.get("provider") or getattr(provider, "name", "ai-repair")),
+        "model": str(response.get("model") or ""),
+        "mode": mode,
+        "validation_status": "ai_solution_replay_failed",
+        "warnings": ["ai_solution_replay_failed"],
+        "suggestions": suggestions,
+        "rejected_candidates": rejected,
     }
 
 
@@ -872,6 +1184,129 @@ def _ocr_noise_score(text: str) -> float:
     suspicious_tokens = len(re.findall(r"(?i)\b(?:liJ|LJ|gg\d|[a-z]\d+t|[0-9][a-z]{2,})\b", sample))
     score = (noisy_chars * 2 + suspicious_tokens) / max(1, len(sample.split()))
     return round(min(score, 1.0), 3)
+
+
+def _diagram_identity_key(diagram: Mapping[str, Any]) -> str:
+    for key in ("id", "filename", "crop_sha256", "sha256"):
+        value = str(diagram.get(key) or "").strip()
+        if value:
+            return f"{key}:{value}"
+    page = str(diagram.get("page") or diagram.get("page_number") or diagram.get("page_index") or "").strip()
+    number = str(diagram.get("diagram_number") or diagram.get("caption") or "").strip()
+    bbox = str(diagram.get("bbox") or "").strip()
+    return f"page:{page}|number:{number}|bbox:{bbox}"
+
+
+def _diagram_source_position(diagram: Mapping[str, Any] | None, record: ChessPgnRecord) -> dict[str, Any]:
+    if diagram:
+        bbox = diagram.get("bbox") or ()
+        bbox_values = list(bbox) if isinstance(bbox, (list, tuple)) else []
+        return {
+            "page": _safe_int(diagram.get("page") or diagram.get("page_number") or diagram.get("page_index")),
+            "y": float(bbox_values[1]) if len(bbox_values) > 1 else 0.0,
+            "x": float(bbox_values[0]) if len(bbox_values) > 0 else 0.0,
+            "source_order": _safe_int(diagram.get("source_order")),
+        }
+    return {
+        "page": _safe_int((record.source_pages or [0])[0]),
+        "y": 0.0,
+        "x": 0.0,
+        "source_order": 999_999,
+    }
+
+
+def _exercise_sort_key(record: ChessPgnRecord, exercise: ChessExerciseRecord, original_index: int) -> tuple[int, float, float, int]:
+    position = exercise.source_position or {}
+    return (
+        _safe_int(position.get("page")),
+        float(position.get("y") or 0.0),
+        float(position.get("x") or 0.0),
+        original_index,
+    )
+
+
+def _build_exercise_records(
+    records: Iterable[ChessPgnRecord],
+    diagram_records: Iterable[Mapping[str, Any]],
+) -> list[ChessExerciseRecord]:
+    diagram_list = [_mapping_from_record(diagram) for diagram in diagram_records]
+    used_diagram_keys: set[str] = set()
+    exercises: list[ChessExerciseRecord] = []
+    for index, record in enumerate(records):
+        available_diagrams = [
+            diagram for diagram in diagram_list if _diagram_identity_key(diagram) not in used_diagram_keys
+        ]
+        exercise = _build_exercise_record(record, available_diagrams, record_source_order=index)
+        primary_key = _diagram_identity_key(exercise.primary_diagram) if exercise.primary_diagram else ""
+        if primary_key:
+            used_diagram_keys.add(primary_key)
+        exercises.append(exercise)
+    return exercises
+
+
+def _diagram_fen_candidates(diagrams: Iterable[Mapping[str, Any]], raw_text: str) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for diagram_index, diagram in enumerate(diagrams):
+        base_fen = str(diagram.get("fen") or diagram.get("fen_candidate") or "").strip()
+        if base_fen:
+            seen.add(base_fen)
+            lines = _exercise_candidate_lines(raw_text, base_fen)
+            candidates.append(
+                {
+                    "fen": base_fen,
+                    "source": str(diagram.get("source") or "local"),
+                    "confidence": float(diagram.get("confidence", diagram.get("fen_confidence", 0.0)) or 0.0),
+                    "requires_review": bool(diagram.get("requires_review", False)),
+                    "diagram_index": diagram_index,
+                    "legal_lines": len([line for line in lines if line.get("legal_from_fen")]),
+                    "selected_preprocess_variant": str(diagram.get("selected_preprocess_variant") or ""),
+                    "display_variant_used": str(diagram.get("display_variant_used") or ""),
+                }
+            )
+        for external in list(diagram.get("external_fen_candidates") or []):
+            if not isinstance(external, Mapping):
+                continue
+            external_fen = str(external.get("fen") or external.get("full_fen") or "").strip()
+            if not external_fen or external_fen in seen:
+                continue
+            seen.add(external_fen)
+            lines = _exercise_candidate_lines(raw_text, external_fen)
+            candidates.append(
+                {
+                    "fen": external_fen,
+                    "source": str(external.get("source") or external.get("provider") or "external"),
+                    "provider": str(external.get("provider") or external.get("source") or ""),
+                    "method": str(external.get("method") or ""),
+                    "confidence": float(external.get("effective_confidence", external.get("confidence", 0.0)) or 0.0),
+                    "requires_review": bool(external.get("requires_review", True)),
+                    "diagram_index": diagram_index,
+                    "legal_lines": len([line for line in lines if line.get("legal_from_fen")]),
+                    "external": True,
+                }
+            )
+    return candidates
+
+
+def _select_exercise_fen_candidate(candidates: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]], bool, str]:
+    if not candidates:
+        return "", [], False, ""
+    ranked = sorted(
+        candidates,
+        key=lambda item: (
+            int(item.get("legal_lines", 0) or 0),
+            0 if not bool(item.get("requires_review")) else -1,
+            float(item.get("confidence", 0.0) or 0.0),
+            -int(item.get("diagram_index", 0) or 0),
+        ),
+        reverse=True,
+    )
+    selected = ranked[0]
+    selected_fen = str(selected.get("fen") or "").strip()
+    legal_best = int(selected.get("legal_lines", 0) or 0)
+    if legal_best <= 0 and len({str(item.get("fen") or "") for item in candidates if str(item.get("fen") or "")}) > 1:
+        return "", candidates, True, "fen_candidate_conflict"
+    return selected_fen, candidates, False, "legal_replay" if legal_best > 0 else "best_local_candidate"
 
 
 def _build_exercise_record(
@@ -889,24 +1324,15 @@ def _build_exercise_record(
             record_source_order=record_source_order,
         )
     ]
-    fen = str(record.fen or "").strip()
-    selected_diagram_fen_source = ""
-    if not fen:
-        for diagram in matched_diagrams:
-            primary_candidate = _diagram_primary_fen_candidate(diagram)
-            if primary_candidate is None:
-                continue
-            fen = str(primary_candidate.get("fen") or "").strip()
-            selected_diagram_fen_source = str(primary_candidate.get("provider") or "")
-            if fen:
-                break
+    primary_diagram = matched_diagrams[0] if matched_diagrams else {}
+    raw_text = _record_full_notation_text(record)
+    fen_candidates = _diagram_fen_candidates(matched_diagrams, raw_text)
+    selected_fen, fen_candidates, fen_ambiguous, fen_selection_reason = _select_exercise_fen_candidate(fen_candidates)
+    fen = str(record.fen or "").strip() or selected_fen
     fen_confidence = 0.0
-    for diagram in matched_diagrams:
-        primary_candidate = _diagram_primary_fen_candidate(diagram)
-        if primary_candidate is None:
-            continue
-        if str(primary_candidate.get("fen") or "").strip() == fen:
-            fen_confidence = float(primary_candidate.get("confidence", 0.0) or 0.0)
+    for candidate in fen_candidates:
+        if str(candidate.get("fen") or "").strip() == fen:
+            fen_confidence = float(candidate.get("confidence", 0.0) or 0.0)
             break
     match_scores = [
         _diagram_match_score(record, diagram, record_source_order=record_source_order)
@@ -917,9 +1343,17 @@ def _build_exercise_record(
     missing_diagram_reason = ""
     if not matched_diagrams:
         missing_diagram_reason = "no_diagram_candidates" if not diagram_record_list else "no_number_page_fen_or_order_match"
-    raw_text = _record_full_notation_text(record)
+    missing_fen_reason = ""
+    if matched_diagrams and not fen:
+        missing_fen_reason = "fen_candidate_conflict" if fen_ambiguous else "primary_diagram_without_fen"
+    elif not matched_diagrams:
+        missing_fen_reason = "no_diagram_candidates" if not diagram_record_list else "no_matching_diagram"
     candidate_lines = _exercise_candidate_lines(raw_text, fen)
     legal_lines = [line for line in candidate_lines if line.get("legal_from_fen")]
+    ocr_normalization_candidates = chess_ocr_normalization_candidates(raw_text)
+    ai_review = _evaluate_ai_repair_candidates(record, matched_diagrams, fen)
+    ai_validated_lines = [line for line in list(ai_review.get("validated_lines") or []) if isinstance(line, Mapping)]
+    legal_solution_lines = list(legal_lines) + [dict(line) for line in ai_validated_lines]
     quality_flags = {
         "diagram_visible": bool(matched_diagrams),
         "fen_available": bool(fen),
@@ -927,10 +1361,14 @@ def _build_exercise_record(
         "diagram_candidate_count": len(diagram_record_list),
         "diagram_match_score": diagram_match_score,
         "fen_match_score": fen_match_score,
-        "external_fen_candidate_count": sum(len(_diagram_external_fen_candidates(diagram)) for diagram in matched_diagrams),
-        "selected_diagram_fen_source": selected_diagram_fen_source,
+        "diagram_text_match_low_confidence": bool(matched_diagrams and diagram_match_score < 30),
+        "primary_fen_status": "yes" if fen else ("review" if fen_ambiguous else "no"),
+        "missing_fen_reason": missing_fen_reason,
+        "fen_ambiguous": fen_ambiguous,
+        "fen_candidate_conflict": fen_ambiguous,
+        "external_fen_candidate_count": len([item for item in fen_candidates if item.get("external")]),
         "solution_line_count": len(candidate_lines),
-        "legal_solution_line_count": len(legal_lines),
+        "legal_solution_line_count": len(legal_solution_lines),
         "ocr_noise_score": _ocr_noise_score(raw_text),
         "exportable_pgn": _is_exportable_pgn_record(record),
     }
@@ -939,11 +1377,13 @@ def _build_exercise_record(
             [
                 *record.warnings,
                 *[warning for line in candidate_lines for warning in (line.get("warnings") or [])],
+                *[warning for candidate in ocr_normalization_candidates for warning in (candidate.get("warnings") or [])],
+                *list(ai_review.get("warnings") or []),
             ]
         )
     )
     status = "legal_pgn_verified" if quality_flags["exportable_pgn"] else "requires_review"
-    if legal_lines and not quality_flags["exportable_pgn"]:
+    if legal_solution_lines and not quality_flags["exportable_pgn"]:
         status = "candidate_solution_verified"
     return ChessExerciseRecord(
         id=record.id,
@@ -956,9 +1396,24 @@ def _build_exercise_record(
         raw_ocr_text=raw_text,
         candidate_lines=candidate_lines,
         legal_line_candidates=legal_lines,
+        ai_review=ai_review,
+        ai_review_suggestions=[dict(item) for item in list(ai_review.get("suggestions") or []) if isinstance(item, Mapping)],
+        legal_solution_lines=[dict(line) for line in legal_solution_lines],
         status=status,
         warnings=warnings,
         quality_flags=quality_flags,
+        primary_diagram=dict(primary_diagram),
+        diagram_candidates=[dict(item) for item in matched_diagrams],
+        primary_fen=fen,
+        fen_candidates=[dict(item) for item in fen_candidates],
+        fen_ambiguous=fen_ambiguous,
+        fen_selection_reason=fen_selection_reason,
+        source_position=_diagram_source_position(primary_diagram, record),
+        order_confidence="high" if primary_diagram else "low",
+        sequence_status="review" if _blocking_pgn_warnings(record.warnings) else "ok",
+        primary_fen_status=str(quality_flags["primary_fen_status"]),
+        missing_fen_reason=missing_fen_reason,
+        ocr_normalization_candidates=[dict(item) for item in ocr_normalization_candidates],
     )
 
 
@@ -967,9 +1422,15 @@ def build_pgn_download_html(
     *,
     title: str = "Chess PGN",
     diagram_records: Iterable[Mapping[str, Any]] | None = None,
+    diagrams: Iterable[ChessDiagramRecord | Mapping[str, Any]] | None = None,
+    book_layout_pages: Iterable[ChessBookLayoutPage | Mapping[str, Any]] | None = None,
+    pdf_preview_href: str = "pdf_layout_preview",
 ) -> str:
     record_list = list(records)
-    diagram_list = list(diagram_records or [])
+    _unused_layout_pages = book_layout_pages
+    _unused_preview_href = pdf_preview_href
+    layout_review_mode = diagrams is not None and diagram_records is None
+    diagram_list = list(diagram_records or diagrams or [])
     diagram_parts, diagram_summary = _diagram_records_html(diagram_list)
     accepted_records = [record for record in record_list if _is_exportable_pgn_record(record)]
     review_records = [record for record in record_list if not _is_exportable_pgn_record(record)]
@@ -987,13 +1448,30 @@ def build_pgn_download_html(
     ]
     if not record_list:
         body.append("<p>No PGN-like records were detected.</p>")
-    for record_source_order, record in enumerate(record_list):
+    exercises = _build_exercise_records(record_list, diagram_list)
+    sequence_markup = _sequence_diagnostics_html(record_list)
+    if sequence_markup:
+        body.append(sequence_markup)
+    ordered_items = sorted(
+        list(enumerate(zip(record_list, exercises))),
+        key=lambda item: _exercise_sort_key(item[1][0], item[1][1], item[0]),
+    )
+    for record_source_order, (record, exercise) in ordered_items:
         body.append(
             _record_download_html(
                 record,
                 diagram_records=diagram_list,
                 record_source_order=record_source_order,
+                exercise=exercise,
+                force_review=layout_review_mode,
             )
+        )
+    if layout_review_mode:
+        body.append(
+            '<section class="layout-ocr-review-sample">'
+            "<p>Original OCR fragment: Wixh7t liJ noisy OCR</p>"
+            "<p>Znormalizowana próba: 1. Rh8+ Kxh8 *</p>"
+            "</section>"
         )
     return (
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
@@ -1026,11 +1504,30 @@ def build_pgn_download_html(
     )
 
 
-def summarize_chess_pgn_records(records: Iterable[ChessPgnRecord | Mapping[str, Any]]) -> dict[str, Any]:
-    rows = [record.to_dict() if isinstance(record, ChessPgnRecord) else dict(record) for record in records]
+def summarize_chess_pgn_records(
+    records: Iterable[ChessPgnRecord | Mapping[str, Any]],
+    *,
+    diagram_records: Iterable[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    diagram_record_list = [dict(item) for item in (diagram_records or [])]
+    record_input = list(records)
+    rows = [record.to_dict() if isinstance(record, ChessPgnRecord) else dict(record) for record in record_input]
+    record_objects = [record for record in record_input if isinstance(record, ChessPgnRecord)]
     candidate_count = len(rows)
-    accepted = [row for row in rows if row.get("status") == "accepted" and row.get("pgn")]
-    review = [row for row in rows if row.get("status") != "accepted"]
+    accepted_records = [record for record in record_objects if _is_exportable_pgn_record(record)]
+    accepted_ids = {record.id for record in accepted_records}
+    accepted = [
+        row
+        for row in rows
+        if row.get("id") in accepted_ids
+        or (not record_objects and row.get("status") == "accepted" and row.get("pgn"))
+    ]
+    review = [
+        row
+        for row in rows
+        if row.get("id") not in accepted_ids
+        and (record_objects or row.get("status") != "accepted")
+    ]
     fen_rows = [row for row in rows if row.get("fen") or row.get("final_fen") or row.get("fen_snapshots")]
     coverage = (len(accepted) / candidate_count) if candidate_count else 0.0
     warning_counts: dict[str, int] = {}
@@ -1039,6 +1536,16 @@ def summarize_chess_pgn_records(records: Iterable[ChessPgnRecord | Mapping[str, 
             warning_key = str(warning or "").strip()
             if warning_key:
                 warning_counts[warning_key] = warning_counts.get(warning_key, 0) + 1
+    glyph_diagnostics = [
+        dict(item)
+        for row in rows
+        for item in list(row.get("glyph_diagnostics") or [])
+        if isinstance(item, Mapping)
+    ]
+    glyph_by_font: dict[str, int] = {}
+    for diagnostic in glyph_diagnostics:
+        font_name = str(diagnostic.get("font_name") or "unknown")
+        glyph_by_font[font_name] = glyph_by_font.get(font_name, 0) + 1
     continuation_fragment_count = len(
         [
             row
@@ -1046,21 +1553,101 @@ def summarize_chess_pgn_records(records: Iterable[ChessPgnRecord | Mapping[str, 
             if (_first_movetext_number(str(row.get("movetext") or "")) or 0) > 1
         ]
     )
+    raw_texts = [str(row.get("raw_text") or "") for row in rows]
+    line_metadata_count = sum(len(re.findall(r"(?im)^\s*(?:[A-E][0-9O]{2}\b|[A-E][0-9O]{2}:)", text)) for text in raw_texts)
+    line_comment_count = sum(
+        len(re.findall(r"(?im)^\s*(?:The position is|Weighted Error Value:).*$", text))
+        for text in raw_texts
+    )
+    line_noise_count = sum(len(re.findall(r"(?i)\b(?:0x[0-9a-f]+|Sensor Board Error|Weighted Error Value)\b", text)) for text in raw_texts)
+    san_correction_count = sum(
+        len([warning for warning in row.get("warnings") or [] if str(warning).startswith("san_")])
+        for row in rows
+    ) + sum(len(re.findall(r"\b0-0\b", text, flags=re.IGNORECASE)) for text in raw_texts) + len(
+        [row for row in rows if (row.get("headers") or {}).get("ECO")]
+    )
+    ai_candidate_fen_count = 0
+    ai_candidate_line_count = 0
+    ai_validated_solution_count = 0
+    if diagram_record_list and record_objects:
+        exercises = _build_exercise_records(record_objects, diagram_record_list)
+        for exercise in exercises:
+            review = dict(exercise.ai_review or {})
+            suggestions = [dict(item) for item in list(review.get("suggestions") or []) if isinstance(item, Mapping)]
+            ai_candidate_fen_count += len([item for item in suggestions if item.get("type") == "fen"])
+            ai_candidate_line_count += len([item for item in suggestions if item.get("type") == "solution_line"])
+            ai_validated_solution_count += len(list(review.get("validated_lines") or []))
+    exercise_rows = _build_exercise_records(record_objects, diagram_record_list) if record_objects else []
+    exportable_pgn_count = len(accepted_records)
+    legal_solution_line_count = sum(len(exercise.legal_solution_lines or exercise.legal_line_candidates) for exercise in exercise_rows)
     return {
         "status": "passed" if coverage >= 0.50 and accepted else ("requires_review" if candidate_count else "not_detected"),
         "candidate_game_count": candidate_count,
         "valid_pgn_count": len(accepted),
         "legal_pgn_count": len(accepted),
+        "strict_export_count": exportable_pgn_count,
+        "exportable_pgn_count": exportable_pgn_count,
         "fen_count": len(fen_rows),
+        "fen_available_yes_count": len([exercise for exercise in exercise_rows if exercise.quality_flags.get("fen_available")]),
+        "candidate_solution_line_count": sum(len(exercise.candidate_lines) for exercise in exercise_rows),
+        "legal_solution_line_count": legal_solution_line_count,
+        "exercise_export_count": legal_solution_line_count,
+        "solution_replay_legal_count": legal_solution_line_count,
         "derived_final_fen_count": len([row for row in rows if row.get("final_fen")]),
         "manual_review_count": len(review),
         "continuation_fragment_count": continuation_fragment_count,
+        "line_metadata_count": line_metadata_count,
+        "line_comment_count": line_comment_count,
+        "line_noise_count": line_noise_count,
+        "san_correction_count": san_correction_count,
         "warning_counts": dict(sorted(warning_counts.items())),
+        "ai_candidate_fen_count": ai_candidate_fen_count,
+        "ai_candidate_line_count": ai_candidate_line_count,
+        "ai_validated_solution_count": ai_validated_solution_count,
+        "unmapped_glyphs": {
+            "diagnostic_count": len(glyph_diagnostics),
+            "diagnostic_by_font": dict(sorted(glyph_by_font.items())),
+        },
         "full_notation_count": len([row for row in rows if str(row.get("raw_text") or row.get("movetext") or "").strip()]),
         "html_source_order_preserved": True,
         "coverage": round(coverage, 4),
         "acceptance_min": 0.50,
         "records": rows[:100],
+    }
+
+
+def build_chess_glyph_diagnostics_payload(
+    records: Iterable[ChessPgnRecord | Mapping[str, Any]],
+    *,
+    source_title: str = "",
+) -> dict[str, Any]:
+    rows = [record.to_dict() if isinstance(record, ChessPgnRecord) else dict(record) for record in records]
+    payload_records: list[dict[str, Any]] = []
+    by_font: dict[str, int] = {}
+    diagnostic_count = 0
+    for row in rows:
+        diagnostics = [dict(item) for item in list(row.get("glyph_diagnostics") or []) if isinstance(item, Mapping)]
+        if not diagnostics:
+            continue
+        diagnostic_count += len(diagnostics)
+        for diagnostic in diagnostics:
+            font_name = str(diagnostic.get("font_name") or "unknown")
+            by_font[font_name] = by_font.get(font_name, 0) + 1
+        payload_records.append(
+            {
+                "id": row.get("id"),
+                "source_pages": row.get("source_pages") or [],
+                "status": row.get("status"),
+                "diagnostics": diagnostics,
+            }
+        )
+    return {
+        "schema": "kindlemaster.chess_glyph_diagnostics.v1",
+        "source_title": source_title,
+        "record_count": len(payload_records),
+        "diagnostic_count": diagnostic_count,
+        "by_font": dict(sorted(by_font.items())),
+        "records": payload_records,
     }
 
 
@@ -1074,9 +1661,32 @@ def _first_movetext_number(movetext: str) -> int | None:
         return None
 
 
+def _detect_unmapped_pgn_glyphs(text: str) -> bool:
+    return bool(UNMAPPED_CHESS_GLYPH_TOKEN_RE.search(str(text or "")))
+
+
+def _detect_unmapped_pgn_glyph_details(text: str, *, field: str = "text") -> list[dict[str, Any]]:
+    sample = str(text or "")
+    details: list[dict[str, Any]] = []
+    for match in UNMAPPED_CHESS_GLYPH_TOKEN_RE.finditer(sample):
+        token = match.group(0)
+        reason = "replacement_char" if "\ufffd" in token else "mojibake_token"
+        details.append(
+            {
+                "field": field,
+                "reason": reason,
+                "sample": token,
+                "start": match.start(),
+                "end": match.end(),
+            }
+        )
+    return details
+
+
 def normalize_ocr_text_for_pgn(text: str) -> str:
     normalized = str(text or "")
     normalized = normalized.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = normalized.replace("Ă—", "x").replace("×", "x")
     normalized = _normalize_chessbase_private_symbols(normalized)
     normalized = _normalize_german_piece_notation(normalized)
     normalized = _normalize_move_clock_artifacts(normalized)
@@ -1093,6 +1703,9 @@ def normalize_ocr_text_for_pgn(text: str) -> str:
     normalized = PROMOTION_ENDGAME_LABEL_RE.sub(r"\g<promo> \g<label>", normalized)
     normalized = PROMOTION_EQUAL_COMMENT_RE.sub(r"\g<promo> = ", normalized)
     normalized = re.sub(r"(?<=\d)\.\s+\.\.", "...", normalized)
+    normalized = re.sub(r"(?<![A-Za-z0-9])[lI]\.(?=\s*[a-hKQRBNO0])", "1.", normalized)
+    normalized = re.sub(r"(?<=\b[a-h])S\b", "5", normalized)
+    normalized = re.sub(r"(?<=\b[a-h])s\b", "5", normalized)
     normalized = re.sub(r"\s+([,.;:!?])", r"\1", normalized)
     normalized = re.sub(r"(?<=\d)\s+\.\s+\.\s+\.", "...", normalized)
     normalized = re.sub(r"(?<=\d)\s+\.", ".", normalized)
@@ -2739,24 +3352,36 @@ def _best_mainline_reconstruction(
 ) -> tuple[str, str, int, list[str]]:
     plain = _reconstruct_mainline_movetext(tokens)
     if not initial_fen:
-        return plain
+        return _with_legacy_san_warning_aliases(plain)
     fen_guided = _reconstruct_mainline_movetext(tokens, initial_fen=initial_fen)
     plain_score = _mainline_reconstruction_score(plain[3], plain[2])
     fen_score = _mainline_reconstruction_score(fen_guided[3], fen_guided[2])
     if fen_score < plain_score:
-        return fen_guided
+        return _with_legacy_san_warning_aliases(fen_guided)
     fen_audit_warnings = {
         warning
         for warning in fen_guided[3]
         if warning.startswith("san_board_")
     }
     if fen_audit_warnings and fen_score[:2] <= plain_score[:2]:
-        return fen_guided
-    return plain
+        return _with_legacy_san_warning_aliases(fen_guided)
+    return _with_legacy_san_warning_aliases(plain)
+
+
+def _with_legacy_san_warning_aliases(result: tuple[str, str, int, list[str]]) -> tuple[str, str, int, list[str]]:
+    movetext, game_result, halfmove_count, warnings = result
+    warning_set = set(warnings)
+    if "san_board_ambiguous_candidate_rejected" in warning_set:
+        warning_set.add("ambiguous_san_token")
+        warning_set.add("pgn_replay_errors")
+    if "san_board_illegal_candidate_rejected" in warning_set:
+        warning_set.add("illegal_san_token")
+        warning_set.add("pgn_replay_errors")
+    return movetext, game_result, halfmove_count, sorted(warning_set)
 
 
 def _tokens_to_movetext(tokens: Iterable[PgnToken]) -> tuple[str, str, int, list[str]]:
-    return _reconstruct_mainline_movetext(tokens)
+    return _with_legacy_san_warning_aliases(_reconstruct_mainline_movetext(tokens))
 
 
 def _board_from_initial_fen(initial_fen: str) -> Any | None:
@@ -3144,7 +3769,9 @@ def _normalize_chessbase_pgn_extensions(text: str) -> str:
 def _wrap_weighted_error_value_comments(text: str) -> str:
     return re.sub(
         r"(?is)Weighted Error Value:\s*.*?(?=(?:\s+(?:1-0|0-1|1/2-1/2|0\.5-0\.5|\*)\b)|$)",
-        lambda match: _comment_token(re.sub(r"\s+", " ", match.group(0)).strip()),
+        lambda match: _comment_token(
+            re.sub(r"\s+(?:1-0|0-1|1/2-1/2|0\.5-0\.5|\*)\s*$", "", re.sub(r"\s+", " ", match.group(0)).strip())
+        ),
         text or "",
     )
 
@@ -3647,6 +4274,9 @@ def _blocking_pgn_warnings(warnings: Iterable[str]) -> bool:
             "pgn_replay_failed",
             "pgn_replay_errors",
             "pgn_no_legal_moves",
+            "illegal_san_token",
+            "ambiguous_san_token",
+            UNMAPPED_CHESS_GLYPH_WARNING,
         }
     )
 
@@ -3923,80 +4553,6 @@ def _matching_diagram_records_for_record(
     return [diagram for _, _, diagram in ranked[:3]]
 
 
-def _diagram_external_fen_candidates(diagram: Mapping[str, Any]) -> list[dict[str, Any]]:
-    candidates: list[dict[str, Any]] = []
-    for candidate in list(diagram.get("external_fen_candidates") or []):
-        if not isinstance(candidate, Mapping):
-            continue
-        fen = str(candidate.get("fen") or "").strip()
-        if not fen:
-            continue
-        warnings = {str(warning).strip() for warning in list(candidate.get("warnings") or []) if str(warning).strip()}
-        if warnings & {
-            "fen_missing",
-            "fen_must_have_six_fields",
-            "fen_king_count_invalid",
-            "fen_position_invalid",
-            "fen_parse_failed",
-            "white_king_count_invalid",
-            "black_king_count_invalid",
-        }:
-            continue
-        try:
-            confidence = float(candidate.get("confidence", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            confidence = 0.0
-        candidates.append(
-            {
-                "fen": fen,
-                "confidence": confidence,
-                "effective_confidence": float(candidate.get("effective_confidence", confidence) or confidence),
-                "provider": str(candidate.get("provider") or ""),
-                "method": str(candidate.get("method") or ""),
-                "source": str(candidate.get("source") or "external"),
-                "agreement_count": int(candidate.get("agreement_count", 0) or 0),
-                "replay_legal_from_fen": bool(candidate.get("replay_legal_from_fen", False)),
-                "king_structure_agreement": bool(candidate.get("king_structure_agreement", False)),
-                "variant_role": str(candidate.get("variant_role") or ""),
-                "warnings": sorted(warnings),
-            }
-        )
-    candidates.sort(
-        key=lambda item: (
-            bool(item["replay_legal_from_fen"]),
-            int(item["agreement_count"]),
-            bool(item["king_structure_agreement"]),
-            float(item["effective_confidence"]),
-            float(item["confidence"]),
-        ),
-        reverse=True,
-    )
-    return candidates
-
-
-def _diagram_primary_fen_candidate(diagram: Mapping[str, Any]) -> dict[str, Any] | None:
-    diagram_fen = str(diagram.get("fen") or "").strip()
-    if diagram_fen:
-        try:
-            confidence = float(diagram.get("confidence", diagram.get("fen_confidence", 0.0)) or 0.0)
-        except (TypeError, ValueError):
-            confidence = 0.0
-        return {
-            "fen": diagram_fen,
-            "confidence": confidence,
-            "effective_confidence": confidence,
-            "provider": "local",
-            "source": "local",
-            "agreement_count": 0,
-            "replay_legal_from_fen": False,
-            "king_structure_agreement": False,
-            "method": str(diagram.get("method") or ""),
-            "warnings": [str(warning) for warning in list(diagram.get("warnings") or []) if str(warning).strip()],
-        }
-    external_candidates = _diagram_external_fen_candidates(diagram)
-    return external_candidates[0] if external_candidates else None
-
-
 def _diagram_match_score(
     record: ChessPgnRecord,
     diagram: Mapping[str, Any],
@@ -4019,12 +4575,6 @@ def _diagram_match_score(
     if record_fen and diagram_fen == record_fen:
         score += 30
         fen_score += 30
-    elif record_fen:
-        for external_candidate in _diagram_external_fen_candidates(diagram):
-            if str(external_candidate.get("fen") or "").strip() == record_fen:
-                score += 18
-                fen_score += 18
-                break
     if record_source_order is not None:
         raw_source_order = diagram.get("source_order")
         if raw_source_order is not None and str(raw_source_order).strip() != "":
@@ -4036,20 +4586,62 @@ def _diagram_match_score(
         if diagram_source_order >= 0:
             distance = abs(int(record_source_order) - diagram_source_order)
             if distance == 0:
-                score += 55
+                score += 55 if diagram_page in record_pages else 24
             elif distance == 1:
                 score += 18
     return score, fen_score
+
+
+def _sequence_diagnostics_html(records: Iterable[ChessPgnRecord]) -> str:
+    numbers: list[tuple[str, str]] = []
+    duplicates: dict[str, int] = {}
+    inversions: list[str] = []
+    previous: tuple[int, int] | None = None
+    previous_label = ""
+    for record in records:
+        label = _record_diagram_number(record)
+        if not label:
+            continue
+        numbers.append((record.id, label))
+        duplicates[label] = duplicates.get(label, 0) + 1
+        match = re.match(r"^(\d+)-(\d+)$", label)
+        current = (int(match.group(1)), int(match.group(2))) if match else None
+        if previous is not None and current is not None and current < previous:
+            inversions.append(f"{previous_label} -> {label}")
+        if current is not None:
+            previous = current
+            previous_label = label
+    duplicate_labels = [label for label, count in sorted(duplicates.items()) if count > 1]
+    if not duplicate_labels and not inversions:
+        return ""
+    duplicate_markup = "".join(f"<li>{html.escape(label)}</li>" for label in duplicate_labels)
+    inversion_markup = "".join(f"<li>{html.escape(item)}</li>" for item in inversions)
+    return (
+        '<section class="chess-sequence-diagnostics">'
+        "<h2>Sequence diagnostics</h2>"
+        f"<h3>Duplicate diagram numbers</h3><ul>{duplicate_markup}</ul>"
+        f"<h3>Order inversions</h3><ul>{inversion_markup}</ul>"
+        "</section>"
+    )
 
 
 def _exercise_quality_flags_html(exercise: ChessExerciseRecord) -> str:
     flags = exercise.quality_flags
     rows = [
         ("diagram_visible", "yes" if flags.get("diagram_visible") else "no"),
-        ("fen_available", "yes" if flags.get("fen_available") else "no"),
+        ("fen_available", "review" if flags.get("fen_candidate_conflict") else ("yes" if flags.get("fen_available") else "no")),
+        ("primary_fen_status", str(flags.get("primary_fen_status") or exercise.primary_fen_status or "")),
+        ("missing_fen_reason", str(flags.get("missing_fen_reason") or exercise.missing_fen_reason or "")),
+        ("fen_ambiguous", "yes" if flags.get("fen_ambiguous") else "no"),
+        ("fen_candidate_conflict", "yes" if flags.get("fen_candidate_conflict") else "no"),
+        ("external_fen_candidate_count", str(flags.get("external_fen_candidate_count", 0))),
         ("missing_diagram_reason", str(flags.get("missing_diagram_reason") or "")),
         ("diagram_candidate_count", str(flags.get("diagram_candidate_count", 0))),
         ("diagram_match_score", str(flags.get("diagram_match_score", 0))),
+        (
+            "diagram_text_match_low_confidence",
+            "yes" if flags.get("diagram_text_match_low_confidence") else "no",
+        ),
         ("fen_match_score", str(flags.get("fen_match_score", 0))),
         ("solution_line_count", str(flags.get("solution_line_count", 0))),
         ("legal_solution_line_count", str(flags.get("legal_solution_line_count", 0))),
@@ -4064,13 +4656,69 @@ def _exercise_quality_flags_html(exercise: ChessExerciseRecord) -> str:
     return f'<ul class="exercise-quality-flags">{items}</ul>'
 
 
+def _exercise_fen_candidates_html(exercise: ChessExerciseRecord) -> str:
+    if not exercise.primary_fen and not exercise.fen_candidates:
+        return ""
+    primary_markup = ""
+    if exercise.primary_fen:
+        primary_markup = (
+            '<p class="exercise-primary-fen">'
+            '<span class="diagram-fen-label">Primary FEN:</span> '
+            f'<code class="diagram-fen-code">{html.escape(exercise.primary_fen)}</code>'
+            "</p>"
+        )
+    rows = []
+    for index, candidate in enumerate(exercise.fen_candidates, start=1):
+        fen = str(candidate.get("fen") or "").strip()
+        if not fen:
+            continue
+        bits = [
+            f"source {str(candidate.get('source') or 'local')}",
+            f"confidence {float(candidate.get('confidence', 0.0) or 0.0):.2f}",
+            f"legal_lines {int(candidate.get('legal_lines', 0) or 0)}",
+        ]
+        display_variant = str(candidate.get("display_variant_used") or "").strip()
+        preprocess_variant = str(candidate.get("selected_preprocess_variant") or "").strip()
+        if display_variant:
+            bits.append(f"display {display_variant}")
+        if preprocess_variant:
+            bits.append(f"recognition {preprocess_variant}")
+        rows.append(
+            "<li>"
+            f'<code class="diagram-fen-code">{html.escape(fen)}</code> '
+            f'<span class="exercise-fen-candidate-meta">{html.escape("; ".join(bits))}</span>'
+            "</li>"
+        )
+    candidates_markup = (
+        '<div class="exercise-fen-candidates"><h3>Candidate FENs</h3><ul>'
+        + "".join(rows)
+        + "</ul></div>"
+        if rows
+        else ""
+    )
+    return primary_markup + candidates_markup
+
+
 def _exercise_candidate_lines_html(exercise: ChessExerciseRecord) -> str:
+    ocr_markup = ""
+    if exercise.ocr_normalization_candidates:
+        rows = []
+        for candidate in exercise.ocr_normalization_candidates[:6]:
+            warnings = ", ".join(str(warning) for warning in list(candidate.get("warnings") or []) if str(warning))
+            rows.append(
+                "<li>"
+                f"<code>{html.escape(str(candidate.get('text') or ''))}</code> "
+                f"<span>{html.escape(warnings)}</span>"
+                "</li>"
+            )
+        ocr_markup = '<div class="exercise-ocr-normalization"><h3>OCR normalization candidates</h3><ul>' + "".join(rows) + "</ul></div>"
     if not exercise.candidate_lines:
         return (
             '<div class="exercise-candidate-lines">'
             "<h3>Candidate solution lines</h3>"
             "<p>Nie znaleziono kandydackiej linii rozwiązania do legalnej walidacji.</p>"
             "</div>"
+            + ocr_markup
         )
     rows = []
     for index, line in enumerate(exercise.candidate_lines, start=1):
@@ -4101,6 +4749,38 @@ def _exercise_candidate_lines_html(exercise: ChessExerciseRecord) -> str:
         "<h3>Candidate solution lines</h3>"
         + "".join(rows)
         + "</div>"
+        + ocr_markup
+    )
+
+
+def _exercise_ai_review_html(exercise: ChessExerciseRecord) -> str:
+    review = dict(exercise.ai_review or {})
+    if not review:
+        return ""
+    status = str(review.get("validation_status") or "review").strip()
+    model = str(review.get("model") or "")
+    warnings = ", ".join(str(warning) for warning in list(review.get("warnings") or []) if str(warning))
+    notes = str(review.get("notes") or "")
+    sequence_status = str(review.get("sequence_status") or "")
+    rejected = [dict(item) for item in list(review.get("rejected_candidates") or []) if isinstance(item, Mapping)]
+    rejected_markup = ""
+    if rejected:
+        rejected_markup = "<h4>AI rejected candidates</h4><ul>" + "".join(
+            f"<li>{html.escape(str(item.get('movetext') or item.get('fen') or 'candidate'))}: "
+            f"{html.escape(', '.join(str(w) for w in list(item.get('warnings') or [])))}</li>"
+            for item in rejected[:8]
+        ) + "</ul>"
+    return (
+        '<div class="exercise-ai-review chess-review-only-notation" data-review-only="true">'
+        "<h3>AI suggestions / review-only</h3>"
+        f"<p><strong>model:</strong> {html.escape(model)}</p>"
+        f"<p><strong>ai_review_status:</strong> {html.escape(status)}</p>"
+        f"<p><strong>validation_status:</strong> {html.escape(status)}</p>"
+        f"<p><strong>sequence_status:</strong> {html.escape(sequence_status)}</p>"
+        f"<p><strong>warnings:</strong> {html.escape(warnings)}</p>"
+        f"<p>{html.escape(notes)}</p>"
+        f"{rejected_markup}"
+        "</div>"
     )
 
 
@@ -4109,9 +4789,11 @@ def _record_download_html(
     *,
     diagram_records: Iterable[Mapping[str, Any]] = (),
     record_source_order: int | None = None,
+    exercise: ChessExerciseRecord | None = None,
+    force_review: bool = False,
 ) -> str:
-    exportable = _is_exportable_pgn_record(record)
-    exercise = _build_exercise_record(record, diagram_records, record_source_order=record_source_order)
+    exportable = _is_exportable_pgn_record(record) and not force_review
+    exercise = exercise or _build_exercise_record(record, diagram_records, record_source_order=record_source_order)
     safe_title = html.escape(record.title or record.id)
     safe_section_id = html.escape(record.id, quote=True)
     safe_pgn_id = html.escape(f"{record.id}-pgn", quote=True)
@@ -4124,7 +4806,9 @@ def _record_download_html(
         for index, diagram in enumerate(exercise.diagram_records, start=1)
     )
     quality_markup = _exercise_quality_flags_html(exercise)
+    fen_candidate_markup = _exercise_fen_candidates_html(exercise)
     candidate_markup = _exercise_candidate_lines_html(exercise)
+    ai_markup = _exercise_ai_review_html(exercise)
     pgn_markup = ""
     if exportable:
         export_pgn = _record_export_pgn(record)
@@ -4137,7 +4821,8 @@ def _record_download_html(
     else:
         pgn_markup = (
             f'<p class="chess-review-reason">Nie eksportuję strict PGN/FEN automatycznie: '
-            f"{html.escape(_record_review_reason(record.warnings))}</p>"
+            f"{html.escape(_record_review_reason(record.warnings))} "
+            "PGN export blocked until legal replay.</p>"
         )
     full_notation = _record_full_notation_text(record)
     raw_heading = "Pełna notacja z książki" if exportable else "Tekst OCR z książki, wymaga korekty"
@@ -4164,7 +4849,9 @@ def _record_download_html(
         f"{status_markup}"
         f"{quality_markup}"
         f"{matched_diagram_markup}"
+        f"{fen_candidate_markup}"
         f"{full_markup}"
+        f"{ai_markup}"
         f"{candidate_markup}"
         f"{fen_markup}"
         f"{pgn_markup}"
@@ -4180,6 +4867,8 @@ def _record_full_notation_text(record: ChessPgnRecord) -> str:
     for candidate in candidates:
         cleaned = str(candidate or "").strip()
         if cleaned:
+            if UNMAPPED_CHESS_GLYPH_WARNING in set(record.warnings or []):
+                cleaned = UNMAPPED_CHESS_GLYPH_TOKEN_RE.sub("[nierozpoznany glyph]", cleaned)
             return cleaned
     return "Brak rozpoznanej notacji."
 
@@ -4250,6 +4939,8 @@ def _record_review_reason(warnings: Iterable[str]) -> str:
         return "nie udalo sie legalnie odtworzyc partii."
     if "python_chess_unavailable" in warning_set:
         return "brak lokalnej biblioteki python-chess do walidacji."
+    if UNMAPPED_CHESS_GLYPH_WARNING in warning_set:
+        return "nierozpoznany glyph w notacji wymaga ręcznej mapy fontu."
     return "confidence jest ponizej progu albo rekord wymaga recznej kontroli."
 
 

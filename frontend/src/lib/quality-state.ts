@@ -17,7 +17,6 @@ export interface QualityStatePayload {
   warnings?: Array<string | Record<string, unknown>> | number | null;
   reports?: Record<string, string> | null;
   artifacts?: Record<string, string> | null;
-  audit?: Record<string, unknown> | null;
   auto_repair?: Record<string, unknown> | null;
   sentry_event_id?: string | null;
   summary?: Record<string, unknown> | null;

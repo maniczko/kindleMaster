@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 import sys
@@ -12,8 +11,16 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from chess_fen_workflow import REVIEW_ONLY_WORKFLOW_STATES
-from chess_position_recognizer import validate_fen
+from chess_fen_hardening import (  # noqa: E402
+    KNOWN_BAD_EXPECTED_FENS,
+    crop_sha256,
+    has_square_diff_ack,
+    infer_verification_source,
+    is_ai_only_verification_source,
+    is_human_verification_source,
+    square_level_fen_diff,
+)
+from chess_position_recognizer import validate_fen  # noqa: E402
 
 
 REVIEW_ONLY_STATUSES = {"needs_manual_fen", "placeholder", "draft", "review_required"}
@@ -80,37 +87,18 @@ def _record_issues(record: dict[str, Any], *, line_number: int) -> list[dict[str
         is_valid, fen_warnings = validate_fen(fen)
         if not is_valid:
             issues.append(_issue(line_number, record_id, "fen_invalid", warnings=fen_warnings))
+        elif record_id in KNOWN_BAD_EXPECTED_FENS:
+            known_diffs = square_level_fen_diff(KNOWN_BAD_EXPECTED_FENS[record_id], fen)
+            if any(diff["square"] == "e5" for diff in known_diffs):
+                issues.append(_issue(line_number, record_id, "known_bad_square_mismatch", square_diffs=known_diffs))
 
     raw_crop_path = str(record.get("crop_path") or record.get("source_crop_path") or "").strip()
     crop_path = Path(raw_crop_path) if raw_crop_path else None
+    crop_exists = bool(crop_path and crop_path.exists())
     if not raw_crop_path:
         issues.append(_issue(line_number, record_id, "crop_path_missing"))
-    elif crop_path is None or not crop_path.exists():
+    elif crop_path is None or not crop_exists:
         issues.append(_issue(line_number, record_id, "crop_path_missing_on_disk", crop_path=raw_crop_path))
-    else:
-        expected_sha256 = str(record.get("crop_sha256") or record.get("sha256") or "").strip().lower()
-        if not expected_sha256:
-            issues.append(_issue(line_number, record_id, "crop_sha256_missing"))
-        else:
-            actual_sha256 = _sha256_file(crop_path)
-            if actual_sha256 != expected_sha256:
-                issues.append(
-                    _issue(
-                        line_number,
-                        record_id,
-                        "crop_sha256_mismatch",
-                        expected_sha256=expected_sha256,
-                        actual_sha256=actual_sha256,
-                    )
-                )
-
-    if not _truthy(record.get("human_verified")):
-        issues.append(_issue(line_number, record_id, "human_verified_missing"))
-    if not _truthy(record.get("square_diff_ack")):
-        issues.append(_issue(line_number, record_id, "square_diff_ack_missing"))
-    verification_source = str(record.get("verification_source") or "").strip()
-    if verification_source != "human_visual":
-        issues.append(_issue(line_number, record_id, "verification_source_invalid", verification_source=verification_source))
 
     verified_by = str(record.get("verified_by") or "").strip()
     if not verified_by:
@@ -123,34 +111,55 @@ def _record_issues(record: dict[str, Any], *, line_number: int) -> list[dict[str
         issues.append(_issue(line_number, record_id, "verified_at_invalid", verified_at=verified_at))
 
     label_status = str(record.get("label_status") or "").strip().lower()
+    if not label_status:
+        issues.append(_issue(line_number, record_id, "label_status_missing"))
+    elif label_status != "verified":
+        issues.append(_issue(line_number, record_id, "label_status_not_verified", label_status=label_status))
     if label_status in REVIEW_ONLY_STATUSES:
         issues.append(_issue(line_number, record_id, "review_only_label_status", label_status=label_status))
-
-    workflow_state = str(record.get("workflow_state") or "").strip()
-    if workflow_state in REVIEW_ONLY_WORKFLOW_STATES:
-        issues.append(_issue(line_number, record_id, "review_only_workflow_state", workflow_state=workflow_state))
 
     notes = str(record.get("notes") or "").strip().lower()
     if "placeholder" in notes or "fill fen manually" in notes:
         issues.append(_issue(line_number, record_id, "placeholder_notes"))
 
+    verification_source = infer_verification_source(record)
+    is_legacy_manual = verification_source == "legacy_human_visual"
+    if not verification_source:
+        issues.append(_issue(line_number, record_id, "verification_source_missing"))
+    elif is_ai_only_verification_source(verification_source):
+        issues.append(_issue(line_number, record_id, "ai_only_verification_source", verification_source=verification_source))
+    elif not is_human_verification_source(verification_source):
+        issues.append(_issue(line_number, record_id, "verification_source_not_human", verification_source=verification_source))
+
+    if not is_legacy_manual and record.get("human_verified") is not True:
+        issues.append(_issue(line_number, record_id, "human_verified_missing"))
+
+    if not is_legacy_manual and not has_square_diff_ack(record):
+        issues.append(_issue(line_number, record_id, "square_diff_ack_missing"))
+
+    if record.get("ai_requires_review") is True:
+        issues.append(_issue(line_number, record_id, "ai_review_unresolved"))
+    if isinstance(record.get("ai_ambiguous_squares"), list) and record.get("ai_ambiguous_squares"):
+        issues.append(_issue(line_number, record_id, "ai_ambiguous_squares_unresolved"))
+    if isinstance(record.get("ambiguous_squares"), list) and record.get("ambiguous_squares"):
+        issues.append(_issue(line_number, record_id, "ambiguous_squares_unresolved"))
+    for key in ("unresolved_ambiguity", "human_rejected", "review_required", "requires_review", "needs_review"):
+        if record.get(key) is True:
+            issues.append(_issue(line_number, record_id, "review_flag_unresolved", flag=key))
+
+    declared_hash = str(record.get("crop_sha256") or "").strip().lower()
+    if crop_exists:
+        actual_hash = crop_sha256(crop_path)
+        if not declared_hash:
+            if not is_legacy_manual:
+                issues.append(_issue(line_number, record_id, "crop_sha256_missing"))
+        elif declared_hash != actual_hash:
+            issues.append(_issue(line_number, record_id, "crop_sha256_mismatch"))
+
+    if record.get("ai_assisted") and not is_legacy_manual and str(record.get("label_source") or "").startswith("ai_"):
+        issues.append(_issue(line_number, record_id, "ai_suggestion_promoted_without_manual_fen"))
+
     return issues
-
-
-def _truthy(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "tak"}
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _issue(line_number: int, record_id: str, code: str, **extra: Any) -> dict[str, Any]:

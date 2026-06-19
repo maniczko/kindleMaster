@@ -14,7 +14,7 @@
       "notes": "Tiny OCR probe for the fastest conversion smoke.",
       "source_path": "<generated-fallback:ocr_probe_pdf>",
       "target_path": "reference_inputs/pdf/ocr_probe.pdf",
-      "size_bytes": 2137
+      "size_bytes": 2127
     },
     {
       "id": "ocr_stress_scan_pdf",
@@ -27,7 +27,7 @@
       "notes": "Deterministic scanned PDF with OCR-stressed image-only pages and noisy text blocks.",
       "source_path": "<generated:ocr_stress_scan>",
       "target_path": "reference_inputs/pdf/ocr_stress_scan.pdf",
-      "size_bytes": 1019552
+      "size_bytes": 1019549
     },
     {
       "id": "mixed_scan_text_pdf",
@@ -40,7 +40,7 @@
       "notes": "Generated PDF with one text-layer page and one image-only page for hybrid OCR benchmark coverage.",
       "source_path": "<generated:mixed_scan_text>",
       "target_path": "reference_inputs/pdf/mixed_scan_text.pdf",
-      "size_bytes": 341322
+      "size_bytes": 341319
     },
     {
       "id": "dense_business_guide_pdf",
@@ -96,7 +96,7 @@
       "notes": "Magazine/business-report style PDF with layout-heavy structures.",
       "source_path": "<generated-fallback:magazine_layout_pdf>",
       "target_path": "reference_inputs/pdf/magazine_layout.pdf",
-      "size_bytes": 5281
+      "size_bytes": 5271
     },
     {
       "id": "document_like_report_pdf",
@@ -123,7 +123,7 @@
       "notes": "Small EPUB for fast validator and repair smoke.",
       "source_path": "<generated-fallback:scan_probe_epub>",
       "target_path": "reference_inputs/epub/scan_probe.epub",
-      "size_bytes": 2387
+      "size_bytes": 2820
     },
     {
       "id": "dense_business_guide_epub",
@@ -136,7 +136,7 @@
       "notes": "Representative generated EPUB for release-audit and validator smoke.",
       "source_path": "<generated-fallback:dense_business_guide_epub>",
       "target_path": "reference_inputs/epub/dense_business_guide.epub",
-      "size_bytes": 2458
+      "size_bytes": 2891
     },
     {
       "id": "simple_report_docx",
@@ -149,7 +149,7 @@
       "generator": "simple_report",
       "source_path": "<generated:simple_report>",
       "target_path": "reference_inputs/docx/simple_report.docx",
-      "size_bytes": 35615
+      "size_bytes": 35612
     },
     {
       "id": "list_table_image_docx",

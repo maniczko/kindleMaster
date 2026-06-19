@@ -53,6 +53,55 @@ REQUIRED_CODEX_PLUGINS: tuple[str, ...] = (
     "linear@openai-curated",
     "build-web-apps@openai-curated",
     "browser-use@openai-bundled",
+    "openai-developers@openai-curated",
+)
+
+PLUGIN_ROUTING_POLICY_MARKERS: tuple[str, ...] = (
+    "## 34A. Codex Plugin Auto-Routing Policy",
+    "Use Browser / Browser Use automatically when:",
+    "Use GitHub automatically when:",
+    "Use Linear automatically when:",
+    "Use OpenAI Developers automatically when:",
+    "Use Build Web Apps automatically when:",
+)
+
+PROMPT_ENGINEERING_POLICY_MARKERS: tuple[str, ...] = (
+    "## 34B. Prompt Engineering Auto-Normalization Policy",
+    "prompt-engineer",
+    "Prompt -> Review -> Rewrite -> Execute",
+    "TRYB: DEBUG",
+    "TRYB: UI POLISH",
+    "TRYB: EPUB QUALITY AUDIT",
+    "Kryteria akceptacji",
+    "Raport końcowy",
+)
+
+PROMPT_ENGINEER_SKILL_MARKERS: tuple[str, ...] = (
+    "name: prompt-engineer",
+    "Prompt -> Review -> Rewrite -> Execute",
+    "## Work Modes",
+    "TRYB: DEBUG",
+    "TRYB: IMPLEMENT",
+    "TRYB: REVIEW",
+    "TRYB: AUDIT",
+    "TRYB: UI POLISH",
+    "TRYB: EPUB QUALITY AUDIT",
+    "# Cel",
+    "# Kryteria akceptacji",
+    "# Raport końcowy",
+)
+
+AGENT_QUALITY_GATE_THRESHOLD = 9.0
+
+PRE_COMMIT_AGENT_QUALITY_MARKERS: tuple[str, ...] = (
+    "test_agent_config_contracts.py",
+    "test_skill_contracts.py",
+    "test_skill_guardrails.py",
+)
+
+PRE_PUSH_AGENT_QUALITY_MARKERS: tuple[str, ...] = (
+    "python kindlemaster.py test --suite quick",
+    "python kindlemaster.py status",
 )
 
 
@@ -123,14 +172,18 @@ def _capability_payload(
     description: str,
     missing_requirements: list[str],
     notes: list[str] | None = None,
+    manual_steps: list[str] | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "support_level": support_level,
         "status": status,
         "description": description,
         "missing_requirements": missing_requirements,
         "notes": notes or [],
     }
+    if manual_steps:
+        payload["manual_steps"] = manual_steps
+    return payload
 
 
 def find_playwright_chromium_executable() -> Path | None:
@@ -365,6 +418,119 @@ def _plugin_enabled(config: dict[str, Any], plugin_name: str) -> bool:
     return isinstance(payload, dict) and payload.get("enabled") is True
 
 
+def _agent_status_score(status: str) -> float:
+    if status == "supported":
+        return 10.0
+    if status == "degraded":
+        return 6.0
+    if status == "unavailable":
+        return 4.0
+    if status == "unsupported":
+        return 0.0
+    return 5.0
+
+
+def _average(values: list[float]) -> float:
+    return round(sum(values) / len(values), 2) if values else 0.0
+
+
+def _quality_category(
+    *,
+    score: float,
+    evidence: list[str],
+    missing_actions: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "score": round(score, 2),
+        "evidence": evidence,
+        "missing_actions": missing_actions or [],
+    }
+
+
+def _score_checks(checks: dict[str, dict[str, Any]], names: list[str]) -> tuple[float, list[str], list[str]]:
+    scores: list[float] = []
+    evidence: list[str] = []
+    missing_actions: list[str] = []
+    for name in names:
+        check = checks.get(name, {})
+        status = str(check.get("status", "unsupported"))
+        scores.append(_agent_status_score(status))
+        evidence.append(f"{name}: {status}")
+        if status != "supported":
+            notes = [str(note) for note in check.get("notes", []) if str(note).strip()]
+            if notes:
+                missing_actions.extend(notes)
+            else:
+                missing_actions.append(f"Repair agent readiness check `{name}`.")
+    return _average(scores), evidence, missing_actions
+
+
+def _read_optional_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8") if path.exists() else ""
+    except Exception:
+        return ""
+
+
+def _build_governance_hooks_category(repo_root: Path, checks: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    git_hook_score, evidence, missing_actions = _score_checks(checks, ["git_hooks"])
+    pre_commit_text = _read_optional_text(repo_root / ".githooks" / "pre-commit")
+    pre_push_text = _read_optional_text(repo_root / ".githooks" / "pre-push")
+    missing_pre_commit = [marker for marker in PRE_COMMIT_AGENT_QUALITY_MARKERS if marker not in pre_commit_text]
+    missing_pre_push = [marker for marker in PRE_PUSH_AGENT_QUALITY_MARKERS if marker not in pre_push_text]
+    if missing_pre_commit:
+        missing_actions.append(
+            "Add agent quality checks to .githooks/pre-commit: " + ", ".join(missing_pre_commit)
+        )
+    if missing_pre_push:
+        missing_actions.append("Add release freshness checks to .githooks/pre-push: " + ", ".join(missing_pre_push))
+    marker_score = 10.0 if not missing_pre_commit and not missing_pre_push else 6.0
+    evidence.extend(
+        [
+            f"pre_commit_agent_markers_missing: {len(missing_pre_commit)}",
+            f"pre_push_quality_markers_missing: {len(missing_pre_push)}",
+        ]
+    )
+    return _quality_category(
+        score=_average([git_hook_score, marker_score]),
+        evidence=evidence,
+        missing_actions=missing_actions,
+    )
+
+
+def _build_agent_quality_gate(repo_root: Path, checks: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    category_specs = {
+        "codex_config_and_tools": ["codex_config", "playwright_mcp_pin", "plugins"],
+        "plugin_auto_routing": ["plugin_routing_policy"],
+        "prompt_normalization_modes": ["prompt_engineering_policy", "prompt_engineer_skill"],
+        "installed_skills": ["skills"],
+        "local_session_drift": ["claude_local_settings"],
+    }
+    categories: dict[str, dict[str, Any]] = {}
+    missing_actions: list[str] = []
+    for category_name, check_names in category_specs.items():
+        score, evidence, category_actions = _score_checks(checks, check_names)
+        categories[category_name] = _quality_category(
+            score=score,
+            evidence=evidence,
+            missing_actions=category_actions,
+        )
+        missing_actions.extend(category_actions)
+    governance_hooks = _build_governance_hooks_category(repo_root, checks)
+    categories["governance_hooks"] = governance_hooks
+    missing_actions.extend(governance_hooks["missing_actions"])
+
+    average_score = _average([float(category["score"]) for category in categories.values()])
+    status = "supported" if average_score >= AGENT_QUALITY_GATE_THRESHOLD and not missing_actions else "degraded"
+    return {
+        "status": status,
+        "average_score": average_score,
+        "threshold": AGENT_QUALITY_GATE_THRESHOLD,
+        "categories": categories,
+        "missing_actions": missing_actions,
+    }
+
+
 def detect_agent_readiness(*, repo_root: str | Path | None = None) -> dict[str, Any]:
     resolved_root = Path(repo_root or Path.cwd()).resolve()
     config_path = resolved_root / ".codex" / "config.toml"
@@ -397,12 +563,130 @@ def detect_agent_readiness(*, repo_root: str | Path | None = None) -> dict[str, 
         details={"required": list(REQUIRED_CODEX_PLUGINS), "missing": missing_plugins},
     )
 
+    agents_path = resolved_root / "AGENTS.md"
+    if agents_path.exists():
+        try:
+            agents_text = agents_path.read_text(encoding="utf-8")
+            missing_policy_markers = [marker for marker in PLUGIN_ROUTING_POLICY_MARKERS if marker not in agents_text]
+            policy_notes = [] if not missing_policy_markers else ["AGENTS.md Section 34A is incomplete."]
+            policy_status = "supported" if not missing_policy_markers else "degraded"
+            policy_details = {
+                "path": str(agents_path),
+                "present": True,
+                "required_markers": list(PLUGIN_ROUTING_POLICY_MARKERS),
+                "missing_markers": missing_policy_markers,
+            }
+        except Exception as exc:
+            policy_status = "degraded"
+            policy_notes = [f"Could not read AGENTS.md plugin routing policy: {exc}"]
+            policy_details = {
+                "path": str(agents_path),
+                "present": True,
+                "required_markers": list(PLUGIN_ROUTING_POLICY_MARKERS),
+                "missing_markers": list(PLUGIN_ROUTING_POLICY_MARKERS),
+            }
+    else:
+        policy_status = "unsupported"
+        policy_notes = ["AGENTS.md is missing; plugin auto-routing policy cannot be verified."]
+        policy_details = {
+            "path": str(agents_path),
+            "present": False,
+            "required_markers": list(PLUGIN_ROUTING_POLICY_MARKERS),
+            "missing_markers": list(PLUGIN_ROUTING_POLICY_MARKERS),
+        }
+    checks["plugin_routing_policy"] = _agent_check(policy_status, details=policy_details, notes=policy_notes)
+
+    if agents_path.exists():
+        try:
+            agents_text = agents_path.read_text(encoding="utf-8")
+            missing_prompt_policy_markers = [
+                marker for marker in PROMPT_ENGINEERING_POLICY_MARKERS if marker not in agents_text
+            ]
+            prompt_policy_status = "supported" if not missing_prompt_policy_markers else "degraded"
+            prompt_policy_notes = (
+                []
+                if not missing_prompt_policy_markers
+                else ["AGENTS.md Section 34B prompt auto-normalization policy is incomplete."]
+            )
+            prompt_policy_details = {
+                "path": str(agents_path),
+                "present": True,
+                "required_markers": list(PROMPT_ENGINEERING_POLICY_MARKERS),
+                "missing_markers": missing_prompt_policy_markers,
+            }
+        except Exception as exc:
+            prompt_policy_status = "degraded"
+            prompt_policy_notes = [f"Could not read AGENTS.md prompt auto-normalization policy: {exc}"]
+            prompt_policy_details = {
+                "path": str(agents_path),
+                "present": True,
+                "required_markers": list(PROMPT_ENGINEERING_POLICY_MARKERS),
+                "missing_markers": list(PROMPT_ENGINEERING_POLICY_MARKERS),
+            }
+    else:
+        prompt_policy_status = "unsupported"
+        prompt_policy_notes = ["AGENTS.md is missing; prompt auto-normalization policy cannot be verified."]
+        prompt_policy_details = {
+            "path": str(agents_path),
+            "present": False,
+            "required_markers": list(PROMPT_ENGINEERING_POLICY_MARKERS),
+            "missing_markers": list(PROMPT_ENGINEERING_POLICY_MARKERS),
+        }
+    checks["prompt_engineering_policy"] = _agent_check(
+        prompt_policy_status,
+        details=prompt_policy_details,
+        notes=prompt_policy_notes,
+    )
+
     skills_root = Path.home() / ".codex" / "skills"
     missing_skills = [skill for skill in KINDLEMASTER_SKILL_NAMES if not (skills_root / skill).exists()]
     checks["skills"] = _agent_check(
         "supported" if not missing_skills else "degraded",
         details={"root": str(skills_root), "required": list(KINDLEMASTER_SKILL_NAMES), "missing": missing_skills},
         notes=[] if not missing_skills else ["Some KindleMaster Codex skills are not installed for this user."],
+    )
+
+    prompt_skill_path = skills_root / "prompt-engineer" / "SKILL.md"
+    if prompt_skill_path.exists():
+        try:
+            prompt_skill_text = prompt_skill_path.read_text(encoding="utf-8")
+            missing_prompt_skill_markers = [
+                marker for marker in PROMPT_ENGINEER_SKILL_MARKERS if marker not in prompt_skill_text
+            ]
+            prompt_skill_status = "supported" if not missing_prompt_skill_markers else "degraded"
+            prompt_skill_notes = (
+                []
+                if not missing_prompt_skill_markers
+                else ["The prompt-engineer skill is installed but missing required routing/template markers."]
+            )
+            prompt_skill_details = {
+                "path": str(prompt_skill_path),
+                "present": True,
+                "required_markers": list(PROMPT_ENGINEER_SKILL_MARKERS),
+                "missing_markers": missing_prompt_skill_markers,
+            }
+        except Exception as exc:
+            prompt_skill_status = "degraded"
+            prompt_skill_notes = [f"Could not read prompt-engineer skill: {exc}"]
+            prompt_skill_details = {
+                "path": str(prompt_skill_path),
+                "present": True,
+                "required_markers": list(PROMPT_ENGINEER_SKILL_MARKERS),
+                "missing_markers": list(PROMPT_ENGINEER_SKILL_MARKERS),
+            }
+    else:
+        prompt_skill_status = "degraded"
+        prompt_skill_notes = ["Install `prompt-engineer` under ~/.codex/skills/prompt-engineer/SKILL.md."]
+        prompt_skill_details = {
+            "path": str(prompt_skill_path),
+            "present": False,
+            "required_markers": list(PROMPT_ENGINEER_SKILL_MARKERS),
+            "missing_markers": list(PROMPT_ENGINEER_SKILL_MARKERS),
+        }
+    checks["prompt_engineer_skill"] = _agent_check(
+        prompt_skill_status,
+        details=prompt_skill_details,
+        notes=prompt_skill_notes,
     )
 
     hooks_path = _read_git_hooks_path(resolved_root)
@@ -435,6 +719,13 @@ def detect_agent_readiness(*, repo_root: str | Path | None = None) -> dict[str, 
         claude_details = {"path": str(claude_local), "present": False, "stale_markers": []}
     checks["claude_local_settings"] = _agent_check(claude_status, details=claude_details, notes=claude_notes)
 
+    quality_gate = _build_agent_quality_gate(resolved_root, checks)
+    checks["agent_quality_gate"] = _agent_check(
+        str(quality_gate["status"]),
+        details=quality_gate,
+        notes=[] if quality_gate["status"] == "supported" else list(quality_gate["missing_actions"]),
+    )
+
     statuses = [check["status"] for check in checks.values()]
     if any(status == "unsupported" for status in statuses):
         overall_status = "unsupported"
@@ -446,8 +737,9 @@ def detect_agent_readiness(*, repo_root: str | Path | None = None) -> dict[str, 
     return {
         "status": overall_status,
         "checks": checks,
+        "quality_gate": quality_gate,
         "notes": [
-            "Agent readiness covers Codex config, local hooks, installed KindleMaster skills, and stale local agent settings.",
+            "Agent readiness covers Codex config, plugin routing policy, prompt auto-normalization, local hooks, installed KindleMaster skills, and stale local agent settings.",
         ],
     }
 
@@ -491,6 +783,9 @@ def _detect_toolchain_uncached() -> dict:
     runtime_surface_missing = list(browser_missing)
     if not waitress_module_found:
         runtime_surface_missing.append("Waitress Python package")
+    quality_critical_missing = list(runtime_requirements["missing_modules"])
+    if not developer_requirements["packages"]["coverage[toml]"]["installed"]:
+        quality_critical_missing.append("coverage Python package")
 
     quick_surface = _surface_payload(
         support_level="core",
@@ -505,9 +800,21 @@ def _detect_toolchain_uncached() -> dict:
         support_level="optional",
         status="supported" if not browser_missing else "unsupported",
         command="python kindlemaster.py test --suite browser",
-        description="Browser polling harness coverage.",
+        description="Browser polling harness and React shell smoke coverage.",
         missing_requirements=browser_missing,
         notes=["Bootstrap installs the Playwright Python package, but Chromium remains a separate local install."],
+    )
+
+    quality_critical_surface = _surface_payload(
+        support_level="core",
+        status="supported" if not quality_critical_missing else "unsupported",
+        command="python kindlemaster.py test --suite quality-critical",
+        description="Coverage-enforced conversion quality gate for core conversion and EPUB cleanup modules.",
+        missing_requirements=quality_critical_missing,
+        notes=[
+            "Requires the developer bootstrap profile because it runs coverage.py.",
+            "Enforces total conversion coverage plus per-file gates for converter.py and kindle_semantic_cleanup.py.",
+        ],
     )
 
     runtime_surface = _surface_payload(
@@ -559,6 +866,7 @@ def _detect_toolchain_uncached() -> dict:
 
     verification_surfaces = {
         "quick": quick_surface,
+        "quality-critical": quality_critical_surface,
         "corpus": corpus_surface,
         "browser": browser_surface,
         "runtime": runtime_surface,
@@ -631,6 +939,37 @@ def _detect_toolchain_uncached() -> dict:
         "Optional evidence-only reviewer for short OCR/TOC/flow samples.",
         "It never mutates EPUB bytes automatically.",
     ]
+    try:
+        from deepseek_quality_provider import deepseek_audit_configuration_status
+
+        deepseek_audit = deepseek_audit_configuration_status(cwd=Path.cwd())
+    except Exception as error:
+        deepseek_audit = {
+            "enabled": False,
+            "api_key_present": False,
+            "model": "",
+            "base_url": "",
+            "mode": "evidence_only",
+            "evidence_only": True,
+            "full_document_upload": False,
+            "mutates_output": False,
+            "error": str(error),
+        }
+    deepseek_audit_enabled = bool(deepseek_audit.get("enabled"))
+    deepseek_audit_key_present = bool(deepseek_audit.get("api_key_present"))
+    if deepseek_audit_enabled and deepseek_audit_key_present:
+        deepseek_audit_status = "supported"
+        deepseek_audit_missing: list[str] = []
+    elif deepseek_audit_enabled:
+        deepseek_audit_status = "degraded"
+        deepseek_audit_missing = ["DEEPSEEK_API_KEY"]
+    else:
+        deepseek_audit_status = "unavailable"
+        deepseek_audit_missing = ["KINDLEMASTER_DEEPSEEK_AUDIT=1"]
+    deepseek_audit_notes = [
+        "Optional audit-first reviewer for glyph, chess layout, and compact quality evidence.",
+        "It never mutates EPUB, PGN, FEN, or TOC output.",
+    ]
 
     conversion_capabilities = {
         "core_conversion": _capability_payload(
@@ -638,6 +977,60 @@ def _detect_toolchain_uncached() -> dict:
             status="supported" if runtime_requirements["ready"] else "unsupported",
             description="Python conversion/runtime dependencies installed from requirements.txt.",
             missing_requirements=list(runtime_requirements["missing_modules"]),
+        ),
+        "email_delivery": _capability_payload(
+            support_level="optional",
+            status="supported"
+            if os.environ.get("KINDLEMASTER_EMAIL_DELIVERY", "").strip() in {"1", "true", "TRUE", "yes", "on"}
+            and os.environ.get("KINDLEMASTER_SMTP_HOST", "").strip()
+            and os.environ.get("KINDLEMASTER_SMTP_USERNAME", "").strip()
+            and os.environ.get("KINDLEMASTER_SMTP_PASSWORD", "").strip()
+            and os.environ.get("KINDLEMASTER_SMTP_FROM", "").strip()
+            else "unavailable",
+            description="Optional SMTP delivery for Send-to-Kindle handoff.",
+            missing_requirements=[]
+            if os.environ.get("KINDLEMASTER_EMAIL_DELIVERY", "").strip() in {"1", "true", "TRUE", "yes", "on"}
+            and os.environ.get("KINDLEMASTER_SMTP_HOST", "").strip()
+            and os.environ.get("KINDLEMASTER_SMTP_USERNAME", "").strip()
+            and os.environ.get("KINDLEMASTER_SMTP_PASSWORD", "").strip()
+            and os.environ.get("KINDLEMASTER_SMTP_FROM", "").strip()
+            else ["email_delivery_config"],
+            manual_steps=[]
+            if os.environ.get("KINDLEMASTER_EMAIL_DELIVERY", "").strip() in {"1", "true", "TRUE", "yes", "on"}
+            and os.environ.get("KINDLEMASTER_SMTP_HOST", "").strip()
+            and os.environ.get("KINDLEMASTER_SMTP_USERNAME", "").strip()
+            and os.environ.get("KINDLEMASTER_SMTP_PASSWORD", "").strip()
+            and os.environ.get("KINDLEMASTER_SMTP_FROM", "").strip()
+            else [
+                "Set KINDLEMASTER_EMAIL_DELIVERY=1 and configure KINDLEMASTER_SMTP_HOST, KINDLEMASTER_SMTP_USERNAME, KINDLEMASTER_SMTP_PASSWORD, and KINDLEMASTER_SMTP_FROM.",
+            ],
+        ),
+        "cloud_account_library": _capability_payload(
+            support_level="optional",
+            status="supported"
+            if os.environ.get("KINDLEMASTER_AUTH_PROVIDER", "").strip().lower() == "supabase"
+            and os.environ.get("SUPABASE_URL", "").strip()
+            and os.environ.get("SUPABASE_PUBLISHABLE_KEY", "").strip()
+            and os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+            and os.environ.get("SUPABASE_ARTIFACT_BUCKET", "").strip()
+            else "unavailable",
+            description="Optional Supabase-backed account library and artifact storage.",
+            missing_requirements=[]
+            if os.environ.get("KINDLEMASTER_AUTH_PROVIDER", "").strip().lower() == "supabase"
+            and os.environ.get("SUPABASE_URL", "").strip()
+            and os.environ.get("SUPABASE_PUBLISHABLE_KEY", "").strip()
+            and os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+            and os.environ.get("SUPABASE_ARTIFACT_BUCKET", "").strip()
+            else ["supabase_config"],
+            manual_steps=[]
+            if os.environ.get("KINDLEMASTER_AUTH_PROVIDER", "").strip().lower() == "supabase"
+            and os.environ.get("SUPABASE_URL", "").strip()
+            and os.environ.get("SUPABASE_PUBLISHABLE_KEY", "").strip()
+            and os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+            and os.environ.get("SUPABASE_ARTIFACT_BUCKET", "").strip()
+            else [
+                "Set KINDLEMASTER_AUTH_PROVIDER=supabase, SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, SUPABASE_SERVICE_ROLE_KEY, and SUPABASE_ARTIFACT_BUCKET.",
+            ],
         ),
         "ocr_pipeline": _capability_payload(
             support_level="optional",
@@ -652,12 +1045,26 @@ def _detect_toolchain_uncached() -> dict:
             description="External EPUBCheck validation executed through Java + epubcheck.jar.",
             missing_requirements=epubcheck_missing,
             notes=["KindleMaster still runs internal validators even when EPUBCheck is unavailable."],
+            manual_steps=[
+                "Install a Java runtime and ensure `java` is on PATH.",
+                "Download EPUBCheck and set EPUBCHECK_JAR to the epubcheck*.jar path, or place the jar under tools/.",
+                "Re-run `python kindlemaster.py doctor` and then `python kindlemaster.py validate path\\to\\file.epub`.",
+            ]
+            if epubcheck_missing
+            else [],
         ),
         "pdfbox_extraction": _capability_payload(
             support_level="optional",
             status="supported" if not pdfbox_missing else "unavailable",
             description="Optional PDFBox extraction and diagnostics helpers.",
             missing_requirements=pdfbox_missing,
+            manual_steps=[
+                "Install a Java runtime and ensure `java` is on PATH.",
+                "Set PDFBOX_JAR to pdfbox-app*.jar, or place the jar under tools/.",
+                "Re-run `python kindlemaster.py doctor` before relying on PDFBox diagnostics.",
+            ]
+            if pdfbox_missing
+            else [],
         ),
         "openai_quality_review": _capability_payload(
             support_level="optional",
@@ -665,6 +1072,13 @@ def _detect_toolchain_uncached() -> dict:
             description="Optional OpenAI reviewer for short quality samples; evidence-only and opt-in.",
             missing_requirements=openai_quality_missing,
             notes=openai_quality_notes,
+        ),
+        "deepseek_audit_review": _capability_payload(
+            support_level="optional",
+            status=deepseek_audit_status,
+            description="Optional DeepSeek audit reviewer for bounded diagnostics; evidence-only and opt-in.",
+            missing_requirements=deepseek_audit_missing,
+            notes=deepseek_audit_notes,
         ),
     }
 

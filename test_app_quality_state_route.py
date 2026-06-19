@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import unittest
 import os
+import tempfile
 from datetime import UTC, datetime
 from unittest.mock import patch
+from pathlib import Path
 
 import app as app_module
 from app import app
@@ -15,14 +17,32 @@ class AppQualityStateRouteTests(unittest.TestCase):
         self.client = app.test_client()
         self.cleanup_job_ids: list[str] = []
         self.cleanup_paths: list[str] = []
+        self.store_temp_dir = tempfile.TemporaryDirectory()
+        self.original_conversion_job_store = app_module._CONVERSION_JOB_STORE
+        app_module._CONVERSION_JOB_STORE = app_module.ConversionJobStore(
+            app_module._CONVERSION_JOBS,
+            app_module._CONVERSION_JOBS_LOCK,
+            persistence_path=Path(self.store_temp_dir.name) / "conversion_jobs.json",
+            active_statuses=app_module.ACTIVE_CONVERSION_JOB_STATUSES,
+        )
+        with app_module._CONVERSION_JOBS_LOCK:
+            self.original_conversion_jobs = {
+                job_id: dict(job)
+                for job_id, job in app_module._CONVERSION_JOBS.items()
+            }
+            app_module._CONVERSION_JOBS.clear()
 
     def tearDown(self) -> None:
         for path in self.cleanup_paths:
             if path and os.path.exists(path):
                 os.remove(path)
         with app_module._CONVERSION_JOBS_LOCK:
-            for job_id in self.cleanup_job_ids:
-                app_module._CONVERSION_JOBS.pop(job_id, None)
+            app_module._CONVERSION_JOBS.clear()
+            app_module._CONVERSION_JOBS.update(
+                {job_id: dict(job) for job_id, job in self.original_conversion_jobs.items()}
+            )
+        app_module._CONVERSION_JOB_STORE = self.original_conversion_job_store
+        self.store_temp_dir.cleanup()
 
     def _write_output_fixture(self, job_id: str, size_bytes: int) -> str:
         output_path = os.path.join(app_module.UPLOAD_DIR, f"{job_id}.epub")
@@ -137,6 +157,8 @@ class AppQualityStateRouteTests(unittest.TestCase):
             "kindle_delivery_release_not_ready",
         )
         self.assertEqual(payload["quality_state"]["download_url"], "/convert/download/quality-ready")
+        self.assertEqual(payload["auto_repair"]["status"], "not_run")
+        self.assertEqual(payload["quality_state"]["auto_repair"]["status"], "not_run")
         self.assertTrue(payload["download_available"])
         self.assertEqual(payload["download_state"]["status"], "available")
         self.assertEqual(payload["quality_state"]["summary"]["profile"], "book_reflow")
@@ -183,6 +205,43 @@ class AppQualityStateRouteTests(unittest.TestCase):
         self.assertEqual(payload["record_id"], "fb_test_record")
         self.assertFalse(payload["online_learning"])
         append_feedback.assert_called_once()
+
+    def test_convert_feedback_rejects_training_intent_without_required_labels(self) -> None:
+        self._register_job(
+            "quality-feedback-training-invalid",
+            status="ready",
+            message="EPUB gotowy do pobrania.",
+            metadata={
+                "source_type": "pdf",
+                "profile": "book_reflow",
+                "source_analysis": {
+                    "profile": "book_reflow",
+                    "confidence": 0.82,
+                    "page_count": 3,
+                    "text_pages": 3,
+                    "scanned_pages": 0,
+                    "image_pages": 0,
+                    "text_heavy": True,
+                    "layout_heavy": False,
+                },
+            },
+            output_size_bytes=4096,
+        )
+
+        response = self.client.post(
+            "/convert/feedback/quality-feedback-training-invalid",
+            json={
+                "status": "accepted",
+                "include_in_training": True,
+                "notes": "Operator wants to train from this but skipped labels.",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        payload = response.get_json()
+        self.assertEqual(payload["error_code"], "invalid_training_feedback")
+        self.assertIn("missing_or_invalid_route_label", payload["error"])
+        self.assertIn("missing_or_invalid_quality_label", payload["error"])
 
     def test_convert_quality_route_includes_ready_quality_cockpit_contract(self) -> None:
         metadata = build_conversion_metadata(
@@ -264,6 +323,20 @@ class AppQualityStateRouteTests(unittest.TestCase):
                     "samples": [],
                     "message": "No visible junk detected.",
                 },
+                "quality_policy_verifier": {
+                    "status": "passed",
+                    "decision": "ready",
+                    "training_status": "bootstrap_policy_until_feedback_dataset_is_sufficient",
+                },
+                "trained_quality_model_status": "policy_only_not_trained",
+                "route_model_shadow": {
+                    "mode": "shadow",
+                    "ml_profile": "book_reflow",
+                    "ml_confidence": 0.77,
+                    "selected_profile": "book_reflow",
+                    "override_used": False,
+                    "model_version": "route-classifier-v1",
+                },
             }
         )
         self._register_job(
@@ -279,6 +352,8 @@ class AppQualityStateRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         quality_state = payload["quality_state"]
+        self.assertEqual(payload["auto_repair"]["status"], "not_run")
+        self.assertEqual(quality_state["auto_repair"]["status"], "not_run")
         self.assertEqual(quality_state["summary"]["profile"], "book_reflow")
         for cockpit_key in (
             "issue_groups",
@@ -306,6 +381,9 @@ class AppQualityStateRouteTests(unittest.TestCase):
         self.assertEqual(quality_state["metadata_health"]["status"], "passed_with_warnings")
         self.assertEqual(quality_state["link_health"]["broken_count"], 0)
         self.assertEqual(quality_state["visible_junk"]["status"], "passed")
+        self.assertEqual(quality_state["quality_policy_verifier"]["decision"], "ready")
+        self.assertEqual(quality_state["trained_quality_model_status"], "policy_only_not_trained")
+        self.assertEqual(quality_state["route_model_shadow"]["mode"], "shadow")
         self.assertTrue(quality_state["download_available"])
         self.assertEqual(quality_state["download_state"]["status"], "available")
         self.assertEqual(quality_state["reading_verdict"], "ready_with_review")

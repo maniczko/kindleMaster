@@ -462,6 +462,61 @@ def _check_status_evidence_contract(source_texts: dict[str, str | None]) -> dict
     }
 
 
+def _check_github_autopilot_contract(source_texts: dict[str, str | None]) -> dict[str, Any]:
+    expected_by_source = {
+        ".github/ISSUE_TEMPLATE/kindlemaster_task.yml": [
+            "agent:ready",
+            "autopilot:allowed",
+            "Kryteria akceptacji",
+            "Walidacja",
+            "Raport koncowy",
+        ],
+        "docs/github-autopilot-orchestration.md": [
+            "GitHub Issues are the task truth",
+            "python kindlemaster.py orchestrate",
+            "autopilot:allowed",
+            "agent:ready",
+        ],
+        "AGENTS.md": [
+            "GitHub Issue autopilot task contract",
+            ".github/ISSUE_TEMPLATE/kindlemaster_task.yml",
+            "GitHub Issues are the default backlog and task truth",
+        ],
+        "README.md": [
+            "docs/github-autopilot-orchestration.md",
+            ".github/ISSUE_TEMPLATE/kindlemaster_task.yml",
+            "python kindlemaster.py orchestrate",
+        ],
+        ".codex/README.md": [
+            "GitHub Issues plus `.github/ISSUE_TEMPLATE/kindlemaster_task.yml`",
+            "python kindlemaster.py orchestrate",
+        ],
+    }
+    missing_by_source: dict[str, list[str]] = {}
+    unavailable_sources: list[str] = []
+    for source, expected_markers in expected_by_source.items():
+        text = source_texts.get(source)
+        if text is None:
+            unavailable_sources.append(source)
+            continue
+        missing_markers = [marker for marker in expected_markers if marker not in text]
+        if missing_markers:
+            missing_by_source[source] = missing_markers
+
+    status = "failed" if missing_by_source else "passed"
+    if unavailable_sources and not missing_by_source:
+        status = "unavailable"
+    return {
+        "id": "github_autopilot_contract",
+        "status": status,
+        "authoritative_source": ".github/ISSUE_TEMPLATE/kindlemaster_task.yml",
+        "mirror_sources": list(expected_by_source),
+        "expected_markers_by_source": expected_by_source,
+        "missing_by_source": missing_by_source,
+        "unavailable_sources": unavailable_sources,
+    }
+
+
 def _build_session_override_policy(repo_root: Path, source_texts: dict[str, str | None]) -> dict[str, Any]:
     doc_path = repo_root / "docs" / "governance-dashboard.md"
     doc_text = source_texts.get("docs/governance-dashboard.md")
@@ -492,6 +547,8 @@ def _build_drift_summary(repo_root: Path) -> dict[str, Any]:
         ".codex/config.toml": repo_root / ".codex" / "config.toml",
         ".codex/README.md": repo_root / ".codex" / "README.md",
         "AGENTS.md": repo_root / "AGENTS.md",
+        ".github/ISSUE_TEMPLATE/kindlemaster_task.yml": repo_root / ".github" / "ISSUE_TEMPLATE" / "kindlemaster_task.yml",
+        "docs/github-autopilot-orchestration.md": repo_root / "docs" / "github-autopilot-orchestration.md",
         "docs/toolchain-matrix.md": repo_root / "docs" / "toolchain-matrix.md",
         "docs/governance-dashboard.md": repo_root / "docs" / "governance-dashboard.md",
     }
@@ -510,6 +567,7 @@ def _build_drift_summary(repo_root: Path) -> dict[str, Any]:
         _check_command_mirrors(kindlemaster_source=kindlemaster_source, source_texts=source_texts),
         _check_toolchain_suite_mirrors(kindlemaster_source=kindlemaster_source, source_texts=source_texts),
         _check_status_evidence_contract(source_texts),
+        _check_github_autopilot_contract(source_texts),
     ]
     failed_checks = [check["id"] for check in checks if check["status"] == "failed"]
     unavailable_checks = [check["id"] for check in checks if check["status"] == "unavailable"]

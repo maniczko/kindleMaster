@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import zipfile
 from io import BytesIO
@@ -36,6 +37,9 @@ class GoldenCaseResult:
     artifact_path: str
     features: dict[str, Any]
     assertions: list[dict[str, Any]]
+    before_artifact_path: str = ""
+    before_features: dict[str, Any] | None = None
+    comparison: dict[str, Any] | None = None
 
 
 def run_golden_epub_regression(
@@ -46,7 +50,8 @@ def run_golden_epub_regression(
     write_reports: bool = True,
 ) -> dict[str, Any]:
     manifest = _load_manifest(Path(manifest_path))
-    resolved_artifact_root = Path(artifact_root)
+    artifact_root_source = "env" if os.environ.get("KINDLEMASTER_GOLDEN_ROOT") else "argument"
+    resolved_artifact_root = Path(os.environ.get("KINDLEMASTER_GOLDEN_ROOT") or artifact_root)
     results: list[GoldenCaseResult] = []
     for case in manifest.get("cases", []):
         result = _evaluate_case(case, artifact_root=resolved_artifact_root)
@@ -60,6 +65,7 @@ def run_golden_epub_regression(
         "status_counts": dict(Counter(result.status for result in results)),
         "manifest_path": str(Path(manifest_path)),
         "artifact_root": str(resolved_artifact_root),
+        "artifact_root_source": artifact_root_source,
         "cases": [_case_to_dict(result) for result in results],
     }
     if write_reports:
@@ -84,7 +90,7 @@ def build_golden_regression_markdown(payload: dict[str, Any]) -> str:
         f"- Cases: `{payload.get('case_count', 0)}`",
         f"- Status counts: `{json.dumps(payload.get('status_counts', {}), ensure_ascii=False)}`",
         f"- Manifest: `{payload.get('manifest_path', '')}`",
-        f"- Artifact root: `{payload.get('artifact_root', '')}`",
+        f"- Artifact root: `{payload.get('artifact_root', '')}` (`{payload.get('artifact_root_source', 'argument')}`)",
         "",
         "## Cases",
         "",
@@ -101,12 +107,17 @@ def build_golden_regression_markdown(payload: dict[str, Any]) -> str:
                 f"- Class: `{case.get('document_class', '')}` / `{case.get('input_type', '')}`",
                 f"- Artifact: `{case.get('artifact_path', '')}`",
                 f"- Validation: `{features.get('validation_status', 'unknown')}`",
+                f"- Kindle sendability: `{features.get('kindle_sendability_status', 'unknown')}`",
                 f"- XHTML / TOC / images / tables: `{features.get('xhtml_count', 0)}` / "
                 f"`{features.get('nav_entries', 0)}` / `{features.get('image_count', 0)}` / "
                 f"`{features.get('table_count', 0)}`",
                 f"- Artifact rate: `{features.get('artifact_rate_per_1000_words', 0)}` per 1000 words",
+                f"- Size: `{features.get('epub_size_bytes', 0)}` bytes",
             ]
         )
+        comparison = case.get("comparison") or {}
+        if comparison:
+            lines.append(f"- Before/after: `{comparison.get('status', 'unknown')}`")
         if failed:
             lines.append(f"- Failed assertions: `{', '.join(item.get('id', '') for item in failed)}`")
         if warnings:
@@ -125,10 +136,11 @@ def inspect_epub_golden_features(epub_path: str | Path) -> dict[str, Any]:
     toc_headings = _inspect_toc_and_headings(epub_bytes)
     validation_summary = validation.get("summary") or {}
     document_stats = validation.get("document_stats") or {}
-    return {
+    features = {
         **stats,
         **table_stats,
         **toc_headings,
+        "epub_size_bytes": path.stat().st_size,
         "validation_status": validation_summary.get("status", "unknown"),
         "validation_error_count": validation_summary.get("error_count", 0),
         "validation_warning_count": validation_summary.get("warning_count", 0),
@@ -138,6 +150,9 @@ def inspect_epub_golden_features(epub_path: str | Path) -> dict[str, Any]:
         "artifact_rate_per_1000_words": artifact_metrics.get("artifact_rate_per_1000_words", 0.0),
         "word_count": artifact_metrics.get("word_count", 0),
     }
+    features["kindle_sendability_status"] = _kindle_sendability_status(features)
+    features["kindle_sendability_rank"] = _kindle_sendability_rank(features["kindle_sendability_status"])
+    return features
 
 
 def _load_manifest(path: Path) -> dict[str, Any]:
@@ -152,23 +167,50 @@ def _evaluate_case(case: dict[str, Any], *, artifact_root: Path) -> GoldenCaseRe
     input_type = str(case.get("input_type", "")).strip()
     artifact_path = _resolve_artifact_path(case, artifact_root=artifact_root)
     if artifact_path is None:
+        required = case.get("required", True) is not False
         return GoldenCaseResult(
             case_id=case_id,
             document_class=document_class,
             input_type=input_type,
-            status="failed",
+            status="failed" if required else "skipped",
             artifact_path="",
             features={},
             assertions=[
                 {
                     "id": "artifact_available",
-                    "status": "failed",
+                    "status": "failed" if required else "skipped",
+                    "severity": "blocker" if required else "info",
                     "detail": "No EPUB artifact candidate exists for this golden case.",
                 }
             ],
         )
+    real_fixture_skip = _real_fixture_skip_assertion(case, artifact_path)
+    if real_fixture_skip is not None:
+        required = case.get("required", True) is not False
+        return GoldenCaseResult(
+            case_id=case_id,
+            document_class=document_class,
+            input_type=input_type,
+            status="failed" if required else "skipped",
+            artifact_path=str(artifact_path),
+            features={"epub_size_bytes": artifact_path.stat().st_size},
+            assertions=[real_fixture_skip | {"status": "failed" if required else "skipped"}],
+        )
     features = inspect_epub_golden_features(artifact_path)
     assertions = _evaluate_expectations(case.get("expectations") or {}, features)
+    before_artifact_path = _resolve_before_artifact_path(case, artifact_root=artifact_root)
+    before_features = inspect_epub_golden_features(before_artifact_path) if before_artifact_path else None
+    comparison = _compare_golden_features(before_features, features) if before_features else {}
+    if comparison and case.get("fail_on_regression") is True:
+        regressed = comparison.get("status") == "regressed"
+        assertions.append(
+            {
+                "id": "before_after_regression",
+                "status": "failed" if regressed else "passed",
+                "severity": "blocker",
+                "detail": f"comparison_status={comparison.get('status')}",
+            }
+        )
     return GoldenCaseResult(
         case_id=case_id,
         document_class=document_class,
@@ -177,6 +219,9 @@ def _evaluate_case(case: dict[str, Any], *, artifact_root: Path) -> GoldenCaseRe
         artifact_path=str(artifact_path),
         features=features,
         assertions=assertions,
+        before_artifact_path=str(before_artifact_path) if before_artifact_path else "",
+        before_features=before_features,
+        comparison=comparison,
     )
 
 
@@ -190,6 +235,15 @@ def _resolve_artifact_path(case: dict[str, Any], *, artifact_root: Path) -> Path
                 f"{case_id}/final.epub",
             ]
         )
+    return _resolve_candidate_path(candidates, artifact_root=artifact_root)
+
+
+def _resolve_before_artifact_path(case: dict[str, Any], *, artifact_root: Path) -> Path | None:
+    candidates = list(case.get("before_artifact_candidates") or case.get("baseline_artifact_candidates") or [])
+    return _resolve_candidate_path(candidates, artifact_root=artifact_root)
+
+
+def _resolve_candidate_path(candidates: list[str], *, artifact_root: Path) -> Path | None:
     for candidate in candidates:
         candidate_path = Path(candidate)
         if not candidate_path.is_absolute():
@@ -197,6 +251,108 @@ def _resolve_artifact_path(case: dict[str, Any], *, artifact_root: Path) -> Path
         if candidate_path.exists():
             return candidate_path
     return None
+
+
+def _real_fixture_skip_assertion(case: dict[str, Any], artifact_path: Path) -> dict[str, Any] | None:
+    if case.get("requires_real_fixture") is not True:
+        return None
+    minimum_size = int(case.get("minimum_artifact_size_bytes") or case.get("real_fixture_min_epub_size_bytes") or 0)
+    if minimum_size <= 0:
+        return None
+    actual_size = artifact_path.stat().st_size
+    if actual_size >= minimum_size:
+        return None
+    return {
+        "id": "real_fixture_available",
+        "severity": "blocker" if case.get("required", True) is not False else "info",
+        "detail": f"artifact_size_bytes={actual_size}; minimum_real_fixture_bytes={minimum_size}",
+    }
+
+
+def _kindle_sendability_status(features: dict[str, Any]) -> str:
+    validation_status = str(features.get("validation_status") or "unknown").lower()
+    has_errors = int(features.get("validation_error_count") or 0) > 0
+    has_broken_links = int(features.get("broken_internal_anchors") or 0) > 0
+    has_duplicate_ids = int(features.get("documents_with_duplicate_ids") or 0) > 0
+    if validation_status == "failed" or has_errors or has_broken_links or has_duplicate_ids:
+        return "blocked"
+    if validation_status in {"passed_with_warnings", "unavailable", "unknown"}:
+        return "sendable_with_warnings"
+    if int(features.get("validation_warning_count") or 0) > 0:
+        return "sendable_with_warnings"
+    return "sendable"
+
+
+def _kindle_sendability_rank(status: str) -> int:
+    return {"blocked": 0, "sendable_with_warnings": 1, "sendable": 2}.get(str(status), 0)
+
+
+def _compare_golden_features(before: dict[str, Any] | None, after: dict[str, Any]) -> dict[str, Any]:
+    if not before:
+        return {}
+
+    metric_directions = {
+        "nav_entries": "higher",
+        "toc_label_count": "higher",
+        "heading_label_count": "higher",
+        "image_count": "higher",
+        "table_count": "higher",
+        "artifact_count": "lower",
+        "artifact_rate_per_1000_words": "lower",
+        "validation_error_count": "lower",
+        "validation_warning_count": "lower",
+        "broken_internal_anchors": "lower",
+        "documents_with_duplicate_ids": "lower",
+        "epub_size_bytes": "lower_info",
+        "kindle_sendability_rank": "higher",
+    }
+    metrics: dict[str, dict[str, Any]] = {}
+    improved = 0
+    regressed = 0
+    for key, direction in metric_directions.items():
+        before_value = _numeric_feature(before.get(key))
+        after_value = _numeric_feature(after.get(key))
+        if before_value is None or after_value is None:
+            continue
+        delta = round(after_value - before_value, 4)
+        base_direction = direction.replace("_info", "")
+        count_metric = not direction.endswith("_info")
+        if delta == 0:
+            status = "unchanged"
+        elif (base_direction == "higher" and delta > 0) or (base_direction == "lower" and delta < 0):
+            status = "improved"
+            if count_metric:
+                improved += 1
+        else:
+            status = "regressed"
+            if count_metric:
+                regressed += 1
+        metrics[key] = {
+            "before": before_value,
+            "after": after_value,
+            "delta": delta,
+            "direction": direction,
+            "status": status,
+        }
+
+    if regressed:
+        status = "regressed"
+    elif improved:
+        status = "improved"
+    else:
+        status = "unchanged"
+    return {"status": status, "improved": improved, "regressed": regressed, "metrics": metrics}
+
+
+def _numeric_feature(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(str(value))
+    except (TypeError, ValueError):
+        return None
 
 
 def _evaluate_expectations(expectations: dict[str, Any], features: dict[str, Any]) -> list[dict[str, Any]]:
@@ -350,4 +506,7 @@ def _case_to_dict(result: GoldenCaseResult) -> dict[str, Any]:
         "artifact_path": result.artifact_path,
         "features": result.features,
         "assertions": result.assertions,
+        "before_artifact_path": result.before_artifact_path,
+        "before_features": result.before_features or {},
+        "comparison": result.comparison or {},
     }

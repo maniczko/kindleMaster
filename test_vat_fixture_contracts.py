@@ -151,6 +151,16 @@ class VatFixtureContractTests(unittest.TestCase):
                     self.assertIn("mimetype", archive.namelist())
                     self.assertIn("EPUB/content.opf", archive.namelist())
                     self.assertIn("EPUB/nav.xhtml", archive.namelist())
+                    self.assertIn("EPUB/style/default.css", archive.namelist())
+                    opf = archive.read("EPUB/content.opf").decode("utf-8")
+                    nav = archive.read("EPUB/nav.xhtml").decode("utf-8")
+                    chapter = archive.read("EPUB/chapter_001.xhtml").decode("utf-8")
+
+                self.assertIn('prefix="dcterms: http://purl.org/dc/terms/"', opf)
+                self.assertIn("<meta property=\"dcterms:modified\">2026-01-01T00:00:00Z</meta>", opf)
+                self.assertIn("<dc:creator>Reference QA</dc:creator>", opf)
+                self.assertIn("style/default.css", nav)
+                self.assertIn("style/default.css", chapter)
 
     def test_manifest_contains_real_vat_fixture_entries_with_required_shape(self) -> None:
         self.assertEqual(set(VAT_FIXTURE_IDS), {"ocr_stress_scan_pdf", "document_like_report_pdf"})

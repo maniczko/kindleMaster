@@ -329,7 +329,6 @@ def clean_epub_text_package(
 
     book_info = _inspect_epub_package(epub_bytes, config)
     config.long_document_mode = config.long_document_mode or _should_enable_long_document_mode(book_info)
-    _augment_runtime_domain_terms(epub_bytes, book_info=book_info, lexicon=lexicon)
     package_blocked = False
     decisions: list[CleanupDecision] = []
     unknown_counter: Counter[str] = Counter()
@@ -368,12 +367,25 @@ def clean_epub_text_package(
 
     source_buffer = BytesIO(epub_bytes)
     output_buffer = BytesIO()
+    text_sources: dict[str, str] = {}
+    runtime_domain_evidence: dict[str, dict[str, int]] = {}
     with zipfile.ZipFile(source_buffer, "r") as source_zip:
+        for info in source_zip.infolist():
+            if not _is_text_cleanup_member(info.filename, text_paths):
+                continue
+            try:
+                decoded = source_zip.read(info.filename).decode("utf-8", errors="ignore")
+            except Exception:
+                continue
+            text_sources[info.filename] = decoded
+            _collect_runtime_domain_evidence(decoded, evidence=runtime_domain_evidence, lexicon=lexicon)
+
+        _apply_runtime_domain_evidence(runtime_domain_evidence, lexicon=lexicon)
+
         with zipfile.ZipFile(output_buffer, "w") as target_zip:
             for info in source_zip.infolist():
-                data = source_zip.read(info.filename)
-                if info.filename in text_paths or EPUB_TEXT_MEMBER_RE.search(info.filename):
-                    decoded = data.decode("utf-8", errors="ignore")
+                decoded = text_sources.get(info.filename)
+                if decoded is not None:
                     cleaned_document, doc_decisions, doc_unknowns, doc_diff = _clean_document(
                         decoded,
                         document_path=info.filename,
@@ -385,6 +397,8 @@ def clean_epub_text_package(
                     unknown_counter.update(doc_unknowns)
                     if config.emit_text_diff and doc_diff:
                         chapter_diffs[info.filename] = doc_diff
+                else:
+                    data = source_zip.read(info.filename)
 
                 clone = zipfile.ZipInfo(info.filename)
                 clone.date_time = info.date_time
@@ -473,48 +487,65 @@ def _augment_runtime_domain_terms(
     evidence: dict[str, dict[str, int]] = {}
     with zipfile.ZipFile(BytesIO(epub_bytes), "r") as source_zip:
         for info in source_zip.infolist():
-            if info.filename not in text_paths and not EPUB_TEXT_MEMBER_RE.search(info.filename):
+            if not _is_text_cleanup_member(info.filename, text_paths):
                 continue
             try:
                 decoded = source_zip.read(info.filename).decode("utf-8", errors="ignore")
             except Exception:
                 continue
 
-            plain_text = re.sub(r"<[^>]+>", " ", decoded)
-            for token in WORDISH_RE.findall(plain_text):
-                normalized = _normalize_lookup_key(token)
-                if len(normalized) < 4 or lexicon.is_protected(normalized) or lexicon.lookup_variant(normalized):
-                    continue
-                row = evidence.setdefault(
-                    normalized,
-                    {"count": 0, "heading_hits": 0, "acronym_hits": 0, "mixed_hits": 0, "lexical_hits": 0},
-                )
-                row["count"] += 1
-                if token.isupper() and 2 <= len(token) <= 8:
-                    row["acronym_hits"] += 1
-                if _looks_like_mixed_domain_term(token):
-                    row["mixed_hits"] += 1
-                if _token_score(token, "en") >= 0.22 or _token_score(token, "mixed") >= 0.24:
-                    row["lexical_hits"] += 1
+            _collect_runtime_domain_evidence(decoded, evidence=evidence, lexicon=lexicon)
 
-            parsed = _parse_document(decoded)
-            if parsed is None:
+    _apply_runtime_domain_evidence(evidence, lexicon=lexicon)
+
+
+def _is_text_cleanup_member(filename: str, text_paths: set[str]) -> bool:
+    return filename in text_paths or bool(EPUB_TEXT_MEMBER_RE.search(filename))
+
+
+def _collect_runtime_domain_evidence(
+    decoded: str,
+    *,
+    evidence: dict[str, dict[str, int]],
+    lexicon: _DomainLexicon,
+) -> None:
+    plain_text = re.sub(r"<[^>]+>", " ", decoded)
+    for token in WORDISH_RE.findall(plain_text):
+        normalized = _normalize_lookup_key(token)
+        if len(normalized) < 4 or lexicon.is_protected(normalized) or lexicon.lookup_variant(normalized):
+            continue
+        row = evidence.setdefault(
+            normalized,
+            {"count": 0, "heading_hits": 0, "acronym_hits": 0, "mixed_hits": 0, "lexical_hits": 0},
+        )
+        row["count"] += 1
+        if token.isupper() and 2 <= len(token) <= 8:
+            row["acronym_hits"] += 1
+        if _looks_like_mixed_domain_term(token):
+            row["mixed_hits"] += 1
+        if _token_score(token, "en") >= 0.22 or _token_score(token, "mixed") >= 0.24:
+            row["lexical_hits"] += 1
+
+    parsed = _parse_document(decoded)
+    if parsed is None:
+        return
+    for element in parsed.tree.getroot().iter():
+        if not isinstance(element.tag, str) or _local_name(element) not in {"h1", "h2", "h3", "title"}:
+            continue
+        heading_text = " ".join(part.strip() for part in element.itertext() if part and part.strip())
+        for token in WORDISH_RE.findall(heading_text):
+            normalized = _normalize_lookup_key(token)
+            if len(normalized) < 4:
                 continue
-            for element in parsed.tree.getroot().iter():
-                if not isinstance(element.tag, str) or _local_name(element) not in {"h1", "h2", "h3", "title"}:
-                    continue
-                heading_text = " ".join(part.strip() for part in element.itertext() if part and part.strip())
-                for token in WORDISH_RE.findall(heading_text):
-                    normalized = _normalize_lookup_key(token)
-                    if len(normalized) < 4:
-                        continue
-                    row = evidence.setdefault(
-                        normalized,
-                        {"count": 0, "heading_hits": 0, "acronym_hits": 0, "mixed_hits": 0, "lexical_hits": 0},
-                    )
-                    row["count"] += 1
-                    row["heading_hits"] += 1
+            row = evidence.setdefault(
+                normalized,
+                {"count": 0, "heading_hits": 0, "acronym_hits": 0, "mixed_hits": 0, "lexical_hits": 0},
+            )
+            row["count"] += 1
+            row["heading_hits"] += 1
 
+
+def _apply_runtime_domain_evidence(evidence: dict[str, dict[str, int]], *, lexicon: _DomainLexicon) -> None:
     for term, row in evidence.items():
         if (
             (row["heading_hits"] >= 2 and row["count"] >= 3)
@@ -1143,12 +1174,15 @@ def _hyphen_break_proposal(
         reason_codes.append("pl-en-lexical-merge")
     if pyphen_bonus:
         reason_codes.append("pyphen-supported")
+    if pyphen_bonus and marker != "-" and not right[:1].isupper():
+        lexical = max(lexical, 0.96)
+        language_score = max(language_score, 0.9)
     return _Proposal(
         before=f"{left}{marker}{gap}{right}",
         after=merged,
         error_class="hyphen-break",
         lexical_score=min(1.0, lexical),
-        context_score=0.95,
+        context_score=0.98 if pyphen_bonus and marker != "-" and not right[:1].isupper() else 0.95,
         language_score=language_score,
         dom_score=1.0,
         bonus_score=pyphen_bonus,
@@ -1198,6 +1232,11 @@ def _glued_word_proposal(
     if split_candidate is None:
         return None
     left, right, lexical_score, reason_codes = split_candidate
+    if config.long_document_mode and (
+        "single-letter-stopword" in reason_codes
+        or ("leading-stopword" in reason_codes and "low-whole-score" in reason_codes)
+    ):
+        return None
     leading_stopword = "leading-stopword" in reason_codes or "single-letter-stopword" in reason_codes
     low_whole_score = "low-whole-score" in reason_codes
     if low_whole_score:

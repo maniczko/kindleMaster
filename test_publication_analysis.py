@@ -184,6 +184,30 @@ class PublicationAnalysisTests(unittest.TestCase):
             )
         )
 
+    def test_short_chess_diagram_caption_samples_route_to_notation_collection(self) -> None:
+        samples = [
+            (
+                "Diagram 1-2 A. Yusu ov- P'Schlosser Bundesliga 1997 "
+                "1. Qe5+ Threatening Qg5# and mate in a few moves. "
+                "1... Qd7 2. Qg5+ Kh7 3. Qg6+"
+            ),
+            (
+                "Diagram 1-3 Dreszer Open, Gdynia 1989 "
+                "Boden's mate 1. Rxc6+ bxc6 2. Ba6#"
+            ),
+            "Exercises and mating motifs with queen rook battery and Anastasia mate.",
+        ]
+
+        self.assertTrue(
+            _detect_chess_notation_collection(
+                samples,
+                total_pages=16,
+                text_page_ratio=0.98,
+                image_page_ratio=0.8,
+                scanned_page_ratio=0.0,
+            )
+        )
+
     def test_large_chess_notation_analysis_uses_sparse_sampling(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             pdf_path = Path(temp_dir) / "large-jobava-like.pdf"

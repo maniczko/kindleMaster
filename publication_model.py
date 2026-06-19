@@ -83,6 +83,18 @@ class PublicationAnalysis:
     scanned_pages: int = 0
     text_pages: int = 0
     image_pages: int = 0
+    visual_density: float = 0.0
+    dominant_visual_ratio: float = 0.0
+    text_block_density: float = 0.0
+    layout_entropy: float = 0.0
+    toc_depth: int = 0
+    toc_noise_score: float = 0.0
+    diagram_signal_count: int = 0
+    chess_signal_count: int = 0
+    non_content_ratio: float = 0.0
+    ocr_confidence: float = 0.0
+    ocr_supported: bool = False
+    ocr_language_available: bool = False
     estimated_columns: int = 1
     heading_density: float = 0.0
     font_consistency: float = 0.0
@@ -91,6 +103,7 @@ class PublicationAnalysis:
     profile_reason: str = ""
     detected_outline_entries: int = 0
     route_decision: dict[str, Any] = field(default_factory=dict)
+    analysis_seconds: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -113,6 +126,18 @@ class PublicationAnalysis:
             "scanned_pages": self.scanned_pages,
             "text_pages": self.text_pages,
             "image_pages": self.image_pages,
+            "visual_density": round(self.visual_density, 3),
+            "dominant_visual_ratio": round(self.dominant_visual_ratio, 3),
+            "text_block_density": round(self.text_block_density, 3),
+            "layout_entropy": round(self.layout_entropy, 3),
+            "toc_depth": self.toc_depth,
+            "toc_noise_score": round(self.toc_noise_score, 3),
+            "diagram_signal_count": self.diagram_signal_count,
+            "chess_signal_count": self.chess_signal_count,
+            "non_content_ratio": round(self.non_content_ratio, 3),
+            "ocr_confidence": round(self.ocr_confidence, 3),
+            "ocr_supported": self.ocr_supported,
+            "ocr_language_available": self.ocr_language_available,
             "estimated_columns": self.estimated_columns,
             "heading_density": round(self.heading_density, 3),
             "font_consistency": round(self.font_consistency, 3),
@@ -121,6 +146,7 @@ class PublicationAnalysis:
             "profile_reason": self.profile_reason,
             "detected_outline_entries": self.detected_outline_entries,
             "route_decision": self.route_decision,
+            "analysis_seconds": round(self.analysis_seconds, 6),
         }
 
 

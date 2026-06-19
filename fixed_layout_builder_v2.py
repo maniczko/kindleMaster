@@ -24,6 +24,8 @@ import zipfile
 from pathlib import Path, PurePosixPath
 from dataclasses import dataclass
 from typing import Optional
+import re
+import uuid
 
 import fitz  # PyMuPDF
 from ebooklib import epub
@@ -600,6 +602,16 @@ def _should_demote_fixed_layout_non_content(pdf_metadata: dict) -> bool:
     )
 
 
+def demote_fixed_layout_non_content_pages_by_content(epub_bytes: bytes) -> bytes:
+    """Compatibility post-pass hook for converter-level fixed-layout repair.
+
+    The v2 builder demotes non-content pages while page text is still
+    available. After packaging, reconstructing that decision from ZIP bytes is
+    intentionally avoided; keep the public hook stable and lossless.
+    """
+    return epub_bytes
+
+
 # ============================================================================
 # IMAGE EXTRACTION WITH CHESS DIAGRAM DETECTION
 # ============================================================================
@@ -832,172 +844,66 @@ def inject_fixed_layout_viewports(
     epub_bytes: bytes,
     page_viewports: dict[str, tuple[int, int]],
 ) -> bytes:
-    """Inject viewport meta tags into all fixed-layout XHTML files.
-
-    EPUBCheck requires every fixed-layout XHTML resource, including nav.xhtml
-    and cover.xhtml, to declare a viewport. Page XHTML files keep their exact
-    page dimensions; auxiliary documents use the first known page viewport.
-    """
-    fallback_viewport = next(iter(page_viewports.values()), (1200, 1600))
-    source = io.BytesIO(epub_bytes)
-    output = io.BytesIO()
-
-    with zipfile.ZipFile(source, "r") as zin, zipfile.ZipFile(output, "w") as zout:
-        for info in zin.infolist():
-            data = zin.read(info.filename)
-
-            if info.filename.endswith((".xhtml", ".html")):
-                try:
-                    text = data.decode("utf-8")
-                except UnicodeDecodeError:
-                    zout.writestr(info, data)
-                    continue
-                width, height = page_viewports.get(info.filename, fallback_viewport)
-                viewport = f'<meta name="viewport" content="width={width},height={height}"/>'
-                if 'name="viewport"' not in text:
-                    if "</title>" in text:
-                        text = text.replace("</title>", f"</title>\n    {viewport}", 1)
-                    elif "<head>" in text:
-                        text = text.replace("<head>", f"<head>\n    {viewport}", 1)
-                    else:
-                        text = re.sub(r"(<html\b[^>]*>)", r"\1\n<head>\n    " + viewport + "\n</head>", text, count=1)
-                    data = text.encode("utf-8")
-
-            zout.writestr(info, data)
-
-    output.seek(0)
-    return output.getvalue()
+    """Backward-compatible wrapper for fixed-layout package repair."""
+    return repair_fixed_layout_epub_package(epub_bytes, page_viewports)
 
 
-def normalize_fixed_layout_package(epub_bytes: bytes) -> bytes:
-    """Repair fixed-layout package details that commonly block EPUBCheck."""
-    source = io.BytesIO(epub_bytes)
-    output = io.BytesIO()
-
-    with zipfile.ZipFile(source, "r") as zin, zipfile.ZipFile(output, "w") as zout:
-        for info in zin.infolist():
-            data = zin.read(info.filename)
-            if info.filename.endswith(".opf"):
-                try:
-                    text = data.decode("utf-8")
-                except UnicodeDecodeError:
-                    zout.writestr(info, data)
-                    continue
-                text = _normalize_uuid_identifiers_in_opf(text)
-                data = text.encode("utf-8")
-            zout.writestr(info, data)
-
-    output.seek(0)
-    return output.getvalue()
-
-
-def demote_fixed_layout_non_content_pages(epub_bytes: bytes, page_filenames: set[str]) -> bytes:
-    """Mark non-editorial fixed-layout pages as non-linear while keeping nav access."""
-    if not page_filenames:
-        return epub_bytes
-
-    source = io.BytesIO(epub_bytes)
-    output = io.BytesIO()
-
-    with zipfile.ZipFile(source, "r") as zin, zipfile.ZipFile(output, "w") as zout:
-        for info in zin.infolist():
-            data = zin.read(info.filename)
-            if info.filename.endswith(".opf"):
-                try:
-                    text = data.decode("utf-8")
-                    manifest: dict[str, str] = {}
-                    for item_match in re.finditer(r"<item\b[^>]*>", text):
-                        item_tag = item_match.group(0)
-                        id_match = re.search(r'\bid="([^"]+)"', item_tag)
-                        href_match = re.search(r'\bhref="([^"]+)"', item_tag)
-                        if id_match and href_match:
-                            manifest[id_match.group(1)] = PurePosixPath(href_match.group(1)).name
-
-                    demoted_count = 0
-
-                    def mark_itemref(match: re.Match[str]) -> str:
-                        nonlocal demoted_count
-                        tag = match.group(0)
-                        id_match = re.search(r'\bidref="([^"]+)"', tag)
-                        if not id_match or manifest.get(id_match.group(1)) not in page_filenames:
-                            return tag
-                        if re.search(r'\blinear="[^"]*"', tag):
-                            updated = re.sub(r'\blinear="[^"]*"', 'linear="no"', tag, count=1)
-                        else:
-                            updated = tag[:-2] + ' linear="no"/>' if tag.endswith("/>") else tag[:-1] + ' linear="no">'
-                        demoted_count += 1
-                        return updated
-
-                    text = re.sub(r"<itemref\b[^>]*/?>", mark_itemref, text)
-                    data = text.encode("utf-8")
-                except Exception:
-                    pass
-            zout.writestr(info, data)
-
-    output.seek(0)
-    return output.getvalue()
-
-
-def demote_fixed_layout_non_content_pages_by_content(epub_bytes: bytes) -> bytes:
-    """Re-apply non-content demotion after final EPUB cleanup rewrites OPF."""
-    try:
-        with zipfile.ZipFile(io.BytesIO(epub_bytes), "r") as archive:
-            candidates: set[str] = set()
-            for name in archive.namelist():
-                if not re.search(r"(?:^|/)page_\d+\.xhtml$", name):
-                    continue
-                soup = BeautifulSoup(archive.read(name), "html.parser")
-                text = " ".join((soup.body or soup).get_text(" ", strip=True).split())
-                text_item = PositionedText(
-                    text=text,
-                    x=0,
-                    y=0,
-                    width=0,
-                    height=0,
-                    font_name="",
-                    font_size=0,
-                    is_bold=False,
-                    is_italic=False,
-                    color=None,
-                    bbox=(0, 0, 0, 0),
-                )
-                match = re.search(r"page_(\d+)\.xhtml$", name)
-                page_num = int(match.group(1)) if match else 0
-                if _is_non_content_magazine_page(page_num, [text_item]):
-                    candidates.add(PurePosixPath(name).name)
-    except Exception:
-        return epub_bytes
-    return demote_fixed_layout_non_content_pages(epub_bytes, candidates)
-
-
-def repair_fixed_layout_epub(
+def repair_fixed_layout_epub_package(
     epub_bytes: bytes,
-    page_viewports: dict[str, tuple[int, int]] | None = None,
-    demoted_page_filenames: set[str] | None = None,
+    page_viewports: dict[str, tuple[int, int]],
 ) -> bytes:
-    """Apply Kindle/EPUBCheck-safe final repairs for fixed-layout output."""
-    repaired = inject_fixed_layout_viewports(epub_bytes, page_viewports or {})
-    repaired = demote_fixed_layout_non_content_pages(repaired, demoted_page_filenames or set())
-    return normalize_fixed_layout_package(repaired)
+    """Make fixed-layout EPUB package metadata EPUBCheck-safe.
+
+    EPUBCheck requires every XHTML document in a pre-paginated package,
+    including nav.xhtml and cover.xhtml, to declare a viewport.
+    """
+    source = io.BytesIO(epub_bytes)
+    output = io.BytesIO()
+    default_viewport = next(iter(page_viewports.values()), (600, 800))
+
+    with zipfile.ZipFile(source, "r") as zin, zipfile.ZipFile(output, "w") as zout:
+        for info in zin.infolist():
+            data = zin.read(info.filename)
+            lower_name = info.filename.lower()
+
+            if lower_name.endswith((".xhtml", ".html")):
+                text = data.decode("utf-8")
+                width, height = page_viewports.get(info.filename, default_viewport)
+                text = _ensure_fixed_layout_viewport(text, width=width, height=height)
+                data = text.encode("utf-8")
+            elif lower_name.endswith(".opf"):
+                text = data.decode("utf-8")
+                text = _normalize_urn_uuid_identifiers(text)
+                data = text.encode("utf-8")
+
+            zout.writestr(info, data)
+
+    output.seek(0)
+    return output.getvalue()
 
 
-def _normalize_uuid_identifiers_in_opf(text: str) -> str:
-    def replace_uuid(match: re.Match[str]) -> str:
-        prefix, raw, suffix = match.groups()
-        value = raw.strip()
-        candidate = value.removeprefix("urn:uuid:")
+def _ensure_fixed_layout_viewport(text: str, *, width: int, height: int) -> str:
+    if re.search(r"<meta\b[^>]*\bname=[\"']viewport[\"']", text, flags=re.IGNORECASE):
+        return text
+    viewport = f'<meta name="viewport" content="width={int(width)},height={int(height)}"/>'
+    if "</title>" in text:
+        return text.replace("</title>", f"</title>\n    {viewport}", 1)
+    head_match = re.search(r"<head\b[^>]*>", text, flags=re.IGNORECASE)
+    if head_match:
+        insert_at = head_match.end()
+        return f"{text[:insert_at]}\n    {viewport}{text[insert_at:]}"
+    return text
+
+
+def _normalize_urn_uuid_identifiers(text: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        raw = match.group(1)
         try:
-            canonical = str(uuid.UUID(candidate))
+            return f"urn:uuid:{uuid.UUID(hex=raw)}"
         except ValueError:
-            canonical = str(uuid.uuid5(uuid.NAMESPACE_URL, f"kindlemaster:{value}"))
-        return f"{prefix}{canonical}{suffix}"
+            return match.group(0)
 
-    return re.sub(
-        r"(<dc:identifier\b[^>]*>\s*urn:uuid:)([^<]+)(\s*</dc:identifier>)",
-        replace_uuid,
-        text,
-        flags=re.IGNORECASE,
-    )
+    return re.sub(r"urn:uuid:([0-9a-fA-F]{32})(?![0-9a-fA-F-])", replace, text)
 
 
 # ============================================================================
@@ -1017,7 +923,7 @@ def build_fixed_layout_epub_v2(
     
     doc = fitz.open(pdf_path)
     book = epub.EpubBook()
-    book.set_identifier("urn:uuid:" + str(uuid.uuid4()))
+    book.set_identifier(f"urn:uuid:{epub.uuid.uuid4()}")
     book.set_title(title)
     book.set_language(config.language)
     book.add_author(author)

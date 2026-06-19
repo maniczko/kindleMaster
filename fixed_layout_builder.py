@@ -379,7 +379,7 @@ def build_fixed_layout_epub(
     
     doc = fitz.open(pdf_path)
     book = epub.EpubBook()
-    book.set_identifier("urn:uuid:" + str(uuid.uuid4()))
+    book.set_identifier(f"urn:uuid:{epub.uuid.uuid4()}")
     book.set_title(title)
     book.set_language(config.language)
     book.add_author(author)
@@ -405,6 +405,7 @@ def build_fixed_layout_epub(
     
     chapters = []
     page_items_for_toc = []
+    page_viewports = {}
     render_dpi, jpeg_quality, cover_dpi, cover_quality = _resolve_fixed_layout_render_settings(
         len(doc),
         render_budget_class=normalize_budget_key(getattr(config, "render_budget_class", "") or ""),
@@ -463,6 +464,10 @@ def build_fixed_layout_epub(
         )
         page_item.content = page_html
         page_item.add_item(fixed_css)
+        page_viewports[f"EPUB/page_{page_num:03d}.xhtml"] = (
+            int(round(page_width)),
+            int(round(page_height)),
+        )
         
         book.add_item(page_item)
         chapters.append(page_item)
@@ -539,10 +544,7 @@ def build_fixed_layout_epub(
     epub_buffer = io.BytesIO()
     epub.write_epub(epub_buffer, book)
     epub_buffer.seek(0)
-    
-    try:
-        from fixed_layout_builder_v2 import repair_fixed_layout_epub
 
-        return repair_fixed_layout_epub(epub_buffer.getvalue())
-    except Exception:
-        return epub_buffer.getvalue()
+    from fixed_layout_builder_v2 import repair_fixed_layout_epub_package
+
+    return repair_fixed_layout_epub_package(epub_buffer.getvalue(), page_viewports)

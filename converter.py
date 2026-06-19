@@ -26,6 +26,7 @@ import hashlib
 import shutil
 import tempfile
 import subprocess
+import time
 import html as html_module
 import zipfile
 from pathlib import Path
@@ -63,9 +64,20 @@ EMAIL_PATTERN = re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
 MAILTO_PATTERN = re.compile(r"(?i)mailto:\s*[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}")
 HTML_PARAGRAPH_RE = re.compile(r"^<p(?P<attrs>[^>]*)>(?P<text>.*)</p>$", re.DOTALL)
 HTML_TAG_RE = re.compile(r"<[^>]+>")
+HTML_ID_ATTR_RE = re.compile(r'\bid=(["\'])(?P<id>[^"\']+)\1')
 SOLUTION_PAGE_RE = re.compile(r"Solutions page (\d+)", re.IGNORECASE)
 EXERCISE_NUMBER_RE = re.compile(r'exercise-number">(?P<num>\d+)\.</span>')
 SOLUTION_ENTRY_RE = re.compile(r"^(?P<num>\d+)\.\s+.+\s[–-]\s.+$")
+INTERACTIVE_DIAGRAM_PAGE_LIMIT = 800
+INTERACTIVE_EXTREME_PAGE_LIMIT = 1000
+
+
+class InteractiveRuntimeBudgetExceeded(RuntimeError):
+    error_code = "interactive_runtime_budget_exceeded"
+
+    def __init__(self, message: str, *, payload: dict) -> None:
+        super().__init__(message)
+        self.payload = payload
 
 
 def strip_emails(text: str) -> str:
@@ -98,6 +110,24 @@ def detect_source_page_label(parts: list[str]) -> Optional[str]:
             return text
         break
     return None
+
+
+def dedupe_html_ids(fragment: str) -> str:
+    """Make duplicate XHTML id attributes unique while preserving the first canonical id."""
+    if not fragment or "id=" not in fragment:
+        return fragment
+    seen: dict[str, int] = {}
+
+    def replace(match: re.Match[str]) -> str:
+        quote = match.group(1)
+        value = match.group("id")
+        count = seen.get(value, 0) + 1
+        seen[value] = count
+        if count == 1:
+            return match.group(0)
+        return f"id={quote}{value}-{count}{quote}"
+
+    return HTML_ID_ATTR_RE.sub(replace, fragment)
 
 
 def maybe_link_solution_reference(fragment: str, page_label_map: dict[str, str]) -> str:
@@ -207,6 +237,8 @@ def finalize_epub_bytes(
     return_details: bool = False,
 ) -> bytes | tuple[bytes, dict]:
     """Run final Kindle-friendly cleanup on reflowable EPUB output."""
+    overall_started = time.perf_counter()
+    timing_breakdown = _new_finalize_timing_breakdown()
     title = (pdf_metadata or {}).get("title") or Path(original_filename).stem
     author = (pdf_metadata or {}).get("author") or UNKNOWN_AUTHOR_FALLBACK
     profile_key = (publication_profile or "").strip().lower()
@@ -309,7 +341,9 @@ def finalize_epub_bytes(
                 "status": "failed",
                 "warnings": [f"Text cleanup failed: {exc}"],
             }
+    _record_finalize_timing(timing_breakdown, "text_cleanup", stage_started)
 
+    stage_started = time.perf_counter()
     try:
         from kindle_semantic_cleanup import finalize_epub_for_kindle
 
@@ -342,7 +376,9 @@ def finalize_epub_bytes(
     except Exception as exc:
         print(f"Warning: Kindle semantic cleanup failed: {exc}")
         semantic_reference_cleanup = {}
+    _record_finalize_timing(timing_breakdown, "semantic_cleanup", stage_started)
 
+    stage_started = time.perf_counter()
     try:
         from epub_reference_repair import repair_epub_reference_sections
 
@@ -366,7 +402,9 @@ def finalize_epub_bytes(
             **text_cleanup_summary,
             "reference_cleanup": semantic_reference_cleanup,
         }
+    _record_finalize_timing(timing_breakdown, "reference_repair", stage_started)
 
+    stage_started = time.perf_counter()
     try:
         from epub_text_artifacts import analyze_epub_text_artifacts
 
@@ -407,7 +445,9 @@ def finalize_epub_bytes(
                 "message": f"Artifact rate analysis failed: {exc.__class__.__name__}",
             },
         }
+    _record_finalize_timing(timing_breakdown, "artifact_scan", stage_started)
 
+    stage_started = time.perf_counter()
     try:
         from ai_quality_intelligence import AIQualityProviders, evaluate_ai_quality_intelligence
         from openai_quality_provider import build_openai_quality_provider_from_env
@@ -443,6 +483,37 @@ def finalize_epub_bytes(
                     "reason": feedback_exc.__class__.__name__,
                 },
             }
+        try:
+            from deepseek_quality_provider import build_deepseek_audit_provider_from_env
+
+            deepseek_provider = build_deepseek_audit_provider_from_env()
+            if deepseek_provider is not None:
+                ai_quality_report = {
+                    **ai_quality_report,
+                    "deepseek_audit": deepseek_provider.review_conversion_quality(
+                        {
+                            "source": "conversion_quality",
+                            "original_filename": original_filename,
+                            "language": config.language,
+                            "publication_profile": publication_profile,
+                            "ai_quality": ai_quality_report,
+                            "artifact_rate": text_cleanup_summary.get("artifact_rate"),
+                        }
+                    ),
+                }
+        except Exception as deepseek_exc:
+            ai_quality_report = {
+                **ai_quality_report,
+                "deepseek_audit": {
+                    "status": "failed",
+                    "provider": "deepseek-audit",
+                    "mode": "evidence_only",
+                    "evidence_only": True,
+                    "requires_human_confirmation": True,
+                    "mutates_output": False,
+                    "error_class": deepseek_exc.__class__.__name__,
+                },
+            }
         text_cleanup_summary = {
             **text_cleanup_summary,
             "ai_quality": ai_quality_report,
@@ -456,10 +527,31 @@ def finalize_epub_bytes(
                 "deterministic_output_preserved": True,
             },
         }
+    _record_finalize_timing(timing_breakdown, "ai_quality", stage_started)
 
+    timing_breakdown["total"] = round(time.perf_counter() - overall_started, 4)
+    text_cleanup_summary = {
+        **text_cleanup_summary,
+        "timing_breakdown": timing_breakdown,
+    }
     if return_details:
         return epub_bytes, text_cleanup_summary
     return epub_bytes
+
+
+def _new_finalize_timing_breakdown() -> dict[str, float]:
+    return {
+        "text_cleanup": 0.0,
+        "semantic_cleanup": 0.0,
+        "reference_repair": 0.0,
+        "artifact_scan": 0.0,
+        "ai_quality": 0.0,
+        "total": 0.0,
+    }
+
+
+def _record_finalize_timing(timing_breakdown: dict[str, float], stage: str, started: float) -> None:
+    timing_breakdown[stage] = round(time.perf_counter() - started, 4)
 
 
 def _should_skip_expensive_text_cleanup(pdf_metadata: dict | None, *, publication_profile: str | None) -> bool:
@@ -540,6 +632,9 @@ def _compact_semantic_cleanup_report(semantic_report: object) -> dict:
         "toc_rebuild": _phase_status_payload(phases.get("toc_rebuild")),
         "structural_integrity": _phase_status_payload(phases.get("structural_integrity")),
     }
+    semantic_timing = _compact_timing_breakdown(semantic_report.get("timing_breakdown"))
+    if semantic_timing:
+        compact["timing_breakdown"] = semantic_timing
     blockers = release_gate.get("blockers")
     warnings = release_gate.get("warnings")
     if isinstance(blockers, list) and blockers:
@@ -582,6 +677,18 @@ def _phase_status_payload(phase: object) -> dict:
     if payload["manual_review_count"]:
         payload["message"] = f"{payload['manual_review_count']} item(s) require manual review."
     return payload
+
+
+def _compact_timing_breakdown(payload: object) -> dict[str, float]:
+    if not isinstance(payload, dict):
+        return {}
+    compact: dict[str, float] = {}
+    for key, value in payload.items():
+        try:
+            compact[str(key)] = round(max(0.0, float(value or 0.0)), 4)
+        except (TypeError, ValueError):
+            continue
+    return compact
 
 
 def _compact_semantic_mapping(payload: dict) -> dict:
@@ -637,8 +744,7 @@ class ConversionConfig:
     chess_fen_review_provider_enabled: bool = False
     chess_fen_scan_enable_sliding_probe: bool = False
     chess_notation_chapter_pages: int = 40
-    chess_notation_diagram_scan_max_pages: int = 260
-    chess_notation_fen_recognition_max_diagrams: int = 96
+    chess_notation_layout_diagram_scan_pages: int = 0  # 0 means all pages for HTML audit preview
     scanned_chess_max_pages: int = 0  # 0 means all pages for premium scanned-chess extraction
     scanned_chess_min_grid_confidence: float = 0.50
     scanned_chess_cache_enabled: bool = True
@@ -648,6 +754,10 @@ class ConversionConfig:
     scanned_chess_ocr_long_edge: int = 1800
     scanned_chess_ocr_min_confidence: float = 0.35
     scanned_chess_front_matter_ocr_pages: int = 4
+    pdf_layout_preview_enabled: bool = True
+    pdf_layout_preview_dpi: int = 96
+    pdf_layout_preview_jpeg_quality: int = 72
+    pdf_layout_preview_max_pages: int = 0  # 0 means all pages
     
     # Typography
     body_font_family: str = "Georgia, serif"
@@ -671,6 +781,7 @@ class ConversionConfig:
     enable_epubcheck: bool = True
     route_model_mode: str = "shadow"
     quality_gate_mode: str = "draft"
+    interactive_runtime_budget: bool = False
     
     # Metadata
     language: str = "pl"
@@ -902,6 +1013,48 @@ def _publication_budget_attempt_order(analysis, budget_key: str) -> tuple[str, .
     if profile_name == "diagram_book_reflow" and normalized_budget_key == "diagram_book_reflow_balanced" and normalized_page_count >= 250:
         return ("fallback", "primary")
     return ("primary", "fallback")
+
+
+def _interactive_runtime_budget_violation(analysis, config: ConversionConfig) -> dict | None:
+    if not getattr(config, "interactive_runtime_budget", False):
+        return None
+
+    profile_name = normalize_budget_key(getattr(analysis, "profile", "") if not isinstance(analysis, dict) else analysis.get("profile", ""))
+    render_budget_class = normalize_budget_key(
+        getattr(analysis, "render_budget_class", "") if not isinstance(analysis, dict) else analysis.get("render_budget_class", "")
+    )
+    try:
+        page_count = int(getattr(analysis, "page_count", 0) if not isinstance(analysis, dict) else analysis.get("page_count", 0) or 0)
+    except (TypeError, ValueError):
+        page_count = 0
+
+    reason_codes: list[str] = []
+    limit = 0
+    if profile_name == "diagram_book_reflow" and page_count >= INTERACTIVE_DIAGRAM_PAGE_LIMIT:
+        limit = INTERACTIVE_DIAGRAM_PAGE_LIMIT
+        reason_codes.extend(["diagram_book_reflow", "interactive_page_budget_exceeded"])
+    elif render_budget_class == "fixed_layout_extreme" and page_count >= INTERACTIVE_EXTREME_PAGE_LIMIT:
+        limit = INTERACTIVE_EXTREME_PAGE_LIMIT
+        reason_codes.extend(["fixed_layout_extreme", "interactive_page_budget_exceeded"])
+
+    if not reason_codes:
+        return None
+
+    message = (
+        f"Ten PDF ma {page_count} stron i przekracza interaktywny limit {limit} stron dla profilu "
+        f"{profile_name or 'unknown'}. Pelna konwersja w UI zostala przerwana szybko zamiast czekac na timeout. "
+        "Uruchom konwersje jako zadanie offline/CLI albo przetestuj krotszy fragment dokumentu."
+    )
+    return {
+        "status": "blocked",
+        "error_code": InteractiveRuntimeBudgetExceeded.error_code,
+        "message": message,
+        "page_count": page_count,
+        "page_limit": limit,
+        "profile": profile_name,
+        "render_budget_class": render_budget_class,
+        "reason_codes": reason_codes,
+    }
 
 
 def _build_publication_pipeline_result(
@@ -2516,6 +2669,7 @@ def build_epub(content: dict, config: ConversionConfig, original_filename: str, 
             )
         
         html_content += "\n</body></html>"
+        html_content = dedupe_html_ids(html_content)
 
         chapter.content = html_content
         chapter.add_item(css)
@@ -2907,6 +3061,12 @@ def convert_pdf_to_epub_with_report(
             preferred_profile=config.profile,
             route_model_mode=config.route_model_mode,
         )
+        runtime_budget_violation = _interactive_runtime_budget_violation(analysis, config)
+        if runtime_budget_violation:
+            raise InteractiveRuntimeBudgetExceeded(
+                runtime_budget_violation["message"],
+                payload=runtime_budget_violation,
+            )
         preserve_layout = config.profile == "preserve-layout" or analysis.profile == "fixed_layout_fallback"
 
         if preserve_layout:
@@ -3025,7 +3185,7 @@ def convert_pdf_to_epub_with_report(
                         best_result = attempt_result
                         best_gate = size_gate
 
-                if size_gate["status"] == "passed":
+                if size_gate["status"] != "failed":
                     return _publication_response_payload(result=attempt_result, analysis=analysis)
 
             return _publication_response_payload(result=best_result, analysis=analysis)
@@ -3042,7 +3202,7 @@ def convert_pdf_to_epub_with_report(
         )
         publication_result["quality_report"]["final_output_size_bytes"] = len(publication_result["epub_bytes"])
         return _publication_response_payload(result=publication_result, analysis=analysis)
-    except SizeBudgetExceededError:
+    except (SizeBudgetExceededError, InteractiveRuntimeBudgetExceeded):
         raise
     except Exception as exc:
         print(f"Premium pipeline failed ({exc}), falling back to legacy conversion...")

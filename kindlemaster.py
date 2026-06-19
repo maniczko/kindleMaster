@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -18,6 +19,7 @@ QUICK_TESTS = [
     "test_skill_contracts.py",
     "test_skill_guardrails.py",
     "test_github_ready_enforcement.py",
+    "test_github_issue_orchestration.py",
     "test_project_status.py",
     "test_pdf_runtime_flow.py",
     "test_kindlemaster_entrypoint.py",
@@ -26,7 +28,12 @@ QUICK_TESTS = [
     "test_sprint4_ui_contracts.py",
     "test_browser_conversion_outcome_harness.py",
     "test_app_async_convert.py",
-    "test_app_pdf_compression.py",
+    "test_supabase_auth.py",
+    "test_supabase_library.py",
+    "test_supabase_profile.py",
+    "test_supabase_migrations.py",
+    "test_email_delivery.py",
+    "test_user_profile.py",
     "test_conversion_library.py",
     "test_app_runtime_services.py",
     "test_runtime_job_adapter.py",
@@ -36,6 +43,7 @@ QUICK_TESTS = [
     "test_ai_quality_intelligence.py",
     "test_ai_quality_feedback.py",
     "test_openai_quality_provider.py",
+    "test_ai_chess_providers.py",
     "test_app_quality_state_route.py",
     "test_sentry_observability.py",
     "test_docx_conversion.py",
@@ -46,7 +54,21 @@ QUICK_TESTS = [
     "test_chess_notation_regression.py",
     "test_chess_notation_reflow.py",
     "test_chess_pgn_extraction.py",
-    "test_scanned_chess_detector.py",
+    "test_chess_html_audit.py",
+    "test_chess_diagram_detection.py",
+    "test_chess_glyph_diagnostics.py",
+    "test_chess_fen_square_diff.py",
+    "test_chess_fen_accepted_audit.py",
+    "test_chess_auto_flow.py",
+    "test_chess_fen_pipeline_hardening.py",
+    "test_chess_fen_ml_acceptance.py",
+    "test_chess_fen_model_pipeline.py",
+    "test_chess_study_data_contracts.py",
+    "test_pdf_layout_preview.py",
+    "test_deepseek_quality_provider.py",
+    "test_chess_study_structure.py",
+    "test_chess_study_pipeline.py",
+    "test_chess_study_render.py",
     "test_converter_publication_budget.py",
     "test_fixed_layout_render_budget.py",
     "test_converter_fixed_layout_budget_enforcement.py",
@@ -75,6 +97,7 @@ QUICK_TESTS = [
     "test_text_normalization.py",
     "test_converter_text_cleanup.py",
     "test_semantic_epub_cleanup.py",
+    "test_epub_delivery_repair.py",
     "test_epub_quality_selection.py",
     "test_epub_reference_repair.py",
     "test_epub_heading_repair.py",
@@ -109,6 +132,34 @@ CORPUS_TESTS = [
     "test_golden_epub_regression.py",
 ]
 
+QUALITY_CRITICAL_TESTS = [
+    "test_docx_conversion.py",
+    "test_converter_core_paths.py",
+    "test_converter_fixed_layout_budget_enforcement.py",
+    "test_converter_text_cleanup.py",
+    "test_text_normalization.py",
+    "test_epub_validation.py",
+    "test_semantic_epub_cleanup.py",
+    "test_app_runtime_services.py",
+    "test_epub_delivery_repair.py",
+    "test_epub_quality_recovery.py",
+    "test_release_quality_recovery.py",
+]
+
+QUALITY_CRITICAL_COVERAGE_SOURCES = [
+    "converter",
+    "docx_conversion",
+    "text_cleanup_engine",
+    "text_normalization",
+    "kindle_semantic_cleanup",
+    "epub_validation",
+]
+
+QUALITY_CRITICAL_TOTAL_COVERAGE_DEFAULT = 70.0
+QUALITY_CRITICAL_CONVERTER_COVERAGE_DEFAULT = 60.0
+QUALITY_CRITICAL_TEXT_NORMALIZATION_COVERAGE_DEFAULT = 65.0
+QUALITY_CRITICAL_SEMANTIC_CLEANUP_COVERAGE_DEFAULT = 70.0
+
 BROWSER_TESTS = [
     "test_browser_polling_runtime_harness.py",
     "test_react_shell_browser_smoke.py",
@@ -129,7 +180,9 @@ DISCOVER_ONLY_TESTS = [
     "test_kindle_semantic_cleanup_coverage_boost.py",
     "test_full_magazine.py",
     "test_integration.py",
+    "test_app_pdf_compression.py",
     "test_import_fen_priority_review_batch.py",
+    "test_js_artifact_links.py",
     "test_local_hostname_contract.py",
     "test_magazine_conversion.py",
     "test_ocr_module.py",
@@ -138,12 +191,10 @@ DISCOVER_ONLY_TESTS = [
     "test_premium_reflow_tables.py",
     "test_quality_report_markdown.py",
     "test_quality_reporting.py",
-    "test_chess_auto_flow.py",
-    "test_chess_fen_accepted_audit.py",
-    "test_chess_fen_pipeline_hardening.py",
     "test_chess_fen_workflow_state_model.py",
     "test_chess_full_automation_ready.py",
     "test_chess_reading_order_audit.py",
+    "test_scanned_chess_detector.py",
     "test_external_chessimg2pos_provider.py",
     "test_external_pgn_extract_provider.py",
     "test_workflow_runner.py",
@@ -153,6 +204,7 @@ SUITE_REGISTRY: dict[str, Sequence[str]] = {
     "quick": QUICK_TESTS,
     "release": RELEASE_TESTS,
     "corpus": CORPUS_TESTS,
+    "quality-critical": QUALITY_CRITICAL_TESTS,
     "browser": BROWSER_TESTS,
     "runtime": RUNTIME_TESTS,
 }
@@ -178,6 +230,11 @@ def main() -> int:
     serve_parser.add_argument("--port", type=int, default=None)
     serve_parser.add_argument("--debug", action="store_true")
     serve_parser.add_argument("--runtime", choices=("flask", "waitress"), default="flask")
+    serve_parser.add_argument(
+        "--skip-ui-build",
+        action="store_true",
+        help="Do not auto-build the React UI before serving; /app will fail clearly if the build is missing.",
+    )
 
     convert_parser = subparsers.add_parser("convert", help="Convert a PDF or DOCX file to EPUB.")
     convert_parser.add_argument("input_path")
@@ -190,14 +247,35 @@ def main() -> int:
     convert_parser.add_argument("--domain-dictionary", default="")
     convert_parser.add_argument("--report-json", default="")
 
-    validate_parser = subparsers.add_parser("validate", help="Run EPUB validators on one or more EPUB files.")
+    process_parser = subparsers.add_parser("process", help="Run the front-door automatic chess PDF flow.")
+    process_parser.add_argument("input_path", nargs="?")
+    process_parser.add_argument("--out", default="")
+    process_parser.add_argument("--mode", choices=("auto", "auto-strict"), default="auto")
+    process_parser.add_argument("--html", default="")
+    process_parser.add_argument("--quality-profile", choices=("smoke", "default", "masterkindle"), default="default")
+    process_parser.add_argument("--render-pages", action="store_true")
+    process_parser.add_argument("--diagram-page-ranges", default="")
+    process_parser.add_argument("--glyph-mapping-file", default="")
+    process_parser.add_argument("--with-ai", action="store_true", help="Run optional AI candidate passes; AI remains review-only.")
+    process_parser.add_argument("--dry-run-ai", action="store_true", help="Write AI request manifests without live API calls.")
+    process_parser.add_argument("--ai-limit", type=int, default=0)
+    process_parser.add_argument("--ai-pgn-limit", type=int, default=30)
+    process_parser.add_argument(
+        "--chess-fen-recognition-max-diagrams",
+        default="all",
+        help="Maximum diagrams to run through runtime FEN acceptance; 0/all means all diagrams.",
+    )
+
+    validate_parser = subparsers.add_parser("validate", help="Run EPUB validators or validate an auto chess output directory.")
     validate_parser.add_argument("epub_paths", nargs="+")
     validate_parser.add_argument("--reports-dir", default="reports/validators")
-    validate_parser.add_argument("--strict", action="store_true")
+    validate_parser.add_argument("--strict", action="store_true", help="For auto chess output directories, fail on unresolved FEN/PGN review items.")
 
-    process_parser = subparsers.add_parser("process", help="Run document processing preflight modes.")
-    process_parser.add_argument("input_path", nargs="?")
-    process_parser.add_argument("--mode", choices=("auto", "auto-strict", "dev"), default="auto")
+    report_parser = subparsers.add_parser("report", help="Build or print an auto chess flow report.")
+    report_parser.add_argument("out_dir")
+
+    review_parser = subparsers.add_parser("review", help="Build an index of auto chess manual review artifacts.")
+    review_parser.add_argument("out_dir")
 
     smoke_parser = subparsers.add_parser("smoke", help="Run curated smoke tests.")
     smoke_parser.add_argument("--mode", choices=("micro", "quick", "full"), default="quick")
@@ -213,7 +291,15 @@ def main() -> int:
     corpus_parser.add_argument("--proof-profile", choices=("standard", "full", "ci"), default="standard")
     corpus_parser.add_argument("--smoke-case", action="append", default=[])
     corpus_parser.add_argument("--premium-case", action="append", default=[])
-    corpus_parser.add_argument("--fen-min-profile-count", type=int, default=None)
+    corpus_parser.add_argument(
+        "--fen-min-profile-count",
+        type=int,
+        default=None,
+        help=(
+            "Override the FEN profile-count gate. By default standard/full corpus proof requires "
+            "2 scanned chess FEN profiles; CI proof remains bounded at 1."
+        ),
+    )
     corpus_parser.add_argument("--fen-min-seed-label-count", type=int, default=20)
 
     status_parser = subparsers.add_parser("status", help="Generate a derived project status from existing evidence artifacts.")
@@ -230,6 +316,8 @@ def main() -> int:
     ml_dataset.add_argument("--reports-root", default="reports")
     ml_dataset.add_argument("--output-dir", default="reports/ml/datasets")
     ml_dataset.add_argument("--feedback-log", action="append", default=[])
+    ml_dataset.add_argument("--fail-on-collisions", action="store_true")
+    ml_dataset.add_argument("--min-examples-per-class", type=int, default=25)
 
     ml_import = ml_subparsers.add_parser("import-reference", help="Import new reference_inputs PDF/DOCX files into manifest and ML labels.")
     ml_import.add_argument("--manifest", default="reference_inputs/manifest.json")
@@ -261,11 +349,13 @@ def main() -> int:
     ml_feedback.add_argument("--notes", default="")
     ml_feedback.add_argument("--reviewer", default="")
     ml_feedback.add_argument("--export-dir", default="")
+    ml_feedback.add_argument("--include-in-training", action="store_true")
 
     ml_train = ml_subparsers.add_parser("train", help="Train the local route classifier and export JSON inference weights.")
     ml_train.add_argument("--dataset", default="reports/ml/datasets/route_examples.jsonl")
-    ml_train.add_argument("--model", default="models/route_classifier_v1.json")
-    ml_train.add_argument("--report", default="reports/ml/route_classifier_v1.metrics.json")
+    ml_train.add_argument("--model", default="")
+    ml_train.add_argument("--report", default="")
+    ml_train.add_argument("--min-examples-per-class", type=int, default=25)
 
     ml_evaluate = ml_subparsers.add_parser("evaluate", help="Evaluate a JSON route model without importing scikit-learn.")
     ml_evaluate.add_argument("--dataset", default="reports/ml/datasets/route_examples.jsonl")
@@ -276,8 +366,17 @@ def main() -> int:
     ml_feedback.add_argument("--feedback-log", default="reports/ml/feedback/conversion_feedback.jsonl")
     ml_feedback.add_argument("--output", default="reports/ml/datasets/quality_feedback_examples.jsonl")
 
+    ml_promote = ml_subparsers.add_parser("promote", help="Promote a candidate route model only after metric and corpus gates pass.")
+    ml_promote.add_argument("--candidate", required=True)
+    ml_promote.add_argument("--model", default="models/route_classifier_v1.json")
+    ml_promote.add_argument("--corpus-report", default="reports/corpus/premium_corpus_smoke_report.json")
+
     test_parser = subparsers.add_parser("test", help="Run standard KindleMaster test suites.")
-    test_parser.add_argument("--suite", choices=("quick", "release", "full", "browser", "runtime", "corpus"), default="quick")
+    test_parser.add_argument(
+        "--suite",
+        choices=("quick", "release", "full", "browser", "runtime", "corpus", "quality-critical"),
+        default="quick",
+    )
 
     audit_parser = subparsers.add_parser("audit", help="Run release audit on an EPUB.")
     audit_parser.add_argument("epub_path")
@@ -296,6 +395,81 @@ def main() -> int:
         help="Stop the release audit after N seconds and return partial evidence instead of hanging.",
     )
 
+    chess_study_parser = subparsers.add_parser("chess-study", help="Build a static chess training-book study export.")
+    chess_study_subparsers = chess_study_parser.add_subparsers(dest="chess_study_command")
+    for command_name in [
+        "run-all",
+        "audit-current",
+        "extract-structure",
+        "segment-pages",
+        "detect-diagrams",
+        "recognize-fen",
+        "extract-pgn",
+        "link-exercises",
+        "validate",
+        "render",
+        "fen-review",
+        "build-fen-templates",
+        "evaluate-fen-profile",
+        "pgn-review",
+        "quality-dashboard",
+        "ai-fen-candidates",
+        "ai-pgn-candidates",
+        "ai-quality-eval",
+        "quality-baseline",
+        "preprocess-boards",
+        "build-square-dataset",
+        "train-fen-classifier",
+        "evaluate-fen-classifier",
+        "recognize-fen-local",
+        "evaluate-fen-ensemble",
+        "calibrate-fen-confidence",
+        "export-fen-corpus-manifest",
+    ]:
+        stage_parser = chess_study_subparsers.add_parser(command_name, help=f"Run chess-study {command_name}.")
+        stage_parser.add_argument("--pdf", default="")
+        stage_parser.add_argument("--html", default="")
+        stage_parser.add_argument("--out", default="output/yusupov_study")
+        stage_parser.add_argument("--diagram-pages", type=int, default=0)
+        stage_parser.add_argument("--diagram-page-ranges", default="", help='1-based inclusive diagram sample ranges, for example "10-20,40-45". Overrides --diagram-pages when set.')
+        stage_parser.add_argument("--diagram-dpi", type=int, default=160)
+        stage_parser.add_argument("--min-grid-confidence", type=float, default=0.50)
+        stage_parser.add_argument("--max-candidates-per-page", type=int, default=6)
+        stage_parser.add_argument(
+            "--low-confidence-diagram-review",
+            action="store_true",
+            help="Add extra low-confidence diagram candidates to review artifacts only; never to accepted FEN.",
+        )
+        stage_parser.add_argument("--low-confidence-min-grid-confidence", type=float, default=0.30)
+        stage_parser.add_argument("--low-confidence-max-candidates-per-page", type=int, default=12)
+        stage_parser.add_argument("--glyph-context-pages", default="", help='Restrict raw glyph context augmentation to 1-based page ranges, for example "9-12". Empty means all pages.')
+        stage_parser.add_argument("--review-sample-limit", type=int, default=0, help="Limit rows written to review datasets; 0 writes all rows.")
+        stage_parser.add_argument("--fen-review-min-count", type=int, default=50, help="When --diagram-page-ranges is used for fen-review, extend with later diagram pages until this many rows are queued; 0 disables extension.")
+        stage_parser.add_argument("--diagram-review-labels", default="", help="CSV or JSONL manual diagram labels exported from review/diagram_review.")
+        stage_parser.add_argument("--glyph-mapping-file", default="", help="JSON file with accepted OCR token mappings for chess notation review.")
+        stage_parser.add_argument("--diagram-alignment-review", action="store_true", help="Generate crop alignment review variants for manually labeled diagrams.")
+        stage_parser.add_argument("--labels", default="", help="Verified/draft FEN labels JSONL for template build or holdout evaluation.")
+        stage_parser.add_argument("--profile", default="study_manual_verified", help="FEN template/evaluation profile name.")
+        stage_parser.add_argument("--template-output-dir", default="", help="Optional output directory for generated FEN templates.")
+        stage_parser.add_argument("--fold-count", type=int, default=5)
+        stage_parser.add_argument("--holdout-fold", type=int, default=0)
+        stage_parser.add_argument("--quality-profile", choices=("smoke", "default", "masterkindle"), default="default")
+        stage_parser.add_argument(
+            "--render-pages",
+            dest="render_pages",
+            action="store_true",
+            default=False,
+            help="Render source PDF page images for audit/debug; disabled by default for semantic study exports.",
+        )
+        stage_parser.add_argument("--no-render-pages", dest="render_pages", action="store_false")
+        stage_parser.add_argument("--ocr-fallback", action="store_true")
+        stage_parser.add_argument("--strict-thresholds", action="store_true")
+        stage_parser.add_argument("--dry-run", action="store_true", help="For AI-assisted chess-study commands, write request manifests without live API calls.")
+        stage_parser.add_argument("--ai-limit", type=int, default=0, help="Limit AI-assisted FEN candidate rows; 0 means all rows.")
+        stage_parser.add_argument("--ai-pgn-limit", type=int, default=30, help="Limit AI-assisted PGN repair rows.")
+        stage_parser.add_argument("--model-path", default="", help="Optional local FEN model path for classifier/inference commands.")
+        stage_parser.add_argument("--min-confidence", type=float, default=0.92, help="Minimum local/ensemble confidence for review gates.")
+
     workflow_parser = subparsers.add_parser(
         "workflow",
         help="Run the standard engineering workflow: reproduce, isolate, validate, and compare.",
@@ -313,6 +487,39 @@ def main() -> int:
     workflow_verify.add_argument("--run-id", required=True)
     workflow_verify.add_argument("--reports-root", default="reports/workflows")
     workflow_verify.add_argument("--output-root", default="output/workflows")
+
+    orchestrate_parser = subparsers.add_parser(
+        "orchestrate",
+        help="Validate and prepare GitHub Issue contracts for local Codex autopilot.",
+    )
+    orchestrate_parser.add_argument("--repo-root", default=".")
+    orchestrate_subparsers = orchestrate_parser.add_subparsers(dest="orchestrate_command")
+
+    orchestrate_doctor = orchestrate_subparsers.add_parser("doctor", help="Check GitHub autopilot governance files.")
+    orchestrate_doctor.add_argument("--repo-root", default=".")
+
+    orchestrate_sync = orchestrate_subparsers.add_parser("sync", help="Validate a GitHub issue JSON payload.")
+    orchestrate_sync.add_argument("--issues-json", required=True)
+    orchestrate_sync.add_argument("--output-json", default="")
+
+    orchestrate_claim = orchestrate_subparsers.add_parser("claim", help="Prepare or apply a branch claim for one issue.")
+    orchestrate_claim.add_argument("--issues-json", required=True)
+    orchestrate_claim.add_argument("--issue-number", type=int, default=None)
+    orchestrate_claim.add_argument("--output-json", default="")
+    orchestrate_claim.add_argument("--apply-branch", action="store_true")
+    orchestrate_claim.add_argument("--repo-root", default=".")
+
+    orchestrate_execute = orchestrate_subparsers.add_parser("execute", help="Build the local agent execution contract.")
+    orchestrate_execute.add_argument("--issues-json", required=True)
+    orchestrate_execute.add_argument("--issue-number", type=int, default=None)
+    orchestrate_execute.add_argument("--output-json", default="")
+
+    orchestrate_report = orchestrate_subparsers.add_parser("report", help="Build a PR/issue-ready evidence summary.")
+    orchestrate_report.add_argument("--issues-json", required=True)
+    orchestrate_report.add_argument("--issue-number", type=int, default=None)
+    orchestrate_report.add_argument("--evidence", action="append", default=[])
+    orchestrate_report.add_argument("--output-json", default="")
+    orchestrate_report.add_argument("--output-md", default="")
 
     args = parser.parse_args()
     if not args.command:
@@ -349,7 +556,12 @@ def main() -> int:
         _print_json(prepare_reference_inputs())
         return 0
     if args.command == "serve":
-        return _run_serve(port=args.port, debug=args.debug, runtime=args.runtime)
+        return _run_serve(
+            port=args.port,
+            debug=args.debug,
+            runtime=args.runtime,
+            skip_ui_build=args.skip_ui_build,
+        )
     if args.command == "convert":
         return _run_convert(
             input_path=args.input_path,
@@ -362,19 +574,84 @@ def main() -> int:
             domain_dictionary=args.domain_dictionary,
             report_json=args.report_json,
         )
-    if args.command == "validate":
-        if args.strict:
-            strict_preflight = _strict_python_chess_cli_preflight(command="python kindlemaster.py validate --strict")
-            if strict_preflight:
-                _print_json(strict_preflight)
+    if args.command == "process":
+        from chess_auto_flow import non_strict_python_chess_notice, run_auto_chess_process, strict_python_chess_preflight
+
+        if args.mode == "auto-strict":
+            preflight = strict_python_chess_preflight()
+            if preflight.get("status") == "failed":
+                _print_json(preflight)
                 return 1
+        else:
+            notice = non_strict_python_chess_notice()
+            if notice.get("manual_review_required") and not args.input_path:
+                payload = {
+                    "status": "requires_review",
+                    "manual_review_required": True,
+                    "warnings": list(notice.get("warnings") or []),
+                    "python_chess": notice.get("python_chess"),
+                }
+                _print_json(payload)
+                return 0
+        if not args.input_path or not args.out:
+            _print_json(
+                {
+                    "status": "failed",
+                    "error_code": "missing_process_input_or_output",
+                    "message": "process requires input_path and --out unless strict dependency preflight already failed.",
+                }
+            )
+            return 1
+
+        payload = run_auto_chess_process(
+            args.input_path,
+            out_dir=args.out,
+            mode=args.mode,
+            html_path=args.html or None,
+            quality_profile=args.quality_profile,
+            render_pages=args.render_pages,
+            with_ai=args.with_ai,
+            dry_run_ai=args.dry_run_ai,
+            ai_limit=args.ai_limit,
+            ai_pgn_limit=args.ai_pgn_limit,
+            chess_fen_recognition_max_diagrams=args.chess_fen_recognition_max_diagrams,
+            diagram_page_ranges=args.diagram_page_ranges,
+            glyph_mapping_file=args.glyph_mapping_file or None,
+        )
+        _print_json(payload)
+        return 1 if payload.get("strict_failed") or payload.get("status") == "AUTO_FAILED_WITH_REASON" else 0
+    if args.command == "validate":
+        from chess_auto_flow import is_auto_chess_output, validate_auto_chess_output
+
+        if args.strict:
+            from chess_auto_flow import strict_python_chess_preflight
+
+            preflight = strict_python_chess_preflight()
+            if preflight.get("status") == "failed":
+                payload = {"overall_status": "failed", **preflight}
+                _print_json(payload)
+                return 1
+        if len(args.epub_paths) == 1 and is_auto_chess_output(args.epub_paths[0]):
+            payload = validate_auto_chess_output(args.epub_paths[0], strict=args.strict)
+            _print_json(payload)
+            return 0 if payload.get("overall_status") != "failed" else 1
         from scripts.run_epub_validators import run_epub_validators
 
         payload = run_epub_validators(args.epub_paths, reports_dir=args.reports_dir)
         _print_json(payload)
         return 0 if payload["overall_status"] != "failed" else 1
-    if args.command == "process":
-        return _run_process(input_path=args.input_path, mode=args.mode)
+    if args.command == "report":
+        from chess_auto_flow import report_auto_chess_output
+
+        payload = report_auto_chess_output(args.out_dir)
+        _print_json(payload)
+        return 0 if payload.get("status") not in {"AUTO_FAILED_WITH_REASON", "failed"} else 1
+    if args.command == "review":
+        from chess_auto_flow import review_auto_chess_output
+
+        payload = review_auto_chess_output(args.out_dir)
+        _print_json(payload)
+        return 0 if payload.get("status") != "failed" else 1
     if args.command == "smoke":
         from scripts.run_smoke_tests import run_smoke_tests
 
@@ -388,10 +665,6 @@ def main() -> int:
         _print_json(payload)
         return 0 if payload["summary"]["overall_status"] != "failed" else 1
     if args.command == "corpus":
-        strict_preflight = _strict_python_chess_cli_preflight(command="python kindlemaster.py corpus")
-        if strict_preflight:
-            _print_json(strict_preflight)
-            return 1
         from scripts.run_corpus_gate import run_corpus_gate
 
         payload = run_corpus_gate(
@@ -463,6 +736,8 @@ def main() -> int:
             )
             _print_json(partial_payload)
             return RELEASE_TIMEOUT_RETURN_CODE
+    if args.command == "chess-study":
+        return _run_chess_study(args)
     if args.command == "workflow":
         from workflow_runner import run_workflow_baseline, run_workflow_verify
 
@@ -486,8 +761,275 @@ def main() -> int:
             return 0 if payload.get("status") in {"passed", "passed_with_warnings"} else 1
         workflow_parser.print_help()
         return 1
+    if args.command == "orchestrate":
+        from github_issue_orchestration import run_orchestration_command
+
+        if not args.orchestrate_command:
+            orchestrate_parser.print_help()
+            return 1
+        try:
+            payload = run_orchestration_command(args)
+        except Exception as error:
+            payload = {"status": "failed", "error": type(error).__name__, "message": str(error)}
+            _print_json(payload)
+            return 1
+        _print_json(payload)
+        return 0 if payload.get("status") in {"passed", "passed_with_warnings", "ready"} else 1
     parser.print_help()
     return 0
+
+
+def _run_chess_study(args: argparse.Namespace) -> int:
+    from chess_study_export import (
+        ChessStudyConfig,
+        audit_current_html,
+        build_chess_fen_manual_review,
+        build_chess_fen_templates,
+        build_chess_pgn_review,
+        build_chess_quality_dashboard,
+        build_ai_assisted_quality_eval,
+        build_ai_fen_candidates,
+        build_ai_pgn_candidates,
+        build_chess_quality_baseline,
+        build_fen_square_dataset,
+        build_study_exercises,
+        build_study_final_test,
+        build_study_pgn,
+        build_study_positions,
+        calibrate_fen_confidence,
+        detect_study_diagrams,
+        evaluate_fen_ensemble,
+        evaluate_chess_fen_profile,
+        export_fen_corpus_manifest,
+        extract_study_structure,
+        extract_study_notation_fragments,
+        ingest_study_pdf,
+        preprocess_chess_board_crops,
+        recognize_fen_local,
+        render_qa_html,
+        render_semantic_source_reader,
+        render_study_html,
+        run_chess_study_export,
+        segment_study_pages,
+        train_fen_square_classifier,
+        validate_study_export,
+    )
+
+    if not args.chess_study_command:
+        _print_json({"status": "failed", "error": "Missing chess-study subcommand."})
+        return 1
+    pdf = Path(args.pdf) if str(args.pdf or "").strip() else _default_chess_study_pdf()
+    out = Path(args.out)
+    html_path = Path(args.html) if str(args.html or "").strip() else None
+    if args.chess_study_command == "run-all":
+        payload = run_chess_study_export(
+            pdf,
+            html_path=html_path,
+            out_dir=out,
+            diagram_pages=args.diagram_pages,
+            diagram_page_ranges=args.diagram_page_ranges,
+            diagram_dpi=args.diagram_dpi,
+            min_grid_confidence=args.min_grid_confidence,
+            max_candidates_per_page=args.max_candidates_per_page,
+            quality_profile=args.quality_profile,
+            render_pages=args.render_pages,
+            ocr_fallback=args.ocr_fallback,
+            strict_thresholds=args.strict_thresholds,
+            low_confidence_diagram_review=args.low_confidence_diagram_review,
+            low_confidence_min_grid_confidence=args.low_confidence_min_grid_confidence,
+            low_confidence_max_candidates_per_page=args.low_confidence_max_candidates_per_page,
+            glyph_context_pages=args.glyph_context_pages,
+            review_sample_limit=args.review_sample_limit,
+            diagram_review_labels=args.diagram_review_labels or None,
+            glyph_mapping_file=args.glyph_mapping_file or None,
+            diagram_alignment_review=args.diagram_alignment_review,
+        )
+        _print_json(payload)
+        return 0 if payload.get("status") != "FAIL" else 1
+
+    config = ChessStudyConfig(
+        pdf=pdf,
+        html=html_path,
+        out=out,
+        diagram_pages=args.diagram_pages,
+        diagram_page_ranges=args.diagram_page_ranges,
+        diagram_dpi=args.diagram_dpi,
+        min_grid_confidence=args.min_grid_confidence,
+        max_candidates_per_page=args.max_candidates_per_page,
+        quality_profile=args.quality_profile,
+        render_pages=args.render_pages,
+        ocr_fallback=args.ocr_fallback,
+        strict_thresholds=args.strict_thresholds,
+        low_confidence_diagram_review=args.low_confidence_diagram_review,
+        low_confidence_min_grid_confidence=args.low_confidence_min_grid_confidence,
+        low_confidence_max_candidates_per_page=args.low_confidence_max_candidates_per_page,
+        glyph_context_pages=args.glyph_context_pages,
+        review_sample_limit=args.review_sample_limit,
+        diagram_review_labels=Path(args.diagram_review_labels) if str(args.diagram_review_labels or "").strip() else None,
+        glyph_mapping_file=Path(args.glyph_mapping_file) if str(args.glyph_mapping_file or "").strip() else None,
+        diagram_alignment_review=args.diagram_alignment_review,
+    )
+    if args.chess_study_command == "fen-review":
+        payload = build_chess_fen_manual_review(
+            config.out,
+            html_path=config.html,
+            pdf_path=config.pdf,
+            review_sample_limit=config.review_sample_limit,
+            page_ranges=config.diagram_page_ranges,
+            min_count=args.fen_review_min_count,
+        )
+    elif args.chess_study_command == "build-fen-templates":
+        if not str(args.labels or "").strip():
+            _print_json({"status": "failed", "error": "Provide --labels for build-fen-templates."})
+            return 1
+        payload = build_chess_fen_templates(
+            args.labels,
+            out_dir=config.out,
+            profile=args.profile,
+            template_output_dir=args.template_output_dir or None,
+        )
+    elif args.chess_study_command == "evaluate-fen-profile":
+        if not str(args.labels or "").strip():
+            _print_json({"status": "failed", "error": "Provide --labels for evaluate-fen-profile."})
+            return 1
+        payload = evaluate_chess_fen_profile(
+            args.labels,
+            out_dir=config.out,
+            profile=args.profile,
+            fold_count=args.fold_count,
+            holdout_fold=args.holdout_fold,
+        )
+    elif args.chess_study_command == "pgn-review":
+        payload = build_chess_pgn_review(
+            config.out,
+            glyph_mapping_file=config.glyph_mapping_file,
+        )
+    elif args.chess_study_command == "quality-dashboard":
+        payload = build_chess_quality_dashboard(config.out)
+    elif args.chess_study_command == "ai-fen-candidates":
+        payload = build_ai_fen_candidates(
+            config.out,
+            limit=args.ai_limit,
+            dry_run=args.dry_run,
+        )
+    elif args.chess_study_command == "ai-pgn-candidates":
+        payload = build_ai_pgn_candidates(
+            config.out,
+            glyph_mapping_file=config.glyph_mapping_file,
+            limit=args.ai_pgn_limit,
+            dry_run=args.dry_run,
+        )
+    elif args.chess_study_command == "ai-quality-eval":
+        payload = build_ai_assisted_quality_eval(config.out)
+    elif args.chess_study_command == "quality-baseline":
+        payload = build_chess_quality_baseline(config.out)
+    elif args.chess_study_command == "preprocess-boards":
+        payload = preprocess_chess_board_crops(
+            config.out,
+            labels_path=args.labels or None,
+            limit=args.review_sample_limit,
+        )
+    elif args.chess_study_command == "build-square-dataset":
+        if not str(args.labels or "").strip():
+            _print_json({"status": "failed", "error": "Provide --labels for build-square-dataset."})
+            return 1
+        payload = build_fen_square_dataset(
+            args.labels,
+            out_dir=config.out,
+            fold_count=args.fold_count,
+            holdout_fold=args.holdout_fold,
+        )
+    elif args.chess_study_command in {"train-fen-classifier", "evaluate-fen-classifier"}:
+        payload = train_fen_square_classifier(
+            config.out,
+            dataset_path=args.labels or None,
+            model_name=Path(args.model_path).stem if str(args.model_path or "").strip() else "chess_fen_square_v1",
+        )
+    elif args.chess_study_command == "recognize-fen-local":
+        payload = recognize_fen_local(
+            config.out,
+            model_path=args.model_path or None,
+            limit=args.review_sample_limit,
+        )
+    elif args.chess_study_command == "evaluate-fen-ensemble":
+        payload = evaluate_fen_ensemble(config.out, min_confidence=args.min_confidence)
+    elif args.chess_study_command == "calibrate-fen-confidence":
+        payload = calibrate_fen_confidence(config.out)
+    elif args.chess_study_command == "export-fen-corpus-manifest":
+        payload = export_fen_corpus_manifest(config.out)
+    elif args.chess_study_command == "audit-current":
+        if not config.html:
+            _print_json({"status": "failed", "error": "Provide --html for audit-current."})
+            return 1
+        payload = audit_current_html(config)
+    elif args.chess_study_command == "extract-structure":
+        payload = extract_study_structure(config.pdf, config.out, html_path=config.html)
+    elif args.chess_study_command == "segment-pages":
+        structure = _read_json(config.out / "chapters.json") if (config.out / "chapters.json").is_file() else extract_study_structure(config.pdf, config.out, html_path=config.html)
+        payload = segment_study_pages(config.pdf, structure, config.out, html_path=config.html)
+    elif args.chess_study_command == "detect-diagrams":
+        payload = detect_study_diagrams(config)
+    elif args.chess_study_command == "render" and (config.out / "data" / "book.json").is_file():
+        payload = render_semantic_source_reader(config.out)
+    elif args.chess_study_command in {"recognize-fen", "extract-pgn", "link-exercises", "validate", "render"}:
+        page_model = ingest_study_pdf(config)
+        structure = _read_json(config.out / "chapters.json") if (config.out / "chapters.json").is_file() else extract_study_structure(config.pdf, config.out, html_path=config.html)
+        segments = _read_json(config.out / "page_segments.json") if (config.out / "page_segments.json").is_file() else segment_study_pages(config.pdf, structure, config.out, html_path=config.html)
+        diagrams = _read_json(config.out / "chess_diagrams.json") if (config.out / "chess_diagrams.json").is_file() else detect_study_diagrams(config)
+        positions = build_study_positions(diagrams, segments, config.out)
+        notation_fragments = extract_study_notation_fragments(
+            page_model,
+            positions,
+            config.out,
+            glyph_context_pages=config.glyph_context_pages,
+            glyph_mapping_file=config.glyph_mapping_file,
+        )
+        pgn_payload = build_study_pgn(positions, config.out, notation_fragments=notation_fragments)
+        exercises = build_study_exercises(positions, config.out)
+        final_test = build_study_final_test(positions, config.out)
+        payload = validate_study_export(
+            config,
+            current_audit={"status": "not_provided", "final_html_status": "NOT_ACCEPTABLE_AS_FINAL"},
+            structure=structure,
+            segments=segments,
+            diagrams=diagrams,
+            positions=positions,
+            page_model=page_model,
+            notation_fragments=notation_fragments,
+            pgn_payload=pgn_payload,
+            exercises=exercises,
+            final_test=final_test,
+        )
+        if args.chess_study_command == "render":
+            render_study_html(
+                config.out,
+                structure=structure,
+                positions=positions,
+                qa_report=payload,
+                page_model=page_model,
+                notation_fragments=notation_fragments,
+            )
+            render_qa_html(config.out, payload)
+    else:
+        payload = {"status": "failed", "error": f"Unsupported chess-study command: {args.chess_study_command}"}
+    _print_json(payload)
+    return 0 if payload.get("status") not in {"failed", "FAIL"} else 1
+
+
+def _default_chess_study_pdf() -> Path:
+    candidates = [
+        Path("input") / "Yusupov_Build up your Chess 1_The Fundamentals(1).pdf",
+        Path.home() / "Downloads" / "Yusupov_Build up your Chess 1_The Fundamentals.pdf",
+        Path.home() / "Downloads" / "Fundamenty 1-1.pdf",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return candidates[0]
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _run_bootstrap(*, runtime_only: bool) -> int:
@@ -516,60 +1058,6 @@ def _run_bootstrap(*, runtime_only: bool) -> int:
     }
     _print_json(payload)
     return 0
-
-
-def _run_process(*, input_path: str | None, mode: str) -> int:
-    if mode == "auto-strict":
-        strict_preflight = _strict_python_chess_cli_preflight(command="python kindlemaster.py process --mode auto-strict")
-        if strict_preflight:
-            if input_path:
-                strict_preflight["input_path"] = input_path
-            _print_json(strict_preflight)
-            return 1
-        payload = {
-            "command": "process",
-            "mode": mode,
-            "status": "ready",
-            "input_path": input_path or "",
-            "notes": ["Strict chess automation prerequisites are available."],
-        }
-        _print_json(payload)
-        return 0
-
-    from chess_auto_flow import non_strict_python_chess_notice
-
-    notice = non_strict_python_chess_notice()
-    status = "ready" if notice.get("status") == "ok" else "requires_review"
-    payload = {
-        "command": "process",
-        "mode": mode,
-        "status": status,
-        "input_path": input_path or "",
-        "python_chess": notice.get("python_chess", {}),
-        "warnings": notice.get("warnings", []),
-        "manual_review_required": bool(notice.get("manual_review_required")),
-        "notes": notice.get("notes", []),
-    }
-    _print_json(payload)
-    return 0
-
-
-def _strict_python_chess_cli_preflight(*, command: str) -> dict[str, Any] | None:
-    from chess_auto_flow import strict_python_chess_preflight
-
-    preflight = strict_python_chess_preflight()
-    if preflight.get("status") == "ok":
-        return None
-    return {
-        "command": command,
-        "overall_status": "failed",
-        "status": "failed",
-        "error_code": preflight.get("error_code") or "python_chess_missing",
-        "blockers": list(preflight.get("blockers") or ["python_chess_unavailable"]),
-        "missing_requirements": list(preflight.get("missing_requirements") or ["python-chess"]),
-        "python_chess": preflight.get("python_chess", {}),
-        "notes": preflight.get("notes", []),
-    }
 
 
 def _maybe_install_git_hooks(*, runtime_only: bool) -> dict[str, Any]:
@@ -621,8 +1109,12 @@ def _run_ml(args: argparse.Namespace) -> int:
             reports_root=args.reports_root,
             output_dir=args.output_dir,
             feedback_log_paths=args.feedback_log,
+            fail_on_collisions=args.fail_on_collisions,
+            min_examples_per_class=args.min_examples_per_class,
         )
         _print_json(payload)
+        if args.fail_on_collisions and payload.get("status") == "blocked_feature_collision":
+            return 2
         return 0 if payload.get("status") != "failed" else 1
     if args.ml_command == "feedback":
         return _run_ml_feedback(args)
@@ -640,11 +1132,12 @@ def _run_ml(args: argparse.Namespace) -> int:
 
         payload = train_route_classifier(
             dataset_path=args.dataset,
-            model_path=args.model,
-            report_path=args.report,
+            model_path=args.model or None,
+            report_path=args.report or None,
+            min_examples_per_class=args.min_examples_per_class,
         )
         _print_json(payload)
-        return 0 if payload.get("status") in {"trained", "training_unavailable"} else 1
+        return 0 if payload.get("status") == "candidate_trained" else 1
     if args.ml_command == "evaluate":
         from scripts.train_route_classifier import evaluate_route_classifier
 
@@ -655,7 +1148,17 @@ def _run_ml(args: argparse.Namespace) -> int:
         )
         _print_json(payload)
         return 0 if payload.get("status") != "failed" else 1
-    _print_json({"status": "failed", "error": "Missing ml subcommand. Use import-reference, sample-reference, dataset, feedback, feedback-export, train, or evaluate."})
+    if args.ml_command == "promote":
+        from scripts.train_route_classifier import promote_route_classifier
+
+        payload = promote_route_classifier(
+            candidate_path=args.candidate,
+            model_path=args.model,
+            corpus_report_path=args.corpus_report,
+        )
+        _print_json(payload)
+        return 0 if payload.get("status") == "promoted" else 1
+    _print_json({"status": "failed", "error": "Missing ml subcommand. Use dataset, feedback, feedback-export, train, evaluate, or promote."})
     return 1
 
 
@@ -682,6 +1185,7 @@ def _run_ml_feedback(args: argparse.Namespace) -> int:
             issue_tags=args.issue_tag,
             notes=args.notes,
             reviewer=args.reviewer,
+            include_in_training=args.include_in_training,
         )
         payload["actions"].append("log")
         payload["logged"] = logged
@@ -705,7 +1209,69 @@ def _run_ml_feedback(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
-def _run_serve(*, port: int | None, debug: bool, runtime: str) -> int:
+def _react_ui_build_inputs(repo_root: Path) -> list[Path]:
+    inputs: list[Path] = []
+    frontend_root = repo_root / "frontend"
+    if frontend_root.is_dir():
+        inputs.extend(path for path in frontend_root.rglob("*") if path.is_file())
+    inputs.extend(
+        path
+        for path in [
+            repo_root / "package.json",
+            repo_root / "package-lock.json",
+            repo_root / "vite.config.ts",
+            repo_root / "vite.config.js",
+        ]
+        if path.is_file()
+    )
+    return inputs
+
+
+def _react_ui_build_required(repo_root: Path) -> bool:
+    react_index = repo_root / "static" / "react" / "index.html"
+    if not react_index.is_file():
+        return True
+    try:
+        build_mtime = react_index.stat().st_mtime
+    except OSError:
+        return True
+    for path in _react_ui_build_inputs(repo_root):
+        try:
+            if path.stat().st_mtime > build_mtime:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _skip_react_ui_build(skip_ui_build: bool) -> bool:
+    value = os.environ.get("KINDLEMASTER_SKIP_UI_BUILD", "")
+    return skip_ui_build or value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _ensure_react_ui_build(*, repo_root: Path, skip_ui_build: bool) -> int:
+    if _skip_react_ui_build(skip_ui_build):
+        return 0
+    if not _react_ui_build_required(repo_root):
+        return 0
+    if shutil.which("npm") is None:
+        print("Skipping React UI build because npm is not available on PATH.", flush=True)
+        return 0
+    print("Building KindleMaster React UI (npm run build:ui)...", flush=True)
+    try:
+        completed = subprocess.run(["npm", "run", "build:ui"], check=False, cwd=repo_root)
+    except FileNotFoundError:
+        print("Skipping React UI build because npm could not be executed.", flush=True)
+        return 0
+    return completed.returncode
+
+
+def _run_serve(*, port: int | None, debug: bool, runtime: str, skip_ui_build: bool = False) -> int:
+    repo_root = Path(__file__).resolve().parent
+    ui_build_returncode = _ensure_react_ui_build(repo_root=repo_root, skip_ui_build=skip_ui_build)
+    if ui_build_returncode != 0:
+        return ui_build_returncode
+
     from app import app
     from app_runtime_services import (
         build_local_app_url,
@@ -782,11 +1348,12 @@ def _run_tests(suite: str) -> int:
             cwd=repo_root,
         ).returncode
     if suite == "corpus":
-        strict_preflight = _strict_python_chess_cli_preflight(command="python kindlemaster.py test --suite corpus")
-        if strict_preflight:
-            strict_preflight["suite"] = "corpus"
-            strict_preflight["status"] = "unavailable"
-            _print_json(strict_preflight)
+        from chess_auto_flow import strict_python_chess_preflight
+
+        preflight = strict_python_chess_preflight()
+        if preflight.get("status") == "failed":
+            payload = {**preflight, "suite": "corpus", "status": "unavailable"}
+            _print_json(payload)
             return 1
         commands: list[Sequence[str]] = [
             [sys.executable, "-m", "unittest", *SUITE_REGISTRY["corpus"]],
@@ -797,6 +1364,8 @@ def _run_tests(suite: str) -> int:
             if completed.returncode != 0:
                 return completed.returncode
         return 0
+    if suite == "quality-critical":
+        return _run_quality_critical_suite(repo_root=repo_root)
     if suite == "release":
         return _run_release_suite(repo_root=repo_root, release_surface=verification_surfaces.get("release", {}))
     if suite == "full":
@@ -821,21 +1390,157 @@ def _run_tests(suite: str) -> int:
     return subprocess.run(command, check=False, cwd=repo_root).returncode
 
 
+def _coverage_threshold_from_env(name: str, default: float) -> float:
+    raw_value = os.environ.get(name, "").strip()
+    if not raw_value:
+        return default
+    try:
+        return float(raw_value)
+    except ValueError:
+        return default
+
+
+def _quality_critical_coverage_payload(
+    coverage_json: dict[str, Any],
+    *,
+    total_threshold: float,
+    converter_threshold: float,
+    text_normalization_threshold: float,
+    semantic_cleanup_threshold: float,
+) -> dict[str, Any]:
+    totals = coverage_json.get("totals", {}) if isinstance(coverage_json, dict) else {}
+    files = coverage_json.get("files", {}) if isinstance(coverage_json, dict) else {}
+    total_coverage = round(float(totals.get("percent_covered", 0.0) or 0.0), 2)
+
+    file_thresholds = {
+        "converter.py": converter_threshold,
+        "text_normalization.py": text_normalization_threshold,
+        "kindle_semantic_cleanup.py": semantic_cleanup_threshold,
+    }
+    file_payload: dict[str, dict[str, float]] = {}
+    missing_actions: list[str] = []
+    if total_coverage < total_threshold:
+        missing_actions.append(f"total coverage {total_coverage}% is below {total_threshold}%")
+    for file_name, threshold in file_thresholds.items():
+        file_summary = files.get(file_name, {}).get("summary", {}) if isinstance(files, dict) else {}
+        coverage = round(float(file_summary.get("percent_covered", 0.0) or 0.0), 2)
+        file_payload[file_name] = {"coverage": coverage, "threshold": threshold}
+        if coverage < threshold:
+            missing_actions.append(f"{file_name} coverage {coverage}% is below {threshold}%")
+
+    return {
+        "suite": "quality-critical",
+        "status": "passed" if not missing_actions else "failed",
+        "thresholds": {
+            "total": total_threshold,
+            "converter.py": converter_threshold,
+            "text_normalization.py": text_normalization_threshold,
+            "kindle_semantic_cleanup.py": semantic_cleanup_threshold,
+        },
+        "total_coverage": total_coverage,
+        "files": file_payload,
+        "missing_actions": missing_actions,
+    }
+
+
+def _run_quality_critical_suite(*, repo_root: Path) -> int:
+    started = time.perf_counter()
+    coverage_dir = repo_root / "reports" / "coverage"
+    coverage_dir.mkdir(parents=True, exist_ok=True)
+    coverage_json_path = coverage_dir / "quality-critical.json"
+    total_threshold = _coverage_threshold_from_env(
+        "CORE_CONVERSION_COVERAGE_FAIL_UNDER",
+        QUALITY_CRITICAL_TOTAL_COVERAGE_DEFAULT,
+    )
+    converter_threshold = _coverage_threshold_from_env(
+        "CONVERTER_COVERAGE_FAIL_UNDER",
+        QUALITY_CRITICAL_CONVERTER_COVERAGE_DEFAULT,
+    )
+    text_normalization_threshold = _coverage_threshold_from_env(
+        "TEXT_NORMALIZATION_COVERAGE_FAIL_UNDER",
+        QUALITY_CRITICAL_TEXT_NORMALIZATION_COVERAGE_DEFAULT,
+    )
+    semantic_threshold = _coverage_threshold_from_env(
+        "SEMANTIC_CLEANUP_COVERAGE_FAIL_UNDER",
+        QUALITY_CRITICAL_SEMANTIC_CLEANUP_COVERAGE_DEFAULT,
+    )
+    commands: list[tuple[str, Sequence[str]]] = [
+        ("coverage-erase", [sys.executable, "-m", "coverage", "erase"]),
+        (
+            "quality-critical-tests",
+            [
+                sys.executable,
+                "-m",
+                "coverage",
+                "run",
+                f"--source={','.join(QUALITY_CRITICAL_COVERAGE_SOURCES)}",
+                "-m",
+                "unittest",
+                *QUALITY_CRITICAL_TESTS,
+            ],
+        ),
+        ("coverage-report", [sys.executable, "-m", "coverage", "report"]),
+        ("coverage-json", [sys.executable, "-m", "coverage", "json", "-o", str(coverage_json_path)]),
+    ]
+    step_results: list[dict[str, Any]] = []
+    for label, command in commands:
+        completed = subprocess.run(command, check=False, cwd=repo_root)
+        step_results.append({"label": label, "command": list(command), "returncode": completed.returncode})
+        if completed.returncode != 0:
+            payload = _governance_artifact_payload(
+                command="python kindlemaster.py test --suite quality-critical",
+                status="failed",
+                returncode=completed.returncode,
+                started=started,
+                notes=[f"Quality-critical failed during `{label}`."],
+                extra={"suite": "quality-critical", "failed_step": label, "steps": step_results},
+            )
+            _write_governance_artifact(lane="quality-critical", payload=payload, repo_root=repo_root)
+            _print_json(payload)
+            return completed.returncode
+
+    try:
+        coverage_json = json.loads(coverage_json_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        coverage_payload = {
+            "suite": "quality-critical",
+            "status": "failed",
+            "missing_actions": [f"Could not read coverage JSON: {exc}"],
+        }
+    else:
+        coverage_payload = _quality_critical_coverage_payload(
+            coverage_json,
+            total_threshold=total_threshold,
+            converter_threshold=converter_threshold,
+            text_normalization_threshold=text_normalization_threshold,
+            semantic_cleanup_threshold=semantic_threshold,
+        )
+    status = str(coverage_payload.get("status", "failed"))
+    returncode = 0 if status == "passed" else 1
+    payload = _governance_artifact_payload(
+        command="python kindlemaster.py test --suite quality-critical",
+        status=status,
+        returncode=returncode,
+        started=started,
+        notes=[
+            "Quality-critical suite protects core conversion coverage without slowing the quick lane.",
+        ],
+        extra={**coverage_payload, "steps": step_results, "coverage_json": str(coverage_json_path)},
+    )
+    _write_governance_artifact(lane="quality-critical", payload=payload, repo_root=repo_root)
+    _print_json(payload)
+    return returncode
+
+
 def _run_release_suite(*, repo_root: Path, release_surface: dict[str, Any]) -> int:
     started = time.perf_counter()
     release_notes = _release_suite_notes(release_surface)
     proof_profile = _release_proof_profile()
-    strict_preflight = _strict_python_chess_cli_preflight(command="python kindlemaster.py test --suite release")
-    if strict_preflight:
-        payload = {
-            "suite": "release",
-            "status": "unavailable",
-            "missing_requirements": strict_preflight.get("missing_requirements", []),
-            "blockers": strict_preflight.get("blockers", []),
-            "error_code": strict_preflight.get("error_code"),
-            "notes": [*release_notes, *strict_preflight.get("notes", [])],
-            "python_chess": strict_preflight.get("python_chess", {}),
-        }
+    from chess_auto_flow import strict_python_chess_preflight
+
+    preflight = strict_python_chess_preflight()
+    if preflight.get("status") == "failed":
+        payload = {**preflight, "suite": "release", "status": "unavailable"}
         _write_governance_artifact(
             lane="release",
             payload=_governance_artifact_payload(
@@ -843,7 +1548,7 @@ def _run_release_suite(*, repo_root: Path, release_surface: dict[str, Any]) -> i
                 status="failed",
                 returncode=1,
                 started=started,
-                notes=payload["notes"],
+                notes=list(preflight.get("notes") or []),
                 extra=payload,
             ),
             repo_root=repo_root,

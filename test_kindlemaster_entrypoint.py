@@ -18,12 +18,14 @@ from kindlemaster import (
     BROWSER_TESTS,
     CORPUS_TESTS,
     DISCOVER_ONLY_TESTS,
+    QUALITY_CRITICAL_TESTS,
     QUICK_TESTS,
     RELEASE_TESTS,
     RUNTIME_TESTS,
     SUITE_REGISTRY,
     TEST_FILE_PATTERN,
     _json_text,
+    _quality_critical_coverage_payload,
     _run_bootstrap,
     _run_convert,
     _run_tests,
@@ -117,6 +119,7 @@ class KindleMasterEntrypointTests(unittest.TestCase):
         self.assertNotIn("test_skill_contracts.py", RELEASE_TESTS)
         self.assertNotIn("test_premium_corpus_smoke.py", RELEASE_TESTS)
         self.assertIn("test_browser_polling_runtime_harness.py", BROWSER_TESTS)
+        self.assertIn("test_react_shell_browser_smoke.py", BROWSER_TESTS)
         self.assertIn("test_browser_polling_e2e.py", RUNTIME_TESTS)
         self.assertIn("test_browser_privacy_diagnostics.py", RUNTIME_TESTS)
         self.assertIn("test_runtime_waitress_smoke.py", RUNTIME_TESTS)
@@ -128,7 +131,7 @@ class KindleMasterEntrypointTests(unittest.TestCase):
         discovered_tests = {path.name for path in repo_root.glob(TEST_FILE_PATTERN) if path.is_file()}
         explicit_tests: set[str] = set()
 
-        self.assertEqual(set(SUITE_REGISTRY), {"quick", "release", "corpus", "browser", "runtime"})
+        self.assertEqual(set(SUITE_REGISTRY), {"quick", "release", "corpus", "browser", "runtime", "quality-critical"})
         for suite_name, suite_tests in SUITE_REGISTRY.items():
             self.assertEqual(len(suite_tests), len(set(suite_tests)), suite_name)
             explicit_tests.update(suite_tests)
@@ -139,6 +142,49 @@ class KindleMasterEntrypointTests(unittest.TestCase):
         self.assertFalse(discover_only_tests & explicit_tests)
         self.assertEqual(discovered_tests - accounted_tests, set())
         self.assertEqual(accounted_tests - discovered_tests, set())
+
+    def test_quality_critical_suite_tracks_conversion_coverage_hotspots(self) -> None:
+        self.assertIn("test_converter_text_cleanup.py", QUALITY_CRITICAL_TESTS)
+        self.assertIn("test_semantic_epub_cleanup.py", QUALITY_CRITICAL_TESTS)
+        self.assertIn("test_app_runtime_services.py", QUALITY_CRITICAL_TESTS)
+        self.assertIn("test_epub_quality_recovery.py", QUALITY_CRITICAL_TESTS)
+
+        coverage_json = {
+            "totals": {"percent_covered": 72.31},
+            "files": {
+                "converter.py": {"summary": {"percent_covered": 43.01}},
+                "text_normalization.py": {"summary": {"percent_covered": 65.5}},
+                "kindle_semantic_cleanup.py": {"summary": {"percent_covered": 75.3}},
+            },
+        }
+
+        payload = _quality_critical_coverage_payload(
+            coverage_json,
+            total_threshold=70.0,
+            converter_threshold=40.0,
+            text_normalization_threshold=65.0,
+            semantic_cleanup_threshold=70.0,
+        )
+
+        self.assertEqual(payload["status"], "passed")
+        self.assertEqual(payload["missing_actions"], [])
+        self.assertEqual(payload["thresholds"]["total"], 70.0)
+        self.assertEqual(payload["files"]["converter.py"]["coverage"], 43.01)
+        self.assertEqual(payload["files"]["text_normalization.py"]["coverage"], 65.5)
+        self.assertEqual(payload["files"]["kindle_semantic_cleanup.py"]["coverage"], 75.3)
+
+        failed = _quality_critical_coverage_payload(
+            coverage_json,
+            total_threshold=75.0,
+            converter_threshold=45.0,
+            text_normalization_threshold=66.0,
+            semantic_cleanup_threshold=80.0,
+        )
+        self.assertEqual(failed["status"], "failed")
+        self.assertIn("total coverage 72.31% is below 75.0%", failed["missing_actions"])
+        self.assertIn("converter.py coverage 43.01% is below 45.0%", failed["missing_actions"])
+        self.assertIn("text_normalization.py coverage 65.5% is below 66.0%", failed["missing_actions"])
+        self.assertIn("kindle_semantic_cleanup.py coverage 75.3% is below 80.0%", failed["missing_actions"])
 
     def test_browser_harness_file_does_not_import_playwright(self) -> None:
         harness_source = Path("test_browser_polling_runtime_harness.py").read_text(encoding="utf-8")
@@ -171,21 +217,33 @@ class KindleMasterEntrypointTests(unittest.TestCase):
         def fake_module_available(name: str) -> bool:
             return module_presence.get(name, False)
 
-        with (
-            patch("premium_tools._module_available", side_effect=fake_module_available),
-            patch("premium_tools._command_available", return_value=False),
-            patch("premium_tools.find_java_executable", return_value=None),
-            patch("premium_tools.find_tesseract_executable", return_value=Path("C:/tools/tesseract.exe")),
-            patch("premium_tools.find_ocrmypdf_executable", return_value=None),
-            patch("premium_tools.find_qpdf_executable", return_value=None),
-            patch("premium_tools.find_ghostscript_executable", return_value=None),
-            patch("premium_tools.find_tessdata_dir", return_value=Path("C:/tools/tessdata")),
-            patch("premium_tools.list_tesseract_languages", return_value=["eng", "pol"]),
-            patch("premium_tools.find_epubcheck_jar", return_value=None),
-            patch("premium_tools.find_pdfbox_jar", return_value=None),
-            patch("premium_tools.find_playwright_chromium_executable", return_value=None),
-        ):
-            toolchain = premium_tools.detect_toolchain()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            isolated_env = {
+                "KINDLEMASTER_USER_PROFILE_PATH": str(Path(temp_dir) / "profile.json"),
+                "KINDLEMASTER_EMAIL_DELIVERY": "0",
+                "KINDLEMASTER_SMTP_HOST": "",
+                "KINDLEMASTER_SMTP_USERNAME": "",
+                "KINDLEMASTER_SMTP_PASSWORD": "",
+                "KINDLEMASTER_SMTP_FROM": "",
+            }
+            with (
+                patch.dict(os.environ, isolated_env, clear=False),
+                patch("premium_tools._module_available", side_effect=fake_module_available),
+                patch("premium_tools._command_available", return_value=False),
+                patch("premium_tools.find_java_executable", return_value=None),
+                patch("premium_tools.find_tesseract_executable", return_value=Path("C:/tools/tesseract.exe")),
+                patch("premium_tools.find_ocrmypdf_executable", return_value=None),
+                patch("premium_tools.find_qpdf_executable", return_value=None),
+                patch("premium_tools.find_ghostscript_executable", return_value=None),
+                patch("premium_tools.find_tessdata_dir", return_value=Path("C:/tools/tessdata")),
+                patch("premium_tools.list_tesseract_languages", return_value=["eng", "pol"]),
+                patch("premium_tools.find_epubcheck_jar", return_value=None),
+                patch("premium_tools.find_pdfbox_jar", return_value=None),
+                patch("premium_tools.find_playwright_chromium_executable", return_value=None),
+                patch("supabase_auth.DEFAULT_SUPABASE_ENV_FILES", ()),
+                patch("supabase_library.DEFAULT_SUPABASE_ENV_FILES", ()),
+            ):
+                toolchain = premium_tools.detect_toolchain()
 
         self.assertEqual(toolchain["bootstrap"]["profiles"]["runtime_only"]["status"], "supported")
         self.assertEqual(toolchain["bootstrap"]["profiles"]["developer"]["status"], "supported")
@@ -194,6 +252,7 @@ class KindleMasterEntrypointTests(unittest.TestCase):
             toolchain["bootstrap"]["profiles"]["developer"]["manual_steps"],
         )
         self.assertEqual(toolchain["verification_surfaces"]["quick"]["status"], "supported")
+        self.assertEqual(toolchain["verification_surfaces"]["quality-critical"]["status"], "supported")
         self.assertEqual(toolchain["verification_surfaces"]["corpus"]["status"], "supported")
         self.assertEqual(toolchain["verification_surfaces"]["browser"]["status"], "unsupported")
         self.assertEqual(toolchain["verification_surfaces"]["runtime"]["status"], "unsupported")
@@ -204,6 +263,32 @@ class KindleMasterEntrypointTests(unittest.TestCase):
         )
         self.assertEqual(toolchain["conversion_capabilities"]["ocr_pipeline"]["status"], "degraded")
         self.assertEqual(toolchain["conversion_capabilities"]["epubcheck_validation"]["status"], "unavailable")
+        self.assertIn(
+            "Install a Java runtime and ensure `java` is on PATH.",
+            toolchain["conversion_capabilities"]["epubcheck_validation"]["manual_steps"],
+        )
+        self.assertIn(
+            "Download EPUBCheck and set EPUBCHECK_JAR to the epubcheck*.jar path, or place the jar under tools/.",
+            toolchain["conversion_capabilities"]["epubcheck_validation"]["manual_steps"],
+        )
+        self.assertIn(
+            "Install a Java runtime and ensure `java` is on PATH.",
+            toolchain["conversion_capabilities"]["pdfbox_extraction"]["manual_steps"],
+        )
+        self.assertIn(
+            "Set PDFBOX_JAR to pdfbox-app*.jar, or place the jar under tools/.",
+            toolchain["conversion_capabilities"]["pdfbox_extraction"]["manual_steps"],
+        )
+        self.assertEqual(toolchain["conversion_capabilities"]["email_delivery"]["status"], "unavailable")
+        self.assertIn(
+            "Set KINDLEMASTER_EMAIL_DELIVERY=1 and configure KINDLEMASTER_SMTP_HOST, KINDLEMASTER_SMTP_USERNAME, KINDLEMASTER_SMTP_PASSWORD, and KINDLEMASTER_SMTP_FROM.",
+            toolchain["conversion_capabilities"]["email_delivery"]["manual_steps"],
+        )
+        self.assertEqual(toolchain["conversion_capabilities"]["cloud_account_library"]["status"], "unavailable")
+        self.assertIn(
+            "Set KINDLEMASTER_AUTH_PROVIDER=supabase, SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, SUPABASE_SERVICE_ROLE_KEY, and SUPABASE_ARTIFACT_BUCKET.",
+            toolchain["conversion_capabilities"]["cloud_account_library"]["manual_steps"],
+        )
 
     def test_detect_toolchain_marks_release_and_corpus_unsupported_without_python_chess(self) -> None:
         def fake_module_available(name: str) -> bool:
@@ -484,6 +569,8 @@ class KindleMasterEntrypointTests(unittest.TestCase):
             reports_root="reports",
             output_dir="reports/ml/datasets",
             feedback_log_paths=["reports/ml/feedback/conversion_feedback.jsonl"],
+            fail_on_collisions=False,
+            min_examples_per_class=25,
         )
         print_mock.assert_called_once_with(payload)
 
@@ -587,6 +674,7 @@ class KindleMasterEntrypointTests(unittest.TestCase):
             issue_tags=["toc"],
             notes="Looks usable.",
             reviewer="operator",
+            include_in_training=False,
         )
         export_mock.assert_called_once_with(
             log_paths=["reports/ml/feedback/conversion_feedback.jsonl"],
@@ -596,6 +684,35 @@ class KindleMasterEntrypointTests(unittest.TestCase):
         self.assertEqual(payload["status"], "completed")
         self.assertFalse(payload["online_learning"])
         self.assertEqual(payload["actions"], ["log", "export"])
+
+    def test_ml_promote_command_requires_candidate_and_uses_promotion_gate(self) -> None:
+        payload = {"status": "blocked", "error": "promotion_gates_failed"}
+        with patch("scripts.train_route_classifier.promote_route_classifier", return_value=payload) as promote_mock:
+            with patch.object(kindlemaster, "_print_json") as print_mock:
+                with patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "kindlemaster.py",
+                        "ml",
+                        "promote",
+                        "--candidate",
+                        "models/candidates/route_classifier_candidate.json",
+                        "--model",
+                        "models/route_classifier_v1.json",
+                        "--corpus-report",
+                        "reports/corpus/premium_corpus_smoke_report.json",
+                    ],
+                ):
+                    exit_code = kindlemaster.main()
+
+        self.assertEqual(exit_code, 1)
+        promote_mock.assert_called_once_with(
+            candidate_path="models/candidates/route_classifier_candidate.json",
+            model_path="models/route_classifier_v1.json",
+            corpus_report_path="reports/corpus/premium_corpus_smoke_report.json",
+        )
+        print_mock.assert_called_once_with(payload)
 
     def test_audit_command_builds_release_audit_invocation(self) -> None:
         with patch("kindlemaster.subprocess.run", return_value=SimpleNamespace(returncode=0)) as run_mock:
@@ -1037,6 +1154,7 @@ class KindleMasterEntrypointTests(unittest.TestCase):
         self.assertIn('approval_policy = "on-request"', codex_config_text)
         self.assertIn('@playwright/mcp@0.0.70', codex_config_text)
         self.assertIn('[plugins."browser-use@openai-bundled"]', codex_config_text)
+        self.assertIn('[plugins."openai-developers@openai-curated"]', codex_config_text)
         self.assertNotIn("@playwright/mcp@latest", codex_config_text)
 
 

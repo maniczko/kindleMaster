@@ -842,13 +842,19 @@ Supported first-class commands:
 - `convert`
 - `process`
 - `validate`
+- `report`
+- `review`
 - `smoke`
 - `corpus`
 - `status`
 - `ml` with `dataset`, `train`, and `evaluate` subcommands
 - `test`
 - `audit`
+- `chess-study` with `run-all`, `audit-current`, `extract-structure`, `segment-pages`, `detect-diagrams`, `recognize-fen`, `extract-pgn`, `link-exercises`, `validate`, `render`, `fen-review`, `build-fen-templates`, `evaluate-fen-profile`, `pgn-review`, `quality-dashboard`, `ai-fen-candidates`, `ai-pgn-candidates`, `ai-quality-eval`, `quality-baseline`, `preprocess-boards`, `build-square-dataset`, `train-fen-classifier`, `evaluate-fen-classifier`, `recognize-fen-local`, `evaluate-fen-ensemble`, `calibrate-fen-confidence`, and `export-fen-corpus-manifest` subcommands; use `--quality-profile smoke|default|masterkindle` for study-export gates
+
+Use `process` as the front-door automatic chess PDF flow when the goal is one command that runs extraction, deterministic FEN/PGN validation, safe candidate mapping, canonical reports, and strict export gating. Use `report` and `review` for the derived auto-flow report and manual review index. Keep `chess-study` as the stage/debug backend for semantic reading order, diagram/FEN recognition, and PGN/comment extraction. Exact PDF visual layout and full page-image rendering are audit/debug aids only; use `--render-pages` explicitly when page images are needed.
 - `workflow` with `baseline` and `verify` subcommands
+- `orchestrate` with `doctor`, `sync`, `claim`, `execute`, and `report` subcommands
 
 Do not create new parallel top-level entrypoints for routine project operation unless there is a strong architectural reason.
 
@@ -863,7 +869,10 @@ This section is the canonical authority map for KindleMaster control-plane artif
 | Supported local toolchains and lane expectations for `python kindlemaster.py test --suite ...` | `docs/toolchain-matrix.md` | `README.md`, `.codex/config.toml` comments | This owns toolchain support expectations only, not the full command contract. |
 | Workflow artifact paths, required filenames, and report-completeness contract | `AGENTS.md` Sections 31 and 35, implemented by `workflow_runner.py` | `README.md`, generated workflow reports under `reports/workflows/<run_id>/` and `output/workflows/<run_id>/` | Generated JSON and Markdown outputs are evidence and runtime artifacts, not the normative contract. |
 | Derived project status summary | `scripts/generate_project_status.py` invoked through `python kindlemaster.py status` | `README.md`, generated `reports/project_status.json` and `reports/project_status.md` | This is a derived view over existing evidence artifacts and must not become a hand-maintained status surface. |
+| GitHub Issue autopilot task contract | GitHub Issues plus `.github/ISSUE_TEMPLATE/kindlemaster_task.yml` | `docs/github-autopilot-orchestration.md`, `README.md`, `.codex/README.md`, generated reports under `reports/github/` | Issues are task truth for agent-executable work; Markdown stays policy, templates, and runbooks only. |
 | Repo-local Codex settings | `.codex/config.toml` | `.codex/README.md`, `AGENTS.md` Section 34 | Only active TOML keys in `.codex/config.toml` control Codex behavior. Comments there are convenience mirrors. |
+| Codex plugin auto-routing policy | `AGENTS.md` Section 34A | `.codex/config.toml` comments, `.codex/README.md`, `README.md` | `.codex/config.toml` enables repo-relevant plugins; this file defines when agents should automatically use them. |
+| Codex prompt auto-normalization policy | `AGENTS.md` Section 34B and `prompt-engineer` skill | `.codex/skills/prompt-engineer/SKILL.md`, `.codex/config.toml` comments, `.codex/README.md`, `README.md` | The skill defines prompt review/rewrite mechanics; Section 34B defines when agents should apply it automatically. |
 | Generated EPUBs, reports, smoke outputs, temporary files, and manual notes | Runtime outputs under `output/`, `reports/`, and local temp paths | README references and ad hoc inspection notes | These are always derived artifacts and must never become the source of truth for command or governance policy. |
 
 When changing control-plane behavior:
@@ -879,6 +888,7 @@ Use these locations consistently:
 - `output/smoke/` and `reports/smoke/` for smoke runs,
 - `output/corpus/` and `reports/corpus/` for derived corpus-wide proof runs,
 - `reports/project_status.json` and `reports/project_status.md` for the derived project status view,
+- `reports/github/` for generated GitHub Issue orchestration evidence and PR-ready summaries,
 - `reports/ml/datasets/` for derived ML route and review datasets,
 - `models/route_classifier_v1.json` and `models/decision_ranker_v1.json` for local JSON-only runtime inference artifacts,
 - `reports/validators/` for validator output,
@@ -953,9 +963,17 @@ Current repo-local Codex defaults:
 - reasoning effort: `xhigh`
 - approval policy: `on-request`
 - multi-agent support: enabled
+- plugin support: Browser Use, GitHub, Linear as optional mirror, Build Web Apps, and OpenAI Developers
 - browser/runtime verification support: Browser Use plugin and pinned Playwright MCP
 - local governance hooks: `.githooks/pre-commit` and `.githooks/pre-push`
-- agent readiness reporting: `python kindlemaster.py doctor` includes `agent_readiness`
+- agent readiness reporting: `python kindlemaster.py doctor` includes `agent_readiness.quality_gate` with threshold `9.0` and `agent_readiness.checks.agent_quality_gate`
+
+Model routing policy:
+- default to `gpt-5.5` with `xhigh` reasoning for high-risk KindleMaster work: conversion runtime, EPUB package/spine/nav integrity, chess FEN/PGN recognition, corpus/release gates, deployment architecture, and cross-module debugging,
+- prefer a lighter/mini model for status checks, short summaries, token/cost reports, simple command lookups, and low-risk documentation-only answers when the user or runtime allows model selection,
+- prefer a mid-tier model for small single-file fixes, UI copy/layout polish with bounded scope, and report formatting when no EPUB/FEN/release invariant is at risk,
+- after any merge or large milestone, start a new thread or provide a compact handoff before continuing; do not keep carrying large historical context into simple status or planning turns,
+- if a task starts on a lighter model but discovers runtime, FEN/PGN, package integrity, or release-gate risk, escalate back to the strongest available model before editing shared code.
 
 Keep MCP and plugin entries deterministic. Do not use floating MCP versions such as `@latest`; pin versions and update them deliberately with a small verification pass.
 
@@ -975,6 +993,93 @@ Governance evidence is written under `reports/governance/`:
 - `release.json` from `python kindlemaster.py test --suite release`.
 
 Each evidence artifact must include `generated_at`, `command`, `status`, `returncode`, `elapsed_seconds`, and `notes`.
+
+## 34A. Codex Plugin Auto-Routing Policy
+
+Agents should automatically use repo-enabled Codex plugins when the task matches the trigger below. This policy is additive: it does not override stricter system, developer, security, or user instructions.
+
+Use Browser / Browser Use automatically when:
+- the user asks to open, inspect, click through, screenshot, or verify the local web app,
+- backend or UI changes touch `app.py`, runtime conversion flow, `/convert*`, `/app`, frontend assets, or localhost behavior,
+- a final answer would otherwise claim `http://kindlemaster.localhost:5001/` is live, fresh, or visually verified.
+
+Browser requirements:
+- restart the local server first when AGENTS.md Section 8 says freshness is required,
+- verify port `5001`, `GET /`, and server start time before claiming live freshness,
+- use `http://kindlemaster.localhost:5001/` by default and `http://127.0.0.1:5001/` as fallback.
+
+Use GitHub automatically when:
+- the user asks for a branch, commit, push, pull request, CI/debugging, or PR review work,
+- the user asks for issue-backed orchestration, autopilot, task contracts, labels, or GitHub Issues as execution truth,
+- a quality/performance audit produces follow-up work that should become an execution backlog,
+- local changes are ready to publish or compare against a remote PR,
+- GitHub Actions status or PR comments are the source of truth for the requested work.
+
+GitHub requirements:
+- never stage, commit, push, or open a PR unless the user asked for that action,
+- preserve unrelated local changes and follow the non-destructive git policy in this file.
+
+Use Linear automatically when:
+- the user explicitly asks to use Linear as a mirror or external planning surface,
+- a historical Linear/VAT reference must be inspected while migrating or reconciling task state.
+
+Linear requirements:
+- do not create or update Linear issues unless the user explicitly asked for Linear-backed work,
+- GitHub Issues are the default backlog and task truth for agent-executable KindleMaster work,
+- keep Linear items generic to document classes and avoid fixture-specific hacks.
+
+Use OpenAI Developers automatically when:
+- the task changes OpenAI API usage, `OPENAI_API_KEY` setup, provider configuration, Agents SDK, ChatGPT Apps, or `ai_quality`,
+- code, tests, or docs require current OpenAI API behavior or official OpenAI documentation.
+
+OpenAI Developers requirements:
+- do not use it for ordinary EPUB cleanup, release audit, or local validation when no OpenAI API behavior is changing,
+- do not request or create API keys unless the user explicitly asks or the OpenAI API key setup flow is required by the task.
+
+Use Build Web Apps automatically when:
+- the task changes the React/Vite UI, visual design system, frontend interaction patterns, or browser-facing UI tests.
+
+Fallback rule:
+- if a plugin is unavailable in the active Codex session, state that briefly and continue with the best local workflow rather than blocking routine engineering work.
+
+## 34B. Prompt Engineering Auto-Normalization Policy
+
+Agents should automatically use the `prompt-engineer` skill before executing user prompts that are large, ambiguous, high-impact, multi-step, or missing clear scope, acceptance criteria, validation, risks, or output format. This is an instruction-level Codex policy, not a hard TOML runtime enforcement mechanism.
+
+Use `prompt-engineer` automatically when:
+- the user asks to improve, rewrite, validate, or review a prompt,
+- the user asks Codex to act as a prompt optimizer, prompt architect, prompt reviewer, prompt quality gate, or generator of missing prompt sections,
+- a coding, debugging, audit, architecture, backlog, or automation request lacks enough structure to execute safely,
+- a prompt would benefit from the standard `Prompt -> Review -> Rewrite -> Execute` flow before implementation.
+
+Default prompt-engineering modes:
+- `TRYB: DEBUG` means reproduce, isolate the owning layer, identify root cause, implement the smallest safe fix, add regression coverage, and validate the real runtime path.
+- `TRYB: IMPLEMENT` means normalize the request into goal, context, scope, acceptance criteria, validation, and final report, then implement end-to-end.
+- `TRYB: REVIEW` means findings first, ordered by severity with file/line references, and no file edits unless the user asks for fixes.
+- `TRYB: AUDIT` means base claims on measurements, reports, traces, or explicit evidence; score key categories and separate facts from uncertainty.
+- `TRYB: UI POLISH` means use frontend/UI workflow, reduce clutter, protect Polish UX copy, verify responsive behavior, and prefer browser-visible evidence.
+- `TRYB: EPUB QUALITY AUDIT` means inspect EPUB structure, metadata, TOC, reading flow, Kindle compatibility, validators, and release gates without publication-specific hacks.
+
+For Polish prompts, normalize the execution brief to:
+- `Cel`,
+- `Kontekst`,
+- `Zakres`,
+- `Kryteria akceptacji`,
+- `Walidacja`,
+- `Raport końcowy`.
+
+Prompt normalization requirements:
+- preserve the user's intent, language, constraints, and priorities,
+- add missing assumptions only when they are reasonable and explicitly mark risky assumptions,
+- do not expose a long rewritten prompt unless the user asks to see it,
+- proceed directly to implementation after internal normalization when the task is actionable,
+- ask one concise question only when a missing requirement blocks safe execution,
+- skip formal rewriting for trivial factual questions, tiny command requests, or when the user explicitly asks not to rewrite the prompt.
+
+Codex collaboration quality gate:
+- `python kindlemaster.py doctor` must report `agent_readiness.quality_gate.average_score >= 9.0` for a high-confidence agent setup,
+- the gate scores Codex config/tooling, plugin auto-routing, prompt normalization modes, installed skills, governance hooks, and local-session drift,
+- if the score drops below `9.0`, repair the listed `missing_actions` before claiming the agent setup is production-ready.
 
 ## 35. Standard Engineering Workflow
 

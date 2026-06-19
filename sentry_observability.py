@@ -113,6 +113,11 @@ def build_conversion_context(
     profile: str = "",
     quality_score: int | float | None = None,
     premium_ready: bool | None = None,
+    user_id: str = "",
+    auth_provider: str = "",
+    auth_state: str = "",
+    cloud_library_enabled: bool | None = None,
+    cloud_sync_status: str = "",
 ) -> dict[str, Any]:
     context: dict[str, Any] = {}
     for key, value in {
@@ -120,6 +125,10 @@ def build_conversion_context(
         "input_type": input_type,
         "source_type": source_type,
         "profile": profile,
+        "user_id": user_id,
+        "auth_provider": auth_provider,
+        "auth_state": auth_state,
+        "cloud_sync_status": cloud_sync_status,
     }.items():
         text = str(value or "").strip()
         if text:
@@ -128,6 +137,8 @@ def build_conversion_context(
         context["quality_score"] = quality_score
     if premium_ready is not None:
         context["premium_ready"] = bool(premium_ready)
+    if cloud_library_enabled is not None:
+        context["cloud_library_enabled"] = bool(cloud_library_enabled)
     return context
 
 
@@ -157,9 +168,16 @@ def capture_conversion_exception(
             "source_type": conversion_context.get("source_type"),
             "profile": conversion_context.get("profile"),
             "premium_ready": conversion_context.get("premium_ready"),
+            "auth_provider": conversion_context.get("auth_provider"),
+            "auth_state": conversion_context.get("auth_state"),
+            "cloud_library_enabled": conversion_context.get("cloud_library_enabled"),
+            "cloud_sync_status": conversion_context.get("cloud_sync_status"),
         },
         context=conversion_context,
     )
+    user_id = str(conversion_context.get("user_id", "") or "").strip()
+    if user_id:
+        _apply_scope_user(sdk, {"id": user_id})
     try:
         event_id = sdk.capture_exception(error)
     except Exception:
@@ -197,5 +215,17 @@ def _apply_scope_tags(
                 scope.set_tag(key, value)
             if context:
                 scope.set_context("conversion", dict(context))
+    except Exception:
+        return
+
+
+def _apply_scope_user(sentry_sdk: Any, user: Mapping[str, Any]) -> None:
+    try:
+        scope_manager = sentry_sdk.configure_scope()
+    except Exception:
+        return
+    try:
+        with scope_manager as scope:
+            scope.set_user(dict(user))
     except Exception:
         return

@@ -5,14 +5,21 @@ converter target. It is intentionally narrower than a SaaS platform plan.
 
 ## P0 control plane
 
-Codex, GitHub, and Linear are the engineering control plane.
+Codex and GitHub are the engineering control plane.
 
 - Codex owns local implementation, verification, and agent workflows.
-- GitHub owns version control, pull requests, and READY enforcement.
-- Linear owns planning and issue truth.
+- GitHub owns issue truth, version control, pull requests, and READY enforcement.
+- Linear is an optional mirror for historical VAT references or external planning, not the default task source.
 
 Do not fragment task truth into Notion, no-code builders, or ad hoc trackers
 unless product scope changes deliberately.
+
+Agent-executable tasks use GitHub Issues plus the local orchestrator:
+
+```powershell
+python kindlemaster.py orchestrate doctor
+python kindlemaster.py orchestrate sync --issues-json reports/github/issues.json
+```
 
 ## P0 release truth
 

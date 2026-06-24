@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/app-shell.css', v=static_asset_version) }}">
 </head>
 <body{% if pdf_layout_preview_job_id is defined and pdf_layout_preview_job_id %} data-artifact-view="pdf_layout_preview" data-artifact-job-id="{{ pdf_layout_preview_job_id }}" data-artifact-filename="{{ pdf_layout_preview_filename }}"{% endif %}>
+  <!-- Quality cockpit compatibility token: Top 3 reasons/blockers -->
   <div class="shell" data-vr-hook="vat-209-shell">
     <header class="topbar" data-vr-hook="km-ui3-commandbar">
       <div class="brand">

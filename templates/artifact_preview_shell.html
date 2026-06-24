@@ -15,7 +15,8 @@
         var(--km-bg, #111722);
       color: var(--km-text, #f8fafc);
     }
-    .artifact-preview-frame {
+    .artifact-preview-frame,
+    .layout-preview-frame {
       width: 100%;
       min-height: calc(100vh - 220px);
       border: 1px solid rgba(255, 255, 255, 0.14);
@@ -45,8 +46,8 @@
     }
   </style>
 </head>
-<body>
-  <main class="artifact-preview-shell" data-km-view="pdf-layout-preview">
+<body data-artifact-view="pdf_layout_preview">
+  <main class="artifact-preview-shell" data-km-view="pdf-layout-preview" data-vr-hook="vat-209-shell">
     <header class="topbar" data-vr-hook="km-artifact-preview-shell">
       <div class="brand">
         <div class="brand-kicker">Lokalny panel EPUB</div>
@@ -72,12 +73,19 @@
       </div>
     </section>
 
-    <iframe
-      class="artifact-preview-frame"
-      title="PDF layout preview"
-      sandbox="allow-scripts allow-same-origin"
-      srcdoc="{{ preview_html|e }}"
-    ></iframe>
+    <section data-vr-hook="km-pdf-layout-preview-handoff">
+      <canvas id="pdfCanvas" hidden></canvas>
+      <iframe
+        class="layout-preview-frame"
+        title="PDF layout preview"
+        sandbox="allow-scripts allow-same-origin"
+        srcdoc="{{ preview_html|e }}"
+      ></iframe>
+    </section>
   </main>
+  <script defer src="{{ url_for('static', filename='js/artifact-links.js') }}?v={{ static_asset_version }}"></script>
+  <script defer src="{{ url_for('static', filename='js/conversion-ui.js') }}?v={{ static_asset_version }}"></script>
+  <script defer src="{{ url_for('static', filename='js/quality-cockpit.js') }}?v={{ static_asset_version }}"></script>
+  <script defer src="{{ url_for('static', filename='js/library.js') }}?v={{ static_asset_version }}"></script>
 </body>
 </html>

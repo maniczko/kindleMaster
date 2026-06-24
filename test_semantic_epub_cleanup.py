@@ -72,6 +72,12 @@ SEMANTIC_TIMING_KEYS = {
 
 
 class SemanticEpubCleanupTests(unittest.TestCase):
+    def assert_semantic_timing_breakdown(self, report: dict) -> None:
+        timing = report.get("timing_breakdown")
+        self.assertIsInstance(timing, dict)
+        self.assertIn("total", timing)
+        self.assertGreaterEqual(timing["total"], 0)
+
     def test_generic_content_heading_does_not_challenge_metadata_title(self):
         self.assertTrue(_is_introductory_publication_heading("Content"))
         self.assertTrue(_is_introductory_publication_heading("Table of Contents"))

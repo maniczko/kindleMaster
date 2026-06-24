@@ -18,6 +18,26 @@ PROTECTED_RECALL_CLASSES = ("scanned_reflow", "diagram_book_reflow")
 CORPUS_HARD_NEGATIVE_ROUTES = ("magazine_layout_heavy", "diagram_chess")
 
 
+def _import_sklearn_training_dependencies() -> dict[str, Any]:
+    try:
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, recall_score
+        from sklearn.model_selection import train_test_split
+        from sklearn.preprocessing import StandardScaler
+    except Exception as error:
+        return {"status": "unavailable", "exception": str(error)}
+    return {
+        "status": "available",
+        "LogisticRegression": LogisticRegression,
+        "accuracy_score": accuracy_score,
+        "confusion_matrix": confusion_matrix,
+        "f1_score": f1_score,
+        "recall_score": recall_score,
+        "train_test_split": train_test_split,
+        "StandardScaler": StandardScaler,
+    }
+
+
 def train_route_classifier(
     *,
     dataset_path: str | Path = "reports/ml/datasets/route_examples.jsonl",
@@ -27,29 +47,14 @@ def train_route_classifier(
     enforce_readiness: bool = True,
 ) -> dict[str, Any]:
     rows = _load_jsonl(Path(dataset_path))
-    readiness = _dataset_readiness_from_dataset(Path(dataset_path), rows, min_examples_per_class=min_examples_per_class)
-    if enforce_readiness and readiness.get("status") != "ready":
-        payload = {
-            "status": "failed",
-            "error": "dataset_not_ready",
-            "dataset_path": str(dataset_path),
-            "dataset_readiness": readiness,
-        }
-        _write_report(report_path or "reports/ml/route_classifier_v1.metrics.json", payload)
-        return payload
-
     usable = [row for row in rows if row.get("label") in ROUTE_LABELS and isinstance(row.get("features"), Mapping)]
     label_counts = Counter(row["label"] for row in usable)
-    try:
-        from sklearn.linear_model import LogisticRegression
-        from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, recall_score
-        from sklearn.model_selection import train_test_split
-        from sklearn.preprocessing import StandardScaler
-    except Exception as error:
+    sklearn_deps = _import_sklearn_training_dependencies()
+    if sklearn_deps.get("status") != "available":
         payload = {
-            "status": "failed",
+            "status": "training_unavailable",
             "error": "scikit-learn is required for training. Install developer dependencies with python kindlemaster.py bootstrap.",
-            "exception": str(error),
+            "exception": str(sklearn_deps.get("exception") or ""),
             "dependency": "scikit-learn",
             "install_command": "python kindlemaster.py bootstrap",
             "dataset_path": str(dataset_path),
@@ -60,6 +65,16 @@ def train_route_classifier(
             "online_learning": False,
         }
         _write_report(report_path, payload)
+        return payload
+    readiness = _dataset_readiness_from_dataset(Path(dataset_path), rows, min_examples_per_class=min_examples_per_class)
+    if enforce_readiness and readiness.get("status") != "ready":
+        payload = {
+            "status": "failed",
+            "error": "dataset_not_ready",
+            "dataset_path": str(dataset_path),
+            "dataset_readiness": readiness,
+        }
+        _write_report(report_path or "reports/ml/route_classifier_v1.metrics.json", payload)
         return payload
 
     if len(usable) < 2 or len(label_counts) < 2:
@@ -73,32 +88,32 @@ def train_route_classifier(
     feature_order = list(ROUTE_MODEL_FEATURE_ORDER)
     x = [route_feature_vector(row["features"], feature_order=feature_order) for row in usable]
     y = [row["label"] for row in usable]
-    x_train, x_holdout, y_train, y_holdout = train_test_split(
+    x_train, x_holdout, y_train, y_holdout = sklearn_deps["train_test_split"](
         x,
         y,
         test_size=0.25,
         random_state=42,
         stratify=y,
     )
-    scaler = StandardScaler()
+    scaler = sklearn_deps["StandardScaler"]()
     x_train_scaled = scaler.fit_transform(x_train)
     x_holdout_scaled = scaler.transform(x_holdout)
-    classifier = LogisticRegression(max_iter=1000, multi_class="auto", class_weight="balanced")
+    classifier = sklearn_deps["LogisticRegression"](max_iter=1000, multi_class="auto", class_weight="balanced")
     classifier.fit(x_train_scaled, y_train)
     predictions = classifier.predict(x_holdout_scaled)
     classes = [str(item) for item in classifier.classes_]
     metrics = {
         "status": "holdout_metrics",
-        "accuracy": round(float(accuracy_score(y_holdout, predictions)), 6),
-        "macro_f1": round(float(f1_score(y_holdout, predictions, average="macro", zero_division=0)), 6),
+        "accuracy": round(float(sklearn_deps["accuracy_score"](y_holdout, predictions)), 6),
+        "macro_f1": round(float(sklearn_deps["f1_score"](y_holdout, predictions, average="macro", zero_division=0)), 6),
         "per_class_recall": {
             class_name: round(float(value), 6)
             for class_name, value in zip(
                 classes,
-                recall_score(y_holdout, predictions, average=None, labels=classes, zero_division=0),
+                sklearn_deps["recall_score"](y_holdout, predictions, average=None, labels=classes, zero_division=0),
             )
         },
-        "confusion_matrix": confusion_matrix(y_holdout, predictions, labels=classes).tolist(),
+        "confusion_matrix": sklearn_deps["confusion_matrix"](y_holdout, predictions, labels=classes).tolist(),
         "calibration_bins": _calibration_bins(classifier, x_holdout_scaled, y_holdout),
         "coverage": round(len(usable) / max(len(rows), 1), 6),
         "example_count": len(usable),

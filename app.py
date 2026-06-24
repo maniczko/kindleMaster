@@ -407,6 +407,7 @@ def _render_pdf_layout_preview_shell(job_id: str, job: dict, artifact: dict, art
             )
         )
         response.headers["X-KindleMaster-Artifact-Source"] = "local-shell"
+        response.headers["X-KindleMaster-Artifact-View"] = "app-shell"
     else:
         handoff = _build_pdf_layout_preview_handoff(artifact)
         response = app.make_response(

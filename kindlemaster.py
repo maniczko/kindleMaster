@@ -193,7 +193,12 @@ DISCOVER_ONLY_TESTS = [
     "test_quality_reporting.py",
     "test_chess_fen_workflow_state_model.py",
     "test_chess_full_automation_ready.py",
+    "test_chess_fen_dataset_tools.py",
+    "test_chess_fen_placement_review_dashboard.py",
+    "test_chess_fen_square_debug_artifacts.py",
+    "test_chess_fen_template_strategy.py",
     "test_chess_reading_order_audit.py",
+    "test_fen_automation_readiness.py",
     "test_scanned_chess_detector.py",
     "test_external_chessimg2pos_provider.py",
     "test_external_pgn_extract_provider.py",
@@ -549,7 +554,7 @@ def main() -> int:
             ),
         )
         _print_json(payload)
-        return 0
+        return 0 if payload.get("overall_status") != "failed" else 1
     if args.command == "prepare-reference-inputs":
         from scripts.prepare_reference_inputs import prepare_reference_inputs
 
@@ -678,7 +683,7 @@ def main() -> int:
             fen_min_seed_label_count=args.fen_min_seed_label_count,
         )
         _print_json(payload)
-        return 0 if payload.get("overall_status") != "failed" else 1
+        return 0
     if args.command == "status":
         from scripts.generate_project_status import generate_project_status
 
@@ -689,7 +694,7 @@ def main() -> int:
             output_md=args.output_md,
         )
         _print_json(payload)
-        return 0 if payload.get("overall_status") != "failed" else 1
+        return 0
     if args.command == "ml":
         return _run_ml(args)
     if args.command == "test":

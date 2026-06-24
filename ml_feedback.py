@@ -13,8 +13,13 @@ DEFAULT_FEEDBACK_LOG_PATH = Path("reports/ml/feedback/conversion_feedback.jsonl"
 DEFAULT_FEEDBACK_EXPORT_DIR = Path("reports/ml/feedback")
 FEEDBACK_SCHEMA_VERSION = 1
 FEEDBACK_STATUSES = ("accepted", "needs_review", "rejected")
-QUALITY_LABELS = ("unknown", "good", "usable", "poor", "blocked")
+QUALITY_LABELS = ("unknown", "premium", "good", "usable", "poor", "blocked")
 TRAINING_QUALITY_LABELS = ("good", "usable", "poor", "blocked")
+QUALITY_FINAL_LABELS = ("premium", "usable", "poor", "blocked")
+QUALITY_LABEL_ALIASES = {
+    "premium": "premium",
+    "good": "premium",
+}
 
 
 def append_conversion_feedback_event(

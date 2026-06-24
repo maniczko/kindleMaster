@@ -8,6 +8,8 @@ from types import SimpleNamespace
 
 from ml_feedback import append_conversion_feedback_from_report, export_feedback_datasets
 from scripts.build_ml_datasets import build_feature_collision_report, build_ml_datasets
+from scripts.import_reference_inputs import import_reference_inputs
+from scripts.sample_reference_inputs import sample_reference_inputs
 
 
 class MlDatasetBuilderTests(unittest.TestCase):

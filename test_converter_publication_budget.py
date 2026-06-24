@@ -10,6 +10,7 @@ from publication_model import PublicationAnalysis, PublicationDocument
 from converter import (
     ConversionConfig,
     InteractiveRuntimeBudgetExceeded,
+    _build_publication_pipeline_result,
     convert_pdf_to_epub_with_report,
 )
 

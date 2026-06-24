@@ -25,7 +25,7 @@ QUALITY_COVERAGE_CLASSES = (
     "diagram_chess",
     "docx_rich",
 )
-QUALITY_COVERAGE_MIN_ACCEPTED = 3
+QUALITY_COVERAGE_MIN_ACCEPTED = 10
 
 
 def build_ml_datasets(

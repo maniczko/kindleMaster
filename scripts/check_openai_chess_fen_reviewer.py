@@ -15,9 +15,10 @@ from openai_chess_fen_reviewer import openai_chess_fen_reviewer_status
 def main() -> int:
     parser = argparse.ArgumentParser(description="Report OpenAI chess FEN reviewer configuration status.")
     parser.add_argument("--output", default="", help="Optional JSON output path for audit evidence.")
+    parser.add_argument("--cwd", default="", help="Optional directory used for .env.local/.env discovery.")
     args = parser.parse_args()
 
-    status = openai_chess_fen_reviewer_status()
+    status = openai_chess_fen_reviewer_status(cwd=args.cwd or None)
     payload = json.dumps(status, ensure_ascii=False, indent=2)
     if args.output:
         output = Path(args.output)

@@ -993,7 +993,7 @@
       return {
         qualityStateUrl: payload.quality_state_url || "",
         downloadUrl: payload.download_url || (qualityState && qualityState.download_url) || "",
-        pdfLayoutPreviewUrl: window.KindleMasterArtifactLinks
+        pdfLayoutPreviewUrl: typeof window !== "undefined" && window.KindleMasterArtifactLinks
           ? window.KindleMasterArtifactLinks.artifactShellUrl(payload, "pdf_layout_preview")
           : "",
         downloadAvailable: downloadAvailableState,

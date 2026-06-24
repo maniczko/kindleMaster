@@ -5182,7 +5182,11 @@ class ChessFenRecognitionTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             output = Path(temp_dir) / "openai_status.json"
-            with mock.patch.object(sys, "argv", ["check_openai_chess_fen_reviewer.py", "--output", str(output)]):
+            with mock.patch.object(
+                sys,
+                "argv",
+                ["check_openai_chess_fen_reviewer.py", "--output", str(output), "--cwd", temp_dir],
+            ):
                 with mock.patch.dict(os.environ, {}, clear=True):
                     self.assertEqual(main(), 0)
 

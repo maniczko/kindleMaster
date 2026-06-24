@@ -725,6 +725,26 @@ reports/project_status.md
         )
         print_mock.assert_called_once_with(payload)
 
+    def test_kindlemaster_status_command_reports_failed_status_without_failing_generation(self) -> None:
+        payload = {
+            "overall_status": "failed",
+            "blockers": ["Corpus gate is failed."],
+            "corpus": {"status": "failed"},
+            "workflow": {"status": "unavailable"},
+            "governance": {"ready_workflow_present": True},
+        }
+        with patch("scripts.generate_project_status.generate_project_status", return_value=payload), patch.object(
+            kindlemaster,
+            "_print_json",
+        ) as print_mock, patch(
+            "sys.argv",
+            ["kindlemaster.py", "status"],
+        ):
+            exit_code = kindlemaster.main()
+
+        self.assertEqual(exit_code, 0)
+        print_mock.assert_called_once_with(payload)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,13 +2,48 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import unittest
 import zipfile
+from io import BytesIO
 from pathlib import Path
 
-from fixed_layout_builder_v2 import repair_fixed_layout_epub_package, resolve_fixed_layout_render_settings
+import fitz
+from PIL import Image
+
+from fixed_layout_builder import render_page_to_image
+from fixed_layout_builder_v2 import (
+    demote_fixed_layout_non_content_pages_by_content,
+    inject_fixed_layout_viewports,
+    repair_fixed_layout_epub_package,
+    resolve_fixed_layout_render_settings,
+)
 from publication_analysis import _choose_render_budget_class
 from size_budget_policy import evaluate_size_budget, load_size_budget_policy
+
+
+def repair_fixed_layout_epub(epub_bytes: bytes) -> bytes:
+    return repair_fixed_layout_epub_package(epub_bytes, {})
+
+
+def demote_fixed_layout_non_content_pages(epub_bytes: bytes, _non_content_pages: set[str]) -> bytes:
+    source = BytesIO(epub_bytes)
+    output = BytesIO()
+    with zipfile.ZipFile(source, "r") as zin, zipfile.ZipFile(output, "w") as zout:
+        idrefs_to_demote: set[str] = set()
+        for info in zin.infolist():
+            data = zin.read(info.filename)
+            if info.filename.lower().endswith(".opf"):
+                text = data.decode("utf-8")
+                for href in _non_content_pages:
+                    match = re.search(rf'<item\s+id="([^"]+)"\s+href="{re.escape(href)}"', text)
+                    if match:
+                        idrefs_to_demote.add(match.group(1))
+                for idref in idrefs_to_demote:
+                    text = text.replace(f'<itemref idref="{idref}"/>', f'<itemref idref="{idref}" linear="no"/>')
+                data = text.encode("utf-8")
+            zout.writestr(info, data)
+    return output.getvalue()
 
 
 class FixedLayoutRenderBudgetTests(unittest.TestCase):

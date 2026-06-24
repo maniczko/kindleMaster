@@ -1843,12 +1843,36 @@ def _apply_delivery_auto_repair(
     selected_epub_bytes = repair_result.epub_bytes if repair_result.status == "applied" else epub_bytes
     repair_payload = repair_result.to_public_dict(before_blockers=before_blockers)
 
+    if repair_result.status == "applied":
+        try:
+            from epub_validation import validate_epub_bytes
+
+            repaired_validation = validate_epub_bytes(selected_epub_bytes, label="delivery_auto_repair_epub")
+            repaired_summary = _build_core_validation_summary(repaired_validation)
+            repaired_core_gate = _to_mapping_payload(repaired_summary.get("core_structure_gate") or {})
+            repaired_blockers = [
+                str(item) for item in repaired_core_gate.get("blockers", []) if str(item).strip()
+            ]
+            if repaired_blockers or str(repaired_summary.get("validation_status", "")).strip().lower() == "failed":
+                selected_epub_bytes = epub_bytes
+                repair_payload["status"] = "rejected"
+                repair_payload["selected_candidate"] = "active"
+                repair_payload["rejected_candidate"] = "auto_repair"
+                repair_payload["error"] = "Delivery auto-repair rejected because it introduced core EPUB validation blockers."
+                repair_payload["rejected_core_blockers"] = repaired_blockers
+        except Exception as error:
+            selected_epub_bytes = epub_bytes
+            repair_payload["status"] = "rejected"
+            repair_payload["selected_candidate"] = "active"
+            repair_payload["rejected_candidate"] = "auto_repair"
+            repair_payload["error"] = f"Delivery auto-repair rejected after validation error: {error.__class__.__name__}"
+
     updated_result = dict(result)
     updated_quality_report = _to_mapping_payload(updated_result.get("quality_report", {}) or {})
     updated_quality_report["auto_repair"] = repair_payload
     updated_result["quality_report"] = updated_quality_report
 
-    if repair_result.status == "applied":
+    if repair_result.status == "applied" and repair_payload.get("status") != "rejected":
         updated_result = _apply_runtime_quality_gate(
             result=updated_result,
             epub_bytes=selected_epub_bytes,
@@ -1981,6 +2005,15 @@ def run_document_conversion(
     conversion_started = perf_counter()
     result = convert_impl(request.source_path, **convert_kwargs)
     stage_timings["conversion_seconds"] = round(perf_counter() - conversion_started, 6)
+    if status_callback:
+        _emit_status(
+            status_callback,
+            "running",
+            "Składanie artykułów i struktury EPUB...",
+            stage_id="assembling",
+            stage_label="Składanie EPUB",
+            percent_estimate=45,
+        )
     analysis_payload = _to_mapping_payload(result.get("analysis", {}) or {})
     route_decision_payload = _to_mapping_payload(analysis_payload.get("route_decision", {}) or {})
     analysis_seconds = _timing_value(analysis_payload.get("analysis_seconds"))
@@ -2068,6 +2101,15 @@ def run_document_conversion(
     existing_timings.update(stage_timings)
     quality_report["stage_timings"] = existing_timings
     result = {**result, "quality_report": quality_report}
+    if status_callback:
+        _emit_status(
+            status_callback,
+            "running",
+            "Uruchamiam audyt premium EPUB...",
+            stage_id="premium_audit",
+            stage_label="Audyt premium",
+            percent_estimate=78,
+        )
     result = _apply_runtime_quality_gate(
         result=result,
         epub_bytes=epub_bytes,

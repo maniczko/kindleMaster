@@ -184,6 +184,117 @@ class AutoChessFlowTests(unittest.TestCase):
                 for blocker in item["acceptance_blockers"]
             }
             self.assertIn("ai_review_only_source", blocker_codes)
+            self.assertEqual(item["candidate_values"][0]["placement_runtime_status"], "FEN_PLACEMENT_REVIEW_REQUIRED")
+            self.assertIn(
+                "ai_review_only_source",
+                {blocker["code"] for blocker in item["candidate_values"][0]["placement_acceptance_blockers"]},
+            )
+
+    def test_placement_only_candidate_is_reported_without_full_fen_acceptance(self) -> None:
+        placement = VALID_KINGS_FEN.split()[0]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir)
+            _write_json(
+                out / "data" / "book.json",
+                {
+                    "pages": [
+                        {
+                            "page": 1,
+                            "diagrams": [
+                                {
+                                    "diagram_id": "p001_d001",
+                                    "page": 1,
+                                    "image_path": "assets/diagrams/p001_d001.png",
+                                    "placement": placement,
+                                    "full_fen": VALID_KINGS_FEN,
+                                    "confidence": 0.99,
+                                    "warnings": ["side_to_move_inferred"],
+                                    "validation_status": "needs_review",
+                                }
+                            ],
+                            "pgn_records": [],
+                            "text_blocks": [],
+                        }
+                    ],
+                    "pgn_records": [],
+                },
+            )
+
+            payload = build_auto_chess_flow_artifacts(out)
+
+            self.assertEqual(payload["status"], "MANUAL_REVIEW_AVAILABLE")
+            fen_payload = json.loads((out / "fen" / "fen_candidates.json").read_text(encoding="utf-8"))
+            item = fen_payload["items"][0]
+            candidate = item["candidate_values"][0]
+            self.assertEqual(item["status"], "FEN_PLACEMENT_MACHINE_ACCEPTED")
+            self.assertEqual(item["runtime_status"], "FEN_PLACEMENT_MACHINE_ACCEPTED")
+            self.assertIsNone(item["selected_value"])
+            self.assertEqual(item["selected_placement"], placement)
+            self.assertEqual(item["next_action"], "resolve_full_fen_metadata_or_human_verify")
+            self.assertEqual(candidate["placement_runtime_status"], "FEN_PLACEMENT_MACHINE_ACCEPTED")
+            self.assertEqual(candidate["normalized_placement"], placement)
+
+            quality = json.loads((out / "report" / "quality_report.json").read_text(encoding="utf-8"))
+            summary = quality["summary"]
+            self.assertEqual(summary["fen_placement_machine_accepted"], 1)
+            self.assertEqual(summary["fen_full_machine_accepted"], 0)
+            self.assertEqual(summary["automatic_placement_success_rate"], 1.0)
+
+    def test_solution_pgn_does_not_consume_placement_only_source_fen(self) -> None:
+        placement = VALID_KINGS_FEN.split()[0]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir)
+            _write_json(
+                out / "data" / "book.json",
+                {
+                    "pages": [
+                        {
+                            "page": 12,
+                            "diagrams": [
+                                {
+                                    "diagram_id": "diagram-1-1",
+                                    "label": "Diagram 1-1",
+                                    "placement": placement,
+                                    "full_fen": VALID_KINGS_FEN,
+                                    "confidence": 0.99,
+                                    "warnings": ["side_to_move_inferred"],
+                                    "validation_status": "needs_review",
+                                }
+                            ],
+                            "pgn_records": [
+                                {
+                                    "record_id": "solution_1_1",
+                                    "page": 12,
+                                    "label": "Ex. 1-1",
+                                    "raw_text": "Ex. 1-1 1. e4",
+                                    "pgn": VALID_PGN,
+                                    "warnings": [],
+                                }
+                            ],
+                            "text_blocks": [],
+                        }
+                    ],
+                    "pgn_records": [
+                        {
+                            "record_id": "solution_1_1",
+                            "page": 12,
+                            "label": "Ex. 1-1",
+                            "raw_text": "Ex. 1-1 1. e4",
+                            "pgn": VALID_PGN,
+                            "warnings": [],
+                        }
+                    ],
+                },
+            )
+
+            build_auto_chess_flow_artifacts(out)
+
+            fen_payload = json.loads((out / "fen" / "fen_candidates.json").read_text(encoding="utf-8"))
+            self.assertEqual(fen_payload["items"][0]["status"], "FEN_PLACEMENT_MACHINE_ACCEPTED")
+            pgn_payload = json.loads((out / "pgn" / "pgn_candidates.json").read_text(encoding="utf-8"))
+            item = pgn_payload["items"][0]
+            self.assertIsNone(item["selected_value"])
+            self.assertIn("source_fen_not_machine_accepted", {error["code"] for error in item["validation_errors"]})
 
     def test_deterministic_ensemble_candidate_can_be_machine_accepted_but_local_model_stays_blocked(self) -> None:
         model_prediction = {
@@ -315,8 +426,12 @@ class AutoChessFlowTests(unittest.TestCase):
 
             report = json.loads((out / "report" / "acceptance_blockers.json").read_text(encoding="utf-8"))
             codes = set(report["summary"]["by_code"])
+            categories = set(report["summary"]["by_category"])
             self.assertIn("fen_not_recognized", codes)
             self.assertIn("unmapped_chess_glyphs", codes)
+            self.assertIn("unknown", categories)
+            self.assertIn("pgn", categories)
+            self.assertTrue(all("category" in blocker for item in report["items"] for blocker in item["blockers"]))
             self.assertTrue((out / "report" / "acceptance_blockers.html").is_file())
 
     def test_exercise_solution_pgn_requires_accepted_source_fen(self) -> None:

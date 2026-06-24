@@ -128,14 +128,17 @@ class ChessFenResult:
         ) or bool({"side_to_move_marker_detected", "verified_exact_crop_label_used"} & set(warnings))
         runtime_fen = self.fen
         requires_review = bool(self.requires_review)
+        fen_suppressed_reason = ""
         if "side_to_move_inferred" in warnings and not trusted_side_to_move:
             runtime_fen = ""
             requires_review = True
+            fen_suppressed_reason = "side_to_move_inferred"
         return {
             "fen": runtime_fen,
             "full_fen": full_fen,
             "placement": self.placement,
             "placement_fen": self.placement,
+            "fen_suppressed_reason": fen_suppressed_reason,
             "confidence": round(float(self.confidence or 0.0), 3),
             "side_to_move": self.side_to_move,
             "side_to_move_status": self.side_to_move_status,

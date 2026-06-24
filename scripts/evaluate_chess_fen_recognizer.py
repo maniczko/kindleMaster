@@ -20,6 +20,7 @@ from chess_position_recognizer import (
     load_piece_templates,
     recognize_chess_position_from_image,
 )
+from scripts.export_chess_fen_square_debug_artifacts import export_square_debug_artifacts
 
 DEFAULT_CHESS_FEN_EVAL_MIN_CONFIDENCE = 0.835
 DEFAULT_CHESS_FEN_EXACT_ACCURACY_MIN = 0.90
@@ -31,6 +32,7 @@ def evaluate_chess_fen_recognizer(
     template_dir: str | Path,
     min_confidence: float = DEFAULT_CHESS_FEN_EVAL_MIN_CONFIDENCE,
     min_exact_accuracy: float = DEFAULT_CHESS_FEN_EXACT_ACCURACY_MIN,
+    square_debug_dir: str | Path | None = None,
     output_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Evaluate deterministic FEN recognition against labeled board crops."""
@@ -71,6 +73,16 @@ def evaluate_chess_fen_recognizer(
             piece_templates=templates,
             min_confidence=min_confidence,
         ).to_dict()
+        square_debug_manifest = ""
+        if square_debug_dir:
+            case_id = str(record.get("id") or crop_path.stem)
+            square_debug = export_square_debug_artifacts(
+                crop_path,
+                list(result.get("squares") or []),
+                Path(square_debug_dir) / case_id,
+                case_id=case_id,
+            )
+            square_debug_manifest = str(Path(square_debug.get("squares_jsonl") or ""))
         diagnostics = _image_board_diagnostics(crop_bytes)
         actual_fen = str(result.get("fen") or result.get("full_fen") or "").strip()
         actual_placement = str(result.get("placement") or "").strip()
@@ -101,6 +113,7 @@ def evaluate_chess_fen_recognizer(
                 "confidence": result.get("confidence", 0.0),
                 "warnings": result.get("warnings", []),
                 "requires_review": result.get("requires_review", True),
+                "square_debug_manifest": square_debug_manifest,
                 "recognition_diagnostics": {
                     **diagnostics,
                     "suppressed_reason": _suppressed_reason(result.get("warnings", []), actual_fen=actual_fen),
@@ -229,6 +242,7 @@ def main() -> int:
     parser.add_argument("--template-dir", required=True)
     parser.add_argument("--min-confidence", type=float, default=DEFAULT_CHESS_FEN_EVAL_MIN_CONFIDENCE)
     parser.add_argument("--min-exact-accuracy", type=float, default=DEFAULT_CHESS_FEN_EXACT_ACCURACY_MIN)
+    parser.add_argument("--square-debug-dir", default="")
     parser.add_argument("--output", default="reports/chess_fen/evals/latest.json")
     args = parser.parse_args()
     result = evaluate_chess_fen_recognizer(
@@ -236,6 +250,7 @@ def main() -> int:
         template_dir=args.template_dir,
         min_confidence=args.min_confidence,
         min_exact_accuracy=args.min_exact_accuracy,
+        square_debug_dir=args.square_debug_dir or None,
         output_path=args.output,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))

@@ -213,6 +213,7 @@ def detect_chess_diagrams(
     review_paths = _write_diagram_review_dataset(target, review_records, sample_limit=review_sample_limit)
     manifest["review_dataset"] = review_paths
     manifest["review_dataset_count"] = min(len(review_records), int(review_sample_limit or 0)) if int(review_sample_limit or 0) > 0 else len(review_records)
+    manifest["board_detection_quality"] = _write_board_detection_quality_artifacts(target, records, low_confidence_records)
     manifest_path = target / "chess_diagrams.json"
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     manifest["manifest_path"] = str(manifest_path)
@@ -337,6 +338,111 @@ def _fen_review_reason(result: ChessFenResult) -> str:
     if result.requires_review:
         return "fen_below_acceptance_threshold"
     return "fen_requires_review"
+
+
+def _build_board_detection_quality_records(records: list[dict], low_confidence_records: list[dict]) -> list[dict]:
+    rows: list[dict] = []
+    for candidate_kind, source_rows in [("strict", records), ("low_confidence_review", low_confidence_records)]:
+        for record in source_rows:
+            warnings = [str(item) for item in record.get("warnings") or [] if str(item)]
+            fen_present = bool(str(record.get("fen") or "").strip())
+            fen_candidate_present = bool(str(record.get("fen_candidate") or "").strip())
+            status = str(record.get("status") or "")
+            reason = str(record.get("reason") or "")
+            primary_blocker = _board_detection_primary_quality_blocker(record, warnings=warnings)
+            if candidate_kind == "low_confidence_review":
+                gate_status = "low_confidence_review"
+            elif status == "accepted" and fen_present:
+                gate_status = "accepted_crop"
+            elif warnings or reason:
+                gate_status = "needs_review"
+            else:
+                gate_status = "false_positive_or_unrecognized"
+            rows.append(
+                {
+                    "diagram_id": record.get("diagram_id") or record.get("id") or "",
+                    "page": record.get("page"),
+                    "page_index": record.get("page_index"),
+                    "candidate_kind": candidate_kind,
+                    "status": status,
+                    "reason": reason,
+                    "bbox": record.get("bbox") or [],
+                    "bbox_xyxy": record.get("bbox_xyxy") or [],
+                    "pixel_bbox": record.get("pixel_bbox") or [],
+                    "crop_path": record.get("image_path") or record.get("crop_path") or "",
+                    "image_href": record.get("image_href") or "",
+                    "method": record.get("method") or "",
+                    "grid_confidence": _safe_float(record.get("grid_confidence")),
+                    "fen_confidence": _safe_float(record.get("fen_confidence")),
+                    "confidence": _safe_float(record.get("confidence")),
+                    "board_detected": record.get("board_detected", None),
+                    "fen_present": fen_present,
+                    "fen_candidate_present": fen_candidate_present,
+                    "warnings": warnings,
+                    "quality_gate_status": gate_status,
+                    "primary_quality_blocker": primary_blocker,
+                }
+            )
+    return rows
+
+
+def _write_board_detection_quality_artifacts(
+    target: Path,
+    records: list[dict],
+    low_confidence_records: list[dict],
+) -> dict[str, Any]:
+    quality_records = _build_board_detection_quality_records(records, low_confidence_records)
+    output_dir = target / "reports" / "chess_fen"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "board_detection_quality.json"
+    jsonl_path = output_dir / "board_detection_quality.jsonl"
+    by_blocker: dict[str, int] = {}
+    by_status: dict[str, int] = {}
+    for row in quality_records:
+        blocker = str(row.get("primary_quality_blocker") or "unknown")
+        gate_status = str(row.get("quality_gate_status") or "unknown")
+        by_blocker[blocker] = by_blocker.get(blocker, 0) + 1
+        by_status[gate_status] = by_status.get(gate_status, 0) + 1
+    summary = {
+        "total_candidates": len(quality_records),
+        "strict_candidate_count": len(records),
+        "low_confidence_candidate_count": len(low_confidence_records),
+        "accepted_crop_count": by_status.get("accepted_crop", 0),
+        "needs_review_count": by_status.get("needs_review", 0),
+        "by_primary_quality_blocker": dict(sorted(by_blocker.items(), key=lambda pair: (-pair[1], pair[0]))),
+        "by_quality_gate_status": dict(sorted(by_status.items(), key=lambda pair: (-pair[1], pair[0]))),
+    }
+    payload = {
+        "schema": "kindlemaster.chess_fen.board_detection_quality.v1",
+        "summary": summary,
+        "items": quality_records,
+    }
+    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    jsonl_path.write_text(
+        "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in quality_records),
+        encoding="utf-8",
+    )
+    return {"json": str(json_path), "jsonl": str(jsonl_path), "summary": summary}
+
+
+def _board_detection_primary_quality_blocker(record: dict, *, warnings: list[str]) -> str:
+    reason = str(record.get("reason") or "").strip()
+    if reason:
+        return reason
+    if warnings:
+        return warnings[0]
+    if not str(record.get("fen") or "").strip() and not str(record.get("fen_candidate") or "").strip():
+        return "fen_candidate_missing"
+    if str(record.get("status") or "") == "accepted":
+        return "none"
+    return "unknown"
+
+
+def _safe_float(value: Any) -> float:
+    try:
+        return round(float(value or 0.0), 4)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _clamp_pixel_bbox(

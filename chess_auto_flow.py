@@ -11,7 +11,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, Iterable
 
-from chess_fen_hardening import machine_accept_fen, validate_fen_detailed
+from chess_fen_hardening import machine_accept_fen, machine_accept_placement, validate_fen_detailed
 
 PIPELINE_STATUSES = {
     "AUTO_SUCCESS",
@@ -695,6 +695,12 @@ def _canonical_fen(
                 "corpus_status": "not_corpus_verified",
                 "acceptance_policy": "runtime_machine_acceptance_v1",
                 "selected_value": None,
+                "selected_placement": None,
+                "placement_status": "FEN_PLACEMENT_REVIEW_REQUIRED",
+                "placement_runtime_status": "FEN_PLACEMENT_REVIEW_REQUIRED",
+                "placement_acceptance_policy": "runtime_placement_acceptance_v1",
+                "placement_acceptance_blockers": [],
+                "placement_acceptance_trace": {},
                 "validation_errors": [{"code": "fen_recognition_limit_skipped", "message": "Diagram skipped by configured runtime FEN recognition limit."}],
                 "acceptance_blockers": [{"code": "fen_recognition_limit_skipped", "message": "Diagram skipped by configured runtime FEN recognition limit."}],
                 "acceptance_trace": {"diagram_index": diagram_index, "max_diagrams": max_count},
@@ -711,6 +717,12 @@ def _canonical_fen(
                     "acceptance_policy": selected["acceptance_policy"],
                     "candidate_values": [],
                     "selected_value": None,
+                    "selected_placement": selected.get("selected_placement"),
+                    "placement_status": selected.get("placement_status"),
+                    "placement_runtime_status": selected.get("placement_runtime_status"),
+                    "placement_acceptance_policy": selected.get("placement_acceptance_policy"),
+                    "placement_acceptance_blockers": selected.get("placement_acceptance_blockers", []),
+                    "placement_acceptance_trace": selected.get("placement_acceptance_trace", {}),
                     "validation_errors": selected["validation_errors"],
                     "acceptance_blockers": selected["acceptance_blockers"],
                     "acceptance_trace": selected["acceptance_trace"],
@@ -756,6 +768,12 @@ def _canonical_fen(
                 "acceptance_policy": selected["acceptance_policy"],
                 "candidate_values": candidate_rows,
                 "selected_value": selected.get("selected_value"),
+                "selected_placement": selected.get("selected_placement"),
+                "placement_status": selected.get("placement_status"),
+                "placement_runtime_status": selected.get("placement_runtime_status"),
+                "placement_acceptance_policy": selected.get("placement_acceptance_policy"),
+                "placement_acceptance_blockers": selected.get("placement_acceptance_blockers", []),
+                "placement_acceptance_trace": selected.get("placement_acceptance_trace", {}),
                 "validation_errors": selected.get("validation_errors", []),
                 "acceptance_blockers": selected.get("acceptance_blockers", []),
                 "acceptance_trace": selected.get("acceptance_trace", {}),
@@ -818,6 +836,31 @@ def _fen_raw_candidates(
                     "squares": diagram.get("squares") or [],
                 }
             )
+    placement = str(diagram.get("placement") or diagram.get("placement_fen") or "").strip()
+    full_fen = str(diagram.get("full_fen") or "").strip()
+    if placement or full_fen:
+        rows.append(
+            {
+                "source": "deterministic_candidate",
+                "fen": "",
+                "placement": placement,
+                "placement_fen": placement,
+                "full_fen": full_fen,
+                "authoritative": False,
+                "confidence": _first_float(
+                    diagram.get("confidence"),
+                    diagram.get("fen_confidence"),
+                    diagram.get("candidate_confidence"),
+                ),
+                "warnings": _string_list(
+                    diagram.get("warnings"),
+                    diagram.get("fen_warnings"),
+                    diagram.get("review_warnings"),
+                ),
+                "method": diagram.get("method") or diagram.get("recognition_method") or "deterministic_candidate",
+                "squares": diagram.get("squares") or [],
+            }
+        )
     if ai_row:
         fen = str(ai_row.get("ai_fen_candidate") or ai_row.get("fen") or "").strip()
         if fen:
@@ -885,9 +928,12 @@ def _fen_raw_candidates(
 def _fen_candidate_row(candidate: dict[str, Any]) -> dict[str, Any]:
     validation = validate_fen_detailed(str(candidate.get("fen") or ""))
     machine = machine_accept_fen(candidate)
+    placement_machine = machine_accept_placement(candidate)
     return {
         "source": candidate.get("source") or "unknown",
         "value": candidate.get("fen") or "",
+        "placement_value": candidate.get("placement") or candidate.get("placement_fen") or placement_machine.get("normalized_placement") or "",
+        "full_fen": candidate.get("full_fen") or "",
         "authoritative": bool(candidate.get("authoritative")),
         "confidence": _first_float(candidate.get("confidence")),
         "method": candidate.get("method") or candidate.get("source") or "unknown",
@@ -900,6 +946,28 @@ def _fen_candidate_row(candidate: dict[str, Any]) -> dict[str, Any]:
         "acceptance_policy": machine["acceptance_policy"],
         "acceptance_blockers": machine["acceptance_blockers"],
         "acceptance_trace": machine["acceptance_trace"],
+        "normalized_placement": placement_machine.get("normalized_placement"),
+        "placement_valid": not any(
+            blocker.get("code") in {"placement_candidate_missing", "invalid_rank_count", "invalid_rank_width", "invalid_rank_digit", "invalid_piece"}
+            for blocker in placement_machine.get("acceptance_blockers") or []
+        ),
+        "placement_plausible": bool(placement_machine.get("normalized_placement")) and not any(
+            blocker.get("code")
+            in {
+                "missing_white_king",
+                "missing_black_king",
+                "too_many_white_kings",
+                "too_many_black_kings",
+                "pawn_on_back_rank",
+                "white_king_count_invalid",
+                "black_king_count_invalid",
+            }
+            for blocker in placement_machine.get("acceptance_blockers") or []
+        ),
+        "placement_runtime_status": placement_machine["runtime_status"],
+        "placement_acceptance_policy": placement_machine["acceptance_policy"],
+        "placement_acceptance_blockers": placement_machine["acceptance_blockers"],
+        "placement_acceptance_trace": placement_machine["acceptance_trace"],
     }
 
 
@@ -926,10 +994,55 @@ def _select_fen_status(diagram: dict[str, Any], candidate_rows: list[dict[str, A
             "corpus_status": "not_corpus_verified",
             "acceptance_policy": "runtime_machine_acceptance_v1",
             "selected_value": machine.get("normalized_value"),
+            "selected_placement": machine.get("normalized_placement"),
+            "placement_status": machine.get("placement_runtime_status"),
+            "placement_runtime_status": machine.get("placement_runtime_status"),
+            "placement_acceptance_policy": machine.get("placement_acceptance_policy"),
+            "placement_acceptance_blockers": machine.get("placement_acceptance_blockers", []),
+            "placement_acceptance_trace": machine.get("placement_acceptance_trace", {}),
             "validation_errors": [],
             "acceptance_blockers": [],
             "acceptance_trace": machine.get("acceptance_trace") or {},
             "next_action": "export_allowed_runtime_machine",
+        }
+    placement_machine = next(
+        (row for row in candidate_rows if row.get("placement_runtime_status") == "FEN_PLACEMENT_MACHINE_ACCEPTED"),
+        None,
+    )
+    if placement_machine:
+        errors: list[dict[str, Any]] = []
+        blockers: list[dict[str, Any]] = []
+        for row in candidate_rows:
+            for error in row.get("errors") or []:
+                errors.append({"source": row.get("source"), **error})
+            for blocker in row.get("acceptance_blockers") or []:
+                blockers.append({"source": row.get("source"), **blocker})
+        blockers.append(
+            {
+                "source": placement_machine.get("source"),
+                "code": "full_fen_metadata_not_accepted",
+                "message": "Placement is machine accepted, but full FEN metadata is not runtime accepted.",
+            }
+        )
+        return {
+            "status": "FEN_PLACEMENT_MACHINE_ACCEPTED",
+            "runtime_status": "FEN_PLACEMENT_MACHINE_ACCEPTED",
+            "corpus_status": "not_corpus_verified",
+            "acceptance_policy": "runtime_placement_acceptance_v1",
+            "selected_value": None,
+            "selected_placement": placement_machine.get("normalized_placement"),
+            "placement_status": "FEN_PLACEMENT_MACHINE_ACCEPTED",
+            "placement_runtime_status": "FEN_PLACEMENT_MACHINE_ACCEPTED",
+            "placement_acceptance_policy": placement_machine.get("placement_acceptance_policy"),
+            "placement_acceptance_blockers": placement_machine.get("placement_acceptance_blockers", []),
+            "placement_acceptance_trace": placement_machine.get("placement_acceptance_trace", {}),
+            "validation_errors": errors,
+            "acceptance_blockers": blockers,
+            "acceptance_trace": {
+                "candidate_count": len(candidate_rows),
+                "placement_acceptance_trace": placement_machine.get("placement_acceptance_trace") or {},
+            },
+            "next_action": "resolve_full_fen_metadata_or_human_verify",
         }
     if not candidate_rows:
         return {
@@ -938,6 +1051,12 @@ def _select_fen_status(diagram: dict[str, Any], candidate_rows: list[dict[str, A
             "corpus_status": "not_corpus_verified",
             "acceptance_policy": "runtime_machine_acceptance_v1",
             "selected_value": None,
+            "selected_placement": None,
+            "placement_status": "FEN_PLACEMENT_REVIEW_REQUIRED",
+            "placement_runtime_status": "FEN_PLACEMENT_REVIEW_REQUIRED",
+            "placement_acceptance_policy": "runtime_placement_acceptance_v1",
+            "placement_acceptance_blockers": [{"code": "placement_candidate_missing", "message": "No placement candidate was available."}],
+            "placement_acceptance_trace": {},
             "validation_errors": [{"code": "fen_not_recognized", "message": "No FEN candidate was available."}],
             "acceptance_blockers": [{"code": "fen_not_recognized", "message": "No FEN candidate was available."}],
             "acceptance_trace": {},
@@ -957,6 +1076,12 @@ def _select_fen_status(diagram: dict[str, Any], candidate_rows: list[dict[str, A
             "corpus_status": "not_corpus_verified",
             "acceptance_policy": "runtime_machine_acceptance_v1",
             "selected_value": None,
+            "selected_placement": None,
+            "placement_status": "FEN_PLACEMENT_REVIEW_REQUIRED",
+            "placement_runtime_status": "FEN_PLACEMENT_REVIEW_REQUIRED",
+            "placement_acceptance_policy": "runtime_placement_acceptance_v1",
+            "placement_acceptance_blockers": [],
+            "placement_acceptance_trace": {},
             "validation_errors": errors,
             "acceptance_blockers": blockers or [{"code": "machine_acceptance_not_proven", "message": "A valid FEN exists, but runtime machine gate did not accept it."}],
             "acceptance_trace": {"candidate_count": len(candidate_rows)},
@@ -968,6 +1093,12 @@ def _select_fen_status(diagram: dict[str, Any], candidate_rows: list[dict[str, A
         "corpus_status": "not_corpus_verified",
         "acceptance_policy": "runtime_machine_acceptance_v1",
         "selected_value": None,
+        "selected_placement": None,
+        "placement_status": "FEN_PLACEMENT_REVIEW_REQUIRED",
+        "placement_runtime_status": "FEN_PLACEMENT_REVIEW_REQUIRED",
+        "placement_acceptance_policy": "runtime_placement_acceptance_v1",
+        "placement_acceptance_blockers": [],
+        "placement_acceptance_trace": {},
         "validation_errors": errors or [{"code": "fen_validation_failed", "message": "No candidate passed deterministic FEN validation."}],
         "acceptance_blockers": blockers or [{"code": "fen_validation_failed", "message": "No candidate passed deterministic FEN validation."}],
         "acceptance_trace": {"candidate_count": len(candidate_rows)},
@@ -1165,6 +1296,16 @@ def _auto_summary(
         "diagrams_total": int(dashboard.get("diagrams_total") or fen_summary.get("total") or 0),
         "fen_accepted": int(fen_summary.get("accepted") or dashboard.get("fen_accepted") or 0),
         "fen_machine_accepted": int(fen_summary.get("runtime_machine_accepted") or 0),
+        "fen_placement_machine_accepted": int(fen_summary.get("placement_machine_accepted") or 0),
+        "fen_placement_machine_accepted_rate": float(fen_summary.get("placement_machine_accepted_rate") or 0.0),
+        "fen_full_machine_accepted": int(fen_summary.get("runtime_machine_accepted") or 0),
+        "fen_full_machine_accepted_rate": _ratio(
+            int(fen_summary.get("runtime_machine_accepted") or 0),
+            int(fen_summary.get("total") or 0),
+        ),
+        "fen_full_review_required": int(fen_summary.get("failed") or 0),
+        "fen_placement_review_required": int(fen_summary.get("placement_review_required") or 0),
+        "automatic_placement_success_rate": float(fen_summary.get("placement_machine_accepted_rate") or 0.0),
         "fen_corpus_verified": int(fen_summary.get("corpus_verified") or 0),
         "fen_review_required": int(fen_summary.get("review_required") or 0),
         "fen_failed": int(fen_summary.get("failed") or 0),
@@ -1240,6 +1381,7 @@ def _quality_report(
 def _acceptance_blockers_report(fen_payload: dict[str, Any], pgn_payload: dict[str, Any]) -> dict[str, Any]:
     items: list[dict[str, Any]] = []
     code_counts: dict[str, int] = {}
+    category_counts: dict[str, int] = {}
     for kind, payload in [("fen", fen_payload), ("pgn", pgn_payload)]:
         for item in payload.get("items") or []:
             if item.get("status") in (FEN_ACCEPTED_STATUSES if kind == "fen" else PGN_ACCEPTED_STATUSES):
@@ -1250,8 +1392,10 @@ def _acceptance_blockers_report(fen_payload: dict[str, Any], pgn_payload: dict[s
             normalized_blockers = []
             for blocker in blockers:
                 code = str(blocker.get("code") or "unknown_blocker")
+                category = _classify_acceptance_blocker(code, kind=kind)
                 code_counts[code] = code_counts.get(code, 0) + 1
-                normalized_blockers.append(blocker)
+                category_counts[category] = category_counts.get(category, 0) + 1
+                normalized_blockers.append({**blocker, "category": category})
             items.append(
                 {
                     "kind": kind,
@@ -1267,8 +1411,79 @@ def _acceptance_blockers_report(fen_payload: dict[str, Any], pgn_payload: dict[s
     summary = {
         "total_blocked_items": len(items),
         "by_code": dict(sorted(code_counts.items(), key=lambda pair: (-pair[1], pair[0]))),
+        "by_category": dict(sorted(category_counts.items(), key=lambda pair: (-pair[1], pair[0]))),
     }
     return {"schema": "kindlemaster.auto_chess.acceptance_blockers.v1", "summary": summary, "items": items}
+
+
+def _classify_acceptance_blocker(code: str, *, kind: str = "fen") -> str:
+    normalized = str(code or "").strip()
+    if normalized in {
+        "board_grid_not_detected",
+        "board_visual_pattern_not_detected",
+        "partial_board_crop_without_dense_board_evidence",
+        "image_board_requires_review",
+        "review_crop_candidate_mismatch",
+    }:
+        return "crop_grid"
+    if normalized in {
+        "piece_template_confidence_below_threshold",
+        "piece_template_set_incomplete",
+        "queen_color_ambiguous_suppressed",
+        "sparse_position_confidence_below_threshold",
+        "no_square_alternatives",
+        "square_alternatives_not_checked",
+        "no_template_or_model_agreement",
+        "score_margin_too_low",
+        "score_margin_below_threshold",
+    }:
+        return "recognition"
+    if normalized in {
+        "placement_candidate_missing",
+        "invalid_rank_count",
+        "invalid_rank_width",
+        "invalid_rank_digit",
+        "invalid_piece",
+        "missing_white_king",
+        "missing_black_king",
+        "too_many_white_kings",
+        "too_many_black_kings",
+        "pawn_on_back_rank",
+        "white_king_count_invalid",
+        "black_king_count_invalid",
+    }:
+        return "placement"
+    if normalized in {
+        "fen_must_have_six_fields",
+        "python_chess_invalid_position",
+        "python_chess_evidence_missing",
+        "validate_fen_evidence_missing",
+        "side_to_move_invalid",
+        "castling_invalid",
+        "castling_order_invalid",
+        "en_passant_invalid",
+        "move_counters_invalid",
+        "fullmove_number_invalid",
+        "full_fen_metadata_not_accepted",
+    }:
+        return "full_fen_validation"
+    if normalized in {"ai_review_only_source", "non_deterministic_source", "fen_source_missing"}:
+        return "source_policy"
+    if normalized in {"confidence_below_runtime_threshold", "confidence_below_threshold"}:
+        return "confidence"
+    if normalized in {"source_crop_hash_missing", "template_profile_not_ready"}:
+        return "metadata"
+    if normalized in {
+        "source_fen_not_machine_accepted",
+        "pgn_parse_failed",
+        "illegal_pgn",
+        "unmapped_chess_glyphs",
+        "pgn_replay_failed",
+    } or kind == "pgn":
+        return "pgn"
+    if normalized in {"python_chess_unavailable", "python_chess_missing", "python_chess_pgn_missing"}:
+        return "runtime_dependency"
+    return "unknown"
 
 
 def _acceptance_blockers_html(report: dict[str, Any]) -> str:
@@ -1292,6 +1507,10 @@ def _acceptance_blockers_html(report: dict[str, Any]) -> str:
         f"<li><code>{html.escape(str(code))}</code>: {html.escape(str(count))}</li>"
         for code, count in (summary.get("by_code") or {}).items()
     ) or "<li>No blocker codes.</li>"
+    category_rows = "".join(
+        f"<li><code>{html.escape(str(category))}</code>: {html.escape(str(count))}</li>"
+        for category, count in (summary.get("by_category") or {}).items()
+    ) or "<li>No blocker categories.</li>"
     return f"""<!doctype html>
 <html lang="en"><meta charset="utf-8"><title>Auto Chess Acceptance Blockers</title>
 <style>
@@ -1302,6 +1521,7 @@ code{{background:#efe2d1;border-radius:5px;padding:.08rem .24rem}}
 </style>
 <h1>Auto Chess Acceptance Blockers</h1>
 <p>Blocked items: {html.escape(str(summary.get('total_blocked_items', 0)))}</p>
+<h2>By category</h2><ul>{category_rows}</ul>
 <h2>By code</h2><ul>{code_rows}</ul>
 <table><thead><tr><th>Kind</th><th>ID</th><th>Page</th><th>Status</th><th>Blockers</th><th>Next action</th></tr></thead>
 <tbody>{table}</tbody></table></html>"""
@@ -1499,6 +1719,12 @@ def _status_summary(items: list[dict[str, Any]], *, accepted: set[str]) -> dict[
         ]
     )
     corpus_verified = len([item for item in items if item.get("corpus_status") == "corpus_verified"])
+    placement_machine_accepted = len(
+        [item for item in items if item.get("placement_runtime_status") == "FEN_PLACEMENT_MACHINE_ACCEPTED"]
+    )
+    placement_review_required = len(
+        [item for item in items if item.get("placement_runtime_status") == "FEN_PLACEMENT_REVIEW_REQUIRED"]
+    )
     review_required = len(
         [
             item
@@ -1512,6 +1738,9 @@ def _status_summary(items: list[dict[str, Any]], *, accepted: set[str]) -> dict[
         "accepted": len([item for item in items if item.get("status") in accepted]),
         "failed": len([item for item in items if item.get("status") not in accepted]),
         "runtime_machine_accepted": runtime_accepted,
+        "placement_machine_accepted": placement_machine_accepted,
+        "placement_machine_accepted_rate": _ratio(placement_machine_accepted, len(items)),
+        "placement_review_required": placement_review_required,
         "corpus_verified": corpus_verified,
         "review_required": review_required,
         "by_status": {

@@ -85,6 +85,20 @@ MACHINE_BLOCKING_FEN_WARNINGS = {
     "template_profile_not_ready",
     "white_king_count_invalid",
 }
+MACHINE_BLOCKING_PLACEMENT_WARNINGS = {
+    "black_king_count_invalid",
+    "board_grid_not_detected",
+    "board_visual_pattern_not_detected",
+    "image_board_requires_review",
+    "partial_board_crop_without_dense_board_evidence",
+    "piece_template_confidence_below_threshold",
+    "piece_template_set_incomplete",
+    "queen_color_ambiguous_suppressed",
+    "review_crop_candidate_mismatch",
+    "sparse_position_confidence_below_threshold",
+    "template_profile_not_ready",
+    "white_king_count_invalid",
+}
 
 
 @dataclass(frozen=True)
@@ -104,6 +118,16 @@ class FenValidationResult:
     warnings: list[FenValidationIssue]
 
 
+@dataclass(frozen=True)
+class FenPlacementValidationResult:
+    input: str
+    normalized_placement: str | None
+    is_structure_valid: bool
+    is_plausible_position: bool
+    errors: list[FenValidationIssue]
+    warnings: list[FenValidationIssue]
+
+
 def crop_sha256(path: str | Path) -> str:
     crop_path = Path(path)
     digest = hashlib.sha256()
@@ -115,6 +139,111 @@ def crop_sha256(path: str | Path) -> str:
 
 def normalize_fen_whitespace(value: str) -> str:
     return " ".join(str(value or "").strip().split())
+
+
+def placement_from_fen_or_placement(value: str) -> str:
+    normalized = normalize_fen_whitespace(value)
+    return normalized.split()[0].strip() if normalized else ""
+
+
+def normalize_placement(value: str) -> str:
+    result = validate_placement_detailed(value)
+    if not result.is_structure_valid or result.errors:
+        message = result.errors[0].message if result.errors else "Invalid FEN placement."
+        raise ValueError(message)
+    return result.normalized_placement or ""
+
+
+def validate_placement_detailed(
+    value: str,
+    *,
+    require_kings: bool = True,
+    reject_pawns_on_back_rank: bool = True,
+) -> FenPlacementValidationResult:
+    raw = str(value or "")
+    placement = placement_from_fen_or_placement(raw)
+    errors: list[FenValidationIssue] = []
+    warnings: list[FenValidationIssue] = []
+
+    def add(code: str, message: str, *, severity: str = "error") -> None:
+        issue = FenValidationIssue(code=code, severity=severity, message=message)
+        if severity == "warning":
+            warnings.append(issue)
+        else:
+            errors.append(issue)
+
+    if not placement:
+        add("placement_candidate_missing", "No board placement candidate was supplied.")
+        return FenPlacementValidationResult(
+            input=raw,
+            normalized_placement=None,
+            is_structure_valid=False,
+            is_plausible_position=False,
+            errors=errors,
+            warnings=warnings,
+        )
+
+    ranks = placement.split("/")
+    if len(ranks) != 8:
+        add("invalid_rank_count", "Board placement must contain exactly eight ranks.")
+
+    white_kings = 0
+    black_kings = 0
+    for rank_index, rank in enumerate(ranks):
+        width = 0
+        last_was_digit = False
+        for char in rank:
+            if char.isdigit():
+                digit = int(char)
+                if digit < 1 or digit > 8 or last_was_digit:
+                    add("invalid_rank_digit", "Empty square digits must be between 1 and 8 and not repeated.")
+                width += digit
+                last_was_digit = True
+                continue
+            if char not in PIECE_CHARS:
+                add("invalid_piece", f"Unsupported FEN piece character: {char!r}.")
+                width += 1
+                last_was_digit = False
+                continue
+            if char == "K":
+                white_kings += 1
+            elif char == "k":
+                black_kings += 1
+            if reject_pawns_on_back_rank and rank_index in {0, 7} and char in {"P", "p"}:
+                add("pawn_on_back_rank", "Pawns cannot appear on the first or eighth rank.")
+            width += 1
+            last_was_digit = False
+        if width != 8:
+            add("invalid_rank_width", "Each FEN rank must describe exactly eight squares.")
+
+    if require_kings:
+        if white_kings == 0:
+            add("missing_white_king", "Placement must contain exactly one white king.")
+        elif white_kings > 1:
+            add("too_many_white_kings", "Placement cannot contain more than one white king.")
+        if black_kings == 0:
+            add("missing_black_king", "Placement must contain exactly one black king.")
+        elif black_kings > 1:
+            add("too_many_black_kings", "Placement cannot contain more than one black king.")
+
+    structure_error_codes = {"placement_candidate_missing", "invalid_rank_count", "invalid_rank_width", "invalid_rank_digit", "invalid_piece"}
+    structure_errors = [issue for issue in errors if issue.code in structure_error_codes]
+    return FenPlacementValidationResult(
+        input=raw,
+        normalized_placement=placement if not structure_errors else None,
+        is_structure_valid=not structure_errors,
+        is_plausible_position=not errors,
+        errors=errors,
+        warnings=warnings,
+    )
+
+
+def placement_to_default_fen(placement: str, *, side_to_move: str = "w") -> str:
+    normalized_placement = normalize_placement(placement)
+    side = str(side_to_move or "w").strip().lower()
+    if side not in {"w", "b"}:
+        raise ValueError("side_to_move must be 'w' or 'b'")
+    return f"{normalized_placement} {side} - - 0 1"
 
 
 def validate_fen_detailed(fen: str) -> FenValidationResult:
@@ -272,6 +401,79 @@ def evaluate_diagram_acceptance(candidate: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def machine_accept_placement(candidate: dict[str, Any], context: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Evaluate whether a visual board placement may be machine accepted.
+
+    This gate intentionally does not accept a full six-field FEN. It proves only
+    the board occupancy/piece placement layer and leaves active color and other
+    FEN metadata to the stricter full-FEN gate.
+    """
+    ctx = dict(context or {})
+    source = str(candidate.get("source") or candidate.get("method") or "").strip()
+    normalized_source = source.lower().replace("_", "-")
+    placement_value = _candidate_placement_value(candidate)
+    min_confidence = float(ctx.get("min_confidence", 0.835) or 0.835)
+    confidence = _candidate_confidence(candidate, default=ctx.get("confidence"))
+    warnings = sorted({str(item) for item in candidate.get("warnings") or [] if str(item)})
+    blockers: list[dict[str, Any]] = []
+    trace: dict[str, Any] = {
+        "source": source or "unknown",
+        "confidence": confidence,
+        "min_confidence": min_confidence,
+        "warnings": warnings,
+        "policy": "runtime_placement_acceptance_v1",
+    }
+
+    if not placement_value:
+        blockers.append({"code": "placement_candidate_missing", "message": "No placement candidate was supplied."})
+    if any(normalized_source == item.replace("_", "-") for item in MACHINE_REVIEW_ONLY_FEN_SOURCES):
+        blockers.append({"code": "ai_review_only_source", "message": "AI placement candidates cannot be machine accepted directly."})
+    if not source:
+        blockers.append({"code": "fen_source_missing", "message": "Candidate source is required for placement machine acceptance."})
+    elif normalized_source == "local-model-candidate" and not bool(ctx.get("allow_local_model_candidate")):
+        blockers.append({"code": "non_deterministic_source", "message": "Local model placement candidates are review-only unless explicitly enabled."})
+    elif not _is_machine_accepted_source(source) and normalized_source != "local-model-candidate":
+        blockers.append({"code": "non_deterministic_source", "message": f"Source {source!r} is review-only for placement acceptance."})
+    if confidence < min_confidence:
+        blockers.append(
+            {
+                "code": "confidence_below_runtime_threshold",
+                "message": "Candidate confidence is below the runtime placement acceptance threshold.",
+                "confidence": confidence,
+                "min_confidence": min_confidence,
+            }
+        )
+
+    if normalized_source == "deterministic-ensemble":
+        blockers.extend(_deterministic_ensemble_placement_blockers(candidate, ctx, trace))
+
+    validation = validate_placement_detailed(placement_value)
+    trace["placement_validation"] = {
+        "is_structure_valid": validation.is_structure_valid,
+        "is_plausible_position": validation.is_plausible_position,
+        "normalized_placement": validation.normalized_placement,
+        "errors": [issue.__dict__ for issue in validation.errors],
+        "warnings": [issue.__dict__ for issue in validation.warnings],
+    }
+    for issue in validation.errors:
+        blockers.append({"code": issue.code, "message": issue.message})
+
+    warning_blockers = sorted(set(warnings) & MACHINE_BLOCKING_PLACEMENT_WARNINGS)
+    for warning in warning_blockers:
+        blockers.append({"code": warning, "message": "Recognizer warning blocks runtime placement acceptance."})
+
+    accepted = not blockers
+    return {
+        "status": "accepted" if accepted else "review_required",
+        "runtime_status": "FEN_PLACEMENT_MACHINE_ACCEPTED" if accepted else "FEN_PLACEMENT_REVIEW_REQUIRED",
+        "selected_placement": validation.normalized_placement if accepted else None,
+        "normalized_placement": validation.normalized_placement,
+        "acceptance_blockers": blockers,
+        "acceptance_trace": trace,
+        "acceptance_policy": "runtime_placement_acceptance_v1",
+    }
+
+
 def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None = None) -> dict[str, Any]:
     """Evaluate whether a FEN candidate may be accepted by the runtime machine gate.
 
@@ -366,6 +568,14 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
     }
 
 
+def _candidate_placement_value(candidate: dict[str, Any]) -> str:
+    for key in ("placement", "placement_fen", "fen", "value", "candidate_fen"):
+        value = str(candidate.get(key) or "").strip()
+        if value:
+            return placement_from_fen_or_placement(value)
+    return ""
+
+
 def _candidate_confidence(candidate: dict[str, Any], *, default: Any = None) -> float:
     value = candidate.get("confidence", default)
     if isinstance(value, dict):
@@ -449,6 +659,60 @@ def _deterministic_ensemble_contract_blockers(
             {
                 "code": "score_margin_too_low",
                 "message": "Best deterministic ensemble candidate is too close to the runner-up.",
+                "score_margin_to_second_candidate": score_margin,
+                "min_score_margin": min_score_margin,
+            }
+        )
+    return blockers
+
+
+def _deterministic_ensemble_placement_blockers(
+    candidate: dict[str, Any],
+    context: dict[str, Any],
+    trace: dict[str, Any],
+) -> list[dict[str, Any]]:
+    evidence = candidate.get("evidence") if isinstance(candidate.get("evidence"), dict) else {}
+    min_score_margin = float(context.get("min_score_margin", 0.025) or 0.025)
+    score_margin = _candidate_score_margin(candidate, evidence)
+    source_crop_hash = str(candidate.get("source_crop_hash") or evidence.get("source_crop_hash") or "").strip()
+    local_model_evidence = bool(evidence.get("local_model_candidate"))
+    template_evidence = bool(evidence.get("template_candidate"))
+    square_alternatives_checked = bool(evidence.get("square_alternatives_checked"))
+    blockers: list[dict[str, Any]] = []
+    trace["deterministic_ensemble_placement_evidence"] = {
+        "score_margin_to_second_candidate": score_margin,
+        "min_score_margin": min_score_margin,
+        "source_crop_hash_present": bool(source_crop_hash),
+        "local_model_candidate": local_model_evidence,
+        "template_candidate": template_evidence,
+        "square_alternatives_checked": square_alternatives_checked,
+    }
+    if not source_crop_hash:
+        blockers.append(
+            {
+                "code": "source_crop_hash_missing",
+                "message": "Deterministic ensemble placement candidates require crop-backed hash evidence.",
+            }
+        )
+    if not square_alternatives_checked:
+        blockers.append(
+            {
+                "code": "square_alternatives_not_checked",
+                "message": "Deterministic ensemble placement candidates require checked per-square alternatives.",
+            }
+        )
+    if not (local_model_evidence or template_evidence):
+        blockers.append(
+            {
+                "code": "no_template_or_model_agreement",
+                "message": "Deterministic ensemble placement candidates require local model or template evidence.",
+            }
+        )
+    if score_margin < min_score_margin:
+        blockers.append(
+            {
+                "code": "score_margin_too_low",
+                "message": "Best deterministic ensemble placement candidate is too close to the runner-up.",
                 "score_margin_to_second_candidate": score_margin,
                 "min_score_margin": min_score_margin,
             }

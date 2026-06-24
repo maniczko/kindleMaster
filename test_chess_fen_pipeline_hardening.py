@@ -9,9 +9,13 @@ from chess_fen_hardening import (
     crop_sha256,
     evaluate_diagram_acceptance,
     machine_accept_fen,
+    machine_accept_placement,
+    placement_from_fen_or_placement,
+    placement_to_default_fen,
     render_square_diff_text,
     square_level_fen_diff,
     validate_fen_detailed,
+    validate_placement_detailed,
 )
 from openai_chess_fen_reviewer import OpenAIChessFenReviewer, _review_schema
 from scripts.audit_chess_fen_false_positives import audit_chess_fen_false_positives
@@ -53,6 +57,58 @@ class ChessFenPipelineHardeningTests(unittest.TestCase):
                 codes = {issue.code for issue in result.errors}
                 self.assertIn(expected_code, codes)
                 self.assertIsNone(result.normalized_fen)
+
+    def test_placement_validation_accepts_placement_only_and_full_fen_input(self) -> None:
+        placement = self.STARTING_FEN.split()[0]
+
+        placement_only = validate_placement_detailed(placement)
+        from_full_fen = validate_placement_detailed(self.STARTING_FEN)
+
+        self.assertTrue(placement_only.is_structure_valid)
+        self.assertTrue(placement_only.is_plausible_position)
+        self.assertEqual(placement_only.normalized_placement, placement)
+        self.assertEqual(from_full_fen.normalized_placement, placement)
+        self.assertEqual(placement_from_fen_or_placement(self.STARTING_FEN), placement)
+
+    def test_placement_validation_rejects_structural_errors(self) -> None:
+        cases = {
+            "invalid_rank_count": "8/8/8/8/8/8/8",
+            "invalid_rank_width": "9/8/8/8/8/8/8/4K2k",
+            "invalid_rank_digit": "44/8/8/8/8/8/8/4K2k",
+            "invalid_piece": "8/8/8/8/8/8/8/4K2x",
+        }
+
+        for expected_code, placement in cases.items():
+            with self.subTest(expected_code=expected_code):
+                result = validate_placement_detailed(placement)
+                self.assertFalse(result.is_structure_valid)
+                self.assertIn(expected_code, {issue.code for issue in result.errors})
+
+    def test_placement_validation_handles_plausibility_options(self) -> None:
+        no_kings = "8/8/8/8/8/8/8/8"
+
+        strict = validate_placement_detailed(no_kings)
+        structural_only = validate_placement_detailed(no_kings, require_kings=False)
+
+        self.assertTrue(strict.is_structure_valid)
+        self.assertFalse(strict.is_plausible_position)
+        self.assertIn("missing_white_king", {issue.code for issue in strict.errors})
+        self.assertTrue(structural_only.is_structure_valid)
+        self.assertTrue(structural_only.is_plausible_position)
+
+    def test_placement_to_default_fen_validates_and_adds_safe_metadata(self) -> None:
+        placement = self.STARTING_FEN.split()[0]
+
+        self.assertEqual(placement_to_default_fen(placement), f"{placement} w - - 0 1")
+        self.assertEqual(placement_to_default_fen(placement, side_to_move="b"), f"{placement} b - - 0 1")
+
+    def test_full_fen_validation_still_requires_six_fields(self) -> None:
+        placement = self.STARTING_FEN.split()[0]
+
+        result = validate_fen_detailed(placement)
+
+        self.assertIn("fen_must_have_six_fields", {issue.code for issue in result.errors})
+        self.assertIsNone(result.normalized_fen)
 
     def test_diagram_acceptance_auto_verifies_only_valid_high_confidence_fen(self) -> None:
         result = evaluate_diagram_acceptance(
@@ -124,6 +180,90 @@ class ChessFenPipelineHardeningTests(unittest.TestCase):
 
         self.assertEqual(result["runtime_status"], "FEN_MACHINE_ACCEPTED")
         self.assertEqual(result["selected_value"], self.STARTING_FEN)
+
+    def test_machine_accept_placement_accepts_deterministic_placement_without_side_evidence(self) -> None:
+        placement = self.STARTING_FEN.split()[0]
+
+        result = machine_accept_placement(
+            {
+                "source": "deterministic",
+                "placement": placement,
+                "confidence": 0.99,
+                "warnings": ["side_to_move_inferred"],
+            },
+            {"min_confidence": 0.90},
+        )
+
+        self.assertEqual(result["runtime_status"], "FEN_PLACEMENT_MACHINE_ACCEPTED")
+        self.assertEqual(result["selected_placement"], placement)
+
+    def test_machine_accept_placement_extracts_placement_from_full_fen_candidate(self) -> None:
+        placement = self.STARTING_FEN.split()[0]
+
+        result = machine_accept_placement(
+            {
+                "source": "image_template",
+                "fen": self.STARTING_FEN,
+                "confidence": 0.99,
+                "warnings": ["side_to_move_inferred"],
+            }
+        )
+
+        self.assertEqual(result["runtime_status"], "FEN_PLACEMENT_MACHINE_ACCEPTED")
+        self.assertEqual(result["selected_placement"], placement)
+
+    def test_machine_accept_placement_blocks_ai_and_local_model_by_default(self) -> None:
+        placement = self.STARTING_FEN.split()[0]
+        ai = machine_accept_placement({"source": "ai_review_only", "placement": placement, "confidence": 0.99})
+        local_model = machine_accept_placement({"source": "local_model_candidate", "placement": placement, "confidence": 0.99})
+
+        self.assertEqual(ai["runtime_status"], "FEN_PLACEMENT_REVIEW_REQUIRED")
+        self.assertIn("ai_review_only_source", {blocker["code"] for blocker in ai["acceptance_blockers"]})
+        self.assertEqual(local_model["runtime_status"], "FEN_PLACEMENT_REVIEW_REQUIRED")
+        self.assertIn("non_deterministic_source", {blocker["code"] for blocker in local_model["acceptance_blockers"]})
+
+    def test_machine_accept_placement_requires_deterministic_ensemble_evidence(self) -> None:
+        placement = self.STARTING_FEN.split()[0]
+        missing_evidence = machine_accept_placement(
+            {
+                "source": "deterministic_ensemble",
+                "placement": placement,
+                "confidence": 0.99,
+                "evidence": {"score_margin_to_second_candidate": 0.50},
+            }
+        )
+        accepted = machine_accept_placement(
+            {
+                "source": "deterministic_ensemble",
+                "placement": placement,
+                "confidence": 0.99,
+                "source_crop_hash": "sha256:abc123",
+                "evidence": {
+                    "score_margin_to_second_candidate": 0.50,
+                    "local_model_candidate": True,
+                    "square_alternatives_checked": True,
+                },
+            },
+            {"min_score_margin": 0.05},
+        )
+
+        missing_codes = {blocker["code"] for blocker in missing_evidence["acceptance_blockers"]}
+        self.assertIn("source_crop_hash_missing", missing_codes)
+        self.assertIn("square_alternatives_not_checked", missing_codes)
+        self.assertIn("no_template_or_model_agreement", missing_codes)
+        self.assertEqual(accepted["runtime_status"], "FEN_PLACEMENT_MACHINE_ACCEPTED")
+
+    def test_machine_accept_placement_rejects_invalid_missing_king_and_low_confidence(self) -> None:
+        invalid = machine_accept_placement({"source": "deterministic", "placement": "8/8/8/8/8/8/8/8", "confidence": 0.99})
+        low_confidence = machine_accept_placement(
+            {"source": "deterministic", "placement": self.STARTING_FEN.split()[0], "confidence": 0.50},
+            {"min_confidence": 0.90},
+        )
+
+        self.assertEqual(invalid["runtime_status"], "FEN_PLACEMENT_REVIEW_REQUIRED")
+        self.assertIn("missing_white_king", {blocker["code"] for blocker in invalid["acceptance_blockers"]})
+        self.assertEqual(low_confidence["runtime_status"], "FEN_PLACEMENT_REVIEW_REQUIRED")
+        self.assertIn("confidence_below_runtime_threshold", {blocker["code"] for blocker in low_confidence["acceptance_blockers"]})
 
     def test_machine_accept_fen_requires_full_deterministic_ensemble_evidence(self) -> None:
         result = machine_accept_fen(

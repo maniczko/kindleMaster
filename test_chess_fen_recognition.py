@@ -75,6 +75,45 @@ from scripts.export_chess_fen_review_queue import (
 
 
 class ChessFenRecognitionTests(unittest.TestCase):
+    def test_chess_fen_result_preserves_placement_when_inferred_side_suppresses_runtime_fen(self) -> None:
+        placement = "4k3/8/8/8/8/8/8/4K3"
+        result = ChessFenResult(
+            fen=f"{placement} w - - 0 1",
+            placement=placement,
+            full_fen=f"{placement} w - - 0 1",
+            confidence=0.99,
+            warnings=["side_to_move_inferred"],
+            requires_review=False,
+            board_detected=True,
+        ).to_dict()
+
+        self.assertEqual(result["fen"], "")
+        self.assertEqual(result["placement"], placement)
+        self.assertEqual(result["placement_fen"], placement)
+        self.assertEqual(result["full_fen"], f"{placement} w - - 0 1")
+        self.assertEqual(result["fen_suppressed_reason"], "side_to_move_inferred")
+        self.assertTrue(result["requires_review"])
+
+    def test_chess_fen_result_keeps_runtime_fen_with_trusted_side_evidence(self) -> None:
+        placement = "4k3/8/8/8/8/8/8/4K3"
+        fen = f"{placement} b - - 0 1"
+        result = ChessFenResult(
+            fen=fen,
+            placement=placement,
+            full_fen=fen,
+            confidence=0.99,
+            side_to_move="b",
+            side_to_move_status="explicit",
+            side_to_move_evidence="marker",
+            warnings=["side_to_move_marker_detected"],
+            requires_review=False,
+            board_detected=True,
+        ).to_dict()
+
+        self.assertEqual(result["fen"], fen)
+        self.assertEqual(result["fen_suppressed_reason"], "")
+        self.assertFalse(result["requires_review"])
+
     def test_review_queue_accepts_premium_corpus_quality_chess_fen(self) -> None:
         case = {
             "quality": {

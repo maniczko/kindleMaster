@@ -2,14 +2,78 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import json
 from pathlib import Path
 
 import fitz
 
-from scripts.chess_diagram_detection import detect_chess_diagrams
+from scripts.chess_diagram_detection import (
+    _build_board_detection_quality_records,
+    _write_board_detection_quality_artifacts,
+    detect_chess_diagrams,
+)
 
 
 class ChessDiagramDetectionTests(unittest.TestCase):
+    def test_board_detection_quality_artifacts_summarize_synthetic_records(self) -> None:
+        strict_records = [
+            {
+                "diagram_id": "accepted",
+                "page": 1,
+                "page_index": 0,
+                "status": "accepted",
+                "fen": "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+                "fen_candidate": "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+                "bbox": [1, 2, 30, 30],
+                "bbox_xyxy": [1, 2, 31, 32],
+                "pixel_bbox": [10, 20, 300, 300],
+                "image_path": "accepted.webp",
+                "image_href": "assets/diagrams/accepted.webp",
+                "method": "synthetic",
+                "grid_confidence": 0.9,
+                "fen_confidence": 0.91,
+                "confidence": 0.92,
+                "warnings": [],
+            },
+            {
+                "diagram_id": "review",
+                "page": 2,
+                "status": "needs_review",
+                "fen": "",
+                "fen_candidate": "",
+                "reason": "fen_not_recognized",
+                "warnings": ["board_grid_not_detected"],
+            },
+        ]
+        low_confidence = [
+            {
+                "diagram_id": "low",
+                "page": 3,
+                "status": "needs_review",
+                "reason": "review_only_low_confidence_candidate",
+                "warnings": ["review_only_low_confidence_candidate"],
+                "review_only": True,
+            }
+        ]
+
+        rows = _build_board_detection_quality_records(strict_records, low_confidence)
+
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[0]["quality_gate_status"], "accepted_crop")
+        self.assertEqual(rows[1]["quality_gate_status"], "needs_review")
+        self.assertEqual(rows[1]["primary_quality_blocker"], "fen_not_recognized")
+        self.assertEqual(rows[2]["candidate_kind"], "low_confidence_review")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = _write_board_detection_quality_artifacts(Path(temp_dir), strict_records, low_confidence)
+            payload = json.loads(Path(result["json"]).read_text(encoding="utf-8"))
+            jsonl_rows = Path(result["jsonl"]).read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(payload["summary"]["total_candidates"], 3)
+        self.assertEqual(payload["summary"]["accepted_crop_count"], 1)
+        self.assertEqual(payload["summary"]["by_quality_gate_status"]["low_confidence_review"], 1)
+        self.assertEqual(len(jsonl_rows), 3)
+
     def test_page_ranges_select_representative_pages(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

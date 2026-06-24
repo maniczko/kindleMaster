@@ -11,3 +11,4 @@ pip-audit>=2.7.0
 playwright>=1.52.0
 waitress>=3.0.0
 scikit-learn>=1.7.0
+opencv-python-headless>=4.10.0

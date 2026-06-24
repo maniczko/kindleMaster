@@ -711,12 +711,13 @@ def _canonical_fen(
                     "acceptance_policy": selected["acceptance_policy"],
                     "candidate_values": [],
                     "selected_value": None,
-                    "validation_errors": selected["validation_errors"],
-                    "acceptance_blockers": selected["acceptance_blockers"],
-                    "acceptance_trace": selected["acceptance_trace"],
-                    "repair_attempts": [],
-                    "next_action": selected["next_action"],
-                }
+                "validation_errors": selected["validation_errors"],
+                "acceptance_blockers": selected["acceptance_blockers"],
+                "acceptance_trace": selected["acceptance_trace"],
+                "fen_semantic_status": _selected_fen_semantic_status(selected, []),
+                "repair_attempts": [],
+                "next_action": selected["next_action"],
+            }
             )
             validation_rows.append(
                 {
@@ -759,6 +760,7 @@ def _canonical_fen(
                 "validation_errors": selected.get("validation_errors", []),
                 "acceptance_blockers": selected.get("acceptance_blockers", []),
                 "acceptance_trace": selected.get("acceptance_trace", {}),
+                "fen_semantic_status": _selected_fen_semantic_status(selected, candidate_rows),
                 "repair_attempts": repair_rows,
                 "next_action": selected["next_action"],
             }
@@ -783,6 +785,11 @@ def _canonical_fen(
     summary["recognition_limit"] = "all" if max_count <= 0 else max_count
     summary["skipped_diagram_count"] = len(skipped)
     summary["skipped_diagram_ids"] = [item.get("id") for item in skipped]
+    summary["fen_semantic_status_counts"] = {
+        status: len([item for item in candidates if item.get("fen_semantic_status") == status])
+        for status in sorted({str(item.get("fen_semantic_status") or "") for item in candidates})
+        if status
+    }
     payload = {"schema": "kindlemaster.auto_chess.fen_candidates.v1", "items": candidates, "summary": summary}
     validation = {"schema": "kindlemaster.auto_chess.fen_validation.v1", "items": validation_rows, "summary": summary}
     return payload, validation, repairs
@@ -897,6 +904,7 @@ def _fen_candidate_row(candidate: dict[str, Any]) -> dict[str, Any]:
         "errors": [asdict(error) for error in validation.errors],
         "validation_warnings": [asdict(warning) for warning in validation.warnings],
         "runtime_status": machine["runtime_status"],
+        "fen_semantic_status": machine.get("fen_semantic_status"),
         "acceptance_policy": machine["acceptance_policy"],
         "acceptance_blockers": machine["acceptance_blockers"],
         "acceptance_trace": machine["acceptance_trace"],
@@ -975,6 +983,22 @@ def _select_fen_status(diagram: dict[str, Any], candidate_rows: list[dict[str, A
     }
 
 
+def _selected_fen_semantic_status(selected: dict[str, Any], candidate_rows: list[dict[str, Any]]) -> str:
+    trace = selected.get("acceptance_trace") if isinstance(selected.get("acceptance_trace"), dict) else {}
+    from_trace = str(trace.get("fen_semantic_status") or "").strip()
+    if from_trace:
+        return from_trace
+    selected_value = str(selected.get("selected_value") or "").strip()
+    for row in candidate_rows:
+        if selected_value and selected_value == str(row.get("normalized_value") or row.get("value") or "").strip():
+            return str(row.get("fen_semantic_status") or "").strip()
+    for row in candidate_rows:
+        semantic = str(row.get("fen_semantic_status") or "").strip()
+        if semantic:
+            return semantic
+    return ""
+
+
 def _fen_repair_rows(diagram_id: str, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for candidate in candidates:
@@ -1028,6 +1052,7 @@ def _canonical_pgn(
         source_fen = _record_source_fen(record, accepted_fen_by_source)
         requires_source_fen = source_type in {"EXERCISE_SOLUTION", "TACTICAL_LINE"}
         source_status = str(record.get("status") or "requires_review")
+        feasibility = _pgn_feasibility_for_record(record)
         blocking_errors = _pgn_errors(
             record,
             lattice,
@@ -1045,6 +1070,14 @@ def _canonical_pgn(
             status = _review_pgn_status(pgn, replay, source_type=source_type)
         runtime_status = status
         validation_errors = [] if accepted else blocking_errors
+        validation_stage = _pgn_validation_stage(
+            pgn=pgn,
+            replay=replay,
+            blocking_errors=blocking_errors,
+            source_fen=source_fen,
+            requires_source_fen=requires_source_fen,
+        )
+        top_blocker = validation_errors[0]["code"] if validation_errors else ""
         item = {
             "id": record_id,
             "page": int(record.get("page") or record.get("source_page") or 0),
@@ -1067,6 +1100,11 @@ def _canonical_pgn(
             "selected_value": pgn if accepted else None,
             "validation_errors": validation_errors,
             "acceptance_blockers": validation_errors,
+            "validation_stage": validation_stage,
+            "top_blocker": top_blocker,
+            "pgn_feasible": bool(feasibility["pgn_feasible"]),
+            "pgn_feasibility_reason": feasibility["pgn_feasibility_reason"],
+            "pgn_should_count_in_success_rate": bool(feasibility["pgn_should_count_in_success_rate"]),
             "acceptance_trace": {
                 "source_status": source_status,
                 "source_type": source_type,
@@ -1090,9 +1128,98 @@ def _canonical_pgn(
                 }
             )
     summary = _status_summary(items, accepted=PGN_ACCEPTED_STATUSES)
+    feasible_items = [item for item in items if bool(item.get("pgn_should_count_in_success_rate"))]
+    infeasible_items = [item for item in items if not bool(item.get("pgn_should_count_in_success_rate"))]
+    summary["failed"] = len([item for item in feasible_items if item.get("status") not in PGN_ACCEPTED_STATUSES])
+    summary["review_required"] = len(
+        [
+            item
+            for item in feasible_items
+            if item.get("status") not in PGN_ACCEPTED_STATUSES
+            and str(item.get("runtime_status") or item.get("status") or "").endswith(("VALID", "REVIEW_REQUIRED", "PARSED", "CANDIDATE"))
+        ]
+    )
+    summary["pgn_feasible_count"] = len(feasible_items)
+    summary["pgn_infeasible_count"] = len(infeasible_items)
+    summary["pgn_infeasible_reason_counts"] = {
+        reason: len([item for item in infeasible_items if item.get("pgn_feasibility_reason") == reason])
+        for reason in sorted({str(item.get("pgn_feasibility_reason") or "") for item in infeasible_items})
+        if reason
+    }
+    summary["pgn_success_rate"] = _ratio(int(summary.get("runtime_machine_accepted") or 0), len(feasible_items))
+    summary["validation_stage_counts"] = {
+        stage: len([item for item in items if item.get("validation_stage") == stage])
+        for stage in sorted({str(item.get("validation_stage") or "") for item in items})
+        if stage
+    }
+    summary["top_blocker_counts"] = {
+        blocker: len([item for item in items if item.get("top_blocker") == blocker])
+        for blocker in sorted({str(item.get("top_blocker") or "") for item in items})
+        if blocker
+    }
     payload = {"schema": "kindlemaster.auto_chess.pgn_candidates.v1", "items": items, "summary": summary}
     validation = {"schema": "kindlemaster.auto_chess.pgn_validation.v1", "items": items, "summary": summary}
     return payload, validation, repairs
+
+
+def _pgn_validation_stage(
+    *,
+    pgn: str,
+    replay: dict[str, Any],
+    blocking_errors: list[dict[str, Any]],
+    source_fen: str,
+    requires_source_fen: bool,
+) -> str:
+    if not pgn:
+        return "no_pgn"
+    if not replay.get("parsed"):
+        return "parse_failed"
+    if not replay.get("valid"):
+        return "replay_failed"
+    if requires_source_fen and not source_fen:
+        return "source_fen_missing"
+    if blocking_errors:
+        return "warning_blocked"
+    return "exportable"
+
+
+def _pgn_feasibility_for_record(record: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(record.get("pgn_feasible"), bool):
+        feasible = bool(record.get("pgn_feasible"))
+        return {
+            "pgn_feasible": feasible,
+            "pgn_feasibility_reason": str(record.get("pgn_feasibility_reason") or ("full_game_text" if feasible else "insufficient_text")),
+            "pgn_should_count_in_success_rate": bool(record.get("pgn_should_count_in_success_rate", feasible)),
+        }
+    pgn = str(record.get("pgn") or record.get("annotated_pgn") or "").strip()
+    movetext = str(record.get("movetext") or "").strip()
+    raw_text = str(record.get("raw_text") or record.get("text") or "").strip()
+    combined = "\n".join(part for part in [pgn, movetext, raw_text] if part)
+    if not combined:
+        return {
+            "pgn_feasible": False,
+            "pgn_feasibility_reason": "insufficient_text",
+            "pgn_should_count_in_success_rate": False,
+        }
+    has_move_signal = bool(re.search(r"\b\d{1,3}\.(?:\.\.)?\s*\S+", combined))
+    has_diagram_only_signal = bool(re.search(r"(?i)^\s*(?:diagram|dia\.?)\s+\d+(?:[-.]\d+)?", combined))
+    if has_move_signal or pgn:
+        return {
+            "pgn_feasible": True,
+            "pgn_feasibility_reason": "full_game_text" if not has_diagram_only_signal else "exercise_solution_line",
+            "pgn_should_count_in_success_rate": True,
+        }
+    if has_diagram_only_signal:
+        return {
+            "pgn_feasible": False,
+            "pgn_feasibility_reason": "diagram_only",
+            "pgn_should_count_in_success_rate": False,
+        }
+    return {
+        "pgn_feasible": False,
+        "pgn_feasibility_reason": "insufficient_movetext",
+        "pgn_should_count_in_success_rate": False,
+    }
 
 
 def _review_pgn_status(pgn: str, replay: dict[str, Any], *, source_type: str = "UNKNOWN") -> str:
@@ -1160,9 +1287,16 @@ def _auto_summary(
 ) -> dict[str, Any]:
     fen_summary = fen_validation.get("summary") or {}
     pgn_summary = pgn_validation.get("summary") or {}
-    return {
+    fen_total = int(fen_summary.get("total") or 0)
+    pgn_total = int(dashboard.get("pgn_total") or pgn_summary.get("total") or 0)
+    pgn_feasible_count = (
+        int(pgn_summary.get("pgn_feasible_count") or 0)
+        if "pgn_feasible_count" in pgn_summary
+        else int(pgn_summary.get("total") or 0)
+    )
+    summary = {
         "pages": int(dashboard.get("pages") or 0),
-        "diagrams_total": int(dashboard.get("diagrams_total") or fen_summary.get("total") or 0),
+        "diagrams_total": int(dashboard.get("diagrams_total") or fen_total or 0),
         "fen_accepted": int(fen_summary.get("accepted") or dashboard.get("fen_accepted") or 0),
         "fen_machine_accepted": int(fen_summary.get("runtime_machine_accepted") or 0),
         "fen_corpus_verified": int(fen_summary.get("corpus_verified") or 0),
@@ -1170,25 +1304,57 @@ def _auto_summary(
         "fen_failed": int(fen_summary.get("failed") or 0),
         "fen_recognition_limit": fen_summary.get("recognition_limit", "all"),
         "fen_skipped_diagram_count": int(fen_summary.get("skipped_diagram_count") or 0),
-        "pgn_total": int(dashboard.get("pgn_total") or pgn_summary.get("total") or 0),
+        "pgn_total": pgn_total,
+        "pgn_feasible_count": pgn_feasible_count,
+        "pgn_infeasible_count": int(pgn_summary.get("pgn_infeasible_count") or 0),
         "accepted_pgn": int(pgn_summary.get("accepted") or dashboard.get("accepted_pgn") or 0),
         "pgn_machine_accepted": int(pgn_summary.get("runtime_machine_accepted") or 0),
         "pgn_review_required": int(pgn_summary.get("review_required") or 0),
         "pgn_failed": int(pgn_summary.get("failed") or 0),
+        "pgn_validation_stage_counts": dict(pgn_summary.get("validation_stage_counts") or {}),
+        "pgn_top_blocker_counts": dict(pgn_summary.get("top_blocker_counts") or {}),
+        "pgn_infeasible_reason_counts": dict(pgn_summary.get("pgn_infeasible_reason_counts") or {}),
+        "fen_semantic_status_counts": dict(fen_summary.get("fen_semantic_status_counts") or {}),
         "repair_attempts": int((repair_payload.get("summary") or {}).get("attempted") or 0),
         "repairs_applied": int((repair_payload.get("summary") or {}).get("applied") or 0),
         "manual_review_items": int(fen_summary.get("failed") or 0) + int(pgn_summary.get("failed") or 0),
         "review_required_rate": _ratio(
             int(fen_summary.get("failed") or 0) + int(pgn_summary.get("failed") or 0),
-            int(fen_summary.get("total") or 0) + int(pgn_summary.get("total") or 0),
+            fen_total + pgn_feasible_count,
         ),
         "automatic_flow_success_rate": _ratio(
             int(fen_summary.get("runtime_machine_accepted") or 0) + int(pgn_summary.get("runtime_machine_accepted") or 0),
-            int(fen_summary.get("total") or 0) + int(pgn_summary.get("total") or 0),
+            fen_total + pgn_feasible_count,
         ),
         "ai_fen_candidates": int(dashboard.get("ai_fen_candidates") or 0),
         "ai_pgn_candidates": int(dashboard.get("ai_pgn_candidates") or 0),
     }
+    summary["fen_breakdown"] = {
+        "total_diagrams": fen_total,
+        "accepted": int(summary["fen_accepted"]),
+        "machine_accepted": int(summary["fen_machine_accepted"]),
+        "corpus_verified": int(summary["fen_corpus_verified"]),
+        "review_required": int(summary["fen_review_required"]),
+        "failed_or_unaccepted": int(summary["fen_failed"]),
+        "acceptance_rate": _ratio(int(summary["fen_machine_accepted"]) + int(summary["fen_corpus_verified"]), fen_total),
+        "semantic_status_counts": dict(summary["fen_semantic_status_counts"]),
+        "recognition_limit": summary["fen_recognition_limit"],
+        "skipped_diagram_count": int(summary["fen_skipped_diagram_count"]),
+    }
+    summary["pgn_breakdown"] = {
+        "total_records": pgn_total,
+        "feasible_records": pgn_feasible_count,
+        "infeasible_records": int(summary["pgn_infeasible_count"]),
+        "accepted": int(summary["accepted_pgn"]),
+        "machine_accepted": int(summary["pgn_machine_accepted"]),
+        "review_required": int(summary["pgn_review_required"]),
+        "failed_feasible_records": int(summary["pgn_failed"]),
+        "acceptance_rate_on_feasible": _ratio(int(summary["pgn_machine_accepted"]), pgn_feasible_count),
+        "validation_stage_counts": dict(summary["pgn_validation_stage_counts"]),
+        "top_blocker_counts": dict(summary["pgn_top_blocker_counts"]),
+        "infeasible_reason_counts": dict(summary["pgn_infeasible_reason_counts"]),
+    }
+    return summary
 
 
 def _pipeline_status(summary: dict[str, Any], *, mode: str) -> str:
@@ -1561,11 +1727,36 @@ def _copy_export_files(out: Path, export_dir: Path) -> None:
 
 def _quality_report_html(report: dict[str, Any]) -> str:
     summary = report.get("summary") or {}
+    fen_breakdown = summary.get("fen_breakdown") if isinstance(summary.get("fen_breakdown"), dict) else {}
+    pgn_breakdown = summary.get("pgn_breakdown") if isinstance(summary.get("pgn_breakdown"), dict) else {}
     blockers = report.get("blockers") or []
     blocker_rows = "".join(
         f"<li><code>{html.escape(str(item.get('code')))}</code>: {html.escape(str(item.get('count')))}</li>"
         for item in blockers
     ) or "<li>No blockers.</li>"
+    fen_rows = _breakdown_rows(
+        [
+            ("Total diagrams", fen_breakdown.get("total_diagrams")),
+            ("Accepted", fen_breakdown.get("accepted")),
+            ("Machine accepted", fen_breakdown.get("machine_accepted")),
+            ("Review required", fen_breakdown.get("review_required")),
+            ("Acceptance rate", fen_breakdown.get("acceptance_rate")),
+            ("Semantic statuses", fen_breakdown.get("semantic_status_counts")),
+        ]
+    )
+    pgn_rows = _breakdown_rows(
+        [
+            ("Total records", pgn_breakdown.get("total_records")),
+            ("Feasible records", pgn_breakdown.get("feasible_records")),
+            ("Infeasible records", pgn_breakdown.get("infeasible_records")),
+            ("Accepted", pgn_breakdown.get("accepted")),
+            ("Failed feasible records", pgn_breakdown.get("failed_feasible_records")),
+            ("Acceptance rate on feasible", pgn_breakdown.get("acceptance_rate_on_feasible")),
+            ("Validation stages", pgn_breakdown.get("validation_stage_counts")),
+            ("Top blockers", pgn_breakdown.get("top_blocker_counts")),
+            ("Infeasible reasons", pgn_breakdown.get("infeasible_reason_counts")),
+        ]
+    )
     tiles = "".join(
         f"<div class='tile'><strong>{html.escape(label)}</strong><span>{html.escape(str(value))}</span></div>"
         for label, value in [
@@ -1592,16 +1783,36 @@ body{{font-family:Georgia,serif;margin:2rem;background:#f7f1e8;color:#21180f}}
 .tile{{background:#fff;border:1px solid #dccbb4;border-radius:14px;padding:1rem;box-shadow:0 10px 24px rgba(62,39,16,.08)}}
 .tile strong{{display:block;font-size:.78rem;text-transform:uppercase;color:#7a5631}}
 .tile span{{display:block;font:700 1.5rem ui-monospace,monospace;margin-top:.35rem}}
+table{{border-collapse:collapse;margin:1rem 0 1.5rem;max-width:960px;width:100%;background:#fff;border:1px solid #dccbb4}}
+th,td{{border-bottom:1px solid #eadcc8;padding:.55rem .7rem;text-align:left;vertical-align:top}}
+th{{color:#7a5631;text-transform:uppercase;font-size:.78rem}}
 code{{background:#efe2d1;border-radius:6px;padding:.1rem .25rem}}
 </style>
 <h1>KindleMaster Auto Chess Quality Report</h1>
 <p>{html.escape(str(report.get("next_action") or ""))}</p>
 <section class="grid">{tiles}</section>
+<h2>FEN Breakdown</h2>
+<table><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>{fen_rows}</tbody></table>
+<h2>PGN Breakdown</h2>
+<table><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>{pgn_rows}</tbody></table>
 <h2>Blockers</h2>
 <ul>{blocker_rows}</ul>
 <h2>Policy</h2>
 <p>{html.escape(str(report.get("ai_policy") or ""))}</p>
 </html>"""
+
+
+def _breakdown_rows(rows: list[tuple[str, Any]]) -> str:
+    return "".join(
+        f"<tr><th>{html.escape(label)}</th><td><code>{html.escape(_format_report_value(value))}</code></td></tr>"
+        for label, value in rows
+    )
+
+
+def _format_report_value(value: Any) -> str:
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return str(value if value is not None else "")
 
 
 def _review_index_html(items: list[dict[str, Any]]) -> str:

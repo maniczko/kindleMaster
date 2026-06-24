@@ -55,6 +55,7 @@ from chess_position_recognizer import (
     summarize_chess_fen_results,
     validate_fen,
 )
+from chess_fen_hardening import machine_accept_fen
 from chess_pgn_extractor import (
     UNMAPPED_CHESS_GLYPH_WARNING,
     _detect_unmapped_pgn_glyphs,
@@ -161,6 +162,24 @@ class TextLineItem:
     glyph_warnings: list[str] = field(default_factory=list)
     glyph_warning_fonts: list[str] = field(default_factory=list)
     glyph_diagnostics: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ScanChessOcrLine:
+    """Line-level OCR geometry in rendered scanned-page image coordinates."""
+
+    text: str
+    bbox: tuple[float, float, float, float]
+    confidence: float
+    page: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "text": self.text,
+            "bbox": [round(float(value), 2) for value in self.bbox],
+            "confidence": round(float(self.confidence or 0.0), 3),
+            "page": int(self.page),
+        }
 
 
 @dataclass
@@ -2378,7 +2397,7 @@ def _reconstruct_row_grouped_diagrams(html_parts: list[str]) -> Optional[list[st
     return reconstructed
 
 
-SCAN_CHESS_CACHE_VERSION = 3
+SCAN_CHESS_CACHE_VERSION = 4
 SCAN_CHESS_PAGE_CANDIDATE_CACHE_VERSION = 17
 SCAN_CHESS_RECOGNITION_CACHE_VERSION = 8
 SCAN_CHESS_SPARSE_EXACT_CONSENSUS_MIN_PIECES = 3
@@ -2567,12 +2586,46 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
                     candidate_payload = _scan_chess_fen_payload(candidate, recognition)
                 else:
                     candidate_payload = _scan_chess_candidate_review_payload(candidate)
-                marker_side = _infer_scan_chess_side_to_move(
-                    page_image,
-                    tuple(float(value) for value in recognition_bbox),
-                )
-                if marker_side and bool(getattr(config, "chess_fen_apply_side_marker", False)):
-                    candidate_payload = _apply_scan_chess_side_to_move_marker(candidate_payload, marker_side)
+                if bool(getattr(config, "chess_fen_apply_side_marker", False)):
+                    side_evidence = _scan_chess_side_to_move_context_evidence(
+                        page_image,
+                        tuple(float(value) for value in recognition_bbox),
+                        nearby_text=str((ocr_record or {}).get("text") or ""),
+                        ocr_record=ocr_record if isinstance(ocr_record, dict) else None,
+                        diagram_bboxes=[
+                            tuple(float(v) for v in candidate_bbox)
+                            for candidate_bbox in (
+                                _clamp_bbox(other.get("bbox"), page_image.size)
+                                for other in candidates
+                            )
+                            if candidate_bbox is not None
+                        ],
+                        allow_caption=len(candidates) == 1,
+                    )
+                    candidate_payload = _apply_scan_chess_side_to_move_context_evidence(
+                        candidate_payload,
+                        side_evidence,
+                        min_confidence=float(getattr(config, "chess_fen_min_confidence", 0.85) or 0.85),
+                    )
+                    if _scan_chess_clean_side_only_review_payload(candidate_payload):
+                        local_side_evidence = _scan_chess_local_side_marker_assignment_evidence(
+                            page_image,
+                            tuple(float(value) for value in recognition_bbox),
+                            candidate_payload,
+                            diagram_bboxes=[
+                                tuple(float(v) for v in candidate_bbox)
+                                for candidate_bbox in (
+                                    _clamp_bbox(other.get("bbox"), page_image.size)
+                                    for other in candidates
+                                )
+                                if candidate_bbox is not None
+                            ],
+                        )
+                        candidate_payload = _apply_scan_chess_side_to_move_context_evidence(
+                            candidate_payload,
+                            local_side_evidence,
+                            min_confidence=float(getattr(config, "chess_fen_min_confidence", 0.85) or 0.85),
+                        )
                 diagram_total += 1
                 chess_img = {
                     "filename": filename,
@@ -3612,8 +3665,6 @@ def _scan_chess_apply_verified_crop_label(
     config: ConversionConfig,
 ):
     """Publish a FEN only when this exact crop has a verified label."""
-    if getattr(recognition, "fen", "") and not getattr(recognition, "requires_review", True):
-        return recognition
     labels_path = _resolve_chess_verified_crop_labels_path(config)
     if not labels_path:
         return recognition
@@ -3630,17 +3681,15 @@ def _scan_chess_apply_verified_crop_label(
         return recognition
     placement = fen.split()[0]
     side_to_move = fen.split()[1] if len(fen.split()) >= 2 else "w"
-    carried_warnings = {
-        str(warning)
-        for warning in (getattr(recognition, "warnings", []) or [])
-        if str(warning) == "side_to_move_inferred"
-    }
-    warnings = sorted({*carried_warnings, *fen_warnings, "verified_exact_crop_label_used"})
+    warnings = sorted({*fen_warnings, "verified_exact_crop_label_used"})
     return ChessFenResult(
         fen=fen,
         placement=placement,
+        full_fen=fen,
         confidence=1.0,
         side_to_move=side_to_move,
+        side_to_move_status="explicit",
+        side_to_move_evidence="exact_label",
         bbox=bbox,
         method="verified-exact-crop-label",
         warnings=warnings,
@@ -3673,8 +3722,13 @@ def _load_verified_crop_labels(labels_path: str | Path) -> dict[str, dict[str, A
         except json.JSONDecodeError:
             continue
         digest = str(record.get("sha256") or "").strip().lower()
+        crop_digest = str(record.get("crop_sha256") or "").strip().lower()
         fen = str(record.get("fen") or "").strip()
         if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            continue
+        if crop_digest and crop_digest != digest:
+            continue
+        if not _verified_crop_label_record_is_runtime_trusted(record):
             continue
         valid, _warnings = validate_fen(fen)
         if not valid:
@@ -3683,6 +3737,29 @@ def _load_verified_crop_labels(labels_path: str | Path) -> dict[str, dict[str, A
     _VERIFIED_CROP_LABEL_CACHE.clear()
     _VERIFIED_CROP_LABEL_CACHE[key] = labels
     return labels
+
+
+def _verified_crop_label_record_is_runtime_trusted(record: dict[str, Any]) -> bool:
+    if record.get("human_verified") is not True:
+        return False
+    if record.get("square_diff_ack") is not True:
+        return False
+    if str(record.get("verification_source") or "").strip().lower() != "human_visual":
+        return False
+    if str(record.get("label_status") or "").strip().lower() not in {"verified", "human_verified", "validation_passed"}:
+        return False
+    if not str(record.get("verified_by") or "").strip():
+        return False
+    if not str(record.get("verified_at") or "").strip():
+        return False
+    digest = str(record.get("sha256") or "").strip().lower()
+    crop_digest = str(record.get("crop_sha256") or "").strip().lower()
+    if not crop_digest or crop_digest != digest:
+        return False
+    source = str(record.get("label_source") or "").strip().lower()
+    if source in {"ai", "ai_only", "openai", "external", "deterministic_suggestion"}:
+        return False
+    return True
 
 
 def _scan_chess_recognition_needs_bbox_recovery(recognition) -> bool:
@@ -4391,6 +4468,8 @@ def _scan_chess_selective_ocr_pages(
 
     processed = 0
     low_confidence = 0
+    line_geometry_pages = 0
+    line_geometry_unavailable = 0
     notation_token_count = 0
     text_char_count = 0
     min_confidence = float(getattr(config, "scanned_chess_ocr_min_confidence", 0.35) or 0.35)
@@ -4411,6 +4490,12 @@ def _scan_chess_selective_ocr_pages(
             except Exception as exc:
                 unavailable_reason = str(exc)
                 continue
+            line_items, line_geometry_reason = _scan_chess_ocr_line_geometry_for_image(
+                ocr_image,
+                page_num=page_num,
+                target_size=page_image.size,
+                language=str(getattr(config, "ocr_language", "eng") or "eng"),
+            )
             normalized_text = _normalize_scan_chess_ocr_text(text)
             if not normalized_text.strip():
                 continue
@@ -4422,10 +4507,15 @@ def _scan_chess_selective_ocr_pages(
                 "notation_token_count": token_count,
                 "requires_review": float(confidence or 0.0) < min_confidence,
             }
+            record.update(_scan_chess_ocr_line_geometry_payload(line_items, unavailable_reason=line_geometry_reason))
             pages[str(page_num)] = record
             processed += 1
             text_char_count += len(normalized_text)
             notation_token_count += token_count
+            if line_items:
+                line_geometry_pages += 1
+            else:
+                line_geometry_unavailable += 1
             if record["requires_review"]:
                 low_confidence += 1
 
@@ -4436,6 +4526,8 @@ def _scan_chess_selective_ocr_pages(
         "candidate_page_count": len(candidate_records),
         "skipped_page_count": max(0, len(candidate_records) - len(selected_records)),
         "low_confidence_page_count": low_confidence,
+        "line_geometry_page_count": line_geometry_pages,
+        "line_geometry_unavailable_page_count": line_geometry_unavailable,
         "notation_token_count": notation_token_count,
         "text_char_count": text_char_count,
         "unavailable_reason": unavailable_reason,
@@ -4450,6 +4542,152 @@ def _scan_chess_selective_ocr_pages(
         except Exception:
             pass
     return {"pages": pages, "summary": summary}
+
+
+def _scan_chess_ocr_line_geometry_payload(
+    line_items: list[ScanChessOcrLine],
+    *,
+    unavailable_reason: str = "",
+) -> dict[str, Any]:
+    if line_items:
+        return {
+            "ocr_line_geometry_status": "available",
+            "ocr_line_geometry_warning": "",
+            "ocr_line_geometry_unavailable_reason": "",
+            "ocr_line_items": [line.to_dict() for line in line_items],
+        }
+    return {
+        "ocr_line_geometry_status": "unavailable",
+        "ocr_line_geometry_warning": "ocr_line_geometry_unavailable",
+        "ocr_line_geometry_unavailable_reason": str(unavailable_reason or "no_line_geometry_detected"),
+        "ocr_line_items": [],
+    }
+
+
+def _scan_chess_ocr_line_geometry_for_image(
+    image: Image.Image,
+    *,
+    page_num: int,
+    target_size: tuple[int, int],
+    language: str,
+) -> tuple[list[ScanChessOcrLine], str]:
+    try:
+        import pytesseract
+        from ocr_module import configure_tesseract, resolve_ocr_language
+
+        configure_tesseract(pytesseract)
+        resolved_language = resolve_ocr_language(language)
+        prepared = ImageOps.autocontrast(image.convert("L"))
+        data = pytesseract.image_to_data(
+            prepared,
+            lang=resolved_language,
+            config="--oem 1 --psm 4 -c preserve_interword_spaces=1",
+            output_type=pytesseract.Output.DICT,
+        )
+    except Exception as exc:
+        return [], str(exc)
+    if not isinstance(data, dict) or not data.get("text"):
+        return [], "tesseract_returned_no_line_data"
+    try:
+        scale_x = float(target_size[0] or image.width) / float(image.width or 1)
+        scale_y = float(target_size[1] or image.height) / float(image.height or 1)
+    except Exception:
+        scale_x = scale_y = 1.0
+    lines = _scan_chess_ocr_lines_from_tesseract_data(
+        data,
+        page_num=page_num,
+        scale_x=scale_x,
+        scale_y=scale_y,
+    )
+    return lines, "" if lines else "no_line_geometry_detected"
+
+
+def _scan_chess_ocr_lines_from_tesseract_data(
+    data: Mapping[str, Any],
+    *,
+    page_num: int,
+    scale_x: float = 1.0,
+    scale_y: float = 1.0,
+) -> list[ScanChessOcrLine]:
+    texts = list(data.get("text") or [])
+    groups: dict[tuple[int, int, int], dict[str, Any]] = {}
+
+    def numeric_list(name: str, default: float = 0.0) -> list[Any]:
+        value = data.get(name)
+        if isinstance(value, list):
+            return value
+        return [default] * len(texts)
+
+    block_nums = numeric_list("block_num")
+    par_nums = numeric_list("par_num")
+    line_nums = numeric_list("line_num")
+    word_nums = numeric_list("word_num")
+    lefts = numeric_list("left")
+    tops = numeric_list("top")
+    widths = numeric_list("width")
+    heights = numeric_list("height")
+    confs = numeric_list("conf", -1)
+
+    for index, raw_text in enumerate(texts):
+        word = str(raw_text or "").strip()
+        if not word:
+            continue
+        try:
+            conf = float(str(confs[index]).strip())
+        except Exception:
+            conf = -1.0
+        if conf < 0:
+            continue
+        try:
+            left = float(lefts[index]) * float(scale_x or 1.0)
+            top = float(tops[index]) * float(scale_y or 1.0)
+            right = left + float(widths[index]) * float(scale_x or 1.0)
+            bottom = top + float(heights[index]) * float(scale_y or 1.0)
+        except Exception:
+            continue
+        if right <= left or bottom <= top:
+            continue
+        key = (
+            int(block_nums[index] or 0),
+            int(par_nums[index] or 0),
+            int(line_nums[index] or 0),
+        )
+        group = groups.setdefault(
+            key,
+            {
+                "words": [],
+                "bbox": [left, top, right, bottom],
+                "confidences": [],
+            },
+        )
+        group["words"].append((int(word_nums[index] or index), left, word))
+        bbox = group["bbox"]
+        bbox[0] = min(float(bbox[0]), left)
+        bbox[1] = min(float(bbox[1]), top)
+        bbox[2] = max(float(bbox[2]), right)
+        bbox[3] = max(float(bbox[3]), bottom)
+        group["confidences"].append(max(0.0, min(1.0, conf / 100.0)))
+
+    output: list[ScanChessOcrLine] = []
+    for group in groups.values():
+        words = [word for _word_num, _left, word in sorted(group["words"], key=lambda item: (item[0], item[1]))]
+        raw_line = " ".join(words).strip()
+        normalized = _normalize_scan_chess_ocr_text(raw_line).replace("\n", " ").strip()
+        if not normalized:
+            continue
+        confidences = list(group["confidences"] or [])
+        confidence = sum(confidences) / len(confidences) if confidences else 0.0
+        bbox = tuple(float(value) for value in group["bbox"])
+        output.append(
+            ScanChessOcrLine(
+                text=normalized,
+                bbox=bbox,  # type: ignore[arg-type]
+                confidence=confidence,
+                page=int(page_num),
+            )
+        )
+    output.sort(key=lambda item: (item.bbox[1], item.bbox[0]))
+    return output
 
 
 def _mask_scan_chess_boards_for_ocr(image: Image.Image, candidates: list[dict[str, Any]]) -> Image.Image:
@@ -5253,27 +5491,618 @@ def _scan_chess_candidate_review_payload(candidate: dict[str, Any]) -> dict[str,
     }
 
 
+@dataclass(frozen=True)
+class ScanChessSideToMoveEvidence:
+    side: str = ""
+    source: str = ""
+    raw_text: str = ""
+    confidence: float = 0.0
+    warnings: tuple[str, ...] = ()
+    source_bbox: tuple[float, float, float, float] | None = None
+    marker_candidates: tuple[dict[str, Any], ...] = ()
+
+
+@dataclass(frozen=True)
+class ScanChessSideMarkerProbe:
+    role: str
+    bbox: tuple[int, int, int, int]
+
+
 def _apply_scan_chess_side_to_move_marker(payload: dict[str, Any], side_to_move: str) -> dict[str, Any]:
-    side = "b" if str(side_to_move).lower().startswith("b") else "w"
+    return _apply_scan_chess_side_to_move_evidence(
+        payload,
+        side_to_move,
+        source="marker",
+    )
+
+
+def _apply_scan_chess_side_to_move_evidence(
+    payload: dict[str, Any],
+    side_to_move: str,
+    *,
+    source: str,
+    raw_text: str = "",
+    source_bbox: tuple[float, float, float, float] | None = None,
+    min_confidence: float = 0.85,
+) -> dict[str, Any]:
+    side = _normalize_scan_chess_side_to_move(side_to_move)
+    if side not in {"w", "b"}:
+        return dict(payload)
+    source_value = str(source or "").strip().lower()
+    if source_value not in {"marker", "caption"}:
+        return dict(payload)
     updated = dict(payload)
+    existing_warnings = {str(warning) for warning in list(updated.get("warnings") or []) if str(warning)}
+    if "verified_exact_crop_label_used" in existing_warnings or str(updated.get("method") or "") == "verified-exact-crop-label":
+        return updated
     updated["side_to_move"] = side
-    fen = str(updated.get("fen") or "").strip()
-    if fen:
-        parts = fen.split()
+    updated["side_to_move_status"] = "explicit"
+    updated["side_to_move_evidence"] = source_value
+    if raw_text:
+        updated["side_to_move_raw_evidence"] = raw_text[:240]
+    if source_bbox is not None:
+        updated["side_to_move_evidence_source_bbox"] = [round(float(value), 2) for value in source_bbox]
+    full_fen = _scan_chess_full_fen_with_side(updated, side)
+    if full_fen:
+        updated["full_fen"] = full_fen
+    warnings = {
+        warning
+        for warning in existing_warnings
+        if warning != "side_to_move_inferred"
+    }
+    warnings.add(f"side_to_move_{source_value}_detected")
+    warnings.add(f"side_to_move_{source_value}_applied")
+    updated["warnings"] = sorted(set(warnings))
+    if full_fen and _scan_chess_payload_machine_accepts(updated, full_fen, min_confidence=min_confidence):
+        updated["fen"] = full_fen
+        updated["requires_review"] = False
+    else:
+        updated["fen"] = ""
+        updated["requires_review"] = True
+    return updated
+
+
+def _apply_scan_chess_side_to_move_context_evidence(
+    payload: dict[str, Any],
+    evidence: ScanChessSideToMoveEvidence | None,
+    *,
+    min_confidence: float = 0.85,
+) -> dict[str, Any]:
+    if evidence is None:
+        return payload
+    updated = dict(payload)
+    existing_warnings = {str(warning) for warning in list(updated.get("warnings") or []) if str(warning)}
+    if "verified_exact_crop_label_used" in existing_warnings or str(updated.get("method") or "") == "verified-exact-crop-label":
+        return updated
+    evidence_warnings = {str(warning) for warning in evidence.warnings if str(warning)}
+    if evidence.marker_candidates:
+        updated["side_marker_candidates"] = list(evidence.marker_candidates)
+    if not evidence.side or "side_to_move_evidence_conflict" in evidence_warnings:
+        updated["warnings"] = sorted(existing_warnings | evidence_warnings)
+        if "side_to_move_evidence_conflict" in evidence_warnings:
+            updated["fen"] = ""
+            updated["requires_review"] = True
+        return updated
+    updated = _apply_scan_chess_side_to_move_evidence(
+        updated,
+        evidence.side,
+        source=evidence.source,
+        raw_text=evidence.raw_text,
+        source_bbox=evidence.source_bbox,
+        min_confidence=min_confidence,
+    )
+    warnings = {str(warning) for warning in list(updated.get("warnings") or []) if str(warning)}
+    updated["warnings"] = sorted(warnings | evidence_warnings | {"side_to_move_context_applied"})
+    return updated
+
+
+def _scan_chess_clean_side_only_review_payload(payload: dict[str, Any]) -> bool:
+    if not bool(payload.get("requires_review")):
+        return False
+    if not str(payload.get("placement") or payload.get("placement_fen") or payload.get("full_fen") or "").strip():
+        return False
+    warnings = {str(warning) for warning in (payload.get("warnings") or []) if str(warning)}
+    allowed = {
+        "side_to_move_inferred",
+        "side_to_move_marker_probes_checked",
+        "reader_visible_crop_fen_used",
+    }
+    if not warnings or not warnings.issubset(allowed):
+        return False
+    return "side_to_move_inferred" in warnings
+
+
+def _scan_chess_local_side_marker_assignment_evidence(
+    page_image: Image.Image,
+    bbox: tuple[float, float, float, float],
+    payload: dict[str, Any],
+    *,
+    diagram_bboxes: list[tuple[float, float, float, float]] | None = None,
+) -> ScanChessSideToMoveEvidence | None:
+    """Narrow recovery for clean side-only review cases.
+
+    This is deliberately more constrained than the general marker detector. It
+    only runs when placement is already available and the sole blocker is
+    missing side-to-move evidence. Borderline outline markers can recover White
+    only when they are strong, unique, and local to this diagram.
+    """
+    if not _scan_chess_clean_side_only_review_payload(payload):
+        return None
+    payloads = _scan_chess_side_marker_probe_payloads(page_image, bbox)
+    candidate_payloads: list[dict[str, Any]] = []
+    component_payloads = [candidate for candidate in payloads if candidate.get("component_bbox")]
+    for candidate in component_payloads:
+        side = _scan_chess_local_side_marker_side_candidate(candidate)
+        if not side:
+            continue
+        enriched = dict(candidate)
+        enriched["side_candidate"] = side
+        enriched["detected_side"] = side
+        candidate_payloads.append(enriched)
+    if not candidate_payloads:
+        if component_payloads:
+            return ScanChessSideToMoveEvidence(
+                warnings=("side_to_move_marker_local_ambiguous",),
+                marker_candidates=tuple(payloads),
+            )
+        return ScanChessSideToMoveEvidence(
+            warnings=("side_to_move_marker_probes_checked",),
+            marker_candidates=tuple(payloads),
+        )
+    sides = {str(candidate.get("side_candidate") or "") for candidate in candidate_payloads}
+    if len(sides) != 1:
+        return ScanChessSideToMoveEvidence(
+            warnings=(
+                "side_to_move_marker_detected",
+                "side_to_move_marker_local_conflict",
+                "side_to_move_marker_probes_checked",
+            ),
+            marker_candidates=tuple(payloads),
+        )
+    ranked = sorted(candidate_payloads, key=lambda item: float(item.get("score") or 0.0), reverse=True)
+    best = ranked[0]
+    if not _scan_chess_local_marker_is_dominant(best, component_payloads):
+        agreement = _scan_chess_local_marker_agreement_evidence(candidate_payloads, bbox, diagram_bboxes or [])
+        if agreement is None:
+            return ScanChessSideToMoveEvidence(
+                warnings=(
+                    "side_to_move_marker_detected",
+                    "side_to_move_marker_local_ambiguous",
+                    "side_to_move_marker_probes_checked",
+                ),
+                marker_candidates=tuple(payloads),
+            )
+        side, agreement_best = agreement
+        warnings = {
+            "side_to_move_marker_detected",
+            "side_to_move_marker_local_agreement_used",
+            "side_to_move_marker_probes_checked",
+        }
+        return ScanChessSideToMoveEvidence(
+            side=side,
+            source="marker",
+            raw_text=str(agreement_best.get("role") or ""),
+            confidence=0.86,
+            warnings=tuple(sorted(warnings)),
+            source_bbox=tuple(float(value) for value in agreement_best.get("bbox", ())) if len(agreement_best.get("bbox", ())) == 4 else None,
+            marker_candidates=tuple(payloads),
+        )
+    if not _scan_chess_marker_is_uniquely_local_to_bbox(best, bbox, diagram_bboxes or []):
+        return ScanChessSideToMoveEvidence(
+            warnings=(
+                "side_to_move_marker_detected",
+                "side_to_move_marker_local_ambiguous",
+                "side_to_move_marker_probes_checked",
+            ),
+            marker_candidates=tuple(payloads),
+        )
+    side = str(best.get("side_candidate") or "")
+    warnings = {
+        "side_to_move_marker_detected",
+        "side_to_move_marker_local_assignment_used",
+        "side_to_move_marker_probes_checked",
+    }
+    if best.get("local_borderline_outline"):
+        warnings.add("side_to_move_marker_local_borderline_outline")
+    return ScanChessSideToMoveEvidence(
+        side=side,
+        source="marker",
+        raw_text=str(best.get("role") or ""),
+        confidence=0.86,
+        warnings=tuple(sorted(warnings)),
+        source_bbox=tuple(float(value) for value in best.get("bbox", ())) if len(best.get("bbox", ())) == 4 else None,
+        marker_candidates=tuple(payloads),
+    )
+
+
+def _scan_chess_local_marker_agreement_evidence(
+    candidate_payloads: list[dict[str, Any]],
+    bbox: tuple[float, float, float, float],
+    diagram_bboxes: list[tuple[float, float, float, float]],
+) -> tuple[str, dict[str, Any]] | None:
+    if not candidate_payloads:
+        return None
+    sides = {str(candidate.get("side_candidate") or candidate.get("detected_side") or "") for candidate in candidate_payloads}
+    if len(sides) != 1:
+        return None
+    side = next(iter(sides))
+    if side not in {"w", "b"}:
+        return None
+    local_candidates = [
+        candidate
+        for candidate in candidate_payloads
+        if _scan_chess_marker_is_uniquely_local_to_bbox(candidate, bbox, diagram_bboxes)
+    ]
+    if len(local_candidates) != len(candidate_payloads):
+        return None
+    best = max(local_candidates, key=lambda item: float(item.get("score") or 0.0))
+    if float(best.get("score") or 0.0) < 300.0:
+        return None
+    return side, best
+
+
+def _scan_chess_local_side_marker_side_candidate(candidate: dict[str, Any]) -> str:
+    side = str(candidate.get("detected_side") or candidate.get("side_candidate") or "")
+    if side in {"w", "b"}:
+        return side
+    try:
+        density = float(candidate.get("density") or 0.0)
+        score = float(candidate.get("score") or 0.0)
+    except (TypeError, ValueError):
+        return ""
+    # Trusted accepted markers show a clear density gap: white outline markers
+    # end below ~0.32 and black filled markers begin above ~0.42. Clean side-only
+    # pages contain many strong components just above the white edge; treat only
+    # that narrow, strong band as a local outline marker. Do not infer black from
+    # below-threshold filled candidates.
+    if 0.320 < density <= 0.360 and score >= 650.0:
+        candidate["detected_shape"] = "borderline_outline_triangle"
+        candidate["local_borderline_outline"] = True
+        return "w"
+    return ""
+
+
+def _scan_chess_local_marker_is_dominant(best: dict[str, Any], component_payloads: list[dict[str, Any]]) -> bool:
+    best_score = float(best.get("score") or 0.0)
+    if best_score < 650.0:
+        return False
+    competitors = [
+        candidate
+        for candidate in component_payloads
+        if candidate is not best and float(candidate.get("score") or 0.0) >= max(300.0, best_score * 0.55)
+    ]
+    if not competitors:
+        return True
+    best_side = str(best.get("side_candidate") or best.get("detected_side") or "")
+    for competitor in competitors:
+        competitor_side = _scan_chess_local_side_marker_side_candidate(competitor)
+        if competitor_side and competitor_side != best_side:
+            return False
+        if not competitor_side:
+            return False
+    return True
+
+
+def _scan_chess_marker_is_uniquely_local_to_bbox(
+    marker_payload: dict[str, Any],
+    bbox: tuple[float, float, float, float],
+    diagram_bboxes: list[tuple[float, float, float, float]],
+) -> bool:
+    marker_bbox = marker_payload.get("bbox")
+    if not isinstance(marker_bbox, (list, tuple)) or len(marker_bbox) != 4:
+        return False
+    current_distance = _scan_chess_bbox_edge_distance(tuple(float(value) for value in marker_bbox), bbox)
+    comparable: list[float] = []
+    for other in diagram_bboxes:
+        if _scan_chess_bbox_same_rect(other, bbox) or _scan_chess_bbox_overlap_ratio(other, bbox) >= 0.72:
+            continue
+        comparable.append(_scan_chess_bbox_edge_distance(tuple(float(value) for value in marker_bbox), other))
+    if not comparable:
+        return True
+    nearest_other = min(comparable)
+    return current_distance + 24.0 < nearest_other and current_distance * 1.20 < nearest_other
+
+
+def _scan_chess_bbox_same_rect(
+    left: tuple[float, float, float, float],
+    right: tuple[float, float, float, float],
+) -> bool:
+    return all(abs(float(a) - float(b)) <= 2.0 for a, b in zip(left, right))
+
+
+def _scan_chess_bbox_overlap_ratio(
+    left: tuple[float, float, float, float],
+    right: tuple[float, float, float, float],
+) -> float:
+    lx0, ly0, lx1, ly1 = (float(value) for value in left)
+    rx0, ry0, rx1, ry1 = (float(value) for value in right)
+    inter_w = max(0.0, min(lx1, rx1) - max(lx0, rx0))
+    inter_h = max(0.0, min(ly1, ry1) - max(ly0, ry0))
+    inter_area = inter_w * inter_h
+    left_area = max(1.0, (lx1 - lx0) * (ly1 - ly0))
+    right_area = max(1.0, (rx1 - rx0) * (ry1 - ry0))
+    return inter_area / max(1.0, min(left_area, right_area))
+
+
+def _scan_chess_bbox_edge_distance(
+    left: tuple[float, float, float, float],
+    right: tuple[float, float, float, float],
+) -> float:
+    lx0, ly0, lx1, ly1 = (float(value) for value in left)
+    rx0, ry0, rx1, ry1 = (float(value) for value in right)
+    dx = max(rx0 - lx1, lx0 - rx1, 0.0)
+    dy = max(ry0 - ly1, ly0 - ry1, 0.0)
+    return (dx * dx + dy * dy) ** 0.5
+
+
+def _scan_chess_payload_machine_accepts(payload: dict[str, Any], fen: str, *, min_confidence: float = 0.85) -> bool:
+    candidate = dict(payload)
+    candidate["fen"] = fen
+    candidate["full_fen"] = fen
+    result = machine_accept_fen(
+        candidate,
+        {
+            "min_confidence": float(min_confidence or 0.85),
+            "side_to_move_status": "explicit",
+            "side_to_move_evidence": str(candidate.get("side_to_move_evidence") or ""),
+        },
+    )
+    return str(result.get("status") or "") == "accepted"
+
+
+def _scan_chess_full_fen_with_side(payload: dict[str, Any], side: str) -> str:
+    value = str(payload.get("full_fen") or payload.get("fen") or "").strip()
+    if value:
+        parts = value.split()
         if len(parts) == 6:
             parts[1] = side
-            updated["fen"] = " ".join(parts)
-    warnings = [warning for warning in list(updated.get("warnings") or []) if warning != "side_to_move_inferred"]
-    if "side_to_move_marker_detected" not in warnings:
-        warnings.append("side_to_move_marker_detected")
-    updated["warnings"] = sorted(set(warnings))
-    return updated
+            return " ".join(parts)
+        if len(parts) == 1:
+            return f"{parts[0]} {side} - - 0 1"
+    placement = str(payload.get("placement") or payload.get("placement_fen") or "").strip()
+    if placement:
+        return f"{placement} {side} - - 0 1"
+    return ""
+
+
+def _normalize_scan_chess_side_to_move(side_to_move: str) -> str:
+    value = str(side_to_move or "").strip().lower()
+    if value in {"w", "white", "biale", "białe"} or value.startswith("white") or value.startswith("bia"):
+        return "w"
+    if value in {"b", "black", "czarne"} or value.startswith("black") or value.startswith("czar"):
+        return "b"
+    return ""
+
+
+def _scan_chess_side_to_move_caption_evidence(text: str) -> ScanChessSideToMoveEvidence | None:
+    raw = " ".join(str(text or "").split())
+    if not raw:
+        return None
+    white_patterns = (
+        r"\bwhite\s+(?:to\s+(?:move|play)|moves?)\b",
+        r"\bbia(?:ł|l)e\s+(?:na\s+ruchu|graj(?:ą|a))\b",
+        r"\bruch\s+bia(?:ł|l)ych\b",
+    )
+    black_patterns = (
+        r"\bblack\s+(?:to\s+(?:move|play)|moves?)\b",
+        r"\bczarne\s+(?:na\s+ruchu|graj(?:ą|a))\b",
+        r"\bruch\s+czarnych\b",
+    )
+    white = any(re.search(pattern, raw, flags=re.IGNORECASE) for pattern in white_patterns)
+    black = any(re.search(pattern, raw, flags=re.IGNORECASE) for pattern in black_patterns)
+    if white and black:
+        return ScanChessSideToMoveEvidence(
+            source="caption",
+            raw_text=raw,
+            confidence=0.0,
+            warnings=("side_to_move_caption_detected", "side_to_move_caption_ambiguous"),
+        )
+    if white:
+        return ScanChessSideToMoveEvidence(
+            side="w",
+            source="caption",
+            raw_text=raw,
+            confidence=0.92,
+            warnings=("side_to_move_caption_detected",),
+        )
+    if black:
+        return ScanChessSideToMoveEvidence(
+            side="b",
+            source="caption",
+            raw_text=raw,
+            confidence=0.92,
+            warnings=("side_to_move_caption_detected",),
+        )
+    return None
+
+
+def _scan_chess_side_to_move_context_evidence(
+    page_image: Image.Image,
+    bbox: tuple[float, float, float, float],
+    *,
+    nearby_text: str = "",
+    ocr_record: dict[str, Any] | None = None,
+    diagram_bboxes: list[tuple[float, float, float, float]] | None = None,
+    allow_caption: bool = True,
+) -> ScanChessSideToMoveEvidence | None:
+    marker = _infer_scan_chess_side_to_move_marker_evidence(page_image, bbox)
+    caption = _scan_chess_nearby_side_to_move_caption_evidence(
+        ocr_record,
+        bbox=bbox,
+        diagram_bboxes=diagram_bboxes or [bbox],
+    )
+    if caption is None:
+        global_caption = _scan_chess_side_to_move_caption_evidence(nearby_text)
+        if global_caption is not None and not allow_caption:
+            return ScanChessSideToMoveEvidence(
+                warnings=(
+                    "side_to_move_caption_detected",
+                    "side_to_move_caption_ambiguous",
+                    "side_to_move_caption_unscoped_multi_diagram",
+                )
+            )
+        if allow_caption:
+            caption = global_caption
+    marker_side = marker.side if marker is not None else ""
+    marker_region = marker.source_bbox if marker is not None else None
+    marker_candidates = marker.marker_candidates if marker is not None else tuple(
+        _scan_chess_side_marker_probe_payloads(page_image, bbox)
+    )
+    marker_warnings = marker.warnings if marker is not None else ()
+    if marker_side and caption is not None and caption.side and caption.side != marker_side:
+        return ScanChessSideToMoveEvidence(
+            raw_text=caption.raw_text,
+            source_bbox=marker_region,
+            warnings=tuple(sorted(set(marker_warnings) | {
+                "side_to_move_marker_detected",
+                "side_to_move_caption_detected",
+                "side_to_move_evidence_conflict",
+            })),
+            marker_candidates=marker_candidates,
+        )
+    if marker_side:
+        return ScanChessSideToMoveEvidence(
+            side=marker_side,
+            source="marker",
+            raw_text=marker.raw_text if marker is not None else "",
+            confidence=marker.confidence if marker is not None else 0.88,
+            warnings=tuple(sorted(set(marker_warnings) | {"side_to_move_context_crop_used", "side_to_move_context_marker_detected"})),
+            source_bbox=marker_region,
+            marker_candidates=marker_candidates,
+        )
+    if marker is not None and marker.warnings:
+        if caption is None:
+            return marker
+        caption = ScanChessSideToMoveEvidence(
+            side=caption.side,
+            source=caption.source,
+            raw_text=caption.raw_text,
+            confidence=caption.confidence,
+            warnings=tuple(sorted(set(caption.warnings) | set(marker.warnings))),
+            source_bbox=caption.source_bbox,
+            marker_candidates=marker_candidates,
+        )
+    if caption is not None:
+        return caption
+    return None
+
+
+def _scan_chess_nearby_side_to_move_caption_evidence(
+    ocr_record: dict[str, Any] | None,
+    *,
+    bbox: tuple[float, float, float, float],
+    diagram_bboxes: list[tuple[float, float, float, float]],
+) -> ScanChessSideToMoveEvidence | None:
+    if not isinstance(ocr_record, dict):
+        return None
+    line_items = list(ocr_record.get("ocr_line_items") or [])
+    if not line_items:
+        return None
+    candidates: list[ScanChessSideToMoveEvidence] = []
+    ambiguous_detected = False
+    for line in line_items:
+        if not isinstance(line, dict):
+            continue
+        evidence = _scan_chess_side_to_move_caption_evidence(str(line.get("text") or ""))
+        if evidence is None:
+            continue
+        line_bbox = _scan_chess_ocr_line_bbox(line.get("bbox"))
+        if not evidence.side:
+            ambiguous_detected = True
+            continue
+        if line_bbox is None:
+            continue
+        match = _scan_chess_caption_spatial_match_score(line_bbox, bbox)
+        if match <= 0:
+            continue
+        competing_scores = [
+            _scan_chess_caption_spatial_match_score(line_bbox, other_bbox)
+            for other_bbox in (diagram_bboxes or [])
+            if tuple(float(value) for value in other_bbox) != tuple(float(value) for value in bbox)
+        ]
+        best_competing = max(competing_scores, default=0)
+        if best_competing and best_competing >= match - 8:
+            ambiguous_detected = True
+            continue
+        candidates.append(
+            ScanChessSideToMoveEvidence(
+                side=evidence.side,
+                source="caption",
+                raw_text=evidence.raw_text,
+                confidence=max(float(evidence.confidence or 0.0), float(line.get("confidence") or 0.0)),
+                warnings=(
+                    "side_to_move_caption_detected",
+                    "side_to_move_caption_spatial_match",
+                ),
+                source_bbox=line_bbox,
+            )
+        )
+    if len(candidates) == 1:
+        return candidates[0]
+    if len(candidates) > 1 or ambiguous_detected:
+        return ScanChessSideToMoveEvidence(
+            warnings=(
+                "side_to_move_caption_detected",
+                "side_to_move_caption_ambiguous",
+            )
+        )
+    return None
+
+
+def _scan_chess_ocr_line_bbox(value: Any) -> tuple[float, float, float, float] | None:
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return None
+    try:
+        x0, y0, x1, y1 = (float(item) for item in value)
+    except Exception:
+        return None
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return x0, y0, x1, y1
+
+
+def _scan_chess_caption_spatial_match_score(
+    caption_bbox: tuple[float, float, float, float],
+    diagram_bbox: tuple[float, float, float, float],
+) -> int:
+    cx0, cy0, cx1, cy1 = caption_bbox
+    dx0, dy0, dx1, dy1 = diagram_bbox
+    diagram_width = max(1.0, dx1 - dx0)
+    diagram_height = max(1.0, dy1 - dy0)
+    horizontal_overlap = max(0.0, min(cx1, dx1) - max(cx0, dx0))
+    horizontal_overlap_ratio = horizontal_overlap / max(1.0, min(cx1 - cx0, diagram_width))
+    caption_center_x = (cx0 + cx1) / 2.0
+    diagram_center_x = (dx0 + dx1) / 2.0
+    center_distance_ratio = abs(caption_center_x - diagram_center_x) / diagram_width
+    above_gap = dy0 - cy1
+    below_gap = cy0 - dy1
+    vertical_gap = above_gap if above_gap >= 0 else below_gap if below_gap >= 0 else 0.0
+    overlaps_vertically = not (cy1 < dy0 or cy0 > dy1)
+    if overlaps_vertically:
+        return 0
+    if vertical_gap > diagram_height * 0.58:
+        return 0
+    if horizontal_overlap_ratio < 0.25 and center_distance_ratio > 0.55:
+        return 0
+    score = 100
+    score -= min(60, int((vertical_gap / diagram_height) * 80))
+    score -= min(35, int(center_distance_ratio * 45))
+    score += min(15, int(horizontal_overlap_ratio * 15))
+    return max(0, score)
 
 
 def _infer_scan_chess_side_to_move(
     page_image: Image.Image,
     bbox: tuple[float, float, float, float],
 ) -> str:
+    evidence = _infer_scan_chess_side_to_move_marker_evidence(page_image, bbox)
+    return evidence.side if evidence is not None else ""
+
+
+def _infer_scan_chess_side_to_move_marker_evidence(
+    page_image: Image.Image,
+    bbox: tuple[float, float, float, float],
+) -> ScanChessSideToMoveEvidence | None:
     """Infer side-to-move from a triangle marker near a scanned board.
 
     In the Yusupov-style exercise pages, an outlined triangle denotes White to
@@ -5281,32 +6110,180 @@ def _infer_scan_chess_side_to_move(
     deliberately treated as optional: if no compact triangular component is
     found, the caller keeps the conservative inferred default.
     """
-    region = _scan_chess_side_marker_region(bbox, page_image.size)
-    if region is None:
-        return ""
-    crop = ImageOps.autocontrast(page_image.crop(region).convert("L"))
-    dark = np.asarray(crop) < 120
-    component = _scan_chess_best_side_marker_component(dark)
-    if component is None:
-        return ""
-    density = component["density"]
-    return "b" if density >= 0.36 else "w"
+    payloads = _scan_chess_side_marker_probe_payloads(page_image, bbox)
+    detections = [payload for payload in payloads if payload.get("detected_side")]
+    if not detections:
+        if payloads:
+            return ScanChessSideToMoveEvidence(
+                warnings=("side_to_move_marker_probes_checked",),
+                marker_candidates=tuple(payloads),
+            )
+        return None
+    detected_sides = {str(payload.get("detected_side") or "") for payload in detections if payload.get("detected_side")}
+    warnings = {"side_to_move_marker_detected", "side_to_move_marker_probes_checked"}
+    if len(detected_sides) > 1:
+        dominant = _scan_chess_dominant_side_marker_detection(detections)
+        if dominant is not None:
+            warnings.add("side_to_move_marker_multi_region_conflict")
+            warnings.add("side_to_move_marker_dominant_conflict_resolved")
+            return ScanChessSideToMoveEvidence(
+                side=str(dominant.get("detected_side") or ""),
+                source="marker",
+                raw_text=str(dominant.get("role") or ""),
+                confidence=0.86,
+                warnings=tuple(sorted(warnings)),
+                source_bbox=tuple(float(value) for value in dominant.get("bbox", ())) if len(dominant.get("bbox", ())) == 4 else None,
+                marker_candidates=tuple(payloads),
+            )
+        return ScanChessSideToMoveEvidence(
+            warnings=tuple(sorted(warnings | {"side_to_move_marker_ambiguous", "side_to_move_marker_multi_region_conflict"})),
+            marker_candidates=tuple(payloads),
+        )
+    side = next(iter(detected_sides))
+    if len(detections) > 1:
+        warnings.add("side_to_move_marker_multi_region_agreement")
+    best = max(detections, key=lambda payload: float(payload.get("score") or 0.0))
+    return ScanChessSideToMoveEvidence(
+        side=side,
+        source="marker",
+        raw_text=str(best.get("role") or ""),
+        confidence=0.88,
+        warnings=tuple(sorted(warnings)),
+        source_bbox=tuple(float(value) for value in best.get("bbox", ())) if len(best.get("bbox", ())) == 4 else None,
+        marker_candidates=tuple(payloads),
+    )
+
+
+def _scan_chess_dominant_side_marker_detection(detections: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Resolve only very strong multi-region conflicts.
+
+    Side-marker probes can pick up border/caption noise in neighboring regions.
+    The detector may therefore report both sides, even when one compact marker
+    component is much stronger. This rule is intentionally narrow and remains
+    geometry-only: no AI output or chess position context is used as authority.
+    """
+    ranked = sorted(detections, key=lambda payload: float(payload.get("score") or 0.0), reverse=True)
+    if len(ranked) < 2:
+        return None
+    top = ranked[0]
+    runner_up = ranked[1]
+    top_side = str(top.get("detected_side") or "")
+    runner_up_side = str(runner_up.get("detected_side") or "")
+    if top_side not in {"w", "b"} or runner_up_side not in {"w", "b"} or top_side == runner_up_side:
+        return None
+    top_score = float(top.get("score") or 0.0)
+    runner_up_score = float(runner_up.get("score") or 0.0)
+    if top_score < 450.0:
+        return None
+    if top_score - runner_up_score < 450.0:
+        return None
+    if runner_up_score <= 0 or top_score / runner_up_score < 1.75:
+        return None
+    return top
+
+
+def _scan_chess_side_marker_probe_payloads(
+    page_image: Image.Image,
+    bbox: tuple[float, float, float, float],
+) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    for probe in _scan_chess_side_marker_probes(bbox, page_image.size):
+        payload: dict[str, Any] = {
+            "role": probe.role,
+            "bbox": [int(value) for value in probe.bbox],
+            "distance_to_board": round(_scan_chess_bbox_edge_distance(tuple(float(value) for value in probe.bbox), bbox), 2),
+            "conflict_group": _scan_chess_side_marker_conflict_group(probe.role),
+        }
+        crop = ImageOps.autocontrast(page_image.crop(probe.bbox).convert("L"))
+        dark = np.asarray(crop) < 120
+        component = _scan_chess_best_side_marker_component(dark)
+        if component is not None:
+            density = float(component["density"])
+            payload.update(
+                {
+                    "density": round(density, 4),
+                    "score": round(float(component.get("score") or 0.0), 3),
+                    "component_bbox": [
+                        round(float(value), 2)
+                        for value in tuple(component.get("bbox") or ())
+                    ],
+                }
+            )
+            if density <= 0.32:
+                payload["detected_side"] = "w"
+                payload["side_candidate"] = "w"
+                payload["detected_shape"] = "outline_triangle"
+            elif density >= 0.42:
+                payload["detected_side"] = "b"
+                payload["side_candidate"] = "b"
+                payload["detected_shape"] = "filled_triangle"
+            else:
+                payload["ambiguous_density"] = True
+                payload["side_candidate"] = ""
+                payload["detected_shape"] = "triangle_like_ambiguous_density"
+        payloads.append(payload)
+    return payloads
+
+
+def _scan_chess_side_marker_conflict_group(role: str) -> str:
+    value = str(role or "")
+    if value.startswith("top_") or value.startswith("bottom_"):
+        return "corner"
+    if value.endswith("_side"):
+        return "side_band"
+    if value.startswith("caption_"):
+        return "caption_band"
+    return "unknown"
+
+
+def _scan_chess_side_marker_probes(
+    bbox: tuple[float, float, float, float],
+    page_size: tuple[int, int],
+) -> list[ScanChessSideMarkerProbe]:
+    x0, y0, x1, y1 = (float(value) for value in bbox)
+    side = max(1.0, min(x1 - x0, y1 - y0))
+    page_width, page_height = page_size
+
+    def clamp(role: str, left: float, top: float, right: float, bottom: float) -> ScanChessSideMarkerProbe | None:
+        region = (
+            int(max(0, round(left))),
+            int(max(0, round(top))),
+            int(min(page_width, round(right))),
+            int(min(page_height, round(bottom))),
+        )
+        if region[2] - region[0] < 20 or region[3] - region[1] < 20:
+            return None
+        return ScanChessSideMarkerProbe(role=role, bbox=region)
+
+    specs = (
+        ("top_right", x1 - side * 0.24, y0, x1 + side * 0.04, y0 + side * 0.20),
+        ("top_left", x0 - side * 0.04, y0, x0 + side * 0.24, y0 + side * 0.20),
+        ("bottom_right", x1 - side * 0.24, y1 - side * 0.20, x1 + side * 0.04, y1),
+        ("bottom_left", x0 - side * 0.04, y1 - side * 0.20, x0 + side * 0.24, y1),
+        ("right_side", x1 + side * 0.02, y0 + side * 0.18, x1 + side * 0.20, y0 + side * 0.58),
+        ("left_side", x0 - side * 0.20, y0 + side * 0.18, x0 - side * 0.02, y0 + side * 0.58),
+        ("caption_above", x0, y0 - side * 0.22, x1, y0),
+        ("caption_below", x0, y1, x1, y1 + side * 0.22),
+    )
+    probes: list[ScanChessSideMarkerProbe] = []
+    seen: set[tuple[int, int, int, int]] = set()
+    for role, left, top, right, bottom in specs:
+        probe = clamp(role, left, top, right, bottom)
+        if probe is None or probe.bbox in seen:
+            continue
+        seen.add(probe.bbox)
+        probes.append(probe)
+    return probes
 
 
 def _scan_chess_side_marker_region(
     bbox: tuple[float, float, float, float],
     page_size: tuple[int, int],
 ) -> tuple[int, int, int, int] | None:
-    x0, y0, x1, y1 = (float(value) for value in bbox)
-    side = max(1.0, min(x1 - x0, y1 - y0))
-    page_width, page_height = page_size
-    left = int(max(0, round(x1 - side * 0.24)))
-    right = int(min(page_width, round(x1 + side * 0.04)))
-    top = int(max(0, round(y0)))
-    bottom = int(min(page_height, round(y0 + side * 0.14)))
-    if right - left < 20 or bottom - top < 20:
-        return None
-    return left, top, right, bottom
+    for probe in _scan_chess_side_marker_probes(bbox, page_size):
+        if probe.role == "top_right":
+            return probe.bbox
+    return None
 
 
 def _scan_chess_best_side_marker_component(mask: Any) -> dict[str, float] | None:
@@ -5343,16 +6320,16 @@ def _scan_chess_best_side_marker_component(mask: Any) -> dict[str, float] | None
             box_height = max_y - min_y + 1
             if box_width < max(12, width * 0.20) or box_height < max(12, height * 0.22):
                 continue
-            if box_width > width * 0.62 or box_height > height * 0.72:
+            if box_width > width * 0.88 or box_height > height * 0.92:
                 continue
             aspect = box_width / max(1, box_height)
-            if aspect < 0.72 or aspect > 1.42:
+            if aspect < 0.62 or aspect > 1.75:
                 continue
             center_x = (min_x + max_x) / 2.0
             center_y = (min_y + max_y) / 2.0
             if center_x < width * 0.20 or center_x > width * 0.80:
                 continue
-            if center_y > height * 0.66 or max_y > height * 0.82:
+            if center_y > height * 0.72 or max_y > height * 0.98:
                 continue
             density = area / max(1, box_width * box_height)
             if density < 0.16 or density > 0.72:

@@ -18,3 +18,4 @@ pyphen>=0.17.2
 rfc3986>=2.0.0
 tldextract>=5.1.2
 chess>=1.11,<2
+pytesseract>=0.3.13

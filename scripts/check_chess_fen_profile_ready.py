@@ -13,6 +13,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from chess_fen_workflow import CHESS_FEN_WORKFLOW_SCHEMA_VERSION, profile_workflow_state
 from scripts.build_chess_piece_templates import build_templates_from_labels
+from scripts.build_chess_piece_templates import PIECE_TEMPLATE_NAMES, TEMPLATE_MANIFEST_NAME
 from scripts.evaluate_chess_fen_recognizer import (
     DEFAULT_CHESS_FEN_EVAL_MIN_CONFIDENCE,
     DEFAULT_CHESS_FEN_EXACT_ACCURACY_MIN,
@@ -148,6 +149,18 @@ def check_chess_fen_profile_ready(
     status = "ready" if not issues else "failed"
     readiness_mode = "corpus" if require_holdout and require_accepted_audit else "diagnostic"
     accepted_for_corpus = bool(status == "ready" and require_holdout and require_accepted_audit)
+    profile_readiness_breakdown = _profile_readiness_breakdown(
+        label_validation=label_validation,
+        template_summary=template_summary or _load_template_summary(templates),
+        evaluation=evaluation,
+        holdout_evaluation=holdout_evaluation,
+        accepted_audit_summary=accepted_audit_summary,
+        min_seed_labels=required_labels,
+        min_exact_accuracy=min_exact_accuracy,
+        accepted_for_corpus=accepted_for_corpus,
+        require_holdout=require_holdout,
+        require_accepted_audit=require_accepted_audit,
+    )
     summary = {
         "status": status,
         "schema_version": CHESS_FEN_WORKFLOW_SCHEMA_VERSION,
@@ -163,6 +176,7 @@ def check_chess_fen_profile_ready(
         "min_confidence": float(min_confidence),
         "min_exact_accuracy": float(min_exact_accuracy),
         "openai_policy": "review_only_not_used",
+        "profile_readiness_breakdown": profile_readiness_breakdown,
         "label_validation": {
             "status": label_validation.get("status"),
             "label_count": label_validation.get("label_count", 0),
@@ -223,6 +237,112 @@ def _compact_evaluation(evaluation: dict[str, Any]) -> dict[str, Any]:
         "false_positive_rate": evaluation.get("false_positive_rate", 0.0),
         "square_accuracy": evaluation.get("square_accuracy", 0.0),
     }
+
+
+def _profile_readiness_breakdown(
+    *,
+    label_validation: dict[str, Any],
+    template_summary: dict[str, Any],
+    evaluation: dict[str, Any],
+    holdout_evaluation: dict[str, Any],
+    accepted_audit_summary: dict[str, Any],
+    min_seed_labels: int,
+    min_exact_accuracy: float,
+    accepted_for_corpus: bool,
+    require_holdout: bool,
+    require_accepted_audit: bool,
+) -> dict[str, Any]:
+    valid_label_count = int(label_validation.get("valid_label_count") or 0)
+    label_status = str(label_validation.get("status") or "")
+    template_status = str(template_summary.get("status") or "")
+    evaluation_status = str(evaluation.get("status") or "")
+    exact_fen_accuracy = float(evaluation.get("exact_fen_accuracy") or 0.0)
+    false_positive_count = int(evaluation.get("false_positive_count") or 0)
+    holdout = _compact_holdout_evaluation(holdout_evaluation)
+    audit = _compact_accepted_audit_summary(accepted_audit_summary)
+    piece_coverage = _piece_coverage_summary(template_summary.get("label_counts") if isinstance(template_summary, dict) else {})
+
+    diagnostic_ready = bool(label_status == "passed" and valid_label_count > 0)
+    runtime_ready = bool(
+        diagnostic_ready
+        and valid_label_count >= 50
+        and template_status == "ok"
+        and piece_coverage["complete_piece_coverage"]
+        and evaluation_status == "passed"
+        and exact_fen_accuracy >= float(min_exact_accuracy)
+        and false_positive_count == 0
+    )
+    corpus_evidence_ready = bool(
+        accepted_for_corpus
+        and valid_label_count >= int(min_seed_labels)
+        and (not require_holdout or holdout.get("status") == "passed")
+        and (not require_accepted_audit or audit.get("status") == "ok")
+    )
+
+    next_actions: list[str] = []
+    if not diagnostic_ready:
+        next_actions.append("add at least one valid human-verified label and pass label validation")
+    if valid_label_count < int(min_seed_labels):
+        next_actions.append(f"add manually verified labels until valid_label_count >= {int(min_seed_labels)}")
+    if valid_label_count < 50:
+        next_actions.append("add more verified labels before treating the template profile as runtime-ready")
+    if not piece_coverage["complete_piece_coverage"]:
+        next_actions.append("add verified crops covering missing piece templates")
+    if evaluation_status and evaluation_status != "passed":
+        next_actions.append("improve templates/evaluation before runtime readiness")
+    if require_holdout and holdout_evaluation and holdout.get("status") != "passed":
+        next_actions.append("provide passing holdout evidence")
+    if require_accepted_audit and accepted_audit_summary and audit.get("status") != "ok":
+        next_actions.append("provide accepted/high-confidence audit evidence with no high or critical risks")
+
+    return {
+        "diagnostic_ready": diagnostic_ready,
+        "runtime_ready": runtime_ready,
+        "corpus_ready": corpus_evidence_ready,
+        "valid_label_count": valid_label_count,
+        "diagnostic_min_labels": 1,
+        "runtime_min_labels": 50,
+        "corpus_min_labels": int(min_seed_labels),
+        "exact_fen_accuracy": exact_fen_accuracy,
+        "false_positive_count": false_positive_count,
+        "piece_coverage": piece_coverage,
+        "next_actions": _dedupe_preserve_order(next_actions),
+    }
+
+
+def _piece_coverage_summary(label_counts: Any) -> dict[str, Any]:
+    counts = label_counts if isinstance(label_counts, dict) else {}
+    required = sorted(set(PIECE_TEMPLATE_NAMES.values()))
+    present = sorted(name for name in required if int(counts.get(name) or 0) > 0)
+    missing = sorted(name for name in required if name not in present)
+    return {
+        "required_piece_templates": required,
+        "present_piece_templates": present,
+        "missing_piece_templates": missing,
+        "complete_piece_coverage": not missing,
+    }
+
+
+def _load_template_summary(template_dir: Path) -> dict[str, Any]:
+    manifest = template_dir / TEMPLATE_MANIFEST_NAME
+    if not manifest.exists():
+        return {}
+    try:
+        loaded = json.loads(manifest.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
 
 
 def _load_or_run_holdout_evaluation(

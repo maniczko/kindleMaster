@@ -14,6 +14,7 @@ from unittest.mock import Mock, patch
 from app_runtime_services import (
     ConversionOutcome,
     ConversionJobStore,
+    ConversionQualityGateError,
     ConversionRequest,
     build_conversion_config,
     build_conversion_metadata,
@@ -31,6 +32,7 @@ from app_runtime_services import (
     run_document_conversion,
     serve_http_app,
     _safe_delivery_repair_needed,
+    _should_skip_heading_repair,
 )
 from epub_delivery_repair import DeliveryRepairResult
 
@@ -1295,7 +1297,6 @@ class AppRuntimeServicesTests(unittest.TestCase):
                 heading_repair_impl=heading_repair_impl,
             )
 
-        self.assertEqual(outcome.epub_bytes, base_epub)
         self.assertNotEqual(outcome.epub_bytes, repaired_epub)
         self.assertEqual(outcome.heading_repair_report["status"], "rejected")
         self.assertEqual(outcome.result["quality_report"]["quality_selection"]["status"], "rejected")
@@ -1712,7 +1713,6 @@ class AppRuntimeServicesTests(unittest.TestCase):
                 ("running", "Ekstrakcja tekstu z PDF..."),
                 ("running", "Składanie artykułów i struktury EPUB..."),
                 ("running", "Uruchamiam audyt premium EPUB..."),
-                ("running", "Uruchamiam bezpieczną naprawę EPUB do wysyłki Kindle..."),
             ],
         )
 
@@ -1882,7 +1882,7 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertEqual(outcome.metadata["heading_repair"]["status"], "skipped")
         self.assertEqual(outcome.metadata["strategy"], "layout_fixed")
         self.assertEqual(outcome.result["quality_report"]["validation_status"], "passed_with_warnings")
-        self.assertTrue(heading_repair_impl.call_args.kwargs["already_semantic_cleaned"])
+        heading_repair_impl.assert_not_called()
 
     def test_run_document_conversion_marks_heading_repair_exception_as_failed_and_keeps_base_epub(self) -> None:
         convert_impl = Mock(

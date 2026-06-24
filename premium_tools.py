@@ -28,6 +28,8 @@ RUNTIME_REQUIREMENT_MODULES: tuple[tuple[str, str, str], ...] = (
     ("pyphen", "pyphen", "pyphen"),
     ("rfc3986", "rfc3986", "rfc3986"),
     ("tldextract", "tldextract", "tldextract"),
+    ("chess", "chess", "python-chess"),
+    ("pytesseract", "pytesseract", "pytesseract"),
 )
 
 DEV_REQUIREMENT_MODULES: tuple[tuple[str, str, str], ...] = (
@@ -36,6 +38,7 @@ DEV_REQUIREMENT_MODULES: tuple[tuple[str, str, str], ...] = (
     ("playwright", "playwright", "Playwright"),
     ("waitress", "waitress", "Waitress"),
     ("scikit-learn", "sklearn", "scikit-learn"),
+    ("opencv-python-headless", "cv2", "OpenCV"),
 )
 
 KINDLEMASTER_SKILL_NAMES: tuple[str, ...] = (
@@ -1096,12 +1099,15 @@ def _detect_toolchain_uncached() -> dict:
             "pyphen": runtime_requirements["packages"]["pyphen"]["installed"],
             "rfc3986": runtime_requirements["packages"]["rfc3986"]["installed"],
             "tldextract": runtime_requirements["packages"]["tldextract"]["installed"],
+            "chess": runtime_requirements["packages"]["chess"]["installed"],
             "pytest": developer_requirements["packages"]["pytest"]["installed"],
             "coverage": developer_requirements["packages"]["coverage[toml]"]["installed"],
             "playwright": playwright_module_found,
             "waitress": waitress_module_found,
             "sklearn": developer_requirements["packages"]["scikit-learn"]["installed"],
             "ocrmypdf": _module_available("ocrmypdf"),
+            "pytesseract": runtime_requirements["packages"]["pytesseract"]["installed"],
+            "cv2": developer_requirements["packages"]["opencv-python-headless"]["installed"],
         },
         "commands": {
             "java": bool(java_path),

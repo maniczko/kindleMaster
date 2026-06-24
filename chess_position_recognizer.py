@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Protocol
 
 import numpy as np
-from PIL import Image, ImageFilter, ImageOps
+from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
 
 PIECE_CHARS = set("pnbrqkPNBRQK")
@@ -579,6 +579,115 @@ def normalize_board_crop_for_templates(image: Image.Image) -> Image.Image:
     return _normalize_board_square(image)
 
 
+def board_crop_grid_diagnostics_from_image(image_data: bytes) -> dict[str, Any]:
+    """Return audit-only board crop/grid diagnostics without changing recognition.
+
+    This is deliberately separate from runtime acceptance. It exposes the same
+    conservative normalization signals used by the recognizer so audit reports
+    can explain crop/grid blockers.
+    """
+    try:
+        image = Image.open(io.BytesIO(image_data)).convert("L")
+    except Exception:
+        return {
+            "normalization_variant": "unreadable",
+            "original_size": None,
+            "normalized_size": None,
+            "board_signal": 0.0,
+            "grid_confidence": 0.0,
+            "crop_box_used": None,
+            "crop_box_approximate": False,
+            "crop_problem_taxonomy": "unknown",
+            "warnings": ["image_unreadable"],
+        }
+    normalized, variant, crop_box, approximate = _normalize_board_square_with_diagnostics(image)
+    detected, signal = _has_board_visual_pattern(normalized)
+    grid = _estimate_board_grid_confidence(normalized) if detected else 0.0
+    taxonomy = classify_board_crop_problem(image_data)
+    warnings: list[str] = []
+    if not detected:
+        warnings.append("board_visual_pattern_not_detected")
+    if taxonomy != "clean_board":
+        warnings.append(f"crop_problem_{taxonomy}")
+    return {
+        "normalization_variant": variant,
+        "original_size": list(image.size),
+        "normalized_size": list(normalized.size),
+        "board_signal": round(float(signal or 0.0), 3),
+        "grid_confidence": round(float(grid or 0.0), 3),
+        "crop_box_used": list(crop_box) if crop_box is not None else None,
+        "crop_box_approximate": bool(approximate),
+        "crop_problem_taxonomy": taxonomy,
+        "warnings": warnings,
+    }
+
+
+def render_board_grid_overlay(image_data: bytes, output_path: str | Path) -> dict[str, Any]:
+    """Render an audit-only 8x8 overlay over the normalized board crop."""
+    try:
+        image = Image.open(io.BytesIO(image_data)).convert("L")
+    except Exception:
+        return {"status": "failed", "reason": "image_unreadable", "path": str(output_path)}
+    normalized, variant, _crop_box, _approximate = _normalize_board_square_with_diagnostics(image)
+    overlay = normalized.convert("RGB")
+    draw = ImageDraw.Draw(overlay)
+    width, height = overlay.size
+    for index in range(9):
+        x = int(round(width * index / 8.0))
+        y = int(round(height * index / 8.0))
+        draw.line((x, 0, x, height), fill=(255, 0, 0), width=max(1, width // 160))
+        draw.line((0, y, width, y), fill=(255, 0, 0), width=max(1, height // 160))
+    for row in range(8):
+        for col in range(8):
+            label = f"{chr(ord('a') + col)}{8 - row}"
+            draw.text((int(width * col / 8.0) + 3, int(height * row / 8.0) + 3), label, fill=(255, 255, 0))
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    overlay.save(output)
+    return {
+        "status": "written",
+        "path": str(output),
+        "normalization_variant": variant,
+        "normalized_size": list(normalized.size),
+    }
+
+
+def classify_board_crop_problem(image_data: bytes) -> str:
+    """Classify obvious crop contamination for audit reports."""
+    try:
+        image = Image.open(io.BytesIO(image_data)).convert("L")
+    except Exception:
+        return "unknown"
+    width, height = image.size
+    if width <= 0 or height <= 0:
+        return "unknown"
+    ratio = width / float(height)
+    if ratio < 0.72 or ratio > 1.38:
+        return "multi_board_region" if max(width, height) > min(width, height) * 1.8 else "partial_board"
+    normalized, variant, _crop_box, _approximate = _normalize_board_square_with_diagnostics(image)
+    detected, signal = _has_board_visual_pattern(normalized)
+    grid = _estimate_board_grid_confidence(normalized) if detected else 0.0
+    if not detected or grid < 0.20:
+        return "unknown"
+    if variant == "strong_border_square_crop":
+        return "thick_border"
+    if variant in {"checkerboard_inner_square_crop", "dense_board_area_crop"}:
+        if height > width * 1.10:
+            return "caption_included"
+        if width > height * 1.10:
+            return "coordinates_included"
+        return "shifted_grid"
+    if signal >= 0.62 and grid >= 0.40 and abs(width - height) <= max(4, min(width, height) * 0.05):
+        return "clean_board"
+    if height > width * 1.08:
+        return "caption_included"
+    if width > height * 1.08:
+        return "coordinates_included"
+    if grid < 0.34:
+        return "shifted_grid"
+    return "unknown"
+
+
 def review_chess_fen_candidate(
     result: ChessFenResult,
     *,
@@ -1006,18 +1115,41 @@ def _normalize_board_square(image: Image.Image) -> Image.Image:
     shortest side keeps recognition and template extraction aligned without
     inventing any board content.
     """
+    return _normalize_board_square_with_diagnostics(image)[0]
+
+
+def _normalize_board_square_with_diagnostics(
+    image: Image.Image,
+) -> tuple[Image.Image, str, tuple[int, int, int, int] | None, bool]:
     grayscale = ImageOps.autocontrast(image.convert("L"))
     border_crop = _strong_border_square_crop(grayscale)
     if border_crop is not None:
-        return border_crop
+        return border_crop, "strong_border_square_crop", _centered_crop_box_for_size(grayscale.size, border_crop.size), True
     inner_checkerboard_crop = _checkerboard_inner_square_crop(grayscale)
     if inner_checkerboard_crop is not None:
-        return inner_checkerboard_crop
+        return (
+            inner_checkerboard_crop,
+            "checkerboard_inner_square_crop",
+            _centered_crop_box_for_size(grayscale.size, inner_checkerboard_crop.size),
+            True,
+        )
 
     side = max(1, min(grayscale.size))
     baseline_left = max(0, (grayscale.width - side) // 2)
     baseline_top = max(0, (grayscale.height - side) // 2)
-    return grayscale.crop((baseline_left, baseline_top, baseline_left + side, baseline_top + side))
+    box = (baseline_left, baseline_top, baseline_left + side, baseline_top + side)
+    return grayscale.crop(box), "center_square_crop", box, False
+
+
+def _centered_crop_box_for_size(
+    original_size: tuple[int, int],
+    crop_size: tuple[int, int],
+) -> tuple[int, int, int, int]:
+    width, height = original_size
+    crop_width, crop_height = crop_size
+    left = max(0, (width - crop_width) // 2)
+    top = max(0, (height - crop_height) // 2)
+    return (left, top, left + crop_width, top + crop_height)
 
 
 def _recognition_trim_variant_crops(image: Image.Image) -> list[tuple[Image.Image, str]]:

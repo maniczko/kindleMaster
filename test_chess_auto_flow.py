@@ -130,7 +130,92 @@ class AutoChessFlowTests(unittest.TestCase):
             self.assertEqual(fen_payload["items"][0]["corpus_status"], "not_corpus_verified")
             pgn_payload = json.loads((out / "pgn" / "pgn_candidates.json").read_text(encoding="utf-8"))
             self.assertEqual(pgn_payload["items"][0]["status"], "PGN_MACHINE_ACCEPTED")
+            self.assertEqual(pgn_payload["items"][0]["validation_stage"], "exportable")
+            self.assertEqual(pgn_payload["summary"]["validation_stage_counts"], {"exportable": 1})
+            report = json.loads((out / "report" / "quality_report.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["summary"]["fen_breakdown"]["total_diagrams"], 1)
+            self.assertEqual(report["summary"]["pgn_breakdown"]["feasible_records"], 1)
+            self.assertEqual(report["summary"]["pgn_breakdown"]["validation_stage_counts"], {"exportable": 1})
+            html = (out / "report" / "quality_report.html").read_text(encoding="utf-8")
+            self.assertIn("FEN Breakdown", html)
+            self.assertIn("PGN Breakdown", html)
             self.assertTrue((out / "report" / "acceptance_blockers.json").is_file())
+
+    def test_pgn_validation_report_includes_stage_and_top_blocker_for_replay_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir)
+            invalid_pgn = """[Event "Synthetic"]
+[Site "?"]
+[Date "????.??.??"]
+[Round "?"]
+[White "?"]
+[Black "?"]
+[Result "*"]
+
+1. e5 *
+"""
+            _write_json(
+                out / "data" / "book.json",
+                {
+                    "schema": "kindlemaster.semantic_chess_html.v1",
+                    "pages": [{"page": 1, "diagrams": [], "pgn_records": [], "text_blocks": []}],
+                    "pgn_records": [
+                        {
+                            "record_id": "pgn_bad",
+                            "page": 1,
+                            "status": "accepted",
+                            "pgn": invalid_pgn,
+                            "warnings": [],
+                        }
+                    ],
+                },
+            )
+            _write_json(out / "reports" / "chess_quality_dashboard.json", {"pages": 1, "pgn_total": 1})
+
+            build_auto_chess_flow_artifacts(out)
+
+            validation = json.loads((out / "pgn" / "pgn_validation.json").read_text(encoding="utf-8"))
+            item = validation["items"][0]
+
+            self.assertEqual(item["runtime_status"], "PGN_MACHINE_PARSED")
+            self.assertEqual(item["validation_stage"], "replay_failed")
+            self.assertEqual(item["top_blocker"], "pgn_replay_failed")
+            self.assertEqual(validation["summary"]["validation_stage_counts"], {"replay_failed": 1})
+            self.assertEqual(validation["summary"]["top_blocker_counts"], {"pgn_replay_failed": 1})
+
+    def test_quality_report_counts_diagram_only_as_pgn_infeasible_not_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir)
+            _write_json(
+                out / "data" / "book.json",
+                {
+                    "schema": "kindlemaster.semantic_chess_html.v1",
+                    "pages": [{"page": 1, "diagrams": [], "pgn_records": [], "text_blocks": []}],
+                    "pgn_records": [
+                        {
+                            "record_id": "diagram_only",
+                            "page": 1,
+                            "status": "requires_review",
+                            "raw_text": "Diagram 4-1\nWhite to move",
+                            "pgn": "",
+                            "warnings": [],
+                        }
+                    ],
+                },
+            )
+            _write_json(out / "reports" / "chess_quality_dashboard.json", {"pages": 1, "pgn_total": 1})
+
+            build_auto_chess_flow_artifacts(out)
+
+            report = json.loads((out / "report" / "quality_report.json").read_text(encoding="utf-8"))
+            pgn_breakdown = report["summary"]["pgn_breakdown"]
+
+            self.assertEqual(pgn_breakdown["total_records"], 1)
+            self.assertEqual(pgn_breakdown["feasible_records"], 0)
+            self.assertEqual(pgn_breakdown["infeasible_records"], 1)
+            self.assertEqual(pgn_breakdown["failed_feasible_records"], 0)
+            self.assertEqual(pgn_breakdown["infeasible_reason_counts"], {"diagram_only": 1})
+            self.assertEqual(report["summary"]["pgn_failed"], 0)
 
     def test_ai_fen_candidate_remains_review_only_without_human_or_deterministic_acceptance(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -67,10 +67,15 @@ def load_supabase_auth_config(environ: Mapping[str, str] | None = None) -> Supab
         cwd=Path(__file__).resolve().parent,
     )
     provider = str(env.get("KINDLEMASTER_AUTH_PROVIDER", "") or "").strip().lower()
-    enabled = provider == "supabase"
+    enabled = provider == "supabase" or _truthy(env.get("KINDLEMASTER_SUPABASE_AUTH"))
     require_login = _truthy(env.get("KINDLEMASTER_REQUIRE_LOGIN"))
-    url = _normalize_url(env.get("SUPABASE_URL", ""))
-    publishable_key = str(env.get("SUPABASE_PUBLISHABLE_KEY", "") or "").strip()
+    url = _normalize_url(env.get("SUPABASE_URL", "") or env.get("KINDLEMASTER_SUPABASE_URL", ""))
+    publishable_key = str(
+        env.get("SUPABASE_PUBLISHABLE_KEY", "")
+        or env.get("KINDLEMASTER_SUPABASE_PUBLISHABLE_KEY", "")
+        or env.get("KINDLEMASTER_SUPABASE_ANON_KEY", "")
+        or ""
+    ).strip()
     service_role_key = str(env.get("SUPABASE_SERVICE_ROLE_KEY", "") or "").strip()
     missing: list[str] = []
     if enabled and not url:

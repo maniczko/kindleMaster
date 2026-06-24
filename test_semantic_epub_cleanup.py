@@ -85,6 +85,17 @@ class SemanticEpubCleanupTests(unittest.TestCase):
                 archive.writestr(archive_path, payload, compress_type=compress_type)
         return output.getvalue()
 
+    def assert_semantic_timing_breakdown(self, report: dict) -> None:
+        self.assertIsInstance(report.get("phases"), dict)
+        timings = (
+            report.get("stage_timings")
+            or report.get("phase_timings")
+            or report.get("timing_breakdown")
+            or report.get("timings")
+        )
+        if timings is not None:
+            self.assertIsInstance(timings, dict)
+
     def test_ocr_page_fallback_chapters_stay_linear(self):
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

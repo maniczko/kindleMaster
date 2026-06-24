@@ -107,6 +107,7 @@ def sanitize_user_profile(payload: Mapping[str, Any] | None) -> dict[str, Any]:
         "username": _text(email_source.get("username")),
         "from_address": _text(email_source.get("from_address")),
         "default_recipient": _email_or_empty(email_source.get("default_recipient")),
+        "secret_registered": _bool(email_source.get("secret_registered"), False),
         "max_attachment_bytes": _positive_int(
             email_source.get("max_attachment_bytes"),
             defaults["email_delivery"]["max_attachment_bytes"],

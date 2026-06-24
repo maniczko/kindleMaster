@@ -1849,12 +1849,24 @@ def _apply_delivery_auto_repair(
     updated_result["quality_report"] = updated_quality_report
 
     if repair_result.status == "applied":
-        updated_result = _apply_runtime_quality_gate(
-            result=updated_result,
-            epub_bytes=selected_epub_bytes,
-            request=request,
-            heading_repair_report=heading_repair_report,
-        )
+        try:
+            updated_result = _apply_runtime_quality_gate(
+                result=updated_result,
+                epub_bytes=selected_epub_bytes,
+                request=request,
+                heading_repair_report=heading_repair_report,
+            )
+        except ConversionQualityGateError as error:
+            # Delivery repair is a safe post-pass: never replace a downloadable EPUB
+            # with an auto-repaired candidate that fails the runtime structure gate.
+            selected_epub_bytes = epub_bytes
+            repair_payload["status"] = "rejected"
+            repair_payload["reason"] = "quality_gate_failed"
+            repair_payload["quality_gate_error"] = str(error)
+            repair_payload["validation_report"] = _to_mapping_payload(error.validation_report)
+            updated_quality_report = _to_mapping_payload(updated_result.get("quality_report", {}) or {})
+            updated_quality_report["auto_repair"] = repair_payload
+            updated_result["quality_report"] = updated_quality_report
 
     post_metadata = build_conversion_metadata(
         result=updated_result,
@@ -1981,6 +1993,15 @@ def run_document_conversion(
     conversion_started = perf_counter()
     result = convert_impl(request.source_path, **convert_kwargs)
     stage_timings["conversion_seconds"] = round(perf_counter() - conversion_started, 6)
+    if status_callback:
+        _emit_status(
+            status_callback,
+            "running",
+            "Składanie artykułów i struktury EPUB...",
+            stage_id="assembling",
+            stage_label="Składanie EPUB",
+            percent_estimate=45,
+        )
     analysis_payload = _to_mapping_payload(result.get("analysis", {}) or {})
     route_decision_payload = _to_mapping_payload(analysis_payload.get("route_decision", {}) or {})
     analysis_seconds = _timing_value(analysis_payload.get("analysis_seconds"))
@@ -2068,6 +2089,15 @@ def run_document_conversion(
     existing_timings.update(stage_timings)
     quality_report["stage_timings"] = existing_timings
     result = {**result, "quality_report": quality_report}
+    if status_callback:
+        _emit_status(
+            status_callback,
+            "running",
+            "Uruchamiam audyt premium EPUB...",
+            stage_id="premium_audit",
+            stage_label="Audyt premium",
+            percent_estimate=78,
+        )
     result = _apply_runtime_quality_gate(
         result=result,
         epub_bytes=epub_bytes,

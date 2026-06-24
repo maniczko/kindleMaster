@@ -211,6 +211,8 @@ class KindleMasterEntrypointTests(unittest.TestCase):
             "sklearn": True,
             "chess": True,
             "chess.pgn": True,
+            "pytesseract": True,
+            "cv2": True,
             "ocrmypdf": False,
         }
 

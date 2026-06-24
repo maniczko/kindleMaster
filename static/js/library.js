@@ -48,7 +48,7 @@
       const downloadUrl = payload.download_url || payload.downloadUrl || "";
       const pdfLayoutPreviewUrl = payload.pdf_layout_preview_url
         || payload.pdfLayoutPreviewUrl
-        || (window.KindleMasterArtifactLinks
+        || (typeof window !== "undefined" && window.KindleMasterArtifactLinks
           ? window.KindleMasterArtifactLinks.artifactShellUrl(payload, "pdf_layout_preview")
           : "");
       const qualityStateUrl = payload.quality_state_url || payload.qualityStateUrl || "";

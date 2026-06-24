@@ -30,6 +30,7 @@ from chess_pgn_extractor import (
     build_exercises_pgn,
     build_pgn_download_html,
     chess_ocr_normalization_candidates,
+    classify_pgn_feasibility,
     extract_chess_pgn_records_from_text,
     merge_chess_pgn_continuation_records,
     normalize_ocr_text_for_pgn,
@@ -3409,6 +3410,45 @@ B13: Caro-Kann: Exchange Variation
 
         self.assertEqual(blocks[0]["type"], "raw-html")
         self.assertIn('class="chess-pgn-review"', blocks[0]["html"])
+
+    def test_pgn_feasibility_classifies_diagram_only_as_not_counted_failure(self) -> None:
+        feasibility = classify_pgn_feasibility(
+            {
+                "id": "diagram-only",
+                "raw_text": "Diagram 4-1\nWhite to move",
+                "movetext": "",
+                "status": "requires_review",
+            }
+        )
+
+        self.assertFalse(feasibility["pgn_feasible"])
+        self.assertEqual(feasibility["pgn_feasibility_reason"], "diagram_only")
+        self.assertFalse(feasibility["pgn_should_count_in_success_rate"])
+
+    def test_pgn_summary_excludes_diagram_only_from_manual_review_rate(self) -> None:
+        rows = [
+            {
+                "id": "diagram-only",
+                "raw_text": "Diagram 4-1\nWhite to move",
+                "movetext": "",
+                "status": "requires_review",
+            },
+            {
+                "id": "review-game",
+                "raw_text": "1. e4 e5",
+                "movetext": "1. e4 e5 *",
+                "pgn": "",
+                "status": "requires_review",
+            },
+        ]
+
+        summary = summarize_chess_pgn_records(rows)
+
+        self.assertEqual(summary["candidate_game_count"], 2)
+        self.assertEqual(summary["pgn_feasible_count"], 1)
+        self.assertEqual(summary["pgn_infeasible_count"], 1)
+        self.assertEqual(summary["pgn_infeasible_reason_counts"], {"diagram_only": 1})
+        self.assertEqual(summary["manual_review_count"], 1)
 
 
 if __name__ == "__main__":

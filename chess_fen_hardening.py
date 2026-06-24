@@ -81,10 +81,17 @@ MACHINE_BLOCKING_FEN_WARNINGS = {
     "review_crop_candidate_mismatch",
     "score_margin_below_threshold",
     "no_square_alternatives",
+    "side_to_move_inferred",
     "sparse_position_confidence_below_threshold",
     "template_profile_not_ready",
     "white_king_count_invalid",
 }
+
+FEN_PLACEMENT_RECOGNIZED = "FEN_PLACEMENT_RECOGNIZED"
+FEN_PLACEMENT_MACHINE_ACCEPTED = "FEN_PLACEMENT_MACHINE_ACCEPTED"
+FEN_FULL_INFERRED_REVIEW_REQUIRED = "FEN_FULL_INFERRED_REVIEW_REQUIRED"
+FEN_FULL_MACHINE_ACCEPTED = "FEN_FULL_MACHINE_ACCEPTED"
+FEN_REJECTED = "FEN_REJECTED"
 
 
 @dataclass(frozen=True)
@@ -104,6 +111,15 @@ class FenValidationResult:
     warnings: list[FenValidationIssue]
 
 
+@dataclass(frozen=True)
+class FenPlacementValidationResult:
+    input: str
+    normalized_placement: str | None
+    is_syntax_valid: bool
+    errors: list[FenValidationIssue]
+    warnings: list[FenValidationIssue]
+
+
 def crop_sha256(path: str | Path) -> str:
     crop_path = Path(path)
     digest = hashlib.sha256()
@@ -115,6 +131,64 @@ def crop_sha256(path: str | Path) -> str:
 
 def normalize_fen_whitespace(value: str) -> str:
     return " ".join(str(value or "").strip().split())
+
+
+def validate_fen_placement_detailed(placement: str) -> FenPlacementValidationResult:
+    normalized = str(placement or "").strip()
+    errors: list[FenValidationIssue] = []
+    warnings: list[FenValidationIssue] = []
+
+    def add_error(code: str, message: str) -> None:
+        errors.append(FenValidationIssue(code=code, severity="error", message=message))
+
+    def add_warning(code: str, message: str) -> None:
+        warnings.append(FenValidationIssue(code=code, severity="warning", message=message))
+
+    ranks = normalized.split("/") if normalized else []
+    if len(ranks) != 8:
+        add_error("invalid_rank_count", "Board placement must contain exactly eight ranks.")
+
+    white_kings = 0
+    black_kings = 0
+    for rank_index, rank in enumerate(ranks):
+        width = 0
+        last_was_digit = False
+        for char in rank:
+            if char.isdigit():
+                value = int(char)
+                if value < 1 or value > 8 or last_was_digit:
+                    add_error("invalid_rank_digit", "Empty square digits must be between 1 and 8 and not repeated.")
+                width += value
+                last_was_digit = True
+                continue
+            if char not in PIECE_CHARS:
+                add_error("invalid_piece", f"Unsupported FEN piece character: {char!r}.")
+                width += 1
+                last_was_digit = False
+                continue
+            if char == "K":
+                white_kings += 1
+            elif char == "k":
+                black_kings += 1
+            if rank_index in {0, 7} and char in {"P", "p"}:
+                add_warning("pawn_on_back_rank", "Pawns on the first or eighth rank require full-FEN review.")
+            width += 1
+            last_was_digit = False
+        if width != 8:
+            add_error("invalid_rank_width", "Each FEN rank must describe exactly eight squares.")
+
+    if white_kings != 1:
+        add_warning("white_king_count_not_one", "Placement does not contain exactly one white king.")
+    if black_kings != 1:
+        add_warning("black_king_count_not_one", "Placement does not contain exactly one black king.")
+
+    return FenPlacementValidationResult(
+        input=placement,
+        normalized_placement=normalized if not errors else None,
+        is_syntax_valid=not errors,
+        errors=errors,
+        warnings=warnings,
+    )
 
 
 def validate_fen_detailed(fen: str) -> FenValidationResult:
@@ -282,9 +356,16 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
     source = str(candidate.get("source") or candidate.get("method") or "").strip()
     normalized_source = source.lower().replace("_", "-")
     fen = str(candidate.get("fen") or candidate.get("value") or candidate.get("candidate_fen") or "").strip()
+    placement = str(candidate.get("placement_fen") or candidate.get("placement") or "").strip()
+    if not placement and fen:
+        placement = normalize_fen_whitespace(fen).split()[0]
     min_confidence = float(ctx.get("min_confidence", 0.835) or 0.835)
     confidence = _candidate_confidence(candidate, default=ctx.get("confidence"))
     warnings = sorted({str(item) for item in candidate.get("warnings") or [] if str(item)})
+    side_to_move_source = _side_to_move_source(candidate, ctx, warnings)
+    side_to_move_is_trusted = _side_to_move_source_is_trusted(side_to_move_source)
+    castling_source = str(candidate.get("castling_source") or ctx.get("castling_source") or "candidate_fen")
+    en_passant_source = str(candidate.get("en_passant_source") or ctx.get("en_passant_source") or "candidate_fen")
     blockers: list[dict[str, Any]] = []
     trace: dict[str, Any] = {
         "source": source or "unknown",
@@ -292,6 +373,12 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
         "min_confidence": min_confidence,
         "warnings": warnings,
         "policy": "runtime_machine_acceptance_only",
+        "side_to_move_source": side_to_move_source,
+        "side_to_move_evidence": str(candidate.get("side_to_move_evidence") or ctx.get("side_to_move_evidence") or ""),
+        "side_to_move_status": str(candidate.get("side_to_move_status") or ctx.get("side_to_move_status") or ""),
+        "metadata_known": side_to_move_source != "inferred",
+        "castling_source": castling_source,
+        "en_passant_source": en_passant_source,
     }
 
     if not fen:
@@ -315,6 +402,23 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
     if normalized_source == "deterministic-ensemble":
         blockers.extend(_deterministic_ensemble_contract_blockers(candidate, ctx, trace))
 
+    placement_validation = validate_fen_placement_detailed(placement)
+    trace["placement_validation"] = {
+        "is_syntax_valid": placement_validation.is_syntax_valid,
+        "normalized_placement": placement_validation.normalized_placement,
+        "errors": [issue.__dict__ for issue in placement_validation.errors],
+        "warnings": [issue.__dict__ for issue in placement_validation.warnings],
+    }
+    trace["placement_valid"] = placement_validation.is_syntax_valid
+    if placement and not placement_validation.is_syntax_valid:
+        blockers.append(
+            {
+                "code": "placement_invalid",
+                "message": "Board placement is syntactically invalid before full-FEN metadata validation.",
+                "details": trace["placement_validation"],
+            }
+        )
+
     validation = validate_fen_detailed(fen)
     trace["fen_validation"] = {
         "is_syntax_valid": validation.is_syntax_valid,
@@ -328,6 +432,9 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
 
     python_chess_result = _python_chess_validate(fen)
     trace["python_chess"] = python_chess_result
+    trace["full_fen_valid"] = bool(
+        validation.is_syntax_valid and validation.is_legal_position and python_chess_result.get("valid")
+    )
     if not python_chess_result.get("valid"):
         blockers.append(
             {
@@ -339,6 +446,8 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
 
     warning_blockers = sorted(set(warnings) & MACHINE_BLOCKING_FEN_WARNINGS)
     for warning in warning_blockers:
+        if warning == "side_to_move_inferred" and side_to_move_is_trusted:
+            continue
         blockers.append({"code": warning, "message": "Recognizer warning blocks runtime machine acceptance."})
 
     expected_fen = str(ctx.get("expected_fen") or "").strip()
@@ -355,9 +464,16 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
             )
 
     accepted = not blockers
+    fen_semantic_status = _fen_semantic_status(
+        accepted=accepted,
+        placement_valid=placement_validation.is_syntax_valid,
+        side_to_move_source=side_to_move_source,
+        has_fen=bool(fen),
+    )
     return {
         "status": "accepted" if accepted else "review_required",
         "runtime_status": "FEN_MACHINE_ACCEPTED" if accepted else "FEN_REVIEW_REQUIRED",
+        "fen_semantic_status": fen_semantic_status,
         "selected_value": validation.normalized_fen if accepted else None,
         "normalized_fen": validation.normalized_fen,
         "acceptance_blockers": blockers,
@@ -374,6 +490,42 @@ def _candidate_confidence(candidate: dict[str, Any], *, default: Any = None) -> 
         return float(value or 0.0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _side_to_move_source(candidate: dict[str, Any], context: dict[str, Any], warnings: list[str]) -> str:
+    evidence = str(candidate.get("side_to_move_evidence") or context.get("side_to_move_evidence") or "").strip().lower()
+    status = str(candidate.get("side_to_move_status") or context.get("side_to_move_status") or "").strip().lower()
+    if evidence:
+        return evidence
+    if status == "explicit":
+        return "explicit"
+    if status in {"inferred", "unknown"} or "side_to_move_inferred" in warnings:
+        return "inferred"
+    return "candidate_fen"
+
+
+def _side_to_move_source_is_trusted(source: str) -> bool:
+    return str(source or "").strip().lower() in {
+        "caption",
+        "exact_label",
+        "explicit",
+        "human",
+        "human_visual",
+        "marker",
+        "pgn_replay",
+        "replay",
+        "verified_exact_crop_label",
+    }
+
+
+def _fen_semantic_status(*, accepted: bool, placement_valid: bool, side_to_move_source: str, has_fen: bool) -> str:
+    if accepted:
+        return FEN_FULL_MACHINE_ACCEPTED
+    if placement_valid and side_to_move_source == "inferred":
+        return FEN_FULL_INFERRED_REVIEW_REQUIRED
+    if placement_valid:
+        return FEN_PLACEMENT_RECOGNIZED if has_fen else FEN_PLACEMENT_MACHINE_ACCEPTED
+    return FEN_REJECTED
 
 
 def _is_machine_accepted_source(source: str) -> bool:

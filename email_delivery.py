@@ -46,6 +46,7 @@ class EmailDeliveryConfig:
     provider: str = "smtp"
     profile_configured: bool = False
     config_source: str = "env"
+    secret_registered: bool = False
 
     @property
     def missing_config(self) -> list[str]:
@@ -56,7 +57,7 @@ class EmailDeliveryConfig:
             missing.append("KINDLEMASTER_SMTP_HOST")
         if not self.username:
             missing.append("KINDLEMASTER_SMTP_USERNAME")
-        if not self.password:
+        if not self.password and not self.secret_registered:
             missing.append("KINDLEMASTER_SMTP_PASSWORD")
         if not self.from_address:
             missing.append("KINDLEMASTER_SMTP_FROM")
@@ -74,6 +75,8 @@ class EmailDeliveryConfig:
             "host_configured": bool(self.host),
             "from_configured": bool(self.from_address),
             "secret_configured": bool(self.password),
+            "secret_registered": bool(self.secret_registered),
+            "send_ready": bool(self.configured and self.password),
             "profile_configured": self.profile_configured,
             "config_source": self.config_source,
             "port": self.port,
@@ -168,6 +171,7 @@ def load_email_delivery_config(environ: Mapping[str, str] | None = None) -> Emai
         timeout_seconds=_positive_int(environment.get("KINDLEMASTER_EMAIL_TIMEOUT_SECONDS"), DEFAULT_EMAIL_TIMEOUT_SECONDS),
         profile_configured=profile_configured,
         config_source=config_source,
+        secret_registered=bool(profile.get("secret_registered")),
     )
 
 

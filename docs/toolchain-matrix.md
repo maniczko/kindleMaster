@@ -13,6 +13,8 @@ For the operator setup sequence and failure classification guidance, see [local-
 
 Bootstrap manages Python packages and local Git hook configuration for the developer profile. It does not install Java, EPUBCheck, Tesseract, Ghostscript, qpdf, PDFBox, or Chromium.
 
+The runtime profile includes `pytesseract` because `ocr_module.py` uses direct Tesseract OCR as the page-level fallback when OCRmyPDF is unavailable or incomplete. The developer profile includes `opencv-python-headless` for chess crop/grid diagnostics and future audit-only geometry experiments; OpenCV is not a default runtime recognizer dependency.
+
 ML runtime inference is local JSON math and belongs to the runtime footprint. Training uses `scikit-learn` from `requirements-dev.txt` only:
 
 ```powershell
@@ -59,6 +61,8 @@ python -m playwright install chromium
 | --- | --- | --- | --- |
 | EPUBCheck validation | optional | Java + `epubcheck.jar` | KindleMaster still runs internal validators when EPUBCheck is unavailable |
 | OCRmyPDF pipeline | optional | Tesseract + OCRmyPDF + Ghostscript + qpdf | falls back to direct Tesseract OCR when OCRmyPDF system dependencies are incomplete |
+| Direct Tesseract OCR fallback | optional | Tesseract executable + `pytesseract` Python package | page-level fallback used by `ocr_module.py`; reported by `doctor` |
+| Chess crop/grid diagnostics | diagnostic | `opencv-python-headless` from the developer profile | audit-only dependency; must not change runtime recognition unless a later PR proves a gated improvement |
 | PDFBox helpers | optional | Java + `pdfbox-app*.jar` | used for optional extraction/diagnostic flows |
 | SMTP email delivery | optional | `KINDLEMASTER_EMAIL_DELIVERY=1` plus SMTP env vars | explicit Send-to-Kindle handoff for `release_ready` EPUBs only |
 

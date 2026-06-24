@@ -1,0 +1,11 @@
+{
+  "schema_version": "kindlemaster.chess_audit_dataset.v1",
+  "profile_id": "audit_2026_06",
+  "description": "Diagnostic FEN/PGN audit dataset. FEN rows are derived from existing manually verified Fundamenty seed labels; PGN and negative samples remain empty until equivalent human-verified evidence is available.",
+  "fen_ground_truth": "labels/fen_ground_truth.jsonl",
+  "pgn_ground_truth": "labels/pgn_ground_truth.jsonl",
+  "negative_samples": "labels/negative_samples.jsonl",
+  "crops_dir": "crops",
+  "overlays_dir": "overlays",
+  "status": "fen_ground_truth_available_pgn_pending"
+}

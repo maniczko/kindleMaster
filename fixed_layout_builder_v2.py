@@ -612,6 +612,38 @@ def demote_fixed_layout_non_content_pages_by_content(epub_bytes: bytes) -> bytes
     return epub_bytes
 
 
+def demote_fixed_layout_non_content_pages(epub_bytes: bytes, non_content_hrefs: set[str] | list[str] | tuple[str, ...]) -> bytes:
+    """Mark known non-content fixed-layout spine pages as non-linear."""
+    targets = {str(value or "").strip().lstrip("/") for value in non_content_hrefs or [] if str(value or "").strip()}
+    if not targets:
+        return epub_bytes
+    source = io.BytesIO(epub_bytes)
+    output = io.BytesIO()
+    with zipfile.ZipFile(source, "r") as zin, zipfile.ZipFile(output, "w") as zout:
+        for info in zin.infolist():
+            data = zin.read(info.filename)
+            if info.filename.lower().endswith(".opf"):
+                text = data.decode("utf-8")
+                for href in targets:
+                    id_match = re.search(
+                        rf'<item\b[^>]*\bid=["\']([^"\']+)["\'][^>]*\bhref=["\']{re.escape(href)}["\'][^>]*/?>',
+                        text,
+                        flags=re.IGNORECASE,
+                    )
+                    if not id_match:
+                        continue
+                    item_id = re.escape(id_match.group(1))
+                    text = re.sub(
+                        rf'(<itemref\b(?=[^>]*\bidref=["\']{item_id}["\'])(?![^>]*\blinear=)[^>]*)(/?>)',
+                        r'\1 linear="no"\2',
+                        text,
+                        flags=re.IGNORECASE,
+                    )
+                data = text.encode("utf-8")
+            zout.writestr(info, data)
+    return output.getvalue()
+
+
 # ============================================================================
 # IMAGE EXTRACTION WITH CHESS DIAGRAM DETECTION
 # ============================================================================
@@ -846,6 +878,11 @@ def inject_fixed_layout_viewports(
 ) -> bytes:
     """Backward-compatible wrapper for fixed-layout package repair."""
     return repair_fixed_layout_epub_package(epub_bytes, page_viewports)
+
+
+def repair_fixed_layout_epub(epub_bytes: bytes) -> bytes:
+    """Backward-compatible package repair entrypoint."""
+    return repair_fixed_layout_epub_package(epub_bytes, {})
 
 
 def repair_fixed_layout_epub_package(

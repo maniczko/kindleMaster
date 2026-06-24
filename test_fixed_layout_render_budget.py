@@ -4,9 +4,21 @@ import io
 import json
 import unittest
 import zipfile
+from io import BytesIO
 from pathlib import Path
 
-from fixed_layout_builder_v2 import repair_fixed_layout_epub_package, resolve_fixed_layout_render_settings
+import fitz
+
+from PIL import Image
+
+from fixed_layout_builder_v2 import (
+    demote_fixed_layout_non_content_pages,
+    inject_fixed_layout_viewports,
+    render_page_to_image,
+    repair_fixed_layout_epub,
+    repair_fixed_layout_epub_package,
+    resolve_fixed_layout_render_settings,
+)
 from publication_analysis import _choose_render_budget_class
 from size_budget_policy import evaluate_size_budget, load_size_budget_policy
 

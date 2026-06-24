@@ -57,6 +57,20 @@ QUICK_TESTS = [
     "test_chess_html_audit.py",
     "test_chess_diagram_detection.py",
     "test_chess_glyph_diagnostics.py",
+    "test_chess_baseline_toolchain_report.py",
+    "test_chess_audit_dataset.py",
+    "test_chess_audit_dataset_intake_apply.py",
+    "test_chess_pgn_ground_truth_intake.py",
+    "test_chess_negative_sample_intake.py",
+    "test_chess_pipeline_audit_harness.py",
+    "test_chess_fen_crop_grid_diagnostics.py",
+    "test_chess_fen_placement_vs_full_fen.py",
+    "test_chess_fen_profile_readiness.py",
+    "test_chess_fen_seed_evidence_refresh.py",
+    "test_chess_full_automation_ready.py",
+    "test_auto_strict_validation_report.py",
+    "test_epub_validation_report.py",
+    "test_chess_reading_order_report_generation.py",
     "test_chess_fen_square_diff.py",
     "test_chess_fen_accepted_audit.py",
     "test_chess_auto_flow.py",
@@ -192,11 +206,11 @@ DISCOVER_ONLY_TESTS = [
     "test_quality_report_markdown.py",
     "test_quality_reporting.py",
     "test_chess_fen_workflow_state_model.py",
-    "test_chess_full_automation_ready.py",
     "test_chess_reading_order_audit.py",
     "test_scanned_chess_detector.py",
     "test_external_chessimg2pos_provider.py",
     "test_external_pgn_extract_provider.py",
+    "test_chess_cv_board_geometry.py",
     "test_workflow_runner.py",
 ]
 
@@ -246,6 +260,22 @@ def main() -> int:
     convert_parser.add_argument("--heading-repair", action="store_true")
     convert_parser.add_argument("--domain-dictionary", default="")
     convert_parser.add_argument("--report-json", default="")
+
+    ai_autoread_parser = subparsers.add_parser(
+        "chess-ai-autoread",
+        help="Build/run/import experimental AI-only chess FEN/PGN readout artifacts.",
+    )
+    ai_autoread_parser.add_argument("report_json")
+    ai_autoread_parser.add_argument("--output-dir", default="reports/chess_fen/ai_autoread/latest")
+    ai_autoread_parser.add_argument("--model", default="gpt-4.1-mini")
+    ai_autoread_parser.add_argument("--max-image-bytes", type=int, default=3_000_000)
+    ai_autoread_parser.add_argument("--run-live", action="store_true")
+    ai_autoread_parser.add_argument("--responses-jsonl", default="")
+    ai_autoread_parser.add_argument("--limit", type=int, default=None)
+    ai_autoread_parser.add_argument("--max-workers", type=int, default=1)
+    ai_autoread_parser.add_argument("--timeout-seconds", type=float, default=120.0)
+    ai_autoread_parser.add_argument("--retries", type=int, default=1)
+    ai_autoread_parser.add_argument("--no-resume", action="store_true")
 
     process_parser = subparsers.add_parser("process", help="Run the front-door automatic chess PDF flow.")
     process_parser.add_argument("input_path", nargs="?")
@@ -574,6 +604,37 @@ def main() -> int:
             domain_dictionary=args.domain_dictionary,
             report_json=args.report_json,
         )
+    if args.command == "chess-ai-autoread":
+        from scripts.build_chess_ai_autoread_requests import build_chess_ai_autoread_requests
+        from scripts.import_chess_ai_autoread_responses import import_chess_ai_autoread_responses
+        from scripts.run_chess_ai_autoread_requests import run_chess_ai_autoread_requests
+
+        output_dir = Path(args.output_dir)
+        summary = build_chess_ai_autoread_requests(
+            args.report_json,
+            output_dir=output_dir,
+            model=args.model,
+            max_image_bytes=args.max_image_bytes,
+        )
+        responses_arg = str(args.responses_jsonl or "").strip()
+        responses_path = Path(responses_arg) if responses_arg else output_dir / "ai_autoread_responses.jsonl"
+        if args.run_live:
+            run_summary = run_chess_ai_autoread_requests(
+                summary["ai_autoread_requests"],
+                output_jsonl=responses_path,
+                limit=args.limit,
+                max_workers=args.max_workers,
+                timeout_seconds=args.timeout_seconds,
+                retries=args.retries,
+                resume=not args.no_resume,
+            )
+            summary["run_summary"] = run_summary
+            if run_summary.get("status") == "ok":
+                summary["import_summary"] = import_chess_ai_autoread_responses(output_dir, responses_path)
+        elif responses_arg:
+            summary["import_summary"] = import_chess_ai_autoread_responses(output_dir, responses_path)
+        _print_json(summary)
+        return 0
     if args.command == "process":
         from chess_auto_flow import non_strict_python_chess_notice, run_auto_chess_process, strict_python_chess_preflight
 

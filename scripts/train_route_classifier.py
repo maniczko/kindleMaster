@@ -18,6 +18,26 @@ PROTECTED_RECALL_CLASSES = ("scanned_reflow", "diagram_book_reflow")
 CORPUS_HARD_NEGATIVE_ROUTES = ("magazine_layout_heavy", "diagram_chess")
 
 
+def _import_sklearn_training_dependencies() -> dict[str, Any]:
+    try:
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, recall_score
+        from sklearn.model_selection import train_test_split
+        from sklearn.preprocessing import StandardScaler
+    except Exception as error:
+        return {"status": "unavailable", "exception": str(error)}
+    return {
+        "status": "available",
+        "LogisticRegression": LogisticRegression,
+        "accuracy_score": accuracy_score,
+        "confusion_matrix": confusion_matrix,
+        "f1_score": f1_score,
+        "recall_score": recall_score,
+        "train_test_split": train_test_split,
+        "StandardScaler": StandardScaler,
+    }
+
+
 def train_route_classifier(
     *,
     dataset_path: str | Path = "reports/ml/datasets/route_examples.jsonl",
@@ -27,29 +47,14 @@ def train_route_classifier(
     enforce_readiness: bool = True,
 ) -> dict[str, Any]:
     rows = _load_jsonl(Path(dataset_path))
-    readiness = _dataset_readiness_from_dataset(Path(dataset_path), rows, min_examples_per_class=min_examples_per_class)
-    if enforce_readiness and readiness.get("status") != "ready":
-        payload = {
-            "status": "failed",
-            "error": "dataset_not_ready",
-            "dataset_path": str(dataset_path),
-            "dataset_readiness": readiness,
-        }
-        _write_report(report_path or "reports/ml/route_classifier_v1.metrics.json", payload)
-        return payload
-
+    sklearn_deps = _import_sklearn_training_dependencies()
     usable = [row for row in rows if row.get("label") in ROUTE_LABELS and isinstance(row.get("features"), Mapping)]
     label_counts = Counter(row["label"] for row in usable)
-    try:
-        from sklearn.linear_model import LogisticRegression
-        from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, recall_score
-        from sklearn.model_selection import train_test_split
-        from sklearn.preprocessing import StandardScaler
-    except Exception as error:
+    if sklearn_deps.get("status") != "available":
         payload = {
-            "status": "failed",
+            "status": "training_unavailable",
             "error": "scikit-learn is required for training. Install developer dependencies with python kindlemaster.py bootstrap.",
-            "exception": str(error),
+            "exception": str(sklearn_deps.get("exception") or ""),
             "dependency": "scikit-learn",
             "install_command": "python kindlemaster.py bootstrap",
             "dataset_path": str(dataset_path),
@@ -61,6 +66,24 @@ def train_route_classifier(
         }
         _write_report(report_path, payload)
         return payload
+    readiness = _dataset_readiness_from_dataset(Path(dataset_path), rows, min_examples_per_class=min_examples_per_class)
+    if enforce_readiness and readiness.get("status") != "ready":
+        payload = {
+            "status": "failed",
+            "error": "dataset_not_ready",
+            "dataset_path": str(dataset_path),
+            "dataset_readiness": readiness,
+        }
+        _write_report(report_path or "reports/ml/route_classifier_v1.metrics.json", payload)
+        return payload
+
+    LogisticRegression = sklearn_deps["LogisticRegression"]
+    accuracy_score = sklearn_deps["accuracy_score"]
+    confusion_matrix = sklearn_deps["confusion_matrix"]
+    f1_score = sklearn_deps["f1_score"]
+    recall_score = sklearn_deps["recall_score"]
+    train_test_split = sklearn_deps["train_test_split"]
+    StandardScaler = sklearn_deps["StandardScaler"]
 
     if len(usable) < 2 or len(label_counts) < 2:
         return {

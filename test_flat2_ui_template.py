@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import unittest
+import os
 from pathlib import Path
+from unittest.mock import patch
+
+from app import app
 
 
 TEMPLATE_PATH = Path(__file__).with_name("templates") / "index.html"
@@ -26,14 +30,17 @@ class Flat2UiTemplateTests(unittest.TestCase):
         client = app.test_client()
 
         root_response = client.get("/")
-        legacy_response = client.get("/legacy")
+        app_response = client.get("/app")
+        legacy_redirect_response = client.get("/legacy")
+        with patch.dict(os.environ, {"KINDLEMASTER_ENABLE_LEGACY_UI": "1"}):
+            legacy_response = client.get("/legacy")
 
-        self.assertEqual(root_response.status_code, 200)
-        root_html = root_response.get_data(as_text=True)
-        if 'id="root"' in root_html:
-            self.assertIn("KindleMaster Pipeline", root_html)
-        else:
-            self.assertIn("Lokalny panel EPUB", root_html)
+        self.assertEqual(root_response.status_code, 302)
+        self.assertEqual(root_response.headers["Location"], "/app")
+        self.assertEqual(app_response.status_code, 200)
+        self.assertIn('id="root"', app_response.get_data(as_text=True))
+        self.assertEqual(legacy_redirect_response.status_code, 302)
+        self.assertEqual(legacy_redirect_response.headers["Location"], "/app")
 
         self.assertEqual(legacy_response.status_code, 200)
         html = legacy_response.get_data(as_text=True)
@@ -44,10 +51,10 @@ class Flat2UiTemplateTests(unittest.TestCase):
         self.assertIn('id="recentProjectSelect"', html)
         self.assertIn('id="newConversionButton"', html)
         self.assertIn('id="recentConversionsList"', html)
-        self.assertIn("filename='css/app-shell.css'", html)
-        self.assertIn("filename='js/conversion-ui.js'", html)
-        self.assertIn("filename='js/quality-cockpit.js'", html)
-        self.assertIn("filename='js/library.js'", html)
+        self.assertIn("/static/css/app-shell.css", html)
+        self.assertIn("/static/js/conversion-ui.js", html)
+        self.assertIn("/static/js/quality-cockpit.js", html)
+        self.assertIn("/static/js/library.js", html)
         frontend = frontend_source()
         self.assertIn('class="flat2-quality-report"', frontend)
         self.assertIn('data-quality-verdict', frontend)
@@ -200,9 +207,8 @@ class Flat2UiTemplateTests(unittest.TestCase):
         response = app.test_client().get("/favicon.ico")
 
         try:
-            self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.mimetype, "image/x-icon")
-            self.assertGreater(len(response.data), 0)
+            self.assertEqual(response.status_code, 204)
+            self.assertEqual(response.data, b"")
         finally:
             response.close()
 

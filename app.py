@@ -13,6 +13,8 @@ import shutil
 import threading
 import uuid
 import tempfile
+import urllib.error
+import urllib.request
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -329,7 +331,21 @@ def _supabase_library_client() -> SupabaseLibraryClient:
 
 
 def _profile_with_secret_status(profile: dict) -> dict:
+    from user_profile import sanitize_user_profile
     from local_env import resolve_runtime_environment
+
+    public_profile = sanitize_user_profile(profile)
+    email_delivery = dict(public_profile.get("email_delivery", {}) or {})
+    source_email = profile.get("email_delivery", {}) if isinstance(profile.get("email_delivery"), dict) else {}
+    environment = resolve_runtime_environment()
+    email_delivery["secret_configured"] = bool(str(environment.get("KINDLEMASTER_SMTP_PASSWORD", "") or ""))
+    email_delivery["secret_registered"] = bool(
+        email_delivery["secret_configured"]
+        or source_email.get("secret_configured")
+        or source_email.get("secret_registered")
+    )
+    public_profile["email_delivery"] = email_delivery
+    return public_profile
 
 
 def _send_local_input_artifact_fallback(job_id: str, job: dict, artifact: dict):
@@ -363,6 +379,65 @@ def _send_local_input_artifact_fallback(job_id: str, job: dict, artifact: dict):
     response.headers["Cache-Control"] = "no-store, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["X-KindleMaster-Artifact-Source"] = "fallback"
+    return response
+
+
+def _send_remote_artifact_proxy(artifact: dict, *, job_id: str, artifact_key: str):
+    signed_url = _signed_artifact_url(artifact) or str(artifact.get("download_url") or "").strip()
+    if not signed_url.startswith(("http://", "https://")):
+        response = _json_error(
+            "Nie znaleziono lokalnego ani zdalnego artefaktu zadania.",
+            error_code="source_artifact_unavailable" if artifact_key == "input" else ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="download",
+            job_id=job_id,
+        )
+        response.headers["X-KindleMaster-Artifact-Source"] = "missing"
+        return response
+
+    request_obj = urllib.request.Request(signed_url, headers={"User-Agent": "KindleMaster/1.0"})
+    try:
+        with urllib.request.urlopen(request_obj, timeout=30) as remote_response:
+            data = remote_response.read()
+            response_headers = getattr(remote_response, "headers", {}) or {}
+            content_type = (
+                response_headers.get("Content-Type")
+                or str(artifact.get("content_type") or "")
+                or mimetypes.guess_type(str(artifact.get("filename") or ""))[0]
+                or "application/octet-stream"
+            )
+    except urllib.error.HTTPError as error:
+        response = _json_error(
+            "Zdalny artefakt nie jest dostepny.",
+            error_code="source_artifact_unavailable" if artifact_key == "input" else ERROR_DELIVERY_UNAVAILABLE,
+            status_code=404 if error.code == 404 else 502,
+            phase="download",
+            job_id=job_id,
+        )
+        response.headers["X-KindleMaster-Artifact-Source"] = "missing"
+        response.headers["X-KindleMaster-Remote-Status"] = str(error.code)
+        return response
+    except (OSError, TimeoutError):
+        response = _json_error(
+            "Nie udalo sie pobrac zdalnego artefaktu.",
+            error_code="source_artifact_unavailable" if artifact_key == "input" else ERROR_DELIVERY_UNAVAILABLE,
+            status_code=502,
+            phase="download",
+            job_id=job_id,
+        )
+        response.headers["X-KindleMaster-Artifact-Source"] = "missing"
+        return response
+
+    response = send_file(
+        io.BytesIO(data),
+        mimetype=content_type,
+        as_attachment=_artifact_should_download_as_attachment(artifact_key, artifact),
+        download_name=str(artifact.get("filename") or f"{artifact_key}.bin"),
+    )
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["X-KindleMaster-Artifact-Proxy"] = "remote"
+    response.headers["X-KindleMaster-Artifact-Source"] = "remote"
     return response
 
 
@@ -652,6 +727,7 @@ def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
         (path for path in report_html_files if path.name != "pdf_layout_preview.html"),
         None,
     )
+    chess_glyph_diagnostics_file = _first_file(job_dir / "report", "chess_glyph_diagnostics.json")
     runtime_json_file = _first_file(job_dir / "log", "*.runtime.json")
     if input_file is None and output_file is None and quality_json_file is None:
         return None
@@ -728,6 +804,14 @@ def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
         artifacts["chess_pgn_html"] = _local_artifact_metadata(job_id, ArtifactKind.REPORT, chess_pgn_html_file)
         artifacts["chess_pgn_html"]["download_url"] = f"/convert/artifact/{job_id}/chess_pgn_html"
         artifacts["chess_pgn_html"]["label"] = "HTML PGN/FEN"
+    if chess_glyph_diagnostics_file is not None:
+        artifacts["chess_glyph_diagnostics"] = _local_artifact_metadata(
+            job_id,
+            ArtifactKind.REPORT,
+            chess_glyph_diagnostics_file,
+        )
+        artifacts["chess_glyph_diagnostics"]["download_url"] = f"/convert/artifact/{job_id}/chess_glyph_diagnostics"
+        artifacts["chess_glyph_diagnostics"]["label"] = "Chess glyph diagnostics"
     if pdf_layout_preview_file is not None:
         artifacts["pdf_layout_preview"] = _local_artifact_metadata(job_id, ArtifactKind.REPORT, pdf_layout_preview_file)
         artifacts["pdf_layout_preview"]["download_url"] = f"/convert/artifact/{job_id}/pdf_layout_preview"
@@ -958,6 +1042,50 @@ def _is_path_under(path: Path, root: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _pdf_source_fallback_roots() -> list[Path]:
+    roots = [
+        Path(UPLOAD_DIR),
+        Path(app.root_path) / "output" / "artifacts",
+    ]
+    configured_artifact_root = os.environ.get("KINDLEMASTER_ARTIFACT_ROOT")
+    if configured_artifact_root:
+        roots.append(Path(configured_artifact_root))
+    resolved_roots: list[Path] = []
+    for root in roots:
+        try:
+            resolved_roots.append(root.resolve())
+        except OSError:
+            continue
+    return resolved_roots
+
+
+def _find_local_pdf_source_fallback(filename: str, size_bytes: int = 0) -> Path | None:
+    safe_name = Path(str(filename or "")).name
+    if not safe_name:
+        return None
+    for root in _pdf_source_fallback_roots():
+        if not root.exists():
+            continue
+        candidates = [root / safe_name]
+        try:
+            candidates.extend(root.rglob(safe_name))
+        except OSError:
+            pass
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                continue
+            if not _is_path_under(resolved, root):
+                continue
+            if not resolved.is_file():
+                continue
+            if size_bytes and resolved.stat().st_size != size_bytes:
+                continue
+            return resolved
+    return None
 
 
 def _resolve_local_artifact_path(artifact: dict | None) -> Path | None:
@@ -2771,15 +2899,63 @@ def _source_pdf_preview_url(job_id: str, job: dict) -> str:
 def _build_library_payload(*, default_include_text: bool = False) -> dict:
     _mark_timed_out_conversion_jobs()
     _cleanup_expired_conversion_jobs()
+    filters = _resolve_library_filters(default_include_text=default_include_text)
     return build_library_index(
         _visible_conversion_jobs_snapshot(),
         quality_state_builder=lambda job_id, job: _build_job_quality_state(job_id, dict(job)),
         output_size_resolver=lambda job: _read_output_size_bytes(dict(job)),
         filters=filters,
     )
-    payload["import"] = import_result
-    payload["cloud_sync"] = cloud_sync
-    return payload
+
+
+def _safe_unlink_local_path(path: Path) -> bool:
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return False
+    allowed_roots = [
+        (Path(app.root_path) / "output" / "artifacts").resolve(),
+        Path(UPLOAD_DIR).resolve(),
+    ]
+    if not any(_is_path_under(resolved, root) for root in allowed_roots):
+        return False
+    if not resolved.is_file():
+        return False
+    try:
+        resolved.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def _cleanup_deleted_conversion_job_files(job_id: str, deleted: dict) -> dict:
+    removed_paths: list[str] = []
+    skipped_paths: list[str] = []
+
+    def _attempt(path_value: str | None) -> None:
+        if not path_value:
+            return
+        path = Path(path_value)
+        if not path.is_absolute():
+            path = Path(app.root_path) / path
+        if _safe_unlink_local_path(path):
+            removed_paths.append(str(path))
+        else:
+            skipped_paths.append(str(path))
+
+    _attempt(str(deleted.get("output_path") or ""))
+    _attempt(str(deleted.get("source_path") or ""))
+    for artifact in (deleted.get("artifacts", {}) or {}).values():
+        if not isinstance(artifact, dict) or str(artifact.get("provider") or "").lower() != "local":
+            continue
+        _attempt(str(artifact.get("location") or ""))
+
+    return {
+        "job_id": job_id,
+        "removed_files": len(removed_paths),
+        "removed_paths": removed_paths,
+        "skipped_paths": skipped_paths,
+    }
 
 
 def _build_scoped_library_payload(
@@ -3531,7 +3707,7 @@ def _render_pdf_layout_preview_shell(job_id: str, artifact: dict):
     response.headers["Cache-Control"] = "no-store, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["X-KindleMaster-Artifact-View"] = "app-shell"
-    response.headers["X-KindleMaster-Artifact-Source"] = "app-shell"
+    response.headers["X-KindleMaster-Artifact-Source"] = "local-shell"
     return response
 
 
@@ -3844,7 +4020,7 @@ def convert_jobs():
     limit = _resolve_conversion_job_history_limit()
     cloud_sync = _merge_cloud_jobs_into_store_for_request(limit=limit)
     import_result = _ensure_local_artifact_history_loaded()
-    jobs = _CONVERSION_JOB_STORE.snapshot()
+    jobs = _visible_conversion_jobs_snapshot()
     recent_jobs = sorted(
         jobs.items(),
         key=lambda item: _conversion_job_sort_timestamp(item[1]),
@@ -4327,14 +4503,18 @@ def user_profile_put():
             status_code=400,
             phase="settings",
         )
-    save_user_profile(payload)
+    sanitized_profile = save_user_profile(payload)
     profile = public_user_profile()
     profile_scope = "local"
     cloud_sync = {"status": "local", "provider": "local"}
     if auth_context.authenticated:
         token = resolve_bearer_token(request.headers.get("Authorization"))
         try:
-            cloud_profile = save_cloud_user_profile(user_id=auth_context.user_id, access_token=token, profile=payload)
+            cloud_profile = save_cloud_user_profile(
+                user_id=auth_context.user_id,
+                access_token=token,
+                profile=sanitized_profile,
+            )
             profile = _profile_with_secret_status(cloud_profile)
             profile_scope = "account"
             cloud_sync = {"status": "synced", "provider": "supabase"}

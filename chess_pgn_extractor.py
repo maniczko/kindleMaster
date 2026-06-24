@@ -261,6 +261,9 @@ class ChessPgnRecord:
     ocr_confidence_source: float = field(default=0.0, repr=False, compare=False)
     pgn_extract: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
     glyph_diagnostics: list[dict[str, Any]] = field(default_factory=list, repr=False, compare=False)
+    pgn_feasible: bool = True
+    pgn_feasibility_reason: str = "exercise_solution_line"
+    pgn_should_count_in_success_rate: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -281,6 +284,9 @@ class ChessPgnRecord:
             "raw_text": self.raw_text,
             "pgn_extract": dict(self.pgn_extract),
             "glyph_diagnostics": [dict(item) for item in self.glyph_diagnostics],
+            "pgn_feasible": bool(self.pgn_feasible),
+            "pgn_feasibility_reason": self.pgn_feasibility_reason,
+            "pgn_should_count_in_success_rate": bool(self.pgn_should_count_in_success_rate),
         }
 
 
@@ -467,6 +473,14 @@ def extract_chess_pgn_records_from_text(
             warnings.append(UNMAPPED_CHESS_GLYPH_WARNING)
         if glyph_rows and UNMAPPED_CHESS_GLYPH_WARNING not in warnings:
             warnings.append(UNMAPPED_CHESS_GLYPH_WARNING)
+        feasibility = classify_pgn_feasibility(
+            {
+                "raw_text": raw,
+                "movetext": movetext,
+                "pgn": pgn,
+                "warnings": warnings,
+            }
+        )
         force_review = bool(candidate.get("force_review"))
         status = (
             "accepted"
@@ -492,6 +506,9 @@ def extract_chess_pgn_records_from_text(
                 ocr_confidence_source=float(ocr_confidence or 0.0),
                 pgn_extract=_pgn_extract_audit_payload(pgn),
                 glyph_diagnostics=glyph_rows,
+                pgn_feasible=bool(feasibility["pgn_feasible"]),
+                pgn_feasibility_reason=str(feasibility["pgn_feasibility_reason"]),
+                pgn_should_count_in_success_rate=bool(feasibility["pgn_should_count_in_success_rate"]),
             )
         )
     return records
@@ -1504,6 +1521,60 @@ def build_pgn_download_html(
     )
 
 
+def classify_pgn_feasibility(record: Mapping[str, Any] | ChessPgnRecord) -> dict[str, Any]:
+    row = record.to_dict() if isinstance(record, ChessPgnRecord) else dict(record)
+    if isinstance(row.get("pgn_feasible"), bool):
+        feasible = bool(row.get("pgn_feasible"))
+        reason = str(row.get("pgn_feasibility_reason") or ("full_game_text" if feasible else "insufficient_text"))
+        return {
+            "pgn_feasible": feasible,
+            "pgn_feasibility_reason": reason,
+            "pgn_should_count_in_success_rate": bool(row.get("pgn_should_count_in_success_rate", feasible)),
+        }
+
+    raw_text = str(row.get("raw_text") or row.get("source_text") or "")
+    movetext = str(row.get("movetext") or "")
+    pgn_text = str(row.get("pgn") or "")
+    combined = "\n".join(part for part in [movetext, raw_text, pgn_text] if part.strip())
+    if not combined.strip():
+        return {
+            "pgn_feasible": False,
+            "pgn_feasibility_reason": "insufficient_text",
+            "pgn_should_count_in_success_rate": False,
+        }
+
+    token_source = movetext or raw_text or pgn_text
+    tokens = list(_extract_pgn_tokens(token_source))
+    san_count = len([token for token in tokens if token.kind == "san"])
+    explicit_move_count = len([token for token in tokens if token.kind == "move"])
+    has_diagram_caption = bool(DIAGRAM_LINE_RE.search(raw_text or combined))
+
+    if san_count >= 2:
+        reason = "exercise_solution_line" if has_diagram_caption else "full_game_text"
+        return {
+            "pgn_feasible": True,
+            "pgn_feasibility_reason": reason,
+            "pgn_should_count_in_success_rate": True,
+        }
+    if has_diagram_caption and san_count == 0 and explicit_move_count == 0:
+        return {
+            "pgn_feasible": False,
+            "pgn_feasibility_reason": "diagram_only",
+            "pgn_should_count_in_success_rate": False,
+        }
+    return {
+        "pgn_feasible": False,
+        "pgn_feasibility_reason": "insufficient_movetext",
+        "pgn_should_count_in_success_rate": False,
+    }
+
+
+def _row_with_pgn_feasibility(row: Mapping[str, Any]) -> dict[str, Any]:
+    enriched = dict(row)
+    enriched.update(classify_pgn_feasibility(enriched))
+    return enriched
+
+
 def summarize_chess_pgn_records(
     records: Iterable[ChessPgnRecord | Mapping[str, Any]],
     *,
@@ -1511,25 +1582,31 @@ def summarize_chess_pgn_records(
 ) -> dict[str, Any]:
     diagram_record_list = [dict(item) for item in (diagram_records or [])]
     record_input = list(records)
-    rows = [record.to_dict() if isinstance(record, ChessPgnRecord) else dict(record) for record in record_input]
+    rows = [
+        _row_with_pgn_feasibility(record.to_dict() if isinstance(record, ChessPgnRecord) else dict(record))
+        for record in record_input
+    ]
     record_objects = [record for record in record_input if isinstance(record, ChessPgnRecord)]
     candidate_count = len(rows)
+    feasible_rows = [row for row in rows if bool(row.get("pgn_should_count_in_success_rate"))]
+    infeasible_rows = [row for row in rows if not bool(row.get("pgn_should_count_in_success_rate"))]
+    feasible_count = len(feasible_rows)
     accepted_records = [record for record in record_objects if _is_exportable_pgn_record(record)]
     accepted_ids = {record.id for record in accepted_records}
     accepted = [
         row
-        for row in rows
+        for row in feasible_rows
         if row.get("id") in accepted_ids
         or (not record_objects and row.get("status") == "accepted" and row.get("pgn"))
     ]
     review = [
         row
-        for row in rows
+        for row in feasible_rows
         if row.get("id") not in accepted_ids
         and (record_objects or row.get("status") != "accepted")
     ]
     fen_rows = [row for row in rows if row.get("fen") or row.get("final_fen") or row.get("fen_snapshots")]
-    coverage = (len(accepted) / candidate_count) if candidate_count else 0.0
+    coverage = (len(accepted) / feasible_count) if feasible_count else 0.0
     warning_counts: dict[str, int] = {}
     for row in rows:
         for warning in row.get("warnings") or []:
@@ -1583,6 +1660,13 @@ def summarize_chess_pgn_records(
     return {
         "status": "passed" if coverage >= 0.50 and accepted else ("requires_review" if candidate_count else "not_detected"),
         "candidate_game_count": candidate_count,
+        "pgn_feasible_count": feasible_count,
+        "pgn_infeasible_count": len(infeasible_rows),
+        "pgn_infeasible_reason_counts": {
+            reason: len([row for row in infeasible_rows if row.get("pgn_feasibility_reason") == reason])
+            for reason in sorted({str(row.get("pgn_feasibility_reason") or "") for row in infeasible_rows})
+            if reason
+        },
         "valid_pgn_count": len(accepted),
         "legal_pgn_count": len(accepted),
         "strict_export_count": exportable_pgn_count,

@@ -4,17 +4,20 @@ import io
 import tempfile
 import unittest
 import zipfile
+from pathlib import Path
 from unittest.mock import patch
 
 from epub_premium_scoring import build_magazine_premium_quality_contract
 from publication_model import PublicationAnalysis, PublicationDocument, PublicationQualityReport
 from publication_pipeline import (
     _benchmark_scanned_chess_ocr_language,
+    _build_scanned_content,
     _inject_scanned_chess_boards,
     _looks_like_cover_masthead_line,
     _ocr_quality_from_result,
     _preserve_weak_ocr_page_images,
     _should_coalesce_page_chapters_with_pdf_outline,
+    _should_skip_external_ocr_for_large_scan,
     finalize_publication_epub,
     publication_from_content,
 )

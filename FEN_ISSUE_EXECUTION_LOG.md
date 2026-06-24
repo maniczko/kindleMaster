@@ -11,7 +11,7 @@ Current issue: #22
 | Issue | Status | Branch | PR | Tests | Result | Notes |
 |---|---|---|---|---|---|---|
 | #19 | DONE | fen-p0-01-strict-regression-diff | #32 | See PR #32 | Passed | Strict diff generated; `lost_strict_count=43`, previous/latest strict `223/180`. |
-| #20 | DONE | fen-p0-02-strict-regression-gate | Pending | `python -m unittest test_chess_fen_strict_regression_gate.py`; `python -m unittest test_chess_fen_pipeline_hardening.py`; `python -m unittest test_kindlemaster_entrypoint.py test_chess_fen_strict_regression_gate.py`; `python -m py_compile kindlemaster.py scripts\check_chess_fen_strict_regression_gate.py` | Passed | Gate formally fails marker-rule report as regression: `180 < 223`, exit code 1 expected. |
+| #20 | DONE | fen-p0-02-strict-regression-gate | #33 | `python -m unittest test_chess_fen_strict_regression_gate.py`; `python -m unittest test_chess_fen_pipeline_hardening.py`; `python -m unittest test_kindlemaster_entrypoint.py test_chess_fen_strict_regression_gate.py`; `python -m py_compile kindlemaster.py scripts\check_chess_fen_strict_regression_gate.py` | Passed | Gate formally fails marker-rule report as regression: `180 < 223`, exit code 1 expected. |
 | #22 | TODO | - | - | - | - | Waiting for execution order. |
 | #23 | TODO | - | - | - | - | Waiting for #19/#22 inputs. |
 | #24 | TODO | - | - | - | - | Waiting for execution order. |

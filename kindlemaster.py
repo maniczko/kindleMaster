@@ -211,6 +211,13 @@ DISCOVER_ONLY_TESTS = [
     "test_external_chessimg2pos_provider.py",
     "test_external_pgn_extract_provider.py",
     "test_chess_cv_board_geometry.py",
+    "test_chess_ai_autoread.py",
+    "test_chess_fen_runtime_regression_audit.py",
+    "test_chess_side_header_calibration.py",
+    "test_chess_side_header_candidates.py",
+    "test_chess_side_marker_ai_review.py",
+    "test_chess_side_marker_calibration_campaign.py",
+    "test_chess_side_marker_calibration_suggestions.py",
     "test_workflow_runner.py",
 ]
 

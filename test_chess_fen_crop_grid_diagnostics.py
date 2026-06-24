@@ -113,6 +113,7 @@ def _write_dataset_with_fen_case(root: Path) -> Path:
                 "expected_full_fen": "",
                 "side_to_move_source": "unknown",
                 "crop_expected_bbox": [0, 0, 160, 160],
+                "crop_correct": True,
                 "crop_has_caption": False,
                 "crop_has_coordinates": False,
                 "human_verified": True,

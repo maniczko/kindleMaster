@@ -13,6 +13,9 @@ import shutil
 import threading
 import uuid
 import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -329,7 +332,13 @@ def _supabase_library_client() -> SupabaseLibraryClient:
 
 
 def _profile_with_secret_status(profile: dict) -> dict:
-    from local_env import resolve_runtime_environment
+    normalized = _normalize_user_profile(profile)
+    email_delivery = normalized["email_delivery"]
+    secret_registered = _safe_bool(email_delivery.get("secret_registered"), False)
+    secret_configured = bool(_smtp_secret_env_value())
+    email_delivery["secret_configured"] = secret_configured
+    email_delivery["secret_registered"] = secret_registered or secret_configured
+    return normalized
 
 
 def _send_local_input_artifact_fallback(job_id: str, job: dict, artifact: dict):
@@ -376,30 +385,92 @@ def _artifact_should_download_as_attachment(artifact_key: str, artifact: dict) -
     return True
 
 
-def _render_pdf_layout_preview_shell(job_id: str, job: dict, artifact: dict, artifact_path: Path):
-    try:
-        preview_html = artifact_path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        preview_html = artifact_path.read_text(encoding="utf-8", errors="replace")
-    filename = str(artifact.get("filename") or artifact_path.name or "pdf_layout_preview.html")
-    title = str(job.get("title") or job.get("filename") or filename or "PDF layout preview").strip()
-    local_app_url = build_local_app_url(
-        _resolve_request_port_label(request.host, _resolve_server_port())
-    )
-    response = app.make_response(
-        render_template(
-            "artifact_preview_shell.html",
-            title=title,
-            job_id=job_id,
-            local_app_url=local_app_url,
-            preview_html=preview_html,
-            static_asset_version=_legacy_static_asset_version(),
+def _render_pdf_layout_preview_shell(job_id: str, job: dict, artifact: dict, artifact_path: Path | None = None):
+    if artifact_path is not None and artifact_path.is_file():
+        try:
+            preview_html = artifact_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            preview_html = artifact_path.read_text(encoding="utf-8", errors="replace")
+        filename = str(artifact.get("filename") or artifact_path.name or "pdf_layout_preview.html")
+        title = str(job.get("title") or job.get("filename") or filename or "PDF layout preview").strip()
+        local_app_url = build_local_app_url(
+            _resolve_request_port_label(request.host, _resolve_server_port())
         )
-    )
+        response = app.make_response(
+            render_template(
+                "artifact_preview_shell.html",
+                title=title,
+                job_id=job_id,
+                local_app_url=local_app_url,
+                preview_html=preview_html,
+                static_asset_version=_legacy_static_asset_version(),
+            )
+        )
+        response.headers["X-KindleMaster-Artifact-Source"] = "local-shell"
+    else:
+        handoff = _build_pdf_layout_preview_handoff(artifact)
+        response = app.make_response(
+            _render_legacy_index(
+                pdf_layout_preview_job_id=job_id,
+                pdf_layout_preview_filename=str(artifact.get("filename") or "pdf_layout_preview.html"),
+                pdf_layout_preview_handoff=handoff,
+            )
+        )
+        response.headers["X-KindleMaster-Artifact-View"] = "app-shell"
+        response.headers["X-KindleMaster-Artifact-Source"] = "app-shell"
     response.headers["Cache-Control"] = "no-store, max-age=0"
     response.headers["Pragma"] = "no-cache"
-    response.headers["X-KindleMaster-Artifact-Source"] = "local-shell"
     response.headers["Content-Type"] = "text/html; charset=utf-8"
+    return response
+
+
+def _send_remote_artifact_proxy(artifact: dict, *, job_id: str, artifact_key: str):
+    signed_url = _signed_artifact_url(artifact) or str(artifact.get("download_url") or "").strip()
+    if not signed_url:
+        response = _json_error(
+            "Artefakt zdalny nie ma aktywnego podpisanego URL.",
+            error_code="source_artifact_unavailable" if artifact_key == "input" else ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="download",
+            job_id=job_id,
+        )
+        response.headers["X-KindleMaster-Artifact-Source"] = "missing"
+        return response
+    try:
+        with urllib.request.urlopen(signed_url, timeout=20) as remote_response:
+            data = remote_response.read()
+            remote_status = int(getattr(remote_response, "status", 200) or 200)
+    except urllib.error.HTTPError as error:
+        response = _json_error(
+            "Nie udało się pobrać zdalnego artefaktu źródłowego.",
+            error_code="source_artifact_unavailable" if artifact_key == "input" else ERROR_MISSING_OUTPUT,
+            status_code=404 if error.code == 404 else 502,
+            phase="download",
+            job_id=job_id,
+        )
+        response.headers["X-KindleMaster-Artifact-Source"] = "missing"
+        response.headers["X-KindleMaster-Remote-Status"] = str(error.code)
+        return response
+    except (OSError, TimeoutError) as error:
+        response = _json_error(
+            f"Nie udało się pobrać zdalnego artefaktu: {error}",
+            error_code="source_artifact_unavailable" if artifact_key == "input" else ERROR_MISSING_OUTPUT,
+            status_code=503,
+            phase="download",
+            job_id=job_id,
+        )
+        response.headers["X-KindleMaster-Artifact-Source"] = "missing"
+        return response
+    mimetype = str(artifact.get("content_type") or mimetypes.guess_type(str(artifact.get("filename") or ""))[0] or "application/octet-stream")
+    response = app.response_class(data, mimetype=mimetype)
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["X-KindleMaster-Artifact-Proxy"] = "remote"
+    response.headers["X-KindleMaster-Artifact-Source"] = "remote"
+    response.headers["X-KindleMaster-Remote-Status"] = str(remote_status)
+    filename = str(artifact.get("filename") or Path(str(urllib.parse.urlparse(signed_url).path)).name or "artifact")
+    if _artifact_should_download_as_attachment(artifact_key, artifact):
+        response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
     return response
 
 
@@ -477,6 +548,46 @@ def _job_input_path(job: dict) -> Path | None:
             return Path(location)
     source_path = str(job.get("source_path") or "").strip()
     return Path(source_path) if source_path else None
+
+
+def _pdf_source_fallback_roots() -> list[Path]:
+    roots: list[Path] = []
+    configured = os.environ.get("KINDLEMASTER_PDF_SOURCE_FALLBACK_ROOTS", "")
+    for raw_root in configured.split(os.pathsep):
+        raw_root = raw_root.strip()
+        if raw_root:
+            roots.append(Path(raw_root))
+    roots.extend([Path(UPLOAD_DIR), Path(app.root_path) / "output" / "artifacts"])
+    return roots
+
+
+def _find_local_pdf_source_fallback(filename: str, size_bytes: int = 0) -> Path | None:
+    safe_filename = Path(str(filename or "")).name
+    if not safe_filename:
+        return None
+    for root in _pdf_source_fallback_roots():
+        try:
+            root_path = Path(root).resolve()
+        except OSError:
+            continue
+        if not root_path.exists():
+            continue
+        candidates = [root_path / safe_filename]
+        try:
+            candidates.extend(root_path.rglob(safe_filename))
+        except OSError:
+            pass
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                continue
+            if not _is_path_under(resolved, root_path) or not resolved.is_file():
+                continue
+            if size_bytes and resolved.stat().st_size != size_bytes:
+                continue
+            return resolved
+    return None
 
 
 def _resolve_job_source_pdf_for_compression(job_id: str, job: dict) -> tuple[Path, str, bool]:
@@ -652,6 +763,7 @@ def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
         (path for path in report_html_files if path.name != "pdf_layout_preview.html"),
         None,
     )
+    chess_glyph_diagnostics_file = _first_file(job_dir / "report", "chess_glyph_diagnostics.json")
     runtime_json_file = _first_file(job_dir / "log", "*.runtime.json")
     if input_file is None and output_file is None and quality_json_file is None:
         return None
@@ -728,6 +840,14 @@ def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
         artifacts["chess_pgn_html"] = _local_artifact_metadata(job_id, ArtifactKind.REPORT, chess_pgn_html_file)
         artifacts["chess_pgn_html"]["download_url"] = f"/convert/artifact/{job_id}/chess_pgn_html"
         artifacts["chess_pgn_html"]["label"] = "HTML PGN/FEN"
+    if chess_glyph_diagnostics_file is not None:
+        artifacts["chess_glyph_diagnostics"] = _local_artifact_metadata(
+            job_id,
+            ArtifactKind.REPORT,
+            chess_glyph_diagnostics_file,
+        )
+        artifacts["chess_glyph_diagnostics"]["download_url"] = f"/convert/artifact/{job_id}/chess_glyph_diagnostics"
+        artifacts["chess_glyph_diagnostics"]["label"] = "Chess glyph diagnostics"
     if pdf_layout_preview_file is not None:
         artifacts["pdf_layout_preview"] = _local_artifact_metadata(job_id, ArtifactKind.REPORT, pdf_layout_preview_file)
         artifacts["pdf_layout_preview"]["download_url"] = f"/convert/artifact/{job_id}/pdf_layout_preview"
@@ -2771,15 +2891,13 @@ def _source_pdf_preview_url(job_id: str, job: dict) -> str:
 def _build_library_payload(*, default_include_text: bool = False) -> dict:
     _mark_timed_out_conversion_jobs()
     _cleanup_expired_conversion_jobs()
+    filters = _resolve_library_filters(default_include_text=default_include_text)
     return build_library_index(
         _visible_conversion_jobs_snapshot(),
         quality_state_builder=lambda job_id, job: _build_job_quality_state(job_id, dict(job)),
         output_size_resolver=lambda job: _read_output_size_bytes(dict(job)),
         filters=filters,
     )
-    payload["import"] = import_result
-    payload["cloud_sync"] = cloud_sync
-    return payload
 
 
 def _build_scoped_library_payload(
@@ -2835,6 +2953,48 @@ def _get_conversion_job_for_auth(job_id: str, auth_context: AuthContext) -> dict
         return _supabase_library_client().get_user_job(user_id=auth_context.user_id, job_id=job_id)
     except Exception:
         return None
+
+
+def _cleanup_deleted_conversion_job_files(job_id: str, job: dict) -> dict:
+    """Remove local files owned by a deleted conversion job."""
+    deleted_paths: list[str] = []
+    missing_paths: list[str] = []
+    failed_paths: list[dict] = []
+    candidate_paths: list[str] = []
+
+    output_path = str(job.get("output_path") or "")
+    if output_path:
+        candidate_paths.append(output_path)
+    for artifact in (job.get("artifacts", {}) or {}).values():
+        if not isinstance(artifact, dict):
+            continue
+        if artifact.get("provider") not in {"", "local", None}:
+            continue
+        location = str(artifact.get("location") or "")
+        if location:
+            candidate_paths.append(location)
+
+    for raw_path in dict.fromkeys(candidate_paths):
+        try:
+            path = Path(raw_path)
+            if not path.exists():
+                missing_paths.append(str(path))
+                continue
+            if path.is_file():
+                path.unlink()
+                deleted_paths.append(str(path))
+            elif path.is_dir():
+                shutil.rmtree(path)
+                deleted_paths.append(str(path))
+        except Exception as error:
+            failed_paths.append({"path": raw_path, "error": str(error)})
+
+    return {
+        "job_id": job_id,
+        "deleted_paths": deleted_paths,
+        "missing_paths": missing_paths,
+        "failed_paths": failed_paths,
+    }
 
 
 def _build_cloud_jobs_payload(auth_context: AuthContext, *, limit: int) -> dict:
@@ -3519,25 +3679,9 @@ def _build_pdf_layout_preview_handoff(artifact: dict) -> dict:
     }
 
 
-def _render_pdf_layout_preview_shell(job_id: str, artifact: dict):
-    handoff = _build_pdf_layout_preview_handoff(artifact)
-    response = app.make_response(
-        _render_legacy_index(
-            pdf_layout_preview_job_id=job_id,
-            pdf_layout_preview_filename=str(artifact.get("filename") or "pdf_layout_preview.html"),
-            pdf_layout_preview_handoff=handoff,
-        )
-    )
-    response.headers["Cache-Control"] = "no-store, max-age=0"
-    response.headers["Pragma"] = "no-cache"
-    response.headers["X-KindleMaster-Artifact-View"] = "app-shell"
-    response.headers["X-KindleMaster-Artifact-Source"] = "app-shell"
-    return response
-
-
 @app.route("/")
 def index():
-    return redirect("/app", code=302)
+    return react_app()
 
 
 @app.route("/legacy")
@@ -3552,6 +3696,9 @@ def legacy_index():
 
 @app.route("/favicon.ico")
 def favicon():
+    favicon_path = Path(app.static_folder or "") / "favicon.ico"
+    if favicon_path.is_file():
+        return send_from_directory(app.static_folder, "favicon.ico", mimetype="image/x-icon")
     return ("", 204)
 
 
@@ -3844,7 +3991,7 @@ def convert_jobs():
     limit = _resolve_conversion_job_history_limit()
     cloud_sync = _merge_cloud_jobs_into_store_for_request(limit=limit)
     import_result = _ensure_local_artifact_history_loaded()
-    jobs = _CONVERSION_JOB_STORE.snapshot()
+    jobs = _visible_conversion_jobs_snapshot()
     recent_jobs = sorted(
         jobs.items(),
         key=lambda item: _conversion_job_sort_timestamp(item[1]),
@@ -4327,14 +4474,18 @@ def user_profile_put():
             status_code=400,
             phase="settings",
         )
-    save_user_profile(payload)
+    sanitized_profile = save_user_profile(payload)
     profile = public_user_profile()
     profile_scope = "local"
     cloud_sync = {"status": "local", "provider": "local"}
     if auth_context.authenticated:
         token = resolve_bearer_token(request.headers.get("Authorization"))
         try:
-            cloud_profile = save_cloud_user_profile(user_id=auth_context.user_id, access_token=token, profile=payload)
+            cloud_profile = save_cloud_user_profile(
+                user_id=auth_context.user_id,
+                access_token=token,
+                profile=sanitized_profile,
+            )
             profile = _profile_with_secret_status(cloud_profile)
             profile_scope = "account"
             cloud_sync = {"status": "synced", "provider": "supabase"}
@@ -4824,7 +4975,8 @@ def convert_artifact_download(job_id: str, artifact_key: str):
             job_id=job_id,
         )
     if key == "pdf_layout_preview":
-        return _render_pdf_layout_preview_shell(job_id, artifact)
+        artifact_path = _resolve_local_artifact_path(artifact)
+        return _render_pdf_layout_preview_shell(job_id, job, artifact, artifact_path)
     artifact_path = _resolve_local_artifact_path(artifact)
     if artifact_path is None or not artifact_path.is_file():
         if key == "input":

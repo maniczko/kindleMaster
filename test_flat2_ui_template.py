@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import unittest
+import os
 from pathlib import Path
+from unittest.mock import patch
+
+from app import app
 
 
 TEMPLATE_PATH = Path(__file__).with_name("templates") / "index.html"
@@ -26,7 +30,6 @@ class Flat2UiTemplateTests(unittest.TestCase):
         client = app.test_client()
 
         root_response = client.get("/")
-        legacy_response = client.get("/legacy")
 
         self.assertEqual(root_response.status_code, 200)
         root_html = root_response.get_data(as_text=True)
@@ -35,6 +38,8 @@ class Flat2UiTemplateTests(unittest.TestCase):
         else:
             self.assertIn("Lokalny panel EPUB", root_html)
 
+        with patch.dict(os.environ, {"KINDLEMASTER_ENABLE_LEGACY_UI": "1"}):
+            legacy_response = client.get("/legacy")
         self.assertEqual(legacy_response.status_code, 200)
         html = legacy_response.get_data(as_text=True)
         self.assertIn('class="flat-sidebar-card"', html)
@@ -44,10 +49,10 @@ class Flat2UiTemplateTests(unittest.TestCase):
         self.assertIn('id="recentProjectSelect"', html)
         self.assertIn('id="newConversionButton"', html)
         self.assertIn('id="recentConversionsList"', html)
-        self.assertIn("filename='css/app-shell.css'", html)
-        self.assertIn("filename='js/conversion-ui.js'", html)
-        self.assertIn("filename='js/quality-cockpit.js'", html)
-        self.assertIn("filename='js/library.js'", html)
+        self.assertIn("/static/css/app-shell.css?v=", html)
+        self.assertIn("/static/js/conversion-ui.js?v=", html)
+        self.assertIn("/static/js/quality-cockpit.js?v=", html)
+        self.assertIn("/static/js/library.js?v=", html)
         frontend = frontend_source()
         self.assertIn('class="flat2-quality-report"', frontend)
         self.assertIn('data-quality-verdict', frontend)
@@ -264,7 +269,7 @@ class Flat2UiTemplateTests(unittest.TestCase):
 
         self.assertIn('pdfCanvas.getContext("2d", { alpha: false, willReadFrequently: true })', html)
         self.assertIn("pdfRenderCanvasFactory", html)
-        self.assertIn('canvas.getContext("2d", { willReadFrequently: true })', html)
+        self.assertIn('canvas.getContext("2d", { alpha: false, willReadFrequently: true })', html)
         self.assertIn("currentPage.render({ canvasContext, viewport, canvasFactory: pdfRenderCanvasFactory })", html)
 
     def test_async_conversion_restart_failure_is_user_friendly(self) -> None:

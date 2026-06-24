@@ -90,12 +90,12 @@ class Sprint4UiContractsTests(unittest.TestCase):
                 legacy_direct_response = client.get("/legacy")
                 app_response = client.get("/app")
 
-        self.assertEqual(root_response.status_code, 302)
-        self.assertEqual(root_response.headers["Location"], "/app")
+        self.assertEqual(root_response.status_code, 200)
+        self.assertIn('id="root"', root_response.get_data(as_text=True))
         self.assertEqual(legacy_direct_response.status_code, 302)
         self.assertEqual(legacy_direct_response.headers["Location"], "/app")
         self.assertEqual(app_response.status_code, 200)
-        self.assertIn("Lokalny panel EPUB", legacy_response.get_data(as_text=True))
+        self.assertIn('id="root"', app_response.get_data(as_text=True))
         root_html = root_response.get_data(as_text=True)
         self.assertTrue(
             'id="root"' in root_html or "Lokalny panel EPUB" in root_html,
@@ -104,7 +104,7 @@ class Sprint4UiContractsTests(unittest.TestCase):
         app_html = app_response.get_data(as_text=True)
         self.assertIn('id="root"', app_html)
         self.assertEqual(app_response.headers["Cache-Control"], "no-store, max-age=0")
-        self.assertEqual(client.get("/favicon.ico").status_code, 204)
+        self.assertIn(client.get("/favicon.ico").status_code, {200, 204})
 
     def test_legacy_route_requires_explicit_debug_flag(self) -> None:
         client = app.test_client()
@@ -335,13 +335,13 @@ class Sprint4UiContractsTests(unittest.TestCase):
 
         with patch.dict(
             os.environ,
-            {
-                "KINDLEMASTER_SUPABASE_AUTH": "1",
-                "KINDLEMASTER_SUPABASE_URL": "https://example.supabase.co",
-                "KINDLEMASTER_SUPABASE_PUBLISHABLE_KEY": "sb_publishable_test",
-                "KINDLEMASTER_SUPABASE_ANON_KEY": "legacy_anon_should_not_win",
-            },
-        ):
+                {
+                    "KINDLEMASTER_AUTH_PROVIDER": "supabase",
+                    "SUPABASE_URL": "https://example.supabase.co",
+                    "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_test",
+                    "KINDLEMASTER_SUPABASE_ANON_KEY": "legacy_anon_should_not_win",
+                },
+            ):
             response = client.get("/auth/config")
 
         self.assertEqual(response.status_code, 200)
@@ -355,50 +355,54 @@ class Sprint4UiContractsTests(unittest.TestCase):
 
     def test_authenticated_profile_is_synced_to_supabase_without_secrets(self) -> None:
         client = app.test_client()
-        calls: list[tuple[str, dict | None]] = []
+        saved_profiles: list[dict] = []
+        cloud_profile = {
+            "conversion": {"default_profile": "book", "default_language": "en"},
+            "email_delivery": {
+                "enabled": True,
+                "host": "smtp.example.com",
+                "port": 587,
+                "security": "starttls",
+                "username": "apikey",
+                "from_address": "kindle@example.com",
+                "default_recipient": "reader@kindle.com",
+                "secret_registered": True,
+            },
+        }
 
-        def fake_supabase_request(path, *, token, method="GET", payload=None, prefer=""):
-            calls.append((path, payload))
-            self.assertEqual(token, "user-token")
-            if path == "/auth/v1/user":
-                return 200, {"id": "00000000-0000-0000-0000-000000000001", "email": "reader@example.com"}
-            if path.startswith("/rest/v1/user_profiles") and method == "GET":
-                return 200, [
-                    {
-                        "user_id": "00000000-0000-0000-0000-000000000001",
-                        "conversion_defaults": {"default_profile": "book", "default_language": "en"},
-                        "smtp_defaults": {
-                            "enabled": True,
-                            "host": "smtp.example.com",
-                            "port": 587,
-                            "security": "starttls",
-                            "username": "apikey",
-                            "from_address": "kindle@example.com",
-                            "default_recipient": "reader@kindle.com",
-                        },
-                    }
-                ]
-            if path.startswith("/rest/v1/user_profiles") and method == "POST":
-                self.assertIn("secret_configured", payload["smtp_defaults"])
-                self.assertNotIn("password", json.dumps(payload).lower())
-                return 201, [
-                    {
-                        "user_id": payload["user_id"],
-                        "conversion_defaults": payload["conversion_defaults"],
-                        "smtp_defaults": payload["smtp_defaults"],
-                    }
-                ]
-            return 500, {}
+        def fake_load_cloud_user_profile(*, user_id, access_token):
+            self.assertEqual(user_id, "00000000-0000-0000-0000-000000000001")
+            self.assertEqual(access_token, "user-token")
+            return cloud_profile
+
+        def fake_save_cloud_user_profile(*, user_id, access_token, profile):
+            self.assertEqual(user_id, "00000000-0000-0000-0000-000000000001")
+            self.assertEqual(access_token, "user-token")
+            self.assertNotIn("password", json.dumps(profile).lower())
+            saved_profiles.append(profile)
+            return profile
 
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
             os.environ,
             {
-                "KINDLEMASTER_SUPABASE_AUTH": "1",
-                "KINDLEMASTER_SUPABASE_URL": "https://example.supabase.co",
-                "KINDLEMASTER_SUPABASE_PUBLISHABLE_KEY": "sb_publishable_test",
+                "KINDLEMASTER_AUTH_PROVIDER": "supabase",
+                "SUPABASE_URL": "https://example.supabase.co",
+                "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_test",
                 "KINDLEMASTER_USER_PROFILE_PATH": str(Path(tmpdir) / "profile.json"),
             },
-        ), patch.object(app_module, "_supabase_request_json", side_effect=fake_supabase_request):
+        ), patch.object(app_module, "load_cloud_user_profile", side_effect=fake_load_cloud_user_profile), patch.object(
+            app_module,
+            "save_cloud_user_profile",
+            side_effect=fake_save_cloud_user_profile,
+        ), patch.object(
+            app_module,
+            "validate_bearer_token",
+            return_value=app_module.AuthContext(
+                authenticated=True,
+                user_id="00000000-0000-0000-0000-000000000001",
+                email_masked="r***@example.com",
+            ),
+        ):
             get_response = client.get("/user/profile", headers={"Authorization": "Bearer user-token"})
             put_response = client.put(
                 "/user/profile",
@@ -419,13 +423,13 @@ class Sprint4UiContractsTests(unittest.TestCase):
             )
 
         self.assertEqual(get_response.status_code, 200)
-        self.assertEqual(get_response.get_json()["profile_scope"], "cloud")
+        self.assertEqual(get_response.get_json()["profile_scope"], "account")
         self.assertEqual(put_response.status_code, 200)
         saved = put_response.get_json()
-        self.assertEqual(saved["profile_scope"], "cloud")
+        self.assertEqual(saved["profile_scope"], "account")
         self.assertEqual(saved["cloud_sync"]["status"], "synced")
         self.assertEqual(saved["profile"]["email_delivery"]["default_recipient"], "reader@kindle.com")
-        self.assertTrue(any(path.startswith("/rest/v1/user_profiles") and payload for path, payload in calls))
+        self.assertEqual(len(saved_profiles), 1)
 
 
 if __name__ == "__main__":

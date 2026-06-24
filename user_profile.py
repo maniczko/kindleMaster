@@ -33,6 +33,7 @@ def default_user_profile() -> dict[str, Any]:
             "username": "",
             "from_address": "",
             "default_recipient": "",
+            "secret_registered": False,
             "max_attachment_bytes": DEFAULT_EMAIL_MAX_ATTACHMENT_BYTES,
         },
     }
@@ -71,6 +72,9 @@ def public_user_profile(environ: Mapping[str, str] | None = None) -> dict[str, A
     profile = load_user_profile(environment)
     email_delivery = dict(profile.get("email_delivery", {}) or {})
     email_delivery["secret_configured"] = bool(str(environment.get("KINDLEMASTER_SMTP_PASSWORD", "") or ""))
+    email_delivery["secret_registered"] = _bool(email_delivery.get("secret_registered"), False) or email_delivery[
+        "secret_configured"
+    ]
     profile["email_delivery"] = email_delivery
     return profile
 
@@ -107,6 +111,10 @@ def sanitize_user_profile(payload: Mapping[str, Any] | None) -> dict[str, Any]:
         "username": _text(email_source.get("username")),
         "from_address": _text(email_source.get("from_address")),
         "default_recipient": _email_or_empty(email_source.get("default_recipient")),
+        "secret_registered": _bool(
+            email_source.get("secret_registered"),
+            _bool(email_source.get("secret_configured"), defaults["email_delivery"]["secret_registered"]),
+        ),
         "max_attachment_bytes": _positive_int(
             email_source.get("max_attachment_bytes"),
             defaults["email_delivery"]["max_attachment_bytes"],

@@ -24,20 +24,13 @@ class AppAsyncConvertTests(unittest.TestCase):
         self.cleanup_job_ids: list[str] = []
         self.store_temp_dir = tempfile.TemporaryDirectory()
         self.original_conversion_job_store = app_module._CONVERSION_JOB_STORE
+        with app_module._CONVERSION_JOBS_LOCK:
+            self._saved_jobs = dict(app_module._CONVERSION_JOBS)
+            app_module._CONVERSION_JOBS.clear()
         app_module._CONVERSION_JOB_STORE = app_module.ConversionJobStore(
             app_module._CONVERSION_JOBS,
             app_module._CONVERSION_JOBS_LOCK,
             persistence_path=Path(self.store_temp_dir.name) / "conversion_jobs.json",
-            active_statuses=app_module.ACTIVE_CONVERSION_JOB_STATUSES,
-        )
-        with app_module._CONVERSION_JOBS_LOCK:
-            self._saved_jobs = dict(app_module._CONVERSION_JOBS)
-            app_module._CONVERSION_JOBS.clear()
-        self._saved_job_store = app_module._CONVERSION_JOB_STORE
-        app_module._CONVERSION_JOB_STORE = app_module.ConversionJobStore(
-            app_module._CONVERSION_JOBS,
-            app_module._CONVERSION_JOBS_LOCK,
-            persistence_path=Path(self._store_temp_dir.name) / "conversion_jobs.json",
             active_statuses=app_module.ACTIVE_CONVERSION_JOB_STATUSES,
         )
 
@@ -59,7 +52,7 @@ class AppAsyncConvertTests(unittest.TestCase):
                 app_module._CONVERSION_JOBS.pop(job_id, None)
             app_module._CONVERSION_JOBS.clear()
             app_module._CONVERSION_JOBS.update(
-                {job_id: dict(job) for job_id, job in self.original_conversion_jobs.items()}
+                {job_id: dict(job) for job_id, job in self._saved_jobs.items()}
             )
         app_module._CONVERSION_JOB_STORE = self.original_conversion_job_store
         self.store_temp_dir.cleanup()
@@ -273,10 +266,11 @@ class AppAsyncConvertTests(unittest.TestCase):
 
     def test_root_serves_react_shell_and_legacy_remains_available(self) -> None:
         root_response = self.client.get("/")
-        legacy_response = self.client.get("/legacy")
 
         self.assertEqual(root_response.status_code, 200)
-        self.assertIn("KindleMaster Pipeline", root_response.get_data(as_text=True))
+        self.assertIn('id="root"', root_response.get_data(as_text=True))
+        with patch.dict(os.environ, {"KINDLEMASTER_ENABLE_LEGACY_UI": "1"}):
+            legacy_response = self.client.get("/legacy")
         self.assertEqual(legacy_response.status_code, 200)
         self.assertIn("Lokalny panel EPUB", legacy_response.get_data(as_text=True))
 
@@ -1345,6 +1339,7 @@ class AppAsyncConvertTests(unittest.TestCase):
         now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         internal_id = "internal-ocr-probe-job"
         visible_id = "visible-user-job"
+        visible_output_path = self._write_epub_fixture(visible_id, "Visible user job")
         with app_module._CONVERSION_JOBS_LOCK:
             app_module._CONVERSION_JOBS[internal_id] = {
                 "job_id": internal_id,
@@ -1362,30 +1357,30 @@ class AppAsyncConvertTests(unittest.TestCase):
                 "output_size_bytes": 1024,
                 "error": "",
             }
-        self.cleanup_job_ids.append(job_id)
+            app_module._CONVERSION_JOBS[visible_id] = {
+                "job_id": visible_id,
+                "status": "ready",
+                "message": "EPUB gotowy do pobrania.",
+                "source_type": "pdf",
+                "filename": "visible.pdf",
+                "created_at": now,
+                "updated_at": now,
+                "source_path": "",
+                "output_path": visible_output_path,
+                "download_name": "visible.epub",
+                "metadata": {"title": "Visible User Job"},
+                "output_size_bytes": 0,
+                "error": "",
+            }
+        self.cleanup_job_ids.extend([internal_id, visible_id])
 
-        class RemoteResponse:
-            def __enter__(self):
-                return self
+        jobs_payload = self.client.get("/convert/jobs?limit=100").get_json()
+        library_payload = self.client.get("/convert/library?limit=100").get_json()
 
-            def __exit__(self, _exc_type, _exc, _tb):
-                return False
-
-            def read(self):
-                return b"<html><body>remote PGN</body></html>"
-
-        local_response = self.client.get(f"/convert/artifact/{job_id}/chess_pgn")
-        with patch("app.urllib.request.urlopen", return_value=RemoteResponse()) as urlopen_mock:
-            remote_response = self.client.get(f"/convert/artifact/{job_id}/chess_pgn_html")
-
-        self.assertEqual(local_response.status_code, 200)
-        self.assertIn(b'[Event "Unit"]', local_response.data)
-        self.assertEqual(remote_response.status_code, 200)
-        self.assertEqual(remote_response.data, b"<html><body>remote PGN</body></html>")
-        self.assertEqual(remote_response.headers["X-KindleMaster-Artifact-Proxy"], "remote")
-        self.assertEqual(remote_response.headers["X-KindleMaster-Artifact-Source"], "remote")
-        requested_url = urlopen_mock.call_args.args[0].full_url
-        self.assertEqual(requested_url, "https://signed.example.invalid/chess_games.html")
+        self.assertNotIn(internal_id, {job["job_id"] for job in jobs_payload["jobs"]})
+        self.assertIn(visible_id, {job["job_id"] for job in jobs_payload["jobs"]})
+        self.assertNotIn(internal_id, {item["job_id"] for item in library_payload["items"]})
+        self.assertIn(visible_id, {item["job_id"] for item in library_payload["items"]})
 
     def test_rebuild_local_history_keeps_pdf_layout_preview_separate_from_chess_html(self) -> None:
         job_id = "ready-layout-preview-history"
@@ -1709,6 +1704,18 @@ class AppAsyncConvertTests(unittest.TestCase):
         html_path = artifact_dir / "chess_games.html"
         html_path.write_text("<html><body>PGN</body></html>", encoding="utf-8")
         self.cleanup_paths.append(str(html_path))
+        artifact = {
+            "provider": "local",
+            "status": "stored",
+            "kind": "report",
+            "job_id": job_id,
+            "filename": "chess_games.html",
+            "location": str(html_path),
+            "size_bytes": html_path.stat().st_size,
+            "content_type": "text/html; charset=utf-8",
+            "download_url": f"/convert/artifact/{job_id}/chess_pgn_html",
+            "label": "HTML PGN/FEN",
+        }
         with app_module._CONVERSION_JOBS_LOCK:
             app_module._CONVERSION_JOBS[job_id] = {
                 "job_id": job_id,
@@ -1716,24 +1723,49 @@ class AppAsyncConvertTests(unittest.TestCase):
                 "message": "EPUB gotowy do pobrania.",
                 "source_type": "pdf",
                 "filename": "user-report.pdf",
-                "created_at": now,
-                "updated_at": now,
+                "created_at": created_at,
+                "updated_at": created_at,
                 "source_path": "",
                 "output_path": "",
                 "download_name": "user-report.epub",
                 "metadata": {"title": "User Report"},
+                "artifacts": {"chess_pgn_html": artifact},
                 "output_size_bytes": 2048,
                 "error": "",
             }
-        self.cleanup_job_ids.extend([internal_id, visible_id])
+        self.cleanup_job_ids.append(job_id)
+        artifact_rows: list[dict] = []
 
-        jobs_payload = self.client.get("/convert/jobs?limit=100").get_json()
-        library_payload = self.client.get("/convert/library?limit=100").get_json()
+        def fake_json(path, *, token, method="GET", payload=None, prefer=""):
+            if path.startswith("/rest/v1/conversion_jobs"):
+                return 201, [payload]
+            if path.startswith("/storage/v1/object/sign/"):
+                return 200, {"signedURL": "https://signed.example.invalid/chess_games.html"}
+            if path.startswith("/rest/v1/conversion_artifacts"):
+                artifact_rows.append(dict(payload))
+                return 201, [payload]
+            return 500, {}
 
-        self.assertNotIn(internal_id, {job["job_id"] for job in jobs_payload["jobs"]})
-        self.assertIn(visible_id, {job["job_id"] for job in jobs_payload["jobs"]})
-        self.assertNotIn(internal_id, {item["job_id"] for item in library_payload["items"]})
-        self.assertIn(visible_id, {item["job_id"] for item in library_payload["items"]})
+        def fake_bytes(path, *, token, method="GET", data=b"", content_type="", extra_headers=None):
+            return 200, {"path": path, "size": len(data), "content_type": content_type}
+
+        with patch.object(app_module, "_supabase_request_json", side_effect=fake_json), patch.object(
+            app_module,
+            "_supabase_request_bytes",
+            side_effect=fake_bytes,
+        ):
+            result = app_module._sync_conversion_job_to_supabase(
+                job_id,
+                token="unit-token",
+                user_id="user-1",
+                upload_artifacts=True,
+            )
+
+        self.assertEqual(result["status"], "synced")
+        self.assertEqual(len(artifact_rows), 1)
+        self.assertEqual(artifact_rows[0]["kind"], "chess_pgn_html")
+        self.assertEqual(artifact_rows[0]["filename"], "chess_games.html")
+        self.assertEqual(artifact_rows[0]["content_type"], "text/html; charset=utf-8")
 
     def test_ready_missing_output_reports_consistent_download_state_without_availability(self) -> None:
         now = datetime.now(UTC)

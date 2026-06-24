@@ -10,7 +10,7 @@ Current issue: #20
 
 | Issue | Status | Branch | PR | Tests | Result | Notes |
 |---|---|---|---|---|---|---|
-| #19 | DONE | fen-p0-01-strict-regression-diff | Pending | `python -m unittest test_chess_fen_strict_report_diff.py`; `python -m unittest test_chess_fen_pipeline_hardening.py`; `python -m unittest test_kindlemaster_entrypoint.py test_chess_fen_strict_report_diff.py`; `python -m py_compile kindlemaster.py scripts\diff_chess_fen_strict_reports.py` | Passed | Generated strict diff artifacts; `lost_strict_count=43`, previous/latest strict `223/180`. |
+| #19 | DONE | fen-p0-01-strict-regression-diff | #32 | `python -m unittest test_chess_fen_strict_report_diff.py`; `python -m unittest test_chess_fen_pipeline_hardening.py`; `python -m unittest test_kindlemaster_entrypoint.py test_chess_fen_strict_report_diff.py`; `python -m py_compile kindlemaster.py scripts\diff_chess_fen_strict_reports.py` | Passed | Generated strict diff artifacts; `lost_strict_count=43`, previous/latest strict `223/180`. |
 | #20 | TODO | - | - | - | - | Waiting for #19 PR creation before starting. |
 | #22 | TODO | - | - | - | - | Waiting for execution order. |
 | #23 | TODO | - | - | - | - | Waiting for #19/#22 inputs. |

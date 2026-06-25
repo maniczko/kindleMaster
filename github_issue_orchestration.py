@@ -221,6 +221,9 @@ def doctor_orchestration(repo_root: str | Path = ".") -> dict[str, Any]:
     root = Path(repo_root)
     required_files = {
         "issue_template": root / ".github" / "ISSUE_TEMPLATE" / "kindlemaster_task.yml",
+        "global_issue_template": root / ".github" / "ISSUE_TEMPLATE" / "agent_task.yml",
+        "pr_template": root / ".github" / "PULL_REQUEST_TEMPLATE.md",
+        "orchestration_config": root / ".codex" / "orchestration.json",
         "autopilot_doc": root / "docs" / "github-autopilot-orchestration.md",
         "source_of_truth": root / "docs" / "source-of-truth-matrix.md",
     }

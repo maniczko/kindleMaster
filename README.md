@@ -40,7 +40,8 @@ The supported toolchain matrix lives in [docs/toolchain-matrix.md](docs/toolchai
 - `docs/source-of-truth-matrix.md` mirrors the control-plane authority model for status, GitHub Issues, reports, and release truth.
 - `docs/independent-audit-mode.md` explains standalone EPUB artifact audit versus full project status.
 - `docs/premium-epub-release-checklist.md` is the agent-facing release-readiness checklist for premium EPUB output.
-- `.github/ISSUE_TEMPLATE/kindlemaster_task.yml` is the reusable GitHub Issue form for agent-executable KindleMaster tasks.
+- `.github/ISSUE_TEMPLATE/kindlemaster_task.yml` is the reusable GitHub Issue form for agent-executable KindleMaster tasks; `.github/ISSUE_TEMPLATE/agent_task.yml` is a generic Codex compatibility alias.
+- `.codex/orchestration.json` mirrors the native `python kindlemaster.py orchestrate` contract for global Codex tooling. The native orchestrator remains preferred.
 - `docs/linear-issue-template.md` is retained for historical VAT/Linear migration only.
 - `.codex/config.toml` is authoritative only for active repo-local Codex settings; its comments are convenience mirrors, not an independent policy source.
 - `AGENTS.md` Section 34A defines the Codex plugin auto-routing policy for Browser, GitHub, Linear, OpenAI Developers, and Build Web Apps.

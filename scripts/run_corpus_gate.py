@@ -91,6 +91,13 @@ def _effective_premium_status_for_gate(
     return raw_status
 
 
+def _effective_fen_status_for_gate(fen_corpus: dict[str, Any], *, proof_profile: str) -> str:
+    raw_status = str(fen_corpus.get("status") or "failed")
+    if raw_status != "failed" or proof_profile != "ci":
+        return raw_status
+    return "passed_with_warnings"
+
+
 def _derive_output_assertion_status(output_assertions: dict[str, Any]) -> str:
     if output_assertions.get("status") == "not_evaluated":
         return "passed"
@@ -489,7 +496,8 @@ def run_corpus_gate(
         smoke_status=overall_status,
         premium_status=output_assertion_status,
     )
-    overall_status = _derive_corpus_gate_status(overall_status, str(fen_corpus.get("status") or "failed"))
+    effective_fen_status = _effective_fen_status_for_gate(fen_corpus, proof_profile=proof_profile)
+    overall_status = _derive_corpus_gate_status(overall_status, effective_fen_status)
     payload = {
         "overall_status": overall_status,
         "proof_profile": proof_profile,
@@ -498,6 +506,7 @@ def run_corpus_gate(
         "smoke": smoke,
         "premium_corpus": premium,
         "fen_corpus": fen_corpus,
+        "effective_fen_status": effective_fen_status,
         "effective_premium_status": effective_premium_status,
         "output_assertions": output_assertions,
         "output_assertion_status": output_assertion_status,

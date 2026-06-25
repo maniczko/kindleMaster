@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from ml_route_model import build_route_decision, predict_route
 from scripts.train_route_classifier import promote_route_classifier, train_route_classifier
@@ -108,15 +109,52 @@ class MlRouteModelTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            payload = train_route_classifier(
-                dataset_path=dataset_path,
-                report_path=report_path,
-                min_examples_per_class=2,
-            )
+            with patch(
+                "scripts.train_route_classifier._import_sklearn_training_dependencies",
+                return_value={"status": "available"},
+            ):
+                payload = train_route_classifier(
+                    dataset_path=dataset_path,
+                    report_path=report_path,
+                    min_examples_per_class=2,
+                )
 
             self.assertEqual(payload["status"], "failed")
             self.assertEqual(payload["error"], "dataset_not_ready")
             self.assertEqual(payload["dataset_readiness"]["status"], "insufficient_data")
+            self.assertTrue(report_path.exists())
+
+    def test_train_reports_unavailable_before_dataset_readiness_when_dependency_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            dataset_path = root / "reports" / "ml" / "datasets" / "route_examples.jsonl"
+            report_path = root / "reports" / "ml" / "route_classifier.metrics.json"
+            dataset_path.parent.mkdir(parents=True)
+            dataset_path.write_text(
+                json.dumps(
+                    {
+                        "case_id": "only-book",
+                        "label": "book_reflow",
+                        "features": {"input_type": "pdf", "text_heavy": True, "layout_heavy": False},
+                    },
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch(
+                "scripts.train_route_classifier._import_sklearn_training_dependencies",
+                return_value={"status": "missing", "exception": "no sklearn"},
+            ):
+                payload = train_route_classifier(
+                    dataset_path=dataset_path,
+                    report_path=report_path,
+                    min_examples_per_class=2,
+                )
+
+            self.assertEqual(payload["status"], "training_unavailable")
+            self.assertEqual(payload["dependency"], "scikit-learn")
             self.assertTrue(report_path.exists())
 
     def test_promote_blocks_low_metric_candidate_without_overwriting_runtime_model(self) -> None:

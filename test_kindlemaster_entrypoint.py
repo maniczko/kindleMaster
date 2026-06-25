@@ -25,7 +25,11 @@ from kindlemaster import (
     SUITE_REGISTRY,
     TEST_FILE_PATTERN,
     _json_text,
+    _load_corpus_gate_summary,
     _quality_critical_coverage_payload,
+    _release_proof_profile,
+    _release_suite_notes,
+    _run_bounded_command,
     _run_bootstrap,
     _run_convert,
     _run_tests,
@@ -1051,6 +1055,88 @@ class KindleMasterEntrypointTests(unittest.TestCase):
         self.assertEqual(payload["status"], "failed")
         self.assertEqual(payload["failed_step"], "release-units")
         self.assertEqual(payload["steps"][0]["status"], "timed_out")
+
+    def test_run_tests_release_reports_unsupported_surface(self) -> None:
+        toolchain = {
+            "verification_surfaces": {
+                "release": {
+                    "status": "unsupported",
+                    "missing_requirements": ["python-chess"],
+                    "optional_followups": [],
+                }
+            }
+        }
+
+        with patch("premium_tools.detect_toolchain", return_value=toolchain):
+            with patch("kindlemaster._print_json") as print_json:
+                with patch("kindlemaster._write_governance_artifact") as artifact_mock:
+                    exit_code = _run_tests("release")
+
+        self.assertEqual(exit_code, 1)
+        payload = print_json.call_args.args[0]
+        self.assertEqual(payload["status"], "unavailable")
+        self.assertEqual(payload["missing_requirements"], ["python-chess"])
+        artifact_payload = artifact_mock.call_args.kwargs["payload"]
+        self.assertEqual(artifact_payload["status"], "unavailable")
+        self.assertEqual(artifact_payload["returncode"], 1)
+
+    def test_release_profile_notes_and_corpus_summary_helpers_are_stable(self) -> None:
+        with patch.dict(os.environ, {"KINDLEMASTER_RELEASE_PROOF_PROFILE": "invalid"}):
+            self.assertEqual(_release_proof_profile(), "standard")
+        with patch.dict(os.environ, {"KINDLEMASTER_RELEASE_PROOF_PROFILE": "ci"}):
+            self.assertEqual(_release_proof_profile(), "ci")
+
+        notes = _release_suite_notes({"optional_followups": [{"surface": "browser", "status": "supported"}]})
+        self.assertIn("Browser and runtime follow-up suites run only when their local toolchains are supported.", notes)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            missing = _load_corpus_gate_summary(root / "missing.json")
+            self.assertFalse(missing["available"])
+
+            invalid_path = root / "invalid.json"
+            invalid_path.write_text("{", encoding="utf-8")
+            invalid = _load_corpus_gate_summary(invalid_path)
+            self.assertFalse(invalid["available"])
+            self.assertIn("error", invalid)
+
+            summary_path = root / "corpus_gate.json"
+            summary_path.write_text(
+                json.dumps(
+                    {
+                        "overall_status": "passed_with_warnings",
+                        "proof_profile": "ci",
+                        "smoke": {"summary": {"overall_status": "passed"}},
+                        "premium_corpus": {"overall": {"overall_status": "passed", "grade_counts": {"pass": 1}}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            loaded = _load_corpus_gate_summary(summary_path)
+
+        self.assertTrue(loaded["available"])
+        self.assertEqual(loaded["overall_status"], "passed_with_warnings")
+        self.assertEqual(loaded["proof_profile"], "ci")
+        self.assertEqual(loaded["grade_counts"], {"pass": 1})
+
+    def test_run_bounded_command_records_success_and_failure(self) -> None:
+        passed = _run_bounded_command(
+            [sys.executable, "-c", "print('ok')"],
+            cwd=Path("."),
+            label="pass-step",
+            timeout_seconds=30,
+        )
+        failed = _run_bounded_command(
+            [sys.executable, "-c", "import sys; sys.exit(3)"],
+            cwd=Path("."),
+            label="fail-step",
+            timeout_seconds=30,
+        )
+
+        self.assertEqual(passed["status"], "passed")
+        self.assertEqual(passed["returncode"], 0)
+        self.assertEqual(failed["status"], "failed")
+        self.assertEqual(failed["returncode"], 3)
 
     def test_run_bootstrap_runtime_only_keeps_dev_requirements_out_of_install_plan(self) -> None:
         with patch("kindlemaster.subprocess.run", return_value=SimpleNamespace(returncode=0)) as run_mock:

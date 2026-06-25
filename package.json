@@ -14,9 +14,10 @@
     "test:contracts:regression": "npm run test:contract && npm run test:ui",
     "test:coverage": "vitest run --coverage --config vitest.config.js",
     "test:e2e": "python kindlemaster.py test --suite runtime",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "trigger:dev": "npx trigger.dev@latest dev",
     "trigger:deploy": "npx trigger.dev@latest deploy",
-    "trigger:check": "tsc --noEmit"
+    "trigger:check": "tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",

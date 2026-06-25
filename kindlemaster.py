@@ -63,6 +63,7 @@ QUICK_TESTS = [
     "test_chess_fen_strict_regression_gate.py",
     "test_chess_fen_strict_report_diff.py",
     "test_chess_fen_strict_readiness.py",
+    "test_chess_fen_best_strict_baseline.py",
     "test_chess_fen_accepted_audit.py",
     "test_chess_auto_flow.py",
     "test_ai_consensus_fen_promotion_queue.py",

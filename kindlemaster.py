@@ -65,6 +65,7 @@ QUICK_TESTS = [
     "test_chess_auto_flow.py",
     "test_ai_consensus_fen_promotion_queue.py",
     "test_ai_tiebreak_fen_review_queue.py",
+    "test_chess_fen_hard_cases.py",
     "test_chess_fen_pipeline_hardening.py",
     "test_chess_fen_ml_acceptance.py",
     "test_chess_fen_model_pipeline.py",

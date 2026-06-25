@@ -4421,7 +4421,19 @@ class ChessFenRecognitionTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             labels_path = Path(temp_dir) / "verified.jsonl"
-            labels_path.write_text(json.dumps({"sha256": digest, "fen": fen}) + "\n", encoding="utf-8")
+            labels_path.write_text(
+                json.dumps(
+                    {
+                        "sha256": digest,
+                        "fen": fen,
+                        "human_verified": True,
+                        "verification_source": "human_visual",
+                        "label_status": "verified",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
             result = _scan_chess_apply_verified_crop_label(
                 review_result,
                 crop_bytes,
@@ -4435,6 +4447,77 @@ class ChessFenRecognitionTests(unittest.TestCase):
         self.assertEqual(result.method, "verified-exact-crop-label")
         self.assertIn("verified_exact_crop_label_used", result.warnings)
         self.assertNotIn("black_king_count_invalid", result.warnings)
+
+    def test_scan_chess_verified_exact_crop_label_requires_human_provenance(self) -> None:
+        crop_bytes = b"verified-crop-png"
+        digest = __import__("hashlib").sha256(crop_bytes).hexdigest()
+        review_result = ChessFenResult(
+            fen="",
+            placement="8/1q6/1p6/1K6/P1P5/8/8/8",
+            confidence=0.832,
+            method="image-template-board",
+            warnings=["black_king_count_invalid"],
+            requires_review=True,
+            board_detected=True,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            labels_path = Path(temp_dir) / "verified.jsonl"
+            labels_path.write_text(
+                json.dumps(
+                    {
+                        "sha256": digest,
+                        "fen": "8/1k6/1p6/1K6/P1P5/8/8/8 w - - 0 1",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = _scan_chess_apply_verified_crop_label(
+                review_result,
+                crop_bytes,
+                bbox=(1.0, 2.0, 100.0, 101.0),
+                config=ConversionConfig(chess_fen_verified_crop_labels_path=str(labels_path)),
+            )
+
+        self.assertIs(result, review_result)
+
+    def test_scan_chess_verified_exact_crop_label_rejects_ai_source(self) -> None:
+        crop_bytes = b"verified-crop-png"
+        digest = __import__("hashlib").sha256(crop_bytes).hexdigest()
+        review_result = ChessFenResult(
+            fen="",
+            placement="8/1q6/1p6/1K6/P1P5/8/8/8",
+            confidence=0.832,
+            method="image-template-board",
+            warnings=["black_king_count_invalid"],
+            requires_review=True,
+            board_detected=True,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            labels_path = Path(temp_dir) / "verified.jsonl"
+            labels_path.write_text(
+                json.dumps(
+                    {
+                        "sha256": digest,
+                        "fen": "8/1k6/1p6/1K6/P1P5/8/8/8 w - - 0 1",
+                        "human_verified": True,
+                        "verification_source": "openai_review",
+                        "label_status": "verified",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = _scan_chess_apply_verified_crop_label(
+                review_result,
+                crop_bytes,
+                bbox=(1.0, 2.0, 100.0, 101.0),
+                config=ConversionConfig(chess_fen_verified_crop_labels_path=str(labels_path)),
+            )
+
+        self.assertIs(result, review_result)
 
     def test_scan_chess_verified_exact_crop_label_requires_hash_match(self) -> None:
         review_result = ChessFenResult(
@@ -4454,6 +4537,9 @@ class ChessFenRecognitionTests(unittest.TestCase):
                     {
                         "sha256": __import__("hashlib").sha256(b"other-crop").hexdigest(),
                         "fen": "8/1k6/1p6/1K6/P1P5/8/8/8 w - - 0 1",
+                        "human_verified": True,
+                        "verification_source": "human_visual",
+                        "label_status": "verified",
                     }
                 )
                 + "\n",

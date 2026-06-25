@@ -11,7 +11,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, Iterable
 
-from chess_fen_hardening import machine_accept_fen, machine_accept_placement, validate_fen_detailed
+from chess_fen_hardening import exact_crop_label_release_safety, machine_accept_fen, machine_accept_placement, validate_fen_detailed
 
 PIPELINE_STATUSES = {
     "AUTO_SUCCESS",
@@ -817,9 +817,11 @@ def _fen_raw_candidates(
     for key, source in [("fen", "deterministic"), ("fen_candidate", "deterministic_candidate")]:
         fen = str(diagram.get(key) or "").strip()
         if fen:
+            method = str(diagram.get("method") or diagram.get("recognition_method") or source)
+            candidate_source = "verified_exact_crop_label" if method.lower().replace("_", "-") == "verified-exact-crop-label" else source
             rows.append(
                 {
-                    "source": source,
+                    "source": candidate_source,
                     "fen": fen,
                     "authoritative": source == "deterministic",
                     "confidence": _first_float(
@@ -832,8 +834,12 @@ def _fen_raw_candidates(
                         diagram.get("fen_warnings"),
                         diagram.get("review_warnings"),
                     ),
-                    "method": diagram.get("method") or diagram.get("recognition_method") or source,
+                    "method": method,
                     "squares": diagram.get("squares") or [],
+                    "source_crop_hash": diagram.get("source_crop_hash") or diagram.get("crop_sha256") or diagram.get("sha256") or "",
+                    "human_verified": bool(diagram.get("human_verified")),
+                    "verification_source": str(diagram.get("verification_source") or ""),
+                    "label_status": str(diagram.get("label_status") or ""),
                 }
             )
     placement = str(diagram.get("placement") or diagram.get("placement_fen") or "").strip()
@@ -972,18 +978,29 @@ def _fen_candidate_row(candidate: dict[str, Any]) -> dict[str, Any]:
 
 
 def _select_fen_status(diagram: dict[str, Any], candidate_rows: list[dict[str, Any]]) -> dict[str, Any]:
-    deterministic = next((row for row in candidate_rows if row.get("source") == "deterministic"), None)
-    human_verified = _is_human_verified_record(diagram)
-    if human_verified and deterministic and deterministic.get("deterministic_valid"):
+    exact_label = next((row for row in candidate_rows if row.get("source") == "verified_exact_crop_label"), None)
+    exact_label_safety = exact_crop_label_release_safety({**diagram, **(exact_label or {})}) if exact_label else None
+    if (
+        exact_label
+        and exact_label.get("deterministic_valid")
+        and exact_label.get("runtime_status") == "FEN_MACHINE_ACCEPTED"
+        and exact_label_safety
+        and exact_label_safety["release_safe"]
+    ):
         return {
             "status": "FEN_CORPUS_VERIFIED",
             "runtime_status": "FEN_CORPUS_VERIFIED",
             "corpus_status": "corpus_verified",
             "acceptance_policy": "human_verified_exact_crop_label",
-            "selected_value": deterministic.get("normalized_value"),
+            "selected_value": exact_label.get("normalized_value"),
             "validation_errors": [],
             "acceptance_blockers": [],
-            "acceptance_trace": {"source": deterministic.get("source"), "human_verified": True},
+            "acceptance_trace": {
+                "source": exact_label.get("source"),
+                "human_verified": True,
+                "source_crop_hash": exact_label_safety.get("sha256"),
+                "verification_source": exact_label_safety.get("verification_source"),
+            },
             "next_action": "export_allowed",
         }
     machine = next((row for row in candidate_rows if row.get("runtime_status") == "FEN_MACHINE_ACCEPTED"), None)

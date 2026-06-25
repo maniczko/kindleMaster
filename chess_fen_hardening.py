@@ -137,6 +137,92 @@ def crop_sha256(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+def normalize_crop_sha256(value: Any) -> str:
+    digest = str(value or "").strip().lower()
+    if digest.startswith("sha256:"):
+        digest = digest.split(":", 1)[1].strip()
+    return digest
+
+
+def exact_crop_label_release_safety(
+    record: dict[str, Any],
+    *,
+    expected_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Return release-safety evidence for a verified exact-crop FEN label.
+
+    Exact crop labels are allowed to bypass noisy recognition only when the
+    crop identity and human provenance are explicit. AI/review-only labels stay
+    review evidence even if they contain a syntactically valid FEN.
+    """
+    issues: list[dict[str, Any]] = []
+    digest = ""
+    for key in ("crop_sha256", "sha256", "source_crop_hash"):
+        digest = normalize_crop_sha256(record.get(key))
+        if digest:
+            break
+    if not digest:
+        issues.append({"code": "crop_sha256_missing", "message": "Exact crop label requires sha256/crop_sha256."})
+    elif len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        issues.append({"code": "crop_sha256_invalid", "message": "Exact crop label hash must be a SHA-256 hex digest."})
+
+    expected = normalize_crop_sha256(expected_sha256)
+    if expected and digest and digest != expected:
+        issues.append({"code": "crop_sha256_mismatch", "message": "Exact crop label hash does not match the runtime crop."})
+
+    fen = str(record.get("fen") or record.get("value") or record.get("candidate_fen") or "").strip()
+    if not fen:
+        issues.append({"code": "fen_missing", "message": "Exact crop label requires a FEN."})
+    else:
+        validation = validate_fen_detailed(fen)
+        for issue in validation.errors:
+            issues.append({"code": issue.code, "message": issue.message})
+
+    label_status = str(record.get("label_status") or "").strip().lower()
+    if not label_status:
+        issues.append({"code": "label_status_missing", "message": "Exact crop label requires label_status=verified."})
+    elif label_status != "verified":
+        issues.append({"code": "label_status_not_verified", "message": "Exact crop label must be verified.", "label_status": label_status})
+
+    verification_source = infer_verification_source(record)
+    if not verification_source:
+        issues.append({"code": "verification_source_missing", "message": "Exact crop label requires human verification provenance."})
+    elif is_ai_only_verification_source(verification_source):
+        issues.append(
+            {
+                "code": "ai_only_verification_source",
+                "message": "AI-only exact crop labels cannot become release-safe strict FEN.",
+                "verification_source": verification_source,
+            }
+        )
+    elif not is_human_verification_source(verification_source):
+        issues.append(
+            {
+                "code": "verification_source_not_human",
+                "message": "Exact crop label verification source must be human.",
+                "verification_source": verification_source,
+            }
+        )
+
+    if record.get("human_verified") is not True:
+        issues.append({"code": "human_verified_missing", "message": "Exact crop label requires human_verified=true."})
+
+    for key in ("ai_requires_review", "human_rejected", "review_required", "requires_review", "needs_review"):
+        if record.get(key) is True:
+            issues.append({"code": "review_flag_unresolved", "message": "Review-only exact crop label cannot be release-safe.", "flag": key})
+
+    return {
+        "release_safe": not issues,
+        "sha256": digest,
+        "expected_sha256": expected,
+        "fen": fen,
+        "label_status": label_status,
+        "verification_source": verification_source,
+        "human_verified": record.get("human_verified") is True,
+        "issues": issues,
+    }
+
+
 def normalize_fen_whitespace(value: str) -> str:
     return " ".join(str(value or "").strip().split())
 
@@ -516,6 +602,8 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
 
     if normalized_source == "deterministic-ensemble":
         blockers.extend(_deterministic_ensemble_contract_blockers(candidate, ctx, trace))
+    if normalized_source == "verified-exact-crop-label":
+        blockers.extend(_verified_exact_crop_label_contract_blockers(candidate, trace))
 
     validation = validate_fen_detailed(fen)
     trace["fen_validation"] = {
@@ -664,6 +752,19 @@ def _deterministic_ensemble_contract_blockers(
             }
         )
     return blockers
+
+
+def _verified_exact_crop_label_contract_blockers(
+    candidate: dict[str, Any],
+    trace: dict[str, Any],
+) -> list[dict[str, Any]]:
+    safety = exact_crop_label_release_safety(candidate)
+    trace["verified_exact_crop_label_evidence"] = {
+        key: value
+        for key, value in safety.items()
+        if key != "issues"
+    }
+    return [dict(issue) for issue in safety["issues"]]
 
 
 def _deterministic_ensemble_placement_blockers(

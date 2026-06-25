@@ -118,6 +118,10 @@ class ChessFenResult:
     requires_review: bool = True
     board_detected: bool = False
     squares: list[dict[str, Any]] = field(default_factory=list)
+    source_crop_hash: str = ""
+    human_verified: bool = False
+    verification_source: str = ""
+    label_status: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         full_fen = self.full_fen or self.fen
@@ -149,6 +153,10 @@ class ChessFenResult:
             "requires_review": requires_review,
             "board_detected": bool(self.board_detected),
             "squares": [dict(square) for square in self.squares],
+            "source_crop_hash": self.source_crop_hash,
+            "human_verified": bool(self.human_verified),
+            "verification_source": self.verification_source,
+            "label_status": self.label_status,
         }
 
 

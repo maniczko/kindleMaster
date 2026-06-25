@@ -190,6 +190,48 @@ class AutoChessFlowTests(unittest.TestCase):
                 {blocker["code"] for blocker in item["candidate_values"][0]["placement_acceptance_blockers"]},
             )
 
+    def test_verified_exact_crop_label_with_release_safe_metadata_is_corpus_verified(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir)
+            _write_json(
+                out / "data" / "book.json",
+                {
+                    "pages": [
+                        {
+                            "page": 1,
+                            "diagrams": [
+                                {
+                                    "diagram_id": "p001_d001",
+                                    "page": 1,
+                                    "image_path": "assets/diagrams/p001_d001.png",
+                                    "fen": VALID_KINGS_FEN,
+                                    "confidence": 1.0,
+                                    "method": "verified-exact-crop-label",
+                                    "source_crop_hash": "a" * 64,
+                                    "human_verified": True,
+                                    "verification_source": "human_visual",
+                                    "label_status": "verified",
+                                    "warnings": ["verified_exact_crop_label_used"],
+                                    "validation_status": "accepted",
+                                }
+                            ],
+                            "pgn_records": [],
+                            "text_blocks": [],
+                        }
+                    ],
+                    "pgn_records": [],
+                },
+            )
+
+            payload = build_auto_chess_flow_artifacts(out)
+            fen_payload = json.loads((out / "fen" / "fen_candidates.json").read_text(encoding="utf-8"))
+            item = fen_payload["items"][0]
+
+        self.assertEqual(payload["status"], "AUTO_SUCCESS")
+        self.assertEqual(item["status"], "FEN_CORPUS_VERIFIED")
+        self.assertEqual(item["corpus_status"], "corpus_verified")
+        self.assertEqual(item["acceptance_policy"], "human_verified_exact_crop_label")
+
     def test_placement_only_candidate_is_reported_without_full_fen_acceptance(self) -> None:
         placement = VALID_KINGS_FEN.split()[0]
         with tempfile.TemporaryDirectory() as temp_dir:

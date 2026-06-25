@@ -55,6 +55,7 @@ from chess_position_recognizer import (
     summarize_chess_fen_results,
     validate_fen,
 )
+from chess_fen_hardening import exact_crop_label_release_safety, normalize_crop_sha256
 from chess_pgn_extractor import (
     UNMAPPED_CHESS_GLYPH_WARNING,
     _detect_unmapped_pgn_glyphs,
@@ -3601,6 +3602,10 @@ def _scan_chess_result_from_dict(data: dict[str, Any]):
         requires_review=bool(data.get("requires_review", True)),
         board_detected=bool(data.get("board_detected", False)),
         squares=[dict(square) for square in (data.get("squares") or []) if isinstance(square, dict)],
+        source_crop_hash=str(data.get("source_crop_hash") or ""),
+        human_verified=bool(data.get("human_verified")),
+        verification_source=str(data.get("verification_source") or ""),
+        label_status=str(data.get("label_status") or ""),
     )
 
 
@@ -3623,6 +3628,9 @@ def _scan_chess_apply_verified_crop_label(
     digest = hashlib.sha256(crop_bytes).hexdigest()
     label = labels.get(digest)
     if not label:
+        return recognition
+    safety = exact_crop_label_release_safety(label, expected_sha256=digest)
+    if not safety["release_safe"]:
         return recognition
     fen = str(label.get("fen") or "").strip()
     valid, fen_warnings = validate_fen(fen)
@@ -3647,6 +3655,10 @@ def _scan_chess_apply_verified_crop_label(
         requires_review=False,
         board_detected=True,
         squares=[],
+        source_crop_hash=digest,
+        human_verified=True,
+        verification_source=str(safety.get("verification_source") or ""),
+        label_status="verified",
     )
 
 
@@ -3672,12 +3684,15 @@ def _load_verified_crop_labels(labels_path: str | Path) -> dict[str, dict[str, A
             record = json.loads(line)
         except json.JSONDecodeError:
             continue
-        digest = str(record.get("sha256") or "").strip().lower()
+        digest = normalize_crop_sha256(record.get("sha256") or record.get("crop_sha256"))
         fen = str(record.get("fen") or "").strip()
         if not re.fullmatch(r"[0-9a-f]{64}", digest):
             continue
         valid, _warnings = validate_fen(fen)
         if not valid:
+            continue
+        safety = exact_crop_label_release_safety(record, expected_sha256=digest)
+        if not safety["release_safe"]:
             continue
         labels[digest] = record
     _VERIFIED_CROP_LABEL_CACHE.clear()

@@ -18,6 +18,7 @@ from chess_fen_hardening import (
     validate_placement_detailed,
 )
 from openai_chess_fen_reviewer import OpenAIChessFenReviewer, _review_schema
+from scripts.audit_chess_fen_exact_label_lookup import audit_chess_fen_exact_label_lookup
 from scripts.audit_chess_fen_false_positives import audit_chess_fen_false_positives
 from scripts.promote_chess_fen_label_draft import promote_chess_fen_label_draft
 from scripts.validate_chess_fen_labels import validate_chess_fen_labels
@@ -326,6 +327,53 @@ class ChessFenPipelineHardeningTests(unittest.TestCase):
         self.assertIn("ai_review_only_source", codes)
         self.assertIn("non_deterministic_source", codes)
 
+    def test_machine_accept_fen_requires_release_safe_exact_label_provenance(self) -> None:
+        missing_provenance = machine_accept_fen(
+            {
+                "source": "verified_exact_crop_label",
+                "fen": self.STARTING_FEN,
+                "confidence": 1.0,
+                "source_crop_hash": "a" * 64,
+            },
+            {"min_confidence": 0.90},
+        )
+        release_safe = machine_accept_fen(
+            {
+                "source": "verified_exact_crop_label",
+                "fen": self.STARTING_FEN,
+                "confidence": 1.0,
+                "source_crop_hash": "a" * 64,
+                "human_verified": True,
+                "verification_source": "human_visual",
+                "label_status": "verified",
+            },
+            {"min_confidence": 0.90},
+        )
+
+        codes = {blocker["code"] for blocker in missing_provenance["acceptance_blockers"]}
+        self.assertEqual(missing_provenance["runtime_status"], "FEN_REVIEW_REQUIRED")
+        self.assertIn("human_verified_missing", codes)
+        self.assertIn("verification_source_missing", codes)
+        self.assertIn("label_status_missing", codes)
+        self.assertEqual(release_safe["runtime_status"], "FEN_MACHINE_ACCEPTED")
+
+    def test_machine_accept_fen_blocks_ai_sourced_exact_label(self) -> None:
+        result = machine_accept_fen(
+            {
+                "source": "verified_exact_crop_label",
+                "fen": self.STARTING_FEN,
+                "confidence": 1.0,
+                "source_crop_hash": "a" * 64,
+                "human_verified": True,
+                "verification_source": "openai_review",
+                "label_status": "verified",
+            },
+            {"min_confidence": 0.90},
+        )
+
+        self.assertEqual(result["runtime_status"], "FEN_REVIEW_REQUIRED")
+        self.assertIn("ai_only_verification_source", {blocker["code"] for blocker in result["acceptance_blockers"]})
+
     def test_machine_accept_fen_rejects_known_square_mismatch_evidence(self) -> None:
         expected = "6k1/p4p1p/3p1p2/2p1r3/2PnrqN1/P6P/1P1Q1PP1/3R1RK1 b - - 0 1"
         candidate = "6k1/p4p1p/3p1p2/2p1p3/2PnrqN1/P6P/1P1Q1PP1/3R1RK1 b - - 0 1"
@@ -417,6 +465,61 @@ class ChessFenPipelineHardeningTests(unittest.TestCase):
             result = validate_chess_fen_labels(labels)
 
         self.assertEqual(result["status"], "passed")
+
+    def test_exact_label_lookup_audit_reports_release_safe_and_blocked_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            labels_dir = root / "labels"
+            crops_dir = root / "crops"
+            labels_dir.mkdir()
+            crops_dir.mkdir()
+            crop = crops_dir / "scan_chess_p001_01.png"
+            crop.write_bytes(b"fake-crop")
+            digest = crop_sha256(crop)
+            labels = labels_dir / "verified.jsonl"
+            labels.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "id": "safe",
+                                "page": 1,
+                                "filename": crop.name,
+                                "sha256": digest,
+                                "fen": self.STARTING_FEN,
+                                "human_verified": True,
+                                "verification_source": "human_visual",
+                                "label_status": "verified",
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "id": "blocked",
+                                "page": 2,
+                                "filename": "scan_chess_p002_01.png",
+                                "sha256": "b" * 64,
+                                "fen": self.STARTING_FEN,
+                            }
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            audit = audit_chess_fen_exact_label_lookup(
+                labels_dir=labels_dir,
+                crops_dir=crops_dir,
+                strict_diff_path=None,
+                output_json=root / "audit.json",
+                output_markdown=root / "audit.md",
+            )
+
+        self.assertEqual(audit["summary"]["label_count"], 2)
+        self.assertEqual(audit["summary"]["release_safe_label_count"], 1)
+        self.assertEqual(audit["summary"]["labels_missing_hash_or_provenance"], 1)
+        self.assertEqual(audit["summary"]["labels_matching_current_crops_by_hash"], 1)
+        self.assertIn("human_verified_missing", audit["summary"]["issue_counts"])
 
     def test_label_validation_rejects_valid_fen_without_verified_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

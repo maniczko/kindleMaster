@@ -58,6 +58,7 @@ QUICK_TESTS = [
     "test_chess_diagram_detection.py",
     "test_chess_glyph_diagnostics.py",
     "test_chess_fen_square_diff.py",
+    "test_chess_fen_blockers.py",
     "test_chess_fen_review_blockers.py",
     "test_chess_fen_strict_regression_gate.py",
     "test_chess_fen_strict_report_diff.py",

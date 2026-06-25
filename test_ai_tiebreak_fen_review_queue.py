@@ -82,6 +82,8 @@ class AiTiebreakFenReviewQueueTests(unittest.TestCase):
         self.assertEqual(record["code"], "candidate_fens_missing")
         self.assertEqual(record["square_diffs"], [])
         self.assertIn("candidate_fens_missing", record["blockers"])
+        self.assertEqual(record["blocker_items"][0]["category"], "metadata")
+        self.assertEqual(payload["summary"]["by_category"]["metadata"], 1)
 
     def test_identical_candidate_fens_produce_missing_conflict_artifact(self) -> None:
         payload = self._build(
@@ -114,6 +116,7 @@ class AiTiebreakFenReviewQueueTests(unittest.TestCase):
 
         record = payload["records"][0]
         self.assertIn("ai_selection_not_in_candidates", record["blockers"])
+        self.assertIn("ai_review_only", {blocker["category"] for blocker in record["blocker_items"]})
         self.assertEqual(payload["summary"]["ai_selection_not_in_candidates_count"], 1)
 
     def test_known_forty_six_tiebreak_records_are_queued_and_other_ai_categories_excluded(self) -> None:

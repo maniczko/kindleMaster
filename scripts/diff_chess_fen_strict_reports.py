@@ -7,6 +7,12 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from chess_fen_blockers import categorize_blocker, classify_blocker_category, recommendation_for_category, sorted_category_counts
+
 
 STRICT_ACCEPTED_STATUSES = {
     "accepted",
@@ -73,6 +79,10 @@ def diff_strict_reports(previous_path: str | Path, latest_path: str | Path) -> d
                 "latest_candidate_fen": _candidate_fen(latest),
                 "previous_blockers": _blockers(previous),
                 "latest_blockers": _blockers(latest),
+                "latest_blocker_items": [
+                    categorize_blocker(blocker, context=[*_blockers(latest), *_warnings(latest)])
+                    for blocker in _blockers(latest)
+                ],
                 "previous_warnings": _warnings(previous),
                 "latest_warnings": _warnings(latest),
             }
@@ -91,7 +101,7 @@ def diff_strict_reports(previous_path: str | Path, latest_path: str | Path) -> d
             "new_strict_count": summary_counts["new_strict_accepted"],
             "net_change": summary_counts["new_strict_accepted"] - summary_counts["lost_strict_accepted"],
             "classification_counts": dict(sorted(summary_counts.items())),
-            "lost_by_category": dict(sorted(lost_by_category.items())),
+            "lost_by_category": sorted_category_counts(lost_by_category),
             "lost_by_blocker_code": dict(lost_by_blocker_code.most_common()),
             "top_20_lost_cases": lost_cases[:20],
         },
@@ -323,35 +333,14 @@ def _is_failed(record: Mapping[str, Any] | None) -> bool:
 
 
 def _primary_regression_category(record: Mapping[str, Any] | None) -> str:
-    text = " ".join(_blockers(record) + _warnings(record)).lower()
-    if any(token in text for token in ("template", "piece", "king_count", "queen_color", "recognition")):
-        return "recognition"
-    if any(token in text for token in ("side_to_move", "caption", "marker", "metadata")):
-        return "side_to_move_metadata"
-    if "placement" in text:
-        return "placement"
-    if any(token in text for token in ("python_chess", "fen_parse", "fen_position", "fen_missing", "side_to_move_inferred")):
-        return "full_fen_validation"
-    if any(token in text for token in ("source", "ai_review_only", "external", "verified_exact")):
-        return "source_policy"
-    if any(token in text for token in ("grid", "bbox", "board_not_detected", "partial_board", "reader_visible_crop", "reader_expanded_crop", "final_rendered_crop")):
-        return "crop_grid"
-    if any(token in text for token in ("confidence", "threshold")):
-        return "confidence"
-    return "unknown"
+    blockers = _blockers(record)
+    if blockers:
+        return classify_blocker_category(blockers[0], context=[*blockers, *_warnings(record)])
+    return classify_blocker_category("unknown_blocker", context=_warnings(record))
 
 
 def _recommended_action(category: str) -> str:
-    return {
-        "crop_grid": "inspect crop/grid geometry before recognizer changes",
-        "recognition": "compare previous exact/deterministic source and current recognition blockers",
-        "placement": "verify placement separately from full FEN acceptance",
-        "full_fen_validation": "inspect side-to-move/full FEN validation evidence",
-        "source_policy": "audit source authority and exact-label lookup path",
-        "side_to_move_metadata": "inspect side-to-move marker/caption metadata",
-        "confidence": "inspect confidence drop without lowering strict gates",
-        "unknown": "inspect raw previous/latest records",
-    }.get(category, "inspect raw previous/latest records")
+    return recommendation_for_category(category)
 
 
 def _status(record: Mapping[str, Any] | None) -> str:

@@ -10,6 +10,8 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from chess_fen_blockers import categorize_blocker
+
 
 SCHEMA = "kindlemaster.fen_automation_readiness.v1"
 
@@ -35,7 +37,7 @@ def evaluate_fen_automation_readiness(out_dir: str | Path, *, output_path: str |
     failed = len([item for item in items if str(item.get("status") or "").startswith("FEN_FAILED")])
     full_review = max(0, total - full_machine)
     blocker_codes = _top_counts((blocker_payload.get("summary") or {}).get("by_code") or _count_item_blockers(items, field="code"))
-    blocker_categories = _top_counts((blocker_payload.get("summary") or {}).get("by_category") or _count_item_blockers(items, field="category"))
+    blocker_categories = _top_counts((blocker_payload.get("summary") or {}).get("by_category") or _count_item_blocker_categories(items))
     if not root.exists():
         status = "blocked"
     elif not input_paths["fen_candidates"].exists():
@@ -95,6 +97,16 @@ def _count_item_blockers(items: list[dict[str, Any]], *, field: str) -> dict[str
     for item in items:
         for blocker in item.get("acceptance_blockers") or item.get("validation_errors") or []:
             value = str(blocker.get(field) or "unknown")
+            counts[value] = counts.get(value, 0) + 1
+    return counts
+
+
+def _count_item_blocker_categories(items: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in items:
+        for blocker in item.get("acceptance_blockers") or item.get("validation_errors") or []:
+            categorized = categorize_blocker(blocker)
+            value = str(categorized.get("category") or "unknown")
             counts[value] = counts.get(value, 0) + 1
     return counts
 

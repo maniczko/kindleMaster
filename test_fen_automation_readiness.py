@@ -75,6 +75,29 @@ class FenAutomationReadinessTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["total_fen_items"], 0)
         self.assertIn("fen_candidates", payload["input_paths"]["missing"])
 
+    def test_evaluator_derives_missing_blocker_categories_from_codes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _write_json(
+                root / "fen" / "fen_candidates.json",
+                {
+                    "items": [
+                        {
+                            "id": "failed",
+                            "status": "FEN_FAILED",
+                            "runtime_status": "FEN_FAILED",
+                            "placement_runtime_status": "FEN_PLACEMENT_REVIEW_REQUIRED",
+                            "acceptance_blockers": [{"code": "piece_template_confidence_below_threshold"}],
+                        }
+                    ]
+                },
+            )
+            _write_json(root / "report" / "acceptance_blockers.json", {"summary": {"by_code": {"piece_template_confidence_below_threshold": 1}}})
+
+            payload = evaluate_fen_automation_readiness(root)
+
+        self.assertEqual(payload["summary"]["top_blocker_categories"][0]["code"], "recognition")
+
 
 if __name__ == "__main__":
     unittest.main()

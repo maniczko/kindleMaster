@@ -10,6 +10,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from chess_fen_blockers import categorize_blocker, sorted_category_counts
 from chess_fen_hardening import fen_placement_to_square_map, validate_fen_detailed
 
 
@@ -29,6 +30,7 @@ def build_ai_tiebreak_fen_review_queue(
     current_by_id = _records_by_diagram_id(_extract_records(current_report))
 
     records: list[dict[str, Any]] = []
+    by_category: dict[str, int] = {}
     skipped: dict[str, int] = {
         "ai_consensus": 0,
         "ai_best_effort": 0,
@@ -95,6 +97,10 @@ def build_ai_tiebreak_fen_review_queue(
             record["code"] = blockers[0] if blockers else "missing_artifact"
         if blockers:
             record["blockers"] = blockers
+            record["blocker_items"] = [categorize_blocker(blocker) for blocker in blockers]
+            for blocker in record["blocker_items"]:
+                category_name = str(blocker.get("category") or "unknown")
+                by_category[category_name] = by_category.get(category_name, 0) + 1
         records.append(record)
 
     records.sort(key=lambda item: (_artifact_sort(item), _int_or_zero(item.get("conflict_count")), _int_or_zero(item.get("page")), str(item.get("diagram_id") or "")))
@@ -110,6 +116,7 @@ def build_ai_tiebreak_fen_review_queue(
             "ai_selection_not_in_candidates_count": sum(
                 1 for item in records if "ai_selection_not_in_candidates" in (item.get("blockers") or [])
             ),
+            "by_category": sorted_category_counts(by_category),
             "skipped": skipped,
         },
         "records": records,

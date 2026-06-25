@@ -77,6 +77,9 @@ class ChessFenStrictReportDiffTests(unittest.TestCase):
         self.assertEqual(categories["crop"], "crop_grid")
         self.assertEqual(categories["recognition"], "recognition")
         self.assertEqual(categories["validation"], "full_fen_validation")
+        lost_cases = [case for case in payload["cases"] if case["classification"] == "lost_strict_accepted"]
+        self.assertTrue(all("category" in blocker for case in lost_cases for blocker in case["latest_blocker_items"]))
+        self.assertIn("unknown", payload["summary"]["lost_by_category"])
 
     def test_does_not_count_placement_or_ai_only_records_as_strict(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

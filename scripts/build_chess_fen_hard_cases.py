@@ -11,6 +11,8 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from chess_fen_blockers import categorize_blocker, classify_blocker_category, sorted_category_counts
+
 
 MISSING_ARTIFACT = "MISSING_ARTIFACT"
 HARD_AI_CATEGORIES = {"ai_unreadable", "ai_best_effort"}
@@ -30,7 +32,8 @@ def build_chess_fen_hard_cases(
     records: list[dict[str, Any]] = []
     skipped: Counter[str] = Counter()
     by_type: Counter[str] = Counter()
-    by_category: Counter[str] = Counter()
+    by_ai_category: Counter[str] = Counter()
+    by_blocker_category: Counter[str] = Counter()
 
     for index, ai_record in enumerate(_extract_records(ai_report)):
         ai_category = _ai_category(ai_record)
@@ -46,6 +49,7 @@ def build_chess_fen_hard_cases(
         crop_path = _crop_path(ai_record, current)
         primary_blocker = _primary_blocker(ai_record, current, crop_path)
         primary_category = _primary_category(primary_blocker, ai_record, current)
+        primary_blocker_item = categorize_blocker(primary_blocker, context=[*_blockers(ai_record), *_blockers(current)])
         hard_case_type = _hard_case_type(ai_category, crop_path, primary_blocker, primary_category)
         recommended_action = _recommended_action(hard_case_type)
 
@@ -57,6 +61,7 @@ def build_chess_fen_hard_cases(
             "current_strict_status": _strict_status(current),
             "primary_blocker": primary_blocker,
             "primary_category": primary_category,
+            "primary_blocker_item": primary_blocker_item,
             "hard_case_type": hard_case_type,
             "requires_manual_label": True,
             "requires_crop_repair": hard_case_type in {"crop_missing", "grid_failed", "low_resolution"},
@@ -69,7 +74,8 @@ def build_chess_fen_hard_cases(
             record["code"] = "crop_path_missing"
         records.append(record)
         by_type[hard_case_type] += 1
-        by_category[ai_category] += 1
+        by_ai_category[ai_category] += 1
+        by_blocker_category[primary_category] += 1
 
     records.sort(key=lambda item: (_int_or_zero(item.get("page")), str(item.get("diagram_id") or "")))
     return {
@@ -78,7 +84,8 @@ def build_chess_fen_hard_cases(
         "current_report_path": str(current_path),
         "summary": {
             "hard_case_count": len(records),
-            "by_ai_category": dict(sorted(by_category.items())),
+            "by_ai_category": dict(sorted(by_ai_category.items())),
+            "by_category": sorted_category_counts(by_blocker_category),
             "by_hard_case_type": dict(sorted(by_type.items())),
             "missing_artifact_count": sum(1 for item in records if item.get("status") == MISSING_ARTIFACT),
             "excluded_from_normal_metrics": True,
@@ -255,24 +262,22 @@ def _blockers(record: Mapping[str, Any]) -> list[str]:
 def _primary_category(primary_blocker: str, ai_record: Mapping[str, Any], current_record: Mapping[str, Any]) -> str:
     explicit = str(current_record.get("primary_category") or ai_record.get("primary_category") or "").strip()
     if explicit:
-        return explicit
-    text = " ".join([primary_blocker, *_blockers(ai_record), *_blockers(current_record)]).lower()
-    if any(token in text for token in ("crop_missing", "crop_path_missing", "missing_artifact")):
-        return "crop_missing"
-    if any(token in text for token in ("grid", "board_not_detected", "bbox", "partial_board")):
-        return "grid_failed"
-    if any(token in text for token in ("low_resolution", "blur", "resolution", "pixel")):
-        return "low_resolution"
-    if any(token in text for token in ("ambiguous", "piece", "queen", "king_count", "recognition")):
-        return "ambiguous_piece"
-    return "unknown"
+        return classify_blocker_category(explicit)
+    return classify_blocker_category(primary_blocker, context=[*_blockers(ai_record), *_blockers(current_record)])
 
 
 def _hard_case_type(ai_category: str, crop_path: str, primary_blocker: str, primary_category: str) -> str:
+    text = str(primary_blocker or "").lower()
     if crop_path == MISSING_ARTIFACT:
         return "crop_missing"
-    if primary_category in {"crop_missing", "grid_failed", "low_resolution", "ambiguous_piece"}:
-        return primary_category
+    if any(token in text for token in ("crop_missing", "crop_path_missing", "missing_artifact")):
+        return "crop_missing"
+    if any(token in text for token in ("low_resolution", "blur", "resolution", "pixel")):
+        return "low_resolution"
+    if primary_category == "crop_grid":
+        return "grid_failed"
+    if primary_category == "recognition":
+        return "ambiguous_piece"
     if ai_category == "ai_unreadable":
         return "unreadable"
     if ai_category == "ai_best_effort":

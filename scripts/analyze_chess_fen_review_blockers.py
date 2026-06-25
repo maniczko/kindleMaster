@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from chess_fen_blockers import categorize_blocker, classify_blocker_category, recommendation_for_category, sorted_category_counts
 
 
 STRICT_ACCEPTED_STATUSES = {
@@ -42,8 +49,12 @@ def analyze_review_blockers(report_path: str | Path) -> dict[str, Any]:
         if not blockers:
             blockers = ["missing_blocker_data"]
             missing_blocker_data = True
-        primary_blocker = blockers[0]
-        primary_category = _primary_category(primary_blocker, blockers, record)
+        blocker_items = [
+            categorize_blocker(blocker, context=[*blockers, *_warnings(record), _status_blob(record)])
+            for blocker in blockers
+        ]
+        primary_blocker = str(blocker_items[0].get("code") or blockers[0])
+        primary_category = str(blocker_items[0].get("category") or "unknown")
         has_ai_candidate = _has_ai_candidate(record)
         has_placement = bool(_selected_placement(record))
         has_fen_candidate = bool(_candidate_fen(record))
@@ -63,6 +74,7 @@ def analyze_review_blockers(report_path: str | Path) -> dict[str, Any]:
             "primary_blocker": primary_blocker,
             "primary_category": primary_category,
             "all_blockers": blockers,
+            "blockers": blocker_items,
             "warnings": _warnings(record),
             "confidence": record.get("confidence"),
             "recommendation": _recommendation(primary_category),
@@ -86,7 +98,7 @@ def analyze_review_blockers(report_path: str | Path) -> dict[str, Any]:
         "report_path": str(report_path),
         "summary": {
             "review_total": len(items),
-            "by_category": dict(sorted(by_category.items())),
+            "by_category": sorted_category_counts(by_category),
             "by_blocker_code": dict(by_blocker_code.most_common()),
             "by_page": dict(sorted(by_page.items(), key=lambda item: _page_sort_key(item[0]))),
             "with_ai_candidate_count": with_ai_candidate_count,
@@ -218,39 +230,11 @@ def _is_strict_accepted(record: Mapping[str, Any] | None) -> bool:
 
 
 def _primary_category(primary_blocker: str, blockers: Iterable[str], record: Mapping[str, Any]) -> str:
-    text = " ".join([primary_blocker, *blockers, *_warnings(record)]).lower()
-    status_blob = _status_blob(record)
-    if "ai_review_only" in text or "ai_only" in text or "ai_consensus" in status_blob or "ai_tie_break" in status_blob:
-        return "ai_review_only"
-    if any(token in text for token in ("source", "external", "verified_exact", "label_lookup")):
-        return "source_policy"
-    if any(token in text for token in ("grid", "bbox", "board_not_detected", "partial_board", "crop_invalid", "crop_missing")):
-        return "crop_grid"
-    if any(token in text for token in ("template", "piece", "king_count", "queen_color", "recognition")):
-        return "recognition"
-    if "placement" in text:
-        return "placement"
-    if any(token in text for token in ("python_chess", "fen_parse", "fen_position", "fen_missing", "side_to_move_inferred")):
-        return "full_fen_validation"
-    if any(token in text for token in ("confidence", "threshold")):
-        return "confidence"
-    if any(token in text for token in ("metadata", "caption", "marker", "side_to_move")):
-        return "metadata"
-    return "unknown"
+    return classify_blocker_category(primary_blocker, context=[*blockers, *_warnings(record), _status_blob(record)])
 
 
 def _recommendation(category: str) -> str:
-    return {
-        "crop_grid": "inspect crop/grid geometry before recognizer changes",
-        "recognition": "compare placement against crop and template confidence",
-        "placement": "separate placement recovery from full FEN metadata",
-        "full_fen_validation": "inspect side-to-move/full FEN validation evidence",
-        "source_policy": "audit exact-label/external source authority",
-        "confidence": "inspect confidence drop without lowering strict gates",
-        "metadata": "inspect side-to-move marker/caption metadata",
-        "ai_review_only": "keep AI as evidence; require deterministic proof before strict accept",
-        "unknown": "inspect raw record and add missing blocker data",
-    }.get(category, "inspect raw record and add missing blocker data")
+    return recommendation_for_category(category)
 
 
 def _diagram_id(record: Mapping[str, Any], index: int) -> str:

@@ -11,6 +11,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, Iterable
 
+from chess_fen_blockers import categorize_blocker, classify_blocker_category, sorted_category_counts
 from chess_fen_hardening import exact_crop_label_release_safety, machine_accept_fen, machine_accept_placement, validate_fen_detailed
 
 PIPELINE_STATUSES = {
@@ -1408,11 +1409,12 @@ def _acceptance_blockers_report(fen_payload: dict[str, Any], pgn_payload: dict[s
                 blockers = [{"code": f"{kind}_requires_review", "message": f"{kind.upper()} was not accepted by runtime gate."}]
             normalized_blockers = []
             for blocker in blockers:
-                code = str(blocker.get("code") or "unknown_blocker")
-                category = _classify_acceptance_blocker(code, kind=kind)
+                normalized = categorize_blocker(blocker, kind=kind)
+                code = str(normalized.get("code") or "unknown_blocker")
+                category = str(normalized.get("category") or "unknown")
                 code_counts[code] = code_counts.get(code, 0) + 1
                 category_counts[category] = category_counts.get(category, 0) + 1
-                normalized_blockers.append({**blocker, "category": category})
+                normalized_blockers.append(normalized)
             items.append(
                 {
                     "kind": kind,
@@ -1428,79 +1430,13 @@ def _acceptance_blockers_report(fen_payload: dict[str, Any], pgn_payload: dict[s
     summary = {
         "total_blocked_items": len(items),
         "by_code": dict(sorted(code_counts.items(), key=lambda pair: (-pair[1], pair[0]))),
-        "by_category": dict(sorted(category_counts.items(), key=lambda pair: (-pair[1], pair[0]))),
+        "by_category": sorted_category_counts(category_counts),
     }
     return {"schema": "kindlemaster.auto_chess.acceptance_blockers.v1", "summary": summary, "items": items}
 
 
 def _classify_acceptance_blocker(code: str, *, kind: str = "fen") -> str:
-    normalized = str(code or "").strip()
-    if normalized in {
-        "board_grid_not_detected",
-        "board_visual_pattern_not_detected",
-        "partial_board_crop_without_dense_board_evidence",
-        "image_board_requires_review",
-        "review_crop_candidate_mismatch",
-    }:
-        return "crop_grid"
-    if normalized in {
-        "piece_template_confidence_below_threshold",
-        "piece_template_set_incomplete",
-        "queen_color_ambiguous_suppressed",
-        "sparse_position_confidence_below_threshold",
-        "no_square_alternatives",
-        "square_alternatives_not_checked",
-        "no_template_or_model_agreement",
-        "score_margin_too_low",
-        "score_margin_below_threshold",
-    }:
-        return "recognition"
-    if normalized in {
-        "placement_candidate_missing",
-        "invalid_rank_count",
-        "invalid_rank_width",
-        "invalid_rank_digit",
-        "invalid_piece",
-        "missing_white_king",
-        "missing_black_king",
-        "too_many_white_kings",
-        "too_many_black_kings",
-        "pawn_on_back_rank",
-        "white_king_count_invalid",
-        "black_king_count_invalid",
-    }:
-        return "placement"
-    if normalized in {
-        "fen_must_have_six_fields",
-        "python_chess_invalid_position",
-        "python_chess_evidence_missing",
-        "validate_fen_evidence_missing",
-        "side_to_move_invalid",
-        "castling_invalid",
-        "castling_order_invalid",
-        "en_passant_invalid",
-        "move_counters_invalid",
-        "fullmove_number_invalid",
-        "full_fen_metadata_not_accepted",
-    }:
-        return "full_fen_validation"
-    if normalized in {"ai_review_only_source", "non_deterministic_source", "fen_source_missing"}:
-        return "source_policy"
-    if normalized in {"confidence_below_runtime_threshold", "confidence_below_threshold"}:
-        return "confidence"
-    if normalized in {"source_crop_hash_missing", "template_profile_not_ready"}:
-        return "metadata"
-    if normalized in {
-        "source_fen_not_machine_accepted",
-        "pgn_parse_failed",
-        "illegal_pgn",
-        "unmapped_chess_glyphs",
-        "pgn_replay_failed",
-    } or kind == "pgn":
-        return "pgn"
-    if normalized in {"python_chess_unavailable", "python_chess_missing", "python_chess_pgn_missing"}:
-        return "runtime_dependency"
-    return "unknown"
+    return classify_blocker_category(code, kind=kind)
 
 
 def _acceptance_blockers_html(report: dict[str, Any]) -> str:

@@ -104,9 +104,11 @@ class ChessFenHardCasesTests(unittest.TestCase):
 
         record = payload["records"][0]
         self.assertEqual(record["primary_blocker"], "queen_color_ambiguous_suppressed")
-        self.assertEqual(record["primary_category"], "ambiguous_piece")
+        self.assertEqual(record["primary_category"], "recognition")
         self.assertEqual(record["hard_case_type"], "ambiguous_piece")
         self.assertEqual(record["recommended_action"], "manual_square_label_review")
+        self.assertEqual(record["primary_blocker_item"]["category"], "recognition")
+        self.assertIn("recognition", payload["summary"]["by_category"])
 
     def test_markdown_contains_summary_and_actions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -37,13 +37,15 @@ class ChessFenReviewBlockerDiagnosticsTests(unittest.TestCase):
 
         by_id = {item["diagram_id"]: item for item in payload["items"]}
         self.assertNotIn("accepted", by_id)
-        self.assertEqual(by_id["ai"]["primary_category"], "ai_review_only")
+        self.assertEqual(by_id["ai"]["primary_category"], "source_policy")
         self.assertEqual(by_id["crop"]["primary_category"], "crop_grid")
         self.assertEqual(by_id["recognition"]["primary_category"], "recognition")
         self.assertEqual(by_id["validation"]["primary_category"], "full_fen_validation")
         self.assertEqual(by_id["unknown"]["primary_category"], "unknown")
         self.assertEqual(by_id["unknown"]["primary_blocker"], "missing_blocker_data")
         self.assertTrue(by_id["unknown"]["missing_blocker_data"])
+        self.assertTrue(all("category" in blocker for item in payload["items"] for blocker in item["blockers"]))
+        self.assertIn("unknown", payload["summary"]["by_category"])
 
     def test_outputs_markdown_with_top_sections(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

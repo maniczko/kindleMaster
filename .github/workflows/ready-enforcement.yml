@@ -51,6 +51,16 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Set up Node when workspace exists
+        if: ${{ hashFiles('package.json') != '' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Node workspace dependencies when workspace exists
+        if: ${{ hashFiles('package.json') != '' }}
+        run: npm ci
+
       - name: Bootstrap developer profile
         run: python kindlemaster.py bootstrap
 
@@ -106,6 +116,16 @@ jobs:
           distribution: temurin
           java-version: "21"
 
+      - name: Set up Node when workspace exists
+        if: ${{ hashFiles('package.json') != '' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Node workspace dependencies when workspace exists
+        if: ${{ hashFiles('package.json') != '' }}
+        run: npm ci
+
       - name: Bootstrap runtime profile
         run: python kindlemaster.py bootstrap --runtime-only
 
@@ -117,12 +137,6 @@ jobs:
 
       - name: Run Sprint 1 QA regression gate
         run: python -m unittest test_sprint1_quality_gates.py
-
-      - name: Set up Node when workspace exists
-        if: ${{ hashFiles('package.json') != '' }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
 
       - name: Run Vitest contract regressions when workspace exists
         shell: bash
@@ -187,6 +201,16 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
+
+      - name: Set up Node when workspace exists
+        if: ${{ hashFiles('package.json') != '' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Node workspace dependencies when workspace exists
+        if: ${{ hashFiles('package.json') != '' }}
+        run: npm ci
 
       - name: Bootstrap developer profile
         run: python kindlemaster.py bootstrap

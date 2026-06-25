@@ -53,9 +53,14 @@ from pymupdf_chess_extractor import (
     _recognize_scan_chess_candidate_bbox,
     _scan_chess_apply_verified_crop_label,
     _scan_chess_confirm_final_rendered_crop_recognition,
+    _scan_chess_local_side_marker_assignment_evidence,
     _scan_chess_is_partial_separator_crop,
+    _scan_chess_side_marker_probe_payloads,
+    _scan_chess_side_to_move_context_evidence,
     _recover_expanded_scan_chess_candidate,
+    _apply_scan_chess_side_to_move_context_evidence,
     _apply_scan_chess_side_to_move_marker,
+    _scan_chess_dominant_side_marker_detection,
     _infer_scan_chess_side_to_move,
     _scan_chess_page_candidates,
     _scan_chess_effective_page_candidate_limit,
@@ -4433,8 +4438,11 @@ class ChessFenRecognitionTests(unittest.TestCase):
         self.assertEqual(result.fen, fen)
         self.assertEqual(result.confidence, 1.0)
         self.assertEqual(result.method, "verified-exact-crop-label")
+        self.assertEqual(result.side_to_move_status, "explicit")
+        self.assertEqual(result.side_to_move_evidence, "exact_label")
         self.assertIn("verified_exact_crop_label_used", result.warnings)
         self.assertNotIn("black_king_count_invalid", result.warnings)
+        self.assertNotIn("side_to_move_inferred", result.warnings)
 
     def test_scan_chess_verified_exact_crop_label_requires_hash_match(self) -> None:
         review_result = ChessFenResult(
@@ -5448,17 +5456,50 @@ class ChessFenRecognitionTests(unittest.TestCase):
 
     def test_scan_chess_side_marker_updates_fen_side_to_move(self) -> None:
         payload = {
-            "fen": "8/8/8/8/8/8/7k/7K w - - 0 1",
+            "fen": "7k/8/8/8/8/8/8/K7 w - - 0 1",
+            "full_fen": "7k/8/8/8/8/8/8/K7 w - - 0 1",
+            "placement": "7k/8/8/8/8/8/8/K7",
+            "confidence": 0.9,
+            "method": "image-template-board",
             "side_to_move": "w",
+            "side_to_move_status": "inferred",
+            "side_to_move_evidence": "inferred",
             "warnings": ["side_to_move_inferred"],
+            "requires_review": True,
         }
 
         updated = _apply_scan_chess_side_to_move_marker(payload, "b")
 
-        self.assertEqual(updated["fen"], "8/8/8/8/8/8/7k/7K b - - 0 1")
+        self.assertEqual(updated["fen"], "7k/8/8/8/8/8/8/K7 b - - 0 1")
+        self.assertEqual(updated["full_fen"], "7k/8/8/8/8/8/8/K7 b - - 0 1")
         self.assertEqual(updated["side_to_move"], "b")
+        self.assertEqual(updated["side_to_move_status"], "explicit")
+        self.assertEqual(updated["side_to_move_evidence"], "marker")
+        self.assertFalse(updated["requires_review"])
         self.assertNotIn("side_to_move_inferred", updated["warnings"])
         self.assertIn("side_to_move_marker_detected", updated["warnings"])
+        self.assertIn("side_to_move_marker_applied", updated["warnings"])
+
+    def test_scan_chess_side_marker_keeps_low_confidence_payload_review_only(self) -> None:
+        payload = {
+            "fen": "",
+            "full_fen": "7k/8/8/8/8/8/8/K7 w - - 0 1",
+            "placement": "7k/8/8/8/8/8/8/K7",
+            "confidence": 0.5,
+            "method": "image-template-board",
+            "side_to_move": "w",
+            "side_to_move_status": "inferred",
+            "side_to_move_evidence": "inferred",
+            "warnings": ["side_to_move_inferred"],
+            "requires_review": True,
+        }
+
+        updated = _apply_scan_chess_side_to_move_marker(payload, "b")
+
+        self.assertEqual(updated["fen"], "")
+        self.assertEqual(updated["full_fen"], "7k/8/8/8/8/8/8/K7 b - - 0 1")
+        self.assertTrue(updated["requires_review"])
+        self.assertEqual(updated["fen_suppressed_reason"], "side_to_move_evidence_gate")
 
     def test_scan_chess_side_marker_infers_outline_white_and_filled_black(self) -> None:
         candidate_bbox = (100.0, 120.0, 900.0, 1120.0)
@@ -5480,6 +5521,190 @@ class ChessFenRecognitionTests(unittest.TestCase):
 
         self.assertEqual(_infer_scan_chess_side_to_move(white_marker_page, candidate_bbox), "w")
         self.assertEqual(_infer_scan_chess_side_to_move(black_marker_page, candidate_bbox), "b")
+
+    def test_scan_chess_side_marker_infers_multi_region_markers(self) -> None:
+        board_bbox = (100.0, 170.0, 300.0, 370.0)
+        cases = {
+            "top_left": [(106, 176), (142, 176), (124, 208)],
+            "bottom_right": [(252, 334), (288, 334), (270, 366)],
+            "left_side": [(66, 222), (96, 222), (81, 250)],
+            "right_side": [(304, 222), (334, 222), (319, 250)],
+            "caption_above": [(178, 138), (222, 138), (200, 166)],
+            "caption_below": [(178, 374), (222, 374), (200, 402)],
+        }
+        for role, points in cases.items():
+            with self.subTest(role=role):
+                page = Image.new("RGB", (420, 440), "white")
+                draw = ImageDraw.Draw(page)
+                draw.rectangle(board_bbox, outline="black", width=3)
+                draw.polygon(points, fill="black")
+
+                self.assertEqual(_infer_scan_chess_side_to_move(page, board_bbox), "b")
+
+    def test_scan_chess_side_marker_conflict_remains_review_evidence(self) -> None:
+        board_bbox = (100.0, 170.0, 300.0, 370.0)
+        page = Image.new("RGB", (420, 440), "white")
+        draw = ImageDraw.Draw(page)
+        draw.rectangle(board_bbox, outline="black", width=3)
+        draw.polygon([(106, 176), (142, 176), (124, 208)], fill="black")
+        draw.line([(252, 334), (288, 334), (270, 366), (252, 334)], fill="black", width=4)
+
+        evidence = _scan_chess_side_to_move_context_evidence(page, board_bbox)
+
+        self.assertIsNotNone(evidence)
+        assert evidence is not None
+        self.assertEqual(evidence.side, "")
+        self.assertIn("side_to_move_marker_multi_region_conflict", evidence.warnings)
+        self.assertGreaterEqual(len(evidence.marker_candidates), 2)
+
+    def test_scan_chess_side_marker_dominant_conflict_helper_requires_large_margin(self) -> None:
+        weak = [
+            {"role": "top_left", "detected_side": "b", "score": 800.0},
+            {"role": "bottom_right", "detected_side": "w", "score": 480.0},
+        ]
+        strong = [
+            {"role": "top_left", "detected_side": "b", "score": 1326.0},
+            {"role": "bottom_right", "detected_side": "w", "score": 465.0},
+        ]
+
+        self.assertIsNone(_scan_chess_dominant_side_marker_detection(weak))
+        dominant = _scan_chess_dominant_side_marker_detection(strong)
+        self.assertIsNotNone(dominant)
+        assert dominant is not None
+        self.assertEqual(dominant["detected_side"], "b")
+        self.assertEqual(dominant["role"], "top_left")
+
+    def test_scan_chess_side_marker_candidates_are_audit_only_without_detection(self) -> None:
+        board_bbox = (100.0, 170.0, 300.0, 370.0)
+        page = Image.new("RGB", (420, 440), "white")
+        ImageDraw.Draw(page).rectangle(board_bbox, outline="black", width=3)
+
+        payloads = _scan_chess_side_marker_probe_payloads(page, board_bbox)
+        evidence = _scan_chess_side_to_move_context_evidence(page, board_bbox)
+
+        self.assertTrue(payloads)
+        self.assertIsNotNone(evidence)
+        assert evidence is not None
+        self.assertEqual(evidence.side, "")
+        self.assertIn("side_to_move_marker_probes_checked", evidence.warnings)
+        self.assertTrue(evidence.marker_candidates)
+
+    def test_scan_chess_clean_side_only_local_marker_assignment_applies_unique_marker(self) -> None:
+        board_bbox = (100.0, 170.0, 300.0, 370.0)
+        page = Image.new("RGB", (420, 440), "white")
+        payload = {
+            "full_fen": "k7/8/8/8/8/8/8/7K w - - 0 1",
+            "placement": "k7/8/8/8/8/8/8/7K",
+            "confidence": 0.93,
+            "method": "image-template-board",
+            "side_to_move_status": "inferred",
+            "side_to_move_evidence": "inferred",
+            "warnings": ["side_to_move_inferred", "side_to_move_marker_probes_checked"],
+            "requires_review": True,
+        }
+        probe_payload = {
+            "role": "left_side",
+            "bbox": [62, 218, 98, 258],
+            "density": 0.34,
+            "score": 820.0,
+            "component_bbox": [4.0, 4.0, 30.0, 34.0],
+            "detected_shape": "triangle_like_ambiguous_density",
+            "side_candidate": "",
+            "distance_to_board": 2.0,
+            "conflict_group": "side_band",
+        }
+
+        with mock.patch(
+            "pymupdf_chess_extractor._scan_chess_side_marker_probe_payloads",
+            return_value=[probe_payload],
+        ):
+            evidence = _scan_chess_local_side_marker_assignment_evidence(page, board_bbox, payload, diagram_bboxes=[board_bbox])
+
+        self.assertIsNotNone(evidence)
+        assert evidence is not None
+        self.assertEqual(evidence.side, "w")
+        self.assertEqual(evidence.source, "marker")
+        self.assertIn("side_to_move_marker_local_assignment_used", evidence.warnings)
+        self.assertIn("side_to_move_marker_local_borderline_outline", evidence.warnings)
+
+        updated = _apply_scan_chess_side_to_move_context_evidence(payload, evidence)
+
+        self.assertEqual(updated["fen"], "k7/8/8/8/8/8/8/7K w - - 0 1")
+        self.assertFalse(updated["requires_review"])
+        self.assertEqual(updated["side_to_move_status"], "explicit")
+        self.assertEqual(updated["side_to_move_evidence"], "marker")
+        self.assertNotIn("side_to_move_inferred", updated["warnings"])
+
+    def test_scan_chess_local_marker_assignment_conflict_remains_review(self) -> None:
+        board_bbox = (100.0, 170.0, 300.0, 370.0)
+        page = Image.new("RGB", (420, 440), "white")
+        payload = {
+            "full_fen": "k7/8/8/8/8/8/8/7K w - - 0 1",
+            "placement": "k7/8/8/8/8/8/8/7K",
+            "confidence": 0.93,
+            "method": "image-template-board",
+            "warnings": ["side_to_move_inferred", "side_to_move_marker_probes_checked"],
+            "requires_review": True,
+        }
+        probes = [
+            {
+                "role": "left_side",
+                "bbox": [62, 218, 98, 258],
+                "density": 0.34,
+                "score": 820.0,
+                "component_bbox": [4.0, 4.0, 30.0, 34.0],
+            },
+            {
+                "role": "right_side",
+                "bbox": [302, 218, 338, 258],
+                "density": 0.50,
+                "score": 790.0,
+                "component_bbox": [4.0, 4.0, 30.0, 34.0],
+                "detected_side": "b",
+            },
+        ]
+
+        with mock.patch(
+            "pymupdf_chess_extractor._scan_chess_side_marker_probe_payloads",
+            return_value=probes,
+        ):
+            evidence = _scan_chess_local_side_marker_assignment_evidence(page, board_bbox, payload, diagram_bboxes=[board_bbox])
+
+        self.assertIsNotNone(evidence)
+        assert evidence is not None
+        self.assertEqual(evidence.side, "")
+        self.assertIn("side_to_move_marker_local_conflict", evidence.warnings)
+
+    def test_scan_chess_local_marker_assignment_rejects_neighbor_diagram_marker(self) -> None:
+        target = (100.0, 170.0, 300.0, 370.0)
+        neighbor = (360.0, 170.0, 560.0, 370.0)
+        page = Image.new("RGB", (640, 440), "white")
+        payload = {
+            "full_fen": "k7/8/8/8/8/8/8/7K w - - 0 1",
+            "placement": "k7/8/8/8/8/8/8/7K",
+            "confidence": 0.93,
+            "method": "image-template-board",
+            "warnings": ["side_to_move_inferred", "side_to_move_marker_probes_checked"],
+            "requires_review": True,
+        }
+        probe_payload = {
+            "role": "right_side",
+            "bbox": [335, 218, 358, 258],
+            "density": 0.34,
+            "score": 820.0,
+            "component_bbox": [4.0, 4.0, 20.0, 34.0],
+        }
+
+        with mock.patch(
+            "pymupdf_chess_extractor._scan_chess_side_marker_probe_payloads",
+            return_value=[probe_payload],
+        ):
+            evidence = _scan_chess_local_side_marker_assignment_evidence(page, target, payload, diagram_bboxes=[target, neighbor])
+
+        self.assertIsNotNone(evidence)
+        assert evidence is not None
+        self.assertEqual(evidence.side, "")
+        self.assertIn("side_to_move_marker_local_ambiguous", evidence.warnings)
 
     def test_scan_chess_side_marker_ignores_coordinate_letters_above_board(self) -> None:
         board_bbox = (100.0, 170.0, 300.0, 370.0)

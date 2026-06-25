@@ -12,16 +12,16 @@ FULL_FEN = "8/8/8/8/8/8/4K3/4k3 w - - 0 1"
 
 
 class ChessFenStrictRegressionGateTests(unittest.TestCase):
-    def test_real_180_report_fails_against_223_baseline(self) -> None:
+    def test_real_marker_rule_report_passes_223_baseline(self) -> None:
         payload = json.loads(
             Path("reports/chess_fen/strict_regression_gate_marker_rule.json").read_text(encoding="utf-8")
         )
 
-        self.assertEqual(payload["status"], "failed")
+        self.assertEqual(payload["status"], "passed")
         self.assertEqual(payload["baseline"]["best_known_strict_accepted"], 223)
-        self.assertEqual(payload["candidate"]["strict_accepted"], 180)
-        self.assertFalse(payload["baseline_update_candidate"])
-        self.assertTrue(payload["blockers"])
+        self.assertGreaterEqual(payload["candidate"]["strict_accepted"], 223)
+        self.assertTrue(payload["baseline_update_candidate"])
+        self.assertFalse(payload["blockers"])
 
     def test_equal_baseline_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

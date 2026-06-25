@@ -1,0 +1,193 @@
+name: FEN Autopilot Queue Helper
+
+on:
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      completed_issue:
+        description: "Completed issue number to promote from"
+        required: false
+        type: string
+      promote_next:
+        description: "Whether to promote next issue to agent:ready"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  promote-next-fen-issue:
+    name: Promote next FEN issue
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.issue.pull_request == null &&
+        contains(github.event.comment.body, 'Codex status: DONE') &&
+        contains(github.event.comment.body, 'Completed issue:')
+      )
+    steps:
+      - name: Configure FEN issue order
+        id: order
+        shell: bash
+        run: |
+          cat > /tmp/fen_order.txt <<'ORDER'
+          28
+          19
+          30
+          20
+          22
+          24
+          21
+          29
+          23
+          25
+          26
+          27
+          ORDER
+          echo "order_file=/tmp/fen_order.txt" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve completed issue
+        id: completed
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_COMPLETED: ${{ inputs.completed_issue }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          completed=""
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ -n "$INPUT_COMPLETED" ]; then
+            completed="$INPUT_COMPLETED"
+          elif [ -n "$ISSUE_NUMBER" ]; then
+            completed="$ISSUE_NUMBER"
+          fi
+
+          completed="${completed//#/}"
+          if ! [[ "$completed" =~ ^[0-9]+$ ]]; then
+            echo "No numeric completed issue could be resolved."
+            exit 1
+          fi
+          echo "completed=$completed" >> "$GITHUB_OUTPUT"
+
+      - name: Find next issue
+        id: next
+        shell: bash
+        run: |
+          completed="${{ steps.completed.outputs.completed }}"
+          next=""
+          found="false"
+          while read -r issue; do
+            [ -z "$issue" ] && continue
+            if [ "$found" = "true" ]; then
+              next="$issue"
+              break
+            fi
+            if [ "$issue" = "$completed" ]; then
+              found="true"
+            fi
+          done < "${{ steps.order.outputs.order_file }}"
+
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+          if [ -z "$next" ]; then
+            echo "No next issue found. This may be the end of the FEN P0 queue."
+          else
+            echo "Next issue: $next"
+          fi
+
+      - name: Ensure lifecycle labels exist
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          ensure_label() {
+            name="$1"
+            color="$2"
+            description="$3"
+            gh label create "$name" --repo "$REPO" --color "$color" --description "$description" 2>/dev/null || true
+          }
+
+          ensure_label "agent:queued" "6f42c1" "Issue is queued for agent execution."
+          ensure_label "agent:in-progress" "fbca04" "Agent is currently working on this issue."
+          ensure_label "agent:blocked" "d73a4a" "Agent is blocked and human input is required."
+          ensure_label "agent:ready-review" "1f6feb" "Agent PR is ready for review."
+          ensure_label "agent:done" "8250df" "Agent completed the issue contract."
+          ensure_label "agent:needs-artifact" "b60205" "Required input artifact is missing."
+          ensure_label "agent:ready" "2ea44f" "Issue is complete enough for agent planning or execution."
+          ensure_label "autopilot:allowed" "0e8a16" "Agent may execute without asking if the issue contract stays valid."
+          ensure_label "area:fen" "ededed" "FEN pipeline work."
+
+      - name: Mark completed and promote next
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          COMPLETED: ${{ steps.completed.outputs.completed }}
+          NEXT: ${{ steps.next.outputs.next }}
+          PROMOTE_NEXT: ${{ inputs.promote_next }}
+        run: |
+          echo "Marking completed issue #$COMPLETED"
+          gh issue edit "$COMPLETED" --repo "$REPO" \
+            --remove-label "agent:ready" \
+            --remove-label "agent:in-progress" \
+            --add-label "agent:done" \
+            --add-label "agent:ready-review" || true
+
+          if [ -n "$NEXT" ] && [ "${PROMOTE_NEXT:-true}" != "false" ]; then
+            echo "Promoting next issue #$NEXT"
+            gh issue edit "$NEXT" --repo "$REPO" \
+              --remove-label "agent:queued" \
+              --add-label "agent:ready" \
+              --add-label "autopilot:allowed" \
+              --add-label "area:fen"
+
+            gh issue comment "$NEXT" --repo "$REPO" --body "## Autopilot queue promotion\n\nThis issue is now promoted to \`agent:ready\` after completion of #$COMPLETED.\n\nCodex may start this issue if the issue contract remains valid and no blocker is present."
+          fi
+
+      - name: Update epic
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          COMPLETED: ${{ steps.completed.outputs.completed }}
+          NEXT: ${{ steps.next.outputs.next }}
+        run: |
+          if [ -n "$NEXT" ]; then
+            body="## FEN autopilot queue update\n\nCompleted: #$COMPLETED\n\nPromoted next: #$NEXT\n\nQueue policy: one issue, one branch, one PR. Stop on BLOCKED, failing tests, missing artifacts, or strict FEN policy conflict."
+          else
+            body="## FEN autopilot queue update\n\nCompleted: #$COMPLETED\n\nNo next P0 issue found. FEN P0 queue may be complete."
+          fi
+          gh issue comment 18 --repo "$REPO" --body "$body"
+
+  block-on-fen-blocked-comment:
+    name: Mark blocked FEN issue
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request == null &&
+      contains(github.event.comment.body, 'Codex status: BLOCKED')
+    permissions:
+      issues: write
+    steps:
+      - name: Ensure blocked labels and mark issue
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          gh label create "agent:blocked" --repo "$REPO" --color "d73a4a" --description "Agent is blocked and human input is required." 2>/dev/null || true
+          gh label create "agent:needs-artifact" --repo "$REPO" --color "b60205" --description "Required input artifact is missing." 2>/dev/null || true
+          gh issue edit "$ISSUE" --repo "$REPO" \
+            --remove-label "agent:ready" \
+            --remove-label "agent:in-progress" \
+            --add-label "agent:blocked" || true
+          gh issue comment 18 --repo "$REPO" --body "## FEN autopilot queue blocked\n\nIssue #$ISSUE reported BLOCKED. Queue promotion is stopped until human action resolves the blocker."

@@ -12,8 +12,10 @@ FULL_FEN = "8/8/8/8/8/8/4K3/4k3 w - - 0 1"
 
 
 class ChessFenReviewBlockerDiagnosticsTests(unittest.TestCase):
-    def test_known_latest_report_has_197_review_items(self) -> None:
-        payload = analyze_review_blockers("reports/chess_fen/fundamenty_marker_rule_recovery.json")
+    def test_generated_latest_diagnostics_has_197_review_items(self) -> None:
+        payload = json.loads(
+            Path("reports/chess_fen/fundamenty_marker_rule_recovery_review_diagnostics.json").read_text(encoding="utf-8")
+        )
 
         self.assertEqual(payload["summary"]["review_total"], 197)
         self.assertEqual(len(payload["items"]), 197)

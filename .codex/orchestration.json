@@ -1,0 +1,97 @@
+{
+  "provider": "github_issues",
+  "mode": "kindlemaster_native_with_global_compatibility",
+  "branch_prefix": "codex/issue-",
+  "native_orchestrator": {
+    "command": "python kindlemaster.py orchestrate",
+    "doctor_command": "python kindlemaster.py orchestrate doctor",
+    "preferred": true
+  },
+  "issue_template": ".github/ISSUE_TEMPLATE/kindlemaster_task.yml",
+  "compatibility": {
+    "global_issue_template": ".github/ISSUE_TEMPLATE/agent_task.yml",
+    "global_doctor_command": "python C:\\Users\\user\\.codex\\skills\\github-issue-orchestrator\\scripts\\codex_orchestrate.py doctor --repo-root .",
+    "notes": [
+      "The KindleMaster native orchestrator remains preferred.",
+      "The generic Codex orchestrator uses this file and agent_task.yml as compatibility adapters."
+    ]
+  },
+  "required_labels": [
+    "agent:ready",
+    "autopilot:allowed"
+  ],
+  "blocking_labels": [
+    "agent:blocked",
+    "autopilot:requires-human",
+    "needs-product-decision"
+  ],
+  "area_labels": {
+    "area:app": [
+      "gate:quick",
+      "gate:runtime"
+    ],
+    "area:auth": [
+      "gate:quick",
+      "gate:runtime"
+    ],
+    "area:converter": [
+      "gate:quality-critical"
+    ],
+    "area:corpus": [
+      "gate:quality-critical",
+      "gate:corpus"
+    ],
+    "area:delivery": [
+      "gate:quick",
+      "gate:runtime"
+    ],
+    "area:governance": [
+      "gate:quick"
+    ],
+    "area:semantic": [
+      "gate:quality-critical"
+    ],
+    "area:text": [
+      "gate:quality-critical"
+    ],
+    "area:ui": [
+      "gate:quick",
+      "gate:browser"
+    ]
+  },
+  "gate_commands": {
+    "gate:quick": "python kindlemaster.py test --suite quick",
+    "gate:quality-critical": "python kindlemaster.py test --suite quality-critical",
+    "gate:browser": "python kindlemaster.py test --suite browser",
+    "gate:runtime": "python kindlemaster.py test --suite runtime",
+    "gate:release": "python kindlemaster.py test --suite release",
+    "gate:corpus": "python kindlemaster.py test --suite corpus"
+  },
+  "required_sections": {
+    "goal": [
+      "Cel",
+      "Goal"
+    ],
+    "context": [
+      "Kontekst",
+      "Context"
+    ],
+    "scope": [
+      "Zakres",
+      "Scope"
+    ],
+    "acceptance_criteria": [
+      "Kryteria akceptacji",
+      "Acceptance Criteria"
+    ],
+    "validation": [
+      "Walidacja",
+      "Validation"
+    ],
+    "final_report": [
+      "Raport koncowy",
+      "Final Report",
+      "Output"
+    ]
+  }
+}

@@ -102,7 +102,20 @@ class GithubIssueOrchestrationTests(unittest.TestCase):
 
         self.assertEqual(payload["status"], "failed")
         self.assertIn("issue_template", payload["missing_files"])
+        self.assertIn("global_issue_template", payload["missing_files"])
+        self.assertIn("orchestration_config", payload["missing_files"])
         self.assertIn("agent:ready", payload["required_labels"])
+
+    def test_repo_has_native_and_global_orchestration_adapters(self) -> None:
+        payload = doctor_orchestration(".")
+        self.assertEqual(payload["status"], "passed", payload)
+
+        config = json.loads(Path(".codex/orchestration.json").read_text(encoding="utf-8"))
+        self.assertEqual(config["provider"], "github_issues")
+        self.assertEqual(config["native_orchestrator"]["command"], "python kindlemaster.py orchestrate")
+        self.assertTrue(config["native_orchestrator"]["preferred"])
+        self.assertEqual(config["issue_template"], ".github/ISSUE_TEMPLATE/kindlemaster_task.yml")
+        self.assertEqual(config["compatibility"]["global_issue_template"], ".github/ISSUE_TEMPLATE/agent_task.yml")
 
     def test_kindlemaster_orchestrate_sync_routes_to_issue_validator(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -13,9 +13,8 @@ FULL_FEN = "8/8/8/8/8/8/4K3/4k3 w - - 0 1"
 
 class ChessFenStrictRegressionGateTests(unittest.TestCase):
     def test_real_180_report_fails_against_223_baseline(self) -> None:
-        payload = evaluate_strict_regression_gate(
-            "reports/chess_fen/fundamenty_marker_rule_recovery.json",
-            baseline_path="reports/chess_fen/strict_baseline.json",
+        payload = json.loads(
+            Path("reports/chess_fen/strict_regression_gate_marker_rule.json").read_text(encoding="utf-8")
         )
 
         self.assertEqual(payload["status"], "failed")

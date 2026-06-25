@@ -53,12 +53,27 @@ AREA_DEFAULT_GATES = {
 }
 
 REQUIRED_SECTION_ALIASES = {
-    "goal": ("Cel", "Goal"),
-    "context": ("Kontekst", "Context"),
-    "scope": ("Zakres", "Scope"),
-    "acceptance_criteria": ("Kryteria akceptacji", "Acceptance Criteria"),
-    "validation": ("Walidacja", "Validation"),
-    "final_report": ("Raport koncowy", "Raport końcowy", "Final report", "Output"),
+    "goal": ("Cel", "Goal", "Cel / Goal", "Goal / Cel"),
+    "context": ("Kontekst", "Context", "Kontekst / Context", "Context / Kontekst"),
+    "scope": ("Zakres", "Scope", "Zakres / Scope", "Scope / Zakres"),
+    "acceptance_criteria": (
+        "Kryteria akceptacji",
+        "Acceptance Criteria",
+        "Kryteria akceptacji / Acceptance Criteria",
+        "Acceptance Criteria / Kryteria akceptacji",
+    ),
+    "validation": ("Walidacja", "Validation", "Walidacja / Validation", "Validation / Walidacja"),
+    "final_report": (
+        "Raport koncowy",
+        "Raport końcowy",
+        "Final report",
+        "Final Report",
+        "Output",
+        "Raport koncowy / Final Report",
+        "Raport końcowy / Final Report",
+        "Final Report / Raport koncowy",
+        "Final Report / Raport końcowy",
+    ),
 }
 
 WORKFLOW_BASELINE_AREAS = {

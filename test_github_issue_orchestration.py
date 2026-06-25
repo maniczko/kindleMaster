@@ -62,6 +62,27 @@ def _complete_issue(*, labels: list[str] | None = None) -> dict[str, object]:
     }
 
 
+def _bilingual_issue() -> dict[str, object]:
+    issue = _complete_issue()
+    issue["body"] = "\n".join(
+        [
+            "# Cel / Goal",
+            "Standardize GitHub labels.",
+            "# Kontekst / Context",
+            "KindleMaster uses bilingual issue contracts.",
+            "# Zakres / Scope",
+            "Only label governance.",
+            "# Kryteria akceptacji / Acceptance Criteria",
+            "- Ready payload stays executable.",
+            "# Walidacja / Validation",
+            "- python kindlemaster.py orchestrate sync --issues-json reports/github/issues.json",
+            "# Raport koncowy / Final Report",
+            "Summarize labels and risks.",
+        ]
+    )
+    return issue
+
+
 class GithubIssueOrchestrationTests(unittest.TestCase):
     def test_complete_issue_contract_is_ready_and_maps_area_to_quality_gate(self) -> None:
         issue = issue_contract_from_payload(_complete_issue())
@@ -89,6 +110,15 @@ class GithubIssueOrchestrationTests(unittest.TestCase):
         self.assertIn("autopilot:requires-human", payload["blocking_labels"])
         self.assertIn("missing_label:autopilot:allowed", payload["blockers"])
         self.assertIn("blocking_label:autopilot:requires-human", payload["blockers"])
+
+    def test_bilingual_issue_headings_are_accepted_as_complete_contract(self) -> None:
+        issue = issue_contract_from_payload(_bilingual_issue())
+
+        payload = evaluate_issue_contract(issue)
+
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(payload["missing_sections"], [])
+        self.assertEqual(payload["missing_labels"], [])
 
     def test_explicit_gate_labels_override_area_defaults(self) -> None:
         issue = issue_contract_from_payload(

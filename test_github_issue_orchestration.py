@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -11,6 +12,12 @@ from unittest.mock import patch
 
 import kindlemaster
 from github_issue_orchestration import (
+    AREA_DEFAULT_GATES,
+    AREA_LABELS,
+    AUTOPILOT_ALLOWED_LABEL,
+    BLOCKING_LABELS,
+    GATE_COMMANDS,
+    READY_LABEL,
     branch_name_for_issue,
     build_issue_report,
     claim_issue,
@@ -22,6 +29,11 @@ from github_issue_orchestration import (
     run_orchestration_command,
     sync_issues,
 )
+
+
+def _area_options_from_template(path: str) -> set[str]:
+    text = Path(path).read_text(encoding="utf-8")
+    return set(re.findall(r"(?m)^\s*-\s+(area:[a-z-]+)\s*$", text))
 
 
 def _complete_issue(*, labels: list[str] | None = None) -> dict[str, object]:
@@ -121,6 +133,38 @@ class GithubIssueOrchestrationTests(unittest.TestCase):
         self.assertTrue(config["native_orchestrator"]["preferred"])
         self.assertEqual(config["issue_template"], ".github/ISSUE_TEMPLATE/kindlemaster_task.yml")
         self.assertEqual(config["compatibility"]["global_issue_template"], ".github/ISSUE_TEMPLATE/agent_task.yml")
+
+    def test_repo_orchestration_contract_catches_template_config_and_agents_drift(self) -> None:
+        config = json.loads(Path(".codex/orchestration.json").read_text(encoding="utf-8"))
+        agents_text = Path("AGENTS.md").read_text(encoding="utf-8")
+        native_template = Path(".github/ISSUE_TEMPLATE/kindlemaster_task.yml").read_text(encoding="utf-8")
+        global_template = Path(".github/ISSUE_TEMPLATE/agent_task.yml").read_text(encoding="utf-8")
+
+        self.assertIn("GitHub Issue autopilot task contract", agents_text)
+        self.assertIn("GitHub Issues plus `.github/ISSUE_TEMPLATE/kindlemaster_task.yml`", agents_text)
+        self.assertIn("python kindlemaster.py orchestrate", agents_text)
+        self.assertNotIn("PROJECT_", agents_text + native_template + global_template + json.dumps(config))
+
+        self.assertEqual(set(config["required_labels"]), {READY_LABEL, AUTOPILOT_ALLOWED_LABEL})
+        self.assertEqual(set(config["blocking_labels"]), BLOCKING_LABELS)
+        self.assertEqual(config["gate_commands"], GATE_COMMANDS)
+        self.assertEqual({area: tuple(gates) for area, gates in config["area_labels"].items()}, AREA_DEFAULT_GATES)
+        self.assertEqual(set(config["area_labels"]), AREA_LABELS)
+
+        native_area_options = _area_options_from_template(".github/ISSUE_TEMPLATE/kindlemaster_task.yml")
+        global_area_options = _area_options_from_template(".github/ISSUE_TEMPLATE/agent_task.yml")
+        self.assertEqual(native_area_options, AREA_LABELS)
+        self.assertEqual(global_area_options, AREA_LABELS)
+        for template_text in [native_template, global_template]:
+            self.assertIn(READY_LABEL, template_text)
+            self.assertIn(AUTOPILOT_ALLOWED_LABEL, template_text)
+            self.assertIn("Kryteria akceptacji", template_text)
+            self.assertIn("Walidacja", template_text)
+
+        for area_label, gate_labels in config["area_labels"].items():
+            self.assertGreaterEqual(len(gate_labels), 1, area_label)
+            for gate_label in gate_labels:
+                self.assertIn(gate_label, config["gate_commands"])
 
     def test_kindlemaster_orchestrate_sync_routes_to_issue_validator(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

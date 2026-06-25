@@ -1,0 +1,26 @@
+{
+  "schema": "kindlemaster.chess_fen.strict_regression_gate.v1",
+  "status": "failed",
+  "candidate_report": "reports\\chess_fen\\fundamenty_marker_rule_recovery.json",
+  "baseline_path": "reports\\chess_fen\\strict_baseline.json",
+  "baseline": {
+    "schema": "kindlemaster.chess_fen.strict_baseline.v1",
+    "corpus": "fundamenty",
+    "case_count": 377,
+    "best_known_report": "reports/chess_fen/fundamenty_exact_label_lookup_fix.json",
+    "best_known_strict_accepted": 223,
+    "best_known_strict_rate": 0.5915,
+    "allowed_strict_drop": 0,
+    "required_min_strict_accepted": 223
+  },
+  "candidate": {
+    "strict_accepted": 180,
+    "case_count": 377,
+    "strict_rate": 0.47745358090185674,
+    "strict_delta_vs_baseline": -43
+  },
+  "baseline_update_candidate": false,
+  "blockers": [
+    "strict accepted 180 is below required minimum 223 (best known 223, allowed drop 0)"
+  ]
+}

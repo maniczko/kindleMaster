@@ -1,0 +1,9 @@
+{
+  "schema": "kindlemaster.chess_fen.strict_baseline.v1",
+  "corpus": "fundamenty",
+  "case_count": 377,
+  "best_known_report": "reports/chess_fen/fundamenty_exact_label_lookup_fix.json",
+  "best_known_strict_accepted": 223,
+  "best_known_strict_rate": 0.5915,
+  "allowed_strict_drop": 0
+}

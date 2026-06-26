@@ -39,7 +39,7 @@ jobs:
       APPLY_CLAIM_INPUT: ${{ inputs.apply_claim || false }}
       COMMENT_HANDOFF_INPUT: ${{ inputs.comment_handoff || true }}
       SCHEDULE_APPLY_CLAIM: ${{ vars.CODEX_QUEUE_APPLY_CLAIM || 'false' }}
-      READY_QUERY: label:"agent:ready" label:"autopilot:allowed" -label:"agent:claimed" -label:"agent:blocked" -label:"autopilot:requires-human" -label:"needs-product-decision" sort:created-asc
+      READY_QUERY: label:"agent:ready" label:"autopilot:allowed" -label:"agent:claimed" -label:"agent:blocked" -label:"agent:needs-review" -label:"autopilot:requires-human" -label:"needs-product-decision" sort:created-asc
     steps:
       - name: Checkout
         uses: actions/checkout@v7

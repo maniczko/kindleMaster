@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
@@ -38,6 +38,8 @@ def export_square_debug_artifacts(
             "status": "failed",
             "case_id": case_id,
             "crop_path": str(crop),
+            "grid_overlay_path": "",
+            "grid_overlay_href": "",
             "square_count": 0,
             "squares_dir": str(square_dir),
             "squares_jsonl": str(target / "squares.jsonl"),
@@ -48,6 +50,8 @@ def export_square_debug_artifacts(
         return payload
 
     board = _normalize_board_square(Image.open(crop).convert("RGB")).resize((800, 800), Image.Resampling.BILINEAR)
+    overlay_path = target / "grid_overlay.png"
+    _write_grid_overlay(board, overlay_path)
     square_by_name = {str(square.get("square") or ""): dict(square) for square in squares if isinstance(square, dict)}
     for row in range(8):
         for col in range(8):
@@ -77,6 +81,8 @@ def export_square_debug_artifacts(
         "status": "ok",
         "case_id": case_id,
         "crop_path": str(crop),
+        "grid_overlay_path": str(overlay_path),
+        "grid_overlay_href": overlay_path.name,
         "square_count": len(rows),
         "squares_dir": str(square_dir),
         "squares_jsonl": str(jsonl_path),
@@ -96,6 +102,19 @@ def _safe_float(value: Any) -> float:
         return round(float(value or 0.0), 4)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _write_grid_overlay(board: Image.Image, output_path: Path) -> None:
+    overlay = board.convert("RGB")
+    draw = ImageDraw.Draw(overlay)
+    width, height = overlay.size
+    line_color = (255, 64, 64)
+    for index in range(9):
+        x = round(index * width / 8)
+        y = round(index * height / 8)
+        draw.line((x, 0, x, height), fill=line_color, width=2)
+        draw.line((0, y, width, y), fill=line_color, width=2)
+    overlay.save(output_path)
 
 
 def _load_squares(path: str | Path) -> list[dict[str, Any]]:

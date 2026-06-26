@@ -37,6 +37,12 @@ class FenAutomationReadinessTests(unittest.TestCase):
                             ],
                         },
                         {
+                            "id": "ai",
+                            "status": "ai_consensus",
+                            "runtime_status": "ai_consensus",
+                            "placement_runtime_status": "FEN_PLACEMENT_REVIEW_REQUIRED",
+                        },
+                        {
                             "id": "failed",
                             "status": "FEN_FAILED",
                             "runtime_status": "FEN_FAILED",
@@ -60,12 +66,19 @@ class FenAutomationReadinessTests(unittest.TestCase):
 
         self.assertEqual(payload["schema"], "kindlemaster.fen_automation_readiness.v1")
         self.assertEqual(payload["status"], "ready_for_p0_review")
-        self.assertEqual(payload["summary"]["total_fen_items"], 3)
+        self.assertEqual(payload["summary"]["total_fen_items"], 4)
         self.assertEqual(payload["summary"]["full_machine_accepted_count"], 1)
         self.assertEqual(payload["summary"]["placement_machine_accepted_count"], 2)
-        self.assertEqual(payload["summary"]["placement_machine_accepted_rate"], 0.6667)
+        self.assertEqual(payload["summary"]["placement_machine_accepted_rate"], 0.5)
         self.assertEqual(payload["summary"]["failed_count"], 1)
         self.assertEqual(payload["summary"]["top_blocker_categories"][0]["code"], "crop_grid")
+        self.assertEqual(payload["strict_full_fen"]["accepted_count"], 1)
+        self.assertEqual(payload["strict_full_fen"]["review_count"], 3)
+        self.assertEqual(payload["placement"]["machine_accepted_count"], 2)
+        self.assertEqual(payload["ai_readout"]["coverage_count"], 1)
+        self.assertEqual(payload["ai_readout"]["ai_consensus"], 1)
+        self.assertEqual(payload["ai_readout"]["release_safe_accepted_count"], 0)
+        self.assertEqual(payload["release_safe"]["canonical_accepted_count"], 1)
 
     def test_evaluator_handles_missing_artifacts_without_traceback(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -74,6 +87,46 @@ class FenAutomationReadinessTests(unittest.TestCase):
         self.assertEqual(payload["status"], "blocked")
         self.assertEqual(payload["summary"]["total_fen_items"], 0)
         self.assertIn("fen_candidates", payload["input_paths"]["missing"])
+        self.assertEqual(payload["ai_readout"]["status"], "MISSING_ARTIFACT")
+        self.assertIn("fen_ensemble_eval.json", payload["ai_readout"]["required_path"])
+
+    def test_ai_artifact_metrics_do_not_increase_release_safe_acceptance(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _write_json(
+                root / "fen" / "fen_candidates.json",
+                {
+                    "items": [
+                        {
+                            "id": "strict",
+                            "status": "FEN_MACHINE_ACCEPTED",
+                            "runtime_status": "FEN_MACHINE_ACCEPTED",
+                            "placement_runtime_status": "FEN_PLACEMENT_REVIEW_REQUIRED",
+                        }
+                    ]
+                },
+            )
+            _write_json(
+                root / "reports" / "fen_ensemble_eval.json",
+                {
+                    "summary": {
+                        "coverage_count": 377,
+                        "strict_existing": 223,
+                        "ai_consensus": 90,
+                        "ai_tie_break_resolved": 46,
+                        "ai_unreadable": 17,
+                        "ai_best_effort": 1,
+                    }
+                },
+            )
+
+            payload = evaluate_fen_automation_readiness(root)
+
+        self.assertEqual(payload["strict_full_fen"]["accepted_count"], 1)
+        self.assertEqual(payload["release_safe"]["canonical_accepted_count"], 1)
+        self.assertEqual(payload["ai_readout"]["coverage_count"], 377)
+        self.assertEqual(payload["ai_readout"]["strict_existing"], 223)
+        self.assertEqual(payload["ai_readout"]["release_safe_accepted_count"], 0)
 
     def test_evaluator_derives_missing_blocker_categories_from_codes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

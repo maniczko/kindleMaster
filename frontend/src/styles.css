@@ -2045,6 +2045,10 @@ a {
   align-items: start;
 }
 
+.km-details-grid > * {
+  min-width: 0;
+}
+
 .km-details-actions {
   display: flex;
   gap: 10px;
@@ -2111,7 +2115,7 @@ a {
 
 .km-details-send-form {
   display: grid;
-  grid-template-columns: minmax(170px, 0.8fr) minmax(220px, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) max-content;
   align-items: end;
   gap: 10px;
   width: 100%;

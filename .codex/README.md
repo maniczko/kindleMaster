@@ -102,7 +102,7 @@ If the average drops below `9.0`, repair `missing_actions` before treating the a
 - `kindlemaster.py` is the executable source of truth for the CLI command surface.
 - `AGENTS.md` owns the canonical human-readable control-plane source-of-truth matrix for command policy, workflow artifacts, and authoritative versus derived docs.
 - `docs/toolchain-matrix.md` owns supported local toolchain expectations for `test --suite` lanes.
-- GitHub Issues plus `.github/ISSUE_TEMPLATE/kindlemaster_task.yml` own agent-executable task truth.
+- GitHub Issues plus `.github/ISSUE_TEMPLATE/kindlemaster_task.yml` own agent-executable task truth. `.github/ISSUE_TEMPLATE/agent_task.yml` and `.codex/orchestration.json` are compatibility mirrors for generic Codex tooling.
 - `.codex/config.toml` owns active repo-local Codex settings only; its comments are convenience mirrors of the command surface and policy.
 - Generated files under `reports/` and `output/` are derived runtime artifacts, never governance authority.
 
@@ -138,6 +138,7 @@ python kindlemaster.py audit path\to\file.epub
 python kindlemaster.py workflow baseline path\to\input.pdf --change-area reference
 python kindlemaster.py workflow verify path\to\input.pdf --run-id <run_id>
 python kindlemaster.py orchestrate doctor
+python C:\Users\user\.codex\skills\github-issue-orchestrator\scripts\codex_orchestrate.py doctor --repo-root .
 python kindlemaster.py orchestrate sync --issues-json reports/github/issues.json
 python scripts/install_git_hooks.py --check
 python scripts/install_git_hooks.py --install

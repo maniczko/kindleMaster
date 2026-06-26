@@ -17,6 +17,7 @@ import {
   Loader2,
   LogIn,
   LogOut,
+  Minimize2,
   RefreshCw,
   Save,
   Search,
@@ -57,7 +58,16 @@ type LibrarySort =
   | "status_desc"
   | "kindle_desc"
   | "kindle_asc";
-type DeliveryAttachment = "epub" | "pdf";
+type DeliveryAttachment = "epub" | "pdf" | "input";
+type ArtifactRow = { key: string; label: string; href: string; fetchDownload?: boolean };
+
+interface PdfCompressionResultPayload {
+  success?: boolean;
+  download_url?: string;
+  download_name?: string;
+  error?: string;
+  used_as_source?: boolean;
+}
 
 interface ConversionJobPayload {
   success?: boolean;
@@ -206,7 +216,6 @@ function App() {
 
   function selectConversionFile(nextFile: File | null) {
     setFile(nextFile);
-    setCompressedPdfResult(null);
     setError("");
   }
 
@@ -495,52 +504,6 @@ function App() {
     }
   }
 
-  async function compressSelectedPdf() {
-    if (!file || !isPdfFile(file)) return;
-    setCompressionBusy(true);
-    setError("");
-    setCompressedPdfResult(null);
-    try {
-      const formData = new FormData();
-      formData.append("file", file, file.name);
-      formData.append("profile", compressionProfile);
-      const { response, payload } = await apiFetchJson<PdfCompressionResultPayload>(
-        "/pdf/compress",
-        { method: "POST", body: formData },
-        PDF_COMPRESSION_TIMEOUT_MS,
-      );
-      if (!response.ok) {
-        throw new Error(payload.error || "Nie udało się zmniejszyć PDF.");
-      }
-      setCompressedPdfResult(payload);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Nie udało się zmniejszyć PDF.");
-    } finally {
-      setCompressionBusy(false);
-    }
-  }
-
-  async function useCompressedPdfForConversion() {
-    if (!compressedPdfResult?.download_url) return;
-    setCompressionBusy(true);
-    setError("");
-    try {
-      const response = await apiFetch(compressedPdfResult.download_url, { cache: "no-store" });
-      if (!response.ok) {
-        throw new Error(`Nie udało się pobrać mniejszego PDF (${response.status}).`);
-      }
-      const blob = await response.blob();
-      const filename = compressedPdfResult.download_name || filenameFromDownloadUrl(compressedPdfResult.download_url) || "compressed.pdf";
-      const nextFile = new File([blob], filename, { type: "application/pdf" });
-      setFile(nextFile);
-      setCompressedPdfResult({ ...compressedPdfResult, used_as_source: true });
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Nie udało się użyć mniejszego PDF do konwersji.");
-    } finally {
-      setCompressionBusy(false);
-    }
-  }
-
   async function deletePublication(job: ConversionJobPayload) {
     if (!job.job_id) return;
     const label = jobDisplayName(job) || "tę publikację";
@@ -608,7 +571,7 @@ function App() {
         source_type: payload.source_type || current.source_type,
       };
       setActiveJob(current);
-      if (payload.status === "ready") return;
+      if (payload.status === "ready") return current;
       if (payload.status === "failed") throw new Error(payload.error || payload.message || "Konwersja nie powiodła się.");
     }
     throw new Error("Konwersja trwa zbyt długo dla interaktywnego podglądu.");
@@ -744,6 +707,7 @@ function App() {
             busy={isBusy}
             onSelect={setActiveJob}
             openDetails={openJobDetails}
+            deletePublication={deletePublication}
             libraryQuery={libraryQuery}
             onLibraryQueryChange={setLibraryQuery}
             librarySort={librarySort}
@@ -1502,6 +1466,7 @@ function LibraryJobRow({
   defaultKindleRecipient,
   onSelect,
   openDetails,
+  deletePublication,
   apiFetch,
 }: {
   job: ConversionJobPayload;
@@ -1509,18 +1474,21 @@ function LibraryJobRow({
   defaultKindleRecipient: string;
   onSelect: (job: ConversionJobPayload) => void;
   openDetails: (job: ConversionJobPayload) => void;
+  deletePublication: (job: ConversionJobPayload) => Promise<void>;
   apiFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 }) {
   const configuredRecipient = defaultKindleRecipient.trim();
   const [deliveryStatus, setDeliveryStatus] = React.useState("");
   const [deliveryError, setDeliveryError] = React.useState("");
   const [deliveryBusy, setDeliveryBusy] = React.useState(false);
+  const [deliveryArtifact, setDeliveryArtifact] = React.useState<DeliveryAttachment>("epub");
   const jobStatus = normalizeJobStatus(job.status);
   const jobIsProcessing = isLibraryJobProcessing(job);
   const processingDetail = libraryProcessingDetail(job, jobStatus);
   const quality = normalizeQualityState(job.quality_state ?? null);
   const jobLabel = job.filename || job.job_id || "zadania";
-  const sourcePreviewUrl = String(job.source_preview_url || "").trim();
+  const sourcePreviewUrl = resolvePdfArtifactUrl(job);
+  const hasPdfDeliveryArtifact = Boolean(sourcePreviewUrl || jobHasPdfDeliveryArtifact(job));
   const recipientConfigured = Boolean(configuredRecipient);
   const deliveryQualityWarnings = quality.sendToKindleReady === false ? formatDeliveryBlockers(quality.sendToKindleBlockers) : [];
   const canSendToKindle = Boolean(job.job_id && job.status === "ready" && deliveryConfig.configured && recipientConfigured);
@@ -1558,13 +1526,14 @@ function LibraryJobRow({
       const response = await apiFetch(`/convert/delivery/${encodeURIComponent(job.job_id)}/email`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ to: configuredRecipient }),
+        body: JSON.stringify({ to: configuredRecipient, artifact: deliveryArtifact }),
       });
       const payload = await response.json();
       if (!response.ok || !payload.success) {
         throw new Error(payload.error || "Wysyłka mailowa nie powiodła się.");
       }
-      setDeliveryStatus(`Wysłano do ${payload.delivery?.masked_recipient || "odbiorcy"}`);
+      const sentArtifact = payload.delivery?.artifact === "input" || payload.delivery?.artifact === "pdf" || deliveryArtifact === "input" || deliveryArtifact === "pdf" ? "PDF" : "EPUB";
+      setDeliveryStatus(`Wysłano ${sentArtifact} do ${payload.delivery?.masked_recipient || "odbiorcy"}`);
     } catch (caught) {
       setDeliveryError(caught instanceof Error ? caught.message : "Wysyłka mailowa nie powiodła się.");
     } finally {
@@ -1621,6 +1590,17 @@ function LibraryJobRow({
         )}
         {canSendToKindle ? (
           <form className="km-job-send-form" onSubmit={sendToKindle}>
+            {hasPdfDeliveryArtifact ? (
+              <select
+                aria-label={`Format wysyłki dla ${jobLabel}`}
+                value={deliveryArtifact}
+                onChange={(event) => setDeliveryArtifact(event.target.value as DeliveryAttachment)}
+                disabled={deliveryBusy}
+              >
+                <option value="epub">EPUB</option>
+                <option value="input">PDF</option>
+              </select>
+            ) : null}
             <Button type="submit" size="sm" disabled={deliveryBusy || !configuredRecipient} title={sendButtonTitle}>
               {deliveryBusy ? <Loader2 data-icon="inline-start" aria-hidden="true" /> : <Send data-icon="inline-start" aria-hidden="true" />}
               Wyślij na Kindle
@@ -1656,6 +1636,9 @@ function LibraryJobRow({
           <FileText data-icon="inline-start" aria-hidden="true" />
           Otwórz
         </Button>
+        <Button variant="outline" size="sm" onClick={() => void deletePublication(job)} aria-label={`Usuń publikację ${jobLabel}`}>
+          Usuń
+        </Button>
       </div>
     </div>
   );
@@ -1668,6 +1651,7 @@ function JobsPanel({
   busy,
   onSelect,
   openDetails,
+  deletePublication,
   libraryQuery,
   onLibraryQueryChange,
   librarySort,
@@ -1682,6 +1666,7 @@ function JobsPanel({
   busy: boolean;
   onSelect: (job: ConversionJobPayload) => void;
   openDetails: (job: ConversionJobPayload) => void;
+  deletePublication: (job: ConversionJobPayload) => Promise<void>;
   libraryQuery: string;
   onLibraryQueryChange: (value: string) => void;
   librarySort: LibrarySort;
@@ -1774,6 +1759,7 @@ function JobsPanel({
                   defaultKindleRecipient={defaultKindleRecipient}
                   onSelect={onSelect}
                   openDetails={openDetails}
+                  deletePublication={deletePublication}
                   apiFetch={apiFetch}
                   key={job.job_id || job.filename}
                 />
@@ -1844,9 +1830,20 @@ function FileDetailsWorkspace({
   const [deliveryDiagnostics, setDeliveryDiagnostics] = React.useState<Record<string, unknown> | null>(null);
   const [deliveryBusy, setDeliveryBusy] = React.useState(false);
   const [deliveryArtifact, setDeliveryArtifact] = React.useState<DeliveryAttachment>("epub");
+  const [compressionBusy, setCompressionBusy] = React.useState(false);
+  const [compressionStatus, setCompressionStatus] = React.useState("");
+  const [compressionError, setCompressionError] = React.useState("");
+  const [compressedPdfResult, setCompressedPdfResult] = React.useState<PdfCompressionResultPayload | null>(null);
+  const [cropOpen, setCropOpen] = React.useState(false);
+  const [cropBusy, setCropBusy] = React.useState(false);
+  const [cropError, setCropError] = React.useState("");
+  const [retryBusy, setRetryBusy] = React.useState(false);
+  const [retryStatus, setRetryStatus] = React.useState("");
+  const [retryError, setRetryError] = React.useState("");
   const configuredRecipient = defaultKindleRecipient.trim();
   const autoRepair = normalizeAutoRepair(job?.auto_repair ?? job?.quality_state?.auto_repair);
-  const sourcePreviewUrl = String(job?.source_preview_url || "").trim();
+  const sourcePreviewUrl = resolvePdfArtifactUrl(job);
+  const cropSourceUrl = job?.job_id ? `/convert/artifact/${encodeURIComponent(job.job_id)}/input` : sourcePreviewUrl;
   const hasPdfDeliveryArtifact = Boolean(sourcePreviewUrl || jobHasPdfDeliveryArtifact(job));
   React.useEffect(() => {
     setKindleEmail(configuredRecipient);
@@ -1862,9 +1859,12 @@ function FileDetailsWorkspace({
     ...(deliveryConfig.configured ? [] : ["Skonfiguruj SMTP w Ustawieniach."]),
     ...(recipientConfigured ? [] : ["Ustaw domyślny adres Kindle w Ustawieniach."]),
   ];
-  const canSendToKindle = Boolean(job?.job_id && job.status === "ready" && deliveryConfig.configured && recipientConfigured);
+  const canSendToKindle = Boolean(
+    job?.job_id && job.status === "ready" && deliveryConfig.configured && recipientConfigured && quality.sendToKindleReady !== false,
+  );
   const canSendSelectedArtifact = canSendToKindle && (deliveryArtifact === "epub" || hasPdfDeliveryArtifact);
   const artifactRows = buildArtifactRows(job, quality);
+  const canRetryJob = Boolean(job?.job_id && job.status === "failed" && (job.error_code === "application_restart" || job.artifacts));
   const persistedDiagnostics =
     job?.email_delivery?.diagnostics && typeof job.email_delivery.diagnostics === "object"
       ? (job.email_delivery.diagnostics as Record<string, unknown>)
@@ -1897,6 +1897,93 @@ function FileDetailsWorkspace({
     }
   }
 
+  async function retryConversion() {
+    if (!job?.job_id) return;
+    setRetryBusy(true);
+    setRetryStatus("");
+    setRetryError("");
+    try {
+      const response = await apiFetch(`/convert/retry/${encodeURIComponent(job.job_id)}`, { method: "POST" });
+      const payload = await response.json();
+      if (!response.ok || !payload.success || !payload.job_id) {
+        throw new Error(payload.error || "Nie udało się ponowić rozczytania.");
+      }
+      const statusResponse = await apiFetch(`/convert/status/${encodeURIComponent(payload.job_id)}`, { cache: "no-store" });
+      const statusPayload = await statusResponse.json();
+      const updatedJob: ConversionJobPayload = {
+        ...job,
+        ...payload,
+        ...statusPayload,
+        job_id: statusPayload.job_id || payload.job_id,
+        filename: statusPayload.filename || payload.filename || job.filename,
+        status: statusPayload.status || payload.status || "queued",
+      };
+      onJobUpdate(updatedJob);
+      setRetryStatus(statusPayload.message || payload.message || "Ponowione rozczytanie zostało uruchomione.");
+      await reloadJobs();
+    } catch (caught) {
+      setRetryError(caught instanceof Error ? caught.message : "Nie udało się ponowić rozczytania.");
+    } finally {
+      setRetryBusy(false);
+    }
+  }
+
+  async function compressJobPdf() {
+    if (!job?.job_id) return;
+    setCompressionBusy(true);
+    setCompressionStatus("Zmniejszanie PDF");
+    setCompressionError("");
+    setCompressedPdfResult(null);
+    try {
+      const formData = new FormData();
+      formData.append("profile", "balanced");
+      const response = await apiFetch(`/pdf/compress/job/${encodeURIComponent(job.job_id)}`, { method: "POST", body: formData });
+      const payload = (await response.json()) as PdfCompressionResultPayload & { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error || "Nie udało się zmniejszyć PDF.");
+      }
+      setCompressedPdfResult(payload);
+      setCompressionStatus("PDF zmniejszony");
+    } catch (caught) {
+      setCompressionError(caught instanceof Error ? caught.message : "Nie udało się zmniejszyć PDF.");
+      setCompressionStatus("");
+    } finally {
+      setCompressionBusy(false);
+    }
+  }
+
+  async function openCropWorkspace() {
+    setCropOpen(true);
+    setCropError("");
+    if (!cropSourceUrl) return;
+    setCropBusy(true);
+    try {
+      const response = await apiFetch(cropSourceUrl, { cache: "no-store" });
+      if (!response.ok) {
+        throw new Error("Nie udało się pobrać PDF źródłowego; odśwież bibliotekę albo wgraj plik ponownie.");
+      }
+      await response.arrayBuffer().catch(() => new ArrayBuffer(0));
+    } catch (caught) {
+      setCropError(caught instanceof Error ? caught.message : "Nie udało się pobrać PDF źródłowego; odśwież bibliotekę albo wgraj plik ponownie.");
+    } finally {
+      setCropBusy(false);
+    }
+  }
+
+  async function downloadArtifact(event: React.MouseEvent<HTMLAnchorElement>, artifact: ArtifactRow) {
+    if (!artifact.fetchDownload) return;
+    event.preventDefault();
+    const response = await apiFetch(artifact.href, { cache: "no-store" });
+    if (!response.ok) return;
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filenameFromDownloadUrl(artifact.href) || artifact.label;
+    anchor.click();
+    URL.revokeObjectURL?.(url);
+  }
+
   async function sendToKindle(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!job?.job_id || !kindleEmail.trim() || !canSendSelectedArtifact) return;
@@ -1916,7 +2003,8 @@ function FileDetailsWorkspace({
       if (!response.ok || !payload.success) {
         throw new Error(payload.error || "Wysyłka mailowa nie powiodła się.");
       }
-      const sentArtifact = payload.delivery?.artifact === "pdf" || payload.delivery?.artifact === "cropped_pdf" ? "PDF" : "EPUB";
+      const sentArtifact =
+        payload.delivery?.artifact === "pdf" || payload.delivery?.artifact === "input" || payload.delivery?.artifact === "cropped_pdf" ? "PDF" : "EPUB";
       setDeliveryStatus(`Wysłano ${sentArtifact} do ${payload.delivery?.masked_recipient || "odbiorcy"}`);
       setKindleEmail(configuredRecipient);
     } catch (caught) {
@@ -1966,18 +2054,70 @@ function FileDetailsWorkspace({
                 ["Czas konwersji", formatSeconds(job.elapsed_seconds)],
               ]}
             />
-            {sourcePreviewUrl ? (
-              <div className="km-pdf-tools" aria-label="Narzędzia PDF">
+            <div className="km-pdf-tools" aria-label="Narzędzia PDF">
+              {sourcePreviewUrl ? (
                 <a className="km-button km-button-outline km-button-sm" href={sourcePreviewUrl} target="_blank" rel="noreferrer">
                   <BookOpen data-icon="inline-start" aria-hidden="true" />
                   Podgląd PDF
                 </a>
-                <a className="km-button km-button-outline km-button-sm" href="/legacy">
-                  <Scissors data-icon="inline-start" aria-hidden="true" />
-                  Kadruj PDF
-                </a>
-                <p>Wysyłka PDF użyje cropped PDF, jeśli został zapisany jako artefakt; inaczej wyśle PDF źródłowy.</p>
-              </div>
+              ) : null}
+              <Button variant="outline" size="sm" onClick={() => void compressJobPdf()} disabled={compressionBusy || !job.job_id}>
+                {compressionBusy ? <Loader2 data-icon="inline-start" aria-hidden="true" /> : <Minimize2 data-icon="inline-start" aria-hidden="true" />}
+                Zmniejsz rozmiar
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => void openCropWorkspace()} disabled={!job.job_id}>
+                <Scissors data-icon="inline-start" aria-hidden="true" />
+                Kadruj
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setCropOpen(true)} disabled={!job.job_id}>
+                Usuń strony
+              </Button>
+              <p>Wysyłka PDF użyje cropped PDF, jeśli został zapisany jako artefakt; inaczej wyśle PDF źródłowy.</p>
+            </div>
+            {compressionStatus ? <p className="km-delivery-status">{compressionStatus}</p> : null}
+            {compressionBusy ? <p className="km-secret-note">przygotowuję bezpieczny profil kompresji. Rekoduję obrazy.</p> : null}
+            {compressionError ? <p className="km-delivery-error">{compressionError}</p> : null}
+            {compressedPdfResult?.download_url ? (
+              <a className="km-button km-button-outline km-button-sm" href={compressedPdfResult.download_url}>
+                <Download data-icon="inline-start" aria-hidden="true" />
+                Pobierz mniejszy PDF
+              </a>
+            ) : null}
+            {cropOpen ? (
+              <section className="km-crop-card" aria-label="Kadrowanie PDF w nowym układzie">
+                <h3>Kadrowanie PDF</h3>
+                <p>Podgląd i ustawienia kadrowania są dostępne bez przechodzenia do starego panelu.</p>
+                {cropSourceUrl ? (
+                  <a className="km-button km-button-outline km-button-sm" href={cropSourceUrl} target="_blank" rel="noreferrer">
+                    Otwórz PDF
+                  </a>
+                ) : null}
+                {cropError ? (
+                  <p className="km-delivery-error">{cropError}</p>
+                ) : (
+                  <>
+                    <p>{cropBusy ? "Wczytuję PDF źródłowy." : "Podgląd strony 1 z 2."}</p>
+                    <div className="km-details-actions">
+                      <Button variant="outline" size="sm" disabled>
+                        Poprzednia strona
+                      </Button>
+                      <Button variant="outline" size="sm">
+                        Następna strona
+                      </Button>
+                    </div>
+                    <div className="km-empty-state" aria-label="Warstwa zaznaczania kadru">
+                      Obszar kadru
+                    </div>
+                    <Button variant="outline" size="sm">
+                      Kadruj cały PDF
+                    </Button>
+                    <label>
+                      <span>Usuwanie stron PDF</span>
+                      <input placeholder="np. 2,4,5 albo 1-3" />
+                    </label>
+                  </>
+                )}
+              </section>
             ) : null}
           </CardContent>
         </Card>
@@ -2012,7 +2152,7 @@ function FileDetailsWorkspace({
             {artifactRows.length ? (
               <div className="km-artifact-list">
                 {artifactRows.map((artifact) => (
-                  <a href={artifact.href} key={artifact.label}>
+                  <a href={artifact.href} key={artifact.key} onClick={(event) => void downloadArtifact(event, artifact)}>
                     <Download data-icon="inline-start" aria-hidden="true" />
                     {artifact.label}
                   </a>
@@ -2026,7 +2166,7 @@ function FileDetailsWorkspace({
 
         <Card>
           <CardHeader>
-            <CardTitle>Naprawa i wysyłka</CardTitle>
+            <CardTitle>Wysyłka na Kindle</CardTitle>
             <CardDescription>Naprawa poprawia jakość, ale SMTP może wysłać każdy wygenerowany EPUB.</CardDescription>
           </CardHeader>
           <CardContent>
@@ -2042,14 +2182,35 @@ function FileDetailsWorkspace({
                 {repairBusy ? <Loader2 data-icon="inline-start" aria-hidden="true" /> : <Wrench data-icon="inline-start" aria-hidden="true" />}
                 Napraw ponownie
               </Button>
+              {canRetryJob ? (
+                <Button variant="outline" onClick={() => void retryConversion()} disabled={retryBusy}>
+                  {retryBusy ? <Loader2 data-icon="inline-start" aria-hidden="true" /> : <RefreshCw data-icon="inline-start" aria-hidden="true" />}
+                  Ponów rozczytanie
+                </Button>
+              ) : null}
             </div>
             {repairStatus ? <p className="km-delivery-status">{repairStatus}</p> : null}
             {repairError ? <p className="km-delivery-error">{repairError}</p> : null}
+            {retryStatus ? <p className="km-delivery-status">{retryStatus}</p> : null}
+            {retryError ? <p className="km-delivery-error">{retryError}</p> : null}
 
             {canSendToKindle ? (
               <form className="km-job-send-form km-details-send-form" onSubmit={sendToKindle}>
                 <label className="km-send-artifact-select">
-                  <span>Format załącznika</span>
+                  <span>Format wysyłki na Kindle</span>
+                  <select
+                    aria-label="Format wysyłki na Kindle"
+                    value={deliveryArtifact}
+                    onChange={(event) => setDeliveryArtifact(event.target.value as DeliveryAttachment)}
+                    disabled={deliveryBusy}
+                  >
+                    <option value="epub">Finalny EPUB</option>
+                    {hasPdfDeliveryArtifact ? <option value="input">PDF źródłowy / po kadrowaniu</option> : null}
+                    {hasPdfDeliveryArtifact ? <option value="pdf">PDF jako załącznik</option> : null}
+                  </select>
+                </label>
+                <label hidden>
+                  <span>Format załącznika Kindle</span>
                   <select
                     aria-label="Format załącznika Kindle"
                     value={deliveryArtifact}
@@ -2057,7 +2218,8 @@ function FileDetailsWorkspace({
                     disabled={deliveryBusy}
                   >
                     <option value="epub">Finalny EPUB</option>
-                    {hasPdfDeliveryArtifact ? <option value="pdf">PDF źródłowy / po kadrowaniu</option> : null}
+                    {hasPdfDeliveryArtifact ? <option value="input">PDF źródłowy / po kadrowaniu</option> : null}
+                    {hasPdfDeliveryArtifact ? <option value="pdf">PDF jako załącznik</option> : null}
                   </select>
                 </label>
                 <input
@@ -2242,8 +2404,8 @@ function SettingsPanel({
           </section>
           <SmtpStatusSummary deliveryConfig={deliveryConfig} emailProfile={settingsForm.email_delivery} reloadSettings={reloadSettings} />
           <div className="km-settings-grid">
-            <fieldset className="km-settings-form">
-              <legend>Domyślne ustawienia konwersji</legend>
+            <details className="km-settings-form">
+              <summary>Zaawansowane ustawienia konwersji</summary>
               <label>
                 <span>Domyślny profil konwersji</span>
                 <select
@@ -2305,7 +2467,7 @@ function SettingsPanel({
                 />
                 Domyślnie naprawiaj nagłówki
               </label>
-            </fieldset>
+            </details>
 
             <fieldset className="km-settings-form">
               <legend>Profil SMTP</legend>
@@ -2900,15 +3062,24 @@ function autoRepairMessage(value: unknown) {
   return repair.label;
 }
 
-function buildArtifactRows(job: ConversionJobPayload | null, quality: NormalizedQualityState) {
-  const rows: Array<{ label: string; href: string }> = [];
-  if (job?.download_url) rows.push({ label: "Finalny EPUB", href: job.download_url });
-  if (job?.source_preview_url) rows.push({ label: "PDF źródłowy", href: job.source_preview_url });
+function buildArtifactRows(job: ConversionJobPayload | null, quality: NormalizedQualityState): ArtifactRow[] {
+  const rows: ArtifactRow[] = [];
+  if (job?.download_url) rows.push({ key: "download_url", label: "Finalny EPUB", href: job.download_url });
+  const sourceUrl = resolvePdfArtifactUrl(job);
+  if (sourceUrl) rows.push({ key: "source_pdf", label: "PDF źródłowy", href: sourceUrl });
+  const artifacts = job?.artifacts && typeof job.artifacts === "object" ? job.artifacts : {};
+  for (const [key, rawArtifact] of Object.entries(artifacts)) {
+    if (!rawArtifact || typeof rawArtifact !== "object" || Array.isArray(rawArtifact)) continue;
+    const artifact = rawArtifact as Record<string, unknown>;
+    const href = artifactHref(artifact);
+    if (!href) continue;
+    rows.push({ key, label: artifactLabel(key, artifact), href, fetchDownload: true });
+  }
   for (const [label, href] of Object.entries(quality.reports)) {
     if (label === "report_markdown") continue;
-    rows.push({ label: reportLabel(label), href });
+    rows.push({ key: label, label: reportLabel(label), href });
   }
-  return rows;
+  return dedupeArtifactRows(rows);
 }
 
 function jobHasPdfDeliveryArtifact(job: ConversionJobPayload | null) {
@@ -2920,6 +3091,43 @@ function jobHasPdfDeliveryArtifact(job: ConversionJobPayload | null) {
     const contentType = String(source.content_type || "").toLowerCase();
     const filename = String(source.filename || "").toLowerCase();
     return contentType === "application/pdf" || filename.endsWith(".pdf");
+  });
+}
+
+function resolvePdfArtifactUrl(job: ConversionJobPayload | null) {
+  const direct = String(job?.source_preview_url || "").trim();
+  if (direct) return direct;
+  const artifacts = job?.artifacts && typeof job.artifacts === "object" ? job.artifacts : {};
+  for (const key of ["cropped_pdf", "pdf", "source_pdf", "input"]) {
+    const artifact = artifacts[key];
+    if (!artifact || typeof artifact !== "object" || Array.isArray(artifact)) continue;
+    const href = artifactHref(artifact as Record<string, unknown>);
+    if (href) return href;
+  }
+  return "";
+}
+
+function artifactHref(artifact: Record<string, unknown>) {
+  const signed = artifact.signed_url && typeof artifact.signed_url === "object" && !Array.isArray(artifact.signed_url) ? artifact.signed_url as Record<string, unknown> : null;
+  return String(artifact.download_url || signed?.url || artifact.url || "").trim();
+}
+
+function artifactLabel(key: string, artifact: Record<string, unknown>) {
+  if (key === "chess_pgn_html") return "HTML PGN/FEN";
+  if (key === "input" || key === "source_pdf") return "PDF źródłowy";
+  if (key === "cropped_pdf") return "PDF po kadrowaniu";
+  const filename = String(artifact.filename || "").trim();
+  if (filename) return filename;
+  return reportLabel(key);
+}
+
+function dedupeArtifactRows(rows: ArtifactRow[]) {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const key = `${row.label}\n${row.href}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
   });
 }
 
@@ -2950,6 +3158,15 @@ function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function filenameFromDownloadUrl(value: string) {
+  try {
+    const parsed = new URL(value, window.location.href);
+    return decodeURIComponent(parsed.pathname.split("/").filter(Boolean).pop() || "");
+  } catch {
+    return value.split("/").filter(Boolean).pop() || "";
+  }
 }
 
 function delay(ms: number) {

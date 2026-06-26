@@ -63,6 +63,7 @@ QUICK_TESTS = [
     "test_chess_fen_strict_regression_gate.py",
     "test_chess_fen_strict_report_diff.py",
     "test_chess_fen_strict_readiness.py",
+    "test_chess_fen_best_strict_baseline.py",
     "test_chess_fen_accepted_audit.py",
     "test_chess_auto_flow.py",
     "test_ai_consensus_fen_promotion_queue.py",
@@ -691,7 +692,7 @@ def main() -> int:
             fen_min_seed_label_count=args.fen_min_seed_label_count,
         )
         _print_json(payload)
-        return 0
+        return 0 if payload.get("overall_status") != "failed" else 1
     if args.command == "status":
         from scripts.generate_project_status import generate_project_status
 

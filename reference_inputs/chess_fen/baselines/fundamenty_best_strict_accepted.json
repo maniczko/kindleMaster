@@ -1,0 +1,2014 @@
+{
+  "schema": "kindlemaster.chess_fen.best_strict_accepted_baseline.v1",
+  "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json",
+  "accepted_count": 223,
+  "records": [
+    {
+      "diagram_id": "p10:scan_chess_p010_01.png",
+      "page": 10,
+      "selected_value": "6k1/5pp1/8/5P2/R6p/1P3N1P/3rnrPK/6R1 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p10:scan_chess_p010_02.png",
+      "page": 10,
+      "selected_value": "6k1/p4p1p/3p1p2/2p1r3/2PnrqN1/P6P/1P1Q1PP1/3R1RK1 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p11:scan_chess_p011_01.png",
+      "page": 11,
+      "selected_value": "r4rk1/1pb2ppp/p2qbnn1/3pp3/1P6/1BP2N1P/PBN2PP1/R2Q1RK1 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p11:scan_chess_p011_02.png",
+      "page": 11,
+      "selected_value": "6k1/5pp1/8/5P2/R6p/1P3n1P/3r4/6RK w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p12:scan_chess_p012_01.png",
+      "page": 12,
+      "selected_value": "5rk1/pp1nqrp1/2p3p1/4p3/4P1P1/1BP2P2/PP2Q3/3RK2R b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p12:scan_chess_p012_02.png",
+      "page": 12,
+      "selected_value": "5rk1/qp1r2pp/1bpp1p1B/p1nPpP1q/P1P1P3/2N4P/1P3P1K/1R4R1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p13:scan_chess_p013_01.png",
+      "page": 13,
+      "selected_value": "2kr1bnr/pp1nqppp/2p1b3/8/4PB2/2N2NP1/PPP1Q2P/2KR1B1R w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p14:scan_chess_p014_01.png",
+      "page": 14,
+      "selected_value": "6R1/2p1qr1k/1p1p1r1p/p3p3/2P1P3/2P3Q1/PP3P2/2K3R1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p14:scan_chess_p014_03.png",
+      "page": 14,
+      "selected_value": "r1b2r1k/ppb2ppB/3q4/8/2PN1n1Q/PP6/1B3PPP/R4RK1 b - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p14:scan_chess_p014_05.png",
+      "page": 14,
+      "selected_value": "3r1rk1/pp3ppp/3pn3/1qpN4/5PP1/P4P1q/1PP3P1/1K1R4 b - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p15:scan_chess_p015_01.png",
+      "page": 15,
+      "selected_value": "r4r1k/ppn4p/2p2N2/4P3/2pP1N2/5K2/PPP5/6R1 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p15:scan_chess_p015_03.png",
+      "page": 15,
+      "selected_value": "2kr1r2/pp1n3p/2p1bB2/8/5B2/8/PP2BP1P/2R1K1R1 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p15:scan_chess_p015_04.png",
+      "page": 15,
+      "selected_value": "k1r5/1p4bq/p7/5n2/3nq3/P4B2/RPP2PPP/2B2RK1 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p20:scan_chess_p020_01.png",
+      "page": 20,
+      "selected_value": "q1r4r/1b2kpp1/p3p3/P1b5/1pN1P3/3BBPp1/1P4P1/R3QRK1 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p23:scan_chess_p023_01.png",
+      "page": 23,
+      "selected_value": "2r2rk1/1b1qbp1n/p3p1p1/1p1p2Np/7Q/1P1BP3/PBP2NPP/3R1RK1 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p24:scan_chess_p024_01.png",
+      "page": 24,
+      "selected_value": "r4rk1/p1pn1p1p/1p3p1B/8/3P4/4P3/PN3PqP/R2QK2R b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p24:scan_chess_p024_02.png",
+      "page": 24,
+      "selected_value": "r4rk1/2p1qpp1/p1p5/2Ppn2b/2PQ1N1p/4P3/PB3PPP/R4RK1 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p25:scan_chess_p025_01.png",
+      "page": 25,
+      "selected_value": "1q1R1r2/1bb2pk1/pN1pp3/4n1p1/1PPQP3/1N2BPp1/P5P1/2RR1B1K w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p25:scan_chess_p025_02.png",
+      "page": 25,
+      "selected_value": "r4r1k/5p1p/p2p1Pp1/2p3Q1/q1P1P3/7P/1P4P1/1R3R1K w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p25:scan_chess_p025_04.png",
+      "page": 25,
+      "selected_value": "rn3r1k/ppp3pp/8/4bP1q/2BqN3/8/PP3p1P/2R2K1R w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p26:scan_chess_p026_01.png",
+      "page": 26,
+      "selected_value": "r1bq2rk/5p1p/2np1PpQ/pnp1p3/1p2P2N/2PP2P1/PP4BP/R2N1RK1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p26:scan_chess_p026_04.png",
+      "page": 26,
+      "selected_value": "6k1/1p5p/pp1p1qp1/2p1q3/8/8/6PP/5RK1 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p33:scan_chess_p033_01.png",
+      "page": 33,
+      "selected_value": "r1bqr3/ppp2k1p/2np2p1/8/3pP3/1Q6/PPP2PPP/RNB1K2R b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p35:scan_chess_p035_01.png",
+      "page": 35,
+      "selected_value": "r1b5/pp2qk1p/2p3p1/n7/3p4/4r1P1/PPPN1K1P/R1B2Q1R b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p36:scan_chess_p036_01.png",
+      "page": 36,
+      "selected_value": "4rk1r/ppp2pp1/3b1n2/4n3/6PQ/1P2p2P/PBPPB1Q1/RN1K3R b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p39:scan_chess_p039_01.png",
+      "page": 39,
+      "selected_value": "r5k1/1b2qpbp/3p4/1B2p3/1N6/2P2P2/1P4PP/3QK2R b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p46:scan_chess_p046_01.png",
+      "page": 46,
+      "selected_value": "8/8/3k4/8/3K4/8/3P4/8 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p46:scan_chess_p046_02.png",
+      "page": 46,
+      "selected_value": "8/8/8/6p1/7k/8/6K1/8 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p47:scan_chess_p047_02.png",
+      "page": 47,
+      "selected_value": "8/8/8/8/8/7p/7k/5K2 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p47:scan_chess_p047_03.png",
+      "page": 47,
+      "selected_value": "8/8/8/8/8/7p/7k/5K2 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p51:scan_chess_p051_06.png",
+      "page": 51,
+      "selected_value": "8/8/8/7p/2K5/8/6kP/8 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p56:scan_chess_p056_01.png",
+      "page": 56,
+      "selected_value": "2r1b1k1/p1q1brp1/1p2p1qB/4p3/4N3/2PBR3/P4PPP/6K1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p58:scan_chess_p058_01.png",
+      "page": 58,
+      "selected_value": "2r4k/4Q1pp/3P4/8/3q4/1B6/P4nPP/5RK1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p59:scan_chess_p059_01.png",
+      "page": 59,
+      "selected_value": "r4nkr/p3b2p/1pp1p1qB/5Q2/2BP4/2P3P1/P4P1P/4R1K1 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p59:scan_chess_p059_02.png",
+      "page": 59,
+      "selected_value": "r2r2k1/5p2/3p2p1/1N2p1q1/2P2n1p/4N1n1/5RPP/3RQBK1 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p60:scan_chess_p060_01.png",
+      "page": 60,
+      "selected_value": "3rk2r/pp3p1p/6n1/2Qnp3/8/P1Pq4/R3NPPP/2B1K2R b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p60:scan_chess_p060_02.png",
+      "page": 60,
+      "selected_value": "3r3k/6p1/3b4/2pb2qp/8/1P3r1P/3pqPP1/R2N1NK1 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p66:scan_chess_p066_01.png",
+      "page": 66,
+      "selected_value": "4r1k1/4bpp1/1r2qn1p/p4N2/1pp1PQ2/1P3N1P/P4PP1/R3R1K1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p67:scan_chess_p067_01.png",
+      "page": 67,
+      "selected_value": "8/4r1k1/6r1/5Q1K/4p3/4P3/8/8 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p67:scan_chess_p067_02.png",
+      "page": 67,
+      "selected_value": "8/5pp1/4n1k1/5r1p/8/3Q4/5P1K/8 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p69:scan_chess_p069_01.png",
+      "page": 69,
+      "selected_value": "4rrk1/ppp2pq1/7p/2P3p1/8/P4PPB/2qB2KP/4R3 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p71:scan_chess_p071_01.png",
+      "page": 71,
+      "selected_value": "k2R4/1p5q/p1n5/4p3/2Q5/P3P1P1/1P3PP1/2R1K3 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p71:scan_chess_p071_02.png",
+      "page": 71,
+      "selected_value": "8/2K1nk2/8/5P2/8/8/8/8 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p71:scan_chess_p071_03.png",
+      "page": 71,
+      "selected_value": "8/8/8/8/7p/1b3N1P/8/qqk3K1 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p71:scan_chess_p071_04.png",
+      "page": 71,
+      "selected_value": "8/p2p2k1/3P2pp/2PN1p2/r4P1P/2K5/6P1/8 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p71:scan_chess_p071_06.png",
+      "page": 71,
+      "selected_value": "6k1/2p3pp/p7/1p1q4/3N4/1P2K3/PB1N2PP/8 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p76:scan_chess_p076_01.png",
+      "page": 76,
+      "selected_value": "r1bqr1k1/p1p2ppp/3b1n2/2p3B1/3P4/2NQ1N2/PP3PPP/R4RK1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p77:scan_chess_p077_01.png",
+      "page": 77,
+      "selected_value": "rn2kb1r/ppq2ppp/4pn2/4N3/3p1B2/8/PPP2PPP/RN1Q1RK1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p77:scan_chess_p077_02.png",
+      "page": 77,
+      "selected_value": "6rk/p5bp/1p1Q4/2p1B3/2P5/1P2R2P/q5PK/8 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p77:scan_chess_p077_03.png",
+      "page": 77,
+      "selected_value": "r1br2kb/pp2pp1p/3p1npB/q7/2P1P3/2N5/PP1QBPPP/R4RK1 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p79:scan_chess_p079_02.png",
+      "page": 79,
+      "selected_value": "3kr1r1/ppp2p1p/2bp4/2nNPB2/2P2P2/1P6/P1qB1qPP/R6K w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p79:scan_chess_p079_03.png",
+      "page": 79,
+      "selected_value": "r3k2r/pp1n1ppp/2p1b3/3pP3/3P1N2/q2BQ3/P1P3PP/R4RK1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p79:scan_chess_p079_04.png",
+      "page": 79,
+      "selected_value": "3rn2k/ppb2rpp/2ppqp2/5N2/2P1P3/1P5Q/PB3PPP/3RR1K1 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p80:scan_chess_p080_01.png",
+      "page": 80,
+      "selected_value": "q1bk4/p4p2/6r1/3p4/8/2P5/2PK1P1P/R4B1Q b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p80:scan_chess_p080_02.png",
+      "page": 80,
+      "selected_value": "4r1k1/pb4p1/1pq2nQp/8/2PB1P1R/3R4/P5PP/6K1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p80:scan_chess_p080_04.png",
+      "page": 80,
+      "selected_value": "3r1q1k/p5b1/1r3p1p/1ppBpQpP/4P3/2P3P1/PP1R1PK1/3R4 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p84:scan_chess_p084_01.png",
+      "page": 84,
+      "selected_value": "8/p2B3k/1p6/1P6/7K/6Q1/6p1/5Q2 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p86:scan_chess_p086_01.png",
+      "page": 86,
+      "selected_value": "r2q1rk1/1b1nbp1p/p4np1/1p1pN1B1/2pP1P2/2N1P2Q/PPB3PP/R4RK1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p86:scan_chess_p086_02.png",
+      "page": 86,
+      "selected_value": "5rk1/1b1qbp2/r4Rp1/p2p2B1/2pP3Q/2p1P3/PPB3PP/5RK1 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p87:scan_chess_p087_02.png",
+      "page": 87,
+      "selected_value": "5r1k/pp2b1rp/8/6q1/3QR3/2pN4/P1P2RP1/6K1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p87:scan_chess_p087_04.png",
+      "page": 87,
+      "selected_value": "r1b1kb1r/4p2p/pqp1pnp1/3pB3/3N4/5N2/PPP2PPP/R2Q1RK1 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p88:scan_chess_p088_03.png",
+      "page": 88,
+      "selected_value": "3r3r/kpp3pp/p1pqbpn1/2N5/Q2PP3/5NPP/PP4P1/2R2RK1 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p88:scan_chess_p088_04.png",
+      "page": 88,
+      "selected_value": "r2b1rk1/2pn3p/1p1pq3/5pp1/1PP5/4NPP1/2Q1PB1P/2RR2K1 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p94:scan_chess_p094_01.png",
+      "page": 94,
+      "selected_value": "7R/K7/8/k7/Pp6/1r6/8/8 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p94:scan_chess_p094_02.png",
+      "page": 94,
+      "selected_value": "8/8/8/4Q3/8/6R1/2n1pkBK/8 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p95:scan_chess_p095_01.png",
+      "page": 95,
+      "selected_value": "8/1q6/8/1p6/Np6/Nk6/8/1K6 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p95:scan_chess_p095_02.png",
+      "page": 95,
+      "selected_value": "8/8/7p/4K1kb/8/7R/7Q/8 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p95:scan_chess_p095_03.png",
+      "page": 95,
+      "selected_value": "8/8/8/8/8/3n1N2/8/3Q1K1k w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p96:scan_chess_p096_01.png",
+      "page": 96,
+      "selected_value": "8/8/8/k1P5/N6Q/8/2n1B3/7K w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p97:scan_chess_p097_03.png",
+      "page": 97,
+      "selected_value": "8/8/3B4/8/8/3Pk1p1/2K3Q1/8 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p97:scan_chess_p097_05.png",
+      "page": 97,
+      "selected_value": "8/8/8/8/8/2N1p1K1/6B1/2B1r1k1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p97:scan_chess_p097_06.png",
+      "page": 97,
+      "selected_value": "B1n5/5RK1/4k3/4p3/8/8/8/3R4 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p98:scan_chess_p098_02.png",
+      "page": 98,
+      "selected_value": "2K4Q/8/2N5/1k6/3B4/8/P5P1/8 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p98:scan_chess_p098_05.png",
+      "page": 98,
+      "selected_value": "br1n4/1k3n2/2R5/3R4/8/K2B4/8/8 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p98:scan_chess_p098_06.png",
+      "page": 98,
+      "selected_value": "5Q2/3N4/2K1k2r/7b/4P3/8/8/8 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p102:scan_chess_p102_02.png",
+      "page": 102,
+      "selected_value": "8/8/Kpk5/8/P1P5/8/8/8 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p103:scan_chess_p103_01.png",
+      "page": 103,
+      "selected_value": "8/8/4k3/1p5p/1P2K2P/8/8/8 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p103:scan_chess_p103_02.png",
+      "page": 103,
+      "selected_value": "8/8/8/4p1p1/8/5P2/6K1/3k4 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p104:scan_chess_p104_01.png",
+      "page": 104,
+      "selected_value": "8/8/3k4/8/Pp6/1P6/6K1/8 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p105:scan_chess_p105_01.png",
+      "page": 105,
+      "selected_value": "8/5p2/8/6Pk/5P2/8/8/7K w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p105:scan_chess_p105_02.png",
+      "page": 105,
+      "selected_value": "8/6k1/3K1p2/4p1p1/4P1P1/5P2/8/8 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p106:scan_chess_p106_02.png",
+      "page": 106,
+      "selected_value": "8/8/8/3p2k1/6q1/3R4/8/7K w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p106:scan_chess_p106_06.png",
+      "page": 106,
+      "selected_value": "8/8/8/1p6/1Pk5/1p6/1K6/8 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p112:scan_chess_p112_01.png",
+      "page": 112,
+      "selected_value": "8/1r3kpp/pn2p3/5pPP/8/P3P3/4KP2/B2R4 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p113:scan_chess_p113_01.png",
+      "page": 113,
+      "selected_value": "8/p4rk1/5b2/P7/8/1P3R2/1B6/7K w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p113:scan_chess_p113_02.png",
+      "page": 113,
+      "selected_value": "1r4k1/3r2p1/1p1p2p1/1R2p1p1/P1P5/1P5P/5PP1/3R2K1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p115:scan_chess_p115_01.png",
+      "page": 115,
+      "selected_value": "rn4k1/p5pp/1p3p2/4p3/8/5N2/PP2KPPP/2R5 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p116:scan_chess_p116_02.png",
+      "page": 116,
+      "selected_value": "3q3k/5p1p/3B4/8/1p6/6Q1/1K6/8 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p116:scan_chess_p116_03.png",
+      "page": 116,
+      "selected_value": "4r3/1p4pk/2b2pq1/7p/3B1P2/7P/4RQP1/7K w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p117:scan_chess_p117_01.png",
+      "page": 117,
+      "selected_value": "8/5B2/6r1/7k/8/3p3K/8/8 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p117:scan_chess_p117_03.png",
+      "page": 117,
+      "selected_value": "2r5/pp1bkp2/3q1p2/3Pp3/7Q/1B6/P1P3PP/1K3R2 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p117:scan_chess_p117_04.png",
+      "page": 117,
+      "selected_value": "2r3k1/q5pp/4p3/2rp1p2/1p3P2/1P1qP3/P1R5/6K1 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p123:scan_chess_p123_01.png",
+      "page": 123,
+      "selected_value": "8/1p6/1k1P4/8/3N4/1P6/8/1b1K4 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p124:scan_chess_p124_01.png",
+      "page": 124,
+      "selected_value": "3r2k1/p1b2ppp/bp3q2/3pN3/P2P1P2/1Q6/1P3RPP/1B4K1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p125:scan_chess_p125_01.png",
+      "page": 125,
+      "selected_value": "r1b1r1k1/pp2qppp/2n2n2/4p1B1/2Pp4/P3PN2/1PQ1BPPP/3RK2R b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p125:scan_chess_p125_02.png",
+      "page": 125,
+      "selected_value": "8/4kppp/4p3/3nP3/4RPK1/P1r5/7P/8 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p125:scan_chess_p125_03.png",
+      "page": 125,
+      "selected_value": "4B1k1/5p1p/5pp1/p2Pn3/3QP3/7P/5PPK/1q6 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p125:scan_chess_p125_04.png",
+      "page": 125,
+      "selected_value": "1n1q2k1/5p1p/1p4p1/1B1PN3/2QP1R2/r7/P4PP1/5RK1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p125:scan_chess_p125_05.png",
+      "page": 125,
+      "selected_value": "6k1/p4p2/1p1bq1p1/2p5/4n3/2BQ2PP/PP1N1PK1/8 b - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p125:scan_chess_p125_06.png",
+      "page": 125,
+      "selected_value": "5rk1/6pp/8/p1qp1N2/1p4n1/1P4P1/P3P2P/3Q1R1K b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p126:scan_chess_p126_01.png",
+      "page": 126,
+      "selected_value": "6k1/1b4pp/1B3p2/4p3/1Pr5/5P2/5QPP/r4BK1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p126:scan_chess_p126_03.png",
+      "page": 126,
+      "selected_value": "6k1/5r1p/p2N4/nppP2q1/2P5/1P2N3/PQ5P/7K w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p126:scan_chess_p126_05.png",
+      "page": 126,
+      "selected_value": "1n6/2qb1kp1/1p2pp1p/1P1p4/1Q1P1N2/4P1PB/5P1P/6K1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p131:scan_chess_p131_01.png",
+      "page": 131,
+      "selected_value": "8/2R2pk1/6p1/8/2B1K1P1/8/5R2/8 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p131:scan_chess_p131_02.png",
+      "page": 131,
+      "selected_value": "4q3/5p1k/p2p2pb/5r1N/2P1B3/7P/P3RPK1/1r2n3 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p134:scan_chess_p134_01.png",
+      "page": 134,
+      "selected_value": "r5b1/8/2k3pp/1N3p2/1K3P2/P3R2P/6P1/8 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p134:scan_chess_p134_02.png",
+      "page": 134,
+      "selected_value": "7k/1b5p/2q3p1/5p2/2P4P/8/1P3Q2/2R3K1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p134:scan_chess_p134_03.png",
+      "page": 134,
+      "selected_value": "3r3k/7p/1pr2b2/p2p4/8/P6Q/1P5P/5R1K w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p134:scan_chess_p134_04.png",
+      "page": 134,
+      "selected_value": "8/8/6p1/pp1k1p1p/3p3P/1P4P1/P1R1KP2/3r4 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p135:scan_chess_p135_01.png",
+      "page": 135,
+      "selected_value": "8/5Rbk/4p3/3pP2P/1P5p/3r4/3n4/6RK w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p135:scan_chess_p135_03.png",
+      "page": 135,
+      "selected_value": "8/k1q2p1p/8/1QN5/8/8/P4PPP/4b1K1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p135:scan_chess_p135_04.png",
+      "page": 135,
+      "selected_value": "8/8/8/8/1R1P4/2P2kb1/7R/6K1 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p135:scan_chess_p135_06.png",
+      "page": 135,
+      "selected_value": "4b1k1/1p3p1p/2r1pp2/p7/1P6/P7/B1n2PPP/2R1R1K1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p141:scan_chess_p141_01.png",
+      "page": 141,
+      "selected_value": "r2r3k/p1p3pn/1pbq1pBp/3p1P2/3P3N/2P1RpP1/PP3Q1P/4R1K1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p142:scan_chess_p142_01.png",
+      "page": 142,
+      "selected_value": "3r1bk1/p4ppp/qp2p3/8/1P1B4/Pq2P1P1/2r2P1P/R3R1K1 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p144:scan_chess_p144_01.png",
+      "page": 144,
+      "selected_value": "2r2rk1/p3bppp/bq2pn2/3p4/1p1P4/4P1P1/PP1N1PPP/R1BQRBK1 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p144:scan_chess_p144_03.png",
+      "page": 144,
+      "selected_value": "r3n1k1/5ppp/1p2p3/p7/1Pr1P3/2P2P2/1B4PP/R2R1K2 b - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p144:scan_chess_p144_05.png",
+      "page": 144,
+      "selected_value": "rnbqrnk1/5p2/p2p1bp1/2pPp3/Q1P1P3/P4NPP/3B4/1R1NRBK1 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p145:scan_chess_p145_01.png",
+      "page": 145,
+      "selected_value": "1r4k1/p4pp1/3q1n1p/2pp1B2/8/1P4P1/P1P2PP1/1R2Q1K1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p145:scan_chess_p145_02.png",
+      "page": 145,
+      "selected_value": "2rq1rk1/pb1n1p1p/1p2pbp1/8/3PPB2/3B1N2/P3QPPP/2RR2K1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p145:scan_chess_p145_03.png",
+      "page": 145,
+      "selected_value": "3r2k1/p1Rn1pbp/qp1Bp1p1/4P3/3q4/8/P2N1PPP/6K1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p151:scan_chess_p151_01.png",
+      "page": 151,
+      "selected_value": "6k1/2r1q1n1/4pR1Q/p2pP1Pp/7P/1r6/1P6/1K3R2 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p152:scan_chess_p152_01.png",
+      "page": 152,
+      "selected_value": "2r3k1/1q3p1p/p2R2p1/bp6/6P1/P6P/1PP2QP1/5BK1 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p152:scan_chess_p152_02.png",
+      "page": 152,
+      "selected_value": "1R6/4qp1k/1p4p1/2p1r3/P2p3P/3Q2P1/1P3P2/6K1 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p153:scan_chess_p153_01.png",
+      "page": 153,
+      "selected_value": "8/p5kp/1p3p2/6p1/8/1P3QPK/P2N4/6q1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p153:scan_chess_p153_02.png",
+      "page": 153,
+      "selected_value": "6k1/ppp3pp/8/8/8/2NQn2P/PP4PK/5r1R w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p153:scan_chess_p153_06.png",
+      "page": 153,
+      "selected_value": "k5r1/p4b2/2P5/5p2/3P1P2/4QBRQ/P5P1/4R1K1 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p154:scan_chess_p154_02.png",
+      "page": 154,
+      "selected_value": "6nr/pq4pp/2Bk4/2b5/3r1pbq/2N5/PPP3PP/R4K1R w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p154:scan_chess_p154_03.png",
+      "page": 154,
+      "selected_value": "4r1k1/5ppn/6q1/pp2pN2/4P3/P6Q/1PP2P2/4K2R w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p154:scan_chess_p154_05.png",
+      "page": 154,
+      "selected_value": "5b1k/6np/pq1p2p1/1pr1p3/4P1N1/PQ1P4/1P4PP/2R3K1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p158:scan_chess_p158_01.png",
+      "page": 158,
+      "selected_value": "8/8/8/8/8/1K6/6Q1/qk6 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p161:scan_chess_p161_02.png",
+      "page": 161,
+      "selected_value": "8/8/8/3QK3/8/2k5/2p5/8 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p161:scan_chess_p161_03.png",
+      "page": 161,
+      "selected_value": "6K1/8/8/8/2Q5/7p/p7/1k6 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p161:scan_chess_p161_06.png",
+      "page": 161,
+      "selected_value": "6K1/7P/6q1/8/8/8/8/1k6 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p162:scan_chess_p162_02.png",
+      "page": 162,
+      "selected_value": "8/8/8/4K3/8/8/q1pk4/8 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p162:scan_chess_p162_04.png",
+      "page": 162,
+      "selected_value": "8/5K2/8/p7/P7/8/kp6/8 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p167:scan_chess_p167_01.png",
+      "page": 167,
+      "selected_value": "8/8/1k6/pP6/K7/Pn6/3B4/2b5 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p167:scan_chess_p167_02.png",
+      "page": 167,
+      "selected_value": "8/8/8/B1p5/2K5/k1N5/1p6/8 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p168:scan_chess_p168_02.png",
+      "page": 168,
+      "selected_value": "8/1q6/4kpn1/5N2/3PP3/6P1/5PKP/4q3 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p169:scan_chess_p169_03.png",
+      "page": 169,
+      "selected_value": "6K1/3nkP2/8/5P2/8/2b5/8/8 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p170:scan_chess_p170_01.png",
+      "page": 170,
+      "selected_value": "8/8/2Pq4/4p2k/4P1qP/4Bp1n/8/5B1K w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p170:scan_chess_p170_03.png",
+      "page": 170,
+      "selected_value": "1R6/4q1pk/2p5/5p1p/4pPQP/8/3r4/1R5K w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p170:scan_chess_p170_04.png",
+      "page": 170,
+      "selected_value": "8/4R3/8/3k1p2/3np3/4K3/r5B1/8 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p170:scan_chess_p170_06.png",
+      "page": 170,
+      "selected_value": "2q5/8/p3R3/P5pP/3p2P1/3k4/3q4/6K1 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p175:scan_chess_p175_01.png",
+      "page": 175,
+      "selected_value": "3rr1k1/5p1p/1p4p1/8/1Pbp4/5BP1/4PP2/3RR1K1 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p176:scan_chess_p176_01.png",
+      "page": 176,
+      "selected_value": "1r3k2/2q2b1p/5Qp1/1p2n3/p3P3/8/PPP3PP/1K1R1R2 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p177:scan_chess_p177_01.png",
+      "page": 177,
+      "selected_value": "r4rk1/1q3ppp/p1b1p1n1/1p6/3BP2P/1BP1Q1P1/P4P2/R2R2K1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p178:scan_chess_p178_01.png",
+      "page": 178,
+      "selected_value": "r5k1/pppb1rpp/3p4/3P3q/3QN3/5P2/PB3P1P/R5RK b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p178:scan_chess_p178_02.png",
+      "page": 178,
+      "selected_value": "4rr2/1ppb2k1/2q3p1/p7/3n4/1BP1B3/PP3PP1/2K4Q b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p178:scan_chess_p178_03.png",
+      "page": 178,
+      "selected_value": "1k1q4/1pp1n1pp/1N6/4p3/3p4/7P/6P1/R4RK1 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p178:scan_chess_p178_04.png",
+      "page": 178,
+      "selected_value": "5rk1/1b3p1p/pp3p2/3n1N2/1P6/P1qB1PP1/3Q3P/4R1K1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p179:scan_chess_p179_02.png",
+      "page": 179,
+      "selected_value": "8/5k2/4N3/8/8/2p2p1p/7P/7K w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p179:scan_chess_p179_03.png",
+      "page": 179,
+      "selected_value": "8/1p3p2/1p4pb/8/1Q4P1/3B1b1K/7P/6k1 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p179:scan_chess_p179_05.png",
+      "page": 179,
+      "selected_value": "r1b1q3/1p4pk/p3pr1p/8/P3pPB1/2b4R/1qP4P/6RK b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p179:scan_chess_p179_06.png",
+      "page": 179,
+      "selected_value": "1n1r1r1k/4qp1p/p3p1pb/2p1Pn2/2P3NN/2B3P1/P1Q2PBP/4R1K1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p184:scan_chess_p184_01.png",
+      "page": 184,
+      "selected_value": "2n5/p4ppp/P1Nkp3/1P6/1K6/8/5PPP/8 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p184:scan_chess_p184_02.png",
+      "page": 184,
+      "selected_value": "8/p1q2pkp/2PR2p1/8/P3Q3/6P1/5P1P/2R3K1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p185:scan_chess_p185_01.png",
+      "page": 185,
+      "selected_value": "rnb1k1nr/ppp2p1p/3b4/8/4P2q/2N3p1/PPPPK1PP/R1BQ1BNR b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p185:scan_chess_p185_02.png",
+      "page": 185,
+      "selected_value": "rn2kbnr/pp2pppp/2p5/3P4/3P4/1P3N2/1P2PPPP/RbB1KB1R w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p186:scan_chess_p186_01.png",
+      "page": 186,
+      "selected_value": "4r1k1/3qP2p/p5p1/1p2Q3/2p5/8/6PP/5R1K w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p187:scan_chess_p187_01.png",
+      "page": 187,
+      "selected_value": "7k/pp2n3/4PP1p/2p3R1/3p4/P7/1PP4P/7K w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p187:scan_chess_p187_02.png",
+      "page": 187,
+      "selected_value": "6k1/1p1b1pp1/p2N4/PPnP4/8/7P/6BK/8 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p188:scan_chess_p188_01.png",
+      "page": 188,
+      "selected_value": "1r3k2/3p1ppp/RP2p3/8/1PR5/6P1/3rPP1P/6K1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p188:scan_chess_p188_02.png",
+      "page": 188,
+      "selected_value": "4b2k/8/p6p/2P5/PP6/5p2/1p5P/1n5K w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p188:scan_chess_p188_05.png",
+      "page": 188,
+      "selected_value": "7r/1pR5/6k1/3p4/p5n1/4P1p1/PPP3P1/5RK1 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p189:scan_chess_p189_01.png",
+      "page": 189,
+      "selected_value": "8/8/6p1/3P1k2/6Bb/7P/5P2/4K3 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p189:scan_chess_p189_03.png",
+      "page": 189,
+      "selected_value": "6k1/5pp1/8/B2n4/5P2/P4QPp/4K3/7q b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p189:scan_chess_p189_04.png",
+      "page": 189,
+      "selected_value": "5rk1/p5pp/8/8/3bp3/6P1/7P/4RR1K w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p189:scan_chess_p189_06.png",
+      "page": 189,
+      "selected_value": "rkb4r/4Rp1p/p1PR1p1b/8/8/5N2/P4PPP/6K1 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p194:scan_chess_p194_01.png",
+      "page": 194,
+      "selected_value": "q3r3/1p1r1kpp/2pPp3/2P2p2/PR1P4/4R1P1/4Q1KP/8 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p195:scan_chess_p195_01.png",
+      "page": 195,
+      "selected_value": "r1bqk2r/pp2npb1/3p2p1/2pP4/2P1BP1p/2N5/PP4PP/R1BQ1RK1 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p198:scan_chess_p198_01.png",
+      "page": 198,
+      "selected_value": "6k1/2q2pp1/2p2n1p/p3p3/1pN1P3/1P1q1P2/P1P3P1/6K1 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p198:scan_chess_p198_02.png",
+      "page": 198,
+      "selected_value": "3k4/1b1nppbp/pp4p1/3N4/P1BPP1P1/3KB3/5P1P/8 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p199:scan_chess_p199_01.png",
+      "page": 199,
+      "selected_value": "3n4/6pp/1p1k1p2/1p6/p3PP1P/3K4/8/8 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p199:scan_chess_p199_02.png",
+      "page": 199,
+      "selected_value": "r2r2k1/p2nqppp/1p2p3/3b4/1P6/2Q2NP1/P3PPBP/2RR2K1 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p199:scan_chess_p199_03.png",
+      "page": 199,
+      "selected_value": "1r6/p1r1k1p1/4p2p/N2p1p2/nPp5/2P1PP2/P1R2KPP/4R3 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p204:scan_chess_p204_01.png",
+      "page": 204,
+      "selected_value": "7k/8/8/8/1p6/r1p5/P1R5/5K2 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p204:scan_chess_p204_02.png",
+      "page": 204,
+      "selected_value": "2b5/1r6/2kBp1p1/p2pP1P1/2pP4/1pP3K1/1R3P2/8 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p205:scan_chess_p205_01.png",
+      "page": 205,
+      "selected_value": "r2q1Rk1/ppp1bppp/2bp1n2/8/2BQPP2/2N1B2P/PPP3P1/R4RK1 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p205:scan_chess_p205_02.png",
+      "page": 205,
+      "selected_value": "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/2N2N2/PPPP1PPP/R1BQK2R b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p206:scan_chess_p206_01.png",
+      "page": 206,
+      "selected_value": "8/8/R7/pp5p/2bK3k/2P5/6P1/8 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p207:scan_chess_p207_01.png",
+      "page": 207,
+      "selected_value": "3r2k1/p6p/b2r2p1/2qPQp2/2P2P2/8/6BP/R4R1K w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p207:scan_chess_p207_02.png",
+      "page": 207,
+      "selected_value": "2r3k1/5pp1/7p/b2q1p2/3P4/pRPQ2B1/P5PP/6K1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p207:scan_chess_p207_05.png",
+      "page": 207,
+      "selected_value": "6r1/5p1p/5Kpk/6R1/7P/p7/6P1/8 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p207:scan_chess_p207_06.png",
+      "page": 207,
+      "selected_value": "5r1k/p6p/1p1p2p1/2prpr2/8/2PP4/PP2R1K1/5R2 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p208:scan_chess_p208_01.png",
+      "page": 208,
+      "selected_value": "3q4/p3b1k1/2p2RPp/2q5/4B3/P2P4/7P/6RK w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p208:scan_chess_p208_02.png",
+      "page": 208,
+      "selected_value": "r1bq1rk1/ppp2pp1/1bnp1n1p/8/2BPP3/2N1BN1P/PP3PP1/R2Q1RK1 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p208:scan_chess_p208_03.png",
+      "page": 208,
+      "selected_value": "8/5p2/8/5KPp/7k/7p/7P/8 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p208:scan_chess_p208_05.png",
+      "page": 208,
+      "selected_value": "4r1k1/6p1/7p/1pp1P3/7P/7n/6Q1/5R1K w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p215:scan_chess_p215_01.png",
+      "page": 215,
+      "selected_value": "8/8/1r3kp1/4b3/8/6P1/2R3KP/8 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p215:scan_chess_p215_02.png",
+      "page": 215,
+      "selected_value": "8/6k1/6p1/8/7P/6P1/1b4K1/8 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p218:scan_chess_p218_03.png",
+      "page": 218,
+      "selected_value": "7k/5Ppp/3b4/4N3/8/8/8/1K6 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p218:scan_chess_p218_04.png",
+      "page": 218,
+      "selected_value": "8/8/8/8/1p2k3/8/b1PK4/8 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p219:scan_chess_p219_04.png",
+      "page": 219,
+      "selected_value": "1N6/p7/3k4/8/1pb5/8/PK6/8 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p224:scan_chess_p224_01.png",
+      "page": 224,
+      "selected_value": "1nq1r2k/5qpp/pn2Pb2/1p3NN1/2p3PP/1P6/P4PK1/3R4 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p225:scan_chess_p225_01.png",
+      "page": 225,
+      "selected_value": "r1bqr2k/pp1n1Qpp/3b1p1N/8/1p1P4/2PB4/P4PPP/R1B2RK1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p227:scan_chess_p227_01.png",
+      "page": 227,
+      "selected_value": "r6k/ppRrb1pp/5p2/nP2p3/4N3/P2P1NPq/Q3PP1P/5RK1 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p227:scan_chess_p227_02.png",
+      "page": 227,
+      "selected_value": "8/8/8/8/8/4N2p/5K1k/8 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p228:scan_chess_p228_01.png",
+      "page": 228,
+      "selected_value": "6rk/p2b4/3p1Nqp/2pPpn2/P1P4p/5P1P/Q2B1NP1/6RK b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p229:scan_chess_p229_01.png",
+      "page": 229,
+      "selected_value": "8/8/8/8/8/7p/N4K1k/8 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p229:scan_chess_p229_02.png",
+      "page": 229,
+      "selected_value": "2r4k/5Rbp/2rNQ1p1/p6q/Pp4n1/1B6/4KP2/3R4 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p229:scan_chess_p229_04.png",
+      "page": 229,
+      "selected_value": "k4q2/n7/B1b5/2N5/8/6Q1/8/6K1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p229:scan_chess_p229_05.png",
+      "page": 229,
+      "selected_value": "5rk1/p1p3pp/4P3/4N3/2pq4/5Q2/P4P1P/6K1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p235:scan_chess_p235_01.png",
+      "page": 235,
+      "selected_value": "r2q1rk1/ppp1bp2/3p1nbQ/6N1/8/2N3R1/PPP2PPP/2K4R w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p236:scan_chess_p236_01.png",
+      "page": 236,
+      "selected_value": "rnbqk2r/ppp2ppp/3p1n2/2b5/2BpP3/2P2N2/PP3PPP/RNBQ1RK1 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p236:scan_chess_p236_02.png",
+      "page": 236,
+      "selected_value": "r1bqk2r/ppp2ppp/1b1p1n2/nP2P3/2B5/2Pq1N2/P4PPP/RNB2RK1 b kq - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p237:scan_chess_p237_01.png",
+      "page": 237,
+      "selected_value": "r4r2/ppp1k1pp/3bbn2/1P2N1B1/2B1pPP1/2P5/P6P/R3R1K1 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p237:scan_chess_p237_02.png",
+      "page": 237,
+      "selected_value": "r4r2/ppp1k1pp/3bbn2/1P2N1B1/5PP1/2PBp3/P6P/R3R1K1 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p240:scan_chess_p240_01.png",
+      "page": 240,
+      "selected_value": "2k1r2r/ppp3pp/2nbR3/q7/3p4/5N2/PPP1qPPP/R5K1 b - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p240:scan_chess_p240_03.png",
+      "page": 240,
+      "selected_value": "5k1R/ppp1R1pp/4Q3/8/8/1P4K1/P1P3PP/8 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p240:scan_chess_p240_05.png",
+      "page": 240,
+      "selected_value": "2kr3r/ppp3pp/2nbR3/7Q/3p4/5N2/PNPBQPPP/R5K1 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p245:scan_chess_p245_04.png",
+      "page": 245,
+      "selected_value": "4R2k/3n3p/b1p2ppQ/p1n1p3/Pp2P3/1B1P1R2/1PPN2P1/R5K1 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p245:scan_chess_p245_05.png",
+      "page": 245,
+      "selected_value": "r4rk1/pp1qb1pp/5p2/4nN2/2P5/5Q2/PB3PPP/R4RK1 b - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p245:scan_chess_p245_06.png",
+      "page": 245,
+      "selected_value": "r2b3k/1ppq3p/5pqB/p7/8/1B2n3/PPP2PPP/6K1 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p246:scan_chess_p246_03.png",
+      "page": 246,
+      "selected_value": "3r3k/p3N1pp/4q3/3Np3/8/1Pp1P1P1/P4Q1P/6K1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p246:scan_chess_p246_04.png",
+      "page": 246,
+      "selected_value": "3r2k1/pp2rppp/1qp2nn1/5B2/3PP3/2N5/PP3QPP/4RR1K w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p246:scan_chess_p246_05.png",
+      "page": 246,
+      "selected_value": "r2qkbnr/ppp1pppp/8/3Pn3/6b1/2N2N2/PPP2PPP/R1BQKB1R b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p247:scan_chess_p247_01.png",
+      "page": 247,
+      "selected_value": "8/8/8/4K3/8/8/3Q1p2/6k1 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p247:scan_chess_p247_02.png",
+      "page": 247,
+      "selected_value": "8/4k1p1/8/3K1p1P/8/8/5b2/8 w - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p247:scan_chess_p247_04.png",
+      "page": 247,
+      "selected_value": "3r2k1/pp4bp/2pNQ1p1/p6q/Pp4n1/1B6/4KP2/3R4 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p247:scan_chess_p247_05.png",
+      "page": 247,
+      "selected_value": "3r1k2/3qbpNp/4pp1Q/p7/Pp6/7P/1PP2PP1/3rR1K1 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p247:scan_chess_p247_06.png",
+      "page": 247,
+      "selected_value": "r1b2rk1/pp3pp1/5n1p/q1p1pP2/2P5/P1PBP3/2QN2PP/R4RK1 w - - 0 1",
+      "runtime_status": "verified-exact-crop-label",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    },
+    {
+      "diagram_id": "p248:scan_chess_p248_05.png",
+      "page": 248,
+      "selected_value": "4rrk1/pq3ppp/n1p2b2/8/3p4/PP1B4/1BPQ1PPP/R4RK1 b - - 0 1",
+      "runtime_status": "image-template-board",
+      "source": "strict_accepted",
+      "crop_hash": "",
+      "report_source": "reports\\chess_fen\\strict_regression_diff_exact_label_vs_marker_rule.json"
+    }
+  ]
+}

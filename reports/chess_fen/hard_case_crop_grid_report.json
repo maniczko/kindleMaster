@@ -1,0 +1,2481 @@
+{
+  "schema": "kindlemaster.chess_fen.hard_cases.v1",
+  "diagnostics_path": "reports\\chess_fen\\fundamenty_marker_rule_recovery_review_diagnostics.json",
+  "summary": {
+    "review_total": 197,
+    "hard_case_total": 197,
+    "crop_grid_unresolved_count": 0,
+    "crop_recovery_evidence_count": 68,
+    "recognition_hard_case_count": 78,
+    "metadata_hard_case_count": 197,
+    "full_fen_validation_hard_case_count": 0,
+    "by_hard_case_tag": {
+      "crop_recovery_evidence": 68,
+      "metadata_hard_case": 197,
+      "recognition_hard_case": 78
+    },
+    "top_primary_blockers": {
+      "reader_visible_crop_fen_used": 54,
+      "piece_template_confidence_below_threshold": 39,
+      "side_to_move_inferred": 38,
+      "annotation_cross_marker_suppressed": 19,
+      "black_king_count_invalid": 17,
+      "reader_expanded_crop_fen_used": 13,
+      "side_to_move_caption_ambiguous": 11,
+      "pawn_on_back_rank": 3,
+      "side_to_move_context_applied": 2,
+      "final_rendered_crop_fen_used": 1
+    }
+  },
+  "items": [
+    {
+      "diagram_id": "p14:scan_chess_p014_02.png",
+      "page": 14,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p14:scan_chess_p014_04.png",
+      "page": 14,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p14:scan_chess_p014_05.png",
+      "page": 14,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p15:scan_chess_p015_01.png",
+      "page": 15,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p15:scan_chess_p015_02.png",
+      "page": 15,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p15:scan_chess_p015_05.png",
+      "page": 15,
+      "primary_blocker": "black_king_count_invalid",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p23:scan_chess_p023_01.png",
+      "page": 23,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p25:scan_chess_p025_03.png",
+      "page": 25,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p25:scan_chess_p025_04.png",
+      "page": 25,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p26:scan_chess_p026_02.png",
+      "page": 26,
+      "primary_blocker": "black_king_count_invalid",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p26:scan_chess_p026_03.png",
+      "page": 26,
+      "primary_blocker": "pawn_on_back_rank",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p26:scan_chess_p026_04.png",
+      "page": 26,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p26:scan_chess_p026_05.png",
+      "page": 26,
+      "primary_blocker": "annotation_cross_marker_suppressed",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p32:scan_chess_p032_01.png",
+      "page": 32,
+      "primary_blocker": "side_to_move_caption_ambiguous",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p32:scan_chess_p032_02.png",
+      "page": 32,
+      "primary_blocker": "side_to_move_caption_ambiguous",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p36:scan_chess_p036_02.png",
+      "page": 36,
+      "primary_blocker": "black_king_count_invalid",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p38:scan_chess_p038_01.png",
+      "page": 38,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p39:scan_chess_p039_02.png",
+      "page": 39,
+      "primary_blocker": "annotation_cross_marker_suppressed",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p39:scan_chess_p039_03.png",
+      "page": 39,
+      "primary_blocker": "black_king_count_invalid",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p47:scan_chess_p047_01.png",
+      "page": 47,
+      "primary_blocker": "side_to_move_caption_ambiguous",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p47:scan_chess_p047_03.png",
+      "page": 47,
+      "primary_blocker": "side_to_move_caption_ambiguous",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p48:scan_chess_p048_01.png",
+      "page": 48,
+      "primary_blocker": "side_to_move_caption_ambiguous",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p48:scan_chess_p048_02.png",
+      "page": 48,
+      "primary_blocker": "side_to_move_caption_ambiguous",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p50:scan_chess_p050_01.png",
+      "page": 50,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p50:scan_chess_p050_02.png",
+      "page": 50,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p50:scan_chess_p050_03.png",
+      "page": 50,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p50:scan_chess_p050_04.png",
+      "page": 50,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p50:scan_chess_p050_05.png",
+      "page": 50,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p51:scan_chess_p051_01.png",
+      "page": 51,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p51:scan_chess_p051_02.png",
+      "page": 51,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p51:scan_chess_p051_03.png",
+      "page": 51,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p51:scan_chess_p051_04.png",
+      "page": 51,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p51:scan_chess_p051_05.png",
+      "page": 51,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p59:scan_chess_p059_03.png",
+      "page": 59,
+      "primary_blocker": "black_king_count_invalid",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p59:scan_chess_p059_04.png",
+      "page": 59,
+      "primary_blocker": "annotation_cross_marker_suppressed",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p59:scan_chess_p059_05.png",
+      "page": 59,
+      "primary_blocker": "annotation_cross_marker_suppressed",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p59:scan_chess_p059_06.png",
+      "page": 59,
+      "primary_blocker": "annotation_cross_marker_suppressed",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p60:scan_chess_p060_02.png",
+      "page": 60,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p60:scan_chess_p060_03.png",
+      "page": 60,
+      "primary_blocker": "annotation_cross_marker_suppressed",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p70:scan_chess_p070_01.png",
+      "page": 70,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p70:scan_chess_p070_02.png",
+      "page": 70,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p70:scan_chess_p070_03.png",
+      "page": 70,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p70:scan_chess_p070_04.png",
+      "page": 70,
+      "primary_blocker": "black_king_count_invalid",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p70:scan_chess_p070_05.png",
+      "page": 70,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p70:scan_chess_p070_06.png",
+      "page": 70,
+      "primary_blocker": "black_king_count_invalid",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p71:scan_chess_p071_02.png",
+      "page": 71,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p71:scan_chess_p071_03.png",
+      "page": 71,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p71:scan_chess_p071_05.png",
+      "page": 71,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p77:scan_chess_p077_03.png",
+      "page": 77,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p79:scan_chess_p079_01.png",
+      "page": 79,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p79:scan_chess_p079_04.png",
+      "page": 79,
+      "primary_blocker": "annotation_cross_marker_suppressed",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p79:scan_chess_p079_05.png",
+      "page": 79,
+      "primary_blocker": "black_king_count_invalid",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p80:scan_chess_p080_03.png",
+      "page": 80,
+      "primary_blocker": "black_king_count_invalid",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p86:scan_chess_p086_02.png",
+      "page": 86,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p87:scan_chess_p087_01.png",
+      "page": 87,
+      "primary_blocker": "reader_expanded_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_expanded_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p87:scan_chess_p087_03.png",
+      "page": 87,
+      "primary_blocker": "reader_expanded_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_expanded_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p87:scan_chess_p087_04.png",
+      "page": 87,
+      "primary_blocker": "annotation_cross_marker_suppressed",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p88:scan_chess_p088_01.png",
+      "page": 88,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p88:scan_chess_p088_02.png",
+      "page": 88,
+      "primary_blocker": "black_king_count_invalid",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p94:scan_chess_p094_03.png",
+      "page": 94,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p97:scan_chess_p097_01.png",
+      "page": 97,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p97:scan_chess_p097_02.png",
+      "page": 97,
+      "primary_blocker": "side_to_move_context_applied",
+      "primary_category": "metadata",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move marker/caption metadata"
+    },
+    {
+      "diagram_id": "p97:scan_chess_p097_04.png",
+      "page": 97,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p98:scan_chess_p098_01.png",
+      "page": 98,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p98:scan_chess_p098_03.png",
+      "page": 98,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p98:scan_chess_p098_04.png",
+      "page": 98,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p98:scan_chess_p098_05.png",
+      "page": 98,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p98:scan_chess_p098_06.png",
+      "page": 98,
+      "primary_blocker": "final_rendered_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "final_rendered_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p102:scan_chess_p102_01.png",
+      "page": 102,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p105:scan_chess_p105_03.png",
+      "page": 105,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p105:scan_chess_p105_04.png",
+      "page": 105,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p105:scan_chess_p105_05.png",
+      "page": 105,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p105:scan_chess_p105_06.png",
+      "page": 105,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p106:scan_chess_p106_01.png",
+      "page": 106,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p106:scan_chess_p106_03.png",
+      "page": 106,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p106:scan_chess_p106_04.png",
+      "page": 106,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p106:scan_chess_p106_05.png",
+      "page": 106,
+      "primary_blocker": "reader_expanded_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_expanded_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p116:scan_chess_p116_01.png",
+      "page": 116,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p116:scan_chess_p116_04.png",
+      "page": 116,
+      "primary_blocker": "reader_expanded_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_expanded_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p117:scan_chess_p117_01.png",
+      "page": 117,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p117:scan_chess_p117_02.png",
+      "page": 117,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p117:scan_chess_p117_04.png",
+      "page": 117,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p125:scan_chess_p125_03.png",
+      "page": 125,
+      "primary_blocker": "reader_expanded_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_expanded_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p125:scan_chess_p125_05.png",
+      "page": 125,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p126:scan_chess_p126_02.png",
+      "page": 126,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p126:scan_chess_p126_04.png",
+      "page": 126,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p126:scan_chess_p126_06.png",
+      "page": 126,
+      "primary_blocker": "reader_expanded_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_expanded_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p134:scan_chess_p134_01.png",
+      "page": 134,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p134:scan_chess_p134_05.png",
+      "page": 134,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p134:scan_chess_p134_06.png",
+      "page": 134,
+      "primary_blocker": "reader_expanded_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_expanded_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p135:scan_chess_p135_02.png",
+      "page": 135,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p135:scan_chess_p135_05.png",
+      "page": 135,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p144:scan_chess_p144_01.png",
+      "page": 144,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p144:scan_chess_p144_02.png",
+      "page": 144,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p144:scan_chess_p144_03.png",
+      "page": 144,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p144:scan_chess_p144_04.png",
+      "page": 144,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p144:scan_chess_p144_05.png",
+      "page": 144,
+      "primary_blocker": "annotation_cross_marker_suppressed",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p144:scan_chess_p144_06.png",
+      "page": 144,
+      "primary_blocker": "annotation_cross_marker_suppressed",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p145:scan_chess_p145_04.png",
+      "page": 145,
+      "primary_blocker": "reader_expanded_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_expanded_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p145:scan_chess_p145_05.png",
+      "page": 145,
+      "primary_blocker": "black_king_count_invalid",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p153:scan_chess_p153_02.png",
+      "page": 153,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p153:scan_chess_p153_03.png",
+      "page": 153,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p153:scan_chess_p153_04.png",
+      "page": 153,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p153:scan_chess_p153_05.png",
+      "page": 153,
+      "primary_blocker": "annotation_cross_marker_suppressed",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p154:scan_chess_p154_01.png",
+      "page": 154,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p154:scan_chess_p154_02.png",
+      "page": 154,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p154:scan_chess_p154_04.png",
+      "page": 154,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p154:scan_chess_p154_06.png",
+      "page": 154,
+      "primary_blocker": "annotation_cross_marker_suppressed",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p158:scan_chess_p158_02.png",
+      "page": 158,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p159:scan_chess_p159_01.png",
+      "page": 159,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p159:scan_chess_p159_02.png",
+      "page": 159,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p161:scan_chess_p161_01.png",
+      "page": 161,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p161:scan_chess_p161_02.png",
+      "page": 161,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p161:scan_chess_p161_04.png",
+      "page": 161,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p161:scan_chess_p161_05.png",
+      "page": 161,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p162:scan_chess_p162_01.png",
+      "page": 162,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p162:scan_chess_p162_03.png",
+      "page": 162,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p162:scan_chess_p162_05.png",
+      "page": 162,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p162:scan_chess_p162_06.png",
+      "page": 162,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p166:scan_chess_p166_01.png",
+      "page": 166,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p167:scan_chess_p167_03.png",
+      "page": 167,
+      "primary_blocker": "reader_expanded_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_expanded_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p168:scan_chess_p168_01.png",
+      "page": 168,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p169:scan_chess_p169_01.png",
+      "page": 169,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p169:scan_chess_p169_02.png",
+      "page": 169,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p169:scan_chess_p169_04.png",
+      "page": 169,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p169:scan_chess_p169_05.png",
+      "page": 169,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p169:scan_chess_p169_06.png",
+      "page": 169,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p170:scan_chess_p170_02.png",
+      "page": 170,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p170:scan_chess_p170_03.png",
+      "page": 170,
+      "primary_blocker": "black_king_count_invalid",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p170:scan_chess_p170_05.png",
+      "page": 170,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p170:scan_chess_p170_06.png",
+      "page": 170,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p179:scan_chess_p179_01.png",
+      "page": 179,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p179:scan_chess_p179_03.png",
+      "page": 179,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p179:scan_chess_p179_04.png",
+      "page": 179,
+      "primary_blocker": "annotation_cross_marker_suppressed",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p184:scan_chess_p184_03.png",
+      "page": 184,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p185:scan_chess_p185_02.png",
+      "page": 185,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p188:scan_chess_p188_02.png",
+      "page": 188,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p188:scan_chess_p188_03.png",
+      "page": 188,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p188:scan_chess_p188_04.png",
+      "page": 188,
+      "primary_blocker": "black_king_count_invalid",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p188:scan_chess_p188_06.png",
+      "page": 188,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p189:scan_chess_p189_01.png",
+      "page": 189,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p189:scan_chess_p189_02.png",
+      "page": 189,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p189:scan_chess_p189_04.png",
+      "page": 189,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p189:scan_chess_p189_05.png",
+      "page": 189,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p196:scan_chess_p196_01.png",
+      "page": 196,
+      "primary_blocker": "side_to_move_context_applied",
+      "primary_category": "metadata",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move marker/caption metadata"
+    },
+    {
+      "diagram_id": "p198:scan_chess_p198_01.png",
+      "page": 198,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p198:scan_chess_p198_03.png",
+      "page": 198,
+      "primary_blocker": "black_king_count_invalid",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p198:scan_chess_p198_04.png",
+      "page": 198,
+      "primary_blocker": "annotation_cross_marker_suppressed",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p199:scan_chess_p199_01.png",
+      "page": 199,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p207:scan_chess_p207_03.png",
+      "page": 207,
+      "primary_blocker": "reader_expanded_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_expanded_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p207:scan_chess_p207_04.png",
+      "page": 207,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p208:scan_chess_p208_04.png",
+      "page": 208,
+      "primary_blocker": "annotation_cross_marker_suppressed",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p208:scan_chess_p208_05.png",
+      "page": 208,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p214:scan_chess_p214_01.png",
+      "page": 214,
+      "primary_blocker": "side_to_move_caption_ambiguous",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p214:scan_chess_p214_02.png",
+      "page": 214,
+      "primary_blocker": "side_to_move_caption_ambiguous",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p217:scan_chess_p217_01.png",
+      "page": 217,
+      "primary_blocker": "side_to_move_caption_ambiguous",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p217:scan_chess_p217_02.png",
+      "page": 217,
+      "primary_blocker": "side_to_move_caption_ambiguous",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p217:scan_chess_p217_03.png",
+      "page": 217,
+      "primary_blocker": "side_to_move_caption_ambiguous",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p218:scan_chess_p218_01.png",
+      "page": 218,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p218:scan_chess_p218_02.png",
+      "page": 218,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p218:scan_chess_p218_05.png",
+      "page": 218,
+      "primary_blocker": "reader_expanded_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_expanded_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p218:scan_chess_p218_06.png",
+      "page": 218,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p219:scan_chess_p219_01.png",
+      "page": 219,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p219:scan_chess_p219_02.png",
+      "page": 219,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p219:scan_chess_p219_03.png",
+      "page": 219,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p219:scan_chess_p219_05.png",
+      "page": 219,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p219:scan_chess_p219_06.png",
+      "page": 219,
+      "primary_blocker": "pawn_on_back_rank",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p228:scan_chess_p228_02.png",
+      "page": 228,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p228:scan_chess_p228_03.png",
+      "page": 228,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p228:scan_chess_p228_04.png",
+      "page": 228,
+      "primary_blocker": "pawn_on_back_rank",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p228:scan_chess_p228_05.png",
+      "page": 228,
+      "primary_blocker": "annotation_cross_marker_suppressed",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p228:scan_chess_p228_06.png",
+      "page": 228,
+      "primary_blocker": "black_king_count_invalid",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p229:scan_chess_p229_02.png",
+      "page": 229,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p229:scan_chess_p229_03.png",
+      "page": 229,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p229:scan_chess_p229_06.png",
+      "page": 229,
+      "primary_blocker": "black_king_count_invalid",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p239:scan_chess_p239_01.png",
+      "page": 239,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p239:scan_chess_p239_02.png",
+      "page": 239,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p239:scan_chess_p239_03.png",
+      "page": 239,
+      "primary_blocker": "black_king_count_invalid",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p240:scan_chess_p240_01.png",
+      "page": 240,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p240:scan_chess_p240_02.png",
+      "page": 240,
+      "primary_blocker": "reader_expanded_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_expanded_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p240:scan_chess_p240_04.png",
+      "page": 240,
+      "primary_blocker": "annotation_cross_marker_suppressed",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p245:scan_chess_p245_01.png",
+      "page": 245,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p245:scan_chess_p245_02.png",
+      "page": 245,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p245:scan_chess_p245_03.png",
+      "page": 245,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p245:scan_chess_p245_04.png",
+      "page": 245,
+      "primary_blocker": "annotation_cross_marker_suppressed",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p245:scan_chess_p245_05.png",
+      "page": 245,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p246:scan_chess_p246_01.png",
+      "page": 246,
+      "primary_blocker": "side_to_move_inferred",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p246:scan_chess_p246_02.png",
+      "page": 246,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p247:scan_chess_p247_03.png",
+      "page": 247,
+      "primary_blocker": "reader_expanded_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_expanded_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p247:scan_chess_p247_04.png",
+      "page": 247,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p247:scan_chess_p247_05.png",
+      "page": 247,
+      "primary_blocker": "piece_template_confidence_below_threshold",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p247:scan_chess_p247_06.png",
+      "page": 247,
+      "primary_blocker": "annotation_cross_marker_suppressed",
+      "primary_category": "recognition",
+      "hard_case_tags": [
+        "metadata_hard_case",
+        "recognition_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [],
+      "recommendation": "compare placement against crop and template confidence"
+    },
+    {
+      "diagram_id": "p248:scan_chess_p248_01.png",
+      "page": 248,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p248:scan_chess_p248_02.png",
+      "page": 248,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p248:scan_chess_p248_03.png",
+      "page": 248,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p248:scan_chess_p248_04.png",
+      "page": 248,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    },
+    {
+      "diagram_id": "p248:scan_chess_p248_06.png",
+      "page": 248,
+      "primary_blocker": "reader_visible_crop_fen_used",
+      "primary_category": "full_fen_validation",
+      "hard_case_tags": [
+        "crop_recovery_evidence",
+        "metadata_hard_case"
+      ],
+      "non_blocking_crop_recovery_warnings": [
+        "reader_visible_crop_fen_used"
+      ],
+      "recommendation": "inspect side-to-move/full FEN validation evidence"
+    }
+  ]
+}

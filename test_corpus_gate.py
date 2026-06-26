@@ -213,6 +213,7 @@ class CorpusGateTests(unittest.TestCase):
                     markdown = (Path(temp_dir) / "reports" / "corpus_gate.md").read_text(encoding="utf-8")
 
         self.assertEqual(payload["overall_status"], "failed")
+        self.assertEqual(payload["effective_fen_status"], "failed")
         self.assertEqual(payload["fen_corpus"]["missing_profile_count"], 1)
         self.assertIn("FEN next actions", markdown)
         self.assertIn("add 1 real scanned chess FEN profile", markdown)
@@ -227,6 +228,45 @@ class CorpusGateTests(unittest.TestCase):
             min_profile_count=2,
             output_path=Path(temp_dir) / "reports" / "fen_corpus_90.json",
         )
+
+    def test_ci_corpus_gate_surfaces_fen_failures_as_warnings(self) -> None:
+        self.fen_corpus_mock.return_value = {
+            "status": "failed",
+            "evaluated_case_count": 1,
+            "font_board_candidate_profile_count": 0,
+            "font_board_candidate_status": "not_configured",
+            "font_board_candidate_failed_count": 0,
+            "missing_profile_count": 0,
+            "overall_exact_fen_accuracy": 0.0,
+            "total_false_positive_count": 0,
+            "reasons": ["manual FEN labels are incomplete"],
+            "next_required_actions": ["complete manual FEN label verification"],
+            "cases": [],
+        }
+        smoke_payload = {"summary": {"overall_status": "passed", "cases_run": 2}}
+        premium_payload = {
+            "overall": {
+                "overall_status": "passed",
+                "converted_case_count": 1,
+                "analysis_only_case_count": 0,
+                "grade_counts": {"pass": 1},
+                "blocker_counts": {},
+                "warning_counts": {},
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch("scripts.run_corpus_gate.run_smoke_tests", return_value=smoke_payload):
+                with patch("scripts.run_corpus_gate.run_premium_corpus_smoke", return_value=premium_payload):
+                    payload = run_corpus_gate(
+                        output_root=Path(temp_dir) / "output",
+                        reports_root=Path(temp_dir) / "reports",
+                        proof_profile="ci",
+                    )
+
+        self.assertEqual(payload["overall_status"], "passed_with_warnings")
+        self.assertEqual(payload["fen_corpus"]["status"], "failed")
+        self.assertEqual(payload["effective_fen_status"], "passed_with_warnings")
 
     def test_corpus_gate_full_profile_disables_standard_case_filters(self) -> None:
         smoke_payload = {"summary": {"overall_status": "passed", "cases_run": 6}}

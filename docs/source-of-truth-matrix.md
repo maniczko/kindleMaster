@@ -17,7 +17,7 @@ This document is the onboarding mirror for the control-plane source-of-truth mod
 | What proves corpus/generalization quality? | `python kindlemaster.py test --suite corpus` and `reports/corpus/corpus_gate.json` | `reports/corpus/*.md`, GitHub Issue/PR evidence comments | Corpus blockers must remain visible until fixed. |
 | What proves one EPUB artifact is acceptable? | `python kindlemaster.py audit <epub>` and release/audit outputs | `docs/independent-audit-mode.md`, final task reports | Audit output is artifact truth, not whole-project truth. |
 | What proves a tracked defect was handled safely? | `python kindlemaster.py workflow baseline/verify` | `reports/workflows/<run_id>/`, `output/workflows/<run_id>/` | Do not claim before/after proof without required workflow artifacts. |
-| What is the task/backlog truth? | GitHub Issue state, labels, and comments | `docs/github-autopilot-orchestration.md`, `.github/ISSUE_TEMPLATE/kindlemaster_task.yml`, final reports | Code/docs evidence should be copied into GitHub Issues or PRs before moving status. |
+| What is the task/backlog truth? | GitHub Issue state, labels, and comments | `docs/github-autopilot-orchestration.md`, `.github/ISSUE_TEMPLATE/kindlemaster_task.yml`, `.github/ISSUE_TEMPLATE/agent_task.yml`, `.codex/orchestration.json`, final reports | Code/docs evidence should be copied into GitHub Issues or PRs before moving status; global Codex compatibility mirrors must not redefine the native contract. |
 | What is release readiness? | `docs/premium-epub-release-checklist.md` plus generated quality/corpus/status reports | GitHub release/PR comments | Checklist is a decision aid; machine reports remain evidence. |
 
 ## Status Surface Rules

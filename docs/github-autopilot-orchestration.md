@@ -5,8 +5,11 @@ GitHub Issues are the task truth for agent-executable KindleMaster work. Markdow
 ## Operating Model
 
 - An issue is executable only when it has `agent:ready`, `autopilot:allowed`, one `area:*` label, and the required sections from `.github/ISSUE_TEMPLATE/kindlemaster_task.yml`.
+- `.github/ISSUE_TEMPLATE/agent_task.yml` is a compatibility alias for the generic Codex GitHub Issue orchestrator; do not treat it as a separate backlog contract.
+- `.codex/orchestration.json` mirrors the native contract for global tooling. If it disagrees with `python kindlemaster.py orchestrate`, update the native orchestrator first and then update the mirror.
 - `autopilot:requires-human`, `agent:blocked`, or `needs-product-decision` blocks execution.
 - The local command `python kindlemaster.py orchestrate` validates issue contracts and prepares branch, gate, and report payloads.
+- The generic global doctor may be used as a compatibility check, but `python kindlemaster.py orchestrate` remains the preferred KindleMaster orchestrator.
 - GitHub Actions remains a validation and READY evidence surface. It does not autonomously edit code in v1.
 
 ## Required Labels

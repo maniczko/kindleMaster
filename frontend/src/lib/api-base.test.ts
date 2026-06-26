@@ -1,4 +1,5 @@
 import { apiUrl, normalizeApiBaseUrl } from "./api-base";
+import { describe, expect, it } from "vitest";
 
 describe("api base URL helpers", () => {
   it("keeps local relative paths unchanged when no API base is configured", () => {

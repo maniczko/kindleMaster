@@ -12,6 +12,22 @@ if str(ROOT_DIR) not in sys.path:
 
 
 SCHEMA = "kindlemaster.fen_automation_readiness.v1"
+STRICT_FULL_FEN_STATUSES = {
+    "FEN_MACHINE_ACCEPTED",
+    "FEN_MACHINE_REPAIRED",
+    "FEN_CORPUS_VERIFIED",
+}
+PLACEMENT_MACHINE_STATUS = "FEN_PLACEMENT_MACHINE_ACCEPTED"
+AI_ONLY_STATUSES = {
+    "ai_consensus",
+    "ai_tie_break_resolved",
+    "ai_unreadable",
+    "ai_best_effort",
+    "AI_CONSENSUS",
+    "AI_TIE_BREAK_RESOLVED",
+    "AI_UNREADABLE",
+    "AI_BEST_EFFORT",
+}
 
 
 def evaluate_fen_automation_readiness(out_dir: str | Path, *, output_path: str | Path | None = None) -> dict[str, Any]:
@@ -28,12 +44,33 @@ def evaluate_fen_automation_readiness(out_dir: str | Path, *, output_path: str |
     missing_inputs = {name: str(path) for name, path in input_paths.items() if not path.exists()}
     fen_payload = _read_json(input_paths["fen_candidates"])
     blocker_payload = _read_json(input_paths["acceptance_blockers"])
+    ai_payload = _read_json(input_paths["fen_ensemble_eval"])
     items = list(fen_payload.get("items") or [])
     total = len(items)
-    full_machine = len([item for item in items if item.get("runtime_status") == "FEN_MACHINE_ACCEPTED"])
-    placement_machine = len([item for item in items if item.get("placement_runtime_status") == "FEN_PLACEMENT_MACHINE_ACCEPTED"])
+    full_machine = len([item for item in items if _is_strict_full_fen(item)])
+    placement_machine = len([item for item in items if item.get("placement_runtime_status") == PLACEMENT_MACHINE_STATUS])
     failed = len([item for item in items if str(item.get("status") or "").startswith("FEN_FAILED")])
     full_review = max(0, total - full_machine)
+    ai_readout = _ai_readout_metrics(
+        items,
+        ai_payload,
+        required_path=input_paths["fen_ensemble_eval"],
+        denominator=total,
+    )
+    strict_full_fen = {
+        "accepted_count": full_machine,
+        "accepted_rate": _ratio(full_machine, total),
+        "review_count": full_review,
+        "review_rate": _ratio(full_review, total),
+    }
+    placement = {
+        "machine_accepted_count": placement_machine,
+        "machine_accepted_rate": _ratio(placement_machine, total),
+    }
+    release_safe = {
+        "canonical_accepted_count": full_machine,
+        "canonical_accepted_rate": _ratio(full_machine, total),
+    }
     blocker_codes = _top_counts((blocker_payload.get("summary") or {}).get("by_code") or _count_item_blockers(items, field="code"))
     blocker_categories = _top_counts((blocker_payload.get("summary") or {}).get("by_category") or _count_item_blockers(items, field="category"))
     if not root.exists():
@@ -62,6 +99,10 @@ def evaluate_fen_automation_readiness(out_dir: str | Path, *, output_path: str |
     payload = {
         "schema": SCHEMA,
         "status": status,
+        "strict_full_fen": strict_full_fen,
+        "placement": placement,
+        "ai_readout": ai_readout,
+        "release_safe": release_safe,
         "summary": summary,
         "recommendation": _recommendation(blocker_categories, total=total, placement_machine=placement_machine),
         "thresholds": {
@@ -88,6 +129,70 @@ def _read_json(path: Path) -> dict[str, Any]:
         return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         return {"status": "MISSING_ARTIFACT", "error": f"invalid_json:{exc}"}
+
+
+def _is_strict_full_fen(item: dict[str, Any]) -> bool:
+    status_blob = " ".join(str(item.get(key) or "") for key in ("status", "runtime_status", "source", "method"))
+    lowered = status_blob.lower()
+    if PLACEMENT_MACHINE_STATUS.lower() in lowered:
+        return False
+    if any(ai_status.lower() in lowered for ai_status in AI_ONLY_STATUSES):
+        return False
+    return str(item.get("runtime_status") or item.get("status") or "") in STRICT_FULL_FEN_STATUSES
+
+
+def _ai_readout_metrics(
+    items: list[dict[str, Any]],
+    ai_payload: dict[str, Any],
+    *,
+    required_path: Path,
+    denominator: int,
+) -> dict[str, Any]:
+    summary = ai_payload.get("summary") if isinstance(ai_payload.get("summary"), dict) else {}
+    ai_counts = _ai_counts_from_items(items)
+    if not ai_payload and not any(ai_counts.values()):
+        return {"status": "MISSING_ARTIFACT", "required_path": str(required_path)}
+    coverage = _int_from(summary, "coverage_count", default=sum(ai_counts.values()))
+    strict_existing = _int_from(summary, "strict_existing", default=_int_from(summary, "strict_accepted", default=0))
+    ai_consensus = _int_from(summary, "ai_consensus", default=ai_counts["ai_consensus"])
+    ai_tie_break = _int_from(summary, "ai_tie_break_resolved", default=ai_counts["ai_tie_break_resolved"])
+    ai_unreadable = _int_from(summary, "ai_unreadable", default=ai_counts["ai_unreadable"])
+    ai_best_effort = _int_from(summary, "ai_best_effort", default=ai_counts["ai_best_effort"])
+    if coverage <= 0:
+        coverage = ai_consensus + ai_tie_break + ai_unreadable + ai_best_effort
+    return {
+        "coverage_count": coverage,
+        "coverage_rate": _ratio(coverage, denominator),
+        "strict_existing": strict_existing,
+        "ai_consensus": ai_consensus,
+        "ai_tie_break_resolved": ai_tie_break,
+        "ai_unreadable": ai_unreadable,
+        "ai_best_effort": ai_best_effort,
+        "release_safe_accepted_count": 0,
+    }
+
+
+def _ai_counts_from_items(items: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {
+        "ai_consensus": 0,
+        "ai_tie_break_resolved": 0,
+        "ai_unreadable": 0,
+        "ai_best_effort": 0,
+    }
+    for item in items:
+        status_blob = " ".join(str(item.get(key) or "").lower() for key in ("status", "runtime_status", "source", "method"))
+        for key in counts:
+            if key in status_blob:
+                counts[key] += 1
+                break
+    return counts
+
+
+def _int_from(payload: dict[str, Any], key: str, *, default: int) -> int:
+    try:
+        return int(payload.get(key, default))
+    except (TypeError, ValueError):
+        return default
 
 
 def _count_item_blockers(items: list[dict[str, Any]], *, field: str) -> dict[str, int]:

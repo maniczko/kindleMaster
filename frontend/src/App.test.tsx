@@ -237,7 +237,7 @@ describe("Premium React shell", () => {
         },
       },
       error: null,
-    });
+    } as any);
     render(<App />);
 
     await user.type(await screen.findByLabelText("Email konta"), "reader@example.com");
@@ -294,7 +294,7 @@ describe("Premium React shell", () => {
           user: { id: "user-1", email: "reader@example.com" },
         },
       },
-    });
+    } as any);
     render(<App />);
 
     expect(await screen.findByText("Import lokalnej historii")).toBeInTheDocument();
@@ -536,7 +536,7 @@ describe("Premium React shell", () => {
     expect(screen.getByRole("button", { name: "Wyślij na Kindle" })).toHaveAttribute("title", "Wyślij na r***@kindle.com");
     await user.click(screen.getByRole("button", { name: "Wyślij na Kindle" }));
 
-    expect(await screen.findByText("Wysłano do r***@kindle.com")).toBeInTheDocument();
+    expect(await screen.findByText("Wysłano EPUB do r***@kindle.com")).toBeInTheDocument();
     expect(fetchMock.mock.calls.map(([url]) => String(url))).not.toContain("/convert/quality/job-ready");
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -544,7 +544,7 @@ describe("Premium React shell", () => {
         expect.objectContaining({
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ to: "reader@kindle.com" }),
+          body: JSON.stringify({ to: "reader@kindle.com", artifact: "epub" }),
         }),
       );
     });
@@ -621,7 +621,7 @@ describe("Premium React shell", () => {
       expect.stringContaining("Uwagi jakości"),
     );
     await user.click(screen.getByRole("button", { name: "Wyślij na Kindle" }));
-    expect(await screen.findByText("Wysłano do r***@kindle.com")).toBeInTheDocument();
+    expect(await screen.findByText("Wysłano EPUB do r***@kindle.com")).toBeInTheDocument();
     expect(screen.queryByText("Wysyłka niedostępna")).not.toBeInTheDocument();
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -629,7 +629,7 @@ describe("Premium React shell", () => {
         expect.objectContaining({
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ to: "reader@kindle.com" }),
+          body: JSON.stringify({ to: "reader@kindle.com", artifact: "epub" }),
         }),
       );
     });
@@ -771,11 +771,12 @@ describe("Premium React shell", () => {
     await user.click(await screen.findByRole("button", { name: "cropped-source.pdf" }));
 
     expect(screen.getByRole("link", { name: /PDF źródłowy/ })).toHaveAttribute("href", "/convert/preview/job-pdf/input");
-    expect(screen.getByRole("link", { name: "Kadruj PDF" })).toHaveAttribute("href", "/legacy");
+    expect(screen.getByRole("button", { name: "Kadruj" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Kadruj" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Raport jakości JSON" })).toHaveAttribute("href", "/convert/report/job-pdf.json");
     expect(screen.queryByText("Raport jakości Markdown")).not.toBeInTheDocument();
 
-    await user.selectOptions(screen.getByLabelText("Format załącznika Kindle"), "pdf");
+    await user.selectOptions(screen.getByLabelText("Format wysyłki na Kindle"), "pdf");
     await user.click(screen.getByRole("button", { name: "Wyślij na Kindle" }));
 
     expect(await screen.findByText("Wysłano PDF do r***@kindle.com")).toBeInTheDocument();
@@ -851,9 +852,9 @@ describe("Premium React shell", () => {
     expect(
       screen.getAllByText("EPUB zawiera obrazy progressive JPEG (1); mail może zostać wysłany, ale zalecane jest przekodowanie do baseline JPEG albo PNG.").length,
     ).toBeGreaterThanOrEqual(1);
-    const repairCard = screen.getByRole("heading", { name: "Naprawa i wysyłka" }).closest(".km-card");
+    const repairCard = screen.getByRole("heading", { name: "Wysyłka na Kindle" }).closest(".km-card");
     expect(repairCard).not.toHaveTextContent("EPUB zawiera obrazy progressive JPEG");
-    expect(screen.getByLabelText("Adres Kindle dla blocked.pdf")).toHaveValue("reader@kindle.com");
+    expect(screen.queryByLabelText("Adres Kindle dla blocked.pdf")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Napraw ponownie" }));
 
@@ -1208,7 +1209,7 @@ describe("Premium React shell", () => {
 
   it("compresses the saved source PDF from file details", async () => {
     const user = userEvent.setup();
-    let resolveCompression: ((response: Response) => void) | null = null;
+    let resolveCompression!: (response: Response) => void;
     const pendingCompression = new Promise<Response>((resolve) => {
       resolveCompression = resolve;
     });
@@ -1262,7 +1263,7 @@ describe("Premium React shell", () => {
     expect(screen.getByText(/przygotowuję bezpieczny profil kompresji/)).toBeInTheDocument();
     expect(screen.getByText(/Rekoduję obrazy/)).toBeInTheDocument();
 
-    resolveCompression?.({
+    resolveCompression({
           ok: true,
           json: async () => ({
             success: true,

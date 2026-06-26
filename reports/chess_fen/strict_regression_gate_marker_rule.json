@@ -1,6 +1,6 @@
 {
   "schema": "kindlemaster.chess_fen.strict_regression_gate.v1",
-  "status": "failed",
+  "status": "passed",
   "candidate_report": "reports\\chess_fen\\fundamenty_marker_rule_recovery.json",
   "baseline_path": "reports\\chess_fen\\strict_baseline.json",
   "baseline": {
@@ -14,13 +14,11 @@
     "required_min_strict_accepted": 223
   },
   "candidate": {
-    "strict_accepted": 180,
+    "strict_accepted": 227,
     "case_count": 377,
-    "strict_rate": 0.47745358090185674,
-    "strict_delta_vs_baseline": -43
+    "strict_rate": 0.6021220159151194,
+    "strict_delta_vs_baseline": 4
   },
-  "baseline_update_candidate": false,
-  "blockers": [
-    "strict accepted 180 is below required minimum 223 (best known 223, allowed drop 0)"
-  ]
+  "baseline_update_candidate": true,
+  "blockers": []
 }

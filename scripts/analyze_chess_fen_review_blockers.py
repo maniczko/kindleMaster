@@ -22,6 +22,24 @@ STRICT_EXCLUDED_STATUSES = {
     "ai_best_effort",
     "ai_autoread",
 }
+NON_BLOCKING_CROP_RECOVERY_WARNINGS = {
+    "final_rendered_crop_fen_used",
+    "final_rendered_crop_sparse_consensus_fen_used",
+    "reader_expanded_crop_fen_used",
+    "reader_expanded_crop_sparse_consensus_fen_used",
+    "reader_visible_crop_fen_used",
+    "reader_visible_crop_sparse_consensus_fen_used",
+    "sparse_exact_crop_consensus",
+}
+UNRESOLVED_CROP_GRID_BLOCKERS = {
+    "board_grid_not_detected",
+    "board_visual_pattern_not_detected",
+    "candidate_bbox_out_of_bounds",
+    "crop_invalid",
+    "crop_missing",
+    "partial_board_crop_without_dense_board_evidence",
+    "review_crop_candidate_mismatch",
+}
 
 
 def analyze_review_blockers(report_path: str | Path) -> dict[str, Any]:
@@ -33,6 +51,9 @@ def analyze_review_blockers(report_path: str | Path) -> dict[str, Any]:
     with_ai_candidate_count = 0
     with_placement_count = 0
     without_any_candidate_count = 0
+    by_hard_case_tag: Counter[str] = Counter()
+    unresolved_crop_grid_count = 0
+    crop_recovery_evidence_count = 0
 
     for index, record in enumerate(_extract_records(report)):
         if _is_strict_accepted(record):
@@ -49,6 +70,8 @@ def analyze_review_blockers(report_path: str | Path) -> dict[str, Any]:
         has_fen_candidate = bool(_candidate_fen(record))
         candidate_count = _candidate_count(record)
         page = _first_non_empty(record.get("page"), record.get("page_number"))
+        hard_case_tags = _hard_case_tags(blockers, record)
+        non_blocking_crop_recovery_warnings = _non_blocking_crop_recovery_warnings(blockers)
         item = {
             "diagram_id": _diagram_id(record, index),
             "page": page,
@@ -65,6 +88,8 @@ def analyze_review_blockers(report_path: str | Path) -> dict[str, Any]:
             "all_blockers": blockers,
             "warnings": _warnings(record),
             "confidence": record.get("confidence"),
+            "hard_case_tags": hard_case_tags,
+            "non_blocking_crop_recovery_warnings": non_blocking_crop_recovery_warnings,
             "recommendation": _recommendation(primary_category),
         }
         if missing_blocker_data:
@@ -80,6 +105,12 @@ def analyze_review_blockers(report_path: str | Path) -> dict[str, Any]:
             with_placement_count += 1
         if not has_fen_candidate and not has_placement and not has_ai_candidate:
             without_any_candidate_count += 1
+        for tag in hard_case_tags:
+            by_hard_case_tag[tag] += 1
+        if "crop_grid_unresolved" in hard_case_tags:
+            unresolved_crop_grid_count += 1
+        if non_blocking_crop_recovery_warnings:
+            crop_recovery_evidence_count += 1
 
     return {
         "schema": "kindlemaster.chess_fen.review_blockers.v1",
@@ -92,6 +123,9 @@ def analyze_review_blockers(report_path: str | Path) -> dict[str, Any]:
             "with_ai_candidate_count": with_ai_candidate_count,
             "with_placement_count": with_placement_count,
             "without_any_candidate_count": without_any_candidate_count,
+            "by_hard_case_tag": dict(sorted(by_hard_case_tag.items())),
+            "unresolved_crop_grid_count": unresolved_crop_grid_count,
+            "crop_recovery_evidence_count": crop_recovery_evidence_count,
         },
         "items": items,
     }
@@ -251,6 +285,28 @@ def _recommendation(category: str) -> str:
         "ai_review_only": "keep AI as evidence; require deterministic proof before strict accept",
         "unknown": "inspect raw record and add missing blocker data",
     }.get(category, "inspect raw record and add missing blocker data")
+
+
+def _hard_case_tags(blockers: Iterable[str], record: Mapping[str, Any]) -> list[str]:
+    blocker_set = {str(blocker) for blocker in blockers}
+    warning_set = set(_warnings(record))
+    tags: list[str] = []
+    if blocker_set & UNRESOLVED_CROP_GRID_BLOCKERS:
+        tags.append("crop_grid_unresolved")
+    if (blocker_set | warning_set) & NON_BLOCKING_CROP_RECOVERY_WARNINGS:
+        tags.append("crop_recovery_evidence")
+    text = " ".join([*blocker_set, *warning_set]).lower()
+    if any(token in text for token in ("piece_template", "king_count", "queen_color", "pawn_on_back_rank")):
+        tags.append("recognition_hard_case")
+    if any(token in text for token in ("side_to_move", "caption", "marker")):
+        tags.append("metadata_hard_case")
+    if any(token in text for token in ("python_chess", "fen_parse", "fen_position")):
+        tags.append("full_fen_validation_hard_case")
+    return sorted(set(tags))
+
+
+def _non_blocking_crop_recovery_warnings(blockers: Iterable[str]) -> list[str]:
+    return sorted({str(blocker) for blocker in blockers if str(blocker) in NON_BLOCKING_CROP_RECOVERY_WARNINGS})
 
 
 def _diagram_id(record: Mapping[str, Any], index: int) -> str:

@@ -40,6 +40,11 @@
       "label_quality": "generated",
       "notes": "Generated image-only Polish chess scan fixture for scanned-board preservation and FEN recognition."
     },
+    "fundamenty_scan_chess_holdout_pdf": {
+      "route_label": "scanned_reflow",
+      "label_quality": "generated",
+      "notes": "Held-out image-only Polish chess scan fixture for scanned-board FEN corpus gating."
+    },
     "magazine_layout_pdf": {
       "route_label": "magazine_reflow",
       "label_quality": "curated",

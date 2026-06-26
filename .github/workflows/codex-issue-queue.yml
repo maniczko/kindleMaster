@@ -1,0 +1,172 @@
+name: Codex Issue Queue
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Optional explicit issue number. Empty means oldest ready issue."
+        required: false
+        default: ""
+      apply_claim:
+        description: "Add agent:claimed to the selected issue after a valid handoff is produced."
+        required: false
+        type: boolean
+        default: false
+      comment_handoff:
+        description: "Post the orchestration handoff back to the selected issue."
+        required: false
+        type: boolean
+        default: true
+  schedule:
+    - cron: "23 */2 * * *"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: codex-issue-queue
+  cancel-in-progress: false
+
+jobs:
+  prepare-one-issue:
+    name: prepare-one-issue
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'schedule' || vars.CODEX_QUEUE_ENABLED == '1' }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REQUESTED_ISSUE: ${{ inputs.issue_number || '' }}
+      APPLY_CLAIM_INPUT: ${{ inputs.apply_claim || false }}
+      COMMENT_HANDOFF_INPUT: ${{ inputs.comment_handoff || true }}
+      SCHEDULE_APPLY_CLAIM: ${{ vars.CODEX_QUEUE_APPLY_CLAIM || 'false' }}
+      READY_QUERY: label:"agent:ready" label:"autopilot:allowed" -label:"agent:claimed" -label:"agent:blocked" -label:"autopilot:requires-human" -label:"needs-product-decision" sort:created-asc
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Select one issue from the queue
+        id: select
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reports/github
+          if [[ -n "${REQUESTED_ISSUE}" ]]; then
+            gh issue view "${REQUESTED_ISSUE}" --json number,title,body,labels,state,url > reports/github/issues.json
+          else
+            gh issue list --state open --search "${READY_QUERY}" --limit 1 --json number,title,body,labels,state,url,createdAt > reports/github/issues.json
+          fi
+
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          payload = json.loads(Path("reports/github/issues.json").read_text(encoding="utf-8"))
+          if isinstance(payload, list):
+              selected = payload[0] if payload else None
+          elif isinstance(payload, dict) and payload.get("number"):
+              selected = payload
+          else:
+              selected = None
+
+          if not selected:
+              print("selected=false")
+              print("issue_number=")
+              raise SystemExit(0)
+
+          print("selected=true")
+          print(f"issue_number={selected['number']}")
+          PY
+
+      - name: Stop when queue is empty
+        if: ${{ steps.select.outputs.selected != 'true' }}
+        run: echo "No ready Codex issue found."
+
+      - name: Build orchestration handoff
+        if: ${{ steps.select.outputs.selected == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          issue_number="${{ steps.select.outputs.issue_number }}"
+          python kindlemaster.py orchestrate doctor --repo-root .
+          python kindlemaster.py orchestrate sync --issues-json reports/github/issues.json --output-json reports/github/codex-queue-sync.json
+          python kindlemaster.py orchestrate claim --issues-json reports/github/issues.json --issue-number "${issue_number}" --output-json reports/github/codex-queue-claim.json
+          python kindlemaster.py orchestrate execute --issues-json reports/github/issues.json --issue-number "${issue_number}" --output-json reports/github/codex-queue-execute.json
+          python kindlemaster.py orchestrate report --issues-json reports/github/issues.json --issue-number "${issue_number}" --evidence reports/github/codex-queue-sync.json --evidence reports/github/codex-queue-claim.json --evidence reports/github/codex-queue-execute.json --output-json reports/github/codex-queue-report.json --output-md reports/github/codex-queue-report.md
+
+      - name: Comment orchestration handoff
+        if: ${{ steps.select.outputs.selected == 'true' && env.COMMENT_HANDOFF_INPUT == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          issue_number="${{ steps.select.outputs.issue_number }}"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          claim = json.loads(Path("reports/github/codex-queue-claim.json").read_text(encoding="utf-8"))
+          execute = json.loads(Path("reports/github/codex-queue-execute.json").read_text(encoding="utf-8"))
+          report = Path("reports/github/codex-queue-report.md").read_text(encoding="utf-8")
+
+          lines = [
+              "## Codex queue handoff",
+              "",
+              report.strip(),
+              "",
+              f"- Queue status: `{claim.get('status', 'unknown')}`",
+              f"- Suggested branch: `{claim.get('branch', '')}`",
+              f"- Execution mode: `{execute.get('execution_mode', 'contract-only')}`",
+          ]
+          commands = execute.get("recommended_commands") or claim.get("recommended_commands") or []
+          if commands:
+              lines.append("- Recommended validation:")
+              for command in commands:
+                  lines.append(f"  - `{command}`")
+          blockers = claim.get("blockers") or []
+          if blockers:
+              lines.append("- Blockers:")
+              for blocker in blockers:
+                  lines.append(f"  - `{blocker}`")
+          lines.extend([
+              "",
+              "This workflow serializes the queue and prepares a Codex execution contract. It does not edit code by itself; an approved Codex executor must use this handoff and open a PR with evidence.",
+          ])
+          Path("reports/github/codex-queue-comment.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+          gh issue comment "${issue_number}" --body-file reports/github/codex-queue-comment.md
+
+      - name: Mark issue as claimed
+        if: ${{ steps.select.outputs.selected == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          issue_number="${{ steps.select.outputs.issue_number }}"
+          apply_claim="${APPLY_CLAIM_INPUT}"
+          if [[ "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
+            apply_claim="${SCHEDULE_APPLY_CLAIM}"
+          fi
+          claim_status="$(python - <<'PY'
+          import json
+          from pathlib import Path
+          payload = json.loads(Path("reports/github/codex-queue-claim.json").read_text(encoding="utf-8"))
+          print(payload.get("status", ""))
+          PY
+          )"
+          if [[ "${apply_claim}" == "true" && "${claim_status}" == "ready" ]]; then
+            gh issue edit "${issue_number}" --add-label "agent:claimed"
+          else
+            echo "Skipping agent:claimed label. apply_claim=${apply_claim}, status=${claim_status}"
+          fi
+
+      - name: Upload queue handoff artifacts
+        if: ${{ steps.select.outputs.selected == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-issue-${{ steps.select.outputs.issue_number }}-handoff
+          path: reports/github/codex-queue-*
+          if-no-files-found: warn
+          retention-days: 14

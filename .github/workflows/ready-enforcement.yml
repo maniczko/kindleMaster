@@ -11,6 +11,9 @@ concurrency:
   group: ready-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 env:
   GOVERNANCE_COVERAGE_FAIL_UNDER: "75"
   CORE_CONVERSION_COVERAGE_FAIL_UNDER: "70"
@@ -44,10 +47,10 @@ jobs:
             core_coverage: false
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -103,10 +106,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.14"
 
@@ -151,6 +154,11 @@ jobs:
           if [[ -f pnpm-lock.yaml ]]; then
             corepack prepare pnpm@9 --activate
             pnpm install --frozen-lockfile
+            if node -e "const scripts=require('./package.json').scripts||{}; process.exit(scripts['typecheck'] ? 0 : 1)"; then
+              pnpm run typecheck
+            else
+              echo "::notice::Node workspace found, but package.json has no typecheck script."
+            fi
             if node -e "const scripts=require('./package.json').scripts||{}; process.exit(scripts['test:contracts:regression'] ? 0 : 1)"; then
               pnpm run test:contracts:regression
               pnpm run test:coverage
@@ -163,6 +171,11 @@ jobs:
               npm ci
             else
               npm install
+            fi
+            if node -e "const scripts=require('./package.json').scripts||{}; process.exit(scripts['typecheck'] ? 0 : 1)"; then
+              npm run typecheck
+            else
+              echo "::notice::Node workspace found, but package.json has no typecheck script."
             fi
             if node -e "const scripts=require('./package.json').scripts||{}; process.exit(scripts['test:contracts:regression'] ? 0 : 1)"; then
               npm run test:contracts:regression
@@ -189,10 +202,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.14"
 

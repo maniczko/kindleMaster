@@ -10,7 +10,8 @@ GitHub Issues are the task truth for agent-executable KindleMaster work. Markdow
 - `autopilot:requires-human`, `agent:blocked`, or `needs-product-decision` blocks execution.
 - The local command `python kindlemaster.py orchestrate` validates issue contracts and prepares branch, gate, and report payloads.
 - The generic global doctor may be used as a compatibility check, but `python kindlemaster.py orchestrate` remains the preferred KindleMaster orchestrator.
-- GitHub Actions remains a validation and READY evidence surface. It does not autonomously edit code in v1.
+- `.github/workflows/codex-issue-queue.yml` serializes the GitHub-side queue: one run selects at most one ready issue, builds a handoff, comments it back to the issue, and can mark it as claimed.
+- GitHub Actions remains the validation and READY evidence surface. The queue workflow prepares a Codex handoff; it does not modify source code until an approved Codex executor is connected.
 
 ## Required Labels
 
@@ -57,11 +58,32 @@ python kindlemaster.py orchestrate report --issues-json reports/github/issues.js
 
 `claim --apply-branch` may create `codex/issue-<number>-<slug>` locally. Use it only after checking that the issue is ready and unrelated local changes are understood.
 
+## Queue Workflow
+
+Use GitHub Actions -> `Codex Issue Queue` to prepare the next issue handoff.
+
+Manual run inputs:
+
+- `issue_number`: explicit issue number, or empty to select the oldest ready issue.
+- `apply_claim`: add `agent:claimed` after a valid handoff is produced.
+- `comment_handoff`: post the generated handoff back to the issue.
+
+Scheduled queue runs are gated by repository variables:
+
+```text
+CODEX_QUEUE_ENABLED=1
+CODEX_QUEUE_APPLY_CLAIM=true
+```
+
+Leave `CODEX_QUEUE_APPLY_CLAIM` unset or false when you want scheduled handoffs without claiming issues.
+
+Detailed workflow guidance lives in [codex-issue-queue.md](codex-issue-queue.md).
+
 ## Issue to PR Flow
 
 1. Create an issue with the KindleMaster task template.
 2. Add `autopilot:allowed` only when the issue is complete enough to execute.
-3. Run `python kindlemaster.py orchestrate sync --issues-json <file>` or the equivalent future GitHub API wrapper.
+3. Run `python kindlemaster.py orchestrate sync --issues-json <file>` or use the `Codex Issue Queue` workflow.
 4. Claim a ready issue and create a `codex/issue-...` branch.
 5. Execute the issue in one coherent PR.
 6. Run the commands recommended by the issue gates.

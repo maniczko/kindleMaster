@@ -383,6 +383,14 @@ def main() -> int:
     ml_fen_experiment.add_argument("--min-usable-labels", type=int, default=25)
     ml_fen_experiment.add_argument("--min-holdout-boards", type=int, default=3)
 
+    ml_fen_alternatives = ml_subparsers.add_parser("evaluate-fen-alternatives", help="Run report-only alternative chess FEN recognizer benchmarks.")
+    ml_fen_alternatives.add_argument("--labels-dir", default="reference_inputs/chess_fen/labels")
+    ml_fen_alternatives.add_argument("--template-dir", default="reference_inputs/chess_fen/templates/fundamenty_merida_like")
+    ml_fen_alternatives.add_argument("--out-dir", default="output/chess_fen/alternative_benchmark")
+    ml_fen_alternatives.add_argument("--report", default="reports/chess_fen/alternative_benchmark.json")
+    ml_fen_alternatives.add_argument("--baseline-report", default="reports/corpus/fen_corpus_90.json")
+    ml_fen_alternatives.add_argument("--max-cases", type=int, default=80)
+
     ml_feedback = ml_subparsers.add_parser("feedback-export", help="Export local conversion/user feedback events into an ML JSONL dataset.")
     ml_feedback.add_argument("--feedback-log", default="reports/ml/feedback/conversion_feedback.jsonl")
     ml_feedback.add_argument("--output", default="reports/ml/datasets/quality_feedback_examples.jsonl")
@@ -1198,6 +1206,35 @@ def _run_ml(args: argparse.Namespace) -> int:
             }
         )
         return 0
+    if args.ml_command == "evaluate-fen-alternatives":
+        from scripts.evaluate_chess_fen_alternative_benchmarks import evaluate_chess_fen_alternative_benchmarks
+
+        payload = evaluate_chess_fen_alternative_benchmarks(
+            labels_dir=args.labels_dir,
+            template_dir=args.template_dir,
+            out_dir=args.out_dir,
+            report_path=args.report,
+            baseline_report=args.baseline_report,
+            max_cases=args.max_cases,
+        )
+        _print_json(
+            {
+                "schema": payload.get("schema"),
+                "status": payload.get("status"),
+                "report_path": (payload.get("artifacts") or {}).get("report_path"),
+                "benchmark_case_count": (payload.get("inputs") or {}).get("benchmark_case_count"),
+                "metrics": payload.get("metrics"),
+                "bucket_counts": {
+                    bucket: {
+                        "available_count": summary.get("available_count"),
+                        "missing_count": summary.get("missing_count"),
+                    }
+                    for bucket, summary in ((payload.get("benchmark_manifest") or {}).get("buckets") or {}).items()
+                },
+                "next_actions": payload.get("next_actions"),
+            }
+        )
+        return 0
     if args.ml_command == "promote":
         from scripts.train_route_classifier import promote_route_classifier
 
@@ -1208,7 +1245,7 @@ def _run_ml(args: argparse.Namespace) -> int:
         )
         _print_json(payload)
         return 0 if payload.get("status") == "promoted" else 1
-    _print_json({"status": "failed", "error": "Missing ml subcommand. Use dataset, feedback, feedback-export, train, evaluate, or promote."})
+    _print_json({"status": "failed", "error": "Missing ml subcommand. Use dataset, feedback, feedback-export, train, evaluate, evaluate-fen-experiment, evaluate-fen-alternatives, or promote."})
     return 1
 
 

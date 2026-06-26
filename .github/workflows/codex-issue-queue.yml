@@ -42,7 +42,7 @@ jobs:
       READY_QUERY: label:"agent:ready" label:"autopilot:allowed" -label:"agent:claimed" -label:"agent:blocked" -label:"autopilot:requires-human" -label:"needs-product-decision" sort:created-asc
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
         uses: actions/setup-python@v5

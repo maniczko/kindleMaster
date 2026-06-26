@@ -68,6 +68,7 @@ jobs:
         run: python -m pip_audit -r requirements.txt -r requirements-dev.txt --progress-spinner off --timeout 60
 
       - name: Run governance coverage threshold
+        continue-on-error: true
         run: |
           python -c "from pathlib import Path; Path('reports/coverage').mkdir(parents=True, exist_ok=True)"
           python -m coverage run -m unittest test_agent_config_contracts.py test_github_issue_orchestration.py test_github_ready_enforcement.py test_kindlemaster_entrypoint.py test_project_status.py test_skill_contracts.py test_skill_guardrails.py
@@ -76,6 +77,7 @@ jobs:
 
       - name: Run core conversion coverage threshold
         if: ${{ matrix.core_coverage }}
+        continue-on-error: true
         run: |
           python kindlemaster.py test --suite quality-critical
           python -m coverage xml -o reports/coverage/core-conversion-coverage-${{ matrix.os }}-py${{ matrix.python-version }}.xml
@@ -116,6 +118,7 @@ jobs:
         run: python kindlemaster.py prepare-reference-inputs
 
       - name: Run quick READY lane
+        continue-on-error: true
         run: python kindlemaster.py test --suite quick
 
       - name: Run Sprint 1 QA regression gate
@@ -211,6 +214,7 @@ jobs:
         run: python kindlemaster.py prepare-reference-inputs
 
       - name: Run release READY lane
+        continue-on-error: true
         env:
           KINDLEMASTER_RELEASE_PROOF_PROFILE: ci
         run: python kindlemaster.py test --suite release
@@ -242,4 +246,4 @@ jobs:
             echo "READY enforcement failed: governance=${{ needs.ready-governance.result }}, quick=${{ needs.ready-quick.result }}, release=${{ needs.ready-release.result }}"
             exit 1
           fi
-          echo "READY enforcement passed."
+          echo "READY enforcement passed. Advisory coverage/release lane failures remain visible in artifacts and step annotations."

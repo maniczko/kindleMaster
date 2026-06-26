@@ -370,6 +370,17 @@ def main() -> int:
     ml_evaluate.add_argument("--model", default="models/route_classifier_v1.json")
     ml_evaluate.add_argument("--report", default="reports/ml/route_classifier_v1.evaluation.json")
 
+    ml_fen_experiment = ml_subparsers.add_parser("evaluate-fen-experiment", help="Evaluate repo-local chess FEN recognizer experiments.")
+    ml_fen_experiment.add_argument("--labels-dir", default="reference_inputs/chess_fen/labels")
+    ml_fen_experiment.add_argument("--out-dir", default="output/chess_fen/benchmark_experiment")
+    ml_fen_experiment.add_argument("--report", default="reports/chess_fen/fen_benchmark_experiment.json")
+    ml_fen_experiment.add_argument("--baseline-report", default="reports/corpus/fen_corpus_90.json")
+    ml_fen_experiment.add_argument("--fold-count", type=int, default=5)
+    ml_fen_experiment.add_argument("--holdout-fold", type=int, default=0)
+    ml_fen_experiment.add_argument("--max-labels", type=int, default=32)
+    ml_fen_experiment.add_argument("--min-usable-labels", type=int, default=25)
+    ml_fen_experiment.add_argument("--min-holdout-boards", type=int, default=3)
+
     ml_feedback = ml_subparsers.add_parser("feedback-export", help="Export local conversion/user feedback events into an ML JSONL dataset.")
     ml_feedback.add_argument("--feedback-log", default="reports/ml/feedback/conversion_feedback.jsonl")
     ml_feedback.add_argument("--output", default="reports/ml/datasets/quality_feedback_examples.jsonl")
@@ -1156,6 +1167,35 @@ def _run_ml(args: argparse.Namespace) -> int:
         )
         _print_json(payload)
         return 0 if payload.get("status") != "failed" else 1
+    if args.ml_command == "evaluate-fen-experiment":
+        from scripts.evaluate_chess_fen_benchmark_experiment import evaluate_chess_fen_benchmark_experiment
+
+        payload = evaluate_chess_fen_benchmark_experiment(
+            labels_dir=args.labels_dir,
+            out_dir=args.out_dir,
+            report_path=args.report,
+            baseline_report=args.baseline_report,
+            fold_count=args.fold_count,
+            holdout_fold=args.holdout_fold,
+            max_labels=args.max_labels,
+            min_usable_labels=args.min_usable_labels,
+            min_holdout_boards=args.min_holdout_boards,
+        )
+        _print_json(
+            {
+                "schema": payload.get("schema"),
+                "status": payload.get("status"),
+                "report_path": (payload.get("artifacts") or {}).get("report_path"),
+                "usable_label_count": (payload.get("inputs") or {}).get("usable_label_count"),
+                "benchmark_case_count": (payload.get("metrics") or {}).get("benchmark_case_count"),
+                "exact_full_fen_rate": (payload.get("metrics") or {}).get("exact_full_fen_rate"),
+                "false_positive_rate": (payload.get("metrics") or {}).get("false_positive_rate"),
+                "review_rate": (payload.get("metrics") or {}).get("review_rate"),
+                "accepted_fen_changed": (payload.get("metrics") or {}).get("accepted_fen_changed"),
+                "next_actions": (payload.get("sufficiency") or {}).get("next_actions"),
+            }
+        )
+        return 0
     if args.ml_command == "promote":
         from scripts.train_route_classifier import promote_route_classifier
 

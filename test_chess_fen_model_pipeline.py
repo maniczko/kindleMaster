@@ -15,6 +15,7 @@ from chess_study_export import (
     recognize_fen_local,
     train_fen_square_classifier,
 )
+from scripts.evaluate_chess_fen_benchmark_experiment import evaluate_chess_fen_benchmark_experiment, main as benchmark_main
 
 
 def _make_board_crop(path: Path) -> None:
@@ -162,6 +163,88 @@ class ChessFenModelPipelineTests(unittest.TestCase):
             self.assertEqual(payload["status"], "ok")
             self.assertTrue((out / "data" / "fen_corpus_manifest.json").is_file())
             self.assertTrue(any(item["exists"] for item in payload["artifacts"]))
+
+    def test_benchmark_experiment_reports_review_only_metrics_from_legacy_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            labels_dir = root / "labels"
+            labels_dir.mkdir()
+            crop = root / "crop.png"
+            _make_board_crop(crop)
+            labels = [
+                {
+                    "id": f"legacy_{index}",
+                    "crop_path": str(crop),
+                    "fen": "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+                    "verified_by": "legacy-grid-review",
+                    "verified_at": "2026-06-26",
+                    "page": index,
+                }
+                for index in range(6)
+            ]
+            (labels_dir / "legacy.jsonl").write_text(
+                "".join(json.dumps(row) + "\n" for row in labels),
+                encoding="utf-8",
+            )
+            report = root / "report.json"
+
+            payload = evaluate_chess_fen_benchmark_experiment(
+                labels_dir=labels_dir,
+                out_dir=root / "out",
+                report_path=report,
+                min_usable_labels=1,
+                min_holdout_boards=1,
+            )
+
+            self.assertIn(payload["status"], {"completed", "insufficient_benchmark"})
+            self.assertEqual(payload["experiment"]["accepted_fen_changed"], 0)
+            self.assertFalse(payload["experiment"]["runtime_strict_acceptance_changed"])
+            self.assertIn("exact_placement_rate", payload["metrics"])
+            self.assertIn("exact_full_fen_rate", payload["metrics"])
+            self.assertIn("false_positive_rate", payload["metrics"])
+            self.assertIn("review_rate", payload["metrics"])
+            self.assertTrue(report.is_file())
+
+    def test_benchmark_experiment_completes_with_insufficiency_report_for_missing_crops(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            labels_dir = root / "labels"
+            labels_dir.mkdir()
+            (labels_dir / "missing.jsonl").write_text(
+                json.dumps(
+                    {
+                        "id": "missing",
+                        "crop_path": str(root / "missing.png"),
+                        "fen": "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+                        "verified_by": "legacy-grid-review",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            report = root / "report.json"
+
+            exit_code = benchmark_main(
+                [
+                    "--labels-dir",
+                    str(labels_dir),
+                    "--out-dir",
+                    str(root / "out"),
+                    "--report",
+                    str(report),
+                    "--min-usable-labels",
+                    "1",
+                    "--min-holdout-boards",
+                    "1",
+                ]
+            )
+
+            payload = json.loads(report.read_text(encoding="utf-8"))
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(payload["status"], "insufficient_benchmark")
+            self.assertEqual(payload["inputs"]["usable_label_count"], 0)
+            self.assertTrue(payload["sufficiency"]["next_actions"])
+            self.assertEqual(payload["experiment"]["accepted_fen_changed"], 0)
 
 
 if __name__ == "__main__":

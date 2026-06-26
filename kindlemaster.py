@@ -692,7 +692,7 @@ def main() -> int:
             fen_min_seed_label_count=args.fen_min_seed_label_count,
         )
         _print_json(payload)
-        return 0
+        return 0 if payload.get("overall_status") != "failed" else 1
     if args.command == "status":
         from scripts.generate_project_status import generate_project_status
 

@@ -78,6 +78,7 @@ def evaluate_chess_fen_alternative_benchmarks(
         "baseline": _load_baseline_metrics(Path(baseline_report)),
         "strategies": strategies,
         "comparison": _compare_strategies(strategies),
+        "training_data_gap": _training_data_gap(manifest, records, status=status),
         "metrics": _aggregate_metrics(strategies, elapsed_seconds=time.perf_counter() - started),
         "artifacts": {
             "out_dir": str(out),
@@ -320,6 +321,39 @@ def _next_actions(manifest: Mapping[str, Any], strategies: list[Mapping[str, Any
         actions.append("keep all alternative recognizer outputs report-only until false positives reach zero.")
     actions.append("do not change production strict FEN acceptance from this benchmark-only issue.")
     return _dedupe(actions)
+
+
+def _training_data_gap(manifest: Mapping[str, Any], records: list[Mapping[str, Any]], *, status: str) -> dict[str, Any]:
+    buckets = manifest.get("buckets") or {}
+    missing = [
+        {
+            "bucket": str(bucket),
+            "needed": int((summary or {}).get("target_count") or 0),
+            "available": int((summary or {}).get("available_count") or 0),
+            "missing": int((summary or {}).get("missing_count") or 0),
+        }
+        for bucket, summary in buckets.items()
+        if int((summary or {}).get("missing_count") or 0) > 0
+    ]
+    if status == "completed" and not missing:
+        return {
+            "status": "READY",
+            "message": "",
+            "required": TARGET_BUCKETS,
+            "available_record_count": len(records),
+            "missing_buckets": [],
+            "report_only_work_possible": True,
+            "next_step": "",
+        }
+    return {
+        "status": "TRAINING_DATA_GAP",
+        "message": "TRAINING_DATA_GAP: alternative board recognizer benchmark lacks enough verified crop fixtures for promotion-quality accuracy.",
+        "required": TARGET_BUCKETS,
+        "available_record_count": len(records),
+        "missing_buckets": missing,
+        "report_only_work_possible": True,
+        "next_step": "Add human-verified board crop labels for the missing buckets; keep all alternative recognizer outputs review-only.",
+    }
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:

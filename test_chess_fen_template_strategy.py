@@ -194,6 +194,10 @@ class ChessFenTemplateStrategyTests(unittest.TestCase):
             self.assertIn("exact_full_fen_rate", payload["metrics"])
             self.assertIn("false_positive_rate", payload["metrics"])
             self.assertIn("review_rate", payload["metrics"])
+            self.assertEqual(payload["training_data_gap"]["status"], "TRAINING_DATA_GAP")
+            self.assertIn("TRAINING_DATA_GAP", payload["training_data_gap"]["message"])
+            self.assertTrue(payload["training_data_gap"]["report_only_work_possible"])
+            self.assertGreater(len(payload["training_data_gap"]["missing_buckets"]), 0)
 
     def test_alternative_benchmark_cli_writes_insufficient_manifest_for_missing_crops(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -231,6 +235,9 @@ class ChessFenTemplateStrategyTests(unittest.TestCase):
             self.assertEqual(payload["status"], "insufficient_inputs")
             self.assertEqual(payload["benchmark_manifest"]["total_available_records"], 0)
             self.assertEqual(payload["policy"]["accepted_fen_changed"], 0)
+            self.assertEqual(payload["training_data_gap"]["status"], "TRAINING_DATA_GAP")
+            self.assertIn("TRAINING_DATA_GAP", payload["training_data_gap"]["message"])
+            self.assertEqual(payload["training_data_gap"]["available_record_count"], 0)
 
 
 if __name__ == "__main__":

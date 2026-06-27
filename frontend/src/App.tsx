@@ -88,6 +88,7 @@ interface ConversionJobPayload {
   report_json_url?: string;
   report_markdown_url?: string;
   artifacts?: Record<string, unknown>;
+  progress?: Record<string, unknown>;
   quality_state?: QualityStatePayload;
   auto_repair?: Record<string, unknown>;
   email_delivery?: Record<string, unknown>;
@@ -154,6 +155,9 @@ const pipelineSteps = ["Wgranie", "Kolejka", "Konwersja", "Audyt", "Bramka jako�
 const START_REQUEST_TIMEOUT_MS = 30000;
 const STATUS_REQUEST_TIMEOUT_MS = 30000;
 const MAX_STATUS_TRANSIENT_FAILURES = 5;
+const MAX_INTERACTIVE_STATUS_POLLS = 240;
+const BACKGROUND_CONVERSION_MESSAGE =
+  "Konwersja nadal trwa w tle. Możesz wrócić do Biblioteki i odświeżyć status później.";
 
 const defaultProfile: UserProfilePayload = {
   conversion: {
@@ -521,7 +525,7 @@ function App() {
   async function pollJob(jobId: string, seed: ConversionJobPayload): Promise<ConversionJobPayload> {
     let current = seed;
     let transientFailures = 0;
-    for (let attempt = 0; attempt < 240; attempt += 1) {
+    for (let attempt = 0; attempt < MAX_INTERACTIVE_STATUS_POLLS; attempt += 1) {
       await delay(attempt === 0 ? 800 : 1600);
       let response: Response;
       let payload: ConversionJobPayload;
@@ -573,8 +577,29 @@ function App() {
       setActiveJob(current);
       if (payload.status === "ready") return current;
       if (payload.status === "failed") throw new Error(payload.error || payload.message || "Konwersja nie powiodła się.");
+      if (shouldContinueConversionInBackground(payload)) {
+        current = {
+          ...current,
+          status: current.status === "queued" ? "queued" : "running",
+          message: BACKGROUND_CONVERSION_MESSAGE,
+        };
+        setActiveJob(current);
+        return current;
+      }
     }
-    throw new Error("Konwersja trwa zbyt długo dla interaktywnego podglądu.");
+    current = {
+      ...current,
+      status: current.status === "queued" ? "queued" : "running",
+      message: BACKGROUND_CONVERSION_MESSAGE,
+    };
+    setActiveJob(current);
+    return current;
+  }
+
+  function shouldContinueConversionInBackground(payload: ConversionJobPayload) {
+    const progress = payload.progress && typeof payload.progress === "object" && !Array.isArray(payload.progress) ? payload.progress : {};
+    const health = String(progress.health || "").trim().toLowerCase();
+    return payload.status === "running" && (health === "long_running" || health === "stalled");
   }
 
   function openView(view: ViewId) {

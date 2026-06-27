@@ -375,6 +375,61 @@ describe("Premium React shell", () => {
     expect(screen.queryByText("Brak ostatnich zadań.")).not.toBeInTheDocument();
   });
 
+  it("keeps a long-running conversion in the background instead of failing the interactive wait", async () => {
+    const user = userEvent.setup();
+    let statusCalls = 0;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/convert/jobs")) return { ok: true, json: async () => ({ jobs: [] }) };
+      if (url === "/convert/start" && init?.method === "POST") {
+        return {
+          ok: true,
+          json: async () => ({
+            success: true,
+            job_id: "job-long-running",
+            status: "running",
+            message: "Konwersja PDF do EPUB...",
+          }),
+        };
+      }
+      if (url === "/convert/status/job-long-running") {
+        statusCalls += 1;
+        return {
+          ok: true,
+          json: async () => ({
+            success: true,
+            job_id: "job-long-running",
+            status: "running",
+            filename: "long-running.pdf",
+            message: "Konwersja PDF do EPUB...",
+            progress: { health: "long_running", elapsed_seconds: 121 },
+          }),
+        };
+      }
+      if (url === "/auth/config") {
+        return { ok: true, json: async () => ({ success: true, auth: { enabled: false, configured: false } }) };
+      }
+      if (url === "/user/profile") {
+        return { ok: true, json: async () => ({ success: true, profile: defaultProfile }) };
+      }
+      if (url === "/convert/delivery/config") {
+        return { ok: true, json: async () => ({ success: true, delivery: { configured: false } }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    render(<App />);
+
+    const file = new File(["pdf"], "long-running.pdf", { type: "application/pdf" });
+    await user.upload(await screen.findByLabelText("Wgraj PDF albo DOCX"), file);
+    await user.click(screen.getByTestId("start-conversion-button"));
+
+    expect(await screen.findByText("Konwersja nadal trwa w tle. Możesz wrócić do Biblioteki i odświeżyć status później.")).toBeInTheDocument();
+    expect(screen.getAllByText("Przetwarzanie").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Konwersja trwa zbyt długo dla interaktywnego podglądu.")).not.toBeInTheDocument();
+    expect(statusCalls).toBe(1);
+  });
+
   it("filters and sorts Library rows without losing aligned action controls", async () => {
     const user = userEvent.setup();
     fetchMock.mockImplementation(async (input: RequestInfo | URL) => {

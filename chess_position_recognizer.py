@@ -125,7 +125,7 @@ class ChessFenResult:
         trusted_side_to_move = (
             self.side_to_move_status == "explicit"
             and self.side_to_move_evidence in {"marker", "caption", "verified_label", "exact_label"}
-        ) or bool({"side_to_move_marker_detected", "verified_exact_crop_label_used"} & set(warnings))
+        ) or "verified_exact_crop_label_used" in set(warnings)
         runtime_fen = self.fen
         requires_review = bool(self.requires_review)
         fen_suppressed_reason = ""

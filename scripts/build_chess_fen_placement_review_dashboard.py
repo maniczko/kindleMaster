@@ -58,6 +58,11 @@ def build_chess_fen_placement_review_dashboard(
                 "square_diffs": diffs[:24],
                 "blockers": blockers,
                 "next_action": item.get("next_action") or "",
+                "side_to_move": item.get("side_to_move") or "unknown",
+                "side_marker_symbol": item.get("side_marker_symbol") or "?",
+                "side_marker_status": item.get("side_marker_status") or "marker_missing",
+                "side_marker_confidence": item.get("side_marker_confidence") or "",
+                "fen_suppressed_reason": item.get("fen_suppressed_reason") or "",
             }
         )
     summary = {
@@ -259,6 +264,9 @@ def _render_card(item: dict[str, Any]) -> str:
       <dt>Page</dt><dd>{_h(item.get('page'))}</dd>
       <dt>Status</dt><dd>{_h(item.get('status'))}</dd>
       <dt>Diffs</dt><dd>{_h(item.get('square_diff_count'))}</dd>
+      <dt>Side marker</dt><dd><strong>{_h(item.get('side_marker_symbol'))}</strong> {_h(item.get('side_marker_status'))} {_h(item.get('side_marker_confidence'))}</dd>
+      <dt>Side</dt><dd>{_h(item.get('side_to_move'))}</dd>
+      <dt>Suppressed</dt><dd>{_h(item.get('fen_suppressed_reason'))}</dd>
       <dt>Next</dt><dd>{_h(item.get('next_action'))}</dd>
       <dt>Predicted</dt><dd><code>{_h(item.get('predicted_placement'))}</code></dd>
       <dt>Expected</dt><dd><code>{_h(item.get('expected_placement'))}</code></dd>

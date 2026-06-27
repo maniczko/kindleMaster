@@ -614,11 +614,17 @@ def summarize_chess_fen_results(records: list[Mapping[str, Any]]) -> dict[str, A
     total = len(records)
     with_fen = [item for item in records if str(item.get("fen") or "").strip()]
     review = [item for item in records if item.get("requires_review")]
+    with_board_crop = [item for item in records if str(item.get("board_crop_path") or "").strip()]
+    with_side_marker_crop = [item for item in records if str(item.get("side_marker_crop_path") or "").strip()]
+    with_debug_overlay = [item for item in records if str(item.get("debug_overlay_path") or "").strip()]
     return {
         "status": "not_applicable" if total == 0 else ("passed" if len(with_fen) == total else "requires_review"),
         "diagram_count": total,
         "fen_count": len(with_fen),
         "manual_review_count": len(review),
+        "board_crop_count": len(with_board_crop),
+        "side_marker_crop_count": len(with_side_marker_crop),
+        "debug_overlay_count": len(with_debug_overlay),
         "records": [dict(item) for item in records],
     }
 

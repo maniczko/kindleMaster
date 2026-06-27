@@ -2103,9 +2103,11 @@ def _wrap_chess_problem(diagram_html: str, caption_text: str, exercise_number: s
 
 def _attach_fen_to_chess_image(chess_img: dict, result) -> dict:
     payload = result.to_dict()
+    payload.update(_basic_two_crop_contract_fields(chess_img.get("filename"), chess_img.get("bbox")))
     chess_img["fen_result"] = payload
     chess_img["fen_confidence"] = payload.get("confidence", 0.0)
     chess_img["fen_method"] = payload.get("method", "")
+    chess_img.update({key: value for key, value in payload.items() if key in TWO_CROP_CONTRACT_FIELDS and value not in (None, "", [])})
     if payload.get("fen"):
         chess_img["fen"] = payload["fen"]
     return payload
@@ -2113,6 +2115,7 @@ def _attach_fen_to_chess_image(chess_img: dict, result) -> dict:
 
 def _chess_fen_record(*, page_num: int, filename: str, result, source: str) -> dict:
     payload = result.to_dict()
+    payload.update(_basic_two_crop_contract_fields(filename, payload.get("bbox")))
     return {
         **payload,
         "page_num": page_num,
@@ -2510,6 +2513,7 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
         chess_html_diagram_records: list[dict[str, Any]] = []
         chess_pgn_records = []
         chess_diagram_records: list[dict[str, Any]] = []
+        chess_fen_review_artifact_files: list[dict[str, Any]] = []
         book_layout_pages: list[dict[str, Any]] = []
         diagram_total = 0
         raw_candidate_total = 0
@@ -2644,6 +2648,14 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
                             local_evidence,
                             min_confidence=side_min_confidence,
                         )
+                two_crop_fields, two_crop_files = _scan_chess_two_crop_review_artifacts(
+                    page_image,
+                    filename=filename,
+                    board_bbox=recognition_bbox,
+                    side_marker_bbox=candidate_payload.get("side_marker_bbox"),
+                )
+                candidate_payload.update(two_crop_fields)
+                chess_fen_review_artifact_files.extend(two_crop_files)
                 diagram_total += 1
                 chess_img = {
                     "filename": filename,
@@ -2658,6 +2670,7 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
                     "fen_result": candidate_payload,
                     "fen_confidence": candidate_payload.get("confidence", 0.0),
                     "fen_method": candidate_payload.get("method", ""),
+                    **{key: candidate_payload.get(key) for key in TWO_CROP_CONTRACT_FIELDS if candidate_payload.get(key) not in (None, "", [])},
                     **preprocess_metadata,
                 }
                 if candidate_payload.get("fen"):
@@ -2856,6 +2869,7 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
             pgn_records=chess_pgn_records,
             diagrams=chess_diagram_records,
             book_layout_pages=book_layout_pages,
+            review_artifact_files=chess_fen_review_artifact_files,
         )
         return {
             "success": True,
@@ -4635,11 +4649,18 @@ def _chess_diagram_record_from_image(
         bbox = []
     while len(bbox) < 4:
         bbox.append(0.0)
+    board_crop_path = str(fen_result.get("board_crop_path") or chess_img.get("board_crop_path") or "").strip()
+    if not board_crop_path and str(chess_img.get("filename") or "").strip():
+        board_crop_path = f"images/{chess_img.get('filename')}"
     return {
         "id": diagram_id,
         "page_index": page_index,
         "page_number": page_index + 1,
         "bbox": bbox[:4],
+        "board_bbox": fen_result.get("board_bbox") or chess_img.get("board_bbox") or bbox[:4],
+        "board_crop_path": board_crop_path,
+        "side_marker_crop_path": str(fen_result.get("side_marker_crop_path") or chess_img.get("side_marker_crop_path") or "").strip(),
+        "debug_overlay_path": str(fen_result.get("debug_overlay_path") or chess_img.get("debug_overlay_path") or "").strip(),
         "caption": caption,
         "image_data_uri": image_data_uri,
         "fen_candidate": fen_candidate,
@@ -4916,6 +4937,145 @@ def _scale_bbox(
     return [x0 * scale_x, y0 * scale_y, x1 * scale_x, y1 * scale_y]
 
 
+TWO_CROP_CONTRACT_FIELDS = {
+    "board_crop_path",
+    "side_marker_crop_path",
+    "debug_overlay_path",
+    "board_bbox",
+    "side_marker_bbox",
+}
+
+
+def _basic_two_crop_contract_fields(filename: Any, bbox: Any) -> dict[str, Any]:
+    path = f"images/{filename}" if str(filename or "").strip() else ""
+    return {
+        "board_crop_path": path,
+        "side_marker_crop_path": "",
+        "debug_overlay_path": "",
+        "board_bbox": _coerce_side_marker_bbox(bbox),
+    }
+
+
+def _scan_chess_two_crop_review_artifacts(
+    page_image: Image.Image,
+    *,
+    filename: str,
+    board_bbox: Any,
+    side_marker_bbox: Any,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    stem = Path(str(filename or "diagram")).stem or "diagram"
+    fields: dict[str, Any] = {
+        "board_crop_path": f"review/chess_fen/two_crop/{stem}_board.png",
+        "side_marker_crop_path": "",
+        "debug_overlay_path": f"review/chess_fen/two_crop/{stem}_overlay.png",
+        "board_bbox": _coerce_side_marker_bbox(board_bbox),
+    }
+    marker_bbox = _coerce_side_marker_bbox(side_marker_bbox)
+    if marker_bbox:
+        fields["side_marker_bbox"] = marker_bbox
+        fields["side_marker_crop_path"] = f"review/chess_fen/two_crop/{stem}_marker.png"
+    files: list[dict[str, Any]] = []
+    board_crop = _crop_bbox_from_image(page_image, fields["board_bbox"])
+    if board_crop is not None:
+        files.append({"path": fields["board_crop_path"], "data": _png_bytes(board_crop)})
+    if marker_bbox:
+        marker_crop = _crop_bbox_from_image(page_image, marker_bbox)
+        if marker_crop is not None:
+            files.append({"path": fields["side_marker_crop_path"], "data": _png_bytes(marker_crop)})
+        else:
+            fields["side_marker_crop_path"] = ""
+    overlay = _scan_chess_debug_overlay(page_image, fields["board_bbox"], marker_bbox)
+    if overlay is not None:
+        files.append({"path": fields["debug_overlay_path"], "data": _png_bytes(overlay)})
+    else:
+        fields["debug_overlay_path"] = ""
+    return fields, files
+
+
+def _crop_bbox_from_image(image: Image.Image, bbox: Any) -> Image.Image | None:
+    box = _bbox_to_int_box(bbox, image.size)
+    if box is None:
+        return None
+    return image.crop(box).convert("RGB")
+
+
+def _bbox_to_int_box(bbox: Any, image_size: tuple[int, int]) -> tuple[int, int, int, int] | None:
+    values = _coerce_side_marker_bbox(bbox)
+    if not values:
+        return None
+    width, height = image_size
+    left = max(0, min(width, int(round(values[0]))))
+    top = max(0, min(height, int(round(values[1]))))
+    right = max(0, min(width, int(round(values[2]))))
+    bottom = max(0, min(height, int(round(values[3]))))
+    if right <= left or bottom <= top:
+        return None
+    return left, top, right, bottom
+
+
+def _png_bytes(image: Image.Image) -> bytes:
+    output = io.BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue()
+
+
+def _scan_chess_debug_overlay(
+    page_image: Image.Image,
+    board_bbox: Any,
+    marker_bbox: Any,
+) -> Image.Image | None:
+    board = _coerce_side_marker_bbox(board_bbox)
+    if not board:
+        return None
+    marker = _coerce_side_marker_bbox(marker_bbox)
+    boxes = [board] + ([marker] if marker else [])
+    x0 = min(box[0] for box in boxes)
+    y0 = min(box[1] for box in boxes)
+    x1 = max(box[2] for box in boxes)
+    y1 = max(box[3] for box in boxes)
+    pad = max(12.0, min(board[2] - board[0], board[3] - board[1]) * 0.08)
+    crop_box = _bbox_to_int_box((x0 - pad, y0 - pad, x1 + pad, y1 + pad), page_image.size)
+    if crop_box is None:
+        return None
+    overlay = page_image.crop(crop_box).convert("RGB")
+    draw = ImageDraw.Draw(overlay)
+
+    def local_box(raw: list[float]) -> tuple[float, float, float, float]:
+        return raw[0] - crop_box[0], raw[1] - crop_box[1], raw[2] - crop_box[0], raw[3] - crop_box[1]
+
+    bx0, by0, bx1, by1 = local_box(board)
+    draw.rectangle((bx0, by0, bx1, by1), outline="#1769aa", width=3)
+    for step in range(1, 8):
+        x = bx0 + (bx1 - bx0) * step / 8.0
+        y = by0 + (by1 - by0) * step / 8.0
+        draw.line((x, by0, x, by1), fill="#1769aa", width=1)
+        draw.line((bx0, y, bx1, y), fill="#1769aa", width=1)
+    if marker:
+        draw.rectangle(local_box(marker), outline="#b42318", width=3)
+    return overlay
+
+
+def _build_two_crop_review_zip(files: list[Mapping[str, Any]], diagrams: list[Mapping[str, Any]]) -> bytes:
+    output = io.BytesIO()
+    seen: set[str] = set()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        manifest = {
+            "schema": "kindlemaster.chess_fen.two_crop_review_artifacts.v1",
+            "artifact_count": len(files),
+            "diagram_count": len(diagrams),
+            "paths": [str(item.get("path") or "") for item in files if str(item.get("path") or "").strip()],
+        }
+        archive.writestr("review/chess_fen/two_crop/manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+        for item in files:
+            path = str(item.get("path") or "").replace("\\", "/").lstrip("/")
+            data = item.get("data")
+            if not path or path in seen or not isinstance(data, (bytes, bytearray)):
+                continue
+            seen.add(path)
+            archive.writestr(path, bytes(data))
+    return output.getvalue()
+
+
 def _scan_chess_pgn_extra_artifacts(
     records: list,
     *,
@@ -4923,6 +5083,7 @@ def _scan_chess_pgn_extra_artifacts(
     diagrams: list[Mapping[str, Any]] | None = None,
     diagram_records: list[Mapping[str, Any]] | None = None,
     book_layout_pages: list[Mapping[str, Any]] | None = None,
+    review_artifact_files: list[Mapping[str, Any]] | None = None,
     deepseek_provider: Any | None = None,
 ) -> list[dict[str, Any]]:
     record_list = [
@@ -5002,6 +5163,17 @@ def _scan_chess_pgn_extra_artifacts(
                 "label": "Chess diagrams",
             }
         )
+    review_files = list(review_artifact_files or [])
+    if review_files:
+        artifacts.append(
+            {
+                "key": "chess_fen_two_crop_review_artifacts",
+                "filename": "chess_fen_two_crop_review_artifacts.zip",
+                "content_type": "application/zip",
+                "data": _build_two_crop_review_zip(review_files, diagram_list),
+                "label": "Chess FEN two-crop review artifacts",
+            }
+        )
     if book_pages:
         artifacts.append(
             {
@@ -5065,12 +5237,14 @@ def _chess_pdf_extra_artifacts(
     pgn_records: list | None = None,
     diagrams: list[Mapping[str, Any]] | None = None,
     book_layout_pages: list[Mapping[str, Any]] | None = None,
+    review_artifact_files: list[Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     return _scan_chess_pgn_extra_artifacts(
         list(pgn_records or []),
         source_title=source_title or Path(pdf_path).stem,
         diagrams=diagrams or [],
         book_layout_pages=book_layout_pages or [],
+        review_artifact_files=review_artifact_files or [],
     )
 
 

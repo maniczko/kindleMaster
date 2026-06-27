@@ -7,6 +7,7 @@ from pathlib import Path
 
 from chess_auto_flow import build_auto_chess_flow_artifacts
 from chess_fen_hardening import machine_accept_fen, machine_accept_placement
+from chess_position_recognizer import summarize_chess_fen_results
 from converter import chess_fen_html_attrs, chess_side_marker_html
 from pymupdf_chess_extractor import (
     ScanChessSideToMoveEvidence,
@@ -111,6 +112,10 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
                     "requires_review": True,
                     "board_detected": True,
                     "fen_suppressed_reason": "side_to_move_inferred",
+                    "board_crop_path": "review/chess_fen/two_crop/diagram-1_board.png",
+                    "side_marker_crop_path": "",
+                    "debug_overlay_path": "review/chess_fen/two_crop/diagram-1_overlay.png",
+                    "board_bbox": [1.0, 2.0, 101.0, 102.0],
                 },
             },
             diagram_id="diagram-1",
@@ -121,7 +126,36 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertEqual(record["side_marker_symbol"], "?")
         self.assertEqual(record["side_marker_status"], "inferred_only")
         self.assertEqual(record["fen_suppressed_reason"], "side_to_move_inferred")
+        self.assertEqual(record["board_crop_path"], "review/chess_fen/two_crop/diagram-1_board.png")
+        self.assertEqual(record["debug_overlay_path"], "review/chess_fen/two_crop/diagram-1_overlay.png")
+        self.assertEqual(record["board_bbox"], [1.0, 2.0, 101.0, 102.0])
         self.assertFalse(record["strict_fen_side_evidence_trusted"])
+
+    def test_fen_summary_counts_two_crop_artifacts_without_requiring_marker(self) -> None:
+        summary = summarize_chess_fen_results(
+            [
+                {
+                    "fen": "",
+                    "requires_review": True,
+                    "board_crop_path": "review/chess_fen/two_crop/d1_board.png",
+                    "debug_overlay_path": "review/chess_fen/two_crop/d1_overlay.png",
+                    "side_marker_status": "marker_missing",
+                },
+                {
+                    "fen": VALID_FEN,
+                    "requires_review": False,
+                    "board_crop_path": "review/chess_fen/two_crop/d2_board.png",
+                    "side_marker_crop_path": "review/chess_fen/two_crop/d2_marker.png",
+                    "debug_overlay_path": "review/chess_fen/two_crop/d2_overlay.png",
+                    "side_marker_status": "trusted_marker",
+                },
+            ]
+        )
+
+        self.assertEqual(summary["diagram_count"], 2)
+        self.assertEqual(summary["board_crop_count"], 2)
+        self.assertEqual(summary["side_marker_crop_count"], 1)
+        self.assertEqual(summary["debug_overlay_count"], 2)
 
     def test_auto_flow_writes_side_marker_assignment_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

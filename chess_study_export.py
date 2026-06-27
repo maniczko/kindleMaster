@@ -622,11 +622,12 @@ def _source_html_quality_gate(
         reasons.append("source_html_lacks_fen_marker_or_crop_evidence")
     if diagrams_total > 0 and fen_accepted == 0 and side_unknown_rate >= 0.8:
         reasons.append("all_or_most_diagrams_have_unknown_side_and_no_accepted_fen")
-    degraded = {
-        "diagram_image_sources_degraded",
+    reason_set = set(reasons)
+    semantic_evidence_missing = {
         "source_html_lacks_fen_marker_or_crop_evidence",
         "all_or_most_diagrams_have_unknown_side_and_no_accepted_fen",
-    }.issubset(set(reasons))
+    }.issubset(reason_set)
+    degraded = "diagram_image_sources_degraded" in reason_set or semantic_evidence_missing
     evidence_path = ""
     if degraded:
         evidence_path = _copy_source_html_evidence(source, out)
@@ -4382,10 +4383,12 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
     if not diagrams:
         summary = _study_side_marker_summary([])
         _write_study_side_marker_report(out, [], summary)
+        _write_study_two_crop_quality_metrics(out, [], summary)
         return summary
     if not Path(pdf_path).is_file():
         summary = {**_study_side_marker_summary(diagrams), "status": "pdf_source_missing"}
         _write_study_side_marker_report(out, diagrams, summary)
+        _write_study_two_crop_quality_metrics(out, diagrams, summary)
         return summary
     diagrams_by_page: dict[int, list[dict[str, Any]]] = {}
     for diagram in diagrams:
@@ -4444,6 +4447,7 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
 
     summary = _study_side_marker_summary(diagrams)
     _write_study_side_marker_report(out, diagrams, summary)
+    _write_study_two_crop_quality_metrics(out, diagrams, summary)
     return summary
 
 
@@ -4619,6 +4623,172 @@ def _write_study_side_marker_report(out: Path, diagrams: list[Mapping[str, Any]]
             f"crop `{item.get('side_marker_crop_path') or ''}`"
         )
     (reports_dir / "side_marker_assignment.md").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    html_lines = [
+        "<!doctype html>",
+        '<html lang="en">',
+        "<head>",
+        '<meta charset="utf-8">',
+        "<title>Side Marker Assignment</title>",
+        "<style>body{font-family:system-ui,sans-serif;margin:24px;color:#111827}table{border-collapse:collapse;width:100%;font-size:13px}th,td{border:1px solid #d1d5db;padding:6px 8px;text-align:left}th{background:#f3f4f6}</style>",
+        "</head>",
+        "<body>",
+        "<h1>Side Marker Assignment</h1>",
+        "<dl>",
+    ]
+    for key, value in summary.items():
+        html_lines.append(f"<dt>{html.escape(str(key))}</dt><dd>{html.escape(str(value))}</dd>")
+    html_lines.extend(
+        [
+            "</dl>",
+            "<table>",
+            "<thead><tr><th>Diagram</th><th>Page</th><th>Status</th><th>Side</th><th>Marker crop</th></tr></thead>",
+            "<tbody>",
+        ]
+    )
+    for item in items:
+        html_lines.append(
+            "<tr>"
+            f"<td>{html.escape(str(item.get('diagram_id') or ''))}</td>"
+            f"<td>{html.escape(str(item.get('page') or ''))}</td>"
+            f"<td>{html.escape(str(item.get('side_marker_status') or ''))}</td>"
+            f"<td>{html.escape(str(item.get('side_to_move') or ''))}</td>"
+            f"<td>{html.escape(str(item.get('side_marker_crop_path') or ''))}</td>"
+            "</tr>"
+        )
+    html_lines.extend(["</tbody>", "</table>", "</body>", "</html>"])
+    (reports_dir / "side_marker_assignment.html").write_text("\n".join(html_lines) + "\n", encoding="utf-8")
+
+
+def _study_two_crop_quality_rows(diagrams: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in diagrams:
+        side_status = str(item.get("side_marker_status") or "")
+        placement = str(item.get("placement") or item.get("placement_fen") or "").strip()
+        placement_status = str(item.get("placement_status") or item.get("placement_runtime_status") or "")
+        placement_accepted = placement_status.startswith("FEN_PLACEMENT_MACHINE_ACCEPTED") or bool(placement)
+        full_fen_status = str(item.get("full_fen_status") or item.get("full_fen_runtime_status") or "")
+        full_fen_accepted = str(item.get("status") or "") == "accepted" and bool(str(item.get("fen") or "").strip())
+        trusted_marker = side_status == "trusted_marker"
+        marker_conflict = side_status in {"marker_conflict", "multi_side"}
+        marker_missing = side_status in {"", "marker_missing", "inferred_only"}
+        rows.append(
+            {
+                "diagram_id": item.get("diagram_id") or item.get("id") or "",
+                "page": item.get("page"),
+                "has_board_crop": bool(str(item.get("board_crop_path") or "").strip()),
+                "has_side_marker_crop": bool(str(item.get("side_marker_crop_path") or "").strip()),
+                "debug_overlay_path": str(item.get("debug_overlay_path") or ""),
+                "side_marker_status": side_status or "marker_missing",
+                "side_marker_symbol": str(item.get("side_marker_symbol") or ""),
+                "side_to_move": str(item.get("side_to_move") or "unknown"),
+                "trusted_marker": trusted_marker,
+                "marker_missing": marker_missing,
+                "marker_conflict": marker_conflict,
+                "placement_status": placement_status or ("FEN_PLACEMENT_MACHINE_ACCEPTED" if placement_accepted else "FEN_PLACEMENT_REVIEW_REQUIRED"),
+                "full_fen_status": full_fen_status or ("FEN_MACHINE_ACCEPTED" if full_fen_accepted else "FEN_REVIEW_REQUIRED"),
+                "blocked_by_marker": not trusted_marker,
+                "blocked_by_placement": not placement_accepted,
+            }
+        )
+    return rows
+
+
+def _study_two_crop_accuracy_gap(diagrams: list[Mapping[str, Any]]) -> dict[str, Any]:
+    verified = [
+        item
+        for item in diagrams
+        if str(item.get("label_source") or item.get("verification_status") or "").lower() in {"human_verified", "verified"}
+    ]
+    marker_label_count = len([item for item in verified if str(item.get("expected_side_to_move") or "").lower() in {"w", "b", "white", "black"}])
+    placement_label_count = len([item for item in verified if str(item.get("expected_placement") or "").strip()])
+    both_label_count = len(
+        [
+            item
+            for item in verified
+            if str(item.get("expected_side_to_move") or "").lower() in {"w", "b", "white", "black"}
+            and str(item.get("expected_placement") or "").strip()
+        ]
+    )
+    missing_data = []
+    if marker_label_count < 30:
+        missing_data.append({"field": "expected_side_to_move", "needed": "human_verified side-to-move labels", "available": marker_label_count})
+    if placement_label_count < 30:
+        missing_data.append({"field": "expected_placement", "needed": "human_verified board placement labels", "available": placement_label_count})
+    status = "TRAINING_DATA_GAP" if missing_data else "READY"
+    return {
+        "status": status,
+        "message": "TRAINING_DATA_GAP: accuracy requires human-verified side-to-move and placement labels." if missing_data else "Human-verified labels are available for accuracy measurement.",
+        "human_verified_record_count": len(verified),
+        "marker_label_count": marker_label_count,
+        "placement_label_count": placement_label_count,
+        "both_label_count": both_label_count,
+        "missing_data": missing_data,
+    }
+
+
+def _write_study_two_crop_quality_metrics(out: Path, diagrams: list[Mapping[str, Any]], summary: Mapping[str, Any]) -> None:
+    reports_dir = out / "reports" / "chess_fen"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    rows = _study_two_crop_quality_rows(diagrams)
+    payload = {
+        "schema": "kindlemaster.chess_fen.two_crop_quality_metrics.v1",
+        "summary": {
+            "diagram_count": len(rows),
+            "board_crop_count": int(summary.get("board_crop_count") or 0),
+            "side_marker_crop_count": int(summary.get("side_marker_crop_count") or 0),
+            "trusted_marker_count": int(summary.get("trusted_marker_count") or 0),
+            "marker_missing_count": int(summary.get("marker_missing_count") or 0),
+            "marker_conflict_count": int(summary.get("marker_conflict_count") or 0),
+            "side_unknown_count": int(summary.get("side_unknown_count") or 0),
+            "placement_accepted_count": int(summary.get("placement_accepted_count") or 0),
+            "full_fen_accepted_count": int(summary.get("full_fen_accepted_count") or 0),
+            "blocked_by_marker_count": len([row for row in rows if row.get("blocked_by_marker")]),
+            "blocked_by_placement_count": len([row for row in rows if row.get("blocked_by_placement")]),
+        },
+        "accuracy": _study_two_crop_accuracy_gap(diagrams),
+        "items": rows,
+    }
+    _write_json(reports_dir / "two_crop_quality_metrics.json", payload)
+    accuracy = payload["accuracy"]
+    lines = [
+        "# Chess FEN Two-Crop Quality Metrics",
+        "",
+        *[f"- {key}: `{value}`" for key, value in payload["summary"].items()],
+        "",
+        "## Accuracy",
+        "",
+        f"- status: `{accuracy.get('status')}`",
+        f"- human verified records: `{accuracy.get('human_verified_record_count')}`",
+        f"- side-to-move labels: `{accuracy.get('marker_label_count')}`",
+        f"- placement labels: `{accuracy.get('placement_label_count')}`",
+    ]
+    if accuracy.get("status") == "TRAINING_DATA_GAP":
+        lines.extend(["", f"TRAINING_DATA_GAP: {accuracy.get('message')}", ""])
+        lines.extend(["| Missing field | Needed | Available |", "| --- | --- | ---: |"])
+        for item in accuracy.get("missing_data") or []:
+            lines.append(f"| {item.get('field')} | {item.get('needed')} | {item.get('available')} |")
+    lines.extend(
+        [
+            "",
+            "| Diagram | Page | Board crop | Marker crop | Marker status | Placement | Full FEN | Marker block | Placement block |",
+            "| --- | ---: | --- | --- | --- | --- | --- | --- | --- |",
+        ]
+    )
+    for row in rows[:100]:
+        lines.append(
+            "| {diagram} | {page} | {board} | {marker} | {status} | {placement} | {full} | {marker_block} | {placement_block} |".format(
+                diagram=row.get("diagram_id") or "",
+                page=row.get("page") or "",
+                board="yes" if row.get("has_board_crop") else "no",
+                marker="yes" if row.get("has_side_marker_crop") else "no",
+                status=row.get("side_marker_status") or "",
+                placement=row.get("placement_status") or "",
+                full=row.get("full_fen_status") or "",
+                marker_block="yes" if row.get("blocked_by_marker") else "no",
+                placement_block="yes" if row.get("blocked_by_placement") else "no",
+            )
+        )
+    (reports_dir / "two_crop_quality_metrics.md").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
 def _study_side_to_move_label(value: Any) -> str:
@@ -5221,7 +5391,11 @@ def render_audit_artifacts(out_dir: str | Path, qa_report: dict[str, Any]) -> No
                 f"- `{problem.get('severity')}` `{problem.get('code')}` "
                 f"{problem.get('position_id') or problem.get('metric') or problem.get('area') or ''}"
             )
-    (out / "audit_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    audit_text = "\n".join(lines) + "\n"
+    (out / "audit_report.md").write_text(audit_text, encoding="utf-8")
+    reports_dir = out / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    (reports_dir / "conversion-audit.md").write_text(audit_text, encoding="utf-8")
 
 
 def _render_standalone_html(

@@ -10,13 +10,17 @@ from typing import Any, Iterable, Sequence
 
 READY_LABEL = "agent:ready"
 CLAIMED_LABEL = "agent:claimed"
+NEEDS_REVIEW_LABEL = "agent:needs-review"
+TRAINING_DATA_MISSING_LABEL = "training-data:missing"
 AUTOPILOT_ALLOWED_LABEL = "autopilot:allowed"
 AUTOPILOT_REQUIRES_HUMAN_LABEL = "autopilot:requires-human"
 
 BLOCKING_LABELS = {
     "agent:blocked",
-    "autopilot:requires-human",
+    NEEDS_REVIEW_LABEL,
+    AUTOPILOT_REQUIRES_HUMAN_LABEL,
     "needs-product-decision",
+    TRAINING_DATA_MISSING_LABEL,
 }
 
 AREA_LABELS = {
@@ -159,6 +163,7 @@ def evaluate_issue_contract(issue: IssueContract) -> dict[str, Any]:
         "recommended_commands": commands,
         "branch": branch,
         "workflow_baseline_required": workflow_baseline_required,
+        "training_data_gap_protocol": _training_data_gap_protocol(area_labels, gate_labels, issue.body + "\n" + issue.title),
         "actions": _actions_for_status(status, branch, commands, workflow_baseline_required),
         "blockers": blockers,
     }
@@ -204,7 +209,8 @@ def execute_issue(issue: IssueContract) -> dict[str, Any]:
     payload["execution_mode"] = "local_agent_handoff"
     payload["notes"] = [
         "Use this payload as the execution contract for a Codex session.",
-        "GitHub Actions validates evidence; it does not autonomously edit code in v1.",
+        "The GitHub queue comments @codex, claims one issue, and after merge prepares the next ready issue.",
+        "If training, benchmark, corpus, fixture, or holdout data is missing, post TRAINING_DATA_GAP and add training-data:missing instead of blocking unrelated work.",
     ]
     return payload
 
@@ -220,6 +226,8 @@ def build_issue_report(issue: IssueContract, *, evidence: Iterable[str] = ()) ->
         f"- Areas: `{', '.join(payload['area_labels']) or 'missing'}`",
         f"- Gates: `{', '.join(payload['gate_labels']) or 'missing'}`",
     ]
+    if payload["training_data_gap_protocol"]["applies"]:
+        markdown_lines.append("- Training-data gap protocol: `applies_if_data_is_missing`")
     if evidence_list:
         markdown_lines.append(f"- Evidence: `{', '.join(evidence_list)}`")
     if payload["blockers"]:
@@ -243,7 +251,17 @@ def doctor_orchestration(repo_root: str | Path = ".") -> dict[str, Any]:
         "source_of_truth": root / "docs" / "source-of-truth-matrix.md",
     }
     missing_files = [name for name, path in required_files.items() if not path.exists()]
-    labels = sorted({READY_LABEL, CLAIMED_LABEL, AUTOPILOT_ALLOWED_LABEL, AUTOPILOT_REQUIRES_HUMAN_LABEL, *AREA_LABELS, *GATE_COMMANDS})
+    labels = sorted(
+        {
+            READY_LABEL,
+            CLAIMED_LABEL,
+            AUTOPILOT_ALLOWED_LABEL,
+            AUTOPILOT_REQUIRES_HUMAN_LABEL,
+            *BLOCKING_LABELS,
+            *AREA_LABELS,
+            *GATE_COMMANDS,
+        }
+    )
     return {
         "status": "failed" if missing_files else "passed",
         "provider": "github_issues",
@@ -254,6 +272,7 @@ def doctor_orchestration(repo_root: str | Path = ".") -> dict[str, Any]:
         "notes": [
             "GitHub Issues are task truth; Markdown is policy/template/runbook only.",
             "Autopilot acts only on issues with agent:ready and autopilot:allowed.",
+            "training-data:missing is issue-local and must not block unrelated ready issues.",
         ],
     }
 
@@ -347,12 +366,34 @@ def _gate_labels(labels: Sequence[str], area_labels: Sequence[str]) -> list[str]
     return sorted(inferred)
 
 
+def _training_data_gap_protocol(area_labels: Sequence[str], gate_labels: Sequence[str], text: str) -> dict[str, Any]:
+    lower_text = text.lower()
+    applies = bool(
+        "area:corpus" in area_labels
+        or "gate:corpus" in gate_labels
+        or re.search(r"\b(training data|dane treningowe|dataset|benchmark|fixture|corpus|holdout)\b", lower_text)
+    )
+    return {
+        "applies": applies,
+        "missing_label": TRAINING_DATA_MISSING_LABEL,
+        "comment_prefix": "TRAINING_DATA_GAP",
+        "required_fields": [
+            "missing data or path",
+            "required counts or classes",
+            "current available counts or classes",
+            "whether useful report-only work can continue",
+            "smallest next data-acquisition action",
+        ],
+    }
+
+
 def _actions_for_status(status: str, branch: str, commands: Sequence[str], workflow_baseline_required: bool) -> list[str]:
     if status != "ready":
         return ["comment_missing_contract", "add_agent_blocked_label"]
     actions = ["add_agent_claimed_label", f"create_branch:{branch}"]
     if workflow_baseline_required:
         actions.append("run_workflow_baseline_if_fixture_is_defined")
+        actions.append("post_training_data_gap_if_training_or_corpus_data_is_missing")
     actions.extend(f"run:{command}" for command in commands)
     actions.extend(["open_pull_request", "attach_evidence_and_residual_risks"])
     return actions

@@ -13,13 +13,20 @@ import zipfile
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 import fitz
 from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageOps
 
 from chess_position_recognizer import validate_fen
+from pymupdf_chess_extractor import (
+    _apply_scan_chess_side_to_move_context_evidence,
+    _infer_scan_chess_side_to_move_marker_evidence,
+    _scan_chess_local_side_marker_assignment_evidence,
+    _scan_chess_side_marker_metadata_from_payload,
+    _scan_chess_two_crop_review_artifacts,
+)
 from scripts.audit_chess_html import audit_chess_html
 from scripts.chess_diagram_detection import detect_chess_diagrams
 
@@ -231,6 +238,24 @@ class StudyDiagram:
     status: str
     confidence: float
     source_crop: str
+    board_crop_path: str
+    side_marker_crop_path: str
+    debug_overlay_path: str
+    board_bbox: list[float]
+    side_marker_bbox: list[float]
+    side_to_move_status: str
+    side_to_move_evidence: str
+    side_marker_symbol: str
+    side_marker_status: str
+    side_marker_source: str
+    side_marker_confidence: float | str
+    side_marker_assignment_trace: dict[str, Any]
+    strict_fen_side_evidence_trusted: bool
+    placement: str
+    placement_status: str
+    full_fen: str
+    full_fen_status: str
+    fen_suppressed_reason: str
     rendered_svg: str
     rendered_png: str
     review_reason: str
@@ -249,6 +274,24 @@ class StudyDiagram:
             "status": self.status,
             "confidence": round(float(self.confidence or 0.0), 3),
             "source_crop": self.source_crop,
+            "board_crop_path": self.board_crop_path,
+            "side_marker_crop_path": self.side_marker_crop_path,
+            "debug_overlay_path": self.debug_overlay_path,
+            "board_bbox": list(self.board_bbox),
+            "side_marker_bbox": list(self.side_marker_bbox),
+            "side_to_move_status": self.side_to_move_status,
+            "side_to_move_evidence": self.side_to_move_evidence,
+            "side_marker_symbol": self.side_marker_symbol,
+            "side_marker_status": self.side_marker_status,
+            "side_marker_source": self.side_marker_source,
+            "side_marker_confidence": self.side_marker_confidence,
+            "side_marker_assignment_trace": dict(self.side_marker_assignment_trace),
+            "strict_fen_side_evidence_trusted": bool(self.strict_fen_side_evidence_trusted),
+            "placement": self.placement,
+            "placement_status": self.placement_status,
+            "full_fen": self.full_fen,
+            "full_fen_status": self.full_fen_status,
+            "fen_suppressed_reason": self.fen_suppressed_reason,
             "rendered_svg": self.rendered_svg,
             "rendered_png": self.rendered_png,
             "review_reason": self.review_reason,
@@ -4089,6 +4132,22 @@ def detect_study_diagrams(config: ChessStudyConfig) -> dict[str, Any]:
         record = dict(item)
         _apply_diagram_manual_label(record, manual_labels)
         low_confidence.append(record)
+    side_marker_summary = _attach_pdf_side_marker_evidence_to_study_diagrams(
+        config.pdf,
+        normalized,
+        config.out,
+        dpi=config.diagram_dpi,
+        min_confidence=config.min_grid_confidence,
+    )
+    for record in normalized:
+        rendered = _render_valid_fen_assets(
+            str(record.get("fen") or ""),
+            config.out,
+            diagram_id=str(record.get("diagram_id") or record.get("id") or "diagram"),
+        )
+        record["rendered_svg"] = rendered.get("svg", "")
+        record["rendered_png"] = rendered.get("png", "")
+        record["rendered_diagram"] = record["rendered_svg"] or record["rendered_png"]
     if config.diagram_alignment_review or manual_labels:
         alignment_payload = _write_diagram_alignment_review(config.out, [*normalized, *low_confidence])
     else:
@@ -4112,11 +4171,272 @@ def detect_study_diagrams(config: ChessStudyConfig) -> dict[str, Any]:
         "diagram_crop_dir": str(crop_dir),
         "rendered_svg_dir": str(config.out / "assets" / "diagram_svg"),
         "rendered_png_dir": str(config.out / "assets" / "diagram_png"),
+        "side_marker_summary": side_marker_summary,
     }
     _write_json(config.out / "chess_diagrams.json", payload)
     _write_jsonl(config.out / "diagrams.jsonl", [_study_diagram_record(record).to_dict() for record in normalized])
     _write_csv(config.out / "diagrams.csv", [_study_diagram_record(record).to_dict() for record in normalized])
     return payload
+
+
+def _attach_pdf_side_marker_evidence_to_study_diagrams(
+    pdf_path: str | Path,
+    diagrams: list[dict[str, Any]],
+    out_dir: str | Path,
+    *,
+    dpi: int,
+    min_confidence: float,
+) -> dict[str, Any]:
+    out = Path(out_dir)
+    if not diagrams:
+        summary = _study_side_marker_summary([])
+        _write_study_side_marker_report(out, [], summary)
+        return summary
+    if not Path(pdf_path).is_file():
+        summary = {**_study_side_marker_summary(diagrams), "status": "pdf_source_missing"}
+        _write_study_side_marker_report(out, diagrams, summary)
+        return summary
+    diagrams_by_page: dict[int, list[dict[str, Any]]] = {}
+    for diagram in diagrams:
+        page_number = int(diagram.get("page") or 0)
+        if page_number > 0:
+            diagrams_by_page.setdefault(page_number, []).append(diagram)
+
+    with fitz.open(pdf_path) as document:
+        zoom = max(72, int(dpi or 72)) / 72.0
+        matrix = fitz.Matrix(zoom, zoom)
+        for page_number, page_diagrams in diagrams_by_page.items():
+            page_index = page_number - 1
+            if page_index < 0 or page_index >= len(document):
+                continue
+            pixmap = document[page_index].get_pixmap(matrix=matrix, alpha=False)
+            page_image = Image.frombytes("RGB", (pixmap.width, pixmap.height), pixmap.samples)
+            page_bboxes = [
+                bbox
+                for bbox in (_study_pixel_bbox_xyxy(diagram) for diagram in page_diagrams)
+                if bbox is not None
+            ]
+            for diagram in page_diagrams:
+                board_bbox = _study_pixel_bbox_xyxy(diagram)
+                if board_bbox is None:
+                    continue
+                payload = _study_side_marker_payload(diagram)
+                evidence = _infer_scan_chess_side_to_move_marker_evidence(page_image, board_bbox)
+                payload = _apply_scan_chess_side_to_move_context_evidence(
+                    payload,
+                    evidence,
+                    min_confidence=min_confidence,
+                )
+                if bool(payload.get("requires_review")) and "side_to_move_inferred" in {
+                    str(warning) for warning in list(payload.get("warnings") or [])
+                }:
+                    local_evidence = _scan_chess_local_side_marker_assignment_evidence(
+                        page_image,
+                        board_bbox,
+                        payload,
+                        diagram_bboxes=page_bboxes,
+                    )
+                    payload = _apply_scan_chess_side_to_move_context_evidence(
+                        payload,
+                        local_evidence,
+                        min_confidence=min_confidence,
+                    )
+                two_crop_fields, two_crop_files = _scan_chess_two_crop_review_artifacts(
+                    page_image,
+                    filename=f"{diagram.get('diagram_id') or diagram.get('id') or 'diagram'}.png",
+                    board_bbox=board_bbox,
+                    side_marker_bbox=payload.get("side_marker_bbox"),
+                )
+                payload.update(two_crop_fields)
+                _write_study_side_marker_artifact_files(out, two_crop_files)
+                _apply_study_side_marker_payload(diagram, payload)
+
+    summary = _study_side_marker_summary(diagrams)
+    _write_study_side_marker_report(out, diagrams, summary)
+    return summary
+
+
+def _study_pixel_bbox_xyxy(diagram: Mapping[str, Any]) -> tuple[float, float, float, float] | None:
+    raw = diagram.get("pixel_bbox")
+    if isinstance(raw, (list, tuple)) and len(raw) == 4:
+        try:
+            x0, y0, width, height = [float(value) for value in raw]
+        except (TypeError, ValueError):
+            return None
+        if width > 0 and height > 0:
+            return (x0, y0, x0 + width, y0 + height)
+    raw_xyxy = diagram.get("pixel_bbox_xyxy") or diagram.get("board_bbox")
+    if isinstance(raw_xyxy, (list, tuple)) and len(raw_xyxy) == 4:
+        try:
+            x0, y0, x1, y1 = [float(value) for value in raw_xyxy]
+        except (TypeError, ValueError):
+            return None
+        if x1 > x0 and y1 > y0:
+            return (x0, y0, x1, y1)
+    return None
+
+
+def _study_side_marker_payload(diagram: Mapping[str, Any]) -> dict[str, Any]:
+    warnings = [str(warning) for warning in diagram.get("warnings") or [] if str(warning)]
+    full_fen = str(diagram.get("full_fen") or diagram.get("fen_candidate") or diagram.get("fen") or "").strip()
+    placement = str(diagram.get("placement") or diagram.get("placement_fen") or "").strip()
+    if not placement and full_fen:
+        placement = full_fen.split()[0]
+    side = str(diagram.get("side_to_move") or "").strip().lower()
+    side_status = str(diagram.get("side_to_move_status") or "").strip().lower()
+    side_evidence = str(diagram.get("side_to_move_evidence") or "").strip().lower()
+    trusted_side = side in {"w", "b"} and side_status == "explicit" and side_evidence in {
+        "marker",
+        "caption",
+        "verified_label",
+        "exact_label",
+    }
+    if not trusted_side:
+        side = side if side in {"w", "b"} else "unknown"
+        side_status = "inferred" if side in {"w", "b"} else "unknown"
+        side_evidence = "inferred"
+        if "side_to_move_inferred" not in warnings:
+            warnings.append("side_to_move_inferred")
+    return {
+        "fen": str(diagram.get("fen") or "").strip() if trusted_side else "",
+        "full_fen": full_fen,
+        "placement": placement,
+        "placement_fen": placement,
+        "confidence": float(diagram.get("fen_confidence") or diagram.get("confidence") or 0.0),
+        "source": str(diagram.get("source") or "image-template-board"),
+        "method": str(diagram.get("method") or "study-diagram-detector"),
+        "side_to_move": side,
+        "side_to_move_status": side_status,
+        "side_to_move_evidence": side_evidence,
+        "warnings": sorted(set(warnings)),
+        "requires_review": not trusted_side,
+        "board_detected": True,
+    }
+
+
+def _apply_study_side_marker_payload(diagram: dict[str, Any], payload: Mapping[str, Any]) -> None:
+    marker = _scan_chess_side_marker_metadata_from_payload(payload)
+    fen = str(payload.get("fen") or "").strip()
+    full_fen = str(payload.get("full_fen") or "").strip()
+    requires_review = bool(payload.get("requires_review", True))
+    diagram.update(
+        {
+            "fen": fen if not requires_review else "",
+            "fen_candidate": full_fen or str(diagram.get("fen_candidate") or ""),
+            "full_fen": full_fen,
+            "placement": str(payload.get("placement") or payload.get("placement_fen") or ""),
+            "placement_fen": str(payload.get("placement") or payload.get("placement_fen") or ""),
+            "placement_status": str(payload.get("placement_status") or payload.get("placement_runtime_status") or ""),
+            "full_fen_status": str(payload.get("full_fen_status") or payload.get("full_fen_runtime_status") or ""),
+            "fen_suppressed_reason": str(payload.get("fen_suppressed_reason") or ""),
+            "side_to_move": marker.get("side_to_move") or payload.get("side_to_move") or "unknown",
+            "side_to_move_status": str(payload.get("side_to_move_status") or ""),
+            "side_to_move_evidence": str(payload.get("side_to_move_evidence") or ""),
+            "side_marker_symbol": marker.get("side_marker_symbol") or "",
+            "side_marker_status": marker.get("side_marker_status") or "",
+            "side_marker_source": marker.get("side_marker_source") or "",
+            "side_marker_bbox": marker.get("side_marker_bbox") or [],
+            "side_marker_confidence": marker.get("side_marker_confidence") or "",
+            "side_marker_assignment_trace": marker.get("side_marker_assignment_trace") or {},
+            "strict_fen_side_evidence_trusted": bool(marker.get("strict_fen_side_evidence_trusted")),
+            "board_crop_path": str(payload.get("board_crop_path") or diagram.get("source_crop") or ""),
+            "side_marker_crop_path": str(payload.get("side_marker_crop_path") or ""),
+            "debug_overlay_path": str(payload.get("debug_overlay_path") or ""),
+            "board_bbox": list(payload.get("board_bbox") or []),
+            "warnings": sorted({str(warning) for warning in payload.get("warnings") or [] if str(warning)}),
+        }
+    )
+    if fen and not requires_review:
+        diagram["status"] = "accepted"
+        diagram["reason"] = None
+        diagram["review_reason"] = ""
+    else:
+        diagram["status"] = "needs_review"
+        diagram["reason"] = str(payload.get("fen_suppressed_reason") or "side_marker_or_fen_requires_review")
+        diagram["review_reason"] = diagram["reason"]
+
+
+def _write_study_side_marker_artifact_files(out: Path, files: list[Mapping[str, Any]]) -> None:
+    for item in files:
+        rel_path = str(item.get("path") or "").strip()
+        data = item.get("data")
+        if not rel_path or not isinstance(data, (bytes, bytearray)):
+            continue
+        target = out / rel_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(bytes(data))
+
+
+def _study_side_marker_summary(diagrams: list[Mapping[str, Any]]) -> dict[str, Any]:
+    return {
+        "diagram_count": len(diagrams),
+        "board_crop_count": len([item for item in diagrams if str(item.get("board_crop_path") or "").strip()]),
+        "side_marker_crop_count": len([item for item in diagrams if str(item.get("side_marker_crop_path") or "").strip()]),
+        "trusted_marker_count": len([item for item in diagrams if str(item.get("side_marker_status") or "") == "trusted_marker"]),
+        "marker_missing_count": len([item for item in diagrams if str(item.get("side_marker_status") or "") in {"", "marker_missing", "inferred_only"}]),
+        "marker_conflict_count": len([item for item in diagrams if str(item.get("side_marker_status") or "") in {"marker_conflict", "multi_side"}]),
+        "side_unknown_count": len([item for item in diagrams if str(item.get("side_to_move") or "") not in {"w", "b"}]),
+        "placement_accepted_count": len(
+            [
+                item
+                for item in diagrams
+                if str(item.get("placement_status") or item.get("placement_runtime_status") or "").startswith("FEN_PLACEMENT_MACHINE_ACCEPTED")
+                or str(item.get("placement") or item.get("placement_fen") or "").strip()
+            ]
+        ),
+        "full_fen_accepted_count": len([item for item in diagrams if str(item.get("status") or "") == "accepted" and str(item.get("fen") or "").strip()]),
+    }
+
+
+def _write_study_side_marker_report(out: Path, diagrams: list[Mapping[str, Any]], summary: Mapping[str, Any]) -> None:
+    reports_dir = out / "reports" / "chess_fen"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    items = [
+        {
+            "diagram_id": item.get("diagram_id") or item.get("id") or "",
+            "page": item.get("page"),
+            "side_to_move": item.get("side_to_move"),
+            "side_marker_symbol": item.get("side_marker_symbol"),
+            "side_marker_status": item.get("side_marker_status"),
+            "side_marker_confidence": item.get("side_marker_confidence"),
+            "board_crop_path": item.get("board_crop_path"),
+            "side_marker_crop_path": item.get("side_marker_crop_path"),
+            "debug_overlay_path": item.get("debug_overlay_path"),
+            "side_marker_bbox": item.get("side_marker_bbox"),
+            "warnings": item.get("warnings") or [],
+        }
+        for item in diagrams
+    ]
+    payload = {
+        "schema": "kindlemaster.chess_study.pdf_side_marker_assignment.v1",
+        "summary": dict(summary),
+        "items": items,
+    }
+    _write_json(reports_dir / "side_marker_assignment.json", payload)
+    lines = [
+        "# Side Marker Assignment",
+        "",
+        *[f"- {key}: `{value}`" for key, value in summary.items()],
+        "",
+        "## Samples",
+        "",
+    ]
+    for item in items[:40]:
+        lines.append(
+            f"- `{item.get('diagram_id')}` page `{item.get('page')}` "
+            f"status `{item.get('side_marker_status')}` side `{item.get('side_to_move')}` "
+            f"crop `{item.get('side_marker_crop_path') or ''}`"
+        )
+    (reports_dir / "side_marker_assignment.md").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
+def _study_side_to_move_label(value: Any) -> str:
+    side = str(value or "").strip().lower()
+    if side in {"w", "white"}:
+        return "white"
+    if side in {"b", "black"}:
+        return "black"
+    return "unknown"
 
 
 def build_study_positions(diagrams: dict[str, Any], segments: dict[str, Any], out_dir: str | Path) -> dict[str, Any]:
@@ -4142,12 +4462,31 @@ def build_study_positions(diagrams: dict[str, Any], segments: dict[str, Any], ou
                 "label": label,
                 "diagram_page": page_number,
                 "solution_page": None,
-                "side_to_move": "white" if diagram.get("side_to_move") == "w" else "black",
+                "side_to_move": _study_side_to_move_label(diagram.get("side_to_move")),
+                "side_to_move_code": str(diagram.get("side_to_move") or "unknown"),
+                "side_to_move_status": str(diagram.get("side_to_move_status") or ""),
+                "side_to_move_evidence": str(diagram.get("side_to_move_evidence") or ""),
+                "side_marker_symbol": str(diagram.get("side_marker_symbol") or ""),
+                "side_marker_status": str(diagram.get("side_marker_status") or ""),
+                "side_marker_source": str(diagram.get("side_marker_source") or ""),
+                "side_marker_bbox": _bbox4(diagram.get("side_marker_bbox") or []),
+                "side_marker_confidence": diagram.get("side_marker_confidence", ""),
+                "side_marker_crop_path": str(diagram.get("side_marker_crop_path") or ""),
+                "side_marker_assignment_trace": dict(diagram.get("side_marker_assignment_trace") or {}),
+                "strict_fen_side_evidence_trusted": bool(diagram.get("strict_fen_side_evidence_trusted")),
                 "bbox": _bbox4(diagram.get("bbox") or []),
+                "board_bbox": _bbox4(diagram.get("board_bbox") or diagram.get("bbox_xyxy") or []),
+                "board_crop_path": str(diagram.get("board_crop_path") or diagram.get("source_crop") or ""),
+                "debug_overlay_path": str(diagram.get("debug_overlay_path") or ""),
                 "visual_order_on_page": diagram.get("visual_order_on_page"),
                 "stars": None,
                 "fen": fen,
                 "fen_candidate": str(diagram.get("fen_candidate") or ""),
+                "placement": str(diagram.get("placement") or diagram.get("placement_fen") or ""),
+                "placement_status": str(diagram.get("placement_status") or ""),
+                "full_fen": str(diagram.get("full_fen") or ""),
+                "full_fen_status": str(diagram.get("full_fen_status") or ""),
+                "fen_suppressed_reason": str(diagram.get("fen_suppressed_reason") or ""),
                 "solution_pgn": "",
                 "points": None,
                 "theme": "",
@@ -4934,7 +5273,9 @@ def _study_position_article(item: dict[str, Any]) -> str:
     status = str(item.get("status") or "needs_review")
     fen = str(item.get("fen") or "")
     pgn = str(item.get("solution_pgn") or "")
-    crop = str(item.get("source_crop") or "")
+    crop = str(item.get("source_crop") or item.get("board_crop_path") or "")
+    marker_crop = str(item.get("side_marker_crop_path") or "")
+    debug_overlay = str(item.get("debug_overlay_path") or "")
     rendered = str(item.get("rendered_diagram") or item.get("rendered_svg") or item.get("rendered_png") or "")
     label = html.escape(str(item.get("label") or item.get("id") or "Diagram"))
     source_page = html.escape(str(item.get("diagram_page") or ""))
@@ -4943,6 +5284,16 @@ def _study_position_article(item: dict[str, Any]) -> str:
         f'<figure><figcaption>Diagram crop</figcaption><img src="{html.escape(crop, quote=True)}" alt="{html.escape(str(item.get("id") or "diagram"))} crop"></figure>'
         if crop
         else "<figure><figcaption>Diagram crop</figcaption><p>No crop available.</p></figure>"
+    )
+    marker_crop_html = (
+        f'<figure><figcaption>Side marker crop</figcaption><img src="{html.escape(marker_crop, quote=True)}" alt="{html.escape(str(item.get("id") or "diagram"))} side marker crop"></figure>'
+        if marker_crop
+        else ""
+    )
+    debug_overlay_html = (
+        f'<figure><figcaption>Debug overlay</figcaption><img src="{html.escape(debug_overlay, quote=True)}" alt="{html.escape(str(item.get("id") or "diagram"))} debug overlay"></figure>'
+        if debug_overlay
+        else ""
     )
     rendered_html = (
         f'<figure><figcaption>Rendered FEN</figcaption><img src="{html.escape(rendered, quote=True)}" alt="{html.escape(str(item.get("id") or "diagram"))} rendered FEN"></figure>'
@@ -4963,11 +5314,11 @@ def _study_position_article(item: dict[str, Any]) -> str:
     return f"""<article class="study-block diagram-card" data-status="{html.escape(status, quote=True)}" data-diagram-id="{html.escape(str(item.get("id") or ""), quote=True)}">
   <div class="study-block-grid">
     <aside class="study-diagram">
-      <div class="diagram-compare">{crop_html}{rendered_block}</div>
+      <div class="diagram-compare">{crop_html}{marker_crop_html}{debug_overlay_html}{rendered_block}</div>
     </aside>
     <div class="study-content">
       <h3>{label}</h3>
-      <p class="study-meta"><span class="status {html.escape(status, quote=True)}">{html.escape(status)}</span><span>Page {source_page}</span><span>{side_to_move} to move</span></p>
+      <p class="study-meta"><span class="status {html.escape(status, quote=True)}">{html.escape(status)}</span><span>Page {source_page}</span><span>{side_to_move} to move</span><span>{html.escape(str(item.get('side_marker_status') or 'marker_missing'))}</span></p>
       {fen_html}
       {pgn_html}
     </div>
@@ -4994,11 +5345,15 @@ def _study_notation_article(item: dict[str, Any]) -> str:
 def _position_card_html(item: dict[str, Any]) -> str:
     safe_id = html.escape(str(item.get("id") or "position"), quote=True)
     status = str(item.get("status") or "needs_review")
-    crop = str(item.get("source_crop") or "")
+    crop = str(item.get("source_crop") or item.get("board_crop_path") or "")
+    marker_crop = str(item.get("side_marker_crop_path") or "")
+    debug_overlay = str(item.get("debug_overlay_path") or "")
     rendered = str(item.get("rendered_diagram") or item.get("rendered_svg") or item.get("rendered_png") or "")
     fen = str(item.get("fen") or "")
     pgn = str(item.get("solution_pgn") or "")
     crop_html = f'<img src="{html.escape(crop, quote=True)}" alt="{safe_id} source crop">' if crop else "<p>No source crop</p>"
+    marker_html = f'<hr><img src="{html.escape(marker_crop, quote=True)}" alt="{safe_id} side marker crop">' if marker_crop else ""
+    overlay_html = f'<hr><img src="{html.escape(debug_overlay, quote=True)}" alt="{safe_id} debug overlay">' if debug_overlay else ""
     rendered_html = f'<img src="{html.escape(rendered, quote=True)}" alt="{safe_id} rendered FEN">' if rendered else "<p>No rendered FEN diagram</p>"
     fen_html = (
         f'<p><button data-copy-target="fen-{safe_id}">Copy FEN</button></p><pre id="fen-{safe_id}">{html.escape(fen)}</pre>'
@@ -5011,7 +5366,7 @@ def _position_card_html(item: dict[str, Any]) -> str:
         else "<p>PGN: needs review or missing.</p>"
     )
     return f"""<article class="card" data-position-status="{html.escape(status, quote=True)}">
-  <div class="diagram">{crop_html}<hr>{rendered_html}</div>
+  <div class="diagram">{crop_html}{marker_html}{overlay_html}<hr>{rendered_html}</div>
   <div>
     <h2>{html.escape(str(item.get("chapter_title") or "Unassigned"))} - {html.escape(str(item.get("label") or item.get("id")))}</h2>
     <p>Source page: {html.escape(str(item.get("diagram_page") or ""))}</p>
@@ -5020,7 +5375,7 @@ def _position_card_html(item: dict[str, Any]) -> str:
     <p>Status: <span class="status {html.escape(status, quote=True)}">{html.escape(status)}</span></p>
     {fen_html}
     {pgn_html}
-    <div class="debug"><h3>Warnings</h3><pre>{html.escape(json.dumps(item.get("warnings", []), ensure_ascii=False, indent=2))}</pre></div>
+    <div class="debug"><h3>Marker</h3><pre>{html.escape(json.dumps({'status': item.get('side_marker_status'), 'symbol': item.get('side_marker_symbol'), 'bbox': item.get('side_marker_bbox'), 'trace': item.get('side_marker_assignment_trace')}, ensure_ascii=False, indent=2))}</pre><h3>Warnings</h3><pre>{html.escape(json.dumps(item.get("warnings", []), ensure_ascii=False, indent=2))}</pre></div>
   </div>
 </article>"""
 
@@ -5592,6 +5947,24 @@ def _study_diagram_record(record: dict[str, Any]) -> StudyDiagram:
         status=str(record.get("status") or "needs_review"),
         confidence=float(record.get("confidence") or 0.0),
         source_crop=str(record.get("source_crop") or ""),
+        board_crop_path=str(record.get("board_crop_path") or record.get("source_crop") or ""),
+        side_marker_crop_path=str(record.get("side_marker_crop_path") or ""),
+        debug_overlay_path=str(record.get("debug_overlay_path") or ""),
+        board_bbox=_bbox4(record.get("board_bbox") or record.get("bbox_xyxy") or []),
+        side_marker_bbox=_bbox4(record.get("side_marker_bbox") or []),
+        side_to_move_status=str(record.get("side_to_move_status") or ""),
+        side_to_move_evidence=str(record.get("side_to_move_evidence") or ""),
+        side_marker_symbol=str(record.get("side_marker_symbol") or ""),
+        side_marker_status=str(record.get("side_marker_status") or ""),
+        side_marker_source=str(record.get("side_marker_source") or ""),
+        side_marker_confidence=record.get("side_marker_confidence", ""),
+        side_marker_assignment_trace=dict(record.get("side_marker_assignment_trace") or {}),
+        strict_fen_side_evidence_trusted=bool(record.get("strict_fen_side_evidence_trusted")),
+        placement=str(record.get("placement") or record.get("placement_fen") or ""),
+        placement_status=str(record.get("placement_status") or record.get("placement_runtime_status") or ""),
+        full_fen=str(record.get("full_fen") or ""),
+        full_fen_status=str(record.get("full_fen_status") or record.get("full_fen_runtime_status") or ""),
+        fen_suppressed_reason=str(record.get("fen_suppressed_reason") or ""),
         rendered_svg=str(record.get("rendered_svg") or ""),
         rendered_png=str(record.get("rendered_png") or ""),
         review_reason=str(record.get("review_reason") or record.get("reason") or ""),

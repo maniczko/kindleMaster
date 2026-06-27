@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import io
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
+import fitz
 from PIL import Image, ImageDraw
 
 from chess_auto_flow import build_auto_chess_flow_artifacts
+from chess_study_export import _attach_pdf_side_marker_evidence_to_study_diagrams
 from chess_fen_hardening import machine_accept_fen, machine_accept_placement
 from chess_position_recognizer import summarize_chess_fen_results
 from converter import chess_fen_html_attrs, chess_side_marker_html
@@ -26,6 +29,18 @@ VALID_PLACEMENT = VALID_FEN.split()[0]
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _write_image_pdf(path: Path, image: Image.Image) -> None:
+    payload = io.BytesIO()
+    image.save(payload, format="PNG")
+    doc = fitz.open()
+    try:
+        page = doc.new_page(width=image.width, height=image.height)
+        page.insert_image(fitz.Rect(0, 0, image.width, image.height), stream=payload.getvalue())
+        doc.save(path)
+    finally:
+        doc.close()
 
 
 class ChessSideMarkerAssignmentTests(unittest.TestCase):
@@ -214,6 +229,100 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertEqual(summary["board_crop_count"], 2)
         self.assertEqual(summary["side_marker_crop_count"], 1)
         self.assertEqual(summary["debug_overlay_count"], 2)
+
+    def test_pdf_side_marker_crop_evidence_reaches_study_diagram_record(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            out = root / "out"
+            page = Image.new("RGB", (420, 440), "white")
+            draw = ImageDraw.Draw(page)
+            draw.rectangle((100, 170, 300, 370), outline="black", width=3)
+            draw.polygon([(304, 222), (334, 222), (319, 250)], fill="black")
+            pdf_path = root / "marker.pdf"
+            _write_image_pdf(pdf_path, page)
+            diagrams = [
+                {
+                    "diagram_id": "p001_d01",
+                    "page": 1,
+                    "pixel_bbox": [100, 170, 200, 200],
+                    "fen_candidate": VALID_FEN,
+                    "confidence": 0.99,
+                    "fen_confidence": 0.99,
+                    "warnings": ["side_to_move_inferred"],
+                    "status": "needs_review",
+                }
+            ]
+
+            summary = _attach_pdf_side_marker_evidence_to_study_diagrams(
+                pdf_path,
+                diagrams,
+                out,
+                dpi=72,
+                min_confidence=0.90,
+            )
+
+            record = diagrams[0]
+            marker_path_exists = (out / record["side_marker_crop_path"]).is_file()
+            board_path_exists = (out / record["board_crop_path"]).is_file()
+            overlay_path_exists = (out / record["debug_overlay_path"]).is_file()
+            report = json.loads((out / "reports" / "chess_fen" / "side_marker_assignment.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(record["side_to_move"], "b")
+        self.assertEqual(record["side_to_move_status"], "explicit")
+        self.assertEqual(record["side_to_move_evidence"], "marker")
+        self.assertEqual(record["side_marker_symbol"], "\u25bc")
+        self.assertEqual(record["side_marker_status"], "trusted_marker")
+        self.assertEqual(record["status"], "accepted")
+        self.assertTrue(record["fen"].endswith(" b - - 0 1"))
+        self.assertTrue(marker_path_exists)
+        self.assertTrue(board_path_exists)
+        self.assertTrue(overlay_path_exists)
+        self.assertEqual(summary["side_marker_crop_count"], 1)
+        self.assertEqual(summary["trusted_marker_count"], 1)
+        self.assertEqual(report["summary"]["trusted_marker_count"], 1)
+
+    def test_pdf_side_marker_conflict_remains_review_only_with_crop_trace(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            out = root / "out"
+            page = Image.new("RGB", (420, 440), "white")
+            draw = ImageDraw.Draw(page)
+            draw.rectangle((100, 170, 300, 370), outline="black", width=3)
+            draw.polygon([(210, 132), (254, 132), (232, 164)], fill="black")
+            draw.line([(130, 132), (174, 132), (152, 164), (130, 132)], fill="black", width=4)
+            pdf_path = root / "marker-conflict.pdf"
+            _write_image_pdf(pdf_path, page)
+            diagrams = [
+                {
+                    "diagram_id": "p001_d01",
+                    "page": 1,
+                    "pixel_bbox": [100, 170, 200, 200],
+                    "fen_candidate": VALID_FEN,
+                    "confidence": 0.99,
+                    "fen_confidence": 0.99,
+                    "warnings": ["side_to_move_inferred"],
+                    "status": "needs_review",
+                }
+            ]
+
+            summary = _attach_pdf_side_marker_evidence_to_study_diagrams(
+                pdf_path,
+                diagrams,
+                out,
+                dpi=72,
+                min_confidence=0.90,
+            )
+
+            record = diagrams[0]
+            marker_path_exists = (out / record["side_marker_crop_path"]).is_file()
+
+        self.assertEqual(record["status"], "needs_review")
+        self.assertEqual(record["side_to_move"], "unknown")
+        self.assertEqual(record["side_marker_status"], "marker_conflict")
+        self.assertIn("side_to_move_marker_local_conflict", record["warnings"])
+        self.assertTrue(marker_path_exists)
+        self.assertEqual(summary["marker_conflict_count"], 1)
+        self.assertEqual(summary["trusted_marker_count"], 0)
 
     def test_auto_flow_writes_side_marker_assignment_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

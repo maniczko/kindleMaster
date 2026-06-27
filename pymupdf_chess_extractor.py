@@ -18,7 +18,7 @@ import time
 import zipfile
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 import fitz  # PyMuPDF
 import numpy as np
@@ -5579,6 +5579,8 @@ def _scan_chess_side_marker_metadata_from_payload(payload: Mapping[str, Any]) ->
         "trusted": marker_status in SIDE_MARKER_TRUSTED_STATUSES,
         "warnings": sorted(warnings),
     }
+    if payload.get("side_marker_probe_role"):
+        trace["selected_candidate_role"] = str(payload.get("side_marker_probe_role") or "")
     if candidates:
         nearest = min(
             candidates,
@@ -5608,6 +5610,39 @@ def _coerce_side_marker_bbox(value: Any) -> list[float]:
         return [round(float(item), 2) for item in value]
     except (TypeError, ValueError):
         return []
+
+
+def _scan_chess_best_marker_candidate(candidates: Iterable[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    ranked: list[Mapping[str, Any]] = []
+    for candidate in candidates:
+        if not isinstance(candidate, Mapping):
+            continue
+        if not _coerce_side_marker_bbox(candidate.get("bbox")):
+            continue
+        has_marker_signal = bool(
+            candidate.get("component_bbox")
+            or candidate.get("detected_side")
+            or candidate.get("side_candidate")
+            or candidate.get("detected_shape")
+        )
+        if has_marker_signal:
+            ranked.append(candidate)
+    if not ranked:
+        return None
+
+    def rank(candidate: Mapping[str, Any]) -> tuple[int, float, float]:
+        trusted_signal = 1 if candidate.get("detected_side") in {"w", "b"} or candidate.get("side_candidate") in {"w", "b"} else 0
+        try:
+            score = float(candidate.get("score") or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+        try:
+            distance = float(candidate.get("distance_to_board") or 10**9)
+        except (TypeError, ValueError):
+            distance = 10**9
+        return trusted_signal, score, -distance
+
+    return max(ranked, key=rank)
 
 
 def _apply_scan_chess_side_to_move_evidence(
@@ -5711,7 +5746,12 @@ def _apply_scan_chess_side_to_move_context_evidence(
         return updated
     evidence_warnings = {str(warning) for warning in evidence.warnings if str(warning)}
     if evidence.marker_candidates:
-        updated["side_marker_candidates"] = list(evidence.marker_candidates)
+        marker_candidates = list(evidence.marker_candidates)
+        updated["side_marker_candidates"] = marker_candidates
+        best_marker = _scan_chess_best_marker_candidate(marker_candidates)
+        if best_marker is not None and not _coerce_side_marker_bbox(updated.get("side_marker_bbox")):
+            updated["side_marker_bbox"] = _coerce_side_marker_bbox(best_marker.get("bbox"))
+            updated["side_marker_probe_role"] = str(best_marker.get("role") or "")
     if evidence.confidence:
         updated["side_marker_confidence"] = round(float(evidence.confidence), 3)
     if not evidence.side:
@@ -5762,6 +5802,15 @@ def _scan_chess_local_side_marker_assignment_evidence(
     if not _scan_chess_clean_side_only_review_payload(payload):
         return None
     payloads = _scan_chess_side_marker_probe_payloads(page_image, bbox)
+    if any(candidate.get("marker_classifier_status") == "side_to_move_marker_local_conflict" for candidate in payloads):
+        return ScanChessSideToMoveEvidence(
+            warnings=(
+                "side_to_move_marker_detected",
+                "side_to_move_marker_local_conflict",
+                "side_to_move_marker_probes_checked",
+            ),
+            marker_candidates=tuple(payloads),
+        )
     component_payloads = [candidate for candidate in payloads if candidate.get("component_bbox")]
     candidate_payloads: list[dict[str, Any]] = []
     for candidate in component_payloads:
@@ -5990,6 +6039,15 @@ def _infer_scan_chess_side_to_move_marker_evidence(
     found, the caller keeps the conservative inferred default.
     """
     payloads = _scan_chess_side_marker_probe_payloads(page_image, bbox)
+    if any(payload.get("marker_classifier_status") == "side_to_move_marker_local_conflict" for payload in payloads):
+        return ScanChessSideToMoveEvidence(
+            warnings=(
+                "side_to_move_marker_detected",
+                "side_to_move_marker_local_conflict",
+                "side_to_move_marker_probes_checked",
+            ),
+            marker_candidates=tuple(payloads),
+        )
     detections = [payload for payload in payloads if payload.get("detected_side")]
     if not detections:
         if payloads:

@@ -11,7 +11,7 @@ on:
         description: "Add agent:claimed to the selected issue after a valid handoff is produced."
         required: false
         type: boolean
-        default: false
+        default: true
       comment_handoff:
         description: "Post the orchestration handoff back to the selected issue."
         required: false
@@ -19,27 +19,33 @@ on:
         default: true
   schedule:
     - cron: "23 */2 * * *"
+  pull_request:
+    types: [closed]
 
 permissions:
   contents: read
   issues: write
+  pull-requests: read
 
 concurrency:
   group: codex-issue-queue
   cancel-in-progress: false
 
 jobs:
-  prepare-one-issue:
-    name: prepare-one-issue
+  queue:
+    name: sync-and-dispatch-one-issue
     runs-on: ubuntu-latest
-    if: ${{ github.event_name != 'schedule' || vars.CODEX_QUEUE_ENABLED == '1' }}
+    if: ${{ github.event_name != 'schedule' || vars.CODEX_QUEUE_DISABLED != '1' }}
     env:
       GH_TOKEN: ${{ github.token }}
       REQUESTED_ISSUE: ${{ inputs.issue_number || '' }}
-      APPLY_CLAIM_INPUT: ${{ inputs.apply_claim || false }}
+      APPLY_CLAIM_INPUT: ${{ inputs.apply_claim || true }}
       COMMENT_HANDOFF_INPUT: ${{ inputs.comment_handoff || true }}
-      SCHEDULE_APPLY_CLAIM: ${{ vars.CODEX_QUEUE_APPLY_CLAIM || 'false' }}
-      READY_QUERY: label:"agent:ready" label:"autopilot:allowed" -label:"agent:claimed" -label:"agent:blocked" -label:"agent:needs-review" -label:"autopilot:requires-human" -label:"needs-product-decision" sort:created-asc
+      SCHEDULE_APPLY_CLAIM: ${{ vars.CODEX_QUEUE_APPLY_CLAIM || 'true' }}
+      EVENT_NAME: ${{ github.event_name }}
+      PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+      PR_MERGED: ${{ github.event.pull_request.merged || false }}
+      READY_QUERY: label:"agent:ready" label:"autopilot:allowed" -label:"agent:claimed" -label:"agent:blocked" -label:"agent:needs-review" -label:"autopilot:requires-human" -label:"needs-product-decision" -label:"training-data:missing" sort:created-asc
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -49,42 +55,137 @@ jobs:
         with:
           python-version: "3.14"
 
+      - name: Ensure queue labels exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          ensure_label() {
+            local name="$1"
+            local color="$2"
+            local desc="$3"
+            gh label create "$name" --color "$color" --description "$desc" --force >/dev/null 2>&1 || true
+          }
+          ensure_label "agent:claimed" "fbca04" "Agent has claimed this issue for active execution."
+          ensure_label "agent:done" "57606a" "Agent work is complete and evidence is attached."
+          ensure_label "agent:blocked" "d73a49" "Agent cannot proceed without user input or external state change."
+          ensure_label "agent:needs-review" "8250df" "Agent work needs human or code review."
+          ensure_label "autopilot:allowed" "0e8a16" "Agent may execute without asking if the issue contract stays valid."
+          ensure_label "autopilot:requires-human" "b60205" "Agent must stop and ask for a decision before execution."
+          ensure_label "training-data:missing" "d93f0b" "Training, benchmark, corpus, or fixture data is missing; queue should skip this issue."
+
+      - name: Sync merged PR back to linked issue
+        id: merged_pr
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "merged_issue=" >> "$GITHUB_OUTPUT"
+
+          if [[ "${EVENT_NAME}" != "pull_request" ]]; then
+            echo "Not a pull_request event; skipping merge sync."
+            exit 0
+          fi
+          if [[ "${PR_MERGED}" != "true" ]]; then
+            echo "Pull request was closed without merge; skipping merge sync and dispatch."
+            echo "skip_dispatch=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          pr_body="$(gh pr view "${PR_NUMBER}" --json body --jq '.body // ""')"
+          linked_issue="$(python - <<'PY' <<< "${pr_body}"
+          import re
+          import sys
+          body = sys.stdin.read()
+          match = re.search(r'(?i)\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\s+#(\d+)\b', body)
+          print(match.group(3) if match else '')
+          PY
+          )"
+
+          if [[ -z "${linked_issue}" ]]; then
+            echo "Merged PR #${PR_NUMBER} does not contain a Closes/Fixes/Resolves issue reference."
+            exit 0
+          fi
+
+          gh issue edit "${linked_issue}" --add-label "agent:done" || true
+          for label in "agent:claimed" "agent:ready" "agent:needs-review" "agent:blocked" "autopilot:allowed" "training-data:missing"; do
+            gh issue edit "${linked_issue}" --remove-label "$label" >/dev/null 2>&1 || true
+          done
+          gh issue comment "${linked_issue}" --body "Merged via PR #${PR_NUMBER}. Queue status moved to agent:done. The queue will now try to prepare the next ready issue." >/dev/null
+          echo "merged_issue=${linked_issue}" >> "$GITHUB_OUTPUT"
+
       - name: Select one issue from the queue
         id: select
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p reports/github
+
+          if [[ "${{ steps.merged_pr.outputs.skip_dispatch || '' }}" == "true" ]]; then
+            echo "selected=false" >> "$GITHUB_OUTPUT"
+            echo "issue_number=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           if [[ -n "${REQUESTED_ISSUE}" ]]; then
             gh issue view "${REQUESTED_ISSUE}" --json number,title,body,labels,state,url > reports/github/issues.json
           else
-            gh issue list --state open --search "${READY_QUERY}" --limit 1 --json number,title,body,labels,state,url,createdAt > reports/github/issues.json
+            gh issue list --state open --search "${READY_QUERY}" --limit 25 --json number,title,body,labels,state,url,createdAt > reports/github/issues.json
           fi
 
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
+          import re
           from pathlib import Path
 
           payload = json.loads(Path("reports/github/issues.json").read_text(encoding="utf-8"))
-          if isinstance(payload, list):
-              selected = payload[0] if payload else None
-          elif isinstance(payload, dict) and payload.get("number"):
-              selected = payload
-          else:
-              selected = None
+          candidates = payload if isinstance(payload, list) else [payload]
+          selected = None
+          required = {"agent:ready", "autopilot:allowed"}
+          blocked = {
+              "agent:claimed",
+              "agent:blocked",
+              "agent:needs-review",
+              "autopilot:requires-human",
+              "needs-product-decision",
+              "training-data:missing",
+          }
+
+          for issue in candidates:
+              if not issue or issue.get("state") not in {None, "OPEN", "open"}:
+                  continue
+              labels = {label["name"] for label in issue.get("labels", [])}
+              area_labels = {label for label in labels if label.startswith("area:")}
+              if not required.issubset(labels):
+                  continue
+              if labels & blocked:
+                  continue
+              if not area_labels:
+                  continue
+              selected = issue
+              break
 
           if not selected:
               print("selected=false")
               print("issue_number=")
+              print("training_related=false")
               raise SystemExit(0)
 
+          labels = {label["name"] for label in selected.get("labels", [])}
+          text = "\n".join([selected.get("title", ""), selected.get("body", "")]).lower()
+          training_related = bool(
+              labels & {"area:corpus", "gate:corpus", "training-data:ready"}
+              or re.search(r"\b(training data|dane treningowe|dataset|benchmark|fixture|corpus|holdout)\b", text)
+          )
+
+          title = selected.get("title", "").replace("%", "%25").replace("\n", "%0A").replace("\r", "%0D")
           print("selected=true")
           print(f"issue_number={selected['number']}")
+          print(f"title={title}")
+          print(f"training_related={'true' if training_related else 'false'}")
           PY
 
       - name: Stop when queue is empty
         if: ${{ steps.select.outputs.selected != 'true' }}
-        run: echo "No ready Codex issue found."
+        run: echo "No executable issue found. Queue requires agent:ready + autopilot:allowed + area:* and skips human/review/training-data blockers."
 
       - name: Build orchestration handoff
         if: ${{ steps.select.outputs.selected == 'true' }}
@@ -98,7 +199,7 @@ jobs:
           python kindlemaster.py orchestrate execute --issues-json reports/github/issues.json --issue-number "${issue_number}" --output-json reports/github/codex-queue-execute.json
           python kindlemaster.py orchestrate report --issues-json reports/github/issues.json --issue-number "${issue_number}" --evidence reports/github/codex-queue-sync.json --evidence reports/github/codex-queue-claim.json --evidence reports/github/codex-queue-execute.json --output-json reports/github/codex-queue-report.json --output-md reports/github/codex-queue-report.md
 
-      - name: Comment orchestration handoff
+      - name: Comment Codex execution handoff
         if: ${{ steps.select.outputs.selected == 'true' && env.COMMENT_HANDOFF_INPUT == 'true' }}
         shell: bash
         run: |
@@ -111,8 +212,11 @@ jobs:
           claim = json.loads(Path("reports/github/codex-queue-claim.json").read_text(encoding="utf-8"))
           execute = json.loads(Path("reports/github/codex-queue-execute.json").read_text(encoding="utf-8"))
           report = Path("reports/github/codex-queue-report.md").read_text(encoding="utf-8")
+          training_related = "${{ steps.select.outputs.training_related }}" == "true"
 
           lines = [
+              "@codex Execute this GitHub issue exactly as scoped.",
+              "",
               "## Codex queue handoff",
               "",
               report.strip(),
@@ -120,21 +224,41 @@ jobs:
               f"- Queue status: `{claim.get('status', 'unknown')}`",
               f"- Suggested branch: `{claim.get('branch', '')}`",
               f"- Execution mode: `{execute.get('execution_mode', 'contract-only')}`",
+              "",
+              "## Automation rules",
+              "- Work on exactly this issue and open one PR with `Closes #<issue>`.",
+              "- Do not merge the PR yourself.",
+              "- Run the validation commands from the issue and report evidence paths.",
+              "- If execution is blocked by a product or human decision, add `agent:blocked` and explain the decision needed.",
+              "- If the work is completed by a merged PR, the queue workflow will mark the issue `agent:done` and prepare the next ready issue.",
+              "",
+              "## Training-data gap protocol",
+              "If training, benchmark, corpus, fixture, or holdout data is missing, do not block the whole queue and do not silently fail.",
+              "Post a separate issue comment starting with `TRAINING_DATA_GAP` and include:",
+              "1. exact missing data or path,",
+              "2. required counts/classes,",
+              "3. current available counts/classes,",
+              "4. whether useful report-only work can still be completed,",
+              "5. the smallest next data-acquisition action.",
+              "Then add `training-data:missing`, remove `agent:claimed` if the issue cannot proceed, and leave unrelated ready issues for the next queue run.",
           ]
+          if training_related:
+              lines.extend([
+                  "",
+                  "This issue appears training/corpus/benchmark-related, so the training-data gap protocol is mandatory if inputs are incomplete.",
+              ])
           commands = execute.get("recommended_commands") or claim.get("recommended_commands") or []
           if commands:
-              lines.append("- Recommended validation:")
+              lines.append("")
+              lines.append("## Recommended validation")
               for command in commands:
-                  lines.append(f"  - `{command}`")
+                  lines.append(f"- `{command}`")
           blockers = claim.get("blockers") or []
           if blockers:
-              lines.append("- Blockers:")
+              lines.append("")
+              lines.append("## Existing blockers")
               for blocker in blockers:
-                  lines.append(f"  - `{blocker}`")
-          lines.extend([
-              "",
-              "This workflow serializes the queue and prepares a Codex execution contract. It does not edit code by itself; an approved Codex executor must use this handoff and open a PR with evidence.",
-          ])
+                  lines.append(f"- `{blocker}`")
           Path("reports/github/codex-queue-comment.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
           PY
           gh issue comment "${issue_number}" --body-file reports/github/codex-queue-comment.md
@@ -146,7 +270,7 @@ jobs:
           set -euo pipefail
           issue_number="${{ steps.select.outputs.issue_number }}"
           apply_claim="${APPLY_CLAIM_INPUT}"
-          if [[ "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
+          if [[ "${EVENT_NAME}" == "schedule" || "${EVENT_NAME}" == "pull_request" ]]; then
             apply_claim="${SCHEDULE_APPLY_CLAIM}"
           fi
           claim_status="$(python - <<'PY'
@@ -157,7 +281,7 @@ jobs:
           PY
           )"
           if [[ "${apply_claim}" == "true" && "${claim_status}" == "ready" ]]; then
-            gh issue edit "${issue_number}" --add-label "agent:claimed"
+            gh issue edit "${issue_number}" --add-label "agent:claimed" --remove-label "agent:ready"
           else
             echo "Skipping agent:claimed label. apply_claim=${apply_claim}, status=${claim_status}"
           fi

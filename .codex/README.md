@@ -57,6 +57,7 @@ Keep these repo conventions synchronized between `.codex/config.toml`, `README.m
 - local hook policy and governance evidence lanes.
 - plugin auto-routing mirrors from `AGENTS.md` Section 34A.
 - prompt auto-normalization mirrors from `AGENTS.md` Section 34B and `.codex/skills/prompt-engineer/SKILL.md`.
+- GitHub autopilot blocking labels and training-data gap protocol from `.codex/orchestration.json` and `docs/github-autopilot-orchestration.md`.
 
 Preferred browser URL for this repo: `http://kindlemaster.localhost:5001/`.
 Loopback bind remains `127.0.0.1:5001` for runtime safety and tool fallback.
@@ -82,6 +83,24 @@ Do not add speculative plugin keys here unless Codex supports them as real confi
 - skip formal rewriting for trivial requests or when the user explicitly asks not to rewrite the prompt.
 
 This is an instruction-level policy. Do not add speculative TOML keys for prompt rewriting unless Codex supports them as real runtime settings.
+
+## GitHub Autopilot Mirror
+
+`docs/github-autopilot-orchestration.md`, `.github/workflows/codex-issue-queue.yml`, and `.codex/orchestration.json` define the executable queue behavior.
+
+Current queue policy:
+- automatic schedule is enabled by default every two hours,
+- set `CODEX_QUEUE_DISABLED=1` only as an emergency stop,
+- ready issues require `agent:ready`, `autopilot:allowed`, and at least one `area:*` label,
+- blocking labels are `agent:blocked`, `agent:needs-review`, `autopilot:requires-human`, `needs-product-decision`, and `training-data:missing`,
+- scheduled and post-merge runs claim selected issues by default,
+- the queue comments an `@codex` handoff and stores handoff artifacts under `reports/github/`,
+- after a PR with `Closes #<issue>` is merged, the queue marks the issue `agent:done` and tries to prepare the next ready issue.
+
+Training-data gap policy:
+- if training, benchmark, corpus, fixture, or holdout data is missing, the agent must post a separate comment starting with `TRAINING_DATA_GAP`,
+- the comment must list missing paths/counts, available counts, whether useful report-only work can continue, and the smallest next data-acquisition action,
+- the issue should receive `training-data:missing`, and unrelated ready issues should continue through the queue.
 
 ## Agent Quality Gate
 

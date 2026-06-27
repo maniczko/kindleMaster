@@ -269,6 +269,8 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
             report_html = (out / "reports" / "chess_fen" / "side_marker_assignment.html").read_text(encoding="utf-8")
             metrics = json.loads((out / "reports" / "chess_fen" / "two_crop_quality_metrics.json").read_text(encoding="utf-8"))
             metrics_md = (out / "reports" / "chess_fen" / "two_crop_quality_metrics.md").read_text(encoding="utf-8")
+            blockers = json.loads((out / "reports" / "chess_fen" / "side_marker_blocker_attribution.json").read_text(encoding="utf-8"))
+            blockers_md = (out / "reports" / "chess_fen" / "side_marker_blocker_attribution.md").read_text(encoding="utf-8")
 
         self.assertEqual(record["side_to_move"], "b")
         self.assertEqual(record["side_to_move_status"], "explicit")
@@ -289,6 +291,9 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertEqual(metrics["summary"]["trusted_marker_count"], 1)
         self.assertEqual(metrics["accuracy"]["status"], "TRAINING_DATA_GAP")
         self.assertIn("TRAINING_DATA_GAP", metrics_md)
+        self.assertEqual(blockers["schema"], "kindlemaster.chess_fen.side_marker_blocker_attribution.v1")
+        self.assertEqual(blockers["summary"]["diagram_count"], 1)
+        self.assertIn("Side Marker Blocker Attribution", blockers_md)
 
     def test_pdf_side_marker_conflict_remains_review_only_with_crop_trace(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -452,6 +457,77 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertEqual(report["accuracy"]["status"], "TRAINING_DATA_GAP")
         self.assertIn("TRAINING_DATA_GAP", markdown)
         self.assertIn("two_crop_quality_metrics", flow_payload["artifacts"])
+
+    def test_auto_flow_writes_side_marker_blocker_attribution(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir)
+            _write_json(
+                out / "data" / "book.json",
+                {
+                    "pages": [
+                        {
+                            "page": 1,
+                            "diagrams": [
+                                {
+                                    "diagram_id": "not-propagated",
+                                    "page": 1,
+                                    "image_path": "assets/diagrams/not-propagated.png",
+                                    "board_crop_path": "review/chess_fen/two_crop/not-propagated_board.png",
+                                    "side_marker_crop_path": "review/chess_fen/two_crop/not-propagated_marker.png",
+                                    "side_to_move": "unknown",
+                                    "side_marker_status": "trusted_marker",
+                                    "side_marker_symbol": "\u25b3",
+                                    "placement_status": "FEN_PLACEMENT_MACHINE_ACCEPTED",
+                                    "full_fen_status": "FEN_REVIEW_REQUIRED",
+                                },
+                                {
+                                    "diagram_id": "missing-marker",
+                                    "page": 2,
+                                    "image_path": "assets/diagrams/missing-marker.png",
+                                    "board_crop_path": "review/chess_fen/two_crop/missing-marker_board.png",
+                                    "side_to_move": "unknown",
+                                    "side_marker_status": "marker_missing",
+                                    "placement_status": "FEN_PLACEMENT_MACHINE_ACCEPTED",
+                                    "full_fen_status": "FEN_REVIEW_REQUIRED",
+                                },
+                                {
+                                    "diagram_id": "placement-blocked",
+                                    "page": 3,
+                                    "image_path": "assets/diagrams/placement-blocked.png",
+                                    "board_crop_path": "review/chess_fen/two_crop/placement-blocked_board.png",
+                                    "side_marker_crop_path": "review/chess_fen/two_crop/placement-blocked_marker.png",
+                                    "side_to_move": "w",
+                                    "side_marker_status": "trusted_marker",
+                                    "side_marker_symbol": "\u25b3",
+                                    "placement_status": "FEN_PLACEMENT_REVIEW_REQUIRED",
+                                    "full_fen_status": "FEN_REVIEW_REQUIRED",
+                                },
+                            ],
+                            "pgn_records": [],
+                            "text_blocks": [],
+                        }
+                    ],
+                    "pgn_records": [],
+                },
+            )
+
+            flow_payload = build_auto_chess_flow_artifacts(out)
+            report_path = out / "reports" / "chess_fen" / "side_marker_blocker_attribution.json"
+            markdown_path = out / "reports" / "chess_fen" / "side_marker_blocker_attribution.md"
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            markdown = markdown_path.read_text(encoding="utf-8")
+
+        by_id = {item["diagram_id"]: item for item in report["items"]}
+        counts = report["summary"]["by_primary_side_marker_blocker"]
+        self.assertEqual(by_id["not-propagated"]["primary_side_marker_blocker"], "trusted_marker_not_propagated")
+        self.assertEqual(by_id["missing-marker"]["primary_side_marker_blocker"], "marker_classifier_missing")
+        self.assertEqual(by_id["placement-blocked"]["primary_side_marker_blocker"], "placement_blocks_full_fen")
+        self.assertEqual(counts["trusted_marker_not_propagated"], 1)
+        self.assertEqual(counts["marker_classifier_missing"], 1)
+        self.assertEqual(counts["placement_blocks_full_fen"], 1)
+        self.assertEqual(report["summary"]["placement_blocks_full_fen_count"], 1)
+        self.assertIn("side_marker_blocker_attribution", flow_payload["artifacts"])
+        self.assertIn("trusted_marker_not_propagated", markdown)
 
     def test_auto_flow_writes_two_crop_benchmark_gap_without_ai_label_promotion(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

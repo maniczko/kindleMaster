@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import io
 import json
 import tempfile
 import unittest
@@ -924,6 +926,58 @@ class ChessStudyPipelineTests(unittest.TestCase):
             self.assertTrue(source_gate["used_as_final_reader"])
             self.assertNotIn("localhost", source_index)
             self.assertNotIn("fen_not_recognized", source_index)
+
+    def test_source_reader_resolves_diagram_assets_and_uses_placeholders(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            pdf_path = root / "study.pdf"
+            _make_minimal_study_pdf(pdf_path)
+            source_asset_dir = root / "assets"
+            source_asset_dir.mkdir()
+            Image.new("RGB", (16, 16), "white").save(source_asset_dir / "relative-diagram.png")
+            data_buffer = io.BytesIO()
+            Image.new("RGB", (12, 12), "white").save(data_buffer, format="PNG")
+            data_uri = "data:image/png;base64," + base64.b64encode(data_buffer.getvalue()).decode("ascii")
+            html_path = root / "current.html"
+            html_path.write_text(
+                f"""
+                <section class="chess-book-page" data-page="1">
+                  <div class="book-text" data-reading-order="1" style="left:10px;top:10px;width:90px;height:12px">Diagram 1-1 White to move</div>
+                  <div class="book-diagram" data-reading-order="2" style="left:10px;top:30px;width:80px;height:80px"><img src="assets/relative-diagram.png" alt="Diagram 1-1"></div>
+                  <div class="book-text" data-reading-order="3" style="left:120px;top:10px;width:90px;height:12px">Diagram 1-2 White to move</div>
+                  <div class="book-diagram" data-reading-order="4" style="left:120px;top:30px;width:80px;height:80px"><img src="{data_uri}" alt="Diagram 1-2"></div>
+                  <div class="book-text" data-reading-order="5" style="left:230px;top:10px;width:90px;height:12px">Diagram 1-3 White to move</div>
+                  <div class="book-diagram" data-reading-order="6" style="left:230px;top:30px;width:80px;height:80px"><img src="" alt="Diagram 1-3"></div>
+                </section>
+                """,
+                encoding="utf-8",
+            )
+            out = root / "out"
+
+            run_chess_study_export(
+                pdf_path,
+                html_path=html_path,
+                out_dir=out,
+                diagram_pages=0,
+                diagram_dpi=96,
+                min_grid_confidence=0.95,
+            )
+
+            diagrams_payload = json.loads((out / "data" / "diagrams.json").read_text(encoding="utf-8"))
+            source_book = json.loads((out / "data" / "book.json").read_text(encoding="utf-8"))
+            gate = json.loads((out / "reports" / "source_html_quality_gate.json").read_text(encoding="utf-8"))
+            final_index = (out / "index.html").read_text(encoding="utf-8")
+
+            self.assertTrue((out / "assets" / "diagrams" / "p001_d001.png").is_file())
+            self.assertTrue((out / "assets" / "diagrams" / "p001_d002.png").is_file())
+            self.assertEqual(diagrams_payload["summary"]["resolved_diagram_image_count"], 2)
+            self.assertEqual(diagrams_payload["summary"]["empty_diagram_image_count"], 1)
+            self.assertEqual(source_book["summary"]["resolved_diagram_image_count"], 2)
+            self.assertEqual(source_book["summary"]["empty_diagram_image_count"], 1)
+            self.assertEqual(gate["summary"]["resolved_diagram_image_count"], 2)
+            self.assertEqual(gate["summary"]["empty_diagram_image_count"], 1)
+            self.assertNotIn('src=""', final_index)
+            self.assertIn('data-asset-missing-reason="empty_src"', final_index)
 
     def test_run_all_keeps_degraded_source_html_evidence_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

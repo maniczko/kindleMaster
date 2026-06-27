@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+from urllib.parse import unquote, urlparse
 
 import fitz
 from bs4 import BeautifulSoup
@@ -490,7 +491,12 @@ def rebuild_chess_source_html_export(
         directory.mkdir(parents=True, exist_ok=True)
 
     soup = BeautifulSoup(source.read_text(encoding="utf-8", errors="replace"), "html.parser")
-    pages = _extract_source_html_pages(soup, diagram_dir=diagram_dir, page_preview_dir=page_preview_dir)
+    pages = _extract_source_html_pages(
+        soup,
+        diagram_dir=diagram_dir,
+        page_preview_dir=page_preview_dir,
+        source_html=source,
+    )
     pgn_records = _extract_source_html_pgn_records(soup)
     _link_source_pgn_records_to_pages(pgn_records, pages)
     chapters = _source_html_chapters(pages)
@@ -511,15 +517,7 @@ def rebuild_chess_source_html_export(
     diagrams_payload = {
         "schema": "kindlemaster.semantic_chess_diagrams.v1",
         "diagrams": [diagram for page in pages for diagram in page.get("diagrams", [])],
-        "summary": {
-            "total": sum(len(page.get("diagrams", [])) for page in pages),
-            "fen_accepted": sum(
-                1
-                for page in pages
-                for diagram in page.get("diagrams", [])
-                if diagram.get("validation_status") == "accepted"
-            ),
-        },
+        "summary": _source_diagram_asset_summary([diagram for page in pages for diagram in page.get("diagrams", [])]),
     }
     _write_json(data_dir / "book.json", book_payload)
     _write_json(data_dir / "diagrams.json", diagrams_payload)
@@ -530,7 +528,13 @@ def rebuild_chess_source_html_export(
     return book_payload
 
 
-def _extract_source_html_pages(soup: BeautifulSoup, *, diagram_dir: Path, page_preview_dir: Path) -> list[dict[str, Any]]:
+def _extract_source_html_pages(
+    soup: BeautifulSoup,
+    *,
+    diagram_dir: Path,
+    page_preview_dir: Path,
+    source_html: Path | None = None,
+) -> list[dict[str, Any]]:
     pages: list[dict[str, Any]] = []
     page_nodes = soup.select(".chess-book-page, .pdf-page, section[data-page]")
     if not page_nodes:
@@ -547,7 +551,12 @@ def _extract_source_html_pages(soup: BeautifulSoup, *, diagram_dir: Path, page_p
             "pgn_records": [],
         }
         page_record["text_chunks"] = _source_text_chunks(page_record["text_blocks"])
-        page_record["diagrams"] = _extract_source_diagrams(node, page_number=page_number, out_dir=diagram_dir)
+        page_record["diagrams"] = _extract_source_diagrams(
+            node,
+            page_number=page_number,
+            out_dir=diagram_dir,
+            source_html=source_html,
+        )
         pages.append(page_record)
     return pages
 
@@ -587,6 +596,8 @@ def _source_html_quality_gate(
                     "src_empty": image_status == "empty",
                     "src_localhost": image_status == "localhost_url",
                     "src_unresolved": image_status in {"relative_unresolved", "remote_unresolved"},
+                    "src_resolved": _source_html_image_status_resolved(image_status),
+                    "asset_missing_reason": _source_html_image_missing_reason(image_status),
                     "has_fen_or_marker_evidence": _source_html_diagram_has_evidence(diagram_node, image),
                     "fen_accepted": _source_html_fen_accepted(fen_candidate),
                     "side_to_move": _infer_side_to_move(caption),
@@ -597,6 +608,7 @@ def _source_html_quality_gate(
     source_img_empty_count = len([row for row in rows if row["src_empty"]])
     source_img_localhost_count = len([row for row in rows if row["src_localhost"]])
     source_img_unresolved_count = len([row for row in rows if row["src_unresolved"]])
+    source_img_resolved_count = len([row for row in rows if row["src_resolved"]])
     source_img_problem_count = source_img_empty_count + source_img_localhost_count + source_img_unresolved_count
     evidence_count = len([row for row in rows if row["has_fen_or_marker_evidence"]])
     fen_accepted = len([row for row in rows if row["fen_accepted"]])
@@ -631,6 +643,8 @@ def _source_html_quality_gate(
             "diagrams_total": diagrams_total,
             "source_img_empty_count": source_img_empty_count,
             "empty_diagram_image_count": source_img_empty_count,
+            "resolved_diagram_image_count": source_img_resolved_count,
+            "source_img_resolved_count": source_img_resolved_count,
             "source_img_localhost_count": source_img_localhost_count,
             "source_img_unresolved_count": source_img_unresolved_count,
             "source_img_problem_count": source_img_problem_count,
@@ -653,14 +667,80 @@ def _source_html_image_status(src: str, source: Path) -> str:
     if lowered.startswith("data:image/"):
         return "data_image"
     if "localhost" in lowered or "127.0.0.1" in lowered:
-        return "localhost_url"
+        return "localhost_resolved" if _source_html_local_image_path(value, source) else "localhost_url"
     if lowered.startswith("http://") or lowered.startswith("https://"):
         return "remote_unresolved"
-    clean = value.split("#", 1)[0].split("?", 1)[0].replace("\\", "/")
-    candidates = [source.parent / clean]
-    if clean.startswith("/"):
-        candidates.append(source.parent / clean.lstrip("/"))
-    return "relative_resolved" if any(path.is_file() for path in candidates) else "relative_unresolved"
+    if _source_html_local_image_path(value, source):
+        return "artifact_resolved" if _source_html_asset_path_text(value).startswith("/") else "relative_resolved"
+    return "relative_unresolved"
+
+
+def _source_html_image_status_resolved(status: str) -> bool:
+    return str(status or "") in {"data_image", "relative_resolved", "artifact_resolved", "localhost_resolved"}
+
+
+def _source_html_image_missing_reason(status: str) -> str:
+    return {
+        "empty": "empty_src",
+        "localhost_url": "localhost_asset_unresolved",
+        "remote_unresolved": "remote_image_not_embedded",
+        "relative_unresolved": "source_asset_unresolved",
+    }.get(str(status or ""), "")
+
+
+def _source_html_asset_path_text(src: str) -> str:
+    value = str(src or "").strip()
+    if not value:
+        return ""
+    parsed = urlparse(value)
+    if parsed.scheme in {"http", "https"}:
+        path_text = parsed.path
+    else:
+        path_text = value.split("#", 1)[0].split("?", 1)[0]
+    return unquote(path_text).replace("\\", "/").strip()
+
+
+def _source_html_local_image_candidates(src: str, source: Path) -> list[Path]:
+    clean = _source_html_asset_path_text(src)
+    if not clean:
+        return []
+    source_dir = source.parent
+    candidates: list[Path] = []
+    clean_path = Path(clean)
+    if clean_path.is_absolute():
+        candidates.append(clean_path)
+    if not clean.startswith("/"):
+        candidates.append(source_dir / clean)
+    relative = clean.lstrip("/")
+    if relative:
+        candidates.append(source_dir / relative)
+    asset_name = Path(relative).name
+    if asset_name:
+        candidates.extend(
+            [
+                source_dir / asset_name,
+                source_dir / "assets" / asset_name,
+                source_dir / "assets" / "diagrams" / asset_name,
+                source_dir / "artifact" / asset_name,
+                source_dir / "artifacts" / asset_name,
+            ]
+        )
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return unique
+
+
+def _source_html_local_image_path(src: str, source: Path) -> Path | None:
+    for candidate in _source_html_local_image_candidates(src, source):
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def _source_html_diagram_has_evidence(diagram_node: Any, image_node: Any | None) -> bool:
@@ -753,7 +833,13 @@ def _extract_source_text_blocks(node: Any, *, page_number: int) -> list[dict[str
     return blocks
 
 
-def _extract_source_diagrams(node: Any, *, page_number: int, out_dir: Path) -> list[dict[str, Any]]:
+def _extract_source_diagrams(
+    node: Any,
+    *,
+    page_number: int,
+    out_dir: Path,
+    source_html: Path | None = None,
+) -> list[dict[str, Any]]:
     diagrams: list[dict[str, Any]] = []
     captions = [
         block
@@ -764,13 +850,16 @@ def _extract_source_diagrams(node: Any, *, page_number: int, out_dir: Path) -> l
         image = diagram.select_one("img")
         bbox = _source_style_box(str(diagram.get("style") or ""))
         diagram_id = f"p{page_number:03d}_d{index:03d}"
-        image_path = _save_data_uri_asset(
-            str(image.get("src") or "") if image else "",
-            out_dir,
+        image_src = str(image.get("src") or "") if image else ""
+        image_asset = _resolve_source_diagram_image_asset(
+            image_src,
+            source_html=source_html,
+            out_dir=out_dir,
             filename_stem=diagram_id,
             default_ext=".png",
             relative_prefix="assets/diagrams",
         )
+        image_path = str(image_asset.get("image_path") or "")
         alt = _scrub_local_links(str(image.get("alt") or "")) if image else ""
         caption = _nearest_source_caption(bbox, captions) or alt or f"Diagram on page {page_number}"
         fen_candidate = _extract_fen_candidate_from_node(diagram)
@@ -784,6 +873,9 @@ def _extract_source_diagrams(node: Any, *, page_number: int, out_dir: Path) -> l
                 "caption": caption,
                 "alt": alt,
                 "image_path": image_path,
+                "image_source_status": image_asset.get("image_source_status") or "empty",
+                "asset_missing_reason": image_asset.get("asset_missing_reason") or "",
+                "source_image_src": _source_image_src_for_record(image_src),
                 "fen": fen_candidate if fen_status["validation_status"] == "accepted" else "",
                 "fen_candidate": fen_candidate,
                 "confidence": fen_status["confidence"],
@@ -794,6 +886,73 @@ def _extract_source_diagrams(node: Any, *, page_number: int, out_dir: Path) -> l
         )
     diagrams.sort(key=_source_order_key)
     return diagrams
+
+
+def _source_image_src_for_record(src: str) -> str:
+    value = str(src or "").strip()
+    lowered = value.lower()
+    if not value or lowered.startswith("data:image/") or "localhost" in lowered or "127.0.0.1" in lowered:
+        return ""
+    return value
+
+
+def _resolve_source_diagram_image_asset(
+    src: str,
+    *,
+    source_html: Path | None,
+    out_dir: Path,
+    filename_stem: str,
+    default_ext: str,
+    relative_prefix: str,
+) -> dict[str, str]:
+    value = str(src or "").strip()
+    source = source_html or Path()
+    status = _source_html_image_status(value, source) if source_html else ("data_image" if value.lower().startswith("data:image/") else "empty")
+    if not value:
+        return {"image_path": "", "image_source_status": "empty", "asset_missing_reason": "empty_src"}
+    if value.lower().startswith("data:image/"):
+        image_path = _save_data_uri_asset(
+            value,
+            out_dir,
+            filename_stem=filename_stem,
+            default_ext=default_ext,
+            relative_prefix=relative_prefix,
+        )
+        return {
+            "image_path": image_path,
+            "image_source_status": "data_image" if image_path else "data_image_decode_failed",
+            "asset_missing_reason": "" if image_path else "data_image_decode_failed",
+        }
+    if not source_html:
+        return {
+            "image_path": "",
+            "image_source_status": "source_html_missing",
+            "asset_missing_reason": "source_html_missing",
+        }
+    local_path = _source_html_local_image_path(value, source)
+    if local_path is None:
+        return {
+            "image_path": "",
+            "image_source_status": status,
+            "asset_missing_reason": _source_html_image_missing_reason(status) or "source_asset_unresolved",
+        }
+    suffix = local_path.suffix.lower()
+    if suffix not in {".gif", ".jpeg", ".jpg", ".png", ".svg", ".webp"}:
+        suffix = default_ext
+    target = out_dir / f"{_safe_filename(filename_stem)}{suffix}"
+    try:
+        shutil.copyfile(local_path, target)
+    except OSError:
+        return {
+            "image_path": "",
+            "image_source_status": "copy_failed",
+            "asset_missing_reason": "source_asset_copy_failed",
+        }
+    return {
+        "image_path": str(Path(relative_prefix) / target.name).replace("\\", "/"),
+        "image_source_status": status if _source_html_image_status_resolved(status) else "relative_resolved",
+        "asset_missing_reason": "",
+    }
 
 
 def _extract_source_html_pgn_records(soup: BeautifulSoup) -> list[dict[str, Any]]:
@@ -877,6 +1036,7 @@ def _source_html_summary(
     qa_report: dict[str, Any] | None,
 ) -> dict[str, Any]:
     diagrams = [diagram for page in pages for diagram in page.get("diagrams", [])]
+    diagram_asset_summary = _source_diagram_asset_summary(diagrams)
     accepted_fen = [diagram for diagram in diagrams if diagram.get("validation_status") == "accepted"]
     accepted_pgn = [record for record in pgn_records if record.get("status") == "accepted"]
     source_text = source.read_text(encoding="utf-8", errors="replace")
@@ -896,6 +1056,8 @@ def _source_html_summary(
         "missing_pages": _missing_page_numbers(pdf_pages, pages),
         "text_blocks": sum(len(page.get("text_blocks", [])) for page in pages),
         "diagrams_total": len(diagrams),
+        "empty_diagram_image_count": diagram_asset_summary["empty_diagram_image_count"],
+        "resolved_diagram_image_count": diagram_asset_summary["resolved_diagram_image_count"],
         "fen_accepted": len(accepted_fen),
         "fen_needs_review": len(diagrams) - len(accepted_fen),
         "pgn_total": len(pgn_records),
@@ -907,6 +1069,20 @@ def _source_html_summary(
         "base64_images_extracted": source_text.count("data:image"),
         "qa_status": (qa_report or {}).get("status", ""),
         "status_policy": "accepted_requires_deterministic_validation",
+    }
+
+
+def _source_diagram_asset_summary(diagrams: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "total": len(diagrams),
+        "fen_accepted": sum(1 for diagram in diagrams if diagram.get("validation_status") == "accepted"),
+        "empty_diagram_image_count": sum(1 for diagram in diagrams if not str(diagram.get("image_path") or "")),
+        "resolved_diagram_image_count": sum(1 for diagram in diagrams if str(diagram.get("image_path") or "")),
+        "asset_missing_reasons": _top_counts(
+            str(diagram.get("asset_missing_reason") or "")
+            for diagram in diagrams
+            if str(diagram.get("asset_missing_reason") or "")
+        ),
     }
 
 
@@ -926,6 +1102,8 @@ def _write_source_html_reports(book: dict[str, Any], diagrams_payload: dict[str,
         f"- Missing pages: `{summary.get('missing_pages')}`",
         f"- Text blocks: `{summary.get('text_blocks')}`",
         f"- Diagrams: `{summary.get('diagrams_total')}`",
+        f"- Diagram images resolved: `{summary.get('resolved_diagram_image_count')}`",
+        f"- Diagram images empty: `{summary.get('empty_diagram_image_count')}`",
         f"- FEN accepted: `{summary.get('fen_accepted')}`",
         f"- FEN needs review: `{summary.get('fen_needs_review')}`",
         f"- PGN records: `{summary.get('pgn_total')}`",
@@ -3445,6 +3623,18 @@ def _semantic_source_diagram_html(diagram: dict[str, Any]) -> str:
     status = str(diagram.get("validation_status") or "needs-human-review")
     fen = str(diagram.get("fen") or "")
     fen_candidate = str(diagram.get("fen_candidate") or "")
+    image_path = str(diagram.get("image_path") or "")
+    caption = str(diagram.get("caption") or diagram.get("id") or "Diagram")
+    missing_reason = str(diagram.get("asset_missing_reason") or "source_asset_unavailable")
+    original_image_html = (
+        f'<img src="{html.escape(image_path, quote=True)}" alt="{html.escape(caption, quote=True)}">'
+        if image_path
+        else (
+            '<div class="diagram-asset-placeholder" '
+            f'data-asset-missing-reason="{html.escape(missing_reason, quote=True)}">'
+            f'Original diagram image unavailable: {html.escape(missing_reason.replace("_", " "))}</div>'
+        )
+    )
     copy_html = (
         f'<button type="button" class="copy-button" data-copy-value="{html.escape(fen, quote=True)}">Copy FEN</button>'
         if fen and status == "accepted"
@@ -3458,7 +3648,7 @@ def _semantic_source_diagram_html(diagram: dict[str, Any]) -> str:
 </div>"""
     return f"""<figure class="diagram-card" id="{html.escape(str(diagram.get('id') or ''), quote=True)}" data-kind="diagram" data-status="{html.escape(status, quote=True)}">
   <header class="card-header">
-    <h3>{html.escape(str(diagram.get('caption') or diagram.get('id') or 'Diagram'))}</h3>
+    <h3>{html.escape(caption)}</h3>
     <span class="source-ref">Page {int(diagram.get('page') or 0)}</span>
     <span class="review-badge {html.escape(status, quote=True)}">{html.escape(_friendly_status(status))}</span>
   </header>
@@ -3472,7 +3662,7 @@ def _semantic_source_diagram_html(diagram: dict[str, Any]) -> str:
       {copy_html}
       <details class="original-diagram">
         <summary>Show original diagram image</summary>
-        <img src="{html.escape(str(diagram.get('image_path') or ''), quote=True)}" alt="{html.escape(str(diagram.get('caption') or diagram.get('id') or 'Diagram'), quote=True)}">
+        {original_image_html}
       </details>
     </div>
   </div>
@@ -3560,6 +3750,7 @@ h2.reader-text { margin-top:1.4rem; color:#5c3215; font-size:1.45rem; }
 .copy-button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visible { outline:3px solid #b96920; outline-offset:3px; }
 .original-diagram summary, .review-details summary { cursor:pointer; min-height:44px; font-weight:900; color:var(--accent); }
 .original-diagram img { max-width:100%; height:auto; border-radius:10px; border:1px solid var(--line); background:#fff; }
+.diagram-asset-placeholder { border:1px dashed var(--line); border-radius:10px; background:#fffdf8; color:var(--muted); padding:.8rem; overflow-wrap:anywhere; }
 .pdf-context { margin-top:.85rem; border-top:1px solid var(--line); padding-top:.5rem; }
 .pdf-context summary { cursor:pointer; min-height:44px; font-weight:900; color:var(--accent); }
 .pdf-context img { max-width:100%; height:auto; border-radius:14px; border:1px solid var(--line); background:#fff; }

@@ -263,6 +263,78 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertEqual(payload["items"][0]["side_marker_symbol"], "\u25b3")
         self.assertIn("trusted_marker", html)
 
+    def test_auto_flow_writes_two_crop_quality_metrics_with_training_data_gap(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir)
+            _write_json(
+                out / "data" / "book.json",
+                {
+                    "pages": [
+                        {
+                            "page": 1,
+                            "diagrams": [
+                                {
+                                    "diagram_id": "diagram-1",
+                                    "page": 1,
+                                    "image_path": "assets/diagrams/diagram-1.png",
+                                    "board_crop_path": "review/chess_fen/two_crop/diagram-1_board.png",
+                                    "side_marker_crop_path": "review/chess_fen/two_crop/diagram-1_marker.png",
+                                    "debug_overlay_path": "review/chess_fen/two_crop/diagram-1_overlay.png",
+                                    "fen": VALID_FEN,
+                                    "placement": VALID_PLACEMENT,
+                                    "full_fen": VALID_FEN,
+                                    "confidence": 0.99,
+                                    "warnings": [],
+                                    "method": "image-template-board",
+                                    "side_to_move": "w",
+                                    "side_to_move_status": "explicit",
+                                    "side_to_move_evidence": "trusted_marker",
+                                    "side_marker_symbol": "\u25b3",
+                                    "side_marker_status": "trusted_marker",
+                                    "side_marker_source": "marker_crop",
+                                    "side_marker_confidence": 0.94,
+                                },
+                                {
+                                    "diagram_id": "diagram-2",
+                                    "page": 1,
+                                    "image_path": "assets/diagrams/diagram-2.png",
+                                    "board_crop_path": "review/chess_fen/two_crop/diagram-2_board.png",
+                                    "debug_overlay_path": "review/chess_fen/two_crop/diagram-2_overlay.png",
+                                    "placement": VALID_PLACEMENT,
+                                    "confidence": 0.99,
+                                    "warnings": [],
+                                    "method": "image-template-board",
+                                    "side_marker_status": "marker_missing",
+                                },
+                            ],
+                            "pgn_records": [],
+                            "text_blocks": [],
+                        }
+                    ],
+                    "pgn_records": [],
+                },
+            )
+
+            flow_payload = build_auto_chess_flow_artifacts(out)
+            report_path = out / "reports" / "chess_fen" / "two_crop_quality_metrics.json"
+            markdown_path = out / "reports" / "chess_fen" / "two_crop_quality_metrics.md"
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            markdown = markdown_path.read_text(encoding="utf-8")
+
+        summary = report["summary"]
+        self.assertEqual(summary["diagram_count"], 2)
+        self.assertEqual(summary["board_crop_count"], 2)
+        self.assertEqual(summary["side_marker_crop_count"], 1)
+        self.assertEqual(summary["trusted_marker_count"], 1)
+        self.assertEqual(summary["marker_missing_count"], 1)
+        self.assertEqual(summary["placement_accepted_count"], 2)
+        self.assertEqual(summary["full_fen_accepted_count"], 1)
+        self.assertEqual(summary["blocked_by_marker_count"], 1)
+        self.assertEqual(summary["blocked_by_placement_count"], 0)
+        self.assertEqual(report["accuracy"]["status"], "TRAINING_DATA_GAP")
+        self.assertIn("TRAINING_DATA_GAP", markdown)
+        self.assertIn("two_crop_quality_metrics", flow_payload["artifacts"])
+
 
 if __name__ == "__main__":
     unittest.main()

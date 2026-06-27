@@ -309,6 +309,7 @@ def build_auto_chess_flow_artifacts(
         max_diagrams=chess_fen_recognition_max_diagrams,
     )
     side_marker_report = _side_marker_assignment_report(diagrams, fen_payload)
+    two_crop_quality_metrics = _two_crop_quality_metrics_report(diagrams, fen_payload)
     accepted_fen_by_source = _accepted_fen_by_source(diagrams, fen_payload)
     pgn_payload, pgn_validation, pgn_repairs = _canonical_pgn(
         pgn_records,
@@ -361,6 +362,11 @@ def build_auto_chess_flow_artifacts(
     _write_json(chess_fen_report_dir / "side_marker_assignment.json", side_marker_report)
     (chess_fen_report_dir / "side_marker_assignment.md").write_text(_side_marker_assignment_markdown(side_marker_report), encoding="utf-8")
     (chess_fen_report_dir / "side_marker_assignment.html").write_text(_side_marker_assignment_html(side_marker_report), encoding="utf-8")
+    _write_json(chess_fen_report_dir / "two_crop_quality_metrics.json", two_crop_quality_metrics)
+    (chess_fen_report_dir / "two_crop_quality_metrics.md").write_text(
+        _two_crop_quality_metrics_markdown(two_crop_quality_metrics),
+        encoding="utf-8",
+    )
     _copy_export_files(out, dirs["export"])
 
     payload = {
@@ -389,6 +395,8 @@ def build_auto_chess_flow_artifacts(
                 "quality_report_html": dirs["report"] / "quality_report.html",
                 "side_marker_assignment": chess_fen_report_dir / "side_marker_assignment.json",
                 "side_marker_assignment_html": chess_fen_report_dir / "side_marker_assignment.html",
+                "two_crop_quality_metrics": chess_fen_report_dir / "two_crop_quality_metrics.json",
+                "two_crop_quality_metrics_md": chess_fen_report_dir / "two_crop_quality_metrics.md",
                 "export_games_pgn": dirs["export"] / "games.pgn",
             }.items()
         },
@@ -1852,17 +1860,258 @@ def _fen_two_gate_summary(items: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _side_marker_assignment_report(diagrams: list[dict[str, Any]], fen_payload: dict[str, Any]) -> dict[str, Any]:
-    fen_by_id = {
+def _diagram_record_id(record: dict[str, Any], index: int) -> str:
+    return str(record.get("diagram_id") or record.get("id") or f"diagram-{index}")
+
+
+def _first_non_empty(*values: Any) -> Any:
+    for value in values:
+        if value not in (None, "", [], {}):
+            return value
+    return ""
+
+
+def _fen_items_by_diagram_id(fen_payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
         str(item.get("id") or ""): item
         for item in fen_payload.get("items") or []
-        if isinstance(item, dict)
+        if isinstance(item, dict) and str(item.get("id") or "")
+    }
+
+
+def _two_crop_blocker_codes(record: dict[str, Any]) -> set[str]:
+    codes: set[str] = set()
+    for key in ("acceptance_blockers", "placement_acceptance_blockers"):
+        for blocker in record.get(key) or []:
+            if isinstance(blocker, dict) and blocker.get("code"):
+                codes.add(str(blocker.get("code")))
+    return codes
+
+
+def _two_crop_quality_rows(diagrams: list[dict[str, Any]], fen_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    fen_by_id = _fen_items_by_diagram_id(fen_payload)
+    marker_blocker_codes = {
+        "full_fen_blocked_by_marker",
+        "side_to_move_inferred",
+        "inferred_only",
+        "marker_missing",
+        "marker_conflict",
+        "ambiguous_marker",
+        "multi_side",
+        "side_to_move_marker_local_ambiguous",
+        "side_to_move_marker_local_conflict",
+        "side_to_move_marker_multi_region_conflict",
+    }
+    placement_blocker_codes = {
+        "full_fen_blocked_by_placement",
+        "placement_candidate_missing",
+        "invalid_rank_count",
+        "invalid_rank_width",
+        "invalid_rank_digit",
+        "invalid_piece",
+        "missing_white_king",
+        "missing_black_king",
+        "white_king_count_invalid",
+        "black_king_count_invalid",
+        "pawn_on_back_rank",
     }
     rows: list[dict[str, Any]] = []
     for index, diagram in enumerate(diagrams, start=1):
         if not isinstance(diagram, dict):
             continue
-        diagram_id = str(diagram.get("diagram_id") or diagram.get("id") or f"diagram-{index}")
+        diagram_id = _diagram_record_id(diagram, index)
+        fen_item = fen_by_id.get(diagram_id, {})
+        merged = {**diagram, **fen_item}
+        blocker_codes = _two_crop_blocker_codes(merged)
+        marker_status = str(_first_non_empty(merged.get("side_marker_status"), "marker_missing"))
+        placement_status = str(_first_non_empty(merged.get("placement_runtime_status"), merged.get("placement_status")))
+        full_fen_status = str(
+            _first_non_empty(merged.get("full_fen_runtime_status"), merged.get("full_fen_status"), merged.get("runtime_status"))
+        )
+        has_board_crop = bool(_first_non_empty(merged.get("board_crop_path")))
+        has_marker_crop = bool(_first_non_empty(merged.get("side_marker_crop_path")))
+        has_debug_overlay = bool(_first_non_empty(merged.get("debug_overlay_path")))
+        marker_missing = marker_status in {"", "marker_missing", "side_to_move_marker_missing", "missing", "no_marker"}
+        marker_conflict = "conflict" in marker_status or "multi" in marker_status
+        marker_ambiguous = "ambiguous" in marker_status
+        trusted_marker = marker_status.startswith("trusted_") or marker_status == "trusted_marker"
+        placement_accepted = placement_status == "FEN_PLACEMENT_MACHINE_ACCEPTED"
+        rows.append(
+            {
+                "diagram_id": diagram_id,
+                "page": merged.get("page") or merged.get("page_number") or "",
+                "board_crop_path": str(_first_non_empty(merged.get("board_crop_path"))),
+                "side_marker_crop_path": str(_first_non_empty(merged.get("side_marker_crop_path"))),
+                "debug_overlay_path": str(_first_non_empty(merged.get("debug_overlay_path"))),
+                "has_board_crop": has_board_crop,
+                "has_side_marker_crop": has_marker_crop,
+                "has_debug_overlay": has_debug_overlay,
+                "side_marker_status": marker_status,
+                "trusted_marker": trusted_marker,
+                "marker_missing": marker_missing,
+                "marker_conflict": marker_conflict,
+                "marker_ambiguous": marker_ambiguous,
+                "placement_status": placement_status,
+                "full_fen_status": full_fen_status,
+                "blocked_by_marker": bool(blocker_codes & marker_blocker_codes)
+                or marker_missing
+                or marker_conflict
+                or marker_ambiguous,
+                "blocked_by_placement": "full_fen_blocked_by_placement" in blocker_codes
+                or (not placement_accepted and bool(blocker_codes & placement_blocker_codes))
+                or placement_status == "FEN_PLACEMENT_REVIEW_REQUIRED",
+                "acceptance_blocker_codes": sorted(blocker_codes),
+            }
+        )
+    return rows
+
+
+def _two_crop_accuracy_data_gap(diagrams: list[dict[str, Any]]) -> dict[str, Any]:
+    verified = [diagram for diagram in diagrams if isinstance(diagram, dict) and _is_human_verified_record(diagram)]
+    marker_label_count = len(
+        [
+            diagram
+            for diagram in verified
+            if _first_non_empty(diagram.get("expected_side_to_move"), diagram.get("side_to_move"), diagram.get("side_to_move_label"))
+        ]
+    )
+    placement_label_count = len(
+        [
+            diagram
+            for diagram in verified
+            if _first_non_empty(diagram.get("expected_placement"), diagram.get("placement"), diagram.get("placement_fen"))
+        ]
+    )
+    both_label_count = len(
+        [
+            diagram
+            for diagram in verified
+            if _first_non_empty(diagram.get("expected_side_to_move"), diagram.get("side_to_move"), diagram.get("side_to_move_label"))
+            and _first_non_empty(diagram.get("expected_placement"), diagram.get("placement"), diagram.get("placement_fen"))
+        ]
+    )
+    missing_data: list[dict[str, Any]] = []
+    if marker_label_count <= 0:
+        missing_data.append(
+            {
+                "field": "expected_side_to_move",
+                "needed": "human_verified side-to-move labels",
+                "available": marker_label_count,
+            }
+        )
+    if placement_label_count <= 0:
+        missing_data.append(
+            {
+                "field": "expected_placement",
+                "needed": "human_verified board placement labels",
+                "available": placement_label_count,
+            }
+        )
+    return {
+        "status": "TRAINING_DATA_GAP" if missing_data else "READY",
+        "message": "TRAINING_DATA_GAP: accuracy requires human-verified side-to-move and placement labels."
+        if missing_data
+        else "Human-verified labels are available for accuracy measurement.",
+        "human_verified_record_count": len(verified),
+        "marker_label_count": marker_label_count,
+        "placement_label_count": placement_label_count,
+        "both_label_count": both_label_count,
+        "missing_data": missing_data,
+    }
+
+
+def _two_crop_quality_metrics_report(diagrams: list[dict[str, Any]], fen_payload: dict[str, Any]) -> dict[str, Any]:
+    rows = _two_crop_quality_rows(diagrams, fen_payload)
+    summary = {
+        "diagram_count": len(rows),
+        "board_crop_count": len([row for row in rows if row.get("has_board_crop")]),
+        "side_marker_crop_count": len([row for row in rows if row.get("has_side_marker_crop")]),
+        "trusted_marker_count": len([row for row in rows if row.get("trusted_marker")]),
+        "marker_missing_count": len([row for row in rows if row.get("marker_missing")]),
+        "marker_conflict_count": len([row for row in rows if row.get("marker_conflict")]),
+        "placement_accepted_count": len(
+            [row for row in rows if row.get("placement_status") == "FEN_PLACEMENT_MACHINE_ACCEPTED"]
+        ),
+        "full_fen_accepted_count": len(
+            [row for row in rows if row.get("full_fen_status") in {"FEN_MACHINE_ACCEPTED", "FEN_CORPUS_VERIFIED"}]
+        ),
+        "blocked_by_marker_count": len([row for row in rows if row.get("blocked_by_marker")]),
+        "blocked_by_placement_count": len([row for row in rows if row.get("blocked_by_placement")]),
+    }
+    return {
+        "schema": "kindlemaster.chess_fen.two_crop_quality_metrics.v1",
+        "summary": summary,
+        "accuracy": _two_crop_accuracy_data_gap(diagrams),
+        "items": rows,
+    }
+
+
+def _two_crop_quality_metrics_markdown(report: dict[str, Any]) -> str:
+    summary = report.get("summary") or {}
+    accuracy = report.get("accuracy") or {}
+    lines = [
+        "# Chess FEN Two-Crop Quality Metrics",
+        "",
+        f"- diagrams: {summary.get('diagram_count', 0)}",
+        f"- board crops: {summary.get('board_crop_count', 0)}",
+        f"- side-marker crops: {summary.get('side_marker_crop_count', 0)}",
+        f"- trusted markers: {summary.get('trusted_marker_count', 0)}",
+        f"- marker missing: {summary.get('marker_missing_count', 0)}",
+        f"- marker conflicts: {summary.get('marker_conflict_count', 0)}",
+        f"- placement accepted: {summary.get('placement_accepted_count', 0)}",
+        f"- full FEN accepted: {summary.get('full_fen_accepted_count', 0)}",
+        f"- blocked by marker: {summary.get('blocked_by_marker_count', 0)}",
+        f"- blocked by placement: {summary.get('blocked_by_placement_count', 0)}",
+        "",
+        "## Accuracy",
+        "",
+        f"- status: {accuracy.get('status', 'UNKNOWN')}",
+        f"- human verified records: {accuracy.get('human_verified_record_count', 0)}",
+        f"- side-to-move labels: {accuracy.get('marker_label_count', 0)}",
+        f"- placement labels: {accuracy.get('placement_label_count', 0)}",
+        f"- complete labels: {accuracy.get('both_label_count', 0)}",
+    ]
+    if accuracy.get("status") == "TRAINING_DATA_GAP":
+        lines.extend(["", f"TRAINING_DATA_GAP: {accuracy.get('message', '')}", "", "| Missing field | Needed | Available |", "| --- | --- | ---: |"])
+        for item in accuracy.get("missing_data") or []:
+            lines.append(
+                "| {field} | {needed} | {available} |".format(
+                    field=_md(str(item.get("field") or "")),
+                    needed=_md(str(item.get("needed") or "")),
+                    available=_md(str(item.get("available") or 0)),
+                )
+            )
+    lines.extend(
+        [
+            "",
+            "| Diagram | Page | Board crop | Marker crop | Marker status | Placement | Full FEN | Marker block | Placement block |",
+            "| --- | ---: | --- | --- | --- | --- | --- | --- | --- |",
+        ]
+    )
+    for item in report.get("items") or []:
+        lines.append(
+            "| {id} | {page} | {board} | {marker} | {marker_status} | {placement} | {full_fen} | {marker_block} | {placement_block} |".format(
+                id=_md(str(item.get("diagram_id") or "")),
+                page=_md(str(item.get("page") or "")),
+                board="yes" if item.get("has_board_crop") else "no",
+                marker="yes" if item.get("has_side_marker_crop") else "no",
+                marker_status=_md(str(item.get("side_marker_status") or "")),
+                placement=_md(str(item.get("placement_status") or "")),
+                full_fen=_md(str(item.get("full_fen_status") or "")),
+                marker_block="yes" if item.get("blocked_by_marker") else "no",
+                placement_block="yes" if item.get("blocked_by_placement") else "no",
+            )
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _side_marker_assignment_report(diagrams: list[dict[str, Any]], fen_payload: dict[str, Any]) -> dict[str, Any]:
+    fen_by_id = _fen_items_by_diagram_id(fen_payload)
+    rows: list[dict[str, Any]] = []
+    for index, diagram in enumerate(diagrams, start=1):
+        if not isinstance(diagram, dict):
+            continue
+        diagram_id = _diagram_record_id(diagram, index)
         fen_item = fen_by_id.get(diagram_id, {})
         marker_status = str(diagram.get("side_marker_status") or fen_item.get("side_marker_status") or "marker_missing")
         marker_symbol = str(diagram.get("side_marker_symbol") or fen_item.get("side_marker_symbol") or "?")

@@ -96,6 +96,14 @@ MACHINE_BLOCKING_SIDE_MARKER_STATUSES = {
     "marker_conflict",
     "marker_missing",
     "multi_side",
+    "side_to_move_marker_local_ambiguous",
+    "side_to_move_marker_local_conflict",
+}
+MACHINE_TRUSTED_SIDE_MARKER_STATUSES = {
+    "trusted_marker",
+    "trusted_caption",
+    "trusted_exact_label",
+    "trusted_verified_label",
 }
 MACHINE_BLOCKING_PLACEMENT_WARNINGS = {
     "black_king_count_invalid",
@@ -529,6 +537,23 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
     if normalized_source == "deterministic-ensemble":
         blockers.extend(_deterministic_ensemble_contract_blockers(candidate, ctx, trace))
 
+    placement_gate = machine_accept_placement(candidate, ctx)
+    trace["placement_gate"] = {
+        "runtime_status": placement_gate.get("runtime_status"),
+        "status": placement_gate.get("status"),
+        "selected_placement": placement_gate.get("selected_placement"),
+        "blocker_codes": [blocker.get("code") for blocker in placement_gate.get("acceptance_blockers") or []],
+    }
+    if placement_gate.get("runtime_status") != "FEN_PLACEMENT_MACHINE_ACCEPTED":
+        blockers.append(
+            {
+                "code": "full_fen_blocked_by_placement",
+                "message": "Full FEN cannot be machine accepted until board placement is machine accepted.",
+                "placement_runtime_status": placement_gate.get("runtime_status"),
+                "placement_blockers": placement_gate.get("acceptance_blockers") or [],
+            }
+        )
+
     side_status = str(candidate.get("side_to_move_status") or "").strip().lower()
     side_evidence = str(candidate.get("side_to_move_evidence") or "").strip().lower()
     side_marker_status = str(candidate.get("side_marker_status") or "").strip().lower()
@@ -536,6 +561,7 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
         "status": side_status,
         "evidence": side_evidence,
         "marker_status": side_marker_status,
+        "trusted_marker": side_marker_status in MACHINE_TRUSTED_SIDE_MARKER_STATUSES,
     }
     if side_status == "inferred" or side_evidence == "inferred":
         blockers.append(
@@ -549,6 +575,14 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
             {
                 "code": side_marker_status,
                 "message": "Full FEN cannot be machine accepted without trusted diagram-scoped side-marker evidence.",
+            }
+        )
+    if side_marker_status not in MACHINE_TRUSTED_SIDE_MARKER_STATUSES:
+        blockers.append(
+            {
+                "code": "full_fen_blocked_by_marker",
+                "message": "Full FEN requires trusted diagram-scoped side-marker evidence.",
+                "side_marker_status": side_marker_status or "marker_missing",
             }
         )
 

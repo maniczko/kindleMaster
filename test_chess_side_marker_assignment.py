@@ -5,13 +5,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from PIL import Image, ImageDraw
+
 from chess_auto_flow import build_auto_chess_flow_artifacts
 from chess_fen_hardening import machine_accept_fen, machine_accept_placement
+from chess_position_recognizer import summarize_chess_fen_results
 from converter import chess_fen_html_attrs, chess_side_marker_html
 from pymupdf_chess_extractor import (
     ScanChessSideToMoveEvidence,
     _apply_scan_chess_side_to_move_context_evidence,
     _chess_diagram_record_from_image,
+    classify_scan_chess_side_marker_crop,
 )
 
 
@@ -25,6 +29,39 @@ def _write_json(path: Path, payload: dict) -> None:
 
 
 class ChessSideMarkerAssignmentTests(unittest.TestCase):
+    def test_marker_crop_classifier_maps_outline_and_filled_triangles(self) -> None:
+        outline = Image.new("L", (80, 80), "white")
+        draw_outline = ImageDraw.Draw(outline)
+        draw_outline.line([(40, 12), (18, 56), (62, 56), (40, 12)], fill="black", width=4, joint="curve")
+        filled = Image.new("L", (80, 80), "white")
+        draw_filled = ImageDraw.Draw(filled)
+        draw_filled.polygon([(40, 12), (18, 56), (62, 56)], fill="black")
+
+        outline_result = classify_scan_chess_side_marker_crop(outline)
+        filled_result = classify_scan_chess_side_marker_crop(filled)
+
+        self.assertEqual(outline_result["status"], "trusted_marker")
+        self.assertEqual(outline_result["side"], "w")
+        self.assertEqual(outline_result["symbol"], "\u25b3")
+        self.assertEqual(filled_result["status"], "trusted_marker")
+        self.assertEqual(filled_result["side"], "b")
+        self.assertEqual(filled_result["symbol"], "\u25bc")
+
+    def test_marker_crop_classifier_keeps_missing_and_conflict_in_review(self) -> None:
+        blank = Image.new("L", (80, 80), "white")
+        conflict = Image.new("L", (130, 80), "white")
+        draw = ImageDraw.Draw(conflict)
+        draw.line([(34, 12), (16, 56), (54, 56), (34, 12)], fill="black", width=4, joint="curve")
+        draw.polygon([(94, 12), (76, 56), (114, 56)], fill="black")
+
+        missing_result = classify_scan_chess_side_marker_crop(blank)
+        conflict_result = classify_scan_chess_side_marker_crop(conflict)
+
+        self.assertEqual(missing_result["status"], "marker_missing")
+        self.assertEqual(missing_result["side"], "")
+        self.assertEqual(conflict_result["status"], "side_to_move_marker_local_conflict")
+        self.assertEqual(conflict_result["side"], "")
+
     def test_trusted_marker_metadata_flows_to_html_attrs_and_badge(self) -> None:
         payload = {
             "fen": VALID_FEN,
@@ -92,6 +129,28 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertEqual(placement["runtime_status"], "FEN_PLACEMENT_MACHINE_ACCEPTED")
         self.assertEqual(placement["selected_placement"], VALID_PLACEMENT)
 
+    def test_full_fen_gate_requires_accepted_placement_and_trusted_marker(self) -> None:
+        candidate = {
+            "source": "deterministic",
+            "fen": VALID_FEN,
+            "placement": VALID_PLACEMENT,
+            "confidence": 0.99,
+            "warnings": [],
+            "side_to_move": "w",
+            "side_to_move_status": "explicit",
+            "side_to_move_evidence": "marker",
+        }
+
+        missing_marker = machine_accept_fen({**candidate, "side_marker_status": "marker_missing"}, {"min_confidence": 0.90})
+        trusted_marker = machine_accept_fen({**candidate, "side_marker_status": "trusted_marker"}, {"min_confidence": 0.90})
+        placement = machine_accept_placement({**candidate, "side_marker_status": "marker_missing"}, {"min_confidence": 0.90})
+
+        self.assertEqual(missing_marker["runtime_status"], "FEN_REVIEW_REQUIRED")
+        self.assertIn("full_fen_blocked_by_marker", {blocker["code"] for blocker in missing_marker["acceptance_blockers"]})
+        self.assertEqual(placement["runtime_status"], "FEN_PLACEMENT_MACHINE_ACCEPTED")
+        self.assertEqual(trusted_marker["runtime_status"], "FEN_MACHINE_ACCEPTED")
+        self.assertEqual(trusted_marker["acceptance_trace"]["placement_gate"]["runtime_status"], "FEN_PLACEMENT_MACHINE_ACCEPTED")
+
     def test_diagram_record_exposes_review_safe_missing_marker(self) -> None:
         record = _chess_diagram_record_from_image(
             {
@@ -111,6 +170,10 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
                     "requires_review": True,
                     "board_detected": True,
                     "fen_suppressed_reason": "side_to_move_inferred",
+                    "board_crop_path": "review/chess_fen/two_crop/diagram-1_board.png",
+                    "side_marker_crop_path": "",
+                    "debug_overlay_path": "review/chess_fen/two_crop/diagram-1_overlay.png",
+                    "board_bbox": [1.0, 2.0, 101.0, 102.0],
                 },
             },
             diagram_id="diagram-1",
@@ -121,7 +184,36 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertEqual(record["side_marker_symbol"], "?")
         self.assertEqual(record["side_marker_status"], "inferred_only")
         self.assertEqual(record["fen_suppressed_reason"], "side_to_move_inferred")
+        self.assertEqual(record["board_crop_path"], "review/chess_fen/two_crop/diagram-1_board.png")
+        self.assertEqual(record["debug_overlay_path"], "review/chess_fen/two_crop/diagram-1_overlay.png")
+        self.assertEqual(record["board_bbox"], [1.0, 2.0, 101.0, 102.0])
         self.assertFalse(record["strict_fen_side_evidence_trusted"])
+
+    def test_fen_summary_counts_two_crop_artifacts_without_requiring_marker(self) -> None:
+        summary = summarize_chess_fen_results(
+            [
+                {
+                    "fen": "",
+                    "requires_review": True,
+                    "board_crop_path": "review/chess_fen/two_crop/d1_board.png",
+                    "debug_overlay_path": "review/chess_fen/two_crop/d1_overlay.png",
+                    "side_marker_status": "marker_missing",
+                },
+                {
+                    "fen": VALID_FEN,
+                    "requires_review": False,
+                    "board_crop_path": "review/chess_fen/two_crop/d2_board.png",
+                    "side_marker_crop_path": "review/chess_fen/two_crop/d2_marker.png",
+                    "debug_overlay_path": "review/chess_fen/two_crop/d2_overlay.png",
+                    "side_marker_status": "trusted_marker",
+                },
+            ]
+        )
+
+        self.assertEqual(summary["diagram_count"], 2)
+        self.assertEqual(summary["board_crop_count"], 2)
+        self.assertEqual(summary["side_marker_crop_count"], 1)
+        self.assertEqual(summary["debug_overlay_count"], 2)
 
     def test_auto_flow_writes_side_marker_assignment_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -170,6 +262,148 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["trusted_marker_assignments"], 1)
         self.assertEqual(payload["items"][0]["side_marker_symbol"], "\u25b3")
         self.assertIn("trusted_marker", html)
+
+    def test_auto_flow_writes_two_crop_quality_metrics_with_training_data_gap(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir)
+            _write_json(
+                out / "data" / "book.json",
+                {
+                    "pages": [
+                        {
+                            "page": 1,
+                            "diagrams": [
+                                {
+                                    "diagram_id": "diagram-1",
+                                    "page": 1,
+                                    "image_path": "assets/diagrams/diagram-1.png",
+                                    "board_crop_path": "review/chess_fen/two_crop/diagram-1_board.png",
+                                    "side_marker_crop_path": "review/chess_fen/two_crop/diagram-1_marker.png",
+                                    "debug_overlay_path": "review/chess_fen/two_crop/diagram-1_overlay.png",
+                                    "fen": VALID_FEN,
+                                    "placement": VALID_PLACEMENT,
+                                    "full_fen": VALID_FEN,
+                                    "confidence": 0.99,
+                                    "warnings": [],
+                                    "method": "image-template-board",
+                                    "side_to_move": "w",
+                                    "side_to_move_status": "explicit",
+                                    "side_to_move_evidence": "trusted_marker",
+                                    "side_marker_symbol": "\u25b3",
+                                    "side_marker_status": "trusted_marker",
+                                    "side_marker_source": "marker_crop",
+                                    "side_marker_confidence": 0.94,
+                                },
+                                {
+                                    "diagram_id": "diagram-2",
+                                    "page": 1,
+                                    "image_path": "assets/diagrams/diagram-2.png",
+                                    "board_crop_path": "review/chess_fen/two_crop/diagram-2_board.png",
+                                    "debug_overlay_path": "review/chess_fen/two_crop/diagram-2_overlay.png",
+                                    "placement": VALID_PLACEMENT,
+                                    "confidence": 0.99,
+                                    "warnings": [],
+                                    "method": "image-template-board",
+                                    "side_marker_status": "marker_missing",
+                                },
+                            ],
+                            "pgn_records": [],
+                            "text_blocks": [],
+                        }
+                    ],
+                    "pgn_records": [],
+                },
+            )
+
+            flow_payload = build_auto_chess_flow_artifacts(out)
+            report_path = out / "reports" / "chess_fen" / "two_crop_quality_metrics.json"
+            markdown_path = out / "reports" / "chess_fen" / "two_crop_quality_metrics.md"
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            markdown = markdown_path.read_text(encoding="utf-8")
+
+        summary = report["summary"]
+        self.assertEqual(summary["diagram_count"], 2)
+        self.assertEqual(summary["board_crop_count"], 2)
+        self.assertEqual(summary["side_marker_crop_count"], 1)
+        self.assertEqual(summary["trusted_marker_count"], 1)
+        self.assertEqual(summary["marker_missing_count"], 1)
+        self.assertEqual(summary["placement_accepted_count"], 2)
+        self.assertEqual(summary["full_fen_accepted_count"], 1)
+        self.assertEqual(summary["blocked_by_marker_count"], 1)
+        self.assertEqual(summary["blocked_by_placement_count"], 0)
+        self.assertEqual(report["accuracy"]["status"], "TRAINING_DATA_GAP")
+        self.assertIn("TRAINING_DATA_GAP", markdown)
+        self.assertIn("two_crop_quality_metrics", flow_payload["artifacts"])
+
+    def test_auto_flow_writes_two_crop_benchmark_gap_without_ai_label_promotion(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir)
+            _write_json(
+                out / "data" / "book.json",
+                {
+                    "pages": [
+                        {
+                            "page": 1,
+                            "diagrams": [
+                                {
+                                    "diagram_id": "marker-label",
+                                    "page": 1,
+                                    "board_crop_path": "review/chess_fen/two_crop/marker-label_board.png",
+                                    "side_marker_crop_path": "review/chess_fen/two_crop/marker-label_marker.png",
+                                    "expected_side_to_move": "w",
+                                    "human_verified": True,
+                                    "verification_source": "human",
+                                },
+                                {
+                                    "diagram_id": "placement-label",
+                                    "page": 1,
+                                    "board_crop_path": "review/chess_fen/two_crop/placement-label_board.png",
+                                    "side_marker_crop_path": "review/chess_fen/two_crop/placement-label_marker.png",
+                                    "expected_placement": VALID_PLACEMENT,
+                                    "human_verified": True,
+                                    "verification_source": "human",
+                                },
+                                {
+                                    "diagram_id": "ai-only-label",
+                                    "page": 1,
+                                    "board_crop_path": "review/chess_fen/two_crop/ai-only-label_board.png",
+                                    "side_marker_crop_path": "review/chess_fen/two_crop/ai-only-label_marker.png",
+                                    "expected_side_to_move": "b",
+                                    "expected_placement": VALID_PLACEMENT,
+                                    "verification_source": "openai",
+                                    "verified_by": "gpt-review",
+                                    "verified_at": "2026-06-27T00:00:00Z",
+                                    "label_status": "verified",
+                                },
+                            ],
+                            "pgn_records": [],
+                            "text_blocks": [],
+                        }
+                    ],
+                    "pgn_records": [],
+                },
+            )
+
+            flow_payload = build_auto_chess_flow_artifacts(out)
+            report_path = out / "reports" / "chess_fen" / "two_crop_benchmark_seed.json"
+            markdown_path = out / "reports" / "chess_fen" / "two_crop_benchmark_seed.md"
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            markdown = markdown_path.read_text(encoding="utf-8")
+
+        summary = report["summary"]
+        self.assertEqual(report["status"], "TRAINING_DATA_GAP")
+        self.assertFalse(report["manifest"]["created"])
+        self.assertEqual(report["manifest"]["items"], [])
+        self.assertEqual(summary["usable_record_count"], 2)
+        self.assertEqual(summary["manifest_record_count"], 0)
+        self.assertEqual(summary["marker_label_count"], 1)
+        self.assertEqual(summary["placement_label_count"], 1)
+        self.assertEqual(summary["both_label_count"], 0)
+        self.assertEqual(summary["ai_only_excluded_count"], 1)
+        self.assertEqual(summary["label_sources"], {"human": 2})
+        self.assertEqual(len(report["available_records"]), 2)
+        self.assertIn("TRAINING_DATA_GAP", markdown)
+        self.assertIn("two_crop_benchmark_seed", flow_payload["artifacts"])
 
 
 if __name__ == "__main__":

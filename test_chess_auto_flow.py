@@ -82,6 +82,13 @@ class AutoChessFlowTests(unittest.TestCase):
                                     "fen": VALID_KINGS_FEN,
                                     "confidence": 0.99,
                                     "warnings": [],
+                                    "side_to_move": "w",
+                                    "side_to_move_status": "explicit",
+                                    "side_to_move_evidence": "marker",
+                                    "side_marker_symbol": "\u25b3",
+                                    "side_marker_status": "trusted_marker",
+                                    "side_marker_source": "marker",
+                                    "side_marker_confidence": 0.94,
                                     "validation_status": "accepted",
                                 }
                             ],
@@ -324,7 +331,19 @@ class AutoChessFlowTests(unittest.TestCase):
                     "pages": [
                         {
                             "page": 1,
-                            "diagrams": [{"diagram_id": "p001_d001", "image_path": "assets/diagrams/p001_d001.png"}],
+                            "diagrams": [
+                                {
+                                    "diagram_id": "p001_d001",
+                                    "image_path": "assets/diagrams/p001_d001.png",
+                                    "side_to_move": "w",
+                                    "side_to_move_status": "explicit",
+                                    "side_to_move_evidence": "marker",
+                                    "side_marker_symbol": "\u25b3",
+                                    "side_marker_status": "trusted_marker",
+                                    "side_marker_source": "marker",
+                                    "side_marker_confidence": 0.94,
+                                }
+                            ],
                             "pgn_records": [],
                             "text_blocks": [],
                         }

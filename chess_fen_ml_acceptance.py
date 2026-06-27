@@ -274,6 +274,7 @@ def build_deterministic_ensemble_fen(
         "changed_squares": selected.get("changed_squares") or [],
         "evidence": evidence,
         "deterministic_validation": _deterministic_validation(fen),
+        **_side_marker_fields(diagram),
     }
     row["machine_acceptance"] = validate_ensemble_candidate(
         row,
@@ -284,6 +285,22 @@ def build_deterministic_ensemble_fen(
     )
     row["next_action"] = _next_action_for_blockers(row["machine_acceptance"].get("acceptance_blockers") or [])
     return row
+
+
+def _side_marker_fields(source: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "side_to_move",
+        "side_to_move_status",
+        "side_to_move_evidence",
+        "side_marker_symbol",
+        "side_marker_status",
+        "side_marker_source",
+        "side_marker_bbox",
+        "side_marker_confidence",
+        "side_marker_assignment_trace",
+        "strict_fen_side_evidence_trusted",
+    )
+    return {key: source.get(key) for key in keys if source.get(key) not in (None, "")}
 
 
 def generate_fen_candidates_from_square_alternatives(

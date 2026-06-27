@@ -174,6 +174,9 @@ class ChessFenPipelineHardeningTests(unittest.TestCase):
                 "fen": self.STARTING_FEN,
                 "confidence": 0.99,
                 "warnings": [],
+                "side_to_move": "w",
+                "side_to_move_evidence": "marker_crop",
+                "side_marker_status": "trusted_marker",
             },
             {"min_confidence": 0.90},
         )
@@ -293,6 +296,9 @@ class ChessFenPipelineHardeningTests(unittest.TestCase):
                 "fen": self.STARTING_FEN,
                 "confidence": 0.99,
                 "warnings": [],
+                "side_to_move": "w",
+                "side_to_move_evidence": "marker_crop",
+                "side_marker_status": "trusted_marker",
                 "source_crop_hash": "sha256:abc123",
                 "evidence": {
                     "python_chess_valid": True,

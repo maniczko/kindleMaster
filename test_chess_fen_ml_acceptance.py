@@ -55,7 +55,20 @@ class ChessFenMlAcceptanceTests(unittest.TestCase):
         }
 
         rows = build_deterministic_ensemble_candidates(
-            diagrams=[{"diagram_id": "p001_d001", "page": 1, "source_crop_hash": "sha256:crop"}],
+            diagrams=[
+                {
+                    "diagram_id": "p001_d001",
+                    "page": 1,
+                    "source_crop_hash": "sha256:crop",
+                    "side_to_move": "w",
+                    "side_to_move_status": "explicit",
+                    "side_to_move_evidence": "marker",
+                    "side_marker_symbol": "\u25b3",
+                    "side_marker_status": "trusted_marker",
+                    "side_marker_source": "marker",
+                    "side_marker_confidence": 0.94,
+                }
+            ],
             model_predictions={"p001_d001": prediction},
             template_candidates={},
             min_confidence=0.90,

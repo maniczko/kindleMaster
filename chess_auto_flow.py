@@ -11,7 +11,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, Iterable
 
-from chess_fen_hardening import machine_accept_fen, machine_accept_placement, validate_fen_detailed
+from chess_fen_hardening import machine_accept_fen, machine_accept_placement, placement_from_fen_or_placement, validate_fen_detailed
 
 PIPELINE_STATUSES = {
     "AUTO_SUCCESS",
@@ -309,6 +309,8 @@ def build_auto_chess_flow_artifacts(
         max_diagrams=chess_fen_recognition_max_diagrams,
     )
     side_marker_report = _side_marker_assignment_report(diagrams, fen_payload)
+    two_crop_quality_metrics = _two_crop_quality_metrics_report(diagrams, fen_payload)
+    two_crop_benchmark_seed = _two_crop_benchmark_seed_report(diagrams)
     accepted_fen_by_source = _accepted_fen_by_source(diagrams, fen_payload)
     pgn_payload, pgn_validation, pgn_repairs = _canonical_pgn(
         pgn_records,
@@ -361,6 +363,16 @@ def build_auto_chess_flow_artifacts(
     _write_json(chess_fen_report_dir / "side_marker_assignment.json", side_marker_report)
     (chess_fen_report_dir / "side_marker_assignment.md").write_text(_side_marker_assignment_markdown(side_marker_report), encoding="utf-8")
     (chess_fen_report_dir / "side_marker_assignment.html").write_text(_side_marker_assignment_html(side_marker_report), encoding="utf-8")
+    _write_json(chess_fen_report_dir / "two_crop_quality_metrics.json", two_crop_quality_metrics)
+    (chess_fen_report_dir / "two_crop_quality_metrics.md").write_text(
+        _two_crop_quality_metrics_markdown(two_crop_quality_metrics),
+        encoding="utf-8",
+    )
+    _write_json(chess_fen_report_dir / "two_crop_benchmark_seed.json", two_crop_benchmark_seed)
+    (chess_fen_report_dir / "two_crop_benchmark_seed.md").write_text(
+        _two_crop_benchmark_seed_markdown(two_crop_benchmark_seed),
+        encoding="utf-8",
+    )
     _copy_export_files(out, dirs["export"])
 
     payload = {
@@ -389,6 +401,10 @@ def build_auto_chess_flow_artifacts(
                 "quality_report_html": dirs["report"] / "quality_report.html",
                 "side_marker_assignment": chess_fen_report_dir / "side_marker_assignment.json",
                 "side_marker_assignment_html": chess_fen_report_dir / "side_marker_assignment.html",
+                "two_crop_quality_metrics": chess_fen_report_dir / "two_crop_quality_metrics.json",
+                "two_crop_quality_metrics_md": chess_fen_report_dir / "two_crop_quality_metrics.md",
+                "two_crop_benchmark_seed": chess_fen_report_dir / "two_crop_benchmark_seed.json",
+                "two_crop_benchmark_seed_md": chess_fen_report_dir / "two_crop_benchmark_seed.md",
                 "export_games_pgn": dirs["export"] / "games.pgn",
             }.items()
         },
@@ -729,6 +745,8 @@ def _canonical_fen(
                     "selected_placement": selected.get("selected_placement"),
                     "placement_status": selected.get("placement_status"),
                     "placement_runtime_status": selected.get("placement_runtime_status"),
+                    "full_fen_status": selected.get("full_fen_status"),
+                    "full_fen_runtime_status": selected.get("full_fen_runtime_status"),
                     "placement_acceptance_policy": selected.get("placement_acceptance_policy"),
                     "placement_acceptance_blockers": selected.get("placement_acceptance_blockers", []),
                     "placement_acceptance_trace": selected.get("placement_acceptance_trace", {}),
@@ -781,6 +799,8 @@ def _canonical_fen(
                 "selected_placement": selected.get("selected_placement"),
                 "placement_status": selected.get("placement_status"),
                 "placement_runtime_status": selected.get("placement_runtime_status"),
+                "full_fen_status": selected.get("full_fen_status"),
+                "full_fen_runtime_status": selected.get("full_fen_runtime_status"),
                 "placement_acceptance_policy": selected.get("placement_acceptance_policy"),
                 "placement_acceptance_blockers": selected.get("placement_acceptance_blockers", []),
                 "placement_acceptance_trace": selected.get("placement_acceptance_trace", {}),
@@ -811,6 +831,7 @@ def _canonical_fen(
     summary["recognition_limit"] = "all" if max_count <= 0 else max_count
     summary["skipped_diagram_count"] = len(skipped)
     summary["skipped_diagram_ids"] = [item.get("id") for item in skipped]
+    summary.update(_fen_two_gate_summary(candidates))
     payload = {"schema": "kindlemaster.auto_chess.fen_candidates.v1", "items": candidates, "summary": summary}
     validation = {"schema": "kindlemaster.auto_chess.fen_validation.v1", "items": validation_rows, "summary": summary}
     return payload, validation, repairs
@@ -901,6 +922,7 @@ def _fen_raw_candidates(
                         "source": "deterministic_ensemble",
                         "fen": fen,
                         "authoritative": False,
+                        **_side_marker_fields({**diagram, **deterministic_row}),
                         "confidence": _first_float(
                             deterministic_row.get("confidence"),
                             deterministic_row.get("global_confidence"),
@@ -973,6 +995,8 @@ def _fen_candidate_row(candidate: dict[str, Any]) -> dict[str, Any]:
         "errors": [asdict(error) for error in validation.errors],
         "validation_warnings": [asdict(warning) for warning in validation.warnings],
         "runtime_status": machine["runtime_status"],
+        "full_fen_status": machine["runtime_status"],
+        "full_fen_runtime_status": machine["runtime_status"],
         "acceptance_policy": machine["acceptance_policy"],
         "acceptance_blockers": machine["acceptance_blockers"],
         "acceptance_trace": machine["acceptance_trace"],
@@ -1011,6 +1035,11 @@ def _select_fen_status(diagram: dict[str, Any], candidate_rows: list[dict[str, A
             "corpus_status": "corpus_verified",
             "acceptance_policy": "human_verified_exact_crop_label",
             "selected_value": deterministic.get("normalized_value"),
+            "selected_placement": deterministic.get("normalized_placement"),
+            "placement_status": deterministic.get("placement_runtime_status"),
+            "placement_runtime_status": deterministic.get("placement_runtime_status"),
+            "full_fen_status": "FEN_CORPUS_VERIFIED",
+            "full_fen_runtime_status": "FEN_CORPUS_VERIFIED",
             "validation_errors": [],
             "acceptance_blockers": [],
             "acceptance_trace": {"source": deterministic.get("source"), "human_verified": True},
@@ -1027,6 +1056,8 @@ def _select_fen_status(diagram: dict[str, Any], candidate_rows: list[dict[str, A
             "selected_placement": machine.get("normalized_placement"),
             "placement_status": machine.get("placement_runtime_status"),
             "placement_runtime_status": machine.get("placement_runtime_status"),
+            "full_fen_status": "FEN_MACHINE_ACCEPTED",
+            "full_fen_runtime_status": "FEN_MACHINE_ACCEPTED",
             "placement_acceptance_policy": machine.get("placement_acceptance_policy"),
             "placement_acceptance_blockers": machine.get("placement_acceptance_blockers", []),
             "placement_acceptance_trace": machine.get("placement_acceptance_trace", {}),
@@ -1063,6 +1094,8 @@ def _select_fen_status(diagram: dict[str, Any], candidate_rows: list[dict[str, A
             "selected_placement": placement_machine.get("normalized_placement"),
             "placement_status": "FEN_PLACEMENT_MACHINE_ACCEPTED",
             "placement_runtime_status": "FEN_PLACEMENT_MACHINE_ACCEPTED",
+            "full_fen_status": "FEN_REVIEW_REQUIRED",
+            "full_fen_runtime_status": "FEN_REVIEW_REQUIRED",
             "placement_acceptance_policy": placement_machine.get("placement_acceptance_policy"),
             "placement_acceptance_blockers": placement_machine.get("placement_acceptance_blockers", []),
             "placement_acceptance_trace": placement_machine.get("placement_acceptance_trace", {}),
@@ -1084,6 +1117,8 @@ def _select_fen_status(diagram: dict[str, Any], candidate_rows: list[dict[str, A
             "selected_placement": None,
             "placement_status": "FEN_PLACEMENT_REVIEW_REQUIRED",
             "placement_runtime_status": "FEN_PLACEMENT_REVIEW_REQUIRED",
+            "full_fen_status": "FEN_REVIEW_REQUIRED",
+            "full_fen_runtime_status": "FEN_REVIEW_REQUIRED",
             "placement_acceptance_policy": "runtime_placement_acceptance_v1",
             "placement_acceptance_blockers": [{"code": "placement_candidate_missing", "message": "No placement candidate was available."}],
             "placement_acceptance_trace": {},
@@ -1109,6 +1144,8 @@ def _select_fen_status(diagram: dict[str, Any], candidate_rows: list[dict[str, A
             "selected_placement": None,
             "placement_status": "FEN_PLACEMENT_REVIEW_REQUIRED",
             "placement_runtime_status": "FEN_PLACEMENT_REVIEW_REQUIRED",
+            "full_fen_status": "FEN_REVIEW_REQUIRED",
+            "full_fen_runtime_status": "FEN_REVIEW_REQUIRED",
             "placement_acceptance_policy": "runtime_placement_acceptance_v1",
             "placement_acceptance_blockers": [],
             "placement_acceptance_trace": {},
@@ -1126,6 +1163,8 @@ def _select_fen_status(diagram: dict[str, Any], candidate_rows: list[dict[str, A
         "selected_placement": None,
         "placement_status": "FEN_PLACEMENT_REVIEW_REQUIRED",
         "placement_runtime_status": "FEN_PLACEMENT_REVIEW_REQUIRED",
+        "full_fen_status": "FEN_REVIEW_REQUIRED",
+        "full_fen_runtime_status": "FEN_REVIEW_REQUIRED",
         "placement_acceptance_policy": "runtime_placement_acceptance_v1",
         "placement_acceptance_blockers": [],
         "placement_acceptance_trace": {},
@@ -1786,17 +1825,510 @@ def _status_summary(items: list[dict[str, Any]], *, accepted: set[str]) -> dict[
     }
 
 
-def _side_marker_assignment_report(diagrams: list[dict[str, Any]], fen_payload: dict[str, Any]) -> dict[str, Any]:
-    fen_by_id = {
+def _fen_two_gate_summary(items: list[dict[str, Any]]) -> dict[str, Any]:
+    def blocker_codes(item: dict[str, Any]) -> set[str]:
+        codes = set()
+        for key in ("acceptance_blockers", "validation_errors"):
+            for blocker in item.get(key) or []:
+                if isinstance(blocker, dict) and blocker.get("code"):
+                    codes.add(str(blocker.get("code")))
+        return codes
+
+    marker_codes = {
+        "full_fen_blocked_by_marker",
+        "side_to_move_inferred",
+        "inferred_only",
+        "marker_missing",
+        "marker_conflict",
+        "ambiguous_marker",
+        "multi_side",
+        "side_to_move_marker_local_ambiguous",
+        "side_to_move_marker_local_conflict",
+        "side_to_move_marker_multi_region_conflict",
+    }
+    placement_codes = {
+        "full_fen_blocked_by_placement",
+        "placement_candidate_missing",
+        "invalid_rank_count",
+        "invalid_rank_width",
+        "missing_white_king",
+        "missing_black_king",
+        "white_king_count_invalid",
+        "black_king_count_invalid",
+    }
+    return {
+        "placement_accepted_count": len(
+            [item for item in items if item.get("placement_runtime_status") == "FEN_PLACEMENT_MACHINE_ACCEPTED"]
+        ),
+        "full_fen_accepted_count": len(
+            [item for item in items if item.get("full_fen_runtime_status") in {"FEN_MACHINE_ACCEPTED", "FEN_CORPUS_VERIFIED"}]
+        ),
+        "full_fen_blocked_by_marker_count": len([item for item in items if blocker_codes(item) & marker_codes]),
+        "full_fen_blocked_by_placement_count": len([item for item in items if blocker_codes(item) & placement_codes]),
+    }
+
+
+def _diagram_record_id(record: dict[str, Any], index: int) -> str:
+    return str(record.get("diagram_id") or record.get("id") or f"diagram-{index}")
+
+
+def _first_non_empty(*values: Any) -> Any:
+    for value in values:
+        if value not in (None, "", [], {}):
+            return value
+    return ""
+
+
+def _fen_items_by_diagram_id(fen_payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
         str(item.get("id") or ""): item
         for item in fen_payload.get("items") or []
-        if isinstance(item, dict)
+        if isinstance(item, dict) and str(item.get("id") or "")
+    }
+
+
+def _two_crop_blocker_codes(record: dict[str, Any]) -> set[str]:
+    codes: set[str] = set()
+    for key in ("acceptance_blockers", "placement_acceptance_blockers"):
+        for blocker in record.get(key) or []:
+            if isinstance(blocker, dict) and blocker.get("code"):
+                codes.add(str(blocker.get("code")))
+    return codes
+
+
+def _two_crop_quality_rows(diagrams: list[dict[str, Any]], fen_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    fen_by_id = _fen_items_by_diagram_id(fen_payload)
+    marker_blocker_codes = {
+        "full_fen_blocked_by_marker",
+        "side_to_move_inferred",
+        "inferred_only",
+        "marker_missing",
+        "marker_conflict",
+        "ambiguous_marker",
+        "multi_side",
+        "side_to_move_marker_local_ambiguous",
+        "side_to_move_marker_local_conflict",
+        "side_to_move_marker_multi_region_conflict",
+    }
+    placement_blocker_codes = {
+        "full_fen_blocked_by_placement",
+        "placement_candidate_missing",
+        "invalid_rank_count",
+        "invalid_rank_width",
+        "invalid_rank_digit",
+        "invalid_piece",
+        "missing_white_king",
+        "missing_black_king",
+        "white_king_count_invalid",
+        "black_king_count_invalid",
+        "pawn_on_back_rank",
     }
     rows: list[dict[str, Any]] = []
     for index, diagram in enumerate(diagrams, start=1):
         if not isinstance(diagram, dict):
             continue
-        diagram_id = str(diagram.get("diagram_id") or diagram.get("id") or f"diagram-{index}")
+        diagram_id = _diagram_record_id(diagram, index)
+        fen_item = fen_by_id.get(diagram_id, {})
+        merged = {**diagram, **fen_item}
+        blocker_codes = _two_crop_blocker_codes(merged)
+        marker_status = str(_first_non_empty(merged.get("side_marker_status"), "marker_missing"))
+        placement_status = str(_first_non_empty(merged.get("placement_runtime_status"), merged.get("placement_status")))
+        full_fen_status = str(
+            _first_non_empty(merged.get("full_fen_runtime_status"), merged.get("full_fen_status"), merged.get("runtime_status"))
+        )
+        has_board_crop = bool(_first_non_empty(merged.get("board_crop_path")))
+        has_marker_crop = bool(_first_non_empty(merged.get("side_marker_crop_path")))
+        has_debug_overlay = bool(_first_non_empty(merged.get("debug_overlay_path")))
+        marker_missing = marker_status in {"", "marker_missing", "side_to_move_marker_missing", "missing", "no_marker"}
+        marker_conflict = "conflict" in marker_status or "multi" in marker_status
+        marker_ambiguous = "ambiguous" in marker_status
+        trusted_marker = marker_status.startswith("trusted_") or marker_status == "trusted_marker"
+        placement_accepted = placement_status == "FEN_PLACEMENT_MACHINE_ACCEPTED"
+        rows.append(
+            {
+                "diagram_id": diagram_id,
+                "page": merged.get("page") or merged.get("page_number") or "",
+                "board_crop_path": str(_first_non_empty(merged.get("board_crop_path"))),
+                "side_marker_crop_path": str(_first_non_empty(merged.get("side_marker_crop_path"))),
+                "debug_overlay_path": str(_first_non_empty(merged.get("debug_overlay_path"))),
+                "has_board_crop": has_board_crop,
+                "has_side_marker_crop": has_marker_crop,
+                "has_debug_overlay": has_debug_overlay,
+                "side_marker_status": marker_status,
+                "trusted_marker": trusted_marker,
+                "marker_missing": marker_missing,
+                "marker_conflict": marker_conflict,
+                "marker_ambiguous": marker_ambiguous,
+                "placement_status": placement_status,
+                "full_fen_status": full_fen_status,
+                "blocked_by_marker": bool(blocker_codes & marker_blocker_codes)
+                or marker_missing
+                or marker_conflict
+                or marker_ambiguous,
+                "blocked_by_placement": "full_fen_blocked_by_placement" in blocker_codes
+                or (not placement_accepted and bool(blocker_codes & placement_blocker_codes))
+                or placement_status == "FEN_PLACEMENT_REVIEW_REQUIRED",
+                "acceptance_blocker_codes": sorted(blocker_codes),
+            }
+        )
+    return rows
+
+
+def _two_crop_accuracy_data_gap(diagrams: list[dict[str, Any]]) -> dict[str, Any]:
+    verified = [diagram for diagram in diagrams if isinstance(diagram, dict) and _is_human_verified_record(diagram)]
+    marker_label_count = len(
+        [
+            diagram
+            for diagram in verified
+            if _first_non_empty(diagram.get("expected_side_to_move"), diagram.get("side_to_move"), diagram.get("side_to_move_label"))
+        ]
+    )
+    placement_label_count = len(
+        [
+            diagram
+            for diagram in verified
+            if _first_non_empty(diagram.get("expected_placement"), diagram.get("placement"), diagram.get("placement_fen"))
+        ]
+    )
+    both_label_count = len(
+        [
+            diagram
+            for diagram in verified
+            if _first_non_empty(diagram.get("expected_side_to_move"), diagram.get("side_to_move"), diagram.get("side_to_move_label"))
+            and _first_non_empty(diagram.get("expected_placement"), diagram.get("placement"), diagram.get("placement_fen"))
+        ]
+    )
+    missing_data: list[dict[str, Any]] = []
+    if marker_label_count <= 0:
+        missing_data.append(
+            {
+                "field": "expected_side_to_move",
+                "needed": "human_verified side-to-move labels",
+                "available": marker_label_count,
+            }
+        )
+    if placement_label_count <= 0:
+        missing_data.append(
+            {
+                "field": "expected_placement",
+                "needed": "human_verified board placement labels",
+                "available": placement_label_count,
+            }
+        )
+    return {
+        "status": "TRAINING_DATA_GAP" if missing_data else "READY",
+        "message": "TRAINING_DATA_GAP: accuracy requires human-verified side-to-move and placement labels."
+        if missing_data
+        else "Human-verified labels are available for accuracy measurement.",
+        "human_verified_record_count": len(verified),
+        "marker_label_count": marker_label_count,
+        "placement_label_count": placement_label_count,
+        "both_label_count": both_label_count,
+        "missing_data": missing_data,
+    }
+
+
+def _two_crop_quality_metrics_report(diagrams: list[dict[str, Any]], fen_payload: dict[str, Any]) -> dict[str, Any]:
+    rows = _two_crop_quality_rows(diagrams, fen_payload)
+    summary = {
+        "diagram_count": len(rows),
+        "board_crop_count": len([row for row in rows if row.get("has_board_crop")]),
+        "side_marker_crop_count": len([row for row in rows if row.get("has_side_marker_crop")]),
+        "trusted_marker_count": len([row for row in rows if row.get("trusted_marker")]),
+        "marker_missing_count": len([row for row in rows if row.get("marker_missing")]),
+        "marker_conflict_count": len([row for row in rows if row.get("marker_conflict")]),
+        "placement_accepted_count": len(
+            [row for row in rows if row.get("placement_status") == "FEN_PLACEMENT_MACHINE_ACCEPTED"]
+        ),
+        "full_fen_accepted_count": len(
+            [row for row in rows if row.get("full_fen_status") in {"FEN_MACHINE_ACCEPTED", "FEN_CORPUS_VERIFIED"}]
+        ),
+        "blocked_by_marker_count": len([row for row in rows if row.get("blocked_by_marker")]),
+        "blocked_by_placement_count": len([row for row in rows if row.get("blocked_by_placement")]),
+    }
+    return {
+        "schema": "kindlemaster.chess_fen.two_crop_quality_metrics.v1",
+        "summary": summary,
+        "accuracy": _two_crop_accuracy_data_gap(diagrams),
+        "items": rows,
+    }
+
+
+def _two_crop_quality_metrics_markdown(report: dict[str, Any]) -> str:
+    summary = report.get("summary") or {}
+    accuracy = report.get("accuracy") or {}
+    lines = [
+        "# Chess FEN Two-Crop Quality Metrics",
+        "",
+        f"- diagrams: {summary.get('diagram_count', 0)}",
+        f"- board crops: {summary.get('board_crop_count', 0)}",
+        f"- side-marker crops: {summary.get('side_marker_crop_count', 0)}",
+        f"- trusted markers: {summary.get('trusted_marker_count', 0)}",
+        f"- marker missing: {summary.get('marker_missing_count', 0)}",
+        f"- marker conflicts: {summary.get('marker_conflict_count', 0)}",
+        f"- placement accepted: {summary.get('placement_accepted_count', 0)}",
+        f"- full FEN accepted: {summary.get('full_fen_accepted_count', 0)}",
+        f"- blocked by marker: {summary.get('blocked_by_marker_count', 0)}",
+        f"- blocked by placement: {summary.get('blocked_by_placement_count', 0)}",
+        "",
+        "## Accuracy",
+        "",
+        f"- status: {accuracy.get('status', 'UNKNOWN')}",
+        f"- human verified records: {accuracy.get('human_verified_record_count', 0)}",
+        f"- side-to-move labels: {accuracy.get('marker_label_count', 0)}",
+        f"- placement labels: {accuracy.get('placement_label_count', 0)}",
+        f"- complete labels: {accuracy.get('both_label_count', 0)}",
+    ]
+    if accuracy.get("status") == "TRAINING_DATA_GAP":
+        lines.extend(["", f"TRAINING_DATA_GAP: {accuracy.get('message', '')}", "", "| Missing field | Needed | Available |", "| --- | --- | ---: |"])
+        for item in accuracy.get("missing_data") or []:
+            lines.append(
+                "| {field} | {needed} | {available} |".format(
+                    field=_md(str(item.get("field") or "")),
+                    needed=_md(str(item.get("needed") or "")),
+                    available=_md(str(item.get("available") or 0)),
+                )
+            )
+    lines.extend(
+        [
+            "",
+            "| Diagram | Page | Board crop | Marker crop | Marker status | Placement | Full FEN | Marker block | Placement block |",
+            "| --- | ---: | --- | --- | --- | --- | --- | --- | --- |",
+        ]
+    )
+    for item in report.get("items") or []:
+        lines.append(
+            "| {id} | {page} | {board} | {marker} | {marker_status} | {placement} | {full_fen} | {marker_block} | {placement_block} |".format(
+                id=_md(str(item.get("diagram_id") or "")),
+                page=_md(str(item.get("page") or "")),
+                board="yes" if item.get("has_board_crop") else "no",
+                marker="yes" if item.get("has_side_marker_crop") else "no",
+                marker_status=_md(str(item.get("side_marker_status") or "")),
+                placement=_md(str(item.get("placement_status") or "")),
+                full_fen=_md(str(item.get("full_fen_status") or "")),
+                marker_block="yes" if item.get("blocked_by_marker") else "no",
+                placement_block="yes" if item.get("blocked_by_placement") else "no",
+            )
+        )
+    return "\n".join(lines) + "\n"
+
+
+TWO_CROP_BENCHMARK_MIN_RECORDS = 30
+AI_ONLY_BENCHMARK_LABEL_SOURCES = {
+    "ai",
+    "ai_assist",
+    "ai_candidate",
+    "ai_review",
+    "ai_review_only",
+    "openai",
+    "openai_review",
+    "gpt",
+}
+
+
+def _benchmark_label_source(record: dict[str, Any]) -> str:
+    source = str(
+        _first_non_empty(
+            record.get("label_source"),
+            record.get("verification_source"),
+            "human_verified_metadata" if _is_human_verified_record(record) else "",
+            record.get("source"),
+        )
+    ).strip()
+    return source or "unknown"
+
+
+def _is_ai_only_benchmark_label_source(source: str) -> bool:
+    normalized = _normalize_source_label(source).replace("-", "_")
+    return normalized in AI_ONLY_BENCHMARK_LABEL_SOURCES
+
+
+def _expected_side_to_move_label(record: dict[str, Any]) -> str:
+    value = str(
+        _first_non_empty(
+            record.get("expected_side_to_move"),
+            record.get("side_to_move_label"),
+            record.get("side_to_move"),
+        )
+    ).strip().lower()
+    if value in {"w", "white"}:
+        return "w"
+    if value in {"b", "black"}:
+        return "b"
+    return ""
+
+
+def _expected_placement_label(record: dict[str, Any]) -> str:
+    value = str(
+        _first_non_empty(
+            record.get("expected_placement"),
+            record.get("expected_placement_fen"),
+            record.get("placement"),
+            record.get("placement_fen"),
+            record.get("expected_fen"),
+            record.get("fen"),
+            record.get("full_fen"),
+        )
+    ).strip()
+    if not value:
+        return ""
+    try:
+        return placement_from_fen_or_placement(value)
+    except Exception:
+        return ""
+
+
+def _two_crop_benchmark_seed_rows(diagrams: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    rows: list[dict[str, Any]] = []
+    ai_only_excluded_count = 0
+    for index, diagram in enumerate(diagrams, start=1):
+        if not isinstance(diagram, dict):
+            continue
+        label_source = _benchmark_label_source(diagram)
+        if _is_ai_only_benchmark_label_source(label_source):
+            ai_only_excluded_count += 1
+            continue
+        if not _is_human_verified_record(diagram):
+            continue
+        board_crop_path = str(_first_non_empty(diagram.get("board_crop_path"))).strip()
+        side_marker_crop_path = str(_first_non_empty(diagram.get("side_marker_crop_path"))).strip()
+        expected_side_to_move = _expected_side_to_move_label(diagram)
+        expected_placement = _expected_placement_label(diagram)
+        if not board_crop_path or not side_marker_crop_path:
+            continue
+        if not expected_side_to_move and not expected_placement:
+            continue
+        rows.append(
+            {
+                "diagram_id": _diagram_record_id(diagram, index),
+                "page": diagram.get("page") or diagram.get("page_number") or "",
+                "board_crop_path": board_crop_path,
+                "side_marker_crop_path": side_marker_crop_path,
+                "expected_side_to_move": expected_side_to_move,
+                "expected_placement": expected_placement,
+                "label_source": label_source,
+            }
+        )
+    return rows, ai_only_excluded_count
+
+
+def _two_crop_benchmark_seed_report(diagrams: list[dict[str, Any]]) -> dict[str, Any]:
+    rows, ai_only_excluded_count = _two_crop_benchmark_seed_rows(diagrams)
+    marker_label_count = len([row for row in rows if row.get("expected_side_to_move")])
+    placement_label_count = len([row for row in rows if row.get("expected_placement")])
+    both_label_count = len([row for row in rows if row.get("expected_side_to_move") and row.get("expected_placement")])
+    status = "READY" if len(rows) >= TWO_CROP_BENCHMARK_MIN_RECORDS else "TRAINING_DATA_GAP"
+    source_counts = {
+        source: len([row for row in rows if row.get("label_source") == source])
+        for source in sorted({str(row.get("label_source") or "") for row in rows})
+        if source
+    }
+    missing_data = []
+    if status == "TRAINING_DATA_GAP":
+        missing_data.append(
+            {
+                "field": "usable_human_verified_two_crop_records",
+                "needed": TWO_CROP_BENCHMARK_MIN_RECORDS,
+                "available": len(rows),
+                "requires": [
+                    "board_crop_path",
+                    "side_marker_crop_path",
+                    "human_verified label_source",
+                    "expected_side_to_move or expected_placement",
+                ],
+            }
+        )
+    return {
+        "schema": "kindlemaster.chess_fen.two_crop_benchmark_seed.v1",
+        "status": status,
+        "minimum_required_records": TWO_CROP_BENCHMARK_MIN_RECORDS,
+        "summary": {
+            "usable_record_count": len(rows),
+            "manifest_record_count": len(rows) if status == "READY" else 0,
+            "marker_label_count": marker_label_count,
+            "placement_label_count": placement_label_count,
+            "both_label_count": both_label_count,
+            "ai_only_excluded_count": ai_only_excluded_count,
+            "label_sources": source_counts,
+        },
+        "manifest": {
+            "created": status == "READY",
+            "items": rows if status == "READY" else [],
+        },
+        "available_records": rows,
+        "training_data_gap": {
+            "status": status,
+            "message": "TRAINING_DATA_GAP: fewer than 30 usable human-verified two-crop records are available."
+            if status == "TRAINING_DATA_GAP"
+            else "",
+            "missing_data": missing_data,
+        },
+    }
+
+
+def _two_crop_benchmark_seed_markdown(report: dict[str, Any]) -> str:
+    summary = report.get("summary") or {}
+    gap = report.get("training_data_gap") or {}
+    lines = [
+        "# Chess FEN Two-Crop Benchmark Seed",
+        "",
+        f"- status: {report.get('status', 'UNKNOWN')}",
+        f"- minimum required records: {report.get('minimum_required_records', TWO_CROP_BENCHMARK_MIN_RECORDS)}",
+        f"- usable records: {summary.get('usable_record_count', 0)}",
+        f"- manifest records: {summary.get('manifest_record_count', 0)}",
+        f"- marker labels: {summary.get('marker_label_count', 0)}",
+        f"- placement labels: {summary.get('placement_label_count', 0)}",
+        f"- complete labels: {summary.get('both_label_count', 0)}",
+        f"- AI-only labels excluded: {summary.get('ai_only_excluded_count', 0)}",
+        "",
+        "## Label Sources",
+        "",
+    ]
+    sources = summary.get("label_sources") or {}
+    if sources:
+        for source, count in sources.items():
+            lines.append(f"- {_md(str(source))}: {count}")
+    else:
+        lines.append("- none")
+    if report.get("status") == "TRAINING_DATA_GAP":
+        lines.extend(["", f"TRAINING_DATA_GAP: {gap.get('message', '')}", "", "| Missing field | Needed | Available |", "| --- | ---: | ---: |"])
+        for item in gap.get("missing_data") or []:
+            lines.append(
+                "| {field} | {needed} | {available} |".format(
+                    field=_md(str(item.get("field") or "")),
+                    needed=_md(str(item.get("needed") or 0)),
+                    available=_md(str(item.get("available") or 0)),
+                )
+            )
+    lines.extend(
+        [
+            "",
+            "| Diagram | Page | Board crop | Marker crop | Side label | Placement label | Source |",
+            "| --- | ---: | --- | --- | --- | --- | --- |",
+        ]
+    )
+    for item in report.get("available_records") or []:
+        lines.append(
+            "| {id} | {page} | {board} | {marker} | {side} | {placement} | {source} |".format(
+                id=_md(str(item.get("diagram_id") or "")),
+                page=_md(str(item.get("page") or "")),
+                board=_md(str(item.get("board_crop_path") or "")),
+                marker=_md(str(item.get("side_marker_crop_path") or "")),
+                side=_md(str(item.get("expected_side_to_move") or "")),
+                placement=_md(str(item.get("expected_placement") or "")),
+                source=_md(str(item.get("label_source") or "")),
+            )
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _side_marker_assignment_report(diagrams: list[dict[str, Any]], fen_payload: dict[str, Any]) -> dict[str, Any]:
+    fen_by_id = _fen_items_by_diagram_id(fen_payload)
+    rows: list[dict[str, Any]] = []
+    for index, diagram in enumerate(diagrams, start=1):
+        if not isinstance(diagram, dict):
+            continue
+        diagram_id = _diagram_record_id(diagram, index)
         fen_item = fen_by_id.get(diagram_id, {})
         marker_status = str(diagram.get("side_marker_status") or fen_item.get("side_marker_status") or "marker_missing")
         marker_symbol = str(diagram.get("side_marker_symbol") or fen_item.get("side_marker_symbol") or "?")
@@ -1813,6 +2345,8 @@ def _side_marker_assignment_report(diagrams: list[dict[str, Any]], fen_payload: 
                 "side_marker_confidence": diagram.get("side_marker_confidence") or fen_item.get("side_marker_confidence") or "",
                 "side_marker_assignment_trace": diagram.get("side_marker_assignment_trace") or fen_item.get("side_marker_assignment_trace") or {},
                 "runtime_status": fen_item.get("runtime_status") or diagram.get("runtime_status") or "",
+                "placement_status": fen_item.get("placement_runtime_status") or diagram.get("placement_status") or "",
+                "full_fen_status": fen_item.get("full_fen_runtime_status") or fen_item.get("runtime_status") or diagram.get("full_fen_status") or "",
                 "fen_suppressed_reason": diagram.get("fen_suppressed_reason") or fen_item.get("fen_suppressed_reason") or "",
                 "strict_fen_allowed": fen_item.get("runtime_status") == "FEN_MACHINE_ACCEPTED",
             }
@@ -1822,6 +2356,8 @@ def _side_marker_assignment_report(diagrams: list[dict[str, Any]], fen_payload: 
         "html_diagrams_with_visible_side_marker": len([row for row in rows if row.get("side_marker_symbol")]),
         "trusted_marker_assignments": len([row for row in rows if str(row.get("side_marker_status") or "").startswith("trusted_")]),
         "strict_full_fen_accepted": len([row for row in rows if row.get("strict_fen_allowed")]),
+        "placement_accepted_count": len([row for row in rows if row.get("placement_status") == "FEN_PLACEMENT_MACHINE_ACCEPTED"]),
+        "full_fen_accepted_count": len([row for row in rows if row.get("full_fen_status") in {"FEN_MACHINE_ACCEPTED", "FEN_CORPUS_VERIFIED"}]),
         "by_side_marker_status": {
             status: len([row for row in rows if row.get("side_marker_status") == status])
             for status in sorted({str(row.get("side_marker_status") or "") for row in rows})
@@ -1839,19 +2375,23 @@ def _side_marker_assignment_markdown(report: dict[str, Any]) -> str:
         f"- diagrams: {summary.get('diagram_count', 0)}",
         f"- visible side markers: {summary.get('html_diagrams_with_visible_side_marker', 0)}",
         f"- trusted assignments: {summary.get('trusted_marker_assignments', 0)}",
+        f"- placement accepted: {summary.get('placement_accepted_count', 0)}",
+        f"- full FEN accepted: {summary.get('full_fen_accepted_count', 0)}",
         f"- strict full FEN accepted: {summary.get('strict_full_fen_accepted', 0)}",
         "",
-        "| Diagram | Page | Marker | Status | Side | Runtime |",
-        "| --- | ---: | --- | --- | --- | --- |",
+        "| Diagram | Page | Marker | Status | Side | Placement | Full FEN | Runtime |",
+        "| --- | ---: | --- | --- | --- | --- | --- | --- |",
     ]
     for item in report.get("items") or []:
         lines.append(
-            "| {id} | {page} | {symbol} | {status} | {side} | {runtime} |".format(
+            "| {id} | {page} | {symbol} | {status} | {side} | {placement} | {full_fen} | {runtime} |".format(
                 id=_md(str(item.get("diagram_id") or "")),
                 page=_md(str(item.get("page") or "")),
                 symbol=_md(str(item.get("side_marker_symbol") or "")),
                 status=_md(str(item.get("side_marker_status") or "")),
                 side=_md(str(item.get("side_to_move") or "")),
+                placement=_md(str(item.get("placement_status") or "")),
+                full_fen=_md(str(item.get("full_fen_status") or "")),
                 runtime=_md(str(item.get("runtime_status") or "")),
             )
         )
@@ -1867,11 +2407,13 @@ def _side_marker_assignment_html(report: dict[str, Any]) -> str:
         f"<td class='marker'>{html.escape(str(item.get('side_marker_symbol') or ''))}</td>"
         f"<td>{html.escape(str(item.get('side_marker_status') or ''))}</td>"
         f"<td>{html.escape(str(item.get('side_to_move') or ''))}</td>"
+        f"<td>{html.escape(str(item.get('placement_status') or ''))}</td>"
+        f"<td>{html.escape(str(item.get('full_fen_status') or ''))}</td>"
         f"<td>{html.escape(str(item.get('runtime_status') or ''))}</td>"
         f"<td>{html.escape(str(item.get('fen_suppressed_reason') or ''))}</td>"
         "</tr>"
         for item in report.get("items") or []
-    ) or "<tr><td colspan='7'>No diagrams found.</td></tr>"
+    ) or "<tr><td colspan='9'>No diagrams found.</td></tr>"
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1893,10 +2435,12 @@ def _side_marker_assignment_html(report: dict[str, Any]) -> str:
     <div class="stat">Diagrams: <strong>{html.escape(str(summary.get('diagram_count', 0)))}</strong></div>
     <div class="stat">Visible markers: <strong>{html.escape(str(summary.get('html_diagrams_with_visible_side_marker', 0)))}</strong></div>
     <div class="stat">Trusted: <strong>{html.escape(str(summary.get('trusted_marker_assignments', 0)))}</strong></div>
+    <div class="stat">Placement accepted: <strong>{html.escape(str(summary.get('placement_accepted_count', 0)))}</strong></div>
+    <div class="stat">Full FEN accepted: <strong>{html.escape(str(summary.get('full_fen_accepted_count', 0)))}</strong></div>
     <div class="stat">Strict FEN: <strong>{html.escape(str(summary.get('strict_full_fen_accepted', 0)))}</strong></div>
   </section>
   <table>
-    <thead><tr><th>Diagram</th><th>Page</th><th>Marker</th><th>Status</th><th>Side</th><th>Runtime</th><th>Suppressed reason</th></tr></thead>
+    <thead><tr><th>Diagram</th><th>Page</th><th>Marker</th><th>Status</th><th>Side</th><th>Placement</th><th>Full FEN</th><th>Runtime</th><th>Suppressed reason</th></tr></thead>
     <tbody>{rows}</tbody>
   </table>
 </body>

@@ -11,7 +11,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, Iterable
 
-from chess_fen_hardening import machine_accept_fen, machine_accept_placement, validate_fen_detailed
+from chess_fen_hardening import machine_accept_fen, machine_accept_placement, placement_from_fen_or_placement, validate_fen_detailed
 
 PIPELINE_STATUSES = {
     "AUTO_SUCCESS",
@@ -310,6 +310,7 @@ def build_auto_chess_flow_artifacts(
     )
     side_marker_report = _side_marker_assignment_report(diagrams, fen_payload)
     two_crop_quality_metrics = _two_crop_quality_metrics_report(diagrams, fen_payload)
+    two_crop_benchmark_seed = _two_crop_benchmark_seed_report(diagrams)
     accepted_fen_by_source = _accepted_fen_by_source(diagrams, fen_payload)
     pgn_payload, pgn_validation, pgn_repairs = _canonical_pgn(
         pgn_records,
@@ -367,6 +368,11 @@ def build_auto_chess_flow_artifacts(
         _two_crop_quality_metrics_markdown(two_crop_quality_metrics),
         encoding="utf-8",
     )
+    _write_json(chess_fen_report_dir / "two_crop_benchmark_seed.json", two_crop_benchmark_seed)
+    (chess_fen_report_dir / "two_crop_benchmark_seed.md").write_text(
+        _two_crop_benchmark_seed_markdown(two_crop_benchmark_seed),
+        encoding="utf-8",
+    )
     _copy_export_files(out, dirs["export"])
 
     payload = {
@@ -397,6 +403,8 @@ def build_auto_chess_flow_artifacts(
                 "side_marker_assignment_html": chess_fen_report_dir / "side_marker_assignment.html",
                 "two_crop_quality_metrics": chess_fen_report_dir / "two_crop_quality_metrics.json",
                 "two_crop_quality_metrics_md": chess_fen_report_dir / "two_crop_quality_metrics.md",
+                "two_crop_benchmark_seed": chess_fen_report_dir / "two_crop_benchmark_seed.json",
+                "two_crop_benchmark_seed_md": chess_fen_report_dir / "two_crop_benchmark_seed.md",
                 "export_games_pgn": dirs["export"] / "games.pgn",
             }.items()
         },
@@ -2100,6 +2108,215 @@ def _two_crop_quality_metrics_markdown(report: dict[str, Any]) -> str:
                 full_fen=_md(str(item.get("full_fen_status") or "")),
                 marker_block="yes" if item.get("blocked_by_marker") else "no",
                 placement_block="yes" if item.get("blocked_by_placement") else "no",
+            )
+        )
+    return "\n".join(lines) + "\n"
+
+
+TWO_CROP_BENCHMARK_MIN_RECORDS = 30
+AI_ONLY_BENCHMARK_LABEL_SOURCES = {
+    "ai",
+    "ai_assist",
+    "ai_candidate",
+    "ai_review",
+    "ai_review_only",
+    "openai",
+    "openai_review",
+    "gpt",
+}
+
+
+def _benchmark_label_source(record: dict[str, Any]) -> str:
+    source = str(
+        _first_non_empty(
+            record.get("label_source"),
+            record.get("verification_source"),
+            "human_verified_metadata" if _is_human_verified_record(record) else "",
+            record.get("source"),
+        )
+    ).strip()
+    return source or "unknown"
+
+
+def _is_ai_only_benchmark_label_source(source: str) -> bool:
+    normalized = _normalize_source_label(source).replace("-", "_")
+    return normalized in AI_ONLY_BENCHMARK_LABEL_SOURCES
+
+
+def _expected_side_to_move_label(record: dict[str, Any]) -> str:
+    value = str(
+        _first_non_empty(
+            record.get("expected_side_to_move"),
+            record.get("side_to_move_label"),
+            record.get("side_to_move"),
+        )
+    ).strip().lower()
+    if value in {"w", "white"}:
+        return "w"
+    if value in {"b", "black"}:
+        return "b"
+    return ""
+
+
+def _expected_placement_label(record: dict[str, Any]) -> str:
+    value = str(
+        _first_non_empty(
+            record.get("expected_placement"),
+            record.get("expected_placement_fen"),
+            record.get("placement"),
+            record.get("placement_fen"),
+            record.get("expected_fen"),
+            record.get("fen"),
+            record.get("full_fen"),
+        )
+    ).strip()
+    if not value:
+        return ""
+    try:
+        return placement_from_fen_or_placement(value)
+    except Exception:
+        return ""
+
+
+def _two_crop_benchmark_seed_rows(diagrams: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    rows: list[dict[str, Any]] = []
+    ai_only_excluded_count = 0
+    for index, diagram in enumerate(diagrams, start=1):
+        if not isinstance(diagram, dict):
+            continue
+        label_source = _benchmark_label_source(diagram)
+        if _is_ai_only_benchmark_label_source(label_source):
+            ai_only_excluded_count += 1
+            continue
+        if not _is_human_verified_record(diagram):
+            continue
+        board_crop_path = str(_first_non_empty(diagram.get("board_crop_path"))).strip()
+        side_marker_crop_path = str(_first_non_empty(diagram.get("side_marker_crop_path"))).strip()
+        expected_side_to_move = _expected_side_to_move_label(diagram)
+        expected_placement = _expected_placement_label(diagram)
+        if not board_crop_path or not side_marker_crop_path:
+            continue
+        if not expected_side_to_move and not expected_placement:
+            continue
+        rows.append(
+            {
+                "diagram_id": _diagram_record_id(diagram, index),
+                "page": diagram.get("page") or diagram.get("page_number") or "",
+                "board_crop_path": board_crop_path,
+                "side_marker_crop_path": side_marker_crop_path,
+                "expected_side_to_move": expected_side_to_move,
+                "expected_placement": expected_placement,
+                "label_source": label_source,
+            }
+        )
+    return rows, ai_only_excluded_count
+
+
+def _two_crop_benchmark_seed_report(diagrams: list[dict[str, Any]]) -> dict[str, Any]:
+    rows, ai_only_excluded_count = _two_crop_benchmark_seed_rows(diagrams)
+    marker_label_count = len([row for row in rows if row.get("expected_side_to_move")])
+    placement_label_count = len([row for row in rows if row.get("expected_placement")])
+    both_label_count = len([row for row in rows if row.get("expected_side_to_move") and row.get("expected_placement")])
+    status = "READY" if len(rows) >= TWO_CROP_BENCHMARK_MIN_RECORDS else "TRAINING_DATA_GAP"
+    source_counts = {
+        source: len([row for row in rows if row.get("label_source") == source])
+        for source in sorted({str(row.get("label_source") or "") for row in rows})
+        if source
+    }
+    missing_data = []
+    if status == "TRAINING_DATA_GAP":
+        missing_data.append(
+            {
+                "field": "usable_human_verified_two_crop_records",
+                "needed": TWO_CROP_BENCHMARK_MIN_RECORDS,
+                "available": len(rows),
+                "requires": [
+                    "board_crop_path",
+                    "side_marker_crop_path",
+                    "human_verified label_source",
+                    "expected_side_to_move or expected_placement",
+                ],
+            }
+        )
+    return {
+        "schema": "kindlemaster.chess_fen.two_crop_benchmark_seed.v1",
+        "status": status,
+        "minimum_required_records": TWO_CROP_BENCHMARK_MIN_RECORDS,
+        "summary": {
+            "usable_record_count": len(rows),
+            "manifest_record_count": len(rows) if status == "READY" else 0,
+            "marker_label_count": marker_label_count,
+            "placement_label_count": placement_label_count,
+            "both_label_count": both_label_count,
+            "ai_only_excluded_count": ai_only_excluded_count,
+            "label_sources": source_counts,
+        },
+        "manifest": {
+            "created": status == "READY",
+            "items": rows if status == "READY" else [],
+        },
+        "available_records": rows,
+        "training_data_gap": {
+            "status": status,
+            "message": "TRAINING_DATA_GAP: fewer than 30 usable human-verified two-crop records are available."
+            if status == "TRAINING_DATA_GAP"
+            else "",
+            "missing_data": missing_data,
+        },
+    }
+
+
+def _two_crop_benchmark_seed_markdown(report: dict[str, Any]) -> str:
+    summary = report.get("summary") or {}
+    gap = report.get("training_data_gap") or {}
+    lines = [
+        "# Chess FEN Two-Crop Benchmark Seed",
+        "",
+        f"- status: {report.get('status', 'UNKNOWN')}",
+        f"- minimum required records: {report.get('minimum_required_records', TWO_CROP_BENCHMARK_MIN_RECORDS)}",
+        f"- usable records: {summary.get('usable_record_count', 0)}",
+        f"- manifest records: {summary.get('manifest_record_count', 0)}",
+        f"- marker labels: {summary.get('marker_label_count', 0)}",
+        f"- placement labels: {summary.get('placement_label_count', 0)}",
+        f"- complete labels: {summary.get('both_label_count', 0)}",
+        f"- AI-only labels excluded: {summary.get('ai_only_excluded_count', 0)}",
+        "",
+        "## Label Sources",
+        "",
+    ]
+    sources = summary.get("label_sources") or {}
+    if sources:
+        for source, count in sources.items():
+            lines.append(f"- {_md(str(source))}: {count}")
+    else:
+        lines.append("- none")
+    if report.get("status") == "TRAINING_DATA_GAP":
+        lines.extend(["", f"TRAINING_DATA_GAP: {gap.get('message', '')}", "", "| Missing field | Needed | Available |", "| --- | ---: | ---: |"])
+        for item in gap.get("missing_data") or []:
+            lines.append(
+                "| {field} | {needed} | {available} |".format(
+                    field=_md(str(item.get("field") or "")),
+                    needed=_md(str(item.get("needed") or 0)),
+                    available=_md(str(item.get("available") or 0)),
+                )
+            )
+    lines.extend(
+        [
+            "",
+            "| Diagram | Page | Board crop | Marker crop | Side label | Placement label | Source |",
+            "| --- | ---: | --- | --- | --- | --- | --- |",
+        ]
+    )
+    for item in report.get("available_records") or []:
+        lines.append(
+            "| {id} | {page} | {board} | {marker} | {side} | {placement} | {source} |".format(
+                id=_md(str(item.get("diagram_id") or "")),
+                page=_md(str(item.get("page") or "")),
+                board=_md(str(item.get("board_crop_path") or "")),
+                marker=_md(str(item.get("side_marker_crop_path") or "")),
+                side=_md(str(item.get("expected_side_to_move") or "")),
+                placement=_md(str(item.get("expected_placement") or "")),
+                source=_md(str(item.get("label_source") or "")),
             )
         )
     return "\n".join(lines) + "\n"

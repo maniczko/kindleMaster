@@ -335,6 +335,76 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertIn("TRAINING_DATA_GAP", markdown)
         self.assertIn("two_crop_quality_metrics", flow_payload["artifacts"])
 
+    def test_auto_flow_writes_two_crop_benchmark_gap_without_ai_label_promotion(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir)
+            _write_json(
+                out / "data" / "book.json",
+                {
+                    "pages": [
+                        {
+                            "page": 1,
+                            "diagrams": [
+                                {
+                                    "diagram_id": "marker-label",
+                                    "page": 1,
+                                    "board_crop_path": "review/chess_fen/two_crop/marker-label_board.png",
+                                    "side_marker_crop_path": "review/chess_fen/two_crop/marker-label_marker.png",
+                                    "expected_side_to_move": "w",
+                                    "human_verified": True,
+                                    "verification_source": "human",
+                                },
+                                {
+                                    "diagram_id": "placement-label",
+                                    "page": 1,
+                                    "board_crop_path": "review/chess_fen/two_crop/placement-label_board.png",
+                                    "side_marker_crop_path": "review/chess_fen/two_crop/placement-label_marker.png",
+                                    "expected_placement": VALID_PLACEMENT,
+                                    "human_verified": True,
+                                    "verification_source": "human",
+                                },
+                                {
+                                    "diagram_id": "ai-only-label",
+                                    "page": 1,
+                                    "board_crop_path": "review/chess_fen/two_crop/ai-only-label_board.png",
+                                    "side_marker_crop_path": "review/chess_fen/two_crop/ai-only-label_marker.png",
+                                    "expected_side_to_move": "b",
+                                    "expected_placement": VALID_PLACEMENT,
+                                    "verification_source": "openai",
+                                    "verified_by": "gpt-review",
+                                    "verified_at": "2026-06-27T00:00:00Z",
+                                    "label_status": "verified",
+                                },
+                            ],
+                            "pgn_records": [],
+                            "text_blocks": [],
+                        }
+                    ],
+                    "pgn_records": [],
+                },
+            )
+
+            flow_payload = build_auto_chess_flow_artifacts(out)
+            report_path = out / "reports" / "chess_fen" / "two_crop_benchmark_seed.json"
+            markdown_path = out / "reports" / "chess_fen" / "two_crop_benchmark_seed.md"
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            markdown = markdown_path.read_text(encoding="utf-8")
+
+        summary = report["summary"]
+        self.assertEqual(report["status"], "TRAINING_DATA_GAP")
+        self.assertFalse(report["manifest"]["created"])
+        self.assertEqual(report["manifest"]["items"], [])
+        self.assertEqual(summary["usable_record_count"], 2)
+        self.assertEqual(summary["manifest_record_count"], 0)
+        self.assertEqual(summary["marker_label_count"], 1)
+        self.assertEqual(summary["placement_label_count"], 1)
+        self.assertEqual(summary["both_label_count"], 0)
+        self.assertEqual(summary["ai_only_excluded_count"], 1)
+        self.assertEqual(summary["label_sources"], {"human": 2})
+        self.assertEqual(len(report["available_records"]), 2)
+        self.assertIn("TRAINING_DATA_GAP", markdown)
+        self.assertIn("two_crop_benchmark_seed", flow_payload["artifacts"])
+
 
 if __name__ == "__main__":
     unittest.main()

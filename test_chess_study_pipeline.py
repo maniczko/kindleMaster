@@ -884,6 +884,7 @@ class ChessStudyPipelineTests(unittest.TestCase):
                 "data/diagrams.json",
                 "data/games.pgn",
                 "reports/conversion-audit.md",
+                "reports/source_html_quality_gate.json",
                 "reports/fen-review.csv",
                 "reports/pgn-review.csv",
                 "reports/ocr-issues.md",
@@ -919,8 +920,57 @@ class ChessStudyPipelineTests(unittest.TestCase):
             source_book = json.loads((out / "data" / "book.json").read_text(encoding="utf-8"))
             source_index = (out / "index.html").read_text(encoding="utf-8")
             self.assertEqual(source_book["summary"]["html_pages"], 1)
+            source_gate = json.loads((out / "reports" / "source_html_quality_gate.json").read_text(encoding="utf-8"))
+            self.assertTrue(source_gate["used_as_final_reader"])
             self.assertNotIn("localhost", source_index)
             self.assertNotIn("fen_not_recognized", source_index)
+
+    def test_run_all_keeps_degraded_source_html_evidence_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            pdf_path = root / "study.pdf"
+            _make_minimal_study_pdf(pdf_path)
+            html_path = root / "current.html"
+            html_path.write_text(
+                """
+                <section class="chess-book-page" data-page="1">
+                  <div class="book-text" data-reading-order="1" style="left:10px;top:10px;width:80px;height:12px">Diagram 1-1</div>
+                  <div class="book-diagram" data-reading-order="2" style="left:10px;top:30px;width:80px;height:80px"><img src="" alt=""></div>
+                  <div class="book-text" data-reading-order="3" style="left:120px;top:10px;width:80px;height:12px">Diagram 1-2</div>
+                  <div class="book-diagram" data-reading-order="4" style="left:120px;top:30px;width:80px;height:80px"><img src="http://127.0.0.1:5001/artifact/missing.png" alt=""></div>
+                </section>
+                """,
+                encoding="utf-8",
+            )
+            out = root / "out"
+
+            run_chess_study_export(
+                pdf_path,
+                html_path=html_path,
+                out_dir=out,
+                diagram_pages=0,
+                diagram_dpi=96,
+                min_grid_confidence=0.95,
+            )
+
+            gate = json.loads((out / "reports" / "source_html_quality_gate.json").read_text(encoding="utf-8"))
+            final_index = (out / "index.html").read_text(encoding="utf-8")
+            evidence_file_exists = (out / gate["source_html_evidence_path"]).is_file()
+            source_book_exists = (out / "data" / "book.json").exists()
+
+        self.assertFalse(gate["used_as_final_reader"])
+        self.assertTrue(gate["source_html_evidence_only"])
+        self.assertEqual(gate["decision"], "reject_degraded_source_html")
+        self.assertIn("diagram_image_sources_degraded", gate["reasons"])
+        self.assertIn("source_html_lacks_fen_marker_or_crop_evidence", gate["reasons"])
+        self.assertEqual(gate["summary"]["diagrams_total"], 2)
+        self.assertEqual(gate["summary"]["source_img_empty_count"], 1)
+        self.assertEqual(gate["summary"]["source_img_localhost_count"], 1)
+        self.assertEqual(gate["summary"]["fen_accepted"], 0)
+        self.assertEqual(gate["summary"]["side_unknown_count"], 2)
+        self.assertTrue(evidence_file_exists)
+        self.assertFalse(source_book_exists)
+        self.assertNotIn("FEN recognition is not available for this extracted diagram crop yet.", final_index)
 
     def test_masterkindle_profile_fails_when_quality_thresholds_are_not_met(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

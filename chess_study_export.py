@@ -412,12 +412,15 @@ def run_chess_study_export(
     )
     render_qa_html(config.out, qa_report)
     if config.html and config.html.is_file():
-        rebuild_chess_source_html_export(
-            config.html,
-            config.out,
-            pdf_path=config.pdf,
-            qa_report=qa_report,
-        )
+        source_gate = _source_html_quality_gate(config.html, config.out, pdf_path=config.pdf, qa_report=qa_report)
+        _write_source_html_quality_gate(config.out, source_gate)
+        if source_gate.get("used_as_final_reader"):
+            rebuild_chess_source_html_export(
+                config.html,
+                config.out,
+                pdf_path=config.pdf,
+                qa_report=qa_report,
+            )
     return qa_report
 
 
@@ -504,6 +507,173 @@ def _extract_source_html_pages(soup: BeautifulSoup, *, diagram_dir: Path, page_p
         page_record["diagrams"] = _extract_source_diagrams(node, page_number=page_number, out_dir=diagram_dir)
         pages.append(page_record)
     return pages
+
+
+def _source_html_quality_gate(
+    html_path: str | Path,
+    out_dir: str | Path,
+    *,
+    pdf_path: str | Path | None = None,
+    qa_report: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    source = Path(html_path)
+    out = Path(out_dir)
+    soup = BeautifulSoup(source.read_text(encoding="utf-8", errors="replace"), "html.parser")
+    page_nodes = soup.select(".chess-book-page, .pdf-page, section[data-page]") or [soup]
+    rows: list[dict[str, Any]] = []
+    for page_index, page_node in enumerate(page_nodes, start=1):
+        page_number = _source_page_number(page_node, fallback=page_index)
+        captions = [
+            block
+            for block in _extract_source_text_blocks(page_node, page_number=page_number)
+            if re.search(r"\b(?:Diagram|Ex\.)\s*\d{1,2}[-.]\d{1,2}\b", block.get("text", ""), re.IGNORECASE)
+        ]
+        for diagram_index, diagram_node in enumerate(page_node.select(".book-diagram"), start=1):
+            image = diagram_node.select_one("img")
+            src = str(image.get("src") or "") if image else ""
+            bbox = _source_style_box(str(diagram_node.get("style") or ""))
+            alt = _scrub_local_links(str(image.get("alt") or "")) if image else ""
+            caption = _nearest_source_caption(bbox, captions) or alt or diagram_node.get_text(" ", strip=True)
+            fen_candidate = _extract_fen_candidate_from_node(diagram_node)
+            image_status = _source_html_image_status(src, source)
+            rows.append(
+                {
+                    "id": f"p{page_number:03d}_d{diagram_index:03d}",
+                    "page": page_number,
+                    "image_status": image_status,
+                    "src_empty": image_status == "empty",
+                    "src_localhost": image_status == "localhost_url",
+                    "src_unresolved": image_status in {"relative_unresolved", "remote_unresolved"},
+                    "has_fen_or_marker_evidence": _source_html_diagram_has_evidence(diagram_node, image),
+                    "fen_accepted": _source_html_fen_accepted(fen_candidate),
+                    "side_to_move": _infer_side_to_move(caption),
+                    "caption": caption,
+                }
+            )
+    diagrams_total = len(rows)
+    source_img_empty_count = len([row for row in rows if row["src_empty"]])
+    source_img_localhost_count = len([row for row in rows if row["src_localhost"]])
+    source_img_unresolved_count = len([row for row in rows if row["src_unresolved"]])
+    source_img_problem_count = source_img_empty_count + source_img_localhost_count + source_img_unresolved_count
+    evidence_count = len([row for row in rows if row["has_fen_or_marker_evidence"]])
+    fen_accepted = len([row for row in rows if row["fen_accepted"]])
+    side_unknown_count = len([row for row in rows if row["side_to_move"] == "unknown"])
+    image_problem_rate = _safe_ratio(source_img_problem_count, diagrams_total)
+    side_unknown_rate = _safe_ratio(side_unknown_count, diagrams_total)
+    reasons: list[str] = []
+    if diagrams_total > 0 and image_problem_rate > 0.5:
+        reasons.append("diagram_image_sources_degraded")
+    if diagrams_total > 0 and evidence_count == 0:
+        reasons.append("source_html_lacks_fen_marker_or_crop_evidence")
+    if diagrams_total > 0 and fen_accepted == 0 and side_unknown_rate >= 0.8:
+        reasons.append("all_or_most_diagrams_have_unknown_side_and_no_accepted_fen")
+    degraded = {
+        "diagram_image_sources_degraded",
+        "source_html_lacks_fen_marker_or_crop_evidence",
+        "all_or_most_diagrams_have_unknown_side_and_no_accepted_fen",
+    }.issubset(set(reasons))
+    evidence_path = ""
+    if degraded:
+        evidence_path = _copy_source_html_evidence(source, out)
+    return {
+        "schema": "kindlemaster.chess_study.source_html_quality_gate.v1",
+        "source_html": str(source),
+        "source_pdf": str(pdf_path or ""),
+        "used_as_final_reader": not degraded,
+        "source_html_evidence_only": degraded,
+        "source_html_evidence_path": evidence_path,
+        "decision": "reject_degraded_source_html" if degraded else "use_source_html_as_final_reader",
+        "reasons": reasons,
+        "summary": {
+            "diagrams_total": diagrams_total,
+            "source_img_empty_count": source_img_empty_count,
+            "empty_diagram_image_count": source_img_empty_count,
+            "source_img_localhost_count": source_img_localhost_count,
+            "source_img_unresolved_count": source_img_unresolved_count,
+            "source_img_problem_count": source_img_problem_count,
+            "source_img_problem_rate": image_problem_rate,
+            "source_fen_or_marker_evidence_count": evidence_count,
+            "fen_accepted": fen_accepted,
+            "side_unknown_count": side_unknown_count,
+            "side_unknown_rate": side_unknown_rate,
+            "qa_status": (qa_report or {}).get("status", ""),
+        },
+        "items": rows[:500],
+    }
+
+
+def _source_html_image_status(src: str, source: Path) -> str:
+    value = str(src or "").strip()
+    if not value:
+        return "empty"
+    lowered = value.lower()
+    if lowered.startswith("data:image/"):
+        return "data_image"
+    if "localhost" in lowered or "127.0.0.1" in lowered:
+        return "localhost_url"
+    if lowered.startswith("http://") or lowered.startswith("https://"):
+        return "remote_unresolved"
+    clean = value.split("#", 1)[0].split("?", 1)[0].replace("\\", "/")
+    candidates = [source.parent / clean]
+    if clean.startswith("/"):
+        candidates.append(source.parent / clean.lstrip("/"))
+    return "relative_resolved" if any(path.is_file() for path in candidates) else "relative_unresolved"
+
+
+def _source_html_diagram_has_evidence(diagram_node: Any, image_node: Any | None) -> bool:
+    evidence_keys = {
+        "data_fen",
+        "data_fen_candidate",
+        "fen",
+        "side_marker_status",
+        "side_marker_bbox",
+        "side_marker_confidence",
+        "side_marker_crop_path",
+        "side_to_move",
+        "side_to_move_evidence",
+        "board_crop_path",
+        "board_bbox",
+    }
+    for node in [diagram_node, image_node]:
+        if not node:
+            continue
+        for key, value in getattr(node, "attrs", {}).items():
+            normalized = str(key or "").replace("-", "_").lower()
+            if normalized in evidence_keys and str(value or "").strip():
+                return True
+    return False
+
+
+def _source_html_fen_accepted(fen: str) -> bool:
+    value = str(fen or "").strip()
+    if not value:
+        return False
+    valid, warnings = validate_fen(value)
+    return bool(valid and not warnings)
+
+
+def _safe_ratio(numerator: int, denominator: int) -> float:
+    if denominator <= 0:
+        return 0.0
+    return round(float(numerator) / float(denominator), 4)
+
+
+def _copy_source_html_evidence(source: Path, out: Path) -> str:
+    reports_dir = out / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    target = reports_dir / "source_html_evidence.html"
+    try:
+        shutil.copyfile(source, target)
+    except OSError:
+        return ""
+    return str(target.relative_to(out)).replace("\\", "/")
+
+
+def _write_source_html_quality_gate(out_dir: str | Path, payload: dict[str, Any]) -> None:
+    out = Path(out_dir)
+    reports_dir = out / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(reports_dir / "source_html_quality_gate.json", payload)
 
 
 def _extract_source_page_preview(node: Any, *, page_number: int, out_dir: Path) -> str:

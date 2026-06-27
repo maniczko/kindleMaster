@@ -22,9 +22,44 @@
   ],
   "blocking_labels": [
     "agent:blocked",
+    "agent:needs-review",
     "autopilot:requires-human",
-    "needs-product-decision"
+    "needs-product-decision",
+    "training-data:missing"
   ],
+  "completion_labels": [
+    "agent:done"
+  ],
+  "auto_claim": {
+    "enabled_by_default": true,
+    "claim_label": "agent:claimed",
+    "remove_ready_on_claim": true
+  },
+  "post_merge": {
+    "sync_linked_issue": true,
+    "mark_done_label": "agent:done",
+    "remove_labels": [
+      "agent:claimed",
+      "agent:ready",
+      "agent:needs-review",
+      "agent:blocked",
+      "autopilot:allowed",
+      "training-data:missing"
+    ],
+    "dispatch_next_ready_issue": true
+  },
+  "training_data_gap_protocol": {
+    "missing_label": "training-data:missing",
+    "comment_prefix": "TRAINING_DATA_GAP",
+    "required_comment_fields": [
+      "missing data or path",
+      "required counts or classes",
+      "current available counts or classes",
+      "whether useful report-only work can continue",
+      "smallest next data-acquisition action"
+    ],
+    "policy": "Missing training, benchmark, corpus, fixture, or holdout data must be reported in a separate TRAINING_DATA_GAP comment and must not block unrelated ready issues."
+  },
   "area_labels": {
     "area:app": [
       "gate:quick",

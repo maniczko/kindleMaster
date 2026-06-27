@@ -21,6 +21,7 @@ from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageOps
 
 from chess_position_recognizer import validate_fen
+from chess_side_marker_blockers import build_side_marker_blocker_attribution, side_marker_blocker_attribution_markdown
 from pymupdf_chess_extractor import (
     _apply_scan_chess_side_to_move_context_evidence,
     _infer_scan_chess_side_to_move_marker_evidence,
@@ -458,6 +459,7 @@ def run_chess_study_export(
     if config.html and config.html.is_file():
         source_gate = _source_html_quality_gate(config.html, config.out, pdf_path=config.pdf, qa_report=qa_report)
         _write_source_html_quality_gate(config.out, source_gate)
+        _write_study_side_marker_blocker_attribution(config.out, diagrams.get("diagrams", []) or [], source_gate=source_gate)
         if source_gate.get("used_as_final_reader"):
             rebuild_chess_source_html_export(
                 config.html,
@@ -4384,11 +4386,13 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
         summary = _study_side_marker_summary([])
         _write_study_side_marker_report(out, [], summary)
         _write_study_two_crop_quality_metrics(out, [], summary)
+        _write_study_side_marker_blocker_attribution(out, [], source_gate=None)
         return summary
     if not Path(pdf_path).is_file():
         summary = {**_study_side_marker_summary(diagrams), "status": "pdf_source_missing"}
         _write_study_side_marker_report(out, diagrams, summary)
         _write_study_two_crop_quality_metrics(out, diagrams, summary)
+        _write_study_side_marker_blocker_attribution(out, diagrams, source_gate=None)
         return summary
     diagrams_by_page: dict[int, list[dict[str, Any]]] = {}
     for diagram in diagrams:
@@ -4448,6 +4452,7 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
     summary = _study_side_marker_summary(diagrams)
     _write_study_side_marker_report(out, diagrams, summary)
     _write_study_two_crop_quality_metrics(out, diagrams, summary)
+    _write_study_side_marker_blocker_attribution(out, diagrams, source_gate=None)
     return summary
 
 
@@ -4789,6 +4794,22 @@ def _write_study_two_crop_quality_metrics(out: Path, diagrams: list[Mapping[str,
             )
         )
     (reports_dir / "two_crop_quality_metrics.md").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
+def _write_study_side_marker_blocker_attribution(
+    out: Path,
+    diagrams: list[Mapping[str, Any]],
+    *,
+    source_gate: Mapping[str, Any] | None,
+) -> None:
+    reports_dir = out / "reports" / "chess_fen"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    report = build_side_marker_blocker_attribution(diagrams, source_gate=source_gate)
+    _write_json(reports_dir / "side_marker_blocker_attribution.json", report)
+    (reports_dir / "side_marker_blocker_attribution.md").write_text(
+        side_marker_blocker_attribution_markdown(report),
+        encoding="utf-8",
+    )
 
 
 def _study_side_to_move_label(value: Any) -> str:

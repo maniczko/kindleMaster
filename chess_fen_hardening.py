@@ -81,9 +81,21 @@ MACHINE_BLOCKING_FEN_WARNINGS = {
     "review_crop_candidate_mismatch",
     "score_margin_below_threshold",
     "no_square_alternatives",
+    "side_to_move_inferred",
+    "side_to_move_marker_ambiguous",
+    "side_to_move_marker_local_ambiguous",
+    "side_to_move_marker_local_conflict",
+    "side_to_move_marker_multi_region_conflict",
     "sparse_position_confidence_below_threshold",
     "template_profile_not_ready",
     "white_king_count_invalid",
+}
+MACHINE_BLOCKING_SIDE_MARKER_STATUSES = {
+    "ambiguous_marker",
+    "inferred_only",
+    "marker_conflict",
+    "marker_missing",
+    "multi_side",
 }
 MACHINE_BLOCKING_PLACEMENT_WARNINGS = {
     "black_king_count_invalid",
@@ -516,6 +528,29 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
 
     if normalized_source == "deterministic-ensemble":
         blockers.extend(_deterministic_ensemble_contract_blockers(candidate, ctx, trace))
+
+    side_status = str(candidate.get("side_to_move_status") or "").strip().lower()
+    side_evidence = str(candidate.get("side_to_move_evidence") or "").strip().lower()
+    side_marker_status = str(candidate.get("side_marker_status") or "").strip().lower()
+    trace["side_to_move"] = {
+        "status": side_status,
+        "evidence": side_evidence,
+        "marker_status": side_marker_status,
+    }
+    if side_status == "inferred" or side_evidence == "inferred":
+        blockers.append(
+            {
+                "code": "side_to_move_inferred",
+                "message": "Full FEN cannot be machine accepted when side to move is inferred.",
+            }
+        )
+    if side_marker_status in MACHINE_BLOCKING_SIDE_MARKER_STATUSES:
+        blockers.append(
+            {
+                "code": side_marker_status,
+                "message": "Full FEN cannot be machine accepted without trusted diagram-scoped side-marker evidence.",
+            }
+        )
 
     validation = validate_fen_detailed(fen)
     trace["fen_validation"] = {

@@ -308,6 +308,7 @@ def build_auto_chess_flow_artifacts(
         ensemble_eval,
         max_diagrams=chess_fen_recognition_max_diagrams,
     )
+    side_marker_report = _side_marker_assignment_report(diagrams, fen_payload)
     accepted_fen_by_source = _accepted_fen_by_source(diagrams, fen_payload)
     pgn_payload, pgn_validation, pgn_repairs = _canonical_pgn(
         pgn_records,
@@ -355,6 +356,11 @@ def build_auto_chess_flow_artifacts(
     (dirs["report"] / "acceptance_blockers.html").write_text(_acceptance_blockers_html(acceptance_blockers), encoding="utf-8")
     _write_json(dirs["report"] / "quality_report.json", report)
     (dirs["report"] / "quality_report.html").write_text(_quality_report_html(report), encoding="utf-8")
+    chess_fen_report_dir = out / "reports" / "chess_fen"
+    chess_fen_report_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(chess_fen_report_dir / "side_marker_assignment.json", side_marker_report)
+    (chess_fen_report_dir / "side_marker_assignment.md").write_text(_side_marker_assignment_markdown(side_marker_report), encoding="utf-8")
+    (chess_fen_report_dir / "side_marker_assignment.html").write_text(_side_marker_assignment_html(side_marker_report), encoding="utf-8")
     _copy_export_files(out, dirs["export"])
 
     payload = {
@@ -381,6 +387,8 @@ def build_auto_chess_flow_artifacts(
                 "acceptance_blockers_html": dirs["report"] / "acceptance_blockers.html",
                 "quality_report": dirs["report"] / "quality_report.json",
                 "quality_report_html": dirs["report"] / "quality_report.html",
+                "side_marker_assignment": chess_fen_report_dir / "side_marker_assignment.json",
+                "side_marker_assignment_html": chess_fen_report_dir / "side_marker_assignment.html",
                 "export_games_pgn": dirs["export"] / "games.pgn",
             }.items()
         },
@@ -711,6 +719,7 @@ def _canonical_fen(
                     "id": diagram_id,
                     "page": int(diagram.get("page") or 0),
                     "source_image_path": diagram.get("image_path") or diagram.get("crop_path") or "",
+                    **_side_marker_fields(diagram),
                     "status": selected["status"],
                     "runtime_status": selected["runtime_status"],
                     "corpus_status": selected["corpus_status"],
@@ -762,6 +771,7 @@ def _canonical_fen(
                 "id": diagram_id,
                 "page": int(diagram.get("page") or 0),
                 "source_image_path": diagram.get("image_path") or diagram.get("crop_path") or "",
+                **_side_marker_fields(diagram),
                 "status": selected["status"],
                 "runtime_status": selected["runtime_status"],
                 "corpus_status": selected["corpus_status"],
@@ -821,6 +831,7 @@ def _fen_raw_candidates(
                 {
                     "source": source,
                     "fen": fen,
+                    **_side_marker_fields(diagram),
                     "authoritative": source == "deterministic",
                     "confidence": _first_float(
                         diagram.get("confidence"),
@@ -846,6 +857,7 @@ def _fen_raw_candidates(
                 "placement": placement,
                 "placement_fen": placement,
                 "full_fen": full_fen,
+                **_side_marker_fields(diagram),
                 "authoritative": False,
                 "confidence": _first_float(
                     diagram.get("confidence"),
@@ -925,6 +937,23 @@ def _fen_raw_candidates(
     return rows
 
 
+def _side_marker_fields(source: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "side_to_move",
+        "side_to_move_status",
+        "side_to_move_evidence",
+        "side_marker_symbol",
+        "side_marker_status",
+        "side_marker_source",
+        "side_marker_bbox",
+        "side_marker_confidence",
+        "side_marker_assignment_trace",
+        "strict_fen_side_evidence_trusted",
+        "fen_suppressed_reason",
+    )
+    return {key: source.get(key) for key in keys if source.get(key) not in (None, "")}
+
+
 def _fen_candidate_row(candidate: dict[str, Any]) -> dict[str, Any]:
     validation = validate_fen_detailed(str(candidate.get("fen") or ""))
     machine = machine_accept_fen(candidate)
@@ -938,6 +967,7 @@ def _fen_candidate_row(candidate: dict[str, Any]) -> dict[str, Any]:
         "confidence": _first_float(candidate.get("confidence")),
         "method": candidate.get("method") or candidate.get("source") or "unknown",
         "warnings": list(candidate.get("warnings") or []),
+        **_side_marker_fields(candidate),
         "deterministic_valid": validation.is_legal_position and not validation.errors,
         "normalized_value": validation.normalized_fen,
         "errors": [asdict(error) for error in validation.errors],
@@ -1754,6 +1784,127 @@ def _status_summary(items: list[dict[str, Any]], *, accepted: set[str]) -> dict[
             if status
         },
     }
+
+
+def _side_marker_assignment_report(diagrams: list[dict[str, Any]], fen_payload: dict[str, Any]) -> dict[str, Any]:
+    fen_by_id = {
+        str(item.get("id") or ""): item
+        for item in fen_payload.get("items") or []
+        if isinstance(item, dict)
+    }
+    rows: list[dict[str, Any]] = []
+    for index, diagram in enumerate(diagrams, start=1):
+        if not isinstance(diagram, dict):
+            continue
+        diagram_id = str(diagram.get("diagram_id") or diagram.get("id") or f"diagram-{index}")
+        fen_item = fen_by_id.get(diagram_id, {})
+        marker_status = str(diagram.get("side_marker_status") or fen_item.get("side_marker_status") or "marker_missing")
+        marker_symbol = str(diagram.get("side_marker_symbol") or fen_item.get("side_marker_symbol") or "?")
+        rows.append(
+            {
+                "diagram_id": diagram_id,
+                "page": diagram.get("page") or diagram.get("page_number") or fen_item.get("page"),
+                "source_image_path": diagram.get("image_path") or diagram.get("crop_path") or fen_item.get("source_image_path") or "",
+                "side_to_move": str(diagram.get("side_to_move") or fen_item.get("side_to_move") or "unknown"),
+                "side_marker_symbol": marker_symbol,
+                "side_marker_status": marker_status,
+                "side_marker_source": diagram.get("side_marker_source") or fen_item.get("side_marker_source") or "",
+                "side_marker_bbox": diagram.get("side_marker_bbox") or fen_item.get("side_marker_bbox") or [],
+                "side_marker_confidence": diagram.get("side_marker_confidence") or fen_item.get("side_marker_confidence") or "",
+                "side_marker_assignment_trace": diagram.get("side_marker_assignment_trace") or fen_item.get("side_marker_assignment_trace") or {},
+                "runtime_status": fen_item.get("runtime_status") or diagram.get("runtime_status") or "",
+                "fen_suppressed_reason": diagram.get("fen_suppressed_reason") or fen_item.get("fen_suppressed_reason") or "",
+                "strict_fen_allowed": fen_item.get("runtime_status") == "FEN_MACHINE_ACCEPTED",
+            }
+        )
+    summary = {
+        "diagram_count": len(rows),
+        "html_diagrams_with_visible_side_marker": len([row for row in rows if row.get("side_marker_symbol")]),
+        "trusted_marker_assignments": len([row for row in rows if str(row.get("side_marker_status") or "").startswith("trusted_")]),
+        "strict_full_fen_accepted": len([row for row in rows if row.get("strict_fen_allowed")]),
+        "by_side_marker_status": {
+            status: len([row for row in rows if row.get("side_marker_status") == status])
+            for status in sorted({str(row.get("side_marker_status") or "") for row in rows})
+            if status
+        },
+    }
+    return {"schema": "kindlemaster.chess_fen.side_marker_assignment.v1", "summary": summary, "items": rows}
+
+
+def _side_marker_assignment_markdown(report: dict[str, Any]) -> str:
+    summary = report.get("summary") or {}
+    lines = [
+        "# Chess FEN Side Marker Assignment",
+        "",
+        f"- diagrams: {summary.get('diagram_count', 0)}",
+        f"- visible side markers: {summary.get('html_diagrams_with_visible_side_marker', 0)}",
+        f"- trusted assignments: {summary.get('trusted_marker_assignments', 0)}",
+        f"- strict full FEN accepted: {summary.get('strict_full_fen_accepted', 0)}",
+        "",
+        "| Diagram | Page | Marker | Status | Side | Runtime |",
+        "| --- | ---: | --- | --- | --- | --- |",
+    ]
+    for item in report.get("items") or []:
+        lines.append(
+            "| {id} | {page} | {symbol} | {status} | {side} | {runtime} |".format(
+                id=_md(str(item.get("diagram_id") or "")),
+                page=_md(str(item.get("page") or "")),
+                symbol=_md(str(item.get("side_marker_symbol") or "")),
+                status=_md(str(item.get("side_marker_status") or "")),
+                side=_md(str(item.get("side_to_move") or "")),
+                runtime=_md(str(item.get("runtime_status") or "")),
+            )
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _side_marker_assignment_html(report: dict[str, Any]) -> str:
+    summary = report.get("summary") or {}
+    rows = "\n".join(
+        "<tr>"
+        f"<td>{html.escape(str(item.get('diagram_id') or ''))}</td>"
+        f"<td>{html.escape(str(item.get('page') or ''))}</td>"
+        f"<td class='marker'>{html.escape(str(item.get('side_marker_symbol') or ''))}</td>"
+        f"<td>{html.escape(str(item.get('side_marker_status') or ''))}</td>"
+        f"<td>{html.escape(str(item.get('side_to_move') or ''))}</td>"
+        f"<td>{html.escape(str(item.get('runtime_status') or ''))}</td>"
+        f"<td>{html.escape(str(item.get('fen_suppressed_reason') or ''))}</td>"
+        "</tr>"
+        for item in report.get("items") or []
+    ) or "<tr><td colspan='7'>No diagrams found.</td></tr>"
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Chess FEN Side Marker Assignment</title>
+  <style>
+    body {{ font-family: system-ui, sans-serif; margin: 2rem; color: #1f2933; }}
+    table {{ border-collapse: collapse; width: 100%; }}
+    th, td {{ border: 1px solid #d7dde6; padding: .45rem .55rem; text-align: left; }}
+    th {{ background: #eef2f7; }}
+    .marker {{ font-size: 1.35rem; font-weight: 700; }}
+    .stats {{ display:flex; gap:1rem; flex-wrap:wrap; margin:1rem 0; }}
+    .stat {{ border:1px solid #d7dde6; padding:.65rem .8rem; }}
+  </style>
+</head>
+<body>
+  <h1>Chess FEN Side Marker Assignment</h1>
+  <section class="stats">
+    <div class="stat">Diagrams: <strong>{html.escape(str(summary.get('diagram_count', 0)))}</strong></div>
+    <div class="stat">Visible markers: <strong>{html.escape(str(summary.get('html_diagrams_with_visible_side_marker', 0)))}</strong></div>
+    <div class="stat">Trusted: <strong>{html.escape(str(summary.get('trusted_marker_assignments', 0)))}</strong></div>
+    <div class="stat">Strict FEN: <strong>{html.escape(str(summary.get('strict_full_fen_accepted', 0)))}</strong></div>
+  </section>
+  <table>
+    <thead><tr><th>Diagram</th><th>Page</th><th>Marker</th><th>Status</th><th>Side</th><th>Runtime</th><th>Suppressed reason</th></tr></thead>
+    <tbody>{rows}</tbody>
+  </table>
+</body>
+</html>"""
+
+
+def _md(value: str) -> str:
+    return value.replace("|", "\\|")
 
 
 def _ensure_auto_dirs(out: Path) -> dict[str, Path]:

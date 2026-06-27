@@ -119,6 +119,23 @@ class ChessFenRecognitionTests(unittest.TestCase):
         self.assertEqual(result["fen_suppressed_reason"], "")
         self.assertFalse(result["requires_review"])
 
+    def test_chess_fen_result_does_not_trust_marker_warning_without_assignment(self) -> None:
+        placement = "4k3/8/8/8/8/8/8/4K3"
+        fen = f"{placement} w - - 0 1"
+        result = ChessFenResult(
+            fen=fen,
+            placement=placement,
+            full_fen=fen,
+            confidence=0.99,
+            warnings=["side_to_move_inferred", "side_to_move_marker_detected"],
+            requires_review=False,
+            board_detected=True,
+        ).to_dict()
+
+        self.assertEqual(result["fen"], "")
+        self.assertEqual(result["fen_suppressed_reason"], "side_to_move_inferred")
+        self.assertTrue(result["requires_review"])
+
     def test_review_queue_accepts_premium_corpus_quality_chess_fen(self) -> None:
         case = {
             "quality": {

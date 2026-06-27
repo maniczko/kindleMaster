@@ -42,6 +42,7 @@ from converter import (
     build_epub,
     chess_diagram_alt_text,
     chess_fen_html_attrs,
+    chess_side_marker_html,
     strip_emails,
 )
 from chess_position_recognizer import (
@@ -183,6 +184,30 @@ class ScanChessSideToMoveEvidence:
     warnings: tuple[str, ...] = ()
     source_bbox: tuple[float, float, float, float] | None = None
     marker_candidates: tuple[dict[str, Any], ...] = ()
+
+
+SIDE_MARKER_SYMBOLS = {
+    "w": "\u25b3",
+    "b": "\u25bc",
+    "both": "\u25b3\u25bc",
+    "unknown": "?",
+    "ambiguous": "!",
+}
+SIDE_MARKER_TRUSTED_STATUSES = {
+    "trusted_marker",
+    "trusted_caption",
+    "trusted_exact_label",
+    "trusted_verified_label",
+}
+SIDE_MARKER_CONFLICT_WARNINGS = {
+    "side_to_move_evidence_conflict",
+    "side_to_move_marker_local_conflict",
+    "side_to_move_marker_multi_region_conflict",
+}
+SIDE_MARKER_AMBIGUOUS_WARNINGS = {
+    "side_to_move_marker_ambiguous",
+    "side_to_move_marker_local_ambiguous",
+}
 
 
 @dataclass
@@ -2723,6 +2748,7 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
                     '<div class="chess-problem">'
                     f'<p class="diagram-caption">{html_module.escape(diagram_caption)}</p>'
                     f'<div class="figure chess-diagram-container"{fen_attrs}>'
+                    f"{chess_side_marker_html(chess_img)}"
                     f'<img class="chess-diagram" src="images/{html_module.escape(filename, quote=True)}" '
                     f'alt="{html_module.escape(chess_diagram_alt_text(chess_img), quote=True)}"{fen_attrs}/>'
                     '</div>'
@@ -4600,6 +4626,7 @@ def _chess_diagram_record_from_image(
     except (TypeError, ValueError):
         page_index = int(page_num)
     fen_result = chess_img.get("fen_result") if isinstance(chess_img.get("fen_result"), Mapping) else {}
+    side_marker = _scan_chess_side_marker_metadata_from_payload(fen_result) if fen_result else {}
     fen_candidate = str(chess_img.get("fen") or fen_result.get("fen") or "").strip()
     raw_bbox = chess_img.get("bbox") or (0.0, 0.0, 0.0, 0.0)
     try:
@@ -4616,9 +4643,23 @@ def _chess_diagram_record_from_image(
         "caption": caption,
         "image_data_uri": image_data_uri,
         "fen_candidate": fen_candidate,
+        "placement": str(fen_result.get("placement") or fen_result.get("placement_fen") or "").strip(),
+        "placement_fen": str(fen_result.get("placement") or fen_result.get("placement_fen") or "").strip(),
+        "full_fen": str(fen_result.get("full_fen") or "").strip(),
         "status": "accepted" if fen_candidate and not bool(fen_result.get("requires_review")) else "needs_review",
         "reason": "" if fen_candidate and not bool(fen_result.get("requires_review")) else _fen_result_review_reason(fen_result),
         "warnings": list(fen_result.get("warnings") or []),
+        "side_to_move": side_marker.get("side_to_move") or fen_result.get("side_to_move") or "unknown",
+        "side_to_move_status": str(fen_result.get("side_to_move_status") or ""),
+        "side_to_move_evidence": str(fen_result.get("side_to_move_evidence") or ""),
+        "side_marker_symbol": side_marker.get("side_marker_symbol") or "",
+        "side_marker_status": side_marker.get("side_marker_status") or "",
+        "side_marker_source": side_marker.get("side_marker_source") or "",
+        "side_marker_bbox": side_marker.get("side_marker_bbox") or [],
+        "side_marker_confidence": side_marker.get("side_marker_confidence") or "",
+        "side_marker_assignment_trace": side_marker.get("side_marker_assignment_trace") or {},
+        "strict_fen_side_evidence_trusted": bool(side_marker.get("strict_fen_side_evidence_trusted")),
+        "fen_suppressed_reason": str(fen_result.get("fen_suppressed_reason") or ""),
         "fen_confidence": float(fen_result.get("confidence", 0.0) or 0.0),
         "fen_method": str(fen_result.get("method") or chess_img.get("fen_method") or ""),
         "nearby_text": nearby_text,
@@ -5284,17 +5325,99 @@ def _scan_chess_candidate_review_payload(candidate: dict[str, Any]) -> dict[str,
     warnings = list(candidate.get("warnings") or [])
     if "image_board_requires_review" not in warnings:
         warnings.append("image_board_requires_review")
-    return {
+    payload = {
         "fen": "",
         "placement": "",
         "confidence": float(candidate.get("confidence", 0.0) or 0.0),
         "side_to_move": "w",
+        "side_to_move_status": "inferred",
+        "side_to_move_evidence": "inferred",
         "bbox": candidate.get("bbox"),
         "method": str(candidate.get("method") or "image-page-board-candidate"),
         "warnings": warnings,
         "requires_review": True,
         "board_detected": True,
     }
+    payload.update(_scan_chess_side_marker_metadata_from_payload(payload))
+    return payload
+
+
+def _scan_chess_side_marker_metadata_from_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    warnings = {str(warning) for warning in payload.get("warnings") or [] if str(warning)}
+    side = str(payload.get("side_to_move") or "").strip().lower()
+    if side not in {"w", "b", "both"}:
+        side = "unknown"
+    status = str(payload.get("side_to_move_status") or "").strip().lower()
+    evidence = str(payload.get("side_to_move_evidence") or "").strip().lower()
+    candidates = list(payload.get("side_marker_candidates") or [])
+    if "side_to_move_marker_multi_side" in warnings:
+        marker_status = "multi_side"
+        symbol_key = "both"
+    elif warnings & SIDE_MARKER_CONFLICT_WARNINGS:
+        marker_status = "marker_conflict"
+        symbol_key = "ambiguous"
+    elif warnings & SIDE_MARKER_AMBIGUOUS_WARNINGS:
+        marker_status = "ambiguous_marker"
+        symbol_key = "ambiguous"
+    elif status == "explicit" and evidence in {"marker", "caption", "exact_label", "verified_label"} and side in {"w", "b"}:
+        marker_status = {
+            "marker": "trusted_marker",
+            "caption": "trusted_caption",
+            "exact_label": "trusted_exact_label",
+            "verified_label": "trusted_verified_label",
+        }.get(evidence, "trusted_marker")
+        symbol_key = side
+    elif status == "inferred" or evidence == "inferred" or "side_to_move_inferred" in warnings:
+        marker_status = "inferred_only"
+        symbol_key = "unknown"
+    elif "side_to_move_marker_probes_checked" in warnings or candidates:
+        marker_status = "marker_missing"
+        symbol_key = "unknown"
+    else:
+        marker_status = "marker_missing"
+        symbol_key = "unknown"
+
+    source_bbox = payload.get("side_to_move_evidence_source_bbox") or payload.get("side_marker_bbox")
+    bbox = _coerce_side_marker_bbox(source_bbox)
+    confidence = payload.get("side_marker_confidence", payload.get("side_to_move_evidence_confidence", ""))
+    try:
+        confidence_value: float | str = round(float(confidence), 3)
+    except (TypeError, ValueError):
+        confidence_value = ""
+    trace = {
+        "candidate_count": len(candidates),
+        "trusted": marker_status in SIDE_MARKER_TRUSTED_STATUSES,
+        "warnings": sorted(warnings),
+    }
+    if candidates:
+        nearest = min(
+            candidates,
+            key=lambda item: float(item.get("distance_to_board") or 10**9) if isinstance(item, Mapping) else 10**9,
+        )
+        if isinstance(nearest, Mapping):
+            trace["nearest_candidate_role"] = str(nearest.get("role") or "")
+            trace["nearest_candidate_distance"] = nearest.get("distance_to_board")
+            trace["nearest_candidate_side"] = nearest.get("detected_side") or nearest.get("side_candidate") or ""
+
+    return {
+        "side_to_move": side,
+        "side_marker_symbol": SIDE_MARKER_SYMBOLS[symbol_key],
+        "side_marker_status": marker_status,
+        "side_marker_source": evidence if evidence not in {"", "inferred"} else "none",
+        "side_marker_bbox": bbox,
+        "side_marker_confidence": confidence_value,
+        "side_marker_assignment_trace": trace,
+        "strict_fen_side_evidence_trusted": marker_status in SIDE_MARKER_TRUSTED_STATUSES,
+    }
+
+
+def _coerce_side_marker_bbox(value: Any) -> list[float]:
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return []
+    try:
+        return [round(float(item), 2) for item in value]
+    except (TypeError, ValueError):
+        return []
 
 
 def _apply_scan_chess_side_to_move_evidence(
@@ -5314,6 +5437,7 @@ def _apply_scan_chess_side_to_move_evidence(
     updated["side_to_move"] = side
     updated["side_to_move_status"] = "explicit"
     updated["side_to_move_evidence"] = source
+    updated["side_to_move_evidence_confidence"] = round(float(min_confidence or updated.get("confidence") or 0.0), 3)
     if raw_text:
         updated["side_to_move_raw_evidence"] = raw_text
     if source_bbox is not None:
@@ -5355,6 +5479,7 @@ def _apply_scan_chess_side_to_move_evidence(
             updated["requires_review"] = True
             updated["fen_suppressed_reason"] = "side_to_move_evidence_gate"
             updated["machine_acceptance"] = gate
+    updated.update(_scan_chess_side_marker_metadata_from_payload(updated))
     return updated
 
 
@@ -5387,11 +5512,14 @@ def _apply_scan_chess_side_to_move_context_evidence(
     evidence_warnings = {str(warning) for warning in evidence.warnings if str(warning)}
     if evidence.marker_candidates:
         updated["side_marker_candidates"] = list(evidence.marker_candidates)
+    if evidence.confidence:
+        updated["side_marker_confidence"] = round(float(evidence.confidence), 3)
     if not evidence.side:
         updated["warnings"] = sorted(existing_warnings | evidence_warnings)
         if "side_to_move_evidence_conflict" in evidence_warnings:
             updated["fen"] = ""
             updated["requires_review"] = True
+        updated.update(_scan_chess_side_marker_metadata_from_payload(updated))
         return updated
     updated = _apply_scan_chess_side_to_move_evidence(
         updated,
@@ -5403,6 +5531,7 @@ def _apply_scan_chess_side_to_move_context_evidence(
     )
     warnings = {str(warning) for warning in list(updated.get("warnings") or []) if str(warning)}
     updated["warnings"] = sorted(warnings | evidence_warnings | {"side_to_move_context_applied"})
+    updated.update(_scan_chess_side_marker_metadata_from_payload(updated))
     return updated
 
 
@@ -6152,6 +6281,7 @@ def extract_pdf_with_chess_support(
             fen_attrs = chess_fen_html_attrs(chess_img)
             html_parts.append(
                 f'<div class="figure chess-diagram-container"{fen_attrs}>'
+                f"{chess_side_marker_html(chess_img)}"
                 f'<img class="chess-diagram" src="images/{chess_img["filename"]}" '
                 f'alt="{html_module.escape(chess_diagram_alt_text(chess_img), quote=True)}"{fen_attrs}/>'
                 "</div>"

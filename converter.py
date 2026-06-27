@@ -205,11 +205,14 @@ def maybe_link_problem_reference(fragment: str, exercise_target_map: dict[str, s
 
 def chess_fen_html_attrs(chess_img: dict) -> str:
     """Return safe data attributes for a recognized chess position."""
+    side_payload = _chess_side_marker_payload(chess_img)
     fen = str(chess_img.get("fen") or "").strip()
-    if not fen:
+    if not fen and not side_payload:
         return ""
     confidence = chess_img.get("fen_confidence", "")
-    attrs = [f'data-fen="{html_module.escape(fen, quote=True)}"']
+    attrs = []
+    if fen:
+        attrs.append(f'data-fen="{html_module.escape(fen, quote=True)}"')
     try:
         attrs.append(f'data-fen-confidence="{float(confidence):.3f}"')
     except (TypeError, ValueError):
@@ -217,7 +220,80 @@ def chess_fen_html_attrs(chess_img: dict) -> str:
     method = str(chess_img.get("fen_method") or "").strip()
     if method:
         attrs.append(f'data-fen-method="{html_module.escape(method, quote=True)}"')
+    for key, attr in (
+        ("side_to_move", "data-side-to-move"),
+        ("side_marker_symbol", "data-side-marker-symbol"),
+        ("side_marker_status", "data-side-marker-status"),
+        ("side_marker_source", "data-side-marker-source"),
+        ("fen_suppressed_reason", "data-fen-suppressed-reason"),
+    ):
+        value = str(side_payload.get(key) or "").strip()
+        if value:
+            attrs.append(f'{attr}="{html_module.escape(value, quote=True)}"')
+    try:
+        side_confidence = side_payload.get("side_marker_confidence")
+        if side_confidence is not None and str(side_confidence).strip() != "":
+            attrs.append(f'data-side-marker-confidence="{float(side_confidence):.3f}"')
+    except (TypeError, ValueError):
+        pass
     return " " + " ".join(attrs)
+
+
+def chess_side_marker_html(chess_img: dict) -> str:
+    """Return a visible side-to-move marker badge for a chess diagram."""
+    payload = _chess_side_marker_payload(chess_img)
+    symbol = str(payload.get("side_marker_symbol") or "").strip()
+    if not symbol:
+        return ""
+    status = str(payload.get("side_marker_status") or "unknown").strip()
+    side = str(payload.get("side_to_move") or "unknown").strip()
+    title = {
+        "trusted_marker": "Side to move: trusted marker",
+        "trusted_caption": "Side to move: trusted caption",
+        "trusted_exact_label": "Side to move: trusted exact label",
+        "trusted_verified_label": "Side to move: trusted verified label",
+        "ambiguous_marker": "Side to move marker ambiguous",
+        "marker_conflict": "Side to move marker conflicts with nearby evidence",
+        "marker_missing": "Side to move marker missing",
+        "inferred_only": "Side to move inferred only",
+        "multi_side": "Both sides indicated; review required",
+    }.get(status, "Side to move marker status")
+    class_name = f"side-marker side-marker-{html_module.escape(status.replace('_', '-'), quote=True)}"
+    return (
+        f'<span class="{class_name}" title="{html_module.escape(title, quote=True)}" '
+        f'aria-label="{html_module.escape(title, quote=True)}" '
+        f'data-side-to-move="{html_module.escape(side, quote=True)}">'
+        f"{html_module.escape(symbol)}</span>"
+    )
+
+
+def _chess_side_marker_payload(chess_img: dict) -> dict:
+    payload = chess_img.get("fen_result") if isinstance(chess_img.get("fen_result"), dict) else {}
+    merged = dict(payload)
+    for key in (
+        "side_to_move",
+        "side_marker_symbol",
+        "side_marker_status",
+        "side_marker_source",
+        "side_marker_confidence",
+        "fen_suppressed_reason",
+    ):
+        if chess_img.get(key) not in (None, ""):
+            merged[key] = chess_img.get(key)
+    return {
+        key: value
+        for key, value in merged.items()
+        if key
+        in {
+            "side_to_move",
+            "side_marker_symbol",
+            "side_marker_status",
+            "side_marker_source",
+            "side_marker_confidence",
+            "fen_suppressed_reason",
+        }
+        and value not in (None, "")
+    }
 
 
 def chess_diagram_alt_text(chess_img: dict) -> str:

@@ -44,6 +44,11 @@ class ChessFenPlacementReviewDashboardTests(unittest.TestCase):
                                 }
                             ],
                             "next_action": "resolve_full_fen_metadata_or_human_verify",
+                            "side_to_move": "w",
+                            "side_marker_symbol": "\u25b3",
+                            "side_marker_status": "trusted_marker",
+                            "side_marker_confidence": 0.94,
+                            "fen_suppressed_reason": "",
                         }
                     ]
                 },
@@ -65,6 +70,8 @@ class ChessFenPlacementReviewDashboardTests(unittest.TestCase):
         self.assertIn("Chess FEN Placement Review", html)
         self.assertIn("assets/diagrams/board.png", html)
         self.assertIn("full_fen_validation/full_fen_metadata_not_accepted", html)
+        self.assertIn("trusted_marker", html)
+        self.assertEqual(payload["items"][0]["side_marker_symbol"], "\u25b3")
         self.assertIn("d1", html)
         self.assertNotIn(str(crop), html)
 

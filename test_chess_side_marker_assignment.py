@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from PIL import Image, ImageDraw
+
 from chess_auto_flow import build_auto_chess_flow_artifacts
 from chess_fen_hardening import machine_accept_fen, machine_accept_placement
 from chess_position_recognizer import summarize_chess_fen_results
@@ -13,6 +15,7 @@ from pymupdf_chess_extractor import (
     ScanChessSideToMoveEvidence,
     _apply_scan_chess_side_to_move_context_evidence,
     _chess_diagram_record_from_image,
+    classify_scan_chess_side_marker_crop,
 )
 
 
@@ -26,6 +29,39 @@ def _write_json(path: Path, payload: dict) -> None:
 
 
 class ChessSideMarkerAssignmentTests(unittest.TestCase):
+    def test_marker_crop_classifier_maps_outline_and_filled_triangles(self) -> None:
+        outline = Image.new("L", (80, 80), "white")
+        draw_outline = ImageDraw.Draw(outline)
+        draw_outline.line([(40, 12), (18, 56), (62, 56), (40, 12)], fill="black", width=4, joint="curve")
+        filled = Image.new("L", (80, 80), "white")
+        draw_filled = ImageDraw.Draw(filled)
+        draw_filled.polygon([(40, 12), (18, 56), (62, 56)], fill="black")
+
+        outline_result = classify_scan_chess_side_marker_crop(outline)
+        filled_result = classify_scan_chess_side_marker_crop(filled)
+
+        self.assertEqual(outline_result["status"], "trusted_marker")
+        self.assertEqual(outline_result["side"], "w")
+        self.assertEqual(outline_result["symbol"], "\u25b3")
+        self.assertEqual(filled_result["status"], "trusted_marker")
+        self.assertEqual(filled_result["side"], "b")
+        self.assertEqual(filled_result["symbol"], "\u25bc")
+
+    def test_marker_crop_classifier_keeps_missing_and_conflict_in_review(self) -> None:
+        blank = Image.new("L", (80, 80), "white")
+        conflict = Image.new("L", (130, 80), "white")
+        draw = ImageDraw.Draw(conflict)
+        draw.line([(34, 12), (16, 56), (54, 56), (34, 12)], fill="black", width=4, joint="curve")
+        draw.polygon([(94, 12), (76, 56), (114, 56)], fill="black")
+
+        missing_result = classify_scan_chess_side_marker_crop(blank)
+        conflict_result = classify_scan_chess_side_marker_crop(conflict)
+
+        self.assertEqual(missing_result["status"], "marker_missing")
+        self.assertEqual(missing_result["side"], "")
+        self.assertEqual(conflict_result["status"], "side_to_move_marker_local_conflict")
+        self.assertEqual(conflict_result["side"], "")
+
     def test_trusted_marker_metadata_flows_to_html_attrs_and_badge(self) -> None:
         payload = {
             "fen": VALID_FEN,

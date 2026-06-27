@@ -266,6 +266,9 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
             board_path_exists = (out / record["board_crop_path"]).is_file()
             overlay_path_exists = (out / record["debug_overlay_path"]).is_file()
             report = json.loads((out / "reports" / "chess_fen" / "side_marker_assignment.json").read_text(encoding="utf-8"))
+            report_html = (out / "reports" / "chess_fen" / "side_marker_assignment.html").read_text(encoding="utf-8")
+            metrics = json.loads((out / "reports" / "chess_fen" / "two_crop_quality_metrics.json").read_text(encoding="utf-8"))
+            metrics_md = (out / "reports" / "chess_fen" / "two_crop_quality_metrics.md").read_text(encoding="utf-8")
 
         self.assertEqual(record["side_to_move"], "b")
         self.assertEqual(record["side_to_move_status"], "explicit")
@@ -280,6 +283,12 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertEqual(summary["side_marker_crop_count"], 1)
         self.assertEqual(summary["trusted_marker_count"], 1)
         self.assertEqual(report["summary"]["trusted_marker_count"], 1)
+        self.assertIn("trusted_marker", report_html)
+        self.assertEqual(metrics["summary"]["board_crop_count"], 1)
+        self.assertEqual(metrics["summary"]["side_marker_crop_count"], 1)
+        self.assertEqual(metrics["summary"]["trusted_marker_count"], 1)
+        self.assertEqual(metrics["accuracy"]["status"], "TRAINING_DATA_GAP")
+        self.assertIn("TRAINING_DATA_GAP", metrics_md)
 
     def test_pdf_side_marker_conflict_remains_review_only_with_crop_trace(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

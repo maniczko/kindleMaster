@@ -979,6 +979,50 @@ class ChessStudyPipelineTests(unittest.TestCase):
             self.assertNotIn('src=""', final_index)
             self.assertIn('data-asset-missing-reason="empty_src"', final_index)
 
+    def test_resolved_source_html_without_side_evidence_stays_evidence_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            pdf_path = root / "study.pdf"
+            _make_minimal_study_pdf(pdf_path)
+            source_asset_dir = root / "assets"
+            source_asset_dir.mkdir()
+            Image.new("RGB", (16, 16), "white").save(source_asset_dir / "diagram-1.png")
+            Image.new("RGB", (16, 16), "white").save(source_asset_dir / "diagram-2.png")
+            html_path = root / "current.html"
+            html_path.write_text(
+                """
+                <section class="chess-book-page" data-page="1">
+                  <div class="book-text" data-reading-order="1" style="left:10px;top:10px;width:90px;height:12px">Diagram 1-1</div>
+                  <div class="book-diagram" data-reading-order="2" style="left:10px;top:30px;width:80px;height:80px"><img src="assets/diagram-1.png" alt="Diagram 1-1"></div>
+                  <div class="book-text" data-reading-order="3" style="left:120px;top:10px;width:90px;height:12px">Diagram 1-2</div>
+                  <div class="book-diagram" data-reading-order="4" style="left:120px;top:30px;width:80px;height:80px"><img src="assets/diagram-2.png" alt="Diagram 1-2"></div>
+                </section>
+                """,
+                encoding="utf-8",
+            )
+            out = root / "out"
+
+            run_chess_study_export(
+                pdf_path,
+                html_path=html_path,
+                out_dir=out,
+                diagram_pages=0,
+                diagram_dpi=96,
+                min_grid_confidence=0.95,
+            )
+
+            gate = json.loads((out / "reports" / "source_html_quality_gate.json").read_text(encoding="utf-8"))
+            source_book_exists = (out / "data" / "book.json").exists()
+
+        self.assertFalse(gate["used_as_final_reader"])
+        self.assertTrue(gate["source_html_evidence_only"])
+        self.assertEqual(gate["decision"], "reject_degraded_source_html")
+        self.assertIn("source_html_lacks_fen_marker_or_crop_evidence", gate["reasons"])
+        self.assertIn("all_or_most_diagrams_have_unknown_side_and_no_accepted_fen", gate["reasons"])
+        self.assertEqual(gate["summary"]["resolved_diagram_image_count"], 2)
+        self.assertEqual(gate["summary"]["side_unknown_count"], 2)
+        self.assertFalse(source_book_exists)
+
     def test_run_all_keeps_degraded_source_html_evidence_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

@@ -729,6 +729,8 @@ def _canonical_fen(
                     "selected_placement": selected.get("selected_placement"),
                     "placement_status": selected.get("placement_status"),
                     "placement_runtime_status": selected.get("placement_runtime_status"),
+                    "full_fen_status": selected.get("full_fen_status"),
+                    "full_fen_runtime_status": selected.get("full_fen_runtime_status"),
                     "placement_acceptance_policy": selected.get("placement_acceptance_policy"),
                     "placement_acceptance_blockers": selected.get("placement_acceptance_blockers", []),
                     "placement_acceptance_trace": selected.get("placement_acceptance_trace", {}),
@@ -781,6 +783,8 @@ def _canonical_fen(
                 "selected_placement": selected.get("selected_placement"),
                 "placement_status": selected.get("placement_status"),
                 "placement_runtime_status": selected.get("placement_runtime_status"),
+                "full_fen_status": selected.get("full_fen_status"),
+                "full_fen_runtime_status": selected.get("full_fen_runtime_status"),
                 "placement_acceptance_policy": selected.get("placement_acceptance_policy"),
                 "placement_acceptance_blockers": selected.get("placement_acceptance_blockers", []),
                 "placement_acceptance_trace": selected.get("placement_acceptance_trace", {}),
@@ -811,6 +815,7 @@ def _canonical_fen(
     summary["recognition_limit"] = "all" if max_count <= 0 else max_count
     summary["skipped_diagram_count"] = len(skipped)
     summary["skipped_diagram_ids"] = [item.get("id") for item in skipped]
+    summary.update(_fen_two_gate_summary(candidates))
     payload = {"schema": "kindlemaster.auto_chess.fen_candidates.v1", "items": candidates, "summary": summary}
     validation = {"schema": "kindlemaster.auto_chess.fen_validation.v1", "items": validation_rows, "summary": summary}
     return payload, validation, repairs
@@ -901,6 +906,7 @@ def _fen_raw_candidates(
                         "source": "deterministic_ensemble",
                         "fen": fen,
                         "authoritative": False,
+                        **_side_marker_fields({**diagram, **deterministic_row}),
                         "confidence": _first_float(
                             deterministic_row.get("confidence"),
                             deterministic_row.get("global_confidence"),
@@ -973,6 +979,8 @@ def _fen_candidate_row(candidate: dict[str, Any]) -> dict[str, Any]:
         "errors": [asdict(error) for error in validation.errors],
         "validation_warnings": [asdict(warning) for warning in validation.warnings],
         "runtime_status": machine["runtime_status"],
+        "full_fen_status": machine["runtime_status"],
+        "full_fen_runtime_status": machine["runtime_status"],
         "acceptance_policy": machine["acceptance_policy"],
         "acceptance_blockers": machine["acceptance_blockers"],
         "acceptance_trace": machine["acceptance_trace"],
@@ -1011,6 +1019,11 @@ def _select_fen_status(diagram: dict[str, Any], candidate_rows: list[dict[str, A
             "corpus_status": "corpus_verified",
             "acceptance_policy": "human_verified_exact_crop_label",
             "selected_value": deterministic.get("normalized_value"),
+            "selected_placement": deterministic.get("normalized_placement"),
+            "placement_status": deterministic.get("placement_runtime_status"),
+            "placement_runtime_status": deterministic.get("placement_runtime_status"),
+            "full_fen_status": "FEN_CORPUS_VERIFIED",
+            "full_fen_runtime_status": "FEN_CORPUS_VERIFIED",
             "validation_errors": [],
             "acceptance_blockers": [],
             "acceptance_trace": {"source": deterministic.get("source"), "human_verified": True},
@@ -1027,6 +1040,8 @@ def _select_fen_status(diagram: dict[str, Any], candidate_rows: list[dict[str, A
             "selected_placement": machine.get("normalized_placement"),
             "placement_status": machine.get("placement_runtime_status"),
             "placement_runtime_status": machine.get("placement_runtime_status"),
+            "full_fen_status": "FEN_MACHINE_ACCEPTED",
+            "full_fen_runtime_status": "FEN_MACHINE_ACCEPTED",
             "placement_acceptance_policy": machine.get("placement_acceptance_policy"),
             "placement_acceptance_blockers": machine.get("placement_acceptance_blockers", []),
             "placement_acceptance_trace": machine.get("placement_acceptance_trace", {}),
@@ -1063,6 +1078,8 @@ def _select_fen_status(diagram: dict[str, Any], candidate_rows: list[dict[str, A
             "selected_placement": placement_machine.get("normalized_placement"),
             "placement_status": "FEN_PLACEMENT_MACHINE_ACCEPTED",
             "placement_runtime_status": "FEN_PLACEMENT_MACHINE_ACCEPTED",
+            "full_fen_status": "FEN_REVIEW_REQUIRED",
+            "full_fen_runtime_status": "FEN_REVIEW_REQUIRED",
             "placement_acceptance_policy": placement_machine.get("placement_acceptance_policy"),
             "placement_acceptance_blockers": placement_machine.get("placement_acceptance_blockers", []),
             "placement_acceptance_trace": placement_machine.get("placement_acceptance_trace", {}),
@@ -1084,6 +1101,8 @@ def _select_fen_status(diagram: dict[str, Any], candidate_rows: list[dict[str, A
             "selected_placement": None,
             "placement_status": "FEN_PLACEMENT_REVIEW_REQUIRED",
             "placement_runtime_status": "FEN_PLACEMENT_REVIEW_REQUIRED",
+            "full_fen_status": "FEN_REVIEW_REQUIRED",
+            "full_fen_runtime_status": "FEN_REVIEW_REQUIRED",
             "placement_acceptance_policy": "runtime_placement_acceptance_v1",
             "placement_acceptance_blockers": [{"code": "placement_candidate_missing", "message": "No placement candidate was available."}],
             "placement_acceptance_trace": {},
@@ -1109,6 +1128,8 @@ def _select_fen_status(diagram: dict[str, Any], candidate_rows: list[dict[str, A
             "selected_placement": None,
             "placement_status": "FEN_PLACEMENT_REVIEW_REQUIRED",
             "placement_runtime_status": "FEN_PLACEMENT_REVIEW_REQUIRED",
+            "full_fen_status": "FEN_REVIEW_REQUIRED",
+            "full_fen_runtime_status": "FEN_REVIEW_REQUIRED",
             "placement_acceptance_policy": "runtime_placement_acceptance_v1",
             "placement_acceptance_blockers": [],
             "placement_acceptance_trace": {},
@@ -1126,6 +1147,8 @@ def _select_fen_status(diagram: dict[str, Any], candidate_rows: list[dict[str, A
         "selected_placement": None,
         "placement_status": "FEN_PLACEMENT_REVIEW_REQUIRED",
         "placement_runtime_status": "FEN_PLACEMENT_REVIEW_REQUIRED",
+        "full_fen_status": "FEN_REVIEW_REQUIRED",
+        "full_fen_runtime_status": "FEN_REVIEW_REQUIRED",
         "placement_acceptance_policy": "runtime_placement_acceptance_v1",
         "placement_acceptance_blockers": [],
         "placement_acceptance_trace": {},
@@ -1786,6 +1809,49 @@ def _status_summary(items: list[dict[str, Any]], *, accepted: set[str]) -> dict[
     }
 
 
+def _fen_two_gate_summary(items: list[dict[str, Any]]) -> dict[str, Any]:
+    def blocker_codes(item: dict[str, Any]) -> set[str]:
+        codes = set()
+        for key in ("acceptance_blockers", "validation_errors"):
+            for blocker in item.get(key) or []:
+                if isinstance(blocker, dict) and blocker.get("code"):
+                    codes.add(str(blocker.get("code")))
+        return codes
+
+    marker_codes = {
+        "full_fen_blocked_by_marker",
+        "side_to_move_inferred",
+        "inferred_only",
+        "marker_missing",
+        "marker_conflict",
+        "ambiguous_marker",
+        "multi_side",
+        "side_to_move_marker_local_ambiguous",
+        "side_to_move_marker_local_conflict",
+        "side_to_move_marker_multi_region_conflict",
+    }
+    placement_codes = {
+        "full_fen_blocked_by_placement",
+        "placement_candidate_missing",
+        "invalid_rank_count",
+        "invalid_rank_width",
+        "missing_white_king",
+        "missing_black_king",
+        "white_king_count_invalid",
+        "black_king_count_invalid",
+    }
+    return {
+        "placement_accepted_count": len(
+            [item for item in items if item.get("placement_runtime_status") == "FEN_PLACEMENT_MACHINE_ACCEPTED"]
+        ),
+        "full_fen_accepted_count": len(
+            [item for item in items if item.get("full_fen_runtime_status") in {"FEN_MACHINE_ACCEPTED", "FEN_CORPUS_VERIFIED"}]
+        ),
+        "full_fen_blocked_by_marker_count": len([item for item in items if blocker_codes(item) & marker_codes]),
+        "full_fen_blocked_by_placement_count": len([item for item in items if blocker_codes(item) & placement_codes]),
+    }
+
+
 def _side_marker_assignment_report(diagrams: list[dict[str, Any]], fen_payload: dict[str, Any]) -> dict[str, Any]:
     fen_by_id = {
         str(item.get("id") or ""): item
@@ -1813,6 +1879,8 @@ def _side_marker_assignment_report(diagrams: list[dict[str, Any]], fen_payload: 
                 "side_marker_confidence": diagram.get("side_marker_confidence") or fen_item.get("side_marker_confidence") or "",
                 "side_marker_assignment_trace": diagram.get("side_marker_assignment_trace") or fen_item.get("side_marker_assignment_trace") or {},
                 "runtime_status": fen_item.get("runtime_status") or diagram.get("runtime_status") or "",
+                "placement_status": fen_item.get("placement_runtime_status") or diagram.get("placement_status") or "",
+                "full_fen_status": fen_item.get("full_fen_runtime_status") or fen_item.get("runtime_status") or diagram.get("full_fen_status") or "",
                 "fen_suppressed_reason": diagram.get("fen_suppressed_reason") or fen_item.get("fen_suppressed_reason") or "",
                 "strict_fen_allowed": fen_item.get("runtime_status") == "FEN_MACHINE_ACCEPTED",
             }
@@ -1822,6 +1890,8 @@ def _side_marker_assignment_report(diagrams: list[dict[str, Any]], fen_payload: 
         "html_diagrams_with_visible_side_marker": len([row for row in rows if row.get("side_marker_symbol")]),
         "trusted_marker_assignments": len([row for row in rows if str(row.get("side_marker_status") or "").startswith("trusted_")]),
         "strict_full_fen_accepted": len([row for row in rows if row.get("strict_fen_allowed")]),
+        "placement_accepted_count": len([row for row in rows if row.get("placement_status") == "FEN_PLACEMENT_MACHINE_ACCEPTED"]),
+        "full_fen_accepted_count": len([row for row in rows if row.get("full_fen_status") in {"FEN_MACHINE_ACCEPTED", "FEN_CORPUS_VERIFIED"}]),
         "by_side_marker_status": {
             status: len([row for row in rows if row.get("side_marker_status") == status])
             for status in sorted({str(row.get("side_marker_status") or "") for row in rows})
@@ -1839,19 +1909,23 @@ def _side_marker_assignment_markdown(report: dict[str, Any]) -> str:
         f"- diagrams: {summary.get('diagram_count', 0)}",
         f"- visible side markers: {summary.get('html_diagrams_with_visible_side_marker', 0)}",
         f"- trusted assignments: {summary.get('trusted_marker_assignments', 0)}",
+        f"- placement accepted: {summary.get('placement_accepted_count', 0)}",
+        f"- full FEN accepted: {summary.get('full_fen_accepted_count', 0)}",
         f"- strict full FEN accepted: {summary.get('strict_full_fen_accepted', 0)}",
         "",
-        "| Diagram | Page | Marker | Status | Side | Runtime |",
-        "| --- | ---: | --- | --- | --- | --- |",
+        "| Diagram | Page | Marker | Status | Side | Placement | Full FEN | Runtime |",
+        "| --- | ---: | --- | --- | --- | --- | --- | --- |",
     ]
     for item in report.get("items") or []:
         lines.append(
-            "| {id} | {page} | {symbol} | {status} | {side} | {runtime} |".format(
+            "| {id} | {page} | {symbol} | {status} | {side} | {placement} | {full_fen} | {runtime} |".format(
                 id=_md(str(item.get("diagram_id") or "")),
                 page=_md(str(item.get("page") or "")),
                 symbol=_md(str(item.get("side_marker_symbol") or "")),
                 status=_md(str(item.get("side_marker_status") or "")),
                 side=_md(str(item.get("side_to_move") or "")),
+                placement=_md(str(item.get("placement_status") or "")),
+                full_fen=_md(str(item.get("full_fen_status") or "")),
                 runtime=_md(str(item.get("runtime_status") or "")),
             )
         )
@@ -1867,11 +1941,13 @@ def _side_marker_assignment_html(report: dict[str, Any]) -> str:
         f"<td class='marker'>{html.escape(str(item.get('side_marker_symbol') or ''))}</td>"
         f"<td>{html.escape(str(item.get('side_marker_status') or ''))}</td>"
         f"<td>{html.escape(str(item.get('side_to_move') or ''))}</td>"
+        f"<td>{html.escape(str(item.get('placement_status') or ''))}</td>"
+        f"<td>{html.escape(str(item.get('full_fen_status') or ''))}</td>"
         f"<td>{html.escape(str(item.get('runtime_status') or ''))}</td>"
         f"<td>{html.escape(str(item.get('fen_suppressed_reason') or ''))}</td>"
         "</tr>"
         for item in report.get("items") or []
-    ) or "<tr><td colspan='7'>No diagrams found.</td></tr>"
+    ) or "<tr><td colspan='9'>No diagrams found.</td></tr>"
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1893,10 +1969,12 @@ def _side_marker_assignment_html(report: dict[str, Any]) -> str:
     <div class="stat">Diagrams: <strong>{html.escape(str(summary.get('diagram_count', 0)))}</strong></div>
     <div class="stat">Visible markers: <strong>{html.escape(str(summary.get('html_diagrams_with_visible_side_marker', 0)))}</strong></div>
     <div class="stat">Trusted: <strong>{html.escape(str(summary.get('trusted_marker_assignments', 0)))}</strong></div>
+    <div class="stat">Placement accepted: <strong>{html.escape(str(summary.get('placement_accepted_count', 0)))}</strong></div>
+    <div class="stat">Full FEN accepted: <strong>{html.escape(str(summary.get('full_fen_accepted_count', 0)))}</strong></div>
     <div class="stat">Strict FEN: <strong>{html.escape(str(summary.get('strict_full_fen_accepted', 0)))}</strong></div>
   </section>
   <table>
-    <thead><tr><th>Diagram</th><th>Page</th><th>Marker</th><th>Status</th><th>Side</th><th>Runtime</th><th>Suppressed reason</th></tr></thead>
+    <thead><tr><th>Diagram</th><th>Page</th><th>Marker</th><th>Status</th><th>Side</th><th>Placement</th><th>Full FEN</th><th>Runtime</th><th>Suppressed reason</th></tr></thead>
     <tbody>{rows}</tbody>
   </table>
 </body>

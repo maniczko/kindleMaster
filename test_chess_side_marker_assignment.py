@@ -129,6 +129,28 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertEqual(placement["runtime_status"], "FEN_PLACEMENT_MACHINE_ACCEPTED")
         self.assertEqual(placement["selected_placement"], VALID_PLACEMENT)
 
+    def test_full_fen_gate_requires_accepted_placement_and_trusted_marker(self) -> None:
+        candidate = {
+            "source": "deterministic",
+            "fen": VALID_FEN,
+            "placement": VALID_PLACEMENT,
+            "confidence": 0.99,
+            "warnings": [],
+            "side_to_move": "w",
+            "side_to_move_status": "explicit",
+            "side_to_move_evidence": "marker",
+        }
+
+        missing_marker = machine_accept_fen({**candidate, "side_marker_status": "marker_missing"}, {"min_confidence": 0.90})
+        trusted_marker = machine_accept_fen({**candidate, "side_marker_status": "trusted_marker"}, {"min_confidence": 0.90})
+        placement = machine_accept_placement({**candidate, "side_marker_status": "marker_missing"}, {"min_confidence": 0.90})
+
+        self.assertEqual(missing_marker["runtime_status"], "FEN_REVIEW_REQUIRED")
+        self.assertIn("full_fen_blocked_by_marker", {blocker["code"] for blocker in missing_marker["acceptance_blockers"]})
+        self.assertEqual(placement["runtime_status"], "FEN_PLACEMENT_MACHINE_ACCEPTED")
+        self.assertEqual(trusted_marker["runtime_status"], "FEN_MACHINE_ACCEPTED")
+        self.assertEqual(trusted_marker["acceptance_trace"]["placement_gate"]["runtime_status"], "FEN_PLACEMENT_MACHINE_ACCEPTED")
+
     def test_diagram_record_exposes_review_safe_missing_marker(self) -> None:
         record = _chess_diagram_record_from_image(
             {

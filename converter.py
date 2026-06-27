@@ -225,6 +225,10 @@ def chess_fen_html_attrs(chess_img: dict) -> str:
         ("side_marker_symbol", "data-side-marker-symbol"),
         ("side_marker_status", "data-side-marker-status"),
         ("side_marker_source", "data-side-marker-source"),
+        ("placement_status", "data-placement-status"),
+        ("placement_runtime_status", "data-placement-runtime-status"),
+        ("full_fen_status", "data-full-fen-status"),
+        ("full_fen_runtime_status", "data-full-fen-runtime-status"),
         ("fen_suppressed_reason", "data-fen-suppressed-reason"),
     ):
         value = str(side_payload.get(key) or "").strip()
@@ -276,6 +280,10 @@ def _chess_side_marker_payload(chess_img: dict) -> dict:
         "side_marker_status",
         "side_marker_source",
         "side_marker_confidence",
+        "placement_status",
+        "placement_runtime_status",
+        "full_fen_status",
+        "full_fen_runtime_status",
         "fen_suppressed_reason",
     ):
         if chess_img.get(key) not in (None, ""):
@@ -290,6 +298,10 @@ def _chess_side_marker_payload(chess_img: dict) -> dict:
             "side_marker_status",
             "side_marker_source",
             "side_marker_confidence",
+            "placement_status",
+            "placement_runtime_status",
+            "full_fen_status",
+            "full_fen_runtime_status",
             "fen_suppressed_reason",
         }
         and value not in (None, "")

@@ -4642,6 +4642,20 @@ def _chess_diagram_record_from_image(
     fen_result = chess_img.get("fen_result") if isinstance(chess_img.get("fen_result"), Mapping) else {}
     side_marker = _scan_chess_side_marker_metadata_from_payload(fen_result) if fen_result else {}
     fen_candidate = str(chess_img.get("fen") or fen_result.get("fen") or "").strip()
+    placement_status = str(
+        fen_result.get("placement_status")
+        or fen_result.get("placement_runtime_status")
+        or chess_img.get("placement_status")
+        or chess_img.get("placement_runtime_status")
+        or ""
+    )
+    full_fen_status = str(
+        fen_result.get("full_fen_status")
+        or fen_result.get("full_fen_runtime_status")
+        or chess_img.get("full_fen_status")
+        or chess_img.get("full_fen_runtime_status")
+        or ("FEN_MACHINE_ACCEPTED" if fen_candidate and not bool(fen_result.get("requires_review")) else "FEN_REVIEW_REQUIRED")
+    )
     raw_bbox = chess_img.get("bbox") or (0.0, 0.0, 0.0, 0.0)
     try:
         bbox = [float(value or 0.0) for value in list(raw_bbox)[:4]]
@@ -4668,6 +4682,8 @@ def _chess_diagram_record_from_image(
         "placement_fen": str(fen_result.get("placement") or fen_result.get("placement_fen") or "").strip(),
         "full_fen": str(fen_result.get("full_fen") or "").strip(),
         "status": "accepted" if fen_candidate and not bool(fen_result.get("requires_review")) else "needs_review",
+        "placement_status": placement_status,
+        "full_fen_status": full_fen_status,
         "reason": "" if fen_candidate and not bool(fen_result.get("requires_review")) else _fen_result_review_reason(fen_result),
         "warnings": list(fen_result.get("warnings") or []),
         "side_to_move": side_marker.get("side_to_move") or fen_result.get("side_to_move") or "unknown",
@@ -5637,20 +5653,30 @@ def _apply_scan_chess_side_to_move_evidence(
     if source == "marker" and "side_to_move_marker_applied" not in warnings:
         warnings.append("side_to_move_marker_applied")
     updated["warnings"] = sorted(set(warnings))
+    updated.update(_scan_chess_side_marker_metadata_from_payload(updated))
 
     if full_fen:
         candidate = dict(updated)
         candidate["fen"] = full_fen
         gate = machine_accept_fen(candidate, {"min_confidence": min_confidence if min_confidence is not None else 0.835})
+        placement_runtime_status = ((gate.get("acceptance_trace") or {}).get("placement_gate") or {}).get("runtime_status")
+        if placement_runtime_status:
+            updated["placement_status"] = placement_runtime_status
+            updated["placement_runtime_status"] = placement_runtime_status
         if gate.get("status") == "accepted":
             updated["fen"] = str(gate.get("selected_value") or full_fen)
             updated["full_fen"] = updated["fen"]
             updated["requires_review"] = False
+            updated["runtime_status"] = "FEN_MACHINE_ACCEPTED"
+            updated["full_fen_status"] = "FEN_MACHINE_ACCEPTED"
+            updated["full_fen_runtime_status"] = "FEN_MACHINE_ACCEPTED"
             updated.pop("fen_suppressed_reason", None)
         else:
             updated["fen"] = ""
             updated["full_fen"] = full_fen
             updated["requires_review"] = True
+            updated["full_fen_status"] = "FEN_REVIEW_REQUIRED"
+            updated["full_fen_runtime_status"] = "FEN_REVIEW_REQUIRED"
             updated["fen_suppressed_reason"] = "side_to_move_evidence_gate"
             updated["machine_acceptance"] = gate
     updated.update(_scan_chess_side_marker_metadata_from_payload(updated))

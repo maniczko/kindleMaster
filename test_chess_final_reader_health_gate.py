@@ -40,6 +40,7 @@ class ChessFinalReaderHealthGateTests(unittest.TestCase):
                 "artifact_type": FINAL_READER_ARTIFACT_TYPE,
                 "pipeline_mode": "pdf_two_crop_reader",
                 "diagrams_total": 2,
+                "fen_accepted": 2,
             },
             positions=[
                 {
@@ -65,8 +66,63 @@ class ChessFinalReaderHealthGateTests(unittest.TestCase):
         self.assertEqual(payload["trusted_marker_count"], 2)
         self.assertEqual(payload["side_marker_crop_count"], 2)
         self.assertEqual(payload["board_crop_count"], 2)
+        self.assertEqual(payload["fen_accepted"], 2)
+        self.assertEqual(payload["side_unknown_rate"], 0.0)
+        self.assertFalse(payload["broken_signature_conditions"]["side_unknown_rate_gte_0_8"])
         self.assertEqual(payload["empty_img_src_count"], 0)
         self.assertEqual(payload["blockers"], [])
+
+    def test_latest_broken_html_signature_fails_with_diagnostics(self) -> None:
+        broken_cards = "\n".join(
+            """
+            <article class="card" data-position-status="needs_review" data-asset-missing-reason="empty_src">
+              <img src="" alt="">
+              <p>Side to move: unknown</p>
+            </article>
+            """
+            for _ in range(548)
+        )
+        html_text = f"""
+        <!doctype html><html><body data-artifact-type="final_pdf_two_crop_reader">
+          <section class="scorebar" aria-label="Study export summary">
+            <div class="score"><span class="score-label">Diagrams</span><span class="score-value">548 / review 548</span></div>
+            <div class="score"><span class="score-label">FEN</span><span class="score-value">0 accepted</span></div>
+            <div class="score"><span class="score-label">Needs review</span><span class="score-value">548</span></div>
+          </section>
+          {broken_cards}
+        </body></html>
+        """
+
+        payload = _build_final_reader_health_gate(
+            html_text=html_text,
+            artifact_manifest={
+                "artifact_type": FINAL_READER_ARTIFACT_TYPE,
+                "pipeline_mode": "pdf_two_crop_reader",
+                "diagrams_total": 548,
+                "fen_accepted": 0,
+            },
+        )
+
+        self.assertEqual(payload["decision"], "fail")
+        self.assertEqual(payload["status"], "FAIL")
+        self.assertEqual(payload["diagram_cards_count"], 548)
+        self.assertEqual(payload["fen_accepted"], 0)
+        self.assertEqual(payload["needs_review_count"], 548)
+        self.assertEqual(payload["side_unknown_count"], 548)
+        self.assertGreaterEqual(payload["side_unknown_rate"], 0.8)
+        self.assertEqual(payload["data_side_marker_attr_count"], 0)
+        self.assertEqual(payload["side_marker_crop_count"], 0)
+        self.assertEqual(payload["asset_missing_empty_src_count"], 548)
+        self.assertIn("broken_latest_html_signature", payload["blockers"])
+        self.assertIn("mass_side_to_move_unknown", payload["blockers"])
+        self.assertIn("empty_img_src", payload["blockers"])
+        conditions = payload["broken_signature_conditions"]
+        self.assertTrue(conditions["diagrams_present"])
+        self.assertTrue(conditions["fen_accepted_zero"])
+        self.assertTrue(conditions["side_unknown_rate_gte_0_8"])
+        self.assertTrue(conditions["missing_side_marker_attrs"])
+        self.assertTrue(conditions["missing_side_marker_crops"])
+        self.assertTrue(conditions["asset_missing_empty_src"])
 
     def test_broken_final_reader_with_mass_unknown_and_empty_images_fails(self) -> None:
         html_text = """

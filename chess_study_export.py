@@ -1092,6 +1092,48 @@ def _html_side_unknown_count(cards: list[Any], soup: BeautifulSoup) -> int:
     return len(re.findall(r"Side\s+to\s+move:\s*unknown", soup.get_text(" ", strip=True), flags=re.IGNORECASE))
 
 
+def _first_int_from_text(value: str) -> int:
+    match = re.search(r"\d+", str(value or ""))
+    return int(match.group(0)) if match else 0
+
+
+def _scorebar_metric_int(soup: BeautifulSoup, labels: Iterable[str]) -> int:
+    wanted = {str(label).strip().lower() for label in labels}
+    for score in soup.select(".score"):
+        label_node = score.select_one(".score-label")
+        value_node = score.select_one(".score-value")
+        label = label_node.get_text(" ", strip=True).lower() if label_node else ""
+        if label in wanted:
+            return _first_int_from_text(value_node.get_text(" ", strip=True) if value_node else score.get_text(" ", strip=True))
+    text = soup.get_text(" ", strip=True)
+    for label in wanted:
+        pattern = re.escape(label).replace("\\ ", r"\s+")
+        match = re.search(rf"{pattern}\s*[:\-]?\s*(\d+)", text, flags=re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return 0
+
+
+def _broken_final_reader_signature_conditions(
+    *,
+    diagram_cards_count: int,
+    fen_accepted: int,
+    side_unknown_rate: float,
+    data_side_marker_attr_count: int,
+    side_marker_crop_count: int,
+    asset_missing_empty_src_count: int,
+    empty_img_src_count: int,
+) -> dict[str, bool]:
+    return {
+        "diagrams_present": diagram_cards_count > 0,
+        "fen_accepted_zero": fen_accepted == 0,
+        "side_unknown_rate_gte_0_8": side_unknown_rate >= 0.8,
+        "missing_side_marker_attrs": data_side_marker_attr_count == 0,
+        "missing_side_marker_crops": side_marker_crop_count == 0,
+        "asset_missing_empty_src": asset_missing_empty_src_count > 0 or empty_img_src_count > 0,
+    }
+
+
 def _build_final_reader_health_gate(
     *,
     html_text: str,
@@ -1124,6 +1166,9 @@ def _build_final_reader_health_gate(
         len(soup.select('[data-has-side-marker-crop="true"]')),
         _count_rows_with_value(row_list, "side_marker_crop_path"),
     )
+    scorebar_diagrams_count = _scorebar_metric_int(soup, ("diagrams",))
+    scorebar_fen_accepted = _scorebar_metric_int(soup, ("fen accepted", "fen"))
+    scorebar_needs_review = _scorebar_metric_int(soup, ("needs review",))
     empty_img_src_count = sum(1 for image in soup.find_all("img") if not str(image.get("src") or "").strip())
     asset_missing_empty_src_count = max(
         len(soup.select('[data-asset-missing-reason="empty_src"]')),
@@ -1137,6 +1182,7 @@ def _build_final_reader_health_gate(
     )
     diagram_cards_count = max(
         len(diagram_cards),
+        scorebar_diagrams_count,
         _safe_int(manifest.get("diagrams_total")),
         _first_int_from_mapping(summary, ("diagrams_total", "strict_diagrams_total", "total"), 0),
         len(row_list),
@@ -1146,6 +1192,26 @@ def _build_final_reader_health_gate(
         row_trusted_marker_count,
         _safe_int(manifest.get("trusted_marker_count")),
         _first_int_from_mapping(summary, ("trusted_marker_count", "trusted_marker_assignments"), 0),
+    )
+    data_side_marker_attr_count = max(len(side_marker_nodes), row_side_marker_status_count)
+    fen_accepted = max(
+        scorebar_fen_accepted,
+        _safe_int(manifest.get("fen_accepted")),
+        _first_int_from_mapping(summary, ("fen_accepted", "fens_accepted", "full_fen_accepted_count"), 0),
+    )
+    needs_review_count = max(
+        scorebar_needs_review,
+        _first_int_from_mapping(summary, ("needs_review_count", "fen_needs_review", "fens_needs_review"), 0),
+    )
+    side_unknown_rate = round(side_unknown_count / diagram_cards_count, 4) if diagram_cards_count else 0.0
+    broken_signature_conditions = _broken_final_reader_signature_conditions(
+        diagram_cards_count=diagram_cards_count,
+        fen_accepted=fen_accepted,
+        side_unknown_rate=side_unknown_rate,
+        data_side_marker_attr_count=data_side_marker_attr_count,
+        side_marker_crop_count=side_marker_crop_count,
+        asset_missing_empty_src_count=asset_missing_empty_src_count,
+        empty_img_src_count=empty_img_src_count,
     )
     blockers: list[str] = []
     warnings: list[str] = []
@@ -1161,6 +1227,13 @@ def _build_final_reader_health_gate(
         warnings.append("side_to_move_unknown_present")
     if artifact_type == FINAL_READER_ARTIFACT_TYPE and diagram_cards_count and not side_marker_nodes and trusted_marker_count == 0:
         warnings.append("missing_side_marker_evidence")
+    if (
+        broken_signature_conditions["diagrams_present"]
+        and broken_signature_conditions["fen_accepted_zero"]
+        and broken_signature_conditions["side_unknown_rate_gte_0_8"]
+        and broken_signature_conditions["missing_side_marker_attrs"]
+    ):
+        blockers.append("broken_latest_html_signature")
     if asset_missing_empty_src_count:
         warnings.append("asset_missing_empty_src")
     decision = "fail" if blockers else "pass"
@@ -1173,12 +1246,16 @@ def _build_final_reader_health_gate(
         "pipeline_mode": str(manifest.get("pipeline_mode") or ""),
         "diagram_cards_count": diagram_cards_count,
         "side_unknown_count": side_unknown_count,
-        "data_side_marker_attr_count": max(len(side_marker_nodes), row_side_marker_status_count),
+        "side_unknown_rate": side_unknown_rate,
+        "data_side_marker_attr_count": data_side_marker_attr_count,
         "trusted_marker_count": trusted_marker_count,
         "side_marker_crop_count": side_marker_crop_count,
         "board_crop_count": board_crop_count,
+        "fen_accepted": fen_accepted,
+        "needs_review_count": needs_review_count,
         "empty_img_src_count": empty_img_src_count,
         "asset_missing_empty_src_count": asset_missing_empty_src_count,
+        "broken_signature_conditions": broken_signature_conditions,
         "blockers": blockers,
         "warnings": warnings,
     }
@@ -1209,10 +1286,31 @@ def _build_final_reader_health_gate_from_records(
         _first_int_from_mapping(summary, ("diagrams_total", "strict_diagrams_total", "total"), 0),
         len(row_list),
     )
+    data_side_marker_attr_count = _count_rows_with_value(row_list, "side_marker_status")
+    side_marker_crop_count = _count_rows_with_value(row_list, "side_marker_crop_path")
+    fen_accepted = max(
+        _safe_int(manifest.get("fen_accepted")),
+        _first_int_from_mapping(summary, ("fen_accepted", "fens_accepted", "full_fen_accepted_count"), 0),
+    )
+    needs_review_count = _first_int_from_mapping(
+        summary,
+        ("needs_review_count", "fen_needs_review", "fens_needs_review"),
+        0,
+    )
+    side_unknown_rate = round(side_unknown_count / diagram_cards_count, 4) if diagram_cards_count else 0.0
     empty_img_src_count = _first_int_from_mapping(summary, ("empty_img_src_count", "source_img_empty_count"), 0)
     asset_missing_empty_src_count = max(
         sum(1 for row in row_list if str(row.get("asset_missing_reason") or "") == "empty_src"),
         _first_int_from_mapping(summary, ("asset_missing_empty_src_count", "empty_diagram_image_count"), 0),
+    )
+    broken_signature_conditions = _broken_final_reader_signature_conditions(
+        diagram_cards_count=diagram_cards_count,
+        fen_accepted=fen_accepted,
+        side_unknown_rate=side_unknown_rate,
+        data_side_marker_attr_count=data_side_marker_attr_count,
+        side_marker_crop_count=side_marker_crop_count,
+        asset_missing_empty_src_count=asset_missing_empty_src_count,
+        empty_img_src_count=empty_img_src_count,
     )
     blockers: list[str] = []
     warnings: list[str] = []
@@ -1225,6 +1323,13 @@ def _build_final_reader_health_gate_from_records(
         blockers.append("mass_side_to_move_unknown")
     elif side_unknown_count:
         warnings.append("side_to_move_unknown_present")
+    if (
+        broken_signature_conditions["diagrams_present"]
+        and broken_signature_conditions["fen_accepted_zero"]
+        and broken_signature_conditions["side_unknown_rate_gte_0_8"]
+        and broken_signature_conditions["missing_side_marker_attrs"]
+    ):
+        blockers.append("broken_latest_html_signature")
     if asset_missing_empty_src_count:
         warnings.append("asset_missing_empty_src")
     return {
@@ -1236,12 +1341,16 @@ def _build_final_reader_health_gate_from_records(
         "pipeline_mode": pipeline_mode,
         "diagram_cards_count": diagram_cards_count,
         "side_unknown_count": side_unknown_count,
-        "data_side_marker_attr_count": _count_rows_with_value(row_list, "side_marker_status"),
+        "side_unknown_rate": side_unknown_rate,
+        "data_side_marker_attr_count": data_side_marker_attr_count,
         "trusted_marker_count": trusted_marker_count,
-        "side_marker_crop_count": _count_rows_with_value(row_list, "side_marker_crop_path"),
+        "side_marker_crop_count": side_marker_crop_count,
         "board_crop_count": max(_count_rows_with_value(row_list, "board_crop_path"), _count_rows_with_value(row_list, "source_crop")),
+        "fen_accepted": fen_accepted,
+        "needs_review_count": needs_review_count,
         "empty_img_src_count": empty_img_src_count,
         "asset_missing_empty_src_count": asset_missing_empty_src_count,
+        "broken_signature_conditions": broken_signature_conditions,
         "blockers": blockers,
         "warnings": warnings,
     }

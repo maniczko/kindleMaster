@@ -128,6 +128,7 @@ class ChessSideMarkerFinalReaderE2ETests(unittest.TestCase):
             diagrams_payload = json.loads((out / "chess_diagrams.json").read_text(encoding="utf-8"))
             positions_payload = json.loads((out / "positions.json").read_text(encoding="utf-8"))
             source_gate = json.loads((out / "reports" / "source_html_quality_gate.json").read_text(encoding="utf-8"))
+            health_gate = json.loads((out / "reports" / "final_reader_health_gate.json").read_text(encoding="utf-8"))
             final_html = (out / "index.html").read_text(encoding="utf-8")
 
             summary = side_marker_report["summary"]
@@ -152,6 +153,11 @@ class ChessSideMarkerFinalReaderE2ETests(unittest.TestCase):
             self.assertGreaterEqual(trusted_marker_count / visible_marker_diagram_count, 0.80, diagnostics)
             self.assertEqual(side_unknown_count, 0, diagnostics)
             self.assertEqual(empty_img_src_count, 0, diagnostics)
+            self.assertEqual(health_gate["decision"], "pass", diagnostics)
+            self.assertEqual(health_gate["side_unknown_count"], 0, diagnostics)
+            self.assertEqual(health_gate["empty_img_src_count"], 0, diagnostics)
+            self.assertGreaterEqual(health_gate["trusted_marker_count"], visible_marker_diagram_count, diagnostics)
+            self.assertGreater(health_gate["side_marker_crop_count"], 0, diagnostics)
             self.assertFalse(source_gate["used_as_final_reader"], diagnostics)
             self.assertEqual({item["side_marker_status"] for item in diagrams}, {"trusted_marker"}, diagnostics)
             self.assertEqual({item["side_to_move"] for item in diagrams}, {"w", "b"}, diagnostics)

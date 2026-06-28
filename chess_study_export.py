@@ -566,6 +566,12 @@ def rebuild_chess_source_html_export(
     (out / "styles.css").write_text(_semantic_source_styles_css(), encoding="utf-8")
     (out / "app.js").write_text(_semantic_source_app_js(), encoding="utf-8")
     (out / "index.html").write_text(_semantic_source_index_html(book_payload), encoding="utf-8")
+    _write_final_reader_health_gate(
+        out,
+        artifact_manifest=artifact_manifest,
+        summary=book_payload["summary"],
+        diagrams=[diagram for page in pages for diagram in page.get("diagrams", [])],
+    )
     return book_payload
 
 
@@ -1048,6 +1054,215 @@ def _write_source_html_quality_gate(out_dir: str | Path, payload: dict[str, Any]
     reports_dir = out / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
     _write_json(reports_dir / "source_html_quality_gate.json", payload)
+
+
+def _unique_html_nodes(nodes: Iterable[Any]) -> list[Any]:
+    unique: list[Any] = []
+    seen: set[int] = set()
+    for node in nodes:
+        key = id(node)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(node)
+    return unique
+
+
+def _count_rows_with_value(rows: Iterable[Mapping[str, Any]], key: str) -> int:
+    return sum(1 for row in rows if str(row.get(key) or "").strip())
+
+
+def _trusted_marker_status(value: Any) -> bool:
+    status = str(value or "").strip()
+    return status == "trusted_marker" or status.startswith("trusted_")
+
+
+def _side_unknown_rows(rows: Iterable[Mapping[str, Any]]) -> int:
+    return sum(1 for row in rows if str(row.get("side_to_move") or row.get("side_to_move_code") or "unknown") not in {"w", "b", "white", "black"})
+
+
+def _html_side_unknown_count(cards: list[Any], soup: BeautifulSoup) -> int:
+    count = 0
+    for card in cards:
+        text = card.get_text(" ", strip=True)
+        if re.search(r"\bSide\s+to\s+move:\s*unknown\b", text, flags=re.IGNORECASE):
+            count += 1
+    if count:
+        return count
+    return len(re.findall(r"Side\s+to\s+move:\s*unknown", soup.get_text(" ", strip=True), flags=re.IGNORECASE))
+
+
+def _build_final_reader_health_gate(
+    *,
+    html_text: str,
+    artifact_manifest: Mapping[str, Any] | None = None,
+    summary: Mapping[str, Any] | None = None,
+    positions: Iterable[Mapping[str, Any]] | None = None,
+    diagrams: Iterable[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    manifest = dict(artifact_manifest or {})
+    summary = dict(summary or {})
+    row_list = list(positions or []) or list(diagrams or [])
+    soup = BeautifulSoup(html_text or "", "html.parser")
+    diagram_cards = _unique_html_nodes(
+        list(soup.select("article.card[data-position-status]"))
+        + list(soup.select("figure.diagram-card"))
+        + list(soup.select('[data-kind="diagram"]'))
+    )
+    side_marker_nodes = list(soup.select("[data-side-marker-status]"))
+    html_trusted_marker_count = sum(
+        1 for node in side_marker_nodes if _trusted_marker_status(node.get("data-side-marker-status"))
+    )
+    row_side_marker_status_count = _count_rows_with_value(row_list, "side_marker_status")
+    row_trusted_marker_count = sum(1 for row in row_list if _trusted_marker_status(row.get("side_marker_status")))
+    board_crop_count = max(
+        len(soup.select('[data-has-board-crop="true"]')),
+        _count_rows_with_value(row_list, "board_crop_path"),
+        _count_rows_with_value(row_list, "source_crop"),
+    )
+    side_marker_crop_count = max(
+        len(soup.select('[data-has-side-marker-crop="true"]')),
+        _count_rows_with_value(row_list, "side_marker_crop_path"),
+    )
+    empty_img_src_count = sum(1 for image in soup.find_all("img") if not str(image.get("src") or "").strip())
+    asset_missing_empty_src_count = max(
+        len(soup.select('[data-asset-missing-reason="empty_src"]')),
+        sum(1 for row in row_list if str(row.get("asset_missing_reason") or "") == "empty_src"),
+        _first_int_from_mapping(summary, ("asset_missing_empty_src_count", "empty_diagram_image_count"), 0),
+    )
+    side_unknown_count = max(
+        _html_side_unknown_count(diagram_cards, soup),
+        _safe_int(manifest.get("side_unknown_count")),
+        _side_unknown_rows(row_list),
+    )
+    diagram_cards_count = max(
+        len(diagram_cards),
+        _safe_int(manifest.get("diagrams_total")),
+        _first_int_from_mapping(summary, ("diagrams_total", "strict_diagrams_total", "total"), 0),
+        len(row_list),
+    )
+    trusted_marker_count = max(
+        html_trusted_marker_count,
+        row_trusted_marker_count,
+        _safe_int(manifest.get("trusted_marker_count")),
+        _first_int_from_mapping(summary, ("trusted_marker_count", "trusted_marker_assignments"), 0),
+    )
+    blockers: list[str] = []
+    warnings: list[str] = []
+    artifact_type = str(manifest.get("artifact_type") or "")
+    if artifact_type != FINAL_READER_ARTIFACT_TYPE:
+        blockers.append("not_final_reader_artifact")
+    if empty_img_src_count:
+        blockers.append("empty_img_src")
+    mass_unknown_threshold = max(2, math.ceil(max(diagram_cards_count, 1) * 0.5))
+    if side_unknown_count >= mass_unknown_threshold:
+        blockers.append("mass_side_to_move_unknown")
+    elif side_unknown_count:
+        warnings.append("side_to_move_unknown_present")
+    if artifact_type == FINAL_READER_ARTIFACT_TYPE and diagram_cards_count and not side_marker_nodes and trusted_marker_count == 0:
+        warnings.append("missing_side_marker_evidence")
+    if asset_missing_empty_src_count:
+        warnings.append("asset_missing_empty_src")
+    decision = "fail" if blockers else "pass"
+    return {
+        "schema": "kindlemaster.chess_study.final_reader_health_gate.v1",
+        "generated_at": _generated_at_utc(),
+        "decision": decision,
+        "status": "FAIL" if blockers else ("PASS_WITH_WARNINGS" if warnings else "PASS"),
+        "artifact_type": artifact_type,
+        "pipeline_mode": str(manifest.get("pipeline_mode") or ""),
+        "diagram_cards_count": diagram_cards_count,
+        "side_unknown_count": side_unknown_count,
+        "data_side_marker_attr_count": max(len(side_marker_nodes), row_side_marker_status_count),
+        "trusted_marker_count": trusted_marker_count,
+        "side_marker_crop_count": side_marker_crop_count,
+        "board_crop_count": board_crop_count,
+        "empty_img_src_count": empty_img_src_count,
+        "asset_missing_empty_src_count": asset_missing_empty_src_count,
+        "blockers": blockers,
+        "warnings": warnings,
+    }
+
+
+def _build_final_reader_health_gate_from_records(
+    *,
+    artifact_manifest: Mapping[str, Any] | None = None,
+    summary: Mapping[str, Any] | None = None,
+    positions: Iterable[Mapping[str, Any]] | None = None,
+    diagrams: Iterable[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    manifest = dict(artifact_manifest or {})
+    summary = dict(summary or {})
+    row_list = list(positions or []) or list(diagrams or [])
+    artifact_type = FINAL_READER_ARTIFACT_TYPE if manifest.get("artifact_type") == FINAL_READER_ARTIFACT_TYPE else "unknown"
+    pipeline_mode = str(manifest.get("pipeline_mode") or "")
+    if pipeline_mode not in {"pdf_two_crop_reader", "source_html_semantic_reader"}:
+        pipeline_mode = "unknown"
+    side_unknown_count = max(_safe_int(manifest.get("side_unknown_count")), _side_unknown_rows(row_list))
+    trusted_marker_count = max(
+        sum(1 for row in row_list if _trusted_marker_status(row.get("side_marker_status"))),
+        _safe_int(manifest.get("trusted_marker_count")),
+        _first_int_from_mapping(summary, ("trusted_marker_count", "trusted_marker_assignments"), 0),
+    )
+    diagram_cards_count = max(
+        _safe_int(manifest.get("diagrams_total")),
+        _first_int_from_mapping(summary, ("diagrams_total", "strict_diagrams_total", "total"), 0),
+        len(row_list),
+    )
+    empty_img_src_count = _first_int_from_mapping(summary, ("empty_img_src_count", "source_img_empty_count"), 0)
+    asset_missing_empty_src_count = max(
+        sum(1 for row in row_list if str(row.get("asset_missing_reason") or "") == "empty_src"),
+        _first_int_from_mapping(summary, ("asset_missing_empty_src_count", "empty_diagram_image_count"), 0),
+    )
+    blockers: list[str] = []
+    warnings: list[str] = []
+    if artifact_type != FINAL_READER_ARTIFACT_TYPE:
+        blockers.append("not_final_reader_artifact")
+    if empty_img_src_count:
+        blockers.append("empty_img_src")
+    mass_unknown_threshold = max(2, math.ceil(max(diagram_cards_count, 1) * 0.5))
+    if side_unknown_count >= mass_unknown_threshold:
+        blockers.append("mass_side_to_move_unknown")
+    elif side_unknown_count:
+        warnings.append("side_to_move_unknown_present")
+    if asset_missing_empty_src_count:
+        warnings.append("asset_missing_empty_src")
+    return {
+        "schema": "kindlemaster.chess_study.final_reader_health_gate.v1",
+        "generated_at": _generated_at_utc(),
+        "decision": "fail" if blockers else "pass",
+        "status": "FAIL" if blockers else ("PASS_WITH_WARNINGS" if warnings else "PASS"),
+        "artifact_type": artifact_type,
+        "pipeline_mode": pipeline_mode,
+        "diagram_cards_count": diagram_cards_count,
+        "side_unknown_count": side_unknown_count,
+        "data_side_marker_attr_count": _count_rows_with_value(row_list, "side_marker_status"),
+        "trusted_marker_count": trusted_marker_count,
+        "side_marker_crop_count": _count_rows_with_value(row_list, "side_marker_crop_path"),
+        "board_crop_count": max(_count_rows_with_value(row_list, "board_crop_path"), _count_rows_with_value(row_list, "source_crop")),
+        "empty_img_src_count": empty_img_src_count,
+        "asset_missing_empty_src_count": asset_missing_empty_src_count,
+        "blockers": blockers,
+        "warnings": warnings,
+    }
+
+
+def _write_final_reader_health_gate(
+    out_dir: str | Path,
+    *,
+    artifact_manifest: Mapping[str, Any] | None = None,
+    summary: Mapping[str, Any] | None = None,
+    positions: Iterable[Mapping[str, Any]] | None = None,
+    diagrams: Iterable[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    payload = _build_final_reader_health_gate_from_records(
+        artifact_manifest=artifact_manifest,
+        summary=summary,
+        positions=positions,
+        diagrams=diagrams,
+    )
+    _write_json(Path(out_dir) / "reports" / "final_reader_health_gate.json", payload)
+    return payload
 
 
 def _extract_source_page_preview(node: Any, *, page_number: int, out_dir: Path) -> str:
@@ -3879,6 +4094,10 @@ def _semantic_source_diagram_html(diagram: dict[str, Any]) -> str:
     image_path = str(diagram.get("image_path") or "")
     caption = str(diagram.get("caption") or diagram.get("id") or "Diagram")
     missing_reason = str(diagram.get("asset_missing_reason") or "source_asset_unavailable")
+    marker_status = str(diagram.get("side_marker_status") or "")
+    marker_attr = f' data-side-marker-status="{html.escape(marker_status, quote=True)}"' if marker_status else ""
+    has_board_crop = bool(str(diagram.get("board_crop_path") or diagram.get("source_crop") or image_path).strip())
+    has_side_marker_crop = bool(str(diagram.get("side_marker_crop_path") or "").strip())
     original_image_html = (
         f'<img src="{html.escape(image_path, quote=True)}" alt="{html.escape(caption, quote=True)}">'
         if image_path
@@ -3899,7 +4118,7 @@ def _semantic_source_diagram_html(diagram: dict[str, Any]) -> str:
   <span>FEN candidate requires review</span>
   <code>{html.escape(fen_candidate)}</code>
 </div>"""
-    return f"""<figure class="diagram-card" id="{html.escape(str(diagram.get('id') or ''), quote=True)}" data-kind="diagram" data-status="{html.escape(status, quote=True)}">
+    return f"""<figure class="diagram-card" id="{html.escape(str(diagram.get('id') or ''), quote=True)}" data-kind="diagram" data-status="{html.escape(status, quote=True)}"{marker_attr} data-has-board-crop="{str(has_board_crop).lower()}" data-has-side-marker-crop="{str(has_side_marker_crop).lower()}">
   <header class="card-header">
     <h3>{html.escape(caption)}</h3>
     <span class="source-ref">Page {int(diagram.get('page') or 0)}</span>
@@ -5590,6 +5809,12 @@ document.querySelectorAll('[data-status-filter]').forEach(function(input) {{
 """
     path = out / "index.html"
     path.write_text(html_text, encoding="utf-8")
+    _write_final_reader_health_gate(
+        out,
+        artifact_manifest=artifact_manifest,
+        summary=qa_report.get("summary") or {},
+        positions=position_list,
+    )
     _render_standalone_html(
         out,
         structure=structure,
@@ -6007,6 +6232,10 @@ def _position_card_html(item: dict[str, Any]) -> str:
     rendered = str(item.get("rendered_diagram") or item.get("rendered_svg") or item.get("rendered_png") or "")
     fen = str(item.get("fen") or "")
     pgn = str(item.get("solution_pgn") or "")
+    marker_status = str(item.get("side_marker_status") or "")
+    marker_attr = f' data-side-marker-status="{html.escape(marker_status, quote=True)}"' if marker_status else ""
+    has_board_crop = bool(crop.strip())
+    has_side_marker_crop = bool(marker_crop.strip())
     crop_html = f'<img src="{html.escape(crop, quote=True)}" alt="{safe_id} source crop">' if crop else "<p>No source crop</p>"
     marker_html = f'<hr><img src="{html.escape(marker_crop, quote=True)}" alt="{safe_id} side marker crop">' if marker_crop else ""
     overlay_html = f'<hr><img src="{html.escape(debug_overlay, quote=True)}" alt="{safe_id} debug overlay">' if debug_overlay else ""
@@ -6021,7 +6250,7 @@ def _position_card_html(item: dict[str, Any]) -> str:
         if pgn and status == "accepted" and _pgn_replay_clean(pgn)
         else "<p>PGN: needs review or missing.</p>"
     )
-    return f"""<article class="card" data-position-status="{html.escape(status, quote=True)}">
+    return f"""<article class="card" data-position-status="{html.escape(status, quote=True)}"{marker_attr} data-has-board-crop="{str(has_board_crop).lower()}" data-has-side-marker-crop="{str(has_side_marker_crop).lower()}">
   <div class="diagram">{crop_html}{marker_html}{overlay_html}<hr>{rendered_html}</div>
   <div>
     <h2>{html.escape(str(item.get("chapter_title") or "Unassigned"))} - {html.escape(str(item.get("label") or item.get("id")))}</h2>

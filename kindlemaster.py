@@ -50,6 +50,7 @@ QUICK_TESTS = [
     "test_docx_conversion.py",
     "test_app_docx_conversion.py",
     "test_epub_validation.py",
+    "test_chess_final_reader_health_gate.py",
     "test_chess_fix.py",
     "test_chess_diagram_visual_quality.py",
     "test_chess_notation_regression.py",

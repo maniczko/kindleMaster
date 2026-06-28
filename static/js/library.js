@@ -89,6 +89,10 @@
         if (!artifact || typeof artifact !== "object") return items;
         const url = artifact.download_url || artifact.downloadUrl || "";
         if (!url) return items;
+        const artifactType = artifact.artifact_type || artifact.artifactType || "";
+        if (key === "chess_pgn_html" && artifactType !== "final_pdf_two_crop_reader") {
+          return items;
+        }
         items[key] = {
           key,
           url,

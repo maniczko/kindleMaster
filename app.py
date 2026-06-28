@@ -154,6 +154,9 @@ CONVERSION_PROGRESS_HEARTBEAT_SECONDS = 45
 CONVERSION_PROGRESS_LONG_RUNNING_SECONDS = 5 * 60
 CONVERSION_PROGRESS_STALLED_SECONDS = 2 * 60
 PDF_LAYOUT_PREVIEW_MAX_INLINE_BYTES = 10 * 1024 * 1024
+FINAL_READER_ARTIFACT_TYPE = "final_pdf_two_crop_reader"
+SOURCE_HTML_EVIDENCE_ARTIFACT_TYPE = "source_html_evidence_only"
+ERROR_FINAL_READER_MISSING = "final_reader_missing"
 PDF_COMPRESS_JOB_RETENTION_SECONDS = 6 * 60 * 60
 PDF_COMPRESS_REMOTE_DOWNLOAD_TIMEOUT_SECONDS = 120
 PDF_COMPRESS_DIR = Path(UPLOAD_DIR) / "pdf_compress"
@@ -494,14 +497,20 @@ def _render_chess_pgn_semantic_artifact(job_id: str, job: dict, artifact: dict, 
 
 
 def _ensure_semantic_chess_html_artifact(job_id: str, job: dict, artifact_path: Path) -> Path | None:
+    artifact_path = _resolve_local_artifact_path({"location": str(artifact_path)}) or artifact_path
+    artifact_routing = _chess_reader_routing_metadata(job_id, artifact_path, {})
+    if artifact_routing.get("artifact_type") == FINAL_READER_ARTIFACT_TYPE:
+        semantic_index = _semantic_chess_index_for_artifact_path(artifact_path)
+        if semantic_index is not None and _semantic_chess_index_is_final_reader(semantic_index):
+            return semantic_index
+        return artifact_path
+    if artifact_routing.get("artifact_type") == SOURCE_HTML_EVIDENCE_ARTIFACT_TYPE:
+        return None
     job_dir = _artifact_job_dir_from_path(artifact_path)
     semantic_dir = job_dir / "semantic_chess_html" if job_dir is not None else artifact_path.parent / "semantic_chess_html"
-    semantic_index = semantic_dir / "index.html"
-    try:
-        if semantic_index.is_file() and semantic_index.stat().st_mtime >= artifact_path.stat().st_mtime:
-            return semantic_index
-    except OSError:
-        pass
+    semantic_index = _semantic_chess_index_for_artifact_path(artifact_path)
+    if semantic_index is not None and _semantic_chess_index_is_final_reader(semantic_index):
+        return semantic_index
     try:
         from chess_study_export import rebuild_chess_source_html_export
 
@@ -513,7 +522,11 @@ def _ensure_semantic_chess_html_artifact(job_id: str, job: dict, artifact_path: 
         )
     except Exception:
         return None
-    return semantic_index if semantic_index.is_file() else None
+    semantic_index = _semantic_chess_index_for_artifact_path(artifact_path)
+    if semantic_index is None:
+        return None
+    routing = _chess_reader_routing_metadata(job_id, semantic_index, {})
+    return semantic_index if routing.get("artifact_type") == FINAL_READER_ARTIFACT_TYPE else None
 
 
 def _rewrite_semantic_chess_asset_urls(html_text: str, *, asset_base: str) -> str:
@@ -688,6 +701,8 @@ def _store_extra_conversion_artifacts(job_id: str, extra_artifacts: list[dict] |
             metadata["content_type"] = content_type
         metadata["download_url"] = f"/convert/artifact/{job_id}/{key}"
         metadata["label"] = str(artifact.get("label") or key).strip() or key
+        if key == "chess_pgn_html":
+            metadata = _enrich_chess_reader_artifact_metadata(job_id, metadata, _resolve_local_artifact_path(metadata))
         stored[key] = metadata
     return stored
 
@@ -725,6 +740,218 @@ def _read_json_file(path: Path | None) -> dict:
     except (OSError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _candidate_chess_reader_manifest_paths(path: Path | None) -> list[Path]:
+    if path is None:
+        return []
+    parent = path.parent
+    candidates = [
+        parent / "data" / "artifact_manifest.json",
+        parent / "source_html_evidence_manifest.json",
+        parent / "reports" / "source_html_evidence_manifest.json",
+    ]
+    if parent.name == "reports":
+        candidates.extend(
+            [
+                parent / "source_html_evidence_manifest.json",
+                parent.parent / "data" / "artifact_manifest.json",
+            ]
+        )
+    job_dir = _artifact_job_dir_from_path(path)
+    if job_dir is not None:
+        candidates.extend(
+            [
+                job_dir / "semantic_chess_html" / "data" / "artifact_manifest.json",
+                job_dir / "semantic_chess_html" / "reports" / "source_html_evidence_manifest.json",
+            ]
+        )
+    return candidates
+
+
+def _read_chess_reader_manifest(path: Path | None) -> dict:
+    for candidate in _candidate_chess_reader_manifest_paths(path):
+        payload = _read_json_file(candidate)
+        if payload:
+            return payload
+    return {}
+
+
+def _candidate_source_html_gate_paths(path: Path | None) -> list[Path]:
+    if path is None:
+        return []
+    parent = path.parent
+    candidates = [
+        parent / "reports" / "source_html_quality_gate.json",
+        parent / "source_html_quality_gate.json",
+    ]
+    if parent.name == "reports":
+        candidates.append(parent / "source_html_quality_gate.json")
+    else:
+        candidates.append(parent.parent / "reports" / "source_html_quality_gate.json")
+    job_dir = _artifact_job_dir_from_path(path)
+    if job_dir is not None:
+        candidates.append(job_dir / "semantic_chess_html" / "reports" / "source_html_quality_gate.json")
+    return candidates
+
+
+def _read_chess_reader_source_gate(path: Path | None) -> dict:
+    for candidate in _candidate_source_html_gate_paths(path):
+        payload = _read_json_file(candidate)
+        if payload:
+            return payload
+    return {}
+
+
+def _semantic_chess_index_for_artifact_path(path: Path | None) -> Path | None:
+    if path is None:
+        return None
+    if path.name == "index.html" and path.parent.name == "semantic_chess_html":
+        return path
+    job_dir = _artifact_job_dir_from_path(path)
+    if job_dir is None:
+        return None
+    semantic_index = job_dir / "semantic_chess_html" / "index.html"
+    return semantic_index if semantic_index.is_file() else None
+
+
+def _semantic_chess_index_is_final_reader(path: Path | None) -> bool:
+    semantic_index = _semantic_chess_index_for_artifact_path(path)
+    if semantic_index is None:
+        return False
+    manifest = _read_json_file(semantic_index.parent / "data" / "artifact_manifest.json")
+    return manifest.get("artifact_type") == FINAL_READER_ARTIFACT_TYPE
+
+
+def _bool_from_payload(value: object, *, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "y"}:
+            return True
+        if lowered in {"0", "false", "no", "n"}:
+            return False
+    if value is None:
+        return default
+    return bool(value)
+
+
+def _resolved_reader_side_path(path: Path | None, value: object) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    candidate = Path(raw)
+    if candidate.is_absolute():
+        resolved = _resolve_local_artifact_path({"location": str(candidate)})
+        return str(resolved) if resolved is not None else ""
+    normalized = raw.replace("\\", "/").strip("/")
+    parts = [part for part in normalized.split("/") if part]
+    if not parts or any(part in {".", ".."} or ":" in part for part in parts):
+        return ""
+    return "/".join(parts)
+
+
+def _chess_reader_routing_metadata(
+    job_id: str,
+    artifact_path: Path | None,
+    artifact: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    manifest = _read_chess_reader_manifest(artifact_path)
+    source_gate = _read_chess_reader_source_gate(artifact_path)
+    artifact_mapping = dict(artifact or {})
+    manifest_gate = manifest.get("source_html_quality_gate") if isinstance(manifest.get("source_html_quality_gate"), Mapping) else {}
+
+    artifact_type = str(
+        artifact_mapping.get("artifact_type")
+        or manifest.get("artifact_type")
+        or ""
+    ).strip()
+    gate_decision = str(
+        source_gate.get("decision")
+        or (manifest_gate.get("decision") if isinstance(manifest_gate, Mapping) else "")
+        or ""
+    ).strip()
+    source_evidence_only = _bool_from_payload(
+        source_gate.get("source_html_evidence_only")
+        if source_gate
+        else (manifest_gate.get("source_html_evidence_only") if isinstance(manifest_gate, Mapping) else None),
+        default=artifact_type == SOURCE_HTML_EVIDENCE_ARTIFACT_TYPE,
+    )
+    used_as_final_reader = _bool_from_payload(
+        source_gate.get("used_as_final_reader")
+        if source_gate
+        else (manifest_gate.get("used_as_final_reader") if isinstance(manifest_gate, Mapping) else None),
+        default=artifact_type == FINAL_READER_ARTIFACT_TYPE,
+    )
+    if artifact_type == SOURCE_HTML_EVIDENCE_ARTIFACT_TYPE:
+        source_evidence_only = True
+        used_as_final_reader = False
+    if artifact_type == FINAL_READER_ARTIFACT_TYPE:
+        used_as_final_reader = True
+
+    source_html_quality_gate = {
+        "decision": gate_decision,
+        "source_html_evidence_only": source_evidence_only,
+        "used_as_final_reader": used_as_final_reader,
+        "reasons": list(source_gate.get("reasons") or (manifest_gate.get("reasons") if isinstance(manifest_gate, Mapping) else []) or []),
+        "summary": dict(source_gate.get("summary") or {}),
+    }
+    final_reader_path = ""
+    if artifact_type == FINAL_READER_ARTIFACT_TYPE:
+        semantic_index = _semantic_chess_index_for_artifact_path(artifact_path)
+        if semantic_index is not None and _semantic_chess_index_is_final_reader(semantic_index):
+            final_reader_path = str(semantic_index)
+        elif artifact_path is not None:
+            final_reader_path = str(artifact_path)
+    source_html_evidence_path = _resolved_reader_side_path(
+        artifact_path,
+        source_gate.get("source_html_evidence_path") or artifact_mapping.get("source_html_evidence_path"),
+    )
+    if not source_html_evidence_path and (source_evidence_only or artifact_type == SOURCE_HTML_EVIDENCE_ARTIFACT_TYPE):
+        source_html_evidence_path = str(artifact_path) if artifact_path is not None else ""
+    return {
+        "artifact_type": artifact_type,
+        "final_reader_path": final_reader_path,
+        "source_html_evidence_path": source_html_evidence_path,
+        "source_html_quality_gate": source_html_quality_gate,
+    }
+
+
+def _enrich_chess_reader_artifact_metadata(job_id: str, artifact: dict, artifact_path: Path | None) -> dict:
+    routing = _chess_reader_routing_metadata(job_id, artifact_path, artifact)
+    artifact.update(routing)
+    return artifact
+
+
+def _enrich_job_chess_reader_artifact_routing(job_id: str, job: dict) -> dict[str, object]:
+    artifacts = dict(job.get("artifacts", {}) or {})
+    artifact = artifacts.get("chess_pgn_html")
+    if not isinstance(artifact, dict):
+        return {}
+    artifact_path = _resolve_local_artifact_path(artifact)
+    enriched = _enrich_chess_reader_artifact_metadata(job_id, dict(artifact), artifact_path)
+    artifacts["chess_pgn_html"] = enriched
+    job["artifacts"] = artifacts
+    return {
+        "final_reader_path": enriched.get("final_reader_path", ""),
+        "source_html_evidence_path": enriched.get("source_html_evidence_path", ""),
+        "artifact_type": enriched.get("artifact_type", ""),
+        "source_html_quality_gate": dict(enriched.get("source_html_quality_gate", {}) or {}),
+    }
+
+
+def _final_reader_missing_response(job_id: str, artifact_path: Path | None, artifact: Mapping[str, object] | None = None):
+    routing = _chess_reader_routing_metadata(job_id, artifact_path, artifact)
+    return _json_error(
+        "Final chess HTML reader is not available for this conversion.",
+        error_code=ERROR_FINAL_READER_MISSING,
+        status_code=409,
+        phase="download",
+        job_id=job_id,
+        retryable=False,
+        extra=routing,
+    )
 
 
 def _first_file(root: Path, pattern: str) -> Path | None:
@@ -841,6 +1068,11 @@ def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
         artifacts["chess_pgn_html"] = _local_artifact_metadata(job_id, ArtifactKind.REPORT, chess_pgn_html_file)
         artifacts["chess_pgn_html"]["download_url"] = f"/convert/artifact/{job_id}/chess_pgn_html"
         artifacts["chess_pgn_html"]["label"] = "HTML PGN/FEN"
+        artifacts["chess_pgn_html"] = _enrich_chess_reader_artifact_metadata(
+            job_id,
+            artifacts["chess_pgn_html"],
+            chess_pgn_html_file,
+        )
     if chess_glyph_diagnostics_file is not None:
         artifacts["chess_glyph_diagnostics"] = _local_artifact_metadata(
             job_id,
@@ -4328,6 +4560,7 @@ def convert_status(job_id: str):
         )
     if not job.get("cloud"):
         job = _ensure_quality_report_artifacts(job_id, job)
+    chess_reader_payload = _enrich_job_chess_reader_artifact_routing(job_id, job)
     download_state = _build_job_download_state(job_id, job)
     download_url = download_state.download_url
     conversion_payload = None
@@ -4339,6 +4572,8 @@ def convert_status(job_id: str):
         output_size_bytes = _read_output_size_bytes(job)
         if output_size_bytes is not None and "output_size_bytes" not in conversion_payload:
             conversion_payload["output_size_bytes"] = output_size_bytes
+        if chess_reader_payload:
+            conversion_payload.update(chess_reader_payload)
     response = jsonify(
         {
             "success": True,
@@ -4364,6 +4599,10 @@ def convert_status(job_id: str):
             "email_delivery": _build_job_email_delivery_state(job),
             "runtime": dict(job.get("runtime", {}) or {}),
             "artifacts": dict(job.get("artifacts", {}) or {}),
+            "final_reader_path": chess_reader_payload.get("final_reader_path", ""),
+            "source_html_evidence_path": chess_reader_payload.get("source_html_evidence_path", ""),
+            "artifact_type": chess_reader_payload.get("artifact_type", ""),
+            "source_html_quality_gate": dict(chess_reader_payload.get("source_html_quality_gate", {}) or {}),
             "artifact_storage": dict(job.get("artifact_storage", {}) or {}),
             "cloud_sync": dict(job.get("cloud_sync", {}) or {}),
             "authenticated": auth_context.authenticated,
@@ -4392,6 +4631,7 @@ def convert_quality(job_id: str):
         )
     if not job.get("cloud"):
         job = _ensure_quality_report_artifacts(job_id, job)
+    _enrich_job_chess_reader_artifact_routing(job_id, job)
 
     response = jsonify(
         {
@@ -4965,6 +5205,7 @@ def convert_artifact_download(job_id: str, artifact_key: str):
             job_id=job_id,
         )
     key = _safe_artifact_key(artifact_key)
+    _enrich_job_chess_reader_artifact_routing(job_id, job)
     artifacts = dict(job.get("artifacts", {}) or {})
     artifact = artifacts.get(key)
     if not isinstance(artifact, dict):
@@ -4980,6 +5221,8 @@ def convert_artifact_download(job_id: str, artifact_key: str):
         return _render_pdf_layout_preview_shell(job_id, job, artifact, artifact_path)
     artifact_path = _resolve_local_artifact_path(artifact)
     if artifact_path is None or not artifact_path.is_file():
+        if key == "chess_pgn_html" and str(artifact.get("artifact_type") or "") == SOURCE_HTML_EVIDENCE_ARTIFACT_TYPE:
+            return _final_reader_missing_response(job_id, None, artifact)
         if key == "input":
             fallback_response = _send_local_input_artifact_fallback(job_id, job, artifact)
             if fallback_response is not None:
@@ -4991,6 +5234,7 @@ def convert_artifact_download(job_id: str, artifact_key: str):
         semantic_response = _render_chess_pgn_semantic_artifact(job_id, job, artifact, artifact_path)
         if semantic_response is not None:
             return semantic_response
+        return _final_reader_missing_response(job_id, artifact_path, artifact)
     response = send_file(
         artifact_path,
         mimetype=str(artifact.get("content_type") or mimetypes.guess_type(artifact_path.name)[0] or "application/octet-stream"),
@@ -5037,13 +5281,7 @@ def convert_chess_pgn_html_asset(job_id: str, asset_path: str):
         )
     semantic_index = _ensure_semantic_chess_html_artifact(job_id, job, artifact_path)
     if semantic_index is None:
-        return _json_error(
-            "Nie udało się przygotować semantycznego HTML PGN/FEN.",
-            error_code=ERROR_MISSING_OUTPUT,
-            status_code=404,
-            phase="download",
-            job_id=job_id,
-        )
+        return _final_reader_missing_response(job_id, artifact_path, artifact)
     root = semantic_index.parent.resolve()
     requested = (root / asset_path).resolve()
     if root not in requested.parents and requested != root:

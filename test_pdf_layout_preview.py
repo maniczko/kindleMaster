@@ -72,6 +72,8 @@ class PdfLayoutPreviewArtifactTests(unittest.TestCase):
         self.assertIn('data-vr-hook="km-pdf-layout-preview-handoff"', html)
         self.assertIn('id="pdfCanvas"', html)
         self.assertIn('data-artifact-view="pdf_layout_preview"', html)
+        self.assertIn("Artefakt audytowy", html)
+        self.assertNotIn("final_pdf_two_crop_reader", html)
         self.assertIn('class="layout-preview-frame"', html)
         self.assertIn("sandbox", html)
         self.assertIn('srcdoc="', html)

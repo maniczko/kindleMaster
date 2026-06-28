@@ -840,6 +840,40 @@ def _final_reader_health_gate_failed(health_gate: Mapping[str, object] | None) -
     return decision == "fail" or status == "FAIL"
 
 
+def _final_reader_health_summary(
+    manifest: Mapping[str, object] | None,
+    health_gate: Mapping[str, object] | None,
+    artifact_health: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    manifest_mapping = manifest if isinstance(manifest, Mapping) else {}
+    source = health_gate if isinstance(health_gate, Mapping) and health_gate else artifact_health if isinstance(artifact_health, Mapping) else {}
+    summary: dict[str, object] = {}
+    for key in (
+        "schema",
+        "decision",
+        "status",
+        "artifact_type",
+        "pipeline_mode",
+        "blockers",
+        "warnings",
+        "diagram_cards_count",
+        "side_unknown_count",
+        "data_side_marker_attr_count",
+        "trusted_marker_count",
+        "side_marker_crop_count",
+        "board_crop_count",
+        "empty_img_src_count",
+        "asset_missing_empty_src_count",
+        "diagrams_total",
+        "fen_accepted",
+    ):
+        if key in source:
+            summary[key] = source[key]
+        elif key in manifest_mapping:
+            summary[key] = manifest_mapping[key]
+    return summary
+
+
 def _bool_from_payload(value: object, *, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
@@ -943,12 +977,57 @@ def _chess_reader_routing_metadata(
         and artifact_path != final_reader_path_obj
     ):
         source_html_evidence_path = str(artifact_path)
-    return {
+    health_gate = _semantic_chess_reader_health_gate(final_reader_path_obj)
+    artifact_health = artifact_mapping.get("final_reader_health")
+    final_reader_health = _final_reader_health_summary(
+        manifest,
+        health_gate,
+        artifact_health if isinstance(artifact_health, Mapping) else None,
+    )
+    final_reader_health_failed = _final_reader_health_gate_failed(health_gate) or _final_reader_health_gate_failed(
+        artifact_health if isinstance(artifact_health, Mapping) else None
+    )
+    signed_url = artifact_mapping.get("signed_url") if isinstance(artifact_mapping.get("signed_url"), Mapping) else {}
+    remote_reader_available = bool(
+        artifact_mapping.get("download_url")
+        or artifact_mapping.get("downloadUrl")
+        or artifact_mapping.get("url")
+        or (signed_url.get("url") if isinstance(signed_url, Mapping) else "")
+    )
+    final_reader_available = bool(
+        artifact_type == FINAL_READER_ARTIFACT_TYPE
+        and (final_reader_path or remote_reader_available)
+        and not final_reader_health_failed
+    )
+    final_reader_blockers: list[str] = []
+    if not final_reader_available:
+        if artifact_type != FINAL_READER_ARTIFACT_TYPE:
+            final_reader_blockers = [str(reason) for reason in source_html_quality_gate.get("reasons", []) if str(reason)]
+            if not final_reader_blockers:
+                final_reader_blockers = ["final_reader_missing"]
+        elif not final_reader_path and not remote_reader_available:
+            final_reader_blockers = ["final_reader_missing"]
+        elif final_reader_health_failed:
+            raw_blockers = final_reader_health.get("blockers", [])
+            if isinstance(raw_blockers, list):
+                final_reader_blockers = [str(blocker) for blocker in raw_blockers if str(blocker)]
+            if not final_reader_blockers:
+                final_reader_blockers = ["final_reader_health_gate_failed"]
+    routing: dict[str, object] = {
         "artifact_type": artifact_type,
         "final_reader_path": final_reader_path,
+        "final_reader_available": final_reader_available,
+        "final_reader_health": final_reader_health,
+        "final_reader_blockers": final_reader_blockers,
         "source_html_evidence_path": source_html_evidence_path,
         "source_html_quality_gate": source_html_quality_gate,
     }
+    for key in ("side_unknown_count", "trusted_marker_count", "empty_img_src_count", "diagrams_total", "fen_accepted"):
+        if key in final_reader_health:
+            routing[key] = final_reader_health[key]
+        elif key in manifest:
+            routing[key] = manifest[key]
+    return routing
 
 
 def _enrich_chess_reader_artifact_metadata(job_id: str, artifact: dict, artifact_path: Path | None) -> dict:
@@ -968,9 +1047,17 @@ def _enrich_job_chess_reader_artifact_routing(job_id: str, job: dict) -> dict[st
     job["artifacts"] = artifacts
     return {
         "final_reader_path": enriched.get("final_reader_path", ""),
+        "final_reader_available": bool(enriched.get("final_reader_available", False)),
+        "final_reader_health": dict(enriched.get("final_reader_health", {}) or {}),
+        "final_reader_blockers": list(enriched.get("final_reader_blockers", []) or []),
         "source_html_evidence_path": enriched.get("source_html_evidence_path", ""),
         "artifact_type": enriched.get("artifact_type", ""),
         "source_html_quality_gate": dict(enriched.get("source_html_quality_gate", {}) or {}),
+        "side_unknown_count": enriched.get("side_unknown_count"),
+        "trusted_marker_count": enriched.get("trusted_marker_count"),
+        "empty_img_src_count": enriched.get("empty_img_src_count"),
+        "diagrams_total": enriched.get("diagrams_total"),
+        "fen_accepted": enriched.get("fen_accepted"),
     }
 
 
@@ -3030,6 +3117,7 @@ def _build_conversion_job_history_item(job_id: str, job: dict) -> dict:
     response_job_id = str(job.get("job_id") or job_id)
     status = str(job.get("status", "queued") or "queued")
     status_key = status.strip().lower()
+    chess_reader_payload = _enrich_job_chess_reader_artifact_routing(response_job_id, job)
     download_state = _build_job_download_state(response_job_id, job)
     source_preview_url = _source_pdf_preview_url(response_job_id, job)
     item = {
@@ -3052,6 +3140,8 @@ def _build_conversion_job_history_item(job_id: str, job: dict) -> dict:
         "artifact_storage": dict(job.get("artifact_storage", {}) or {}),
         "cloud_sync": dict(job.get("cloud_sync", {}) or {}),
     }
+    if chess_reader_payload:
+        item.update(chess_reader_payload)
     if source_preview_url:
         item["source_preview_url"] = source_preview_url
     if status_key in {"ready", "failed", "timed_out"}:
@@ -4653,9 +4743,17 @@ def convert_status(job_id: str):
             "runtime": dict(job.get("runtime", {}) or {}),
             "artifacts": dict(job.get("artifacts", {}) or {}),
             "final_reader_path": chess_reader_payload.get("final_reader_path", ""),
+            "final_reader_available": bool(chess_reader_payload.get("final_reader_available", False)),
+            "final_reader_health": dict(chess_reader_payload.get("final_reader_health", {}) or {}),
+            "final_reader_blockers": list(chess_reader_payload.get("final_reader_blockers", []) or []),
             "source_html_evidence_path": chess_reader_payload.get("source_html_evidence_path", ""),
             "artifact_type": chess_reader_payload.get("artifact_type", ""),
             "source_html_quality_gate": dict(chess_reader_payload.get("source_html_quality_gate", {}) or {}),
+            "side_unknown_count": chess_reader_payload.get("side_unknown_count"),
+            "trusted_marker_count": chess_reader_payload.get("trusted_marker_count"),
+            "empty_img_src_count": chess_reader_payload.get("empty_img_src_count"),
+            "diagrams_total": chess_reader_payload.get("diagrams_total"),
+            "fen_accepted": chess_reader_payload.get("fen_accepted"),
             "artifact_storage": dict(job.get("artifact_storage", {}) or {}),
             "cloud_sync": dict(job.get("cloud_sync", {}) or {}),
             "authenticated": auth_context.authenticated,

@@ -1204,17 +1204,10 @@ describe("Premium React shell", () => {
     expect(screen.queryByLabelText("Informacje o aktywnym zadaniu")).not.toBeInTheDocument();
   });
 
-  it("downloads HTML PGN/FEN from file details artifact actions", async () => {
+  it("opens final HTML PGN/FEN as the primary chess reader action", async () => {
     const user = userEvent.setup();
     fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url === "/convert/artifact/job-chess/chess_pgn_html") {
-        return {
-          ok: true,
-          headers: { get: (name: string) => (name.toLowerCase() === "content-disposition" ? 'attachment; filename="chess_games.html"' : "") },
-          blob: async () => new Blob(["<html>chess</html>"], { type: "text/html" }),
-        };
-      }
       if (url.startsWith("/convert/jobs")) {
         return {
           ok: true,
@@ -1231,7 +1224,28 @@ describe("Premium React shell", () => {
                     filename: "chess_games.html",
                     download_url: "/convert/artifact/job-chess/chess_pgn_html",
                     content_type: "text/html",
+                    artifact_type: "final_pdf_two_crop_reader",
+                    final_reader_available: true,
+                    final_reader_health: {
+                      status: "PASS",
+                      side_unknown_count: 0,
+                      trusted_marker_count: 12,
+                      empty_img_src_count: 0,
+                    },
                   },
+                  pdf_layout_preview: {
+                    filename: "pdf_layout_preview.html",
+                    download_url: "/convert/artifact/job-chess/pdf_layout_preview",
+                    content_type: "text/html",
+                  },
+                },
+                artifact_type: "final_pdf_two_crop_reader",
+                final_reader_available: true,
+                final_reader_health: {
+                  status: "PASS",
+                  side_unknown_count: 0,
+                  trusted_marker_count: 12,
+                  empty_img_src_count: 0,
                 },
                 quality_state: { release_verdict: "ready_with_review", premium_ready: false },
               },
@@ -1247,19 +1261,84 @@ describe("Premium React shell", () => {
       }
       return { ok: true, json: async () => ({}) };
     });
-    const anchorClickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
     render(<App />);
 
     await user.click(await screen.findByRole("button", { name: "Biblioteka" }));
+    const primaryReaderLink = await screen.findByRole("link", { name: /HTML PGN\/FEN/ });
+    expect(primaryReaderLink).toHaveAttribute("href", "/convert/artifact/job-chess/chess_pgn_html");
+    expect(primaryReaderLink).toHaveClass("km-button-primary");
     await user.click(await screen.findByRole("button", { name: "chess.pdf" }));
-    await user.click(await screen.findByRole("link", { name: /HTML PGN\/FEN/ }));
 
-    await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith("/convert/artifact/job-chess/chess_pgn_html", expect.objectContaining({ cache: "no-store" }));
+    const readerLinks = screen.getAllByRole("link", { name: /HTML PGN\/FEN/ });
+    expect(readerLinks.some((link) => link.getAttribute("href") === "/convert/artifact/job-chess/chess_pgn_html")).toBe(true);
+    const pdfAuditLink = screen.getByRole("link", { name: /PDF layout preview \(audyt layoutu\)/ });
+    expect(pdfAuditLink).toHaveAttribute("href", "/convert/artifact/job-chess/pdf_layout_preview");
+    expect(pdfAuditLink).not.toHaveTextContent("HTML PGN/FEN");
+  });
+
+  it("shows a chess reader blocker instead of falling back to PDF layout preview", async () => {
+    const user = userEvent.setup();
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith("/convert/jobs")) {
+        return {
+          ok: true,
+          json: async () => ({
+            jobs: [
+              {
+                job_id: "job-chess-blocked",
+                filename: "blocked-chess.pdf",
+                status: "ready",
+                source_type: "pdf",
+                download_url: "/convert/download/job-chess-blocked",
+                artifacts: {
+                  chess_pgn_html: {
+                    filename: "chess_games.html",
+                    download_url: "/convert/artifact/job-chess-blocked/chess_pgn_html",
+                    content_type: "text/html",
+                    artifact_type: "final_pdf_two_crop_reader",
+                    final_reader_available: false,
+                    final_reader_health: {
+                      status: "FAIL",
+                      decision: "fail",
+                      blockers: ["mass_side_to_move_unknown", "empty_img_src"],
+                    },
+                    final_reader_blockers: ["mass_side_to_move_unknown", "empty_img_src"],
+                  },
+                  pdf_layout_preview: {
+                    filename: "pdf_layout_preview.html",
+                    download_url: "/convert/artifact/job-chess-blocked/pdf_layout_preview",
+                    content_type: "text/html",
+                  },
+                },
+                artifact_type: "final_pdf_two_crop_reader",
+                final_reader_available: false,
+                final_reader_blockers: ["mass_side_to_move_unknown", "empty_img_src"],
+                quality_state: { release_verdict: "ready_with_review", premium_ready: false },
+              },
+            ],
+          }),
+        };
+      }
+      if (url === "/user/profile") {
+        return { ok: true, json: async () => ({ success: true, profile: defaultProfile }) };
+      }
+      if (url === "/convert/delivery/config") {
+        return { ok: true, json: async () => ({ success: true, delivery: { configured: false } }) };
+      }
+      return { ok: true, json: async () => ({}) };
     });
-    expect(URL.createObjectURL).toHaveBeenCalled();
-    expect(anchorClickSpy).toHaveBeenCalled();
-    anchorClickSpy.mockRestore();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Biblioteka" }));
+    expect(screen.queryByRole("link", { name: /HTML PGN\/FEN/ })).not.toBeInTheDocument();
+    expect(screen.getByText("HTML PGN/FEN niedostepny")).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "blocked-chess.pdf" }));
+    expect(screen.getByText(/Reader szachowy HTML PGN\/FEN niedostepny: mass_side_to_move_unknown, empty_img_src/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /PDF layout preview \(audyt layoutu\)/ })).toHaveAttribute(
+      "href",
+      "/convert/artifact/job-chess-blocked/pdf_layout_preview",
+    );
   });
 
   it("compresses the saved source PDF from file details", async () => {

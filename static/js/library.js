@@ -1,3 +1,9 @@
+    const FINAL_CHESS_READER_ARTIFACT_TYPE = "final_pdf_two_crop_reader";
+
+    function normalizeObject(value) {
+      return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    }
+
     function renderRecentConversions() {
       if (!recentConversionsList) return;
       if (!recentConversions.length) {
@@ -45,6 +51,7 @@
 
     function normalizeRecentConversion(item) {
       const payload = item && typeof item === "object" ? item : {};
+      const rawArtifacts = normalizeArtifactMap(payload);
       const downloadUrl = payload.download_url || payload.downloadUrl || "";
       const pdfLayoutPreviewUrl = payload.pdf_layout_preview_url
         || payload.pdfLayoutPreviewUrl
@@ -52,7 +59,8 @@
           ? window.KindleMasterArtifactLinks.artifactShellUrl(payload, "pdf_layout_preview")
           : "");
       const qualityStateUrl = payload.quality_state_url || payload.qualityStateUrl || "";
-      const artifacts = normalizeConversionArtifacts(payload.artifacts || {});
+      const artifacts = normalizeConversionArtifacts(rawArtifacts);
+      const chessReader = normalizeFinalChessReader(payload, rawArtifacts);
       const status = normalizeRecentConversionStatus(
         payload.status || (downloadUrl || qualityStateUrl || payload.verdict ? "ready" : ""),
       );
@@ -71,6 +79,7 @@
         reportJsonUrl: payload.report_json_url || payload.reportJsonUrl || "",
         reportMarkdownUrl: payload.report_markdown_url || payload.reportMarkdownUrl || "",
         artifacts,
+        chessReader,
         outputSizeBytes: coerceFiniteNumber(payload.output_size_bytes ?? payload.outputSizeBytes),
         error: payload.error || "",
         verdict: payload.release_verdict || payload.releaseVerdict || payload.verdict || "",
@@ -81,6 +90,19 @@
         profile: payload.profile || "",
         validation: payload.validation || "",
       };
+    }
+
+    function normalizeArtifactMap(payload) {
+      const sources = [
+        payload && payload.artifacts,
+        payload && payload.quality_state && payload.quality_state.artifacts,
+        payload && payload.conversion && payload.conversion.artifacts,
+      ];
+      for (const source of sources) {
+        const artifacts = normalizeObject(source);
+        if (Object.keys(artifacts).length) return artifacts;
+      }
+      return {};
     }
 
     function normalizeConversionArtifacts(rawArtifacts) {
@@ -106,12 +128,101 @@
 
     function formatArtifactLabel(key) {
       const labels = {
-        pdf_layout_preview: "PDF layout preview",
+        pdf_layout_preview: "PDF layout preview (audyt layoutu)",
         chess_glyph_diagnostics: "Glyph diagnostics",
         chess_pgn_html: "HTML PGN/FEN",
         chess_pgn: "PGN",
       };
       return labels[key] || key.replace(/_/g, " ");
+    }
+
+    function optionalBoolean(value) {
+      if (typeof value === "boolean") return value;
+      if (typeof value === "string") {
+        const lowered = value.trim().toLowerCase();
+        if (["true", "1", "yes", "y"].includes(lowered)) return true;
+        if (["false", "0", "no", "n"].includes(lowered)) return false;
+      }
+      return null;
+    }
+
+    function finalReaderHealthFailed(health) {
+      const source = normalizeObject(health);
+      return String(source.decision || "").toLowerCase() === "fail"
+        || String(source.status || "").toUpperCase() === "FAIL";
+    }
+
+    function arrayOfStrings(value) {
+      return Array.isArray(value) ? value.map((item) => String(item)).filter(Boolean) : [];
+    }
+
+    function normalizeFinalChessReader(payload, rawArtifacts) {
+      const artifacts = normalizeObject(rawArtifacts);
+      const artifact = normalizeObject(artifacts.chess_pgn_html);
+      const conversion = normalizeObject(payload && payload.conversion);
+      const sourceGate = normalizeObject(artifact.source_html_quality_gate || payload.source_html_quality_gate || conversion.source_html_quality_gate);
+      const health = normalizeObject(artifact.final_reader_health || payload.final_reader_health || conversion.final_reader_health);
+      const artifactType = String(
+        artifact.artifact_type
+        || artifact.artifactType
+        || payload.artifact_type
+        || conversion.artifact_type
+        || "",
+      );
+      let url = "";
+      if (typeof window !== "undefined" && window.KindleMasterArtifactLinks) {
+        url = window.KindleMasterArtifactLinks.artifactShellUrl(payload, "chess_pgn_html");
+      }
+      if (!url) url = artifact.download_url || artifact.downloadUrl || "";
+      const jobId = payload.job_id || payload.jobId || artifact.job_id || artifact.jobId || "";
+      if (!url && artifactType === FINAL_CHESS_READER_ARTIFACT_TYPE && jobId) {
+        url = `/convert/artifact/${encodeURIComponent(jobId)}/chess_pgn_html`;
+      }
+      const availabilityValues = [
+        optionalBoolean(artifact.final_reader_available),
+        optionalBoolean(payload.final_reader_available),
+        optionalBoolean(conversion.final_reader_available),
+      ].filter((value) => value !== null);
+      const explicitlyUnavailable = availabilityValues.includes(false);
+      const present = Boolean(
+        artifactType
+        || Object.keys(artifact).length
+        || payload.final_reader_path
+        || conversion.final_reader_path
+        || Object.keys(health).length
+        || Object.keys(sourceGate).length,
+      );
+      const available = artifactType === FINAL_CHESS_READER_ARTIFACT_TYPE
+        && Boolean(url)
+        && !explicitlyUnavailable
+        && !finalReaderHealthFailed(health);
+      let blockers = [
+        ...arrayOfStrings(artifact.final_reader_blockers),
+        ...arrayOfStrings(payload.final_reader_blockers),
+        ...arrayOfStrings(conversion.final_reader_blockers),
+        ...arrayOfStrings(health.blockers),
+      ];
+      if (!blockers.length && artifactType !== FINAL_CHESS_READER_ARTIFACT_TYPE) {
+        blockers = arrayOfStrings(sourceGate.reasons);
+      }
+      if (!blockers.length && present && !available) {
+        blockers = ["final_reader_missing"];
+      }
+      const blockerText = blockers.length ? blockers.join(", ") : "final reader niedostepny";
+      return {
+        present,
+        available,
+        url,
+        blockerText,
+      };
+    }
+
+    function renderChessReaderAction(chessReader) {
+      if (!chessReader || !chessReader.present) return "";
+      if (chessReader.available && chessReader.url) {
+        return `<a data-primary="true" href="${escapeHtml(chessReader.url)}" target="_blank" rel="noreferrer">HTML PGN/FEN</a>`;
+      }
+      return `<span class="chess-reader-blocker">HTML PGN/FEN niedostepny: ${escapeHtml(chessReader.blockerText || "final reader niedostepny")}</span>`;
     }
 
     function renderArtifactAction(artifact, label = "") {
@@ -123,8 +234,8 @@
     function renderReviewArtifactActions(artifacts) {
       if (!artifacts || typeof artifacts !== "object") return [];
       return [
-        renderArtifactAction(artifacts.pdf_layout_preview, "PDF layout preview"),
         renderArtifactAction(artifacts.chess_pgn_html, "HTML PGN/FEN"),
+        renderArtifactAction(artifacts.pdf_layout_preview, "PDF layout preview (audyt layoutu)"),
         renderArtifactAction(artifacts.chess_glyph_diagnostics, "Glyph diagnostics"),
         renderArtifactAction(artifacts.chess_pgn, "PGN"),
       ].filter(Boolean);
@@ -151,8 +262,9 @@
         : "Pobierz EPUB";
       const evidenceActions = ["ready", "failed", "blocked", "interrupted"].includes(status);
       const actions = evidenceActions ? [
+        renderChessReaderAction(payload.chessReader),
         payload.downloadUrl ? `<a href="${escapeHtml(payload.downloadUrl)}">${downloadLabel}</a>` : "",
-        payload.pdfLayoutPreviewUrl ? `<a href="${escapeHtml(payload.pdfLayoutPreviewUrl)}" target="_blank" rel="noreferrer">Podglad PDF</a>` : "",
+        payload.pdfLayoutPreviewUrl ? `<a href="${escapeHtml(payload.pdfLayoutPreviewUrl)}" target="_blank" rel="noreferrer">Podglad PDF (audyt layoutu)</a>` : "",
         payload.qualityStateUrl ? `<a href="${escapeHtml(payload.qualityStateUrl)}" target="_blank" rel="noreferrer">JSON jakości</a>` : "",
         payload.reportMarkdownUrl ? `<a href="${escapeHtml(payload.reportMarkdownUrl)}" target="_blank" rel="noreferrer">Raport MD</a>` : "",
         payload.reportJsonUrl ? `<a href="${escapeHtml(payload.reportJsonUrl)}" target="_blank" rel="noreferrer">Raport JSON</a>` : "",
@@ -197,8 +309,9 @@
         payload.searchableTextAvailable ? "tekst indeksowany" : "",
       ].filter(Boolean).join(" | ");
       const actions = [
-        payload.downloadUrl ? `<a data-primary="true" href="${escapeHtml(payload.downloadUrl)}">${downloadLabel}</a>` : "<span>Brak EPUB</span>",
-        payload.pdfLayoutPreviewUrl ? `<a href="${escapeHtml(payload.pdfLayoutPreviewUrl)}" target="_blank" rel="noreferrer">Podglad PDF</a>` : "",
+        renderChessReaderAction(payload.chessReader),
+        payload.downloadUrl ? `<a${payload.chessReader && payload.chessReader.available ? "" : ' data-primary="true"'} href="${escapeHtml(payload.downloadUrl)}">${downloadLabel}</a>` : "<span>Brak EPUB</span>",
+        payload.pdfLayoutPreviewUrl ? `<a href="${escapeHtml(payload.pdfLayoutPreviewUrl)}" target="_blank" rel="noreferrer">Podglad PDF (audyt layoutu)</a>` : "",
         payload.qualityStateUrl ? `<a href="${escapeHtml(payload.qualityStateUrl)}" target="_blank" rel="noreferrer">Quality JSON</a>` : "",
         payload.reportMarkdownUrl ? `<a href="${escapeHtml(payload.reportMarkdownUrl)}" target="_blank" rel="noreferrer">Raport MD</a>` : "",
         payload.reportJsonUrl ? `<a href="${escapeHtml(payload.reportJsonUrl)}" target="_blank" rel="noreferrer">Raport JSON</a>` : "",

@@ -1491,7 +1491,8 @@
       margin-top: 8px;
     }
 
-    .recent-conversion-actions a {
+    .recent-conversion-actions a,
+    .recent-conversion-actions span {
       padding: 6px 8px;
       border: 1px solid var(--line);
       border-radius: 4px;
@@ -2796,6 +2797,14 @@
       border-color: var(--accent);
       background: var(--accent-soft);
       color: var(--accent-strong);
+    }
+
+    .library-actions .chess-reader-blocker,
+    .recent-conversion-actions .chess-reader-blocker {
+      border-color: rgba(176, 112, 70, 0.35);
+      color: var(--muted);
+      background: rgba(255, 246, 229, 0.72);
+      line-height: 1.2;
     }
 
     .library-empty-state {

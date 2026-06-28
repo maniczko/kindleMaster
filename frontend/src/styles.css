@@ -2019,12 +2019,27 @@ a {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
 }
 
 .km-job-actions .km-button {
   min-width: 62px;
   justify-content: center;
+}
+
+.km-chess-reader-blocker {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  max-width: 180px;
+  padding: 6px 9px;
+  border: 1px solid rgba(191, 143, 107, 0.35);
+  border-radius: 999px;
+  color: var(--km-muted);
+  background: rgba(255, 249, 236, 0.72);
+  font-size: 0.76rem;
+  font-weight: 900;
+  line-height: 1.15;
 }
 
 .km-empty-state {

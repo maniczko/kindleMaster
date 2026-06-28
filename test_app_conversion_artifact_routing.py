@@ -204,6 +204,14 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
             "fen_accepted": 2,
         }
         (data_dir / "artifact_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        pdf_preview_path = report_dir / "pdf_layout_preview.html"
+        pdf_preview_path.write_text("<!doctype html><html><body>PDF layout audit</body></html>", encoding="utf-8")
+        pdf_preview_artifact = app_module._local_artifact_metadata(job_id, ArtifactKind.REPORT, pdf_preview_path)
+        pdf_preview_artifact["content_type"] = "text/html; charset=utf-8"
+        pdf_preview_artifact["download_url"] = f"/convert/artifact/{job_id}/pdf_layout_preview"
+        pdf_preview_artifact["label"] = "PDF layout preview"
+        with app_module._CONVERSION_JOBS_LOCK:
+            app_module._CONVERSION_JOBS[job_id]["artifacts"]["pdf_layout_preview"] = pdf_preview_artifact
         index_path = semantic_dir / "index.html"
         index_path.write_text(
             """
@@ -231,15 +239,28 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
         self.assertEqual(status_response.status_code, 200)
         payload = status_response.get_json()
         self.assertEqual(payload["artifact_type"], "final_pdf_two_crop_reader")
+        self.assertTrue(payload["final_reader_available"])
+        self.assertEqual(payload["final_reader_blockers"], [])
+        self.assertEqual(payload["final_reader_health"]["side_unknown_count"], 0)
+        self.assertEqual(payload["final_reader_health"]["trusted_marker_count"], 2)
+        self.assertEqual(payload["final_reader_health"]["empty_img_src_count"], 0)
+        self.assertEqual(payload["side_unknown_count"], 0)
+        self.assertEqual(payload["trusted_marker_count"], 2)
+        self.assertEqual(payload["empty_img_src_count"], 0)
         self.assertTrue(payload["final_reader_path"].endswith("semantic_chess_html\\index.html") or payload["final_reader_path"].endswith("semantic_chess_html/index.html"))
         self.assertTrue(payload["source_html_evidence_path"].endswith("chess_games.html"))
         self.assertEqual(payload["source_html_quality_gate"]["decision"], "reject_degraded_source_html")
         self.assertTrue(payload["source_html_quality_gate"]["source_html_evidence_only"])
         self.assertFalse(payload["source_html_quality_gate"]["used_as_final_reader"])
         self.assertEqual(payload["conversion"]["artifact_type"], "final_pdf_two_crop_reader")
+        self.assertTrue(payload["conversion"]["final_reader_available"])
         self.assertEqual(payload["artifacts"]["chess_pgn_html"]["artifact_type"], "final_pdf_two_crop_reader")
+        self.assertEqual(payload["artifacts"]["chess_pgn_html"]["download_url"], f"/convert/artifact/{job_id}/chess_pgn_html")
+        self.assertTrue(payload["artifacts"]["chess_pgn_html"]["final_reader_available"])
         self.assertTrue(payload["artifacts"]["chess_pgn_html"]["final_reader_path"].endswith("semantic_chess_html\\index.html") or payload["artifacts"]["chess_pgn_html"]["final_reader_path"].endswith("semantic_chess_html/index.html"))
         self.assertTrue(payload["artifacts"]["chess_pgn_html"]["source_html_evidence_path"].endswith("chess_games.html"))
+        self.assertEqual(payload["artifacts"]["pdf_layout_preview"]["download_url"], f"/convert/artifact/{job_id}/pdf_layout_preview")
+        self.assertNotEqual(payload["artifacts"]["pdf_layout_preview"].get("artifact_type"), "final_pdf_two_crop_reader")
 
     def test_unhealthy_final_reader_with_mass_unknown_is_blocked(self) -> None:
         job_id = "routing-unhealthy-final-reader"
@@ -253,6 +274,15 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
             },
         )
         job_root = source_html.parents[1]
+        report_dir = job_root / "report"
+        pdf_preview_path = report_dir / "pdf_layout_preview.html"
+        pdf_preview_path.write_text("<!doctype html><html><body>PDF preview is audit only</body></html>", encoding="utf-8")
+        pdf_preview_artifact = app_module._local_artifact_metadata(job_id, ArtifactKind.REPORT, pdf_preview_path)
+        pdf_preview_artifact["content_type"] = "text/html; charset=utf-8"
+        pdf_preview_artifact["download_url"] = f"/convert/artifact/{job_id}/pdf_layout_preview"
+        pdf_preview_artifact["label"] = "PDF layout preview"
+        with app_module._CONVERSION_JOBS_LOCK:
+            app_module._CONVERSION_JOBS[job_id]["artifacts"]["pdf_layout_preview"] = pdf_preview_artifact
         semantic_dir = job_root / "semantic_chess_html"
         data_dir = semantic_dir / "data"
         data_dir.mkdir(parents=True, exist_ok=True)
@@ -308,6 +338,7 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
         )
 
         response = self.client.get(f"/convert/artifact/{job_id}/chess_pgn_html")
+        status_response = self.client.get(f"/convert/status/{job_id}")
 
         self.assertEqual(response.status_code, 409)
         payload = response.get_json()
@@ -319,6 +350,15 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
         self.assertIn("mass_side_to_move_unknown", health_gate["blockers"])
         self.assertIn("empty_img_src", health_gate["blockers"])
         self.assertNotIn("Side to move: unknown", response.get_data(as_text=True))
+        self.assertEqual(status_response.status_code, 200)
+        status_payload = status_response.get_json()
+        self.assertEqual(status_payload["artifact_type"], "final_pdf_two_crop_reader")
+        self.assertFalse(status_payload["final_reader_available"])
+        self.assertEqual(status_payload["final_reader_health"]["status"], "FAIL")
+        self.assertIn("mass_side_to_move_unknown", status_payload["final_reader_blockers"])
+        self.assertEqual(status_payload["artifacts"]["chess_pgn_html"]["download_url"], f"/convert/artifact/{job_id}/chess_pgn_html")
+        self.assertEqual(status_payload["artifacts"]["pdf_layout_preview"]["download_url"], f"/convert/artifact/{job_id}/pdf_layout_preview")
+        self.assertFalse(status_payload["artifacts"]["chess_pgn_html"]["final_reader_available"])
 
 
 if __name__ == "__main__":

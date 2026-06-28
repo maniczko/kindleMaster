@@ -769,8 +769,15 @@ process.stdout.write(JSON.stringify({{
             _extract_function_source(template_html, "normalizeRecentConversionStatus"),
             _extract_function_source(template_html, "formatRecentConversionStatus"),
             _extract_function_source(template_html, "formatRecentConversionElapsed"),
+            _extract_function_source(template_html, "normalizeObject"),
+            _extract_function_source(template_html, "normalizeArtifactMap"),
             _extract_function_source(template_html, "normalizeConversionArtifacts"),
             _extract_function_source(template_html, "formatArtifactLabel"),
+            _extract_function_source(template_html, "optionalBoolean"),
+            _extract_function_source(template_html, "finalReaderHealthFailed"),
+            _extract_function_source(template_html, "arrayOfStrings"),
+            _extract_function_source(template_html, "normalizeFinalChessReader"),
+            _extract_function_source(template_html, "renderChessReaderAction"),
             _extract_function_source(template_html, "renderArtifactAction"),
             _extract_function_source(template_html, "renderReviewArtifactActions"),
             _extract_function_source(template_html, "normalizeRecentConversion"),
@@ -778,6 +785,7 @@ process.stdout.write(JSON.stringify({{
         ]
         node_script = f"""
 const vm = require("node:vm");
+const FINAL_CHESS_READER_ARTIFACT_TYPE = "final_pdf_two_crop_reader";
 const functionSources = {json.dumps(function_sources, ensure_ascii=False)};
 for (const source of functionSources) {{
   vm.runInThisContext(source);

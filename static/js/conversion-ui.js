@@ -996,6 +996,11 @@
         pdfLayoutPreviewUrl: typeof window !== "undefined" && window.KindleMasterArtifactLinks
           ? window.KindleMasterArtifactLinks.artifactShellUrl(payload, "pdf_layout_preview")
           : "",
+        artifacts: payload.artifacts || (qualityState && qualityState.artifacts) || (conversion && conversion.artifacts) || {},
+        artifact_type: payload.artifact_type || (conversion && conversion.artifact_type) || "",
+        final_reader_available: payload.final_reader_available ?? (conversion && conversion.final_reader_available),
+        final_reader_health: payload.final_reader_health || (conversion && conversion.final_reader_health) || {},
+        final_reader_blockers: payload.final_reader_blockers || (conversion && conversion.final_reader_blockers) || [],
         downloadAvailable: downloadAvailableState,
         readingVerdict: qualityState && qualityState.reading_verdict ? qualityState.reading_verdict : "",
         releaseVerdict: releaseVerdictState,

@@ -59,7 +59,10 @@ type LibrarySort =
   | "kindle_desc"
   | "kindle_asc";
 type DeliveryAttachment = "epub" | "pdf" | "input";
-type ArtifactRow = { key: string; label: string; href: string; fetchDownload?: boolean };
+type ArtifactRow = { key: string; label: string; href: string; fetchDownload?: boolean; targetBlank?: boolean };
+type FinalChessReaderState = { present: boolean; available: boolean; href: string; blockerText: string };
+
+const FINAL_CHESS_READER_ARTIFACT_TYPE = "final_pdf_two_crop_reader";
 
 interface PdfCompressionResultPayload {
   success?: boolean;
@@ -88,6 +91,12 @@ interface ConversionJobPayload {
   report_json_url?: string;
   report_markdown_url?: string;
   artifacts?: Record<string, unknown>;
+  artifact_type?: string;
+  final_reader_available?: boolean;
+  final_reader_health?: Record<string, unknown>;
+  final_reader_blockers?: unknown[];
+  final_reader_path?: string;
+  source_html_quality_gate?: Record<string, unknown>;
   progress?: Record<string, unknown>;
   quality_state?: QualityStatePayload;
   auto_repair?: Record<string, unknown>;
@@ -1512,6 +1521,7 @@ function LibraryJobRow({
   const processingDetail = libraryProcessingDetail(job, jobStatus);
   const quality = normalizeQualityState(job.quality_state ?? null);
   const jobLabel = job.filename || job.job_id || "zadania";
+  const chessReader = finalChessReaderState(job);
   const sourcePreviewUrl = resolvePdfArtifactUrl(job);
   const hasPdfDeliveryArtifact = Boolean(sourcePreviewUrl || jobHasPdfDeliveryArtifact(job));
   const recipientConfigured = Boolean(configuredRecipient);
@@ -1638,6 +1648,16 @@ function LibraryJobRow({
         {deliveryError ? <p className="km-delivery-error">{deliveryError}</p> : null}
       </div>
       <div className="km-job-actions">
+        {chessReader.available ? (
+          <a className="km-button km-button-primary km-button-sm" href={chessReader.href} target="_blank" rel="noreferrer" title={`HTML PGN/FEN: ${jobLabel}`}>
+            <BookOpen data-icon="inline-start" aria-hidden="true" />
+            HTML PGN/FEN
+          </a>
+        ) : chessReader.present ? (
+          <span className="km-chess-reader-blocker" role="status" title={chessReader.blockerText}>
+            HTML PGN/FEN niedostepny
+          </span>
+        ) : null}
         {sourcePreviewUrl ? (
           <a className="km-button km-button-outline km-button-sm" href={sourcePreviewUrl} target="_blank" rel="noreferrer" title={`Podgląd PDF: ${jobLabel}`}>
             <BookOpen data-icon="inline-start" aria-hidden="true" />
@@ -1867,6 +1887,7 @@ function FileDetailsWorkspace({
   const [retryError, setRetryError] = React.useState("");
   const configuredRecipient = defaultKindleRecipient.trim();
   const autoRepair = normalizeAutoRepair(job?.auto_repair ?? job?.quality_state?.auto_repair);
+  const chessReader = finalChessReaderState(job);
   const sourcePreviewUrl = resolvePdfArtifactUrl(job);
   const cropSourceUrl = job?.job_id ? `/convert/artifact/${encodeURIComponent(job.job_id)}/input` : sourcePreviewUrl;
   const hasPdfDeliveryArtifact = Boolean(sourcePreviewUrl || jobHasPdfDeliveryArtifact(job));
@@ -2177,7 +2198,13 @@ function FileDetailsWorkspace({
             {artifactRows.length ? (
               <div className="km-artifact-list">
                 {artifactRows.map((artifact) => (
-                  <a href={artifact.href} key={artifact.key} onClick={(event) => void downloadArtifact(event, artifact)}>
+                  <a
+                    href={artifact.href}
+                    key={artifact.key}
+                    onClick={(event) => void downloadArtifact(event, artifact)}
+                    target={artifact.targetBlank ? "_blank" : undefined}
+                    rel={artifact.targetBlank ? "noreferrer" : undefined}
+                  >
                     <Download data-icon="inline-start" aria-hidden="true" />
                     {artifact.label}
                   </a>
@@ -2186,6 +2213,9 @@ function FileDetailsWorkspace({
             ) : (
               <div className="km-empty-state">Brak artefaktów do pobrania.</div>
             )}
+            {chessReader.present && !chessReader.available ? (
+              <p className="km-delivery-error">Reader szachowy HTML PGN/FEN niedostepny: {chessReader.blockerText}</p>
+            ) : null}
           </CardContent>
         </Card>
 
@@ -3016,6 +3046,73 @@ function readRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
+function optionalBoolean(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const lowered = value.trim().toLowerCase();
+    if (["true", "1", "yes", "y"].includes(lowered)) return true;
+    if (["false", "0", "no", "n"].includes(lowered)) return false;
+  }
+  return null;
+}
+
+function arrayOfStrings(value: unknown): string[] {
+  return Array.isArray(value) ? value.map((item) => String(item)).filter(Boolean) : [];
+}
+
+function finalReaderHealthFailed(health: Record<string, unknown>) {
+  return String(health.decision || "").toLowerCase() === "fail"
+    || String(health.status || "").toUpperCase() === "FAIL";
+}
+
+function jobArtifact(job: ConversionJobPayload | null, key: string): Record<string, unknown> {
+  const artifacts = readRecord(job?.artifacts);
+  return readRecord(artifacts[key]);
+}
+
+function finalChessReaderState(job: ConversionJobPayload | null): FinalChessReaderState {
+  const artifact = jobArtifact(job, "chess_pgn_html");
+  const health = readRecord(artifact.final_reader_health || job?.final_reader_health);
+  const sourceGate = readRecord(artifact.source_html_quality_gate || job?.source_html_quality_gate);
+  const artifactType = String(artifact.artifact_type || artifact.artifactType || job?.artifact_type || "");
+  let href = artifactHref(artifact);
+  if (!href && artifactType === FINAL_CHESS_READER_ARTIFACT_TYPE && job?.job_id) {
+    href = `/convert/artifact/${encodeURIComponent(job.job_id)}/chess_pgn_html`;
+  }
+  const availabilityValues = [
+    optionalBoolean(artifact.final_reader_available),
+    optionalBoolean(job?.final_reader_available),
+  ].filter((value): value is boolean => value !== null);
+  const present = Boolean(
+    artifactType
+    || Object.keys(artifact).length
+    || job?.final_reader_path
+    || Object.keys(health).length
+    || Object.keys(sourceGate).length,
+  );
+  const available = artifactType === FINAL_CHESS_READER_ARTIFACT_TYPE
+    && Boolean(href)
+    && !availabilityValues.includes(false)
+    && !finalReaderHealthFailed(health);
+  let blockers = [
+    ...arrayOfStrings(artifact.final_reader_blockers),
+    ...arrayOfStrings(job?.final_reader_blockers),
+    ...arrayOfStrings(health.blockers),
+  ];
+  if (!blockers.length && artifactType !== FINAL_CHESS_READER_ARTIFACT_TYPE) {
+    blockers = arrayOfStrings(sourceGate.reasons);
+  }
+  if (!blockers.length && present && !available) {
+    blockers = ["final_reader_missing"];
+  }
+  return {
+    present,
+    available,
+    href,
+    blockerText: blockers.length ? blockers.join(", ") : "final reader niedostepny",
+  };
+}
+
 function formatDeliveryBlockers(items: Array<Record<string, unknown>>) {
   if (!items.length) return ["EPUB nie jest jeszcze gotowy do wysyłki na Kindle."];
   return items.map(translateIssue);
@@ -3090,15 +3187,26 @@ function autoRepairMessage(value: unknown) {
 function buildArtifactRows(job: ConversionJobPayload | null, quality: NormalizedQualityState): ArtifactRow[] {
   const rows: ArtifactRow[] = [];
   if (job?.download_url) rows.push({ key: "download_url", label: "Finalny EPUB", href: job.download_url });
+  const chessReader = finalChessReaderState(job);
+  if (chessReader.available) {
+    rows.push({ key: "chess_pgn_html", label: "HTML PGN/FEN", href: chessReader.href, targetBlank: true });
+  }
   const sourceUrl = resolvePdfArtifactUrl(job);
   if (sourceUrl) rows.push({ key: "source_pdf", label: "PDF źródłowy", href: sourceUrl });
   const artifacts = job?.artifacts && typeof job.artifacts === "object" ? job.artifacts : {};
   for (const [key, rawArtifact] of Object.entries(artifacts)) {
+    if (key === "chess_pgn_html") continue;
     if (!rawArtifact || typeof rawArtifact !== "object" || Array.isArray(rawArtifact)) continue;
     const artifact = rawArtifact as Record<string, unknown>;
     const href = artifactHref(artifact);
     if (!href) continue;
-    rows.push({ key, label: artifactLabel(key, artifact), href, fetchDownload: true });
+    rows.push({
+      key,
+      label: artifactLabel(key, artifact),
+      href,
+      fetchDownload: key !== "pdf_layout_preview",
+      targetBlank: key === "pdf_layout_preview",
+    });
   }
   for (const [label, href] of Object.entries(quality.reports)) {
     if (label === "report_markdown") continue;
@@ -3139,6 +3247,7 @@ function artifactHref(artifact: Record<string, unknown>) {
 
 function artifactLabel(key: string, artifact: Record<string, unknown>) {
   if (key === "chess_pgn_html") return "HTML PGN/FEN";
+  if (key === "pdf_layout_preview") return "PDF layout preview (audyt layoutu)";
   if (key === "input" || key === "source_pdf") return "PDF źródłowy";
   if (key === "cropped_pdf") return "PDF po kadrowaniu";
   const filename = String(artifact.filename || "").trim();

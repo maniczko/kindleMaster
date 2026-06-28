@@ -5312,6 +5312,56 @@ def _study_two_crop_accuracy_gap(diagrams: list[Mapping[str, Any]]) -> dict[str,
     }
 
 
+def _study_side_marker_probe_before_after(summary: Mapping[str, Any]) -> dict[str, Any]:
+    after = {
+        "marker_missing_count": int(summary.get("marker_missing_count") or 0),
+        "marker_conflict_count": int(summary.get("marker_conflict_count") or 0),
+        "trusted_marker_count": int(summary.get("trusted_marker_count") or 0),
+        "full_fen_accepted_count": int(summary.get("full_fen_accepted_count") or 0),
+    }
+    before = {
+        "marker_missing_count": summary.get("baseline_marker_missing_count"),
+        "marker_conflict_count": summary.get("baseline_marker_conflict_count"),
+        "trusted_marker_count": summary.get("baseline_trusted_marker_count"),
+        "full_fen_accepted_count": summary.get("baseline_full_fen_accepted_count"),
+    }
+    has_baseline = all(value is not None for value in before.values())
+    if not has_baseline:
+        return {
+            "status": "TRAINING_DATA_GAP",
+            "message": "TRAINING_DATA_GAP: side-marker probe before/after requires matched baseline fixture counts.",
+            "before": before,
+            "after": after,
+            "improvement": {
+                "trusted_marker_count_delta": None,
+                "marker_missing_count_delta": None,
+                "marker_conflict_count_delta": None,
+                "full_fen_accepted_count_delta": None,
+            },
+        }
+    before_int = {key: int(value or 0) for key, value in before.items()}
+    improvement = {
+        "trusted_marker_count_delta": after["trusted_marker_count"] - before_int["trusted_marker_count"],
+        "marker_missing_count_delta": after["marker_missing_count"] - before_int["marker_missing_count"],
+        "marker_conflict_count_delta": after["marker_conflict_count"] - before_int["marker_conflict_count"],
+        "full_fen_accepted_count_delta": after["full_fen_accepted_count"] - before_int["full_fen_accepted_count"],
+    }
+    status = (
+        "improved"
+        if improvement["trusted_marker_count_delta"] > 0
+        or improvement["marker_missing_count_delta"] < 0
+        or improvement["marker_conflict_count_delta"] < 0
+        else "unchanged"
+    )
+    return {
+        "status": status,
+        "message": "Side-marker probe before/after counts are available.",
+        "before": before_int,
+        "after": after,
+        "improvement": improvement,
+    }
+
+
 def _write_study_two_crop_quality_metrics(out: Path, diagrams: list[Mapping[str, Any]], summary: Mapping[str, Any]) -> None:
     reports_dir = out / "reports" / "chess_fen"
     reports_dir.mkdir(parents=True, exist_ok=True)
@@ -5331,6 +5381,7 @@ def _write_study_two_crop_quality_metrics(out: Path, diagrams: list[Mapping[str,
             "blocked_by_marker_count": len([row for row in rows if row.get("blocked_by_marker")]),
             "blocked_by_placement_count": len([row for row in rows if row.get("blocked_by_placement")]),
         },
+        "probe_quality_before_after": _study_side_marker_probe_before_after(summary),
         "accuracy": _study_two_crop_accuracy_gap(diagrams),
         "items": rows,
     }
@@ -5348,6 +5399,20 @@ def _write_study_two_crop_quality_metrics(out: Path, diagrams: list[Mapping[str,
         f"- side-to-move labels: `{accuracy.get('marker_label_count')}`",
         f"- placement labels: `{accuracy.get('placement_label_count')}`",
     ]
+    probe_quality = payload["probe_quality_before_after"]
+    lines.extend(
+        [
+            "",
+            "## Probe Before/After",
+            "",
+            f"- status: `{probe_quality.get('status')}`",
+            f"- message: {probe_quality.get('message')}",
+            f"- after marker missing: `{(probe_quality.get('after') or {}).get('marker_missing_count')}`",
+            f"- after marker conflict: `{(probe_quality.get('after') or {}).get('marker_conflict_count')}`",
+            f"- after trusted marker: `{(probe_quality.get('after') or {}).get('trusted_marker_count')}`",
+            f"- after full FEN accepted: `{(probe_quality.get('after') or {}).get('full_fen_accepted_count')}`",
+        ]
+    )
     if accuracy.get("status") == "TRAINING_DATA_GAP":
         lines.extend(["", f"TRAINING_DATA_GAP: {accuracy.get('message')}", ""])
         lines.extend(["| Missing field | Needed | Available |", "| --- | --- | ---: |"])

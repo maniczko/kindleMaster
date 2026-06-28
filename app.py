@@ -157,6 +157,7 @@ PDF_LAYOUT_PREVIEW_MAX_INLINE_BYTES = 10 * 1024 * 1024
 FINAL_READER_ARTIFACT_TYPE = "final_pdf_two_crop_reader"
 SOURCE_HTML_EVIDENCE_ARTIFACT_TYPE = "source_html_evidence_only"
 ERROR_FINAL_READER_MISSING = "final_reader_missing"
+ERROR_FINAL_READER_HEALTH_GATE_FAILED = "final_reader_health_gate_failed"
 PDF_COMPRESS_JOB_RETENTION_SECONDS = 6 * 60 * 60
 PDF_COMPRESS_REMOTE_DOWNLOAD_TIMEOUT_SECONDS = 120
 PDF_COMPRESS_DIR = Path(UPLOAD_DIR) / "pdf_compress"
@@ -482,6 +483,9 @@ def _render_chess_pgn_semantic_artifact(job_id: str, job: dict, artifact: dict, 
     semantic_index = _ensure_semantic_chess_html_artifact(job_id, job, artifact_path)
     if semantic_index is None or not semantic_index.is_file():
         return None
+    health_gate = _semantic_chess_reader_health_gate(semantic_index)
+    if _final_reader_health_gate_failed(health_gate):
+        return _final_reader_health_gate_failed_response(job_id, semantic_index, artifact_path, artifact, health_gate)
     try:
         html_text = semantic_index.read_text(encoding="utf-8")
     except UnicodeDecodeError:
@@ -498,9 +502,11 @@ def _render_chess_pgn_semantic_artifact(job_id: str, job: dict, artifact: dict, 
 
 def _ensure_semantic_chess_html_artifact(job_id: str, job: dict, artifact_path: Path) -> Path | None:
     artifact_path = _resolve_local_artifact_path({"location": str(artifact_path)}) or artifact_path
+    semantic_index = _semantic_chess_index_for_artifact_path(artifact_path)
+    if semantic_index is not None and _semantic_chess_index_is_final_reader(semantic_index):
+        return semantic_index
     artifact_routing = _chess_reader_routing_metadata(job_id, artifact_path, {})
     if artifact_routing.get("artifact_type") == FINAL_READER_ARTIFACT_TYPE:
-        semantic_index = _semantic_chess_index_for_artifact_path(artifact_path)
         if semantic_index is not None and _semantic_chess_index_is_final_reader(semantic_index):
             return semantic_index
         return artifact_path
@@ -508,9 +514,6 @@ def _ensure_semantic_chess_html_artifact(job_id: str, job: dict, artifact_path: 
         return None
     job_dir = _artifact_job_dir_from_path(artifact_path)
     semantic_dir = job_dir / "semantic_chess_html" if job_dir is not None else artifact_path.parent / "semantic_chess_html"
-    semantic_index = _semantic_chess_index_for_artifact_path(artifact_path)
-    if semantic_index is not None and _semantic_chess_index_is_final_reader(semantic_index):
-        return semantic_index
     try:
         from chess_study_export import rebuild_chess_source_html_export
 
@@ -823,6 +826,20 @@ def _semantic_chess_index_is_final_reader(path: Path | None) -> bool:
     return manifest.get("artifact_type") == FINAL_READER_ARTIFACT_TYPE
 
 
+def _semantic_chess_reader_health_gate(semantic_index: Path | None) -> dict:
+    if semantic_index is None:
+        return {}
+    return _read_json_file(semantic_index.parent / "reports" / "final_reader_health_gate.json")
+
+
+def _final_reader_health_gate_failed(health_gate: Mapping[str, object] | None) -> bool:
+    if not isinstance(health_gate, Mapping):
+        return False
+    decision = str(health_gate.get("decision") or "").strip().lower()
+    status = str(health_gate.get("status") or "").strip().upper()
+    return decision == "fail" or status == "FAIL"
+
+
 def _bool_from_payload(value: object, *, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
@@ -858,6 +875,11 @@ def _chess_reader_routing_metadata(
     artifact: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     manifest = _read_chess_reader_manifest(artifact_path)
+    semantic_index = _semantic_chess_index_for_artifact_path(artifact_path)
+    if semantic_index is not None and _semantic_chess_index_is_final_reader(semantic_index):
+        semantic_manifest = _read_json_file(semantic_index.parent / "data" / "artifact_manifest.json")
+        if semantic_manifest.get("artifact_type") == FINAL_READER_ARTIFACT_TYPE:
+            manifest = semantic_manifest
     source_gate = _read_chess_reader_source_gate(artifact_path)
     artifact_mapping = dict(artifact or {})
     manifest_gate = manifest.get("source_html_quality_gate") if isinstance(manifest.get("source_html_quality_gate"), Mapping) else {}
@@ -887,7 +909,7 @@ def _chess_reader_routing_metadata(
     if artifact_type == SOURCE_HTML_EVIDENCE_ARTIFACT_TYPE:
         source_evidence_only = True
         used_as_final_reader = False
-    if artifact_type == FINAL_READER_ARTIFACT_TYPE:
+    if artifact_type == FINAL_READER_ARTIFACT_TYPE and not source_gate and not manifest_gate:
         used_as_final_reader = True
 
     source_html_quality_gate = {
@@ -898,18 +920,29 @@ def _chess_reader_routing_metadata(
         "summary": dict(source_gate.get("summary") or {}),
     }
     final_reader_path = ""
+    final_reader_path_obj: Path | None = None
     if artifact_type == FINAL_READER_ARTIFACT_TYPE:
         semantic_index = _semantic_chess_index_for_artifact_path(artifact_path)
         if semantic_index is not None and _semantic_chess_index_is_final_reader(semantic_index):
-            final_reader_path = str(semantic_index)
+            final_reader_path_obj = semantic_index
         elif artifact_path is not None:
-            final_reader_path = str(artifact_path)
+            final_reader_path_obj = artifact_path
+        final_reader_path = str(final_reader_path_obj or "")
     source_html_evidence_path = _resolved_reader_side_path(
         artifact_path,
         source_gate.get("source_html_evidence_path") or artifact_mapping.get("source_html_evidence_path"),
     )
     if not source_html_evidence_path and (source_evidence_only or artifact_type == SOURCE_HTML_EVIDENCE_ARTIFACT_TYPE):
         source_html_evidence_path = str(artifact_path) if artifact_path is not None else ""
+    if (
+        not source_html_evidence_path
+        and artifact_type == FINAL_READER_ARTIFACT_TYPE
+        and artifact_path is not None
+        and final_reader_path_obj is not None
+        and artifact_path.suffix.lower() in {".html", ".htm"}
+        and artifact_path != final_reader_path_obj
+    ):
+        source_html_evidence_path = str(artifact_path)
     return {
         "artifact_type": artifact_type,
         "final_reader_path": final_reader_path,
@@ -946,6 +979,26 @@ def _final_reader_missing_response(job_id: str, artifact_path: Path | None, arti
     return _json_error(
         "Final chess HTML reader is not available for this conversion.",
         error_code=ERROR_FINAL_READER_MISSING,
+        status_code=409,
+        phase="download",
+        job_id=job_id,
+        retryable=False,
+        extra=routing,
+    )
+
+
+def _final_reader_health_gate_failed_response(
+    job_id: str,
+    semantic_index: Path | None,
+    artifact_path: Path | None,
+    artifact: Mapping[str, object] | None,
+    health_gate: Mapping[str, object],
+):
+    routing = _chess_reader_routing_metadata(job_id, artifact_path or semantic_index, artifact)
+    routing["final_reader_health_gate"] = dict(health_gate)
+    return _json_error(
+        "Final chess HTML reader failed its health gate.",
+        error_code=ERROR_FINAL_READER_HEALTH_GATE_FAILED,
         status_code=409,
         phase="download",
         job_id=job_id,

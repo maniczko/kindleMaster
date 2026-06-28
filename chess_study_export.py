@@ -501,6 +501,25 @@ def rebuild_chess_source_html_export(
     for directory in [out, data_dir, reports_dir, diagram_dir, page_preview_dir]:
         directory.mkdir(parents=True, exist_ok=True)
 
+    effective_source_gate = dict(source_gate or {})
+    if source_gate is None:
+        effective_source_gate = _source_html_quality_gate(source, out, pdf_path=pdf_path, qa_report=qa_report)
+        _write_source_html_quality_gate(out, effective_source_gate)
+    if effective_source_gate.get("source_html_evidence_only") or not effective_source_gate.get("used_as_final_reader", True):
+        return {
+            "schema": "kindlemaster.semantic_chess_html.v1",
+            "source_html": str(source),
+            "source_pdf": str(pdf_path or ""),
+            "title": "",
+            "chapters": [],
+            "pages": [],
+            "pgn_records": [],
+            "summary": dict(effective_source_gate.get("summary") or {}),
+            "source_html_quality_gate": effective_source_gate,
+            "source_html_evidence_path": str(effective_source_gate.get("source_html_evidence_path") or ""),
+            "final_reader_missing": True,
+        }
+
     soup = BeautifulSoup(source.read_text(encoding="utf-8", errors="replace"), "html.parser")
     pages = _extract_source_html_pages(
         soup,
@@ -530,7 +549,7 @@ def rebuild_chess_source_html_export(
         pipeline_mode="source_html_semantic_reader",
         source_pdf=pdf_path,
         source_html=source,
-        source_gate=source_gate,
+        source_gate=effective_source_gate,
         summary=book_payload["summary"],
         diagrams=[diagram for page in pages for diagram in page.get("diagrams", [])],
     )

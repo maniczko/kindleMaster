@@ -36,6 +36,7 @@ QUICK_TESTS = [
     "test_user_profile.py",
     "test_conversion_library.py",
     "test_app_runtime_services.py",
+    "test_app_conversion_artifact_routing.py",
     "test_runtime_job_adapter.py",
     "test_artifact_storage.py",
     "test_ai_ocr_cleanup.py",

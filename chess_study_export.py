@@ -10,10 +10,11 @@ import math
 import re
 import shutil
 import zipfile
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any
 from urllib.parse import unquote, urlparse
 
 import fitz
@@ -44,6 +45,8 @@ STUDY_STATUSES = {
 }
 
 QUALITY_PROFILES = {"smoke", "default", "masterkindle"}
+FINAL_READER_ARTIFACT_TYPE = "final_pdf_two_crop_reader"
+SOURCE_HTML_EVIDENCE_ARTIFACT_TYPE = "source_html_evidence_only"
 QUALITY_THRESHOLDS = {
     "smoke": {
         "pages": 1,
@@ -447,6 +450,11 @@ def run_chess_study_export(
         exercises=exercises,
         final_test=final_test,
     )
+    source_gate: dict[str, Any] | None = None
+    if config.html and config.html.is_file():
+        source_gate = _source_html_quality_gate(config.html, config.out, pdf_path=config.pdf, qa_report=qa_report)
+        _write_source_html_quality_gate(config.out, source_gate)
+        _write_study_side_marker_blocker_attribution(config.out, diagrams.get("diagrams", []) or [], source_gate=source_gate)
     render_study_html(
         config.out,
         structure=structure,
@@ -454,19 +462,19 @@ def run_chess_study_export(
         qa_report=qa_report,
         page_model=page_model,
         notation_fragments=notation_fragments,
+        source_pdf=config.pdf,
+        source_html=config.html,
+        source_gate=source_gate,
     )
     render_qa_html(config.out, qa_report)
-    if config.html and config.html.is_file():
-        source_gate = _source_html_quality_gate(config.html, config.out, pdf_path=config.pdf, qa_report=qa_report)
-        _write_source_html_quality_gate(config.out, source_gate)
-        _write_study_side_marker_blocker_attribution(config.out, diagrams.get("diagrams", []) or [], source_gate=source_gate)
-        if source_gate.get("used_as_final_reader"):
-            rebuild_chess_source_html_export(
-                config.html,
-                config.out,
-                pdf_path=config.pdf,
-                qa_report=qa_report,
-            )
+    if source_gate and source_gate.get("used_as_final_reader"):
+        rebuild_chess_source_html_export(
+            config.html,
+            config.out,
+            pdf_path=config.pdf,
+            qa_report=qa_report,
+            source_gate=source_gate,
+        )
     return qa_report
 
 
@@ -476,6 +484,7 @@ def rebuild_chess_source_html_export(
     *,
     pdf_path: str | Path | None = None,
     qa_report: dict[str, Any] | None = None,
+    source_gate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Rebuild a semantic, asset-backed study reader from the PDF-layout HTML artifact.
 
@@ -516,6 +525,16 @@ def rebuild_chess_source_html_export(
         "pgn_records": pgn_records,
         "summary": _source_html_summary(pages, pgn_records, source, pdf_path=pdf_path, qa_report=qa_report),
     }
+    artifact_manifest = _build_artifact_manifest(
+        artifact_type=FINAL_READER_ARTIFACT_TYPE,
+        pipeline_mode="source_html_semantic_reader",
+        source_pdf=pdf_path,
+        source_html=source,
+        source_gate=source_gate,
+        summary=book_payload["summary"],
+        diagrams=[diagram for page in pages for diagram in page.get("diagrams", [])],
+    )
+    book_payload["artifact_manifest"] = artifact_manifest
     diagrams_payload = {
         "schema": "kindlemaster.semantic_chess_diagrams.v1",
         "diagrams": [diagram for page in pages for diagram in page.get("diagrams", [])],
@@ -524,6 +543,7 @@ def rebuild_chess_source_html_export(
     _write_json(data_dir / "book.json", book_payload)
     _write_json(data_dir / "diagrams.json", diagrams_payload)
     _write_source_html_reports(book_payload, diagrams_payload, reports_dir)
+    _write_artifact_manifest(data_dir / "artifact_manifest.json", artifact_manifest)
     (out / "styles.css").write_text(_semantic_source_styles_css(), encoding="utf-8")
     (out / "app.js").write_text(_semantic_source_app_js(), encoding="utf-8")
     (out / "index.html").write_text(_semantic_source_index_html(book_payload), encoding="utf-8")
@@ -630,9 +650,34 @@ def _source_html_quality_gate(
         "all_or_most_diagrams_have_unknown_side_and_no_accepted_fen",
     }.issubset(reason_set)
     degraded = "diagram_image_sources_degraded" in reason_set or semantic_evidence_missing
+    summary = {
+        "diagrams_total": diagrams_total,
+        "source_img_empty_count": source_img_empty_count,
+        "empty_diagram_image_count": source_img_empty_count,
+        "resolved_diagram_image_count": source_img_resolved_count,
+        "source_img_resolved_count": source_img_resolved_count,
+        "source_img_localhost_count": source_img_localhost_count,
+        "source_img_unresolved_count": source_img_unresolved_count,
+        "source_img_problem_count": source_img_problem_count,
+        "source_img_problem_rate": image_problem_rate,
+        "source_fen_or_marker_evidence_count": evidence_count,
+        "fen_accepted": fen_accepted,
+        "side_unknown_count": side_unknown_count,
+        "side_unknown_rate": side_unknown_rate,
+        "qa_status": (qa_report or {}).get("status", ""),
+    }
     evidence_path = ""
+    evidence_manifest_path = ""
     if degraded:
-        evidence_path = _copy_source_html_evidence(source, out)
+        evidence_path = _copy_source_html_evidence(
+            source,
+            out,
+            pdf_path=pdf_path,
+            summary=summary,
+            decision="reject_degraded_source_html",
+        )
+        if evidence_path:
+            evidence_manifest_path = "reports/source_html_evidence_manifest.json"
     return {
         "schema": "kindlemaster.chess_study.source_html_quality_gate.v1",
         "source_html": str(source),
@@ -640,24 +685,10 @@ def _source_html_quality_gate(
         "used_as_final_reader": not degraded,
         "source_html_evidence_only": degraded,
         "source_html_evidence_path": evidence_path,
+        "source_html_evidence_manifest_path": evidence_manifest_path,
         "decision": "reject_degraded_source_html" if degraded else "use_source_html_as_final_reader",
         "reasons": reasons,
-        "summary": {
-            "diagrams_total": diagrams_total,
-            "source_img_empty_count": source_img_empty_count,
-            "empty_diagram_image_count": source_img_empty_count,
-            "resolved_diagram_image_count": source_img_resolved_count,
-            "source_img_resolved_count": source_img_resolved_count,
-            "source_img_localhost_count": source_img_localhost_count,
-            "source_img_unresolved_count": source_img_unresolved_count,
-            "source_img_problem_count": source_img_problem_count,
-            "source_img_problem_rate": image_problem_rate,
-            "source_fen_or_marker_evidence_count": evidence_count,
-            "fen_accepted": fen_accepted,
-            "side_unknown_count": side_unknown_count,
-            "side_unknown_rate": side_unknown_rate,
-            "qa_status": (qa_report or {}).get("status", ""),
-        },
+        "summary": summary,
         "items": rows[:500],
     }
 
@@ -784,12 +815,210 @@ def _safe_ratio(numerator: int, denominator: int) -> float:
     return round(float(numerator) / float(denominator), 4)
 
 
-def _copy_source_html_evidence(source: Path, out: Path) -> str:
+def _generated_at_utc() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _commit_sha_with_reason() -> tuple[str, str]:
+    commit = _current_git_commit()
+    if commit:
+        return commit, ""
+    return "", "git_rev_parse_head_unavailable"
+
+
+def _first_int_from_mapping(source: Mapping[str, Any], keys: Iterable[str], default: int = 0) -> int:
+    for key in keys:
+        value = source.get(key)
+        if value is not None and value != "":
+            return _safe_int(value)
+    return default
+
+
+def _artifact_metrics(
+    *,
+    summary: Mapping[str, Any] | None = None,
+    positions: Iterable[Mapping[str, Any]] | None = None,
+    diagrams: Iterable[Mapping[str, Any]] | None = None,
+) -> dict[str, int]:
+    summary = dict(summary or {})
+    position_list = list(positions or [])
+    diagram_list = list(diagrams or [])
+    side_rows = position_list or diagram_list
+    side_unknown_count = _first_int_from_mapping(summary, ("side_unknown_count",), -1)
+    if side_unknown_count < 0:
+        side_unknown_count = len([row for row in side_rows if str(row.get("side_to_move") or "unknown") == "unknown"])
+    trusted_marker_count = _first_int_from_mapping(summary, ("trusted_marker_count", "trusted_marker_assignments"), -1)
+    if trusted_marker_count < 0:
+        trusted_marker_count = len(
+            [
+                row
+                for row in side_rows
+                if str(row.get("side_marker_status") or "").startswith("trusted_")
+                or str(row.get("side_marker_status") or "") == "trusted_marker"
+            ]
+        )
+    return {
+        "side_unknown_count": side_unknown_count,
+        "trusted_marker_count": trusted_marker_count,
+        "empty_img_src_count": _first_int_from_mapping(
+            summary,
+            (
+                "empty_img_src_count",
+                "source_img_empty_count",
+                "empty_diagram_image_count",
+                "asset_missing_empty_src_count",
+            ),
+            0,
+        ),
+        "diagrams_total": _first_int_from_mapping(
+            summary,
+            ("diagrams_total", "strict_diagrams_total", "total"),
+            len(position_list) or len(diagram_list),
+        ),
+        "fen_accepted": _first_int_from_mapping(summary, ("fen_accepted", "fens_accepted"), 0),
+    }
+
+
+def _build_artifact_manifest(
+    *,
+    artifact_type: str,
+    pipeline_mode: str,
+    source_pdf: str | Path | None = None,
+    source_html: str | Path | None = None,
+    source_gate: Mapping[str, Any] | None = None,
+    summary: Mapping[str, Any] | None = None,
+    positions: Iterable[Mapping[str, Any]] | None = None,
+    diagrams: Iterable[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    commit_sha, commit_sha_reason = _commit_sha_with_reason()
+    gate = dict(source_gate or {})
+    manifest = {
+        "schema": "kindlemaster.chess_study.artifact_manifest.v1",
+        "artifact_type": artifact_type,
+        "pipeline_mode": pipeline_mode,
+        "generated_at": _generated_at_utc(),
+        "source_pdf": str(source_pdf or ""),
+        "source_html": str(source_html or ""),
+        "commit_sha": commit_sha,
+        "commit_sha_reason": commit_sha_reason,
+        "source_html_quality_gate": {
+            "decision": str(gate.get("decision") or ""),
+            "source_html_evidence_only": bool(gate.get("source_html_evidence_only")),
+            "used_as_final_reader": bool(gate.get("used_as_final_reader")),
+            "reasons": list(gate.get("reasons") or []),
+        },
+    }
+    manifest.update(_artifact_metrics(summary=summary, positions=positions, diagrams=diagrams))
+    return manifest
+
+
+def _write_artifact_manifest(path: Path, manifest: Mapping[str, Any]) -> None:
+    _write_json(path, dict(manifest))
+
+
+def _artifact_data_attrs(manifest: Mapping[str, Any]) -> str:
+    gate = manifest.get("source_html_quality_gate") if isinstance(manifest.get("source_html_quality_gate"), Mapping) else {}
+    attrs = {
+        "data-artifact-type": manifest.get("artifact_type", ""),
+        "data-pipeline-mode": manifest.get("pipeline_mode", ""),
+        "data-commit-sha": manifest.get("commit_sha", ""),
+        "data-source-html-gate-decision": gate.get("decision", "") if isinstance(gate, Mapping) else "",
+        "data-generated-at": manifest.get("generated_at", ""),
+    }
+    return " ".join(f'{name}="{html.escape(str(value), quote=True)}"' for name, value in attrs.items())
+
+
+def _artifact_provenance_banner_html(manifest: Mapping[str, Any]) -> str:
+    gate = manifest.get("source_html_quality_gate") if isinstance(manifest.get("source_html_quality_gate"), Mapping) else {}
+    decision = str(gate.get("decision") or "") if isinstance(gate, Mapping) else ""
+    warning = ""
+    if manifest.get("artifact_type") == SOURCE_HTML_EVIDENCE_ARTIFACT_TYPE:
+        warning = "<strong>Evidence-only report. This is not the final reader download.</strong>"
+    return f"""<section class="artifact-provenance" aria-label="Artifact provenance">
+  <h2>Artifact provenance</h2>
+  <p>Artifact type: <strong>{html.escape(str(manifest.get('artifact_type') or ''))}</strong></p>
+  <p>Pipeline mode: <code>{html.escape(str(manifest.get('pipeline_mode') or ''))}</code></p>
+  <p>Source HTML gate: <code>{html.escape(decision)}</code></p>
+  {f'<p class="artifact-warning">{warning}</p>' if warning else ''}
+</section>"""
+
+
+def _inject_artifact_attrs_and_banner(html_text: str, manifest: Mapping[str, Any]) -> str:
+    soup = BeautifulSoup(html_text, "html.parser")
+    if soup.body is None:
+        return (
+            "<!doctype html><html><head><meta charset=\"utf-8\">"
+            "<title>Evidence-only source HTML - KindleMaster</title></head>"
+            f"<body {_artifact_data_attrs(manifest)}>{_inline_artifact_banner_html(manifest)}"
+            f"<pre>{html.escape(html_text)}</pre></body></html>"
+        )
+    for name, value in _artifact_attrs_dict(manifest).items():
+        soup.body[name] = value
+    if soup.html is not None:
+        for name, value in _artifact_attrs_dict(manifest).items():
+            soup.html[name] = value
+    title = soup.find("title")
+    if manifest.get("artifact_type") == SOURCE_HTML_EVIDENCE_ARTIFACT_TYPE:
+        if title is None:
+            if soup.head is None and soup.html is not None:
+                head = soup.new_tag("head")
+                soup.html.insert(0, head)
+            if soup.head is not None:
+                title = soup.new_tag("title")
+                soup.head.append(title)
+        if title is not None:
+            title.string = "Evidence-only source HTML - KindleMaster"
+    soup.body.insert(0, BeautifulSoup(_inline_artifact_banner_html(manifest), "html.parser"))
+    return str(soup)
+
+
+def _artifact_attrs_dict(manifest: Mapping[str, Any]) -> dict[str, str]:
+    gate = manifest.get("source_html_quality_gate") if isinstance(manifest.get("source_html_quality_gate"), Mapping) else {}
+    return {
+        "data-artifact-type": str(manifest.get("artifact_type") or ""),
+        "data-pipeline-mode": str(manifest.get("pipeline_mode") or ""),
+        "data-commit-sha": str(manifest.get("commit_sha") or ""),
+        "data-source-html-gate-decision": str(gate.get("decision") or "") if isinstance(gate, Mapping) else "",
+        "data-generated-at": str(manifest.get("generated_at") or ""),
+    }
+
+
+def _inline_artifact_banner_html(manifest: Mapping[str, Any]) -> str:
+    return f"""<section style="border:2px solid #9a1b1b;background:#fff5e4;color:#201713;padding:12px;margin:0 0 16px;font-family:Arial,sans-serif" class="artifact-provenance" aria-label="Artifact provenance">
+  <strong>Artifact provenance</strong>
+  <div>Artifact type: <code>{html.escape(str(manifest.get('artifact_type') or ''))}</code></div>
+  <div>Pipeline mode: <code>{html.escape(str(manifest.get('pipeline_mode') or ''))}</code></div>
+  <div>Evidence-only source HTML: this report must not be used as the final reader download.</div>
+</section>"""
+
+
+def _copy_source_html_evidence(
+    source: Path,
+    out: Path,
+    *,
+    pdf_path: str | Path | None = None,
+    summary: Mapping[str, Any] | None = None,
+    decision: str = "reject_degraded_source_html",
+) -> str:
     reports_dir = out / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
     target = reports_dir / "source_html_evidence.html"
+    manifest = _build_artifact_manifest(
+        artifact_type=SOURCE_HTML_EVIDENCE_ARTIFACT_TYPE,
+        pipeline_mode="source_html_evidence_report",
+        source_pdf=pdf_path,
+        source_html=source,
+        source_gate={
+            "decision": decision,
+            "source_html_evidence_only": True,
+            "used_as_final_reader": False,
+        },
+        summary=summary,
+    )
     try:
-        shutil.copyfile(source, target)
+        source_text = source.read_text(encoding="utf-8", errors="replace")
+        target.write_text(_inject_artifact_attrs_and_banner(source_text, manifest), encoding="utf-8")
+        _write_artifact_manifest(reports_dir / "source_html_evidence_manifest.json", manifest)
     except OSError:
         return ""
     return str(target.relative_to(out)).replace("\\", "/")
@@ -3219,6 +3448,7 @@ def _quality_dashboard_row(row: dict[str, Any]) -> str:
 
 def _semantic_source_index_html(book: dict[str, Any]) -> str:
     summary = dict(book.get("summary") or {})
+    artifact_manifest = dict(book.get("artifact_manifest") or {})
     chapters = list(book.get("chapters") or [])
     pages = _semantic_pages_with_logical_pgn(book)
     toc = "\n".join(
@@ -3236,11 +3466,12 @@ def _semantic_source_index_html(book: dict[str, Any]) -> str:
   <link rel="stylesheet" href="styles.css">
   <title>{html.escape(str(book.get('title') or 'Chess Study Reader'))}</title>
 </head>
-<body>
+<body {_artifact_data_attrs(artifact_manifest)}>
   <header class="app-header">
     <p class="eyebrow">MasterKindle study reader</p>
     <h1>{html.escape(str(book.get('title') or 'Chess Study Reader'))}</h1>
     <p class="lede">Logical chess-study reader rebuilt from source order: prose, diagrams, FEN/PGN review, and notation stay together without reproducing the PDF page layout 1:1.</p>
+    {_artifact_provenance_banner_html(artifact_manifest)}
     <section class="scorebar" aria-label="Conversion summary">
       {_score_tile('Pages', summary.get('html_pages'))}
       {_score_tile('Diagrams', summary.get('diagrams_total'))}
@@ -3708,6 +3939,9 @@ h1 { margin:.1rem 0 .6rem; font-size:clamp(2rem,5vw,4.4rem); line-height:1; }
 .score { background:var(--paper); border:1px solid var(--line); border-radius:18px; padding:.8rem .9rem; box-shadow:0 10px 30px rgba(47,30,9,.06); }
 .score span { display:block; color:var(--muted); font-size:.76rem; font-weight:900; letter-spacing:.05em; text-transform:uppercase; }
 .score strong { display:block; margin-top:.15rem; font-size:1.45rem; line-height:1.1; }
+.artifact-provenance { background:var(--paper); border:1px solid var(--line); border-left:6px solid var(--accent); border-radius:18px; padding:.9rem 1rem; margin:1rem 0; box-shadow:0 10px 30px rgba(47,30,9,.06); }
+.artifact-provenance h2 { margin:0 0 .35rem; font-size:1rem; }
+.artifact-provenance p { margin:.2rem 0; }
 .layout { max-width:1240px; margin:0 auto; display:grid; grid-template-columns:260px minmax(0,1fr); gap:1.25rem; padding:0 1rem 3rem; }
 .sidebar { position:sticky; top:1rem; align-self:start; max-height:calc(100vh - 2rem); overflow:auto; background:#24170f; color:#fff8ed; border-radius:22px; padding:1rem; }
 .sidebar a, .sidebar label { color:#fff8ed; display:block; margin:.45rem 0; text-decoration:none; }
@@ -5234,9 +5468,22 @@ def render_study_html(
     qa_report: dict[str, Any],
     page_model: dict[str, Any] | None = None,
     notation_fragments: dict[str, Any] | None = None,
+    source_pdf: str | Path | None = None,
+    source_html: str | Path | None = None,
+    source_gate: Mapping[str, Any] | None = None,
 ) -> Path:
     out = Path(out_dir)
     position_list = list(positions.get("positions") or [])
+    artifact_manifest = _build_artifact_manifest(
+        artifact_type=FINAL_READER_ARTIFACT_TYPE,
+        pipeline_mode="pdf_two_crop_reader",
+        source_pdf=source_pdf,
+        source_html=source_html,
+        source_gate=source_gate,
+        summary=qa_report.get("summary") or {},
+        positions=position_list,
+    )
+    _write_artifact_manifest(out / "data" / "artifact_manifest.json", artifact_manifest)
     status_options = sorted(STUDY_STATUSES)
     chapters = list(structure.get("chapters") or [])
     body_cards = "\n".join(_position_card_html(item) for item in position_list) or "<p>No positions detected yet.</p>"
@@ -5272,12 +5519,15 @@ def render_study_html(
     code, pre {{ font-family: 'Courier New', monospace; }}
     pre {{ white-space:pre-wrap; background:#f6eddd; padding:.75rem; border-radius:12px; }}
     button {{ border:1px solid var(--line); border-radius:999px; background:#fff8ed; padding:.42rem .75rem; font-weight:800; cursor:pointer; }}
+    .artifact-provenance {{ background:#fff8ed; border:1px solid var(--line); border-left:6px solid var(--accent); border-radius:14px; padding:.85rem 1rem; margin:0 0 1rem; }}
+    .artifact-provenance h2 {{ margin:0 0 .35rem; font-size:1rem; }}
+    .artifact-provenance p {{ margin:.2rem 0; }}
     .debug {{ display:none; }}
     body.show-debug .debug {{ display:block; }}
     @media(max-width:960px) {{ .shell {{ grid-template-columns:1fr; }} aside {{ position:relative; height:auto; }} .card {{ grid-template-columns:1fr; }} }}
   </style>
 </head>
-<body>
+<body {_artifact_data_attrs(artifact_manifest)}>
 <div class="shell">
   <aside>
     <h2>Chapters</h2>
@@ -5289,6 +5539,7 @@ def render_study_html(
   </aside>
   <main>
     <h1>Build Up Your Chess - Study Export</h1>
+    {_artifact_provenance_banner_html(artifact_manifest)}
     {_summary_html(qa_report)}
     <section id="positions">{body_cards}</section>
   </main>

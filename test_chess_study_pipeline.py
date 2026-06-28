@@ -11,6 +11,7 @@ from unittest.mock import patch
 import fitz
 from PIL import Image
 
+import chess_study_export
 from chess_study_export import (
     ChessStudyConfig,
     YUSUPOV_CHAPTERS,
@@ -884,6 +885,7 @@ class ChessStudyPipelineTests(unittest.TestCase):
                 "app.js",
                 "data/book.json",
                 "data/diagrams.json",
+                "data/artifact_manifest.json",
                 "data/games.pgn",
                 "reports/conversion-audit.md",
                 "reports/source_html_quality_gate.json",
@@ -920,10 +922,18 @@ class ChessStudyPipelineTests(unittest.TestCase):
             self.assertEqual(pages_summary["page_images"], 0)
             self.assertEqual((out / "book.pgn").read_text(encoding="utf-8"), "")
             source_book = json.loads((out / "data" / "book.json").read_text(encoding="utf-8"))
+            artifact_manifest = json.loads((out / "data" / "artifact_manifest.json").read_text(encoding="utf-8"))
             source_index = (out / "index.html").read_text(encoding="utf-8")
             self.assertEqual(source_book["summary"]["html_pages"], 1)
             source_gate = json.loads((out / "reports" / "source_html_quality_gate.json").read_text(encoding="utf-8"))
             self.assertTrue(source_gate["used_as_final_reader"])
+            self.assertEqual(artifact_manifest["artifact_type"], "final_pdf_two_crop_reader")
+            self.assertEqual(artifact_manifest["pipeline_mode"], "source_html_semantic_reader")
+            self.assertEqual(artifact_manifest["source_html_quality_gate"]["decision"], "use_source_html_as_final_reader")
+            self.assertEqual(artifact_manifest["side_unknown_count"], 0)
+            self.assertIn("Artifact type:", source_index)
+            self.assertIn('data-artifact-type="final_pdf_two_crop_reader"', source_index)
+            self.assertIn('data-pipeline-mode="source_html_semantic_reader"', source_index)
             self.assertNotIn("localhost", source_index)
             self.assertNotIn("fen_not_recognized", source_index)
 
@@ -1013,14 +1023,24 @@ class ChessStudyPipelineTests(unittest.TestCase):
 
             gate = json.loads((out / "reports" / "source_html_quality_gate.json").read_text(encoding="utf-8"))
             source_book_exists = (out / "data" / "book.json").exists()
+            evidence_html = (out / gate["source_html_evidence_path"]).read_text(encoding="utf-8")
+            evidence_manifest = json.loads((out / "reports" / "source_html_evidence_manifest.json").read_text(encoding="utf-8"))
 
         self.assertFalse(gate["used_as_final_reader"])
         self.assertTrue(gate["source_html_evidence_only"])
         self.assertEqual(gate["decision"], "reject_degraded_source_html")
+        self.assertEqual(gate["source_html_evidence_manifest_path"], "reports/source_html_evidence_manifest.json")
         self.assertIn("source_html_lacks_fen_marker_or_crop_evidence", gate["reasons"])
         self.assertIn("all_or_most_diagrams_have_unknown_side_and_no_accepted_fen", gate["reasons"])
         self.assertEqual(gate["summary"]["resolved_diagram_image_count"], 2)
         self.assertEqual(gate["summary"]["side_unknown_count"], 2)
+        self.assertEqual(evidence_manifest["artifact_type"], "source_html_evidence_only")
+        self.assertEqual(evidence_manifest["source_html_quality_gate"]["decision"], "reject_degraded_source_html")
+        self.assertEqual(evidence_manifest["side_unknown_count"], 2)
+        self.assertIn("Artifact type:", evidence_html)
+        self.assertIn("source_html_evidence_only", evidence_html)
+        self.assertIn('data-artifact-type="source_html_evidence_only"', evidence_html)
+        self.assertIn("Evidence-only source HTML", evidence_html)
         self.assertFalse(source_book_exists)
 
     def test_run_all_keeps_degraded_source_html_evidence_only(self) -> None:
@@ -1053,7 +1073,9 @@ class ChessStudyPipelineTests(unittest.TestCase):
 
             gate = json.loads((out / "reports" / "source_html_quality_gate.json").read_text(encoding="utf-8"))
             final_index = (out / "index.html").read_text(encoding="utf-8")
+            final_manifest = json.loads((out / "data" / "artifact_manifest.json").read_text(encoding="utf-8"))
             evidence_file_exists = (out / gate["source_html_evidence_path"]).is_file()
+            evidence_manifest = json.loads((out / "reports" / "source_html_evidence_manifest.json").read_text(encoding="utf-8"))
             source_book_exists = (out / "data" / "book.json").exists()
 
         self.assertFalse(gate["used_as_final_reader"])
@@ -1066,9 +1088,29 @@ class ChessStudyPipelineTests(unittest.TestCase):
         self.assertEqual(gate["summary"]["source_img_localhost_count"], 1)
         self.assertEqual(gate["summary"]["fen_accepted"], 0)
         self.assertEqual(gate["summary"]["side_unknown_count"], 2)
+        self.assertEqual(final_manifest["artifact_type"], "final_pdf_two_crop_reader")
+        self.assertEqual(final_manifest["pipeline_mode"], "pdf_two_crop_reader")
+        self.assertEqual(final_manifest["source_html_quality_gate"]["decision"], "reject_degraded_source_html")
+        self.assertEqual(evidence_manifest["artifact_type"], "source_html_evidence_only")
+        self.assertEqual(evidence_manifest["empty_img_src_count"], 1)
+        self.assertIn("Artifact type:", final_index)
+        self.assertIn('data-artifact-type="final_pdf_two_crop_reader"', final_index)
+        self.assertIn('data-source-html-gate-decision="reject_degraded_source_html"', final_index)
         self.assertTrue(evidence_file_exists)
         self.assertFalse(source_book_exists)
         self.assertNotIn("FEN recognition is not available for this extracted diagram crop yet.", final_index)
+
+    def test_artifact_manifest_records_commit_sha_fallback_reason(self) -> None:
+        with patch("chess_study_export._current_git_commit", return_value=""):
+            manifest = chess_study_export._build_artifact_manifest(
+                artifact_type="final_pdf_two_crop_reader",
+                pipeline_mode="pdf_two_crop_reader",
+                summary={"diagrams_total": 1, "fen_accepted": 0},
+            )
+
+        self.assertEqual(manifest["commit_sha"], "")
+        self.assertEqual(manifest["commit_sha_reason"], "git_rev_parse_head_unavailable")
+        self.assertEqual(manifest["artifact_type"], "final_pdf_two_crop_reader")
 
     def test_masterkindle_profile_fails_when_quality_thresholds_are_not_met(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

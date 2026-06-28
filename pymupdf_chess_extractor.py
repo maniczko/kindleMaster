@@ -6182,9 +6182,13 @@ def _scan_chess_side_marker_probes(
 
     specs = (
         ("top_right", x1 - side * 0.24, y0, x1 + side * 0.04, y0 + side * 0.20),
+        ("top_right_outside", x1 + side * 0.02, y0 - side * 0.02, x1 + side * 0.26, y0 + side * 0.26),
         ("top_left", x0 - side * 0.04, y0, x0 + side * 0.24, y0 + side * 0.20),
+        ("top_left_outside", x0 - side * 0.26, y0 - side * 0.02, x0 - side * 0.02, y0 + side * 0.26),
         ("bottom_right", x1 - side * 0.24, y1 - side * 0.20, x1 + side * 0.04, y1),
+        ("bottom_right_outside", x1 + side * 0.02, y1 - side * 0.26, x1 + side * 0.26, y1 + side * 0.02),
         ("bottom_left", x0 - side * 0.04, y1 - side * 0.20, x0 + side * 0.24, y1),
+        ("bottom_left_outside", x0 - side * 0.26, y1 - side * 0.26, x0 - side * 0.02, y1 + side * 0.02),
         ("right_side", x1 + side * 0.02, y0 + side * 0.18, x1 + side * 0.20, y0 + side * 0.58),
         ("left_side", x0 - side * 0.20, y0 + side * 0.18, x0 - side * 0.02, y0 + side * 0.58),
         ("caption_above", x0, y0 - side * 0.22, x1, y0),

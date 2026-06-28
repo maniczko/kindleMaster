@@ -18,6 +18,8 @@ from pymupdf_chess_extractor import (
     ScanChessSideToMoveEvidence,
     _apply_scan_chess_side_to_move_context_evidence,
     _chess_diagram_record_from_image,
+    _infer_scan_chess_side_to_move_marker_evidence,
+    _scan_chess_side_marker_probe_payloads,
     classify_scan_chess_side_marker_crop,
 )
 
@@ -295,6 +297,31 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertEqual(blockers["summary"]["diagram_count"], 1)
         self.assertIn("Side Marker Blocker Attribution", blockers_md)
 
+    def test_side_marker_probe_covers_outside_top_right_corner(self) -> None:
+        page = Image.new("RGB", (420, 440), "white")
+        draw = ImageDraw.Draw(page)
+        board_bbox = (100.0, 170.0, 300.0, 370.0)
+        draw.rectangle(board_bbox, outline="black", width=3)
+        draw.polygon([(312, 176), (342, 176), (327, 205)], fill="black")
+
+        payloads = _scan_chess_side_marker_probe_payloads(page, board_bbox)
+        by_role = {str(payload.get("role")): payload for payload in payloads}
+        outside = by_role["top_right_outside"]
+        evidence = _infer_scan_chess_side_to_move_marker_evidence(page, board_bbox)
+        trusted_roles = {
+            str(payload.get("role"))
+            for payload in (evidence.marker_candidates if evidence is not None else ())
+            if payload.get("detected_side") == "b"
+        }
+
+        self.assertEqual(outside["marker_classifier_status"], "trusted_marker")
+        self.assertEqual(outside["detected_side"], "b")
+        self.assertEqual(outside["conflict_group"], "corner")
+        self.assertIsNotNone(evidence)
+        self.assertEqual(evidence.side, "b")
+        self.assertIn("side_to_move_marker_detected", evidence.warnings)
+        self.assertIn("top_right_outside", trusted_roles)
+
     def test_pdf_side_marker_conflict_remains_review_only_with_crop_trace(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -454,7 +481,14 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertEqual(summary["full_fen_accepted_count"], 1)
         self.assertEqual(summary["blocked_by_marker_count"], 1)
         self.assertEqual(summary["blocked_by_placement_count"], 0)
+        probe_quality = report["probe_quality_before_after"]
+        self.assertEqual(probe_quality["status"], "TRAINING_DATA_GAP")
+        self.assertEqual(probe_quality["after"]["marker_missing_count"], 1)
+        self.assertEqual(probe_quality["after"]["marker_conflict_count"], 0)
+        self.assertEqual(probe_quality["after"]["trusted_marker_count"], 1)
+        self.assertEqual(probe_quality["after"]["full_fen_accepted_count"], 1)
         self.assertEqual(report["accuracy"]["status"], "TRAINING_DATA_GAP")
+        self.assertIn("Probe Before/After", markdown)
         self.assertIn("TRAINING_DATA_GAP", markdown)
         self.assertIn("two_crop_quality_metrics", flow_payload["artifacts"])
 

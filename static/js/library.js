@@ -280,7 +280,6 @@
     function renderReviewArtifactActions(artifacts) {
       if (!artifacts || typeof artifacts !== "object") return [];
       return [
-        renderArtifactAction(artifacts.chess_pgn_html, "HTML PGN/FEN"),
         renderArtifactAction(artifacts.pdf_layout_preview, "PDF layout preview (audyt layoutu)"),
         renderArtifactAction(artifacts.chess_glyph_diagnostics, "Glyph diagnostics"),
         renderArtifactAction(artifacts.chess_pgn, "PGN"),

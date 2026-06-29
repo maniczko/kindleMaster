@@ -194,6 +194,46 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
             app_module._CONVERSION_JOBS[job_id]["artifacts"]["pdf_layout_preview"] = artifact
         return preview_path
 
+    def _yusupov_style_training_data_gap(self) -> dict[str, object]:
+        fixture_roots = [Path("reference_inputs"), Path("example")]
+        candidates: list[str] = []
+        for root in fixture_roots:
+            if not root.exists():
+                continue
+            for pattern in ("*yusupov*.pdf", "*Yusupov*.pdf", "*yusupov*.html", "*Yusupov*.html"):
+                candidates.extend(str(path) for path in root.rglob(pattern))
+        def has_verified_sidecars(source_path: Path) -> bool:
+            evidence_roots = [
+                source_path.with_suffix(""),
+                source_path.parent / f"{source_path.stem}_evidence",
+                source_path.parent / f"{source_path.stem}_semantic_chess_html",
+            ]
+            return any(
+                (root / "data" / "artifact_manifest.json").is_file()
+                and (root / "reports" / "final_reader_health_gate.json").is_file()
+                for root in evidence_roots
+            )
+        usable = [
+            path
+            for path in candidates
+            if Path(path).is_file()
+            and any(token in Path(path).name.lower() for token in ("yusupov", "build-up-your-chess"))
+            and has_verified_sidecars(Path(path))
+        ]
+        return {
+            "status": "TRAINING_DATA_GAP" if not usable else "ready",
+            "fixture_family": "yusupov_style_chess_training",
+            "candidate_paths": candidates,
+            "usable_source_count": len(usable),
+            "required_evidence": [
+                "source PDF or source HTML",
+                "artifact_manifest.json",
+                "final_reader_health_gate.json",
+                "trusted side-marker evidence or explicit blocker",
+            ],
+            "reason": "" if usable else "No verified Yusupov-style source fixture with crop/FEN/side-marker evidence is present.",
+        }
+
     def test_store_extra_artifacts_builds_final_reader_sidecar_from_diagram_records(self) -> None:
         job_id = "real-extra-artifact-sidecar"
         self._artifact_root(job_id)
@@ -368,6 +408,150 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
         self.assertIn("fen_accepted_zero", status_payload["final_reader_blockers"])
         self.assertIn("missing_side_marker_evidence", status_payload["final_reader_blockers"])
         self.assertFalse(status_payload["chess_files"]["chess_pgn_html"]["available"])
+
+    def test_yusupov_style_conversion_downloads_block_bad_final_reader_and_keep_preview_audit_only(self) -> None:
+        job_id = "yusupov-style-artifact-e2e-blocked"
+        self._artifact_root(job_id)
+        stored = app_module._store_extra_conversion_artifacts(
+            job_id,
+            [
+                {
+                    "key": "chess_pgn_html",
+                    "filename": "chess_games.html",
+                    "content_type": "text/html; charset=utf-8",
+                    "label": "HTML PGN/FEN",
+                    "data": "<!doctype html><html><body><p>Bad Yusupov-style source evidence HTML</p></body></html>",
+                },
+                {
+                    "key": "pdf_layout_preview",
+                    "filename": "pdf_layout_preview.html",
+                    "content_type": "text/html; charset=utf-8",
+                    "label": "PDF layout preview",
+                    "data": "<!doctype html><html><body>PDF layout audit only</body></html>",
+                },
+                {
+                    "key": "chess_diagrams",
+                    "filename": "chess_diagrams.json",
+                    "content_type": "application/json; charset=utf-8",
+                    "label": "Chess diagrams",
+                    "data": json.dumps(
+                        {
+                            "schema": "kindlemaster.yusupov_style_chess_diagrams.v1",
+                            "diagram_count": 2,
+                            "records": [
+                                {
+                                    "id": "yusupov-style-001",
+                                    "page": 14,
+                                    "caption": "Diagram 14-1",
+                                    "fen": "",
+                                    "fen_candidate": "",
+                                    "requires_review": True,
+                                    "side_to_move": "unknown",
+                                    "side_marker_status": "",
+                                    "board_crop_path": "data:image/png;base64,AA==",
+                                    "confidence": 0.22,
+                                    "warnings": ["side_marker_missing", "fen_not_accepted"],
+                                },
+                                {
+                                    "id": "yusupov-style-002",
+                                    "page": 15,
+                                    "caption": "Diagram 15-1",
+                                    "fen": "",
+                                    "fen_candidate": "",
+                                    "requires_review": True,
+                                    "side_to_move": "unknown",
+                                    "side_marker_status": "",
+                                    "board_crop_path": "data:image/png;base64,BB==",
+                                    "confidence": 0.18,
+                                    "warnings": ["side_marker_missing", "fen_not_accepted"],
+                                },
+                            ],
+                        }
+                    ),
+                },
+                {
+                    "key": "chess_glyph_diagnostics",
+                    "filename": "chess_glyph_diagnostics.json",
+                    "content_type": "application/json; charset=utf-8",
+                    "label": "Chess glyph diagnostics",
+                    "data": json.dumps({"status": "review_required", "accepted_pgn": 0, "fen_accepted": 0}),
+                },
+            ],
+        )
+        created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        with app_module._CONVERSION_JOBS_LOCK:
+            app_module._CONVERSION_JOBS[job_id] = {
+                "job_id": job_id,
+                "status": "ready",
+                "message": "EPUB ready.",
+                "source_type": "pdf",
+                "filename": "yusupov-style-training.pdf",
+                "created_at": created_at,
+                "updated_at": created_at,
+                "source_path": "",
+                "output_path": "",
+                "download_name": "yusupov-style-training.epub",
+                "metadata": {
+                    "source_type": "pdf",
+                    "profile": "chess_training",
+                    "chess_pgn": {
+                        "candidate_game_count": 0,
+                        "valid_pgn_count": 0,
+                        "legal_pgn_count": 0,
+                        "strict_export_count": 0,
+                        "exportable_pgn_count": 0,
+                        "manual_review_count": 2,
+                    },
+                },
+                "output_size_bytes": 0,
+                "error": "",
+                "error_code": "",
+                "artifacts": stored,
+            }
+
+        status_response = self.client.get(f"/convert/status/{job_id}")
+        html_response = self.client.get(f"/convert/artifact/{job_id}/chess_pgn_html")
+        preview_response = self.client.get(f"/convert/artifact/{job_id}/pdf_layout_preview")
+
+        self.assertEqual(status_response.status_code, 200)
+        status_payload = status_response.get_json()
+        self.assertIn("chess_pgn_html", status_payload["chess_files"])
+        self.assertFalse(status_payload["chess_files"]["chess_pgn_html"]["available"])
+        self.assertFalse(status_payload["final_reader_available"])
+        self.assertIn("fen_accepted_zero", status_payload["final_reader_blockers"])
+        self.assertIn("missing_side_marker_evidence", status_payload["final_reader_blockers"])
+        self.assertIn("chess_diagrams", status_payload["artifacts"])
+        self.assertIn("chess_glyph_diagnostics", status_payload["artifacts"])
+        self.assertIn("pdf_layout_preview", status_payload["artifacts"])
+        self.assertNotIn("chess_diagrams", status_payload["chess_files"])
+        self.assertNotIn("chess_glyph_diagnostics", status_payload["chess_files"])
+
+        self.assertEqual(html_response.status_code, 409)
+        html_payload = html_response.get_json()
+        self.assertEqual(html_payload["error_code"], "final_reader_health_gate_failed")
+        self.assertNotIn("Bad Yusupov-style source evidence HTML", html_response.get_data(as_text=True))
+        self.assertIn("fen_accepted_zero", html_payload["final_reader_health_gate"]["blockers"])
+        self.assertIn("missing_side_marker_evidence", html_payload["final_reader_health_gate"]["blockers"])
+
+        self.assertEqual(preview_response.status_code, 200)
+        preview_text = preview_response.get_data(as_text=True)
+        self.assertIn("To nie jest finalny reader szachowy", preview_text)
+        self.assertIn("Artefakt audytowy", preview_text)
+        self.assertNotEqual(html_response.get_data(as_text=True), preview_text)
+        self.assertNotIn('data-primary-chess-artifact="pdf_layout_preview"', preview_text)
+
+    def test_yusupov_style_real_fixture_gap_is_reported_without_fabricating_labels(self) -> None:
+        gap = self._yusupov_style_training_data_gap()
+        gap_path = Path(self.store_temp_dir.name) / "yusupov_style_training_data_gap.json"
+        gap_path.write_text(json.dumps(gap, indent=2), encoding="utf-8")
+
+        payload = json.loads(gap_path.read_text(encoding="utf-8"))
+        if payload["status"] == "TRAINING_DATA_GAP":
+            self.assertEqual(payload["usable_source_count"], 0)
+            self.assertIn("No verified Yusupov-style source fixture", payload["reason"])
+            self.assertIn("trusted side-marker evidence or explicit blocker", payload["required_evidence"])
+        else:
+            self.assertGreater(payload["usable_source_count"], 0)
 
     def test_final_reader_missing_health_gate_is_blocked(self) -> None:
         job_id = "routing-missing-final-reader-health-gate"

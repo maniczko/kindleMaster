@@ -131,6 +131,31 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
             "fen_accepted": diagrams_total,
         }
         (data_dir / "artifact_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        reports_dir = semantic_dir / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        (reports_dir / "final_reader_health_gate.json").write_text(
+            json.dumps(
+                {
+                    "schema": "kindlemaster.chess_study.final_reader_health_gate.v1",
+                    "decision": "pass",
+                    "status": "PASS",
+                    "artifact_type": "final_pdf_two_crop_reader",
+                    "pipeline_mode": "pdf_two_crop_reader",
+                    "diagram_cards_count": diagrams_total,
+                    "side_unknown_count": 0,
+                    "data_side_marker_attr_count": diagrams_total,
+                    "trusted_marker_count": diagrams_total,
+                    "side_marker_crop_count": diagrams_total,
+                    "board_crop_count": diagrams_total,
+                    "empty_img_src_count": 0,
+                    "asset_missing_empty_src_count": 0,
+                    "fen_accepted": diagrams_total,
+                    "blockers": [],
+                    "warnings": [],
+                }
+            ),
+            encoding="utf-8",
+        )
         index_path = semantic_dir / "index.html"
         index_path.write_text(
             """
@@ -268,6 +293,133 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
         self.assertIn(fen, html_text)
         self.assertNotIn("Source evidence HTML", html_text)
 
+    def test_store_extra_artifacts_blocks_reader_without_accepted_fen_or_marker(self) -> None:
+        job_id = "real-extra-artifact-blocked-sidecar"
+        self._artifact_root(job_id)
+        stored = app_module._store_extra_conversion_artifacts(
+            job_id,
+            [
+                {
+                    "key": "chess_pgn_html",
+                    "filename": "chess_games.html",
+                    "content_type": "text/html; charset=utf-8",
+                    "label": "HTML PGN/FEN",
+                    "data": "<!doctype html><html><body><p>Bad source evidence HTML</p></body></html>",
+                },
+                {
+                    "key": "chess_diagrams",
+                    "filename": "chess_diagrams.json",
+                    "content_type": "application/json; charset=utf-8",
+                    "label": "Chess diagrams",
+                    "data": json.dumps(
+                        {
+                            "diagram_count": 1,
+                            "records": [
+                                {
+                                    "id": "diagram-review",
+                                    "page": 1,
+                                    "caption": "Diagram 1",
+                                    "fen_candidate": "",
+                                    "requires_review": True,
+                                    "side_to_move": "unknown",
+                                    "side_marker_status": "",
+                                    "board_crop_path": "data:image/png;base64,AA==",
+                                    "confidence": 0.41,
+                                    "warnings": ["side_marker_missing"],
+                                }
+                            ],
+                        }
+                    ),
+                },
+            ],
+        )
+        created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        with app_module._CONVERSION_JOBS_LOCK:
+            app_module._CONVERSION_JOBS[job_id] = {
+                "job_id": job_id,
+                "status": "ready",
+                "message": "EPUB ready.",
+                "source_type": "pdf",
+                "filename": "study.pdf",
+                "created_at": created_at,
+                "updated_at": created_at,
+                "source_path": "",
+                "output_path": "",
+                "download_name": "study.epub",
+                "metadata": {"source_type": "pdf", "profile": "chess_training"},
+                "output_size_bytes": 0,
+                "error": "",
+                "error_code": "",
+                "artifacts": stored,
+            }
+
+        response = self.client.get(f"/convert/artifact/{job_id}/chess_pgn_html")
+        status_response = self.client.get(f"/convert/status/{job_id}")
+
+        self.assertEqual(response.status_code, 409)
+        payload = response.get_json()
+        self.assertEqual(payload["error_code"], "final_reader_health_gate_failed")
+        self.assertNotIn("Bad source evidence HTML", response.get_data(as_text=True))
+        self.assertIn("fen_accepted_zero", payload["final_reader_health_gate"]["blockers"])
+        self.assertIn("missing_side_marker_evidence", payload["final_reader_health_gate"]["blockers"])
+        self.assertEqual(status_response.status_code, 200)
+        status_payload = status_response.get_json()
+        self.assertFalse(status_payload["final_reader_available"])
+        self.assertIn("fen_accepted_zero", status_payload["final_reader_blockers"])
+        self.assertIn("missing_side_marker_evidence", status_payload["final_reader_blockers"])
+        self.assertFalse(status_payload["chess_files"]["chess_pgn_html"]["available"])
+
+    def test_final_reader_missing_health_gate_is_blocked(self) -> None:
+        job_id = "routing-missing-final-reader-health-gate"
+        source_html = self._register_chess_html_job(
+            job_id,
+            "<!doctype html><html><body><p>Source report should not be served.</p></body></html>",
+        )
+        job_root = source_html.parents[1]
+        semantic_dir = job_root / "semantic_chess_html"
+        data_dir = semantic_dir / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        (data_dir / "artifact_manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema": "kindlemaster.chess_study.artifact_manifest.v1",
+                    "artifact_type": "final_pdf_two_crop_reader",
+                    "pipeline_mode": "pdf_two_crop_reader",
+                    "diagrams_total": 1,
+                    "side_unknown_count": 0,
+                    "trusted_marker_count": 1,
+                    "side_marker_crop_count": 1,
+                    "board_crop_count": 1,
+                    "empty_img_src_count": 0,
+                    "fen_accepted": 1,
+                }
+            ),
+            encoding="utf-8",
+        )
+        (semantic_dir / "index.html").write_text(
+            """
+            <!doctype html><html><body data-artifact-type="final_pdf_two_crop_reader">
+              <article class="card" data-position-status="accepted" data-side-marker-status="trusted_marker">
+                <p>This HTML must not be served without health gate.</p>
+              </article>
+            </body></html>
+            """,
+            encoding="utf-8",
+        )
+
+        response = self.client.get(f"/convert/artifact/{job_id}/chess_pgn_html")
+        status_response = self.client.get(f"/convert/status/{job_id}")
+
+        self.assertEqual(response.status_code, 409)
+        payload = response.get_json()
+        self.assertEqual(payload["error_code"], "final_reader_health_gate_failed")
+        self.assertIn("final_reader_health_gate_missing", payload["final_reader_health_gate"]["blockers"])
+        self.assertNotIn("This HTML must not be served", response.get_data(as_text=True))
+        self.assertEqual(status_response.status_code, 200)
+        status_payload = status_response.get_json()
+        self.assertFalse(status_payload["final_reader_available"])
+        self.assertIn("final_reader_health_gate_missing", status_payload["final_reader_blockers"])
+
     def test_evidence_only_html_is_not_returned_as_final_artifact(self) -> None:
         job_id = "routing-evidence-only"
         self._register_chess_html_job(
@@ -389,6 +541,31 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
             "fen_accepted": 2,
         }
         (data_dir / "artifact_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        reports_dir = semantic_dir / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        (reports_dir / "final_reader_health_gate.json").write_text(
+            json.dumps(
+                {
+                    "schema": "kindlemaster.chess_study.final_reader_health_gate.v1",
+                    "decision": "pass",
+                    "status": "PASS",
+                    "artifact_type": "final_pdf_two_crop_reader",
+                    "pipeline_mode": "source_html_semantic_reader",
+                    "diagram_cards_count": 2,
+                    "side_unknown_count": 0,
+                    "data_side_marker_attr_count": 2,
+                    "trusted_marker_count": 2,
+                    "side_marker_crop_count": 2,
+                    "board_crop_count": 2,
+                    "empty_img_src_count": 0,
+                    "asset_missing_empty_src_count": 0,
+                    "fen_accepted": 2,
+                    "blockers": [],
+                    "warnings": [],
+                }
+            ),
+            encoding="utf-8",
+        )
         pdf_preview_path = report_dir / "pdf_layout_preview.html"
         pdf_preview_path.write_text("<!doctype html><html><body>PDF layout audit</body></html>", encoding="utf-8")
         pdf_preview_artifact = app_module._local_artifact_metadata(job_id, ArtifactKind.REPORT, pdf_preview_path)

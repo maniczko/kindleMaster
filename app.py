@@ -519,6 +519,8 @@ def _render_chess_pgn_semantic_artifact(job_id: str, job: dict, artifact: dict, 
     if semantic_index is None or not semantic_index.is_file():
         return None
     health_gate = _semantic_chess_reader_health_gate(semantic_index)
+    if not health_gate:
+        health_gate = _missing_final_reader_health_gate(semantic_index)
     if _final_reader_health_gate_failed(health_gate):
         return _final_reader_health_gate_failed_response(job_id, semantic_index, artifact_path, artifact, health_gate)
     try:
@@ -1037,6 +1039,23 @@ def _semantic_chess_reader_health_gate(semantic_index: Path | None) -> dict:
     return _read_json_file(semantic_index.parent / "reports" / "final_reader_health_gate.json")
 
 
+def _missing_final_reader_health_gate(semantic_index: Path | None) -> dict:
+    if semantic_index is None:
+        return {}
+    manifest = _read_json_file(semantic_index.parent / "data" / "artifact_manifest.json")
+    if manifest.get("artifact_type") != FINAL_READER_ARTIFACT_TYPE:
+        return {}
+    return {
+        "schema": "kindlemaster.chess_study.final_reader_health_gate.v1",
+        "decision": "fail",
+        "status": "FAIL",
+        "artifact_type": FINAL_READER_ARTIFACT_TYPE,
+        "pipeline_mode": str(manifest.get("pipeline_mode") or ""),
+        "blockers": ["final_reader_health_gate_missing"],
+        "warnings": [],
+    }
+
+
 def _final_reader_health_gate_failed(health_gate: Mapping[str, object] | None) -> bool:
     if not isinstance(health_gate, Mapping):
         return False
@@ -1183,6 +1202,8 @@ def _chess_reader_routing_metadata(
     ):
         source_html_evidence_path = str(artifact_path)
     health_gate = _semantic_chess_reader_health_gate(final_reader_path_obj)
+    if final_reader_path_obj is not None and not health_gate:
+        health_gate = _missing_final_reader_health_gate(final_reader_path_obj)
     artifact_health = artifact_mapping.get("final_reader_health")
     final_reader_health = _final_reader_health_summary(
         manifest,

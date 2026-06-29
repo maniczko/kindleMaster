@@ -90,21 +90,24 @@ class PdfLayoutPreviewArtifactTests(unittest.TestCase):
             """,
             encoding="utf-8",
         )
-        if health_gate_status != "PASS":
-            (reports_dir / "final_reader_health_gate.json").write_text(
-                json.dumps(
-                    {
-                        "schema": "kindlemaster.chess_study.final_reader_health_gate.v1",
-                        "status": health_gate_status,
-                        "artifact_type": "final_pdf_two_crop_reader",
-                        "blockers": blockers or ["final_reader_health_gate_failed"],
-                        "side_unknown_count": 30,
-                        "trusted_marker_count": 0,
-                        "empty_img_src_count": 0,
-                    }
-                ),
-                encoding="utf-8",
-            )
+        (reports_dir / "final_reader_health_gate.json").write_text(
+            json.dumps(
+                {
+                    "schema": "kindlemaster.chess_study.final_reader_health_gate.v1",
+                    "decision": "pass" if health_gate_status == "PASS" else "fail",
+                    "status": health_gate_status,
+                    "artifact_type": "final_pdf_two_crop_reader",
+                    "pipeline_mode": "pdf_two_crop_reader",
+                    "blockers": blockers or ([] if health_gate_status == "PASS" else ["final_reader_health_gate_failed"]),
+                    "side_unknown_count": 0 if health_gate_status == "PASS" else 30,
+                    "trusted_marker_count": 2 if health_gate_status == "PASS" else 0,
+                    "empty_img_src_count": 0,
+                    "fen_accepted": 2 if health_gate_status == "PASS" else 0,
+                    "fen_evidence_count": 2 if health_gate_status == "PASS" else 0,
+                }
+            ),
+            encoding="utf-8",
+        )
         artifact["download_url"] = f"/convert/artifact/{job_id}/chess_pgn_html"
         artifact["label"] = "HTML PGN/FEN"
         artifact["content_type"] = "text/html; charset=utf-8"

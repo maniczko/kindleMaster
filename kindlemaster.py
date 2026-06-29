@@ -2013,14 +2013,53 @@ def _json_text(value: Any) -> str:
     return json.dumps(_json_safe(value), ensure_ascii=False, indent=2)
 
 
+_SENSITIVE_JSON_KEY_PARTS = (
+    "api_key",
+    "apikey",
+    "authorization",
+    "credential",
+    "password",
+    "private_key",
+    "secret",
+    "token",
+)
+
+
+def _looks_sensitive_json_key(key: str) -> bool:
+    normalized = "".join(character for character in key.lower() if character.isalnum())
+    return any(part.replace("_", "") in normalized for part in _SENSITIVE_JSON_KEY_PARTS)
+
+
+def _redact_sensitive_cli_json(value: Any) -> Any:
+    safe_value = _json_safe(value)
+    if isinstance(safe_value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in safe_value.items():
+            if _looks_sensitive_json_key(str(key)) and isinstance(item, (str, bytes)):
+                redacted[str(key)] = "[redacted]"
+            else:
+                redacted[str(key)] = _redact_sensitive_cli_json(item)
+        return redacted
+    if isinstance(safe_value, list):
+        return [_redact_sensitive_cli_json(item) for item in safe_value]
+    return safe_value
+
+
 def _print_json(value: Any) -> None:
-    rendered = _json_text(value)
+    rendered = _json_text(_redact_sensitive_cli_json(value))
     stream = getattr(sys.stdout, "buffer", None)
     if stream is not None:
         stream.write((rendered + "\n").encode("utf-8", errors="replace"))
         stream.flush()
         return
-    print(rendered)
+    fileno = getattr(sys.stdout, "fileno", None)
+    if not callable(fileno):
+        return
+    try:
+        descriptor = fileno()
+    except (OSError, ValueError):
+        return
+    os.write(descriptor, (rendered + "\n").encode("utf-8", errors="replace"))
 
 
 def _run_convert(

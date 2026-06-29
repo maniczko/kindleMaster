@@ -13,6 +13,12 @@ from typing import Any, Iterable
 
 from chess_fen_hardening import machine_accept_fen, machine_accept_placement, placement_from_fen_or_placement, validate_fen_detailed
 from chess_side_marker_blockers import build_side_marker_blocker_attribution, side_marker_blocker_attribution_markdown
+from chess_side_marker_learning import (
+    build_side_marker_learning_artifacts,
+    persisted_side_marker_learning_report,
+    side_marker_learning_markdown,
+    side_marker_learning_review_html,
+)
 
 PIPELINE_STATUSES = {
     "AUTO_SUCCESS",
@@ -316,6 +322,11 @@ def build_auto_chess_flow_artifacts(
         two_crop_quality_metrics.get("items") or [],
         source_gate=source_gate,
     )
+    side_marker_learning = build_side_marker_learning_artifacts(
+        two_crop_quality_metrics.get("items") or [],
+        blocker_report=side_marker_blockers,
+        assignment_report=side_marker_report,
+    )
     two_crop_benchmark_seed = _two_crop_benchmark_seed_report(diagrams)
     accepted_fen_by_source = _accepted_fen_by_source(diagrams, fen_payload)
     pgn_payload, pgn_validation, pgn_repairs = _canonical_pgn(
@@ -379,6 +390,26 @@ def build_auto_chess_flow_artifacts(
         side_marker_blocker_attribution_markdown(side_marker_blockers),
         encoding="utf-8",
     )
+    side_marker_learning_report = persisted_side_marker_learning_report(side_marker_learning.get("learning_report") or {})
+    side_marker_learning_payload = {
+        **side_marker_learning,
+        "learning_report": side_marker_learning_report,
+    }
+    _write_json(chess_fen_report_dir / "side_marker_learning_queue.json", side_marker_learning["queue"])
+    _write_jsonl(chess_fen_report_dir / "side_marker_learning_queue.jsonl", side_marker_learning["queue"]["items"])
+    _write_jsonl(
+        chess_fen_report_dir / "side_marker_learning_labels_template.jsonl",
+        side_marker_learning["manual_label_template"],
+    )
+    _write_json(chess_fen_report_dir / "side_marker_learning_report.json", side_marker_learning_report)
+    (chess_fen_report_dir / "side_marker_learning_report.md").write_text(
+        side_marker_learning_markdown(side_marker_learning_report),
+        encoding="utf-8",
+    )
+    (chess_fen_report_dir / "side_marker_learning_review.html").write_text(
+        side_marker_learning_review_html(side_marker_learning_payload),
+        encoding="utf-8",
+    )
     _write_json(chess_fen_report_dir / "two_crop_benchmark_seed.json", two_crop_benchmark_seed)
     (chess_fen_report_dir / "two_crop_benchmark_seed.md").write_text(
         _two_crop_benchmark_seed_markdown(two_crop_benchmark_seed),
@@ -416,11 +447,18 @@ def build_auto_chess_flow_artifacts(
                 "two_crop_quality_metrics_md": chess_fen_report_dir / "two_crop_quality_metrics.md",
                 "side_marker_blocker_attribution": chess_fen_report_dir / "side_marker_blocker_attribution.json",
                 "side_marker_blocker_attribution_md": chess_fen_report_dir / "side_marker_blocker_attribution.md",
+                "side_marker_learning_queue": chess_fen_report_dir / "side_marker_learning_queue.json",
+                "side_marker_learning_queue_jsonl": chess_fen_report_dir / "side_marker_learning_queue.jsonl",
+                "side_marker_learning_label_template": chess_fen_report_dir / "side_marker_learning_labels_template.jsonl",
+                "side_marker_learning_report": chess_fen_report_dir / "side_marker_learning_report.json",
+                "side_marker_learning_report_md": chess_fen_report_dir / "side_marker_learning_report.md",
+                "side_marker_learning_review_html": chess_fen_report_dir / "side_marker_learning_review.html",
                 "two_crop_benchmark_seed": chess_fen_report_dir / "two_crop_benchmark_seed.json",
                 "two_crop_benchmark_seed_md": chess_fen_report_dir / "two_crop_benchmark_seed.md",
                 "export_games_pgn": dirs["export"] / "games.pgn",
             }.items()
         },
+        "side_marker_learning": side_marker_learning.get("summary") or {},
         "strict_failed": bool(mode == "auto-strict" and status != "AUTO_SUCCESS"),
     }
     _write_json(out / "auto_chess_flow.json", payload)

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import contextlib
-import io
 import json
 import re
 import sys
@@ -200,12 +198,11 @@ class GithubIssueOrchestrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             issue_path = Path(temp_dir) / "issues.json"
             issue_path.write_text(json.dumps([_complete_issue()]), encoding="utf-8")
-            stdout = io.StringIO()
             with patch.object(sys, "argv", ["kindlemaster.py", "orchestrate", "sync", "--issues-json", str(issue_path)]):
-                with contextlib.redirect_stdout(stdout):
+                with patch.object(kindlemaster, "_print_json") as print_json:
                     exit_code = kindlemaster.main()
 
-        payload = json.loads(stdout.getvalue())
+        payload = print_json.call_args.args[0]
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["summary"]["ready"], 1)
         self.assertEqual(payload["issues"][0]["branch"], "codex/issue-42-improve-semantic-cleanup-orchestration")

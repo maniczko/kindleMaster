@@ -215,15 +215,22 @@ class ChessGlyphDiagnosticsTests(unittest.TestCase):
 
         by_key = {artifact["key"]: artifact for artifact in artifacts}
         self.assertIn("chess_pgn_html", by_key)
+        self.assertIn("pdf_layout_preview", by_key)
         self.assertNotIn("chess_pgn", by_key)
         html = by_key["chess_pgn_html"]["data"].decode("utf-8")
-        self.assertIn('data-km-view="chess-book-review"', html)
-        self.assertIn('class="chess-book-page"', html)
-        self.assertIn('class="book-page-bg"', html)
-        self.assertIn("book-diagram", html)
-        self.assertIn("book-fen", html)
-        self.assertIn("Diagram 1-2", html)
-        self.assertIn("pdf_layout_preview", html)
+        preview_html = by_key["pdf_layout_preview"]["data"].decode("utf-8")
+        self.assertIn("Detected chess diagrams / FEN", html)
+        self.assertIn("diagram-1", html)
+        self.assertNotIn('data-km-view="chess-book-review"', html)
+        self.assertNotIn("book-diagram", html)
+        self.assertIn('data-km-view="chess-book-review"', preview_html)
+        self.assertIn('class="chess-book-page"', preview_html)
+        self.assertIn('class="book-page-bg"', preview_html)
+        self.assertIn("book-diagram", preview_html)
+        self.assertIn("book-fen", preview_html)
+        self.assertIn("Diagram 1-2", preview_html)
+        self.assertIn("To nie jest finalny reader szachowy", preview_html)
+        self.assertIn("chess_pgn_html", preview_html)
 
 
 if __name__ == "__main__":

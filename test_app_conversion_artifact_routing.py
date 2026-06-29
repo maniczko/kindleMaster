@@ -124,6 +124,10 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
             "trusted_marker_count": diagrams_total,
             "empty_img_src_count": 0,
             "diagrams_total": diagrams_total,
+            "diagram_cards_count": diagrams_total,
+            "data_side_marker_attr_count": diagrams_total,
+            "side_marker_crop_count": diagrams_total,
+            "board_crop_count": diagrams_total,
             "fen_accepted": diagrams_total,
         }
         (data_dir / "artifact_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
@@ -131,15 +135,39 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
         index_path.write_text(
             """
             <!doctype html><html><body data-artifact-type="final_pdf_two_crop_reader">
-              <article class="card" data-position-status="accepted" data-side-marker-status="trusted_marker"
+              <article class="card" data-diagram-id="one" data-position-status="accepted"
+                       data-side-marker-status="trusted_marker" data-side-to-move="w"
+                       data-fen="8/8/8/8/8/8/4K3/4k3 w - - 0 1"
                        data-has-board-crop="true" data-has-side-marker-crop="true">
-                <p>Side to move: white</p>
+                <img src="assets/board-one.png" alt="board crop">
+                <p>side_to_move: white</p>
+                <p>FEN: 8/8/8/8/8/8/4K3/4k3 w - - 0 1</p>
+              </article>
+              <article class="card" data-diagram-id="two" data-position-status="requires_review"
+                       data-side-marker-status="marker_missing" data-fen-blocker="board_grid_not_detected">
+                <img src="assets/board-two.png" alt="board crop">
+                <p>Review reason: board_grid_not_detected</p>
+                <p>FEN blocker: board_grid_not_detected</p>
               </article>
             </body></html>
             """,
             encoding="utf-8",
         )
         return index_path
+
+    def _register_pdf_layout_preview_artifact(self, job_id: str, html_text: str) -> Path:
+        job_root = self._artifact_root(job_id)
+        report_dir = job_root / "report"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        preview_path = report_dir / "pdf_layout_preview.html"
+        preview_path.write_text(html_text, encoding="utf-8")
+        artifact = app_module._local_artifact_metadata(job_id, ArtifactKind.REPORT, preview_path)
+        artifact["content_type"] = "text/html; charset=utf-8"
+        artifact["download_url"] = f"/convert/artifact/{job_id}/pdf_layout_preview"
+        artifact["label"] = "PDF layout preview"
+        with app_module._CONVERSION_JOBS_LOCK:
+            app_module._CONVERSION_JOBS[job_id]["artifacts"]["pdf_layout_preview"] = artifact
+        return preview_path
 
     def test_evidence_only_html_is_not_returned_as_final_artifact(self) -> None:
         job_id = "routing-evidence-only"
@@ -363,6 +391,78 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
         self.assertIn("attachment", pgn_response.headers.get("Content-Disposition", ""))
         pgn_response.close()
 
+    def test_chess_download_endpoints_expose_pgn_final_reader_and_audit_preview(self) -> None:
+        job_id = "routing-chess-download-e2e"
+        source_html = self._register_chess_html_job(
+            job_id,
+            "<!doctype html><html><body><p>Source evidence report should not be served.</p></body></html>",
+        )
+        self._write_final_reader_sidecar(source_html, diagrams_total=2)
+        self._register_chess_pgn_artifact(
+            job_id,
+            '[Event "Study"]\n[Date "????.??.??"]\n[Round "?"]\n[White "White"]\n[Black "Black"]\n[Result "*"]\n\n1. e4 e5 *\n',
+        )
+        self._register_pdf_layout_preview_artifact(
+            job_id,
+            "<!doctype html><html><body>PDF layout audit only</body></html>",
+        )
+        with app_module._CONVERSION_JOBS_LOCK:
+            app_module._CONVERSION_JOBS[job_id]["metadata"]["chess_pgn"] = {
+                "candidate_game_count": 1,
+                "valid_pgn_count": 1,
+                "legal_pgn_count": 1,
+                "strict_export_count": 1,
+                "exportable_pgn_count": 1,
+                "manual_review_count": 0,
+            }
+
+        status_response = self.client.get(f"/convert/status/{job_id}")
+        pgn_response = self.client.get(f"/convert/artifact/{job_id}/chess_pgn")
+        html_response = self.client.get(f"/convert/artifact/{job_id}/chess_pgn_html")
+        preview_response = self.client.get(f"/convert/artifact/{job_id}/pdf_layout_preview")
+
+        self.assertEqual(status_response.status_code, 200)
+        status_payload = status_response.get_json()
+        self.assertEqual(status_payload["chess_files"]["chess_pgn"]["label"], "PGN")
+        self.assertTrue(status_payload["chess_files"]["chess_pgn"]["available"])
+        self.assertEqual(status_payload["chess_files"]["chess_pgn"]["download_url"], f"/convert/artifact/{job_id}/chess_pgn")
+        self.assertEqual(status_payload["chess_files"]["chess_pgn_html"]["label"], "HTML PGN/FEN")
+        self.assertTrue(status_payload["chess_files"]["chess_pgn_html"]["available"])
+        self.assertEqual(status_payload["chess_files"]["chess_pgn_html"]["artifact_type"], "final_pdf_two_crop_reader")
+        self.assertEqual(status_payload["chess_files"]["chess_pgn_html"]["download_url"], f"/convert/artifact/{job_id}/chess_pgn_html")
+        self.assertEqual(status_payload["final_reader_health"]["diagram_cards_count"], 2)
+        self.assertEqual(status_payload["final_reader_health"]["empty_img_src_count"], 0)
+        self.assertEqual(status_payload["final_reader_health"]["side_unknown_count"], 0)
+        self.assertEqual(status_payload["final_reader_health"]["trusted_marker_count"], 2)
+        self.assertEqual(status_payload["artifacts"]["pdf_layout_preview"]["label"], "PDF layout preview")
+        self.assertNotEqual(status_payload["artifacts"]["pdf_layout_preview"].get("artifact_type"), "final_pdf_two_crop_reader")
+
+        self.assertEqual(pgn_response.status_code, 200)
+        self.assertEqual(pgn_response.mimetype, "application/x-chess-pgn")
+        self.assertIn('[Event "Study"]', pgn_response.get_data(as_text=True))
+        self.assertIn("attachment", pgn_response.headers.get("Content-Disposition", ""))
+
+        self.assertEqual(html_response.status_code, 200)
+        html_text = html_response.get_data(as_text=True)
+        self.assertIn('data-artifact-type="final_pdf_two_crop_reader"', html_text)
+        self.assertIn('data-side-marker-status="trusted_marker"', html_text)
+        self.assertIn("side_to_move: white", html_text)
+        self.assertIn("FEN: 8/8/8/8/8/8/4K3/4k3 w - - 0 1", html_text)
+        self.assertIn("Review reason: board_grid_not_detected", html_text)
+        self.assertNotIn('src=""', html_text)
+        self.assertNotIn("Source evidence report should not be served.", html_text)
+        self.assertNotIn("PDF layout audit only", html_text)
+        self.assertNotIn("Side to move: unknown", html_text)
+
+        self.assertEqual(preview_response.status_code, 200)
+        preview_text = preview_response.get_data(as_text=True)
+        self.assertIn("To nie jest finalny reader szachowy", preview_text)
+        self.assertIn(f'href="/convert/artifact/{job_id}/chess_pgn_html"', preview_text)
+        self.assertIn('data-primary-chess-artifact="chess_pgn_html"', preview_text)
+        self.assertIn("PDF layout audit only", preview_text)
+        self.assertNotIn('data-primary-chess-artifact="pdf_layout_preview"', preview_text)
+        pgn_response.close()
+
     def test_missing_accepted_pgn_returns_review_safe_status(self) -> None:
         job_id = "routing-pgn-unavailable"
         source_html = self._register_chess_html_job(
@@ -467,7 +567,7 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
                     "board_crop_count": 0,
                     "empty_img_src_count": 4,
                     "asset_missing_empty_src_count": 4,
-                    "blockers": ["mass_side_to_move_unknown", "empty_img_src"],
+                    "blockers": ["mass_side_to_move_unknown", "empty_img_src", "missing_side_marker_evidence"],
                     "warnings": [],
                 }
             ),
@@ -486,6 +586,7 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
         self.assertEqual(health_gate["decision"], "fail")
         self.assertIn("mass_side_to_move_unknown", health_gate["blockers"])
         self.assertIn("empty_img_src", health_gate["blockers"])
+        self.assertIn("missing_side_marker_evidence", health_gate["blockers"])
         self.assertNotIn("Side to move: unknown", response.get_data(as_text=True))
         self.assertEqual(status_response.status_code, 200)
         status_payload = status_response.get_json()

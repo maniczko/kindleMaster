@@ -392,40 +392,72 @@ def _artifact_should_download_as_attachment(artifact_key: str, artifact: dict) -
     return True
 
 
+def _pdf_layout_preview_warning_payload(job_id: str, job: dict) -> dict[str, object]:
+    reader_payload = _enrich_job_chess_reader_artifact_routing(job_id, job)
+    artifacts = dict(job.get("artifacts", {}) or {})
+    artifact = artifacts.get("chess_pgn_html") if isinstance(artifacts.get("chess_pgn_html"), Mapping) else {}
+    artifact_mapping = dict(artifact or {})
+    artifact_type = str(reader_payload.get("artifact_type") or artifact_mapping.get("artifact_type") or "").strip()
+    href = str(
+        artifact_mapping.get("download_url")
+        or artifact_mapping.get("downloadUrl")
+        or _artifact_signed_url(artifact_mapping)
+        or ""
+    ).strip()
+    if not href and artifact_type == FINAL_READER_ARTIFACT_TYPE:
+        href = f"/convert/artifact/{job_id}/chess_pgn_html"
+    blockers = [str(blocker) for blocker in list(reader_payload.get("final_reader_blockers", []) or []) if str(blocker)]
+    final_reader_available = bool(reader_payload.get("final_reader_available", False)) and bool(href)
+    if not final_reader_available and not blockers:
+        blockers = ["final_reader_missing"]
+    return {
+        "artifact_type": artifact_type,
+        "final_reader_available": final_reader_available,
+        "final_reader_href": href if final_reader_available else "",
+        "final_reader_blockers": blockers,
+        "quality_href": f"/convert/quality/{job_id}",
+    }
+
+
 def _render_pdf_layout_preview_shell(job_id: str, job: dict, artifact: dict, artifact_path: Path | None = None):
+    filename = str(artifact.get("filename") or (artifact_path.name if artifact_path is not None else "") or "pdf_layout_preview.html")
+    title = str(job.get("title") or job.get("filename") or filename or "PDF layout preview").strip()
+    local_app_url = build_local_app_url(
+        _resolve_request_port_label(request.host, _resolve_server_port())
+    )
+    preview_handoff: dict[str, object] = {
+        "available": True,
+        "mode": "srcdoc",
+        "srcdoc": "",
+        "frame_src": "",
+        "badge": "Artefakt lokalny",
+        "message": "",
+        "size_bytes": int(artifact.get("size_bytes") or 0),
+    }
+    artifact_source = "local-shell"
     if artifact_path is not None and artifact_path.is_file():
         try:
             preview_html = artifact_path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             preview_html = artifact_path.read_text(encoding="utf-8", errors="replace")
-        filename = str(artifact.get("filename") or artifact_path.name or "pdf_layout_preview.html")
-        title = str(job.get("title") or job.get("filename") or filename or "PDF layout preview").strip()
-        local_app_url = build_local_app_url(
-            _resolve_request_port_label(request.host, _resolve_server_port())
-        )
-        response = app.make_response(
-            render_template(
-                "artifact_preview_shell.html",
-                title=title,
-                job_id=job_id,
-                local_app_url=local_app_url,
-                preview_html=preview_html,
-                static_asset_version=_legacy_static_asset_version(),
-            )
-        )
-        response.headers["X-KindleMaster-Artifact-Source"] = "local-shell"
-        response.headers["X-KindleMaster-Artifact-View"] = "app-shell"
+        preview_handoff["srcdoc"] = preview_html
     else:
-        handoff = _build_pdf_layout_preview_handoff(artifact)
-        response = app.make_response(
-            _render_legacy_index(
-                pdf_layout_preview_job_id=job_id,
-                pdf_layout_preview_filename=str(artifact.get("filename") or "pdf_layout_preview.html"),
-                pdf_layout_preview_handoff=handoff,
-            )
+        preview_handoff = _build_pdf_layout_preview_handoff(artifact)
+        artifact_source = "app-shell"
+    response = app.make_response(
+        render_template(
+            "artifact_preview_shell.html",
+            title=title,
+            job_id=job_id,
+            local_app_url=local_app_url,
+            preview_html=str(preview_handoff.get("srcdoc") or ""),
+            preview_handoff=preview_handoff,
+            pdf_layout_preview_warning=_pdf_layout_preview_warning_payload(job_id, job),
+            static_asset_version=_legacy_static_asset_version(),
         )
-        response.headers["X-KindleMaster-Artifact-View"] = "app-shell"
-        response.headers["X-KindleMaster-Artifact-Source"] = "app-shell"
+    )
+    response.headers["X-KindleMaster-Artifact-View"] = "app-shell"
+    response.headers["X-KindleMaster-Artifact-Source"] = artifact_source
     response.headers["Cache-Control"] = "no-store, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["Content-Type"] = "text/html; charset=utf-8"

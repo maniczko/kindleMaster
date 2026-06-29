@@ -44,9 +44,48 @@
       font-size: 0.92rem;
       max-width: 820px;
     }
+    .pdf-layout-warning {
+      border: 1px solid rgba(250, 204, 21, 0.5);
+      border-radius: 16px;
+      margin: 18px 0;
+      padding: 18px;
+      background: rgba(250, 204, 21, 0.12);
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.22);
+    }
+    .pdf-layout-warning h3 {
+      margin: 4px 0 8px;
+      font-size: 1.18rem;
+    }
+    .pdf-layout-warning p {
+      margin: 6px 0;
+      color: rgba(248, 250, 252, 0.8);
+    }
+    .pdf-layout-warning .artifact-preview-actions {
+      margin-bottom: 0;
+    }
+    .pdf-layout-warning__blocker {
+      color: rgba(248, 250, 252, 0.86);
+      font-weight: 800;
+    }
+    .pdf-layout-warning__blockers {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 10px 0 0;
+      padding: 0;
+      list-style: none;
+    }
+    .pdf-layout-warning__blockers code {
+      border: 1px solid rgba(248, 250, 252, 0.18);
+      border-radius: 999px;
+      padding: 4px 8px;
+      background: rgba(15, 23, 42, 0.36);
+    }
   </style>
 </head>
 <body data-artifact-view="pdf_layout_preview">
+  {% set preview_state = preview_handoff or {} %}
+  {% set warning = pdf_layout_preview_warning or {} %}
   <main class="artifact-preview-shell" data-km-view="pdf-layout-preview" data-vr-hook="vat-209-shell">
     <header class="topbar" data-vr-hook="km-artifact-preview-shell">
       <div class="brand">
@@ -73,13 +112,42 @@
       </div>
     </section>
 
+    <section class="pdf-layout-warning" aria-label="Ostrzeżenie PDF layout preview" data-vr-hook="km-pdf-layout-preview-warning">
+      <div class="section-title">PDF layout preview</div>
+      <h3>To nie jest finalny reader szachowy</h3>
+      <p>Ten widok nie służy do oceny FEN/PGN/side-to-move.</p>
+      <p>Otwórz HTML PGN/FEN, aby zobaczyć diagramy, FEN i kto jest na ruchu.</p>
+      <div class="artifact-preview-actions">
+        {% if warning.final_reader_available and warning.final_reader_href %}
+          <a href="{{ warning.final_reader_href }}" data-primary-chess-artifact="chess_pgn_html">Otwórz HTML PGN/FEN</a>
+        {% else %}
+          <span class="pdf-layout-warning__blocker">Final reader niedostępny</span>
+          <a href="{{ warning.quality_href or url_for('convert_quality', job_id=job_id) }}" target="_blank" rel="noreferrer">Quality JSON</a>
+        {% endif %}
+      </div>
+      {% if warning.final_reader_blockers %}
+        <ul class="pdf-layout-warning__blockers" aria-label="Blokery finalnego readera">
+          {% for blocker in warning.final_reader_blockers %}
+            <li><code>{{ blocker }}</code></li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </section>
+
     <section data-vr-hook="km-pdf-layout-preview-handoff">
       <canvas id="pdfCanvas" hidden></canvas>
+      {% if preview_state.message %}
+        <p class="artifact-preview-meta">{{ preview_state.message }}</p>
+      {% endif %}
       <iframe
         class="layout-preview-frame"
         title="PDF layout preview"
         sandbox="allow-scripts allow-same-origin"
+        {% if preview_state.frame_src %}
+        src="{{ preview_state.frame_src }}"
+        {% else %}
         srcdoc="{{ preview_html|e }}"
+        {% endif %}
       ></iframe>
     </section>
   </main>

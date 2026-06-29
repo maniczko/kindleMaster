@@ -5118,24 +5118,21 @@ def _scan_chess_pgn_extra_artifacts(
         diagram_records=diagram_list,
         source_title=source_title or "Chess Exercises",
     )
-    html_text = build_pgn_download_html(
+    pgn_fen_html = build_pgn_download_html(
         record_list,
         title=f"{source_title or 'Chess'} - PGN and FEN",
         diagram_records=diagram_list,
     )
     artifacts: list[dict[str, Any]] = []
     book_pages = list(book_layout_pages or [])
+    layout_preview_html = _book_layout_review_html(book_pages, title=source_title or "Chess") if book_pages else ""
     if record_list or diagram_list or book_pages:
         pgn_text = build_combined_pgn(record_list)
-        html_text = build_pgn_download_html(
+        pgn_fen_html = build_pgn_download_html(
             record_list,
             title=f"{source_title or 'Chess'} - PGN and FEN",
-            diagrams=diagram_list,
-            book_layout_pages=book_pages,
-            pdf_preview_href="pdf_layout_preview",
+            diagram_records=diagram_list,
         )
-        if book_pages:
-            html_text = _book_layout_review_html(book_pages, title=source_title or "Chess") + html_text
         if pgn_text.strip():
             artifacts.append(
                 {
@@ -5161,7 +5158,7 @@ def _scan_chess_pgn_extra_artifacts(
                 "key": "chess_pgn_html",
                 "filename": "chess_games.html",
                 "content_type": "text/html; charset=utf-8",
-                "data": html_text.encode("utf-8"),
+                "data": pgn_fen_html.encode("utf-8"),
                 "label": "HTML PGN/FEN",
             }
         )
@@ -5196,7 +5193,7 @@ def _scan_chess_pgn_extra_artifacts(
                 "key": "pdf_layout_preview",
                 "filename": "pdf_layout_preview.html",
                 "content_type": "text/html; charset=utf-8",
-                "data": html_text.encode("utf-8"),
+                "data": layout_preview_html.encode("utf-8"),
                 "label": "PDF layout preview",
             }
         )
@@ -5294,8 +5291,12 @@ def _book_layout_review_html(book_pages: list[Mapping[str, Any]], *, title: str)
     return (
         '<!doctype html><html><body data-km-view="chess-book-review">'
         f"<h1>{html_module.escape(title)}</h1>"
+        '<p class="pdf-layout-preview-warning">'
+        "To nie jest finalny reader szachowy. "
+        "To artefakt audytowy do sprawdzenia układu PDF; finalny reader szachowy jest w HTML PGN/FEN."
+        "</p>"
         + "".join(page_markup)
-        + '<p><a href="pdf_layout_preview">pdf_layout_preview</a></p>'
+        + '<p><a href="chess_pgn_html">HTML PGN/FEN</a></p>'
         "</body></html>\n"
     )
 

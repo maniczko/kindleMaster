@@ -160,6 +160,62 @@ class ChessNotationReflowTests(unittest.TestCase):
         self.assertIn(b'[SetUp "1"]', artifacts[0]["data"])
         self.assertIn(b"1. e4 e5", artifacts[0]["data"])
 
+    def test_pdf_layout_preview_and_pgn_fen_html_use_distinct_payloads(self) -> None:
+        record = ChessPgnRecord(
+            id="study-1",
+            source_pages=[1],
+            title="Study 1",
+            headers={"Event": "Study 1", "Result": "*"},
+            movetext="1. e4 e5 *",
+            pgn='[Event "Study 1"]\n[Result "*"]\n\n1. e4 e5 *\n',
+            raw_text="1. e4 e5 *",
+            status="accepted",
+        )
+        diagram_fen = "8/8/8/8/8/8/4K3/4k3 w - - 0 1"
+
+        artifacts = _scan_chess_pgn_extra_artifacts(
+            [record],
+            source_title="Distinct artifacts",
+            diagram_records=[
+                {
+                    "page": 1,
+                    "filename": "diagram_1.png",
+                    "fen": diagram_fen,
+                    "confidence": 0.99,
+                    "requires_review": False,
+                    "image_data_uri": "data:image/png;base64,AA==",
+                }
+            ],
+            book_layout_pages=[
+                {
+                    "page": 1,
+                    "background_image_data_uri": "data:image/png;base64,BB==",
+                    "elements": [
+                        {"type": "diagram", "title": "PDF layout diagram"},
+                        {"type": "fen", "fen": diagram_fen},
+                        {"type": "text", "text": "PDF layout audit-only text"},
+                    ],
+                }
+            ],
+        )
+
+        html_artifact = next(artifact for artifact in artifacts if artifact["key"] == "chess_pgn_html")
+        preview_artifact = next(artifact for artifact in artifacts if artifact["key"] == "pdf_layout_preview")
+        html = html_artifact["data"].decode("utf-8")
+        preview_html = preview_artifact["data"].decode("utf-8")
+
+        self.assertNotEqual(html, preview_html)
+        self.assertIn("Detected chess diagrams / FEN", html)
+        self.assertIn(diagram_fen, html)
+        self.assertNotIn('data-km-view="chess-book-review"', html)
+        self.assertNotIn("To nie jest finalny reader szachowy", html)
+        self.assertNotIn("PDF layout audit-only text", html)
+        self.assertNotIn("layout-ocr-review-sample", html)
+        self.assertIn('data-km-view="chess-book-review"', preview_html)
+        self.assertIn("To nie jest finalny reader szachowy", preview_html)
+        self.assertIn("PDF layout audit-only text", preview_html)
+        self.assertNotIn("Accepted PGN records", preview_html)
+
     def test_chess_notation_css_uses_high_contrast_text(self) -> None:
         self.assertIn(".chess-notation-text", CHESS_REFLOW_CSS)
         self.assertIn(".chess-pgn-text", CHESS_REFLOW_CSS)
@@ -197,8 +253,16 @@ class ChessNotationReflowTests(unittest.TestCase):
         self.assertIn("chess_diagrams", artifact_keys)
         html_artifact = next(artifact for artifact in content["extra_artifacts"] if artifact["key"] == "chess_pgn_html")
         html = html_artifact["data"].decode("utf-8")
-        self.assertIn('class="book-element book-diagram"', html)
-        self.assertIn('data-km-view="chess-book-review"', html)
+        preview_artifact = next(artifact for artifact in content["extra_artifacts"] if artifact["key"] == "pdf_layout_preview")
+        preview_html = preview_artifact["data"].decode("utf-8")
+        self.assertIn('class="chess-diagram-fen-record', html)
+        self.assertIn("Detected chess diagrams / FEN", html)
+        self.assertNotIn('class="book-element book-diagram"', html)
+        self.assertNotIn('data-km-view="chess-book-review"', html)
+        self.assertIn('class="book-element book-diagram"', preview_html)
+        self.assertIn('data-km-view="chess-book-review"', preview_html)
+        self.assertIn("To nie jest finalny reader szachowy", preview_html)
+        self.assertNotEqual(html, preview_html)
         self.assertNotIn("localhost", html)
 
 

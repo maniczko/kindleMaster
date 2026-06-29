@@ -882,9 +882,23 @@ def _artifact_metrics(
                 or str(row.get("side_marker_status") or "") == "trusted_marker"
             ]
         )
+    side_marker_crop_count = _first_int_from_mapping(summary, ("side_marker_crop_count",), -1)
+    if side_marker_crop_count < 0:
+        side_marker_crop_count = len([row for row in side_rows if str(row.get("side_marker_crop_path") or "").strip()])
+    board_crop_count = _first_int_from_mapping(summary, ("board_crop_count",), -1)
+    if board_crop_count < 0:
+        board_crop_count = len(
+            [
+                row
+                for row in side_rows
+                if str(row.get("board_crop_path") or row.get("source_crop") or "").strip()
+            ]
+        )
     return {
         "side_unknown_count": side_unknown_count,
         "trusted_marker_count": trusted_marker_count,
+        "side_marker_crop_count": side_marker_crop_count,
+        "board_crop_count": board_crop_count,
         "empty_img_src_count": _first_int_from_mapping(
             summary,
             (

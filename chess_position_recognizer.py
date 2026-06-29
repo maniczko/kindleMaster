@@ -617,6 +617,20 @@ def summarize_chess_fen_results(records: list[Mapping[str, Any]]) -> dict[str, A
     with_board_crop = [item for item in records if str(item.get("board_crop_path") or "").strip()]
     with_side_marker_crop = [item for item in records if str(item.get("side_marker_crop_path") or "").strip()]
     with_debug_overlay = [item for item in records if str(item.get("debug_overlay_path") or "").strip()]
+    trusted_markers = [item for item in records if _trusted_side_marker_status(item.get("side_marker_status"))]
+    marker_conflicts = [item for item in records if _has_side_marker_conflict(item)]
+    marker_ambiguous = [item for item in records if _has_side_marker_ambiguous(item)]
+    marker_missing = [
+        item
+        for item in records
+        if not _trusted_side_marker_status(item.get("side_marker_status"))
+        and not _has_side_marker_conflict(item)
+        and not _has_side_marker_ambiguous(item)
+        and _marker_missing_or_inferred(item)
+    ]
+    side_to_move_inferred = [item for item in records if _side_to_move_inferred(item)]
+    side_unknown = [item for item in records if _record_side_to_move(item) not in {"w", "b"}]
+    probe_checked = [item for item in records if "side_to_move_marker_probes_checked" in _record_warnings(item)]
     return {
         "status": "not_applicable" if total == 0 else ("passed" if len(with_fen) == total else "requires_review"),
         "diagram_count": total,
@@ -625,8 +639,72 @@ def summarize_chess_fen_results(records: list[Mapping[str, Any]]) -> dict[str, A
         "board_crop_count": len(with_board_crop),
         "side_marker_crop_count": len(with_side_marker_crop),
         "debug_overlay_count": len(with_debug_overlay),
+        "side_marker_probe_checked_count": len(probe_checked),
+        "side_to_move_inferred_count": len(side_to_move_inferred),
+        "side_unknown_count": len(side_unknown),
+        "trusted_marker_count": len(trusted_markers),
+        "marker_missing_count": len(marker_missing),
+        "marker_conflict_count": len(marker_conflicts),
+        "marker_ambiguous_count": len(marker_ambiguous),
         "records": [dict(item) for item in records],
     }
+
+
+def _record_warnings(record: Mapping[str, Any]) -> set[str]:
+    return {str(warning) for warning in record.get("warnings") or [] if str(warning)}
+
+
+def _trusted_side_marker_status(value: Any) -> bool:
+    status = str(value or "").strip().lower()
+    return status == "trusted_marker" or status.startswith("trusted_")
+
+
+def _has_side_marker_conflict(record: Mapping[str, Any]) -> bool:
+    status = str(record.get("side_marker_status") or "").strip().lower()
+    return status in {"marker_conflict", "multi_side"} or bool(
+        _record_warnings(record)
+        & {
+            "side_to_move_evidence_conflict",
+            "side_to_move_marker_local_conflict",
+            "side_to_move_marker_multi_region_conflict",
+        }
+    )
+
+
+def _has_side_marker_ambiguous(record: Mapping[str, Any]) -> bool:
+    status = str(record.get("side_marker_status") or "").strip().lower()
+    return status in {"ambiguous_marker", "marker_ambiguous"} or bool(
+        _record_warnings(record)
+        & {
+            "side_to_move_marker_ambiguous",
+            "side_to_move_marker_local_ambiguous",
+        }
+    )
+
+
+def _side_to_move_inferred(record: Mapping[str, Any]) -> bool:
+    if "side_to_move_inferred" in _record_warnings(record):
+        return True
+    status = str(record.get("side_to_move_status") or "").strip().lower()
+    evidence = str(record.get("side_to_move_evidence") or "").strip().lower()
+    marker_status = str(record.get("side_marker_status") or "").strip().lower()
+    return status == "inferred" or evidence == "inferred" or marker_status == "inferred_only"
+
+
+def _record_side_to_move(record: Mapping[str, Any]) -> str:
+    side = str(record.get("side_to_move") or "").strip().lower()
+    if side in {"w", "b"}:
+        return side
+    for key in ("full_fen", "fen"):
+        parts = str(record.get(key) or "").strip().split()
+        if len(parts) >= 2 and parts[1].lower() in {"w", "b"}:
+            return parts[1].lower()
+    return "unknown"
+
+
+def _marker_missing_or_inferred(record: Mapping[str, Any]) -> bool:
+    status = str(record.get("side_marker_status") or "").strip().lower()
+    return status in {"", "marker_missing", "inferred_only"} or "side_to_move_marker_probes_checked" in _record_warnings(record)
 
 
 def _recognize_board_with_templates(

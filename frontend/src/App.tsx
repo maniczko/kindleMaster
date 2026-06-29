@@ -64,6 +64,15 @@ type ArtifactSections = { finalRows: ArtifactRow[]; diagnosticRows: ArtifactRow[
 type FinalChessReaderState = { present: boolean; available: boolean; href: string; blockerText: string };
 type ChessPgnState = { present: boolean; available: boolean; href: string; blockerText: string; message: string };
 type ChessDownloadFilesState = { present: boolean; pgn: ChessPgnState; reader: FinalChessReaderState };
+type ChessReadinessStatus = "ready" | "review_only" | "not_available";
+type ChessReadinessState = {
+  present: boolean;
+  status: ChessReadinessStatus;
+  label: string;
+  detail: string;
+  metrics: Array<{ label: string; value: string; tone?: "good" | "warning" | "muted" }>;
+  blockers: string[];
+};
 
 const FINAL_CHESS_READER_ARTIFACT_TYPE = "final_pdf_two_crop_reader";
 
@@ -103,6 +112,11 @@ interface ConversionJobPayload {
   final_reader_blockers?: unknown[];
   final_reader_path?: string;
   source_html_quality_gate?: Record<string, unknown>;
+  side_unknown_count?: unknown;
+  trusted_marker_count?: unknown;
+  empty_img_src_count?: unknown;
+  diagrams_total?: unknown;
+  fen_accepted?: unknown;
   progress?: Record<string, unknown>;
   quality_state?: QualityStatePayload;
   auto_repair?: Record<string, unknown>;
@@ -1906,6 +1920,7 @@ function FileDetailsWorkspace({
   const autoRepair = normalizeAutoRepair(job?.auto_repair ?? job?.quality_state?.auto_repair);
   const chessDownloads = chessDownloadFilesState(job);
   const chessReader = chessDownloads.reader;
+  const chessReadiness = chessReadinessState(job, chessDownloads);
   const sourcePreviewUrl = resolvePdfArtifactUrl(job);
   const cropSourceUrl = job?.job_id ? `/convert/artifact/${encodeURIComponent(job.job_id)}/input` : sourcePreviewUrl;
   const hasPdfDeliveryArtifact = Boolean(sourcePreviewUrl || jobHasPdfDeliveryArtifact(job));
@@ -2207,6 +2222,8 @@ function FileDetailsWorkspace({
           </CardContent>
         </Card>
 
+        {chessReadiness.present ? <ChessReadinessPanel readiness={chessReadiness} /> : null}
+
         <Card>
           <CardHeader>
             <CardTitle>Pliki końcowe</CardTitle>
@@ -2356,6 +2373,41 @@ function FileDetailsWorkspace({
         </Card>
       </div>
     </section>
+  );
+}
+
+function ChessReadinessPanel({ readiness }: { readiness: ChessReadinessState }) {
+  const badgeVariant = readiness.status === "ready" ? "success" : readiness.status === "review_only" ? "warning" : "secondary";
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Gotowość szachowa</CardTitle>
+        <CardDescription>{readiness.detail}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="km-chess-readiness-header">
+          <Badge variant={badgeVariant}>{readiness.label}</Badge>
+          <span>Diagram / FEN / PGN / ruch</span>
+        </div>
+        <div className="km-chess-readiness-grid" aria-label="Metryki gotowości szachowej">
+          {readiness.metrics.map((metric) => (
+            <div className={`km-chess-readiness-metric is-${metric.tone || "muted"}`} key={metric.label}>
+              <span>{metric.label}</span>
+              <strong>{metric.value}</strong>
+            </div>
+          ))}
+        </div>
+        {readiness.blockers.length ? (
+          <div className="km-chess-readiness-blockers" role="status">
+            <AlertTriangle data-icon="inline-start" aria-hidden="true" />
+            <span>
+              <strong>Co blokuje finalny reader</strong>
+              <small>{readiness.blockers.join(", ")}</small>
+            </span>
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -3214,6 +3266,104 @@ function chessDownloadFilesState(job: ConversionJobPayload | null): ChessDownloa
     pgn,
     reader,
   };
+}
+
+function chessReadinessState(job: ConversionJobPayload | null, downloads: ChessDownloadFilesState): ChessReadinessState {
+  const readerPayload = chessFilePayload(job, "chess_pgn_html");
+  const readerArtifact = jobArtifact(job, "chess_pgn_html");
+  const readerHealth = readRecord(readerPayload.final_reader_health || readerArtifact.final_reader_health || job?.final_reader_health);
+  const pgnPayload = chessFilePayload(job, "chess_pgn");
+  const pgnArtifact = jobArtifact(job, "chess_pgn");
+  const diagramsTotal = firstIntegerValue(
+    job?.diagrams_total,
+    readerPayload.diagrams_total,
+    readerArtifact.diagrams_total,
+    readerHealth.diagrams_total,
+    readerHealth.diagram_cards_count,
+  );
+  const fenAccepted = firstIntegerValue(job?.fen_accepted, readerPayload.fen_accepted, readerArtifact.fen_accepted, readerHealth.fen_accepted);
+  const trustedMarkers = firstIntegerValue(
+    job?.trusted_marker_count,
+    readerPayload.trusted_marker_count,
+    readerArtifact.trusted_marker_count,
+    readerHealth.trusted_marker_count,
+  );
+  const sideUnknown = firstIntegerValue(job?.side_unknown_count, readerPayload.side_unknown_count, readerArtifact.side_unknown_count, readerHealth.side_unknown_count);
+  const sideMarkerCrops = firstIntegerValue(readerPayload.side_marker_crop_count, readerArtifact.side_marker_crop_count, readerHealth.side_marker_crop_count);
+  const acceptedPgn = firstIntegerValue(
+    pgnPayload.exportable_pgn_count,
+    pgnArtifact.exportable_pgn_count,
+    pgnPayload.accepted_pgn,
+    pgnArtifact.accepted_pgn,
+    pgnPayload.accepted_pgn_count,
+    pgnArtifact.accepted_pgn_count,
+    pgnPayload.pgn_accepted,
+    pgnArtifact.pgn_accepted,
+  );
+  const hasMetricEvidence = [diagramsTotal, fenAccepted, trustedMarkers, sideUnknown, sideMarkerCrops, acceptedPgn].some((value) => value > 0);
+  const present = Boolean(downloads.present || hasMetricEvidence || Object.keys(readerHealth).length);
+  const rawBlockers = dedupeStrings([
+    ...arrayOfStrings(readerPayload.final_reader_blockers),
+    ...arrayOfStrings(readerArtifact.final_reader_blockers),
+    ...arrayOfStrings(job?.final_reader_blockers),
+    ...arrayOfStrings(readerHealth.blockers),
+  ]);
+  const blockers = dedupeStrings([
+    ...rawBlockers,
+    ...(!rawBlockers.length && !downloads.reader.available && downloads.reader.present ? [downloads.reader.blockerText] : []),
+    ...(diagramsTotal === 0 && downloads.present ? ["diagrams_detected=0"] : []),
+    ...(fenAccepted === 0 && diagramsTotal > 0 ? ["FEN accepted=0"] : []),
+    ...(trustedMarkers === 0 && diagramsTotal > 0 ? ["trusted_marker_count=0"] : []),
+  ]);
+  let status: ChessReadinessStatus = "not_available";
+  if (present) {
+    const hasNoAcceptedChessContent = diagramsTotal === 0 && fenAccepted === 0 && acceptedPgn === 0 && trustedMarkers === 0;
+    status = downloads.reader.available && diagramsTotal > 0 && fenAccepted > 0 && acceptedPgn > 0 && trustedMarkers > 0
+      ? "ready"
+      : hasNoAcceptedChessContent && !downloads.reader.available
+        ? "not_available"
+        : "review_only";
+  }
+  const label = status === "ready" ? "Ready" : status === "review_only" ? "Review only" : "Not available";
+  const detail = status === "ready"
+    ? "Finalny HTML PGN/FEN ma zaakceptowane dane i zaufany marker ruchu."
+    : status === "review_only"
+      ? "Diagramy albo partie wymagają przeglądu; finalny reader nie udaje pełnego rozczytania."
+      : "Brak wykrytych diagramów lub zaakceptowanych danych szachowych.";
+  return {
+    present,
+    status,
+    label,
+    detail,
+    blockers,
+    metrics: [
+      { label: "Diagramy", value: String(diagramsTotal), tone: diagramsTotal > 0 ? "good" : "muted" },
+      { label: "FEN accepted", value: String(fenAccepted), tone: fenAccepted > 0 ? "good" : "warning" },
+      { label: "PGN accepted", value: String(acceptedPgn), tone: acceptedPgn > 0 ? "good" : "warning" },
+      { label: "Trusted marker", value: String(trustedMarkers), tone: trustedMarkers > 0 ? "good" : "warning" },
+      { label: "Side unknown", value: String(sideUnknown), tone: sideUnknown > 0 ? "warning" : "good" },
+      { label: "Marker crop", value: String(sideMarkerCrops), tone: sideMarkerCrops > 0 ? "good" : "warning" },
+    ],
+  };
+}
+
+function firstIntegerValue(...values: unknown[]) {
+  for (const value of values) {
+    const numeric = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : Number.NaN;
+    if (Number.isFinite(numeric)) return Math.max(0, Math.trunc(numeric));
+  }
+  return 0;
+}
+
+function dedupeStrings(values: string[]) {
+  const seen = new Set<string>();
+  return values
+    .map((value) => value.trim())
+    .filter((value) => {
+      if (!value || seen.has(value)) return false;
+      seen.add(value);
+      return true;
+    });
 }
 
 function formatDeliveryBlockers(items: Array<Record<string, unknown>>) {

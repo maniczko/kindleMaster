@@ -2173,6 +2173,96 @@ a {
   border-color: rgba(191, 143, 107, 0.35);
 }
 
+.km-chess-readiness-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.km-chess-readiness-header span {
+  color: var(--km-muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.km-chess-readiness-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.km-chess-readiness-metric {
+  min-height: 74px;
+  display: grid;
+  align-content: space-between;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--km-border);
+  border-radius: var(--km-radius);
+  background: var(--km-panel-muted);
+}
+
+.km-chess-readiness-metric span {
+  color: var(--km-muted);
+  font-size: 0.76rem;
+  font-weight: 900;
+}
+
+.km-chess-readiness-metric strong {
+  color: var(--km-text);
+  font-size: 1.18rem;
+}
+
+.km-chess-readiness-metric.is-good {
+  border-color: color-mix(in srgb, var(--km-success) 42%, var(--km-border));
+}
+
+.km-chess-readiness-metric.is-warning {
+  border-color: rgba(191, 143, 107, 0.42);
+  background: rgba(255, 249, 236, 0.72);
+}
+
+.km-chess-readiness-blockers {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid rgba(191, 143, 107, 0.42);
+  border-radius: var(--km-radius);
+  color: var(--km-muted);
+  background: rgba(255, 249, 236, 0.72);
+}
+
+.km-chess-readiness-blockers svg {
+  inline-size: 18px;
+  block-size: 18px;
+  flex: 0 0 auto;
+}
+
+.km-chess-readiness-blockers span {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.km-chess-readiness-blockers strong,
+.km-chess-readiness-blockers small {
+  overflow-wrap: anywhere;
+}
+
+.km-chess-readiness-blockers strong {
+  color: var(--km-text);
+  font-size: 0.88rem;
+}
+
+.km-chess-readiness-blockers small {
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
 .km-pdf-tools {
   display: flex;
   align-items: center;
@@ -2453,6 +2543,7 @@ a {
   .km-smtp-readiness-grid,
   .km-activity-grid,
   .km-chess-download-list,
+  .km-chess-readiness-grid,
   .km-form-grid {
     grid-template-columns: 1fr;
   }

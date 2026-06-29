@@ -8,6 +8,7 @@
     "build:ui": "vite build",
     "build:ui:vercel": "vite build --mode vercel",
     "preview:ui": "vite preview --host 127.0.0.1 --port 4173",
+    "test": "vitest run --config vitest.config.js --dir frontend/src",
     "test:js": "vitest run --config vitest.config.js",
     "test:contract": "vitest run --config vitest.config.js --dir static/js",
     "test:ui": "vitest run --config vitest.config.js --dir frontend/src",

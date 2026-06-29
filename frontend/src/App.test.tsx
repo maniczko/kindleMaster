@@ -1239,7 +1239,10 @@ describe("Premium React shell", () => {
                       status: "PASS",
                       side_unknown_count: 0,
                       trusted_marker_count: 12,
+                      side_marker_crop_count: 12,
                       empty_img_src_count: 0,
+                      diagrams_total: 12,
+                      fen_accepted: 10,
                     },
                   },
                   pdf_layout_preview: {
@@ -1284,7 +1287,10 @@ describe("Premium React shell", () => {
                   status: "PASS",
                   side_unknown_count: 0,
                   trusted_marker_count: 12,
+                  side_marker_crop_count: 12,
                   empty_img_src_count: 0,
+                  diagrams_total: 12,
+                  fen_accepted: 10,
                 },
                 quality_state: { release_verdict: "ready_with_review", premium_ready: false },
               },
@@ -1321,6 +1327,17 @@ describe("Premium React shell", () => {
     expect(finalFiles.queryByRole("link", { name: /PGN$/ })).not.toBeInTheDocument();
     expect(finalFiles.queryByRole("link", { name: /PDF layout preview/ })).not.toBeInTheDocument();
     expect(finalFiles.queryByRole("link", { name: /chess_diagrams\.json/ })).not.toBeInTheDocument();
+    const readiness = within(screen.getByRole("heading", { name: "Gotowość szachowa" }).closest(".km-card") as HTMLElement);
+    expect(readiness.getByText("Ready")).toBeInTheDocument();
+    expect(readiness.getByText("Finalny HTML PGN/FEN ma zaakceptowane dane i zaufany marker ruchu.")).toBeInTheDocument();
+    const readinessMetrics = within(readiness.getByLabelText("Metryki gotowości szachowej"));
+    expect(readinessMetrics.getByText("Diagramy")).toBeInTheDocument();
+    expect(readinessMetrics.getByText("FEN accepted")).toBeInTheDocument();
+    expect(readinessMetrics.getByText("PGN accepted")).toBeInTheDocument();
+    expect(readinessMetrics.getByText("Trusted marker")).toBeInTheDocument();
+    expect(readinessMetrics.getByText("Marker crop")).toBeInTheDocument();
+    expect(readinessMetrics.getByText("10")).toBeInTheDocument();
+    expect(readinessMetrics.getAllByText("12").length).toBeGreaterThanOrEqual(3);
     const diagnostics = within(screen.getByLabelText("Diagnostyka"));
     expect(diagnostics.getByRole("link", { name: "PGN" })).toHaveAttribute("href", "/convert/artifact/job-chess/chess_pgn");
     expect(diagnostics.getByRole("link", { name: /PDF layout preview \(audyt layoutu\)/ })).toHaveAttribute(
@@ -1372,6 +1389,11 @@ describe("Premium React shell", () => {
                       status: "FAIL",
                       decision: "fail",
                       blockers: ["mass_side_to_move_unknown", "empty_img_src"],
+                      diagrams_total: 4,
+                      fen_accepted: 0,
+                      side_unknown_count: 4,
+                      trusted_marker_count: 0,
+                      side_marker_crop_count: 0,
                     },
                     final_reader_blockers: ["mass_side_to_move_unknown", "empty_img_src"],
                   },
@@ -1433,12 +1455,89 @@ describe("Premium React shell", () => {
         Boolean(element?.textContent?.includes("mass_side_to_move_unknown") && element.textContent.includes("empty_img_src")),
       ).length,
     ).toBeGreaterThan(0);
+    const readiness = within(screen.getByRole("heading", { name: "Gotowość szachowa" }).closest(".km-card") as HTMLElement);
+    expect(readiness.getByText("Review only")).toBeInTheDocument();
+    expect(readiness.getByText("Diagramy albo partie wymagają przeglądu; finalny reader nie udaje pełnego rozczytania.")).toBeInTheDocument();
+    expect(readiness.getByText("Co blokuje finalny reader")).toBeInTheDocument();
+    expect(
+      readiness.getAllByText((_content, element) =>
+        Boolean(
+          element?.textContent?.includes("mass_side_to_move_unknown")
+            && element.textContent.includes("empty_img_src")
+            && element.textContent.includes("FEN accepted=0")
+            && element.textContent.includes("trusted_marker_count=0"),
+        ),
+      ).length,
+    ).toBeGreaterThan(0);
+    const readinessMetrics = within(readiness.getByLabelText("Metryki gotowości szachowej"));
+    expect(readinessMetrics.getByText("Diagramy")).toBeInTheDocument();
+    expect(readinessMetrics.getByText("FEN accepted")).toBeInTheDocument();
+    expect(readinessMetrics.getByText("Trusted marker")).toBeInTheDocument();
+    expect(readinessMetrics.getAllByText("0").length).toBeGreaterThanOrEqual(4);
     expect(finalFiles.queryByRole("link", { name: /HTML PGN\/FEN/ })).not.toBeInTheDocument();
     const diagnostics = within(screen.getByLabelText("Diagnostyka"));
     expect(diagnostics.getByRole("link", { name: /PDF layout preview \(audyt layoutu\)/ })).toHaveAttribute(
       "href",
       "/convert/artifact/job-chess-blocked/pdf_layout_preview",
     );
+  });
+
+  it("shows not available when chess payload exists but no diagrams or accepted data are present", async () => {
+    const user = userEvent.setup();
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith("/convert/jobs")) {
+        return {
+          ok: true,
+          json: async () => ({
+            jobs: [
+              {
+                job_id: "job-chess-empty",
+                filename: "empty-chess.pdf",
+                status: "ready",
+                source_type: "pdf",
+                download_url: "/convert/download/job-chess-empty",
+                chess_files: {
+                  chess_pgn_html: {
+                    key: "chess_pgn_html",
+                    label: "HTML PGN/FEN",
+                    available: false,
+                    status: "blocked",
+                    artifact_type: "final_pdf_two_crop_reader",
+                    final_reader_available: false,
+                    final_reader_blockers: ["final_reader_missing"],
+                  },
+                },
+                artifact_type: "final_pdf_two_crop_reader",
+                final_reader_available: false,
+                final_reader_blockers: ["final_reader_missing"],
+                quality_state: { release_verdict: "ready_with_review", premium_ready: false },
+              },
+            ],
+          }),
+        };
+      }
+      if (url === "/user/profile") {
+        return { ok: true, json: async () => ({ success: true, profile: defaultProfile }) };
+      }
+      if (url === "/convert/delivery/config") {
+        return { ok: true, json: async () => ({ success: true, delivery: { configured: false } }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Biblioteka" }));
+    await user.click(await screen.findByRole("button", { name: "empty-chess.pdf" }));
+
+    const readiness = within(screen.getByRole("heading", { name: "Gotowość szachowa" }).closest(".km-card") as HTMLElement);
+    expect(readiness.getByText("Not available")).toBeInTheDocument();
+    expect(readiness.getByText("Brak wykrytych diagramów lub zaakceptowanych danych szachowych.")).toBeInTheDocument();
+    expect(
+      readiness.getAllByText((_content, element) =>
+        Boolean(element?.textContent?.includes("final_reader_missing") && element.textContent.includes("diagrams_detected=0")),
+      ).length,
+    ).toBeGreaterThan(0);
   });
 
   it("compresses the saved source PDF from file details", async () => {

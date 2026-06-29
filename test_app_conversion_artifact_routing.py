@@ -169,6 +169,105 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
             app_module._CONVERSION_JOBS[job_id]["artifacts"]["pdf_layout_preview"] = artifact
         return preview_path
 
+    def test_store_extra_artifacts_builds_final_reader_sidecar_from_diagram_records(self) -> None:
+        job_id = "real-extra-artifact-sidecar"
+        self._artifact_root(job_id)
+        fen = "8/8/8/8/8/8/4K3/7k w - - 0 1"
+        stored = app_module._store_extra_conversion_artifacts(
+            job_id,
+            [
+                {
+                    "key": "chess_pgn_html",
+                    "filename": "chess_games.html",
+                    "content_type": "text/html; charset=utf-8",
+                    "label": "HTML PGN/FEN",
+                    "data": "<!doctype html><html><body><p>Source evidence HTML</p></body></html>",
+                },
+                {
+                    "key": "chess_diagrams",
+                    "filename": "chess_diagrams.json",
+                    "content_type": "application/json; charset=utf-8",
+                    "label": "Chess diagrams",
+                    "data": json.dumps(
+                        {
+                            "diagram_count": 1,
+                            "records": [
+                                {
+                                    "id": "diagram-one",
+                                    "page": 1,
+                                    "caption": "Diagram 1",
+                                    "fen": fen,
+                                    "full_fen": fen,
+                                    "full_fen_status": "accepted",
+                                    "requires_review": False,
+                                    "side_to_move": "w",
+                                    "side_marker_status": "trusted_marker",
+                                    "side_marker_symbol": "△",
+                                    "board_crop_path": "data:image/png;base64,AA==",
+                                    "side_marker_crop_path": "data:image/png;base64,BB==",
+                                    "confidence": 0.97,
+                                }
+                            ],
+                        }
+                    ),
+                },
+            ],
+        )
+        created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        with app_module._CONVERSION_JOBS_LOCK:
+            app_module._CONVERSION_JOBS[job_id] = {
+                "job_id": job_id,
+                "status": "ready",
+                "message": "EPUB ready.",
+                "source_type": "pdf",
+                "filename": "study.pdf",
+                "created_at": created_at,
+                "updated_at": created_at,
+                "source_path": "",
+                "output_path": "",
+                "download_name": "study.epub",
+                "metadata": {"source_type": "pdf", "profile": "chess_training"},
+                "output_size_bytes": 0,
+                "error": "",
+                "error_code": "",
+                "artifacts": stored,
+            }
+
+        html_artifact = stored["chess_pgn_html"]
+        source_html = Path(str(html_artifact["location"]))
+        semantic_dir = source_html.parents[1] / "semantic_chess_html"
+        manifest = json.loads((semantic_dir / "data" / "artifact_manifest.json").read_text(encoding="utf-8"))
+        health_gate = json.loads((semantic_dir / "reports" / "final_reader_health_gate.json").read_text(encoding="utf-8"))
+        status_response = self.client.get(f"/convert/status/{job_id}")
+        html_response = self.client.get(f"/convert/artifact/{job_id}/chess_pgn_html")
+
+        self.assertTrue((semantic_dir / "index.html").is_file())
+        self.assertEqual(manifest["artifact_type"], "final_pdf_two_crop_reader")
+        self.assertEqual(manifest["pipeline_mode"], "pdf_two_crop_reader")
+        self.assertEqual(manifest["side_unknown_count"], 0)
+        self.assertEqual(manifest["trusted_marker_count"], 1)
+        self.assertEqual(manifest["side_marker_crop_count"], 1)
+        self.assertEqual(manifest["board_crop_count"], 1)
+        self.assertEqual(manifest["empty_img_src_count"], 0)
+        self.assertEqual(manifest["diagrams_total"], 1)
+        self.assertEqual(manifest["fen_accepted"], 1)
+        self.assertEqual(health_gate["decision"], "pass")
+        self.assertEqual(health_gate["artifact_type"], "final_pdf_two_crop_reader")
+        self.assertTrue(html_artifact["final_reader_available"])
+        self.assertEqual(html_artifact["artifact_type"], "final_pdf_two_crop_reader")
+        self.assertTrue(str(html_artifact["final_reader_path"]).endswith("semantic_chess_html\\index.html") or str(html_artifact["final_reader_path"]).endswith("semantic_chess_html/index.html"))
+        self.assertEqual(status_response.status_code, 200)
+        payload = status_response.get_json()
+        self.assertEqual(payload["artifact_type"], "final_pdf_two_crop_reader")
+        self.assertTrue(payload["final_reader_available"])
+        self.assertEqual(payload["chess_files"]["chess_pgn_html"]["download_url"], f"/convert/artifact/{job_id}/chess_pgn_html")
+        self.assertEqual(html_response.status_code, 200)
+        html_text = html_response.get_data(as_text=True)
+        self.assertIn('data-artifact-type="final_pdf_two_crop_reader"', html_text)
+        self.assertIn('data-side-marker-status="trusted_marker"', html_text)
+        self.assertIn(fen, html_text)
+        self.assertNotIn("Source evidence HTML", html_text)
+
     def test_evidence_only_html_is_not_returned_as_final_artifact(self) -> None:
         job_id = "routing-evidence-only"
         self._register_chess_html_job(

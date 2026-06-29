@@ -714,7 +714,171 @@ def _safe_artifact_key(value: str) -> str:
     return key.strip("_") or "artifact"
 
 
-def _store_extra_conversion_artifacts(job_id: str, extra_artifacts: list[dict] | None) -> dict[str, dict]:
+def _app_trusted_marker_status(value: object) -> bool:
+    status = str(value or "").strip().lower()
+    return status == "trusted_marker" or status.startswith("trusted_")
+
+
+def _side_to_move_from_diagram_record(record: Mapping[str, object], *, trusted_marker: bool) -> str:
+    if not trusted_marker:
+        return "unknown"
+    raw = str(record.get("side_to_move") or record.get("side_to_move_code") or "").strip().lower()
+    if raw in {"w", "white"}:
+        return "w"
+    if raw in {"b", "black"}:
+        return "b"
+    full_fen = str(record.get("full_fen") or record.get("fen") or "").strip().split()
+    if len(full_fen) > 1 and full_fen[1] in {"w", "b"}:
+        return full_fen[1]
+    return "unknown"
+
+
+def _full_fen_status_accepted(value: object) -> bool:
+    status = str(value or "").strip().lower()
+    return status in {
+        "accepted",
+        "full_fen_accepted",
+        "fen_full_accepted",
+        "trusted",
+        "trusted_marker",
+    }
+
+
+def _diagram_record_to_reader_position(record: Mapping[str, object], index: int) -> dict[str, object]:
+    trusted_marker = _app_trusted_marker_status(record.get("side_marker_status"))
+    full_fen = str(record.get("full_fen") or "").strip()
+    placement_fen = str(record.get("fen") or record.get("fen_candidate") or "").strip()
+    fen_value = full_fen or placement_fen
+    requires_review = bool(record.get("requires_review"))
+    status_text = str(record.get("status") or "").strip().lower()
+    accepted_full_fen = _full_fen_status_accepted(record.get("full_fen_status")) or (
+        not str(record.get("full_fen_status") or "").strip() and trusted_marker
+    )
+    accepted = bool(fen_value and not requires_review and accepted_full_fen and status_text not in {"review", "requires_review"})
+    source_crop = str(
+        record.get("board_crop_path")
+        or record.get("source_crop")
+        or record.get("image_data_uri")
+        or record.get("filename")
+        or ""
+    ).strip()
+    page = int(record.get("page") or record.get("page_number") or record.get("page_index") or 0)
+    identifier = str(record.get("id") or record.get("diagram_id") or record.get("filename") or f"diagram-{index}").strip()
+    label = str(record.get("diagram_number") or record.get("caption") or record.get("filename") or identifier).strip()
+    blockers = record.get("blockers") if isinstance(record.get("blockers"), list) else []
+    warnings = record.get("warnings") if isinstance(record.get("warnings"), list) else []
+    review_reason = (
+        str(record.get("review_reason") or record.get("fen_suppressed_reason") or "").strip()
+        or ", ".join(str(item) for item in [*blockers, *warnings] if str(item).strip())
+        or ("accepted" if accepted else "requires_review")
+    )
+    return {
+        "id": identifier or f"diagram-{index}",
+        "status": "accepted" if accepted else "needs_review",
+        "label": label or f"Diagram {index}",
+        "chapter_title": "Chess diagrams",
+        "diagram_page": page,
+        "solution_page": "",
+        "side_to_move": _side_to_move_from_diagram_record(record, trusted_marker=trusted_marker),
+        "fen": fen_value if accepted else "",
+        "fen_candidate": fen_value if not accepted else "",
+        "source_crop": source_crop,
+        "board_crop_path": str(record.get("board_crop_path") or source_crop or "").strip(),
+        "side_marker_crop_path": str(record.get("side_marker_crop_path") or "").strip(),
+        "debug_overlay_path": str(record.get("debug_overlay_path") or "").strip(),
+        "side_marker_status": str(record.get("side_marker_status") or "").strip(),
+        "side_marker_symbol": str(record.get("side_marker_symbol") or "").strip(),
+        "side_marker_bbox": record.get("side_marker_bbox") or record.get("side_marker_bbox_pixels") or [],
+        "side_marker_assignment_trace": record.get("side_marker_assignment_trace") or record.get("acceptance_trace") or [],
+        "warnings": list(warnings),
+        "review_reason": review_reason,
+    }
+
+
+def _stored_chess_diagram_records(artifact: Mapping[str, object] | None) -> list[dict[str, object]]:
+    artifact_path = _resolve_local_artifact_path(dict(artifact or {}))
+    payload = _read_json_file(artifact_path)
+    records = payload.get("records") if isinstance(payload.get("records"), list) else []
+    return [dict(record) for record in records if isinstance(record, Mapping)]
+
+
+def _reader_sidecar_summary(positions: list[dict[str, object]]) -> dict[str, object]:
+    side_unknown_count = len(
+        [item for item in positions if str(item.get("side_to_move") or "unknown").lower() not in {"w", "b", "white", "black"}]
+    )
+    return {
+        "pages": max([int(item.get("diagram_page") or 0) for item in positions] or [0]),
+        "diagrams_total": len(positions),
+        "fen_accepted": len([item for item in positions if item.get("status") == "accepted" and item.get("fen")]),
+        "needs_review_count": len([item for item in positions if item.get("status") != "accepted"]),
+        "side_unknown_count": side_unknown_count,
+        "trusted_marker_count": len([item for item in positions if _app_trusted_marker_status(item.get("side_marker_status"))]),
+        "side_marker_crop_count": len([item for item in positions if str(item.get("side_marker_crop_path") or "").strip()]),
+        "board_crop_count": len([item for item in positions if str(item.get("board_crop_path") or item.get("source_crop") or "").strip()]),
+        "empty_img_src_count": 0,
+        "accepted_pgn": 0,
+    }
+
+
+def _create_semantic_chess_reader_sidecar(
+    job_id: str,
+    stored: dict[str, dict],
+    *,
+    job: Mapping[str, object] | None = None,
+) -> dict[str, dict]:
+    html_artifact = stored.get("chess_pgn_html")
+    if not isinstance(html_artifact, dict):
+        return stored
+    html_path = _resolve_local_artifact_path(html_artifact)
+    if html_path is None:
+        return stored
+    diagram_records = _stored_chess_diagram_records(stored.get("chess_diagrams"))
+    if not diagram_records:
+        stored["chess_pgn_html"] = _enrich_chess_reader_artifact_metadata(job_id, dict(html_artifact), html_path)
+        return stored
+    job_dir = _artifact_job_dir_from_path(html_path)
+    if job_dir is None:
+        stored["chess_pgn_html"] = _enrich_chess_reader_artifact_metadata(job_id, dict(html_artifact), html_path)
+        return stored
+    positions = [_diagram_record_to_reader_position(record, index) for index, record in enumerate(diagram_records, start=1)]
+    summary = _reader_sidecar_summary(positions)
+    qa_report = {
+        "status": "PASS" if not summary["needs_review_count"] else "PASS_WITH_REVIEW_ITEMS",
+        "summary": summary,
+        "problems": [],
+        "status_policy": "accepted_requires_deterministic_validation",
+    }
+    source_gate = {
+        "decision": "use_conversion_records_as_final_reader",
+        "source_html_evidence_only": False,
+        "used_as_final_reader": True,
+        "reasons": [],
+    }
+    try:
+        from chess_study_export import render_study_html
+
+        render_study_html(
+            job_dir / "semantic_chess_html",
+            structure={"chapters": [{"chapter_no": 1, "title": "Chess diagrams"}]},
+            positions={"positions": positions},
+            qa_report=qa_report,
+            source_pdf=_job_input_path(dict(job or {})),
+            source_html=html_path,
+            source_gate=source_gate,
+        )
+    except Exception:
+        stored["chess_pgn_html"] = _enrich_chess_reader_artifact_metadata(job_id, dict(html_artifact), html_path)
+        return stored
+    stored["chess_pgn_html"] = _enrich_chess_reader_artifact_metadata(job_id, dict(html_artifact), html_path)
+    return stored
+
+
+def _store_extra_conversion_artifacts(
+    job_id: str,
+    extra_artifacts: list[dict] | None,
+    *,
+    job: Mapping[str, object] | None = None,
+) -> dict[str, dict]:
     stored: dict[str, dict] = {}
     for index, artifact in enumerate(extra_artifacts or [], start=1):
         if not isinstance(artifact, dict):
@@ -747,6 +911,7 @@ def _store_extra_conversion_artifacts(job_id: str, extra_artifacts: list[dict] |
             metadata["message"] = CHESS_PGN_AVAILABLE_MESSAGE
             metadata["label"] = "PGN"
         stored[key] = metadata
+    stored = _create_semantic_chess_reader_sidecar(job_id, stored, job=job)
     return stored
 
 
@@ -4096,7 +4261,7 @@ def _spawn_conversion_job(
             job_before_ready = _get_conversion_job(job_id) or {}
             artifacts = dict(job_before_ready.get("artifacts", {}) or {})
             artifacts["output"] = output_artifact
-            artifacts.update(_store_extra_conversion_artifacts(job_id, payload.get("extra_artifacts")))
+            artifacts.update(_store_extra_conversion_artifacts(job_id, payload.get("extra_artifacts"), job=job_before_ready))
             runtime_metadata = _update_runtime_job(
                 job_id,
                 RuntimeJobStatus.SUCCEEDED,

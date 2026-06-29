@@ -829,7 +829,7 @@ describe("Premium React shell", () => {
     expect(screen.getByRole("button", { name: "Kadruj" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Kadruj" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Raport jakości JSON" })).toHaveAttribute("href", "/convert/report/job-pdf.json");
-    expect(screen.queryByText("Raport jakości Markdown")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Raport jakości Markdown" })).toHaveAttribute("href", "/convert/report/job-pdf.md");
 
     await user.selectOptions(screen.getByLabelText("Format wysyłki na Kindle"), "pdf");
     await user.click(screen.getByRole("button", { name: "Wyślij na Kindle" }));
@@ -1247,6 +1247,16 @@ describe("Premium React shell", () => {
                     download_url: "/convert/artifact/job-chess/pdf_layout_preview",
                     content_type: "text/html",
                   },
+                  chess_diagrams: {
+                    filename: "chess_diagrams.json",
+                    download_url: "/convert/artifact/job-chess/chess_diagrams",
+                    content_type: "application/json",
+                  },
+                  chess_glyph_diagnostics: {
+                    filename: "chess_glyph_diagnostics.json",
+                    download_url: "/convert/artifact/job-chess/chess_glyph_diagnostics",
+                    content_type: "application/json",
+                  },
                 },
                 chess_files: {
                   chess_pgn: {
@@ -1300,13 +1310,31 @@ describe("Premium React shell", () => {
     expect(primaryReaderLink).toHaveClass("km-button-primary");
     await user.click(await screen.findByRole("button", { name: "chess.pdf" }));
 
-    expect(screen.getByRole("heading", { name: "Pliki szachowe do pobrania" })).toBeInTheDocument();
-    expect(screen.getAllByRole("link", { name: /Pobierz PGN/ }).some((link) => link.getAttribute("href") === "/convert/artifact/job-chess/chess_pgn")).toBe(true);
-    const readerLinks = screen.getAllByRole("link", { name: /HTML PGN\/FEN/ });
-    expect(readerLinks.some((link) => link.getAttribute("href") === "/convert/artifact/job-chess/chess_pgn_html")).toBe(true);
-    const pdfAuditLink = screen.getByRole("link", { name: /PDF layout preview \(audyt layoutu\)/ });
-    expect(pdfAuditLink).toHaveAttribute("href", "/convert/artifact/job-chess/pdf_layout_preview");
-    expect(pdfAuditLink).not.toHaveTextContent("HTML PGN/FEN");
+    expect(screen.getByRole("heading", { name: "Pliki końcowe" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Diagnostyka" })).toBeInTheDocument();
+    const finalFiles = within(screen.getByLabelText("Pliki końcowe"));
+    expect(finalFiles.getByRole("link", { name: "Finalny EPUB" })).toHaveAttribute("href", "/convert/download/job-chess");
+    expect(finalFiles.getByRole("link", { name: "Finalny HTML PGN/FEN" })).toHaveAttribute(
+      "href",
+      "/convert/artifact/job-chess/chess_pgn_html",
+    );
+    expect(finalFiles.queryByRole("link", { name: /PGN$/ })).not.toBeInTheDocument();
+    expect(finalFiles.queryByRole("link", { name: /PDF layout preview/ })).not.toBeInTheDocument();
+    expect(finalFiles.queryByRole("link", { name: /chess_diagrams\.json/ })).not.toBeInTheDocument();
+    const diagnostics = within(screen.getByLabelText("Diagnostyka"));
+    expect(diagnostics.getByRole("link", { name: "PGN" })).toHaveAttribute("href", "/convert/artifact/job-chess/chess_pgn");
+    expect(diagnostics.getByRole("link", { name: /PDF layout preview \(audyt layoutu\)/ })).toHaveAttribute(
+      "href",
+      "/convert/artifact/job-chess/pdf_layout_preview",
+    );
+    expect(diagnostics.getByRole("link", { name: "chess_diagrams.json" })).toHaveAttribute(
+      "href",
+      "/convert/artifact/job-chess/chess_diagrams",
+    );
+    expect(diagnostics.getByRole("link", { name: "chess_glyph_diagnostics.json" })).toHaveAttribute(
+      "href",
+      "/convert/artifact/job-chess/chess_glyph_diagnostics",
+    );
   });
 
   it("shows a chess reader blocker instead of falling back to PDF layout preview", async () => {
@@ -1398,14 +1426,16 @@ describe("Premium React shell", () => {
     expect(screen.getByText("HTML PGN/FEN niedostepny")).toBeInTheDocument();
     expect(screen.getByText("PGN niedostepny")).toBeInTheDocument();
     await user.click(await screen.findByRole("button", { name: "blocked-chess.pdf" }));
-    expect(screen.getByRole("heading", { name: "Pliki szachowe do pobrania" })).toBeInTheDocument();
-    expect(screen.getByText("PGN niedostepny: brak zaakceptowanych partii")).toBeInTheDocument();
+    const finalFiles = within(screen.getByLabelText("Pliki końcowe"));
+    expect(finalFiles.getByText("HTML PGN/FEN niedostepny")).toBeInTheDocument();
     expect(
-      screen.getAllByText((_content, element) =>
+      finalFiles.getAllByText((_content, element) =>
         Boolean(element?.textContent?.includes("mass_side_to_move_unknown") && element.textContent.includes("empty_img_src")),
       ).length,
     ).toBeGreaterThan(0);
-    expect(screen.getByRole("link", { name: /PDF layout preview \(audyt layoutu\)/ })).toHaveAttribute(
+    expect(finalFiles.queryByRole("link", { name: /HTML PGN\/FEN/ })).not.toBeInTheDocument();
+    const diagnostics = within(screen.getByLabelText("Diagnostyka"));
+    expect(diagnostics.getByRole("link", { name: /PDF layout preview \(audyt layoutu\)/ })).toHaveAttribute(
       "href",
       "/convert/artifact/job-chess-blocked/pdf_layout_preview",
     );

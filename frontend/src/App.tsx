@@ -60,6 +60,7 @@ type LibrarySort =
   | "kindle_asc";
 type DeliveryAttachment = "epub" | "pdf" | "input";
 type ArtifactRow = { key: string; label: string; href: string; fetchDownload?: boolean; targetBlank?: boolean };
+type ArtifactSections = { finalRows: ArtifactRow[]; diagnosticRows: ArtifactRow[] };
 type FinalChessReaderState = { present: boolean; available: boolean; href: string; blockerText: string };
 type ChessPgnState = { present: boolean; available: boolean; href: string; blockerText: string; message: string };
 type ChessDownloadFilesState = { present: boolean; pgn: ChessPgnState; reader: FinalChessReaderState };
@@ -1926,7 +1927,7 @@ function FileDetailsWorkspace({
     job?.job_id && job.status === "ready" && deliveryConfig.configured && recipientConfigured && quality.sendToKindleReady !== false,
   );
   const canSendSelectedArtifact = canSendToKindle && (deliveryArtifact === "epub" || hasPdfDeliveryArtifact);
-  const artifactRows = buildArtifactRows(job, quality);
+  const artifactSections = buildArtifactSections(job, quality, chessDownloads);
   const canRetryJob = Boolean(job?.job_id && job.status === "failed" && (job.error_code === "application_restart" || job.artifacts));
   const persistedDiagnostics =
     job?.email_delivery?.diagnostics && typeof job.email_delivery.diagnostics === "object"
@@ -2206,77 +2207,71 @@ function FileDetailsWorkspace({
           </CardContent>
         </Card>
 
-        {chessDownloads.present ? (
-          <Card>
-            <CardHeader>
-              <CardTitle>Pliki szachowe do pobrania</CardTitle>
-              <CardDescription>PGN oraz finalny reader HTML PGN/FEN dla rozpoznanych partii i diagramow.</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="km-chess-download-list">
-                {chessDownloads.pgn.available ? (
-                  <a className="km-chess-download-item" href={chessDownloads.pgn.href}>
-                    <Download data-icon="inline-start" aria-hidden="true" />
-                    <span>
-                      <strong>Pobierz PGN</strong>
-                      <small>{chessDownloads.pgn.message}</small>
-                    </span>
-                  </a>
-                ) : (
-                  <div className="km-chess-download-blocker" role="status">
-                    <AlertTriangle data-icon="inline-start" aria-hidden="true" />
-                    <span>
-                      <strong>PGN</strong>
-                      <small>{chessDownloads.pgn.blockerText}</small>
-                    </span>
-                  </div>
-                )}
-                {chessReader.available ? (
-                  <a className="km-chess-download-item is-primary" href={chessReader.href} target="_blank" rel="noreferrer">
-                    <BookOpen data-icon="inline-start" aria-hidden="true" />
-                    <span>
-                      <strong>Otwórz / pobierz HTML PGN/FEN</strong>
-                      <small>final_pdf_two_crop_reader</small>
-                    </span>
-                  </a>
-                ) : (
-                  <div className="km-chess-download-blocker" role="status">
-                    <AlertTriangle data-icon="inline-start" aria-hidden="true" />
-                    <span>
-                      <strong>HTML PGN/FEN</strong>
-                      <small>{chessReader.blockerText}</small>
-                    </span>
-                  </div>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-        ) : null}
+        <Card>
+          <CardHeader>
+            <CardTitle>Pliki końcowe</CardTitle>
+            <CardDescription>Gotowe pliki dla czytelnika. Diagnostyka jest oddzielona niżej.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="km-artifact-section" aria-label="Pliki końcowe">
+              {artifactSections.finalRows.length ? (
+                <div className="km-artifact-list">
+                  {artifactSections.finalRows.map((artifact) => (
+                    <a
+                      href={artifact.href}
+                      key={artifact.key}
+                      onClick={(event) => void downloadArtifact(event, artifact)}
+                      target={artifact.targetBlank ? "_blank" : undefined}
+                      rel={artifact.targetBlank ? "noreferrer" : undefined}
+                    >
+                      <Download data-icon="inline-start" aria-hidden="true" />
+                      {artifact.label}
+                    </a>
+                  ))}
+                </div>
+              ) : null}
+              {!chessReader.available && chessReader.present ? (
+                <div className="km-chess-download-blocker" role="status">
+                  <AlertTriangle data-icon="inline-start" aria-hidden="true" />
+                  <span>
+                    <strong>HTML PGN/FEN niedostepny</strong>
+                    <small>{chessReader.blockerText}</small>
+                  </span>
+                </div>
+              ) : null}
+              {!artifactSections.finalRows.length && !(chessReader.present && !chessReader.available) ? (
+                <div className="km-empty-state">Brak plików końcowych do pobrania.</div>
+              ) : null}
+            </div>
+          </CardContent>
+        </Card>
 
         <Card>
           <CardHeader>
-            <CardTitle>Artefakty audytowe</CardTitle>
-            <CardDescription>Pobierz finalny EPUB i raporty dostępne dla tego zadania.</CardDescription>
+            <CardTitle>Diagnostyka</CardTitle>
+            <CardDescription>Źródła, podglądy layoutu, PGN i raporty techniczne dla audytu konwersji.</CardDescription>
           </CardHeader>
           <CardContent>
-            {artifactRows.length ? (
-              <div className="km-artifact-list">
-                {artifactRows.map((artifact) => (
-                  <a
-                    href={artifact.href}
-                    key={artifact.key}
-                    onClick={(event) => void downloadArtifact(event, artifact)}
-                    target={artifact.targetBlank ? "_blank" : undefined}
-                    rel={artifact.targetBlank ? "noreferrer" : undefined}
-                  >
-                    <Download data-icon="inline-start" aria-hidden="true" />
-                    {artifact.label}
-                  </a>
-                ))}
-              </div>
-            ) : (
-              <div className="km-empty-state">Brak artefaktów do pobrania.</div>
-            )}
+            <div className="km-artifact-section" aria-label="Diagnostyka">
+              {artifactSections.diagnosticRows.length ? (
+                <div className="km-artifact-list">
+                  {artifactSections.diagnosticRows.map((artifact) => (
+                    <a
+                      href={artifact.href}
+                      key={artifact.key}
+                      onClick={(event) => void downloadArtifact(event, artifact)}
+                      target={artifact.targetBlank ? "_blank" : undefined}
+                      rel={artifact.targetBlank ? "noreferrer" : undefined}
+                    >
+                      <Download data-icon="inline-start" aria-hidden="true" />
+                      {artifact.label}
+                    </a>
+                  ))}
+                </div>
+              ) : (
+                <div className="km-empty-state">Brak diagnostyki do pobrania.</div>
+              )}
+            </div>
           </CardContent>
         </Card>
 
@@ -3292,19 +3287,32 @@ function autoRepairMessage(value: unknown) {
   return repair.label;
 }
 
-function buildArtifactRows(job: ConversionJobPayload | null, quality: NormalizedQualityState): ArtifactRow[] {
-  const rows: ArtifactRow[] = [];
-  if (job?.download_url) rows.push({ key: "download_url", label: "Finalny EPUB", href: job.download_url });
+function buildArtifactSections(
+  job: ConversionJobPayload | null,
+  quality: NormalizedQualityState,
+  chessDownloads: ChessDownloadFilesState,
+): ArtifactSections {
+  const finalRows: ArtifactRow[] = [];
+  const diagnosticRows: ArtifactRow[] = [];
+  if (job?.download_url) finalRows.push({ key: "download_url", label: "Finalny EPUB", href: job.download_url });
+  if (chessDownloads.reader.available) {
+    finalRows.push({
+      key: "chess_pgn_html",
+      label: "Finalny HTML PGN/FEN",
+      href: chessDownloads.reader.href,
+      targetBlank: true,
+    });
+  }
   const sourceUrl = resolvePdfArtifactUrl(job);
-  if (sourceUrl) rows.push({ key: "source_pdf", label: "PDF źródłowy", href: sourceUrl });
+  if (sourceUrl) diagnosticRows.push({ key: "source_pdf", label: "PDF źródłowy", href: sourceUrl });
   const artifacts = job?.artifacts && typeof job.artifacts === "object" ? job.artifacts : {};
   for (const [key, rawArtifact] of Object.entries(artifacts)) {
-    if (key === "chess_pgn" || key === "chess_pgn_html") continue;
+    if (key === "chess_pgn_html") continue;
     if (!rawArtifact || typeof rawArtifact !== "object" || Array.isArray(rawArtifact)) continue;
     const artifact = rawArtifact as Record<string, unknown>;
     const href = artifactHref(artifact);
     if (!href) continue;
-    rows.push({
+    diagnosticRows.push({
       key,
       label: artifactLabel(key, artifact),
       href,
@@ -3313,10 +3321,12 @@ function buildArtifactRows(job: ConversionJobPayload | null, quality: Normalized
     });
   }
   for (const [label, href] of Object.entries(quality.reports)) {
-    if (label === "report_markdown") continue;
-    rows.push({ key: label, label: reportLabel(label), href });
+    diagnosticRows.push({ key: label, label: reportLabel(label), href });
   }
-  return dedupeArtifactRows(rows);
+  return {
+    finalRows: dedupeArtifactRows(finalRows),
+    diagnosticRows: dedupeArtifactRows(diagnosticRows),
+  };
 }
 
 function jobHasPdfDeliveryArtifact(job: ConversionJobPayload | null) {
@@ -3351,6 +3361,7 @@ function artifactHref(artifact: Record<string, unknown>) {
 
 function artifactLabel(key: string, artifact: Record<string, unknown>) {
   if (key === "chess_pgn_html") return "HTML PGN/FEN";
+  if (key === "chess_pgn") return "PGN";
   if (key === "pdf_layout_preview") return "PDF layout preview (audyt layoutu)";
   if (key === "input" || key === "source_pdf") return "PDF źródłowy";
   if (key === "cropped_pdf") return "PDF po kadrowaniu";

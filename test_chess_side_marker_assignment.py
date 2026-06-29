@@ -4,7 +4,9 @@ import io
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
+from unittest import mock
 
 import fitz
 from PIL import Image, ImageDraw
@@ -12,8 +14,8 @@ from PIL import Image, ImageDraw
 from chess_auto_flow import build_auto_chess_flow_artifacts
 from chess_study_export import _attach_pdf_side_marker_evidence_to_study_diagrams
 from chess_fen_hardening import machine_accept_fen, machine_accept_placement
-from chess_position_recognizer import summarize_chess_fen_results
-from converter import chess_fen_html_attrs, chess_side_marker_html
+from chess_position_recognizer import ChessFenResult, summarize_chess_fen_results
+from converter import ConversionConfig, chess_fen_html_attrs, chess_side_marker_html
 from pymupdf_chess_extractor import (
     ScanChessSideToMoveEvidence,
     _apply_scan_chess_side_to_move_context_evidence,
@@ -21,6 +23,7 @@ from pymupdf_chess_extractor import (
     _infer_scan_chess_side_to_move_marker_evidence,
     _scan_chess_side_marker_probe_payloads,
     classify_scan_chess_side_marker_crop,
+    extract_scanned_chess_pdf_with_support,
 )
 
 
@@ -215,6 +218,9 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
                     "board_crop_path": "review/chess_fen/two_crop/d1_board.png",
                     "debug_overlay_path": "review/chess_fen/two_crop/d1_overlay.png",
                     "side_marker_status": "marker_missing",
+                    "side_to_move_status": "inferred",
+                    "side_to_move_evidence": "inferred",
+                    "warnings": ["side_to_move_inferred", "side_to_move_marker_probes_checked"],
                 },
                 {
                     "fen": VALID_FEN,
@@ -223,6 +229,8 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
                     "side_marker_crop_path": "review/chess_fen/two_crop/d2_marker.png",
                     "debug_overlay_path": "review/chess_fen/two_crop/d2_overlay.png",
                     "side_marker_status": "trusted_marker",
+                    "side_to_move": "w",
+                    "warnings": ["side_to_move_marker_probes_checked"],
                 },
             ]
         )
@@ -231,6 +239,11 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertEqual(summary["board_crop_count"], 2)
         self.assertEqual(summary["side_marker_crop_count"], 1)
         self.assertEqual(summary["debug_overlay_count"], 2)
+        self.assertEqual(summary["side_marker_probe_checked_count"], 2)
+        self.assertEqual(summary["trusted_marker_count"], 1)
+        self.assertEqual(summary["marker_missing_count"], 1)
+        self.assertEqual(summary["side_to_move_inferred_count"], 1)
+        self.assertEqual(summary["side_unknown_count"], 1)
 
     def test_pdf_side_marker_crop_evidence_reaches_study_diagram_record(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -321,6 +334,92 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertEqual(evidence.side, "b")
         self.assertIn("side_to_move_marker_detected", evidence.warnings)
         self.assertIn("top_right_outside", trusted_roles)
+
+    def test_scanned_runtime_reports_side_marker_probe_counts_and_artifact_zip(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            pdf_path = root / "runtime-side-markers.pdf"
+            page = Image.new("RGB", (620, 360), "white")
+            draw = ImageDraw.Draw(page)
+            first_board = (80, 130, 230, 280)
+            second_board = (330, 130, 480, 280)
+            for board in (first_board, second_board):
+                draw.rectangle(board, outline="black", width=3)
+                step = (board[2] - board[0]) / 8
+                for index in range(1, 8):
+                    x = round(board[0] + step * index)
+                    y = round(board[1] + step * index)
+                    draw.line((x, board[1], x, board[3]), fill="black", width=1)
+                    draw.line((board[0], y, board[2], y), fill="black", width=1)
+            draw.line([(242, 144), (274, 144), (258, 174), (242, 144)], fill="black", width=4)
+            draw.polygon([(492, 144), (524, 144), (508, 174)], fill="black")
+            _write_image_pdf(pdf_path, page)
+
+            page_candidates = [
+                {
+                    "page_num": 0,
+                    "candidates": [
+                        {"bbox": first_board, "confidence": 0.98},
+                        {"bbox": second_board, "confidence": 0.98},
+                    ],
+                }
+            ]
+
+            recognition = ChessFenResult(
+                fen="",
+                placement=VALID_PLACEMENT,
+                full_fen=VALID_FEN,
+                confidence=0.98,
+                side_to_move="w",
+                side_to_move_status="inferred",
+                side_to_move_evidence="inferred",
+                warnings=["side_to_move_inferred"],
+                requires_review=True,
+                board_detected=True,
+                method="image-template-board",
+            )
+
+            with mock.patch("pymupdf_chess_extractor._scan_chess_page_candidates", return_value=page_candidates), mock.patch(
+                "pymupdf_chess_extractor._scan_chess_selective_ocr_pages",
+                return_value={"pages": {}, "summary": {}},
+            ), mock.patch("pymupdf_chess_extractor._scan_chess_front_matter_metadata", return_value={}), mock.patch(
+                "pymupdf_chess_extractor._resolve_chess_piece_template_dir",
+                return_value="templates",
+            ), mock.patch("pymupdf_chess_extractor.load_piece_templates", return_value={"probe": []}), mock.patch(
+                "pymupdf_chess_extractor._recognize_scan_chess_candidate_bbox",
+                return_value=recognition,
+            ), mock.patch(
+                "pymupdf_chess_extractor._scan_chess_confirm_final_rendered_crop_recognition",
+                side_effect=lambda result, *args, **kwargs: result,
+            ), mock.patch(
+                "pymupdf_chess_extractor._scan_chess_apply_verified_crop_label",
+                side_effect=lambda result, *args, **kwargs: result,
+            ):
+                result = extract_scanned_chess_pdf_with_support(
+                    str(pdf_path),
+                    ConversionConfig(chess_fen_apply_side_marker=True, chess_fen_min_confidence=0.90),
+                )
+
+            chess_fen_summary = result["metadata"]["chess_fen"]
+            scan_audit = result["audit"]["scan_chess"]
+            diagram_artifact = next(item for item in result["extra_artifacts"] if item["key"] == "chess_diagrams")
+            zip_artifact = next(item for item in result["extra_artifacts"] if item["key"] == "chess_fen_two_crop_review_artifacts")
+            diagrams_payload = json.loads(diagram_artifact["data"].decode("utf-8"))
+            records = diagrams_payload["records"]
+            with zipfile.ZipFile(io.BytesIO(zip_artifact["data"])) as archive:
+                names = set(archive.namelist())
+
+        self.assertEqual(chess_fen_summary["diagram_count"], 2)
+        self.assertEqual(chess_fen_summary["side_marker_probe_checked_count"], 2)
+        self.assertEqual(chess_fen_summary["side_marker_crop_count"], 2)
+        self.assertEqual(chess_fen_summary["trusted_marker_count"], 2)
+        self.assertEqual(chess_fen_summary["side_to_move_inferred_count"], 0)
+        self.assertEqual(scan_audit["trusted_marker_count"], 2)
+        self.assertEqual({record["side_marker_status"] for record in records}, {"trusted_marker"})
+        self.assertEqual({record["side_to_move"] for record in records}, {"w", "b"})
+        self.assertTrue(any(name.endswith("_board.png") for name in names))
+        self.assertTrue(any(name.endswith("_marker.png") for name in names))
+        self.assertTrue(any(name.endswith("_overlay.png") for name in names))
 
     def test_pdf_side_marker_conflict_remains_review_only_with_crop_trace(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

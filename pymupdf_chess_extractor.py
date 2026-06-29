@@ -2823,6 +2823,20 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
         manual_review_count = len([record for record in chess_fen_records if record.get("requires_review")])
         chess_pgn_records = merge_chess_pgn_continuation_records(chess_pgn_records)
         chess_pgn_summary = summarize_chess_pgn_records(chess_pgn_records, diagram_records=chess_fen_records)
+        chess_fen_summary = summarize_chess_fen_results(chess_fen_records)
+        side_marker_runtime_counts = {
+            key: int(chess_fen_summary.get(key) or 0)
+            for key in (
+                "side_marker_probe_checked_count",
+                "side_marker_crop_count",
+                "trusted_marker_count",
+                "marker_missing_count",
+                "marker_conflict_count",
+                "marker_ambiguous_count",
+                "side_to_move_inferred_count",
+                "side_unknown_count",
+            )
+        }
         ocr_quality = {
             "status": "passed_with_warnings",
             "quality_gate_status": "passed_with_warnings",
@@ -2838,6 +2852,7 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
             "raw_candidate_count": raw_candidate_total,
             "diagram_crop_count": diagram_total,
             "non_board_rejected_count": non_board_rejected_count,
+            **side_marker_runtime_counts,
             "selective_ocr": selective_ocr_summary,
         }
         metadata.update(
@@ -2851,7 +2866,7 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
                     "diagram_crop_count": diagram_total,
                     "non_board_rejected_count": non_board_rejected_count,
                 },
-                "chess_fen": summarize_chess_fen_results(chess_fen_records),
+                "chess_fen": chess_fen_summary,
                 "ocr_quality": ocr_quality,
                 "reading_flow": {
                     "status": "passed_with_warnings",
@@ -2896,6 +2911,7 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
                     "pgn_count": int(chess_pgn_summary.get("valid_pgn_count", 0) or 0),
                     "pgn_candidate_count": int(chess_pgn_summary.get("candidate_game_count", 0) or 0),
                     "manual_review_count": manual_review_count,
+                    **side_marker_runtime_counts,
                 },
             },
         }

@@ -74,6 +74,22 @@ class KindleMasterEntrypointTests(unittest.TestCase):
         self.assertNotIn("\\xc5", rendered)
         self.assertNotIn("b'", rendered)
 
+    def test_print_json_redacts_sensitive_cli_fields(self) -> None:
+        payload = {
+            "status": "ok",
+            "api_key": "sk-secret",
+            "api_key_present": True,
+            "nested": {"refresh_token": "token-secret", "count": 3},
+        }
+
+        rendered = _json_text(kindlemaster._redact_sensitive_cli_json(payload))
+        self.assertIn('"status": "ok"', rendered)
+        self.assertIn('"api_key": "[redacted]"', rendered)
+        self.assertIn('"api_key_present": true', rendered)
+        self.assertIn('"refresh_token": "[redacted]"', rendered)
+        self.assertNotIn("sk-secret", rendered)
+        self.assertNotIn("token-secret", rendered)
+
     def test_run_convert_writes_json_report_for_pdf(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             input_path = Path(temp_dir) / "probe.pdf"

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-import io
 import json
 import sys
 import tempfile
@@ -602,12 +601,12 @@ class AutoChessFlowTests(unittest.TestCase):
             argv = ["kindlemaster.py", "process", "study.pdf", "--out", temp_dir, "--mode", "auto"]
             with patch.object(sys, "argv", argv):
                 with patch("chess_auto_flow.run_auto_chess_process", return_value=fake_payload) as run_mock:
-                    with contextlib.redirect_stdout(io.StringIO()) as stdout:
+                    with patch.object(kindlemaster, "_print_json") as print_json:
                         exit_code = kindlemaster.main()
 
             self.assertEqual(exit_code, 0)
             run_mock.assert_called_once()
-            self.assertIn("MANUAL_REVIEW_AVAILABLE", stdout.getvalue())
+            self.assertEqual(print_json.call_args.args[0]["status"], "MANUAL_REVIEW_AVAILABLE")
 
     def test_run_auto_chess_process_executes_full_backend_chain(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

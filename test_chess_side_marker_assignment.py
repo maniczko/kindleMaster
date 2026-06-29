@@ -15,6 +15,7 @@ from chess_auto_flow import build_auto_chess_flow_artifacts
 from chess_study_export import _attach_pdf_side_marker_evidence_to_study_diagrams
 from chess_fen_hardening import machine_accept_fen, machine_accept_placement
 from chess_position_recognizer import ChessFenResult, summarize_chess_fen_results
+from chess_side_marker_learning import REVIEW_ONLY_POLICY, build_side_marker_learning_artifacts
 from converter import ConversionConfig, chess_fen_html_attrs, chess_side_marker_html
 from pymupdf_chess_extractor import (
     ScanChessSideToMoveEvidence,
@@ -731,6 +732,172 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertEqual(len(report["available_records"]), 2)
         self.assertIn("TRAINING_DATA_GAP", markdown)
         self.assertIn("two_crop_benchmark_seed", flow_payload["artifacts"])
+
+    def test_side_marker_learning_queue_prioritizes_blockers_and_keeps_labels_review_only(self) -> None:
+        records = [
+            {
+                "diagram_id": "trusted",
+                "page": 3,
+                "board_crop_path": "review/chess_fen/two_crop/trusted_board.png",
+                "side_marker_crop_path": "review/chess_fen/two_crop/trusted_marker.png",
+                "side_to_move": "w",
+                "side_marker_status": "trusted_marker",
+            },
+            {
+                "diagram_id": "missing",
+                "page": 1,
+                "board_crop_path": "review/chess_fen/two_crop/missing_board.png",
+                "side_marker_crop_path": "",
+                "side_to_move": "unknown",
+                "side_marker_status": "marker_missing",
+            },
+            {
+                "diagram_id": "conflict",
+                "page": 2,
+                "board_crop_path": "review/chess_fen/two_crop/conflict_board.png",
+                "side_marker_crop_path": "review/chess_fen/two_crop/conflict_marker.png",
+                "side_to_move": "unknown",
+                "side_marker_status": "marker_conflict",
+            },
+        ]
+        blockers = {
+            "items": [
+                {"diagram_id": "trusted", "primary_side_marker_blocker": "no_side_marker_blocker"},
+                {"diagram_id": "missing", "primary_side_marker_blocker": "marker_crop_not_generated"},
+                {"diagram_id": "conflict", "primary_side_marker_blocker": "marker_classifier_conflict"},
+            ]
+        }
+
+        payload = build_side_marker_learning_artifacts(records, blocker_report=blockers)
+        queue = payload["queue"]["items"]
+        template = payload["manual_label_template"][0]
+        report = payload["learning_report"]
+
+        self.assertEqual([row["diagram_id"] for row in queue], ["missing", "conflict", "trusted"])
+        self.assertEqual(template["label_status"], "needs_manual_marker")
+        self.assertFalse(template["human_verified"])
+        self.assertFalse(template["accepted_for_runtime"])
+        self.assertFalse(template["accepted_for_corpus"])
+        self.assertEqual(template["policy"], REVIEW_ONLY_POLICY)
+        self.assertEqual(report["status"], "TRAINING_DATA_GAP")
+
+    def test_side_marker_learning_report_turns_human_labels_into_classifier_findings(self) -> None:
+        records = [
+            {
+                "diagram_id": "missed",
+                "page": 1,
+                "side_to_move": "unknown",
+                "side_marker_status": "marker_missing",
+                "primary_side_marker_blocker": "marker_classifier_missing",
+            },
+            {
+                "diagram_id": "conflict",
+                "page": 2,
+                "side_to_move": "unknown",
+                "side_marker_status": "marker_conflict",
+                "primary_side_marker_blocker": "marker_classifier_conflict",
+            },
+            {
+                "diagram_id": "wrong-side",
+                "page": 3,
+                "side_to_move": "w",
+                "side_marker_status": "trusted_marker",
+                "primary_side_marker_blocker": "no_side_marker_blocker",
+            },
+        ]
+        labels = [
+            {
+                "diagram_id": "missed",
+                "manual_visible_marker": "outline_triangle",
+                "manual_side_to_move": "w",
+                "label_status": "verified",
+                "human_verified": True,
+            },
+            {
+                "diagram_id": "conflict",
+                "manual_visible_marker": "filled_triangle",
+                "manual_side_to_move": "b",
+                "label_status": "verified",
+                "verification_source": "human_visual",
+            },
+            {
+                "diagram_id": "wrong-side",
+                "manual_visible_marker": "filled_triangle",
+                "manual_side_to_move": "b",
+                "label_status": "verified",
+                "human_verified": True,
+            },
+            {
+                "diagram_id": "ai-only",
+                "manual_visible_marker": "outline_triangle",
+                "manual_side_to_move": "w",
+                "label_status": "verified",
+                "verification_source": "openai",
+            },
+        ]
+
+        payload = build_side_marker_learning_artifacts(records, manual_labels=labels, min_verified_labels=2)
+        report = payload["learning_report"]
+        actions = {item["action"] for item in report["suggestions"]}
+
+        self.assertEqual(report["status"], "READY_FOR_RULE_CALIBRATION")
+        self.assertEqual(report["summary"]["usable_manual_label_count"], 3)
+        self.assertEqual(report["summary"]["rejected_manual_label_count"], 1)
+        self.assertEqual(report["confusion"]["false_negative_marker_count"], 1)
+        self.assertEqual(report["confusion"]["conflict_resolvable_count"], 1)
+        self.assertEqual(report["confusion"]["trusted_wrong_side_count"], 1)
+        self.assertIn("expand marker probe coverage", actions)
+        self.assertIn("improve marker-region arbitration", actions)
+        self.assertIn("tighten trusted-marker promotion", actions)
+        self.assertTrue(all(row["accepted_for_runtime"] is False for row in report["comparisons"]))
+        self.assertEqual(report["label_rejections"][0]["code"], "ai_only_label_ignored")
+
+    def test_auto_flow_writes_side_marker_learning_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir)
+            _write_json(
+                out / "data" / "book.json",
+                {
+                    "pages": [
+                        {
+                            "page": 1,
+                            "diagrams": [
+                                {
+                                    "diagram_id": "marker-missing",
+                                    "page": 1,
+                                    "image_path": "assets/diagrams/missing.png",
+                                    "board_crop_path": "review/chess_fen/two_crop/missing_board.png",
+                                    "debug_overlay_path": "review/chess_fen/two_crop/missing_overlay.png",
+                                    "placement": VALID_PLACEMENT,
+                                    "confidence": 0.99,
+                                    "side_to_move": "unknown",
+                                    "side_marker_status": "marker_missing",
+                                    "placement_status": "FEN_PLACEMENT_MACHINE_ACCEPTED",
+                                    "full_fen_status": "FEN_REVIEW_REQUIRED",
+                                }
+                            ],
+                            "pgn_records": [],
+                            "text_blocks": [],
+                        }
+                    ],
+                    "pgn_records": [],
+                },
+            )
+
+            flow_payload = build_auto_chess_flow_artifacts(out)
+            queue = json.loads((out / "reports" / "chess_fen" / "side_marker_learning_queue.json").read_text(encoding="utf-8"))
+            template = (out / "reports" / "chess_fen" / "side_marker_learning_labels_template.jsonl").read_text(encoding="utf-8")
+            report = json.loads((out / "reports" / "chess_fen" / "side_marker_learning_report.json").read_text(encoding="utf-8"))
+            review_html = (out / "reports" / "chess_fen" / "side_marker_learning_review.html").read_text(encoding="utf-8")
+
+        self.assertIn("side_marker_learning_report", flow_payload["artifacts"])
+        self.assertEqual(queue["items"][0]["diagram_id"], "marker-missing")
+        self.assertEqual(queue["items"][0]["policy"], REVIEW_ONLY_POLICY)
+        self.assertIn('"accepted_for_runtime": false', template)
+        self.assertEqual(report["status"], "TRAINING_DATA_GAP")
+        self.assertIn("Chess Side Marker Learning Queue", review_html)
+        self.assertIn("JSONL row to fill", review_html)
+        self.assertIn("Manual labels train and evaluate marker logic", review_html)
 
 
 if __name__ == "__main__":

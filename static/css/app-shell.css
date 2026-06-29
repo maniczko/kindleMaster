@@ -1504,6 +1504,23 @@
       text-decoration: none;
     }
 
+    .recent-conversion-actions .chess-download-files {
+      flex-basis: 100%;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+      padding: 0;
+      border: 0;
+      background: transparent;
+    }
+
+    .recent-conversion-actions .chess-download-files b {
+      flex-basis: 100%;
+      color: var(--muted);
+      font-size: 0.72rem;
+    }
+
     .button-primary,
     .preset-chip.is-active,
     .zoom-mode-button.is-active {
@@ -2797,6 +2814,22 @@
       border-color: var(--accent);
       background: var(--accent-soft);
       color: var(--accent-strong);
+    }
+
+    .library-actions .chess-download-files {
+      flex-basis: 100%;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      justify-content: flex-end;
+      align-items: center;
+    }
+
+    .library-actions .chess-download-files b {
+      flex-basis: 100%;
+      color: var(--muted);
+      font-size: 0.72rem;
+      text-align: right;
     }
 
     .library-actions .chess-reader-blocker,

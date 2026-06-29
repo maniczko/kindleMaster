@@ -778,6 +778,8 @@ process.stdout.write(JSON.stringify({{
             _extract_function_source(template_html, "arrayOfStrings"),
             _extract_function_source(template_html, "normalizeFinalChessReader"),
             _extract_function_source(template_html, "renderChessReaderAction"),
+            _extract_function_source(template_html, "normalizeChessPgnFile"),
+            _extract_function_source(template_html, "renderChessDownloadFiles"),
             _extract_function_source(template_html, "renderArtifactAction"),
             _extract_function_source(template_html, "renderReviewArtifactActions"),
             _extract_function_source(template_html, "normalizeRecentConversion"),

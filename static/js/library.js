@@ -61,6 +61,7 @@
       const qualityStateUrl = payload.quality_state_url || payload.qualityStateUrl || "";
       const artifacts = normalizeConversionArtifacts(rawArtifacts);
       const chessReader = normalizeFinalChessReader(payload, rawArtifacts);
+      const chessPgn = normalizeChessPgnFile(payload, rawArtifacts, chessReader);
       const status = normalizeRecentConversionStatus(
         payload.status || (downloadUrl || qualityStateUrl || payload.verdict ? "ready" : ""),
       );
@@ -80,6 +81,7 @@
         reportMarkdownUrl: payload.report_markdown_url || payload.reportMarkdownUrl || "",
         artifacts,
         chessReader,
+        chessPgn,
         outputSizeBytes: coerceFiniteNumber(payload.output_size_bytes ?? payload.outputSizeBytes),
         error: payload.error || "",
         verdict: payload.release_verdict || payload.releaseVerdict || payload.verdict || "",
@@ -225,6 +227,50 @@
       return `<span class="chess-reader-blocker">HTML PGN/FEN niedostepny: ${escapeHtml(chessReader.blockerText || "final reader niedostepny")}</span>`;
     }
 
+    function normalizeChessPgnFile(payload, rawArtifacts, chessReader) {
+      const artifacts = normalizeObject(rawArtifacts);
+      const chessFiles = normalizeObject(payload && payload.chess_files);
+      const artifact = normalizeObject(chessFiles.chess_pgn || (payload && payload.chess_pgn) || artifacts.chess_pgn);
+      let url = artifact.download_url || artifact.downloadUrl || "";
+      const jobId = (payload && (payload.job_id || payload.jobId)) || artifact.job_id || artifact.jobId || "";
+      const availability = optionalBoolean(artifact.available);
+      if (!url && availability === true && jobId) {
+        url = `/convert/artifact/${encodeURIComponent(jobId)}/chess_pgn`;
+      }
+      const status = String(artifact.status || "").toLowerCase();
+      const present = Boolean((chessReader && chessReader.present) || Object.keys(artifact).length || url);
+      const available = present
+        && status !== "unavailable"
+        && status !== "blocked"
+        && availability !== false
+        && Boolean(url);
+      const message = String(artifact.message || "");
+      const reason = String(artifact.reason || "");
+      const blockerText = available
+        ? ""
+        : message || (reason === "no_accepted_pgn_records" ? "PGN niedostepny: brak zaakceptowanych partii" : "PGN niedostepny");
+      return {
+        present,
+        available,
+        url: available ? url : "",
+        message: message || (available ? "PGN gotowy do pobrania." : blockerText),
+        blockerText,
+      };
+    }
+
+    function renderChessDownloadFiles(payload) {
+      const chessReader = payload && payload.chessReader;
+      const chessPgn = payload && payload.chessPgn;
+      if ((!chessReader || !chessReader.present) && (!chessPgn || !chessPgn.present)) return "";
+      const pgnAction = chessPgn && chessPgn.available && chessPgn.url
+        ? `<a href="${escapeHtml(chessPgn.url)}">Pobierz PGN</a>`
+        : `<span class="chess-reader-blocker">PGN niedostepny: ${escapeHtml((chessPgn && chessPgn.blockerText) || "brak zaakceptowanych partii")}</span>`;
+      const readerAction = chessReader && chessReader.available && chessReader.url
+        ? `<a data-primary="true" href="${escapeHtml(chessReader.url)}" target="_blank" rel="noreferrer">Otworz / pobierz HTML PGN/FEN</a>`
+        : `<span class="chess-reader-blocker">HTML PGN/FEN niedostepny: ${escapeHtml((chessReader && chessReader.blockerText) || "final reader niedostepny")}</span>`;
+      return `<div class="chess-download-files"><b>Pliki szachowe do pobrania</b>${pgnAction}${readerAction}</div>`;
+    }
+
     function renderArtifactAction(artifact, label = "") {
       if (!artifact || !artifact.url) return "";
       const text = label || artifact.label || formatArtifactLabel(artifact.key);
@@ -262,7 +308,7 @@
         : "Pobierz EPUB";
       const evidenceActions = ["ready", "failed", "blocked", "interrupted"].includes(status);
       const actions = evidenceActions ? [
-        renderChessReaderAction(payload.chessReader),
+        renderChessDownloadFiles(payload),
         payload.downloadUrl ? `<a href="${escapeHtml(payload.downloadUrl)}">${downloadLabel}</a>` : "",
         payload.pdfLayoutPreviewUrl ? `<a href="${escapeHtml(payload.pdfLayoutPreviewUrl)}" target="_blank" rel="noreferrer">Podglad PDF (audyt layoutu)</a>` : "",
         payload.qualityStateUrl ? `<a href="${escapeHtml(payload.qualityStateUrl)}" target="_blank" rel="noreferrer">JSON jakości</a>` : "",
@@ -309,7 +355,7 @@
         payload.searchableTextAvailable ? "tekst indeksowany" : "",
       ].filter(Boolean).join(" | ");
       const actions = [
-        renderChessReaderAction(payload.chessReader),
+        renderChessDownloadFiles(payload),
         payload.downloadUrl ? `<a${payload.chessReader && payload.chessReader.available ? "" : ' data-primary="true"'} href="${escapeHtml(payload.downloadUrl)}">${downloadLabel}</a>` : "<span>Brak EPUB</span>",
         payload.pdfLayoutPreviewUrl ? `<a href="${escapeHtml(payload.pdfLayoutPreviewUrl)}" target="_blank" rel="noreferrer">Podglad PDF (audyt layoutu)</a>` : "",
         payload.qualityStateUrl ? `<a href="${escapeHtml(payload.qualityStateUrl)}" target="_blank" rel="noreferrer">Quality JSON</a>` : "",

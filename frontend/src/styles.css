@@ -2109,6 +2109,70 @@ a {
   border-color: var(--km-accent);
 }
 
+.km-chess-download-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.km-chess-download-item,
+.km-chess-download-blocker {
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--km-border);
+  border-radius: var(--km-radius);
+  color: var(--km-text);
+  background: var(--km-panel-muted);
+  text-decoration: none;
+}
+
+.km-chess-download-item.is-primary {
+  border-color: color-mix(in srgb, var(--km-accent) 55%, var(--km-border));
+  background: color-mix(in srgb, var(--km-accent-soft) 72%, var(--km-panel));
+}
+
+.km-chess-download-item svg,
+.km-chess-download-blocker svg {
+  inline-size: 18px;
+  block-size: 18px;
+  flex: 0 0 auto;
+}
+
+.km-chess-download-item span,
+.km-chess-download-blocker span {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.km-chess-download-item strong,
+.km-chess-download-blocker strong,
+.km-chess-download-item small,
+.km-chess-download-blocker small {
+  overflow-wrap: anywhere;
+}
+
+.km-chess-download-item strong,
+.km-chess-download-blocker strong {
+  font-size: 0.88rem;
+}
+
+.km-chess-download-item small,
+.km-chess-download-blocker small {
+  color: var(--km-muted);
+  font-size: 0.76rem;
+  line-height: 1.25;
+}
+
+.km-chess-download-blocker {
+  color: var(--km-muted);
+  background: rgba(255, 249, 236, 0.72);
+  border-color: rgba(191, 143, 107, 0.35);
+}
+
 .km-pdf-tools {
   display: flex;
   align-items: center;
@@ -2388,6 +2452,7 @@ a {
   .km-smtp-summary-header,
   .km-smtp-readiness-grid,
   .km-activity-grid,
+  .km-chess-download-list,
   .km-form-grid {
     grid-template-columns: 1fr;
   }

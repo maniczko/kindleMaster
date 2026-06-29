@@ -158,6 +158,9 @@ FINAL_READER_ARTIFACT_TYPE = "final_pdf_two_crop_reader"
 SOURCE_HTML_EVIDENCE_ARTIFACT_TYPE = "source_html_evidence_only"
 ERROR_FINAL_READER_MISSING = "final_reader_missing"
 ERROR_FINAL_READER_HEALTH_GATE_FAILED = "final_reader_health_gate_failed"
+ERROR_CHESS_PGN_UNAVAILABLE = "chess_pgn_unavailable"
+CHESS_PGN_UNAVAILABLE_MESSAGE = "PGN niedostepny: brak zaakceptowanych partii"
+CHESS_PGN_AVAILABLE_MESSAGE = "PGN gotowy do pobrania."
 PDF_COMPRESS_JOB_RETENTION_SECONDS = 6 * 60 * 60
 PDF_COMPRESS_REMOTE_DOWNLOAD_TIMEOUT_SECONDS = 120
 PDF_COMPRESS_DIR = Path(UPLOAD_DIR) / "pdf_compress"
@@ -706,6 +709,11 @@ def _store_extra_conversion_artifacts(job_id: str, extra_artifacts: list[dict] |
         metadata["label"] = str(artifact.get("label") or key).strip() or key
         if key == "chess_pgn_html":
             metadata = _enrich_chess_reader_artifact_metadata(job_id, metadata, _resolve_local_artifact_path(metadata))
+        if key == "chess_pgn":
+            metadata["available"] = True
+            metadata["status"] = "available"
+            metadata["message"] = CHESS_PGN_AVAILABLE_MESSAGE
+            metadata["label"] = "PGN"
         stored[key] = metadata
     return stored
 
@@ -1061,6 +1069,196 @@ def _enrich_job_chess_reader_artifact_routing(job_id: str, job: dict) -> dict[st
     }
 
 
+def _job_chess_pgn_summary(job: Mapping[str, object]) -> dict[str, object]:
+    containers: list[Mapping[str, object]] = []
+    for value in (
+        job,
+        job.get("metadata"),
+        job.get("quality_state"),
+        job.get("conversion"),
+    ):
+        if isinstance(value, Mapping):
+            containers.append(value)
+    for container in list(containers):
+        for nested_key in ("metadata", "quality_report", "publication_report", "conversion"):
+            nested = container.get(nested_key)
+            if isinstance(nested, Mapping):
+                containers.append(nested)
+    for container in containers:
+        for key in ("chess_pgn", "chess_pgn_summary", "pgn_summary", "pgn"):
+            value = container.get(key)
+            if isinstance(value, Mapping):
+                return dict(value)
+    return {}
+
+
+def _job_has_chess_delivery_context(
+    job: Mapping[str, object],
+    artifacts: Mapping[str, object],
+    pgn_summary: Mapping[str, object],
+) -> bool:
+    if any(key in artifacts for key in ("chess_pgn", "chess_pgn_html", "chess_exercises_pgn")):
+        return True
+    if pgn_summary:
+        known_keys = {
+            "candidate_game_count",
+            "valid_pgn_count",
+            "legal_pgn_count",
+            "strict_export_count",
+            "exportable_pgn_count",
+            "manual_review_count",
+            "exercise_export_count",
+        }
+        if any(key in pgn_summary for key in known_keys):
+            return True
+    metadata = job.get("metadata")
+    profile = str(metadata.get("profile", "") if isinstance(metadata, Mapping) else "")
+    return "chess" in profile.lower()
+
+
+def _artifact_signed_url(artifact: Mapping[str, object]) -> str:
+    signed_url = artifact.get("signed_url")
+    if isinstance(signed_url, Mapping):
+        return str(signed_url.get("url") or "").strip()
+    return ""
+
+
+def _chess_pgn_status_payload(
+    job_id: str,
+    artifact: Mapping[str, object] | None,
+    pgn_summary: Mapping[str, object],
+) -> dict[str, object]:
+    source = dict(artifact or {})
+    status = str(source.get("status") or "").strip().lower()
+    existing_url = str(source.get("download_url") or source.get("downloadUrl") or _artifact_signed_url(source) or "").strip()
+    available = bool(source) and status != "unavailable" and bool(
+        existing_url
+        or str(source.get("location") or "").strip()
+        or _resolve_local_artifact_path(source) is not None
+    )
+    download_url = existing_url if available else ""
+    if available and not download_url:
+        download_url = f"/convert/artifact/{job_id}/chess_pgn"
+    payload: dict[str, object] = {
+        "key": "chess_pgn",
+        "label": "PGN",
+        "filename": str(source.get("filename") or "chess_games.pgn"),
+        "content_type": str(source.get("content_type") or "application/x-chess-pgn; charset=utf-8"),
+        "available": available,
+        "status": "available" if available else "unavailable",
+        "download_url": download_url,
+        "message": CHESS_PGN_AVAILABLE_MESSAGE if available else CHESS_PGN_UNAVAILABLE_MESSAGE,
+    }
+    if not available:
+        payload["reason"] = "no_accepted_pgn_records"
+    for key in (
+        "candidate_game_count",
+        "valid_pgn_count",
+        "legal_pgn_count",
+        "strict_export_count",
+        "exportable_pgn_count",
+        "manual_review_count",
+        "exercise_export_count",
+        "derived_final_fen_count",
+        "fen_count",
+    ):
+        if key in pgn_summary:
+            payload[key] = pgn_summary.get(key)
+    return payload
+
+
+def _enrich_job_chess_pgn_artifact_routing(job_id: str, job: dict) -> dict[str, object]:
+    artifacts = dict(job.get("artifacts", {}) or {})
+    artifact = artifacts.get("chess_pgn")
+    source_artifact = artifact if isinstance(artifact, Mapping) else None
+    pgn_summary = _job_chess_pgn_summary(job)
+    if not _job_has_chess_delivery_context(job, artifacts, pgn_summary):
+        return {}
+    payload = _chess_pgn_status_payload(job_id, source_artifact, pgn_summary)
+    if source_artifact:
+        enriched = dict(source_artifact)
+        enriched.update(payload)
+        artifacts["chess_pgn"] = enriched
+    else:
+        artifacts["chess_pgn"] = dict(payload)
+    job["artifacts"] = artifacts
+    return dict(artifacts["chess_pgn"])
+
+
+def _chess_reader_file_payload(job_id: str, job: Mapping[str, object], reader_payload: Mapping[str, object]) -> dict[str, object]:
+    artifacts = dict(job.get("artifacts", {}) or {})
+    artifact = artifacts.get("chess_pgn_html") if isinstance(artifacts.get("chess_pgn_html"), Mapping) else {}
+    href = str(dict(artifact).get("download_url") or dict(artifact).get("downloadUrl") or "").strip()
+    if not href and reader_payload.get("artifact_type") == FINAL_READER_ARTIFACT_TYPE:
+        href = f"/convert/artifact/{job_id}/chess_pgn_html"
+    blockers = list(reader_payload.get("final_reader_blockers", []) or [])
+    available = bool(reader_payload.get("final_reader_available", False)) and bool(href)
+    payload: dict[str, object] = {
+        "key": "chess_pgn_html",
+        "label": "HTML PGN/FEN",
+        "filename": str(dict(artifact).get("filename") or "chess_games.html"),
+        "content_type": str(dict(artifact).get("content_type") or "text/html; charset=utf-8"),
+        "artifact_type": str(reader_payload.get("artifact_type") or ""),
+        "available": available,
+        "status": "available" if available else "blocked",
+        "download_url": href if available else "",
+        "message": "HTML PGN/FEN gotowy do otwarcia." if available else "HTML PGN/FEN niedostepny.",
+        "final_reader_available": bool(reader_payload.get("final_reader_available", False)),
+        "final_reader_health": dict(reader_payload.get("final_reader_health", {}) or {}),
+        "final_reader_blockers": blockers,
+        "source_html_quality_gate": dict(reader_payload.get("source_html_quality_gate", {}) or {}),
+    }
+    for key in (
+        "final_reader_path",
+        "source_html_evidence_path",
+        "side_unknown_count",
+        "trusted_marker_count",
+        "empty_img_src_count",
+        "diagrams_total",
+        "fen_accepted",
+    ):
+        if key in reader_payload:
+            payload[key] = reader_payload.get(key)
+    return payload
+
+
+def _enrich_job_chess_delivery_artifacts(job_id: str, job: dict) -> dict[str, object]:
+    reader_payload = _enrich_job_chess_reader_artifact_routing(job_id, job)
+    pgn_payload = _enrich_job_chess_pgn_artifact_routing(job_id, job)
+    if not reader_payload and not pgn_payload:
+        return {}
+    payload: dict[str, object] = dict(reader_payload)
+    chess_files: dict[str, object] = {}
+    if pgn_payload:
+        payload["chess_pgn"] = pgn_payload
+        chess_files["chess_pgn"] = pgn_payload
+    if reader_payload:
+        html_payload = _chess_reader_file_payload(job_id, job, reader_payload)
+        payload["chess_pgn_html"] = html_payload
+        chess_files["chess_pgn_html"] = html_payload
+    if chess_files:
+        payload["chess_files"] = chess_files
+    return payload
+
+
+def _chess_pgn_unavailable_response(job_id: str, artifact: Mapping[str, object] | None = None):
+    payload = dict(artifact or {})
+    if not payload:
+        payload = _chess_pgn_status_payload(job_id, None, {})
+    return _json_error(
+        CHESS_PGN_UNAVAILABLE_MESSAGE,
+        error_code=ERROR_CHESS_PGN_UNAVAILABLE,
+        status_code=409,
+        phase="download",
+        job_id=job_id,
+        retryable=False,
+        extra={
+            "chess_pgn": payload,
+            "chess_files": {"chess_pgn": payload},
+        },
+    )
+
+
 def _final_reader_missing_response(job_id: str, artifact_path: Path | None, artifact: Mapping[str, object] | None = None):
     routing = _chess_reader_routing_metadata(job_id, artifact_path, artifact)
     return _json_error(
@@ -1200,6 +1398,9 @@ def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
         artifacts["chess_pgn"] = _local_artifact_metadata(job_id, ArtifactKind.REPORT, chess_pgn_file)
         artifacts["chess_pgn"]["download_url"] = f"/convert/artifact/{job_id}/chess_pgn"
         artifacts["chess_pgn"]["label"] = "PGN"
+        artifacts["chess_pgn"]["available"] = True
+        artifacts["chess_pgn"]["status"] = "available"
+        artifacts["chess_pgn"]["message"] = CHESS_PGN_AVAILABLE_MESSAGE
     if chess_exercises_pgn_file is not None:
         artifacts["chess_exercises_pgn"] = _local_artifact_metadata(job_id, ArtifactKind.REPORT, chess_exercises_pgn_file)
         artifacts["chess_exercises_pgn"]["download_url"] = f"/convert/artifact/{job_id}/chess_exercises_pgn"
@@ -3117,7 +3318,7 @@ def _build_conversion_job_history_item(job_id: str, job: dict) -> dict:
     response_job_id = str(job.get("job_id") or job_id)
     status = str(job.get("status", "queued") or "queued")
     status_key = status.strip().lower()
-    chess_reader_payload = _enrich_job_chess_reader_artifact_routing(response_job_id, job)
+    chess_delivery_payload = _enrich_job_chess_delivery_artifacts(response_job_id, job)
     download_state = _build_job_download_state(response_job_id, job)
     source_preview_url = _source_pdf_preview_url(response_job_id, job)
     item = {
@@ -3140,8 +3341,8 @@ def _build_conversion_job_history_item(job_id: str, job: dict) -> dict:
         "artifact_storage": dict(job.get("artifact_storage", {}) or {}),
         "cloud_sync": dict(job.get("cloud_sync", {}) or {}),
     }
-    if chess_reader_payload:
-        item.update(chess_reader_payload)
+    if chess_delivery_payload:
+        item.update(chess_delivery_payload)
     if source_preview_url:
         item["source_preview_url"] = source_preview_url
     if status_key in {"ready", "failed", "timed_out"}:
@@ -4703,7 +4904,7 @@ def convert_status(job_id: str):
         )
     if not job.get("cloud"):
         job = _ensure_quality_report_artifacts(job_id, job)
-    chess_reader_payload = _enrich_job_chess_reader_artifact_routing(job_id, job)
+    chess_delivery_payload = _enrich_job_chess_delivery_artifacts(job_id, job)
     download_state = _build_job_download_state(job_id, job)
     download_url = download_state.download_url
     conversion_payload = None
@@ -4715,8 +4916,8 @@ def convert_status(job_id: str):
         output_size_bytes = _read_output_size_bytes(job)
         if output_size_bytes is not None and "output_size_bytes" not in conversion_payload:
             conversion_payload["output_size_bytes"] = output_size_bytes
-        if chess_reader_payload:
-            conversion_payload.update(chess_reader_payload)
+        if chess_delivery_payload:
+            conversion_payload.update(chess_delivery_payload)
     response = jsonify(
         {
             "success": True,
@@ -4742,18 +4943,21 @@ def convert_status(job_id: str):
             "email_delivery": _build_job_email_delivery_state(job),
             "runtime": dict(job.get("runtime", {}) or {}),
             "artifacts": dict(job.get("artifacts", {}) or {}),
-            "final_reader_path": chess_reader_payload.get("final_reader_path", ""),
-            "final_reader_available": bool(chess_reader_payload.get("final_reader_available", False)),
-            "final_reader_health": dict(chess_reader_payload.get("final_reader_health", {}) or {}),
-            "final_reader_blockers": list(chess_reader_payload.get("final_reader_blockers", []) or []),
-            "source_html_evidence_path": chess_reader_payload.get("source_html_evidence_path", ""),
-            "artifact_type": chess_reader_payload.get("artifact_type", ""),
-            "source_html_quality_gate": dict(chess_reader_payload.get("source_html_quality_gate", {}) or {}),
-            "side_unknown_count": chess_reader_payload.get("side_unknown_count"),
-            "trusted_marker_count": chess_reader_payload.get("trusted_marker_count"),
-            "empty_img_src_count": chess_reader_payload.get("empty_img_src_count"),
-            "diagrams_total": chess_reader_payload.get("diagrams_total"),
-            "fen_accepted": chess_reader_payload.get("fen_accepted"),
+            "final_reader_path": chess_delivery_payload.get("final_reader_path", ""),
+            "final_reader_available": bool(chess_delivery_payload.get("final_reader_available", False)),
+            "final_reader_health": dict(chess_delivery_payload.get("final_reader_health", {}) or {}),
+            "final_reader_blockers": list(chess_delivery_payload.get("final_reader_blockers", []) or []),
+            "source_html_evidence_path": chess_delivery_payload.get("source_html_evidence_path", ""),
+            "artifact_type": chess_delivery_payload.get("artifact_type", ""),
+            "source_html_quality_gate": dict(chess_delivery_payload.get("source_html_quality_gate", {}) or {}),
+            "side_unknown_count": chess_delivery_payload.get("side_unknown_count"),
+            "trusted_marker_count": chess_delivery_payload.get("trusted_marker_count"),
+            "empty_img_src_count": chess_delivery_payload.get("empty_img_src_count"),
+            "diagrams_total": chess_delivery_payload.get("diagrams_total"),
+            "fen_accepted": chess_delivery_payload.get("fen_accepted"),
+            "chess_pgn": dict(chess_delivery_payload.get("chess_pgn", {}) or {}),
+            "chess_pgn_html": dict(chess_delivery_payload.get("chess_pgn_html", {}) or {}),
+            "chess_files": dict(chess_delivery_payload.get("chess_files", {}) or {}),
             "artifact_storage": dict(job.get("artifact_storage", {}) or {}),
             "cloud_sync": dict(job.get("cloud_sync", {}) or {}),
             "authenticated": auth_context.authenticated,
@@ -4782,7 +4986,7 @@ def convert_quality(job_id: str):
         )
     if not job.get("cloud"):
         job = _ensure_quality_report_artifacts(job_id, job)
-    _enrich_job_chess_reader_artifact_routing(job_id, job)
+    chess_delivery_payload = _enrich_job_chess_delivery_artifacts(job_id, job)
 
     response = jsonify(
         {
@@ -4795,6 +4999,9 @@ def convert_quality(job_id: str):
             "runtime": dict(job.get("runtime", {}) or {}),
             "progress": _build_job_progress_state(job),
             "artifacts": dict(job.get("artifacts", {}) or {}),
+            "chess_pgn": dict(chess_delivery_payload.get("chess_pgn", {}) or {}),
+            "chess_pgn_html": dict(chess_delivery_payload.get("chess_pgn_html", {}) or {}),
+            "chess_files": dict(chess_delivery_payload.get("chess_files", {}) or {}),
             "artifact_storage": dict(job.get("artifact_storage", {}) or {}),
             "cloud_sync": dict(job.get("cloud_sync", {}) or {}),
             "authenticated": auth_context.authenticated,
@@ -5356,10 +5563,12 @@ def convert_artifact_download(job_id: str, artifact_key: str):
             job_id=job_id,
         )
     key = _safe_artifact_key(artifact_key)
-    _enrich_job_chess_reader_artifact_routing(job_id, job)
+    chess_delivery_payload = _enrich_job_chess_delivery_artifacts(job_id, job)
     artifacts = dict(job.get("artifacts", {}) or {})
     artifact = artifacts.get(key)
     if not isinstance(artifact, dict):
+        if key == "chess_pgn" and isinstance(chess_delivery_payload.get("chess_pgn"), Mapping):
+            return _chess_pgn_unavailable_response(job_id, chess_delivery_payload.get("chess_pgn"))
         return _json_error(
             "Nie znaleziono artefaktu zadania.",
             error_code=ERROR_MISSING_OUTPUT,
@@ -5371,7 +5580,11 @@ def convert_artifact_download(job_id: str, artifact_key: str):
         artifact_path = _resolve_local_artifact_path(artifact)
         return _render_pdf_layout_preview_shell(job_id, job, artifact, artifact_path)
     artifact_path = _resolve_local_artifact_path(artifact)
+    if key == "chess_pgn" and not bool(artifact.get("available", True)):
+        return _chess_pgn_unavailable_response(job_id, artifact)
     if artifact_path is None or not artifact_path.is_file():
+        if key == "chess_pgn" and not bool(artifact.get("download_url") or _artifact_signed_url(artifact)):
+            return _chess_pgn_unavailable_response(job_id, artifact)
         if key == "chess_pgn_html" and str(artifact.get("artifact_type") or "") == SOURCE_HTML_EVIDENCE_ARTIFACT_TYPE:
             return _final_reader_missing_response(job_id, None, artifact)
         if key == "input":

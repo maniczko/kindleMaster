@@ -83,6 +83,64 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
             }
         return html_path
 
+    def _register_chess_pgn_artifact(self, job_id: str, pgn_text: str) -> Path:
+        job_root = self._artifact_root(job_id)
+        report_dir = job_root / "report"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        pgn_path = report_dir / "chess_games.pgn"
+        pgn_path.write_text(pgn_text, encoding="utf-8")
+        artifact = app_module._local_artifact_metadata(job_id, ArtifactKind.REPORT, pgn_path)
+        artifact["content_type"] = "application/x-chess-pgn; charset=utf-8"
+        artifact["download_url"] = f"/convert/artifact/{job_id}/chess_pgn"
+        artifact["label"] = "PGN"
+        artifact["available"] = True
+        artifact["status"] = "available"
+        artifact["message"] = "PGN gotowy do pobrania."
+        with app_module._CONVERSION_JOBS_LOCK:
+            app_module._CONVERSION_JOBS[job_id]["artifacts"]["chess_pgn"] = artifact
+        return pgn_path
+
+    def _write_final_reader_sidecar(self, source_html: Path, *, diagrams_total: int = 1) -> Path:
+        job_root = source_html.parents[1]
+        semantic_dir = job_root / "semantic_chess_html"
+        data_dir = semantic_dir / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        manifest = {
+            "schema": "kindlemaster.chess_study.artifact_manifest.v1",
+            "artifact_type": "final_pdf_two_crop_reader",
+            "pipeline_mode": "pdf_two_crop_reader",
+            "generated_at": "2026-06-28T00:00:00Z",
+            "source_pdf": "",
+            "source_html": str(source_html),
+            "commit_sha": "",
+            "commit_sha_reason": "test",
+            "source_html_quality_gate": {
+                "decision": "use_source_html_as_final_reader",
+                "source_html_evidence_only": False,
+                "used_as_final_reader": True,
+                "reasons": [],
+            },
+            "side_unknown_count": 0,
+            "trusted_marker_count": diagrams_total,
+            "empty_img_src_count": 0,
+            "diagrams_total": diagrams_total,
+            "fen_accepted": diagrams_total,
+        }
+        (data_dir / "artifact_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        index_path = semantic_dir / "index.html"
+        index_path.write_text(
+            """
+            <!doctype html><html><body data-artifact-type="final_pdf_two_crop_reader">
+              <article class="card" data-position-status="accepted" data-side-marker-status="trusted_marker"
+                       data-has-board-crop="true" data-has-side-marker-crop="true">
+                <p>Side to move: white</p>
+              </article>
+            </body></html>
+            """,
+            encoding="utf-8",
+        )
+        return index_path
+
     def test_evidence_only_html_is_not_returned_as_final_artifact(self) -> None:
         job_id = "routing-evidence-only"
         self._register_chess_html_job(
@@ -261,6 +319,85 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
         self.assertTrue(payload["artifacts"]["chess_pgn_html"]["source_html_evidence_path"].endswith("chess_games.html"))
         self.assertEqual(payload["artifacts"]["pdf_layout_preview"]["download_url"], f"/convert/artifact/{job_id}/pdf_layout_preview")
         self.assertNotEqual(payload["artifacts"]["pdf_layout_preview"].get("artifact_type"), "final_pdf_two_crop_reader")
+
+    def test_status_exposes_pgn_and_final_html_as_chess_files(self) -> None:
+        job_id = "routing-pgn-and-final-reader"
+        source_html = self._register_chess_html_job(
+            job_id,
+            "<!doctype html><html><body><p>Source evidence report.</p></body></html>",
+        )
+        self._write_final_reader_sidecar(source_html, diagrams_total=3)
+        self._register_chess_pgn_artifact(
+            job_id,
+            '[Event "Study"]\n[Date "????.??.??"]\n[Round "?"]\n[White "White"]\n[Black "Black"]\n[Result "*"]\n\n1. e4 e5 *\n',
+        )
+        with app_module._CONVERSION_JOBS_LOCK:
+            app_module._CONVERSION_JOBS[job_id]["metadata"]["chess_pgn"] = {
+                "candidate_game_count": 1,
+                "valid_pgn_count": 1,
+                "legal_pgn_count": 1,
+                "strict_export_count": 1,
+                "exportable_pgn_count": 1,
+                "manual_review_count": 0,
+            }
+
+        status_response = self.client.get(f"/convert/status/{job_id}")
+        pgn_response = self.client.get(f"/convert/artifact/{job_id}/chess_pgn")
+
+        self.assertEqual(status_response.status_code, 200)
+        payload = status_response.get_json()
+        self.assertIn("chess_files", payload)
+        self.assertEqual(payload["chess_files"]["chess_pgn"]["label"], "PGN")
+        self.assertTrue(payload["chess_files"]["chess_pgn"]["available"])
+        self.assertEqual(payload["chess_files"]["chess_pgn"]["download_url"], f"/convert/artifact/{job_id}/chess_pgn")
+        self.assertEqual(payload["chess_files"]["chess_pgn"]["exportable_pgn_count"], 1)
+        self.assertEqual(payload["chess_files"]["chess_pgn_html"]["label"], "HTML PGN/FEN")
+        self.assertTrue(payload["chess_files"]["chess_pgn_html"]["available"])
+        self.assertEqual(payload["chess_files"]["chess_pgn_html"]["artifact_type"], "final_pdf_two_crop_reader")
+        self.assertEqual(payload["chess_files"]["chess_pgn_html"]["download_url"], f"/convert/artifact/{job_id}/chess_pgn_html")
+        self.assertEqual(payload["artifacts"]["chess_pgn"]["status"], "available")
+        self.assertEqual(payload["artifacts"]["chess_pgn_html"]["artifact_type"], "final_pdf_two_crop_reader")
+        self.assertEqual(pgn_response.status_code, 200)
+        self.assertEqual(pgn_response.mimetype, "application/x-chess-pgn")
+        self.assertIn('[Event "Study"]', pgn_response.get_data(as_text=True))
+        self.assertIn("attachment", pgn_response.headers.get("Content-Disposition", ""))
+        pgn_response.close()
+
+    def test_missing_accepted_pgn_returns_review_safe_status(self) -> None:
+        job_id = "routing-pgn-unavailable"
+        source_html = self._register_chess_html_job(
+            job_id,
+            "<!doctype html><html><body><p>Source evidence report.</p></body></html>",
+        )
+        self._write_final_reader_sidecar(source_html, diagrams_total=2)
+        with app_module._CONVERSION_JOBS_LOCK:
+            app_module._CONVERSION_JOBS[job_id]["metadata"]["chess_pgn"] = {
+                "candidate_game_count": 2,
+                "valid_pgn_count": 0,
+                "strict_export_count": 0,
+                "exportable_pgn_count": 0,
+                "manual_review_count": 2,
+            }
+
+        status_response = self.client.get(f"/convert/status/{job_id}")
+        pgn_response = self.client.get(f"/convert/artifact/{job_id}/chess_pgn")
+
+        self.assertEqual(status_response.status_code, 200)
+        payload = status_response.get_json()
+        chess_pgn = payload["chess_files"]["chess_pgn"]
+        self.assertEqual(chess_pgn["label"], "PGN")
+        self.assertFalse(chess_pgn["available"])
+        self.assertEqual(chess_pgn["reason"], "no_accepted_pgn_records")
+        self.assertEqual(chess_pgn["message"], "PGN niedostepny: brak zaakceptowanych partii")
+        self.assertEqual(chess_pgn["candidate_game_count"], 2)
+        self.assertEqual(chess_pgn["manual_review_count"], 2)
+        self.assertEqual(chess_pgn["download_url"], "")
+        self.assertEqual(payload["chess_files"]["chess_pgn_html"]["artifact_type"], "final_pdf_two_crop_reader")
+        self.assertEqual(pgn_response.status_code, 409)
+        error_payload = pgn_response.get_json()
+        self.assertEqual(error_payload["error_code"], "chess_pgn_unavailable")
+        self.assertEqual(error_payload["chess_pgn"]["reason"], "no_accepted_pgn_records")
+        self.assertEqual(error_payload["chess_pgn"]["message"], "PGN niedostepny: brak zaakceptowanych partii")
 
     def test_unhealthy_final_reader_with_mass_unknown_is_blocked(self) -> None:
         job_id = "routing-unhealthy-final-reader"

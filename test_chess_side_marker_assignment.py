@@ -15,7 +15,11 @@ from chess_auto_flow import build_auto_chess_flow_artifacts
 from chess_study_export import _attach_pdf_side_marker_evidence_to_study_diagrams
 from chess_fen_hardening import machine_accept_fen, machine_accept_placement
 from chess_position_recognizer import ChessFenResult, summarize_chess_fen_results
-from chess_side_marker_learning import REVIEW_ONLY_POLICY, build_side_marker_learning_artifacts
+from chess_side_marker_learning import (
+    REVIEW_ONLY_POLICY,
+    build_side_marker_learning_artifacts,
+    side_marker_learning_review_html,
+)
 from converter import ConversionConfig, chess_fen_html_attrs, chess_side_marker_html
 from pymupdf_chess_extractor import (
     ScanChessSideToMoveEvidence,
@@ -895,9 +899,25 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertEqual(queue["items"][0]["policy"], REVIEW_ONLY_POLICY)
         self.assertIn('"accepted_for_runtime": false', template)
         self.assertEqual(report["status"], "TRAINING_DATA_GAP")
-        self.assertIn("Chess Side Marker Learning Queue", review_html)
-        self.assertIn("JSONL row to fill", review_html)
-        self.assertIn("Manual labels train and evaluate marker logic", review_html)
+        self.assertIn("Oznaczanie markerów ruchu", review_html)
+        self.assertIn("Co widać w cropie markera?", review_html)
+        self.assertIn("△ pusty trójkąt", review_html)
+        self.assertIn("▼ pełny trójkąt", review_html)
+        self.assertIn("Kopiuj wszystkie JSONL", review_html)
+        self.assertIn("Pobierz labels.jsonl", review_html)
+        self.assertIn('"accepted_for_runtime": false', review_html)
+
+    def test_side_marker_learning_review_empty_state_explains_next_action(self) -> None:
+        payload = build_side_marker_learning_artifacts([])
+
+        review_html = side_marker_learning_review_html(payload)
+
+        self.assertIn("Brak diagramów do oznaczenia", review_html)
+        self.assertIn("python kindlemaster.py process", review_html)
+        self.assertIn("side_marker_learning_queue.jsonl", review_html)
+        self.assertIn("two_crop_quality_metrics.json", review_html)
+        self.assertIn("invalid choice: process", review_html)
+        self.assertNotIn("No side-marker learning rows found", review_html)
 
 
 if __name__ == "__main__":

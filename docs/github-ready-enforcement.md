@@ -131,7 +131,7 @@ tests plus the React UI contract tests. Browser/runtime coverage remains in
 - Security audit: `pip-audit` runs once on the Ubuntu Python 3.14 lane against `requirements.txt` and `requirements-dev.txt` with a 60-second network timeout.
 - Coverage threshold: deterministic governance/control-plane paths (`kindlemaster.py`, `github_issue_orchestration.py`, and `scripts/generate_project_status.py`) run through `coverage` with `GOVERNANCE_COVERAGE_FAIL_UNDER=75`.
 - Quality-critical conversion coverage: `python kindlemaster.py test --suite quality-critical` runs selected conversion, semantic cleanup, delivery repair, and release recovery tests once on Ubuntu Python 3.14 with `CORE_CONVERSION_COVERAGE_FAIL_UNDER=70`, `CONVERTER_COVERAGE_FAIL_UNDER=60`, `TEXT_NORMALIZATION_COVERAGE_FAIL_UNDER=65`, and `SEMANTIC_CLEANUP_COVERAGE_FAIL_UNDER=70`. This is the core conversion coverage gate for release-critical paths.
-- Artifact upload: governance artifacts, quick READY evidence, and release READY evidence are uploaded through `actions/upload-artifact@v4`.
+- Artifact upload: governance artifacts, quick READY evidence, and release READY evidence are uploaded through `actions/upload-artifact@v7`.
 
 The per-file `converter.py` threshold is intentionally lower than the total gate because the orchestrator is broad. It is now enforced at 60% after adding targeted conversion orchestration regressions.
 

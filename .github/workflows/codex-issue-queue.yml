@@ -288,7 +288,7 @@ jobs:
 
       - name: Upload queue handoff artifacts
         if: ${{ steps.select.outputs.selected == 'true' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: codex-issue-${{ steps.select.outputs.issue_number }}-handoff
           path: reports/github/codex-queue-*

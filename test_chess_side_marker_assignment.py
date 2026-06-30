@@ -937,6 +937,9 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertIn("Problem z wejściem: PDF nie został znaleziony", review_html)
         self.assertIn(r"C:\ścieżka\do\pliku.pdf", review_html)
         self.assertIn("system nie ma stron ani diagramów do pokazania", review_html)
+        self.assertIn("INPUT_PDF_MISSING", review_html)
+        self.assertIn("Dlaczego status to INPUT_PDF_MISSING", review_html)
+        self.assertNotIn("Dlaczego status to TRAINING_DATA_GAP", review_html)
 
 
 if __name__ == "__main__":

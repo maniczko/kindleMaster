@@ -154,10 +154,11 @@ def persisted_side_marker_learning_report(report: Mapping[str, Any]) -> dict[str
 def side_marker_learning_review_html(payload: Mapping[str, Any]) -> str:
     summary = payload.get("summary") or {}
     learning = payload.get("learning_report") or {}
+    review_status = _review_status(learning, payload)
     rows = (payload.get("queue") or {}).get("items") or []
     cards = "\n".join(_review_card(row, index) for index, row in enumerate(rows, start=1))
     has_cards = bool(cards)
-    content = cards if has_cards else _empty_review_state(summary, learning, payload)
+    content = cards if has_cards else _empty_review_state(summary, learning, payload, review_status)
     toolbar = _review_toolbar() if has_cards else ""
     return f"""<!doctype html>
 <html lang="pl">
@@ -298,7 +299,7 @@ def side_marker_learning_review_html(payload: Mapping[str, Any]) -> str:
         <div class="stat"><span>Ręczne etykiety</span><strong>{_h(summary.get('manual_label_count', 0))}</strong></div>
         <div class="stat"><span>Użyteczne etykiety</span><strong>{_h(summary.get('usable_manual_label_count', 0))}</strong></div>
         <div class="stat"><span>Minimum do kalibracji</span><strong>{_h(summary.get('min_verified_labels', MIN_VERIFIED_LABELS))}</strong></div>
-        <div class="stat"><span>Status</span><strong>{_h(learning.get('status', 'UNKNOWN'))}</strong></div>
+        <div class="stat"><span>Status</span><strong>{_h(review_status)}</strong></div>
       </section>
     </div>
   </header>
@@ -734,10 +735,15 @@ def _review_toolbar() -> str:
 </section>"""
 
 
-def _empty_review_state(summary: Mapping[str, Any], learning: Mapping[str, Any], payload: Mapping[str, Any]) -> str:
+def _empty_review_state(
+    summary: Mapping[str, Any],
+    learning: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    review_status: str,
+) -> str:
     learning_summary = learning.get("summary") or {}
     source_count = learning_summary.get("source_record_count", summary.get("record_count", 0))
-    status = learning.get("status") or "UNKNOWN"
+    status = review_status or str(learning.get("status") or "UNKNOWN")
     input_blocker = _input_blocker_notice(payload)
     return f"""<section class="empty-state" aria-labelledby="empty-title">
   <h2 id="empty-title">Brak diagramów do oznaczenia</h2>
@@ -758,10 +764,7 @@ python kindlemaster.py process "C:\\ścieżka\\do\\pliku.pdf" --out "output\\mar
         <li>Jeśli PowerShell pokazuje <code>invalid choice: process</code>, uruchamiasz stary checkout, nie aktualny main/worktree.</li>
       </ul>
     </div>
-    <div class="empty-block">
-      <h3>Dlaczego status to {_h(status)}</h3>
-      <p>Do kalibracji potrzeba co najmniej <strong>{_h(summary.get('min_verified_labels', MIN_VERIFIED_LABELS))}</strong> ręcznie sprawdzonych etykiet. Gdy kolejka jest pusta, najpierw naprawiamy wejście albo detekcję diagramów/cropów, dopiero potem oznaczamy.</p>
-    </div>
+    {_empty_status_explanation(status, summary)}
     <div class="empty-block">
       <h3>Czego nie wpisywać ręcznie</h3>
       <ul>
@@ -774,16 +777,51 @@ python kindlemaster.py process "C:\\ścieżka\\do\\pliku.pdf" --out "output\\mar
 </section>"""
 
 
-def _input_blocker_notice(payload: Mapping[str, Any]) -> str:
+def _review_status(learning: Mapping[str, Any], payload: Mapping[str, Any]) -> str:
+    input_status = _input_blocker_status(payload)
+    if input_status:
+        return input_status
+    return str(learning.get("status") or "UNKNOWN")
+
+
+def _input_blocker_status(payload: Mapping[str, Any]) -> str:
+    _, failed_reasons = _first_stage_failure(payload)
+    if not failed_reasons:
+        return ""
+    joined = " | ".join(failed_reasons)
+    if "FileNotFoundError" in joined or "no such file" in joined.lower():
+        return "INPUT_PDF_MISSING"
+    return "INPUT_EXTRACTION_BLOCKED"
+
+
+def _empty_status_explanation(status: str, summary: Mapping[str, Any]) -> str:
+    if status == "INPUT_PDF_MISSING":
+        return """<div class="empty-block">
+      <h3>Dlaczego status to INPUT_PDF_MISSING</h3>
+      <p>Nie ma nic do sprawdzenia, bo system nie dostał istniejącego PDF-a. Najpierw uruchom proces na prawdziwym pliku PDF; dopiero wtedy powstaną strony, cropy diagramów i cropy markerów do oznaczania.</p>
+    </div>"""
+    if status == "INPUT_EXTRACTION_BLOCKED":
+        return """<div class="empty-block">
+      <h3>Dlaczego status to INPUT_EXTRACTION_BLOCKED</h3>
+      <p>Eksport zatrzymał się przed wygenerowaniem kolejki markerów. Najpierw trzeba usunąć błąd wejścia lub ekstrakcji widoczny powyżej, potem wrócić do oznaczania.</p>
+    </div>"""
+    return f"""<div class="empty-block">
+      <h3>Dlaczego status to {_h(status)}</h3>
+      <p>Do kalibracji potrzeba co najmniej <strong>{_h(summary.get('min_verified_labels', MIN_VERIFIED_LABELS))}</strong> ręcznie sprawdzonych etykiet. Gdy kolejka jest pusta, najpierw naprawiamy wejście albo detekcję diagramów/cropów, dopiero potem oznaczamy.</p>
+    </div>"""
+
+
+def _first_stage_failure(payload: Mapping[str, Any]) -> tuple[str, list[str]]:
     stages = [stage for stage in payload.get("stage_results") or [] if isinstance(stage, Mapping)]
-    failed_reasons: list[str] = []
-    failed_stage = ""
     for stage in stages:
         reasons = [str(reason) for reason in stage.get("failure_reasons") or [] if str(reason)]
         if reasons:
-            failed_stage = str(stage.get("name") or "")
-            failed_reasons = reasons
-            break
+            return str(stage.get("name") or ""), reasons
+    return "", []
+
+
+def _input_blocker_notice(payload: Mapping[str, Any]) -> str:
+    failed_stage, failed_reasons = _first_stage_failure(payload)
     if not failed_reasons:
         return ""
 

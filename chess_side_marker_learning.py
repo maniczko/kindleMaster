@@ -154,8 +154,8 @@ def persisted_side_marker_learning_report(report: Mapping[str, Any]) -> dict[str
 def side_marker_learning_review_html(payload: Mapping[str, Any]) -> str:
     summary = payload.get("summary") or {}
     learning = payload.get("learning_report") or {}
-    review_status = _review_status(learning, payload)
     rows = (payload.get("queue") or {}).get("items") or []
+    review_status = _review_status(learning, payload, has_review_rows=bool(rows))
     cards = "\n".join(_review_card(row, index) for index, row in enumerate(rows, start=1))
     has_cards = bool(cards)
     content = cards if has_cards else _empty_review_state(summary, learning, payload, review_status)
@@ -777,7 +777,9 @@ python kindlemaster.py process "C:\\ścieżka\\do\\pliku.pdf" --out "output\\mar
 </section>"""
 
 
-def _review_status(learning: Mapping[str, Any], payload: Mapping[str, Any]) -> str:
+def _review_status(learning: Mapping[str, Any], payload: Mapping[str, Any], *, has_review_rows: bool = False) -> str:
+    if has_review_rows:
+        return "MARKER_REVIEW_READY"
     input_status = _input_blocker_status(payload)
     if input_status:
         return input_status

@@ -293,9 +293,15 @@ def build_auto_chess_flow_artifacts(
     dirs = _ensure_auto_dirs(out)
     book = _read_optional_json(out / "data" / "book.json")
     diagrams_payload = _read_optional_json(out / "data" / "diagrams.json")
+    export_diagrams_payload = _read_optional_json(out / "chess_diagrams.json")
     dashboard = _load_or_build_dashboard(out)
     pages = list(book.get("pages") or [])
-    diagrams = _extract_diagrams(book, diagrams_payload)
+    diagrams = _extract_diagrams(
+        book,
+        diagrams_payload,
+        export_diagrams_payload=export_diagrams_payload,
+        export_diagram_rows=_read_jsonl(out / "diagrams.jsonl"),
+    )
     pgn_records = list(book.get("pgn_records") or [])
     ai_fen_rows = _read_jsonl(out / "review" / "ai_fen_candidates.jsonl")
     model_fen_rows = _read_jsonl(out / "review" / "fen_model_predictions.jsonl")
@@ -1686,8 +1692,14 @@ def _failed_process_payload(
     return payload
 
 
-def _extract_diagrams(book: dict[str, Any], diagrams_payload: dict[str, Any]) -> list[dict[str, Any]]:
-    if isinstance(diagrams_payload.get("diagrams"), list):
+def _extract_diagrams(
+    book: dict[str, Any],
+    diagrams_payload: dict[str, Any],
+    *,
+    export_diagrams_payload: dict[str, Any] | None = None,
+    export_diagram_rows: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    if isinstance(diagrams_payload.get("diagrams"), list) and diagrams_payload.get("diagrams"):
         return list(diagrams_payload.get("diagrams") or [])
     diagrams: list[dict[str, Any]] = []
     for page in book.get("pages") or []:
@@ -1695,6 +1707,12 @@ def _extract_diagrams(book: dict[str, Any], diagrams_payload: dict[str, Any]) ->
         for diagram in page.get("diagrams") or []:
             if isinstance(diagram, dict):
                 diagrams.append({**diagram, "page": int(diagram.get("page") or page_number)})
+    if diagrams:
+        return diagrams
+    if isinstance((export_diagrams_payload or {}).get("diagrams"), list):
+        return list((export_diagrams_payload or {}).get("diagrams") or [])
+    if export_diagram_rows:
+        return list(export_diagram_rows)
     return diagrams
 
 

@@ -596,6 +596,47 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertIn("TRAINING_DATA_GAP", markdown)
         self.assertIn("two_crop_quality_metrics", flow_payload["artifacts"])
 
+    def test_auto_flow_uses_export_diagrams_when_book_model_is_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir)
+            _write_json(out / "data" / "book.json", {"pages": [], "pgn_records": []})
+            _write_json(
+                out / "chess_diagrams.json",
+                {
+                    "status": "ok",
+                    "page_count": 1,
+                    "diagram_count": 1,
+                    "diagrams": [
+                        {
+                            "diagram_id": "p010_d01",
+                            "page": 10,
+                            "board_crop_path": "review/chess_fen/two_crop/p010_d01_board.png",
+                            "side_marker_crop_path": "review/chess_fen/two_crop/p010_d01_marker.png",
+                            "debug_overlay_path": "review/chess_fen/two_crop/p010_d01_overlay.png",
+                            "placement": VALID_PLACEMENT,
+                            "full_fen": VALID_FEN,
+                            "side_to_move": "b",
+                            "side_marker_symbol": "\u25bc",
+                            "side_marker_status": "trusted_marker",
+                            "side_marker_confidence": 0.88,
+                            "placement_status": "FEN_PLACEMENT_REVIEW_REQUIRED",
+                            "full_fen_status": "FEN_REVIEW_REQUIRED",
+                        }
+                    ],
+                },
+            )
+
+            flow_payload = build_auto_chess_flow_artifacts(out)
+            metrics = json.loads((out / "reports" / "chess_fen" / "two_crop_quality_metrics.json").read_text(encoding="utf-8"))
+            queue = json.loads((out / "reports" / "chess_fen" / "side_marker_learning_queue.json").read_text(encoding="utf-8"))
+            review_html = (out / "reports" / "chess_fen" / "side_marker_learning_review.html").read_text(encoding="utf-8")
+
+        self.assertEqual(flow_payload["summary"]["diagrams_total"], 1)
+        self.assertEqual(metrics["summary"]["diagram_count"], 1)
+        self.assertEqual(metrics["summary"]["side_marker_crop_count"], 1)
+        self.assertEqual(queue["items"][0]["diagram_id"], "p010_d01")
+        self.assertIn("p010_d01_marker.png", review_html)
+
     def test_auto_flow_writes_side_marker_blocker_attribution(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             out = Path(temp_dir)
@@ -940,6 +981,34 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertIn("INPUT_PDF_MISSING", review_html)
         self.assertIn("Dlaczego status to INPUT_PDF_MISSING", review_html)
         self.assertNotIn("Dlaczego status to TRAINING_DATA_GAP", review_html)
+
+    def test_side_marker_learning_review_rows_are_ready_despite_fen_model_gap(self) -> None:
+        payload = {
+            **build_side_marker_learning_artifacts(
+                [
+                    {
+                        "diagram_id": "p010_d01",
+                        "page": 10,
+                        "board_crop_path": "review/chess_fen/two_crop/p010_d01_board.png",
+                        "side_marker_crop_path": "review/chess_fen/two_crop/p010_d01_marker.png",
+                        "side_marker_status": "marker_missing",
+                    }
+                ]
+            ),
+            "stage_results": [
+                {
+                    "name": "recognize_fen_local",
+                    "status": "needs_review",
+                    "failure_reasons": ["model_missing"],
+                }
+            ],
+        }
+
+        review_html = side_marker_learning_review_html(payload)
+
+        self.assertIn("MARKER_REVIEW_READY", review_html)
+        self.assertIn("p010_d01_marker.png", review_html)
+        self.assertNotIn("INPUT_EXTRACTION_BLOCKED", review_html)
 
 
 if __name__ == "__main__":

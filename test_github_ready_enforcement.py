@@ -46,7 +46,7 @@ class GithubReadyEnforcementTests(unittest.TestCase):
         self.assertIn("python kindlemaster.py test --suite quality-critical", workflow_text)
         self.assertIn("npm run test:coverage", workflow_text)
         self.assertIn("core-conversion-coverage-${{ matrix.os }}-py${{ matrix.python-version }}.xml", workflow_text)
-        self.assertIn("actions/upload-artifact@v4", workflow_text)
+        self.assertIn("actions/upload-artifact@v7", workflow_text)
         self.assertIn("reports/coverage/", workflow_text)
         self.assertIn("ready-quick-evidence", workflow_text)
         self.assertIn("ready-release-evidence", workflow_text)

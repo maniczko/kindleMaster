@@ -394,6 +394,9 @@ def build_auto_chess_flow_artifacts(
     side_marker_learning_payload = {
         **side_marker_learning,
         "learning_report": side_marker_learning_report,
+        "source_pdf": str(source_pdf or ""),
+        "source_html": str(source_html or ""),
+        "stage_results": list((stage_payload or {}).get("stages") or []),
     }
     _write_json(chess_fen_report_dir / "side_marker_learning_queue.json", side_marker_learning["queue"])
     _write_jsonl(chess_fen_report_dir / "side_marker_learning_queue.jsonl", side_marker_learning["queue"]["items"])

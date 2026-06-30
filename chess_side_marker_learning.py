@@ -157,7 +157,7 @@ def side_marker_learning_review_html(payload: Mapping[str, Any]) -> str:
     rows = (payload.get("queue") or {}).get("items") or []
     cards = "\n".join(_review_card(row, index) for index, row in enumerate(rows, start=1))
     has_cards = bool(cards)
-    content = cards if has_cards else _empty_review_state(summary, learning)
+    content = cards if has_cards else _empty_review_state(summary, learning, payload)
     toolbar = _review_toolbar() if has_cards else ""
     return f"""<!doctype html>
 <html lang="pl">
@@ -256,6 +256,8 @@ def side_marker_learning_review_html(payload: Mapping[str, Any]) -> str:
     .empty-state p {{ margin:0 0 12px; color:var(--muted); }}
     .empty-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin-top:12px; }}
     .empty-block {{ border:1px solid var(--line); border-radius:8px; padding:12px; background:#fbfcfe; min-width:0; }}
+    .empty-block.alert {{ border-color:rgba(180,35,24,.35); background:rgba(180,35,24,.06); }}
+    .empty-block.alert h3 {{ color:var(--bad); }}
     .empty-block h3 {{ margin:0 0 8px; font-size:.94rem; }}
     .empty-block ul {{ margin:0; padding-left:19px; color:var(--muted); }}
     pre {{ margin:8px 0 0; max-width:100%; min-width:0; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; border:1px solid #dbe4ff; background:#eef2ff; border-radius:8px; padding:10px; font-size:.82rem; }}
@@ -732,13 +734,15 @@ def _review_toolbar() -> str:
 </section>"""
 
 
-def _empty_review_state(summary: Mapping[str, Any], learning: Mapping[str, Any]) -> str:
+def _empty_review_state(summary: Mapping[str, Any], learning: Mapping[str, Any], payload: Mapping[str, Any]) -> str:
     learning_summary = learning.get("summary") or {}
     source_count = learning_summary.get("source_record_count", summary.get("record_count", 0))
     status = learning.get("status") or "UNKNOWN"
+    input_blocker = _input_blocker_notice(payload)
     return f"""<section class="empty-state" aria-labelledby="empty-title">
   <h2 id="empty-title">Brak diagramów do oznaczenia</h2>
   <p>Nie ma teraz pól do wypełnienia, bo kolejka markerów ma <strong>{_h(summary.get('queue_count', 0))}</strong> pozycji, a raport źródłowy widzi <strong>{_h(source_count)}</strong> rekordów. To nie jest formularz do ręcznego wpisywania FEN od zera; najpierw system musi wygenerować crop planszy i crop markera.</p>
+  {input_blocker}
   <div class="empty-grid">
     <div class="empty-block">
       <h3>Co uruchomić</h3>
@@ -768,6 +772,34 @@ python kindlemaster.py process "C:\\ścieżka\\do\\pliku.pdf" --out "output\\mar
     </div>
   </div>
 </section>"""
+
+
+def _input_blocker_notice(payload: Mapping[str, Any]) -> str:
+    stages = [stage for stage in payload.get("stage_results") or [] if isinstance(stage, Mapping)]
+    failed_reasons: list[str] = []
+    failed_stage = ""
+    for stage in stages:
+        reasons = [str(reason) for reason in stage.get("failure_reasons") or [] if str(reason)]
+        if reasons:
+            failed_stage = str(stage.get("name") or "")
+            failed_reasons = reasons
+            break
+    if not failed_reasons:
+        return ""
+
+    source_pdf = str(payload.get("source_pdf") or "").strip()
+    joined = " | ".join(failed_reasons)
+    if "FileNotFoundError" in joined or "no such file" in joined.lower():
+        return f"""<div class="empty-block alert">
+    <h3>Problem z wejściem: PDF nie został znaleziony</h3>
+    <p>Etap <code>{_h(failed_stage or 'run_chess_study_export')}</code> nie mógł otworzyć pliku <code>{_h(source_pdf or 'brak ścieżki')}</code>. W tym stanie system nie ma stron ani diagramów do pokazania.</p>
+    <p>Podmień przykładową ścieżkę w komendzie na pełną ścieżkę do istniejącego PDF-a, najlepiej przeciągając plik do PowerShella po wpisaniu <code>python kindlemaster.py process </code>.</p>
+  </div>"""
+
+    return f"""<div class="empty-block alert">
+    <h3>Problem z wejściem albo ekstrakcją</h3>
+    <p>Etap <code>{_h(failed_stage or 'unknown')}</code> zgłosił: <code>{_h(joined)}</code>. Najpierw usuń tę blokadę, potem wróć do oznaczania markerów.</p>
+  </div>"""
 
 
 def _review_card(row: Mapping[str, Any], index: int) -> str:

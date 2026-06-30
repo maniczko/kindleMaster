@@ -919,6 +919,25 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertIn("invalid choice: process", review_html)
         self.assertNotIn("No side-marker learning rows found", review_html)
 
+    def test_side_marker_learning_review_empty_state_surfaces_missing_pdf(self) -> None:
+        payload = {
+            **build_side_marker_learning_artifacts([]),
+            "source_pdf": r"C:\ścieżka\do\pliku.pdf",
+            "stage_results": [
+                {
+                    "name": "run_chess_study_export",
+                    "status": "failed",
+                    "failure_reasons": [r"FileNotFoundError: no such file: 'C:\ścieżka\do\pliku.pdf'"],
+                }
+            ],
+        }
+
+        review_html = side_marker_learning_review_html(payload)
+
+        self.assertIn("Problem z wejściem: PDF nie został znaleziony", review_html)
+        self.assertIn(r"C:\ścieżka\do\pliku.pdf", review_html)
+        self.assertIn("system nie ma stron ani diagramów do pokazania", review_html)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -154,36 +154,52 @@ def persisted_side_marker_learning_report(report: Mapping[str, Any]) -> dict[str
 def side_marker_learning_review_html(payload: Mapping[str, Any]) -> str:
     summary = payload.get("summary") or {}
     learning = payload.get("learning_report") or {}
-    cards = "\n".join(_review_card(row) for row in (payload.get("queue") or {}).get("items") or [])
-    if not cards:
-        cards = "<p class=\"empty\">No side-marker learning rows found.</p>"
+    rows = (payload.get("queue") or {}).get("items") or []
+    cards = "\n".join(_review_card(row, index) for index, row in enumerate(rows, start=1))
+    has_cards = bool(cards)
+    content = cards if has_cards else _empty_review_state(summary, learning)
+    toolbar = _review_toolbar() if has_cards else ""
     return f"""<!doctype html>
-<html lang="en">
+<html lang="pl">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Chess Side Marker Learning Queue</title>
+  <title>Oznaczanie markerów ruchu - KindleMaster</title>
   <style>
     :root {{
-      --bg:#f6f7f9; --surface:#ffffff; --ink:#172033; --muted:#5d6878;
-      --line:#d9e0ea; --primary:#1d4ed8; --warn:#8a5a00; --bad:#b42318;
-      --good:#157347; --soft:#eef3f8;
+      --bg:#f5f7fb; --surface:#ffffff; --ink:#172033; --muted:#5d6878;
+      --line:#d9e0ea; --primary:#2456c2; --primary-ink:#ffffff;
+      --warn:#8a5a00; --bad:#b42318; --good:#157347; --soft:#eef3f8;
+      --focus:rgba(36,86,194,.24);
     }}
     * {{ box-sizing:border-box; }}
-    body {{ margin:0; background:var(--bg); color:var(--ink); font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
-    header {{ border-bottom:1px solid var(--line); background:rgba(246,247,249,.96); position:sticky; top:0; z-index:10; }}
+    body {{
+      margin:0; background:var(--bg); color:var(--ink);
+      font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size:15px; line-height:1.5;
+    }}
+    header {{ border-bottom:1px solid var(--line); background:rgba(245,247,251,.97); position:sticky; top:0; z-index:10; }}
     .bar {{ max-width:1440px; margin:0 auto; padding:18px clamp(16px,3vw,32px); display:grid; gap:14px; }}
-    h1 {{ margin:0; font-size:1.35rem; line-height:1.2; }}
-    .meta {{ margin:4px 0 0; color:var(--muted); font-size:.92rem; }}
-    .stats {{ display:grid; grid-template-columns:repeat(5,minmax(120px,1fr)); gap:8px; }}
+    .title-row {{ display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }}
+    h1 {{ margin:0; font-size:1.45rem; line-height:1.2; letter-spacing:0; }}
+    .meta {{ margin:5px 0 0; color:var(--muted); font-size:.94rem; max-width:850px; }}
+    .guide {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }}
+    .guide-step {{ border:1px solid var(--line); border-radius:8px; background:var(--surface); padding:10px 12px; }}
+    .guide-step strong {{ display:block; font-size:.9rem; }}
+    .guide-step span {{ display:block; margin-top:2px; color:var(--muted); font-size:.82rem; }}
+    .stats {{ display:grid; grid-template-columns:repeat(5,minmax(124px,1fr)); gap:8px; }}
     .stat {{ min-height:64px; border:1px solid var(--line); border-radius:8px; background:var(--surface); padding:10px 12px; }}
     .stat span {{ display:block; color:var(--muted); font-size:.76rem; }}
-    .stat strong {{ display:block; margin-top:4px; font-size:1.14rem; }}
-    main {{ max-width:1440px; margin:0 auto; padding:18px clamp(16px,3vw,32px) 40px; }}
+    .stat strong {{ display:block; margin-top:4px; font-size:1.08rem; overflow-wrap:anywhere; }}
+    main {{ max-width:1440px; margin:0 auto; padding:18px clamp(16px,3vw,32px) 42px; }}
+    .toolbar {{ border:1px solid var(--line); border-radius:8px; background:var(--surface); padding:12px; margin-bottom:14px; display:flex; align-items:center; justify-content:space-between; gap:12px; }}
+    .toolbar-text strong {{ display:block; }}
+    .toolbar-text span {{ display:block; color:var(--muted); font-size:.86rem; }}
+    .toolbar-actions {{ display:flex; flex-wrap:wrap; gap:8px; justify-content:flex-end; }}
     .grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; align-items:start; }}
     article {{ border:1px solid var(--line); border-radius:8px; background:var(--surface); overflow:hidden; }}
     .head {{ padding:14px 14px 10px; display:flex; align-items:flex-start; justify-content:space-between; gap:12px; border-bottom:1px solid var(--line); }}
-    h2 {{ margin:0; font-size:1rem; overflow-wrap:anywhere; }}
+    h2 {{ margin:0; font-size:1rem; line-height:1.3; overflow-wrap:anywhere; }}
     .page {{ color:var(--muted); font-size:.82rem; margin-top:3px; }}
     .badges {{ display:flex; flex-wrap:wrap; gap:6px; justify-content:flex-end; }}
     .badge {{ border:1px solid var(--line); border-radius:999px; padding:3px 8px; color:var(--muted); background:#f8fafc; font-size:.75rem; white-space:nowrap; }}
@@ -197,23 +213,63 @@ def side_marker_learning_review_html(payload: Mapping[str, Any]) -> str:
     .media.marker {{ min-height:104px; }}
     img {{ display:block; width:100%; max-height:260px; object-fit:contain; }}
     .no-img {{ color:var(--muted); font-size:.86rem; padding:14px; text-align:center; }}
-    .body {{ padding:12px 14px 14px; }}
-    dl {{ display:grid; grid-template-columns:minmax(132px,auto) 1fr; gap:6px 10px; margin:0 0 12px; font-size:.88rem; }}
+    .body {{ padding:12px 14px 14px; display:grid; gap:14px; }}
+    dl {{ display:grid; grid-template-columns:minmax(132px,auto) 1fr; gap:6px 10px; margin:0; font-size:.88rem; }}
     dt {{ color:var(--muted); font-weight:700; }}
     dd {{ margin:0; overflow-wrap:anywhere; }}
-    code {{ font-family:"Cascadia Mono","Courier New",monospace; border:1px solid #dbe4ff; background:#eef2ff; border-radius:6px; padding:1px 4px; }}
-    .template {{ border-top:1px solid var(--line); padding-top:10px; }}
-    .template label {{ display:block; color:var(--muted); font-size:.78rem; font-weight:700; margin-bottom:5px; }}
-    textarea {{ width:100%; min-height:96px; resize:vertical; border:1px solid var(--line); border-radius:8px; padding:9px; background:#fff; color:var(--ink); font-family:"Cascadia Mono","Courier New",monospace; font-size:.79rem; line-height:1.42; }}
-    textarea:focus-visible {{ outline:3px solid rgba(29,78,216,.22); outline-offset:2px; border-color:var(--primary); }}
-    .empty {{ padding:24px; border:1px solid var(--line); background:var(--surface); border-radius:8px; }}
+    code {{ font-family:"Cascadia Mono","Courier New",monospace; border:1px solid #dbe4ff; background:#eef2ff; border-radius:6px; padding:1px 4px; overflow-wrap:anywhere; word-break:break-word; }}
+    form {{ display:grid; gap:12px; }}
+    fieldset {{ margin:0; border:1px solid var(--line); border-radius:8px; padding:11px; min-width:0; }}
+    legend {{ padding:0 4px; font-weight:800; font-size:.9rem; }}
+    .hint {{ color:var(--muted); font-size:.84rem; margin:3px 0 9px; }}
+    .choice-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }}
+    .choice {{ display:grid; grid-template-columns:auto 1fr; gap:8px; align-items:start; min-height:44px; border:1px solid var(--line); border-radius:8px; padding:8px; background:#fff; cursor:pointer; }}
+    .choice:hover {{ border-color:#b8c7de; background:#f8fbff; }}
+    .choice input {{ margin-top:3px; }}
+    .choice strong {{ display:block; font-size:.9rem; }}
+    .choice span {{ display:block; color:var(--muted); font-size:.79rem; }}
+    .field-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }}
+    .field {{ display:grid; gap:5px; }}
+    .field label, .checkline span {{ color:var(--muted); font-size:.79rem; font-weight:700; }}
+    input[type="text"], textarea {{
+      width:100%; border:1px solid var(--line); border-radius:8px; padding:9px; background:#fff; color:var(--ink);
+      font:inherit; min-height:42px;
+    }}
+    textarea {{ min-height:90px; resize:vertical; font-family:"Cascadia Mono","Courier New",monospace; font-size:.79rem; line-height:1.42; }}
+    .notes {{ font-family:inherit; font-size:.88rem; }}
+    .checkline {{ display:flex; align-items:flex-start; gap:9px; min-height:44px; }}
+    .checkline input {{ margin-top:5px; }}
+    .template {{ border-top:1px solid var(--line); padding-top:10px; display:grid; gap:8px; }}
+    .template-row {{ display:flex; align-items:center; justify-content:space-between; gap:8px; }}
+    .template-row label {{ display:block; color:var(--muted); font-size:.78rem; font-weight:800; }}
+    .json-output {{ min-height:134px; }}
+    button {{
+      min-height:42px; border:1px solid var(--line); border-radius:8px; padding:8px 12px;
+      background:#fff; color:var(--ink); font-weight:800; cursor:pointer;
+    }}
+    button.primary {{ background:var(--primary); color:var(--primary-ink); border-color:var(--primary); }}
+    button:hover {{ border-color:#b8c7de; background:#f8fbff; }}
+    button.primary:hover {{ background:#1e48a8; border-color:#1e48a8; }}
+    input:focus-visible, textarea:focus-visible, button:focus-visible, .choice:focus-within {{ outline:3px solid var(--focus); outline-offset:2px; border-color:var(--primary); }}
+    .empty-state {{ border:1px solid var(--line); background:var(--surface); border-radius:8px; padding:22px; max-width:920px; min-width:0; }}
+    .empty-state h2 {{ font-size:1.12rem; margin-bottom:8px; }}
+    .empty-state p {{ margin:0 0 12px; color:var(--muted); }}
+    .empty-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin-top:12px; }}
+    .empty-block {{ border:1px solid var(--line); border-radius:8px; padding:12px; background:#fbfcfe; min-width:0; }}
+    .empty-block h3 {{ margin:0 0 8px; font-size:.94rem; }}
+    .empty-block ul {{ margin:0; padding-left:19px; color:var(--muted); }}
+    pre {{ margin:8px 0 0; max-width:100%; min-width:0; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; border:1px solid #dbe4ff; background:#eef2ff; border-radius:8px; padding:10px; font-size:.82rem; }}
     @media (max-width: 980px) {{
       header {{ position:static; }}
       .grid {{ grid-template-columns:1fr; }}
       .stats {{ grid-template-columns:repeat(3,minmax(0,1fr)); }}
+      .guide {{ grid-template-columns:1fr; }}
+      .toolbar {{ align-items:flex-start; flex-direction:column; }}
+      .toolbar-actions {{ justify-content:flex-start; }}
     }}
     @media (max-width: 640px) {{
-      .stats {{ grid-template-columns:repeat(2,minmax(0,1fr)); }}
+      .title-row {{ display:block; }}
+      .stats, .empty-grid, .field-grid, .choice-grid {{ grid-template-columns:1fr; }}
       .head {{ display:block; }}
       .badges {{ justify-content:flex-start; margin-top:8px; }}
       .media-grid {{ grid-template-columns:1fr; }}
@@ -224,20 +280,31 @@ def side_marker_learning_review_html(payload: Mapping[str, Any]) -> str:
 <body>
   <header>
     <div class="bar">
-      <div>
-        <h1>Chess Side Marker Learning Queue</h1>
-        <p class="meta">Manual labels train and evaluate marker logic. They do not directly publish full FEN.</p>
+      <div class="title-row">
+        <div>
+          <h1>Oznaczanie markerów ruchu</h1>
+          <p class="meta">Uzupełniasz tylko marker przy diagramie: <strong>△ = białe mają ruch</strong>, <strong>▼ = czarne mają ruch</strong>. Etykiety uczą i oceniają logikę markera; nie publikują automatycznie pełnego FEN.</p>
+        </div>
       </div>
-      <section class="stats" aria-label="Learning queue summary">
-        <div class="stat"><span>Queue</span><strong>{_h(summary.get('queue_count', 0))}</strong></div>
-        <div class="stat"><span>Manual labels</span><strong>{_h(summary.get('manual_label_count', 0))}</strong></div>
-        <div class="stat"><span>Usable labels</span><strong>{_h(summary.get('usable_manual_label_count', 0))}</strong></div>
+      <section class="guide" aria-label="Jak oznaczać">
+        <div class="guide-step"><strong>1. Sprawdź crop markera</strong><span>Patrz na mały wycinek obok planszy, nie na układ figur.</span></div>
+        <div class="guide-step"><strong>2. Wybierz widoczny znak</strong><span>△ oznacza ruch białych, ▼ oznacza ruch czarnych; nie zgaduj przy szumie.</span></div>
+        <div class="guide-step"><strong>3. Skopiuj JSONL</strong><span>Zaznacz “sprawdzone przez człowieka”, pobierz JSONL i użyj go jako ręczne etykiety.</span></div>
+      </section>
+      <section class="stats" aria-label="Podsumowanie kolejki oznaczania">
+        <div class="stat"><span>Pozycje w kolejce</span><strong>{_h(summary.get('queue_count', 0))}</strong></div>
+        <div class="stat"><span>Ręczne etykiety</span><strong>{_h(summary.get('manual_label_count', 0))}</strong></div>
+        <div class="stat"><span>Użyteczne etykiety</span><strong>{_h(summary.get('usable_manual_label_count', 0))}</strong></div>
+        <div class="stat"><span>Minimum do kalibracji</span><strong>{_h(summary.get('min_verified_labels', MIN_VERIFIED_LABELS))}</strong></div>
         <div class="stat"><span>Status</span><strong>{_h(learning.get('status', 'UNKNOWN'))}</strong></div>
-        <div class="stat"><span>Policy</span><strong>review-only</strong></div>
       </section>
     </div>
   </header>
-  <main><section class="grid">{cards}</section></main>
+  <main>
+    {toolbar}
+    <section class="grid">{content}</section>
+  </main>
+  {_review_script() if has_cards else ""}
 </body>
 </html>"""
 
@@ -652,40 +719,345 @@ def _suggestions(by_blocker: Mapping[str, Mapping[str, int]], confusion: Mapping
     return suggestions
 
 
-def _review_card(row: Mapping[str, Any]) -> str:
+def _review_toolbar() -> str:
+    return """<section class="toolbar" aria-label="Akcje dla etykiet">
+  <div class="toolbar-text">
+    <strong>Eksport etykiet</strong>
+    <span>Formularz zapisuje podgląd w przeglądarce i generuje plik JSONL do dalszego uczenia/evaluacji.</span>
+  </div>
+  <div class="toolbar-actions">
+    <button type="button" class="copy-all">Kopiuj wszystkie JSONL</button>
+    <button type="button" class="primary download-labels">Pobierz labels.jsonl</button>
+  </div>
+</section>"""
+
+
+def _empty_review_state(summary: Mapping[str, Any], learning: Mapping[str, Any]) -> str:
+    learning_summary = learning.get("summary") or {}
+    source_count = learning_summary.get("source_record_count", summary.get("record_count", 0))
+    status = learning.get("status") or "UNKNOWN"
+    return f"""<section class="empty-state" aria-labelledby="empty-title">
+  <h2 id="empty-title">Brak diagramów do oznaczenia</h2>
+  <p>Nie ma teraz pól do wypełnienia, bo kolejka markerów ma <strong>{_h(summary.get('queue_count', 0))}</strong> pozycji, a raport źródłowy widzi <strong>{_h(source_count)}</strong> rekordów. To nie jest formularz do ręcznego wpisywania FEN od zera; najpierw system musi wygenerować crop planszy i crop markera.</p>
+  <div class="empty-grid">
+    <div class="empty-block">
+      <h3>Co uruchomić</h3>
+      <p>Użyj aktualnego worktree z obsługą komendy <code>process</code> i prawdziwego PDF-a:</p>
+      <pre>cd C:\\Users\\user\\.codex\\worktrees\\kindlemaster-main-localhost
+python kindlemaster.py process "C:\\ścieżka\\do\\pliku.pdf" --out "output\\marker_review\\book" --mode auto --render-pages</pre>
+    </div>
+    <div class="empty-block">
+      <h3>Co sprawdzić po konwersji</h3>
+      <ul>
+        <li><code>reports/chess_fen/side_marker_learning_queue.jsonl</code> powinien mieć wiersze do oznaczenia.</li>
+        <li><code>reports/chess_fen/two_crop_quality_metrics.json</code> pokaże, czy powstały cropy planszy i markera.</li>
+        <li>Jeśli PowerShell pokazuje <code>invalid choice: process</code>, uruchamiasz stary checkout, nie aktualny main/worktree.</li>
+      </ul>
+    </div>
+    <div class="empty-block">
+      <h3>Dlaczego status to {_h(status)}</h3>
+      <p>Do kalibracji potrzeba co najmniej <strong>{_h(summary.get('min_verified_labels', MIN_VERIFIED_LABELS))}</strong> ręcznie sprawdzonych etykiet. Gdy kolejka jest pusta, najpierw naprawiamy wejście albo detekcję diagramów/cropów, dopiero potem oznaczamy.</p>
+    </div>
+    <div class="empty-block">
+      <h3>Czego nie wpisywać ręcznie</h3>
+      <ul>
+        <li>Nie zgaduj strony ruchu z pozycji na szachownicy.</li>
+        <li>Nie wpisuj pełnego FEN jako substytutu markera.</li>
+        <li>Nie oznaczaj AI-only jako etykiety treningowej człowieka.</li>
+      </ul>
+    </div>
+  </div>
+</section>"""
+
+
+def _review_card(row: Mapping[str, Any], index: int) -> str:
     priority = int(row.get("priority") or 999)
     status = str(row.get("system_side_marker_status") or "")
     badge_class = "good" if status.startswith("trusted") else ("bad" if "conflict" in status else "warn")
     template = _label_template_row(row)
     template_json = json.dumps(template, ensure_ascii=False, indent=2)
-    return f"""<article>
+    safe_id = _dom_id(row.get("diagram_id"), index)
+    marker_name = f"marker-{safe_id}"
+    side_name = f"side-{safe_id}"
+    storage_key = f"kindlemaster.side_marker_label.{row.get('diagram_id') or index}"
+    return f"""<article class="review-card" data-index="{index}" data-storage-key="{_attr(storage_key)}" data-template="{_json_attr(template)}">
   <div class="head">
     <div><h2>{_h(row.get('diagram_id'))}</h2><div class="page">Page {_h(row.get('page'))}</div></div>
     <div class="badges">
       <span class="badge">P{priority}</span>
       <span class="badge {badge_class}">{_h(status)}</span>
-      <span class="badge warn">{_h(row.get('primary_side_marker_blocker'))}</span>
+      <span class="badge warn">{_h(row.get('primary_side_marker_blocker') or 'no_blocker')}</span>
     </div>
   </div>
   <div class="media-grid">
-    {_figure('Board crop', row.get('board_crop_path'), row.get('diagram_id'), 'board')}
-    {_figure('Marker crop', row.get('side_marker_crop_path'), row.get('diagram_id'), 'marker')}
+    {_figure('Crop planszy', row.get('board_crop_path'), row.get('diagram_id'), 'board')}
+    {_figure('Crop markera', row.get('side_marker_crop_path'), row.get('diagram_id'), 'marker')}
     {_figure('Debug overlay', row.get('debug_overlay_path'), row.get('diagram_id'), 'overlay')}
   </div>
   <div class="body">
     <dl>
-      <dt>System side</dt><dd>{_h(row.get('system_side_to_move'))}</dd>
-      <dt>Marker symbol</dt><dd>{_h(row.get('system_side_marker_symbol'))}</dd>
-      <dt>Placement</dt><dd>{_h(row.get('placement_status'))}</dd>
-      <dt>Full FEN</dt><dd>{_h(row.get('full_fen_status'))}</dd>
+      <dt>System sugeruje</dt><dd>{_h(row.get('system_side_to_move') or 'unknown')}</dd>
+      <dt>Symbol systemu</dt><dd>{_h(row.get('system_side_marker_symbol') or 'brak')}</dd>
+      <dt>Status placement</dt><dd>{_h(row.get('placement_status'))}</dd>
+      <dt>Status pełnego FEN</dt><dd>{_h(row.get('full_fen_status'))}</dd>
       <dt>Policy</dt><dd>{_h(REVIEW_ONLY_POLICY)}</dd>
     </dl>
+    <form class="label-form">
+      <fieldset>
+        <legend>Co widać w cropie markera?</legend>
+        <p class="hint">Wybierz tylko to, co naprawdę widać. Przy szumie albo kilku znakach zostaw rekord do przeglądu.</p>
+        <div class="choice-grid">
+          {_radio(marker_name, 'outline_triangle', '△ pusty trójkąt', 'białe mają ruch (w)')}
+          {_radio(marker_name, 'filled_triangle', '▼ pełny trójkąt', 'czarne mają ruch (b)')}
+          {_radio(marker_name, 'none', 'Brak markera', 'w cropie nie ma wiarygodnego znaku')}
+          {_radio(marker_name, 'unclear', 'Nieczytelny / szum', 'nie da się bezpiecznie rozpoznać')}
+          {_radio(marker_name, 'multiple', 'Kilka markerów', 'rekord konfliktowy, nie promować')}
+          {_radio(marker_name, 'bad_crop', 'Zły crop', 'marker jest ucięty albo wycinek jest błędny')}
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Kto ma ruch?</legend>
+        <p class="hint">Pole ustawia się automatycznie po wyborze △ albo ▼. Zmień tylko wtedy, gdy formularz nie odzwierciedla markera.</p>
+        <div class="choice-grid">
+          {_radio(side_name, 'w', 'Białe', 'manual_side_to_move = w')}
+          {_radio(side_name, 'b', 'Czarne', 'manual_side_to_move = b')}
+          {_radio(side_name, 'unknown', 'Nie wiadomo', 'brak bezpiecznej etykiety')}
+        </div>
+      </fieldset>
+      <div class="field-grid">
+        <div class="field">
+          <label for="location-{safe_id}">Położenie markera (opcjonalnie)</label>
+          <input id="location-{safe_id}" class="marker-location" type="text" placeholder="np. pod planszą, prawa strona">
+        </div>
+        <div class="field">
+          <label for="bbox-{safe_id}">BBox markera (opcjonalnie)</label>
+          <input id="bbox-{safe_id}" class="marker-bbox" type="text" placeholder="np. x,y,w,h">
+        </div>
+      </div>
+      <div class="field">
+        <label for="notes-{safe_id}">Notatka</label>
+        <textarea id="notes-{safe_id}" class="notes" placeholder="np. marker częściowo ucięty, ale pusty trójkąt jest czytelny"></textarea>
+      </div>
+      <div class="field-grid">
+        <label class="checkline">
+          <input class="human-verified" type="checkbox">
+          <span>Sprawdzone wzrokowo przez człowieka. Bez tego etykieta nie będzie użyteczna do kalibracji.</span>
+        </label>
+        <div class="field">
+          <label for="verified-by-{safe_id}">Kto sprawdził</label>
+          <input id="verified-by-{safe_id}" class="verified-by" type="text" placeholder="np. PM">
+          <input class="verified-at" type="hidden" value="">
+        </div>
+      </div>
+    </form>
     <div class="template">
-      <label for="label-{_attr(row.get('diagram_id'))}">JSONL row to fill</label>
-      <textarea id="label-{_attr(row.get('diagram_id'))}" spellcheck="false">{_h(template_json)}</textarea>
+      <div class="template-row">
+        <label for="label-{safe_id}">Gotowy wiersz JSONL</label>
+        <button type="button" class="copy-row">Kopiuj ten wiersz</button>
+      </div>
+      <textarea id="label-{safe_id}" class="json-output" spellcheck="false" readonly>{_h(template_json)}</textarea>
     </div>
   </div>
 </article>"""
+
+
+def _radio(name: str, value: str, label: str, detail: str) -> str:
+    return f"""<label class="choice">
+  <input type="radio" name="{_attr(name)}" value="{_attr(value)}">
+  <span><strong>{_h(label)}</strong><span>{_h(detail)}</span></span>
+</label>"""
+
+
+def _review_script() -> str:
+    policy = json.dumps(REVIEW_ONLY_POLICY, ensure_ascii=False)
+    return """<script>
+(function () {
+  const POLICY = __POLICY__;
+  const markerToSide = { outline_triangle: "w", filled_triangle: "b" };
+  const markerToStatus = {
+    outline_triangle: "verified",
+    filled_triangle: "verified",
+    none: "verified",
+    unclear: "verified",
+    multiple: "verified",
+    bad_crop: "verified"
+  };
+
+  function radioValue(form, prefix) {
+    const checked = form.querySelector('input[name^="' + prefix + '-"]:checked');
+    return checked ? checked.value : "";
+  }
+
+  function setRadio(form, prefix, value) {
+    const inputs = form.querySelectorAll('input[name^="' + prefix + '-"]');
+    inputs.forEach((input) => {
+      input.checked = input.value === value;
+    });
+  }
+
+  function stateFromForm(card) {
+    const form = card.querySelector(".label-form");
+    return {
+      marker: radioValue(form, "marker"),
+      side: radioValue(form, "side"),
+      location: form.querySelector(".marker-location").value.trim(),
+      bbox: form.querySelector(".marker-bbox").value.trim(),
+      notes: form.querySelector(".notes").value.trim(),
+      verified: form.querySelector(".human-verified").checked,
+      verifiedBy: form.querySelector(".verified-by").value.trim(),
+      verifiedAt: form.querySelector(".verified-at").value
+    };
+  }
+
+  function applyState(card, state) {
+    const form = card.querySelector(".label-form");
+    if (!form || !state) return;
+    setRadio(form, "marker", state.marker || "");
+    setRadio(form, "side", state.side || "");
+    form.querySelector(".marker-location").value = state.location || "";
+    form.querySelector(".marker-bbox").value = state.bbox || "";
+    form.querySelector(".notes").value = state.notes || "";
+    form.querySelector(".human-verified").checked = Boolean(state.verified);
+    form.querySelector(".verified-by").value = state.verifiedBy || "";
+    form.querySelector(".verified-at").value = state.verifiedAt || "";
+  }
+
+  function buildRow(card) {
+    const template = JSON.parse(card.dataset.template || "{}");
+    const state = stateFromForm(card);
+    const row = Object.assign({}, template);
+    const inferredSide = markerToSide[state.marker] || "";
+
+    row.manual_visible_marker = state.marker || "";
+    row.manual_marker_shape = state.marker || "";
+    row.manual_side_to_move = state.side && state.side !== "unknown" ? state.side : inferredSide;
+    row.manual_marker_location = state.location;
+    row.manual_marker_bbox = state.bbox;
+    row.manual_notes = state.notes;
+    row.human_verified = Boolean(state.verified);
+    row.verification_source = state.verified ? "human_visual" : "";
+    row.verified_by = state.verified ? state.verifiedBy : "";
+    row.verified_at = state.verified ? state.verifiedAt : "";
+    row.label_status = state.verified && markerToStatus[state.marker] ? "verified" : "needs_manual_marker";
+    row.accepted_for_runtime = false;
+    row.accepted_for_corpus = false;
+    row.policy = POLICY;
+    return row;
+  }
+
+  function writePreview(card, persist) {
+    const form = card.querySelector(".label-form");
+    const verified = form.querySelector(".human-verified");
+    const verifiedAt = form.querySelector(".verified-at");
+    const marker = radioValue(form, "marker");
+
+    if (markerToSide[marker]) {
+      setRadio(form, "side", markerToSide[marker]);
+    }
+    if (verified.checked && !verifiedAt.value) {
+      verifiedAt.value = new Date().toISOString();
+    }
+    if (!verified.checked) {
+      verifiedAt.value = "";
+    }
+
+    const row = buildRow(card);
+    card.querySelector(".json-output").value = JSON.stringify(row);
+    if (persist) {
+      try {
+        window.localStorage.setItem(card.dataset.storageKey, JSON.stringify(stateFromForm(card)));
+      } catch (error) {
+        // Local storage is best-effort only; JSONL preview remains the source of export.
+      }
+    }
+  }
+
+  function allJsonl() {
+    return Array.from(document.querySelectorAll(".review-card"))
+      .map((card) => {
+        writePreview(card, false);
+        return card.querySelector(".json-output").value;
+      })
+      .filter(Boolean)
+      .join("\\n") + "\\n";
+  }
+
+  function copyText(text, button) {
+    const done = () => {
+      const original = button.textContent;
+      button.textContent = "Skopiowano";
+      window.setTimeout(() => { button.textContent = original; }, 1200);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
+    } else {
+      fallbackCopy(text, done);
+    }
+  }
+
+  function fallbackCopy(text, done) {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand("copy");
+    textarea.remove();
+    done();
+  }
+
+  document.querySelectorAll(".review-card").forEach((card) => {
+    try {
+      const saved = window.localStorage.getItem(card.dataset.storageKey);
+      if (saved) applyState(card, JSON.parse(saved));
+    } catch (error) {
+      // Ignore corrupted local drafts and keep the generated template.
+    }
+    card.querySelectorAll("input, textarea.notes").forEach((control) => {
+      control.addEventListener("input", () => writePreview(card, true));
+      control.addEventListener("change", () => writePreview(card, true));
+    });
+    card.querySelector(".copy-row").addEventListener("click", (event) => {
+      writePreview(card, true);
+      copyText(card.querySelector(".json-output").value + "\\n", event.currentTarget);
+    });
+    writePreview(card, false);
+  });
+
+  const copyAll = document.querySelector(".copy-all");
+  if (copyAll) {
+    copyAll.addEventListener("click", (event) => copyText(allJsonl(), event.currentTarget));
+  }
+
+  const download = document.querySelector(".download-labels");
+  if (download) {
+    download.addEventListener("click", () => {
+      const blob = new Blob([allJsonl()], { type: "application/jsonl;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "side_marker_manual_labels.jsonl";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    });
+  }
+})();
+</script>""".replace("__POLICY__", policy)
+
+
+def _json_attr(value: Mapping[str, Any]) -> str:
+    return _attr(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+
+
+def _dom_id(value: Any, fallback: int) -> str:
+    raw = str(value or f"row-{fallback}").strip().lower()
+    safe = "".join(char if char.isalnum() else "-" for char in raw)
+    safe = "-".join(part for part in safe.split("-") if part)
+    return safe or f"row-{fallback}"
 
 
 def _figure(label: str, src: Any, diagram_id: Any, class_name: str) -> str:

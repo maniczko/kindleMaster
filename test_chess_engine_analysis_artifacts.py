@@ -37,6 +37,8 @@ class ChessEngineAnalysisArtifactTests(unittest.TestCase):
             self.assertEqual(report["summary"]["eligible_count"], 1)
             self.assertEqual(report["summary"]["analyzed_count"], 1)
             self.assertEqual(item["engine_status"], "ok")
+            self.assertEqual(item["engine"], "stockfish")
+            self.assertEqual(item["engine_version"], "Fakefish 1.0")
             self.assertEqual(item["best_move_uci"], "e1e2")
             self.assertEqual(item["best_move_san"], "Ke2")
             self.assertEqual(item["score_cp"], 12)
@@ -152,6 +154,8 @@ class ChessEngineAnalysisArtifactTests(unittest.TestCase):
 def _fake_ok_engine(fen: str, **_: object) -> dict:
     return {
         "status": "ok",
+        "engine": "stockfish",
+        "engine_version": "Fakefish 1.0",
         "fen": fen,
         "side_to_move": fen.split()[1],
         "best_move_uci": "e1e2",
@@ -169,6 +173,8 @@ def _fake_ok_engine(fen: str, **_: object) -> dict:
 def _fake_engine_unavailable(fen: str, **_: object) -> dict:
     return {
         "status": "engine_unavailable",
+        "engine": "stockfish",
+        "engine_version": "",
         "fen": fen,
         "side_to_move": fen.split()[1],
         "best_move_uci": "",

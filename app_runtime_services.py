@@ -49,6 +49,7 @@ class ConversionRequest:
     quality_gate_mode: str = "draft"
     feedback_enabled: bool = True
     interactive_runtime_budget: bool = False
+    conversion_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -2171,6 +2172,39 @@ def run_document_conversion(
                 "learning_mode": "feedback_retrain_no_online_updates",
                 "error": str(error),
             }
+    try:
+        from learning_ledger import record_conversion_completed
+
+        ledger_record = record_conversion_completed(
+            conversion_id=request.conversion_id,
+            source_path=request.source_path,
+            original_filename=request.original_filename,
+            source_type=detected_source_type,
+            profile_requested=request.profile,
+            route_model_mode=request.route_model_mode,
+            quality_gate_mode=request.quality_gate_mode,
+            metadata=metadata,
+            result=result,
+            output_size_bytes=len(epub_bytes),
+        )
+        metadata["learning_ledger"] = {
+            "status": "recorded",
+            "event_id": str(ledger_record.get("event_id", "") or ""),
+            "events_path": str(ledger_record.get("events_path", "") or ""),
+            "index_path": str(ledger_record.get("index_path", "") or ""),
+            "input_fingerprint": str((_to_mapping_payload(ledger_record.get("event"))).get("input_fingerprint", "") or ""),
+            "privacy": (_to_mapping_payload(ledger_record.get("event"))).get("privacy") or {},
+        }
+    except Exception as error:
+        metadata["learning_ledger"] = {
+            "status": "failed",
+            "error": str(error),
+            "privacy": {
+                "stores_text": False,
+                "stores_source_file": False,
+                "stores_fingerprints_only": True,
+            },
+        }
     return ConversionOutcome(
         result=result,
         epub_bytes=epub_bytes,

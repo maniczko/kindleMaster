@@ -18,6 +18,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 from urllib.parse import quote
 
@@ -4295,9 +4296,11 @@ def _run_conversion_pipeline(
     quality_gate_mode: str = "draft",
     status_callback=None,
     interactive_runtime_budget: bool = True,
+    conversion_id: str = "",
 ) -> dict:
     outcome = run_document_conversion(
         ConversionRequest(
+            conversion_id=conversion_id or _sync_conversion_id(source_path, original_filename),
             source_path=source_path,
             source_type=source_type,
             original_filename=original_filename,
@@ -4356,6 +4359,7 @@ def _spawn_conversion_job(
                 language=language,
                 heading_repair_enabled=heading_repair_enabled,
                 status_callback=_status_callback,
+                conversion_id=job_id,
             )
             if not _worker_can_finish_job(job_id):
                 return
@@ -4456,6 +4460,15 @@ def _spawn_conversion_job(
 
     thread = threading.Thread(target=_worker, daemon=True, name=f"kindlemaster-convert-{job_id}")
     thread.start()
+
+
+def _sync_conversion_id(source_path: str, original_filename: str) -> str:
+    try:
+        stat = Path(source_path).stat()
+        seed = f"{original_filename}|{stat.st_size}|{stat.st_mtime_ns}"
+    except OSError:
+        seed = str(original_filename or source_path or "conversion")
+    return f"sync_{sha256(seed.encode('utf-8')).hexdigest()[:16]}"
 
 
 def _react_shell_index_path() -> Path:

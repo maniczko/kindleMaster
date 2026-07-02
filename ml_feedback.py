@@ -73,6 +73,7 @@ def append_user_feedback(
     feedback: Mapping[str, Any],
     job: Mapping[str, Any],
     event_path: str | Path | None = None,
+    ledger_repo_root: str | Path = ".",
 ) -> dict[str, Any]:
     metadata = _mapping(job.get("metadata"))
     include_in_training, validation_errors = validate_feedback_training_intent(feedback)
@@ -140,6 +141,25 @@ def append_user_feedback(
         },
     }
     append_feedback_record(record, log_path=event_path or DEFAULT_FEEDBACK_LOG_PATH)
+    try:
+        from learning_ledger import record_user_feedback_added
+
+        ledger_record = record_user_feedback_added(
+            feedback_record=record,
+            job={**dict(job), "job_id": job_id},
+            repo_root=ledger_repo_root,
+        )
+        record["learning_ledger"] = {
+            "status": "recorded",
+            "event_id": str(ledger_record.get("event_id", "") or ""),
+            "events_path": str(ledger_record.get("events_path", "") or ""),
+            "index_path": str(ledger_record.get("index_path", "") or ""),
+        }
+    except Exception as error:
+        record["learning_ledger"] = {
+            "status": "failed",
+            "error": str(error),
+        }
     return record
 
 

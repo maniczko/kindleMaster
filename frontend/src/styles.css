@@ -2263,6 +2263,114 @@ a {
   line-height: 1.35;
 }
 
+.km-feedback-panel {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.km-feedback-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.km-feedback-summary span,
+.km-feedback-latest {
+  border: 1px solid var(--km-border);
+  border-radius: var(--km-radius);
+  padding: 0.65rem 0.75rem;
+  background: var(--km-panel-muted);
+  color: var(--km-muted);
+  font-size: 0.82rem;
+}
+
+.km-feedback-summary strong {
+  display: block;
+  color: var(--km-text);
+  font-size: 1.05rem;
+}
+
+.km-feedback-fieldset {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.km-feedback-chip {
+  min-height: 2.2rem;
+  border: 1px solid var(--km-border);
+  border-radius: 999px;
+  padding: 0.35rem 0.75rem;
+  background: var(--km-panel);
+  color: var(--km-text);
+  cursor: pointer;
+  font: inherit;
+}
+
+.km-feedback-chip:hover {
+  border-color: var(--km-accent);
+}
+
+.km-feedback-chip:focus-visible,
+.km-feedback-label input:focus-visible,
+.km-feedback-label select:focus-visible,
+.km-feedback-label textarea:focus-visible,
+.km-feedback-training-toggle input:focus-visible {
+  outline: 2px solid var(--km-accent);
+  outline-offset: 2px;
+}
+
+.km-feedback-chip.is-active {
+  border-color: var(--km-accent);
+  background: var(--km-accent);
+  color: #fff;
+}
+
+.km-feedback-label {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.km-feedback-label span {
+  color: var(--km-muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.km-feedback-label input,
+.km-feedback-label select,
+.km-feedback-label textarea {
+  min-height: 2.4rem;
+  border: 1px solid var(--km-border);
+  border-radius: var(--km-radius);
+  padding: 0.55rem 0.7rem;
+  background: var(--km-panel);
+  color: var(--km-text);
+  font: inherit;
+}
+
+.km-feedback-label textarea {
+  resize: vertical;
+}
+
+.km-feedback-training-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  color: var(--km-text);
+  font-size: 0.9rem;
+}
+
+.km-feedback-latest {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.75rem;
+}
+
+.km-feedback-latest strong {
+  color: var(--km-text);
+}
+
 .km-pdf-tools {
   display: flex;
   align-items: center;
@@ -2465,6 +2573,10 @@ a {
   .km-app-shell {
     width: 100%;
     overflow-x: hidden;
+  }
+
+  .km-feedback-summary {
+    grid-template-columns: 1fr;
   }
 
   .km-sidebar {

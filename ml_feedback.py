@@ -140,7 +140,6 @@ def append_user_feedback(
             "reason": dataset_reason,
         },
     }
-    append_feedback_record(record, log_path=event_path or DEFAULT_FEEDBACK_LOG_PATH)
     try:
         from learning_ledger import record_user_feedback_added
 
@@ -160,6 +159,7 @@ def append_user_feedback(
             "status": "failed",
             "error": str(error),
         }
+    append_feedback_record(record, log_path=event_path or DEFAULT_FEEDBACK_LOG_PATH)
     return record
 
 
@@ -427,6 +427,82 @@ def load_feedback_records(
             else:
                 skipped.append({"source": "feedback", "path": str(path), "line": line_number, "reason": "feedback_not_object"})
     return records, skipped
+
+
+def feedback_records_for_job(
+    job_id: str,
+    *,
+    log_paths: Iterable[str | Path] | str | Path | None = None,
+    repo_root: str | Path = ".",
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    records, skipped = load_feedback_records(log_paths=log_paths, repo_root=repo_root)
+    selected = [
+        feedback_public_record(record)
+        for record in records
+        if str(record.get("job_id", "") or "") == str(job_id)
+    ]
+    selected.sort(key=lambda item: str(item.get("created_at", "")))
+    return selected, skipped
+
+
+def feedback_public_record(record: Mapping[str, Any]) -> dict[str, Any]:
+    feedback = _mapping(record.get("feedback"))
+    dataset = _mapping(record.get("dataset"))
+    ledger = _mapping(record.get("learning_ledger"))
+    return {
+        "record_id": str(record.get("record_id", "") or ""),
+        "created_at": str(record.get("created_at", "") or ""),
+        "job_id": str(record.get("job_id", "") or ""),
+        "status": str(feedback.get("status", "") or ""),
+        "quality_label": str(feedback.get("quality_label", "") or ""),
+        "quality_score": feedback.get("quality_score"),
+        "route_label": str(feedback.get("route_label", "") or ""),
+        "issue_tags": _clean_issue_tags(feedback.get("issue_tags") or []),
+        "notes": str(feedback.get("notes", "") or ""),
+        "reviewer": str(feedback.get("reviewer", "") or ""),
+        "include_in_training_requested": bool(feedback.get("include_in_training")),
+        "include_in_training": bool(dataset.get("include_in_route_training")),
+        "dataset_reason": str(dataset.get("reason", "") or ""),
+        "learning_ledger": {
+            "status": str(ledger.get("status", "") or ""),
+            "event_id": str(ledger.get("event_id", "") or ""),
+            "events_path": str(ledger.get("events_path", "") or ""),
+            "index_path": str(ledger.get("index_path", "") or ""),
+        },
+    }
+
+
+def summarize_feedback_records(
+    records: Iterable[Mapping[str, Any]],
+    skipped: Iterable[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    record_list = [feedback_public_record(record) for record in records]
+    by_status: dict[str, int] = {}
+    by_quality_label: dict[str, int] = {}
+    by_route_label: dict[str, int] = {}
+    by_issue_tag: dict[str, int] = {}
+    training_eligible_count = 0
+    for record in record_list:
+        _increment_count(by_status, str(record.get("status", "") or "unknown"))
+        _increment_count(by_quality_label, str(record.get("quality_label", "") or "unknown"))
+        route_label = str(record.get("route_label", "") or "")
+        if route_label:
+            _increment_count(by_route_label, route_label)
+        for tag in record.get("issue_tags") or []:
+            _increment_count(by_issue_tag, str(tag))
+        if bool(record.get("include_in_training")):
+            training_eligible_count += 1
+    return {
+        "feedback_record_count": len(record_list),
+        "training_eligible_count": training_eligible_count,
+        "product_signal_count": len(record_list) - training_eligible_count,
+        "by_status": by_status,
+        "by_quality_label": by_quality_label,
+        "by_route_label": by_route_label,
+        "by_issue_tag": by_issue_tag,
+        "skipped": list(skipped or []),
+        "online_learning": False,
+    }
 
 
 def route_examples_from_feedback(
@@ -1012,6 +1088,11 @@ def _clean_issue_tags(values: Iterable[str]) -> list[str]:
             if normalized and normalized not in tags:
                 tags.append(normalized)
     return tags
+
+
+def _increment_count(target: dict[str, int], key: str) -> None:
+    normalized = str(key or "unknown").strip() or "unknown"
+    target[normalized] = target.get(normalized, 0) + 1
 
 
 def _optional_float(value: Any) -> float | None:

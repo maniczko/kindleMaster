@@ -767,6 +767,92 @@ describe("Premium React shell", () => {
     expect(screen.queryByLabelText("Informacje o aktywnym zadaniu")).not.toBeInTheDocument();
   });
 
+  it("saves post-conversion feedback from file details", async () => {
+    const user = userEvent.setup();
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/convert/jobs")) {
+        return {
+          ok: true,
+          json: async () => ({
+            jobs: [
+              {
+                job_id: "job-feedback-ui",
+                filename: "feedback.pdf",
+                status: "ready",
+                elapsed_seconds: 7,
+                output_size_bytes: 1024,
+                quality_state: { release_verdict: "ready_with_review", premium_ready: false },
+              },
+            ],
+          }),
+        };
+      }
+      if (url === "/convert/feedback/job-feedback-ui" && init?.method === "POST") {
+        return {
+          ok: true,
+          json: async () => ({
+            success: true,
+            feedback_record: {
+              record_id: "fb_ui",
+              created_at: "2026-07-02T10:00:00Z",
+              job_id: "job-feedback-ui",
+              status: "accepted",
+              quality_label: "good",
+              route_label: "book_reflow",
+              issue_tags: ["layout"],
+              notes: "Layout checked.",
+              reviewer: "Iwo",
+              include_in_training_requested: true,
+              include_in_training: true,
+              dataset_reason: "ready",
+              learning_ledger: { status: "recorded" },
+            },
+          }),
+        };
+      }
+      if (url === "/convert/feedback/job-feedback-ui") {
+        return {
+          ok: true,
+          json: async () => ({ success: true, feedback_records: [], latest_feedback: null, feedback_count: 0 }),
+        };
+      }
+      if (url === "/user/profile") {
+        return { ok: true, json: async () => ({ success: true, profile: defaultProfile }) };
+      }
+      if (url === "/convert/delivery/config") {
+        return { ok: true, json: async () => ({ success: true, delivery: { configured: false } }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Biblioteka" }));
+    await user.click(await screen.findByRole("button", { name: "feedback.pdf" }));
+
+    expect(await screen.findByRole("heading", { name: "Feedback po konwersji" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Akceptuję" }));
+    await user.selectOptions(screen.getByLabelText("Jakość wyniku"), "good");
+    await user.selectOptions(screen.getByLabelText("Poprawna trasa konwersji"), "book_reflow");
+    await user.click(screen.getByRole("button", { name: "Layout" }));
+    await user.type(screen.getByLabelText("Recenzent"), "Iwo");
+    await user.type(screen.getByLabelText("Notatka"), "Layout checked.");
+    await user.click(screen.getByLabelText("Użyj tej oceny do uczenia po weryfikacji"));
+    await user.click(screen.getByRole("button", { name: "Zapisz feedback" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/convert/feedback/job-feedback-ui",
+        expect.objectContaining({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    });
+    expect(await screen.findByText("Feedback zapisany lokalnie.")).toBeInTheDocument();
+    expect(screen.getByText("etykieta treningowa")).toBeInTheDocument();
+  });
+
   it("lets file details send PDF to Kindle and hides markdown report artifact", async () => {
     const user = userEvent.setup();
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {

@@ -199,6 +199,14 @@ class ReactShellBrowserSmokeTests(unittest.TestCase):
                 ),
             ),
         )
+        self.page.route(
+            "**/convert/feedback/**",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=_json_body({"success": True, "feedback_records": [], "latest_feedback": None, "feedback_count": 0}),
+            ),
+        )
 
     def test_key_react_views_render_and_navigate_without_console_errors(self) -> None:
         self.page.goto(f"{self.base_url}/#library")

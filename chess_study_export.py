@@ -25,6 +25,7 @@ from chess_position_recognizer import validate_fen
 from chess_side_marker_blockers import build_side_marker_blocker_attribution, side_marker_blocker_attribution_markdown
 from pymupdf_chess_extractor import (
     _apply_scan_chess_side_to_move_context_evidence,
+    _apply_scan_chess_two_crop_quality_gate,
     _infer_scan_chess_side_to_move_marker_evidence,
     _scan_chess_local_side_marker_assignment_evidence,
     _scan_chess_side_marker_metadata_from_payload,
@@ -245,9 +246,23 @@ class StudyDiagram:
     source_crop: str
     board_crop_path: str
     side_marker_crop_path: str
+    side_marker_search_crop_path: str
+    side_marker_review_crop_path: str
+    side_marker_review_crop_kind: str
     debug_overlay_path: str
     board_bbox: list[float]
     side_marker_bbox: list[float]
+    marker_search_zones: dict[str, Any]
+    selected_marker_zone: str
+    marker_bbox: list[float]
+    board_crop_quality: str
+    board_crop_fail_reason: list[str]
+    marker_crop_quality: str
+    marker_crop_fail_reason: list[str]
+    side_to_move_detected: str
+    side_to_move_confidence: float | str
+    manual_review_required: bool
+    manual_review_reason: str
     side_to_move_status: str
     side_to_move_evidence: str
     side_marker_symbol: str
@@ -281,9 +296,23 @@ class StudyDiagram:
             "source_crop": self.source_crop,
             "board_crop_path": self.board_crop_path,
             "side_marker_crop_path": self.side_marker_crop_path,
+            "side_marker_search_crop_path": self.side_marker_search_crop_path,
+            "side_marker_review_crop_path": self.side_marker_review_crop_path,
+            "side_marker_review_crop_kind": self.side_marker_review_crop_kind,
             "debug_overlay_path": self.debug_overlay_path,
             "board_bbox": list(self.board_bbox),
             "side_marker_bbox": list(self.side_marker_bbox),
+            "marker_search_zones": dict(self.marker_search_zones),
+            "selected_marker_zone": self.selected_marker_zone,
+            "marker_bbox": list(self.marker_bbox),
+            "board_crop_quality": self.board_crop_quality,
+            "board_crop_fail_reason": list(self.board_crop_fail_reason),
+            "marker_crop_quality": self.marker_crop_quality,
+            "marker_crop_fail_reason": list(self.marker_crop_fail_reason),
+            "side_to_move_detected": self.side_to_move_detected,
+            "side_to_move_confidence": self.side_to_move_confidence,
+            "manual_review_required": bool(self.manual_review_required),
+            "manual_review_reason": self.manual_review_reason,
             "side_to_move_status": self.side_to_move_status,
             "side_to_move_evidence": self.side_to_move_evidence,
             "side_marker_symbol": self.side_marker_symbol,
@@ -5105,6 +5134,7 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
                     board_bbox=board_bbox,
                     side_marker_bbox=payload.get("side_marker_bbox"),
                 )
+                payload = _apply_scan_chess_two_crop_quality_gate(payload, two_crop_fields)
                 payload.update(two_crop_fields)
                 _write_study_side_marker_artifact_files(out, two_crop_files)
                 _apply_study_side_marker_payload(diagram, payload)
@@ -5201,8 +5231,24 @@ def _apply_study_side_marker_payload(diagram: dict[str, Any], payload: Mapping[s
             "strict_fen_side_evidence_trusted": bool(marker.get("strict_fen_side_evidence_trusted")),
             "board_crop_path": str(payload.get("board_crop_path") or diagram.get("source_crop") or ""),
             "side_marker_crop_path": str(payload.get("side_marker_crop_path") or ""),
+            "side_marker_search_crop_path": str(payload.get("side_marker_search_crop_path") or ""),
+            "side_marker_review_crop_path": str(payload.get("side_marker_review_crop_path") or ""),
+            "side_marker_review_crop_kind": str(payload.get("side_marker_review_crop_kind") or ""),
             "debug_overlay_path": str(payload.get("debug_overlay_path") or ""),
             "board_bbox": list(payload.get("board_bbox") or []),
+            "board_crop_quality": str(payload.get("board_crop_quality") or ""),
+            "board_crop_fail_reason": list(payload.get("board_crop_fail_reason") or []),
+            "board_crop_quality_gate": dict(payload.get("board_crop_quality_gate") or {}),
+            "marker_search_zones": dict(payload.get("marker_search_zones") or {}),
+            "selected_marker_zone": payload.get("selected_marker_zone"),
+            "marker_bbox": list(payload.get("marker_bbox") or []),
+            "marker_crop_quality": str(payload.get("marker_crop_quality") or ""),
+            "marker_crop_fail_reason": list(payload.get("marker_crop_fail_reason") or []),
+            "marker_crop_quality_gate": dict(payload.get("marker_crop_quality_gate") or {}),
+            "side_to_move_detected": payload.get("side_to_move_detected"),
+            "side_to_move_confidence": payload.get("side_to_move_confidence"),
+            "manual_review_required": bool(payload.get("manual_review_required", True)),
+            "manual_review_reason": str(payload.get("manual_review_reason") or ""),
             "warnings": sorted({str(warning) for warning in payload.get("warnings") or [] if str(warning)}),
         }
     )
@@ -5228,14 +5274,54 @@ def _write_study_side_marker_artifact_files(out: Path, files: list[Mapping[str, 
 
 
 def _study_side_marker_summary(diagrams: list[Mapping[str, Any]]) -> dict[str, Any]:
+    diagram_count = len(diagrams)
+    board_pass = len([item for item in diagrams if str(item.get("board_crop_quality") or "") == "pass"])
+    marker_pass = len([item for item in diagrams if str(item.get("marker_crop_quality") or "") == "pass"])
+    marker_fail_reasons = [
+        str(reason)
+        for item in diagrams
+        for reason in (item.get("marker_crop_fail_reason") or [])
+        if str(reason)
+    ]
+    board_fail_reasons = [
+        str(reason)
+        for item in diagrams
+        for reason in (item.get("board_crop_fail_reason") or [])
+        if str(reason)
+    ]
     return {
-        "diagram_count": len(diagrams),
+        "diagram_count": diagram_count,
         "board_crop_count": len([item for item in diagrams if str(item.get("board_crop_path") or "").strip()]),
         "side_marker_crop_count": len([item for item in diagrams if str(item.get("side_marker_crop_path") or "").strip()]),
+        "side_marker_search_crop_count": len([item for item in diagrams if str(item.get("side_marker_search_crop_path") or "").strip()]),
+        "board_crop_quality_pass_count": board_pass,
+        "board_crop_quality_pass_rate": round(board_pass / diagram_count, 4) if diagram_count else 0.0,
+        "board_crop_contains_coordinates_count": board_fail_reasons.count("contains_coordinates"),
+        "board_crop_contains_marker_count": board_fail_reasons.count("contains_marker"),
+        "marker_crop_quality_pass_count": marker_pass,
+        "marker_crop_quality_pass_rate": round(marker_pass / diagram_count, 4) if diagram_count else 0.0,
+        "marker_crop_missing_count": marker_fail_reasons.count("marker_missing"),
+        "marker_crop_cut_off_count": marker_fail_reasons.count("marker_cut_off"),
+        "marker_crop_mostly_board_edge_count": marker_fail_reasons.count("mostly_board_edge"),
+        "marker_crop_mostly_coordinates_count": marker_fail_reasons.count("mostly_rank_numbers")
+        + marker_fail_reasons.count("mostly_file_letters"),
         "trusted_marker_count": len([item for item in diagrams if str(item.get("side_marker_status") or "") == "trusted_marker"]),
         "marker_missing_count": len([item for item in diagrams if str(item.get("side_marker_status") or "") in {"", "marker_missing", "inferred_only"}]),
         "marker_conflict_count": len([item for item in diagrams if str(item.get("side_marker_status") or "") in {"marker_conflict", "multi_side"}]),
         "side_unknown_count": len([item for item in diagrams if str(item.get("side_to_move") or "") not in {"w", "b"}]),
+        "side_to_move_auto_confident_rate": round(
+            len([item for item in diagrams if str(item.get("side_marker_status") or "") == "trusted_marker"]) / diagram_count,
+            4,
+        )
+        if diagram_count
+        else 0.0,
+        "side_to_move_manual_review_rate": round(
+            len([item for item in diagrams if bool(item.get("manual_review_required", True))]) / diagram_count,
+            4,
+        )
+        if diagram_count
+        else 0.0,
+        "side_to_move_auto_vs_manual_accuracy": None,
         "placement_accepted_count": len(
             [
                 item
@@ -5261,8 +5347,23 @@ def _write_study_side_marker_report(out: Path, diagrams: list[Mapping[str, Any]]
             "side_marker_confidence": item.get("side_marker_confidence"),
             "board_crop_path": item.get("board_crop_path"),
             "side_marker_crop_path": item.get("side_marker_crop_path"),
+            "side_marker_search_crop_path": item.get("side_marker_search_crop_path"),
+            "side_marker_review_crop_path": item.get("side_marker_review_crop_path"),
+            "side_marker_review_crop_kind": item.get("side_marker_review_crop_kind"),
             "debug_overlay_path": item.get("debug_overlay_path"),
+            "board_bbox": item.get("board_bbox"),
             "side_marker_bbox": item.get("side_marker_bbox"),
+            "marker_bbox": item.get("marker_bbox"),
+            "marker_search_zones": item.get("marker_search_zones") or {},
+            "selected_marker_zone": item.get("selected_marker_zone"),
+            "board_crop_quality": item.get("board_crop_quality"),
+            "board_crop_fail_reason": item.get("board_crop_fail_reason") or [],
+            "marker_crop_quality": item.get("marker_crop_quality"),
+            "marker_crop_fail_reason": item.get("marker_crop_fail_reason") or [],
+            "side_to_move_detected": item.get("side_to_move_detected"),
+            "side_to_move_confidence": item.get("side_to_move_confidence"),
+            "manual_review_required": bool(item.get("manual_review_required", True)),
+            "manual_review_reason": item.get("manual_review_reason"),
             "warnings": item.get("warnings") or [],
         }
         for item in diagrams
@@ -5306,7 +5407,7 @@ def _write_study_side_marker_report(out: Path, diagrams: list[Mapping[str, Any]]
         [
             "</dl>",
             "<table>",
-            "<thead><tr><th>Diagram</th><th>Page</th><th>Status</th><th>Side</th><th>Marker crop</th></tr></thead>",
+            "<thead><tr><th>Diagram</th><th>Page</th><th>Status</th><th>Side</th><th>Board quality</th><th>Marker quality</th><th>Marker crop</th><th>Search preview</th><th>Review reason</th></tr></thead>",
             "<tbody>",
         ]
     )
@@ -5317,7 +5418,11 @@ def _write_study_side_marker_report(out: Path, diagrams: list[Mapping[str, Any]]
             f"<td>{html.escape(str(item.get('page') or ''))}</td>"
             f"<td>{html.escape(str(item.get('side_marker_status') or ''))}</td>"
             f"<td>{html.escape(str(item.get('side_to_move') or ''))}</td>"
+            f"<td>{html.escape(str(item.get('board_crop_quality') or ''))}</td>"
+            f"<td>{html.escape(str(item.get('marker_crop_quality') or ''))}</td>"
             f"<td>{html.escape(str(item.get('side_marker_crop_path') or ''))}</td>"
+            f"<td>{html.escape(str(item.get('side_marker_search_crop_path') or ''))}</td>"
+            f"<td>{html.escape(str(item.get('manual_review_reason') or ''))}</td>"
             "</tr>"
         )
     html_lines.extend(["</tbody>", "</table>", "</body>", "</html>"])
@@ -5342,7 +5447,22 @@ def _study_two_crop_quality_rows(diagrams: list[Mapping[str, Any]]) -> list[dict
                 "page": item.get("page"),
                 "has_board_crop": bool(str(item.get("board_crop_path") or "").strip()),
                 "has_side_marker_crop": bool(str(item.get("side_marker_crop_path") or "").strip()),
+                "has_side_marker_search_crop": bool(str(item.get("side_marker_search_crop_path") or "").strip()),
+                "side_marker_search_crop_path": str(item.get("side_marker_search_crop_path") or ""),
+                "side_marker_review_crop_path": str(item.get("side_marker_review_crop_path") or ""),
+                "side_marker_review_crop_kind": str(item.get("side_marker_review_crop_kind") or ""),
                 "debug_overlay_path": str(item.get("debug_overlay_path") or ""),
+                "board_crop_quality": str(item.get("board_crop_quality") or ""),
+                "board_crop_fail_reason": list(item.get("board_crop_fail_reason") or []),
+                "marker_search_zones": dict(item.get("marker_search_zones") or {}),
+                "selected_marker_zone": item.get("selected_marker_zone"),
+                "marker_bbox": list(item.get("marker_bbox") or []),
+                "marker_crop_quality": str(item.get("marker_crop_quality") or ""),
+                "marker_crop_fail_reason": list(item.get("marker_crop_fail_reason") or []),
+                "side_to_move_detected": item.get("side_to_move_detected"),
+                "side_to_move_confidence": item.get("side_to_move_confidence"),
+                "manual_review_required": bool(item.get("manual_review_required", True)),
+                "manual_review_reason": str(item.get("manual_review_reason") or ""),
                 "side_marker_status": side_status or "marker_missing",
                 "side_marker_symbol": str(item.get("side_marker_symbol") or ""),
                 "side_to_move": str(item.get("side_to_move") or "unknown"),
@@ -5451,6 +5571,20 @@ def _write_study_two_crop_quality_metrics(out: Path, diagrams: list[Mapping[str,
             "diagram_count": len(rows),
             "board_crop_count": int(summary.get("board_crop_count") or 0),
             "side_marker_crop_count": int(summary.get("side_marker_crop_count") or 0),
+            "side_marker_search_crop_count": int(summary.get("side_marker_search_crop_count") or 0),
+            "board_crop_quality_pass_count": int(summary.get("board_crop_quality_pass_count") or 0),
+            "board_crop_quality_pass_rate": summary.get("board_crop_quality_pass_rate", 0.0),
+            "board_crop_contains_coordinates_count": int(summary.get("board_crop_contains_coordinates_count") or 0),
+            "board_crop_contains_marker_count": int(summary.get("board_crop_contains_marker_count") or 0),
+            "marker_crop_quality_pass_count": int(summary.get("marker_crop_quality_pass_count") or 0),
+            "marker_crop_quality_pass_rate": summary.get("marker_crop_quality_pass_rate", 0.0),
+            "marker_crop_missing_count": int(summary.get("marker_crop_missing_count") or 0),
+            "marker_crop_cut_off_count": int(summary.get("marker_crop_cut_off_count") or 0),
+            "marker_crop_mostly_board_edge_count": int(summary.get("marker_crop_mostly_board_edge_count") or 0),
+            "marker_crop_mostly_coordinates_count": int(summary.get("marker_crop_mostly_coordinates_count") or 0),
+            "side_to_move_auto_confident_rate": summary.get("side_to_move_auto_confident_rate", 0.0),
+            "side_to_move_manual_review_rate": summary.get("side_to_move_manual_review_rate", 0.0),
+            "side_to_move_auto_vs_manual_accuracy": summary.get("side_to_move_auto_vs_manual_accuracy"),
             "trusted_marker_count": int(summary.get("trusted_marker_count") or 0),
             "marker_missing_count": int(summary.get("marker_missing_count") or 0),
             "marker_conflict_count": int(summary.get("marker_conflict_count") or 0),
@@ -5500,17 +5634,21 @@ def _write_study_two_crop_quality_metrics(out: Path, diagrams: list[Mapping[str,
     lines.extend(
         [
             "",
-            "| Diagram | Page | Board crop | Marker crop | Marker status | Placement | Full FEN | Marker block | Placement block |",
-            "| --- | ---: | --- | --- | --- | --- | --- | --- | --- |",
+            "| Diagram | Page | Board crop | Marker crop | Search crop | Board quality | Marker quality | Review crop | Marker status | Placement | Full FEN | Marker block | Placement block |",
+            "| --- | ---: | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
     )
     for row in rows[:100]:
         lines.append(
-            "| {diagram} | {page} | {board} | {marker} | {status} | {placement} | {full} | {marker_block} | {placement_block} |".format(
+            "| {diagram} | {page} | {board} | {marker} | {search} | {board_quality} | {marker_quality} | {review} | {status} | {placement} | {full} | {marker_block} | {placement_block} |".format(
                 diagram=row.get("diagram_id") or "",
                 page=row.get("page") or "",
                 board="yes" if row.get("has_board_crop") else "no",
                 marker="yes" if row.get("has_side_marker_crop") else "no",
+                search="yes" if row.get("has_side_marker_search_crop") else "no",
+                board_quality=row.get("board_crop_quality") or "",
+                marker_quality=row.get("marker_crop_quality") or "",
+                review=row.get("side_marker_review_crop_kind") or "",
                 status=row.get("side_marker_status") or "",
                 placement=row.get("placement_status") or "",
                 full=row.get("full_fen_status") or "",
@@ -7087,9 +7225,28 @@ def _study_diagram_record(record: dict[str, Any]) -> StudyDiagram:
         source_crop=str(record.get("source_crop") or ""),
         board_crop_path=str(record.get("board_crop_path") or record.get("source_crop") or ""),
         side_marker_crop_path=str(record.get("side_marker_crop_path") or ""),
+        side_marker_search_crop_path=str(record.get("side_marker_search_crop_path") or ""),
+        side_marker_review_crop_path=str(
+            record.get("side_marker_review_crop_path")
+            or record.get("side_marker_crop_path")
+            or record.get("side_marker_search_crop_path")
+            or ""
+        ),
+        side_marker_review_crop_kind=str(record.get("side_marker_review_crop_kind") or ""),
         debug_overlay_path=str(record.get("debug_overlay_path") or ""),
         board_bbox=_bbox4(record.get("board_bbox") or record.get("bbox_xyxy") or []),
         side_marker_bbox=_bbox4(record.get("side_marker_bbox") or []),
+        marker_search_zones=dict(record.get("marker_search_zones") or {}),
+        selected_marker_zone=str(record.get("selected_marker_zone") or ""),
+        marker_bbox=_bbox4(record.get("marker_bbox") or []),
+        board_crop_quality=str(record.get("board_crop_quality") or ""),
+        board_crop_fail_reason=[str(reason) for reason in record.get("board_crop_fail_reason") or []],
+        marker_crop_quality=str(record.get("marker_crop_quality") or ""),
+        marker_crop_fail_reason=[str(reason) for reason in record.get("marker_crop_fail_reason") or []],
+        side_to_move_detected=str(record.get("side_to_move_detected") or ""),
+        side_to_move_confidence=record.get("side_to_move_confidence", ""),
+        manual_review_required=bool(record.get("manual_review_required", True)),
+        manual_review_reason=str(record.get("manual_review_reason") or ""),
         side_to_move_status=str(record.get("side_to_move_status") or ""),
         side_to_move_evidence=str(record.get("side_to_move_evidence") or ""),
         side_marker_symbol=str(record.get("side_marker_symbol") or ""),

@@ -268,6 +268,96 @@ class ChessStudyRenderTests(unittest.TestCase):
         self.assertEqual(qa["status"], "FAIL")
         self.assertTrue(any(problem["code"] == "accepted_fen_missing_render" for problem in qa["problems"]))
 
+    def test_engine_analysis_panels_render_reader_study_and_audit_statuses(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir)
+            positions = {
+                "positions": [
+                    _engine_panel_position("p001_d001", "Engine OK"),
+                    _engine_panel_position("p001_d002", "Engine skipped"),
+                    _engine_panel_position("p001_d003", "Engine unavailable"),
+                    _engine_panel_position("p001_d004", "Engine invalid FEN"),
+                ]
+            }
+            _write_json(
+                out / "data" / "engine_analysis.json",
+                {
+                    "schema": "kindlemaster.chess_engine.analysis_data.v1",
+                    "summary": {"diagram_count": 4},
+                    "items": [
+                        {
+                            "diagram_id": "p001_d001",
+                            "engine": "stockfish",
+                            "engine_version": "Fakefish 1.0",
+                            "engine_status": "ok",
+                            "skip_reason": "",
+                            "fen_status": "FEN_MACHINE_ACCEPTED",
+                            "side_marker_status": "trusted_marker",
+                            "best_move_san": "Ke2",
+                            "best_move_uci": "e1e2",
+                            "score_cp": 34,
+                            "mate": None,
+                            "pv": [{"moves_san": ["Ke2", "Ke7"], "moves_uci": ["e1e2", "e8e7"]}],
+                            "depth": 6,
+                            "elapsed_ms": 12,
+                            "cache_hit": True,
+                            "multipv": 1,
+                        },
+                        {
+                            "diagram_id": "p001_d002",
+                            "engine_status": "skipped",
+                            "skip_reason": "side_to_move_not_trusted",
+                            "fen_status": "FEN_MACHINE_ACCEPTED",
+                            "side_marker_status": "marker_missing",
+                        },
+                        {
+                            "diagram_id": "p001_d003",
+                            "engine_status": "engine_unavailable",
+                            "skip_reason": "engine_unavailable",
+                            "fen_status": "FEN_MACHINE_ACCEPTED",
+                            "side_marker_status": "trusted_marker",
+                        },
+                        {
+                            "diagram_id": "p001_d004",
+                            "engine_status": "invalid_fen",
+                            "skip_reason": "invalid_fen",
+                            "fen_status": "FEN_MACHINE_ACCEPTED",
+                            "side_marker_status": "trusted_marker",
+                        },
+                    ],
+                },
+            )
+
+            render_study_html(
+                out,
+                structure={"chapters": [{"chapter_no": 1, "title": "Engine chapter"}]},
+                positions=positions,
+                qa_report={"status": "review", "summary": {"pages": 1, "diagrams_total": 4}},
+                page_model={"pages": [{"page": 1, "paragraphs": [], "elements": []}]},
+                notation_fragments={"fragments": []},
+            )
+            index_html = (out / "index.html").read_text(encoding="utf-8")
+            kindle_html = (out / "kindle.html").read_text(encoding="utf-8")
+            audit_html = (out / "standalone_audit.html").read_text(encoding="utf-8")
+
+        self.assertIn("Pokaż analizę silnika", kindle_html)
+        self.assertIn("Spróbuj sam", kindle_html)
+        self.assertIn("Pokaż rozwiązanie książki", kindle_html)
+        self.assertIn("Podgląd oryginału", kindle_html)
+        self.assertIn('data-engine-status="ok"', kindle_html)
+        self.assertIn('data-engine-status="skipped"', kindle_html)
+        self.assertIn('data-engine-status="engine_unavailable"', kindle_html)
+        self.assertIn('data-engine-status="invalid_fen"', kindle_html)
+        self.assertNotIn('engine-panel-study" data-engine-status="ok" open', kindle_html)
+        self.assertIn("Ke2", kindle_html)
+        self.assertIn("side_to_move_not_trusted", kindle_html)
+        self.assertIn("engine_unavailable", kindle_html)
+        self.assertIn("invalid_fen", kindle_html)
+        self.assertIn("Dane techniczne silnika", index_html)
+        self.assertIn("&quot;engine_version&quot;: &quot;Fakefish 1.0&quot;", index_html)
+        self.assertIn("&quot;cache_hit&quot;: true", index_html)
+        self.assertIn("&quot;multipv&quot;: 1", index_html)
+
     def test_accepted_notation_with_unmapped_glyphs_fails_quality_gate(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             out = Path(temp_dir)
@@ -357,6 +447,42 @@ class ChessStudyRenderTests(unittest.TestCase):
 
         self.assertEqual(qa["status"], "FAIL")
         self.assertTrue(any(problem["code"] == "accepted_notation_missing_raw_glyph_context" for problem in qa["problems"]))
+
+
+def _engine_panel_position(position_id: str, label: str) -> dict:
+    return {
+        "id": position_id,
+        "diagram_id": position_id,
+        "type": "exercise",
+        "chapter_no": 1,
+        "chapter_title": "Engine chapter",
+        "label": label,
+        "diagram_page": 1,
+        "solution_page": 2,
+        "side_to_move": "white",
+        "fen": "8/8/8/8/8/8/4K3/4k3 w - - 0 1",
+        "solution_pgn": (
+            '[Event "Engine sample"]\n'
+            '[Site "?"]\n'
+            '[Date "????.??.??"]\n'
+            '[White "?"]\n'
+            '[Black "?"]\n'
+            '[Result "*"]\n'
+            '[SourcePage "1"]\n\n'
+            '1. e4 *'
+        ),
+        "status": "accepted",
+        "warnings": [],
+        "critical_warnings": [],
+        "source_crop": "diagrams/source/sample.webp",
+        "rendered_diagram": "assets/diagram_svg/sample.svg",
+        "side_marker_status": "trusted_marker",
+    }
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

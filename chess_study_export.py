@@ -573,6 +573,7 @@ def rebuild_chess_source_html_export(
         "pgn_records": pgn_records,
         "summary": _source_html_summary(pages, pgn_records, source, pdf_path=pdf_path, qa_report=qa_report),
     }
+    book_payload = _attach_engine_analysis_to_book(book_payload, out)
     artifact_manifest = _build_artifact_manifest(
         artifact_type=FINAL_READER_ARTIFACT_TYPE,
         pipeline_mode="source_html_semantic_reader",
@@ -2647,6 +2648,7 @@ def render_semantic_source_reader(out_dir: str | Path) -> dict[str, Any]:
             "error": "data/book.json missing; run chess-study run-all/rebuild from source HTML first.",
             "out_dir": str(out),
         }
+    book = _attach_engine_analysis_to_book(book, out)
     (out / "styles.css").write_text(_semantic_source_styles_css(), encoding="utf-8")
     (out / "app.js").write_text(_semantic_source_app_js(), encoding="utf-8")
     (out / "index.html").write_text(_semantic_source_index_html(book), encoding="utf-8")
@@ -3954,6 +3956,132 @@ def _semantic_source_index_html(book: dict[str, Any]) -> str:
 """
 
 
+def _engine_analysis_by_diagram_id(out: Path) -> dict[str, dict[str, Any]]:
+    payload = _read_optional_json(out / "data" / "engine_analysis.json")
+    rows = payload.get("items") if isinstance(payload, dict) else []
+    return {
+        str(row.get("diagram_id") or ""): dict(row)
+        for row in rows or []
+        if isinstance(row, dict) and str(row.get("diagram_id") or "")
+    }
+
+
+def _attach_engine_analysis_to_book(book: dict[str, Any], out: Path) -> dict[str, Any]:
+    engine_by_id = _engine_analysis_by_diagram_id(out)
+    if not engine_by_id:
+        return book
+    pages: list[dict[str, Any]] = []
+    for page in book.get("pages") or []:
+        if not isinstance(page, dict):
+            continue
+        next_page = dict(page)
+        next_page["diagrams"] = [
+            _attach_engine_analysis_to_record(dict(diagram), engine_by_id)
+            for diagram in page.get("diagrams") or []
+            if isinstance(diagram, dict)
+        ]
+        pages.append(next_page)
+    payload = _read_optional_json(out / "data" / "engine_analysis.json")
+    return {
+        **book,
+        "pages": pages,
+        "engine_analysis_summary": payload.get("summary") or {},
+    }
+
+
+def _attach_engine_analysis_to_record(record: dict[str, Any], engine_by_id: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    for key in (record.get("diagram_id"), record.get("id"), record.get("source_diagram"), record.get("label")):
+        value = str(key or "")
+        if value and value in engine_by_id:
+            return {**record, "engine_analysis": engine_by_id[value]}
+    return record
+
+
+def _engine_analysis_panel_html(
+    analysis: Mapping[str, Any] | None,
+    *,
+    mode: str,
+    open_by_default: bool = False,
+) -> str:
+    row = dict(analysis or {})
+    status = str(row.get("engine_status") or "missing")
+    summary_label = {
+        "reader": "Analiza silnika",
+        "study": "Pokaż analizę silnika",
+        "audit": "Dane techniczne silnika",
+    }.get(mode, "Analiza silnika")
+    if not row:
+        body = '<p class="engine-empty">Analiza silnika niedostępna dla tej pozycji.</p>'
+    elif status == "ok":
+        pv = _engine_pv_text(row)
+        body = f"""
+        <div class="engine-kpis">
+          <span><strong>Silnik</strong>{html.escape(_engine_name(row))}</span>
+          <span><strong>Ocena</strong>{html.escape(_engine_score_text(row))}</span>
+          <span><strong>Najlepszy ruch</strong>{html.escape(str(row.get('best_move_san') or row.get('best_move_uci') or ''))}</span>
+          <span><strong>Głębokość / czas</strong>{html.escape(_engine_depth_time(row))}</span>
+        </div>
+        {f'<p class="engine-pv"><strong>Główna linia</strong> {html.escape(pv)}</p>' if pv else ''}
+        {f'<p class="engine-cache">Cache: {html.escape("hit" if row.get("cache_hit") else "miss")}</p>' if mode == "audit" else ''}
+        """
+    else:
+        reason = str(row.get("skip_reason") or status or "analysis_missing")
+        body = f"""<p class="engine-empty">Analiza silnika niedostępna dla tej pozycji.</p>
+        <p class="engine-reason">Powód: <code>{html.escape(reason)}</code></p>"""
+    audit_details = ""
+    if mode == "audit" and row:
+        audit_details = f"""<pre class="engine-technical">{html.escape(json.dumps({
+            "engine_status": row.get("engine_status"),
+            "skip_reason": row.get("skip_reason"),
+            "fen_status": row.get("fen_status"),
+            "side_marker_status": row.get("side_marker_status"),
+            "engine_version": row.get("engine_version"),
+            "cache_hit": row.get("cache_hit"),
+            "elapsed_ms": row.get("elapsed_ms"),
+            "depth": row.get("depth"),
+            "multipv": row.get("multipv"),
+        }, ensure_ascii=False, indent=2))}</pre>"""
+    open_attr = " open" if open_by_default else ""
+    return f"""<details class="engine-panel engine-panel-{html.escape(mode, quote=True)}" data-engine-status="{html.escape(status, quote=True)}"{open_attr}>
+  <summary>{html.escape(summary_label)}</summary>
+  <div class="engine-panel-body">{body}{audit_details}</div>
+</details>"""
+
+
+def _engine_name(row: Mapping[str, Any]) -> str:
+    engine = str(row.get("engine") or "stockfish")
+    version = str(row.get("engine_version") or "").strip()
+    return f"{engine} {version}".strip()
+
+
+def _engine_score_text(row: Mapping[str, Any]) -> str:
+    if row.get("mate") is not None:
+        return f"mat {row.get('mate')}"
+    if row.get("score_cp") is None:
+        return "brak oceny"
+    try:
+        return f"{int(row.get('score_cp')) / 100:+.2f}"
+    except (TypeError, ValueError):
+        return str(row.get("score_cp"))
+
+
+def _engine_depth_time(row: Mapping[str, Any]) -> str:
+    depth = str(row.get("depth") or "?")
+    elapsed = str(row.get("elapsed_ms") or "0")
+    return f"{depth} ply / {elapsed} ms"
+
+
+def _engine_pv_text(row: Mapping[str, Any]) -> str:
+    pv = row.get("pv")
+    if not isinstance(pv, list) or not pv:
+        return ""
+    first = pv[0] if isinstance(pv[0], dict) else {}
+    san = first.get("moves_san") if isinstance(first, dict) else []
+    uci = first.get("moves_uci") if isinstance(first, dict) else []
+    moves = san if san else uci
+    return " ".join(str(move) for move in moves or [])
+
+
 def _semantic_source_book_flow_html(pages: list[dict[str, Any]]) -> str:
     parts: list[str] = []
     for page in pages:
@@ -4335,6 +4463,7 @@ def _semantic_source_diagram_html(diagram: dict[str, Any]) -> str:
   <span>FEN candidate requires review</span>
   <code>{html.escape(fen_candidate)}</code>
 </div>"""
+    engine_html = _engine_analysis_panel_html(diagram.get("engine_analysis"), mode="reader")
     return f"""<figure class="diagram-card" id="{html.escape(str(diagram.get('id') or ''), quote=True)}" data-kind="diagram" data-status="{html.escape(status, quote=True)}"{marker_attr} data-has-board-crop="{str(has_board_crop).lower()}" data-has-side-marker-crop="{str(has_side_marker_crop).lower()}">
   <header class="card-header">
     <h3>{html.escape(caption)}</h3>
@@ -4349,8 +4478,9 @@ def _semantic_source_diagram_html(diagram: dict[str, Any]) -> str:
       {candidate_html}
       {f'<pre class="fen"><code>{html.escape(fen)}</code></pre>' if fen else ''}
       {copy_html}
+      {engine_html}
       <details class="original-diagram">
-        <summary>Show original diagram image</summary>
+        <summary>Podgląd oryginału</summary>
         {original_image_html}
       </details>
     </div>
@@ -4384,12 +4514,13 @@ def _semantic_source_styles_css() -> str:
   --line:#dac8ad; --accent:#8a4516; --ok:#146b3a; --warn:#a76100; --bad:#9a1b1b;
 }
 * { box-sizing:border-box; }
+html, body { max-width:100%; overflow-x:hidden; }
 body { margin:0; font-family:Georgia, 'Times New Roman', serif; color:var(--ink); background:linear-gradient(180deg,#f4ead8,#eadbc4); line-height:1.6; }
 a { color:var(--accent); }
 .app-header { max-width:1180px; margin:0 auto; padding:2rem 1rem 1rem; }
 .eyebrow { margin:0 0 .35rem; color:var(--accent); font-size:.78rem; font-weight:900; letter-spacing:.08em; text-transform:uppercase; }
 h1 { margin:.1rem 0 .6rem; font-size:clamp(2rem,5vw,4.4rem); line-height:1; }
-.lede { max-width:70ch; color:var(--muted); font-size:1.06rem; }
+.lede { max-width:70ch; color:var(--muted); font-size:1.06rem; overflow-wrap:anywhere; }
 .scorebar { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:.75rem; margin-top:1.2rem; }
 .score { background:var(--paper); border:1px solid var(--line); border-radius:18px; padding:.8rem .9rem; box-shadow:0 10px 30px rgba(47,30,9,.06); }
 .score span { display:block; color:var(--muted); font-size:.76rem; font-weight:900; letter-spacing:.05em; text-transform:uppercase; }
@@ -4402,13 +4533,13 @@ h1 { margin:.1rem 0 .6rem; font-size:clamp(2rem,5vw,4.4rem); line-height:1; }
 .sidebar a, .sidebar label { color:#fff8ed; display:block; margin:.45rem 0; text-decoration:none; }
 .sidebar ol { padding-left:1.25rem; }
 .filters { border-top:1px solid rgba(255,255,255,.2); margin-top:1rem; padding-top:.75rem; }
-.book-flow { min-width:0; max-width:940px; }
+.book-flow { min-width:0; max-width:940px; width:100%; }
 .page-anchor { display:block; position:relative; top:-1rem; height:1px; overflow:hidden; }
 .flow-meta { color:var(--muted); font-size:.84rem; font-weight:800; margin:0 0 .3rem; }
 .flow-prose { max-width:76ch; margin:0 0 1rem; padding:.2rem 0 .2rem 1rem; border-left:3px solid rgba(138,69,22,.18); }
 .chapter-page { background:var(--paper); border:1px solid var(--line); border-radius:24px; padding:1.25rem; margin:0 0 1.2rem; box-shadow:0 18px 45px rgba(55,34,12,.09); }
 .page-heading { display:flex; justify-content:space-between; gap:1rem; align-items:center; border-bottom:1px solid var(--line); padding-bottom:.7rem; margin-bottom:.9rem; color:var(--muted); font-weight:800; }
-.study-block { background:var(--paper); border:1px solid var(--line); border-radius:24px; padding:1.15rem; margin:0 0 1.15rem; box-shadow:0 18px 45px rgba(55,34,12,.09); }
+.study-block { min-width:0; max-width:100%; background:var(--paper); border:1px solid var(--line); border-radius:24px; padding:1.15rem; margin:0 0 1.15rem; box-shadow:0 18px 45px rgba(55,34,12,.09); }
 .study-block-header { display:flex; justify-content:space-between; gap:1rem; align-items:flex-start; border-bottom:1px solid var(--line); margin-bottom:1rem; padding-bottom:.75rem; }
 .study-block-header h2 { margin:.1rem 0 0; font-size:clamp(1.35rem,2.5vw,2rem); line-height:1.12; }
 .study-block-grid { display:grid; grid-template-columns:minmax(260px,300px) minmax(0,1fr); gap:1rem; align-items:start; }
@@ -4423,7 +4554,7 @@ h2.reader-text { margin-top:1.4rem; color:#5c3215; font-size:1.45rem; }
 .diagram-panel .diagram-card { margin-bottom:0; }
 .card-header { display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; justify-content:space-between; margin-bottom:.75rem; }
 .card-header h3 { margin:0; font-size:1.2rem; }
-.source-ref { color:var(--muted); font-size:.92rem; }
+.source-ref { color:var(--muted); font-size:.92rem; overflow-wrap:anywhere; }
 .review-badge { border:1px solid var(--line); border-radius:999px; padding:.18rem .55rem; font-size:.82rem; font-weight:900; }
 .review-badge.accepted { color:var(--ok); border-color:rgba(20,107,58,.35); }
 .review-badge.needs-human-review, .review-badge.needs_review { color:var(--warn); border-color:rgba(167,97,0,.35); }
@@ -4439,9 +4570,18 @@ h2.reader-text { margin-top:1.4rem; color:#5c3215; font-size:1.45rem; }
 .diagram-meta { min-width:0; }
 .candidate code, pre { display:block; max-width:100%; overflow-wrap:anywhere; word-break:break-word; white-space:pre-wrap; background:#f2e4cd; border:1px solid #e3d1b6; border-radius:12px; padding:.7rem; }
 .copy-button { min-height:44px; border:1px solid var(--line); border-radius:999px; background:#fffaf1; color:var(--accent); padding:.5rem .9rem; font-weight:900; cursor:pointer; }
-.copy-button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visible { outline:3px solid #b96920; outline-offset:3px; }
+.copy-button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visible, button:focus-visible { outline:3px solid #b96920; outline-offset:3px; }
 .original-diagram summary, .review-details summary { cursor:pointer; min-height:44px; font-weight:900; color:var(--accent); }
 .original-diagram img { max-width:100%; height:auto; border-radius:10px; border:1px solid var(--line); background:#fff; }
+.engine-panel, .try-self-panel, .solution-panel, .original-source { border:1px solid var(--line); border-radius:14px; background:#fffaf1; margin:.65rem 0; padding:0 .75rem; }
+.engine-panel summary, .try-self-panel summary, .solution-panel summary, .original-source summary { cursor:pointer; min-height:44px; font-weight:900; color:var(--accent); }
+.engine-panel-body { padding:0 0 .75rem; }
+.engine-kpis { display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:.5rem; }
+.engine-kpis span { border:1px solid #ead8bf; border-radius:12px; background:#fffdf8; padding:.55rem .6rem; overflow-wrap:anywhere; }
+.engine-kpis strong { display:block; color:var(--muted); font-size:.76rem; text-transform:uppercase; letter-spacing:.04em; }
+.engine-empty, .engine-reason, .engine-cache, .engine-pv { margin:.45rem 0; color:var(--muted); }
+.study-actions { min-width:0; display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:.55rem; margin:.75rem 0; }
+.study-actions > * { min-width:0; }
 .diagram-asset-placeholder { border:1px dashed var(--line); border-radius:10px; background:#fffdf8; color:var(--muted); padding:.8rem; overflow-wrap:anywhere; }
 .pdf-context { margin-top:.85rem; border-top:1px solid var(--line); padding-top:.5rem; }
 .pdf-context summary { cursor:pointer; min-height:44px; font-weight:900; color:var(--accent); }
@@ -4452,7 +4592,7 @@ body.reader-mode .page-preview-link, body.reader-mode .warnings { display:none; 
 .empty-page { color:var(--muted); font-style:italic; }
 @media (max-width: 940px) { .layout { grid-template-columns:1fr; } .sidebar { position:relative; top:auto; max-height:none; } .scorebar { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 @media (max-width: 840px) { .study-block-grid { grid-template-columns:1fr; } }
-@media (max-width: 720px) { .layout,.app-header { padding-left:.85rem; padding-right:.85rem; } .scorebar,.diagram-grid { grid-template-columns:1fr; } .chapter-page,.study-block { border-radius:0; margin-left:-.85rem; margin-right:-.85rem; } .flow-prose { padding-left:.75rem; } .study-block-header { display:block; } }
+@media (max-width: 720px) { .layout,.app-header { padding-left:.85rem; padding-right:.85rem; } .scorebar,.diagram-grid,.study-actions { grid-template-columns:1fr; } .chapter-page,.study-block { border-radius:0; margin-left:-.85rem; margin-right:-.85rem; } .flow-prose { padding-left:.75rem; } .study-block-header { display:block; } }
 """
 
 
@@ -6102,7 +6242,9 @@ def render_study_html(
     source_gate: Mapping[str, Any] | None = None,
 ) -> Path:
     out = Path(out_dir)
-    position_list = list(positions.get("positions") or [])
+    engine_by_id = _engine_analysis_by_diagram_id(out)
+    position_list = [_attach_engine_analysis_to_record(dict(item), engine_by_id) for item in positions.get("positions") or []]
+    positions = {**positions, "positions": position_list}
     artifact_manifest = _build_artifact_manifest(
         artifact_type=FINAL_READER_ARTIFACT_TYPE,
         pipeline_mode="pdf_two_crop_reader",
@@ -6148,6 +6290,15 @@ def render_study_html(
     code, pre {{ font-family: 'Courier New', monospace; }}
     pre {{ white-space:pre-wrap; background:#f6eddd; padding:.75rem; border-radius:12px; }}
     button {{ border:1px solid var(--line); border-radius:999px; background:#fff8ed; padding:.42rem .75rem; font-weight:800; cursor:pointer; }}
+    button:focus-visible, summary:focus-visible, a:focus-visible, input:focus-visible {{ outline:3px solid #b96920; outline-offset:3px; }}
+    .engine-panel, .try-self-panel, .solution-panel, .original-source {{ border:1px solid var(--line); border-radius:14px; background:#fffaf2; margin:.65rem 0; padding:0 .75rem; }}
+    .engine-panel summary, .try-self-panel summary, .solution-panel summary, .original-source summary {{ cursor:pointer; min-height:2.75rem; font-weight:900; color:var(--accent); }}
+    .engine-panel-body {{ padding:0 0 .75rem; }}
+    .engine-kpis {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:.5rem; }}
+    .engine-kpis span {{ border:1px solid #e5d5bd; border-radius:12px; background:#fffdf8; padding:.55rem .6rem; overflow-wrap:anywhere; }}
+    .engine-kpis strong {{ display:block; color:#76634e; font-size:.76rem; text-transform:uppercase; letter-spacing:.04em; }}
+    .engine-empty, .engine-reason, .engine-cache, .engine-pv {{ margin:.45rem 0; color:#76634e; }}
+    .study-actions {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:.55rem; margin:.75rem 0; }}
     .artifact-provenance {{ background:#fff8ed; border:1px solid var(--line); border-left:6px solid var(--accent); border-radius:14px; padding:.85rem 1rem; margin:0 0 1rem; }}
     .artifact-provenance h2 {{ margin:0 0 .35rem; font-size:1rem; }}
     .artifact-provenance p {{ margin:.2rem 0; }}
@@ -6388,10 +6539,11 @@ def _study_html_document(*, title: str, body: str, qa_report: dict[str, Any]) ->
   <style>
     :root {{ --ink:#201713; --paper:#fffaf0; --paper-soft:#fff7e8; --wash:#efe2cd; --line:#d8c5aa; --muted:#76634e; --ok:#176b3a; --warn:#985b00; --bad:#9b1c1c; --accent:#7a3e13; }}
     * {{ box-sizing:border-box; }}
+    html, body {{ max-width:100%; overflow-x:hidden; }}
     body {{ margin:0; font-family:Georgia, 'Times New Roman', serif; line-height:1.55; color:var(--ink); background:var(--wash); }}
     a {{ color:#7a3e13; }}
     .hero {{ max-width:1120px; margin:0 auto; padding:2rem 1rem 1rem; }}
-    .hero-copy {{ max-width:62ch; margin:.25rem 0 1.1rem; color:var(--muted); font-size:1.05rem; }}
+    .hero-copy {{ max-width:62ch; margin:.25rem 0 1.1rem; color:var(--muted); font-size:1.05rem; overflow-wrap:anywhere; }}
     .eyebrow {{ margin:0 0 .35rem; color:#8a4a18; font-weight:800; letter-spacing:.06em; text-transform:uppercase; font-size:.8rem; }}
     h1 {{ margin:.1rem 0 1rem; font-size:clamp(2rem, 5vw, 4rem); line-height:1.02; }}
     h2, h3 {{ line-height:1.18; }}
@@ -6405,9 +6557,9 @@ def _study_html_document(*, title: str, body: str, qa_report: dict[str, Any]) ->
     .audit-summary summary {{ color:var(--accent); }}
     .audit-grid {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:.45rem; padding:0 0 .9rem; }}
     .audit-grid span {{ color:var(--muted); font-size:.88rem; overflow-wrap:anywhere; }}
-    .toc, .book-flow {{ max-width:1120px; margin:0 auto; padding:0 1rem 2rem; }}
+    .toc, .book-flow {{ max-width:1120px; width:100%; min-width:0; margin:0 auto; padding:0 1rem 2rem; }}
     .toc {{ background:#fff6e8; border:1px solid var(--line); border-radius:20px; padding:1rem 1.25rem; margin-bottom:1rem; }}
-    .page {{ background:var(--paper); border:1px solid var(--line); border-radius:22px; padding:1.25rem; margin:1.25rem 0; box-shadow:0 18px 42px rgba(61, 38, 12, .10); }}
+    .page {{ min-width:0; max-width:100%; background:var(--paper); border:1px solid var(--line); border-radius:22px; padding:1.25rem; margin:1.25rem 0; box-shadow:0 18px 42px rgba(61, 38, 12, .10); }}
     .study-page {{ background:linear-gradient(180deg, #fffaf0 0%, #fff4e2 100%); box-shadow:0 10px 30px rgba(61,38,12,.07); }}
     .page-header {{ display:flex; justify-content:space-between; gap:1rem; align-items:baseline; border-bottom:1px solid var(--line); margin-bottom:1rem; }}
     .page-header span {{ color:var(--muted); font-size:.92rem; }}
@@ -6416,26 +6568,37 @@ def _study_html_document(*, title: str, body: str, qa_report: dict[str, Any]) ->
     .book-text-block, .study-prose {{ margin:.65rem 0; max-width:68ch; }}
     .book-heading {{ margin:1rem 0 .45rem; color:#5d3418; }}
     .diagram-card, .notation-fragment {{ border:1px solid var(--line); border-radius:16px; padding:.9rem; background:#fffdf7; margin:1rem 0; }}
-    .study-block {{ max-width:100%; background:var(--paper-soft); }}
+    .study-block {{ min-width:0; max-width:100%; background:var(--paper-soft); }}
     .study-block-grid {{ display:grid; grid-template-columns:minmax(220px, 280px) minmax(0, 1fr); gap:1rem; align-items:start; }}
     .study-diagram {{ min-width:0; }}
     .study-content {{ min-width:0; }}
     .study-meta {{ display:flex; flex-wrap:wrap; gap:.45rem; align-items:center; margin:.25rem 0 .75rem; color:var(--muted); font-size:.9rem; }}
+    .study-meta > * {{ min-width:0; overflow-wrap:anywhere; }}
     .study-notation, .study-review {{ min-width:0; }}
     .diagram-compare {{ display:grid; grid-template-columns:1fr; gap:.75rem; align-items:start; }}
     .diagram-compare figure {{ margin:0; }}
     .diagram-compare figcaption {{ font-size:.86rem; color:var(--muted); margin:.25rem 0; }}
     code.fen {{ display:block; overflow-wrap:anywhere; background:#f5ead8; border:1px solid #e5d5bd; border-radius:10px; padding:.55rem; }}
     pre.pgn {{ background:#f1e2c9; }}
-    .status {{ display:inline-flex; border-radius:999px; padding:.2rem .55rem; border:1px solid var(--line); font-weight:800; }}
+    .status {{ display:inline-flex; max-width:100%; border-radius:999px; padding:.2rem .55rem; border:1px solid var(--line); font-weight:800; white-space:normal; overflow-wrap:anywhere; }}
     .status.accepted {{ color:var(--ok); }}
     .status.needs_review, .status.missing_fen, .status.missing_pgn, .status.low_confidence, .status.unlinked_solution {{ color:var(--warn); }}
     .status.illegal_pgn {{ color:var(--bad); }}
     pre, code {{ font-family:'Courier New', monospace; }}
     pre {{ white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; max-width:100%; background:#f5ead8; border-radius:12px; padding:.75rem; border:1px solid #e5d5bd; }}
     summary {{ cursor:pointer; font-weight:800; min-height:2.75rem; display:flex; align-items:center; }}
+    summary:focus-visible, a:focus-visible, button:focus-visible {{ outline:3px solid #b96920; outline-offset:3px; }}
+    .engine-panel, .try-self-panel, .solution-panel, .original-source {{ border:1px solid var(--line); border-radius:14px; background:#fffaf2; margin:.65rem 0; padding:0 .75rem; }}
+    .engine-panel summary, .try-self-panel summary, .solution-panel summary, .original-source summary {{ color:var(--accent); font-weight:900; }}
+    .engine-panel-body {{ padding:0 0 .75rem; }}
+    .engine-kpis {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:.5rem; }}
+    .engine-kpis span {{ border:1px solid #e5d5bd; border-radius:12px; background:#fffdf8; padding:.55rem .6rem; overflow-wrap:anywhere; }}
+    .engine-kpis strong {{ display:block; color:var(--muted); font-size:.76rem; text-transform:uppercase; letter-spacing:.04em; }}
+    .engine-empty, .engine-reason, .engine-cache, .engine-pv {{ margin:.45rem 0; color:var(--muted); }}
+    .study-actions {{ min-width:0; display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:.55rem; margin:.75rem 0; }}
+    .study-actions > * {{ min-width:0; }}
     @media(max-width:840px) {{ .scorebar {{ grid-template-columns:repeat(2, minmax(0, 1fr)); }} .study-block-grid {{ grid-template-columns:1fr; }} }}
-    @media(max-width:720px) {{ .page {{ border-radius:0; margin:0 0 1rem; }} .page-header {{ display:block; }} .scorebar {{ grid-template-columns:1fr; }} .toc, .book-flow, .hero {{ padding-left:.85rem; padding-right:.85rem; }} }}
+    @media(max-width:720px) {{ .page {{ border-radius:0; margin:0 0 1rem; }} .page-header {{ display:block; }} .scorebar, .study-actions {{ grid-template-columns:1fr; }} .toc, .book-flow, .hero {{ padding-left:.85rem; padding-right:.85rem; }} }}
   </style>
 </head>
 <body data-audit-status="{html.escape(str(qa_report.get('status') or ''), quote=True)}">
@@ -6583,16 +6746,31 @@ def _study_position_article(item: dict[str, Any]) -> str:
         else '<p class="study-review">PGN needs review or is missing.</p>'
     )
     rendered_block = rendered_html if rendered_html else ""
+    engine_html = _engine_analysis_panel_html(item.get("engine_analysis"), mode="study")
+    solution_html = f"""<details class="solution-panel">
+        <summary>Pokaż rozwiązanie książki</summary>
+        {pgn_html}
+      </details>"""
     return f"""<article class="study-block diagram-card" data-status="{html.escape(status, quote=True)}" data-diagram-id="{html.escape(str(item.get("id") or ""), quote=True)}">
   <div class="study-block-grid">
     <aside class="study-diagram">
-      <div class="diagram-compare">{crop_html}{marker_crop_html}{debug_overlay_html}{rendered_block}</div>
+      <details class="original-source" open>
+        <summary>Podgląd oryginału</summary>
+        <div class="diagram-compare">{crop_html}{marker_crop_html}{debug_overlay_html}{rendered_block}</div>
+      </details>
     </aside>
     <div class="study-content">
       <h3>{label}</h3>
       <p class="study-meta"><span class="status {html.escape(status, quote=True)}">{html.escape(status)}</span><span>Page {source_page}</span><span>{side_to_move} to move</span><span>{html.escape(str(item.get('side_marker_status') or 'marker_missing'))}</span></p>
+      <div class="study-actions">
+        <details class="try-self-panel">
+          <summary>Spróbuj sam</summary>
+          <p>Zatrzymaj się przy diagramie i wybierz własny kandydacki ruch przed odkryciem analizy.</p>
+        </details>
+        {engine_html}
+        {solution_html}
+      </div>
       {fen_html}
-      {pgn_html}
     </div>
   </div>
 </article>"""
@@ -6641,6 +6819,7 @@ def _position_card_html(item: dict[str, Any]) -> str:
         if pgn and status == "accepted" and _pgn_replay_clean(pgn)
         else "<p>PGN: needs review or missing.</p>"
     )
+    engine_html = _engine_analysis_panel_html(item.get("engine_analysis"), mode="audit", open_by_default=False)
     return f"""<article class="card" data-position-status="{html.escape(status, quote=True)}"{marker_attr} data-has-board-crop="{str(has_board_crop).lower()}" data-has-side-marker-crop="{str(has_side_marker_crop).lower()}">
   <div class="diagram">{crop_html}{marker_html}{overlay_html}<hr>{rendered_html}</div>
   <div>
@@ -6651,6 +6830,7 @@ def _position_card_html(item: dict[str, Any]) -> str:
     <p>Status: <span class="status {html.escape(status, quote=True)}">{html.escape(status)}</span></p>
     {fen_html}
     {pgn_html}
+    {engine_html}
     <div class="debug"><h3>Marker</h3><pre>{html.escape(json.dumps({'status': item.get('side_marker_status'), 'symbol': item.get('side_marker_symbol'), 'bbox': item.get('side_marker_bbox'), 'trace': item.get('side_marker_assignment_trace')}, ensure_ascii=False, indent=2))}</pre><h3>Warnings</h3><pre>{html.escape(json.dumps(item.get("warnings", []), ensure_ascii=False, indent=2))}</pre></div>
   </div>
 </article>"""

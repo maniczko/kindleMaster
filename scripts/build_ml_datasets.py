@@ -168,6 +168,20 @@ def build_ml_datasets(
         "online_learning": False,
     }
     completeness_path.write_text(json.dumps(completeness, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        from learning_ledger import record_dataset_built
+
+        ledger_record = record_dataset_built(dataset_payload=completeness, repo_root=root)
+        completeness["learning_ledger"] = {
+            "status": "recorded",
+            "event_id": str(ledger_record.get("event_id", "") or ""),
+            "events_path": str(ledger_record.get("events_path", "") or ""),
+            "index_path": str(ledger_record.get("index_path", "") or ""),
+        }
+        completeness_path.write_text(json.dumps(completeness, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as error:
+        completeness["learning_ledger"] = {"status": "failed", "error": str(error)}
+        completeness_path.write_text(json.dumps(completeness, ensure_ascii=False, indent=2), encoding="utf-8")
     if fail_on_collisions and readiness["status"] == "blocked_feature_collision":
         completeness["error"] = "feature_collision"
     return completeness

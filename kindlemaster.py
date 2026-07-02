@@ -87,6 +87,7 @@ QUICK_TESTS = [
     "test_ml_features.py",
     "test_ml_route_model.py",
     "test_ml_datasets.py",
+    "test_learning_ledger.py",
     "test_ml_training_reporting.py",
     "test_ml_quality_verifier.py",
     "test_publication_analysis.py",
@@ -1172,6 +1173,18 @@ def _run_ml(args: argparse.Namespace) -> int:
             report_path=args.report or None,
             min_examples_per_class=args.min_examples_per_class,
         )
+        try:
+            from learning_ledger import record_model_trained
+
+            ledger_record = record_model_trained(training_payload=payload, dataset_path=args.dataset)
+            payload["learning_ledger"] = {
+                "status": "recorded",
+                "event_id": str(ledger_record.get("event_id", "") or ""),
+                "events_path": str(ledger_record.get("events_path", "") or ""),
+                "index_path": str(ledger_record.get("index_path", "") or ""),
+            }
+        except Exception as error:
+            payload["learning_ledger"] = {"status": "failed", "error": str(error)}
         _print_json(payload)
         return 0 if payload.get("status") == "candidate_trained" else 1
     if args.ml_command == "evaluate":
@@ -1250,6 +1263,18 @@ def _run_ml(args: argparse.Namespace) -> int:
             model_path=args.model,
             corpus_report_path=args.corpus_report,
         )
+        try:
+            from learning_ledger import record_model_promoted
+
+            ledger_record = record_model_promoted(promotion_payload=payload)
+            payload["learning_ledger"] = {
+                "status": "recorded",
+                "event_id": str(ledger_record.get("event_id", "") or ""),
+                "events_path": str(ledger_record.get("events_path", "") or ""),
+                "index_path": str(ledger_record.get("index_path", "") or ""),
+            }
+        except Exception as error:
+            payload["learning_ledger"] = {"status": "failed", "error": str(error)}
         _print_json(payload)
         return 0 if payload.get("status") == "promoted" else 1
     _print_json({"status": "failed", "error": "Missing ml subcommand. Use dataset, feedback, feedback-export, train, evaluate, evaluate-fen-experiment, evaluate-fen-alternatives, or promote."})
@@ -2093,6 +2118,7 @@ def _run_convert(
     source_type = source_suffix.lstrip(".") if source_suffix in {".pdf", ".docx"} else None
     outcome = run_document_conversion(
         ConversionRequest(
+            conversion_id=_cli_conversion_id(resolved_input),
             source_path=str(resolved_input),
             source_type=source_type,
             original_filename=resolved_input.name,
@@ -2122,6 +2148,17 @@ def _run_convert(
         report_path.write_text(_json_text(payload), encoding="utf-8")
     _print_json(payload)
     return 0
+
+
+def _cli_conversion_id(input_path: Path) -> str:
+    try:
+        stat = input_path.stat()
+        seed = f"{input_path.name}|{stat.st_size}|{stat.st_mtime_ns}"
+    except OSError:
+        seed = input_path.name
+    from hashlib import sha256
+
+    return f"cli_{sha256(seed.encode('utf-8')).hexdigest()[:16]}"
 
 
 if __name__ == "__main__":

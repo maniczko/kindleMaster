@@ -73,6 +73,14 @@ type ChessReadinessState = {
   metrics: Array<{ label: string; value: string; tone?: "good" | "warning" | "muted" }>;
   blockers: string[];
 };
+type EngineAnalysisGateState = {
+  present: boolean;
+  availability: "available" | "partially_available" | "unavailable";
+  label: string;
+  reason: string;
+  engineReaderAvailable: boolean;
+  metrics: Array<{ label: string; value: string; tone?: "good" | "warning" | "muted" }>;
+};
 
 const FINAL_CHESS_READER_ARTIFACT_TYPE = "final_pdf_two_crop_reader";
 
@@ -117,6 +125,9 @@ interface ConversionJobPayload {
   empty_img_src_count?: unknown;
   diagrams_total?: unknown;
   fen_accepted?: unknown;
+  engine_analysis_gate?: Record<string, unknown>;
+  engine_analysis_availability?: string;
+  engine_reader_available?: boolean;
   progress?: Record<string, unknown>;
   quality_state?: QualityStatePayload;
   auto_repair?: Record<string, unknown>;
@@ -1921,6 +1932,7 @@ function FileDetailsWorkspace({
   const chessDownloads = chessDownloadFilesState(job);
   const chessReader = chessDownloads.reader;
   const chessReadiness = chessReadinessState(job, chessDownloads);
+  const engineAnalysisGate = engineAnalysisGateState(job);
   const sourcePreviewUrl = resolvePdfArtifactUrl(job);
   const cropSourceUrl = job?.job_id ? `/convert/artifact/${encodeURIComponent(job.job_id)}/input` : sourcePreviewUrl;
   const hasPdfDeliveryArtifact = Boolean(sourcePreviewUrl || jobHasPdfDeliveryArtifact(job));
@@ -2223,6 +2235,7 @@ function FileDetailsWorkspace({
         </Card>
 
         {chessReadiness.present ? <ChessReadinessPanel readiness={chessReadiness} /> : null}
+        {engineAnalysisGate.present ? <EngineAnalysisGatePanel gate={engineAnalysisGate} /> : null}
 
         <Card>
           <CardHeader>
@@ -2406,6 +2419,35 @@ function ChessReadinessPanel({ readiness }: { readiness: ChessReadinessState }) 
             </span>
           </div>
         ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+function EngineAnalysisGatePanel({ gate }: { gate: EngineAnalysisGateState }) {
+  const badgeVariant = gate.availability === "available" ? "success" : gate.availability === "partially_available" ? "warning" : "secondary";
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Engine analysis</CardTitle>
+        <CardDescription>
+          {gate.label}
+          {gate.reason ? ` Reason: ${gate.reason}` : ""}
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="km-chess-readiness-header">
+          <Badge variant={badgeVariant}>{gate.availability.replace("_", " ")}</Badge>
+          <span>{gate.engineReaderAvailable ? "Analiza moĹĽe byÄ‡ pokazana w readerze." : "Reader nie pokazuje aktywnej analizy silnika."}</span>
+        </div>
+        <div className="km-chess-readiness-grid" aria-label="Metryki dostÄ™pnoĹ›ci analizy silnika">
+          {gate.metrics.map((metric) => (
+            <div className={`km-chess-readiness-metric is-${metric.tone || "muted"}`} key={metric.label}>
+              <span>{metric.label}</span>
+              <strong>{metric.value}</strong>
+            </div>
+          ))}
+        </div>
       </CardContent>
     </Card>
   );
@@ -3343,6 +3385,41 @@ function chessReadinessState(job: ConversionJobPayload | null, downloads: ChessD
       { label: "Trusted marker", value: String(trustedMarkers), tone: trustedMarkers > 0 ? "good" : "warning" },
       { label: "Side unknown", value: String(sideUnknown), tone: sideUnknown > 0 ? "warning" : "good" },
       { label: "Marker crop", value: String(sideMarkerCrops), tone: sideMarkerCrops > 0 ? "good" : "warning" },
+    ],
+  };
+}
+
+function engineAnalysisGateState(job: ConversionJobPayload | null): EngineAnalysisGateState {
+  const quality = readRecord(job?.quality_state);
+  const conversion = readRecord((job as Record<string, unknown> | null)?.conversion);
+  const gate = readRecord(job?.engine_analysis_gate || quality.engine_analysis_gate || conversion.engine_analysis_gate);
+  const availabilityRaw = String(gate.availability || job?.engine_analysis_availability || "").trim().toLowerCase();
+  const availability = availabilityRaw === "available" || availabilityRaw === "partially_available" ? availabilityRaw : "unavailable";
+  const topReasons = Array.isArray(gate.top_reasons) ? gate.top_reasons : [];
+  const firstReason = readRecord(topReasons[0]);
+  const reason = String(firstReason.reason || gate.reason || "").trim();
+  const analyzed = firstIntegerValue(gate.analyzed_count);
+  const unavailable = firstIntegerValue(gate.unavailable_count);
+  const eligible = firstIntegerValue(gate.eligible_count);
+  const diagrams = firstIntegerValue(gate.diagram_count);
+  const engineReaderAvailable = optionalBoolean(gate.engine_reader_available) ?? Boolean(job?.engine_reader_available) ?? analyzed > 0;
+  const present = Boolean(Object.keys(gate).length || job?.engine_analysis_availability || job?.engine_reader_available);
+  const label = availability === "available"
+    ? "Engine analysis: available"
+    : availability === "partially_available"
+      ? "Engine analysis: partially available"
+      : "Engine analysis: unavailable";
+  return {
+    present,
+    availability,
+    label,
+    reason,
+    engineReaderAvailable,
+    metrics: [
+      { label: "Diagrams", value: String(diagrams), tone: diagrams > 0 ? "good" : "muted" },
+      { label: "Eligible", value: String(eligible), tone: eligible > 0 ? "good" : "warning" },
+      { label: "Analyzed", value: String(analyzed), tone: analyzed > 0 ? "good" : "warning" },
+      { label: "Unavailable", value: String(unavailable), tone: unavailable > 0 ? "warning" : "good" },
     ],
   };
 }

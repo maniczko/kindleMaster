@@ -4028,6 +4028,11 @@ def _engine_analysis_panel_html(
         reason = str(row.get("skip_reason") or status or "analysis_missing")
         body = f"""<p class="engine-empty">Analiza silnika niedostępna dla tej pozycji.</p>
         <p class="engine-reason">Powód: <code>{html.escape(reason)}</code></p>"""
+        if mode != "audit":
+            return f"""<div class="engine-panel engine-panel-{html.escape(mode, quote=True)} engine-panel-unavailable" data-engine-status="{html.escape(status, quote=True)}">
+  <strong>Analiza silnika niedostępna</strong>
+  <div class="engine-panel-body">{body}</div>
+</div>"""
     audit_details = ""
     if mode == "audit" and row:
         audit_details = f"""<pre class="engine-technical">{html.escape(json.dumps({

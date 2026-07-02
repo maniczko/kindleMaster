@@ -1427,6 +1427,17 @@ describe("Premium React shell", () => {
                 artifact_type: "final_pdf_two_crop_reader",
                 final_reader_available: false,
                 final_reader_blockers: ["mass_side_to_move_unknown", "empty_img_src"],
+                engine_analysis_gate: {
+                  schema: "kindlemaster.chess_engine.gate.v1",
+                  diagram_count: 4,
+                  eligible_count: 0,
+                  analyzed_count: 0,
+                  unavailable_count: 4,
+                  engine_available: false,
+                  engine_reader_available: false,
+                  availability: "unavailable",
+                  top_reasons: [{ reason: "fen_not_accepted", count: 4 }],
+                },
                 quality_state: { release_verdict: "ready_with_review", premium_ready: false },
               },
             ],
@@ -1474,6 +1485,11 @@ describe("Premium React shell", () => {
     expect(readinessMetrics.getByText("FEN accepted")).toBeInTheDocument();
     expect(readinessMetrics.getByText("Trusted marker")).toBeInTheDocument();
     expect(readinessMetrics.getAllByText("0").length).toBeGreaterThanOrEqual(4);
+    const engineGate = within(screen.getByRole("heading", { name: "Engine analysis" }).closest(".km-card") as HTMLElement);
+    expect(engineGate.getByText(/Engine analysis: unavailable/)).toBeInTheDocument();
+    expect(engineGate.getByText(/Reason: fen_not_accepted/)).toBeInTheDocument();
+    expect(engineGate.getByText("Reader nie pokazuje aktywnej analizy silnika.")).toBeInTheDocument();
+    expect(within(engineGate.getByLabelText("Metryki dostÄ™pnoĹ›ci analizy silnika")).getByText("Unavailable")).toBeInTheDocument();
     expect(finalFiles.queryByRole("link", { name: /HTML PGN\/FEN/ })).not.toBeInTheDocument();
     const diagnostics = within(screen.getByLabelText("Diagnostyka"));
     expect(diagnostics.getByRole("link", { name: /PDF layout preview \(audyt layoutu\)/ })).toHaveAttribute(

@@ -912,6 +912,9 @@ def _store_extra_conversion_artifacts(
             metadata["status"] = "available"
             metadata["message"] = CHESS_PGN_AVAILABLE_MESSAGE
             metadata["label"] = "PGN"
+        if key == "engine_analysis_gate":
+            metadata["content_type"] = "application/json; charset=utf-8"
+            metadata["label"] = "Engine analysis gate"
         stored[key] = metadata
     stored = _create_semantic_chess_reader_sidecar(job_id, stored, job=job)
     return stored
@@ -950,6 +953,94 @@ def _read_json_file(path: Path | None) -> dict:
     except (OSError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _normalize_engine_analysis_gate(payload: Mapping[str, object] | None) -> dict[str, object]:
+    if not isinstance(payload, Mapping) or not payload:
+        return {}
+    top_reasons = payload.get("top_reasons") if isinstance(payload.get("top_reasons"), list) else []
+    return {
+        "schema": str(payload.get("schema") or "kindlemaster.chess_engine.gate.v1"),
+        "diagram_count": int(payload.get("diagram_count") or 0),
+        "eligible_count": int(payload.get("eligible_count") or 0),
+        "analyzed_count": int(payload.get("analyzed_count") or 0),
+        "unavailable_count": int(payload.get("unavailable_count") or 0),
+        "engine_available": bool(payload.get("engine_available")),
+        "top_reasons": [dict(item) for item in top_reasons if isinstance(item, Mapping)],
+        "engine_reader_available": bool(payload.get("engine_reader_available")),
+        "availability": str(payload.get("availability") or ("available" if payload.get("engine_reader_available") else "unavailable")),
+        "message": str(payload.get("message") or ""),
+    }
+
+
+def _candidate_engine_analysis_gate_paths(path: Path | None) -> list[Path]:
+    if path is None:
+        return []
+    candidates: list[Path] = []
+    if path.name == "engine_analysis_gate.json":
+        candidates.append(path)
+    parent = path.parent
+    candidates.extend(
+        [
+            parent / "reports" / "chess_engine" / "engine_analysis_gate.json",
+            parent / "chess_engine" / "engine_analysis_gate.json",
+            parent / "engine_analysis_gate.json",
+        ]
+    )
+    if parent.name == "reports":
+        candidates.append(parent / "chess_engine" / "engine_analysis_gate.json")
+    job_dir = _artifact_job_dir_from_path(path)
+    if job_dir is not None:
+        candidates.extend(
+            [
+                job_dir / "reports" / "chess_engine" / "engine_analysis_gate.json",
+                job_dir / "semantic_chess_html" / "reports" / "chess_engine" / "engine_analysis_gate.json",
+                job_dir / "report" / "engine_analysis_gate.json",
+            ]
+        )
+    return candidates
+
+
+def _read_engine_analysis_gate_from_path(path: Path | None) -> dict[str, object]:
+    for candidate in _candidate_engine_analysis_gate_paths(path):
+        gate = _normalize_engine_analysis_gate(_read_json_file(candidate))
+        if gate:
+            return gate
+    return {}
+
+
+def _engine_analysis_gate_from_job(job: Mapping[str, object]) -> dict[str, object]:
+    containers: list[Mapping[str, object]] = []
+    for value in (
+        job,
+        job.get("metadata"),
+        job.get("quality_state"),
+        job.get("quality_state_snapshot"),
+        job.get("conversion"),
+    ):
+        if isinstance(value, Mapping):
+            containers.append(value)
+    for container in list(containers):
+        nested = container.get("metadata")
+        if isinstance(nested, Mapping):
+            containers.append(nested)
+    for container in containers:
+        for key in ("engine_analysis_gate", "engine_analysis_availability", "chess_engine_analysis_gate"):
+            gate = _normalize_engine_analysis_gate(container.get(key) if isinstance(container.get(key), Mapping) else None)
+            if gate:
+                return gate
+    artifacts = job.get("artifacts") if isinstance(job.get("artifacts"), Mapping) else {}
+    gate_artifact = artifacts.get("engine_analysis_gate") if isinstance(artifacts.get("engine_analysis_gate"), Mapping) else None
+    gate = _read_engine_analysis_gate_from_path(_resolve_local_artifact_path(dict(gate_artifact or {})))
+    if gate:
+        return gate
+    for artifact in artifacts.values():
+        if not isinstance(artifact, Mapping):
+            continue
+        gate = _read_engine_analysis_gate_from_path(_resolve_local_artifact_path(dict(artifact)))
+        if gate:
+            return gate
+    return {}
 
 
 def _candidate_chess_reader_manifest_paths(path: Path | None) -> list[Path]:
@@ -2433,6 +2524,9 @@ def _build_job_quality_state(job_id: str, job: dict) -> dict:
         artifacts.update(dict(job.get("artifacts", {}) or {}))
         quality_state["artifacts"] = artifacts
         quality_state["auto_repair"] = _build_job_auto_repair_state(job)
+        engine_gate = _engine_analysis_gate_from_job({**job, "quality_state_snapshot": quality_state})
+        if engine_gate:
+            quality_state["engine_analysis_gate"] = engine_gate
         return quality_state
     payload = dict(job)
     output_size_bytes = _read_output_size_bytes(job)
@@ -2447,6 +2541,9 @@ def _build_job_quality_state(job_id: str, job: dict) -> dict:
     artifacts.update(dict(job.get("artifacts", {}) or {}))
     quality_state["artifacts"] = artifacts
     quality_state["auto_repair"] = _build_job_auto_repair_state(job)
+    engine_gate = _engine_analysis_gate_from_job({**job, "quality_state": quality_state})
+    if engine_gate:
+        quality_state["engine_analysis_gate"] = engine_gate
     return quality_state
 
 
@@ -5123,6 +5220,7 @@ def convert_status(job_id: str):
     if not job.get("cloud"):
         job = _ensure_quality_report_artifacts(job_id, job)
     chess_delivery_payload = _enrich_job_chess_delivery_artifacts(job_id, job)
+    engine_analysis_gate = _engine_analysis_gate_from_job(job)
     download_state = _build_job_download_state(job_id, job)
     download_url = download_state.download_url
     conversion_payload = None
@@ -5136,6 +5234,11 @@ def convert_status(job_id: str):
             conversion_payload["output_size_bytes"] = output_size_bytes
         if chess_delivery_payload:
             conversion_payload.update(chess_delivery_payload)
+        if engine_analysis_gate:
+            conversion_payload["engine_analysis_gate"] = engine_analysis_gate
+    quality_state = _build_job_quality_state(job_id, job)
+    if engine_analysis_gate:
+        quality_state["engine_analysis_gate"] = engine_analysis_gate
     response = jsonify(
         {
             "success": True,
@@ -5155,8 +5258,11 @@ def convert_status(job_id: str):
             "poll_after_ms": _recommended_poll_interval_ms(job),
             "elapsed_seconds": _compute_job_elapsed_seconds(job),
             "output_size_bytes": _read_output_size_bytes(job) if job.get("status") == "ready" else None,
-            "quality_state": _build_job_quality_state(job_id, job),
+            "quality_state": quality_state,
             "quality_state_url": f"/convert/quality/{job_id}",
+            "engine_analysis_gate": engine_analysis_gate,
+            "engine_analysis_availability": engine_analysis_gate.get("availability", "") if engine_analysis_gate else "",
+            "engine_reader_available": bool(engine_analysis_gate.get("engine_reader_available")) if engine_analysis_gate else False,
             "auto_repair": _build_job_auto_repair_state(job),
             "email_delivery": _build_job_email_delivery_state(job),
             "runtime": dict(job.get("runtime", {}) or {}),

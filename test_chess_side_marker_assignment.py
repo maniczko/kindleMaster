@@ -24,9 +24,13 @@ from converter import ConversionConfig, chess_fen_html_attrs, chess_side_marker_
 from pymupdf_chess_extractor import (
     ScanChessSideToMoveEvidence,
     _apply_scan_chess_side_to_move_context_evidence,
+    _apply_scan_chess_two_crop_quality_gate,
     _chess_diagram_record_from_image,
     _infer_scan_chess_side_to_move_marker_evidence,
+    _scan_chess_marker_crop_quality,
+    _scan_chess_marker_search_zones,
     _scan_chess_side_marker_probe_payloads,
+    _scan_chess_two_crop_review_artifacts,
     classify_scan_chess_side_marker_crop,
     extract_scanned_chess_pdf_with_support,
 )
@@ -86,6 +90,89 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertEqual(missing_result["side"], "")
         self.assertEqual(conflict_result["status"], "side_to_move_marker_local_conflict")
         self.assertEqual(conflict_result["side"], "")
+
+    def test_marker_search_zones_follow_board_bbox_contract(self) -> None:
+        board_bbox = [100.0, 120.0, 260.0, 280.0]
+        zones = _scan_chess_marker_search_zones(board_bbox, (420, 420))
+
+        self.assertEqual(set(zones), {"top", "right", "bottom", "left"})
+        self.assertEqual(zones["top"], [90.0, 90.0, 270.0, 120.0])
+        self.assertEqual(zones["right"], [260.0, 110.0, 290.0, 290.0])
+        self.assertEqual(zones["bottom"], [90.0, 280.0, 270.0, 310.0])
+        self.assertEqual(zones["left"], [70.0, 110.0, 100.0, 290.0])
+
+    def test_two_crop_artifacts_separate_board_marker_and_search_preview(self) -> None:
+        page = Image.new("RGB", (420, 440), "white")
+        draw = ImageDraw.Draw(page)
+        board_bbox = [100.0, 170.0, 300.0, 370.0]
+        draw.rectangle(board_bbox, outline="black", width=3)
+        draw.polygon([(308, 222), (336, 222), (322, 250)], fill="black")
+
+        fields, files = _scan_chess_two_crop_review_artifacts(
+            page,
+            filename="diagram-1.png",
+            board_bbox=board_bbox,
+            side_marker_bbox=[302.0, 214.0, 342.0, 260.0],
+        )
+        paths = {str(item.get("path") or "") for item in files}
+
+        self.assertEqual(fields["board_crop_quality"], "pass")
+        self.assertEqual(fields["marker_crop_quality"], "pass")
+        self.assertEqual(fields["side_to_move_detected"], "black")
+        self.assertEqual(fields["selected_marker_zone"], "right")
+        self.assertEqual(set(fields["marker_search_zones"]), {"top", "right", "bottom", "left"})
+        self.assertEqual(fields["side_marker_review_crop_kind"], "detected_marker_bbox")
+        self.assertFalse(fields["manual_review_required"])
+        self.assertIn(fields["board_crop_path"], paths)
+        self.assertIn(fields["side_marker_crop_path"], paths)
+        self.assertIn(fields["side_marker_search_crop_path"], paths)
+
+    def test_marker_crop_quality_blocks_edge_strip_and_multiple_markers(self) -> None:
+        page = Image.new("RGB", (420, 440), "white")
+        draw = ImageDraw.Draw(page)
+        board_bbox = [100.0, 170.0, 300.0, 370.0]
+        draw.rectangle(board_bbox, outline="black", width=3)
+        draw.line((300, 170, 300, 370), fill="black", width=4)
+        edge_quality = _scan_chess_marker_crop_quality(page, [296.0, 170.0, 306.0, 370.0], board_bbox)
+
+        multi = Image.new("RGB", (180, 100), "white")
+        multi_draw = ImageDraw.Draw(multi)
+        multi_draw.line([(42, 18), (20, 70), (64, 70), (42, 18)], fill="black", width=4)
+        multi_draw.polygon([(132, 18), (110, 70), (154, 70)], fill="black")
+        page.paste(multi, (40, 20))
+        multi_quality = _scan_chess_marker_crop_quality(page, [40.0, 20.0, 220.0, 120.0], board_bbox)
+
+        self.assertEqual(edge_quality["decision"], "fail")
+        self.assertIn("mostly_board_edge", edge_quality["reasons"])
+        self.assertEqual(multi_quality["decision"], "fail")
+        self.assertIn("multiple_candidates", multi_quality["reasons"])
+
+    def test_crop_quality_gate_blocks_trusted_side_when_marker_crop_fails(self) -> None:
+        payload = {
+            "fen": VALID_FEN.replace(" w ", " b "),
+            "full_fen": VALID_FEN.replace(" w ", " b "),
+            "placement": VALID_PLACEMENT,
+            "confidence": 0.99,
+            "side_to_move": "b",
+            "side_to_move_status": "explicit",
+            "side_to_move_evidence": "marker",
+            "warnings": ["side_to_move_marker_detected"],
+            "requires_review": False,
+            "board_detected": True,
+        }
+        fields = {
+            "board_crop_quality": "pass",
+            "marker_crop_quality": "fail",
+            "marker_crop_fail_reason": ["mostly_board_edge"],
+        }
+
+        gated = _apply_scan_chess_two_crop_quality_gate(payload, fields)
+
+        self.assertEqual(gated["fen"], "")
+        self.assertTrue(gated["requires_review"])
+        self.assertEqual(gated["side_to_move"], "unknown")
+        self.assertEqual(gated["side_marker_status"], "marker_missing")
+        self.assertIn("marker_crop_quality_failed", gated["warnings"])
 
     def test_trusted_marker_metadata_flows_to_html_attrs_and_badge(self) -> None:
         payload = {

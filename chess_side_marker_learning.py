@@ -360,7 +360,26 @@ def _queue_row(record: Mapping[str, Any]) -> dict[str, Any]:
         "system_side_marker_confidence": record.get("side_marker_confidence") or "",
         "board_crop_path": str(record.get("board_crop_path") or ""),
         "side_marker_crop_path": str(record.get("side_marker_crop_path") or ""),
+        "side_marker_search_crop_path": str(record.get("side_marker_search_crop_path") or ""),
+        "side_marker_review_crop_path": str(
+            record.get("side_marker_review_crop_path")
+            or record.get("side_marker_crop_path")
+            or record.get("side_marker_search_crop_path")
+            or ""
+        ),
+        "side_marker_review_crop_kind": str(record.get("side_marker_review_crop_kind") or ""),
         "debug_overlay_path": str(record.get("debug_overlay_path") or ""),
+        "board_crop_quality": str(record.get("board_crop_quality") or ""),
+        "board_crop_fail_reason": list(record.get("board_crop_fail_reason") or []),
+        "marker_search_zones": dict(record.get("marker_search_zones") or {}),
+        "selected_marker_zone": record.get("selected_marker_zone"),
+        "marker_bbox": list(record.get("marker_bbox") or []),
+        "marker_crop_quality": str(record.get("marker_crop_quality") or ""),
+        "marker_crop_fail_reason": list(record.get("marker_crop_fail_reason") or []),
+        "side_to_move_detected": record.get("side_to_move_detected"),
+        "side_to_move_confidence": record.get("side_to_move_confidence"),
+        "manual_review_required": bool(record.get("manual_review_required", True)),
+        "manual_review_reason": str(record.get("manual_review_reason") or ""),
         "placement_status": str(record.get("placement_status") or record.get("placement_runtime_status") or ""),
         "full_fen_status": str(record.get("full_fen_status") or record.get("full_fen_runtime_status") or record.get("runtime_status") or ""),
         "acceptance_blocker_codes": list(record.get("acceptance_blocker_codes") or []),
@@ -385,7 +404,16 @@ def _label_template_row(row: Mapping[str, Any]) -> dict[str, Any]:
         "page": row.get("page") or "",
         "board_crop_path": row.get("board_crop_path") or "",
         "side_marker_crop_path": row.get("side_marker_crop_path") or "",
+        "side_marker_search_crop_path": row.get("side_marker_search_crop_path") or "",
+        "side_marker_review_crop_path": row.get("side_marker_review_crop_path") or row.get("side_marker_crop_path") or "",
+        "side_marker_review_crop_kind": row.get("side_marker_review_crop_kind") or "",
         "debug_overlay_path": row.get("debug_overlay_path") or "",
+        "board_crop_quality": row.get("board_crop_quality") or "",
+        "board_crop_fail_reason": row.get("board_crop_fail_reason") or [],
+        "marker_crop_quality": row.get("marker_crop_quality") or "",
+        "marker_crop_fail_reason": row.get("marker_crop_fail_reason") or [],
+        "selected_marker_zone": row.get("selected_marker_zone") or "",
+        "marker_bbox": row.get("marker_bbox") or [],
         "system_side_to_move": row.get("system_side_to_move") or "unknown",
         "system_side_marker_status": row.get("system_side_marker_status") or "",
         "primary_side_marker_blocker": row.get("primary_side_marker_blocker") or "",
@@ -635,6 +663,10 @@ def _is_trusted_marker(record: Mapping[str, Any]) -> bool:
 
 def _fallback_blocker(record: Mapping[str, Any]) -> str:
     status = str(record.get("side_marker_status") or "").lower()
+    if str(record.get("board_crop_quality") or "").lower() == "fail":
+        return "board_crop_quality_failed"
+    if str(record.get("marker_crop_quality") or "").lower() == "fail":
+        return "marker_crop_quality_failed"
     if "conflict" in status or "multi" in status:
         return "marker_classifier_conflict"
     if "ambiguous" in status or "noisy" in status:
@@ -864,12 +896,18 @@ def _review_card(row: Mapping[str, Any], index: int) -> str:
   <div class="media-grid">
     {_figure('Crop planszy', row.get('board_crop_path'), row.get('diagram_id'), 'board')}
     {_figure('Crop markera', row.get('side_marker_crop_path'), row.get('diagram_id'), 'marker')}
+    {_figure('Podgląd stref markera', row.get('side_marker_search_crop_path'), row.get('diagram_id'), 'marker-search')}
+    {_figure('Crop do oznaczenia', row.get('side_marker_review_crop_path') or row.get('side_marker_crop_path') or row.get('side_marker_search_crop_path'), row.get('diagram_id'), 'marker-review')}
     {_figure('Debug overlay', row.get('debug_overlay_path'), row.get('diagram_id'), 'overlay')}
   </div>
   <div class="body">
     <dl>
       <dt>System sugeruje</dt><dd>{_h(row.get('system_side_to_move') or 'unknown')}</dd>
       <dt>Symbol systemu</dt><dd>{_h(row.get('system_side_marker_symbol') or 'brak')}</dd>
+      <dt>Jakość cropu planszy</dt><dd>{_h(row.get('board_crop_quality') or 'unknown')} {_h(', '.join(row.get('board_crop_fail_reason') or []))}</dd>
+      <dt>Jakość cropu markera</dt><dd>{_h(row.get('marker_crop_quality') or 'unknown')} {_h(', '.join(row.get('marker_crop_fail_reason') or []))}</dd>
+      <dt>Wybrana strefa markera</dt><dd>{_h(row.get('selected_marker_zone') or 'brak')}</dd>
+      <dt>Crop do oznaczenia</dt><dd>{_h(row.get('side_marker_review_crop_kind') or 'brak')}</dd>
       <dt>Status placement</dt><dd>{_h(row.get('placement_status'))}</dd>
       <dt>Status pełnego FEN</dt><dd>{_h(row.get('full_fen_status'))}</dd>
       <dt>Policy</dt><dd>{_h(REVIEW_ONLY_POLICY)}</dd>

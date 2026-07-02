@@ -2654,6 +2654,7 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
                     board_bbox=recognition_bbox,
                     side_marker_bbox=candidate_payload.get("side_marker_bbox"),
                 )
+                candidate_payload = _apply_scan_chess_two_crop_quality_gate(candidate_payload, two_crop_fields)
                 candidate_payload.update(two_crop_fields)
                 chess_fen_review_artifact_files.extend(two_crop_files)
                 diagram_total += 1
@@ -4690,7 +4691,35 @@ def _chess_diagram_record_from_image(
         "board_bbox": fen_result.get("board_bbox") or chess_img.get("board_bbox") or bbox[:4],
         "board_crop_path": board_crop_path,
         "side_marker_crop_path": str(fen_result.get("side_marker_crop_path") or chess_img.get("side_marker_crop_path") or "").strip(),
+        "side_marker_search_crop_path": str(
+            fen_result.get("side_marker_search_crop_path") or chess_img.get("side_marker_search_crop_path") or ""
+        ).strip(),
+        "side_marker_review_crop_path": str(
+            fen_result.get("side_marker_review_crop_path")
+            or chess_img.get("side_marker_review_crop_path")
+            or fen_result.get("side_marker_crop_path")
+            or chess_img.get("side_marker_crop_path")
+            or fen_result.get("side_marker_search_crop_path")
+            or chess_img.get("side_marker_search_crop_path")
+            or ""
+        ).strip(),
+        "side_marker_review_crop_kind": str(
+            fen_result.get("side_marker_review_crop_kind") or chess_img.get("side_marker_review_crop_kind") or ""
+        ).strip(),
         "debug_overlay_path": str(fen_result.get("debug_overlay_path") or chess_img.get("debug_overlay_path") or "").strip(),
+        "board_crop_quality": str(fen_result.get("board_crop_quality") or chess_img.get("board_crop_quality") or ""),
+        "board_crop_fail_reason": list(fen_result.get("board_crop_fail_reason") or chess_img.get("board_crop_fail_reason") or []),
+        "marker_search_zones": dict(fen_result.get("marker_search_zones") or chess_img.get("marker_search_zones") or {}),
+        "selected_marker_zone": fen_result.get("selected_marker_zone") or chess_img.get("selected_marker_zone") or "",
+        "marker_bbox": list(fen_result.get("marker_bbox") or chess_img.get("marker_bbox") or []),
+        "marker_crop_quality": str(fen_result.get("marker_crop_quality") or chess_img.get("marker_crop_quality") or ""),
+        "marker_crop_fail_reason": list(fen_result.get("marker_crop_fail_reason") or chess_img.get("marker_crop_fail_reason") or []),
+        "side_to_move_detected": fen_result.get("side_to_move_detected") or chess_img.get("side_to_move_detected"),
+        "side_to_move_confidence": fen_result.get("side_to_move_confidence") or chess_img.get("side_to_move_confidence"),
+        "manual_review_required": bool(
+            fen_result.get("manual_review_required", chess_img.get("manual_review_required", True))
+        ),
+        "manual_review_reason": str(fen_result.get("manual_review_reason") or chess_img.get("manual_review_reason") or ""),
         "caption": caption,
         "image_data_uri": image_data_uri,
         "fen_candidate": fen_candidate,
@@ -4972,9 +5001,25 @@ def _scale_bbox(
 TWO_CROP_CONTRACT_FIELDS = {
     "board_crop_path",
     "side_marker_crop_path",
+    "side_marker_search_crop_path",
+    "side_marker_review_crop_path",
+    "side_marker_review_crop_kind",
     "debug_overlay_path",
     "board_bbox",
+    "board_crop_quality",
+    "board_crop_fail_reason",
+    "board_crop_quality_gate",
+    "marker_search_zones",
+    "selected_marker_zone",
+    "marker_bbox",
+    "marker_crop_quality",
+    "marker_crop_fail_reason",
+    "marker_crop_quality_gate",
     "side_marker_bbox",
+    "side_to_move_detected",
+    "side_to_move_confidence",
+    "manual_review_required",
+    "manual_review_reason",
 }
 
 
@@ -4999,29 +5044,357 @@ def _scan_chess_two_crop_review_artifacts(
     fields: dict[str, Any] = {
         "board_crop_path": f"review/chess_fen/two_crop/{stem}_board.png",
         "side_marker_crop_path": "",
+        "side_marker_search_crop_path": "",
+        "side_marker_review_crop_path": "",
+        "side_marker_review_crop_kind": "missing",
         "debug_overlay_path": f"review/chess_fen/two_crop/{stem}_overlay.png",
         "board_bbox": _coerce_side_marker_bbox(board_bbox),
+        "marker_search_zones": {},
+        "selected_marker_zone": None,
+        "marker_bbox": [],
+        "board_crop_quality": "fail",
+        "board_crop_fail_reason": ["board_bbox_missing"],
+        "board_crop_quality_gate": {"decision": "fail", "reasons": ["board_bbox_missing"]},
+        "marker_crop_quality": "fail",
+        "marker_crop_fail_reason": ["marker_missing"],
+        "marker_crop_quality_gate": {"decision": "fail", "reasons": ["marker_missing"]},
+        "side_to_move_detected": None,
+        "side_to_move_confidence": 0.0,
+        "manual_review_required": True,
+        "manual_review_reason": "marker_missing",
     }
-    marker_bbox = _coerce_side_marker_bbox(side_marker_bbox)
-    if marker_bbox:
-        fields["side_marker_bbox"] = marker_bbox
-        fields["side_marker_crop_path"] = f"review/chess_fen/two_crop/{stem}_marker.png"
     files: list[dict[str, Any]] = []
+    board_quality = _scan_chess_board_crop_quality(page_image, fields["board_bbox"])
+    fields["board_crop_quality_gate"] = board_quality
+    fields["board_crop_quality"] = "pass" if board_quality.get("decision") == "pass" else "fail"
+    fields["board_crop_fail_reason"] = list(board_quality.get("reasons") or [])
+
     board_crop = _crop_bbox_from_image(page_image, fields["board_bbox"])
     if board_crop is not None:
         files.append({"path": fields["board_crop_path"], "data": _png_bytes(board_crop)})
+
+    zones = _scan_chess_marker_search_zones(fields["board_bbox"], page_image.size)
+    fields["marker_search_zones"] = zones
+    search_bbox, search_crop = _scan_chess_marker_search_zone_preview(page_image, fields["board_bbox"], zones)
+    if search_crop is not None:
+        fields["side_marker_search_crop_path"] = f"review/chess_fen/two_crop/{stem}_marker_search.png"
+        fields["side_marker_search_bbox"] = search_bbox
+        files.append({"path": fields["side_marker_search_crop_path"], "data": _png_bytes(search_crop)})
+
+    marker_bbox = _coerce_side_marker_bbox(side_marker_bbox)
     if marker_bbox:
+        marker_bbox = _scan_chess_padded_marker_bbox(marker_bbox, fields["board_bbox"], page_image.size)
+    candidate = _scan_chess_best_marker_zone_candidate(page_image, fields["board_bbox"], zones)
+    if not marker_bbox and candidate:
+        marker_bbox = _coerce_side_marker_bbox(candidate.get("marker_bbox"))
+    selected_zone = _scan_chess_selected_marker_zone(marker_bbox, zones) if marker_bbox else ""
+    if not selected_zone and candidate:
+        selected_zone = str(candidate.get("zone") or "")
+    if selected_zone:
+        fields["selected_marker_zone"] = selected_zone
+    if marker_bbox:
+        fields["marker_bbox"] = marker_bbox
+        fields["side_marker_bbox"] = marker_bbox
+        fields["side_marker_crop_path"] = f"review/chess_fen/two_crop/{stem}_marker.png"
+        marker_quality = _scan_chess_marker_crop_quality(page_image, marker_bbox, fields["board_bbox"])
+        fields["marker_crop_quality_gate"] = marker_quality
+        fields["marker_crop_quality"] = "pass" if marker_quality.get("decision") == "pass" else "fail"
+        fields["marker_crop_fail_reason"] = list(marker_quality.get("reasons") or [])
+        if marker_quality.get("side_to_move") in {"white", "black"}:
+            fields["side_to_move_detected"] = marker_quality.get("side_to_move")
+            fields["side_to_move_confidence"] = marker_quality.get("confidence", 0.0)
         marker_crop = _crop_bbox_from_image(page_image, marker_bbox)
         if marker_crop is not None:
             files.append({"path": fields["side_marker_crop_path"], "data": _png_bytes(marker_crop)})
+            fields["side_marker_review_crop_path"] = fields["side_marker_crop_path"]
+            fields["side_marker_review_crop_kind"] = (
+                "detected_marker_bbox" if marker_quality.get("decision") == "pass" else "detected_marker_bbox_quality_failed"
+            )
+            fields["manual_review_required"] = fields["board_crop_quality"] != "pass" or fields["marker_crop_quality"] != "pass"
+            fields["manual_review_reason"] = "" if not fields["manual_review_required"] else _scan_chess_manual_review_reason(fields["marker_crop_fail_reason"])
         else:
             fields["side_marker_crop_path"] = ""
-    overlay = _scan_chess_debug_overlay(page_image, fields["board_bbox"], marker_bbox)
+            fields["side_marker_review_crop_path"] = fields["side_marker_search_crop_path"]
+            fields["side_marker_review_crop_kind"] = "marker_search_zone_preview" if fields["side_marker_search_crop_path"] else "missing"
+            fields["manual_review_required"] = True
+            fields["manual_review_reason"] = _scan_chess_manual_review_reason(fields["marker_crop_fail_reason"])
+    elif fields["side_marker_search_crop_path"]:
+        fields["side_marker_review_crop_path"] = fields["side_marker_search_crop_path"]
+        fields["side_marker_review_crop_kind"] = "marker_search_zone_preview"
+
+    if fields["board_crop_quality"] != "pass":
+        fields["manual_review_required"] = True
+        fields["manual_review_reason"] = "bad_crop"
+    overlay = _scan_chess_debug_overlay(page_image, fields["board_bbox"], marker_bbox, marker_search_zones=zones)
     if overlay is not None:
         files.append({"path": fields["debug_overlay_path"], "data": _png_bytes(overlay)})
     else:
         fields["debug_overlay_path"] = ""
     return fields, files
+
+
+def _scan_chess_board_crop_quality(page_image: Image.Image, board_bbox: Any) -> dict[str, Any]:
+    board = _coerce_side_marker_bbox(board_bbox)
+    box = _bbox_to_int_box(board, page_image.size)
+    reasons: list[str] = []
+    if box is None:
+        reasons.append("board_bbox_missing")
+        return {"decision": "fail", "reasons": reasons}
+    width = max(1.0, board[2] - board[0])
+    height = max(1.0, board[3] - board[1])
+    ratio = width / height
+    cell_size_x = width / 8.0
+    cell_size_y = height / 8.0
+    if ratio < 0.95 or ratio > 1.05:
+        reasons.append("not_square")
+    if abs(cell_size_x - cell_size_y) / max(cell_size_x, cell_size_y) > 0.08:
+        reasons.append("cell_size_mismatch")
+    if box[0] <= 0 or box[1] <= 0 or box[2] >= page_image.width or box[3] >= page_image.height:
+        reasons.append("board_cut_off")
+    return {
+        "decision": "fail" if reasons else "pass",
+        "reasons": reasons,
+        "ratio": round(ratio, 4),
+        "cell_size_x": round(cell_size_x, 2),
+        "cell_size_y": round(cell_size_y, 2),
+    }
+
+
+def _scan_chess_marker_search_zones(board_bbox: Any, page_size: tuple[int, int]) -> dict[str, list[float]]:
+    board = _coerce_side_marker_bbox(board_bbox)
+    if not board:
+        return {}
+    x0, y0, x1, y1 = board
+    cell = min(max(1.0, x1 - x0), max(1.0, y1 - y0)) / 8.0
+    raw = {
+        "top": (x0 - 0.5 * cell, y0 - 1.5 * cell, x1 + 0.5 * cell, y0),
+        "right": (x1, y0 - 0.5 * cell, x1 + 1.5 * cell, y1 + 0.5 * cell),
+        "bottom": (x0 - 0.5 * cell, y1, x1 + 0.5 * cell, y1 + 1.5 * cell),
+        "left": (x0 - 1.5 * cell, y0 - 0.5 * cell, x0, y1 + 0.5 * cell),
+    }
+    zones: dict[str, list[float]] = {}
+    for name, bbox in raw.items():
+        box = _bbox_to_int_box(bbox, page_size)
+        if box is not None:
+            zones[name] = [float(value) for value in box]
+    return zones
+
+
+def _scan_chess_marker_search_zone_preview(
+    page_image: Image.Image,
+    board_bbox: Any,
+    zones: Mapping[str, Any],
+) -> tuple[list[float], Image.Image | None]:
+    all_boxes = [_coerce_side_marker_bbox(value) for value in zones.values()]
+    all_boxes = [box for box in all_boxes if box]
+    board = _coerce_side_marker_bbox(board_bbox)
+    if not board or not all_boxes:
+        return [], None
+    x0 = min([board[0], *[box[0] for box in all_boxes]])
+    y0 = min([board[1], *[box[1] for box in all_boxes]])
+    x1 = max([board[2], *[box[2] for box in all_boxes]])
+    y1 = max([board[3], *[box[3] for box in all_boxes]])
+    search_box = _bbox_to_int_box((x0, y0, x1, y1), page_image.size)
+    board_box = _bbox_to_int_box(board, page_image.size)
+    if search_box is None:
+        return [], None
+    crop = page_image.crop(search_box).convert("RGB")
+    draw = ImageDraw.Draw(crop)
+    if board_box is not None:
+        local_board = (
+            max(0, board_box[0] - search_box[0]),
+            max(0, board_box[1] - search_box[1]),
+            min(search_box[2] - search_box[0], board_box[2] - search_box[0]),
+            min(search_box[3] - search_box[1], board_box[3] - search_box[1]),
+        )
+        if local_board[2] > local_board[0] and local_board[3] > local_board[1]:
+            draw.rectangle(local_board, fill="#f8fafc", outline="#94a3b8", width=2)
+    for zone in all_boxes:
+        local = (zone[0] - search_box[0], zone[1] - search_box[1], zone[2] - search_box[0], zone[3] - search_box[1])
+        draw.rectangle(local, outline="#f59e0b", width=2)
+    return [float(value) for value in search_box], crop
+
+
+def _scan_chess_best_marker_zone_candidate(
+    page_image: Image.Image,
+    board_bbox: Any,
+    zones: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    board = _coerce_side_marker_bbox(board_bbox)
+    if not board:
+        return None
+    candidates: list[dict[str, Any]] = []
+    for zone_name, raw_zone in zones.items():
+        zone = _coerce_side_marker_bbox(raw_zone)
+        zone_box = _bbox_to_int_box(zone, page_image.size)
+        if zone_box is None:
+            continue
+        crop = ImageOps.autocontrast(page_image.crop(zone_box).convert("L"))
+        classification = classify_scan_chess_side_marker_crop(crop)
+        component = classification.get("component")
+        if not isinstance(component, Mapping):
+            continue
+        component_bbox = component.get("bbox")
+        if not isinstance(component_bbox, (list, tuple)) or len(component_bbox) != 4:
+            continue
+        marker_bbox = [
+            float(zone_box[0]) + float(component_bbox[0]),
+            float(zone_box[1]) + float(component_bbox[1]),
+            float(zone_box[0]) + float(component_bbox[2]),
+            float(zone_box[1]) + float(component_bbox[3]),
+        ]
+        padded = _scan_chess_padded_marker_bbox(marker_bbox, board, page_image.size)
+        candidates.append(
+            {
+                "zone": str(zone_name),
+                "zone_bbox": [float(value) for value in zone_box],
+                "marker_bbox": padded,
+                "component_bbox": [round(float(value), 2) for value in marker_bbox],
+                "status": classification.get("status"),
+                "side": classification.get("side") or "",
+                "shape": classification.get("shape") or "",
+                "confidence": classification.get("confidence") or 0.0,
+                "score": float(component.get("score") or 0.0),
+            }
+        )
+    trusted = [item for item in candidates if item.get("status") == "trusted_marker" and item.get("side") in {"w", "b"}]
+    if not trusted:
+        return None
+    sides = {str(item.get("side") or "") for item in trusted}
+    if len(sides) != 1:
+        return None
+    return max(trusted, key=lambda item: float(item.get("score") or 0.0))
+
+
+def _scan_chess_padded_marker_bbox(marker_bbox: Any, board_bbox: Any, image_size: tuple[int, int]) -> list[float]:
+    marker = _coerce_side_marker_bbox(marker_bbox)
+    board = _coerce_side_marker_bbox(board_bbox)
+    if not marker:
+        return []
+    marker_w = max(1.0, marker[2] - marker[0])
+    marker_h = max(1.0, marker[3] - marker[1])
+    cell = min(max(1.0, board[2] - board[0]), max(1.0, board[3] - board[1])) / 8.0 if board else max(marker_w, marker_h)
+    padding = max(2.0, min(0.35 * cell, 0.25 * max(marker_w, marker_h)))
+    box = _bbox_to_int_box((marker[0] - padding, marker[1] - padding, marker[2] + padding, marker[3] + padding), image_size)
+    return [float(value) for value in box] if box is not None else []
+
+
+def _scan_chess_selected_marker_zone(marker_bbox: Any, zones: Mapping[str, Any]) -> str:
+    marker = _coerce_side_marker_bbox(marker_bbox)
+    if not marker:
+        return ""
+    cx = (marker[0] + marker[2]) / 2.0
+    cy = (marker[1] + marker[3]) / 2.0
+    for name, raw_zone in zones.items():
+        zone = _coerce_side_marker_bbox(raw_zone)
+        if zone and zone[0] <= cx <= zone[2] and zone[1] <= cy <= zone[3]:
+            return str(name)
+    return ""
+
+
+def _scan_chess_marker_crop_quality(page_image: Image.Image, marker_bbox: Any, board_bbox: Any) -> dict[str, Any]:
+    marker = _coerce_side_marker_bbox(marker_bbox)
+    board = _coerce_side_marker_bbox(board_bbox)
+    box = _bbox_to_int_box(marker, page_image.size)
+    reasons: list[str] = []
+    if box is None:
+        return {"decision": "fail", "reasons": ["marker_missing"], "side_to_move": None, "confidence": 0.0}
+    width = max(1, box[2] - box[0])
+    height = max(1, box[3] - box[1])
+    if min(width, height) < 10 or width / max(1, height) < 0.35 or height / max(1, width) < 0.35:
+        reasons.append("too_narrow")
+    if board:
+        overlap = _bbox_overlap_ratio(tuple(float(value) for value in marker), tuple(float(value) for value in board))
+        if overlap > 0.18:
+            reasons.append("mostly_board_edge")
+    if box[0] <= 0 or box[1] <= 0 or box[2] >= page_image.width or box[3] >= page_image.height:
+        reasons.append("marker_cut_off")
+    crop = ImageOps.autocontrast(page_image.crop(box).convert("L"))
+    classification = classify_scan_chess_side_marker_crop(crop)
+    component = classification.get("component")
+    borderline_outline = False
+    if classification.get("status") == "side_to_move_marker_local_ambiguous" and isinstance(component, Mapping):
+        try:
+            density = float(component.get("density") or 0.0)
+            score = float(component.get("score") or 0.0)
+        except (TypeError, ValueError):
+            density = 0.0
+            score = 0.0
+        borderline_outline = 0.320 < density <= 0.365 and score >= 45.0
+    if classification.get("status") == "marker_missing":
+        reasons.append("marker_missing")
+    elif classification.get("status") in {"side_to_move_marker_local_conflict", "side_to_move_marker_local_ambiguous"}:
+        if classification.get("status") == "side_to_move_marker_local_conflict" or classification.get("shape") == "multiple_triangle_candidates":
+            reasons.append("multiple_candidates")
+        elif not borderline_outline:
+            reasons.append("unclear_symbol")
+    if isinstance(component, Mapping):
+        component_bbox = component.get("bbox")
+        if isinstance(component_bbox, (list, tuple)) and len(component_bbox) == 4:
+            cx0, cy0, cx1, cy1 = [float(value) for value in component_bbox]
+            if cx0 < 0.5 or cy0 < 0.5 or cx1 >= width - 0.5 or cy1 >= height - 0.5:
+                reasons.append("marker_cut_off")
+            component_h = max(1.0, cy1 - cy0)
+            if component_h < max(8.0, height * 0.10):
+                reasons.append("marker_too_small")
+    side = None
+    if classification.get("side") == "w":
+        side = "white"
+    elif classification.get("side") == "b":
+        side = "black"
+    elif borderline_outline:
+        side = "white"
+    if side is None and "marker_missing" not in reasons:
+        reasons.append("unclear_symbol")
+    reasons = sorted(set(reasons))
+    return {
+        "decision": "fail" if reasons else "pass",
+        "reasons": reasons,
+        "side_to_move": side if not reasons else None,
+        "confidence": round(float(classification.get("confidence") or 0.0), 3) if not reasons else 0.0,
+        "classifier_status": classification.get("status") or "",
+        "component_count": 1 if isinstance(component, Mapping) else 0,
+    }
+
+
+def _scan_chess_manual_review_reason(reasons: Iterable[Any]) -> str:
+    values = {str(reason) for reason in reasons if str(reason)}
+    if "multiple_candidates" in values:
+        return "multiple"
+    if "marker_missing" in values:
+        return "marker_missing"
+    if "unclear_symbol" in values:
+        return "unclear"
+    if values:
+        return "bad_crop"
+    return ""
+
+
+def _apply_scan_chess_two_crop_quality_gate(payload: dict[str, Any], fields: Mapping[str, Any]) -> dict[str, Any]:
+    updated = dict(payload)
+    warnings = {str(warning) for warning in updated.get("warnings") or [] if str(warning)}
+    board_failed = str(fields.get("board_crop_quality") or "") == "fail"
+    marker_failed = str(fields.get("marker_crop_quality") or "") == "fail"
+    trusted_side = str(updated.get("side_to_move_status") or "").lower() == "explicit" and str(
+        updated.get("side_to_move_evidence") or ""
+    ).lower() == "marker"
+    if board_failed:
+        warnings.add("board_crop_quality_failed")
+    if marker_failed:
+        warnings.add("marker_crop_quality_failed")
+    if board_failed or (marker_failed and trusted_side):
+        updated["fen"] = ""
+        updated["requires_review"] = True
+        updated["fen_suppressed_reason"] = "crop_quality_gate"
+        updated["full_fen_runtime_status"] = "FEN_REVIEW_REQUIRED"
+        if trusted_side:
+            updated["side_to_move"] = "unknown"
+            updated["side_to_move_status"] = "unknown"
+            updated["side_to_move_evidence"] = "none"
+            updated["side_marker_confidence"] = 0.0
+    updated["warnings"] = sorted(warnings)
+    updated.update(_scan_chess_side_marker_metadata_from_payload(updated))
+    return updated
 
 
 def _crop_bbox_from_image(image: Image.Image, bbox: Any) -> Image.Image | None:
@@ -5055,12 +5428,16 @@ def _scan_chess_debug_overlay(
     page_image: Image.Image,
     board_bbox: Any,
     marker_bbox: Any,
+    *,
+    marker_search_zones: Mapping[str, Any] | None = None,
 ) -> Image.Image | None:
     board = _coerce_side_marker_bbox(board_bbox)
     if not board:
         return None
     marker = _coerce_side_marker_bbox(marker_bbox)
-    boxes = [board] + ([marker] if marker else [])
+    zones = [_coerce_side_marker_bbox(value) for value in (marker_search_zones or {}).values()]
+    zones = [zone for zone in zones if zone]
+    boxes = [board] + zones + ([marker] if marker else [])
     x0 = min(box[0] for box in boxes)
     y0 = min(box[1] for box in boxes)
     x1 = max(box[2] for box in boxes)
@@ -5082,6 +5459,8 @@ def _scan_chess_debug_overlay(
         y = by0 + (by1 - by0) * step / 8.0
         draw.line((x, by0, x, by1), fill="#1769aa", width=1)
         draw.line((bx0, y, bx1, y), fill="#1769aa", width=1)
+    for zone in zones:
+        draw.rectangle(local_box(zone), outline="#f59e0b", width=2)
     if marker:
         draw.rectangle(local_box(marker), outline="#b42318", width=3)
     return overlay

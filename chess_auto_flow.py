@@ -2022,10 +2022,25 @@ def _two_crop_quality_rows(diagrams: list[dict[str, Any]], fen_payload: dict[str
                 "page": merged.get("page") or merged.get("page_number") or "",
                 "board_crop_path": str(_first_non_empty(merged.get("board_crop_path"))),
                 "side_marker_crop_path": str(_first_non_empty(merged.get("side_marker_crop_path"))),
+                "side_marker_search_crop_path": str(_first_non_empty(merged.get("side_marker_search_crop_path"))),
+                "side_marker_review_crop_path": str(_first_non_empty(merged.get("side_marker_review_crop_path"))),
+                "side_marker_review_crop_kind": str(_first_non_empty(merged.get("side_marker_review_crop_kind"))),
                 "debug_overlay_path": str(_first_non_empty(merged.get("debug_overlay_path"))),
                 "has_board_crop": has_board_crop,
                 "has_side_marker_crop": has_marker_crop,
+                "has_side_marker_search_crop": bool(_first_non_empty(merged.get("side_marker_search_crop_path"))),
                 "has_debug_overlay": has_debug_overlay,
+                "board_crop_quality": str(_first_non_empty(merged.get("board_crop_quality"))),
+                "board_crop_fail_reason": list(merged.get("board_crop_fail_reason") or []),
+                "marker_search_zones": dict(merged.get("marker_search_zones") or {}),
+                "selected_marker_zone": merged.get("selected_marker_zone"),
+                "marker_bbox": list(merged.get("marker_bbox") or []),
+                "marker_crop_quality": str(_first_non_empty(merged.get("marker_crop_quality"))),
+                "marker_crop_fail_reason": list(merged.get("marker_crop_fail_reason") or []),
+                "side_to_move_detected": merged.get("side_to_move_detected"),
+                "side_to_move_confidence": merged.get("side_to_move_confidence"),
+                "manual_review_required": bool(merged.get("manual_review_required", True)),
+                "manual_review_reason": str(_first_non_empty(merged.get("manual_review_reason"))),
                 "side_marker_status": marker_status,
                 "side_to_move": str(_first_non_empty(merged.get("side_to_move"), "unknown")),
                 "trusted_marker": trusted_marker,
@@ -2103,13 +2118,58 @@ def _two_crop_accuracy_data_gap(diagrams: list[dict[str, Any]]) -> dict[str, Any
 
 def _two_crop_quality_metrics_report(diagrams: list[dict[str, Any]], fen_payload: dict[str, Any]) -> dict[str, Any]:
     rows = _two_crop_quality_rows(diagrams, fen_payload)
+    board_fail_reasons = [
+        str(reason)
+        for row in rows
+        for reason in (row.get("board_crop_fail_reason") or [])
+        if str(reason)
+    ]
+    marker_fail_reasons = [
+        str(reason)
+        for row in rows
+        for reason in (row.get("marker_crop_fail_reason") or [])
+        if str(reason)
+    ]
+    diagram_count = len(rows)
     summary = {
-        "diagram_count": len(rows),
+        "diagram_count": diagram_count,
         "board_crop_count": len([row for row in rows if row.get("has_board_crop")]),
         "side_marker_crop_count": len([row for row in rows if row.get("has_side_marker_crop")]),
+        "side_marker_search_crop_count": len([row for row in rows if row.get("has_side_marker_search_crop")]),
+        "board_crop_quality_pass_count": len([row for row in rows if row.get("board_crop_quality") == "pass"]),
+        "board_crop_quality_pass_rate": round(
+            len([row for row in rows if row.get("board_crop_quality") == "pass"]) / diagram_count,
+            4,
+        )
+        if diagram_count
+        else 0.0,
+        "board_crop_contains_coordinates_count": board_fail_reasons.count("contains_coordinates"),
+        "board_crop_contains_marker_count": board_fail_reasons.count("contains_marker"),
+        "marker_crop_quality_pass_count": len([row for row in rows if row.get("marker_crop_quality") == "pass"]),
+        "marker_crop_quality_pass_rate": round(
+            len([row for row in rows if row.get("marker_crop_quality") == "pass"]) / diagram_count,
+            4,
+        )
+        if diagram_count
+        else 0.0,
+        "marker_crop_missing_count": marker_fail_reasons.count("marker_missing"),
+        "marker_crop_cut_off_count": marker_fail_reasons.count("marker_cut_off"),
+        "marker_crop_mostly_board_edge_count": marker_fail_reasons.count("mostly_board_edge"),
+        "marker_crop_mostly_coordinates_count": marker_fail_reasons.count("mostly_rank_numbers")
+        + marker_fail_reasons.count("mostly_file_letters"),
         "trusted_marker_count": len([row for row in rows if row.get("trusted_marker")]),
         "marker_missing_count": len([row for row in rows if row.get("marker_missing")]),
         "marker_conflict_count": len([row for row in rows if row.get("marker_conflict")]),
+        "side_to_move_auto_confident_rate": round(len([row for row in rows if row.get("trusted_marker")]) / diagram_count, 4)
+        if diagram_count
+        else 0.0,
+        "side_to_move_manual_review_rate": round(
+            len([row for row in rows if bool(row.get("manual_review_required", True))]) / diagram_count,
+            4,
+        )
+        if diagram_count
+        else 0.0,
+        "side_to_move_auto_vs_manual_accuracy": None,
         "placement_accepted_count": len(
             [row for row in rows if row.get("placement_status") == "FEN_PLACEMENT_MACHINE_ACCEPTED"]
         ),
@@ -2226,17 +2286,21 @@ def _two_crop_quality_metrics_markdown(report: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "| Diagram | Page | Board crop | Marker crop | Marker status | Placement | Full FEN | Marker block | Placement block |",
-            "| --- | ---: | --- | --- | --- | --- | --- | --- | --- |",
+            "| Diagram | Page | Board crop | Marker crop | Search crop | Board quality | Marker quality | Review crop | Marker status | Placement | Full FEN | Marker block | Placement block |",
+            "| --- | ---: | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
     )
     for item in report.get("items") or []:
         lines.append(
-            "| {id} | {page} | {board} | {marker} | {marker_status} | {placement} | {full_fen} | {marker_block} | {placement_block} |".format(
+            "| {id} | {page} | {board} | {marker} | {search} | {board_quality} | {marker_quality} | {review} | {marker_status} | {placement} | {full_fen} | {marker_block} | {placement_block} |".format(
                 id=_md(str(item.get("diagram_id") or "")),
                 page=_md(str(item.get("page") or "")),
                 board="yes" if item.get("has_board_crop") else "no",
                 marker="yes" if item.get("has_side_marker_crop") else "no",
+                search="yes" if item.get("has_side_marker_search_crop") else "no",
+                board_quality=_md(str(item.get("board_crop_quality") or "")),
+                marker_quality=_md(str(item.get("marker_crop_quality") or "")),
+                review=_md(str(item.get("side_marker_review_crop_kind") or "")),
                 marker_status=_md(str(item.get("side_marker_status") or "")),
                 placement=_md(str(item.get("placement_status") or "")),
                 full_fen=_md(str(item.get("full_fen_status") or "")),

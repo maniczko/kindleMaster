@@ -6013,7 +6013,31 @@ def convert_chess_pgn_html_asset(job_id: str, asset_path: str):
     return response
 
 
-@app.route("/convert/feedback/<job_id>", methods=["POST"])
+def _feedback_log_path_override() -> str | None:
+    raw = os.environ.get("KINDLEMASTER_FEEDBACK_LOG", "").strip()
+    return raw or None
+
+
+def _learning_ledger_root_override() -> str:
+    raw = os.environ.get("KINDLEMASTER_LEARNING_LEDGER_ROOT", "").strip()
+    return raw or "."
+
+
+def _feedback_validation_payload(error: ValueError) -> dict[str, object]:
+    message = str(error)
+    if message.startswith("training_feedback_invalid:"):
+        missing = [part for part in message.split(":", 1)[1].split(",") if part]
+        return {
+            "message": (
+                "Feedback oznaczony do uczenia wymaga recenzenta, etykiety jakości, tagów problemu i poprawnej trasy. "
+                f"Brakuje: {', '.join(missing)}."
+            ),
+            "missing": missing,
+        }
+    return {"message": message, "missing": []}
+
+
+@app.route("/convert/feedback/<job_id>", methods=["GET", "POST"])
 def convert_feedback(job_id: str):
     auth_context = _resolve_request_auth_context()
     if auth_context.error:
@@ -6022,6 +6046,21 @@ def convert_feedback(job_id: str):
     _cleanup_expired_conversion_jobs()
     job = _get_conversion_job_for_auth(job_id, auth_context)
     if not job:
+        if request.method == "GET":
+            response = jsonify(
+                {
+                    "success": True,
+                    "job_id": job_id,
+                    "feedback_records": [],
+                    "latest_feedback": None,
+                    "feedback_count": 0,
+                    "skipped": [{"source": "feedback", "reason": "conversion_job_missing"}],
+                    "online_learning": False,
+                }
+            )
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            return response
         return _json_error(
             "Nie znaleziono zadania konwersji.",
             error_code=ERROR_MISSING_OUTPUT,
@@ -6029,6 +6068,36 @@ def convert_feedback(job_id: str):
             phase="feedback",
             job_id=job_id,
         )
+    if request.method == "GET":
+        try:
+            from ml_feedback import feedback_records_for_job
+
+            records, skipped = feedback_records_for_job(
+                job_id,
+                log_paths=[_feedback_log_path_override()] if _feedback_log_path_override() else None,
+            )
+        except Exception as error:
+            return _json_error(
+                f"Nie udalo sie odczytac feedbacku: {error}",
+                error_code="feedback_read_failed",
+                status_code=500,
+                phase="feedback",
+                job_id=job_id,
+            )
+        response = jsonify(
+            {
+                "success": True,
+                "job_id": job_id,
+                "feedback_records": records,
+                "latest_feedback": records[-1] if records else None,
+                "feedback_count": len(records),
+                "skipped": skipped,
+                "online_learning": False,
+            }
+        )
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        return response
     payload = request.get_json(silent=True)
     if payload is None:
         payload = {}
@@ -6041,16 +6110,25 @@ def convert_feedback(job_id: str):
             job_id=job_id,
         )
     try:
-        from ml_feedback import append_user_feedback
+        from ml_feedback import append_user_feedback, feedback_public_record
 
-        record = append_user_feedback(job_id=job_id, feedback=payload, job=job)
+        record = append_user_feedback(
+            job_id=job_id,
+            feedback=payload,
+            job=job,
+            event_path=_feedback_log_path_override(),
+            ledger_repo_root=_learning_ledger_root_override(),
+        )
+        public_record = feedback_public_record(record)
     except ValueError as error:
+        validation = _feedback_validation_payload(error)
         return _json_error(
-            str(error),
+            str(validation["message"]),
             error_code="invalid_training_feedback",
             status_code=400,
             phase="feedback",
             job_id=job_id,
+            extra={"missing": validation["missing"]},
         )
     except Exception as error:
         return _json_error(
@@ -6068,9 +6146,36 @@ def convert_feedback(job_id: str):
             "record_id": record.get("record_id", ""),
             "include_in_training": bool((record.get("dataset") or {}).get("include_in_route_training")),
             "dataset_reason": str((record.get("dataset") or {}).get("reason", "")),
+            "feedback_record": public_record,
+            "learning_ledger": public_record.get("learning_ledger", {}),
             "online_learning": False,
         }
     )
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+
+@app.route("/learning/feedback/summary", methods=["GET"])
+def learning_feedback_summary():
+    auth_context = _resolve_request_auth_context()
+    if auth_context.error:
+        return _json_auth_error(auth_context)
+    try:
+        from ml_feedback import load_feedback_records, summarize_feedback_records
+
+        records, skipped = load_feedback_records(
+            log_paths=[_feedback_log_path_override()] if _feedback_log_path_override() else None
+        )
+        summary = summarize_feedback_records(records, skipped)
+    except Exception as error:
+        return _json_error(
+            f"Nie udalo sie odczytac podsumowania feedbacku: {error}",
+            error_code="feedback_summary_failed",
+            status_code=500,
+            phase="feedback",
+        )
+    response = jsonify({"success": True, "summary": summary, "online_learning": False})
     response.headers["Cache-Control"] = "no-store, max-age=0"
     response.headers["Pragma"] = "no-cache"
     return response

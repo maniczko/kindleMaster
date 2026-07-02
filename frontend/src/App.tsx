@@ -139,6 +139,32 @@ interface ConversionJobPayload {
   error_code?: string;
 }
 
+interface ConversionFeedbackRecord {
+  record_id: string;
+  created_at: string;
+  job_id: string;
+  status: "accepted" | "needs_review" | "rejected" | string;
+  quality_label: "premium" | "good" | "usable" | "poor" | "blocked" | "unknown" | string;
+  quality_score?: number | null;
+  route_label: string;
+  issue_tags: string[];
+  notes: string;
+  reviewer: string;
+  include_in_training_requested: boolean;
+  include_in_training: boolean;
+  dataset_reason: string;
+  learning_ledger?: Record<string, unknown>;
+}
+
+interface ConversionFeedbackResponse {
+  success?: boolean;
+  feedback_records?: ConversionFeedbackRecord[];
+  latest_feedback?: ConversionFeedbackRecord | null;
+  feedback_record?: ConversionFeedbackRecord;
+  missing?: string[];
+  error?: string;
+}
+
 interface UserProfilePayload {
   conversion: {
     default_profile: string;
@@ -2305,6 +2331,8 @@ function FileDetailsWorkspace({
           </CardContent>
         </Card>
 
+        <ConversionFeedbackPanel job={job} apiFetch={apiFetch} />
+
         <Card>
           <CardHeader>
             <CardTitle>Wysyłka na Kindle</CardTitle>
@@ -2386,6 +2414,240 @@ function FileDetailsWorkspace({
         </Card>
       </div>
     </section>
+  );
+}
+
+const FEEDBACK_STATUSES = [
+  { value: "accepted", label: "Akceptuję" },
+  { value: "needs_review", label: "Do przeglądu" },
+  { value: "rejected", label: "Odrzucam" },
+];
+
+const FEEDBACK_QUALITY_LABELS = [
+  { value: "premium", label: "Premium" },
+  { value: "good", label: "Dobre" },
+  { value: "usable", label: "Używalne" },
+  { value: "poor", label: "Słabe" },
+  { value: "blocked", label: "Zablokowane" },
+  { value: "unknown", label: "Nie wiem" },
+];
+
+const FEEDBACK_ROUTE_LABELS = [
+  { value: "", label: "Nie wybieram trasy" },
+  { value: "book_reflow", label: "Book reflow" },
+  { value: "magazine_reflow", label: "Magazine reflow" },
+  { value: "diagram_book_reflow", label: "Diagram book reflow" },
+  { value: "scanned_reflow", label: "Scanned reflow" },
+  { value: "docx_reflow", label: "DOCX reflow" },
+  { value: "fixed_layout_fallback", label: "Fixed layout fallback" },
+];
+
+const FEEDBACK_ISSUE_TAGS = [
+  { value: "ocr", label: "OCR" },
+  { value: "layout", label: "Layout" },
+  { value: "toc", label: "Spis treści" },
+  { value: "images", label: "Obrazy" },
+  { value: "epub", label: "EPUB" },
+  { value: "fen", label: "FEN" },
+  { value: "pgn", label: "PGN" },
+  { value: "side_to_move", label: "Kto ma ruch" },
+  { value: "wrong_profile", label: "Zły profil" },
+  { value: "original_preview", label: "Podgląd oryginału" },
+];
+
+function ConversionFeedbackPanel({
+  job,
+  apiFetch,
+}: {
+  job: ConversionJobPayload;
+  apiFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}) {
+  const [records, setRecords] = React.useState<ConversionFeedbackRecord[]>([]);
+  const [status, setStatus] = React.useState("needs_review");
+  const [qualityLabel, setQualityLabel] = React.useState("unknown");
+  const [routeLabel, setRouteLabel] = React.useState("");
+  const [issueTags, setIssueTags] = React.useState<string[]>([]);
+  const [reviewer, setReviewer] = React.useState("");
+  const [notes, setNotes] = React.useState("");
+  const [includeInTraining, setIncludeInTraining] = React.useState(false);
+  const [busy, setBusy] = React.useState(false);
+  const [loading, setLoading] = React.useState(false);
+  const [message, setMessage] = React.useState("");
+  const [error, setError] = React.useState("");
+  const latest = records.length ? records[records.length - 1] : null;
+
+  React.useEffect(() => {
+    let cancelled = false;
+    async function loadFeedback() {
+      if (!job.job_id) return;
+      setLoading(true);
+      setError("");
+      try {
+        const response = await apiFetch(`/convert/feedback/${encodeURIComponent(job.job_id)}`, { cache: "no-store" });
+        const payload = (await response.json().catch(() => ({}))) as ConversionFeedbackResponse;
+        if (!response.ok || !payload.success) {
+          throw new Error(payload.error || "Nie udało się pobrać feedbacku.");
+        }
+        if (!cancelled) {
+          setRecords(Array.isArray(payload.feedback_records) ? payload.feedback_records : []);
+        }
+      } catch (caught) {
+        if (!cancelled) {
+          setError(caught instanceof Error ? caught.message : "Nie udało się pobrać feedbacku.");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    void loadFeedback();
+    return () => {
+      cancelled = true;
+    };
+  }, [apiFetch, job.job_id]);
+
+  function toggleIssueTag(tag: string) {
+    setIssueTags((current) => (current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag]));
+  }
+
+  async function submitFeedback(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!job.job_id) return;
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const response = await apiFetch(`/convert/feedback/${encodeURIComponent(job.job_id)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          status,
+          quality_label: qualityLabel,
+          route_label: routeLabel,
+          issue_tags: issueTags,
+          notes,
+          reviewer,
+          include_in_training: includeInTraining,
+        }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as ConversionFeedbackResponse;
+      if (!response.ok || !payload.success) {
+        const missing = Array.isArray(payload.missing) && payload.missing.length ? ` Brakuje: ${payload.missing.join(", ")}.` : "";
+        throw new Error(`${payload.error || "Nie udało się zapisać feedbacku."}${missing}`);
+      }
+      const nextRecord = payload.feedback_record;
+      if (nextRecord) {
+        setRecords((current) => [...current, nextRecord]);
+      }
+      setMessage("Feedback zapisany lokalnie.");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Nie udało się zapisać feedbacku.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Feedback po konwersji</CardTitle>
+        <CardDescription>Ocena zapisuje sygnał do raportów ML; dopiero kompletna etykieta z recenzentem może wejść do uczenia.</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form className="km-feedback-panel" onSubmit={submitFeedback}>
+          <div className="km-feedback-summary" aria-live="polite">
+            <span>
+              <strong>{records.length}</strong>
+              zapisane oceny
+            </span>
+            <span>
+              <strong>{records.filter((record) => record.include_in_training).length}</strong>
+              do uczenia
+            </span>
+            <span>
+              <strong>{latest?.status || "brak"}</strong>
+              ostatni status
+            </span>
+          </div>
+          <div className="km-feedback-fieldset" role="group" aria-label="Status feedbacku">
+            {FEEDBACK_STATUSES.map((option) => (
+              <button
+                className={`km-feedback-chip${status === option.value ? " is-active" : ""}`}
+                key={option.value}
+                type="button"
+                onClick={() => setStatus(option.value)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <label className="km-feedback-label">
+            <span>Jakość wyniku</span>
+            <select value={qualityLabel} onChange={(event) => setQualityLabel(event.target.value)}>
+              {FEEDBACK_QUALITY_LABELS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="km-feedback-label">
+            <span>Poprawna trasa konwersji</span>
+            <select value={routeLabel} onChange={(event) => setRouteLabel(event.target.value)}>
+              {FEEDBACK_ROUTE_LABELS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="km-feedback-fieldset" role="group" aria-label="Tagi problemów">
+            {FEEDBACK_ISSUE_TAGS.map((tag) => (
+              <button
+                className={`km-feedback-chip${issueTags.includes(tag.value) ? " is-active" : ""}`}
+                key={tag.value}
+                type="button"
+                onClick={() => toggleIssueTag(tag.value)}
+              >
+                {tag.label}
+              </button>
+            ))}
+          </div>
+          <label className="km-feedback-label">
+            <span>Recenzent</span>
+            <input value={reviewer} onChange={(event) => setReviewer(event.target.value)} placeholder="np. Iwo" />
+          </label>
+          <label className="km-feedback-label">
+            <span>Notatka</span>
+            <textarea value={notes} onChange={(event) => setNotes(event.target.value)} rows={3} placeholder="Co jest dobre albo co trzeba poprawić?" />
+          </label>
+          <label className="km-feedback-training-toggle">
+            <input checked={includeInTraining} onChange={(event) => setIncludeInTraining(event.target.checked)} type="checkbox" />
+            <span>Użyj tej oceny do uczenia po weryfikacji</span>
+          </label>
+          {includeInTraining ? (
+            <p className="km-secret-note">Do uczenia wymagane są: recenzent, jakość, trasa i co najmniej jeden tag problemu.</p>
+          ) : null}
+          <div className="km-details-actions">
+            <Button type="submit" disabled={busy || !job.job_id}>
+              {busy ? <Loader2 data-icon="inline-start" aria-hidden="true" /> : <Save data-icon="inline-start" aria-hidden="true" />}
+              Zapisz feedback
+            </Button>
+            {loading ? <span className="km-secret-note">Wczytuję zapisane oceny.</span> : null}
+          </div>
+          {message ? <p className="km-delivery-status">{message}</p> : null}
+          {error ? <p className="km-delivery-error">{error}</p> : null}
+          {latest ? (
+            <div className="km-feedback-latest" aria-label="Ostatni zapisany feedback">
+              <strong>Ostatnio zapisano:</strong>
+              <span>{latest.status}</span>
+              <span>{latest.quality_label}</span>
+              <span>{latest.route_label || "bez trasy"}</span>
+              <span>{latest.include_in_training ? "etykieta treningowa" : "sygnał produktowy"}</span>
+            </div>
+          ) : null}
+        </form>
+      </CardContent>
+    </Card>
   );
 }
 

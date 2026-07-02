@@ -100,6 +100,20 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
             app_module._CONVERSION_JOBS[job_id]["artifacts"]["chess_pgn"] = artifact
         return pgn_path
 
+    def _register_engine_analysis_gate_artifact(self, job_id: str, gate: dict) -> Path:
+        job_root = self._artifact_root(job_id)
+        report_dir = job_root / "reports" / "chess_engine"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        gate_path = report_dir / "engine_analysis_gate.json"
+        gate_path.write_text(json.dumps(gate), encoding="utf-8")
+        artifact = app_module._local_artifact_metadata(job_id, ArtifactKind.REPORT, gate_path)
+        artifact["content_type"] = "application/json; charset=utf-8"
+        artifact["download_url"] = f"/convert/artifact/{job_id}/engine_analysis_gate"
+        artifact["label"] = "Engine analysis gate"
+        with app_module._CONVERSION_JOBS_LOCK:
+            app_module._CONVERSION_JOBS[job_id]["artifacts"]["engine_analysis_gate"] = artifact
+        return gate_path
+
     def _write_final_reader_sidecar(self, source_html: Path, *, diagrams_total: int = 1) -> Path:
         job_root = source_html.parents[1]
         semantic_dir = job_root / "semantic_chess_html"
@@ -850,6 +864,40 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
         self.assertIn('[Event "Study"]', pgn_response.get_data(as_text=True))
         self.assertIn("attachment", pgn_response.headers.get("Content-Disposition", ""))
         pgn_response.close()
+
+    def test_status_exposes_engine_analysis_gate_summary(self) -> None:
+        job_id = "routing-engine-analysis-gate"
+        source_html = self._register_chess_html_job(
+            job_id,
+            "<!doctype html><html><body><p>Source evidence report.</p></body></html>",
+        )
+        self._write_final_reader_sidecar(source_html, diagrams_total=2)
+        self._register_engine_analysis_gate_artifact(
+            job_id,
+            {
+                "schema": "kindlemaster.chess_engine.gate.v1",
+                "diagram_count": 2,
+                "eligible_count": 1,
+                "analyzed_count": 0,
+                "unavailable_count": 2,
+                "engine_available": False,
+                "top_reasons": [{"reason": "fen_not_accepted", "count": 1}, {"reason": "engine_unavailable", "count": 1}],
+                "engine_reader_available": False,
+                "availability": "unavailable",
+                "message": "Engine analysis unavailable. Reason: fen_not_accepted.",
+            },
+        )
+
+        status_response = self.client.get(f"/convert/status/{job_id}")
+
+        self.assertEqual(status_response.status_code, 200)
+        payload = status_response.get_json()
+        self.assertEqual(payload["engine_analysis_availability"], "unavailable")
+        self.assertFalse(payload["engine_reader_available"])
+        self.assertEqual(payload["engine_analysis_gate"]["diagram_count"], 2)
+        self.assertEqual(payload["engine_analysis_gate"]["top_reasons"][0]["reason"], "fen_not_accepted")
+        self.assertEqual(payload["quality_state"]["engine_analysis_gate"]["availability"], "unavailable")
+        self.assertEqual(payload["conversion"]["engine_analysis_gate"]["unavailable_count"], 2)
 
     def test_chess_download_endpoints_expose_pgn_final_reader_and_audit_preview(self) -> None:
         job_id = "routing-chess-download-e2e"

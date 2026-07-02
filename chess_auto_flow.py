@@ -471,6 +471,7 @@ def build_auto_chess_flow_artifacts(
             }.items()
         },
         "engine_analysis": (engine_analysis.get("report") or {}).get("summary") or {},
+        "engine_analysis_gate": engine_analysis.get("gate") or {},
         "side_marker_learning": side_marker_learning.get("summary") or {},
         "strict_failed": bool(mode == "auto-strict" and status != "AUTO_SUCCESS"),
     }

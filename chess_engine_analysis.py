@@ -11,6 +11,7 @@ from chess_engine_service import analyze_fen as _analyze_fen
 ENGINE_ANALYSIS_REPORT_SCHEMA = "kindlemaster.chess_engine.analysis_artifacts.v1"
 ENGINE_ANALYSIS_DATA_SCHEMA = "kindlemaster.chess_engine.analysis_data.v1"
 ENGINE_RECORD_SCHEMA = "kindlemaster.chess_engine.diagram_analysis.v1"
+ENGINE_ANALYSIS_GATE_SCHEMA = "kindlemaster.chess_engine.gate.v1"
 
 ACCEPTED_FEN_STATUSES = {"FEN_MACHINE_ACCEPTED", "FEN_CORPUS_VERIFIED"}
 TRUSTED_SIDE_MARKER_STATUSES = {
@@ -76,22 +77,116 @@ def build_engine_analysis_artifacts(
     jsonl_path = report_dir / "engine_analysis.jsonl"
     md_path = report_dir / "engine_analysis.md"
     html_path = report_dir / "engine_analysis.html"
+    gate_json_path = report_dir / "engine_analysis_gate.json"
+    gate_md_path = report_dir / "engine_analysis_gate.md"
     data_path = data_dir / "engine_analysis.json"
+    gate = build_engine_analysis_gate(payload)
     _write_json(json_path, payload)
     _write_jsonl(jsonl_path, records)
     md_path.write_text(_engine_analysis_markdown(payload), encoding="utf-8")
     html_path.write_text(_engine_analysis_html(payload), encoding="utf-8")
+    _write_json(gate_json_path, gate)
+    gate_md_path.write_text(_engine_analysis_gate_markdown(gate), encoding="utf-8")
     _write_json(data_path, data_payload)
     return {
         "report": payload,
+        "gate": gate,
         "paths": {
             "engine_analysis": json_path,
             "engine_analysis_jsonl": jsonl_path,
             "engine_analysis_md": md_path,
             "engine_analysis_html": html_path,
+            "engine_analysis_gate": gate_json_path,
+            "engine_analysis_gate_md": gate_md_path,
             "engine_analysis_data": data_path,
         },
     }
+
+
+def build_engine_analysis_gate(analysis_payload: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Summarize whether engine analysis is reader-available without changing FEN gates."""
+
+    items = analysis_payload.get("items") if isinstance(analysis_payload, Mapping) else []
+    records = [dict(item) for item in items or [] if isinstance(item, Mapping)]
+    reason_counts: dict[str, int] = {}
+    eligible_count = 0
+    analyzed_count = 0
+    unavailable_count = 0
+    engine_available = False
+    cache_available = False
+    for record in records:
+        reason = _engine_gate_reason(record)
+        if _engine_gate_eligible(record):
+            eligible_count += 1
+        if record.get("engine_status") == "ok":
+            analyzed_count += 1
+            engine_available = True
+        else:
+            unavailable_count += 1
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        if record.get("cache_hit") and record.get("engine_status") == "ok":
+            cache_available = True
+    if analyzed_count and analyzed_count == len(records):
+        availability = "available"
+    elif analyzed_count:
+        availability = "partially_available"
+    else:
+        availability = "unavailable"
+    top_reasons = [
+        {"reason": reason, "count": count}
+        for reason, count in sorted(reason_counts.items(), key=lambda item: (-item[1], item[0]))
+        if reason
+    ]
+    return {
+        "schema": ENGINE_ANALYSIS_GATE_SCHEMA,
+        "diagram_count": len(records),
+        "eligible_count": eligible_count,
+        "analyzed_count": analyzed_count,
+        "unavailable_count": unavailable_count,
+        "engine_available": bool(engine_available or cache_available),
+        "top_reasons": top_reasons,
+        "engine_reader_available": analyzed_count > 0,
+        "availability": availability,
+        "message": _engine_gate_message(availability, top_reasons),
+    }
+
+
+def _engine_gate_eligible(record: Mapping[str, Any]) -> bool:
+    return (
+        str(record.get("fen_status") or "") in ACCEPTED_FEN_STATUSES
+        and _trusted_side_marker_status(str(record.get("side_marker_status") or ""))
+        and _valid_fen(str(record.get("fen") or ""))
+    )
+
+
+def _engine_gate_reason(record: Mapping[str, Any]) -> str:
+    skip_reason = str(record.get("skip_reason") or "").strip()
+    engine_status = str(record.get("engine_status") or "").strip()
+    if skip_reason in {"fen_not_accepted", "side_to_move_not_trusted", "invalid_fen", "engine_unavailable"}:
+        return skip_reason
+    if skip_reason == "timeout" or engine_status == "timeout":
+        return "engine_timeout"
+    if engine_status == "invalid_fen":
+        return "invalid_fen"
+    if engine_status in {"engine_unavailable", "failed"}:
+        return "engine_unavailable"
+    if not _engine_gate_eligible(record):
+        if str(record.get("fen_status") or "") not in ACCEPTED_FEN_STATUSES:
+            return "fen_not_accepted"
+        if not _trusted_side_marker_status(str(record.get("side_marker_status") or "")):
+            return "side_to_move_not_trusted"
+        return "invalid_fen"
+    return engine_status or "engine_unavailable"
+
+
+def _engine_gate_message(availability: str, top_reasons: list[dict[str, Any]]) -> str:
+    if availability == "available":
+        return "Engine analysis available."
+    if availability == "partially_available":
+        reason = str((top_reasons[0] if top_reasons else {}).get("reason") or "some positions unavailable")
+        return f"Engine analysis partially available. Reason: {reason}."
+    reason = str((top_reasons[0] if top_reasons else {}).get("reason") or "analysis unavailable")
+    return f"Engine analysis unavailable. Reason: {reason}."
 
 
 def _engine_record_for_diagram(
@@ -247,6 +342,34 @@ def _engine_analysis_markdown(payload: Mapping[str, Any]) -> str:
                 score=_md(score_text),
             )
         )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _engine_analysis_gate_markdown(gate: Mapping[str, Any]) -> str:
+    reasons = gate.get("top_reasons") if isinstance(gate.get("top_reasons"), list) else []
+    lines = [
+        "# Chess Engine Analysis Gate",
+        "",
+        f"- availability: `{gate.get('availability', 'unavailable')}`",
+        f"- engine reader available: `{bool(gate.get('engine_reader_available'))}`",
+        f"- diagrams: `{gate.get('diagram_count', 0)}`",
+        f"- eligible: `{gate.get('eligible_count', 0)}`",
+        f"- analyzed: `{gate.get('analyzed_count', 0)}`",
+        f"- unavailable: `{gate.get('unavailable_count', 0)}`",
+        f"- engine available: `{bool(gate.get('engine_available'))}`",
+        "",
+        "## Top Reasons",
+        "",
+        "| Reason | Count |",
+        "| --- | ---: |",
+    ]
+    if reasons:
+        for item in reasons:
+            if not isinstance(item, Mapping):
+                continue
+            lines.append(f"| {_md(str(item.get('reason') or ''))} | {_md(str(item.get('count') or 0))} |")
+    else:
+        lines.append("| none | 0 |")
     return "\n".join(lines).rstrip() + "\n"
 
 

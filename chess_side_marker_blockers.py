@@ -30,6 +30,18 @@ def build_side_marker_blocker_attribution(
             "side_unknown_count": len([row for row in rows if row.get("side_to_move_unknown")]),
             "trusted_marker_not_propagated_count": counts.get("trusted_marker_not_propagated", 0),
             "placement_blocks_full_fen_count": counts.get("placement_blocks_full_fen", 0),
+            "board_crop_quality_blocks_full_fen_count": len(
+                [row for row in rows if row.get("board_crop_quality_blocks_full_fen")]
+            ),
+            "marker_crop_quality_blocks_full_fen_count": len(
+                [row for row in rows if row.get("marker_crop_quality_blocks_full_fen")]
+            ),
+            "marker_conflict_blocks_full_fen_count": len(
+                [row for row in rows if row.get("marker_conflict_blocks_full_fen")]
+            ),
+            "marker_manual_review_blocks_full_fen_count": len(
+                [row for row in rows if row.get("marker_manual_review_blocks_full_fen")]
+            ),
             "by_primary_side_marker_blocker": dict(sorted(counts.items())),
             "rates_by_primary_side_marker_blocker": {
                 code: round(count / total, 4) if total else 0.0 for code, count in sorted(counts.items())
@@ -50,6 +62,10 @@ def side_marker_blocker_attribution_markdown(report: Mapping[str, Any]) -> str:
         f"- side unknown: {summary.get('side_unknown_count', 0)}",
         f"- trusted marker not propagated: {summary.get('trusted_marker_not_propagated_count', 0)}",
         f"- placement blocks full FEN: {summary.get('placement_blocks_full_fen_count', 0)}",
+        f"- board crop quality blocks full FEN: {summary.get('board_crop_quality_blocks_full_fen_count', 0)}",
+        f"- marker crop quality blocks full FEN: {summary.get('marker_crop_quality_blocks_full_fen_count', 0)}",
+        f"- marker conflict blocks full FEN: {summary.get('marker_conflict_blocks_full_fen_count', 0)}",
+        f"- marker manual review blocks full FEN: {summary.get('marker_manual_review_blocks_full_fen_count', 0)}",
         f"- source HTML final reader: {source_html.get('used_as_final_reader', False)}",
         "",
         "## Blocker Counts",
@@ -109,6 +125,24 @@ def _side_marker_blocker_row(record: Mapping[str, Any], *, source_gate: Mapping[
         or marker_status
         or str(_first(record, "side_marker_source", "side_marker_symbol") or "").strip().strip("?")
     )
+    blocker_codes = _blocker_codes(record)
+    board_crop_quality = str(_first(record, "board_crop_quality") or "").lower()
+    marker_crop_quality = str(_first(record, "marker_crop_quality") or "").lower()
+    manual_review_required = _truthy(record.get("manual_review_required"))
+    manual_review_reason = str(_first(record, "manual_review_reason") or "")
+    board_quality_blocked = (
+        "full_fen_blocked_by_board_crop_quality" in blocker_codes
+        or "placement_blocked_by_board_crop_quality" in blocker_codes
+        or board_crop_quality == "fail"
+    )
+    marker_quality_blocked = "full_fen_blocked_by_marker_crop_quality" in blocker_codes or marker_crop_quality == "fail"
+    marker_conflict_blocked = "full_fen_blocked_by_marker_conflict" in blocker_codes or "conflict" in marker_status or "multi" in marker_status
+    marker_manual_review_blocked = (
+        "full_fen_blocked_by_marker_manual_review" in blocker_codes
+        or manual_review_required
+        or bool(manual_review_reason)
+        or "system_suggestion_mismatch" in blocker_codes
+    )
     primary = _primary_side_marker_blocker(
         source_gate=source_gate,
         source_image_path=source_image_path,
@@ -121,6 +155,10 @@ def _side_marker_blocker_row(record: Mapping[str, Any], *, source_gate: Mapping[
         side_unknown=side_unknown,
         placement_accepted=placement_accepted,
         full_fen_accepted=full_fen_accepted,
+        board_quality_blocked=board_quality_blocked,
+        marker_quality_blocked=marker_quality_blocked,
+        marker_conflict_blocked=marker_conflict_blocked,
+        marker_manual_review_blocked=marker_manual_review_blocked,
     )
     return {
         "diagram_id": _first(record, "diagram_id", "id") or "",
@@ -138,7 +176,15 @@ def _side_marker_blocker_row(record: Mapping[str, Any], *, source_gate: Mapping[
         "placement_accepted": placement_accepted,
         "full_fen_status": full_fen_status,
         "full_fen_accepted": full_fen_accepted,
-        "acceptance_blocker_codes": list(record.get("acceptance_blocker_codes") or []),
+        "board_crop_quality": board_crop_quality,
+        "marker_crop_quality": marker_crop_quality,
+        "manual_review_required": manual_review_required,
+        "manual_review_reason": manual_review_reason,
+        "board_crop_quality_blocks_full_fen": board_quality_blocked,
+        "marker_crop_quality_blocks_full_fen": marker_quality_blocked,
+        "marker_conflict_blocks_full_fen": marker_conflict_blocked,
+        "marker_manual_review_blocks_full_fen": marker_manual_review_blocked,
+        "acceptance_blocker_codes": sorted(blocker_codes),
     }
 
 
@@ -155,6 +201,10 @@ def _primary_side_marker_blocker(
     side_unknown: bool,
     placement_accepted: bool,
     full_fen_accepted: bool,
+    board_quality_blocked: bool,
+    marker_quality_blocked: bool,
+    marker_conflict_blocked: bool,
+    marker_manual_review_blocked: bool,
 ) -> str:
     if _source_html_overwrites_reader(source_gate):
         return "source_html_overwrite"
@@ -162,18 +212,24 @@ def _primary_side_marker_blocker(
         return "diagram_image_missing"
     if not has_board_bbox and not has_board_crop:
         return "board_bbox_missing"
+    if board_quality_blocked:
+        return "board_crop_quality_blocks_full_fen"
     if trusted_marker and side_unknown:
         return "trusted_marker_not_propagated"
     if not has_marker_probe:
         return "marker_probe_not_run"
-    if "conflict" in marker_status or "multi" in marker_status:
+    if marker_conflict_blocked or "conflict" in marker_status or "multi" in marker_status:
         return "marker_classifier_conflict"
     if "ambiguous" in marker_status or "noisy" in marker_status:
         return "marker_classifier_ambiguous"
     if marker_status in {"", "marker_missing", "side_to_move_marker_missing", "missing", "no_marker", "inferred_only"}:
         return "marker_classifier_missing"
+    if marker_quality_blocked:
+        return "marker_crop_quality_blocks_full_fen"
     if not has_marker_crop and not trusted_marker:
         return "marker_crop_not_generated"
+    if marker_manual_review_blocked:
+        return "marker_manual_review_required"
     if trusted_marker and not placement_accepted and not full_fen_accepted:
         return "placement_blocks_full_fen"
     if trusted_marker and placement_accepted and not full_fen_accepted:
@@ -215,6 +271,15 @@ def _truthy(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes"}
     return bool(value)
+
+
+def _blocker_codes(record: Mapping[str, Any]) -> set[str]:
+    codes = {str(code) for code in (record.get("acceptance_blocker_codes") or []) if str(code)}
+    for key in ("acceptance_blockers", "placement_acceptance_blockers", "validation_errors"):
+        for blocker in record.get(key) or []:
+            if isinstance(blocker, Mapping) and blocker.get("code"):
+                codes.add(str(blocker.get("code")))
+    return codes
 
 
 def _md(value: str) -> str:

@@ -1037,6 +1037,9 @@ def _side_marker_fields(source: dict[str, Any]) -> dict[str, Any]:
         "side_marker_assignment_trace",
         "strict_fen_side_evidence_trusted",
         "fen_suppressed_reason",
+        "board_crop_quality",
+        "board_crop_fail_reason",
+        "board_crop_quality_gate",
         "marker_crop_quality",
         "marker_crop_fail_reason",
         "marker_crop_quality_gate",
@@ -1558,6 +1561,30 @@ def _acceptance_blockers_report(fen_payload: dict[str, Any], pgn_payload: dict[s
 
 def _classify_acceptance_blocker(code: str, *, kind: str = "fen") -> str:
     normalized = str(code or "").strip()
+    if normalized in {"full_fen_blocked_by_board_crop_quality", "placement_blocked_by_board_crop_quality"}:
+        return "board_crop_quality"
+    if normalized in {"full_fen_blocked_by_marker_crop_quality", "marker_crop_quality_failed", "marker_crop_blocking_reason"}:
+        return "marker_crop_quality"
+    if normalized in {
+        "full_fen_blocked_by_marker_conflict",
+        "marker_conflict",
+        "multi_side",
+        "side_to_move_marker_local_conflict",
+        "side_to_move_marker_multi_region_conflict",
+    }:
+        return "marker_conflict"
+    if normalized in {
+        "full_fen_blocked_by_marker_manual_review",
+        "full_fen_blocked_by_marker",
+        "side_to_move_inferred",
+        "inferred_only",
+        "marker_missing",
+        "ambiguous_marker",
+        "multiple_candidates",
+        "unclear_symbol",
+        "side_to_move_marker_local_ambiguous",
+    }:
+        return "marker_review"
     if normalized in {
         "board_grid_not_detected",
         "board_visual_pattern_not_detected",
@@ -1919,18 +1946,25 @@ def _fen_two_gate_summary(items: list[dict[str, Any]]) -> dict[str, Any]:
 
     marker_codes = {
         "full_fen_blocked_by_marker",
+        "full_fen_blocked_by_marker_conflict",
+        "full_fen_blocked_by_marker_crop_quality",
+        "full_fen_blocked_by_marker_manual_review",
         "side_to_move_inferred",
         "inferred_only",
         "marker_missing",
         "marker_conflict",
         "ambiguous_marker",
         "multi_side",
+        "multiple_candidates",
         "side_to_move_marker_local_ambiguous",
         "side_to_move_marker_local_conflict",
         "side_to_move_marker_multi_region_conflict",
+        "unclear_symbol",
     }
     placement_codes = {
         "full_fen_blocked_by_placement",
+        "full_fen_blocked_by_board_crop_quality",
+        "placement_blocked_by_board_crop_quality",
         "placement_candidate_missing",
         "invalid_rank_count",
         "invalid_rank_width",
@@ -1948,6 +1982,18 @@ def _fen_two_gate_summary(items: list[dict[str, Any]]) -> dict[str, Any]:
         ),
         "full_fen_blocked_by_marker_count": len([item for item in items if blocker_codes(item) & marker_codes]),
         "full_fen_blocked_by_placement_count": len([item for item in items if blocker_codes(item) & placement_codes]),
+        "full_fen_blocked_by_board_crop_quality_count": len(
+            [item for item in items if "full_fen_blocked_by_board_crop_quality" in blocker_codes(item)]
+        ),
+        "full_fen_blocked_by_marker_crop_quality_count": len(
+            [item for item in items if "full_fen_blocked_by_marker_crop_quality" in blocker_codes(item)]
+        ),
+        "full_fen_blocked_by_marker_conflict_count": len(
+            [item for item in items if "full_fen_blocked_by_marker_conflict" in blocker_codes(item)]
+        ),
+        "full_fen_blocked_by_marker_manual_review_count": len(
+            [item for item in items if "full_fen_blocked_by_marker_manual_review" in blocker_codes(item)]
+        ),
     }
 
 
@@ -2017,18 +2063,25 @@ def _two_crop_quality_rows(diagrams: list[dict[str, Any]], fen_payload: dict[str
     fen_by_id = _fen_items_by_diagram_id(fen_payload)
     marker_blocker_codes = {
         "full_fen_blocked_by_marker",
+        "full_fen_blocked_by_marker_conflict",
+        "full_fen_blocked_by_marker_crop_quality",
+        "full_fen_blocked_by_marker_manual_review",
         "side_to_move_inferred",
         "inferred_only",
         "marker_missing",
         "marker_conflict",
         "ambiguous_marker",
         "multi_side",
+        "multiple_candidates",
         "side_to_move_marker_local_ambiguous",
         "side_to_move_marker_local_conflict",
         "side_to_move_marker_multi_region_conflict",
+        "unclear_symbol",
     }
     placement_blocker_codes = {
         "full_fen_blocked_by_placement",
+        "full_fen_blocked_by_board_crop_quality",
+        "placement_blocked_by_board_crop_quality",
         "placement_candidate_missing",
         "invalid_rank_count",
         "invalid_rank_width",

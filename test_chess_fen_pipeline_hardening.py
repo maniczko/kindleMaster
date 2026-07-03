@@ -177,6 +177,8 @@ class ChessFenPipelineHardeningTests(unittest.TestCase):
                 "side_to_move": "w",
                 "side_to_move_evidence": "marker_crop",
                 "side_marker_status": "trusted_marker",
+                "board_crop_quality": "pass",
+                "board_crop_quality_gate": {"decision": "pass", "reasons": []},
                 "marker_crop_quality": "pass",
                 "marker_bbox": [10.0, 20.0, 30.0, 40.0],
                 "selected_marker_zone": "right",
@@ -199,6 +201,8 @@ class ChessFenPipelineHardeningTests(unittest.TestCase):
                 "side_to_move_status": "explicit",
                 "side_to_move_evidence": "marker",
                 "side_marker_status": "trusted_marker",
+                "board_crop_quality": "pass",
+                "board_crop_quality_gate": {"decision": "pass", "reasons": []},
                 "marker_crop_quality": "fail",
                 "marker_crop_fail_reason": ["mostly_board_edge"],
                 "marker_bbox": [10.0, 20.0, 30.0, 40.0],
@@ -209,8 +213,90 @@ class ChessFenPipelineHardeningTests(unittest.TestCase):
         )
 
         self.assertEqual(result["runtime_status"], "FEN_REVIEW_REQUIRED")
+        self.assertIn("full_fen_blocked_by_marker_crop_quality", {blocker["code"] for blocker in result["acceptance_blockers"]})
         self.assertIn("marker_crop_quality_failed", {blocker["code"] for blocker in result["acceptance_blockers"]})
         self.assertEqual(result["acceptance_trace"]["side_to_move"]["marker_crop_quality"], "fail")
+
+    def test_machine_accept_fen_blocks_failed_board_crop_quality(self) -> None:
+        result = machine_accept_fen(
+            {
+                "source": "deterministic",
+                "fen": self.STARTING_FEN,
+                "confidence": 0.99,
+                "warnings": [],
+                "side_to_move": "w",
+                "side_to_move_status": "explicit",
+                "side_to_move_evidence": "marker",
+                "side_marker_status": "trusted_marker",
+                "board_crop_quality": "fail",
+                "board_crop_fail_reason": ["fragmentary_board_crop"],
+                "board_crop_quality_gate": {"decision": "fail", "reasons": ["fragmentary_board_crop"]},
+                "marker_crop_quality": "pass",
+                "marker_bbox": [10.0, 20.0, 30.0, 40.0],
+                "selected_marker_zone": "right",
+                "marker_crop_quality_gate": {"decision": "pass", "component_count": 1, "reasons": []},
+            },
+            {"min_confidence": 0.90},
+        )
+
+        codes = {blocker["code"] for blocker in result["acceptance_blockers"]}
+        self.assertEqual(result["runtime_status"], "FEN_REVIEW_REQUIRED")
+        self.assertIn("full_fen_blocked_by_board_crop_quality", codes)
+        self.assertEqual(result["acceptance_trace"]["crop_quality"]["board_crop_quality"], "fail")
+
+    def test_machine_accept_fen_blocks_marker_conflict_with_explicit_reason_code(self) -> None:
+        result = machine_accept_fen(
+            {
+                "source": "deterministic",
+                "fen": self.STARTING_FEN,
+                "confidence": 0.99,
+                "warnings": [],
+                "side_to_move": "w",
+                "side_to_move_status": "explicit",
+                "side_to_move_evidence": "marker",
+                "side_marker_status": "marker_conflict",
+                "board_crop_quality": "pass",
+                "board_crop_quality_gate": {"decision": "pass", "reasons": []},
+                "marker_crop_quality": "pass",
+                "marker_bbox": [10.0, 20.0, 30.0, 40.0],
+                "selected_marker_zone": "right",
+                "marker_crop_quality_gate": {"decision": "pass", "component_count": 1, "reasons": []},
+            },
+            {"min_confidence": 0.90},
+        )
+
+        codes = {blocker["code"] for blocker in result["acceptance_blockers"]}
+        self.assertEqual(result["runtime_status"], "FEN_REVIEW_REQUIRED")
+        self.assertIn("marker_conflict", codes)
+        self.assertIn("full_fen_blocked_by_marker_conflict", codes)
+        self.assertIn("full_fen_blocked_by_marker", codes)
+
+    def test_machine_accept_fen_blocks_manual_marker_review_even_with_side_value(self) -> None:
+        result = machine_accept_fen(
+            {
+                "source": "deterministic",
+                "fen": self.STARTING_FEN,
+                "confidence": 0.99,
+                "warnings": [],
+                "side_to_move": "w",
+                "side_to_move_status": "explicit",
+                "side_to_move_evidence": "marker",
+                "side_marker_status": "trusted_marker",
+                "board_crop_quality": "pass",
+                "board_crop_quality_gate": {"decision": "pass", "reasons": []},
+                "marker_crop_quality": "pass",
+                "marker_bbox": [10.0, 20.0, 30.0, 40.0],
+                "selected_marker_zone": "right",
+                "marker_crop_quality_gate": {"decision": "pass", "component_count": 1, "reasons": []},
+                "manual_review_required": True,
+                "manual_review_reason": "system_suggestion_mismatch",
+            },
+            {"min_confidence": 0.90},
+        )
+
+        codes = {blocker["code"] for blocker in result["acceptance_blockers"]}
+        self.assertEqual(result["runtime_status"], "FEN_REVIEW_REQUIRED")
+        self.assertIn("full_fen_blocked_by_marker_manual_review", codes)
 
     def test_machine_accept_placement_accepts_deterministic_placement_without_side_evidence(self) -> None:
         placement = self.STARTING_FEN.split()[0]
@@ -327,6 +413,8 @@ class ChessFenPipelineHardeningTests(unittest.TestCase):
                 "side_to_move": "w",
                 "side_to_move_evidence": "marker_crop",
                 "side_marker_status": "trusted_marker",
+                "board_crop_quality": "pass",
+                "board_crop_quality_gate": {"decision": "pass", "reasons": []},
                 "marker_crop_quality": "pass",
                 "marker_bbox": [10.0, 20.0, 30.0, 40.0],
                 "selected_marker_zone": "right",

@@ -215,6 +215,9 @@ def side_marker_learning_review_html(payload: Mapping[str, Any]) -> str:
     img {{ display:block; width:100%; max-height:260px; object-fit:contain; }}
     .no-img {{ color:var(--muted); font-size:.86rem; padding:14px; text-align:center; }}
     .body {{ padding:12px 14px 14px; display:grid; gap:14px; }}
+    .reason-codes {{ display:flex; flex-wrap:wrap; gap:6px; align-items:center; border:1px solid var(--line); border-radius:8px; background:#f8fafc; padding:8px; }}
+    .reason-codes strong {{ font-size:.82rem; margin-right:2px; }}
+    .reason-codes span {{ border:1px solid #dbe4ff; border-radius:999px; background:#eef2ff; padding:3px 8px; color:var(--muted); font-size:.76rem; overflow-wrap:anywhere; }}
     dl {{ display:grid; grid-template-columns:minmax(132px,auto) 1fr; gap:6px 10px; margin:0; font-size:.88rem; }}
     dt {{ color:var(--muted); font-weight:700; }}
     dd {{ margin:0; overflow-wrap:anywhere; }}
@@ -361,6 +364,8 @@ def _queue_row(record: Mapping[str, Any]) -> dict[str, Any]:
         "board_crop_path": str(record.get("board_crop_path") or ""),
         "side_marker_crop_path": str(record.get("side_marker_crop_path") or ""),
         "side_marker_search_crop_path": str(record.get("side_marker_search_crop_path") or ""),
+        "marker_search_zone_preview_path": str(record.get("marker_search_zone_preview_path") or record.get("side_marker_search_crop_path") or ""),
+        "marker_search_zone_preview_bbox": list(record.get("marker_search_zone_preview_bbox") or []),
         "side_marker_review_crop_path": str(
             record.get("side_marker_review_crop_path")
             or record.get("side_marker_crop_path")
@@ -894,13 +899,19 @@ def _review_card(row: Mapping[str, Any], index: int) -> str:
     </div>
   </div>
   <div class="media-grid">
-    {_figure('Crop planszy', row.get('board_crop_path'), row.get('diagram_id'), 'board')}
-    {_figure('Crop markera', row.get('side_marker_crop_path'), row.get('diagram_id'), 'marker')}
-    {_figure('Podgląd stref markera', row.get('side_marker_search_crop_path'), row.get('diagram_id'), 'marker-search')}
+    {_figure('Źródło / overlay', row.get('debug_overlay_path'), row.get('diagram_id'), 'overlay source_page_overlay')}
+    {_figure('Tight board_crop', row.get('board_crop_path'), row.get('diagram_id'), 'board board_crop')}
+    {_figure('marker_search_zone_preview', row.get('marker_search_zone_preview_path') or row.get('side_marker_search_crop_path'), row.get('diagram_id'), 'marker-search marker_search_zone_preview')}
+    {_figure('final marker_crop', row.get('side_marker_crop_path'), row.get('diagram_id'), 'marker marker_crop')}
     {_figure('Crop do oznaczenia', row.get('side_marker_review_crop_path') or row.get('side_marker_crop_path') or row.get('side_marker_search_crop_path'), row.get('diagram_id'), 'marker-review')}
-    {_figure('Debug overlay', row.get('debug_overlay_path'), row.get('diagram_id'), 'overlay')}
   </div>
   <div class="body">
+    <section class="reason-codes" data-section="reason_codes">
+      <strong>reason codes</strong>
+      <span>board: {_h(', '.join(row.get('board_crop_fail_reason') or []) or 'none')}</span>
+      <span>marker: {_h(', '.join(row.get('marker_crop_fail_reason') or []) or 'none')}</span>
+      <span>manual review: {_h(row.get('manual_review_reason') or 'none')}</span>
+    </section>
     <dl>
       <dt>System sugeruje</dt><dd>{_h(row.get('system_side_to_move') or 'unknown')}</dd>
       <dt>Symbol systemu</dt><dd>{_h(row.get('system_side_marker_symbol') or 'brak')}</dd>

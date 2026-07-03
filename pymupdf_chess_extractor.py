@@ -5515,7 +5515,15 @@ def _scan_chess_two_crop_review_artifacts(
     if fields["board_crop_quality"] != "pass":
         fields["manual_review_required"] = True
         fields["manual_review_reason"] = "bad_crop"
-    overlay = _scan_chess_debug_overlay(page_image, fields["board_bbox"], marker_bbox, marker_search_zones=zones)
+    overlay = _scan_chess_debug_overlay(
+        page_image,
+        fields["board_bbox"],
+        marker_bbox,
+        marker_search_zones=zones,
+        selected_marker_zone=str(fields.get("selected_marker_zone") or ""),
+        board_crop_quality=str(fields.get("board_crop_quality") or ""),
+        marker_crop_quality=str(fields.get("marker_crop_quality") or ""),
+    )
     if overlay is not None:
         files.append({"path": fields["debug_overlay_path"], "data": _png_bytes(overlay)})
     else:
@@ -6117,14 +6125,21 @@ def _scan_chess_debug_overlay(
     marker_bbox: Any,
     *,
     marker_search_zones: Mapping[str, Any] | None = None,
+    selected_marker_zone: str = "",
+    board_crop_quality: str = "",
+    marker_crop_quality: str = "",
 ) -> Image.Image | None:
     board = _coerce_side_marker_bbox(board_bbox)
     if not board:
         return None
     marker = _coerce_side_marker_bbox(marker_bbox)
-    zones = [_coerce_side_marker_bbox(value) for value in (marker_search_zones or {}).values()]
-    zones = [zone for zone in zones if zone]
-    boxes = [board] + zones + ([marker] if marker else [])
+    named_zones = [
+        (str(name), zone)
+        for name, value in (marker_search_zones or {}).items()
+        for zone in [_coerce_side_marker_bbox(value)]
+        if zone
+    ]
+    boxes = [board] + [zone for _name, zone in named_zones] + ([marker] if marker else [])
     x0 = min(box[0] for box in boxes)
     y0 = min(box[1] for box in boxes)
     x1 = max(box[2] for box in boxes)
@@ -6141,15 +6156,24 @@ def _scan_chess_debug_overlay(
 
     bx0, by0, bx1, by1 = local_box(board)
     draw.rectangle((bx0, by0, bx1, by1), outline="#1769aa", width=3)
+    draw.text((bx0 + 3, max(0, by0 - 13)), f"board_bbox {board_crop_quality or 'unknown'}", fill="#1769aa")
     for step in range(1, 8):
         x = bx0 + (bx1 - bx0) * step / 8.0
         y = by0 + (by1 - by0) * step / 8.0
         draw.line((x, by0, x, by1), fill="#1769aa", width=1)
         draw.line((bx0, y, bx1, y), fill="#1769aa", width=1)
-    for zone in zones:
-        draw.rectangle(local_box(zone), outline="#f59e0b", width=2)
+    for name, zone in named_zones:
+        zx0, zy0, zx1, zy1 = local_box(zone)
+        color = "#b45309" if name == selected_marker_zone else "#f59e0b"
+        draw.rectangle((zx0, zy0, zx1, zy1), outline=color, width=3 if name == selected_marker_zone else 2)
+        label = f"{name} search_zone"
+        if name == selected_marker_zone:
+            label += " selected"
+        draw.text((zx0 + 3, max(0, zy0 - 12)), label, fill=color)
     if marker:
-        draw.rectangle(local_box(marker), outline="#b42318", width=3)
+        mx0, my0, mx1, my1 = local_box(marker)
+        draw.rectangle((mx0, my0, mx1, my1), outline="#b42318", width=3)
+        draw.text((mx0 + 3, max(0, my0 - 13)), f"marker_bbox {marker_crop_quality or 'unknown'}", fill="#b42318")
     return overlay
 
 
@@ -6662,25 +6686,70 @@ def _scan_chess_side_marker_metadata_from_payload(payload: Mapping[str, Any]) ->
         confidence_value = ""
     trace = {
         "candidate_count": len(candidates),
+        "candidate_roles": [
+            str(candidate.get("role") or candidate.get("zone") or candidate.get("source") or "")
+            for candidate in candidates
+            if isinstance(candidate, Mapping)
+        ],
         "trusted": marker_status in SIDE_MARKER_TRUSTED_STATUSES,
         "warnings": sorted(warnings),
         "marker_crop_fail_reason": list(payload.get("marker_crop_fail_reason") or []),
+        "rejected_candidate_reasons": [],
     }
     if payload.get("side_marker_probe_role"):
         trace["selected_candidate_role"] = str(payload.get("side_marker_probe_role") or "")
     if candidates:
+        selected = _scan_chess_best_marker_candidate(candidates)
         nearest = min(
             candidates,
             key=lambda item: float(item.get("distance_to_board") or 10**9) if isinstance(item, Mapping) else 10**9,
         )
+        if selected is None:
+            selected = nearest if isinstance(nearest, Mapping) else None
         if isinstance(nearest, Mapping):
-            trace["nearest_candidate_role"] = str(nearest.get("role") or "")
+            trace["nearest_candidate_role"] = str(nearest.get("role") or nearest.get("zone") or nearest.get("source") or "")
             trace["nearest_candidate_distance"] = nearest.get("distance_to_board")
             trace["nearest_candidate_side"] = nearest.get("detected_side") or nearest.get("side_candidate") or ""
-            trace["detected_side"] = nearest.get("detected_side") or nearest.get("side_candidate") or ""
-            trace["score"] = nearest.get("score")
-            trace["distance_to_board"] = nearest.get("distance_to_board")
-            trace.setdefault("selected_candidate_role", str(nearest.get("role") or ""))
+        if isinstance(selected, Mapping):
+            selected_role = str(selected.get("role") or selected.get("zone") or selected.get("source") or "")
+            selected_side = str(selected.get("detected_side") or selected.get("side_candidate") or "")
+            trace["selected_candidate_role"] = selected_role
+            trace["selected_candidate_score"] = selected.get("score")
+            trace["selected_candidate_density"] = selected.get("density")
+            trace["selected_candidate_distance_to_board"] = selected.get("distance_to_board")
+            trace["selected_candidate_bbox"] = _coerce_side_marker_bbox(selected.get("bbox") or selected.get("marker_bbox"))
+            trace["selected_candidate_role"] = selected_role
+            trace["selected_candidate_side"] = selected_side
+            trace["detected_side"] = selected_side
+            trace["score"] = selected.get("score")
+            trace["distance_to_board"] = selected.get("distance_to_board")
+            rejected: list[dict[str, Any]] = []
+            for candidate in candidates:
+                if not isinstance(candidate, Mapping) or candidate is selected:
+                    continue
+                role = str(candidate.get("role") or candidate.get("zone") or candidate.get("source") or "")
+                side_candidate = str(candidate.get("detected_side") or candidate.get("side_candidate") or "")
+                classifier_status = str(candidate.get("marker_classifier_status") or candidate.get("status") or "")
+                if selected_side in {"w", "b"} and side_candidate in {"w", "b"} and side_candidate != selected_side:
+                    reason = "opposite_side_candidate"
+                elif classifier_status and classifier_status != "trusted_marker":
+                    reason = classifier_status
+                elif not side_candidate:
+                    reason = "no_side_candidate"
+                else:
+                    reason = "lower_score_candidate"
+                rejected.append(
+                    {
+                        "role": role,
+                        "reason": reason,
+                        "side": side_candidate,
+                        "score": candidate.get("score"),
+                        "density": candidate.get("density"),
+                        "distance_to_board": candidate.get("distance_to_board"),
+                        "bbox": _coerce_side_marker_bbox(candidate.get("bbox") or candidate.get("marker_bbox")),
+                    }
+                )
+            trace["rejected_candidate_reasons"] = rejected
 
     return {
         "side_to_move": side,

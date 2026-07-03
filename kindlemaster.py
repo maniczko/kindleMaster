@@ -420,6 +420,12 @@ def main() -> int:
     ml_fen_alternatives.add_argument("--baseline-report", default="reports/corpus/fen_corpus_90.json")
     ml_fen_alternatives.add_argument("--max-cases", type=int, default=80)
 
+    ml_chess_benchmark = ml_subparsers.add_parser("chess-benchmark", help="Build the chess crop/marker/FEN/PGN learning benchmark report.")
+    ml_chess_benchmark.add_argument("--labels-dir", default="reference_inputs/chess_fen/labels")
+    ml_chess_benchmark.add_argument("--report", default="reports/ml/datasets/chess_learning_benchmark_report.json")
+    ml_chess_benchmark.add_argument("--min-per-type", type=int, default=30)
+    ml_chess_benchmark.add_argument("--write-ledger", action="store_true")
+
     ml_feedback = ml_subparsers.add_parser("feedback-export", help="Export local conversion/user feedback events into an ML JSONL dataset.")
     ml_feedback.add_argument("--feedback-log", default="reports/ml/feedback/conversion_feedback.jsonl")
     ml_feedback.add_argument("--output", default="reports/ml/datasets/quality_feedback_examples.jsonl")
@@ -1302,6 +1308,27 @@ def _run_ml(args: argparse.Namespace) -> int:
             }
         )
         return 0
+    if args.ml_command == "chess-benchmark":
+        from chess_learning_labels import build_chess_learning_benchmark
+
+        payload = build_chess_learning_benchmark(
+            labels_dir=args.labels_dir,
+            report_path=args.report,
+            min_per_type=args.min_per_type,
+            write_ledger=args.write_ledger,
+        )
+        _print_json(
+            {
+                "schema": payload.get("schema"),
+                "status": payload.get("status"),
+                "report_path": payload.get("report_path"),
+                "usable_label_count": (payload.get("summary") or {}).get("usable_label_count"),
+                "label_type_counts": (payload.get("summary") or {}).get("label_type_counts"),
+                "full_fen_gate": payload.get("full_fen_gate"),
+                "learning_ledger": payload.get("learning_ledger"),
+            }
+        )
+        return 0
     if args.ml_command == "promote":
         from scripts.train_route_classifier import promote_route_classifier
 
@@ -1331,7 +1358,7 @@ def _run_ml(args: argparse.Namespace) -> int:
         payload = rollback_model(model_name=args.model, to_version=args.to_version)
         _print_json(payload)
         return 0 if payload.get("status") == "rolled_back" else 1
-    _print_json({"status": "failed", "error": "Missing ml subcommand. Use dataset, feedback, feedback-export, train, evaluate, retrain-all, rollback, evaluate-fen-experiment, evaluate-fen-alternatives, or promote."})
+    _print_json({"status": "failed", "error": "Missing ml subcommand. Use dataset, feedback, feedback-export, train, evaluate, retrain-all, rollback, evaluate-fen-experiment, evaluate-fen-alternatives, chess-benchmark, or promote."})
     return 1
 
 

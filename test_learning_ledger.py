@@ -13,6 +13,9 @@ from learning_ledger import (
     DEFAULT_INDEX_PATH,
     PRIVACY_PAYLOAD,
     build_conversion_learning_index,
+    record_chess_benchmark_built,
+    record_chess_label_added,
+    record_chess_profile_promoted,
     record_dataset_built,
     record_model_evaluated,
     record_model_promotion_blocked,
@@ -244,6 +247,61 @@ class LearningLedgerTests(unittest.TestCase):
             self.assertEqual(dataset_event["training_readiness_status"], "ready")
             self.assertTrue(dataset_event["promotion_allowed"])
             self.assertEqual(dataset_event["quality_feedback_count"], 3)
+
+    def test_chess_learning_events_are_indexed_without_runtime_acceptance(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            label = {
+                "label_id": "cl-test",
+                "diagram_id": "p010_d03",
+                "label_type": "side_marker",
+                "label_value": "black",
+                "reviewer": "qa",
+                "human_verified": True,
+                "accepted_for_runtime": False,
+                "bypasses_full_fen_gate": False,
+            }
+
+            label_event = record_chess_label_added(label_payload=label, repo_root=root)
+            benchmark_event = record_chess_benchmark_built(
+                benchmark_payload={
+                    "status": "READY_FOR_BENCHMARK",
+                    "dataset_version": "chess-20260703",
+                    "source_files": ["reference_inputs/chess_fen/labels/side_marker_labels.jsonl"],
+                    "summary": {
+                        "usable_label_count": 30,
+                        "label_type_counts": {"side_marker": 30},
+                    },
+                },
+                repo_root=root,
+            )
+            promoted_event = record_chess_profile_promoted(
+                promotion_payload={
+                    "status": "promoted",
+                    "dataset_version": "chess-20260703",
+                    "profile_version_before": "profile-v1",
+                    "profile_version": "profile-v2",
+                },
+                repo_root=root,
+            )
+
+            index = build_conversion_learning_index(events_path=root / DEFAULT_EVENTS_PATH)
+            events = [
+                json.loads(line)
+                for line in (root / DEFAULT_EVENTS_PATH).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+
+        self.assertEqual(label_event["status"], "recorded")
+        self.assertEqual(benchmark_event["status"], "recorded")
+        self.assertEqual(promoted_event["status"], "recorded")
+        self.assertEqual(index["event_type_counts"]["chess_label_added"], 1)
+        self.assertEqual(index["event_type_counts"]["chess_benchmark_built"], 1)
+        self.assertEqual(index["event_type_counts"]["chess_profile_promoted"], 1)
+        label_payload = events[0]
+        self.assertEqual(label_payload["label_type"], "side_marker")
+        self.assertFalse(label_payload["chess_metrics"]["accepted_for_runtime"])
+        self.assertFalse(label_payload["chess_metrics"]["bypasses_full_fen_gate"])
 
 
 if __name__ == "__main__":

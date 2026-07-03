@@ -132,6 +132,20 @@ def build_ml_datasets(
     ]
     collision_report = build_feature_collision_report(route_examples)
     collision_path.write_text(json.dumps(collision_report, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        from chess_learning_labels import build_chess_learning_benchmark
+
+        chess_learning_benchmark = build_chess_learning_benchmark(
+            labels_dir=root / "reference_inputs" / "chess_fen" / "labels",
+            repo_root=root,
+            report_path=output_root / "chess_learning_benchmark_report.json",
+        )
+    except Exception as error:
+        chess_learning_benchmark = {
+            "status": "failed",
+            "error": str(error),
+            "summary": {"usable_label_count": 0, "label_type_counts": {}},
+        }
     readiness = build_dataset_readiness(
         label_counts=label_counts,
         missing_classes=missing_classes,
@@ -151,6 +165,9 @@ def build_ml_datasets(
         "quality_feedback_role_counts": dict(Counter(example.get("dataset_role", "unknown") for example in quality_feedback_examples)),
         "quality_coverage_status": quality_coverage["status"],
         "quality_coverage": quality_coverage,
+        "chess_learning_label_count": int((chess_learning_benchmark.get("summary") or {}).get("usable_label_count") or 0),
+        "chess_learning_benchmark_status": str(chess_learning_benchmark.get("status") or ""),
+        "chess_learning_benchmark": chess_learning_benchmark,
         "heading_reference_example_count": len(heading_reference_examples),
         "route_label_counts": label_counts,
         "missing_route_classes": missing_classes,
@@ -167,6 +184,7 @@ def build_ml_datasets(
             "magazine_quality_examples": str(magazine_quality_path),
             "quality_feedback_examples": str(quality_feedback_path),
             "heading_reference_examples": str(review_path),
+            "chess_learning_benchmark": str(output_root / "chess_learning_benchmark_report.json"),
             "completeness_report": str(completeness_path),
             "feature_collision_report": str(collision_path),
         },
@@ -301,6 +319,7 @@ def _publish_versioned_dataset(
             "heading_reference_examples": heading_reference_examples,
             "feature_collision_report": collision_report,
             "dataset_readiness": readiness,
+            "chess_learning_benchmark": _mapping(completeness.get("chess_learning_benchmark")),
         }
     )
     dataset_version = _dataset_version(dataset_hash)
@@ -317,6 +336,7 @@ def _publish_versioned_dataset(
         "dataset_card_md": version_dir / "dataset_card.md",
         "readiness_report": version_dir / "readiness_report.json",
         "feature_collision_report": version_dir / "feature_collision_report.json",
+        "chess_learning_benchmark": version_dir / "chess_learning_benchmark_report.json",
     }
     _write_jsonl(versioned_outputs["route_examples"], route_examples)
     _write_jsonl(versioned_outputs["feedback_route_examples"], feedback_route_examples)
@@ -324,6 +344,7 @@ def _publish_versioned_dataset(
     _write_jsonl(versioned_outputs["magazine_quality_examples"], magazine_quality_examples)
     _write_jsonl(versioned_outputs["heading_reference_examples"], heading_reference_examples)
     _write_json(versioned_outputs["feature_collision_report"], collision_report)
+    _write_json(versioned_outputs["chess_learning_benchmark"], _mapping(completeness.get("chess_learning_benchmark")))
 
     dashboard = _build_training_readiness_dashboard(
         dataset_version=dataset_version,
@@ -403,6 +424,8 @@ def _build_training_readiness_dashboard(
     heading_reference_examples: list[dict[str, Any]],
 ) -> dict[str, Any]:
     quality_coverage = _mapping(completeness.get("quality_coverage"))
+    chess_learning = _mapping(completeness.get("chess_learning_benchmark"))
+    chess_learning_summary = _mapping(chess_learning.get("summary"))
     route_status = str(readiness.get("status") or "insufficient_data")
     route_promotion_allowed = bool(readiness.get("promotion_allowed"))
     components = {
@@ -427,6 +450,14 @@ def _build_training_readiness_dashboard(
             rows=quality_feedback_examples + magazine_quality_examples + heading_reference_examples,
             tokens=("chess", "diagram", "fen", "pgn", "board", "side_marker"),
         ),
+        "chess_learning": {
+            "status": str(chess_learning.get("status") or "TRAINING_DATA_GAP"),
+            "example_count": int(chess_learning_summary.get("usable_label_count") or 0),
+            "label_type_counts": dict(_mapping(chess_learning_summary.get("label_type_counts"))),
+            "missing_label_types": list(chess_learning_summary.get("missing_label_types") or []),
+            "promotion_allowed": str(chess_learning.get("status") or "") == "READY_FOR_BENCHMARK",
+            "policy": str(chess_learning.get("policy") or ""),
+        },
         "layout_presentation": _domain_readiness_component(
             name="layout_presentation",
             rows=quality_feedback_examples + magazine_quality_examples,

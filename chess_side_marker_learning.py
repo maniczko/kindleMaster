@@ -3,7 +3,10 @@ from __future__ import annotations
 import html
 import json
 from collections import Counter, defaultdict
+from pathlib import Path
 from typing import Any, Iterable, Mapping
+
+from chess_learning_labels import CHESS_LABEL_SCHEMA, crop_hash
 
 
 SCHEMA = "kindlemaster.chess_fen.side_marker_learning.v1"
@@ -38,9 +41,10 @@ def build_side_marker_learning_artifacts(
     manual_labels: Iterable[Mapping[str, Any]] | None = None,
     min_verified_labels: int = MIN_VERIFIED_LABELS,
     max_queue_items: int = 200,
+    artifact_root: str | Path | None = None,
 ) -> dict[str, Any]:
     base_rows = _merged_rows(records, blocker_report=blocker_report, assignment_report=assignment_report)
-    queue_rows = [_queue_row(row) for row in base_rows]
+    queue_rows = [_queue_row(row, artifact_root=artifact_root) for row in base_rows]
     queue_rows.sort(key=_queue_sort_key)
     if max_queue_items > 0:
         queue_rows = queue_rows[:max_queue_items]
@@ -165,7 +169,7 @@ def side_marker_learning_review_html(payload: Mapping[str, Any]) -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Oznaczanie markerów ruchu - KindleMaster</title>
+  <title>Chess Learning Review - KindleMaster</title>
   <style>
     :root {{
       --bg:#f5f7fb; --surface:#ffffff; --ink:#172033; --muted:#5d6878;
@@ -288,14 +292,14 @@ def side_marker_learning_review_html(payload: Mapping[str, Any]) -> str:
     <div class="bar">
       <div class="title-row">
         <div>
-          <h1>Oznaczanie markerów ruchu</h1>
-          <p class="meta">Uzupełniasz tylko marker przy diagramie: <strong>△ = białe mają ruch</strong>, <strong>▼ = czarne mają ruch</strong>. Etykiety uczą i oceniają logikę markera; nie publikują automatycznie pełnego FEN.</p>
+          <h1>Chess Learning Review</h1>
+          <p class="meta">Oznaczasz crop planszy, crop markera, marker ruchu, FEN, PGN i link diagram-tekst. Etykiety uczą i oceniają pipeline; nie publikują automatycznie pełnego FEN.</p>
         </div>
       </div>
       <section class="guide" aria-label="Jak oznaczać">
-        <div class="guide-step"><strong>1. Sprawdź crop markera</strong><span>Patrz na mały wycinek obok planszy, nie na układ figur.</span></div>
-        <div class="guide-step"><strong>2. Wybierz widoczny znak</strong><span>△ oznacza ruch białych, ▼ oznacza ruch czarnych; nie zgaduj przy szumie.</span></div>
-        <div class="guide-step"><strong>3. Skopiuj JSONL</strong><span>Zaznacz “sprawdzone przez człowieka”, pobierz JSONL i użyj go jako ręczne etykiety.</span></div>
+        <div class="guide-step"><strong>1. Sprawdź obrazy</strong><span>Porównaj overlay, tight board_crop i crop markera.</span></div>
+        <div class="guide-step"><strong>2. Oznacz jakość i treść</strong><span>△ = białe, ▼ = czarne; FEN/PGN oceniaj tylko gdy jest jasne.</span></div>
+        <div class="guide-step"><strong>3. Pobierz JSONL</strong><span>Kanoniczny eksport tworzy osobne label rows dla datasetu szachowego.</span></div>
       </section>
       <section class="stats" aria-label="Podsumowanie kolejki oznaczania">
         <div class="stat"><span>Pozycje w kolejce</span><strong>{_h(summary.get('queue_count', 0))}</strong></div>
@@ -342,7 +346,7 @@ def _merged_rows(
     return rows
 
 
-def _queue_row(record: Mapping[str, Any]) -> dict[str, Any]:
+def _queue_row(record: Mapping[str, Any], *, artifact_root: str | Path | None = None) -> dict[str, Any]:
     blocker = str(record.get("primary_side_marker_blocker") or _fallback_blocker(record))
     status = str(record.get("side_marker_status") or "marker_missing")
     side = _normalize_side(record.get("side_to_move")) or "unknown"
@@ -351,6 +355,14 @@ def _queue_row(record: Mapping[str, Any]) -> dict[str, Any]:
         priority += 40
     elif _is_trusted_marker(record) and side in {"w", "b"}:
         priority += 20
+    board_crop_path = str(record.get("board_crop_path") or "")
+    marker_crop_path = str(record.get("side_marker_crop_path") or "")
+    marker_review_crop_path = str(
+        record.get("side_marker_review_crop_path")
+        or marker_crop_path
+        or record.get("side_marker_search_crop_path")
+        or ""
+    )
     return {
         "schema": QUEUE_SCHEMA,
         "diagram_id": str(record.get("diagram_id") or ""),
@@ -361,17 +373,14 @@ def _queue_row(record: Mapping[str, Any]) -> dict[str, Any]:
         "system_side_marker_status": status,
         "system_side_marker_symbol": str(record.get("side_marker_symbol") or ""),
         "system_side_marker_confidence": record.get("side_marker_confidence") or "",
-        "board_crop_path": str(record.get("board_crop_path") or ""),
-        "side_marker_crop_path": str(record.get("side_marker_crop_path") or ""),
+        "board_crop_path": board_crop_path,
+        "board_crop_hash": str(record.get("board_crop_hash") or crop_hash(board_crop_path, artifact_root=artifact_root)),
+        "side_marker_crop_path": marker_crop_path,
+        "marker_crop_hash": str(record.get("marker_crop_hash") or crop_hash(marker_review_crop_path or marker_crop_path, artifact_root=artifact_root)),
         "side_marker_search_crop_path": str(record.get("side_marker_search_crop_path") or ""),
         "marker_search_zone_preview_path": str(record.get("marker_search_zone_preview_path") or record.get("side_marker_search_crop_path") or ""),
         "marker_search_zone_preview_bbox": list(record.get("marker_search_zone_preview_bbox") or []),
-        "side_marker_review_crop_path": str(
-            record.get("side_marker_review_crop_path")
-            or record.get("side_marker_crop_path")
-            or record.get("side_marker_search_crop_path")
-            or ""
-        ),
+        "side_marker_review_crop_path": marker_review_crop_path,
         "side_marker_review_crop_kind": str(record.get("side_marker_review_crop_kind") or ""),
         "debug_overlay_path": str(record.get("debug_overlay_path") or ""),
         "board_crop_quality": str(record.get("board_crop_quality") or ""),
@@ -395,6 +404,11 @@ def _queue_row(record: Mapping[str, Any]) -> dict[str, Any]:
         "manual_marker_shape": "",
         "manual_marker_location": "",
         "manual_marker_bbox": "",
+        "board_crop_label": "",
+        "side_marker_crop_label": "",
+        "fen_label": "",
+        "pgn_label": "",
+        "diagram_text_link_label": "",
         "manual_notes": "",
         "human_verified": False,
         "accepted_for_runtime": False,
@@ -408,7 +422,9 @@ def _label_template_row(row: Mapping[str, Any]) -> dict[str, Any]:
         "diagram_id": row.get("diagram_id") or "",
         "page": row.get("page") or "",
         "board_crop_path": row.get("board_crop_path") or "",
+        "board_crop_hash": row.get("board_crop_hash") or "",
         "side_marker_crop_path": row.get("side_marker_crop_path") or "",
+        "marker_crop_hash": row.get("marker_crop_hash") or "",
         "side_marker_search_crop_path": row.get("side_marker_search_crop_path") or "",
         "side_marker_review_crop_path": row.get("side_marker_review_crop_path") or row.get("side_marker_crop_path") or "",
         "side_marker_review_crop_kind": row.get("side_marker_review_crop_kind") or "",
@@ -427,9 +443,18 @@ def _label_template_row(row: Mapping[str, Any]) -> dict[str, Any]:
         "manual_marker_shape": "",
         "manual_marker_location": "",
         "manual_marker_bbox": "",
+        "board_crop_label": "",
+        "side_marker_crop_label": "",
+        "fen_label": "",
+        "pgn_label": "",
+        "diagram_text_link_label": "",
+        "chess_learning_label_schema": CHESS_LABEL_SCHEMA,
+        "chess_learning_labels": [],
         "label_status": "needs_manual_marker",
         "human_verified": False,
         "verification_source": "",
+        "reviewer": "",
+        "created_at": "",
         "verified_by": "",
         "verified_at": "",
         "manual_notes": "",
@@ -763,11 +788,13 @@ def _review_toolbar() -> str:
     return """<section class="toolbar" aria-label="Akcje dla etykiet">
   <div class="toolbar-text">
     <strong>Eksport etykiet</strong>
-    <span>Formularz zapisuje podgląd w przeglądarce i generuje plik JSONL do dalszego uczenia/evaluacji.</span>
+    <span>Formularz zapisuje podgląd w przeglądarce. Stary eksport markerów zostaje, a chess learning JSONL ma osobne label rows dla benchmarku.</span>
   </div>
   <div class="toolbar-actions">
     <button type="button" class="copy-all">Kopiuj wszystkie JSONL</button>
     <button type="button" class="primary download-labels">Pobierz labels.jsonl</button>
+    <button type="button" class="copy-chess-labels">Kopiuj chess learning JSONL</button>
+    <button type="button" class="primary download-chess-labels">Pobierz chess_learning_labels.jsonl</button>
   </div>
 </section>"""
 
@@ -888,6 +915,11 @@ def _review_card(row: Mapping[str, Any], index: int) -> str:
     safe_id = _dom_id(row.get("diagram_id"), index)
     marker_name = f"marker-{safe_id}"
     side_name = f"side-{safe_id}"
+    board_crop_name = f"board-crop-{safe_id}"
+    marker_crop_name = f"marker-crop-{safe_id}"
+    fen_name = f"fen-{safe_id}"
+    pgn_name = f"pgn-{safe_id}"
+    link_name = f"diagram-link-{safe_id}"
     storage_key = f"kindlemaster.side_marker_label.{row.get('diagram_id') or index}"
     return f"""<article class="review-card" data-index="{index}" data-storage-key="{_attr(storage_key)}" data-template="{_json_attr(template)}">
   <div class="head">
@@ -925,6 +957,21 @@ def _review_card(row: Mapping[str, Any], index: int) -> str:
     </dl>
     <form class="label-form">
       <fieldset>
+        <legend>Jakość cropów</legend>
+        <p class="hint">Oceń obrazy, które zasilają rozpoznawanie. To nie akceptuje FEN, tylko buduje benchmark jakości.</p>
+        <div class="choice-grid">
+          {_radio(board_crop_name, 'correct', 'Board crop poprawny', 'tight 8x8 obejmuje właściwą planszę')}
+          {_radio(board_crop_name, 'shifted', 'Board crop przesunięty', 'plansza jest ucięta lub przesunięta')}
+          {_radio(board_crop_name, 'wrong', 'Board crop błędny', 'to nie jest właściwa plansza')}
+          {_radio(board_crop_name, 'missing', 'Board crop brak', 'nie ma obrazu planszy do oceny')}
+        </div>
+        <div class="choice-grid">
+          {_radio(marker_crop_name, 'correct', 'Marker crop poprawny', 'widać właściwy obszar znacznika')}
+          {_radio(marker_crop_name, 'wrong', 'Marker crop błędny', 'pokazuje zły obszar albo obcy diagram')}
+          {_radio(marker_crop_name, 'missing', 'Marker crop brak', 'brakuje sensownego cropa markera')}
+        </div>
+      </fieldset>
+      <fieldset>
         <legend>Co widać w cropie markera?</legend>
         <p class="hint">Wybierz tylko to, co naprawdę widać. Przy szumie albo kilku znakach zostaw rekord do przeglądu.</p>
         <div class="choice-grid">
@@ -943,6 +990,25 @@ def _review_card(row: Mapping[str, Any], index: int) -> str:
           {_radio(side_name, 'w', 'Białe', 'manual_side_to_move = w')}
           {_radio(side_name, 'b', 'Czarne', 'manual_side_to_move = b')}
           {_radio(side_name, 'unknown', 'Nie wiadomo', 'brak bezpiecznej etykiety')}
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>FEN, PGN i link diagram-tekst</legend>
+        <p class="hint">Oceniaj tylko to, co da się zweryfikować z raportu. Gdy brak danych, wybierz unavailable albo unclear.</p>
+        <div class="choice-grid">
+          {_radio(fen_name, 'correct', 'FEN poprawny', 'rozpoznana pozycja odpowiada diagramowi')}
+          {_radio(fen_name, 'wrong', 'FEN błędny', 'pozycja nie odpowiada diagramowi')}
+          {_radio(fen_name, 'unavailable', 'FEN niedostępny', 'brak wystarczającego wyniku do oceny')}
+        </div>
+        <div class="choice-grid">
+          {_radio(pgn_name, 'correct', 'PGN poprawny', 'notation/replay jest poprawny')}
+          {_radio(pgn_name, 'wrong', 'PGN błędny', 'notation/replay wymaga poprawy')}
+          {_radio(pgn_name, 'unavailable', 'PGN niedostępny', 'brak PGN do oceny')}
+        </div>
+        <div class="choice-grid">
+          {_radio(link_name, 'correct', 'Link poprawny', 'diagram pasuje do właściwego tekstu/ćwiczenia')}
+          {_radio(link_name, 'wrong', 'Link błędny', 'diagram jest przypięty do złego tekstu')}
+          {_radio(link_name, 'unclear', 'Link niejasny', 'nie da się bezpiecznie potwierdzić')}
         </div>
       </fieldset>
       <div class="field-grid">
@@ -991,9 +1057,11 @@ def _radio(name: str, value: str, label: str, detail: str) -> str:
 
 def _review_script() -> str:
     policy = json.dumps(REVIEW_ONLY_POLICY, ensure_ascii=False)
+    label_schema = json.dumps(CHESS_LABEL_SCHEMA, ensure_ascii=False)
     return """<script>
 (function () {
   const POLICY = __POLICY__;
+  const CHESS_LABEL_SCHEMA = __CHESS_LABEL_SCHEMA__;
   const markerToSide = { outline_triangle: "w", filled_triangle: "b" };
   const markerToStatus = {
     outline_triangle: "verified",
@@ -1026,7 +1094,12 @@ def _review_script() -> str:
       notes: form.querySelector(".notes").value.trim(),
       verified: form.querySelector(".human-verified").checked,
       verifiedBy: form.querySelector(".verified-by").value.trim(),
-      verifiedAt: form.querySelector(".verified-at").value
+      verifiedAt: form.querySelector(".verified-at").value,
+      boardCrop: radioValue(form, "board-crop"),
+      markerCrop: radioValue(form, "marker-crop"),
+      fen: radioValue(form, "fen"),
+      pgn: radioValue(form, "pgn"),
+      diagramLink: radioValue(form, "diagram-link")
     };
   }
 
@@ -1035,6 +1108,11 @@ def _review_script() -> str:
     if (!form || !state) return;
     setRadio(form, "marker", state.marker || "");
     setRadio(form, "side", state.side || "");
+    setRadio(form, "board-crop", state.boardCrop || "");
+    setRadio(form, "marker-crop", state.markerCrop || "");
+    setRadio(form, "fen", state.fen || "");
+    setRadio(form, "pgn", state.pgn || "");
+    setRadio(form, "diagram-link", state.diagramLink || "");
     form.querySelector(".marker-location").value = state.location || "";
     form.querySelector(".marker-bbox").value = state.bbox || "";
     form.querySelector(".notes").value = state.notes || "";
@@ -1054,16 +1132,89 @@ def _review_script() -> str:
     row.manual_side_to_move = state.side && state.side !== "unknown" ? state.side : inferredSide;
     row.manual_marker_location = state.location;
     row.manual_marker_bbox = state.bbox;
+    row.board_crop_label = state.boardCrop || "";
+    row.side_marker_crop_label = state.markerCrop || "";
+    row.fen_label = state.fen || "";
+    row.pgn_label = state.pgn || "";
+    row.diagram_text_link_label = state.diagramLink || "";
     row.manual_notes = state.notes;
     row.human_verified = Boolean(state.verified);
     row.verification_source = state.verified ? "human_visual" : "";
+    row.reviewer = state.verified ? state.verifiedBy : "";
+    row.created_at = state.verified ? state.verifiedAt : "";
     row.verified_by = state.verified ? state.verifiedBy : "";
     row.verified_at = state.verified ? state.verifiedAt : "";
-    row.label_status = state.verified && markerToStatus[state.marker] ? "verified" : "needs_manual_marker";
+    row.chess_learning_label_schema = CHESS_LABEL_SCHEMA;
+    row.chess_learning_labels = chessLearningRows(row, state);
+    row.label_status = state.verified && selectedLabelCount(state) > 0 ? "verified" : "needs_manual_marker";
     row.accepted_for_runtime = false;
     row.accepted_for_corpus = false;
     row.policy = POLICY;
     return row;
+  }
+
+  function selectedLabelCount(state) {
+    return [
+      state.boardCrop,
+      state.markerCrop,
+      state.marker,
+      state.fen,
+      state.pgn,
+      state.diagramLink
+    ].filter(Boolean).length;
+  }
+
+  function labelId(row, labelType) {
+    return [
+      "cl",
+      String(row.diagram_id || "").replace(/[^A-Za-z0-9_.-]/g, "_"),
+      labelType,
+      String(row.board_crop_hash || "no_board_hash").slice(-12),
+      String(row.marker_crop_hash || "no_marker_hash").slice(-12)
+    ].join("_");
+  }
+
+  function normalizeSideMarker(value) {
+    if (value === "outline_triangle") return "white";
+    if (value === "filled_triangle") return "black";
+    return value || "";
+  }
+
+  function chessLearningRows(row, state) {
+    if (!state.verified || !state.verifiedBy || !state.verifiedAt) return [];
+    const values = [
+      ["board_crop", state.boardCrop],
+      ["side_marker_crop", state.markerCrop],
+      ["side_marker", normalizeSideMarker(state.marker)],
+      ["fen", state.fen],
+      ["pgn", state.pgn],
+      ["diagram_text_link", state.diagramLink]
+    ];
+    return values
+      .filter((entry) => Boolean(entry[1]))
+      .map((entry) => {
+        const labelType = entry[0];
+        return {
+          schema: CHESS_LABEL_SCHEMA,
+          label_id: labelId(row, labelType),
+          diagram_id: row.diagram_id || "",
+          page: row.page || "",
+          board_crop_hash: row.board_crop_hash || "",
+          marker_crop_hash: row.marker_crop_hash || "",
+          label_type: labelType,
+          label_value: entry[1],
+          reviewer: state.verifiedBy,
+          created_at: state.verifiedAt,
+          confidence: "human_verified",
+          human_verified: true,
+          verification_source: "human_visual",
+          notes: state.notes || "",
+          accepted_for_runtime: false,
+          accepted_for_corpus: false,
+          bypasses_full_fen_gate: false,
+          policy: POLICY
+        };
+      });
   }
 
   function writePreview(card, persist) {
@@ -1100,6 +1251,17 @@ def _review_script() -> str:
         return card.querySelector(".json-output").value;
       })
       .filter(Boolean)
+      .join("\\n") + "\\n";
+  }
+
+  function allChessLearningJsonl() {
+    return Array.from(document.querySelectorAll(".review-card"))
+      .flatMap((card) => {
+        writePreview(card, false);
+        const row = JSON.parse(card.querySelector(".json-output").value || "{}");
+        return row.chess_learning_labels || [];
+      })
+      .map((row) => JSON.stringify(row))
       .join("\\n") + "\\n";
   }
 
@@ -1166,8 +1328,28 @@ def _review_script() -> str:
       URL.revokeObjectURL(url);
     });
   }
+
+  const copyChessLabels = document.querySelector(".copy-chess-labels");
+  if (copyChessLabels) {
+    copyChessLabels.addEventListener("click", (event) => copyText(allChessLearningJsonl(), event.currentTarget));
+  }
+
+  const downloadChessLabels = document.querySelector(".download-chess-labels");
+  if (downloadChessLabels) {
+    downloadChessLabels.addEventListener("click", () => {
+      const blob = new Blob([allChessLearningJsonl()], { type: "application/jsonl;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "chess_learning_labels.jsonl";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    });
+  }
 })();
-</script>""".replace("__POLICY__", policy)
+</script>""".replace("__POLICY__", policy).replace("__CHESS_LABEL_SCHEMA__", label_schema)
 
 
 def _json_attr(value: Mapping[str, Any]) -> str:

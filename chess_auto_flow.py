@@ -333,6 +333,7 @@ def build_auto_chess_flow_artifacts(
         two_crop_quality_metrics.get("items") or [],
         blocker_report=side_marker_blockers,
         assignment_report=side_marker_report,
+        artifact_root=out,
     )
     two_crop_benchmark_seed = _two_crop_benchmark_seed_report(diagrams)
     accepted_fen_by_source = _accepted_fen_by_source(diagrams, fen_payload)

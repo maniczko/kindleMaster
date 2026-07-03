@@ -168,6 +168,11 @@ def record_dataset_built(
                 dataset_payload.get("quality_feedback_count")
                 or dataset_payload.get("quality_feedback_example_count")
             ),
+            "chess_learning_label_count": _int_value(dataset_payload.get("chess_learning_label_count")),
+            "chess_learning_benchmark_status": str(dataset_payload.get("chess_learning_benchmark_status") or ""),
+            "chess_learning_label_type_counts": dict(
+                _mapping(_mapping(_mapping(dataset_payload.get("chess_learning_benchmark")).get("summary")).get("label_type_counts"))
+            ),
             "training_eligible": promotion_allowed,
             "cloud_sync_status": "local_only",
         }
@@ -303,6 +308,91 @@ def record_model_promotion_blocked(
             "metric_delta": _mapping(promotion_payload.get("metric_delta")),
             "corpus_gate_status": str(promotion_payload.get("corpus_gate_status") or ""),
             "training_eligible": False,
+            "cloud_sync_status": "local_only",
+        }
+    )
+    return append_learning_event(event, repo_root=repo_root)
+
+
+def record_chess_label_added(
+    *,
+    label_payload: Mapping[str, Any],
+    repo_root: str | Path = ".",
+) -> dict[str, Any]:
+    event = _base_event(
+        event_type="chess_label_added",
+        conversion_id=str(label_payload.get("conversion_id") or ""),
+        input_fingerprint=str(label_payload.get("input_fingerprint") or ""),
+        source_type="chess_label",
+    )
+    event.update(
+        {
+            "label_id": str(label_payload.get("label_id") or ""),
+            "diagram_id": str(label_payload.get("diagram_id") or ""),
+            "label_type": str(label_payload.get("label_type") or ""),
+            "label_value": str(label_payload.get("label_value") or ""),
+            "reviewer": str(label_payload.get("reviewer") or label_payload.get("verified_by") or ""),
+            "dataset_version": str(label_payload.get("dataset_version") or ""),
+            "training_eligible": bool(label_payload.get("human_verified") is True),
+            "chess_metrics": {
+                "human_verified": bool(label_payload.get("human_verified") is True),
+                "accepted_for_runtime": bool(label_payload.get("accepted_for_runtime") is True),
+                "bypasses_full_fen_gate": bool(label_payload.get("bypasses_full_fen_gate") is True),
+            },
+            "cloud_sync_status": "local_only",
+        }
+    )
+    return append_learning_event(event, repo_root=repo_root)
+
+
+def record_chess_benchmark_built(
+    *,
+    benchmark_payload: Mapping[str, Any],
+    repo_root: str | Path = ".",
+) -> dict[str, Any]:
+    summary = _mapping(benchmark_payload.get("summary"))
+    event = _base_event(
+        event_type="chess_benchmark_built",
+        conversion_id="",
+        input_fingerprint="",
+        source_type="chess_label",
+    )
+    event.update(
+        {
+            "dataset_version": str(benchmark_payload.get("dataset_version") or _dataset_version(benchmark_payload)),
+            "dataset_status": str(benchmark_payload.get("status") or ""),
+            "training_readiness_status": str(benchmark_payload.get("status") or ""),
+            "promotion_allowed": str(benchmark_payload.get("status") or "") == "READY_FOR_BENCHMARK",
+            "dataset_paths": _safe_paths(benchmark_payload.get("source_files") or []),
+            "chess_learning_label_count": _int_value(summary.get("usable_label_count")),
+            "chess_learning_label_type_counts": dict(_mapping(summary.get("label_type_counts"))),
+            "training_eligible": str(benchmark_payload.get("status") or "") == "READY_FOR_BENCHMARK",
+            "cloud_sync_status": "local_only",
+        }
+    )
+    return append_learning_event(event, repo_root=repo_root)
+
+
+def record_chess_profile_promoted(
+    *,
+    promotion_payload: Mapping[str, Any],
+    repo_root: str | Path = ".",
+) -> dict[str, Any]:
+    event = _base_event(
+        event_type="chess_profile_promoted",
+        conversion_id="",
+        input_fingerprint="",
+        source_type="chess_label",
+    )
+    event.update(
+        {
+            "chess_fen_profile_version": str(promotion_payload.get("profile_version") or promotion_payload.get("model_version_after") or ""),
+            "model_version_before": str(promotion_payload.get("profile_version_before") or ""),
+            "model_version_after": str(promotion_payload.get("profile_version") or promotion_payload.get("model_version_after") or ""),
+            "dataset_version": str(promotion_payload.get("dataset_version") or ""),
+            "promotion_status": str(promotion_payload.get("status") or ""),
+            "promotion_decision": _mapping(promotion_payload.get("promotion_decision")),
+            "training_eligible": str(promotion_payload.get("status") or "") == "promoted",
             "cloud_sync_status": "local_only",
         }
     )

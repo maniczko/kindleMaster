@@ -1,0 +1,64 @@
+{
+  "schema": "kindlemaster.chess_fen.crop_qa_benchmark.v1",
+  "source": "Raport_QA_cropy_diagramy_markery + side_marker_manual_labels (5).jsonl",
+  "record_count": 200,
+  "created_at": "2026-07-02",
+  "policy": "manual_crop_qa_labels_evaluate_only_no_direct_fen_publication",
+  "fields": [
+    "diagram_id",
+    "diagram_crop_status",
+    "marker_crop_status",
+    "visible_marker",
+    "final_label",
+    "issue_type",
+    "QA_note",
+    "recommended_fix"
+  ],
+  "acceptance_subsets": {
+    "fragmentary_board_crops": [
+      "p010_d01",
+      "p048_d01",
+      "p066_d01",
+      "p084_d01",
+      "p115_d02",
+      "p122_d01",
+      "p123_d04",
+      "p132_d01",
+      "p132_d02",
+      "p158_d01"
+    ],
+    "marker_system_conflicts": [
+      "p046_d01",
+      "p079_d01",
+      "p105_d01",
+      "p106_d02",
+      "p106_d03",
+      "p135_d01",
+      "p135_d05",
+      "p153_d03",
+      "p154_d04"
+    ],
+    "marker_search_review_only": [
+      "p059_d03",
+      "p071_d06",
+      "p084_d01",
+      "p123_d04"
+    ]
+  },
+  "source_counts": {
+    "manual_label_rows": 200,
+    "fragmentary_board_crop_subset_count": 10,
+    "marker_system_conflict_subset_count": 9,
+    "marker_search_review_only_subset_count": 4,
+    "visible_marker_counts": {
+      "outline_triangle": 120,
+      "filled_triangle": 45,
+      "bad_crop": 34,
+      "multiple": 1
+    }
+  },
+  "notes": [
+    "Images/crops are not stored in repo; acceptance subsets preserve real diagram_id coverage for runtime comparison.",
+    "Manual labels are evaluation-only and never directly promote FEN."
+  ]
+}

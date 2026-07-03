@@ -44,6 +44,7 @@ def build_ml_datasets(
     docx_analyzer: Analyzer | None = None,
     fail_on_collisions: bool = False,
     min_examples_per_class: int = MIN_ROUTE_EXAMPLES_PER_CLASS,
+    write_ledger: bool = True,
 ) -> dict[str, Any]:
     root = Path(repo_root).resolve()
     manifest_file = _resolve_path(root, manifest_path)
@@ -189,19 +190,23 @@ def build_ml_datasets(
     )
     completeness.update(versioned_payload)
     completeness_path.write_text(json.dumps(completeness, ensure_ascii=False, indent=2), encoding="utf-8")
-    try:
-        from learning_ledger import record_dataset_built
+    if write_ledger:
+        try:
+            from learning_ledger import record_dataset_built
 
-        ledger_record = record_dataset_built(dataset_payload=completeness, repo_root=root)
-        completeness["learning_ledger"] = {
-            "status": "recorded",
-            "event_id": str(ledger_record.get("event_id", "") or ""),
-            "events_path": str(ledger_record.get("events_path", "") or ""),
-            "index_path": str(ledger_record.get("index_path", "") or ""),
-        }
-        completeness_path.write_text(json.dumps(completeness, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception as error:
-        completeness["learning_ledger"] = {"status": "failed", "error": str(error)}
+            ledger_record = record_dataset_built(dataset_payload=completeness, repo_root=root)
+            completeness["learning_ledger"] = {
+                "status": "recorded",
+                "event_id": str(ledger_record.get("event_id", "") or ""),
+                "events_path": str(ledger_record.get("events_path", "") or ""),
+                "index_path": str(ledger_record.get("index_path", "") or ""),
+            }
+            completeness_path.write_text(json.dumps(completeness, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as error:
+            completeness["learning_ledger"] = {"status": "failed", "error": str(error)}
+            completeness_path.write_text(json.dumps(completeness, ensure_ascii=False, indent=2), encoding="utf-8")
+    else:
+        completeness["learning_ledger"] = {"status": "skipped", "reason": "write_ledger_false"}
         completeness_path.write_text(json.dumps(completeness, ensure_ascii=False, indent=2), encoding="utf-8")
     if fail_on_collisions and readiness["status"] == "blocked_feature_collision":
         completeness["error"] = "feature_collision"

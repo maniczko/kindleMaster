@@ -14,6 +14,8 @@ from learning_ledger import (
     PRIVACY_PAYLOAD,
     build_conversion_learning_index,
     record_dataset_built,
+    record_model_evaluated,
+    record_model_promotion_blocked,
     record_model_promoted,
     record_model_trained,
 )
@@ -195,6 +197,25 @@ class LearningLedgerTests(unittest.TestCase):
                 dataset_path=dataset,
                 repo_root=root,
             )
+            record_model_evaluated(
+                evaluation_payload={"status": "evaluated", "accuracy": 0.92, "example_count": 40},
+                dataset_path=dataset,
+                model_path=model,
+                repo_root=root,
+            )
+            record_model_promotion_blocked(
+                promotion_payload={
+                    "status": "promotion_blocked",
+                    "dataset_version": "20260703-120000-unit",
+                    "before_model_version": "route-current",
+                    "candidate_model_version": "route-candidate-1",
+                    "promotion_status": "blocked",
+                    "promotion_decision": {"reasons": ["candidate_not_better"]},
+                    "metric_delta": {"accuracy_delta": -0.01},
+                    "corpus_gate_status": "not_run",
+                },
+                repo_root=root,
+            )
             record_model_promoted(
                 promotion_payload={
                     "status": "promoted",
@@ -215,8 +236,10 @@ class LearningLedgerTests(unittest.TestCase):
             dataset_event = events[0]
             self.assertEqual(index["event_type_counts"]["dataset_built"], 1)
             self.assertEqual(index["event_type_counts"]["model_trained"], 1)
+            self.assertEqual(index["event_type_counts"]["model_evaluated"], 1)
+            self.assertEqual(index["event_type_counts"]["model_promotion_blocked"], 1)
             self.assertEqual(index["event_type_counts"]["model_promoted"], 1)
-            self.assertEqual(index["event_count"], 3)
+            self.assertEqual(index["event_count"], 5)
             self.assertEqual(dataset_event["dataset_version"], "20260703-120000-unit")
             self.assertEqual(dataset_event["training_readiness_status"], "ready")
             self.assertTrue(dataset_event["promotion_allowed"])

@@ -92,6 +92,7 @@ QUICK_TESTS = [
     "test_learning_ledger.py",
     "test_ml_feedback.py",
     "test_ml_training_reporting.py",
+    "test_ml_retrain_all.py",
     "test_ml_quality_verifier.py",
     "test_publication_analysis.py",
     "test_publication_pipeline.py",
@@ -382,6 +383,22 @@ def main() -> int:
     ml_evaluate.add_argument("--dataset", default="reports/ml/datasets/route_examples.jsonl")
     ml_evaluate.add_argument("--model", default="models/route_classifier_v1.json")
     ml_evaluate.add_argument("--report", default="reports/ml/route_classifier_v1.evaluation.json")
+
+    ml_retrain = ml_subparsers.add_parser("retrain-all", help="Run the offline feedback -> dataset -> train -> evaluate -> promote workflow.")
+    ml_retrain.add_argument("--from-feedback", action="store_true")
+    ml_retrain.add_argument("--evaluate", action="store_true")
+    ml_retrain.add_argument("--promote-if-better", action="store_true")
+    ml_retrain.add_argument("--write-ledger", action="store_true")
+    ml_retrain.add_argument("--feedback-log", default="reports/ml/feedback/conversion_feedback.jsonl")
+    ml_retrain.add_argument("--dataset-output-dir", default="reports/ml/datasets")
+    ml_retrain.add_argument("--candidate-model-dir", default="models/candidates")
+    ml_retrain.add_argument("--current-model", default="models/route_classifier_v1.json")
+    ml_retrain.add_argument("--corpus-report", default="reports/corpus/premium_corpus_smoke_report.json")
+    ml_retrain.add_argument("--min-examples-per-class", type=int, default=25)
+    ml_retrain.add_argument("--dry-run", action="store_true")
+    ml_retrain.add_argument("--no-promote", action="store_true")
+    ml_retrain.add_argument("--require-human-reviewed", action="store_true")
+    ml_retrain.add_argument("--report", default="reports/ml/retrain_all/retrain_all_report.json")
 
     ml_fen_experiment = ml_subparsers.add_parser("evaluate-fen-experiment", help="Evaluate repo-local chess FEN recognizer experiments.")
     ml_fen_experiment.add_argument("--labels-dir", default="reference_inputs/chess_fen/labels")
@@ -1200,6 +1217,27 @@ def _run_ml(args: argparse.Namespace) -> int:
         )
         _print_json(payload)
         return 0 if payload.get("status") != "failed" else 1
+    if args.ml_command == "retrain-all":
+        from scripts.retrain_all import run_retrain_all
+
+        payload = run_retrain_all(
+            from_feedback=args.from_feedback,
+            evaluate=args.evaluate,
+            promote_if_better=args.promote_if_better,
+            write_ledger=args.write_ledger,
+            feedback_log=args.feedback_log,
+            dataset_output_dir=args.dataset_output_dir,
+            candidate_model_dir=args.candidate_model_dir,
+            current_model=args.current_model,
+            corpus_report=args.corpus_report,
+            min_examples_per_class=args.min_examples_per_class,
+            dry_run=args.dry_run,
+            no_promote=args.no_promote,
+            require_human_reviewed=args.require_human_reviewed,
+            report_path=args.report,
+        )
+        _print_json(payload)
+        return 1 if payload.get("status") in {"failed", "training_failed"} else 0
     if args.ml_command == "evaluate-fen-experiment":
         from scripts.evaluate_chess_fen_benchmark_experiment import evaluate_chess_fen_benchmark_experiment
 
@@ -1280,7 +1318,7 @@ def _run_ml(args: argparse.Namespace) -> int:
             payload["learning_ledger"] = {"status": "failed", "error": str(error)}
         _print_json(payload)
         return 0 if payload.get("status") == "promoted" else 1
-    _print_json({"status": "failed", "error": "Missing ml subcommand. Use dataset, feedback, feedback-export, train, evaluate, evaluate-fen-experiment, evaluate-fen-alternatives, or promote."})
+    _print_json({"status": "failed", "error": "Missing ml subcommand. Use dataset, feedback, feedback-export, train, evaluate, retrain-all, evaluate-fen-experiment, evaluate-fen-alternatives, or promote."})
     return 1
 
 

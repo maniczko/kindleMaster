@@ -132,10 +132,11 @@ Training and promotion are two separate steps:
 
 ```powershell
 python kindlemaster.py ml train
+python kindlemaster.py ml promote --candidate models\candidates\route_classifier_YYYYMMDD_HHMMSS.json --dry-run
 python kindlemaster.py ml promote --candidate models\candidates\route_classifier_YYYYMMDD_HHMMSS.json
 ```
 
-`ml train` writes candidates under `models/candidates/` and model cards beside them. It never overwrites the runtime model automatically. `ml promote` blocks if holdout metrics, protected-class recall, dataset readiness, or corpus hard negatives (`magazine_layout_heavy`, `diagram_chess`) fail.
+`ml train` writes candidates under `models/candidates/` and model cards beside them. It never overwrites the runtime model automatically. `ml promote --dry-run` verifies the same gates without mutating the active model. A real `ml promote` blocks if holdout metrics, protected-class recall, dataset readiness, or corpus hard negatives (`magazine_layout_heavy`, `diagram_chess`) fail. Successful promotion updates `models/registry.json`, appends `reports/ml/promotions/promotion_history.jsonl`, writes model cards under `reports/ml/model_cards/<model_name>/`, and creates rollback snapshots under `reports/ml/promotions/rollback_snapshots/`.
 
 For the full offline learning loop, use the batch workflow:
 
@@ -144,7 +145,15 @@ python kindlemaster.py ml retrain-all --from-feedback --evaluate --promote-if-be
 python kindlemaster.py ml retrain-all --from-feedback --evaluate --promote-if-better --write-ledger
 ```
 
-`ml retrain-all` runs `feedback -> dataset version -> train candidate -> evaluate -> gate -> promote` as one operator workflow. `--dry-run` writes `reports/ml/retrain_all/retrain_all_report.json` without modifying `models/route_classifier_v1.json`. Promotion is blocked unless dataset readiness, candidate metric gates, current-model comparison, protected-class recall, and corpus gate all pass; successful promotion writes a rollback snapshot under `models/rollback/`.
+`ml retrain-all` runs `feedback -> dataset version -> train candidate -> evaluate -> gate -> promote` as one operator workflow. `--dry-run` writes `reports/ml/retrain_all/retrain_all_report.json` without modifying `models/route_classifier_v1.json`. Promotion is blocked unless dataset readiness, candidate metric gates, current-model comparison, protected-class recall, and corpus gate all pass; successful promotion writes registry, history, model-card, and rollback evidence through the same `ml promote` path.
+
+Rollback is explicit and versioned:
+
+```powershell
+python kindlemaster.py ml rollback --model route_classifier --to-version route-classifier-v1
+```
+
+Every conversion metadata/quality state records `route_model_version`, `quality_verifier_version`, `chess_fen_profile_version`, and `model_registry_version` so a job can be tied back to the active registry state that produced it.
 
 For web/runtime integration, conversion-quality events are recorded automatically after metadata assembly. User feedback is recorded separately through:
 

@@ -43,6 +43,7 @@ def record_conversion_completed(
     ai_verifier = _mapping(metadata.get("ai_quality_verification")) or _mapping(
         quality_report.get("ai_quality_verification")
     )
+    model_attribution = _mapping(metadata.get("model_attribution"))
     premium = _mapping(metadata.get("premium_scoring")) or _mapping(quality_report.get("premium_scoring"))
     event = _base_event(
         event_type="conversion_completed",
@@ -60,8 +61,11 @@ def record_conversion_completed(
                 or ""
             ),
             "route_model_mode": str(route_decision.get("mode") or route_model_mode or "off"),
-            "route_model_version": str(route_decision.get("model_version") or ""),
-            "quality_verifier_version": str(ai_verifier.get("model_version") or ""),
+            "route_model_version": str(route_decision.get("model_version") or model_attribution.get("route_model_version") or ""),
+            "quality_verifier_version": str(ai_verifier.get("model_version") or model_attribution.get("quality_verifier_version") or ""),
+            "chess_fen_profile_version": str(model_attribution.get("chess_fen_profile_version") or ""),
+            "model_registry_version": str(model_attribution.get("model_registry_version") or ""),
+            "model_attribution": dict(model_attribution),
             "quality_gate_mode": str(quality_gate_mode or ""),
             "feature_hash": str(
                 route_decision.get("input_features_hash")
@@ -108,6 +112,8 @@ def record_user_feedback_added(
             "route_model_mode": str(route.get("mode") or ""),
             "route_model_version": str(route.get("model_version") or ""),
             "quality_verifier_version": str(_mapping(quality.get("ai_quality_verification")).get("model_version") or ""),
+            "chess_fen_profile_version": str(_mapping(feedback_record.get("model_attribution")).get("chess_fen_profile_version") or ""),
+            "model_registry_version": str(_mapping(feedback_record.get("model_attribution")).get("model_registry_version") or ""),
             "feature_hash": str(route.get("features_hash") or route.get("reported_features_hash") or ""),
             "quality_score": _optional_float(feedback.get("quality_score")),
             "quality_decision": str(feedback.get("status") or ""),
@@ -218,10 +224,17 @@ def record_model_promoted(
     )
     event.update(
         {
-            "model_version_before": "",
-            "model_version_after": _model_version_from_path(promotion_payload.get("model_path")),
+            "model_version_before": str(_mapping(_mapping(promotion_payload.get("model_registry")).get("promotion_event")).get("model_version_before") or ""),
+            "model_version_after": str(
+                promotion_payload.get("model_version")
+                or _mapping(_mapping(promotion_payload.get("model_registry")).get("promotion_event")).get("model_version_after")
+                or _model_version_from_path(promotion_payload.get("model_path"))
+            ),
+            "dataset_version": str(promotion_payload.get("dataset_version") or ""),
+            "model_registry_version": str(_mapping(promotion_payload.get("model_registry")).get("registry_version") or ""),
             "model_path": _safe_path(promotion_payload.get("model_path")),
             "candidate_path": _safe_path(promotion_payload.get("candidate_path")),
+            "rollback_snapshot": _safe_path(promotion_payload.get("rollback_snapshot")),
             "promotion_status": str(promotion_payload.get("status") or ""),
             "promotion_gates": {
                 "metric_gates": _mapping(promotion_payload.get("metric_gates")),
@@ -418,6 +431,9 @@ def _base_event(*, event_type: str, conversion_id: str, input_fingerprint: str, 
         "route_model_mode": "",
         "route_model_version": "",
         "quality_verifier_version": "",
+        "chess_fen_profile_version": "",
+        "model_registry_version": "",
+        "model_attribution": {},
         "feature_hash": "",
         "quality_score": None,
         "quality_decision": "",
@@ -464,7 +480,7 @@ def _update_index_row(row: dict[str, Any], event: Mapping[str, Any]) -> None:
     dataset_version = str(event.get("dataset_version") or "")
     if dataset_version and dataset_version not in row["dataset_versions"]:
         row["dataset_versions"].append(dataset_version)
-    for key in ("model_version_before", "model_version_after"):
+    for key in ("model_version_before", "model_version_after", "route_model_version", "quality_verifier_version", "chess_fen_profile_version"):
         model_version = str(event.get(key) or "")
         if model_version and model_version not in row["model_versions"]:
             row["model_versions"].append(model_version)

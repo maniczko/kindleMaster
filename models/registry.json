@@ -1,0 +1,28 @@
+{
+  "active_models": {
+    "chess_fen_profile": {
+      "profile_name": "default",
+      "profile_path": "reference_inputs/chess_fen/templates/fundamenty_merida_like",
+      "profile_version": "chess-fen-profile-bootstrap"
+    },
+    "quality_verifier": {
+      "dataset_version": "",
+      "model_path": "models/quality_verifier_v1.json",
+      "model_type": "local_quality_policy",
+      "model_version": "quality-verifier-v1-bootstrap",
+      "promoted_at": "2026-05-11T00:00:00Z"
+    },
+    "route_classifier": {
+      "dataset_version": "",
+      "model_path": "models/route_classifier_v1.json",
+      "model_type": "multinomial_logistic_regression",
+      "model_version": "route-classifier-v1",
+      "promoted_at": "2026-06-07T14:53:03.384630Z"
+    }
+  },
+  "generated_at": "2026-07-03T00:00:00Z",
+  "last_promotion": {},
+  "registry_version": "registry_0bf3734d08a1413b",
+  "rollback_available": false,
+  "schema": "kindlemaster.model_registry.v1"
+}

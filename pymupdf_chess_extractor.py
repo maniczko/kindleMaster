@@ -4696,6 +4696,12 @@ def _chess_diagram_record_from_image(
         "side_marker_search_crop_path": str(
             fen_result.get("side_marker_search_crop_path") or chess_img.get("side_marker_search_crop_path") or ""
         ).strip(),
+        "marker_search_zone_preview_path": str(
+            fen_result.get("marker_search_zone_preview_path") or chess_img.get("marker_search_zone_preview_path") or ""
+        ).strip(),
+        "marker_search_zone_preview_bbox": list(
+            fen_result.get("marker_search_zone_preview_bbox") or chess_img.get("marker_search_zone_preview_bbox") or []
+        ),
         "side_marker_review_crop_path": str(
             fen_result.get("side_marker_review_crop_path")
             or chess_img.get("side_marker_review_crop_path")
@@ -4714,6 +4720,7 @@ def _chess_diagram_record_from_image(
         "marker_search_zones": dict(fen_result.get("marker_search_zones") or chess_img.get("marker_search_zones") or {}),
         "selected_marker_zone": fen_result.get("selected_marker_zone") or chess_img.get("selected_marker_zone") or "",
         "marker_bbox": list(fen_result.get("marker_bbox") or chess_img.get("marker_bbox") or []),
+        "marker_crop_bbox": list(fen_result.get("marker_crop_bbox") or chess_img.get("marker_crop_bbox") or []),
         "marker_crop_quality": str(fen_result.get("marker_crop_quality") or chess_img.get("marker_crop_quality") or ""),
         "marker_crop_fail_reason": list(fen_result.get("marker_crop_fail_reason") or chess_img.get("marker_crop_fail_reason") or []),
         "side_to_move_detected": fen_result.get("side_to_move_detected") or chess_img.get("side_to_move_detected"),
@@ -5004,6 +5011,8 @@ TWO_CROP_CONTRACT_FIELDS = {
     "board_crop_path",
     "side_marker_crop_path",
     "side_marker_search_crop_path",
+    "marker_search_zone_preview_path",
+    "marker_search_zone_preview_bbox",
     "side_marker_review_crop_path",
     "side_marker_review_crop_kind",
     "debug_overlay_path",
@@ -5018,6 +5027,7 @@ TWO_CROP_CONTRACT_FIELDS = {
     "marker_search_zones",
     "selected_marker_zone",
     "marker_bbox",
+    "marker_crop_bbox",
     "marker_crop_quality",
     "marker_crop_fail_reason",
     "marker_crop_quality_gate",
@@ -5037,6 +5047,20 @@ BOARD_CROP_REASON_CODES = {
     "contains_marker",
     "contains_text",
     "contains_neighbor_diagram",
+}
+
+MARKER_CROP_REASON_CODES = {
+    "marker_missing",
+    "marker_cut_off",
+    "multiple_candidates",
+    "mostly_board_edge",
+    "mostly_rank_numbers",
+    "mostly_file_letters",
+    "too_narrow",
+    "marker_too_small",
+    "unclear_symbol",
+    "wrong_marker_candidate",
+    "outside_expected_zone",
 }
 
 
@@ -5349,6 +5373,8 @@ def _scan_chess_two_crop_review_artifacts(
         "board_crop_path": f"review/chess_fen/two_crop/{stem}_board.png",
         "side_marker_crop_path": "",
         "side_marker_search_crop_path": "",
+        "marker_search_zone_preview_path": "",
+        "marker_search_zone_preview_bbox": [],
         "side_marker_review_crop_path": "",
         "side_marker_review_crop_kind": "missing",
         "debug_overlay_path": f"review/chess_fen/two_crop/{stem}_overlay.png",
@@ -5361,6 +5387,7 @@ def _scan_chess_two_crop_review_artifacts(
         "marker_search_zones": {},
         "selected_marker_zone": None,
         "marker_bbox": [],
+        "marker_crop_bbox": [],
         "board_crop_quality": "fail",
         "board_crop_fail_reason": ["board_bbox_missing"],
         "board_crop_quality_gate": {"decision": "fail", "reasons": ["board_bbox_missing"]},
@@ -5395,14 +5422,45 @@ def _scan_chess_two_crop_review_artifacts(
     if search_crop is not None:
         fields["side_marker_search_crop_path"] = f"review/chess_fen/two_crop/{stem}_marker_search.png"
         fields["side_marker_search_bbox"] = search_bbox
+        fields["marker_search_zone_preview_path"] = fields["side_marker_search_crop_path"]
+        fields["marker_search_zone_preview_bbox"] = search_bbox
         files.append({"path": fields["side_marker_search_crop_path"], "data": _png_bytes(search_crop)})
 
-    marker_bbox = _coerce_side_marker_bbox(side_marker_bbox)
-    if marker_bbox:
-        marker_bbox = _scan_chess_padded_marker_bbox(marker_bbox, fields["board_bbox"], page_image.size)
+    marker_source = ""
+    marker_bbox = []
+    marker_crop_bbox = []
+    region_candidate = _scan_chess_marker_component_candidate_from_region(
+        page_image,
+        side_marker_bbox,
+        fields["board_bbox"],
+        source="side_marker_bbox",
+    )
+    if region_candidate:
+        marker_bbox = _coerce_side_marker_bbox(region_candidate.get("marker_bbox"))
+        marker_crop_bbox = _coerce_side_marker_bbox(region_candidate.get("marker_crop_bbox"))
+        marker_source = str(region_candidate.get("source") or "")
+    elif _coerce_side_marker_bbox(side_marker_bbox):
+        marker_bbox = _coerce_side_marker_bbox(side_marker_bbox)
+        marker_crop_bbox = _scan_chess_padded_marker_bbox(marker_bbox, fields["board_bbox"], page_image.size)
+        marker_source = "side_marker_bbox"
     candidate = _scan_chess_best_marker_zone_candidate(page_image, fields["board_bbox"], zones)
-    if not marker_bbox and candidate:
+    if not marker_bbox and candidate and candidate.get("status") == "trusted_marker":
         marker_bbox = _coerce_side_marker_bbox(candidate.get("marker_bbox"))
+        marker_crop_bbox = _coerce_side_marker_bbox(candidate.get("marker_crop_bbox"))
+        marker_source = str(candidate.get("source") or "marker_search_zone")
+    elif not marker_bbox and candidate and candidate.get("status") == "multiple_candidates":
+        fields["marker_crop_quality_gate"] = {
+            "decision": "fail",
+            "reasons": ["multiple_candidates"],
+            "side_to_move": None,
+            "confidence": 0.0,
+            "classifier_status": "side_to_move_marker_local_conflict",
+            "component_count": int(candidate.get("component_count") or 2),
+        }
+        fields["marker_crop_quality"] = "fail"
+        fields["marker_crop_fail_reason"] = ["multiple_candidates"]
+        fields["manual_review_required"] = True
+        fields["manual_review_reason"] = "multiple"
     selected_zone = _scan_chess_selected_marker_zone(marker_bbox, zones) if marker_bbox else ""
     if not selected_zone and candidate:
         selected_zone = str(candidate.get("zone") or "")
@@ -5411,15 +5469,24 @@ def _scan_chess_two_crop_review_artifacts(
     if marker_bbox:
         fields["marker_bbox"] = marker_bbox
         fields["side_marker_bbox"] = marker_bbox
+        fields["marker_crop_bbox"] = marker_crop_bbox or marker_bbox
         fields["side_marker_crop_path"] = f"review/chess_fen/two_crop/{stem}_marker.png"
-        marker_quality = _scan_chess_marker_crop_quality(page_image, marker_bbox, fields["board_bbox"])
+        marker_quality = _scan_chess_marker_crop_quality(
+            page_image,
+            fields["marker_crop_bbox"],
+            fields["board_bbox"],
+            marker_bbox=marker_bbox,
+            marker_search_zones=zones,
+        )
+        if marker_source:
+            marker_quality["source"] = marker_source
         fields["marker_crop_quality_gate"] = marker_quality
         fields["marker_crop_quality"] = "pass" if marker_quality.get("decision") == "pass" else "fail"
         fields["marker_crop_fail_reason"] = list(marker_quality.get("reasons") or [])
         if marker_quality.get("side_to_move") in {"white", "black"}:
             fields["side_to_move_detected"] = marker_quality.get("side_to_move")
             fields["side_to_move_confidence"] = marker_quality.get("confidence", 0.0)
-        marker_crop = _crop_bbox_from_image(page_image, marker_bbox)
+        marker_crop = _crop_bbox_from_image(page_image, fields["marker_crop_bbox"])
         if marker_crop is not None:
             files.append({"path": fields["side_marker_crop_path"], "data": _png_bytes(marker_crop)})
             fields["side_marker_review_crop_path"] = fields["side_marker_crop_path"]
@@ -5537,6 +5604,148 @@ def _scan_chess_marker_search_zone_preview(
     return [float(value) for value in search_box], crop
 
 
+def _scan_chess_dark_components(mask: Any) -> list[dict[str, float]]:
+    height, width = mask.shape
+    visited = np.zeros(mask.shape, dtype=bool)
+    components: list[dict[str, float]] = []
+    for start_y in range(height):
+        for start_x in range(width):
+            if visited[start_y, start_x] or not mask[start_y, start_x]:
+                continue
+            stack = [(start_x, start_y)]
+            visited[start_y, start_x] = True
+            area = 0
+            min_x = max_x = start_x
+            min_y = max_y = start_y
+            while stack:
+                x, y = stack.pop()
+                area += 1
+                min_x = min(min_x, x)
+                max_x = max(max_x, x)
+                min_y = min(min_y, y)
+                max_y = max(max_y, y)
+                for nx in (x - 1, x, x + 1):
+                    for ny in (y - 1, y, y + 1):
+                        if nx == x and ny == y:
+                            continue
+                        if nx < 0 or ny < 0 or nx >= width or ny >= height:
+                            continue
+                        if visited[ny, nx] or not mask[ny, nx]:
+                            continue
+                        visited[ny, nx] = True
+                        stack.append((nx, ny))
+            box_width = max_x - min_x + 1
+            box_height = max_y - min_y + 1
+            density = area / max(1, box_width * box_height)
+            components.append(
+                {
+                    "area": float(area),
+                    "density": float(density),
+                    "bbox": (float(min_x), float(min_y), float(max_x), float(max_y)),
+                    "width": float(box_width),
+                    "height": float(box_height),
+                    "score": float(area),
+                }
+            )
+    return components
+
+
+def _scan_chess_marker_component_candidates_from_region(
+    page_image: Image.Image,
+    region_bbox: Any,
+    board_bbox: Any,
+    *,
+    source: str,
+) -> list[dict[str, Any]]:
+    board = _coerce_side_marker_bbox(board_bbox)
+    region_box = _bbox_to_int_box(region_bbox, page_image.size)
+    if region_box is None or not board:
+        return []
+    cell = min(max(1.0, board[2] - board[0]), max(1.0, board[3] - board[1])) / 8.0
+    crop = ImageOps.autocontrast(page_image.crop(region_box).convert("L"))
+    dark = np.asarray(crop) < 120
+    candidates: list[dict[str, Any]] = []
+    for component in _scan_chess_dark_components(dark):
+        raw_bbox = component.get("bbox")
+        if not isinstance(raw_bbox, (list, tuple)) or len(raw_bbox) != 4:
+            continue
+        local_x0, local_y0, local_x1, local_y1 = [float(value) for value in raw_bbox]
+        width = max(1.0, local_x1 - local_x0 + 1.0)
+        height = max(1.0, local_y1 - local_y0 + 1.0)
+        if width < max(8.0, cell * 0.22) or height < max(8.0, cell * 0.22):
+            continue
+        if width > max(24.0, cell * 1.9) or height > max(24.0, cell * 1.9):
+            continue
+        aspect = width / max(1.0, height)
+        if not (0.55 <= aspect <= 1.85):
+            continue
+        density = float(component.get("density") or 0.0)
+        if not (0.12 <= density <= 0.78):
+            continue
+        marker_bbox = [
+            float(region_box[0]) + local_x0,
+            float(region_box[1]) + local_y0,
+            float(region_box[0]) + local_x1,
+            float(region_box[1]) + local_y1,
+        ]
+        if _bbox_overlap_ratio(tuple(float(value) for value in marker_bbox), tuple(float(value) for value in board)) > 0.12:
+            continue
+        marker_crop_bbox = _scan_chess_padded_marker_bbox(marker_bbox, board, page_image.size)
+        marker_crop = _crop_bbox_from_image(page_image, marker_crop_bbox)
+        if marker_crop is None:
+            continue
+        classification = classify_scan_chess_side_marker_crop(marker_crop)
+        score = float(component.get("score") or 0.0)
+        candidates.append(
+            {
+                "source": source,
+                "zone_bbox": [float(value) for value in region_box],
+                "marker_bbox": [round(float(value), 2) for value in marker_bbox],
+                "marker_crop_bbox": marker_crop_bbox,
+                "component_bbox": [round(float(value), 2) for value in marker_bbox],
+                "local_component_bbox": [round(float(value), 2) for value in (local_x0, local_y0, local_x1, local_y1)],
+                "status": classification.get("status"),
+                "side": classification.get("side") or "",
+                "shape": classification.get("shape") or "",
+                "confidence": classification.get("confidence") or 0.0,
+                "score": score,
+            }
+        )
+    return candidates
+
+
+def _scan_chess_marker_component_candidate_from_region(
+    page_image: Image.Image,
+    region_bbox: Any,
+    board_bbox: Any,
+    *,
+    source: str,
+) -> dict[str, Any] | None:
+    candidates = _scan_chess_marker_component_candidates_from_region(page_image, region_bbox, board_bbox, source=source)
+    trusted = [item for item in candidates if item.get("status") == "trusted_marker" and item.get("side") in {"w", "b"}]
+    if len(trusted) != 1:
+        return None
+    return max(trusted, key=lambda item: float(item.get("score") or 0.0))
+
+
+def _scan_chess_unique_marker_candidates(candidates: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    unique: list[dict[str, Any]] = []
+    ranked = sorted(candidates, key=lambda item: float(item.get("score") or 0.0), reverse=True)
+    for candidate in ranked:
+        bbox = _coerce_side_marker_bbox(candidate.get("marker_bbox") or candidate.get("component_bbox"))
+        if not bbox:
+            continue
+        duplicate = False
+        for existing in unique:
+            existing_bbox = _coerce_side_marker_bbox(existing.get("marker_bbox") or existing.get("component_bbox"))
+            if existing_bbox and _bbox_overlap_ratio(tuple(bbox), tuple(existing_bbox)) >= 0.72:
+                duplicate = True
+                break
+        if not duplicate:
+            unique.append(dict(candidate))
+    return unique
+
+
 def _scan_chess_best_marker_zone_candidate(
     page_image: Image.Image,
     board_bbox: Any,
@@ -5548,43 +5757,35 @@ def _scan_chess_best_marker_zone_candidate(
     candidates: list[dict[str, Any]] = []
     for zone_name, raw_zone in zones.items():
         zone = _coerce_side_marker_bbox(raw_zone)
-        zone_box = _bbox_to_int_box(zone, page_image.size)
-        if zone_box is None:
-            continue
-        crop = ImageOps.autocontrast(page_image.crop(zone_box).convert("L"))
-        classification = classify_scan_chess_side_marker_crop(crop)
-        component = classification.get("component")
-        if not isinstance(component, Mapping):
-            continue
-        component_bbox = component.get("bbox")
-        if not isinstance(component_bbox, (list, tuple)) or len(component_bbox) != 4:
-            continue
-        marker_bbox = [
-            float(zone_box[0]) + float(component_bbox[0]),
-            float(zone_box[1]) + float(component_bbox[1]),
-            float(zone_box[0]) + float(component_bbox[2]),
-            float(zone_box[1]) + float(component_bbox[3]),
-        ]
-        padded = _scan_chess_padded_marker_bbox(marker_bbox, board, page_image.size)
-        candidates.append(
-            {
-                "zone": str(zone_name),
-                "zone_bbox": [float(value) for value in zone_box],
-                "marker_bbox": padded,
-                "component_bbox": [round(float(value), 2) for value in marker_bbox],
-                "status": classification.get("status"),
-                "side": classification.get("side") or "",
-                "shape": classification.get("shape") or "",
-                "confidence": classification.get("confidence") or 0.0,
-                "score": float(component.get("score") or 0.0),
-            }
+        zone_candidates = _scan_chess_marker_component_candidates_from_region(
+            page_image,
+            zone,
+            board,
+            source="marker_search_zone",
         )
+        for item in zone_candidates:
+            enriched = dict(item)
+            enriched["zone"] = str(zone_name)
+            candidates.append(enriched)
     trusted = [item for item in candidates if item.get("status") == "trusted_marker" and item.get("side") in {"w", "b"}]
+    trusted = _scan_chess_unique_marker_candidates(trusted)
     if not trusted:
         return None
+    if len(trusted) > 1:
+        return {
+            "status": "multiple_candidates",
+            "zone": str(trusted[0].get("zone") or ""),
+            "component_count": len(trusted),
+            "candidates": trusted,
+        }
     sides = {str(item.get("side") or "") for item in trusted}
     if len(sides) != 1:
-        return None
+        return {
+            "status": "multiple_candidates",
+            "zone": str(trusted[0].get("zone") or ""),
+            "component_count": len(trusted),
+            "candidates": trusted,
+        }
     return max(trusted, key=lambda item: float(item.get("score") or 0.0))
 
 
@@ -5614,13 +5815,47 @@ def _scan_chess_selected_marker_zone(marker_bbox: Any, zones: Mapping[str, Any])
     return ""
 
 
-def _scan_chess_marker_crop_quality(page_image: Image.Image, marker_bbox: Any, board_bbox: Any) -> dict[str, Any]:
-    marker = _coerce_side_marker_bbox(marker_bbox)
+def _scan_chess_marker_crop_coordinate_reasons(marker: list[float], board: list[float]) -> list[str]:
+    if not marker or not board:
+        return []
+    mx0, my0, mx1, my1 = marker
+    bx0, by0, bx1, by1 = board
+    marker_w = max(1.0, mx1 - mx0)
+    marker_h = max(1.0, my1 - my0)
+    board_w = max(1.0, bx1 - bx0)
+    board_h = max(1.0, by1 - by0)
+    cell = min(board_w, board_h) / 8.0
+    reasons: list[str] = []
+    vertical_side_band = (mx1 <= bx0 + cell * 0.35 or mx0 >= bx1 - cell * 0.35) and marker_h >= cell * 2.6
+    horizontal_coordinate_band = (my1 <= by0 + cell * 0.35 or my0 >= by1 - cell * 0.35) and marker_w >= cell * 2.6
+    if vertical_side_band and marker_h / max(1.0, marker_w) >= 2.8:
+        reasons.append("mostly_rank_numbers")
+    if horizontal_coordinate_band and marker_w / max(1.0, marker_h) >= 2.8:
+        reasons.append("mostly_file_letters")
+    return reasons
+
+
+def _scan_chess_marker_crop_quality(
+    page_image: Image.Image,
+    crop_bbox: Any,
+    board_bbox: Any,
+    *,
+    marker_bbox: Any = None,
+    marker_search_zones: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    marker = _coerce_side_marker_bbox(crop_bbox)
     board = _coerce_side_marker_bbox(board_bbox)
+    detected_marker = _coerce_side_marker_bbox(marker_bbox) or marker
     box = _bbox_to_int_box(marker, page_image.size)
     reasons: list[str] = []
     if box is None:
-        return {"decision": "fail", "reasons": ["marker_missing"], "side_to_move": None, "confidence": 0.0}
+        return {
+            "decision": "fail",
+            "reasons": ["marker_missing"],
+            "reason_codes": {"marker_missing": 1},
+            "side_to_move": None,
+            "confidence": 0.0,
+        }
     width = max(1, box[2] - box[0])
     height = max(1, box[3] - box[1])
     if min(width, height) < 10 or width / max(1, height) < 0.35 or height / max(1, width) < 0.35:
@@ -5629,11 +5864,29 @@ def _scan_chess_marker_crop_quality(page_image: Image.Image, marker_bbox: Any, b
         overlap = _bbox_overlap_ratio(tuple(float(value) for value in marker), tuple(float(value) for value in board))
         if overlap > 0.18:
             reasons.append("mostly_board_edge")
+        reasons.extend(_scan_chess_marker_crop_coordinate_reasons(marker, board))
+        zones = marker_search_zones or _scan_chess_marker_search_zones(board, page_image.size)
+        if zones and not _scan_chess_selected_marker_zone(detected_marker, zones):
+            reasons.append("outside_expected_zone")
     if box[0] <= 0 or box[1] <= 0 or box[2] >= page_image.width or box[3] >= page_image.height:
         reasons.append("marker_cut_off")
     crop = ImageOps.autocontrast(page_image.crop(box).convert("L"))
+    raw_components = _scan_chess_dark_components(np.asarray(crop) < 120)
     classification = classify_scan_chess_side_marker_crop(crop)
     component = classification.get("component")
+    component_count = len(
+        [
+            item
+            for item in raw_components
+            if float(item.get("width") or 0.0) >= max(8.0, min(width, height) * 0.18)
+            and float(item.get("height") or 0.0) >= max(8.0, min(width, height) * 0.18)
+            and 0.55
+            <= float(item.get("width") or 0.0) / max(1.0, float(item.get("height") or 0.0))
+            <= 1.85
+        ]
+    )
+    if component_count > 1:
+        reasons.append("multiple_candidates")
     borderline_outline = False
     if classification.get("status") == "side_to_move_marker_local_ambiguous" and isinstance(component, Mapping):
         try:
@@ -5668,14 +5921,20 @@ def _scan_chess_marker_crop_quality(page_image: Image.Image, marker_bbox: Any, b
         side = "white"
     if side is None and "marker_missing" not in reasons:
         reasons.append("unclear_symbol")
+    if classification.get("status") == "trusted_marker" and any(
+        reason in reasons
+        for reason in ("mostly_board_edge", "mostly_rank_numbers", "mostly_file_letters", "outside_expected_zone")
+    ):
+        reasons.append("wrong_marker_candidate")
     reasons = sorted(set(reasons))
     return {
         "decision": "fail" if reasons else "pass",
         "reasons": reasons,
+        "reason_codes": {reason: reasons.count(reason) for reason in sorted(MARKER_CROP_REASON_CODES) if reason in reasons},
         "side_to_move": side if not reasons else None,
         "confidence": round(float(classification.get("confidence") or 0.0), 3) if not reasons else 0.0,
         "classifier_status": classification.get("status") or "",
-        "component_count": 1 if isinstance(component, Mapping) else 0,
+        "component_count": component_count if component_count else (1 if isinstance(component, Mapping) else 0),
     }
 
 

@@ -148,6 +148,67 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertIn(fields["side_marker_crop_path"], paths)
         self.assertIn(fields["side_marker_search_crop_path"], paths)
 
+    def test_search_zone_outline_triangle_writes_tight_marker_crop(self) -> None:
+        page = Image.new("RGB", (420, 440), "white")
+        draw = ImageDraw.Draw(page)
+        board_bbox = [100.0, 170.0, 300.0, 370.0]
+        _draw_checkerboard(draw, board_bbox)
+        draw.line([(324, 188), (306, 224), (342, 224), (324, 188)], fill="black", width=4, joint="curve")
+
+        fields, files = _scan_chess_two_crop_review_artifacts(
+            page,
+            filename="outline-search.png",
+            board_bbox=board_bbox,
+            side_marker_bbox=None,
+        )
+        file_by_path = {str(item.get("path") or ""): item.get("data") for item in files}
+        marker_png = Image.open(io.BytesIO(file_by_path[fields["side_marker_crop_path"]]))
+
+        self.assertEqual(fields["marker_crop_quality"], "pass")
+        self.assertEqual(fields["side_to_move_detected"], "white")
+        self.assertEqual(fields["side_marker_review_crop_kind"], "detected_marker_bbox")
+        self.assertEqual(fields["marker_search_zone_preview_path"], fields["side_marker_search_crop_path"])
+        self.assertNotEqual(fields["marker_crop_bbox"], fields["marker_search_zone_preview_bbox"])
+        self.assertLess(marker_png.width, 64)
+        self.assertLess(marker_png.height, 64)
+
+    def test_search_zone_filled_triangle_writes_tight_marker_crop(self) -> None:
+        page = Image.new("RGB", (420, 440), "white")
+        draw = ImageDraw.Draw(page)
+        board_bbox = [100.0, 170.0, 300.0, 370.0]
+        _draw_checkerboard(draw, board_bbox)
+        draw.polygon([(324, 188), (306, 224), (342, 224)], fill="black")
+
+        fields, _files = _scan_chess_two_crop_review_artifacts(
+            page,
+            filename="filled-search.png",
+            board_bbox=board_bbox,
+            side_marker_bbox=None,
+        )
+
+        self.assertEqual(fields["marker_crop_quality"], "pass")
+        self.assertEqual(fields["side_to_move_detected"], "black")
+        self.assertEqual(fields["selected_marker_zone"], "right")
+        self.assertFalse(fields["manual_review_required"])
+
+    def test_corner_marker_tight_crop_is_not_cut_off(self) -> None:
+        page = Image.new("RGB", (420, 440), "white")
+        draw = ImageDraw.Draw(page)
+        board_bbox = [100.0, 170.0, 300.0, 370.0]
+        _draw_checkerboard(draw, board_bbox)
+        draw.polygon([(318, 154), (304, 184), (332, 184)], fill="black")
+
+        fields, _files = _scan_chess_two_crop_review_artifacts(
+            page,
+            filename="corner-marker.png",
+            board_bbox=board_bbox,
+            side_marker_bbox=None,
+        )
+
+        self.assertEqual(fields["marker_crop_quality"], "pass")
+        self.assertNotIn("marker_cut_off", fields["marker_crop_fail_reason"])
+        self.assertEqual(fields["side_to_move_detected"], "black")
+
     def test_tight_board_crop_quality_passes_for_clean_8x8_board(self) -> None:
         page = Image.new("RGB", (320, 320), "white")
         draw = ImageDraw.Draw(page)
@@ -259,6 +320,47 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertIn("mostly_board_edge", edge_quality["reasons"])
         self.assertEqual(multi_quality["decision"], "fail")
         self.assertIn("multiple_candidates", multi_quality["reasons"])
+
+    def test_marker_crop_quality_blocks_rank_numbers_file_letters_and_thin_strip(self) -> None:
+        page = Image.new("RGB", (420, 440), "white")
+        draw = ImageDraw.Draw(page)
+        board_bbox = [100.0, 170.0, 300.0, 370.0]
+        _draw_checkerboard(draw, board_bbox)
+        for index, label in enumerate("87654321"):
+            draw.text((82, 174 + index * 23), label, fill="black")
+        draw.text((108, 383), "a b c d e f g h", fill="black")
+        draw.line((302, 170, 302, 370), fill="black", width=3)
+
+        rank_quality = _scan_chess_marker_crop_quality(page, [78.0, 170.0, 98.0, 370.0], board_bbox)
+        file_quality = _scan_chess_marker_crop_quality(page, [100.0, 380.0, 300.0, 404.0], board_bbox)
+        thin_quality = _scan_chess_marker_crop_quality(page, [300.0, 170.0, 306.0, 370.0], board_bbox)
+
+        self.assertEqual(rank_quality["decision"], "fail")
+        self.assertIn("mostly_rank_numbers", rank_quality["reasons"])
+        self.assertEqual(file_quality["decision"], "fail")
+        self.assertIn("mostly_file_letters", file_quality["reasons"])
+        self.assertEqual(thin_quality["decision"], "fail")
+        self.assertIn("too_narrow", thin_quality["reasons"])
+
+    def test_multiple_search_zone_candidates_stay_manual_review(self) -> None:
+        page = Image.new("RGB", (420, 440), "white")
+        draw = ImageDraw.Draw(page)
+        board_bbox = [100.0, 170.0, 300.0, 370.0]
+        _draw_checkerboard(draw, board_bbox)
+        draw.polygon([(324, 188), (306, 224), (342, 224)], fill="black")
+        draw.line([(324, 290), (306, 326), (342, 326), (324, 290)], fill="black", width=4, joint="curve")
+
+        fields, _files = _scan_chess_two_crop_review_artifacts(
+            page,
+            filename="multi-search.png",
+            board_bbox=board_bbox,
+            side_marker_bbox=None,
+        )
+
+        self.assertTrue(fields["manual_review_required"])
+        self.assertEqual(fields["marker_crop_quality"], "fail")
+        self.assertIn("multiple_candidates", fields["marker_crop_fail_reason"])
+        self.assertIsNone(fields["side_to_move_detected"])
 
     def test_crop_quality_gate_blocks_trusted_side_when_marker_crop_fails(self) -> None:
         payload = {

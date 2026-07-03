@@ -2028,6 +2028,8 @@ def _two_crop_quality_rows(diagrams: list[dict[str, Any]], fen_payload: dict[str
                 "board_crop_path": str(_first_non_empty(merged.get("board_crop_path"))),
                 "side_marker_crop_path": str(_first_non_empty(merged.get("side_marker_crop_path"))),
                 "side_marker_search_crop_path": str(_first_non_empty(merged.get("side_marker_search_crop_path"))),
+                "marker_search_zone_preview_path": str(_first_non_empty(merged.get("marker_search_zone_preview_path"))),
+                "marker_search_zone_preview_bbox": list(merged.get("marker_search_zone_preview_bbox") or []),
                 "side_marker_review_crop_path": str(_first_non_empty(merged.get("side_marker_review_crop_path"))),
                 "side_marker_review_crop_kind": str(_first_non_empty(merged.get("side_marker_review_crop_kind"))),
                 "debug_overlay_path": str(_first_non_empty(merged.get("debug_overlay_path"))),
@@ -2044,6 +2046,7 @@ def _two_crop_quality_rows(diagrams: list[dict[str, Any]], fen_payload: dict[str
                 "marker_search_zones": dict(merged.get("marker_search_zones") or {}),
                 "selected_marker_zone": merged.get("selected_marker_zone"),
                 "marker_bbox": list(merged.get("marker_bbox") or []),
+                "marker_crop_bbox": list(merged.get("marker_crop_bbox") or []),
                 "marker_crop_quality": str(_first_non_empty(merged.get("marker_crop_quality"))),
                 "marker_crop_fail_reason": list(merged.get("marker_crop_fail_reason") or []),
                 "side_to_move_detected": merged.get("side_to_move_detected"),
@@ -2142,6 +2145,8 @@ def _two_crop_quality_metrics_report(diagrams: list[dict[str, Any]], fen_payload
     diagram_count = len(rows)
     board_pass_count = len([row for row in rows if row.get("board_crop_quality") == "pass"])
     board_fail_count = len([row for row in rows if row.get("board_crop_quality") == "fail"])
+    marker_pass_count = len([row for row in rows if row.get("marker_crop_quality") == "pass"])
+    marker_fail_count = len([row for row in rows if row.get("marker_crop_quality") == "fail"])
     board_reason_breakdown = {reason: board_fail_reasons.count(reason) for reason in sorted(set(board_fail_reasons))}
     summary = {
         "diagram_count": diagram_count,
@@ -2151,6 +2156,11 @@ def _two_crop_quality_metrics_report(diagrams: list[dict[str, Any]], fen_payload
         "board_crop_fail_reason_breakdown": board_reason_breakdown,
         "side_marker_crop_count": len([row for row in rows if row.get("has_side_marker_crop")]),
         "side_marker_search_crop_count": len([row for row in rows if row.get("has_side_marker_search_crop")]),
+        "marker_search_zone_count": len([row for row in rows if row.get("marker_search_zones")]),
+        "marker_search_zone_region_count": sum(len(row.get("marker_search_zones") or {}) for row in rows),
+        "marker_bbox_count": len([row for row in rows if row.get("marker_bbox")]),
+        "marker_crop_pass_count": marker_pass_count,
+        "marker_crop_fail_count": marker_fail_count,
         "board_crop_quality_pass_count": board_pass_count,
         "board_crop_quality_pass_rate": round(
             board_pass_count / diagram_count,
@@ -2160,9 +2170,9 @@ def _two_crop_quality_metrics_report(diagrams: list[dict[str, Any]], fen_payload
         else 0.0,
         "board_crop_contains_coordinates_count": board_fail_reasons.count("contains_coordinates"),
         "board_crop_contains_marker_count": board_fail_reasons.count("contains_marker"),
-        "marker_crop_quality_pass_count": len([row for row in rows if row.get("marker_crop_quality") == "pass"]),
+        "marker_crop_quality_pass_count": marker_pass_count,
         "marker_crop_quality_pass_rate": round(
-            len([row for row in rows if row.get("marker_crop_quality") == "pass"]) / diagram_count,
+            marker_pass_count / diagram_count,
             4,
         )
         if diagram_count

@@ -5483,6 +5483,8 @@ class ChessFenRecognitionTests(unittest.TestCase):
             "side_to_move_evidence": "inferred",
             "warnings": ["side_to_move_inferred"],
             "requires_review": True,
+            "board_crop_quality": "pass",
+            "board_crop_quality_gate": {"decision": "pass", "reasons": []},
             "marker_crop_quality": "pass",
             "marker_bbox": [10.0, 20.0, 30.0, 40.0],
             "selected_marker_zone": "right",

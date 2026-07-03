@@ -20,6 +20,7 @@ from chess_side_marker_learning import (
     build_side_marker_learning_artifacts,
     side_marker_learning_review_html,
 )
+from chess_side_marker_blockers import build_side_marker_blocker_attribution
 from converter import ConversionConfig, chess_fen_html_attrs, chess_side_marker_html
 from pymupdf_chess_extractor import (
     ScanChessSideToMoveEvidence,
@@ -658,6 +659,8 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
             {
                 **candidate,
                 "side_marker_status": "trusted_marker",
+                "board_crop_quality": "pass",
+                "board_crop_quality_gate": {"decision": "pass", "reasons": []},
                 "marker_crop_quality": "pass",
                 "marker_bbox": [10.0, 20.0, 30.0, 40.0],
                 "selected_marker_zone": "right",
@@ -670,6 +673,7 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertEqual(missing_marker["runtime_status"], "FEN_REVIEW_REQUIRED")
         self.assertIn("full_fen_blocked_by_marker", {blocker["code"] for blocker in missing_marker["acceptance_blockers"]})
         self.assertEqual(trusted_marker_missing_crop["runtime_status"], "FEN_REVIEW_REQUIRED")
+        self.assertIn("full_fen_blocked_by_marker_crop_quality", {blocker["code"] for blocker in trusted_marker_missing_crop["acceptance_blockers"]})
         self.assertIn("marker_crop_quality_failed", {blocker["code"] for blocker in trusted_marker_missing_crop["acceptance_blockers"]})
         self.assertEqual(placement["runtime_status"], "FEN_PLACEMENT_MACHINE_ACCEPTED")
         self.assertEqual(trusted_marker["runtime_status"], "FEN_MACHINE_ACCEPTED")
@@ -1100,10 +1104,10 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertEqual(summary["manual_review_required_count"], 1)
         self.assertEqual(summary["trusted_marker_count"], 1)
         self.assertEqual(summary["marker_missing_count"], 1)
-        self.assertEqual(summary["placement_accepted_count"], 2)
+        self.assertEqual(summary["placement_accepted_count"], 1)
         self.assertEqual(summary["full_fen_accepted_count"], 1)
         self.assertEqual(summary["blocked_by_marker_count"], 1)
-        self.assertEqual(summary["blocked_by_placement_count"], 0)
+        self.assertEqual(summary["blocked_by_placement_count"], 1)
         probe_quality = report["probe_quality_before_after"]
         self.assertEqual(probe_quality["status"], "TRAINING_DATA_GAP")
         self.assertEqual(probe_quality["after"]["marker_missing_count"], 1)
@@ -1180,6 +1184,10 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
                                     "side_to_move": "unknown",
                                     "side_marker_status": "trusted_marker",
                                     "side_marker_symbol": "\u25b3",
+                                    "board_crop_quality": "pass",
+                                    "board_crop_fail_reason": [],
+                                    "marker_crop_quality": "pass",
+                                    "marker_crop_fail_reason": [],
                                     "placement_status": "FEN_PLACEMENT_MACHINE_ACCEPTED",
                                     "full_fen_status": "FEN_REVIEW_REQUIRED",
                                 },
@@ -1190,6 +1198,10 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
                                     "board_crop_path": "review/chess_fen/two_crop/missing-marker_board.png",
                                     "side_to_move": "unknown",
                                     "side_marker_status": "marker_missing",
+                                    "board_crop_quality": "pass",
+                                    "board_crop_fail_reason": [],
+                                    "marker_crop_quality": "fail",
+                                    "marker_crop_fail_reason": ["marker_missing"],
                                     "placement_status": "FEN_PLACEMENT_MACHINE_ACCEPTED",
                                     "full_fen_status": "FEN_REVIEW_REQUIRED",
                                 },
@@ -1202,6 +1214,10 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
                                     "side_to_move": "w",
                                     "side_marker_status": "trusted_marker",
                                     "side_marker_symbol": "\u25b3",
+                                    "board_crop_quality": "pass",
+                                    "board_crop_fail_reason": [],
+                                    "marker_crop_quality": "pass",
+                                    "marker_crop_fail_reason": [],
                                     "placement_status": "FEN_PLACEMENT_REVIEW_REQUIRED",
                                     "full_fen_status": "FEN_REVIEW_REQUIRED",
                                 },
@@ -1231,6 +1247,76 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertEqual(report["summary"]["placement_blocks_full_fen_count"], 1)
         self.assertIn("side_marker_blocker_attribution", flow_payload["artifacts"])
         self.assertIn("trusted_marker_not_propagated", markdown)
+
+    def test_side_marker_blocker_attribution_counts_quality_gate_blockers(self) -> None:
+        report = build_side_marker_blocker_attribution(
+            [
+                {
+                    "diagram_id": "board-fail",
+                    "page": 1,
+                    "image_path": "assets/diagrams/board-fail.png",
+                    "board_crop_path": "review/chess_fen/two_crop/board-fail_board.png",
+                    "board_bbox": [1, 2, 101, 102],
+                    "side_marker_status": "trusted_marker",
+                    "side_to_move": "w",
+                    "board_crop_quality": "fail",
+                    "marker_crop_quality": "pass",
+                    "acceptance_blocker_codes": ["full_fen_blocked_by_board_crop_quality"],
+                },
+                {
+                    "diagram_id": "marker-fail",
+                    "page": 2,
+                    "image_path": "assets/diagrams/marker-fail.png",
+                    "board_crop_path": "review/chess_fen/two_crop/marker-fail_board.png",
+                    "side_marker_crop_path": "review/chess_fen/two_crop/marker-fail_marker.png",
+                    "board_bbox": [1, 2, 101, 102],
+                    "side_marker_status": "trusted_marker",
+                    "side_to_move": "b",
+                    "board_crop_quality": "pass",
+                    "marker_crop_quality": "fail",
+                    "acceptance_blocker_codes": ["full_fen_blocked_by_marker_crop_quality"],
+                },
+                {
+                    "diagram_id": "conflict",
+                    "page": 3,
+                    "image_path": "assets/diagrams/conflict.png",
+                    "board_crop_path": "review/chess_fen/two_crop/conflict_board.png",
+                    "side_marker_crop_path": "review/chess_fen/two_crop/conflict_marker.png",
+                    "board_bbox": [1, 2, 101, 102],
+                    "side_marker_status": "marker_conflict",
+                    "side_to_move": "unknown",
+                    "board_crop_quality": "pass",
+                    "marker_crop_quality": "pass",
+                    "acceptance_blocker_codes": ["full_fen_blocked_by_marker_conflict"],
+                },
+                {
+                    "diagram_id": "manual-review",
+                    "page": 4,
+                    "image_path": "assets/diagrams/manual-review.png",
+                    "board_crop_path": "review/chess_fen/two_crop/manual-review_board.png",
+                    "side_marker_crop_path": "review/chess_fen/two_crop/manual-review_marker.png",
+                    "board_bbox": [1, 2, 101, 102],
+                    "side_marker_status": "trusted_marker",
+                    "side_to_move": "w",
+                    "board_crop_quality": "pass",
+                    "marker_crop_quality": "pass",
+                    "manual_review_required": True,
+                    "manual_review_reason": "system_suggestion_mismatch",
+                    "acceptance_blocker_codes": ["full_fen_blocked_by_marker_manual_review"],
+                },
+            ]
+        )
+
+        by_id = {item["diagram_id"]: item for item in report["items"]}
+        summary = report["summary"]
+        self.assertEqual(by_id["board-fail"]["primary_side_marker_blocker"], "board_crop_quality_blocks_full_fen")
+        self.assertEqual(by_id["marker-fail"]["primary_side_marker_blocker"], "marker_crop_quality_blocks_full_fen")
+        self.assertEqual(by_id["conflict"]["primary_side_marker_blocker"], "marker_classifier_conflict")
+        self.assertEqual(by_id["manual-review"]["primary_side_marker_blocker"], "marker_manual_review_required")
+        self.assertEqual(summary["board_crop_quality_blocks_full_fen_count"], 1)
+        self.assertEqual(summary["marker_crop_quality_blocks_full_fen_count"], 1)
+        self.assertEqual(summary["marker_conflict_blocks_full_fen_count"], 1)
+        self.assertEqual(summary["marker_manual_review_blocks_full_fen_count"], 1)
 
     def test_auto_flow_writes_two_crop_benchmark_gap_without_ai_label_promotion(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

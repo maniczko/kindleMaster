@@ -96,8 +96,10 @@ MACHINE_BLOCKING_SIDE_MARKER_STATUSES = {
     "marker_conflict",
     "marker_missing",
     "multi_side",
+    "multiple_candidates",
     "side_to_move_marker_local_ambiguous",
     "side_to_move_marker_local_conflict",
+    "unclear_symbol",
 }
 MACHINE_TRUSTED_SIDE_MARKER_STATUSES = {
     "trusted_marker",
@@ -442,12 +444,15 @@ def machine_accept_placement(candidate: dict[str, Any], context: dict[str, Any] 
     min_confidence = float(ctx.get("min_confidence", 0.835) or 0.835)
     confidence = _candidate_confidence(candidate, default=ctx.get("confidence"))
     warnings = sorted({str(item) for item in candidate.get("warnings") or [] if str(item)})
+    board_crop_quality = str(candidate.get("board_crop_quality") or "").strip().lower()
+    board_crop_fail_reason = _string_list(candidate.get("board_crop_fail_reason"))
     blockers: list[dict[str, Any]] = []
     trace: dict[str, Any] = {
         "source": source or "unknown",
         "confidence": confidence,
         "min_confidence": min_confidence,
         "warnings": warnings,
+        "board_crop_quality": board_crop_quality or None,
         "policy": "runtime_placement_acceptance_v1",
     }
 
@@ -468,6 +473,15 @@ def machine_accept_placement(candidate: dict[str, Any], context: dict[str, Any] 
                 "message": "Candidate confidence is below the runtime placement acceptance threshold.",
                 "confidence": confidence,
                 "min_confidence": min_confidence,
+            }
+        )
+    if _has_field(candidate, "board_crop_quality") and board_crop_quality != "pass":
+        blockers.append(
+            {
+                "code": "placement_blocked_by_board_crop_quality",
+                "message": "Placement cannot be machine accepted when the tight board crop quality gate fails.",
+                "board_crop_quality": board_crop_quality or "missing",
+                "board_crop_fail_reason": board_crop_fail_reason,
             }
         )
 
@@ -514,12 +528,21 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
     min_confidence = float(ctx.get("min_confidence", 0.835) or 0.835)
     confidence = _candidate_confidence(candidate, default=ctx.get("confidence"))
     warnings = sorted({str(item) for item in candidate.get("warnings") or [] if str(item)})
+    board_crop_quality = str(candidate.get("board_crop_quality") or "").strip().lower()
+    board_crop_fail_reason = _string_list(candidate.get("board_crop_fail_reason"))
+    board_crop_quality_gate = candidate.get("board_crop_quality_gate") if isinstance(candidate.get("board_crop_quality_gate"), dict) else {}
+    board_crop_gate_reasons = _string_list(board_crop_quality_gate.get("reasons"))
     blockers: list[dict[str, Any]] = []
     trace: dict[str, Any] = {
         "source": source or "unknown",
         "confidence": confidence,
         "min_confidence": min_confidence,
         "warnings": warnings,
+        "crop_quality": {
+            "board_crop_quality": board_crop_quality or "missing",
+            "board_crop_fail_reason": board_crop_fail_reason,
+            "board_crop_quality_gate_reasons": board_crop_gate_reasons,
+        },
         "policy": "runtime_machine_acceptance_only",
     }
 
@@ -601,11 +624,35 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
         "marker_bbox_present": marker_bbox_valid,
         "marker_crop_component_count": marker_crop_component_count,
     }
+    trace["crop_quality"]["marker_crop_quality"] = marker_crop_quality or "missing"
+    trace["crop_quality"]["marker_crop_fail_reason"] = marker_crop_fail_reason
+    trace["crop_quality"]["marker_crop_quality_gate_reasons"] = marker_crop_gate_reasons
+    if board_crop_quality != "pass":
+        blockers.append(
+            {
+                "code": "full_fen_blocked_by_board_crop_quality",
+                "message": "Full FEN requires a passing tight 8x8 board crop.",
+                "board_crop_quality": board_crop_quality or "missing",
+                "board_crop_fail_reason": sorted(set(board_crop_fail_reason + board_crop_gate_reasons)),
+            }
+        )
     if side_status == "inferred" or side_evidence == "inferred":
         blockers.append(
             {
                 "code": "side_to_move_inferred",
                 "message": "Full FEN cannot be machine accepted when side to move is inferred.",
+            }
+        )
+    manual_review_required = _truthy_value(candidate.get("manual_review_required"))
+    manual_review_reason = str(candidate.get("manual_review_reason") or "").strip()
+    manual_review_codes = set(_string_list(candidate.get("manual_review_reason"))) | set(marker_crop_fail_reason) | set(marker_crop_gate_reasons) | set(warnings)
+    if manual_review_required or manual_review_reason or "system_suggestion_mismatch" in manual_review_codes:
+        blockers.append(
+            {
+                "code": "full_fen_blocked_by_marker_manual_review",
+                "message": "Full FEN cannot be machine accepted while marker evidence is flagged for manual review.",
+                "manual_review_required": manual_review_required,
+                "manual_review_reason": manual_review_reason,
             }
         )
     if side_marker_status in MACHINE_BLOCKING_SIDE_MARKER_STATUSES:
@@ -615,12 +662,29 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
                 "message": "Full FEN cannot be machine accepted without trusted diagram-scoped side-marker evidence.",
             }
         )
+        if "conflict" in side_marker_status or "multi" in side_marker_status:
+            blockers.append(
+                {
+                    "code": "full_fen_blocked_by_marker_conflict",
+                    "message": "Full FEN cannot be machine accepted when side-marker evidence conflicts.",
+                    "side_marker_status": side_marker_status,
+                }
+            )
     if side_marker_status not in MACHINE_TRUSTED_SIDE_MARKER_STATUSES:
         blockers.append(
             {
                 "code": "full_fen_blocked_by_marker",
                 "message": "Full FEN requires trusted diagram-scoped side-marker evidence.",
                 "side_marker_status": side_marker_status or "marker_missing",
+            }
+        )
+    if marker_crop_quality != "pass":
+        blockers.append(
+            {
+                "code": "full_fen_blocked_by_marker_crop_quality",
+                "message": "Full FEN requires a passing tight side-marker crop.",
+                "marker_crop_quality": marker_crop_quality or "missing",
+                "marker_crop_fail_reason": sorted(set(marker_crop_fail_reason + marker_crop_gate_reasons)),
             }
         )
     if side_marker_status == "trusted_marker" and marker_crop_quality != "pass":
@@ -734,6 +798,24 @@ def _candidate_confidence(candidate: dict[str, Any], *, default: Any = None) -> 
         return float(value or 0.0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _has_field(candidate: dict[str, Any], key: str) -> bool:
+    return key in candidate and candidate.get(key) not in (None, "")
+
+
+def _truthy_value(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return bool(value)
+
+
+def _string_list(value: Any) -> list[str]:
+    if value in (None, "", [], {}):
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if str(item)]
+    return [str(value)] if str(value) else []
 
 
 def _is_machine_accepted_source(source: str) -> bool:

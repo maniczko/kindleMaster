@@ -5483,6 +5483,10 @@ class ChessFenRecognitionTests(unittest.TestCase):
             "side_to_move_evidence": "inferred",
             "warnings": ["side_to_move_inferred"],
             "requires_review": True,
+            "marker_crop_quality": "pass",
+            "marker_bbox": [10.0, 20.0, 30.0, 40.0],
+            "selected_marker_zone": "right",
+            "marker_crop_quality_gate": {"decision": "pass", "component_count": 1, "reasons": []},
         }
 
         updated = _apply_scan_chess_side_to_move_marker(payload, "b")
@@ -5606,7 +5610,7 @@ class ChessFenRecognitionTests(unittest.TestCase):
         self.assertIn("side_to_move_marker_probes_checked", evidence.warnings)
         self.assertTrue(evidence.marker_candidates)
 
-    def test_scan_chess_clean_side_only_local_marker_assignment_applies_unique_marker(self) -> None:
+    def test_scan_chess_clean_side_only_local_marker_assignment_keeps_borderline_marker_review_only(self) -> None:
         board_bbox = (100.0, 170.0, 300.0, 370.0)
         page = Image.new("RGB", (420, 440), "white")
         payload = {
@@ -5639,18 +5643,16 @@ class ChessFenRecognitionTests(unittest.TestCase):
 
         self.assertIsNotNone(evidence)
         assert evidence is not None
-        self.assertEqual(evidence.side, "w")
-        self.assertEqual(evidence.source, "marker")
-        self.assertIn("side_to_move_marker_local_assignment_used", evidence.warnings)
-        self.assertIn("side_to_move_marker_local_borderline_outline", evidence.warnings)
+        self.assertEqual(evidence.side, "")
+        self.assertIn("side_to_move_marker_local_ambiguous", evidence.warnings)
+        self.assertIn("side_to_move_marker_probes_checked", evidence.warnings)
 
         updated = _apply_scan_chess_side_to_move_context_evidence(payload, evidence)
 
-        self.assertEqual(updated["fen"], "k7/8/8/8/8/8/8/7K w - - 0 1")
-        self.assertFalse(updated["requires_review"])
-        self.assertEqual(updated["side_to_move_status"], "explicit")
-        self.assertEqual(updated["side_to_move_evidence"], "marker")
-        self.assertNotIn("side_to_move_inferred", updated["warnings"])
+        self.assertEqual(updated["fen"], "")
+        self.assertTrue(updated["requires_review"])
+        self.assertEqual(updated["side_to_move"], "unknown")
+        self.assertEqual(updated["side_marker_status"], "ambiguous_marker")
 
     def test_scan_chess_local_marker_assignment_conflict_remains_review(self) -> None:
         board_bbox = (100.0, 170.0, 300.0, 370.0)
@@ -5670,6 +5672,7 @@ class ChessFenRecognitionTests(unittest.TestCase):
                 "density": 0.34,
                 "score": 820.0,
                 "component_bbox": [4.0, 4.0, 30.0, 34.0],
+                "detected_side": "w",
             },
             {
                 "role": "right_side",

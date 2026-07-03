@@ -2656,7 +2656,14 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
                     board_bbox=recognition_bbox,
                     side_marker_bbox=candidate_payload.get("side_marker_bbox"),
                 )
+                candidate_payload.update(two_crop_fields)
                 candidate_payload = _apply_scan_chess_two_crop_quality_gate(candidate_payload, two_crop_fields)
+                if bool(getattr(config, "chess_fen_apply_side_marker", False)):
+                    candidate_payload = _apply_scan_chess_two_crop_side_marker_if_trusted(
+                        candidate_payload,
+                        two_crop_fields,
+                        min_confidence=side_min_confidence,
+                    )
                 candidate_payload.update(two_crop_fields)
                 chess_fen_review_artifact_files.extend(two_crop_files)
                 diagram_total += 1
@@ -5978,6 +5985,105 @@ def _apply_scan_chess_two_crop_quality_gate(payload: dict[str, Any], fields: Map
     return updated
 
 
+def _scan_chess_two_crop_trusted_side(fields: Mapping[str, Any]) -> str:
+    if str(fields.get("board_crop_quality") or "").lower() != "pass":
+        return ""
+    if str(fields.get("marker_crop_quality") or "").lower() != "pass":
+        return ""
+    if not _coerce_side_marker_bbox(fields.get("marker_bbox")):
+        return ""
+    if not str(fields.get("selected_marker_zone") or "").strip():
+        return ""
+    gate = fields.get("marker_crop_quality_gate") if isinstance(fields.get("marker_crop_quality_gate"), Mapping) else {}
+    if str(gate.get("decision") or "").lower() != "pass":
+        return ""
+    try:
+        component_count = int(gate.get("component_count") or 0)
+    except (TypeError, ValueError):
+        return ""
+    if component_count != 1:
+        return ""
+    blocked_reasons = {
+        "multiple_candidates",
+        "unclear_symbol",
+        "marker_cut_off",
+        "mostly_board_edge",
+        "wrong_marker_candidate",
+    }
+    reasons = {str(reason) for reason in (fields.get("marker_crop_fail_reason") or gate.get("reasons") or []) if str(reason)}
+    if reasons & blocked_reasons:
+        return ""
+    detected = str(fields.get("side_to_move_detected") or gate.get("side_to_move") or "").strip().lower()
+    if detected in {"b", "black"}:
+        return "b"
+    if detected in {"w", "white"}:
+        return "w"
+    return ""
+
+
+def _apply_scan_chess_two_crop_side_marker_if_trusted(
+    payload: dict[str, Any],
+    fields: Mapping[str, Any],
+    *,
+    min_confidence: float | None = None,
+) -> dict[str, Any]:
+    side = _scan_chess_two_crop_trusted_side(fields)
+    if not side:
+        return dict(payload)
+    payload_warnings = {str(warning) for warning in payload.get("warnings") or [] if str(warning)}
+    if payload_warnings & (SIDE_MARKER_CONFLICT_WARNINGS | SIDE_MARKER_AMBIGUOUS_WARNINGS):
+        updated = dict(payload)
+        updated["requires_review"] = True
+        updated["manual_review_required"] = True
+        updated["manual_review_reason"] = (
+            "marker_conflict" if payload_warnings & SIDE_MARKER_CONFLICT_WARNINGS else "unclear_symbol"
+        )
+        updated["side_to_move"] = "unknown"
+        updated["side_to_move_status"] = "unknown"
+        updated["side_to_move_evidence"] = "none"
+        updated.update(_scan_chess_side_marker_metadata_from_payload(updated))
+        return updated
+    confidence = fields.get("side_to_move_confidence") or fields.get("side_marker_confidence")
+    if confidence is None:
+        gate = fields.get("marker_crop_quality_gate") if isinstance(fields.get("marker_crop_quality_gate"), Mapping) else {}
+        confidence = gate.get("confidence")
+    cleaned_payload = dict(payload)
+    cleaned_warnings = {
+        str(warning)
+        for warning in cleaned_payload.get("warnings") or []
+        if str(warning)
+        and str(warning) not in SIDE_MARKER_CONFLICT_WARNINGS
+        and str(warning) not in SIDE_MARKER_AMBIGUOUS_WARNINGS
+        and str(warning) not in {"side_to_move_marker_multi_region_agreement", "side_to_move_marker_dominant_conflict_review_only"}
+    }
+    cleaned_warnings.add("side_to_move_marker_tight_crop_resolved")
+    cleaned_payload["warnings"] = sorted(cleaned_warnings)
+    updated = _apply_scan_chess_side_to_move_evidence(
+        cleaned_payload,
+        side,
+        source="marker",
+        raw_text=str(fields.get("selected_marker_zone") or "marker_crop"),
+        source_bbox=tuple(float(value) for value in _coerce_side_marker_bbox(fields.get("marker_bbox")) or ()),
+        min_confidence=min_confidence,
+    )
+    if confidence is not None:
+        try:
+            updated["side_marker_confidence"] = round(float(confidence), 3)
+        except (TypeError, ValueError):
+            pass
+    updated.update(_scan_chess_side_marker_metadata_from_payload(updated))
+    trace = updated.get("side_marker_assignment_trace") if isinstance(updated.get("side_marker_assignment_trace"), dict) else {}
+    trace = {
+        **trace,
+        "promotion_source": "tight_marker_crop",
+        "promotion_rule": "marker_crop_quality_pass_v1",
+        "marker_crop_quality": fields.get("marker_crop_quality"),
+        "marker_crop_quality_gate": fields.get("marker_crop_quality_gate"),
+    }
+    updated["side_marker_assignment_trace"] = trace
+    return updated
+
+
 def _crop_bbox_from_image(image: Image.Image, bbox: Any) -> Image.Image | None:
     box = _bbox_to_int_box(bbox, image.size)
     if box is None:
@@ -6520,12 +6626,15 @@ def _scan_chess_side_marker_metadata_from_payload(payload: Mapping[str, Any]) ->
     if "side_to_move_marker_multi_side" in warnings:
         marker_status = "multi_side"
         symbol_key = "both"
+        side = "unknown"
     elif warnings & SIDE_MARKER_CONFLICT_WARNINGS:
         marker_status = "marker_conflict"
         symbol_key = "ambiguous"
+        side = "unknown"
     elif warnings & SIDE_MARKER_AMBIGUOUS_WARNINGS:
         marker_status = "ambiguous_marker"
         symbol_key = "ambiguous"
+        side = "unknown"
     elif status == "explicit" and evidence in {"marker", "caption", "exact_label", "verified_label"} and side in {"w", "b"}:
         marker_status = {
             "marker": "trusted_marker",
@@ -6555,6 +6664,7 @@ def _scan_chess_side_marker_metadata_from_payload(payload: Mapping[str, Any]) ->
         "candidate_count": len(candidates),
         "trusted": marker_status in SIDE_MARKER_TRUSTED_STATUSES,
         "warnings": sorted(warnings),
+        "marker_crop_fail_reason": list(payload.get("marker_crop_fail_reason") or []),
     }
     if payload.get("side_marker_probe_role"):
         trace["selected_candidate_role"] = str(payload.get("side_marker_probe_role") or "")
@@ -6567,6 +6677,10 @@ def _scan_chess_side_marker_metadata_from_payload(payload: Mapping[str, Any]) ->
             trace["nearest_candidate_role"] = str(nearest.get("role") or "")
             trace["nearest_candidate_distance"] = nearest.get("distance_to_board")
             trace["nearest_candidate_side"] = nearest.get("detected_side") or nearest.get("side_candidate") or ""
+            trace["detected_side"] = nearest.get("detected_side") or nearest.get("side_candidate") or ""
+            trace["score"] = nearest.get("score")
+            trace["distance_to_board"] = nearest.get("distance_to_board")
+            trace.setdefault("selected_candidate_role", str(nearest.get("role") or ""))
 
     return {
         "side_to_move": side,
@@ -6733,9 +6847,16 @@ def _apply_scan_chess_side_to_move_context_evidence(
         updated["side_marker_confidence"] = round(float(evidence.confidence), 3)
     if not evidence.side:
         updated["warnings"] = sorted(existing_warnings | evidence_warnings)
-        if "side_to_move_evidence_conflict" in evidence_warnings:
+        if evidence_warnings & (SIDE_MARKER_CONFLICT_WARNINGS | SIDE_MARKER_AMBIGUOUS_WARNINGS):
             updated["fen"] = ""
             updated["requires_review"] = True
+            updated["manual_review_required"] = True
+            updated["manual_review_reason"] = (
+                "marker_conflict" if evidence_warnings & SIDE_MARKER_CONFLICT_WARNINGS else "unclear_symbol"
+            )
+            updated["side_to_move"] = "unknown"
+            updated["side_to_move_status"] = "unknown"
+            updated["side_to_move_evidence"] = "none"
         updated.update(_scan_chess_side_marker_metadata_from_payload(updated))
         return updated
     updated = _apply_scan_chess_side_to_move_evidence(
@@ -6818,6 +6939,15 @@ def _scan_chess_local_side_marker_assignment_evidence(
             ),
             marker_candidates=tuple(payloads),
         )
+    if len(candidate_payloads) != 1:
+        return ScanChessSideToMoveEvidence(
+            warnings=(
+                "side_to_move_marker_detected",
+                "side_to_move_marker_local_ambiguous",
+                "side_to_move_marker_probes_checked",
+            ),
+            marker_candidates=tuple(payloads),
+        )
     ranked = sorted(candidate_payloads, key=lambda item: float(item.get("score") or 0.0), reverse=True)
     best = ranked[0]
     if not _scan_chess_local_marker_is_dominant(best, component_payloads):
@@ -6882,9 +7012,9 @@ def _scan_chess_local_side_marker_side_candidate(candidate: dict[str, Any]) -> s
     except (TypeError, ValueError):
         return ""
     if 0.320 < density <= 0.360 and score >= 650.0:
-        candidate["detected_shape"] = "borderline_outline_triangle"
+        candidate["detected_shape"] = "borderline_outline_triangle_review_only"
         candidate["local_borderline_outline"] = True
-        return "w"
+        return ""
     return ""
 
 
@@ -7037,25 +7167,24 @@ def _infer_scan_chess_side_to_move_marker_evidence(
     warnings = {"side_to_move_marker_detected", "side_to_move_marker_probes_checked"}
     if len(detected_sides) > 1:
         dominant = _scan_chess_dominant_side_marker_detection(detections)
+        conflict_warnings = warnings | {
+            "side_to_move_marker_ambiguous",
+            "side_to_move_marker_multi_region_conflict",
+        }
         if dominant is not None:
-            warnings.add("side_to_move_marker_multi_region_conflict")
-            warnings.add("side_to_move_marker_dominant_conflict_resolved")
-            return ScanChessSideToMoveEvidence(
-                side=str(dominant.get("detected_side") or ""),
-                source="marker",
-                raw_text=str(dominant.get("role") or ""),
-                confidence=0.86,
-                warnings=tuple(sorted(warnings)),
-                source_bbox=tuple(float(value) for value in dominant.get("bbox", ())) if len(dominant.get("bbox", ())) == 4 else None,
-                marker_candidates=tuple(payloads),
-            )
+            conflict_warnings.add("side_to_move_marker_dominant_conflict_review_only")
         return ScanChessSideToMoveEvidence(
-            warnings=tuple(sorted(warnings | {"side_to_move_marker_ambiguous", "side_to_move_marker_multi_region_conflict"})),
+            warnings=tuple(sorted(conflict_warnings)),
             marker_candidates=tuple(payloads),
         )
     side = next(iter(detected_sides))
     if len(detections) > 1:
         warnings.add("side_to_move_marker_multi_region_agreement")
+        warnings.add("side_to_move_marker_local_ambiguous")
+        return ScanChessSideToMoveEvidence(
+            warnings=tuple(sorted(warnings)),
+            marker_candidates=tuple(payloads),
+        )
     best = max(detections, key=lambda payload: float(payload.get("score") or 0.0))
     return ScanChessSideToMoveEvidence(
         side=side,

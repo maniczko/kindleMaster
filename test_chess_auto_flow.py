@@ -88,6 +88,10 @@ class AutoChessFlowTests(unittest.TestCase):
                                     "side_marker_status": "trusted_marker",
                                     "side_marker_source": "marker",
                                     "side_marker_confidence": 0.94,
+                                    "marker_crop_quality": "pass",
+                                    "marker_bbox": [10.0, 20.0, 30.0, 40.0],
+                                    "selected_marker_zone": "right",
+                                    "marker_crop_quality_gate": {"decision": "pass", "component_count": 1, "reasons": []},
                                     "validation_status": "accepted",
                                 }
                             ],
@@ -341,6 +345,10 @@ class AutoChessFlowTests(unittest.TestCase):
                                     "side_marker_status": "trusted_marker",
                                     "side_marker_source": "marker",
                                     "side_marker_confidence": 0.94,
+                                    "marker_crop_quality": "pass",
+                                    "marker_bbox": [10.0, 20.0, 30.0, 40.0],
+                                    "selected_marker_zone": "right",
+                                    "marker_crop_quality_gate": {"decision": "pass", "component_count": 1, "reasons": []},
                                 }
                             ],
                             "pgn_records": [],

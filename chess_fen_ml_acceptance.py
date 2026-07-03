@@ -299,6 +299,12 @@ def _side_marker_fields(source: dict[str, Any]) -> dict[str, Any]:
         "side_marker_confidence",
         "side_marker_assignment_trace",
         "strict_fen_side_evidence_trusted",
+        "marker_crop_quality",
+        "marker_crop_fail_reason",
+        "marker_crop_quality_gate",
+        "marker_bbox",
+        "marker_crop_bbox",
+        "selected_marker_zone",
     )
     return {key: source.get(key) for key in keys if source.get(key) not in (None, "")}
 

@@ -25,9 +25,11 @@ from pymupdf_chess_extractor import (
     ScanChessSideToMoveEvidence,
     _apply_scan_chess_side_to_move_context_evidence,
     _apply_scan_chess_two_crop_quality_gate,
+    _apply_scan_chess_two_crop_side_marker_if_trusted,
     _chess_diagram_record_from_image,
     _infer_scan_chess_side_to_move_marker_evidence,
     _scan_chess_board_crop_quality,
+    _scan_chess_local_side_marker_side_candidate,
     _scan_chess_marker_crop_quality,
     _scan_chess_marker_search_zones,
     _scan_chess_side_marker_probe_payloads,
@@ -362,6 +364,179 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertIn("multiple_candidates", fields["marker_crop_fail_reason"])
         self.assertIsNone(fields["side_to_move_detected"])
 
+    def test_marker_conflict_evidence_clears_side_to_move_for_review(self) -> None:
+        payload = {
+            "fen": VALID_FEN,
+            "full_fen": VALID_FEN,
+            "placement": VALID_PLACEMENT,
+            "confidence": 0.99,
+            "source": "image-template-board",
+            "method": "image-template-board",
+            "side_to_move": "w",
+            "side_to_move_status": "inferred",
+            "side_to_move_evidence": "inferred",
+            "warnings": ["side_to_move_inferred"],
+            "requires_review": True,
+            "board_detected": True,
+        }
+        evidence = ScanChessSideToMoveEvidence(
+            warnings=(
+                "side_to_move_marker_detected",
+                "side_to_move_marker_multi_region_conflict",
+                "side_to_move_marker_probes_checked",
+            ),
+            marker_candidates=(
+                {
+                    "role": "right",
+                    "bbox": [304, 188, 342, 224],
+                    "detected_side": "b",
+                    "distance_to_board": 4.0,
+                    "score": 950.0,
+                },
+                {
+                    "role": "top",
+                    "bbox": [124, 132, 160, 166],
+                    "detected_side": "w",
+                    "distance_to_board": 8.0,
+                    "score": 720.0,
+                },
+            ),
+        )
+
+        updated = _apply_scan_chess_side_to_move_context_evidence(payload, evidence, min_confidence=0.90)
+        trace = updated["side_marker_assignment_trace"]
+
+        self.assertEqual(updated["side_to_move"], "unknown")
+        self.assertEqual(updated["side_marker_status"], "marker_conflict")
+        self.assertTrue(updated["requires_review"])
+        self.assertTrue(updated["manual_review_required"])
+        self.assertEqual(updated["manual_review_reason"], "marker_conflict")
+        self.assertEqual(trace["candidate_count"], 2)
+        self.assertEqual(trace["selected_candidate_role"], "right")
+        self.assertEqual(trace["detected_side"], "b")
+        self.assertEqual(trace["score"], 950.0)
+        self.assertEqual(trace["distance_to_board"], 4.0)
+        self.assertEqual(trace["marker_crop_fail_reason"], [])
+
+    def test_tight_marker_crop_pass_promotes_filled_triangle_to_black(self) -> None:
+        page = Image.new("RGB", (420, 440), "white")
+        draw = ImageDraw.Draw(page)
+        board_bbox = [100.0, 170.0, 300.0, 370.0]
+        _draw_checkerboard(draw, board_bbox)
+        draw.polygon([(324, 188), (306, 224), (342, 224)], fill="black")
+        fields, _files = _scan_chess_two_crop_review_artifacts(
+            page,
+            filename="promote-filled.png",
+            board_bbox=board_bbox,
+            side_marker_bbox=None,
+        )
+        payload = {
+            "fen": VALID_FEN,
+            "full_fen": VALID_FEN,
+            "placement": VALID_PLACEMENT,
+            "confidence": 0.99,
+            "source": "image-template-board",
+            "method": "image-template-board",
+            "side_to_move": "unknown",
+            "side_to_move_status": "unknown",
+            "side_to_move_evidence": "none",
+            "warnings": [],
+            "requires_review": True,
+            "board_detected": True,
+            **fields,
+        }
+
+        updated = _apply_scan_chess_two_crop_side_marker_if_trusted(payload, fields, min_confidence=0.90)
+
+        self.assertEqual(fields["marker_crop_quality"], "pass")
+        self.assertEqual(updated["side_to_move"], "b")
+        self.assertEqual(updated["side_marker_symbol"], "\u25bc")
+        self.assertEqual(updated["side_marker_status"], "trusted_marker")
+        self.assertNotIn("side_to_move_marker_multi_region_conflict", updated["warnings"])
+        self.assertEqual(updated["side_marker_assignment_trace"]["promotion_rule"], "marker_crop_quality_pass_v1")
+
+    def test_tight_marker_crop_does_not_override_existing_marker_conflict(self) -> None:
+        page = Image.new("RGB", (420, 440), "white")
+        draw = ImageDraw.Draw(page)
+        board_bbox = [100.0, 170.0, 300.0, 370.0]
+        _draw_checkerboard(draw, board_bbox)
+        draw.polygon([(324, 188), (306, 224), (342, 224)], fill="black")
+        fields, _files = _scan_chess_two_crop_review_artifacts(
+            page,
+            filename="conflict-filled.png",
+            board_bbox=board_bbox,
+            side_marker_bbox=None,
+        )
+        payload = {
+            "fen": VALID_FEN,
+            "full_fen": VALID_FEN,
+            "placement": VALID_PLACEMENT,
+            "confidence": 0.99,
+            "source": "image-template-board",
+            "method": "image-template-board",
+            "side_to_move": "unknown",
+            "side_to_move_status": "unknown",
+            "side_to_move_evidence": "none",
+            "warnings": [
+                "side_to_move_marker_multi_region_conflict",
+                "side_to_move_marker_ambiguous",
+            ],
+            "requires_review": True,
+            "board_detected": True,
+            **fields,
+        }
+
+        updated = _apply_scan_chess_two_crop_side_marker_if_trusted(payload, fields, min_confidence=0.90)
+
+        self.assertEqual(fields["marker_crop_quality"], "pass")
+        self.assertEqual(updated["side_to_move"], "unknown")
+        self.assertEqual(updated["side_marker_status"], "marker_conflict")
+        self.assertTrue(updated["manual_review_required"])
+        self.assertEqual(updated["manual_review_reason"], "marker_conflict")
+
+    def test_failed_marker_crop_does_not_promote_side_to_move(self) -> None:
+        fields = {
+            "board_crop_quality": "pass",
+            "marker_crop_quality": "fail",
+            "marker_crop_fail_reason": ["mostly_board_edge"],
+            "marker_crop_quality_gate": {
+                "decision": "fail",
+                "reasons": ["mostly_board_edge"],
+                "side_to_move": "black",
+                "confidence": 0.91,
+                "component_count": 1,
+            },
+            "marker_bbox": [302.0, 170.0, 306.0, 370.0],
+            "selected_marker_zone": "right",
+            "side_to_move_detected": "black",
+            "side_to_move_confidence": 0.91,
+        }
+        payload = {
+            "fen": VALID_FEN,
+            "full_fen": VALID_FEN,
+            "placement": VALID_PLACEMENT,
+            "confidence": 0.99,
+            "side_to_move": "unknown",
+            "side_to_move_status": "unknown",
+            "side_to_move_evidence": "none",
+            "warnings": [],
+            "requires_review": True,
+        }
+
+        updated = _apply_scan_chess_two_crop_side_marker_if_trusted(payload, fields, min_confidence=0.90)
+
+        self.assertEqual(updated["side_to_move"], "unknown")
+        self.assertNotEqual(updated.get("side_marker_status"), "trusted_marker")
+
+    def test_borderline_density_candidate_is_review_only_not_white(self) -> None:
+        candidate = {"density": 0.34, "score": 900.0}
+
+        side = _scan_chess_local_side_marker_side_candidate(candidate)
+
+        self.assertEqual(side, "")
+        self.assertEqual(candidate["detected_shape"], "borderline_outline_triangle_review_only")
+        self.assertTrue(candidate["local_borderline_outline"])
+
     def test_crop_quality_gate_blocks_trusted_side_when_marker_crop_fails(self) -> None:
         payload = {
             "fen": VALID_FEN.replace(" w ", " b "),
@@ -469,11 +644,24 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         }
 
         missing_marker = machine_accept_fen({**candidate, "side_marker_status": "marker_missing"}, {"min_confidence": 0.90})
-        trusted_marker = machine_accept_fen({**candidate, "side_marker_status": "trusted_marker"}, {"min_confidence": 0.90})
+        trusted_marker_missing_crop = machine_accept_fen({**candidate, "side_marker_status": "trusted_marker"}, {"min_confidence": 0.90})
+        trusted_marker = machine_accept_fen(
+            {
+                **candidate,
+                "side_marker_status": "trusted_marker",
+                "marker_crop_quality": "pass",
+                "marker_bbox": [10.0, 20.0, 30.0, 40.0],
+                "selected_marker_zone": "right",
+                "marker_crop_quality_gate": {"decision": "pass", "component_count": 1, "reasons": []},
+            },
+            {"min_confidence": 0.90},
+        )
         placement = machine_accept_placement({**candidate, "side_marker_status": "marker_missing"}, {"min_confidence": 0.90})
 
         self.assertEqual(missing_marker["runtime_status"], "FEN_REVIEW_REQUIRED")
         self.assertIn("full_fen_blocked_by_marker", {blocker["code"] for blocker in missing_marker["acceptance_blockers"]})
+        self.assertEqual(trusted_marker_missing_crop["runtime_status"], "FEN_REVIEW_REQUIRED")
+        self.assertIn("marker_crop_quality_failed", {blocker["code"] for blocker in trusted_marker_missing_crop["acceptance_blockers"]})
         self.assertEqual(placement["runtime_status"], "FEN_PLACEMENT_MACHINE_ACCEPTED")
         self.assertEqual(trusted_marker["runtime_status"], "FEN_MACHINE_ACCEPTED")
         self.assertEqual(trusted_marker["acceptance_trace"]["placement_gate"]["runtime_status"], "FEN_PLACEMENT_MACHINE_ACCEPTED")
@@ -844,11 +1032,15 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
                                     "method": "image-template-board",
                                     "side_to_move": "w",
                                     "side_to_move_status": "explicit",
-                                    "side_to_move_evidence": "trusted_marker",
+                                    "side_to_move_evidence": "marker",
                                     "side_marker_symbol": "\u25b3",
                                     "side_marker_status": "trusted_marker",
                                     "side_marker_source": "marker_crop",
                                     "side_marker_confidence": 0.94,
+                                    "marker_crop_quality": "pass",
+                                    "marker_bbox": [10.0, 20.0, 30.0, 40.0],
+                                    "selected_marker_zone": "right",
+                                    "marker_crop_quality_gate": {"decision": "pass", "component_count": 1, "reasons": []},
                                 },
                                 {
                                     "diagram_id": "diagram-2",

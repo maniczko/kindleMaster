@@ -26,6 +26,7 @@ from chess_side_marker_blockers import build_side_marker_blocker_attribution, si
 from pymupdf_chess_extractor import (
     _apply_scan_chess_side_to_move_context_evidence,
     _apply_scan_chess_two_crop_quality_gate,
+    _apply_scan_chess_two_crop_side_marker_if_trusted,
     _infer_scan_chess_side_to_move_marker_evidence,
     _scan_chess_local_side_marker_assignment_evidence,
     _scan_chess_side_marker_metadata_from_payload,
@@ -5285,7 +5286,13 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
                     board_bbox=board_bbox,
                     side_marker_bbox=payload.get("side_marker_bbox"),
                 )
+                payload.update(two_crop_fields)
                 payload = _apply_scan_chess_two_crop_quality_gate(payload, two_crop_fields)
+                payload = _apply_scan_chess_two_crop_side_marker_if_trusted(
+                    payload,
+                    two_crop_fields,
+                    min_confidence=min_confidence,
+                )
                 payload.update(two_crop_fields)
                 _write_study_side_marker_artifact_files(out, two_crop_files)
                 _apply_study_side_marker_payload(diagram, payload)

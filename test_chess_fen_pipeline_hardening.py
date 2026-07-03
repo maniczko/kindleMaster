@@ -177,12 +177,40 @@ class ChessFenPipelineHardeningTests(unittest.TestCase):
                 "side_to_move": "w",
                 "side_to_move_evidence": "marker_crop",
                 "side_marker_status": "trusted_marker",
+                "marker_crop_quality": "pass",
+                "marker_bbox": [10.0, 20.0, 30.0, 40.0],
+                "selected_marker_zone": "right",
+                "marker_crop_quality_gate": {"decision": "pass", "component_count": 1, "reasons": []},
             },
             {"min_confidence": 0.90},
         )
 
         self.assertEqual(result["runtime_status"], "FEN_MACHINE_ACCEPTED")
         self.assertEqual(result["selected_value"], self.STARTING_FEN)
+
+    def test_machine_accept_fen_rejects_trusted_marker_when_marker_crop_quality_fails(self) -> None:
+        result = machine_accept_fen(
+            {
+                "source": "deterministic",
+                "fen": self.STARTING_FEN,
+                "confidence": 0.99,
+                "warnings": [],
+                "side_to_move": "w",
+                "side_to_move_status": "explicit",
+                "side_to_move_evidence": "marker",
+                "side_marker_status": "trusted_marker",
+                "marker_crop_quality": "fail",
+                "marker_crop_fail_reason": ["mostly_board_edge"],
+                "marker_bbox": [10.0, 20.0, 30.0, 40.0],
+                "selected_marker_zone": "right",
+                "marker_crop_quality_gate": {"decision": "fail", "component_count": 1, "reasons": ["mostly_board_edge"]},
+            },
+            {"min_confidence": 0.90},
+        )
+
+        self.assertEqual(result["runtime_status"], "FEN_REVIEW_REQUIRED")
+        self.assertIn("marker_crop_quality_failed", {blocker["code"] for blocker in result["acceptance_blockers"]})
+        self.assertEqual(result["acceptance_trace"]["side_to_move"]["marker_crop_quality"], "fail")
 
     def test_machine_accept_placement_accepts_deterministic_placement_without_side_evidence(self) -> None:
         placement = self.STARTING_FEN.split()[0]
@@ -299,6 +327,10 @@ class ChessFenPipelineHardeningTests(unittest.TestCase):
                 "side_to_move": "w",
                 "side_to_move_evidence": "marker_crop",
                 "side_marker_status": "trusted_marker",
+                "marker_crop_quality": "pass",
+                "marker_bbox": [10.0, 20.0, 30.0, 40.0],
+                "selected_marker_zone": "right",
+                "marker_crop_quality_gate": {"decision": "pass", "component_count": 1, "reasons": []},
                 "source_crop_hash": "sha256:abc123",
                 "evidence": {
                     "python_chess_valid": True,

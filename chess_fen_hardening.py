@@ -105,6 +105,13 @@ MACHINE_TRUSTED_SIDE_MARKER_STATUSES = {
     "trusted_exact_label",
     "trusted_verified_label",
 }
+MACHINE_BLOCKING_MARKER_CROP_REASONS = {
+    "multiple_candidates",
+    "unclear_symbol",
+    "marker_cut_off",
+    "mostly_board_edge",
+    "wrong_marker_candidate",
+}
 MACHINE_BLOCKING_PLACEMENT_WARNINGS = {
     "black_king_count_invalid",
     "board_grid_not_detected",
@@ -557,11 +564,42 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
     side_status = str(candidate.get("side_to_move_status") or "").strip().lower()
     side_evidence = str(candidate.get("side_to_move_evidence") or "").strip().lower()
     side_marker_status = str(candidate.get("side_marker_status") or "").strip().lower()
+    marker_crop_quality = str(candidate.get("marker_crop_quality") or "").strip().lower()
+    marker_crop_fail_reason = [
+        str(reason)
+        for reason in candidate.get("marker_crop_fail_reason") or []
+        if str(reason)
+    ]
+    marker_crop_quality_gate = candidate.get("marker_crop_quality_gate") if isinstance(candidate.get("marker_crop_quality_gate"), dict) else {}
+    marker_crop_gate_reasons = [
+        str(reason)
+        for reason in marker_crop_quality_gate.get("reasons") or []
+        if str(reason)
+    ]
+    try:
+        marker_crop_component_count = int(marker_crop_quality_gate.get("component_count") or 0)
+    except (TypeError, ValueError):
+        marker_crop_component_count = 0
+    marker_bbox = candidate.get("marker_bbox") or candidate.get("side_marker_bbox")
+    marker_bbox_valid = False
+    if isinstance(marker_bbox, (list, tuple)) and len(marker_bbox) == 4:
+        try:
+            mx0, my0, mx1, my1 = [float(value) for value in marker_bbox]
+        except (TypeError, ValueError):
+            marker_bbox_valid = False
+        else:
+            marker_bbox_valid = mx1 > mx0 and my1 > my0
+    selected_marker_zone = str(candidate.get("selected_marker_zone") or "").strip()
     trace["side_to_move"] = {
         "status": side_status,
         "evidence": side_evidence,
         "marker_status": side_marker_status,
         "trusted_marker": side_marker_status in MACHINE_TRUSTED_SIDE_MARKER_STATUSES,
+        "marker_crop_quality": marker_crop_quality or None,
+        "marker_crop_fail_reason": marker_crop_fail_reason,
+        "selected_marker_zone": selected_marker_zone or None,
+        "marker_bbox_present": marker_bbox_valid,
+        "marker_crop_component_count": marker_crop_component_count,
     }
     if side_status == "inferred" or side_evidence == "inferred":
         blockers.append(
@@ -585,6 +623,49 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
                 "side_marker_status": side_marker_status or "marker_missing",
             }
         )
+    if side_marker_status == "trusted_marker" and marker_crop_quality != "pass":
+        blockers.append(
+            {
+                "code": "marker_crop_quality_failed",
+                "message": "Full FEN requires a passing tight side-marker crop.",
+                "marker_crop_quality": marker_crop_quality or "missing",
+                "marker_crop_fail_reason": marker_crop_fail_reason,
+            }
+        )
+    if side_marker_status == "trusted_marker":
+        if not marker_bbox_valid:
+            blockers.append(
+                {
+                    "code": "marker_bbox_missing",
+                    "message": "Full FEN requires a non-empty tight side-marker bbox.",
+                }
+            )
+        if not selected_marker_zone:
+            blockers.append(
+                {
+                    "code": "selected_marker_zone_missing",
+                    "message": "Full FEN requires an unambiguous selected marker zone.",
+                }
+            )
+        if marker_crop_component_count != 1:
+            blockers.append(
+                {
+                    "code": "marker_component_count_invalid",
+                    "message": "Full FEN requires exactly one marker candidate component.",
+                    "component_count": marker_crop_component_count,
+                }
+            )
+        blocked_crop_reasons = sorted(
+            (set(marker_crop_fail_reason) | set(marker_crop_gate_reasons)) & MACHINE_BLOCKING_MARKER_CROP_REASONS
+        )
+        if blocked_crop_reasons:
+            blockers.append(
+                {
+                    "code": "marker_crop_blocking_reason",
+                    "message": "Full FEN cannot use a side marker crop with blocking review reasons.",
+                    "reasons": blocked_crop_reasons,
+                }
+            )
 
     validation = validate_fen_detailed(fen)
     trace["fen_validation"] = {

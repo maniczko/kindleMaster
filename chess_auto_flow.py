@@ -2031,6 +2031,10 @@ def _two_crop_quality_rows(diagrams: list[dict[str, Any]], fen_payload: dict[str
                 "side_marker_review_crop_path": str(_first_non_empty(merged.get("side_marker_review_crop_path"))),
                 "side_marker_review_crop_kind": str(_first_non_empty(merged.get("side_marker_review_crop_kind"))),
                 "debug_overlay_path": str(_first_non_empty(merged.get("debug_overlay_path"))),
+                "debug_context_crop_path": str(_first_non_empty(merged.get("debug_context_crop_path"))),
+                "raw_board_candidate_bbox": list(merged.get("raw_board_candidate_bbox") or []),
+                "tight_board_bbox": list(merged.get("tight_board_bbox") or []),
+                "board_bbox": list(merged.get("board_bbox") or []),
                 "has_board_crop": has_board_crop,
                 "has_side_marker_crop": has_marker_crop,
                 "has_side_marker_search_crop": bool(_first_non_empty(merged.get("side_marker_search_crop_path"))),
@@ -2136,14 +2140,20 @@ def _two_crop_quality_metrics_report(diagrams: list[dict[str, Any]], fen_payload
         if str(reason)
     ]
     diagram_count = len(rows)
+    board_pass_count = len([row for row in rows if row.get("board_crop_quality") == "pass"])
+    board_fail_count = len([row for row in rows if row.get("board_crop_quality") == "fail"])
+    board_reason_breakdown = {reason: board_fail_reasons.count(reason) for reason in sorted(set(board_fail_reasons))}
     summary = {
         "diagram_count": diagram_count,
         "board_crop_count": len([row for row in rows if row.get("has_board_crop")]),
+        "board_crop_pass_count": board_pass_count,
+        "board_crop_fail_count": board_fail_count,
+        "board_crop_fail_reason_breakdown": board_reason_breakdown,
         "side_marker_crop_count": len([row for row in rows if row.get("has_side_marker_crop")]),
         "side_marker_search_crop_count": len([row for row in rows if row.get("has_side_marker_search_crop")]),
-        "board_crop_quality_pass_count": len([row for row in rows if row.get("board_crop_quality") == "pass"]),
+        "board_crop_quality_pass_count": board_pass_count,
         "board_crop_quality_pass_rate": round(
-            len([row for row in rows if row.get("board_crop_quality") == "pass"]) / diagram_count,
+            board_pass_count / diagram_count,
             4,
         )
         if diagram_count

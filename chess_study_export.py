@@ -5434,9 +5434,14 @@ def _study_side_marker_summary(diagrams: list[Mapping[str, Any]]) -> dict[str, A
         for reason in (item.get("board_crop_fail_reason") or [])
         if str(reason)
     ]
+    board_fail = len([item for item in diagrams if str(item.get("board_crop_quality") or "") == "fail"])
+    board_reason_breakdown = {reason: board_fail_reasons.count(reason) for reason in sorted(set(board_fail_reasons))}
     return {
         "diagram_count": diagram_count,
         "board_crop_count": len([item for item in diagrams if str(item.get("board_crop_path") or "").strip()]),
+        "board_crop_pass_count": board_pass,
+        "board_crop_fail_count": board_fail,
+        "board_crop_fail_reason_breakdown": board_reason_breakdown,
         "side_marker_crop_count": len([item for item in diagrams if str(item.get("side_marker_crop_path") or "").strip()]),
         "side_marker_search_crop_count": len([item for item in diagrams if str(item.get("side_marker_search_crop_path") or "").strip()]),
         "board_crop_quality_pass_count": board_pass,
@@ -5597,6 +5602,10 @@ def _study_two_crop_quality_rows(diagrams: list[Mapping[str, Any]]) -> list[dict
                 "side_marker_review_crop_path": str(item.get("side_marker_review_crop_path") or ""),
                 "side_marker_review_crop_kind": str(item.get("side_marker_review_crop_kind") or ""),
                 "debug_overlay_path": str(item.get("debug_overlay_path") or ""),
+                "debug_context_crop_path": str(item.get("debug_context_crop_path") or ""),
+                "raw_board_candidate_bbox": list(item.get("raw_board_candidate_bbox") or []),
+                "tight_board_bbox": list(item.get("tight_board_bbox") or []),
+                "board_bbox": list(item.get("board_bbox") or []),
                 "board_crop_quality": str(item.get("board_crop_quality") or ""),
                 "board_crop_fail_reason": list(item.get("board_crop_fail_reason") or []),
                 "marker_search_zones": dict(item.get("marker_search_zones") or {}),
@@ -5715,6 +5724,9 @@ def _write_study_two_crop_quality_metrics(out: Path, diagrams: list[Mapping[str,
         "summary": {
             "diagram_count": len(rows),
             "board_crop_count": int(summary.get("board_crop_count") or 0),
+            "board_crop_pass_count": int(summary.get("board_crop_pass_count") or summary.get("board_crop_quality_pass_count") or 0),
+            "board_crop_fail_count": int(summary.get("board_crop_fail_count") or 0),
+            "board_crop_fail_reason_breakdown": dict(summary.get("board_crop_fail_reason_breakdown") or {}),
             "side_marker_crop_count": int(summary.get("side_marker_crop_count") or 0),
             "side_marker_search_crop_count": int(summary.get("side_marker_search_crop_count") or 0),
             "board_crop_quality_pass_count": int(summary.get("board_crop_quality_pass_count") or 0),

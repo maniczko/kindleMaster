@@ -47,7 +47,9 @@ from converter import (
 )
 from chess_position_recognizer import (
     ChessFenResult,
+    _estimate_board_grid_confidence,
     _bbox_overlap_ratio,
+    _has_board_visual_pattern,
     detect_board_candidates_in_page_image,
     empty_chess_fen_result,
     load_piece_templates,
@@ -5005,6 +5007,10 @@ TWO_CROP_CONTRACT_FIELDS = {
     "side_marker_review_crop_path",
     "side_marker_review_crop_kind",
     "debug_overlay_path",
+    "debug_context_crop_path",
+    "debug_context_bbox",
+    "raw_board_candidate_bbox",
+    "tight_board_bbox",
     "board_bbox",
     "board_crop_quality",
     "board_crop_fail_reason",
@@ -5022,6 +5028,17 @@ TWO_CROP_CONTRACT_FIELDS = {
     "manual_review_reason",
 }
 
+BOARD_CROP_REASON_CODES = {
+    "not_square",
+    "cell_size_mismatch",
+    "board_cut_off",
+    "too_much_margin",
+    "contains_coordinates",
+    "contains_marker",
+    "contains_text",
+    "contains_neighbor_diagram",
+}
+
 
 def _basic_two_crop_contract_fields(filename: Any, bbox: Any) -> dict[str, Any]:
     path = f"images/{filename}" if str(filename or "").strip() else ""
@@ -5033,6 +5050,290 @@ def _basic_two_crop_contract_fields(filename: Any, bbox: Any) -> dict[str, Any]:
     }
 
 
+def _scan_chess_projection_groups(values: np.ndarray, *, threshold: float, min_length: int = 1) -> list[tuple[int, int]]:
+    groups: list[tuple[int, int]] = []
+    start: int | None = None
+    for index, value in enumerate(values):
+        if float(value) >= threshold:
+            if start is None:
+                start = index
+        elif start is not None:
+            if index - start >= min_length:
+                groups.append((start, index - 1))
+            start = None
+    if start is not None and len(values) - start >= min_length:
+        groups.append((start, len(values) - 1))
+    return groups
+
+
+def _scan_chess_board_square_score(image: Image.Image) -> float:
+    grayscale = ImageOps.autocontrast(image.convert("L"))
+    detected, signal = _has_board_visual_pattern(grayscale)
+    if not detected:
+        return 0.0
+    grid = _estimate_board_grid_confidence(grayscale)
+    return float(signal) * 2.0 + float(grid)
+
+
+def _scan_chess_regular_grid_axis(groups: list[tuple[int, int]]) -> tuple[int, int] | None:
+    if len(groups) < 9:
+        return None
+    centers = [(start + end) / 2.0 for start, end in groups]
+    best: tuple[float, int, int] | None = None
+    for start_index in range(0, len(groups) - 8):
+        window = centers[start_index : start_index + 9]
+        spacing = (window[-1] - window[0]) / 8.0
+        if spacing < 8.0:
+            continue
+        deviations = [abs(window[i] - (window[0] + spacing * i)) for i in range(9)]
+        max_deviation = max(deviations)
+        if max_deviation > max(2.5, spacing * 0.18):
+            continue
+        score = spacing - max_deviation * 0.8
+        if best is None or score > best[0]:
+            best = (score, start_index, start_index + 8)
+    if best is None:
+        return None
+    _score, first, last = best
+    return groups[first][0], groups[last][1] + 1
+
+
+def _scan_chess_grid_line_board_box(image: Image.Image) -> tuple[int, int, int, int] | None:
+    grayscale = ImageOps.autocontrast(image.convert("L"))
+    pixels = np.array(grayscale, dtype=np.uint8)
+    if pixels.size == 0:
+        return None
+    dark = pixels < 100
+    row_groups = _scan_chess_projection_groups(dark.mean(axis=1), threshold=0.34, min_length=1)
+    col_groups = _scan_chess_projection_groups(dark.mean(axis=0), threshold=0.34, min_length=1)
+    x_axis = _scan_chess_regular_grid_axis(col_groups)
+    y_axis = _scan_chess_regular_grid_axis(row_groups)
+    if x_axis is None or y_axis is None:
+        return None
+    x0, x1 = x_axis
+    y0, y1 = y_axis
+    width = x1 - x0
+    height = y1 - y0
+    if width < 64 or height < 64:
+        return None
+    ratio = width / max(1.0, float(height))
+    if not (0.90 <= ratio <= 1.10):
+        return None
+    side = int(round((width + height) / 2.0))
+    cx = (x0 + x1) / 2.0
+    cy = (y0 + y1) / 2.0
+    left = int(round(cx - side / 2.0))
+    top = int(round(cy - side / 2.0))
+    left = min(max(0, left), max(0, image.width - side))
+    top = min(max(0, top), max(0, image.height - side))
+    return (left, top, left + side, top + side)
+
+
+def _scan_chess_tight_board_box_in_crop(image: Image.Image) -> tuple[int, int, int, int] | None:
+    grayscale = ImageOps.autocontrast(image.convert("L"))
+    width, height = grayscale.size
+    min_axis = min(width, height)
+    if min_axis < 64:
+        return None
+    grid_box = _scan_chess_grid_line_board_box(grayscale)
+    if grid_box is not None:
+        fullish_grid = (
+            grid_box[0] <= 2
+            and grid_box[1] <= 2
+            and abs(grid_box[2] - width) <= 4
+            and abs(grid_box[3] - height) <= 4
+        )
+        if not fullish_grid:
+            return grid_box
+
+    baseline_side = min_axis
+    baseline_left = max(0, (width - baseline_side) // 2)
+    baseline_top = max(0, (height - baseline_side) // 2)
+    baseline_box = (baseline_left, baseline_top, baseline_left + baseline_side, baseline_top + baseline_side)
+    baseline_score = _scan_chess_board_square_score(grayscale.crop(baseline_box))
+
+    side_values = sorted(
+        {
+            int(round(min_axis * ratio))
+            for ratio in (1.0, 0.96, 0.92, 0.88, 0.84, 0.80, 0.76, 0.72, 0.68, 0.64, 0.60)
+            if int(round(min_axis * ratio)) >= 64
+        },
+        reverse=True,
+    )
+    best: tuple[float, int, int, int] | None = None
+    for side in side_values:
+        x_stride = max(4, side // 18)
+        y_stride = max(4, side // 18)
+        left_values = set(range(0, max(1, width - side + 1), x_stride))
+        top_values = set(range(0, max(1, height - side + 1), y_stride))
+        left_values.add(max(0, width - side))
+        top_values.add(max(0, height - side))
+        for top in sorted(top_values):
+            for left in sorted(left_values):
+                box = (left, top, left + side, top + side)
+                score = _scan_chess_board_square_score(grayscale.crop(box))
+                if score <= 0.0:
+                    continue
+                center_penalty = (
+                    abs((left + side / 2.0) - width / 2.0) / max(1.0, float(width))
+                    + abs((top + side / 2.0) - height / 2.0) / max(1.0, float(height))
+                ) * 0.08
+                candidate_score = score - center_penalty
+                if best is None or candidate_score > best[0]:
+                    best = (candidate_score, left, top, side)
+
+    if best is None:
+        return None
+    score, left, top, side = best
+    fullish = left <= 2 and top <= 2 and abs(side - width) <= 4 and abs(side - height) <= 4
+    if fullish:
+        return None
+    crop_ratio = width / max(1.0, float(height))
+    if 0.95 <= crop_ratio <= 1.05 and side < min_axis * 0.82:
+        return None
+    if score < baseline_score + 0.05:
+        return None
+    return (left, top, left + side, top + side)
+
+
+def _scan_chess_region_has_dark_content(image: Image.Image) -> bool:
+    if image.width < 2 or image.height < 2:
+        return False
+    pixels = np.array(ImageOps.autocontrast(image.convert("L")), dtype=np.uint8)
+    if pixels.size == 0:
+        return False
+    return float((pixels < 170).mean()) >= 0.0015
+
+
+def _scan_chess_region_contains_marker(image: Image.Image) -> bool:
+    if image.width < 12 or image.height < 12:
+        return False
+    grayscale = ImageOps.autocontrast(image.convert("L"))
+    result = classify_scan_chess_side_marker_crop(grayscale)
+    if str(result.get("status") or "") in {
+        "trusted_marker",
+        "side_to_move_marker_local_conflict",
+        "side_to_move_marker_local_ambiguous",
+    }:
+        return True
+    pixels = np.array(grayscale, dtype=np.uint8)
+    dark_y, dark_x = np.where(pixels < 150)
+    if len(dark_x) < 8 or len(dark_y) < 8:
+        return False
+    x0 = max(0, int(dark_x.min()) - 3)
+    y0 = max(0, int(dark_y.min()) - 3)
+    x1 = min(image.width, int(dark_x.max()) + 4)
+    y1 = min(image.height, int(dark_y.max()) + 4)
+    if x1 - x0 < 12 or y1 - y0 < 12:
+        return False
+    result = classify_scan_chess_side_marker_crop(grayscale.crop((x0, y0, x1, y1)))
+    return str(result.get("status") or "") in {
+        "trusted_marker",
+        "side_to_move_marker_local_conflict",
+        "side_to_move_marker_local_ambiguous",
+    }
+
+
+def _scan_chess_region_contains_neighbor_diagram(image: Image.Image, board_side: float) -> bool:
+    if image.width < max(48, board_side * 0.35) or image.height < max(48, board_side * 0.35):
+        return False
+    detected, signal = _has_board_visual_pattern(ImageOps.autocontrast(image.convert("L")))
+    if detected and signal >= 0.18:
+        return True
+    pixels = np.array(ImageOps.autocontrast(image.convert("L")), dtype=np.uint8)
+    dark = pixels < 90
+    row_groups = _scan_chess_projection_groups(dark.mean(axis=1), threshold=0.12, min_length=1)
+    col_groups = _scan_chess_projection_groups(dark.mean(axis=0), threshold=0.12, min_length=1)
+    return len(row_groups) >= 6 and len(col_groups) >= 6
+
+
+def _scan_chess_region_contains_coordinates(image: Image.Image, orientation: str) -> bool:
+    if image.width < 8 or image.height < 8:
+        return False
+    pixels = np.array(ImageOps.autocontrast(image.convert("L")), dtype=np.uint8)
+    dark = pixels < 145
+    if dark.mean() < 0.004:
+        return False
+    if orientation in {"top", "bottom"}:
+        groups = _scan_chess_projection_groups(dark.mean(axis=0), threshold=0.015, min_length=1)
+        small_groups = [group for group in groups if 1 <= group[1] - group[0] + 1 <= max(12, image.width // 12)]
+        if len(small_groups) < 4:
+            return False
+        span = small_groups[-1][1] - small_groups[0][0]
+        return span >= image.width * 0.45
+    groups = _scan_chess_projection_groups(dark.mean(axis=1), threshold=0.015, min_length=1)
+    small_groups = [group for group in groups if 1 <= group[1] - group[0] + 1 <= max(12, image.height // 12)]
+    if len(small_groups) < 4:
+        return False
+    span = small_groups[-1][1] - small_groups[0][0]
+    return span >= image.height * 0.45
+
+
+def _scan_chess_board_margin_reasons(image: Image.Image, local_board_box: tuple[int, int, int, int]) -> list[str]:
+    width, height = image.size
+    x0, y0, x1, y1 = local_board_box
+    board_side = max(1.0, float(max(x1 - x0, y1 - y0)))
+    margin_threshold = max(4.0, board_side * 0.03)
+    margin_regions = {
+        "top": (0, 0, width, max(0, y0)),
+        "bottom": (0, min(height, y1), width, height),
+        "left": (0, max(0, y0), max(0, x0), min(height, y1)),
+        "right": (min(width, x1), max(0, y0), width, min(height, y1)),
+    }
+    visible_margins = [
+        name
+        for name, box in margin_regions.items()
+        if (box[2] - box[0] if name in {"left", "right"} else box[3] - box[1]) >= margin_threshold
+    ]
+    reasons: set[str] = set()
+    if visible_margins:
+        reasons.add("too_much_margin")
+    for name in visible_margins:
+        box = margin_regions[name]
+        if box[2] <= box[0] or box[3] <= box[1]:
+            continue
+        region = image.crop(box)
+        if not _scan_chess_region_has_dark_content(region):
+            continue
+        if _scan_chess_region_contains_neighbor_diagram(region, board_side):
+            reasons.add("contains_neighbor_diagram")
+        if _scan_chess_region_contains_marker(region):
+            reasons.add("contains_marker")
+        elif _scan_chess_region_contains_coordinates(region, name):
+            reasons.add("contains_coordinates")
+        else:
+            reasons.add("contains_text")
+    return sorted(reasons)
+
+
+def _scan_chess_tight_board_bbox_from_candidate(
+    page_image: Image.Image,
+    board_bbox: Any,
+) -> tuple[list[float], dict[str, Any]]:
+    raw_box = _bbox_to_int_box(_coerce_side_marker_bbox(board_bbox), page_image.size)
+    if raw_box is None:
+        return [], {"decision": "fail", "reasons": ["board_bbox_missing"]}
+    crop = page_image.crop(raw_box).convert("RGB")
+    local_tight = _scan_chess_tight_board_box_in_crop(crop)
+    if local_tight is None:
+        tight_box = raw_box
+        reasons: list[str] = []
+    else:
+        tight_box = (
+            raw_box[0] + local_tight[0],
+            raw_box[1] + local_tight[1],
+            raw_box[0] + local_tight[2],
+            raw_box[1] + local_tight[3],
+        )
+        reasons = _scan_chess_board_margin_reasons(crop, local_tight)
+    return [float(value) for value in tight_box], {
+        "decision": "adjusted" if local_tight is not None else "unchanged",
+        "reasons": reasons,
+        "raw_bbox": [float(value) for value in raw_box],
+        "tight_bbox": [float(value) for value in tight_box],
+    }
+
+
 def _scan_chess_two_crop_review_artifacts(
     page_image: Image.Image,
     *,
@@ -5041,6 +5342,9 @@ def _scan_chess_two_crop_review_artifacts(
     side_marker_bbox: Any,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     stem = Path(str(filename or "diagram")).stem or "diagram"
+    raw_board_bbox = _coerce_side_marker_bbox(board_bbox)
+    tight_board_bbox, tight_board_trace = _scan_chess_tight_board_bbox_from_candidate(page_image, raw_board_bbox)
+    board_bbox_for_crop = tight_board_bbox or raw_board_bbox
     fields: dict[str, Any] = {
         "board_crop_path": f"review/chess_fen/two_crop/{stem}_board.png",
         "side_marker_crop_path": "",
@@ -5048,7 +5352,12 @@ def _scan_chess_two_crop_review_artifacts(
         "side_marker_review_crop_path": "",
         "side_marker_review_crop_kind": "missing",
         "debug_overlay_path": f"review/chess_fen/two_crop/{stem}_overlay.png",
-        "board_bbox": _coerce_side_marker_bbox(board_bbox),
+        "debug_context_crop_path": "",
+        "debug_context_bbox": raw_board_bbox,
+        "raw_board_candidate_bbox": raw_board_bbox,
+        "tight_board_bbox": board_bbox_for_crop,
+        "board_bbox": board_bbox_for_crop,
+        "board_bbox_derivation": tight_board_trace,
         "marker_search_zones": {},
         "selected_marker_zone": None,
         "marker_bbox": [],
@@ -5072,6 +5381,13 @@ def _scan_chess_two_crop_review_artifacts(
     board_crop = _crop_bbox_from_image(page_image, fields["board_bbox"])
     if board_crop is not None:
         files.append({"path": fields["board_crop_path"], "data": _png_bytes(board_crop)})
+    raw_box = _bbox_to_int_box(raw_board_bbox, page_image.size)
+    tight_box = _bbox_to_int_box(fields["board_bbox"], page_image.size)
+    if raw_box is not None and tight_box is not None and raw_box != tight_box:
+        context_crop = _crop_bbox_from_image(page_image, raw_board_bbox)
+        if context_crop is not None:
+            fields["debug_context_crop_path"] = f"review/chess_fen/two_crop/{stem}_context.png"
+            files.append({"path": fields["debug_context_crop_path"], "data": _png_bytes(context_crop)})
 
     zones = _scan_chess_marker_search_zones(fields["board_bbox"], page_image.size)
     fields["marker_search_zones"] = zones
@@ -5151,12 +5467,18 @@ def _scan_chess_board_crop_quality(page_image: Image.Image, board_bbox: Any) -> 
         reasons.append("cell_size_mismatch")
     if box[0] <= 0 or box[1] <= 0 or box[2] >= page_image.width or box[3] >= page_image.height:
         reasons.append("board_cut_off")
+    crop = page_image.crop(box).convert("RGB")
+    local_tight = _scan_chess_tight_board_box_in_crop(crop)
+    if local_tight is not None:
+        reasons.extend(_scan_chess_board_margin_reasons(crop, local_tight))
+    reasons = sorted(set(reasons))
     return {
         "decision": "fail" if reasons else "pass",
         "reasons": reasons,
         "ratio": round(ratio, 4),
         "cell_size_x": round(cell_size_x, 2),
         "cell_size_y": round(cell_size_y, 2),
+        "reason_codes": {reason: reasons.count(reason) for reason in sorted(BOARD_CROP_REASON_CODES) if reason in reasons},
     }
 
 

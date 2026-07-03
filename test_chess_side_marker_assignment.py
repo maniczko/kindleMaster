@@ -27,6 +27,7 @@ from pymupdf_chess_extractor import (
     _apply_scan_chess_two_crop_quality_gate,
     _chess_diagram_record_from_image,
     _infer_scan_chess_side_to_move_marker_evidence,
+    _scan_chess_board_crop_quality,
     _scan_chess_marker_crop_quality,
     _scan_chess_marker_search_zones,
     _scan_chess_side_marker_probe_payloads,
@@ -55,6 +56,26 @@ def _write_image_pdf(path: Path, image: Image.Image) -> None:
         doc.save(path)
     finally:
         doc.close()
+
+
+def _draw_checkerboard(draw: ImageDraw.ImageDraw, bbox: list[float], *, outline_width: int = 2) -> None:
+    x0, y0, x1, y1 = [int(round(value)) for value in bbox]
+    side = min(x1 - x0, y1 - y0)
+    cell = side / 8.0
+    for row in range(8):
+        for col in range(8):
+            shade = "#d1d5db" if (row + col) % 2 else "#ffffff"
+            left = int(round(x0 + col * cell))
+            top = int(round(y0 + row * cell))
+            right = int(round(x0 + (col + 1) * cell))
+            bottom = int(round(y0 + (row + 1) * cell))
+            draw.rectangle((left, top, right, bottom), fill=shade)
+    for index in range(9):
+        pos = int(round(x0 + index * cell))
+        draw.line((pos, y0, pos, y0 + side), fill="black", width=1)
+        pos_y = int(round(y0 + index * cell))
+        draw.line((x0, pos_y, x0 + side, pos_y), fill="black", width=1)
+    draw.rectangle((x0, y0, x0 + side, y0 + side), outline="black", width=outline_width)
 
 
 class ChessSideMarkerAssignmentTests(unittest.TestCase):
@@ -126,6 +147,98 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertIn(fields["board_crop_path"], paths)
         self.assertIn(fields["side_marker_crop_path"], paths)
         self.assertIn(fields["side_marker_search_crop_path"], paths)
+
+    def test_tight_board_crop_quality_passes_for_clean_8x8_board(self) -> None:
+        page = Image.new("RGB", (320, 320), "white")
+        draw = ImageDraw.Draw(page)
+        board_bbox = [80.0, 60.0, 240.0, 220.0]
+        _draw_checkerboard(draw, board_bbox)
+
+        quality = _scan_chess_board_crop_quality(page, board_bbox)
+
+        self.assertEqual(quality["decision"], "pass")
+        self.assertEqual(quality["reasons"], [])
+        self.assertAlmostEqual(quality["ratio"], 1.0)
+
+    def test_board_crop_quality_rejects_coordinates_and_marker_context(self) -> None:
+        page = Image.new("RGB", (430, 340), "white")
+        draw = ImageDraw.Draw(page)
+        board_bbox = [100.0, 70.0, 260.0, 230.0]
+        _draw_checkerboard(draw, board_bbox)
+        draw.text((105, 236), "a b c d e f g h", fill="black")
+        draw.text((82, 78), "8\n7\n6\n5\n4\n3\n2\n1", fill="black")
+        draw.polygon([(276, 112), (302, 112), (289, 142)], fill="black")
+
+        quality = _scan_chess_board_crop_quality(page, [76.0, 48.0, 322.0, 258.0])
+
+        self.assertEqual(quality["decision"], "fail")
+        self.assertIn("too_much_margin", quality["reasons"])
+        self.assertIn("contains_coordinates", quality["reasons"])
+        self.assertIn("contains_marker", quality["reasons"])
+
+    def test_board_crop_quality_rejects_caption_text_context(self) -> None:
+        page = Image.new("RGB", (340, 340), "white")
+        draw = ImageDraw.Draw(page)
+        board_bbox = [90.0, 60.0, 250.0, 220.0]
+        _draw_checkerboard(draw, board_bbox)
+        draw.text((94, 252), "Ex. 14", fill="black")
+
+        quality = _scan_chess_board_crop_quality(page, [80.0, 48.0, 264.0, 286.0])
+
+        self.assertEqual(quality["decision"], "fail")
+        self.assertIn("too_much_margin", quality["reasons"])
+        self.assertIn("contains_text", quality["reasons"])
+
+    def test_board_crop_quality_rejects_neighbor_diagram_context(self) -> None:
+        page = Image.new("RGB", (430, 300), "white")
+        draw = ImageDraw.Draw(page)
+        board_bbox = [80.0, 70.0, 240.0, 230.0]
+        _draw_checkerboard(draw, board_bbox)
+        _draw_checkerboard(draw, [270.0, 82.0, 390.0, 202.0], outline_width=1)
+
+        quality = _scan_chess_board_crop_quality(page, [72.0, 58.0, 398.0, 238.0])
+
+        self.assertEqual(quality["decision"], "fail")
+        self.assertIn("too_much_margin", quality["reasons"])
+        self.assertIn("contains_neighbor_diagram", quality["reasons"])
+
+    def test_two_crop_artifacts_write_board_crop_from_tight_bbox_not_context(self) -> None:
+        page = Image.new("RGB", (430, 340), "white")
+        draw = ImageDraw.Draw(page)
+        board_bbox = [100.0, 70.0, 260.0, 230.0]
+        context_bbox = [76.0, 48.0, 322.0, 284.0]
+        _draw_checkerboard(draw, board_bbox)
+        draw.text((105, 236), "a b c d e f g h", fill="black")
+        draw.polygon([(276, 112), (302, 112), (289, 142)], fill="black")
+
+        fields, files = _scan_chess_two_crop_review_artifacts(
+            page,
+            filename="diagram-context.png",
+            board_bbox=context_bbox,
+            side_marker_bbox=None,
+        )
+        file_by_path = {str(item.get("path") or ""): item.get("data") for item in files}
+        board_png = Image.open(io.BytesIO(file_by_path[fields["board_crop_path"]]))
+
+        self.assertEqual(fields["raw_board_candidate_bbox"], context_bbox)
+        self.assertNotEqual(fields["board_bbox"], fields["raw_board_candidate_bbox"])
+        self.assertEqual(fields["tight_board_bbox"], fields["board_bbox"])
+        self.assertEqual(fields["board_crop_quality"], "pass")
+        self.assertTrue(str(fields["debug_context_crop_path"]).endswith("_context.png"))
+        self.assertLess(max(board_png.size), 190)
+        self.assertEqual(board_png.width, board_png.height)
+
+    def test_board_crop_quality_rejects_fragmentary_and_non_square_crops(self) -> None:
+        page = Image.new("RGB", (240, 240), "white")
+        draw = ImageDraw.Draw(page)
+        _draw_checkerboard(draw, [0.0, 10.0, 130.0, 140.0])
+
+        quality = _scan_chess_board_crop_quality(page, [0.0, 10.0, 130.0, 120.0])
+
+        self.assertEqual(quality["decision"], "fail")
+        self.assertIn("not_square", quality["reasons"])
+        self.assertIn("cell_size_mismatch", quality["reasons"])
+        self.assertIn("board_cut_off", quality["reasons"])
 
     def test_marker_crop_quality_blocks_edge_strip_and_multiple_markers(self) -> None:
         page = Image.new("RGB", (420, 440), "white")

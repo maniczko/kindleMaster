@@ -731,6 +731,7 @@ class KindleMasterEntrypointTests(unittest.TestCase):
             candidate_path="models/candidates/route_classifier_candidate.json",
             model_path="models/route_classifier_v1.json",
             corpus_report_path="reports/corpus/premium_corpus_smoke_report.json",
+            dry_run=False,
         )
         print_mock.assert_called_once_with(payload)
 

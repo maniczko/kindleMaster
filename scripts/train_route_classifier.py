@@ -9,6 +9,7 @@ from typing import Any, Iterable, Mapping
 
 from ml_features import ROUTE_LABELS, ROUTE_MODEL_FEATURE_ORDER, route_feature_vector
 from ml_route_model import predict_route
+from model_registry import create_rollback_snapshot, register_model_promotion
 
 MIN_ROUTE_EXAMPLES_PER_CLASS = 25
 MIN_HOLDOUT_ACCURACY = 0.85
@@ -144,9 +145,11 @@ def train_route_classifier(
             for class_name, value in zip(classes, intercept_values)
         }
 
+    dataset_version = _dataset_version_for_model(Path(dataset_path), metrics)
     model = {
-        "model_version": "route-classifier-v1",
+        "model_version": f"route-classifier-{dataset_version}" if dataset_version else "route-classifier-v1",
         "model_type": "multinomial_logistic_regression",
+        "dataset_version": dataset_version,
         "trained_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "training_status": "candidate_trained_pending_promotion",
         "feature_order": feature_order,
@@ -187,10 +190,14 @@ def promote_route_classifier(
     candidate_path: str | Path,
     model_path: str | Path = "models/route_classifier_v1.json",
     corpus_report_path: str | Path = "reports/corpus/premium_corpus_smoke_report.json",
+    dry_run: bool = False,
+    repo_root: str | Path = ".",
+    rollback_snapshot_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    candidate_file = Path(candidate_path)
+    root = Path(repo_root).resolve()
+    candidate_file = _resolve_path(root, candidate_path)
     try:
-        candidate = json.loads(candidate_file.read_text(encoding="utf-8"))
+        candidate = json.loads(candidate_file.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as error:
         return {"status": "failed", "error": "candidate_unavailable", "exception": str(error), "candidate_path": str(candidate_file)}
     metrics = candidate.get("metrics") if isinstance(candidate, Mapping) else {}
@@ -210,15 +217,50 @@ def promote_route_classifier(
     promoted["training_status"] = "promoted"
     promoted["promoted_at"] = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     promoted["promotion_gates"] = {"metric_gates": metric_gates, "corpus_gate": corpus_gate}
-    target = Path(model_path)
+    target = _resolve_path(root, model_path)
+    if dry_run:
+        return {
+            "status": "dry_run",
+            "candidate_path": str(candidate_file),
+            "model_path": str(target),
+            "candidate_model_version": str(candidate.get("model_version") or ""),
+            "dataset_version": str(candidate.get("dataset_version") or ""),
+            "metric_gates": metric_gates,
+            "corpus_gate": corpus_gate,
+            "would_create_rollback_snapshot": target.exists(),
+            "would_update_registry": True,
+        }
+    rollback_snapshot = str(rollback_snapshot_path or "")
+    if not rollback_snapshot:
+        rollback_snapshot = create_rollback_snapshot(model_name="route_classifier", model_path=target, repo_root=root)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(promoted, ensure_ascii=False, indent=2), encoding="utf-8")
+    registry = register_model_promotion(
+        model_name="route_classifier",
+        model_path=target,
+        candidate_path=candidate_file,
+        promotion_payload={
+            "status": "promoted",
+            "candidate_path": str(candidate_file),
+            "model_path": str(target),
+            "dataset_version": str(promoted.get("dataset_version") or ""),
+            "metric_gates": metric_gates,
+            "corpus_gate": corpus_gate,
+            "rollback_snapshot": rollback_snapshot,
+        },
+        repo_root=root,
+        rollback_snapshot_path=rollback_snapshot,
+    )
     return {
         "status": "promoted",
         "candidate_path": str(candidate_file),
         "model_path": str(target),
+        "dataset_version": str(promoted.get("dataset_version") or ""),
+        "model_version": str(promoted.get("model_version") or ""),
         "metric_gates": metric_gates,
         "corpus_gate": corpus_gate,
+        "rollback_snapshot": rollback_snapshot,
+        "model_registry": registry,
     }
 
 
@@ -235,7 +277,7 @@ def evaluate_route_classifier(
         _write_report(report_path, payload)
         return payload
     try:
-        model = json.loads(Path(model_path).read_text(encoding="utf-8"))
+        model = json.loads(Path(model_path).read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as error:
         payload = {"status": "failed", "error": "model_unavailable", "exception": str(error), "model_path": str(model_path)}
         _write_report(report_path, payload)
@@ -431,7 +473,7 @@ def _promotion_metric_gates(metrics: Mapping[str, Any]) -> dict[str, Any]:
 def _corpus_promotion_gate(corpus_report_path: str | Path) -> dict[str, Any]:
     path = Path(corpus_report_path)
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as error:
         return {"passed": False, "status": "unavailable", "path": str(path), "error": str(error)}
     overall_status = str(payload.get("overall_status", "") or "").lower()
@@ -486,17 +528,57 @@ def _corpus_hard_negative_failures(payload: Mapping[str, Any]) -> list[dict[str,
 def _model_card(*, model: Mapping[str, Any], dataset_path: str | Path, report_path: str | Path) -> dict[str, Any]:
     metrics = dict(model.get("metrics") or {})
     return {
+        "schema": "kindlemaster.model_card.v1",
+        "model_name": "route_classifier",
         "model_version": model.get("model_version", ""),
         "model_type": model.get("model_type", ""),
+        "dataset_version": model.get("dataset_version", ""),
         "training_status": model.get("training_status", ""),
         "dataset_path": str(dataset_path),
         "metrics_report_path": str(report_path),
         "trained_at": model.get("trained_at", ""),
+        "training_data_counts": {
+            "example_count": metrics.get("example_count", 0),
+            "train_example_count": metrics.get("train_example_count", 0),
+            "holdout_example_count": metrics.get("holdout_example_count", 0),
+            "label_counts": dict(metrics.get("label_counts") or {}),
+        },
+        "holdout_metrics": {
+            "accuracy": metrics.get("accuracy"),
+            "macro_f1": metrics.get("macro_f1"),
+            "coverage": metrics.get("coverage"),
+        },
+        "protected_class_metrics": {
+            "per_class_recall": dict(metrics.get("per_class_recall") or {}),
+        },
+        "known_limitations": [
+            "Candidate model is not active until explicit promotion gates pass.",
+            "Runtime inference is local JSON-only and falls back to deterministic routing when unavailable.",
+        ],
+        "privacy_notes": {
+            "stores_text": False,
+            "stores_source_file": False,
+            "stores_fingerprints_only": True,
+        },
         "feature_order": list(model.get("feature_order") or []),
         "classes": list(model.get("classes") or []),
         "promotion_gates": metrics.get("promotion_gates") or _promotion_metric_gates(metrics),
+        "rollback_path": "",
+        "compatible_code_version": "",
         "runtime_dependency_policy": "JSON inference only; scikit-learn is training-time only.",
     }
+
+
+def _dataset_version_for_model(dataset_path: Path, metrics: Mapping[str, Any]) -> str:
+    readiness = metrics.get("dataset_readiness")
+    if isinstance(readiness, Mapping) and readiness.get("dataset_version"):
+        return str(readiness.get("dataset_version") or "")
+    completeness_path = dataset_path.parent / "completeness_report.json"
+    try:
+        completeness = json.loads(completeness_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    return str(completeness.get("dataset_version") or "")
 
 
 def _load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -524,6 +606,11 @@ def _write_report(path: str | Path, payload: Mapping[str, Any]) -> None:
     report_file.write_text(json.dumps(dict(payload), ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _resolve_path(root: Path, path: str | Path) -> Path:
+    candidate = Path(path)
+    return candidate if candidate.is_absolute() else root / candidate
+
+
 def _float_value(value: Any) -> float:
     try:
         return float(value)
@@ -547,6 +634,7 @@ def main() -> int:
     promote_parser.add_argument("--candidate", required=True)
     promote_parser.add_argument("--model", default="models/route_classifier_v1.json")
     promote_parser.add_argument("--corpus-report", default="reports/corpus/premium_corpus_smoke_report.json")
+    promote_parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     if args.command == "train":
         payload = train_route_classifier(
@@ -566,9 +654,10 @@ def main() -> int:
             candidate_path=args.candidate,
             model_path=args.model,
             corpus_report_path=args.corpus_report,
+            dry_run=args.dry_run,
         )
         print(json.dumps(payload, ensure_ascii=False, indent=2))
-        return 0 if payload.get("status") == "promoted" else 1
+        return 0 if payload.get("status") in {"promoted", "dry_run"} else 1
     parser.print_help()
     return 1
 

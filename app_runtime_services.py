@@ -1666,6 +1666,24 @@ def build_conversion_metadata(
             "input_features_hash": str(route_decision.get("input_features_hash", "") or ""),
             "inference_seconds": route_decision.get("inference_seconds", 0.0),
         }
+    try:
+        from model_registry import build_runtime_model_attribution
+
+        model_attribution = build_runtime_model_attribution(
+            route_decision=route_decision,
+            ai_quality_verification=ai_quality_verification if isinstance(ai_quality_verification, Mapping) else {},
+        )
+        metadata["model_attribution"] = model_attribution
+        metadata["route_model_version"] = str(model_attribution.get("route_model_version") or "")
+        metadata["quality_verifier_version"] = str(model_attribution.get("quality_verifier_version") or "")
+        metadata["chess_fen_profile_version"] = str(model_attribution.get("chess_fen_profile_version") or "")
+        metadata["model_registry_version"] = str(model_attribution.get("model_registry_version") or "")
+    except Exception as error:
+        metadata["model_attribution"] = {
+            "schema": "kindlemaster.model_attribution.v1",
+            "status": "unavailable",
+            "error": str(error),
+        }
     stage_timings = _json_safe_metadata_value(quality_report.get("stage_timings") or {})
     if isinstance(stage_timings, Mapping) and stage_timings:
         metadata["stage_timings"] = dict(stage_timings)

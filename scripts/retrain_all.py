@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import json
-import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from model_registry import create_rollback_snapshot
 from scripts.build_ml_datasets import build_ml_datasets
 from scripts.train_route_classifier import (
     PROTECTED_RECALL_CLASSES,
@@ -205,14 +205,16 @@ def run_retrain_all(
         _record_blocked_event(payload, write_ledger=write_ledger, repo_root=root)
         return _write_final_report(resolved_report_path, payload)
 
-    rollback_snapshot = _write_rollback_snapshot(resolved_current_model, dataset_version=dataset_version)
+    rollback_snapshot = _write_rollback_snapshot(resolved_current_model, dataset_version=dataset_version, repo_root=root)
     promotion = promote_route_classifier(
         candidate_path=candidate_path,
         model_path=resolved_current_model,
         corpus_report_path=resolved_corpus_report,
+        repo_root=root,
+        rollback_snapshot_path=rollback_snapshot or None,
     )
     payload["promotion"] = promotion
-    payload["rollback_snapshot"] = rollback_snapshot
+    payload["rollback_snapshot"] = str(promotion.get("rollback_snapshot") or rollback_snapshot or "")
     payload["corpus_gate_status"] = str(_mapping(promotion.get("corpus_gate")).get("status") or "unknown")
     if str(promotion.get("status") or "") == "promoted":
         payload.update({"status": "promoted", "promotion_status": "promoted"})
@@ -292,14 +294,16 @@ def _protected_recall_regressions(current_eval: Mapping[str, Any], candidate_eva
     return reasons
 
 
-def _write_rollback_snapshot(model_path: Path, *, dataset_version: str) -> str:
-    if not model_path.exists():
-        return ""
-    snapshot_dir = model_path.parent / "rollback"
-    snapshot_dir.mkdir(parents=True, exist_ok=True)
-    snapshot_path = snapshot_dir / f"{model_path.stem}_{dataset_version}.json"
-    shutil.copy2(model_path, snapshot_path)
-    return str(snapshot_path)
+def _write_rollback_snapshot(model_path: Path, *, dataset_version: str, repo_root: Path) -> str:
+    root = repo_root.resolve()
+    snapshot = create_rollback_snapshot(
+        model_name="route_classifier",
+        model_path=model_path,
+        repo_root=root,
+    )
+    if snapshot and not Path(snapshot).is_absolute():
+        return str((root / snapshot).resolve())
+    return snapshot
 
 
 def _dataset_has_human_reviewed_feedback(dataset: Mapping[str, Any]) -> bool:

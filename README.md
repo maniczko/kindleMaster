@@ -110,6 +110,8 @@ python kindlemaster.py ml dataset
 python kindlemaster.py ml retrain-all --from-feedback --evaluate --promote-if-better --dry-run
 python kindlemaster.py ml train
 python kindlemaster.py ml evaluate
+python kindlemaster.py ml promote --candidate models\candidates\route_classifier_YYYYMMDD_HHMMSS.json --dry-run
+python kindlemaster.py ml rollback --model route_classifier --to-version route-classifier-v1
 python kindlemaster.py test --suite quality-critical
 python kindlemaster.py test --suite corpus
 python kindlemaster.py validate path\to\file.epub

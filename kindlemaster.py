@@ -93,6 +93,7 @@ QUICK_TESTS = [
     "test_ml_feedback.py",
     "test_ml_training_reporting.py",
     "test_ml_retrain_all.py",
+    "test_model_registry.py",
     "test_ml_quality_verifier.py",
     "test_publication_analysis.py",
     "test_publication_pipeline.py",
@@ -427,6 +428,11 @@ def main() -> int:
     ml_promote.add_argument("--candidate", required=True)
     ml_promote.add_argument("--model", default="models/route_classifier_v1.json")
     ml_promote.add_argument("--corpus-report", default="reports/corpus/premium_corpus_smoke_report.json")
+    ml_promote.add_argument("--dry-run", action="store_true")
+
+    ml_rollback = ml_subparsers.add_parser("rollback", help="Rollback an active model from a registry rollback snapshot.")
+    ml_rollback.add_argument("--model", default="route_classifier")
+    ml_rollback.add_argument("--to-version", required=True)
 
     test_parser = subparsers.add_parser("test", help="Run standard KindleMaster test suites.")
     test_parser.add_argument(
@@ -1303,6 +1309,7 @@ def _run_ml(args: argparse.Namespace) -> int:
             candidate_path=args.candidate,
             model_path=args.model,
             corpus_report_path=args.corpus_report,
+            dry_run=args.dry_run,
         )
         try:
             from learning_ledger import record_model_promoted
@@ -1317,8 +1324,14 @@ def _run_ml(args: argparse.Namespace) -> int:
         except Exception as error:
             payload["learning_ledger"] = {"status": "failed", "error": str(error)}
         _print_json(payload)
-        return 0 if payload.get("status") == "promoted" else 1
-    _print_json({"status": "failed", "error": "Missing ml subcommand. Use dataset, feedback, feedback-export, train, evaluate, retrain-all, evaluate-fen-experiment, evaluate-fen-alternatives, or promote."})
+        return 0 if payload.get("status") in {"promoted", "dry_run"} else 1
+    if args.ml_command == "rollback":
+        from model_registry import rollback_model
+
+        payload = rollback_model(model_name=args.model, to_version=args.to_version)
+        _print_json(payload)
+        return 0 if payload.get("status") == "rolled_back" else 1
+    _print_json({"status": "failed", "error": "Missing ml subcommand. Use dataset, feedback, feedback-export, train, evaluate, retrain-all, rollback, evaluate-fen-experiment, evaluate-fen-alternatives, or promote."})
     return 1
 
 

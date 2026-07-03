@@ -541,6 +541,7 @@ class ConversionQualityState:
     quality_policy_verifier: dict[str, Any]
     trained_quality_model_status: str
     route_model_shadow: dict[str, Any]
+    model_attribution: dict[str, Any]
     stage_timings: dict[str, Any]
     quality_gate_mode: str
     issue_groups: dict[str, list[dict[str, Any]]]
@@ -609,6 +610,7 @@ class ConversionQualityState:
             "quality_policy_verifier": self.quality_policy_verifier,
             "trained_quality_model_status": self.trained_quality_model_status,
             "route_model_shadow": self.route_model_shadow,
+            "model_attribution": self.model_attribution,
             "stage_timings": self.stage_timings,
             "quality_gate_mode": self.quality_gate_mode,
             "issue_groups": self.issue_groups,
@@ -2335,6 +2337,21 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
         or _dict_payload(conversion_metadata.get("source_analysis")).get("route_decision")
         or quality_report.get("route_model_shadow")
     )
+    model_attribution = _normalize_optional_payload(conversion_metadata.get("model_attribution"))
+    if not model_attribution:
+        model_attribution = {
+            "schema": "kindlemaster.model_attribution.v1",
+            "route_model_version": _coerce_first_text(
+                conversion_metadata.get("route_model_version"),
+                route_model_shadow.get("model_version"),
+            ),
+            "quality_verifier_version": _coerce_first_text(
+                conversion_metadata.get("quality_verifier_version"),
+                quality_policy_verifier.get("model_version"),
+            ),
+            "chess_fen_profile_version": _coerce_first_text(conversion_metadata.get("chess_fen_profile_version")),
+            "model_registry_version": _coerce_first_text(conversion_metadata.get("model_registry_version")),
+        }
     trained_quality_model_status = _coerce_first_text(
         conversion_metadata.get("trained_quality_model_status"),
         quality_report.get("trained_quality_model_status"),
@@ -2592,6 +2609,7 @@ def assemble_quality_state(request: ConversionQualityStateRequest) -> Conversion
         quality_policy_verifier=quality_policy_verifier,
         trained_quality_model_status=trained_quality_model_status,
         route_model_shadow=route_model_shadow,
+        model_attribution=model_attribution,
         stage_timings=stage_timings,
         quality_gate_mode=quality_gate_mode,
         issue_groups=issue_groups,

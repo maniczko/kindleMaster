@@ -157,6 +157,14 @@ python kindlemaster.py convert path\to\input.pdf --output output\ml-assist.epub 
 
 Do not treat a model as release-enabling unless `reports/ml/datasets/completeness_report.json` is `ready`, the candidate passes promotion gates, and corpus output is unchanged in default `shadow` mode.
 
+Every `python kindlemaster.py ml dataset` run keeps the legacy dataset files in
+`reports/ml/datasets/` for training compatibility and also writes an immutable
+snapshot under `reports/ml/datasets/versions/<dataset_version>/`. Use
+`reports/ml/datasets/latest_readiness.html` or
+`reports/ml/datasets/latest_readiness.json` as the operator-facing answer to
+"can I train now?"; `reports/ml/datasets/latest.json` points to the current
+version, dataset card, and readiness report.
+
 ## Cleanup Guidance
 
 - Conversion job history is local, derived runtime state.

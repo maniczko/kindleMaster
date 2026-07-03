@@ -412,6 +412,47 @@ class MlDatasetBuilderTests(unittest.TestCase):
             self.assertEqual(rows["explicit_premium_magazine"]["final_label"], "premium")
             self.assertEqual(rows["explicit_premium_magazine"]["output_metrics"]["premium_score"], 9.2)
 
+    def test_builder_creates_versioned_dataset_history_and_latest_readiness(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "manifest.json").write_text(json.dumps({"cases": []}), encoding="utf-8")
+            (root / "labels.json").write_text(json.dumps({"cases": {}}), encoding="utf-8")
+
+            first = build_ml_datasets(
+                manifest_path="manifest.json",
+                labels_path="labels.json",
+                reports_root="reports",
+                output_dir="reports/ml/datasets",
+                repo_root=root,
+            )
+            second = build_ml_datasets(
+                manifest_path="manifest.json",
+                labels_path="labels.json",
+                reports_root="reports",
+                output_dir="reports/ml/datasets",
+                repo_root=root,
+            )
+
+            output_root = root / "reports" / "ml" / "datasets"
+            version_dirs = sorted((output_root / "versions").iterdir())
+            latest = json.loads((output_root / "latest.json").read_text(encoding="utf-8"))
+            latest_readiness = json.loads((output_root / "latest_readiness.json").read_text(encoding="utf-8"))
+
+            self.assertNotEqual(first["dataset_version"], second["dataset_version"])
+            self.assertEqual(len(version_dirs), 2)
+            self.assertTrue((version_dirs[0] / "dataset_card.json").exists())
+            self.assertTrue((version_dirs[0] / "dataset_card.md").exists())
+            self.assertTrue((version_dirs[0] / "readiness_report.json").exists())
+            self.assertTrue((version_dirs[0] / "feature_collision_report.json").exists())
+            self.assertTrue((version_dirs[1] / "route_examples.jsonl").exists())
+            self.assertTrue((output_root / "route_examples.jsonl").exists())
+            self.assertTrue((output_root / "latest_readiness.html").exists())
+            self.assertEqual(latest["dataset_version"], second["dataset_version"])
+            self.assertEqual(latest_readiness["summary"]["dataset_version"], second["dataset_version"])
+            self.assertEqual(second["training_readiness_status"], "insufficient_data")
+            self.assertFalse(second["promotion_allowed"])
+            self.assertIn("versions", second["version_dir"])
+
     def test_builder_skips_non_ml_utf16_reports_without_crashing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

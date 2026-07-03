@@ -391,6 +391,7 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
                     "bbox": [304, 188, 342, 224],
                     "detected_side": "b",
                     "distance_to_board": 4.0,
+                    "density": 0.71,
                     "score": 950.0,
                 },
                 {
@@ -398,6 +399,7 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
                     "bbox": [124, 132, 160, 166],
                     "detected_side": "w",
                     "distance_to_board": 8.0,
+                    "density": 0.33,
                     "score": 720.0,
                 },
             ),
@@ -412,10 +414,17 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertTrue(updated["manual_review_required"])
         self.assertEqual(updated["manual_review_reason"], "marker_conflict")
         self.assertEqual(trace["candidate_count"], 2)
+        self.assertEqual(trace["candidate_roles"], ["right", "top"])
         self.assertEqual(trace["selected_candidate_role"], "right")
+        self.assertEqual(trace["selected_candidate_score"], 950.0)
+        self.assertEqual(trace["selected_candidate_density"], 0.71)
+        self.assertEqual(trace["selected_candidate_distance_to_board"], 4.0)
+        self.assertEqual(trace["selected_candidate_bbox"], [304.0, 188.0, 342.0, 224.0])
         self.assertEqual(trace["detected_side"], "b")
         self.assertEqual(trace["score"], 950.0)
         self.assertEqual(trace["distance_to_board"], 4.0)
+        self.assertEqual(trace["rejected_candidate_reasons"][0]["role"], "top")
+        self.assertEqual(trace["rejected_candidate_reasons"][0]["reason"], "opposite_side_candidate")
         self.assertEqual(trace["marker_crop_fail_reason"], [])
 
     def test_tight_marker_crop_pass_promotes_filled_triangle_to_black(self) -> None:
@@ -1037,7 +1046,10 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
                                     "side_marker_status": "trusted_marker",
                                     "side_marker_source": "marker_crop",
                                     "side_marker_confidence": 0.94,
+                                    "board_crop_quality": "pass",
+                                    "board_crop_fail_reason": [],
                                     "marker_crop_quality": "pass",
+                                    "marker_crop_fail_reason": [],
                                     "marker_bbox": [10.0, 20.0, 30.0, 40.0],
                                     "selected_marker_zone": "right",
                                     "marker_crop_quality_gate": {"decision": "pass", "component_count": 1, "reasons": []},
@@ -1052,7 +1064,13 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
                                     "confidence": 0.99,
                                     "warnings": [],
                                     "method": "image-template-board",
+                                    "board_crop_quality": "fail",
+                                    "board_crop_fail_reason": ["fragmentary_board_crop"],
+                                    "marker_crop_quality": "fail",
+                                    "marker_crop_fail_reason": ["marker_missing"],
                                     "side_marker_status": "marker_missing",
+                                    "manual_review_required": True,
+                                    "manual_review_reason": "marker_missing",
                                 },
                             ],
                             "pgn_records": [],
@@ -1072,7 +1090,14 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         summary = report["summary"]
         self.assertEqual(summary["diagram_count"], 2)
         self.assertEqual(summary["board_crop_count"], 2)
+        self.assertEqual(summary["board_crop_pass_count"], 1)
+        self.assertEqual(summary["board_crop_fail_count"], 1)
+        self.assertEqual(summary["by_board_crop_fail_reason"], {"fragmentary_board_crop": 1})
         self.assertEqual(summary["side_marker_crop_count"], 1)
+        self.assertEqual(summary["marker_crop_pass_count"], 1)
+        self.assertEqual(summary["marker_crop_fail_count"], 1)
+        self.assertEqual(summary["by_marker_crop_fail_reason"], {"marker_missing": 1})
+        self.assertEqual(summary["manual_review_required_count"], 1)
         self.assertEqual(summary["trusted_marker_count"], 1)
         self.assertEqual(summary["marker_missing_count"], 1)
         self.assertEqual(summary["placement_accepted_count"], 2)
@@ -1086,7 +1111,12 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertEqual(probe_quality["after"]["trusted_marker_count"], 1)
         self.assertEqual(probe_quality["after"]["full_fen_accepted_count"], 1)
         self.assertEqual(report["accuracy"]["status"], "TRAINING_DATA_GAP")
+        self.assertEqual(report["items"][1]["manual_review_reason"], "marker_missing")
+        self.assertEqual(report["items"][1]["marker_crop_quality"], "fail")
         self.assertIn("Probe Before/After", markdown)
+        self.assertIn("Top Reason Codes", markdown)
+        self.assertIn("Critical Diagrams", markdown)
+        self.assertIn("fragmentary_board_crop", markdown)
         self.assertIn("TRAINING_DATA_GAP", markdown)
         self.assertIn("two_crop_quality_metrics", flow_payload["artifacts"])
 
@@ -1406,11 +1436,19 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
                                     "page": 1,
                                     "image_path": "assets/diagrams/missing.png",
                                     "board_crop_path": "review/chess_fen/two_crop/missing_board.png",
+                                    "side_marker_search_crop_path": "review/chess_fen/two_crop/missing_search.png",
+                                    "marker_search_zone_preview_path": "review/chess_fen/two_crop/missing_search.png",
                                     "debug_overlay_path": "review/chess_fen/two_crop/missing_overlay.png",
                                     "placement": VALID_PLACEMENT,
                                     "confidence": 0.99,
                                     "side_to_move": "unknown",
                                     "side_marker_status": "marker_missing",
+                                    "board_crop_quality": "pass",
+                                    "board_crop_fail_reason": [],
+                                    "marker_crop_quality": "fail",
+                                    "marker_crop_fail_reason": ["marker_missing"],
+                                    "manual_review_required": True,
+                                    "manual_review_reason": "marker_missing",
                                     "placement_status": "FEN_PLACEMENT_MACHINE_ACCEPTED",
                                     "full_fen_status": "FEN_REVIEW_REQUIRED",
                                 }
@@ -1434,6 +1472,12 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertEqual(queue["items"][0]["policy"], REVIEW_ONLY_POLICY)
         self.assertIn('"accepted_for_runtime": false', template)
         self.assertEqual(report["status"], "TRAINING_DATA_GAP")
+        self.assertIn("Źródło / overlay", review_html)
+        self.assertIn("Tight board_crop", review_html)
+        self.assertIn("marker_search_zone_preview", review_html)
+        self.assertIn("final marker_crop", review_html)
+        self.assertIn("reason codes", review_html)
+        self.assertIn("marker_missing", review_html)
         self.assertIn("Oznaczanie markerów ruchu", review_html)
         self.assertIn("Co widać w cropie markera?", review_html)
         self.assertIn("△ pusty trójkąt", review_html)

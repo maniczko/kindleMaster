@@ -734,6 +734,58 @@ class KindleMasterEntrypointTests(unittest.TestCase):
         )
         print_mock.assert_called_once_with(payload)
 
+    def test_ml_retrain_all_command_runs_batch_workflow(self) -> None:
+        payload = {"status": "blocked_dataset_not_ready", "report_path": "reports/ml/retrain_all/retrain_all_report.json"}
+        with patch("scripts.retrain_all.run_retrain_all", return_value=payload) as retrain_mock:
+            with patch.object(kindlemaster, "_print_json") as print_mock:
+                with patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "kindlemaster.py",
+                        "ml",
+                        "retrain-all",
+                        "--from-feedback",
+                        "--evaluate",
+                        "--promote-if-better",
+                        "--write-ledger",
+                        "--feedback-log",
+                        "reports/ml/feedback/conversion_feedback.jsonl",
+                        "--dataset-output-dir",
+                        "reports/ml/datasets",
+                        "--candidate-model-dir",
+                        "models/candidates",
+                        "--current-model",
+                        "models/route_classifier_v1.json",
+                        "--corpus-report",
+                        "reports/corpus/premium_corpus_smoke_report.json",
+                        "--min-examples-per-class",
+                        "12",
+                        "--dry-run",
+                        "--require-human-reviewed",
+                    ],
+                ):
+                    exit_code = kindlemaster.main()
+
+        self.assertEqual(exit_code, 0)
+        retrain_mock.assert_called_once_with(
+            from_feedback=True,
+            evaluate=True,
+            promote_if_better=True,
+            write_ledger=True,
+            feedback_log="reports/ml/feedback/conversion_feedback.jsonl",
+            dataset_output_dir="reports/ml/datasets",
+            candidate_model_dir="models/candidates",
+            current_model="models/route_classifier_v1.json",
+            corpus_report="reports/corpus/premium_corpus_smoke_report.json",
+            min_examples_per_class=12,
+            dry_run=True,
+            no_promote=False,
+            require_human_reviewed=True,
+            report_path="reports/ml/retrain_all/retrain_all_report.json",
+        )
+        print_mock.assert_called_once_with(payload)
+
     def test_audit_command_builds_release_audit_invocation(self) -> None:
         with patch("kindlemaster.subprocess.run", return_value=SimpleNamespace(returncode=0)) as run_mock:
             with patch.object(

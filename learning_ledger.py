@@ -234,6 +234,68 @@ def record_model_promoted(
     return append_learning_event(event, repo_root=repo_root)
 
 
+def record_model_evaluated(
+    *,
+    evaluation_payload: Mapping[str, Any],
+    dataset_path: str | Path,
+    model_path: str | Path,
+    repo_root: str | Path = ".",
+) -> dict[str, Any]:
+    event = _base_event(
+        event_type="model_evaluated",
+        conversion_id="",
+        input_fingerprint="",
+        source_type="",
+    )
+    event.update(
+        {
+            "dataset_version": _dataset_version({"outputs": {"dataset": str(dataset_path)}}),
+            "dataset_path": _safe_path(dataset_path),
+            "model_version_after": _model_version_from_path(model_path),
+            "model_path": _safe_path(model_path),
+            "evaluation_status": str(evaluation_payload.get("status") or ""),
+            "quality_score": _optional_float(evaluation_payload.get("accuracy")),
+            "evaluation_metrics": {
+                "accuracy": _optional_float(evaluation_payload.get("accuracy")),
+                "example_count": _int_value(evaluation_payload.get("example_count")),
+                "warning_count": len(_list_value(evaluation_payload.get("warnings"))),
+                "confusion_counts": dict(_mapping(evaluation_payload.get("confusion_counts"))),
+            },
+            "training_eligible": str(evaluation_payload.get("status") or "") == "evaluated",
+            "cloud_sync_status": "local_only",
+        }
+    )
+    return append_learning_event(event, repo_root=repo_root)
+
+
+def record_model_promotion_blocked(
+    *,
+    promotion_payload: Mapping[str, Any],
+    repo_root: str | Path = ".",
+) -> dict[str, Any]:
+    event = _base_event(
+        event_type="model_promotion_blocked",
+        conversion_id="",
+        input_fingerprint="",
+        source_type="",
+    )
+    event.update(
+        {
+            "dataset_version": str(promotion_payload.get("dataset_version") or ""),
+            "model_version_before": str(promotion_payload.get("before_model_version") or ""),
+            "model_version_after": str(promotion_payload.get("candidate_model_version") or ""),
+            "promotion_status": str(promotion_payload.get("promotion_status") or promotion_payload.get("status") or "blocked"),
+            "promotion_blocker": str(promotion_payload.get("blocker") or ""),
+            "promotion_decision": _mapping(promotion_payload.get("promotion_decision")),
+            "metric_delta": _mapping(promotion_payload.get("metric_delta")),
+            "corpus_gate_status": str(promotion_payload.get("corpus_gate_status") or ""),
+            "training_eligible": False,
+            "cloud_sync_status": "local_only",
+        }
+    )
+    return append_learning_event(event, repo_root=repo_root)
+
+
 def append_learning_event(
     event: Mapping[str, Any],
     *,

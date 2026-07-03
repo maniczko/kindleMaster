@@ -137,6 +137,15 @@ python kindlemaster.py ml promote --candidate models\candidates\route_classifier
 
 `ml train` writes candidates under `models/candidates/` and model cards beside them. It never overwrites the runtime model automatically. `ml promote` blocks if holdout metrics, protected-class recall, dataset readiness, or corpus hard negatives (`magazine_layout_heavy`, `diagram_chess`) fail.
 
+For the full offline learning loop, use the batch workflow:
+
+```powershell
+python kindlemaster.py ml retrain-all --from-feedback --evaluate --promote-if-better --dry-run
+python kindlemaster.py ml retrain-all --from-feedback --evaluate --promote-if-better --write-ledger
+```
+
+`ml retrain-all` runs `feedback -> dataset version -> train candidate -> evaluate -> gate -> promote` as one operator workflow. `--dry-run` writes `reports/ml/retrain_all/retrain_all_report.json` without modifying `models/route_classifier_v1.json`. Promotion is blocked unless dataset readiness, candidate metric gates, current-model comparison, protected-class recall, and corpus gate all pass; successful promotion writes a rollback snapshot under `models/rollback/`.
+
 For web/runtime integration, conversion-quality events are recorded automatically after metadata assembly. User feedback is recorded separately through:
 
 ```text

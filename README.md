@@ -107,6 +107,7 @@ python kindlemaster.py smoke --mode quick
 python kindlemaster.py corpus
 python kindlemaster.py status
 python kindlemaster.py ml dataset
+python kindlemaster.py ml retrain-all --from-feedback --evaluate --promote-if-better --dry-run
 python kindlemaster.py ml train
 python kindlemaster.py ml evaluate
 python kindlemaster.py test --suite quality-critical

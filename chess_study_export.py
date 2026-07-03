@@ -247,6 +247,8 @@ class StudyDiagram:
     board_crop_path: str
     side_marker_crop_path: str
     side_marker_search_crop_path: str
+    marker_search_zone_preview_path: str
+    marker_search_zone_preview_bbox: list[float]
     side_marker_review_crop_path: str
     side_marker_review_crop_kind: str
     debug_overlay_path: str
@@ -255,6 +257,7 @@ class StudyDiagram:
     marker_search_zones: dict[str, Any]
     selected_marker_zone: str
     marker_bbox: list[float]
+    marker_crop_bbox: list[float]
     board_crop_quality: str
     board_crop_fail_reason: list[str]
     marker_crop_quality: str
@@ -297,6 +300,8 @@ class StudyDiagram:
             "board_crop_path": self.board_crop_path,
             "side_marker_crop_path": self.side_marker_crop_path,
             "side_marker_search_crop_path": self.side_marker_search_crop_path,
+            "marker_search_zone_preview_path": self.marker_search_zone_preview_path,
+            "marker_search_zone_preview_bbox": list(self.marker_search_zone_preview_bbox),
             "side_marker_review_crop_path": self.side_marker_review_crop_path,
             "side_marker_review_crop_kind": self.side_marker_review_crop_kind,
             "debug_overlay_path": self.debug_overlay_path,
@@ -305,6 +310,7 @@ class StudyDiagram:
             "marker_search_zones": dict(self.marker_search_zones),
             "selected_marker_zone": self.selected_marker_zone,
             "marker_bbox": list(self.marker_bbox),
+            "marker_crop_bbox": list(self.marker_crop_bbox),
             "board_crop_quality": self.board_crop_quality,
             "board_crop_fail_reason": list(self.board_crop_fail_reason),
             "marker_crop_quality": self.marker_crop_quality,
@@ -5377,6 +5383,8 @@ def _apply_study_side_marker_payload(diagram: dict[str, Any], payload: Mapping[s
             "board_crop_path": str(payload.get("board_crop_path") or diagram.get("source_crop") or ""),
             "side_marker_crop_path": str(payload.get("side_marker_crop_path") or ""),
             "side_marker_search_crop_path": str(payload.get("side_marker_search_crop_path") or ""),
+            "marker_search_zone_preview_path": str(payload.get("marker_search_zone_preview_path") or ""),
+            "marker_search_zone_preview_bbox": list(payload.get("marker_search_zone_preview_bbox") or []),
             "side_marker_review_crop_path": str(payload.get("side_marker_review_crop_path") or ""),
             "side_marker_review_crop_kind": str(payload.get("side_marker_review_crop_kind") or ""),
             "debug_overlay_path": str(payload.get("debug_overlay_path") or ""),
@@ -5387,6 +5395,7 @@ def _apply_study_side_marker_payload(diagram: dict[str, Any], payload: Mapping[s
             "marker_search_zones": dict(payload.get("marker_search_zones") or {}),
             "selected_marker_zone": payload.get("selected_marker_zone"),
             "marker_bbox": list(payload.get("marker_bbox") or []),
+            "marker_crop_bbox": list(payload.get("marker_crop_bbox") or []),
             "marker_crop_quality": str(payload.get("marker_crop_quality") or ""),
             "marker_crop_fail_reason": list(payload.get("marker_crop_fail_reason") or []),
             "marker_crop_quality_gate": dict(payload.get("marker_crop_quality_gate") or {}),
@@ -5422,6 +5431,7 @@ def _study_side_marker_summary(diagrams: list[Mapping[str, Any]]) -> dict[str, A
     diagram_count = len(diagrams)
     board_pass = len([item for item in diagrams if str(item.get("board_crop_quality") or "") == "pass"])
     marker_pass = len([item for item in diagrams if str(item.get("marker_crop_quality") or "") == "pass"])
+    marker_fail = len([item for item in diagrams if str(item.get("marker_crop_quality") or "") == "fail"])
     marker_fail_reasons = [
         str(reason)
         for item in diagrams
@@ -5444,6 +5454,11 @@ def _study_side_marker_summary(diagrams: list[Mapping[str, Any]]) -> dict[str, A
         "board_crop_fail_reason_breakdown": board_reason_breakdown,
         "side_marker_crop_count": len([item for item in diagrams if str(item.get("side_marker_crop_path") or "").strip()]),
         "side_marker_search_crop_count": len([item for item in diagrams if str(item.get("side_marker_search_crop_path") or "").strip()]),
+        "marker_search_zone_count": len([item for item in diagrams if item.get("marker_search_zones")]),
+        "marker_search_zone_region_count": sum(len(item.get("marker_search_zones") or {}) for item in diagrams),
+        "marker_bbox_count": len([item for item in diagrams if item.get("marker_bbox")]),
+        "marker_crop_pass_count": marker_pass,
+        "marker_crop_fail_count": marker_fail,
         "board_crop_quality_pass_count": board_pass,
         "board_crop_quality_pass_rate": round(board_pass / diagram_count, 4) if diagram_count else 0.0,
         "board_crop_contains_coordinates_count": board_fail_reasons.count("contains_coordinates"),
@@ -5498,12 +5513,15 @@ def _write_study_side_marker_report(out: Path, diagrams: list[Mapping[str, Any]]
             "board_crop_path": item.get("board_crop_path"),
             "side_marker_crop_path": item.get("side_marker_crop_path"),
             "side_marker_search_crop_path": item.get("side_marker_search_crop_path"),
+            "marker_search_zone_preview_path": item.get("marker_search_zone_preview_path"),
+            "marker_search_zone_preview_bbox": item.get("marker_search_zone_preview_bbox") or [],
             "side_marker_review_crop_path": item.get("side_marker_review_crop_path"),
             "side_marker_review_crop_kind": item.get("side_marker_review_crop_kind"),
             "debug_overlay_path": item.get("debug_overlay_path"),
             "board_bbox": item.get("board_bbox"),
             "side_marker_bbox": item.get("side_marker_bbox"),
             "marker_bbox": item.get("marker_bbox"),
+            "marker_crop_bbox": item.get("marker_crop_bbox"),
             "marker_search_zones": item.get("marker_search_zones") or {},
             "selected_marker_zone": item.get("selected_marker_zone"),
             "board_crop_quality": item.get("board_crop_quality"),
@@ -5599,6 +5617,8 @@ def _study_two_crop_quality_rows(diagrams: list[Mapping[str, Any]]) -> list[dict
                 "has_side_marker_crop": bool(str(item.get("side_marker_crop_path") or "").strip()),
                 "has_side_marker_search_crop": bool(str(item.get("side_marker_search_crop_path") or "").strip()),
                 "side_marker_search_crop_path": str(item.get("side_marker_search_crop_path") or ""),
+                "marker_search_zone_preview_path": str(item.get("marker_search_zone_preview_path") or ""),
+                "marker_search_zone_preview_bbox": list(item.get("marker_search_zone_preview_bbox") or []),
                 "side_marker_review_crop_path": str(item.get("side_marker_review_crop_path") or ""),
                 "side_marker_review_crop_kind": str(item.get("side_marker_review_crop_kind") or ""),
                 "debug_overlay_path": str(item.get("debug_overlay_path") or ""),
@@ -5611,6 +5631,7 @@ def _study_two_crop_quality_rows(diagrams: list[Mapping[str, Any]]) -> list[dict
                 "marker_search_zones": dict(item.get("marker_search_zones") or {}),
                 "selected_marker_zone": item.get("selected_marker_zone"),
                 "marker_bbox": list(item.get("marker_bbox") or []),
+                "marker_crop_bbox": list(item.get("marker_crop_bbox") or []),
                 "marker_crop_quality": str(item.get("marker_crop_quality") or ""),
                 "marker_crop_fail_reason": list(item.get("marker_crop_fail_reason") or []),
                 "side_to_move_detected": item.get("side_to_move_detected"),
@@ -5729,6 +5750,11 @@ def _write_study_two_crop_quality_metrics(out: Path, diagrams: list[Mapping[str,
             "board_crop_fail_reason_breakdown": dict(summary.get("board_crop_fail_reason_breakdown") or {}),
             "side_marker_crop_count": int(summary.get("side_marker_crop_count") or 0),
             "side_marker_search_crop_count": int(summary.get("side_marker_search_crop_count") or 0),
+            "marker_search_zone_count": int(summary.get("marker_search_zone_count") or 0),
+            "marker_search_zone_region_count": int(summary.get("marker_search_zone_region_count") or 0),
+            "marker_bbox_count": int(summary.get("marker_bbox_count") or 0),
+            "marker_crop_pass_count": int(summary.get("marker_crop_pass_count") or summary.get("marker_crop_quality_pass_count") or 0),
+            "marker_crop_fail_count": int(summary.get("marker_crop_fail_count") or 0),
             "board_crop_quality_pass_count": int(summary.get("board_crop_quality_pass_count") or 0),
             "board_crop_quality_pass_rate": summary.get("board_crop_quality_pass_rate", 0.0),
             "board_crop_contains_coordinates_count": int(summary.get("board_crop_contains_coordinates_count") or 0),
@@ -7423,6 +7449,8 @@ def _study_diagram_record(record: dict[str, Any]) -> StudyDiagram:
         board_crop_path=str(record.get("board_crop_path") or record.get("source_crop") or ""),
         side_marker_crop_path=str(record.get("side_marker_crop_path") or ""),
         side_marker_search_crop_path=str(record.get("side_marker_search_crop_path") or ""),
+        marker_search_zone_preview_path=str(record.get("marker_search_zone_preview_path") or record.get("side_marker_search_crop_path") or ""),
+        marker_search_zone_preview_bbox=_bbox4(record.get("marker_search_zone_preview_bbox") or record.get("side_marker_search_bbox") or []),
         side_marker_review_crop_path=str(
             record.get("side_marker_review_crop_path")
             or record.get("side_marker_crop_path")
@@ -7436,6 +7464,7 @@ def _study_diagram_record(record: dict[str, Any]) -> StudyDiagram:
         marker_search_zones=dict(record.get("marker_search_zones") or {}),
         selected_marker_zone=str(record.get("selected_marker_zone") or ""),
         marker_bbox=_bbox4(record.get("marker_bbox") or []),
+        marker_crop_bbox=_bbox4(record.get("marker_crop_bbox") or record.get("marker_bbox") or []),
         board_crop_quality=str(record.get("board_crop_quality") or ""),
         board_crop_fail_reason=[str(reason) for reason in record.get("board_crop_fail_reason") or []],
         marker_crop_quality=str(record.get("marker_crop_quality") or ""),

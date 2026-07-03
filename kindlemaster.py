@@ -73,6 +73,7 @@ QUICK_TESTS = [
     "test_chess_auto_flow.py",
     "test_chess_side_marker_assignment.py",
     "test_chess_side_marker_final_reader_e2e.py",
+    "test_chess_crop_qa_benchmark.py",
     "test_chess_fen_pipeline_hardening.py",
     "test_chess_fen_ml_acceptance.py",
     "test_chess_fen_model_pipeline.py",

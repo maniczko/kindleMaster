@@ -128,6 +128,18 @@ def record_dataset_built(
     repo_root: str | Path = ".",
 ) -> dict[str, Any]:
     outputs = _mapping(dataset_payload.get("outputs"))
+    dataset_readiness = _mapping(dataset_payload.get("dataset_readiness"))
+    training_readiness_status = str(
+        dataset_payload.get("training_readiness_status")
+        or dataset_readiness.get("status")
+        or dataset_payload.get("status")
+        or ""
+    )
+    promotion_allowed = bool(
+        dataset_payload.get("promotion_allowed")
+        if "promotion_allowed" in dataset_payload
+        else dataset_readiness.get("promotion_allowed")
+    )
     event = _base_event(
         event_type="dataset_built",
         conversion_id="",
@@ -136,14 +148,21 @@ def record_dataset_built(
     )
     event.update(
         {
-            "dataset_version": _dataset_version(dataset_payload),
+            "dataset_version": str(dataset_payload.get("dataset_version") or _dataset_version(dataset_payload)),
+            "dataset_hash": str(dataset_payload.get("dataset_hash") or ""),
             "dataset_status": str(dataset_payload.get("status") or ""),
+            "training_readiness_status": training_readiness_status,
+            "promotion_allowed": promotion_allowed,
             "dataset_paths": _safe_paths(outputs.values()),
             "route_example_count": _int_value(dataset_payload.get("route_example_count")),
             "feedback_record_count": _int_value(dataset_payload.get("feedback_record_count")),
             "feedback_route_example_count": _int_value(dataset_payload.get("feedback_route_example_count")),
             "quality_feedback_example_count": _int_value(dataset_payload.get("quality_feedback_example_count")),
-            "training_eligible": str(dataset_payload.get("status") or "") == "ready",
+            "quality_feedback_count": _int_value(
+                dataset_payload.get("quality_feedback_count")
+                or dataset_payload.get("quality_feedback_example_count")
+            ),
+            "training_eligible": promotion_allowed,
             "cloud_sync_status": "local_only",
         }
     )

@@ -174,9 +174,14 @@ class LearningLedgerTests(unittest.TestCase):
 
             record_dataset_built(
                 dataset_payload={
+                    "dataset_version": "20260703-120000-unit",
+                    "dataset_hash": "sha256:test",
                     "status": "ready",
+                    "training_readiness_status": "ready",
+                    "promotion_allowed": True,
                     "route_example_count": 40,
                     "feedback_record_count": 2,
+                    "quality_feedback_example_count": 3,
                     "outputs": {"route_examples": str(dataset)},
                 },
                 repo_root=root,
@@ -202,10 +207,20 @@ class LearningLedgerTests(unittest.TestCase):
             )
 
             index = build_conversion_learning_index(events_path=root / DEFAULT_EVENTS_PATH)
+            events = [
+                json.loads(line)
+                for line in (root / DEFAULT_EVENTS_PATH).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            dataset_event = events[0]
             self.assertEqual(index["event_type_counts"]["dataset_built"], 1)
             self.assertEqual(index["event_type_counts"]["model_trained"], 1)
             self.assertEqual(index["event_type_counts"]["model_promoted"], 1)
             self.assertEqual(index["event_count"], 3)
+            self.assertEqual(dataset_event["dataset_version"], "20260703-120000-unit")
+            self.assertEqual(dataset_event["training_readiness_status"], "ready")
+            self.assertTrue(dataset_event["promotion_allowed"])
+            self.assertEqual(dataset_event["quality_feedback_count"], 3)
 
 
 if __name__ == "__main__":

@@ -48,6 +48,7 @@ QUICK_TESTS = [
     "test_chess_engine_service.py",
     "test_chess_engine_analysis_artifacts.py",
     "test_chess_engine_analysis_gate.py",
+    "test_chess_engine_hints.py",
     "test_book_move_engine_comparison.py",
     "test_app_feedback_api.py",
     "test_app_quality_state_route.py",

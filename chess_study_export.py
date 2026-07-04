@@ -3983,10 +3983,21 @@ def _book_move_comparison_by_diagram_id(out: Path) -> dict[str, dict[str, Any]]:
     }
 
 
+def _engine_hints_by_diagram_id(out: Path) -> dict[str, dict[str, Any]]:
+    payload = _read_optional_json(out / "data" / "engine_hints.json")
+    rows = payload.get("items") if isinstance(payload, dict) else []
+    return {
+        str(row.get("diagram_id") or ""): dict(row)
+        for row in rows or []
+        if isinstance(row, dict) and str(row.get("diagram_id") or "")
+    }
+
+
 def _attach_engine_analysis_to_book(book: dict[str, Any], out: Path) -> dict[str, Any]:
     engine_by_id = _engine_analysis_by_diagram_id(out)
+    hints_by_id = _engine_hints_by_diagram_id(out)
     comparison_by_id = _book_move_comparison_by_diagram_id(out)
-    if not engine_by_id and not comparison_by_id:
+    if not engine_by_id and not hints_by_id and not comparison_by_id:
         return book
     pages: list[dict[str, Any]] = []
     for page in book.get("pages") or []:
@@ -3998,16 +4009,19 @@ def _attach_engine_analysis_to_book(book: dict[str, Any], out: Path) -> dict[str
             if not isinstance(diagram, dict):
                 continue
             next_diagram = _attach_engine_analysis_to_record(dict(diagram), engine_by_id)
+            next_diagram = _attach_engine_hints_to_record(next_diagram, hints_by_id)
             next_diagram = _attach_book_move_comparison_to_record(next_diagram, comparison_by_id)
             next_diagrams.append(next_diagram)
         next_page["diagrams"] = next_diagrams
         pages.append(next_page)
     payload = _read_optional_json(out / "data" / "engine_analysis.json")
+    hints_payload = _read_optional_json(out / "data" / "engine_hints.json")
     comparison_payload = _read_optional_json(out / "data" / "book_move_comparison.json")
     return {
         **book,
         "pages": pages,
         "engine_analysis_summary": payload.get("summary") or {},
+        "engine_hints_summary": hints_payload.get("summary") or {},
         "book_move_comparison_summary": comparison_payload.get("summary") or {},
     }
 
@@ -4017,6 +4031,14 @@ def _attach_engine_analysis_to_record(record: dict[str, Any], engine_by_id: dict
         value = str(key or "")
         if value and value in engine_by_id:
             return {**record, "engine_analysis": engine_by_id[value]}
+    return record
+
+
+def _attach_engine_hints_to_record(record: dict[str, Any], hints_by_id: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    for key in (record.get("diagram_id"), record.get("id"), record.get("source_diagram"), record.get("label")):
+        value = str(key or "")
+        if value and value in hints_by_id:
+            return {**record, "engine_hints": hints_by_id[value]}
     return record
 
 
@@ -4134,6 +4156,74 @@ def _book_move_comparison_panel_html(
     return f"""<details class="book-move-comparison-panel book-move-comparison-{html.escape(status, quote=True)}" data-book-move-status="{html.escape(status, quote=True)}"{open_attr}>
   <summary>{html.escape(summary_label)}</summary>
   <div class="engine-panel-body">{body}{audit_details}</div>
+</details>"""
+
+
+def _engine_study_hints_panel_html(
+    hints: Mapping[str, Any] | None,
+    *,
+    mode: str,
+    open_by_default: bool = False,
+) -> str:
+    if mode == "reader":
+        return ""
+    row = dict(hints or {})
+    if not row:
+        return ""
+    status = str(row.get("hint_status") or "unavailable")
+    source = str(row.get("source") or "engine_rule_based_v1")
+    if status != "available":
+        if mode != "audit":
+            return ""
+        reason = str(row.get("unavailable_reason") or "engine_hint_unavailable")
+        return f"""<details class="engine-hints-panel engine-hints-unavailable" data-engine-hint-status="{html.escape(status, quote=True)}" data-engine-hint-source="{html.escape(source, quote=True)}">
+  <summary>Engine hint unavailable</summary>
+  <div class="engine-panel-body">
+    <p class="engine-empty">Engine hint unavailable for this position.</p>
+    <p class="engine-reason">Reason: <code>{html.escape(reason)}</code></p>
+  </div>
+</details>"""
+    hint_1 = str(row.get("hint_level_1") or "").strip()
+    hint_2 = str(row.get("hint_level_2") or "").strip()
+    best_move = str(row.get("best_move_san") or row.get("best_move_uci") or "").strip()
+    pv = _engine_pv_text(row)
+    score = _engine_score_text(row)
+    audit_details = ""
+    if mode == "audit":
+        audit_details = f"""<pre class="engine-technical">{html.escape(json.dumps({
+            "diagram_id": row.get("diagram_id"),
+            "hint_status": row.get("hint_status"),
+            "source": source,
+            "move_features": row.get("move_features"),
+            "engine_status": row.get("engine_status"),
+            "skip_reason": row.get("skip_reason"),
+        }, ensure_ascii=False, indent=2))}</pre>"""
+    open_attr = " open" if open_by_default else ""
+    return f"""<details class="engine-hints-panel engine-hints-{html.escape(status, quote=True)}" data-engine-hint-status="{html.escape(status, quote=True)}" data-engine-hint-source="{html.escape(source, quote=True)}"{open_attr}>
+  <summary>Engine hint</summary>
+  <div class="engine-panel-body">
+    <div class="engine-hint-steps">
+      <details class="engine-hint-level" open>
+        <summary>Podpowiedz 1</summary>
+        <p>{html.escape(hint_1)}</p>
+      </details>
+      <details class="engine-hint-level">
+        <summary>Podpowiedz 2</summary>
+        <p>{html.escape(hint_2)}</p>
+      </details>
+      <details class="engine-hint-full-reveal" data-full-reveal-available="{str(bool(row.get('full_reveal_available'))).lower()}">
+        <summary>Pokaz najlepszy ruch</summary>
+        <p><strong>Najlepszy ruch</strong> {html.escape(best_move or 'brak')}</p>
+        <p><strong>Ocena</strong> {html.escape(score)}</p>
+      </details>
+      <details class="engine-hint-line-reveal">
+        <summary>Pokaz linie silnika</summary>
+        <p>{html.escape(pv or 'Glowna linia niedostepna.')}</p>
+      </details>
+    </div>
+    <p class="engine-hint-source">Source: <code>{html.escape(source)}</code></p>
+    {audit_details}
+  </div>
 </details>"""
 
 
@@ -4553,6 +4643,7 @@ def _semantic_source_diagram_html(diagram: dict[str, Any]) -> str:
   <code>{html.escape(fen_candidate)}</code>
 </div>"""
     engine_html = _engine_analysis_panel_html(diagram.get("engine_analysis"), mode="reader")
+    hints_html = _engine_study_hints_panel_html(diagram.get("engine_hints"), mode="reader")
     comparison_html = _book_move_comparison_panel_html(diagram.get("book_move_comparison"), mode="reader")
     return f"""<figure class="diagram-card" id="{html.escape(str(diagram.get('id') or ''), quote=True)}" data-kind="diagram" data-status="{html.escape(status, quote=True)}"{marker_attr} data-has-board-crop="{str(has_board_crop).lower()}" data-has-side-marker-crop="{str(has_side_marker_crop).lower()}">
   <header class="card-header">
@@ -4569,6 +4660,7 @@ def _semantic_source_diagram_html(diagram: dict[str, Any]) -> str:
       {f'<pre class="fen"><code>{html.escape(fen)}</code></pre>' if fen else ''}
       {copy_html}
       {engine_html}
+      {hints_html}
       {comparison_html}
       <details class="original-diagram">
         <summary>Podgląd oryginału</summary>
@@ -4664,13 +4756,16 @@ h2.reader-text { margin-top:1.4rem; color:#5c3215; font-size:1.45rem; }
 .copy-button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visible, button:focus-visible { outline:3px solid #b96920; outline-offset:3px; }
 .original-diagram summary, .review-details summary { cursor:pointer; min-height:44px; font-weight:900; color:var(--accent); }
 .original-diagram img { max-width:100%; height:auto; border-radius:10px; border:1px solid var(--line); background:#fff; }
-.engine-panel, .book-move-comparison-panel, .try-self-panel, .solution-panel, .original-source { border:1px solid var(--line); border-radius:14px; background:#fffaf1; margin:.65rem 0; padding:0 .75rem; }
-.engine-panel summary, .book-move-comparison-panel summary, .try-self-panel summary, .solution-panel summary, .original-source summary { cursor:pointer; min-height:44px; font-weight:900; color:var(--accent); }
+.engine-panel, .engine-hints-panel, .book-move-comparison-panel, .try-self-panel, .solution-panel, .original-source { border:1px solid var(--line); border-radius:14px; background:#fffaf1; margin:.65rem 0; padding:0 .75rem; }
+.engine-panel summary, .engine-hints-panel summary, .book-move-comparison-panel summary, .try-self-panel summary, .solution-panel summary, .original-source summary { cursor:pointer; min-height:44px; font-weight:900; color:var(--accent); }
 .engine-panel-body { padding:0 0 .75rem; }
 .engine-kpis { display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:.5rem; }
 .engine-kpis span { border:1px solid #ead8bf; border-radius:12px; background:#fffdf8; padding:.55rem .6rem; overflow-wrap:anywhere; }
 .engine-kpis strong { display:block; color:var(--muted); font-size:.76rem; text-transform:uppercase; letter-spacing:.04em; }
-.engine-empty, .engine-reason, .engine-cache, .engine-pv { margin:.45rem 0; color:var(--muted); }
+.engine-empty, .engine-reason, .engine-cache, .engine-pv, .engine-hint-source { margin:.45rem 0; color:var(--muted); }
+.engine-hint-steps { display:grid; gap:.45rem; }
+.engine-hint-level, .engine-hint-full-reveal, .engine-hint-line-reveal { border:1px solid #ead8bf; border-radius:12px; background:#fffdf8; padding:0 .6rem; }
+.engine-hint-level p, .engine-hint-full-reveal p, .engine-hint-line-reveal p { margin:.35rem 0 .6rem; }
 .study-actions { min-width:0; display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:.55rem; margin:.75rem 0; }
 .study-actions > * { min-width:0; }
 .diagram-asset-placeholder { border:1px dashed var(--line); border-radius:10px; background:#fffdf8; color:var(--muted); padding:.8rem; overflow-wrap:anywhere; }
@@ -6372,9 +6467,13 @@ def render_study_html(
 ) -> Path:
     out = Path(out_dir)
     engine_by_id = _engine_analysis_by_diagram_id(out)
+    hints_by_id = _engine_hints_by_diagram_id(out)
     comparison_by_id = _book_move_comparison_by_diagram_id(out)
     position_list = [
-        _attach_book_move_comparison_to_record(_attach_engine_analysis_to_record(dict(item), engine_by_id), comparison_by_id)
+        _attach_book_move_comparison_to_record(
+            _attach_engine_hints_to_record(_attach_engine_analysis_to_record(dict(item), engine_by_id), hints_by_id),
+            comparison_by_id,
+        )
         for item in positions.get("positions") or []
     ]
     positions = {**positions, "positions": position_list}
@@ -6424,13 +6523,16 @@ def render_study_html(
     pre {{ white-space:pre-wrap; background:#f6eddd; padding:.75rem; border-radius:12px; }}
     button {{ border:1px solid var(--line); border-radius:999px; background:#fff8ed; padding:.42rem .75rem; font-weight:800; cursor:pointer; }}
     button:focus-visible, summary:focus-visible, a:focus-visible, input:focus-visible {{ outline:3px solid #b96920; outline-offset:3px; }}
-    .engine-panel, .book-move-comparison-panel, .try-self-panel, .solution-panel, .original-source {{ border:1px solid var(--line); border-radius:14px; background:#fffaf2; margin:.65rem 0; padding:0 .75rem; }}
-    .engine-panel summary, .book-move-comparison-panel summary, .try-self-panel summary, .solution-panel summary, .original-source summary {{ cursor:pointer; min-height:2.75rem; font-weight:900; color:var(--accent); }}
-    .engine-panel-body {{ padding:0 0 .75rem; }}
-    .engine-kpis {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:.5rem; }}
-    .engine-kpis span {{ border:1px solid #e5d5bd; border-radius:12px; background:#fffdf8; padding:.55rem .6rem; overflow-wrap:anywhere; }}
-    .engine-kpis strong {{ display:block; color:#76634e; font-size:.76rem; text-transform:uppercase; letter-spacing:.04em; }}
-    .engine-empty, .engine-reason, .engine-cache, .engine-pv {{ margin:.45rem 0; color:#76634e; }}
+.engine-panel, .engine-hints-panel, .book-move-comparison-panel, .try-self-panel, .solution-panel, .original-source {{ border:1px solid var(--line); border-radius:14px; background:#fffaf2; margin:.65rem 0; padding:0 .75rem; }}
+.engine-panel summary, .engine-hints-panel summary, .book-move-comparison-panel summary, .try-self-panel summary, .solution-panel summary, .original-source summary {{ cursor:pointer; min-height:2.75rem; font-weight:900; color:var(--accent); }}
+.engine-panel-body {{ padding:0 0 .75rem; }}
+.engine-kpis {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:.5rem; }}
+.engine-kpis span {{ border:1px solid #e5d5bd; border-radius:12px; background:#fffdf8; padding:.55rem .6rem; overflow-wrap:anywhere; }}
+.engine-kpis strong {{ display:block; color:#76634e; font-size:.76rem; text-transform:uppercase; letter-spacing:.04em; }}
+.engine-empty, .engine-reason, .engine-cache, .engine-pv, .engine-hint-source {{ margin:.45rem 0; color:#76634e; }}
+.engine-hint-steps {{ display:grid; gap:.45rem; }}
+.engine-hint-level, .engine-hint-full-reveal, .engine-hint-line-reveal {{ border:1px solid #e5d5bd; border-radius:12px; background:#fffdf8; padding:0 .6rem; }}
+.engine-hint-level p, .engine-hint-full-reveal p, .engine-hint-line-reveal p {{ margin:.35rem 0 .6rem; }}
     .study-actions {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:.55rem; margin:.75rem 0; }}
     .artifact-provenance {{ background:#fff8ed; border:1px solid var(--line); border-left:6px solid var(--accent); border-radius:14px; padding:.85rem 1rem; margin:0 0 1rem; }}
     .artifact-provenance h2 {{ margin:0 0 .35rem; font-size:1rem; }}
@@ -6721,13 +6823,16 @@ def _study_html_document(*, title: str, body: str, qa_report: dict[str, Any]) ->
     pre {{ white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; max-width:100%; background:#f5ead8; border-radius:12px; padding:.75rem; border:1px solid #e5d5bd; }}
     summary {{ cursor:pointer; font-weight:800; min-height:2.75rem; display:flex; align-items:center; }}
     summary:focus-visible, a:focus-visible, button:focus-visible {{ outline:3px solid #b96920; outline-offset:3px; }}
-    .engine-panel, .book-move-comparison-panel, .try-self-panel, .solution-panel, .original-source {{ border:1px solid var(--line); border-radius:14px; background:#fffaf2; margin:.65rem 0; padding:0 .75rem; }}
-    .engine-panel summary, .book-move-comparison-panel summary, .try-self-panel summary, .solution-panel summary, .original-source summary {{ color:var(--accent); font-weight:900; }}
-    .engine-panel-body {{ padding:0 0 .75rem; }}
-    .engine-kpis {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:.5rem; }}
-    .engine-kpis span {{ border:1px solid #e5d5bd; border-radius:12px; background:#fffdf8; padding:.55rem .6rem; overflow-wrap:anywhere; }}
-    .engine-kpis strong {{ display:block; color:var(--muted); font-size:.76rem; text-transform:uppercase; letter-spacing:.04em; }}
-    .engine-empty, .engine-reason, .engine-cache, .engine-pv {{ margin:.45rem 0; color:var(--muted); }}
+.engine-panel, .engine-hints-panel, .book-move-comparison-panel, .try-self-panel, .solution-panel, .original-source {{ border:1px solid var(--line); border-radius:14px; background:#fffaf2; margin:.65rem 0; padding:0 .75rem; }}
+.engine-panel summary, .engine-hints-panel summary, .book-move-comparison-panel summary, .try-self-panel summary, .solution-panel summary, .original-source summary {{ color:var(--accent); font-weight:900; }}
+.engine-panel-body {{ padding:0 0 .75rem; }}
+.engine-kpis {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:.5rem; }}
+.engine-kpis span {{ border:1px solid #e5d5bd; border-radius:12px; background:#fffdf8; padding:.55rem .6rem; overflow-wrap:anywhere; }}
+.engine-kpis strong {{ display:block; color:var(--muted); font-size:.76rem; text-transform:uppercase; letter-spacing:.04em; }}
+.engine-empty, .engine-reason, .engine-cache, .engine-pv, .engine-hint-source {{ margin:.45rem 0; color:var(--muted); }}
+.engine-hint-steps {{ display:grid; gap:.45rem; }}
+.engine-hint-level, .engine-hint-full-reveal, .engine-hint-line-reveal {{ border:1px solid #e5d5bd; border-radius:12px; background:#fffdf8; padding:0 .6rem; }}
+.engine-hint-level p, .engine-hint-full-reveal p, .engine-hint-line-reveal p {{ margin:.35rem 0 .6rem; }}
     .study-actions {{ min-width:0; display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:.55rem; margin:.75rem 0; }}
     .study-actions > * {{ min-width:0; }}
     @media(max-width:840px) {{ .scorebar {{ grid-template-columns:repeat(2, minmax(0, 1fr)); }} .study-block-grid {{ grid-template-columns:1fr; }} }}
@@ -6879,6 +6984,7 @@ def _study_position_article(item: dict[str, Any]) -> str:
         else '<p class="study-review">PGN needs review or is missing.</p>'
     )
     rendered_block = rendered_html if rendered_html else ""
+    hints_html = _engine_study_hints_panel_html(item.get("engine_hints"), mode="study")
     engine_html = _engine_analysis_panel_html(item.get("engine_analysis"), mode="study")
     comparison_html = _book_move_comparison_panel_html(item.get("book_move_comparison"), mode="study")
     solution_html = f"""<details class="solution-panel">
@@ -6901,6 +7007,7 @@ def _study_position_article(item: dict[str, Any]) -> str:
           <summary>Spróbuj sam</summary>
           <p>Zatrzymaj się przy diagramie i wybierz własny kandydacki ruch przed odkryciem analizy.</p>
         </details>
+        {hints_html}
         {engine_html}
         {comparison_html}
         {solution_html}
@@ -6954,6 +7061,7 @@ def _position_card_html(item: dict[str, Any]) -> str:
         if pgn and status == "accepted" and _pgn_replay_clean(pgn)
         else "<p>PGN: needs review or missing.</p>"
     )
+    hints_html = _engine_study_hints_panel_html(item.get("engine_hints"), mode="audit", open_by_default=False)
     engine_html = _engine_analysis_panel_html(item.get("engine_analysis"), mode="audit", open_by_default=False)
     comparison_html = _book_move_comparison_panel_html(item.get("book_move_comparison"), mode="audit", open_by_default=False)
     return f"""<article class="card" data-position-status="{html.escape(status, quote=True)}"{marker_attr} data-has-board-crop="{str(has_board_crop).lower()}" data-has-side-marker-crop="{str(has_side_marker_crop).lower()}">
@@ -6966,6 +7074,7 @@ def _position_card_html(item: dict[str, Any]) -> str:
     <p>Status: <span class="status {html.escape(status, quote=True)}">{html.escape(status)}</span></p>
     {fen_html}
     {pgn_html}
+    {hints_html}
     {engine_html}
     {comparison_html}
     <div class="debug"><h3>Marker</h3><pre>{html.escape(json.dumps({'status': item.get('side_marker_status'), 'symbol': item.get('side_marker_symbol'), 'bbox': item.get('side_marker_bbox'), 'trace': item.get('side_marker_assignment_trace')}, ensure_ascii=False, indent=2))}</pre><h3>Warnings</h3><pre>{html.escape(json.dumps(item.get("warnings", []), ensure_ascii=False, indent=2))}</pre></div>

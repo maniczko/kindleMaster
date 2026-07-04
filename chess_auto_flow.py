@@ -14,6 +14,7 @@ from typing import Any, Iterable, Mapping
 from chess_fen_hardening import machine_accept_fen, machine_accept_placement, placement_from_fen_or_placement, validate_fen_detailed
 from chess_book_move_comparison import build_book_move_engine_comparison
 from chess_engine_analysis import build_engine_analysis_artifacts
+from chess_engine_hints import build_engine_study_hint_artifacts
 from chess_side_marker_blockers import build_side_marker_blocker_attribution, side_marker_blocker_attribution_markdown
 from chess_side_marker_learning import (
     build_side_marker_learning_artifacts,
@@ -339,6 +340,7 @@ def build_auto_chess_flow_artifacts(
     two_crop_benchmark_seed = _two_crop_benchmark_seed_report(diagrams)
     accepted_fen_by_source = _accepted_fen_by_source(diagrams, fen_payload)
     engine_analysis = build_engine_analysis_artifacts(out, diagrams, fen_payload)
+    engine_hints = build_engine_study_hint_artifacts(out, engine_analysis.get("report") or {}, diagram_payload)
     pgn_payload, pgn_validation, pgn_repairs = _canonical_pgn(
         pgn_records,
         pgn_lattice_rows,
@@ -477,12 +479,14 @@ def build_auto_chess_flow_artifacts(
                 "two_crop_benchmark_seed": chess_fen_report_dir / "two_crop_benchmark_seed.json",
                 "two_crop_benchmark_seed_md": chess_fen_report_dir / "two_crop_benchmark_seed.md",
                 **engine_analysis.get("paths", {}),
+                **engine_hints.get("paths", {}),
                 **book_move_comparison.get("paths", {}),
                 "export_games_pgn": dirs["export"] / "games.pgn",
             }.items()
         },
         "engine_analysis": (engine_analysis.get("report") or {}).get("summary") or {},
         "engine_analysis_gate": engine_analysis.get("gate") or {},
+        "engine_hints": (engine_hints.get("report") or {}).get("summary") or {},
         "book_move_comparison": (book_move_comparison.get("report") or {}).get("summary") or {},
         "side_marker_learning": side_marker_learning.get("summary") or {},
         "strict_failed": bool(mode == "auto-strict" and status != "AUTO_SUCCESS"),

@@ -16,6 +16,7 @@ from ml_feedback import (
     magazine_quality_examples_from_feedback,
     quality_feedback_examples_from_feedback,
     route_examples_from_feedback,
+    summarize_layout_feedback_metrics,
 )
 
 
@@ -103,6 +104,7 @@ def build_ml_datasets(
         log_paths=feedback_log_path_list,
         repo_root=root,
     ) if feedback_log_path_list else ([], [])
+    layout_feedback_metrics = summarize_layout_feedback_metrics(feedback_records)
     feedback_route_examples, feedback_route_skipped = route_examples_from_feedback(feedback_records)
     magazine_quality_examples, magazine_quality_skipped = magazine_quality_examples_from_feedback(feedback_records)
     quality_feedback_examples, quality_feedback_skipped = quality_feedback_examples_from_feedback(feedback_records)
@@ -165,6 +167,7 @@ def build_ml_datasets(
         "quality_feedback_role_counts": dict(Counter(example.get("dataset_role", "unknown") for example in quality_feedback_examples)),
         "quality_coverage_status": quality_coverage["status"],
         "quality_coverage": quality_coverage,
+        "layout_feedback_metrics": layout_feedback_metrics,
         "chess_learning_label_count": int((chess_learning_benchmark.get("summary") or {}).get("usable_label_count") or 0),
         "chess_learning_benchmark_status": str(chess_learning_benchmark.get("status") or ""),
         "chess_learning_benchmark": chess_learning_benchmark,
@@ -320,6 +323,7 @@ def _publish_versioned_dataset(
             "feature_collision_report": collision_report,
             "dataset_readiness": readiness,
             "chess_learning_benchmark": _mapping(completeness.get("chess_learning_benchmark")),
+            "layout_feedback_metrics": _mapping(completeness.get("layout_feedback_metrics")),
         }
     )
     dataset_version = _dataset_version(dataset_hash)
@@ -426,6 +430,8 @@ def _build_training_readiness_dashboard(
     quality_coverage = _mapping(completeness.get("quality_coverage"))
     chess_learning = _mapping(completeness.get("chess_learning_benchmark"))
     chess_learning_summary = _mapping(chess_learning.get("summary"))
+    layout_feedback_metrics = _mapping(completeness.get("layout_feedback_metrics"))
+    layout_feedback_count = int(layout_feedback_metrics.get("layout_feedback_record_count", 0) or 0)
     route_status = str(readiness.get("status") or "insufficient_data")
     route_promotion_allowed = bool(readiness.get("promotion_allowed"))
     components = {
@@ -463,6 +469,22 @@ def _build_training_readiness_dashboard(
             rows=quality_feedback_examples + magazine_quality_examples,
             tokens=("layout", "presentation", "magazine", "toc", "nav", "article", "image"),
         ),
+        "layout_feedback": {
+            "status": "collecting" if layout_feedback_count else "data_gap",
+            "component": "layout_feedback",
+            "example_count": layout_feedback_count,
+            "accepted_example_count": int(layout_feedback_metrics.get("layout_feedback_record_count", 0) or 0),
+            "minimum_accepted_count": 0,
+            "gap_to_minimum": 0 if layout_feedback_count else 1,
+            "promotion_allowed": False,
+            "preferred_view_mode_count": dict(_mapping(layout_feedback_metrics.get("preferred_view_mode_count"))),
+            "original_preview_usage_rate": float(layout_feedback_metrics.get("original_preview_usage_rate", 0.0) or 0.0),
+            "layout_issue_tag_counts": dict(_mapping(layout_feedback_metrics.get("layout_issue_tag_counts"))),
+            "reader_mode_feedback_score": layout_feedback_metrics.get("reader_mode_feedback_score"),
+            "study_mode_feedback_score": layout_feedback_metrics.get("study_mode_feedback_score"),
+            "audit_mode_feedback_score": layout_feedback_metrics.get("audit_mode_feedback_score"),
+            "detail": _layout_feedback_detail(layout_feedback_metrics),
+        },
     }
     training_readiness_status = route_status
     if route_status == "ready" and int(collision_report.get("collision_count", 0) or 0) > 0:
@@ -480,6 +502,7 @@ def _build_training_readiness_dashboard(
         "magazine_quality_count": len(magazine_quality_examples),
         "heading_reference_count": len(heading_reference_examples),
         "feature_collision_count": int(collision_report.get("collision_count", 0) or 0),
+        "layout_feedback_record_count": layout_feedback_count,
     }
     return {
         "schema": "kindlemaster.ml.dataset.readiness.v1",
@@ -530,6 +553,30 @@ def _row_marker_text(row: Mapping[str, Any]) -> str:
         " ".join(str(tag) for tag in row.get("issue_tags", []) or []),
     ]
     return " ".join(parts).lower()
+
+
+def _layout_feedback_detail(metrics: Mapping[str, Any]) -> str:
+    view_modes = ", ".join(
+        f"{key}={value}"
+        for key, value in sorted(_mapping(metrics.get("preferred_view_mode_count")).items())
+    ) or "view_modes=0"
+    issue_tags = ", ".join(
+        f"{key}={value}"
+        for key, value in sorted(_mapping(metrics.get("layout_issue_tag_counts")).items())
+    ) or "issue_tags=0"
+    scores = ", ".join(
+        f"{key}={metrics.get(key)}"
+        for key in (
+            "reader_mode_feedback_score",
+            "study_mode_feedback_score",
+            "audit_mode_feedback_score",
+        )
+        if metrics.get(key) is not None
+    ) or "scores=none"
+    return (
+        f"{view_modes}; original_preview_usage_rate={metrics.get('original_preview_usage_rate', 0.0)}; "
+        f"{issue_tags}; {scores}"
+    )
 
 
 def _readiness_next_actions(summary: Mapping[str, Any], components: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -589,6 +636,9 @@ def _build_dataset_card(
             "quality_feedback_examples": int(completeness.get("quality_feedback_example_count", 0) or 0),
             "magazine_quality_examples": int(completeness.get("magazine_quality_example_count", 0) or 0),
             "heading_reference_examples": int(completeness.get("heading_reference_example_count", 0) or 0),
+            "layout_feedback_records": int(
+                _mapping(completeness.get("layout_feedback_metrics")).get("layout_feedback_record_count", 0) or 0
+            ),
         },
         "route_readiness": dict(readiness),
         "training_readiness_status": str(_mapping(dashboard.get("summary")).get("training_readiness_status") or ""),
@@ -604,6 +654,7 @@ def _build_dataset_card(
             "route_example_count": int(completeness.get("feedback_route_example_count", 0) or 0),
             "quality_example_count": int(completeness.get("quality_feedback_example_count", 0) or 0),
             "skipped_count": len(list(completeness.get("feedback_skipped") or [])),
+            "layout_feedback": dict(_mapping(completeness.get("layout_feedback_metrics"))),
         },
     }
 
@@ -625,6 +676,7 @@ def _dataset_card_markdown(card: Mapping[str, Any]) -> str:
         "",
         f"- Route examples: {counts.get('route_examples', 0)}",
         f"- Feedback records: {counts.get('feedback_records', 0)}",
+        f"- Layout feedback records: {counts.get('layout_feedback_records', 0)}",
         f"- Quality feedback examples: {counts.get('quality_feedback_examples', 0)}",
         f"- Magazine quality examples: {counts.get('magazine_quality_examples', 0)}",
         f"- Heading/reference examples: {counts.get('heading_reference_examples', 0)}",
@@ -662,6 +714,7 @@ def _readiness_dashboard_html(report: Mapping[str, Any]) -> str:
         ("Promotion allowed", "yes" if summary.get("promotion_allowed") else "no"),
         ("Route examples", summary.get("route_example_count", 0)),
         ("Quality feedback", summary.get("quality_feedback_count", 0)),
+        ("Layout feedback", summary.get("layout_feedback_record_count", 0)),
         ("Feature collisions", summary.get("feature_collision_count", 0)),
     ]
     card_html = "\n".join(
@@ -675,6 +728,7 @@ def _readiness_dashboard_html(report: Mapping[str, Any]) -> str:
         f"<td>{html.escape(str(_mapping(component).get('example_count', '')))}</td>"
         f"<td>{html.escape(str(_mapping(component).get('accepted_example_count', '')))}</td>"
         f"<td>{html.escape(str(_mapping(component).get('gap_to_minimum', '')))}</td>"
+        f"<td>{html.escape(str(_mapping(component).get('detail', '')))}</td>"
         "</tr>"
         for name, component in components.items()
     )
@@ -714,7 +768,7 @@ def _readiness_dashboard_html(report: Mapping[str, Any]) -> str:
   <section>
     <h2>Model areas</h2>
     <table>
-      <thead><tr><th>Area</th><th>Status</th><th>Examples</th><th>Accepted</th><th>Gap</th></tr></thead>
+      <thead><tr><th>Area</th><th>Status</th><th>Examples</th><th>Accepted</th><th>Gap</th><th>Details</th></tr></thead>
       <tbody>{component_rows}</tbody>
     </table>
   </section>

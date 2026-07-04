@@ -173,6 +173,7 @@ def record_dataset_built(
             "chess_learning_label_type_counts": dict(
                 _mapping(_mapping(_mapping(dataset_payload.get("chess_learning_benchmark")).get("summary")).get("label_type_counts"))
             ),
+            "layout_metrics": _mapping(dataset_payload.get("layout_feedback_metrics")),
             "training_eligible": promotion_allowed,
             "cloud_sync_status": "local_only",
         }
@@ -307,6 +308,64 @@ def record_model_promotion_blocked(
             "promotion_decision": _mapping(promotion_payload.get("promotion_decision")),
             "metric_delta": _mapping(promotion_payload.get("metric_delta")),
             "corpus_gate_status": str(promotion_payload.get("corpus_gate_status") or ""),
+            "training_eligible": False,
+            "cloud_sync_status": "local_only",
+        }
+    )
+    return append_learning_event(event, repo_root=repo_root)
+
+
+def record_layout_interaction_recorded(
+    *,
+    feedback_record: Mapping[str, Any],
+    layout_feedback: Mapping[str, Any],
+    job: Mapping[str, Any] | None = None,
+    repo_root: str | Path = ".",
+) -> dict[str, Any]:
+    conversion = _mapping(feedback_record.get("conversion"))
+    metadata = _mapping((job or {}).get("metadata"))
+    ledger = _mapping(metadata.get("learning_ledger"))
+    conversion_id = str(feedback_record.get("job_id") or (job or {}).get("job_id") or feedback_record.get("case_id") or "")
+    event = _base_event(
+        event_type="layout_interaction_recorded",
+        conversion_id=conversion_id,
+        input_fingerprint=str(ledger.get("input_fingerprint") or ""),
+        source_type=str(conversion.get("source_type") or (job or {}).get("source_type") or ""),
+    )
+    event.update(
+        {
+            "feedback_id": str(feedback_record.get("record_id") or ""),
+            "layout_metrics": _layout_feedback_summary(layout_feedback),
+            "quality_decision": str(_mapping(feedback_record.get("feedback")).get("status") or ""),
+            "training_eligible": False,
+            "cloud_sync_status": "local_only",
+        }
+    )
+    return append_learning_event(event, repo_root=repo_root)
+
+
+def record_layout_feedback_added(
+    *,
+    feedback_record: Mapping[str, Any],
+    layout_feedback: Mapping[str, Any],
+    job: Mapping[str, Any] | None = None,
+    repo_root: str | Path = ".",
+) -> dict[str, Any]:
+    conversion = _mapping(feedback_record.get("conversion"))
+    metadata = _mapping((job or {}).get("metadata"))
+    ledger = _mapping(metadata.get("learning_ledger"))
+    conversion_id = str(feedback_record.get("job_id") or (job or {}).get("job_id") or feedback_record.get("case_id") or "")
+    event = _base_event(
+        event_type="layout_feedback_added",
+        conversion_id=conversion_id,
+        input_fingerprint=str(ledger.get("input_fingerprint") or ""),
+        source_type=str(conversion.get("source_type") or (job or {}).get("source_type") or ""),
+    )
+    event.update(
+        {
+            "feedback_id": str(feedback_record.get("record_id") or ""),
+            "layout_metrics": _layout_feedback_summary(layout_feedback),
+            "quality_decision": str(_mapping(feedback_record.get("feedback")).get("status") or ""),
             "training_eligible": False,
             "cloud_sync_status": "local_only",
         }
@@ -662,6 +721,27 @@ def _feedback_summary(feedback: Mapping[str, Any]) -> dict[str, Any]:
         "include_in_training": bool(feedback.get("include_in_training")),
         "notes_length": len(str(feedback.get("notes") or "")),
     }
+
+
+def _layout_feedback_summary(layout_feedback: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "conversion_id": _short(layout_feedback.get("conversion_id")),
+        "artifact_type": _short(layout_feedback.get("artifact_type")),
+        "view_mode": _short(layout_feedback.get("view_mode")),
+        "chapter_id": _short(layout_feedback.get("chapter_id")),
+        "page": _short(layout_feedback.get("page")),
+        "block_type": _short(layout_feedback.get("block_type")),
+        "screen_width_bucket": _short(layout_feedback.get("screen_width_bucket")),
+        "original_preview_opened": bool(layout_feedback.get("original_preview_opened")),
+        "feedback_label": _short(layout_feedback.get("feedback_label")),
+        "issue_tags": [_short(item) for item in layout_feedback.get("issue_tags", []) or []][:20],
+        "interaction_events": [_short(item) for item in layout_feedback.get("interaction_events", []) or []][:20],
+        "stores_text": False,
+    }
+
+
+def _short(value: Any, *, limit: int = 96) -> str:
+    return str(value or "").strip()[:limit]
 
 
 def _dataset_version(payload: Mapping[str, Any]) -> str:

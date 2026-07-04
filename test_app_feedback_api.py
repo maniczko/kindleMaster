@@ -84,6 +84,15 @@ class AppFeedbackApiTests(unittest.TestCase):
                         "reviewer": "operator",
                         "notes": "Dobre do uczenia po weryfikacji.",
                         "include_in_training": True,
+                        "layout_feedback": {
+                            "artifact_type": "final_pdf_two_crop_reader",
+                            "view_mode": "study",
+                            "block_type": "exercise",
+                            "screen_width_bucket": "desktop",
+                            "original_preview_opened": True,
+                            "feedback_label": "good",
+                            "issue_tags": ["diagram_too_small", "missing_original"],
+                        },
                     },
                 )
 
@@ -92,7 +101,13 @@ class AppFeedbackApiTests(unittest.TestCase):
                 self.assertTrue(payload["success"])
                 self.assertTrue(payload["include_in_training"])
                 self.assertEqual(payload["feedback_record"]["route_label"], "book_reflow")
+                self.assertEqual(payload["feedback_record"]["layout_feedback"]["view_mode"], "study")
+                self.assertEqual(payload["feedback_record"]["layout_feedback"]["feedback_label"], "good")
                 self.assertEqual(payload["learning_ledger"]["status"], "recorded")
+                self.assertEqual(
+                    {event["event_type"] for event in payload["learning_ledger"]["layout_events"]},
+                    {"layout_interaction_recorded", "layout_feedback_added"},
+                )
                 self.assertTrue(log_path.is_file())
 
                 get_response = self.client.get("/convert/feedback/feedback-job")
@@ -107,6 +122,10 @@ class AppFeedbackApiTests(unittest.TestCase):
                 self.assertEqual(summary_response.status_code, 200)
                 self.assertEqual(summary_payload["summary"]["feedback_record_count"], 1)
                 self.assertEqual(summary_payload["summary"]["training_eligible_count"], 1)
+                layout_summary = summary_payload["summary"]["layout_feedback"]
+                self.assertEqual(layout_summary["layout_feedback_record_count"], 1)
+                self.assertEqual(layout_summary["preferred_view_mode_count"]["study"], 1)
+                self.assertEqual(layout_summary["layout_issue_tag_counts"]["diagram_too_small"], 1)
 
     def test_feedback_training_validation_returns_readable_missing_list(self) -> None:
         self._register_ready_job("feedback-invalid")

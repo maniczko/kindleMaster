@@ -167,6 +167,86 @@ class LearningLedgerTests(unittest.TestCase):
             self.assertEqual(event["feedback"]["notes_length"], len("This note must not be copied into the ledger event."))
             self.assertNotIn("This note must not", json.dumps(event, ensure_ascii=False))
 
+    def test_layout_feedback_records_interaction_events_without_source_text(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            job = {
+                "job_id": "job-layout-feedback",
+                "source_type": "pdf",
+                "filename": "private-layout.pdf",
+                "text_excerpt": "private book paragraph must never enter layout ledger",
+                "metadata": {
+                    "learning_ledger": {"input_fingerprint": "sha256:layout"},
+                    "source_analysis": {
+                        "profile": "book_reflow",
+                        "page_count": 12,
+                        "text_pages": 12,
+                        "scanned_pages": 0,
+                        "image_pages": 3,
+                        "has_toc": True,
+                        "has_tables": False,
+                        "has_diagrams": True,
+                        "has_meaningful_images": True,
+                        "estimated_columns": 1,
+                        "heading_density": 0.4,
+                        "font_consistency": 0.9,
+                        "layout_heavy": True,
+                        "text_heavy": True,
+                    },
+                    "premium_scoring": {"premium_score": 7.2, "status": "review"},
+                },
+            }
+
+            record = append_user_feedback(
+                job_id="job-layout-feedback",
+                job=job,
+                feedback={
+                    "status": "needs_review",
+                    "quality_label": "usable",
+                    "route_label": "diagram_book_reflow",
+                    "issue_tags": ["layout"],
+                    "reviewer": "qa",
+                    "notes": "Private note must not be copied into layout ledger.",
+                    "include_in_training": False,
+                    "layout_feedback": {
+                        "artifact_type": "final_pdf_two_crop_reader",
+                        "view_mode": "study",
+                        "block_type": "exercise",
+                        "screen_width_bucket": "desktop",
+                        "original_preview_opened": True,
+                        "feedback_label": "partial",
+                        "issue_tags": ["diagram_too_small"],
+                    },
+                },
+                event_path=root / "reports/ml/feedback/conversion_feedback.jsonl",
+                ledger_repo_root=root,
+            )
+
+            events = [
+                json.loads(line)
+                for line in (root / DEFAULT_EVENTS_PATH).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            event_types = [event["event_type"] for event in events]
+            self.assertEqual(
+                event_types,
+                ["user_feedback_added", "layout_interaction_recorded", "layout_feedback_added"],
+            )
+            self.assertEqual(record["layout_feedback"]["view_mode"], "study")
+            self.assertEqual(
+                {event["event_type"] for event in record["learning_ledger"]["layout_events"]},
+                {"layout_interaction_recorded", "layout_feedback_added"},
+            )
+            layout_events = [event for event in events if event["event_type"].startswith("layout_")]
+            for event in layout_events:
+                self.assertEqual(event["layout_metrics"]["view_mode"], "study")
+                self.assertEqual(event["layout_metrics"]["feedback_label"], "partial")
+                self.assertEqual(event["layout_metrics"]["issue_tags"], ["diagram_too_small"])
+                self.assertFalse(event["layout_metrics"]["stores_text"])
+                serialized = json.dumps(event, ensure_ascii=False)
+                self.assertNotIn("Private note must not", serialized)
+                self.assertNotIn("private book paragraph", serialized)
+
     def test_dataset_training_and_promotion_events_are_indexed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

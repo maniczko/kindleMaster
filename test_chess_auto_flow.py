@@ -143,6 +143,9 @@ class AutoChessFlowTests(unittest.TestCase):
             pgn_payload = json.loads((out / "pgn" / "pgn_candidates.json").read_text(encoding="utf-8"))
             self.assertEqual(pgn_payload["items"][0]["status"], "PGN_MACHINE_ACCEPTED")
             self.assertTrue((out / "report" / "acceptance_blockers.json").is_file())
+            self.assertIn("book_move_comparison", payload["artifacts"])
+            self.assertTrue((out / "reports" / "chess_engine" / "book_move_comparison.json").is_file())
+            self.assertTrue((out / "data" / "book_move_comparison.json").is_file())
 
     def test_ai_fen_candidate_remains_review_only_without_human_or_deterministic_acceptance(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

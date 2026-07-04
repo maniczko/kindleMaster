@@ -3848,6 +3848,21 @@ def _get_conversion_job_for_auth(job_id: str, auth_context: AuthContext) -> dict
         return None
 
 
+def _get_existing_conversion_job_for_auth(job_id: str, auth_context: AuthContext) -> dict | None:
+    local_job = _CONVERSION_JOB_STORE.get(job_id)
+    if not auth_context.authenticated:
+        return local_job
+    if local_job:
+        owner = str(local_job.get("user_id", "") or "").strip()
+        if owner == auth_context.user_id or not owner:
+            return local_job
+        return None
+    try:
+        return _supabase_library_client().get_user_job(user_id=auth_context.user_id, job_id=job_id)
+    except Exception:
+        return None
+
+
 def _cleanup_deleted_conversion_job_files(job_id: str, job: dict) -> dict:
     """Remove local files owned by a deleted conversion job."""
     deleted_paths: list[str] = []
@@ -4964,6 +4979,11 @@ def convert_job_delete(job_id: str):
         if cloud_user and cloud_token
         else {"status": "skipped", "provider": "supabase", "reason": "anonymous_or_local"}
     )
+    behavior_signal = _record_user_behavior_signal_safely(
+        job_id=job_id,
+        job=deleted,
+        event_type="job_deleted",
+    )
     response = jsonify(
         {
             "success": True,
@@ -4971,6 +4991,7 @@ def convert_job_delete(job_id: str):
             "status": "deleted",
             "cleanup": cleanup,
             "cloud_delete": cloud_delete,
+            "behavior_signal": behavior_signal,
         }
     )
     apply_no_store_headers(response.headers)
@@ -5191,6 +5212,12 @@ def convert_retry(job_id: str):
         cloud_user_id=cloud_user_id,
         cloud_token=cloud_token,
     )
+    behavior_signal = _record_user_behavior_signal_safely(
+        job_id=job_id,
+        job=previous_job,
+        event_type="conversion_retried",
+        signal_strength="medium",
+    )
 
     response = jsonify(
         {
@@ -5206,6 +5233,7 @@ def convert_retry(job_id: str):
             "artifacts": {"input": input_artifact},
             "artifact_storage": retry_record["artifact_storage"],
             "cloud_sync": cloud_sync,
+            "behavior_signal": behavior_signal,
         }
     )
     response.status_code = 202
@@ -5575,6 +5603,12 @@ def convert_repair(job_id: str):
             job_id=job_id,
         )
 
+    repair_started_signal = _record_user_behavior_signal_safely(
+        job_id=job_id,
+        job=job,
+        event_type="repair_started",
+        artifact_type="epub",
+    )
     before_quality_state = _build_job_quality_state(job_id, job)
     before_blockers = [
         dict(item)
@@ -5642,7 +5676,15 @@ def convert_repair(job_id: str):
     _store_quality_report_artifacts(job_id)
     _sync_job_to_cloud(job_id)
     updated_job = _get_conversion_job(job_id) or updated_job
-    response = jsonify(_build_repair_job_response(job_id, updated_job, auto_repair))
+    repair_completed_signal = _record_user_behavior_signal_safely(
+        job_id=job_id,
+        job=updated_job,
+        event_type="repair_completed",
+        artifact_type="epub",
+    )
+    response_payload = _build_repair_job_response(job_id, updated_job, auto_repair)
+    response_payload["behavior_signals"] = [repair_started_signal, repair_completed_signal]
+    response = jsonify(response_payload)
     response.headers["Cache-Control"] = "no-store, max-age=0"
     response.headers["Pragma"] = "no-cache"
     return response
@@ -5863,11 +5905,19 @@ def convert_delivery_email(job_id: str):
     delivery_payload["quality_gate"] = quality_gate_payload
     _set_conversion_job(job_id, email_delivery=delivery_payload)
     _sync_job_to_cloud(job_id)
+    behavior_signal = _record_user_behavior_signal_safely(
+        job_id=job_id,
+        job=job,
+        event_type="send_to_kindle_clicked",
+        artifact_type=attachment_artifact,
+        signal_strength="medium",
+    )
     response = jsonify(
         {
             "success": True,
             "job_id": job_id,
             "delivery": delivery_payload,
+            "behavior_signal": behavior_signal,
         }
     )
     response.headers["Cache-Control"] = "no-store, max-age=0"
@@ -5913,6 +5963,7 @@ def convert_artifact_download(job_id: str, artifact_key: str):
             phase="download",
             job_id=job_id,
         )
+    _artifact_behavior_signal(job_id, job, key, artifact)
     if key == "pdf_layout_preview":
         artifact_path = _resolve_local_artifact_path(artifact)
         return _render_pdf_layout_preview_shell(job_id, job, artifact, artifact_path)
@@ -6021,6 +6072,72 @@ def _feedback_log_path_override() -> str | None:
 def _learning_ledger_root_override() -> str:
     raw = os.environ.get("KINDLEMASTER_LEARNING_LEDGER_ROOT", "").strip()
     return raw or "."
+
+
+def _record_user_behavior_signal(
+    *,
+    job_id: str,
+    job: Mapping[str, object] | None,
+    event_type: str,
+    artifact_type: str = "",
+    view_mode: str = "",
+    signal_strength: str = "",
+) -> dict[str, object]:
+    from learning_ledger import record_user_behavior_signal
+
+    return record_user_behavior_signal(
+        conversion_id=job_id,
+        event_type=event_type,
+        artifact_type=artifact_type,
+        view_mode=view_mode,
+        signal_strength=signal_strength,
+        job=job,
+        repo_root=_learning_ledger_root_override(),
+    )
+
+
+def _record_user_behavior_signal_safely(
+    *,
+    job_id: str,
+    job: Mapping[str, object] | None,
+    event_type: str,
+    artifact_type: str = "",
+    view_mode: str = "",
+    signal_strength: str = "",
+) -> dict[str, object]:
+    try:
+        record = _record_user_behavior_signal(
+            job_id=job_id,
+            job=job,
+            event_type=event_type,
+            artifact_type=artifact_type,
+            view_mode=view_mode,
+            signal_strength=signal_strength,
+        )
+        return {"status": "recorded", "event_id": str(record.get("event_id") or "")}
+    except Exception:
+        return {"status": "failed", "reason": "ledger_write_failed"}
+
+
+def _artifact_behavior_signal(job_id: str, job: Mapping[str, object], key: str, artifact: Mapping[str, object] | None = None) -> dict[str, object]:
+    artifact_payload = dict(artifact or {})
+    artifact_type = str(artifact_payload.get("artifact_type") or artifact_payload.get("kind") or key or "").strip()
+    if key == "chess_pgn_html":
+        event_type = "html_reader_opened"
+        artifact_type = artifact_type or FINAL_READER_ARTIFACT_TYPE
+    elif key == "input":
+        event_type = "original_preview_opened"
+        artifact_type = "source_pdf"
+    elif key in {"pdf_layout_preview", "chess_glyph_diagnostics", "deepseek_audit"} or key.endswith("diagnostics"):
+        event_type = "diagnostics_opened"
+    else:
+        event_type = "artifact_downloaded"
+    return _record_user_behavior_signal_safely(
+        job_id=job_id,
+        job=job,
+        event_type=event_type,
+        artifact_type=artifact_type or key,
+    )
 
 
 def _feedback_validation_payload(error: ValueError) -> dict[str, object]:
@@ -6156,6 +6273,89 @@ def convert_feedback(job_id: str):
     return response
 
 
+@app.route("/learning/behavior/<job_id>", methods=["POST"])
+def learning_behavior_signal(job_id: str):
+    auth_context = _resolve_request_auth_context()
+    if auth_context.error:
+        return _json_auth_error(auth_context)
+    if not _is_conversion_job_id(job_id):
+        return _json_error(
+            "Nieprawidlowy identyfikator zadania konwersji.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="learning_behavior",
+            job_id=job_id,
+        )
+    _mark_timed_out_conversion_jobs()
+    _cleanup_expired_conversion_jobs()
+    job = _get_existing_conversion_job_for_auth(job_id, auth_context)
+    if not job:
+        return _json_error(
+            "Nie znaleziono zadania konwersji dla sygnalu zachowania.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="learning_behavior",
+            job_id=job_id,
+        )
+    payload = request.get_json(silent=True)
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        return _json_error(
+            "SygnaĹ‚ zachowania musi byÄ‡ obiektem JSON.",
+            error_code="invalid_behavior_signal_payload",
+            status_code=400,
+            phase="learning_behavior",
+            job_id=job_id,
+        )
+    event_type = str(payload.get("event_type") or "").strip()
+    try:
+        record = _record_user_behavior_signal(
+            job_id=job_id,
+            job=job,
+            event_type=event_type,
+            artifact_type=str(payload.get("artifact_type") or ""),
+            view_mode=str(payload.get("view_mode") or ""),
+            signal_strength=str(payload.get("signal_strength") or ""),
+        )
+    except ValueError as error:
+        return _json_error(
+            "Nieznany typ sygnalu zachowania.",
+            error_code="invalid_behavior_signal_type",
+            status_code=400,
+            phase="learning_behavior",
+            job_id=job_id,
+        )
+    except Exception:
+        return _json_error(
+            "Nie udalo sie zapisac sygnalu zachowania.",
+            error_code="behavior_signal_write_failed",
+            status_code=500,
+            phase="learning_behavior",
+            job_id=job_id,
+        )
+    event = dict(record.get("event", {}) or {})
+    response = jsonify(
+        {
+            "success": True,
+            "job_id": job_id,
+            "behavior_signal": {
+                "status": "recorded",
+                "event_id": str(record.get("event_id") or ""),
+                "event_type": str(event.get("event_type") or event_type),
+                "signal_strength": str(event.get("signal_strength") or ""),
+                "training_label": bool(event.get("training_label")),
+                "training_eligible": bool(event.get("training_eligible")),
+                "privacy": dict(event.get("privacy", {}) or {}),
+            },
+            "online_learning": False,
+        }
+    )
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+
 @app.route("/learning/feedback/summary", methods=["GET"])
 def learning_feedback_summary():
     auth_context = _resolve_request_auth_context()
@@ -6209,6 +6409,12 @@ def convert_input_pdf_preview(job_id: str):
             job_id=job_id,
         )
 
+    _record_user_behavior_signal_safely(
+        job_id=job_id,
+        job=job,
+        event_type="original_preview_opened",
+        artifact_type="source_pdf",
+    )
     response = send_file(
         artifact_path,
         mimetype="application/pdf",
@@ -6282,8 +6488,20 @@ def convert_download(job_id: str):
         signed = _sign_cloud_output_artifact(job)
         signed_artifact_url = str(signed.get("url", "") or "") if signed.get("available") else ""
     if signed_artifact_url:
+        _record_user_behavior_signal_safely(
+            job_id=job_id,
+            job=job,
+            event_type="artifact_downloaded",
+            artifact_type="epub",
+        )
         return redirect(signed_artifact_url, code=302)
 
+    _record_user_behavior_signal_safely(
+        job_id=job_id,
+        job=job,
+        event_type="artifact_downloaded",
+        artifact_type="epub",
+    )
     response = send_file(
         output_path,
         mimetype="application/epub+zip",

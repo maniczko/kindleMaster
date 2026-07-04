@@ -2553,6 +2553,23 @@ function ConversionFeedbackPanel({
     setLayoutIssueTags((current) => (current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag]));
   }
 
+  function behaviorArtifactType() {
+    return String(job.artifact_type || (chessDownloadFilesState(job).reader.present ? FINAL_CHESS_READER_ARTIFACT_TYPE : "conversion_reader"));
+  }
+
+  function recordReaderModeChanged(viewMode: string) {
+    if (!job.job_id) return;
+    void apiFetch(`/learning/behavior/${encodeURIComponent(job.job_id)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        event_type: "reader_mode_changed",
+        artifact_type: behaviorArtifactType(),
+        view_mode: viewMode,
+      }),
+    }).catch(() => undefined);
+  }
+
   async function submitFeedback(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!job.job_id) return;
@@ -2632,7 +2649,10 @@ function ConversionFeedbackPanel({
                   className={`km-feedback-chip${layoutViewMode === option.value ? " is-active" : ""}`}
                   key={option.value}
                   type="button"
-                  onClick={() => setLayoutViewMode(option.value)}
+                  onClick={() => {
+                    if (layoutViewMode !== option.value) recordReaderModeChanged(option.value);
+                    setLayoutViewMode(option.value);
+                  }}
                 >
                   {option.label}
                 </button>

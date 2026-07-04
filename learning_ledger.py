@@ -19,6 +19,19 @@ PRIVACY_PAYLOAD = {
     "stores_source_file": False,
     "stores_fingerprints_only": True,
 }
+USER_BEHAVIOR_SIGNAL_SCHEMA = "kindlemaster.user_behavior_signal.v1"
+USER_BEHAVIOR_SIGNAL_TYPES = {
+    "artifact_downloaded": {"signal_strength": "weak", "interpretation": "positive_artifact_use"},
+    "send_to_kindle_clicked": {"signal_strength": "medium", "interpretation": "positive_delivery_intent"},
+    "repair_started": {"signal_strength": "weak", "interpretation": "negative_quality_issue"},
+    "repair_completed": {"signal_strength": "weak", "interpretation": "quality_repair_completed"},
+    "conversion_retried": {"signal_strength": "medium", "interpretation": "negative_retry_needed"},
+    "job_deleted": {"signal_strength": "weak", "interpretation": "ambiguous_cleanup"},
+    "original_preview_opened": {"signal_strength": "weak", "interpretation": "layout_original_comparison_need"},
+    "diagnostics_opened": {"signal_strength": "weak", "interpretation": "possible_quality_issue"},
+    "html_reader_opened": {"signal_strength": "weak", "interpretation": "positive_reader_use"},
+    "reader_mode_changed": {"signal_strength": "weak", "interpretation": "reader_mode_preference"},
+}
 
 
 def record_conversion_completed(
@@ -128,6 +141,58 @@ def record_user_feedback_added(
     return append_learning_event(event, repo_root=repo_root)
 
 
+def record_user_behavior_signal(
+    *,
+    conversion_id: str,
+    event_type: str,
+    artifact_type: str = "",
+    view_mode: str = "",
+    signal_strength: str = "",
+    job: Mapping[str, Any] | None = None,
+    repo_root: str | Path = ".",
+) -> dict[str, Any]:
+    normalized_event_type = str(event_type or "").strip()
+    if normalized_event_type not in USER_BEHAVIOR_SIGNAL_TYPES:
+        raise ValueError(f"unknown_user_behavior_signal:{normalized_event_type}")
+    defaults = USER_BEHAVIOR_SIGNAL_TYPES[normalized_event_type]
+    normalized_strength = str(signal_strength or defaults.get("signal_strength") or "weak").strip().lower()
+    if normalized_strength not in {"weak", "medium"}:
+        normalized_strength = str(defaults.get("signal_strength") or "weak")
+    job_payload = _mapping(job or {})
+    metadata = _mapping(job_payload.get("metadata"))
+    ledger = _mapping(metadata.get("learning_ledger"))
+    event = _base_event(
+        event_type=normalized_event_type,
+        conversion_id=str(conversion_id or job_payload.get("job_id") or ""),
+        input_fingerprint=str(ledger.get("input_fingerprint") or ""),
+        source_type=str(job_payload.get("source_type") or ""),
+    )
+    event.update(
+        {
+            "behavior_signal_schema": USER_BEHAVIOR_SIGNAL_SCHEMA,
+            "source": "user_action",
+            "artifact_type": _short(artifact_type or job_payload.get("artifact_type") or ""),
+            "view_mode": _short(view_mode),
+            "signal_strength": normalized_strength,
+            "signal_interpretation": str(defaults.get("interpretation") or ""),
+            "training_label": False,
+            "training_eligible": False,
+            "behavior_signal": {
+                "event_type": normalized_event_type,
+                "artifact_type": _short(artifact_type or job_payload.get("artifact_type") or ""),
+                "view_mode": _short(view_mode),
+                "signal_strength": normalized_strength,
+                "interpretation": str(defaults.get("interpretation") or ""),
+                "source": "user_action",
+                "training_label": False,
+                "stores_text": False,
+            },
+            "cloud_sync_status": "local_only",
+        }
+    )
+    return append_learning_event(event, repo_root=repo_root)
+
+
 def record_dataset_built(
     *,
     dataset_payload: Mapping[str, Any],
@@ -174,6 +239,8 @@ def record_dataset_built(
                 _mapping(_mapping(_mapping(dataset_payload.get("chess_learning_benchmark")).get("summary")).get("label_type_counts"))
             ),
             "layout_metrics": _mapping(dataset_payload.get("layout_feedback_metrics")),
+            "weak_signal_metrics": _mapping(dataset_payload.get("weak_signal_metrics")),
+            "weak_signal_count": _int_value(_mapping(dataset_payload.get("weak_signal_metrics")).get("event_count")),
             "training_eligible": promotion_allowed,
             "cloud_sync_status": "local_only",
         }
@@ -507,6 +574,10 @@ def build_conversion_learning_index(*, events_path: str | Path) -> dict[str, Any
                     "model_versions": [],
                     "training_eligible": False,
                     "quality_decision": "",
+                    "weak_signal_count": 0,
+                    "weak_signal_types": {},
+                    "weak_signal_strength_counts": {},
+                    "weak_signal_artifact_type_counts": {},
                 },
             )
             _update_index_row(row, event)
@@ -533,6 +604,77 @@ def build_conversion_learning_index(*, events_path: str | Path) -> dict[str, Any
         "input_fingerprint_count": len(fingerprints),
         "conversions": conversions,
         "input_fingerprints": fingerprints,
+        "privacy": dict(PRIVACY_PAYLOAD),
+    }
+
+
+def summarize_user_behavior_signals(*, events_path: str | Path = DEFAULT_EVENTS_PATH) -> dict[str, Any]:
+    events = [event for event in load_learning_events(events_path) if _is_user_behavior_signal_event(event)]
+    event_type_counts: Counter[str] = Counter()
+    strength_counts: Counter[str] = Counter()
+    artifact_type_counts: Counter[str] = Counter()
+    view_mode_counts: Counter[str] = Counter()
+    per_job: dict[str, dict[str, Any]] = {}
+    per_artifact_type: dict[str, dict[str, Any]] = {}
+    training_label_true_count = 0
+    training_eligible_true_count = 0
+    for event in events:
+        event_type = str(event.get("event_type") or "")
+        conversion_id = str(event.get("conversion_id") or "")
+        artifact_type = str(event.get("artifact_type") or "unknown") or "unknown"
+        view_mode = str(event.get("view_mode") or "")
+        strength = str(event.get("signal_strength") or "weak") or "weak"
+        event_type_counts[event_type] += 1
+        strength_counts[strength] += 1
+        artifact_type_counts[artifact_type] += 1
+        if view_mode:
+            view_mode_counts[view_mode] += 1
+        if bool(event.get("training_label")):
+            training_label_true_count += 1
+        if bool(event.get("training_eligible")):
+            training_eligible_true_count += 1
+        if conversion_id:
+            row = per_job.setdefault(
+                conversion_id,
+                {
+                    "conversion_id": conversion_id,
+                    "event_count": 0,
+                    "event_type_counts": {},
+                    "signal_strength_counts": {},
+                    "artifact_type_counts": {},
+                },
+            )
+            _increment_counter_field(row, "event_type_counts", event_type)
+            _increment_counter_field(row, "signal_strength_counts", strength)
+            _increment_counter_field(row, "artifact_type_counts", artifact_type)
+            row["event_count"] = int(row.get("event_count", 0) or 0) + 1
+        artifact_row = per_artifact_type.setdefault(
+            artifact_type,
+            {
+                "artifact_type": artifact_type,
+                "event_count": 0,
+                "event_type_counts": {},
+                "conversion_ids": [],
+            },
+        )
+        _increment_counter_field(artifact_row, "event_type_counts", event_type)
+        artifact_row["event_count"] = int(artifact_row.get("event_count", 0) or 0) + 1
+        if conversion_id and conversion_id not in artifact_row["conversion_ids"]:
+            artifact_row["conversion_ids"].append(conversion_id)
+    for artifact_row in per_artifact_type.values():
+        artifact_row["conversion_count"] = len(artifact_row.get("conversion_ids") or [])
+    return {
+        "schema": "kindlemaster.user_behavior_signals.summary.v1",
+        "event_count": len(events),
+        "event_type_counts": dict(event_type_counts),
+        "signal_strength_counts": dict(strength_counts),
+        "artifact_type_counts": dict(artifact_type_counts),
+        "view_mode_counts": dict(view_mode_counts),
+        "per_job": per_job,
+        "per_artifact_type": per_artifact_type,
+        "training_label_true_count": training_label_true_count,
+        "training_eligible_true_count": training_eligible_true_count,
+        "online_learning": False,
         "privacy": dict(PRIVACY_PAYLOAD),
     }
 
@@ -623,6 +765,11 @@ def _update_index_row(row: dict[str, Any], event: Mapping[str, Any]) -> None:
     row["latest_created_at"] = str(event.get("created_at") or "")
     row["quality_decision"] = str(event.get("quality_decision") or row.get("quality_decision") or "")
     row["training_eligible"] = bool(row.get("training_eligible") or event.get("training_eligible"))
+    if _is_user_behavior_signal_event(event):
+        row["weak_signal_count"] = int(row.get("weak_signal_count", 0) or 0) + 1
+        _increment_counter_field(row, "weak_signal_types", event_type)
+        _increment_counter_field(row, "weak_signal_strength_counts", str(event.get("signal_strength") or "weak"))
+        _increment_counter_field(row, "weak_signal_artifact_type_counts", str(event.get("artifact_type") or "unknown") or "unknown")
     feedback_id = str(event.get("feedback_id") or "")
     if feedback_id and feedback_id not in row["feedback_ids"]:
         row["feedback_ids"].append(feedback_id)
@@ -633,6 +780,17 @@ def _update_index_row(row: dict[str, Any], event: Mapping[str, Any]) -> None:
         model_version = str(event.get(key) or "")
         if model_version and model_version not in row["model_versions"]:
             row["model_versions"].append(model_version)
+
+
+def _is_user_behavior_signal_event(event: Mapping[str, Any]) -> bool:
+    return str(event.get("event_type") or "") in USER_BEHAVIOR_SIGNAL_TYPES
+
+
+def _increment_counter_field(row: dict[str, Any], field: str, key: str) -> None:
+    normalized_key = str(key or "unknown") or "unknown"
+    counts = dict(row.get(field) or {})
+    counts[normalized_key] = int(counts.get(normalized_key, 0) or 0) + 1
+    row[field] = counts
 
 
 def _route_decision(result: Mapping[str, Any], metadata: Mapping[str, Any]) -> Mapping[str, Any]:

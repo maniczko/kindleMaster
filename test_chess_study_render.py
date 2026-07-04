@@ -327,6 +327,26 @@ class ChessStudyRenderTests(unittest.TestCase):
                     ],
                 },
             )
+            _write_json(
+                out / "data" / "book_move_comparison.json",
+                {
+                    "schema": "kindlemaster.chess_engine.book_move_comparison_data.v1",
+                    "summary": {"comparison_count": 1, "exact_match_count": 1},
+                    "items": [
+                        {
+                            "diagram_id": "p001_d001",
+                            "page": 1,
+                            "book_move_san": "Ke2",
+                            "book_move_uci": "e1e2",
+                            "engine_best_move_san": "Ke2",
+                            "engine_best_move_uci": "e1e2",
+                            "match_status": "exact_match",
+                            "requires_review": False,
+                            "review_reason": "",
+                        }
+                    ],
+                },
+            )
 
             render_study_html(
                 out,
@@ -354,6 +374,10 @@ class ChessStudyRenderTests(unittest.TestCase):
         self.assertIn("engine_unavailable", kindle_html)
         self.assertIn("invalid_fen", kindle_html)
         self.assertIn("Dane techniczne silnika", index_html)
+        self.assertIn("Porownaj ruch ksiazki", kindle_html)
+        self.assertIn('data-book-move-status="exact_match"', kindle_html)
+        self.assertIn("Ruch z ksiazki", kindle_html)
+        self.assertIn("Audyt ruchu ksiazki", index_html)
         self.assertIn("&quot;engine_version&quot;: &quot;Fakefish 1.0&quot;", index_html)
         self.assertIn("&quot;cache_hit&quot;: true", index_html)
         self.assertIn("&quot;multipv&quot;: 1", index_html)

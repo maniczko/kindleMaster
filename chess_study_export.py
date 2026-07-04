@@ -3973,26 +3973,42 @@ def _engine_analysis_by_diagram_id(out: Path) -> dict[str, dict[str, Any]]:
     }
 
 
+def _book_move_comparison_by_diagram_id(out: Path) -> dict[str, dict[str, Any]]:
+    payload = _read_optional_json(out / "data" / "book_move_comparison.json")
+    rows = payload.get("items") if isinstance(payload, dict) else []
+    return {
+        str(row.get("diagram_id") or ""): dict(row)
+        for row in rows or []
+        if isinstance(row, dict) and str(row.get("diagram_id") or "")
+    }
+
+
 def _attach_engine_analysis_to_book(book: dict[str, Any], out: Path) -> dict[str, Any]:
     engine_by_id = _engine_analysis_by_diagram_id(out)
-    if not engine_by_id:
+    comparison_by_id = _book_move_comparison_by_diagram_id(out)
+    if not engine_by_id and not comparison_by_id:
         return book
     pages: list[dict[str, Any]] = []
     for page in book.get("pages") or []:
         if not isinstance(page, dict):
             continue
         next_page = dict(page)
-        next_page["diagrams"] = [
-            _attach_engine_analysis_to_record(dict(diagram), engine_by_id)
-            for diagram in page.get("diagrams") or []
-            if isinstance(diagram, dict)
-        ]
+        next_diagrams: list[dict[str, Any]] = []
+        for diagram in page.get("diagrams") or []:
+            if not isinstance(diagram, dict):
+                continue
+            next_diagram = _attach_engine_analysis_to_record(dict(diagram), engine_by_id)
+            next_diagram = _attach_book_move_comparison_to_record(next_diagram, comparison_by_id)
+            next_diagrams.append(next_diagram)
+        next_page["diagrams"] = next_diagrams
         pages.append(next_page)
     payload = _read_optional_json(out / "data" / "engine_analysis.json")
+    comparison_payload = _read_optional_json(out / "data" / "book_move_comparison.json")
     return {
         **book,
         "pages": pages,
         "engine_analysis_summary": payload.get("summary") or {},
+        "book_move_comparison_summary": comparison_payload.get("summary") or {},
     }
 
 
@@ -4001,6 +4017,14 @@ def _attach_engine_analysis_to_record(record: dict[str, Any], engine_by_id: dict
         value = str(key or "")
         if value and value in engine_by_id:
             return {**record, "engine_analysis": engine_by_id[value]}
+    return record
+
+
+def _attach_book_move_comparison_to_record(record: dict[str, Any], comparison_by_id: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    for key in (record.get("diagram_id"), record.get("id"), record.get("source_diagram"), record.get("label")):
+        value = str(key or "")
+        if value and value in comparison_by_id:
+            return {**record, "book_move_comparison": comparison_by_id[value]}
     return record
 
 
@@ -4055,6 +4079,59 @@ def _engine_analysis_panel_html(
         }, ensure_ascii=False, indent=2))}</pre>"""
     open_attr = " open" if open_by_default else ""
     return f"""<details class="engine-panel engine-panel-{html.escape(mode, quote=True)}" data-engine-status="{html.escape(status, quote=True)}"{open_attr}>
+  <summary>{html.escape(summary_label)}</summary>
+  <div class="engine-panel-body">{body}{audit_details}</div>
+</details>"""
+
+
+def _book_move_comparison_panel_html(
+    comparison: Mapping[str, Any] | None,
+    *,
+    mode: str,
+    open_by_default: bool = False,
+) -> str:
+    row = dict(comparison or {})
+    if not row:
+        return ""
+    status = str(row.get("match_status") or "unknown")
+    summary_label = {
+        "reader": "Ruch ksiazki vs silnik",
+        "study": "Porownaj ruch ksiazki",
+        "audit": "Audyt ruchu ksiazki",
+    }.get(mode, "Ruch ksiazki vs silnik")
+    status_label = {
+        "exact_match": "zgodne",
+        "equivalent_move": "zgodne wariantowo",
+        "book_move_legal_but_not_best": "wymaga sprawdzenia",
+        "book_move_illegal": "ruch nielegalny z zaakceptowanego FEN",
+        "no_book_move": "brak parsowalnego ruchu ksiazki",
+        "engine_unavailable": "silnik niedostepny",
+    }.get(status, status)
+    body = f"""
+      <div class="engine-kpis">
+        <span><strong>Ruch z ksiazki</strong>{html.escape(str(row.get('book_move_san') or row.get('book_move_uci') or 'brak'))}</span>
+        <span><strong>Ruch silnika</strong>{html.escape(str(row.get('engine_best_move_san') or row.get('engine_best_move_uci') or 'brak'))}</span>
+        <span><strong>Status</strong>{html.escape(status_label)}</span>
+      </div>
+      {f'<p class="engine-reason">Powod review: <code>{html.escape(str(row.get("review_reason") or ""))}</code></p>' if row.get("review_reason") else ''}
+    """
+    audit_details = ""
+    if mode == "audit":
+        audit_details = f"""<pre class="engine-technical">{html.escape(json.dumps({
+            "diagram_id": row.get("diagram_id"),
+            "match_status": row.get("match_status"),
+            "book_move_raw": row.get("book_move_raw"),
+            "book_move_san": row.get("book_move_san"),
+            "book_move_uci": row.get("book_move_uci"),
+            "engine_best_move_san": row.get("engine_best_move_san"),
+            "engine_best_move_uci": row.get("engine_best_move_uci"),
+            "requires_review": row.get("requires_review"),
+            "review_reason": row.get("review_reason"),
+            "source_pgn_id": row.get("source_pgn_id"),
+            "source_type": row.get("source_type"),
+        }, ensure_ascii=False, indent=2))}</pre>"""
+    open_attr = " open" if open_by_default else ""
+    return f"""<details class="book-move-comparison-panel book-move-comparison-{html.escape(status, quote=True)}" data-book-move-status="{html.escape(status, quote=True)}"{open_attr}>
   <summary>{html.escape(summary_label)}</summary>
   <div class="engine-panel-body">{body}{audit_details}</div>
 </details>"""
@@ -4476,6 +4553,7 @@ def _semantic_source_diagram_html(diagram: dict[str, Any]) -> str:
   <code>{html.escape(fen_candidate)}</code>
 </div>"""
     engine_html = _engine_analysis_panel_html(diagram.get("engine_analysis"), mode="reader")
+    comparison_html = _book_move_comparison_panel_html(diagram.get("book_move_comparison"), mode="reader")
     return f"""<figure class="diagram-card" id="{html.escape(str(diagram.get('id') or ''), quote=True)}" data-kind="diagram" data-status="{html.escape(status, quote=True)}"{marker_attr} data-has-board-crop="{str(has_board_crop).lower()}" data-has-side-marker-crop="{str(has_side_marker_crop).lower()}">
   <header class="card-header">
     <h3>{html.escape(caption)}</h3>
@@ -4491,6 +4569,7 @@ def _semantic_source_diagram_html(diagram: dict[str, Any]) -> str:
       {f'<pre class="fen"><code>{html.escape(fen)}</code></pre>' if fen else ''}
       {copy_html}
       {engine_html}
+      {comparison_html}
       <details class="original-diagram">
         <summary>Podgląd oryginału</summary>
         {original_image_html}
@@ -4585,8 +4664,8 @@ h2.reader-text { margin-top:1.4rem; color:#5c3215; font-size:1.45rem; }
 .copy-button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visible, button:focus-visible { outline:3px solid #b96920; outline-offset:3px; }
 .original-diagram summary, .review-details summary { cursor:pointer; min-height:44px; font-weight:900; color:var(--accent); }
 .original-diagram img { max-width:100%; height:auto; border-radius:10px; border:1px solid var(--line); background:#fff; }
-.engine-panel, .try-self-panel, .solution-panel, .original-source { border:1px solid var(--line); border-radius:14px; background:#fffaf1; margin:.65rem 0; padding:0 .75rem; }
-.engine-panel summary, .try-self-panel summary, .solution-panel summary, .original-source summary { cursor:pointer; min-height:44px; font-weight:900; color:var(--accent); }
+.engine-panel, .book-move-comparison-panel, .try-self-panel, .solution-panel, .original-source { border:1px solid var(--line); border-radius:14px; background:#fffaf1; margin:.65rem 0; padding:0 .75rem; }
+.engine-panel summary, .book-move-comparison-panel summary, .try-self-panel summary, .solution-panel summary, .original-source summary { cursor:pointer; min-height:44px; font-weight:900; color:var(--accent); }
 .engine-panel-body { padding:0 0 .75rem; }
 .engine-kpis { display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:.5rem; }
 .engine-kpis span { border:1px solid #ead8bf; border-radius:12px; background:#fffdf8; padding:.55rem .6rem; overflow-wrap:anywhere; }
@@ -6293,7 +6372,11 @@ def render_study_html(
 ) -> Path:
     out = Path(out_dir)
     engine_by_id = _engine_analysis_by_diagram_id(out)
-    position_list = [_attach_engine_analysis_to_record(dict(item), engine_by_id) for item in positions.get("positions") or []]
+    comparison_by_id = _book_move_comparison_by_diagram_id(out)
+    position_list = [
+        _attach_book_move_comparison_to_record(_attach_engine_analysis_to_record(dict(item), engine_by_id), comparison_by_id)
+        for item in positions.get("positions") or []
+    ]
     positions = {**positions, "positions": position_list}
     artifact_manifest = _build_artifact_manifest(
         artifact_type=FINAL_READER_ARTIFACT_TYPE,
@@ -6341,8 +6424,8 @@ def render_study_html(
     pre {{ white-space:pre-wrap; background:#f6eddd; padding:.75rem; border-radius:12px; }}
     button {{ border:1px solid var(--line); border-radius:999px; background:#fff8ed; padding:.42rem .75rem; font-weight:800; cursor:pointer; }}
     button:focus-visible, summary:focus-visible, a:focus-visible, input:focus-visible {{ outline:3px solid #b96920; outline-offset:3px; }}
-    .engine-panel, .try-self-panel, .solution-panel, .original-source {{ border:1px solid var(--line); border-radius:14px; background:#fffaf2; margin:.65rem 0; padding:0 .75rem; }}
-    .engine-panel summary, .try-self-panel summary, .solution-panel summary, .original-source summary {{ cursor:pointer; min-height:2.75rem; font-weight:900; color:var(--accent); }}
+    .engine-panel, .book-move-comparison-panel, .try-self-panel, .solution-panel, .original-source {{ border:1px solid var(--line); border-radius:14px; background:#fffaf2; margin:.65rem 0; padding:0 .75rem; }}
+    .engine-panel summary, .book-move-comparison-panel summary, .try-self-panel summary, .solution-panel summary, .original-source summary {{ cursor:pointer; min-height:2.75rem; font-weight:900; color:var(--accent); }}
     .engine-panel-body {{ padding:0 0 .75rem; }}
     .engine-kpis {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:.5rem; }}
     .engine-kpis span {{ border:1px solid #e5d5bd; border-radius:12px; background:#fffdf8; padding:.55rem .6rem; overflow-wrap:anywhere; }}
@@ -6638,8 +6721,8 @@ def _study_html_document(*, title: str, body: str, qa_report: dict[str, Any]) ->
     pre {{ white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; max-width:100%; background:#f5ead8; border-radius:12px; padding:.75rem; border:1px solid #e5d5bd; }}
     summary {{ cursor:pointer; font-weight:800; min-height:2.75rem; display:flex; align-items:center; }}
     summary:focus-visible, a:focus-visible, button:focus-visible {{ outline:3px solid #b96920; outline-offset:3px; }}
-    .engine-panel, .try-self-panel, .solution-panel, .original-source {{ border:1px solid var(--line); border-radius:14px; background:#fffaf2; margin:.65rem 0; padding:0 .75rem; }}
-    .engine-panel summary, .try-self-panel summary, .solution-panel summary, .original-source summary {{ color:var(--accent); font-weight:900; }}
+    .engine-panel, .book-move-comparison-panel, .try-self-panel, .solution-panel, .original-source {{ border:1px solid var(--line); border-radius:14px; background:#fffaf2; margin:.65rem 0; padding:0 .75rem; }}
+    .engine-panel summary, .book-move-comparison-panel summary, .try-self-panel summary, .solution-panel summary, .original-source summary {{ color:var(--accent); font-weight:900; }}
     .engine-panel-body {{ padding:0 0 .75rem; }}
     .engine-kpis {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:.5rem; }}
     .engine-kpis span {{ border:1px solid #e5d5bd; border-radius:12px; background:#fffdf8; padding:.55rem .6rem; overflow-wrap:anywhere; }}
@@ -6797,6 +6880,7 @@ def _study_position_article(item: dict[str, Any]) -> str:
     )
     rendered_block = rendered_html if rendered_html else ""
     engine_html = _engine_analysis_panel_html(item.get("engine_analysis"), mode="study")
+    comparison_html = _book_move_comparison_panel_html(item.get("book_move_comparison"), mode="study")
     solution_html = f"""<details class="solution-panel">
         <summary>Pokaż rozwiązanie książki</summary>
         {pgn_html}
@@ -6818,6 +6902,7 @@ def _study_position_article(item: dict[str, Any]) -> str:
           <p>Zatrzymaj się przy diagramie i wybierz własny kandydacki ruch przed odkryciem analizy.</p>
         </details>
         {engine_html}
+        {comparison_html}
         {solution_html}
       </div>
       {fen_html}
@@ -6870,6 +6955,7 @@ def _position_card_html(item: dict[str, Any]) -> str:
         else "<p>PGN: needs review or missing.</p>"
     )
     engine_html = _engine_analysis_panel_html(item.get("engine_analysis"), mode="audit", open_by_default=False)
+    comparison_html = _book_move_comparison_panel_html(item.get("book_move_comparison"), mode="audit", open_by_default=False)
     return f"""<article class="card" data-position-status="{html.escape(status, quote=True)}"{marker_attr} data-has-board-crop="{str(has_board_crop).lower()}" data-has-side-marker-crop="{str(has_side_marker_crop).lower()}">
   <div class="diagram">{crop_html}{marker_html}{overlay_html}<hr>{rendered_html}</div>
   <div>
@@ -6881,6 +6967,7 @@ def _position_card_html(item: dict[str, Any]) -> str:
     {fen_html}
     {pgn_html}
     {engine_html}
+    {comparison_html}
     <div class="debug"><h3>Marker</h3><pre>{html.escape(json.dumps({'status': item.get('side_marker_status'), 'symbol': item.get('side_marker_symbol'), 'bbox': item.get('side_marker_bbox'), 'trace': item.get('side_marker_assignment_trace')}, ensure_ascii=False, indent=2))}</pre><h3>Warnings</h3><pre>{html.escape(json.dumps(item.get("warnings", []), ensure_ascii=False, indent=2))}</pre></div>
   </div>
 </article>"""

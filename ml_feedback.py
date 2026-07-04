@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
@@ -16,6 +17,18 @@ FEEDBACK_STATUSES = ("accepted", "needs_review", "rejected")
 QUALITY_LABELS = ("unknown", "premium", "good", "usable", "poor", "blocked")
 TRAINING_QUALITY_LABELS = ("good", "usable", "poor", "blocked")
 QUALITY_FINAL_LABELS = ("premium", "usable", "poor", "blocked")
+LAYOUT_VIEW_MODES = ("reader", "study", "audit")
+LAYOUT_BLOCK_TYPES = ("prose", "example", "exercise", "solution", "audit")
+LAYOUT_FEEDBACK_LABELS = ("good", "partial", "bad")
+LAYOUT_SCREEN_WIDTH_BUCKETS = ("mobile", "tablet", "desktop", "wide", "unknown")
+LAYOUT_ISSUE_TAGS = (
+    "too_much_diagnostics",
+    "missing_original",
+    "diagram_too_small",
+    "text_too_wide",
+    "exercise_cards_unclear",
+    "solutions_mixed_with_lesson",
+)
 QUALITY_LABEL_ALIASES = {
     "premium": "premium",
     "good": "premium",
@@ -100,6 +113,7 @@ def append_user_feedback(
         "reviewer": str(feedback.get("reviewer", "") or "").strip(),
         "include_in_training": include_in_training,
     }
+    layout_feedback = _clean_layout_feedback(feedback, job=job)
     dataset_reason = _dataset_reason(
         cleaned_feedback["route_label"],
         _mapping(route_payload.get("features")),
@@ -135,24 +149,58 @@ def append_user_feedback(
             "quality_selection": _quality_selection_summary(_mapping(metadata.get("quality_selection"))),
             "ai_quality_verification": _mapping(metadata.get("ai_quality_verification")),
         },
+        "layout_feedback": layout_feedback,
         "dataset": {
             "include_in_route_training": include_in_training and dataset_reason == "ready",
             "reason": dataset_reason,
         },
     }
     try:
-        from learning_ledger import record_user_feedback_added
+        from learning_ledger import (
+            record_layout_feedback_added,
+            record_layout_interaction_recorded,
+            record_user_feedback_added,
+        )
 
         ledger_record = record_user_feedback_added(
             feedback_record=record,
             job={**dict(job), "job_id": job_id},
             repo_root=ledger_repo_root,
         )
+        layout_events: list[dict[str, str]] = []
+        if layout_feedback:
+            if layout_feedback.get("interaction_events"):
+                interaction_record = record_layout_interaction_recorded(
+                    feedback_record=record,
+                    layout_feedback=layout_feedback,
+                    job={**dict(job), "job_id": job_id},
+                    repo_root=ledger_repo_root,
+                )
+                layout_events.append(
+                    {
+                        "event_type": "layout_interaction_recorded",
+                        "event_id": str(interaction_record.get("event_id", "") or ""),
+                    }
+                )
+            if layout_feedback.get("feedback_label") or layout_feedback.get("issue_tags"):
+                feedback_record = record_layout_feedback_added(
+                    feedback_record=record,
+                    layout_feedback=layout_feedback,
+                    job={**dict(job), "job_id": job_id},
+                    repo_root=ledger_repo_root,
+                )
+                layout_events.append(
+                    {
+                        "event_type": "layout_feedback_added",
+                        "event_id": str(feedback_record.get("event_id", "") or ""),
+                    }
+                )
         record["learning_ledger"] = {
             "status": "recorded",
             "event_id": str(ledger_record.get("event_id", "") or ""),
             "events_path": str(ledger_record.get("events_path", "") or ""),
             "index_path": str(ledger_record.get("index_path", "") or ""),
+            "layout_events": layout_events,
         }
     except Exception as error:
         record["learning_ledger"] = {
@@ -449,6 +497,7 @@ def feedback_public_record(record: Mapping[str, Any]) -> dict[str, Any]:
     feedback = _mapping(record.get("feedback"))
     dataset = _mapping(record.get("dataset"))
     ledger = _mapping(record.get("learning_ledger"))
+    layout_feedback = _mapping(record.get("layout_feedback") or feedback.get("layout_feedback"))
     return {
         "record_id": str(record.get("record_id", "") or ""),
         "created_at": str(record.get("created_at", "") or ""),
@@ -463,11 +512,13 @@ def feedback_public_record(record: Mapping[str, Any]) -> dict[str, Any]:
         "include_in_training_requested": bool(feedback.get("include_in_training")),
         "include_in_training": bool(dataset.get("include_in_route_training")),
         "dataset_reason": str(dataset.get("reason", "") or ""),
+        "layout_feedback": dict(layout_feedback),
         "learning_ledger": {
             "status": str(ledger.get("status", "") or ""),
             "event_id": str(ledger.get("event_id", "") or ""),
             "events_path": str(ledger.get("events_path", "") or ""),
             "index_path": str(ledger.get("index_path", "") or ""),
+            "layout_events": list(ledger.get("layout_events") or []),
         },
     }
 
@@ -500,7 +551,50 @@ def summarize_feedback_records(
         "by_quality_label": by_quality_label,
         "by_route_label": by_route_label,
         "by_issue_tag": by_issue_tag,
+        "layout_feedback": summarize_layout_feedback_metrics(record_list),
         "skipped": list(skipped or []),
+        "online_learning": False,
+    }
+
+
+def summarize_layout_feedback_metrics(records: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    layout_rows: list[Mapping[str, Any]] = []
+    view_mode_count: Counter[str] = Counter()
+    issue_tag_counts: Counter[str] = Counter()
+    score_by_mode: dict[str, list[float]] = {mode: [] for mode in LAYOUT_VIEW_MODES}
+    original_preview_opened = 0
+    interaction_event_count = 0
+    score_values = {"good": 1.0, "partial": 0.5, "bad": 0.0}
+    for record in records:
+        feedback = _mapping(record.get("feedback"))
+        layout = _mapping(record.get("layout_feedback") or feedback.get("layout_feedback"))
+        if not layout:
+            continue
+        layout_rows.append(layout)
+        view_mode = str(layout.get("view_mode") or "")
+        if view_mode:
+            view_mode_count[view_mode] += 1
+        if bool(layout.get("original_preview_opened")):
+            original_preview_opened += 1
+        for tag in layout.get("issue_tags") or []:
+            issue_tag_counts[str(tag)] += 1
+        interaction_event_count += len(list(layout.get("interaction_events") or []))
+        feedback_label = str(layout.get("feedback_label") or "")
+        if view_mode in score_by_mode and feedback_label in score_values:
+            score_by_mode[view_mode].append(score_values[feedback_label])
+    total = len(layout_rows)
+    scores = {
+        f"{mode}_mode_feedback_score": round(sum(values) / len(values), 4) if values else None
+        for mode, values in score_by_mode.items()
+    }
+    return {
+        "layout_feedback_record_count": total,
+        "preferred_view_mode_count": dict(view_mode_count),
+        "original_preview_opened_count": original_preview_opened,
+        "original_preview_usage_rate": round(original_preview_opened / total, 6) if total else 0.0,
+        "layout_issue_tag_counts": dict(issue_tag_counts),
+        "layout_interaction_event_count": interaction_event_count,
+        **scores,
         "online_learning": False,
     }
 
@@ -1088,6 +1182,92 @@ def _clean_issue_tags(values: Iterable[str]) -> list[str]:
             if normalized and normalized not in tags:
                 tags.append(normalized)
     return tags
+
+
+def _clean_layout_feedback(feedback: Mapping[str, Any], *, job: Mapping[str, Any]) -> dict[str, Any]:
+    raw = _mapping(feedback.get("layout_feedback"))
+    has_direct_layout_keys = any(
+        key in feedback
+        for key in (
+            "view_mode",
+            "block_type",
+            "screen_width_bucket",
+            "original_preview_opened",
+            "layout_feedback_label",
+            "layout_issue_tags",
+        )
+    )
+    if not raw and not has_direct_layout_keys:
+        return {}
+    metadata = _mapping(job.get("metadata"))
+    artifact_type = _clean_short_token(
+        raw.get("artifact_type")
+        or feedback.get("artifact_type")
+        or job.get("artifact_type")
+        or metadata.get("artifact_type")
+        or ""
+    )
+    view_mode = _clean_choice(raw.get("view_mode") or feedback.get("view_mode"), LAYOUT_VIEW_MODES, default="")
+    feedback_label = _clean_choice(
+        raw.get("feedback_label") or feedback.get("layout_feedback_label"),
+        LAYOUT_FEEDBACK_LABELS,
+        default="",
+    )
+    block_type = _clean_choice(raw.get("block_type") or feedback.get("block_type"), LAYOUT_BLOCK_TYPES, default="prose")
+    screen_width_bucket = _clean_choice(
+        raw.get("screen_width_bucket") or feedback.get("screen_width_bucket"),
+        LAYOUT_SCREEN_WIDTH_BUCKETS,
+        default="unknown",
+    )
+    issue_tags = _clean_layout_issue_tags(raw.get("issue_tags") or feedback.get("layout_issue_tags") or [])
+    original_preview = _bool_value(raw.get("original_preview_opened") or feedback.get("original_preview_opened"))
+    interaction_events = _layout_interaction_events(
+        view_mode=view_mode,
+        original_preview_opened=original_preview,
+        feedback_label=feedback_label,
+        issue_tags=issue_tags,
+    )
+    return {
+        "conversion_id": str(job.get("job_id") or ""),
+        "artifact_type": artifact_type,
+        "view_mode": view_mode,
+        "chapter_id": _clean_short_token(raw.get("chapter_id") or feedback.get("chapter_id") or ""),
+        "page": _clean_short_token(raw.get("page") or feedback.get("page") or ""),
+        "block_type": block_type,
+        "screen_width_bucket": screen_width_bucket,
+        "original_preview_opened": original_preview,
+        "feedback_label": feedback_label,
+        "issue_tags": issue_tags,
+        "interaction_events": interaction_events,
+        "created_at": _clean_timestamp(str(raw.get("created_at") or feedback.get("layout_created_at") or "") or None),
+    }
+
+
+def _layout_interaction_events(
+    *,
+    view_mode: str,
+    original_preview_opened: bool,
+    feedback_label: str,
+    issue_tags: list[str],
+) -> list[str]:
+    events: list[str] = []
+    if view_mode:
+        events.append("layout_view_selected")
+        events.append(f"{view_mode}_mode_selected")
+    if original_preview_opened:
+        events.append("original_preview_opened")
+    if feedback_label or issue_tags:
+        events.append("layout_feedback_submitted")
+    return events
+
+
+def _clean_layout_issue_tags(values: Iterable[str]) -> list[str]:
+    tags = _clean_issue_tags(values)
+    return [tag for tag in tags if tag in LAYOUT_ISSUE_TAGS]
+
+
+def _clean_short_token(value: Any, *, limit: int = 96) -> str:
+    return str(value or "").strip()[:limit]
 
 
 def _increment_count(target: dict[str, int], key: str) -> None:

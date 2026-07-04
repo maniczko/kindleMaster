@@ -153,6 +153,7 @@ interface ConversionFeedbackRecord {
   include_in_training_requested: boolean;
   include_in_training: boolean;
   dataset_reason: string;
+  layout_feedback?: Record<string, unknown>;
   learning_ledger?: Record<string, unknown>;
 }
 
@@ -1953,6 +1954,7 @@ function FileDetailsWorkspace({
   const [retryBusy, setRetryBusy] = React.useState(false);
   const [retryStatus, setRetryStatus] = React.useState("");
   const [retryError, setRetryError] = React.useState("");
+  const [originalPreviewOpened, setOriginalPreviewOpened] = React.useState(false);
   const configuredRecipient = defaultKindleRecipient.trim();
   const autoRepair = normalizeAutoRepair(job?.auto_repair ?? job?.quality_state?.auto_repair);
   const chessDownloads = chessDownloadFilesState(job);
@@ -1968,6 +1970,7 @@ function FileDetailsWorkspace({
   React.useEffect(() => {
     setDeliveryDiagnostics(null);
     setDeliveryArtifact("epub");
+    setOriginalPreviewOpened(false);
   }, [job?.job_id]);
   const recipientConfigured = Boolean(configuredRecipient);
   const deliveryBlockers = [
@@ -2173,7 +2176,13 @@ function FileDetailsWorkspace({
             />
             <div className="km-pdf-tools" aria-label="Narzędzia PDF">
               {sourcePreviewUrl ? (
-                <a className="km-button km-button-outline km-button-sm" href={sourcePreviewUrl} target="_blank" rel="noreferrer">
+                <a
+                  className="km-button km-button-outline km-button-sm"
+                  href={sourcePreviewUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={() => setOriginalPreviewOpened(true)}
+                >
                   <BookOpen data-icon="inline-start" aria-hidden="true" />
                   Podgląd PDF
                 </a>
@@ -2331,7 +2340,7 @@ function FileDetailsWorkspace({
           </CardContent>
         </Card>
 
-        <ConversionFeedbackPanel job={job} apiFetch={apiFetch} />
+        <ConversionFeedbackPanel job={job} apiFetch={apiFetch} originalPreviewOpened={originalPreviewOpened} />
 
         <Card>
           <CardHeader>
@@ -2455,12 +2464,35 @@ const FEEDBACK_ISSUE_TAGS = [
   { value: "original_preview", label: "Podgląd oryginału" },
 ];
 
+const LAYOUT_VIEW_MODES = [
+  { value: "reader", label: "Czytanie" },
+  { value: "study", label: "Nauka" },
+  { value: "audit", label: "Audyt" },
+];
+
+const LAYOUT_FEEDBACK_LABELS = [
+  { value: "good", label: "Tak" },
+  { value: "partial", label: "Częściowo" },
+  { value: "bad", label: "Nie" },
+];
+
+const LAYOUT_ISSUE_TAGS = [
+  { value: "too_much_diagnostics", label: "za dużo diagnostyki" },
+  { value: "missing_original", label: "brak oryginału" },
+  { value: "diagram_too_small", label: "diagram zbyt mały" },
+  { value: "text_too_wide", label: "tekst za szeroki" },
+  { value: "exercise_cards_unclear", label: "ćwiczenia nieczytelne" },
+  { value: "solutions_mixed_with_lesson", label: "rozwiązania mieszają się z lekcją" },
+];
+
 function ConversionFeedbackPanel({
   job,
   apiFetch,
+  originalPreviewOpened = false,
 }: {
   job: ConversionJobPayload;
   apiFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+  originalPreviewOpened?: boolean;
 }) {
   const [records, setRecords] = React.useState<ConversionFeedbackRecord[]>([]);
   const [status, setStatus] = React.useState("needs_review");
@@ -2470,6 +2502,10 @@ function ConversionFeedbackPanel({
   const [reviewer, setReviewer] = React.useState("");
   const [notes, setNotes] = React.useState("");
   const [includeInTraining, setIncludeInTraining] = React.useState(false);
+  const [layoutViewMode, setLayoutViewMode] = React.useState("reader");
+  const [layoutFeedbackLabel, setLayoutFeedbackLabel] = React.useState("");
+  const [layoutIssueTags, setLayoutIssueTags] = React.useState<string[]>([]);
+  const [layoutOriginalPreviewOpened, setLayoutOriginalPreviewOpened] = React.useState(originalPreviewOpened);
   const [busy, setBusy] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
   const [message, setMessage] = React.useState("");
@@ -2505,8 +2541,16 @@ function ConversionFeedbackPanel({
     };
   }, [apiFetch, job.job_id]);
 
+  React.useEffect(() => {
+    if (originalPreviewOpened) setLayoutOriginalPreviewOpened(true);
+  }, [originalPreviewOpened]);
+
   function toggleIssueTag(tag: string) {
     setIssueTags((current) => (current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag]));
+  }
+
+  function toggleLayoutIssueTag(tag: string) {
+    setLayoutIssueTags((current) => (current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag]));
   }
 
   async function submitFeedback(event: React.FormEvent<HTMLFormElement>) {
@@ -2527,6 +2571,15 @@ function ConversionFeedbackPanel({
           notes,
           reviewer,
           include_in_training: includeInTraining,
+          layout_feedback: {
+            artifact_type: String(job.artifact_type || (chessDownloadFilesState(job).reader.present ? FINAL_CHESS_READER_ARTIFACT_TYPE : "conversion_reader")),
+            view_mode: layoutViewMode,
+            block_type: layoutViewMode === "audit" ? "audit" : layoutViewMode === "study" ? "exercise" : "prose",
+            screen_width_bucket: screenWidthBucket(),
+            original_preview_opened: layoutOriginalPreviewOpened,
+            feedback_label: layoutFeedbackLabel,
+            issue_tags: layoutIssueTags,
+          },
         }),
       });
       const payload = (await response.json().catch(() => ({}))) as ConversionFeedbackResponse;
@@ -2568,6 +2621,56 @@ function ConversionFeedbackPanel({
               ostatni status
             </span>
           </div>
+          <section className="km-layout-feedback-group" aria-label="Feedback layoutu readera">
+            <div>
+              <strong>Układ readera</strong>
+              <p>Czytanie, Nauka i Audyt są sygnałami produktu; nie trenują modelu bez analizy batch.</p>
+            </div>
+            <div className="km-feedback-fieldset" role="group" aria-label="Wybrany tryb readera">
+              {LAYOUT_VIEW_MODES.map((option) => (
+                <button
+                  className={`km-feedback-chip${layoutViewMode === option.value ? " is-active" : ""}`}
+                  key={option.value}
+                  type="button"
+                  onClick={() => setLayoutViewMode(option.value)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            <div className="km-feedback-fieldset" role="group" aria-label="Czy ten układ jest wygodny">
+              {LAYOUT_FEEDBACK_LABELS.map((option) => (
+                <button
+                  className={`km-feedback-chip${layoutFeedbackLabel === option.value ? " is-active" : ""}`}
+                  key={option.value}
+                  type="button"
+                  onClick={() => setLayoutFeedbackLabel((current) => (current === option.value ? "" : option.value))}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            <div className="km-feedback-fieldset" role="group" aria-label="Co przeszkadza w układzie">
+              {LAYOUT_ISSUE_TAGS.map((tag) => (
+                <button
+                  className={`km-feedback-chip${layoutIssueTags.includes(tag.value) ? " is-active" : ""}`}
+                  key={tag.value}
+                  type="button"
+                  onClick={() => toggleLayoutIssueTag(tag.value)}
+                >
+                  {tag.label}
+                </button>
+              ))}
+            </div>
+            <label className="km-feedback-training-toggle">
+              <input
+                checked={layoutOriginalPreviewOpened}
+                onChange={(event) => setLayoutOriginalPreviewOpened(event.target.checked)}
+                type="checkbox"
+              />
+              <span>Podgląd oryginału był otwarty</span>
+            </label>
+          </section>
           <div className="km-feedback-fieldset" role="group" aria-label="Status feedbacku">
             {FEEDBACK_STATUSES.map((option) => (
               <button
@@ -2642,6 +2745,7 @@ function ConversionFeedbackPanel({
               <span>{latest.status}</span>
               <span>{latest.quality_label}</span>
               <span>{latest.route_label || "bez trasy"}</span>
+              <span>{layoutFeedbackSummary(latest.layout_feedback)}</span>
               <span>{latest.include_in_training ? "etykieta treningowa" : "sygnał produktowy"}</span>
             </div>
           ) : null}
@@ -3324,6 +3428,23 @@ function syncHash(view: ViewId) {
   if (typeof window !== "undefined") {
     window.history.replaceState(null, "", `#${view}`);
   }
+}
+
+function screenWidthBucket() {
+  if (typeof window === "undefined") return "unknown";
+  const width = window.innerWidth || 0;
+  if (width <= 640) return "mobile";
+  if (width <= 1024) return "tablet";
+  if (width <= 1440) return "desktop";
+  return "wide";
+}
+
+function layoutFeedbackSummary(value: unknown) {
+  if (!value || typeof value !== "object") return "layout: brak";
+  const record = value as Record<string, unknown>;
+  const mode = String(record.view_mode || "brak");
+  const label = String(record.feedback_label || "bez oceny");
+  return `layout: ${mode}, ${label}`;
 }
 
 function importPromptStorageKey(userId: string) {

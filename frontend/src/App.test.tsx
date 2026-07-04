@@ -769,6 +769,7 @@ describe("Premium React shell", () => {
 
   it("saves post-conversion feedback from file details", async () => {
     const user = userEvent.setup();
+    const postedFeedback: Array<Record<string, any>> = [];
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.startsWith("/convert/jobs")) {
@@ -782,6 +783,7 @@ describe("Premium React shell", () => {
                 status: "ready",
                 elapsed_seconds: 7,
                 output_size_bytes: 1024,
+                source_preview_url: "/convert/preview/job-feedback-ui/input",
                 quality_state: { release_verdict: "ready_with_review", premium_ready: false },
               },
             ],
@@ -789,6 +791,7 @@ describe("Premium React shell", () => {
         };
       }
       if (url === "/convert/feedback/job-feedback-ui" && init?.method === "POST") {
+        postedFeedback.push(JSON.parse(String(init.body || "{}")));
         return {
           ok: true,
           json: async () => ({
@@ -806,6 +809,13 @@ describe("Premium React shell", () => {
               include_in_training_requested: true,
               include_in_training: true,
               dataset_reason: "ready",
+              layout_feedback: {
+                artifact_type: "conversion_reader",
+                view_mode: "study",
+                feedback_label: "partial",
+                issue_tags: ["diagram_too_small"],
+                original_preview_opened: true,
+              },
               learning_ledger: { status: "recorded" },
             },
           }),
@@ -831,6 +841,10 @@ describe("Premium React shell", () => {
     await user.click(await screen.findByRole("button", { name: "feedback.pdf" }));
 
     expect(await screen.findByRole("heading", { name: "Feedback po konwersji" })).toBeInTheDocument();
+    await user.click(screen.getByRole("link", { name: "Podgląd PDF" }));
+    await user.click(screen.getByRole("button", { name: "Nauka" }));
+    await user.click(screen.getByRole("button", { name: "Częściowo" }));
+    await user.click(screen.getByRole("button", { name: "diagram zbyt mały" }));
     await user.click(screen.getByRole("button", { name: "Akceptuję" }));
     await user.selectOptions(screen.getByLabelText("Jakość wyniku"), "good");
     await user.selectOptions(screen.getByLabelText("Poprawna trasa konwersji"), "book_reflow");
@@ -849,8 +863,19 @@ describe("Premium React shell", () => {
         }),
       );
     });
+    expect(postedFeedback[0]?.layout_feedback).toEqual(
+      expect.objectContaining({
+        artifact_type: "conversion_reader",
+        view_mode: "study",
+        block_type: "exercise",
+        original_preview_opened: true,
+        feedback_label: "partial",
+        issue_tags: ["diagram_too_small"],
+      }),
+    );
     expect(await screen.findByText("Feedback zapisany lokalnie.")).toBeInTheDocument();
     expect(screen.getByText("etykieta treningowa")).toBeInTheDocument();
+    expect(screen.getByText("layout: study, partial")).toBeInTheDocument();
   });
 
   it("lets file details send PDF to Kindle and hides markdown report artifact", async () => {

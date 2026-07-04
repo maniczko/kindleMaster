@@ -90,6 +90,7 @@ QUICK_TESTS = [
     "test_ml_route_model.py",
     "test_ml_datasets.py",
     "test_learning_ledger.py",
+    "test_layout_feedback.py",
     "test_ml_feedback.py",
     "test_ml_training_reporting.py",
     "test_ml_retrain_all.py",

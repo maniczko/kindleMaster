@@ -2296,6 +2296,28 @@ a {
   gap: 0.45rem;
 }
 
+.km-layout-feedback-group {
+  display: grid;
+  gap: 0.65rem;
+  border: 1px solid var(--km-border);
+  border-radius: var(--km-radius);
+  padding: 0.8rem;
+  background: var(--km-panel-muted);
+}
+
+.km-layout-feedback-group strong {
+  display: block;
+  color: var(--km-text);
+  font-size: 0.95rem;
+}
+
+.km-layout-feedback-group p {
+  margin: 0.15rem 0 0;
+  color: var(--km-muted);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
 .km-feedback-chip {
   min-height: 2.2rem;
   border: 1px solid var(--km-border);

@@ -105,6 +105,23 @@ def build_ml_datasets(
         repo_root=root,
     ) if feedback_log_path_list else ([], [])
     layout_feedback_metrics = summarize_layout_feedback_metrics(feedback_records)
+    try:
+        from learning_ledger import DEFAULT_EVENTS_PATH, summarize_user_behavior_signals
+
+        weak_signal_metrics = summarize_user_behavior_signals(events_path=root / DEFAULT_EVENTS_PATH)
+    except Exception as error:
+        weak_signal_metrics = {
+            "schema": "kindlemaster.user_behavior_signals.summary.v1",
+            "event_count": 0,
+            "error": str(error),
+            "event_type_counts": {},
+            "artifact_type_counts": {},
+            "per_job": {},
+            "per_artifact_type": {},
+            "training_label_true_count": 0,
+            "training_eligible_true_count": 0,
+            "online_learning": False,
+        }
     feedback_route_examples, feedback_route_skipped = route_examples_from_feedback(feedback_records)
     magazine_quality_examples, magazine_quality_skipped = magazine_quality_examples_from_feedback(feedback_records)
     quality_feedback_examples, quality_feedback_skipped = quality_feedback_examples_from_feedback(feedback_records)
@@ -168,6 +185,7 @@ def build_ml_datasets(
         "quality_coverage_status": quality_coverage["status"],
         "quality_coverage": quality_coverage,
         "layout_feedback_metrics": layout_feedback_metrics,
+        "weak_signal_metrics": weak_signal_metrics,
         "chess_learning_label_count": int((chess_learning_benchmark.get("summary") or {}).get("usable_label_count") or 0),
         "chess_learning_benchmark_status": str(chess_learning_benchmark.get("status") or ""),
         "chess_learning_benchmark": chess_learning_benchmark,
@@ -432,6 +450,8 @@ def _build_training_readiness_dashboard(
     chess_learning_summary = _mapping(chess_learning.get("summary"))
     layout_feedback_metrics = _mapping(completeness.get("layout_feedback_metrics"))
     layout_feedback_count = int(layout_feedback_metrics.get("layout_feedback_record_count", 0) or 0)
+    weak_signal_metrics = _mapping(completeness.get("weak_signal_metrics"))
+    weak_signal_count = int(weak_signal_metrics.get("event_count", 0) or 0)
     route_status = str(readiness.get("status") or "insufficient_data")
     route_promotion_allowed = bool(readiness.get("promotion_allowed"))
     components = {
@@ -485,6 +505,23 @@ def _build_training_readiness_dashboard(
             "audit_mode_feedback_score": layout_feedback_metrics.get("audit_mode_feedback_score"),
             "detail": _layout_feedback_detail(layout_feedback_metrics),
         },
+        "weak_behavior_signals": {
+            "status": "collecting" if weak_signal_count else "data_gap",
+            "component": "weak_behavior_signals",
+            "example_count": weak_signal_count,
+            "accepted_example_count": 0,
+            "minimum_accepted_count": 0,
+            "gap_to_minimum": 0,
+            "promotion_allowed": False,
+            "event_type_counts": dict(_mapping(weak_signal_metrics.get("event_type_counts"))),
+            "artifact_type_counts": dict(_mapping(weak_signal_metrics.get("artifact_type_counts"))),
+            "signal_strength_counts": dict(_mapping(weak_signal_metrics.get("signal_strength_counts"))),
+            "per_job": dict(_mapping(weak_signal_metrics.get("per_job"))),
+            "per_artifact_type": dict(_mapping(weak_signal_metrics.get("per_artifact_type"))),
+            "training_label_true_count": int(weak_signal_metrics.get("training_label_true_count", 0) or 0),
+            "training_eligible_true_count": int(weak_signal_metrics.get("training_eligible_true_count", 0) or 0),
+            "detail": _weak_signal_detail(weak_signal_metrics),
+        },
     }
     training_readiness_status = route_status
     if route_status == "ready" and int(collision_report.get("collision_count", 0) or 0) > 0:
@@ -503,6 +540,7 @@ def _build_training_readiness_dashboard(
         "heading_reference_count": len(heading_reference_examples),
         "feature_collision_count": int(collision_report.get("collision_count", 0) or 0),
         "layout_feedback_record_count": layout_feedback_count,
+        "weak_signal_event_count": weak_signal_count,
     }
     return {
         "schema": "kindlemaster.ml.dataset.readiness.v1",
@@ -579,6 +617,26 @@ def _layout_feedback_detail(metrics: Mapping[str, Any]) -> str:
     )
 
 
+def _weak_signal_detail(metrics: Mapping[str, Any]) -> str:
+    event_types = ", ".join(
+        f"{key}={value}"
+        for key, value in sorted(_mapping(metrics.get("event_type_counts")).items())
+    ) or "event_types=0"
+    artifacts = ", ".join(
+        f"{key}={value}"
+        for key, value in sorted(_mapping(metrics.get("artifact_type_counts")).items())
+    ) or "artifact_types=0"
+    strengths = ", ".join(
+        f"{key}={value}"
+        for key, value in sorted(_mapping(metrics.get("signal_strength_counts")).items())
+    ) or "strengths=0"
+    return (
+        f"{event_types}; {artifacts}; {strengths}; "
+        f"training_label_true={int(metrics.get('training_label_true_count', 0) or 0)}; "
+        f"training_eligible_true={int(metrics.get('training_eligible_true_count', 0) or 0)}"
+    )
+
+
 def _readiness_next_actions(summary: Mapping[str, Any], components: Mapping[str, Any]) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     if str(summary.get("training_readiness_status") or "") != "ready":
@@ -639,6 +697,7 @@ def _build_dataset_card(
             "layout_feedback_records": int(
                 _mapping(completeness.get("layout_feedback_metrics")).get("layout_feedback_record_count", 0) or 0
             ),
+            "weak_signal_events": int(_mapping(completeness.get("weak_signal_metrics")).get("event_count", 0) or 0),
         },
         "route_readiness": dict(readiness),
         "training_readiness_status": str(_mapping(dashboard.get("summary")).get("training_readiness_status") or ""),
@@ -655,6 +714,7 @@ def _build_dataset_card(
             "quality_example_count": int(completeness.get("quality_feedback_example_count", 0) or 0),
             "skipped_count": len(list(completeness.get("feedback_skipped") or [])),
             "layout_feedback": dict(_mapping(completeness.get("layout_feedback_metrics"))),
+            "weak_behavior_signals": dict(_mapping(completeness.get("weak_signal_metrics"))),
         },
     }
 
@@ -677,6 +737,7 @@ def _dataset_card_markdown(card: Mapping[str, Any]) -> str:
         f"- Route examples: {counts.get('route_examples', 0)}",
         f"- Feedback records: {counts.get('feedback_records', 0)}",
         f"- Layout feedback records: {counts.get('layout_feedback_records', 0)}",
+        f"- Weak behavior signal events: {counts.get('weak_signal_events', 0)}",
         f"- Quality feedback examples: {counts.get('quality_feedback_examples', 0)}",
         f"- Magazine quality examples: {counts.get('magazine_quality_examples', 0)}",
         f"- Heading/reference examples: {counts.get('heading_reference_examples', 0)}",
@@ -715,6 +776,7 @@ def _readiness_dashboard_html(report: Mapping[str, Any]) -> str:
         ("Route examples", summary.get("route_example_count", 0)),
         ("Quality feedback", summary.get("quality_feedback_count", 0)),
         ("Layout feedback", summary.get("layout_feedback_record_count", 0)),
+        ("Weak signals", summary.get("weak_signal_event_count", 0)),
         ("Feature collisions", summary.get("feature_collision_count", 0)),
     ]
     card_html = "\n".join(

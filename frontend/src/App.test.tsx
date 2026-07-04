@@ -770,6 +770,7 @@ describe("Premium React shell", () => {
   it("saves post-conversion feedback from file details", async () => {
     const user = userEvent.setup();
     const postedFeedback: Array<Record<string, any>> = [];
+    const postedSignals: Array<Record<string, any>> = [];
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.startsWith("/convert/jobs")) {
@@ -817,6 +818,22 @@ describe("Premium React shell", () => {
                 original_preview_opened: true,
               },
               learning_ledger: { status: "recorded" },
+            },
+          }),
+        };
+      }
+      if (url === "/learning/behavior/job-feedback-ui" && init?.method === "POST") {
+        postedSignals.push(JSON.parse(String(init.body || "{}")));
+        return {
+          ok: true,
+          json: async () => ({
+            success: true,
+            behavior_signal: {
+              status: "recorded",
+              event_type: "reader_mode_changed",
+              signal_strength: "weak",
+              training_label: false,
+              training_eligible: false,
             },
           }),
         };
@@ -873,6 +890,15 @@ describe("Premium React shell", () => {
         issue_tags: ["diagram_too_small"],
       }),
     );
+    await waitFor(() => {
+      expect(postedSignals).toContainEqual(
+        expect.objectContaining({
+          event_type: "reader_mode_changed",
+          artifact_type: "conversion_reader",
+          view_mode: "study",
+        }),
+      );
+    });
     expect(await screen.findByText("Feedback zapisany lokalnie.")).toBeInTheDocument();
     expect(screen.getByText("etykieta treningowa")).toBeInTheDocument();
     expect(screen.getByText("layout: study, partial")).toBeInTheDocument();

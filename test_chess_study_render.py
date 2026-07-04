@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from chess_study_export import build_study_pgn, render_study_html, validate_study_export, ChessStudyConfig
-from chess_study_export import rebuild_chess_source_html_export
+from chess_study_export import _semantic_source_diagram_html, rebuild_chess_source_html_export
 
 
 class ChessStudyRenderTests(unittest.TestCase):
@@ -347,6 +347,37 @@ class ChessStudyRenderTests(unittest.TestCase):
                     ],
                 },
             )
+            _write_json(
+                out / "data" / "engine_hints.json",
+                {
+                    "schema": "kindlemaster.chess_engine.study_hints_data.v1",
+                    "summary": {"hint_count": 2, "available_count": 1, "unavailable_count": 1},
+                    "items": [
+                        {
+                            "diagram_id": "p001_d001",
+                            "page": 1,
+                            "hint_status": "available",
+                            "hint_level_1": "Look for a forcing move.",
+                            "hint_level_2": "Look for a forcing check.",
+                            "full_reveal_available": True,
+                            "source": "engine_rule_based_v1",
+                            "best_move_san": "Ke2",
+                            "best_move_uci": "e1e2",
+                            "score_cp": 34,
+                            "mate": None,
+                            "pv": [{"moves_san": ["Ke2", "Ke7"], "moves_uci": ["e1e2", "e8e7"]}],
+                            "engine_status": "ok",
+                        },
+                        {
+                            "diagram_id": "p001_d002",
+                            "hint_status": "unavailable",
+                            "unavailable_reason": "side_to_move_not_trusted",
+                            "source": "engine_rule_based_v1",
+                            "engine_status": "skipped",
+                        },
+                    ],
+                },
+            )
 
             render_study_html(
                 out,
@@ -364,6 +395,13 @@ class ChessStudyRenderTests(unittest.TestCase):
         self.assertIn("Spróbuj sam", kindle_html)
         self.assertIn("Pokaż rozwiązanie książki", kindle_html)
         self.assertIn("Podgląd oryginału", kindle_html)
+        self.assertIn("Engine hint", kindle_html)
+        self.assertIn('data-engine-hint-status="available"', kindle_html)
+        self.assertIn("Podpowiedz 1", kindle_html)
+        self.assertIn("Podpowiedz 2", kindle_html)
+        self.assertIn("Pokaz najlepszy ruch", kindle_html)
+        self.assertIn('data-full-reveal-available="true"', kindle_html)
+        self.assertNotIn('class="engine-hint-full-reveal" data-full-reveal-available="true" open', kindle_html)
         self.assertIn('data-engine-status="ok"', kindle_html)
         self.assertIn('data-engine-status="skipped"', kindle_html)
         self.assertIn('data-engine-status="engine_unavailable"', kindle_html)
@@ -378,9 +416,32 @@ class ChessStudyRenderTests(unittest.TestCase):
         self.assertIn('data-book-move-status="exact_match"', kindle_html)
         self.assertIn("Ruch z ksiazki", kindle_html)
         self.assertIn("Audyt ruchu ksiazki", index_html)
+        self.assertIn("&quot;source&quot;: &quot;engine_rule_based_v1&quot;", index_html)
         self.assertIn("&quot;engine_version&quot;: &quot;Fakefish 1.0&quot;", index_html)
         self.assertIn("&quot;cache_hit&quot;: true", index_html)
         self.assertIn("&quot;multipv&quot;: 1", index_html)
+
+    def test_reader_diagram_does_not_auto_show_engine_hints(self) -> None:
+        diagram_html = _semantic_source_diagram_html(
+            {
+                "id": "p001_d001",
+                "caption": "Diagram 1",
+                "validation_status": "accepted",
+                "fen": "4k3/8/8/8/8/8/4K3/R7 w - - 0 1",
+                "engine_hints": {
+                    "hint_status": "available",
+                    "hint_level_1": "Look for a forcing move.",
+                    "hint_level_2": "Look for a forcing check.",
+                    "full_reveal_available": True,
+                    "source": "engine_rule_based_v1",
+                    "best_move_san": "Ra8+",
+                },
+            }
+        )
+
+        self.assertNotIn("engine-hints-panel", diagram_html)
+        self.assertNotIn("Engine hint", diagram_html)
+        self.assertNotIn("Ra8+", diagram_html)
 
     def test_accepted_notation_with_unmapped_glyphs_fails_quality_gate(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

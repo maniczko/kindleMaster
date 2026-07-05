@@ -3917,6 +3917,11 @@ def _semantic_source_index_html(book: dict[str, Any]) -> str:
         if int(chapter.get("start_page") or 0)
     )
     flow_html = _semantic_source_book_flow_html(pages)
+    mode_switch = """<nav class="reader-mode-switch" aria-label="Reader view modes">
+      <a href="#book" class="active" data-reader-mode-option="reader">Reader</a>
+      <a href="#book" data-reader-mode-option="study">Study</a>
+      <a href="reports/conversion-audit.md" data-reader-mode-option="audit">Audit</a>
+    </nav>"""
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -3932,6 +3937,7 @@ def _semantic_source_index_html(book: dict[str, Any]) -> str:
     <h1>{html.escape(str(book.get('title') or 'Chess Study Reader'))}</h1>
     <p class="lede">Logical chess-study reader rebuilt from source order: prose, diagrams, FEN/PGN review, and notation stay together without reproducing the PDF page layout 1:1.</p>
     {_artifact_provenance_banner_html(artifact_manifest)}
+    {mode_switch}
     <section class="scorebar" aria-label="Conversion summary">
       {_score_tile('Pages', summary.get('html_pages'))}
       {_score_tile('Diagrams', summary.get('diagrams_total'))}
@@ -4520,9 +4526,10 @@ def _semantic_source_study_block_html(block: dict[str, Any]) -> str:
 
 
 def _semantic_source_text_html(element: dict[str, Any]) -> str:
-    text = html.escape(str(element.get("text") or ""))
-    if not text:
+    raw_text = str(element.get("text") or "")
+    if _is_reader_noise_text(raw_text):
         return ""
+    text = html.escape(raw_text)
     tag = "h3" if element.get("kind") == "heading" or element.get("text_kind") == "heading" else "p"
     return f'<{tag} class="reader-text" data-order="{int(element.get("reading_order") or 0)}">{text}</{tag}>'
 
@@ -4598,7 +4605,10 @@ def _semantic_source_element_html(element: dict[str, Any]) -> str:
         return _semantic_source_diagram_html(element)
     if kind == "pgn":
         return _semantic_source_pgn_html(element)
-    text = html.escape(str(element.get("text") or ""))
+    raw_text = str(element.get("text") or "")
+    if _is_reader_noise_text(raw_text):
+        return ""
+    text = html.escape(raw_text)
     tag = "h2" if element.get("kind") == "heading" or element.get("text_kind") == "heading" else "p"
     return f'<{tag} class="reader-text" data-order="{int(element.get("reading_order") or 0)}">{text}</{tag}>'
 
@@ -4645,6 +4655,25 @@ def _semantic_source_diagram_html(diagram: dict[str, Any]) -> str:
     engine_html = _engine_analysis_panel_html(diagram.get("engine_analysis"), mode="reader")
     hints_html = _engine_study_hints_panel_html(diagram.get("engine_hints"), mode="reader")
     comparison_html = _book_move_comparison_panel_html(diagram.get("book_move_comparison"), mode="reader")
+    side_to_move = str(diagram.get("side_to_move") or "").strip().lower()
+    side_label = {"w": "white", "white": "white", "b": "black", "black": "black"}.get(side_to_move, "")
+    review_reason = _friendly_reader_reason(str(diagram.get("review_reason") or "Awaiting deterministic FEN recognition."))
+    side_status_html = (
+        f'<p class="component-status ok">Side to move: <strong>{html.escape(side_label)}</strong></p>'
+        if side_label
+        else '<p class="component-status review">Side to move unavailable <a class="review-action" href="#review">Send to review</a></p>'
+    )
+    fen_status_html = (
+        f'<pre class="fen"><code>{html.escape(fen)}</code></pre>'
+        if fen
+        else (
+            '<div class="component-status review">'
+            '<strong>FEN unavailable</strong>'
+            f'<span>Reason: {html.escape(review_reason)}</span>'
+            '<a class="review-action" href="#review">Send to review</a>'
+            '</div>'
+        )
+    )
     return f"""<figure class="diagram-card" id="{html.escape(str(diagram.get('id') or ''), quote=True)}" data-kind="diagram" data-status="{html.escape(status, quote=True)}"{marker_attr} data-has-board-crop="{str(has_board_crop).lower()}" data-has-side-marker-crop="{str(has_side_marker_crop).lower()}">
   <header class="card-header">
     <h3>{html.escape(caption)}</h3>
@@ -4654,10 +4683,10 @@ def _semantic_source_diagram_html(diagram: dict[str, Any]) -> str:
   <div class="diagram-grid">
     <div class="board-placeholder" data-fen="{html.escape(fen, quote=True)}">{_fen_board_placeholder(fen)}</div>
     <div class="diagram-meta">
-      <p>Side to move: <strong>{html.escape(str(diagram.get('side_to_move') or 'unknown'))}</strong></p>
-      <p class="review-reason">{html.escape(str(diagram.get('review_reason') or 'Awaiting deterministic FEN recognition.'))}</p>
+      {side_status_html}
+      <p class="review-reason">{html.escape(review_reason)}</p>
       {candidate_html}
-      {f'<pre class="fen"><code>{html.escape(fen)}</code></pre>' if fen else ''}
+      {fen_status_html}
       {copy_html}
       {engine_html}
       {hints_html}
@@ -4669,6 +4698,23 @@ def _semantic_source_diagram_html(diagram: dict[str, Any]) -> str:
     </div>
   </div>
 </figure>"""
+
+
+def _friendly_reader_reason(reason: str) -> str:
+    value = str(reason or "").strip()
+    if not value:
+        return "needs component review"
+    replacements = {
+        "fen_not_recognized": "FEN was not recognized with enough confidence",
+        "mass_side_to_move_unknown": "side marker needs review",
+        "board_crop_quality=fail": "board crop needs review",
+        "marker_crop_quality=fail": "side marker crop needs review",
+        "side_to_move_unknown": "side marker needs review",
+    }
+    normalized = value
+    for raw, friendly in replacements.items():
+        normalized = normalized.replace(raw, friendly)
+    return normalized.replace("_", " ")
 
 
 def _semantic_source_pgn_html(record: dict[str, Any]) -> str:
@@ -4711,6 +4757,9 @@ h1 { margin:.1rem 0 .6rem; font-size:clamp(2rem,5vw,4.4rem); line-height:1; }
 .artifact-provenance { background:var(--paper); border:1px solid var(--line); border-left:6px solid var(--accent); border-radius:18px; padding:.9rem 1rem; margin:1rem 0; box-shadow:0 10px 30px rgba(47,30,9,.06); }
 .artifact-provenance h2 { margin:0 0 .35rem; font-size:1rem; }
 .artifact-provenance p { margin:.2rem 0; }
+.reader-mode-switch { display:flex; flex-wrap:wrap; gap:.5rem; margin:1rem 0 0; }
+.reader-mode-switch a { display:inline-flex; align-items:center; justify-content:center; min-height:2.25rem; padding:.42rem .82rem; border:1px solid var(--line); border-radius:999px; background:var(--paper); color:var(--ink); font-family:Arial, sans-serif; font-size:.86rem; font-weight:800; text-decoration:none; }
+.reader-mode-switch a.active { background:#24170f; color:#fff8ed; border-color:#24170f; }
 .layout { max-width:1240px; margin:0 auto; display:grid; grid-template-columns:260px minmax(0,1fr); gap:1.25rem; padding:0 1rem 3rem; }
 .sidebar { position:sticky; top:1rem; align-self:start; max-height:calc(100vh - 2rem); overflow:auto; background:#24170f; color:#fff8ed; border-radius:22px; padding:1rem; }
 .sidebar a, .sidebar label { color:#fff8ed; display:block; margin:.45rem 0; text-decoration:none; }
@@ -4738,6 +4787,10 @@ h2.reader-text { margin-top:1.4rem; color:#5c3215; font-size:1.45rem; }
 .card-header { display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; justify-content:space-between; margin-bottom:.75rem; }
 .card-header h3 { margin:0; font-size:1.2rem; }
 .source-ref { color:var(--muted); font-size:.92rem; overflow-wrap:anywhere; }
+.component-status { display:flex; flex-wrap:wrap; gap:.45rem .65rem; align-items:center; margin:.45rem 0; padding:.55rem .65rem; border:1px solid var(--line); border-radius:14px; background:#fffdf8; font-family:Arial, sans-serif; font-size:.9rem; line-height:1.35; }
+.component-status.review { border-color:#ddb26e; background:#fff8e8; color:#5a3511; }
+.component-status.ok { border-color:#8ec3a0; background:#eefaf1; color:#124d2d; }
+.review-action { margin-left:auto; font-weight:800; white-space:nowrap; }
 .review-badge { border:1px solid var(--line); border-radius:999px; padding:.18rem .55rem; font-size:.82rem; font-weight:900; }
 .review-badge.accepted { color:var(--ok); border-color:rgba(20,107,58,.35); }
 .review-badge.needs-human-review, .review-badge.needs_review { color:var(--warn); border-color:rgba(167,97,0,.35); }
@@ -7582,6 +7635,18 @@ def _text_block_layout_type(block: StudyTextBlock) -> str:
 def _is_reader_noise_text(text: str) -> bool:
     value = str(text or "").strip()
     if not value:
+        return True
+    technical_tokens = (
+        "fen_not_recognized",
+        "mass_side_to_move_unknown",
+        "board_crop_quality=fail",
+        "marker_crop_quality=fail",
+        "side_to_move_unknown",
+    )
+    lowered = value.lower()
+    if any(token in lowered for token in technical_tokens):
+        return True
+    if re.search(r"\b(?:board|side_marker|marker|raw|debug)?_?bbox\s*[:=]", lowered):
         return True
     if len(value) <= 3 and re.fullmatch(r"[a-h1-8*.,:;!?\-]+", value, flags=re.IGNORECASE):
         return True

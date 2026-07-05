@@ -245,13 +245,13 @@ class PdfLayoutPreviewArtifactTests(unittest.TestCase):
         html = response.get_data(as_text=True)
         self.assertEqual(response.status_code, 200)
         self.assertIn("To nie jest finalny reader szachowy", html)
-        self.assertIn("Otwórz HTML PGN/FEN", html)
-        self.assertIn(f'href="/convert/artifact/{job_id}/chess_pgn_html"', html)
-        self.assertIn('data-primary-chess-artifact="chess_pgn_html"', html)
+        self.assertIn("Chess Reader", html)
+        self.assertIn(f'href="/convert/artifact/{job_id}/chess_reader"', html)
+        self.assertIn('data-primary-chess-artifact="chess_reader"', html)
         self.assertNotIn('data-primary-chess-artifact="pdf_layout_preview"', html)
         self.assertNotIn("Final reader niedostępny", html)
 
-    def test_pdf_layout_preview_warning_blocks_when_final_reader_unhealthy(self) -> None:
+    def test_pdf_layout_preview_warning_keeps_reader_link_for_component_review(self) -> None:
         job_id = "pdf-layout-preview-unhealthy-reader"
         raw_preview_html = b"<html><body>layout audit only</body></html>"
         preview_artifact = app_module._store_artifact_bytes(
@@ -287,9 +287,9 @@ class PdfLayoutPreviewArtifactTests(unittest.TestCase):
 
         html = response.get_data(as_text=True)
         self.assertEqual(response.status_code, 200)
-        self.assertIn("Final reader niedostępny", html)
-        self.assertIn("mass_side_to_move_unknown", html)
-        self.assertIn(f'href="/convert/quality/{job_id}"', html)
+        self.assertIn("To nie jest finalny reader szachowy", html)
+        self.assertIn(f'href="/convert/artifact/{job_id}/chess_reader"', html)
+        self.assertIn('data-primary-chess-artifact="chess_reader"', html)
         self.assertNotIn('data-primary-chess-artifact="chess_pgn_html"', html)
 
     def test_restored_local_pdf_layout_preview_keeps_distinct_artifact_key(self) -> None:

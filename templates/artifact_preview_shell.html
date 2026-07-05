@@ -116,10 +116,10 @@
       <div class="section-title">PDF layout preview</div>
       <h3>To nie jest finalny reader szachowy</h3>
       <p>Ten widok nie służy do oceny FEN/PGN/side-to-move.</p>
-      <p>Otwórz HTML PGN/FEN, aby zobaczyć diagramy, FEN i kto jest na ruchu.</p>
+      <p>Otwórz Chess Reader, aby zobaczyć treść książki, diagramy, FEN/PGN i statusy komponentów.</p>
       <div class="artifact-preview-actions">
         {% if warning.final_reader_available and warning.final_reader_href %}
-          <a href="{{ warning.final_reader_href }}" data-primary-chess-artifact="chess_pgn_html">Otwórz HTML PGN/FEN</a>
+          <a href="{{ warning.final_reader_href }}" data-primary-chess-artifact="chess_reader">Otwórz Chess Reader</a>
         {% else %}
           <span class="pdf-layout-warning__blocker">Final reader niedostępny</span>
           <a href="{{ warning.quality_href or url_for('convert_quality', job_id=job_id) }}" target="_blank" rel="noreferrer">Quality JSON</a>

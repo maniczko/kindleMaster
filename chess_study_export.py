@@ -4397,10 +4397,21 @@ def _semantic_study_mode_html(items: list[dict[str, Any]]) -> str:
   </header>
   <div class="study-mode-stage">{cards}</div>
   <div class="study-mode-controls">
-    <button type="button" class="copy-button secondary" data-study-prev>Previous exercise</button>
-    <button type="button" class="copy-button" data-study-next>Next exercise</button>
+    <button type="button" class="copy-button secondary" data-study-prev aria-label="Previous exercise">Previous exercise</button>
+    <button type="button" class="copy-button" data-study-next aria-label="Next exercise">Next exercise</button>
   </div>
 </section>"""
+
+
+def _reader_copy_button(label: str, value: Any, *, secondary: bool = False, aria_label: str | None = None) -> str:
+    text = str(label or "Copy")
+    classes = "copy-button secondary" if secondary else "copy-button"
+    aria = str(aria_label or text)
+    return (
+        f'<button type="button" class="{classes}" '
+        f'data-copy-value="{html.escape(str(value or ""), quote=True)}" '
+        f'aria-label="{html.escape(aria, quote=True)}">{html.escape(text)}</button>'
+    )
 
 
 def _semantic_study_mode_card_html(item: Mapping[str, Any], *, index: int, total: int) -> str:
@@ -4441,7 +4452,7 @@ def _semantic_exercise_card_html(item: Mapping[str, Any], *, compact: bool) -> s
         )
     )
     copy_fen_html = (
-        f'<button type="button" class="copy-button" data-copy-value="{html.escape(fen, quote=True)}">Copy FEN</button>'
+        _reader_copy_button("Copy FEN", fen, aria_label=f"Copy FEN for {label}")
         if fen_available
         else '<span class="component-status review"><strong>FEN unavailable</strong></span>'
     )
@@ -4615,9 +4626,9 @@ def _semantic_solution_body_html(
             parts.append(_semantic_solution_code_block(label=f"Variation {index}", value=value, copy_label="Copy line", css_class="variation-block"))
     action_parts = []
     if moves_value:
-        action_parts.append(f'<button type="button" class="copy-button secondary" data-copy-value="{html.escape(moves_value, quote=True)}">Copy moves only</button>')
+        action_parts.append(_reader_copy_button("Copy moves only", moves_value, secondary=True, aria_label="Copy solution moves only"))
     if copy_solution_value:
-        action_parts.append(f'<button type="button" class="copy-button secondary" data-copy-value="{html.escape(copy_solution_value, quote=True)}">Copy solution text</button>')
+        action_parts.append(_reader_copy_button("Copy solution text", copy_solution_value, secondary=True, aria_label="Copy full solution text"))
     if linked_target:
         action_parts.append(f'<a class="copy-button secondary" href="#{html.escape(linked_target, quote=True)}">Open linked diagram</a>')
     if original_source:
@@ -4630,7 +4641,7 @@ def _semantic_solution_body_html(
 
 def _semantic_solution_code_block(*, label: str, value: str, copy_label: str, css_class: str) -> str:
     return f"""<section class="solution-section {html.escape(css_class, quote=True)}">
-  <div class="code-block-header"><h4>{html.escape(label)}</h4><button type="button" class="copy-button" data-copy-value="{html.escape(value, quote=True)}">{html.escape(copy_label)}</button></div>
+  <div class="code-block-header"><h4>{html.escape(label)}</h4>{_reader_copy_button(copy_label, value, aria_label=f"{copy_label} from {label}")}</div>
   <pre class="pgn"><code>{html.escape(value)}</code></pre>
 </section>"""
 
@@ -4668,10 +4679,14 @@ def _semantic_book_block_html(block: Mapping[str, Any], *, page_number: int, blo
     if block_type == "heading":
         level = min(3, max(2, int(block.get("level") or 2)))
         text = str(block.get("text") or "")
+        if not text or _is_reader_noise_text(text) or _is_technical_audit_text(text) or _semantic_text_is_coordinates_or_marker(text):
+            return ""
         attrs = _reader_item_attrs(kinds=["text"], search_text=_reader_search_text(text, page_number))
         return f'<h{level} class="reader-text semantic-heading" id="{html.escape(_semantic_heading_anchor(page_number, block_index, text), quote=True)}" data-page="{page_number}"{attrs}>{html.escape(text)}</h{level}>'
     if block_type == "paragraph":
         text = str(block.get("text") or "")
+        if not text or _is_reader_noise_text(text) or _is_technical_audit_text(text) or _semantic_text_is_coordinates_or_marker(text):
+            return ""
         attrs = _reader_item_attrs(kinds=["text"], search_text=_reader_search_text(text, page_number))
         return f'<p class="reader-text semantic-paragraph" data-page="{page_number}"{attrs}>{html.escape(text)}</p>'
     if block_type == "diagram":
@@ -5601,7 +5616,7 @@ def _semantic_source_diagram_html(diagram: dict[str, Any]) -> str:
         else '<span>Board crop unavailable.</span>'
     )
     copy_html = (
-        f'<button type="button" class="copy-button" data-copy-value="{html.escape(fen, quote=True)}">Copy FEN</button>'
+        _reader_copy_button("Copy FEN", fen, aria_label=f"Copy FEN for {caption}")
         if fen_available
         else ""
     )
@@ -5616,6 +5631,9 @@ def _semantic_source_diagram_html(diagram: dict[str, Any]) -> str:
     comparison_html = _book_move_comparison_panel_html(diagram.get("book_move_comparison"), mode="reader")
     side_to_move = str(diagram.get("side_to_move") or "").strip().lower()
     side_label = {"w": "White", "white": "White", "b": "Black", "black": "Black"}.get(side_to_move, "")
+    side_description = f"{side_label} to move" if side_label else "Unknown side to move"
+    fen_description = "FEN available" if fen_available else "FEN unavailable"
+    diagram_description = f"{caption}, {side_description}, {fen_description}"
     review_reason = _friendly_reader_reason(str(diagram.get("review_reason") or "Awaiting deterministic FEN recognition."))
     side_status_html = (
         f'<p class="component-status ok"><strong>{html.escape(side_label)} to move</strong></p>'
@@ -5657,7 +5675,7 @@ def _semantic_source_diagram_html(diagram: dict[str, Any]) -> str:
         pgn,
         book_line,
     )
-    return f"""<figure class="diagram-card" id="{html.escape(_reader_anchor('diagram', diagram_id, fallback='diagram'), quote=True)}" data-kind="diagram" data-diagram-id="{html.escape(diagram_id, quote=True)}" data-status="{html.escape(status, quote=True)}"{marker_attr} data-has-board-crop="{str(has_board_crop).lower()}" data-has-side-marker-crop="{str(has_side_marker_crop).lower()}"{_reader_item_attrs(kinds=kinds, search_text=search_text)}>
+    return f"""<figure class="diagram-card" id="{html.escape(_reader_anchor('diagram', diagram_id, fallback='diagram'), quote=True)}" aria-label="{html.escape(diagram_description, quote=True)}" data-kind="diagram" data-diagram-id="{html.escape(diagram_id, quote=True)}" data-status="{html.escape(status, quote=True)}"{marker_attr} data-has-board-crop="{str(has_board_crop).lower()}" data-has-side-marker-crop="{str(has_side_marker_crop).lower()}"{_reader_item_attrs(kinds=kinds, search_text=search_text)}>
   <header class="card-header">
     <div>
       <h3>{html.escape(caption)}</h3>
@@ -5698,12 +5716,12 @@ def _diagram_card_source_html(diagram: Mapping[str, Any]) -> str:
 def _diagram_card_pgn_html(*, pgn: str, book_line: str) -> str:
     if pgn:
         return f"""<div class="pgn-copy-block code-copy-block">
-  <div class="code-block-header"><span>PGN</span><button type="button" class="copy-button" data-copy-value="{html.escape(pgn, quote=True)}">Copy PGN</button></div>
+  <div class="code-block-header"><span>PGN</span>{_reader_copy_button("Copy PGN", pgn, aria_label="Copy PGN for diagram")}</div>
   <pre class="pgn"><code>{html.escape(pgn)}</code></pre>
 </div>"""
     if book_line:
         return f"""<div class="book-line-copy-block code-copy-block">
-  <div class="code-block-header"><span>Book line</span><button type="button" class="copy-button" data-copy-value="{html.escape(book_line, quote=True)}">Copy line</button></div>
+  <div class="code-block-header"><span>Book line</span>{_reader_copy_button("Copy line", book_line, aria_label="Copy book line for diagram")}</div>
   <pre class="book-line"><code>{html.escape(book_line)}</code></pre>
 </div>"""
     return '<p class="component-status review"><strong>Moves unavailable</strong></p>'
@@ -5731,7 +5749,7 @@ def _semantic_source_pgn_html(record: dict[str, Any]) -> str:
     pgn = str(record.get("pgn") or "")
     body = (
         f"""<div class="pgn-copy-block code-copy-block">
-  <div class="code-block-header"><span>PGN</span><button type="button" class="copy-button" data-copy-value="{html.escape(pgn, quote=True)}">Copy PGN</button></div>
+  <div class="code-block-header"><span>PGN</span>{_reader_copy_button("Copy PGN", pgn, aria_label="Copy PGN notation")}</div>
   <pre class="pgn"><code>{html.escape(pgn)}</code></pre>
 </div>"""
         if status == "accepted" and pgn
@@ -8399,12 +8417,12 @@ def _position_card_html(item: dict[str, Any]) -> str:
     overlay_html = f'<hr><img src="{html.escape(debug_overlay, quote=True)}" alt="{safe_id} debug overlay">' if debug_overlay else ""
     rendered_html = f'<img src="{html.escape(rendered, quote=True)}" alt="{safe_id} rendered FEN">' if rendered else "<p>No rendered FEN diagram</p>"
     fen_html = (
-        f'<p><button data-copy-target="fen-{safe_id}">Copy FEN</button></p><pre id="fen-{safe_id}">{html.escape(fen)}</pre>'
+        f'<p><button data-copy-target="fen-{safe_id}" aria-label="Copy FEN for {safe_id}">Copy FEN</button></p><pre id="fen-{safe_id}">{html.escape(fen)}</pre>'
         if fen and status == "accepted"
         else "<p>FEN: needs review or missing.</p>"
     )
     pgn_html = (
-        f'<p><button data-copy-target="pgn-{safe_id}">Copy PGN</button></p><pre id="pgn-{safe_id}">{html.escape(pgn)}</pre>'
+        f'<p><button data-copy-target="pgn-{safe_id}" aria-label="Copy PGN for {safe_id}">Copy PGN</button></p><pre id="pgn-{safe_id}">{html.escape(pgn)}</pre>'
         if pgn and status == "accepted" and _pgn_replay_clean(pgn)
         else "<p>PGN: needs review or missing.</p>"
     )
@@ -8810,6 +8828,11 @@ def _is_technical_audit_text(text: str) -> bool:
         "move_number_jump",
         "move_number_regression",
         "side_to_move_mismatch",
+        "side_to_move_unknown",
+        "mass_side_to_move_unknown",
+        "board_crop_quality",
+        "marker_crop_quality",
+        "raw trace ids",
         "quality_threshold_not_met",
         "status_policy",
     ]

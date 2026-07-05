@@ -130,7 +130,7 @@
 
     function formatArtifactLabel(key) {
       const labels = {
-        pdf_layout_preview: "PDF layout preview (audyt layoutu)",
+        pdf_layout_preview: "Audit View / Source Preview",
         chess_glyph_diagnostics: "Glyph diagnostics",
         chess_reader: "Chess Reader",
         chess_pgn_html: "HTML PGN/FEN",
@@ -287,7 +287,7 @@
     function renderReviewArtifactActions(artifacts) {
       if (!artifacts || typeof artifacts !== "object") return [];
       return [
-        renderArtifactAction(artifacts.pdf_layout_preview, "PDF layout preview (audyt layoutu)"),
+        renderArtifactAction(artifacts.pdf_layout_preview, "Audit View / Source Preview"),
         renderArtifactAction(artifacts.chess_glyph_diagnostics, "Glyph diagnostics"),
         renderArtifactAction(artifacts.chess_pgn, "PGN"),
       ].filter(Boolean);
@@ -316,7 +316,7 @@
       const actions = evidenceActions ? [
         renderChessDownloadFiles(payload),
         payload.downloadUrl ? `<a href="${escapeHtml(payload.downloadUrl)}">${downloadLabel}</a>` : "",
-        payload.pdfLayoutPreviewUrl ? `<a href="${escapeHtml(payload.pdfLayoutPreviewUrl)}" target="_blank" rel="noreferrer">Podglad PDF (audyt layoutu)</a>` : "",
+        payload.pdfLayoutPreviewUrl ? `<a href="${escapeHtml(payload.pdfLayoutPreviewUrl)}" target="_blank" rel="noreferrer">Audit View / Source Preview</a>` : "",
         payload.qualityStateUrl ? `<a href="${escapeHtml(payload.qualityStateUrl)}" target="_blank" rel="noreferrer">JSON jakości</a>` : "",
         payload.reportMarkdownUrl ? `<a href="${escapeHtml(payload.reportMarkdownUrl)}" target="_blank" rel="noreferrer">Raport MD</a>` : "",
         payload.reportJsonUrl ? `<a href="${escapeHtml(payload.reportJsonUrl)}" target="_blank" rel="noreferrer">Raport JSON</a>` : "",
@@ -363,7 +363,7 @@
       const actions = [
         renderChessDownloadFiles(payload),
         payload.downloadUrl ? `<a${payload.chessReader && payload.chessReader.available ? "" : ' data-primary="true"'} href="${escapeHtml(payload.downloadUrl)}">${downloadLabel}</a>` : "<span>Brak EPUB</span>",
-        payload.pdfLayoutPreviewUrl ? `<a href="${escapeHtml(payload.pdfLayoutPreviewUrl)}" target="_blank" rel="noreferrer">Podglad PDF (audyt layoutu)</a>` : "",
+        payload.pdfLayoutPreviewUrl ? `<a href="${escapeHtml(payload.pdfLayoutPreviewUrl)}" target="_blank" rel="noreferrer">Audit View / Source Preview</a>` : "",
         payload.qualityStateUrl ? `<a href="${escapeHtml(payload.qualityStateUrl)}" target="_blank" rel="noreferrer">Quality JSON</a>` : "",
         payload.reportMarkdownUrl ? `<a href="${escapeHtml(payload.reportMarkdownUrl)}" target="_blank" rel="noreferrer">Raport MD</a>` : "",
         payload.reportJsonUrl ? `<a href="${escapeHtml(payload.reportJsonUrl)}" target="_blank" rel="noreferrer">Raport JSON</a>` : "",

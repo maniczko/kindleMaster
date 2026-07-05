@@ -994,7 +994,7 @@
       const qualityLinks = [
         qualityStateUrl ? `<a href="${escapeHtml(qualityStateUrl)}" target="_blank" rel="noreferrer">JSON jakości</a>` : "",
         downloadUrl ? `<a href="${escapeHtml(downloadUrl)}" class="quality-download-action">${downloadLabel}</a>` : "",
-        pdfLayoutPreviewUrl ? `<a href="${escapeHtml(pdfLayoutPreviewUrl)}" target="_blank" rel="noreferrer">Podglad PDF</a>` : "",
+        pdfLayoutPreviewUrl ? `<a href="${escapeHtml(pdfLayoutPreviewUrl)}" target="_blank" rel="noreferrer">Audit View</a>` : "",
       ].filter(Boolean).join("");
       const qualityReportPanel = `
         <div class="flat2-quality-report" data-quality-verdict="${escapeHtml(reportVerdict.key)}" data-vr-hook="vat-209-quality-report">

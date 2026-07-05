@@ -1426,7 +1426,7 @@ class AppAsyncConvertTests(unittest.TestCase):
             artifacts["pdf_layout_preview"]["download_url"],
             f"/convert/artifact/{job_id}/pdf_layout_preview",
         )
-        self.assertEqual(artifacts["pdf_layout_preview"]["label"], "PDF layout preview")
+        self.assertEqual(artifacts["pdf_layout_preview"]["label"], "Audit View / Source Preview")
 
     def test_convert_artifact_serves_local_input_inline_with_source_header(self) -> None:
         job_id = "local-input-artifact"

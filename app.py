@@ -422,7 +422,7 @@ def _pdf_layout_preview_warning_payload(job_id: str, job: dict) -> dict[str, obj
 
 def _render_pdf_layout_preview_shell(job_id: str, job: dict, artifact: dict, artifact_path: Path | None = None):
     filename = str(artifact.get("filename") or (artifact_path.name if artifact_path is not None else "") or "pdf_layout_preview.html")
-    title = str(job.get("title") or job.get("filename") or filename or "PDF layout preview").strip()
+    title = str(job.get("title") or job.get("filename") or filename or "Audit View / Source Preview").strip()
     local_app_url = build_local_app_url(
         _resolve_request_port_label(request.host, _resolve_server_port())
     )
@@ -1826,7 +1826,7 @@ def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
     if pdf_layout_preview_file is not None:
         artifacts["pdf_layout_preview"] = _local_artifact_metadata(job_id, ArtifactKind.REPORT, pdf_layout_preview_file)
         artifacts["pdf_layout_preview"]["download_url"] = f"/convert/artifact/{job_id}/pdf_layout_preview"
-        artifacts["pdf_layout_preview"]["label"] = "PDF layout preview"
+        artifacts["pdf_layout_preview"]["label"] = "Audit View / Source Preview"
     if runtime_json_file is not None:
         artifacts["log"] = _local_artifact_metadata(job_id, ArtifactKind.LOG, runtime_json_file)
     job["artifacts"] = artifacts

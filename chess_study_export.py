@@ -7923,7 +7923,7 @@ def _render_standalone_html(
     notation_fragments: dict[str, Any],
 ) -> Path:
     page_cards = "\n".join(
-        _study_page_html(page, positions=positions, notation_fragments=notation_fragments, include_page_image=True)
+        _study_page_html(page, positions=positions, notation_fragments=notation_fragments, include_page_image=True, audit_view=True)
         for page in page_model.get("pages", []) or []
     )
     if not page_cards:
@@ -7932,8 +7932,9 @@ def _render_standalone_html(
         title="Build Up Your Chess - Standalone Audit",
         body=f"""
 <header class="hero">
-  <p class="eyebrow">MasterKindle audit view</p>
-  <h1>Build Up Your Chess - Standalone Audit</h1>
+  <p class="eyebrow">MasterKindle Audit View</p>
+  <h1>Audit View / Source Preview</h1>
+  <p class="hero-copy">Technical source preview for PDF pages, overlays, crop quality, FEN/PGN gates, and manual-review reason codes. This is not the final chess reader.</p>
   {_summary_html(qa_report)}
 </header>
 <main class="book-flow">{page_cards}</main>
@@ -8035,6 +8036,22 @@ def _study_html_document(*, title: str, body: str, qa_report: dict[str, Any]) ->
     .diagram-compare {{ display:grid; grid-template-columns:1fr; gap:.75rem; align-items:start; }}
     .diagram-compare figure {{ margin:0; }}
     .diagram-compare figcaption {{ font-size:.86rem; color:var(--muted); margin:.25rem 0; }}
+    .audit-diagram-card {{ border:1px solid var(--line); border-radius:18px; background:#fffdf7; padding:1rem; margin:1rem 0; box-shadow:0 12px 34px rgba(61,38,12,.08); }}
+    .audit-diagram-header {{ display:flex; justify-content:space-between; gap:1rem; align-items:flex-start; border-bottom:1px solid var(--line); padding-bottom:.75rem; margin-bottom:1rem; }}
+    .audit-diagram-header h3 {{ margin:.1rem 0 0; }}
+    .audit-reader-link {{ display:inline-flex; align-items:center; justify-content:center; min-height:44px; border:1px solid var(--line); border-radius:999px; padding:.35rem .75rem; background:#fff8ed; font-weight:900; text-decoration:none; white-space:nowrap; }}
+    .audit-diagram-layout {{ display:grid; grid-template-columns:minmax(280px, 1.1fr) minmax(280px, .9fr); gap:1rem; align-items:start; }}
+    .audit-overlay-panel, .audit-diagnostics-panel, .audit-semantic-preview {{ border:1px solid #e5d5bd; border-radius:14px; background:#fffaf2; padding:.85rem; }}
+    .audit-overlay-panel h4, .audit-diagnostics-panel h4, .audit-semantic-preview h4 {{ margin:.05rem 0 .6rem; font-family:Arial, sans-serif; color:var(--muted); font-size:.82rem; font-weight:900; text-transform:uppercase; letter-spacing:.04em; }}
+    .audit-diagnostics-panel dl {{ display:grid; grid-template-columns:minmax(135px,.42fr) minmax(0,1fr); gap:.35rem .55rem; margin:0; }}
+    .audit-diagnostics-panel dt {{ color:var(--muted); font-weight:900; overflow-wrap:anywhere; }}
+    .audit-diagnostics-panel dd {{ margin:0; min-width:0; }}
+    .audit-diagnostics-panel code, .audit-semantic-preview code {{ display:block; max-width:100%; white-space:pre-wrap; overflow-wrap:anywhere; background:#f5ead8; border:1px solid #e5d5bd; border-radius:10px; padding:.4rem .5rem; }}
+    .audit-crop-grid {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:.85rem; margin:.85rem 0; }}
+    .audit-crop {{ margin:0; border:1px solid #e5d5bd; border-radius:14px; background:#fffaf2; padding:.7rem; min-width:0; }}
+    .audit-crop figcaption {{ margin:0 0 .45rem; color:var(--muted); font-weight:900; }}
+    .audit-crop img {{ max-width:100%; height:auto; border-radius:10px; border:1px solid var(--line); background:#fff; }}
+    .audit-crop-empty p {{ margin:.3rem 0; color:var(--muted); }}
     code.fen {{ display:block; overflow-wrap:anywhere; background:#f5ead8; border:1px solid #e5d5bd; border-radius:10px; padding:.55rem; }}
     pre.pgn {{ background:#f1e2c9; }}
     .status {{ display:inline-flex; max-width:100%; border-radius:999px; padding:.2rem .55rem; border:1px solid var(--line); font-weight:800; white-space:normal; overflow-wrap:anywhere; }}
@@ -8057,8 +8074,9 @@ def _study_html_document(*, title: str, body: str, qa_report: dict[str, Any]) ->
 .engine-hint-level p, .engine-hint-full-reveal p, .engine-hint-line-reveal p {{ margin:.35rem 0 .6rem; }}
     .study-actions {{ min-width:0; display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:.55rem; margin:.75rem 0; }}
     .study-actions > * {{ min-width:0; }}
+    @media(max-width:960px) {{ .audit-diagram-layout, .audit-crop-grid {{ grid-template-columns:1fr; }} .audit-diagram-header {{ display:block; }} .audit-reader-link {{ margin-top:.65rem; }} }}
     @media(max-width:840px) {{ .scorebar {{ grid-template-columns:repeat(2, minmax(0, 1fr)); }} .study-block-grid {{ grid-template-columns:1fr; }} }}
-    @media(max-width:720px) {{ .page {{ border-radius:0; margin:0 0 1rem; }} .page-header {{ display:block; }} .scorebar, .study-actions {{ grid-template-columns:1fr; }} .toc, .book-flow, .hero {{ padding-left:.85rem; padding-right:.85rem; }} }}
+    @media(max-width:720px) {{ .page {{ border-radius:0; margin:0 0 1rem; }} .page-header {{ display:block; }} .scorebar, .study-actions {{ grid-template-columns:1fr; }} .toc, .book-flow, .hero {{ padding-left:.85rem; padding-right:.85rem; }} .audit-diagnostics-panel dl {{ grid-template-columns:1fr; }} }}
   </style>
 </head>
 <body data-audit-status="{html.escape(str(qa_report.get('status') or ''), quote=True)}">
@@ -8073,6 +8091,7 @@ def _study_page_html(
     positions: dict[str, Any],
     notation_fragments: dict[str, Any],
     include_page_image: bool,
+    audit_view: bool = False,
 ) -> str:
     page_number = int(page.get("page") or 0)
     page_positions = [item for item in positions.get("positions", []) or [] if int(item.get("diagram_page") or 0) == page_number]
@@ -8084,7 +8103,7 @@ def _study_page_html(
     fragment_by_id = {str(item.get("id") or ""): item for item in page_fragments}
     layout_elements = _page_layout_elements_for_render(page, page_positions=page_positions, page_fragments=page_fragments)
     element_html = "\n".join(
-        _study_layout_element_html(element, position_by_id=position_by_id, fragment_by_id=fragment_by_id)
+        _study_layout_element_html(element, position_by_id=position_by_id, fragment_by_id=fragment_by_id, audit_view=audit_view)
         for element in layout_elements
     )
     if not element_html:
@@ -8146,12 +8165,14 @@ def _study_layout_element_html(
     *,
     position_by_id: dict[str, dict[str, Any]],
     fragment_by_id: dict[str, dict[str, Any]],
+    audit_view: bool = False,
 ) -> str:
     element_type = str(element.get("type") or "text")
     source_kind = html.escape(str(element.get("source_kind") or "unknown"), quote=True)
     reading_order = html.escape(str(element.get("reading_order") or "0"), quote=True)
     if element_type == "diagram":
-        return _study_position_article(position_by_id.get(str(element.get("ref_id") or ""), element))
+        item = position_by_id.get(str(element.get("ref_id") or ""), element)
+        return _audit_position_article(item) if audit_view else _study_position_article(item)
     if element_type == "notation":
         return _study_notation_article(fragment_by_id.get(str(element.get("ref_id") or ""), element))
     text = html.escape(str(element.get("text") or ""))
@@ -8162,6 +8183,110 @@ def _study_layout_element_html(
     if _is_reader_noise_text(str(element.get("text") or "")):
         return ""
     return f'<p class="book-text-block study-prose" data-source-kind="{source_kind}" data-reading-order="{reading_order}">{text}</p>'
+
+
+def _audit_reason_value(item: Mapping[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = item.get(key)
+        if isinstance(value, (list, tuple)):
+            value = ", ".join(str(part) for part in value if str(part).strip())
+        if isinstance(value, Mapping):
+            value = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _audit_diagnostic_row(label: str, value: Any) -> str:
+    text = value
+    if isinstance(value, Mapping) or isinstance(value, list):
+        text = json.dumps(value, ensure_ascii=False, indent=2)
+    text = str(text or "").strip() or "unavailable"
+    return f"<dt>{html.escape(label)}</dt><dd><code>{html.escape(text)}</code></dd>"
+
+
+def _audit_crop_figure(title: str, src: str, *, empty: str, alt: str) -> str:
+    if src:
+        return f"""<figure class="audit-crop">
+  <figcaption>{html.escape(title)}</figcaption>
+  <img src="{html.escape(src, quote=True)}" alt="{html.escape(alt, quote=True)}">
+</figure>"""
+    return f"""<figure class="audit-crop audit-crop-empty">
+  <figcaption>{html.escape(title)}</figcaption>
+  <p>{html.escape(empty)}</p>
+</figure>"""
+
+
+def _audit_position_article(item: dict[str, Any]) -> str:
+    diagram_id = str(item.get("id") or item.get("diagram_id") or "diagram")
+    safe_id = html.escape(diagram_id, quote=True)
+    status = str(item.get("status") or "needs_review")
+    board_crop = str(item.get("board_crop_path") or item.get("source_crop") or "")
+    marker_crop = str(item.get("side_marker_crop_path") or item.get("side_marker_review_crop_path") or "")
+    overlay = str(item.get("debug_overlay_path") or item.get("marker_search_zone_preview_path") or "")
+    rendered = str(item.get("rendered_diagram") or item.get("rendered_svg") or item.get("rendered_png") or "")
+    fen = str(item.get("fen") or item.get("full_fen") or "")
+    pgn = str(item.get("solution_pgn") or item.get("pgn") or "")
+    manual_reason = _audit_reason_value(
+        item,
+        "manual_review_reason",
+        "full_fen_blocker",
+        "review_reason",
+        "board_crop_fail_reason",
+        "marker_crop_fail_reason",
+    )
+    diagnostics = [
+        ("board_crop_quality", _audit_reason_value(item, "board_crop_quality", "tight_board_crop_status", "board_crop_status")),
+        ("board_crop_fail_reason", _audit_reason_value(item, "board_crop_fail_reason", "board_crop_reason")),
+        ("marker_crop_quality", _audit_reason_value(item, "marker_crop_quality", "side_marker_crop_status", "side_marker_status")),
+        ("marker_crop_fail_reason", _audit_reason_value(item, "marker_crop_fail_reason", "side_marker_fail_reason")),
+        ("fen_status", _audit_reason_value(item, "full_fen_status", "fen_status", "status")),
+        ("pgn_status", _audit_reason_value(item, "pgn_status", "notation_status")),
+        ("side_to_move_status", _audit_reason_value(item, "side_to_move_status", "side_marker_status")),
+        ("manual_review_required", str(status != "accepted" or bool(manual_reason)).lower()),
+        ("manual_review_reason", manual_reason),
+        ("board_bbox", item.get("board_bbox") or item.get("tight_board_bbox") or item.get("bbox") or []),
+        ("marker_search_zones", item.get("marker_search_zones") or {}),
+        ("selected_marker_zone", item.get("selected_marker_zone") or ""),
+        ("marker_bbox", item.get("marker_bbox") or item.get("side_marker_bbox") or []),
+        ("diagram_block_bbox", item.get("bbox") or item.get("bbox_xyxy") or []),
+        ("text_block_bbox", item.get("text_block_bbox") or []),
+    ]
+    diagnostic_rows = "".join(_audit_diagnostic_row(label, value) for label, value in diagnostics)
+    fen_preview = html.escape(fen) if fen else "FEN unavailable"
+    pgn_preview = html.escape(pgn) if pgn else "PGN unavailable"
+    return f"""<article class="audit-diagram-card" id="audit-{safe_id}" data-audit-diagram-id="{safe_id}" data-position-status="{html.escape(status, quote=True)}">
+  <header class="audit-diagram-header">
+    <div>
+      <p class="eyebrow">Audit View</p>
+      <h3>Diagram {html.escape(diagram_id)} / Page {html.escape(str(item.get("diagram_page") or item.get("page") or ""))}</h3>
+    </div>
+    <a class="audit-reader-link" href="index.html#diagram-{html.escape(_reader_slug(diagram_id), quote=True)}">Back to Reader View</a>
+  </header>
+  <div class="audit-diagram-layout">
+    <section class="audit-overlay-panel">
+      <h4>Source page overlay</h4>
+      {_audit_crop_figure("Source page overlay", overlay, empty="Overlay unavailable for this diagram.", alt=f"{diagram_id} source overlay")}
+    </section>
+    <section class="audit-diagnostics-panel">
+      <h4>Diagnostics / reason codes</h4>
+      <dl>{diagnostic_rows}</dl>
+    </section>
+  </div>
+  <div class="audit-crop-grid">
+    {_audit_crop_figure("Tight board crop", board_crop, empty="Tight board crop unavailable.", alt=f"{diagram_id} tight board crop")}
+    {_audit_crop_figure("Marker crop", marker_crop, empty="Marker crop unavailable.", alt=f"{diagram_id} marker crop")}
+    {_audit_crop_figure("Rendered FEN preview", rendered, empty="Rendered FEN preview unavailable.", alt=f"{diagram_id} rendered FEN")}
+  </div>
+  <section class="audit-semantic-preview">
+    <h4>Semantic reader block preview</h4>
+    <p><strong>Status:</strong> {html.escape(status)}</p>
+    <p><strong>Side to move:</strong> {html.escape(str(item.get("side_to_move") or "unknown"))}</p>
+    <p><strong>FEN:</strong> <code>{fen_preview}</code></p>
+    <p><strong>PGN:</strong> <code>{pgn_preview}</code></p>
+  </section>
+</article>"""
 
 
 def _study_position_article(item: dict[str, Any]) -> str:

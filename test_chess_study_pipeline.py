@@ -988,7 +988,7 @@ class ChessStudyPipelineTests(unittest.TestCase):
         self.assertIn("Study", source_index)
         self.assertIn("Audit", source_index)
         self.assertIn("FEN unavailable", source_index)
-        self.assertIn("Side to move unavailable", source_index)
+        self.assertIn("Unknown side to move", source_index)
         self.assertIn("Send to review", source_index)
         self.assertNotIn("Side to move: unknown", source_index)
         self.assertNotIn("fen_not_recognized", source_index)

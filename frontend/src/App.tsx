@@ -113,6 +113,7 @@ interface ConversionJobPayload {
   artifacts?: Record<string, unknown>;
   chess_files?: Record<string, unknown>;
   chess_pgn?: Record<string, unknown>;
+  chess_reader?: Record<string, unknown>;
   chess_pgn_html?: Record<string, unknown>;
   artifact_type?: string;
   final_reader_available?: boolean;
@@ -1718,13 +1719,13 @@ function LibraryJobRow({
           </span>
         ) : null}
         {chessReader.available ? (
-          <a className="km-button km-button-primary km-button-sm" href={chessReader.href} target="_blank" rel="noreferrer" title={`HTML PGN/FEN: ${jobLabel}`}>
+          <a className="km-button km-button-primary km-button-sm" href={chessReader.href} target="_blank" rel="noreferrer" title={`Chess Reader: ${jobLabel}`}>
             <BookOpen data-icon="inline-start" aria-hidden="true" />
-            HTML PGN/FEN
+            Chess Reader
           </a>
         ) : chessReader.present ? (
           <span className="km-chess-reader-blocker" role="status" title={chessReader.blockerText}>
-            HTML PGN/FEN niedostepny
+            Chess Reader niedostepny
           </span>
         ) : null}
         {sourcePreviewUrl ? (
@@ -2299,7 +2300,7 @@ function FileDetailsWorkspace({
                 <div className="km-chess-download-blocker" role="status">
                   <AlertTriangle data-icon="inline-start" aria-hidden="true" />
                   <span>
-                    <strong>HTML PGN/FEN niedostepny</strong>
+                    <strong>Chess Reader niedostepny</strong>
                     <small>{chessReader.blockerText}</small>
                   </span>
                 </div>
@@ -3613,38 +3614,42 @@ function arrayOfStrings(value: unknown): string[] {
   return Array.isArray(value) ? value.map((item) => String(item)).filter(Boolean) : [];
 }
 
-function finalReaderHealthFailed(health: Record<string, unknown>) {
-  return String(health.decision || "").toLowerCase() === "fail"
-    || String(health.status || "").toUpperCase() === "FAIL";
-}
-
 function jobArtifact(job: ConversionJobPayload | null, key: string): Record<string, unknown> {
   const artifacts = readRecord(job?.artifacts);
   return readRecord(artifacts[key]);
 }
 
-function chessFilePayload(job: ConversionJobPayload | null, key: "chess_pgn" | "chess_pgn_html"): Record<string, unknown> {
+function chessFilePayload(job: ConversionJobPayload | null, key: "chess_pgn" | "chess_reader" | "chess_pgn_html"): Record<string, unknown> {
   const chessFiles = readRecord(job?.chess_files);
   const filePayload = readRecord(chessFiles[key]);
   if (Object.keys(filePayload).length) return filePayload;
-  const directPayload = key === "chess_pgn" ? readRecord(job?.chess_pgn) : readRecord(job?.chess_pgn_html);
+  const directPayload = key === "chess_pgn"
+    ? readRecord(job?.chess_pgn)
+    : key === "chess_reader"
+      ? readRecord(job?.chess_reader)
+      : readRecord(job?.chess_pgn_html);
   if (Object.keys(directPayload).length) return directPayload;
   return jobArtifact(job, key);
 }
 
 function finalChessReaderState(job: ConversionJobPayload | null): FinalChessReaderState {
-  const artifact = chessFilePayload(job, "chess_pgn_html");
+  const readerArtifact = chessFilePayload(job, "chess_reader");
+  const legacyHtmlArtifact = chessFilePayload(job, "chess_pgn_html");
+  const readerPayloadIsPresent = Object.keys(readerArtifact).length > 0;
+  const artifact = readerPayloadIsPresent ? readerArtifact : legacyHtmlArtifact;
   const health = readRecord(artifact.final_reader_health || job?.final_reader_health);
   const sourceGate = readRecord(artifact.source_html_quality_gate || job?.source_html_quality_gate);
   const artifactType = String(artifact.artifact_type || artifact.artifactType || job?.artifact_type || "");
   let href = artifactHref(artifact);
   if (!href && artifactType === FINAL_CHESS_READER_ARTIFACT_TYPE && job?.job_id) {
-    href = `/convert/artifact/${encodeURIComponent(job.job_id)}/chess_pgn_html`;
+    href = `/convert/artifact/${encodeURIComponent(job.job_id)}/${readerPayloadIsPresent ? "chess_reader" : "chess_pgn_html"}`;
   }
   const availabilityValues = [
+    optionalBoolean(artifact.available),
     optionalBoolean(artifact.final_reader_available),
     optionalBoolean(job?.final_reader_available),
   ].filter((value): value is boolean => value !== null);
+  const status = String(artifact.status || "").trim().toLowerCase();
   const present = Boolean(
     artifactType
     || Object.keys(artifact).length
@@ -3655,7 +3660,8 @@ function finalChessReaderState(job: ConversionJobPayload | null): FinalChessRead
   const available = artifactType === FINAL_CHESS_READER_ARTIFACT_TYPE
     && Boolean(href)
     && !availabilityValues.includes(false)
-    && !finalReaderHealthFailed(health);
+    && status !== "blocked"
+    && status !== "unavailable";
   let blockers = [
     ...arrayOfStrings(artifact.final_reader_blockers),
     ...arrayOfStrings(job?.final_reader_blockers),
@@ -3714,8 +3720,12 @@ function chessDownloadFilesState(job: ConversionJobPayload | null): ChessDownloa
 }
 
 function chessReadinessState(job: ConversionJobPayload | null, downloads: ChessDownloadFilesState): ChessReadinessState {
-  const readerPayload = chessFilePayload(job, "chess_pgn_html");
-  const readerArtifact = jobArtifact(job, "chess_pgn_html");
+  const primaryReaderPayload = chessFilePayload(job, "chess_reader");
+  const legacyReaderPayload = chessFilePayload(job, "chess_pgn_html");
+  const readerPayload = Object.keys(primaryReaderPayload).length ? primaryReaderPayload : legacyReaderPayload;
+  const primaryReaderArtifact = jobArtifact(job, "chess_reader");
+  const legacyReaderArtifact = jobArtifact(job, "chess_pgn_html");
+  const readerArtifact = Object.keys(primaryReaderArtifact).length ? primaryReaderArtifact : legacyReaderArtifact;
   const readerHealth = readRecord(readerPayload.final_reader_health || readerArtifact.final_reader_health || job?.final_reader_health);
   const pgnPayload = chessFilePayload(job, "chess_pgn");
   const pgnArtifact = jobArtifact(job, "chess_pgn");
@@ -3771,7 +3781,7 @@ function chessReadinessState(job: ConversionJobPayload | null, downloads: ChessD
   }
   const label = status === "ready" ? "Ready" : status === "review_only" ? "Review only" : "Not available";
   const detail = status === "ready"
-    ? "Finalny HTML PGN/FEN ma zaakceptowane dane i zaufany marker ruchu."
+    ? "Chess Reader ma zaakceptowane dane i zaufany marker ruchu."
     : status === "review_only"
       ? "Diagramy albo partie wymagają przeglądu; finalny reader nie udaje pełnego rozczytania."
       : "Brak wykrytych diagramów lub zaakceptowanych danych szachowych.";
@@ -3927,8 +3937,8 @@ function buildArtifactSections(
   if (job?.download_url) finalRows.push({ key: "download_url", label: "Finalny EPUB", href: job.download_url });
   if (chessDownloads.reader.available) {
     finalRows.push({
-      key: "chess_pgn_html",
-      label: "Finalny HTML PGN/FEN",
+      key: "chess_reader",
+      label: "Chess Reader",
       href: chessDownloads.reader.href,
       targetBlank: true,
     });
@@ -3937,7 +3947,7 @@ function buildArtifactSections(
   if (sourceUrl) diagnosticRows.push({ key: "source_pdf", label: "PDF źródłowy", href: sourceUrl });
   const artifacts = job?.artifacts && typeof job.artifacts === "object" ? job.artifacts : {};
   for (const [key, rawArtifact] of Object.entries(artifacts)) {
-    if (key === "chess_pgn_html") continue;
+    if (key === "chess_reader" || key === "chess_pgn_html") continue;
     if (!rawArtifact || typeof rawArtifact !== "object" || Array.isArray(rawArtifact)) continue;
     const artifact = rawArtifact as Record<string, unknown>;
     const href = artifactHref(artifact);

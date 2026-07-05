@@ -4134,9 +4134,14 @@ def _semantic_book_solution_block(
         "type": "solution",
         "exercise_id": exercise_id,
         "diagram_id": diagram_id,
+        "source_page": int(pgn.get("logical_page") or pgn.get("page") or 0),
+        "solution_page": int(pgn.get("logical_page") or pgn.get("page") or 0),
         "best_move": _semantic_best_move_from_line(book_line),
+        "pgn": pgn_text or "",
         "book_line": book_line,
+        "variations": _semantic_solution_variations_from_text(visible_text or pgn_text),
         "commentary": visible_text if visible_text and visible_text != pgn_text else "",
+        "review_status": "available" if pgn_text else "needs_review",
     }
 
 
@@ -4304,10 +4309,12 @@ def _semantic_exercise_items(semantic_book: Mapping[str, Any]) -> list[dict[str,
                 "board_crop_path": str(diagram.get("board_crop_path") or ""),
                 "original_crop_path": str(diagram.get("original_crop_path") or diagram.get("board_crop_path") or ""),
                 "asset_missing_reason": str(diagram.get("asset_missing_reason") or "source_asset_unavailable"),
-                "pgn": str(pgn.get("pgn") or diagram.get("pgn") or ""),
+                "pgn": str(solution.get("pgn") or pgn.get("pgn") or diagram.get("pgn") or ""),
                 "book_line": str(solution.get("book_line") or pgn.get("book_line") or diagram.get("book_line") or ""),
                 "best_move": str(solution.get("best_move") or _semantic_best_move_from_line(solution_text)),
+                "variations": list(solution.get("variations") or []),
                 "commentary": str(solution.get("commentary") or ""),
+                "solution_page": int(solution.get("solution_page") or solution.get("_semantic_page_number") or 0),
             }
         )
     return items
@@ -4405,7 +4412,10 @@ def _semantic_exercise_card_html(item: Mapping[str, Any], *, compact: bool) -> s
         best_move=best_move,
         pgn=pgn,
         book_line=book_line,
+        variations=list(item.get("variations") or []),
         commentary=commentary,
+        linked_target=card_id,
+        original_source=original_crop_path,
     )
     original_html = (
         f'<a class="copy-button secondary" href="{html.escape(original_crop_path, quote=True)}">Open original crop</a>'
@@ -4440,32 +4450,143 @@ def _semantic_exercise_card_html(item: Mapping[str, Any], *, compact: bool) -> s
 </article>"""
 
 
-def _semantic_exercise_solution_html(*, best_move: str, pgn: str, book_line: str, commentary: str) -> str:
-    if not any([best_move, pgn, book_line, commentary]):
+def _semantic_exercise_solution_html(
+    *,
+    best_move: str,
+    pgn: str,
+    book_line: str,
+    variations: list[Any] | None = None,
+    commentary: str,
+    linked_target: str = "",
+    original_source: str = "",
+) -> str:
+    if not any([best_move, pgn, book_line, commentary, variations]):
         return '<p class="component-status review"><strong>Solution not linked</strong></p>'
-    copy_value = pgn or book_line
-    copy_html = (
-        f'<button type="button" class="copy-button" data-copy-value="{html.escape(copy_value, quote=True)}">Copy PGN</button>'
-        if copy_value
-        else ""
+    return _semantic_solution_body_html(
+        best_move=best_move,
+        pgn=pgn,
+        book_line=book_line,
+        variations=variations or [],
+        commentary=commentary,
+        linked_target=linked_target,
+        original_source=original_source,
     )
-    line_html = (
-        f"""<div class="pgn-copy-block code-copy-block">
-  <div class="code-block-header"><span>{'PGN' if pgn else 'Book line'}</span>{copy_html}</div>
-  <pre class="pgn"><code>{html.escape(copy_value)}</code></pre>
-</div>"""
-        if copy_value
-        else ""
+
+
+def _semantic_solution_card_html(block: Mapping[str, Any], *, page_number: int) -> str:
+    exercise_id = str(block.get("exercise_id") or "")
+    label = _semantic_exercise_label(exercise_id)
+    linked_target = exercise_id or str(block.get("diagram_id") or "")
+    pgn = str(block.get("pgn") or "")
+    book_line = str(block.get("book_line") or "")
+    best_move = str(block.get("best_move") or _semantic_best_move_from_line(pgn or book_line))
+    commentary = str(block.get("commentary") or "")
+    variations = list(block.get("variations") or _semantic_solution_variations_from_text(commentary or book_line))
+    status = str(block.get("review_status") or ("available" if pgn or book_line or best_move else "needs_review"))
+    solution_page = int(block.get("solution_page") or block.get("source_page") or page_number)
+    body = _semantic_solution_body_html(
+        best_move=best_move,
+        pgn=pgn,
+        book_line=book_line,
+        variations=variations,
+        commentary=commentary,
+        linked_target=linked_target,
+        original_source=str(block.get("original_source_path") or ""),
     )
-    return "\n".join(
-        part
-        for part in [
-            f'<p><strong>Best move:</strong> {html.escape(best_move)}</p>' if best_move else "",
-            line_html,
-            f'<p>{html.escape(commentary)}</p>' if commentary else "",
-        ]
-        if part
-    )
+    return f"""<section class="solution-card solution-card-rich" data-kind="solution" data-exercise-id="{html.escape(exercise_id, quote=True)}" data-diagram-id="{html.escape(str(block.get('diagram_id') or ''), quote=True)}" data-review-status="{html.escape(status, quote=True)}">
+  <header class="card-header solution-card-header">
+    <div>
+      <p class="eyebrow">Solution</p>
+      <h3>Solution - {html.escape(label)}</h3>
+      <p class="diagram-source-line">Page {solution_page}</p>
+    </div>
+    <span class="review-badge {html.escape(status, quote=True)}">{html.escape(status.replace('_', ' '))}</span>
+  </header>
+  {body}
+</section>"""
+
+
+def _semantic_solution_body_html(
+    *,
+    best_move: str,
+    pgn: str,
+    book_line: str,
+    variations: list[Any],
+    commentary: str,
+    linked_target: str,
+    original_source: str,
+) -> str:
+    moves_value = _semantic_moves_only_text(pgn or book_line)
+    copy_solution_value = "\n".join(part for part in [best_move, pgn or book_line, commentary] if str(part or "").strip())
+    parts: list[str] = []
+    if best_move:
+        parts.append(f"""<section class="solution-section best-move-block">
+  <h4>Best move</h4>
+  <p class="best-move">{html.escape(best_move)}</p>
+</section>""")
+    if commentary:
+        parts.append(f"""<section class="solution-section solution-explanation-block">
+  <h4>Explanation</h4>
+  <p>{html.escape(_semantic_solution_commentary_text(commentary))}</p>
+</section>""")
+    if pgn:
+        parts.append(_semantic_solution_code_block(label="PGN", value=pgn, copy_label="Copy PGN", css_class="pgn-block"))
+    elif book_line:
+        parts.append(_semantic_solution_code_block(label="Book line", value=_semantic_solution_main_line(book_line), copy_label="Copy line", css_class="book-line-block"))
+    else:
+        parts.append('<p class="component-status review"><strong>Moves unavailable</strong></p>')
+    for index, variation in enumerate(variations, start=1):
+        value = str(variation or "").strip()
+        if value:
+            parts.append(_semantic_solution_code_block(label=f"Variation {index}", value=value, copy_label="Copy line", css_class="variation-block"))
+    action_parts = []
+    if moves_value:
+        action_parts.append(f'<button type="button" class="copy-button secondary" data-copy-value="{html.escape(moves_value, quote=True)}">Copy moves only</button>')
+    if copy_solution_value:
+        action_parts.append(f'<button type="button" class="copy-button secondary" data-copy-value="{html.escape(copy_solution_value, quote=True)}">Copy solution text</button>')
+    if linked_target:
+        action_parts.append(f'<a class="copy-button secondary" href="#{html.escape(linked_target, quote=True)}">Open linked diagram</a>')
+    if original_source:
+        action_parts.append(f'<a class="copy-button secondary" href="{html.escape(original_source, quote=True)}">Open original source</a>')
+    else:
+        action_parts.append('<span class="component-status review"><strong>Original source unavailable</strong></span>')
+    parts.append(f'<div class="solution-actions">{"".join(action_parts)}</div>')
+    return "\n".join(parts)
+
+
+def _semantic_solution_code_block(*, label: str, value: str, copy_label: str, css_class: str) -> str:
+    return f"""<section class="solution-section {html.escape(css_class, quote=True)}">
+  <div class="code-block-header"><h4>{html.escape(label)}</h4><button type="button" class="copy-button" data-copy-value="{html.escape(value, quote=True)}">{html.escape(copy_label)}</button></div>
+  <pre class="pgn"><code>{html.escape(value)}</code></pre>
+</section>"""
+
+
+def _semantic_moves_only_text(text: str) -> str:
+    lines = []
+    for line in str(text or "").splitlines():
+        value = line.strip()
+        if value and not value.startswith("["):
+            lines.append(value)
+    return " ".join(lines).strip()
+
+
+def _semantic_solution_variations_from_text(text: str) -> list[str]:
+    variations: list[str] = []
+    for match in re.finditer(r"\(([^()]{3,260})\)", str(text or "")):
+        value = re.sub(r"\s+", " ", match.group(1)).strip()
+        if re.search(r"\b\d+\.(?:\.\.)?", value):
+            variations.append(value)
+    return variations[:6]
+
+
+def _semantic_solution_main_line(text: str) -> str:
+    value = re.sub(r"\([^()]{3,260}\)", " ", str(text or ""))
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _semantic_solution_commentary_text(text: str) -> str:
+    value = _semantic_solution_main_line(text)
+    return value or str(text or "").strip()
 
 
 def _semantic_book_block_html(block: Mapping[str, Any], *, page_number: int) -> str:
@@ -4494,12 +4615,7 @@ def _semantic_book_block_html(block: Mapping[str, Any], *, page_number: int) -> 
             }
         )
     if block_type == "solution":
-        return f"""<section class="solution-card" data-kind="solution" data-exercise-id="{html.escape(str(block.get('exercise_id') or ''), quote=True)}">
-  <h3>Solution</h3>
-  {f'<p><strong>Best move</strong> {html.escape(str(block.get("best_move") or ""))}</p>' if block.get("best_move") else ''}
-  {f'<pre class="pgn"><code>{html.escape(str(block.get("book_line") or ""))}</code></pre>' if block.get("book_line") else ''}
-  {f'<p>{html.escape(str(block.get("commentary") or ""))}</p>' if block.get("commentary") else ''}
-</section>"""
+        return _semantic_solution_card_html(block, page_number=page_number)
     return ""
 
 
@@ -5487,6 +5603,14 @@ h2.reader-text { margin-top:1.4rem; color:#5c3215; font-size:1.45rem; }
 .copy-button.secondary { background:#FFF8EC; color:var(--km-text); }
 .exercise-solution { border:1px solid #ead8bf; border-radius:14px; background:#fffaf1; padding:0 .75rem; }
 .exercise-solution summary { cursor:pointer; min-height:44px; display:flex; align-items:center; font-weight:900; color:var(--accent); }
+.solution-card-rich { display:grid; gap:.75rem; }
+.solution-card-header { align-items:flex-start; }
+.solution-section { border:1px solid #ead8bf; border-radius:14px; background:#fffaf1; padding:.75rem; margin:.65rem 0; }
+.solution-section h4 { margin:0 0 .4rem; font-family:Inter, ui-sans-serif, system-ui, sans-serif; color:var(--km-muted); font-size:.82rem; font-weight:900; text-transform:uppercase; }
+.best-move { margin:.15rem 0 0; font-size:1.35rem; font-weight:900; color:#2f1d10; }
+.variation-block { background:#fffdf8; }
+.solution-actions { min-width:0; display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:.55rem; margin-top:.7rem; }
+.solution-actions > * { min-width:0; }
 .study-mode-stage { min-width:0; }
 .study-mode-card[hidden] { display:none; }
 .study-mode-controls { display:flex; flex-wrap:wrap; gap:.6rem; justify-content:flex-end; border-top:1px solid var(--km-border); padding-top:.85rem; margin-top:.85rem; }
@@ -5500,7 +5624,7 @@ h2.reader-text { margin-top:1.4rem; color:#5c3215; font-size:1.45rem; }
 .component-status.ok { border-color:#8ec3a0; background:#eefaf1; color:#124d2d; }
 .review-action { margin-left:auto; font-weight:800; white-space:nowrap; }
 .review-badge, .status-chip { border:1px solid var(--line); border-radius:999px; padding:.18rem .55rem; font-size:.82rem; font-weight:900; }
-.review-badge.accepted, .review-badge.verified { color:var(--ok); border-color:rgba(20,107,58,.35); }
+.review-badge.accepted, .review-badge.verified, .review-badge.available { color:var(--ok); border-color:rgba(20,107,58,.35); }
 .review-badge.needs-human-review, .review-badge.needs_review { color:var(--warn); border-color:rgba(167,97,0,.35); }
 .diagram-grid { display:grid; grid-template-columns:minmax(280px,340px) minmax(0,1fr); gap:1rem; align-items:start; }
 .diagram-panel .diagram-grid { grid-template-columns:1fr; }
@@ -5545,7 +5669,7 @@ body.reader-mode .page-preview-link, body.reader-mode .warnings { display:none; 
 @media (max-width: 1180px) { .study-block-grid { grid-template-columns:1fr; } .diagram-grid { grid-template-columns:minmax(280px,340px) minmax(0,1fr); } }
 @media (max-width: 940px) { .layout { grid-template-columns:1fr; } .sidebar { position:relative; top:auto; max-height:none; } .scorebar { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 @media (max-width: 840px) { .study-block-grid { grid-template-columns:1fr; } }
-@media (max-width: 720px) { .layout,.app-header { padding-left:.85rem; padding-right:.85rem; } .scorebar,.diagram-grid,.study-actions,.exercise-actions { grid-template-columns:1fr; } .chapter-page,.study-block,.exercise-grid-section,.study-mode-panel { border-radius:0; margin-left:-.85rem; margin-right:-.85rem; } .flow-prose { padding-left:.75rem; } .study-block-header,.exercise-grid-header,.study-mode-header { display:block; } .code-block-header { align-items:stretch; flex-direction:column; } .copy-button { width:100%; } .study-mode-controls { display:grid; grid-template-columns:1fr; } .study-mode-card .exercise-board { min-height:260px; } }
+@media (max-width: 720px) { .layout,.app-header { padding-left:.85rem; padding-right:.85rem; } .scorebar,.diagram-grid,.study-actions,.exercise-actions,.solution-actions { grid-template-columns:1fr; } .chapter-page,.study-block,.exercise-grid-section,.study-mode-panel { border-radius:0; margin-left:-.85rem; margin-right:-.85rem; } .flow-prose { padding-left:.75rem; } .study-block-header,.exercise-grid-header,.study-mode-header { display:block; } .code-block-header { align-items:stretch; flex-direction:column; } .copy-button { width:100%; } .study-mode-controls { display:grid; grid-template-columns:1fr; } .study-mode-card .exercise-board { min-height:260px; } }
 """
 
 

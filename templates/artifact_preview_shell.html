@@ -83,7 +83,7 @@
     }
   </style>
 </head>
-<body data-artifact-view="pdf_layout_preview">
+<body data-artifact-view="pdf_layout_preview" data-audit-view="source_preview">
   {% set preview_state = preview_handoff or {} %}
   {% set warning = pdf_layout_preview_warning or {} %}
   <main class="artifact-preview-shell" data-km-view="pdf-layout-preview" data-vr-hook="vat-209-shell">
@@ -91,7 +91,7 @@
       <div class="brand">
         <div class="brand-kicker">Lokalny panel EPUB</div>
         <h1>Kindle<span>Master</span></h1>
-        <p>PDF layout preview w głównym layoucie aplikacji. Adres: <code>{{ local_app_url }}</code>.</p>
+        <p>Audit View / Source Preview w głównym layoucie aplikacji. Adres: <code>{{ local_app_url }}</code>.</p>
       </div>
       <div class="system-status-pill" aria-label="Status podglądu">
         <span aria-hidden="true"></span>
@@ -99,11 +99,11 @@
       </div>
     </header>
 
-    <section class="hero-card" aria-label="PDF layout preview">
-      <div class="section-title">PDF layout preview</div>
+    <section class="hero-card" aria-label="Audit View / Source Preview">
+      <div class="section-title">Audit View / Source Preview</div>
       <h2>{{ title }}</h2>
       <p class="artifact-preview-meta">
-        Job <code>{{ job_id }}</code>. Ten widok używa aktualnego shellu KindleMaster; surowy HTML artefaktu nie jest domyślną stroną użytkownika.
+        Job <code>{{ job_id }}</code>. Ten widok używa aktualnego shellu KindleMaster; PDF layout preview jest artefaktem audytowym, a nie domyślną stroną czytelnika.
       </p>
       <div class="artifact-preview-actions">
         <a href="{{ url_for('index') }}">Dashboard</a>
@@ -113,7 +113,7 @@
     </section>
 
     <section class="pdf-layout-warning" aria-label="Ostrzeżenie PDF layout preview" data-vr-hook="km-pdf-layout-preview-warning">
-      <div class="section-title">PDF layout preview</div>
+      <div class="section-title">Audit View / Source Preview</div>
       <h3>To nie jest finalny reader szachowy</h3>
       <p>Ten widok nie służy do oceny FEN/PGN/side-to-move.</p>
       <p>Otwórz Chess Reader, aby zobaczyć treść książki, diagramy, FEN/PGN i statusy komponentów.</p>
@@ -141,7 +141,7 @@
       {% endif %}
       <iframe
         class="layout-preview-frame"
-        title="PDF layout preview"
+        title="Audit View / Source Preview"
         sandbox="allow-scripts allow-same-origin"
         {% if preview_state.frame_src %}
         src="{{ preview_state.frame_src }}"

@@ -4081,8 +4081,10 @@ def _semantic_book_diagram_block(
         "fen": fen,
         "fen_status": fen_status,
         "pgn": pgn_text,
+        "book_line": str((pgn or {}).get("visible_review_text") or (pgn or {}).get("raw_text") or "").strip() or None,
         "pgn_status": "available" if pgn_text else ("needs_review" if pgn else "unavailable"),
         "board_crop_path": str(diagram.get("board_crop_path") or diagram.get("source_crop") or diagram.get("image_path") or ""),
+        "original_crop_path": str(diagram.get("original_crop_path") or diagram.get("image_path") or ""),
         "side_marker_crop_path": str(diagram.get("side_marker_crop_path") or ""),
         "side_marker_status": str(diagram.get("side_marker_status") or ""),
         "asset_missing_reason": str(diagram.get("asset_missing_reason") or ""),
@@ -4265,7 +4267,11 @@ def _diagram_record_from_semantic_block(block: Mapping[str, Any], *, page_number
         "review_reason": "FEN unavailable" if block.get("fen_status") != "available" else "",
         "side_to_move": side_value,
         "fen": fen,
+        "pgn": str(block.get("pgn") or ""),
+        "book_line": str(block.get("book_line") or ""),
+        "pgn_status": str(block.get("pgn_status") or ""),
         "image_path": str(block.get("board_crop_path") or ""),
+        "original_crop_path": str(block.get("original_crop_path") or ""),
         "side_marker_crop_path": str(block.get("side_marker_crop_path") or ""),
         "side_marker_status": str(block.get("side_marker_status") or ""),
         "asset_missing_reason": str(block.get("asset_missing_reason") or "source_asset_unavailable"),
@@ -4996,13 +5002,20 @@ def _semantic_source_diagram_html(diagram: dict[str, Any]) -> str:
     status = str(diagram.get("validation_status") or "needs-human-review")
     fen = str(diagram.get("fen") or "")
     fen_candidate = str(diagram.get("fen_candidate") or "")
-    image_path = str(diagram.get("image_path") or "")
+    image_path = str(diagram.get("original_crop_path") or diagram.get("image_path") or "")
+    board_crop_path = str(diagram.get("board_crop_path") or diagram.get("source_crop") or diagram.get("image_path") or image_path)
     caption = str(diagram.get("caption") or diagram.get("id") or "Diagram")
     missing_reason = str(diagram.get("asset_missing_reason") or "source_asset_unavailable")
     marker_status = str(diagram.get("side_marker_status") or "")
     marker_attr = f' data-side-marker-status="{html.escape(marker_status, quote=True)}"' if marker_status else ""
-    has_board_crop = bool(str(diagram.get("board_crop_path") or diagram.get("source_crop") or image_path).strip())
+    has_board_crop = bool(board_crop_path.strip())
     has_side_marker_crop = bool(str(diagram.get("side_marker_crop_path") or "").strip())
+    fen_valid = False
+    if fen:
+        fen_valid, _fen_warnings = validate_fen(fen)
+    fen_available = bool(fen and fen_valid and status == "accepted")
+    pgn = str(diagram.get("pgn") or "").strip()
+    book_line = str(diagram.get("book_line") or diagram.get("visible_review_text") or "").strip()
     original_image_html = (
         f'<img src="{html.escape(image_path, quote=True)}" alt="{html.escape(caption, quote=True)}">'
         if image_path
@@ -5012,9 +5025,14 @@ def _semantic_source_diagram_html(diagram: dict[str, Any]) -> str:
             f'Original diagram image unavailable: {html.escape(missing_reason.replace("_", " "))}</div>'
         )
     )
+    fallback_board_html = (
+        f'<img class="board-crop-fallback" src="{html.escape(board_crop_path, quote=True)}" alt="{html.escape(caption, quote=True)} board crop">'
+        if board_crop_path
+        else '<span>Board crop unavailable.</span>'
+    )
     copy_html = (
         f'<button type="button" class="copy-button" data-copy-value="{html.escape(fen, quote=True)}">Copy FEN</button>'
-        if fen and status == "accepted"
+        if fen_available
         else ""
     )
     candidate_html = ""
@@ -5027,19 +5045,19 @@ def _semantic_source_diagram_html(diagram: dict[str, Any]) -> str:
     hints_html = _engine_study_hints_panel_html(diagram.get("engine_hints"), mode="reader")
     comparison_html = _book_move_comparison_panel_html(diagram.get("book_move_comparison"), mode="reader")
     side_to_move = str(diagram.get("side_to_move") or "").strip().lower()
-    side_label = {"w": "white", "white": "white", "b": "black", "black": "black"}.get(side_to_move, "")
+    side_label = {"w": "White", "white": "White", "b": "Black", "black": "Black"}.get(side_to_move, "")
     review_reason = _friendly_reader_reason(str(diagram.get("review_reason") or "Awaiting deterministic FEN recognition."))
     side_status_html = (
-        f'<p class="component-status ok">Side to move: <strong>{html.escape(side_label)}</strong></p>'
+        f'<p class="component-status ok"><strong>{html.escape(side_label)} to move</strong></p>'
         if side_label
-        else '<p class="component-status review">Side to move unavailable <a class="review-action" href="#review">Send to review</a></p>'
+        else '<p class="component-status review"><strong>Unknown side to move</strong> <a class="review-action" href="#review">Send to review</a></p>'
     )
     fen_status_html = (
         f"""<div class="fen-copy-block code-copy-block">
   <div class="code-block-header"><span>FEN</span>{copy_html}</div>
   <pre class="fen"><code>{html.escape(fen)}</code></pre>
 </div>"""
-        if fen
+        if fen_available
         else (
             '<div class="component-status review">'
             '<strong>FEN unavailable</strong>'
@@ -5050,27 +5068,54 @@ def _semantic_source_diagram_html(diagram: dict[str, Any]) -> str:
     )
     return f"""<figure class="diagram-card" id="{html.escape(str(diagram.get('id') or ''), quote=True)}" data-kind="diagram" data-status="{html.escape(status, quote=True)}"{marker_attr} data-has-board-crop="{str(has_board_crop).lower()}" data-has-side-marker-crop="{str(has_side_marker_crop).lower()}">
   <header class="card-header">
-    <h3>{html.escape(caption)}</h3>
+    <div>
+      <h3>{html.escape(caption)}</h3>
+      {_diagram_card_source_html(diagram)}
+    </div>
     <span class="source-ref">Page {int(diagram.get('page') or 0)}</span>
     <span class="review-badge {html.escape(status, quote=True)}">{html.escape(_friendly_status(status))}</span>
   </header>
   <div class="diagram-grid">
-    <div class="board-placeholder" data-fen="{html.escape(fen, quote=True)}">{_fen_board_placeholder(fen)}</div>
+    <div class="board-placeholder" data-fen="{html.escape(fen if fen_available else '', quote=True)}">{_fen_board_placeholder(fen) if fen_available else fallback_board_html}</div>
     <div class="diagram-meta">
       {side_status_html}
       <p class="review-reason">{html.escape(review_reason)}</p>
       {candidate_html}
       {fen_status_html}
+      {_diagram_card_pgn_html(pgn=pgn, book_line=book_line)}
       {engine_html}
       {hints_html}
       {comparison_html}
       <details class="original-diagram">
-        <summary>Podgląd oryginału</summary>
+        <summary>Show original crop</summary>
         {original_image_html}
       </details>
     </div>
   </div>
 </figure>"""
+
+
+def _diagram_card_source_html(diagram: Mapping[str, Any]) -> str:
+    parts = [
+        str(diagram.get("players") or "").strip(),
+        str(diagram.get("source") or "").strip(),
+    ]
+    text = ", ".join(part for part in parts if part)
+    return f'<p class="diagram-source-line">{html.escape(text)}</p>' if text else ""
+
+
+def _diagram_card_pgn_html(*, pgn: str, book_line: str) -> str:
+    if pgn:
+        return f"""<div class="pgn-copy-block code-copy-block">
+  <div class="code-block-header"><span>PGN</span><button type="button" class="copy-button" data-copy-value="{html.escape(pgn, quote=True)}">Copy PGN</button></div>
+  <pre class="pgn"><code>{html.escape(pgn)}</code></pre>
+</div>"""
+    if book_line:
+        return f"""<div class="book-line-copy-block code-copy-block">
+  <div class="code-block-header"><span>Book line</span><button type="button" class="copy-button" data-copy-value="{html.escape(book_line, quote=True)}">Copy line</button></div>
+  <pre class="book-line"><code>{html.escape(book_line)}</code></pre>
+</div>"""
+    return '<p class="component-status review"><strong>Moves unavailable</strong></p>'
 
 
 def _friendly_reader_reason(reason: str) -> str:
@@ -5179,6 +5224,7 @@ h2.reader-text { margin-top:1.4rem; color:#5c3215; font-size:1.45rem; }
 .diagram-panel .diagram-card { margin-bottom:0; }
 .card-header { display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; justify-content:space-between; margin-bottom:.75rem; }
 .card-header h3 { margin:0; font-size:1.2rem; }
+.diagram-source-line { margin:.2rem 0 0; color:var(--km-muted); font-family:Inter, ui-sans-serif, system-ui, sans-serif; font-size:.88rem; }
 .source-ref { color:var(--muted); font-size:.92rem; overflow-wrap:anywhere; }
 .component-status { display:flex; flex-wrap:wrap; gap:.45rem .65rem; align-items:center; margin:.45rem 0; padding:.55rem .65rem; border:1px solid var(--line); border-radius:14px; background:#fffdf8; font-family:Arial, sans-serif; font-size:.9rem; line-height:1.35; }
 .component-status.review { border-color:#ddb26e; background:#fff8e8; color:#5a3511; }
@@ -5190,6 +5236,7 @@ h2.reader-text { margin-top:1.4rem; color:#5c3215; font-size:1.45rem; }
 .diagram-grid { display:grid; grid-template-columns:minmax(280px,340px) minmax(0,1fr); gap:1rem; align-items:start; }
 .diagram-panel .diagram-grid { grid-template-columns:1fr; }
 .board-placeholder { min-height:280px; display:grid; place-items:center; border:1px dashed var(--line); border-radius:14px; background:#fffdf8; color:var(--muted); text-align:center; padding:1rem; }
+.board-crop-fallback { max-width:100%; height:auto; border-radius:12px; border:1px solid var(--km-border); background:#fff; }
 .mini-board { width:min(320px,100%); aspect-ratio:1; display:grid; grid-template-columns:repeat(8,1fr); border:1px solid var(--line); color:var(--ink); }
 .mini-board span { display:grid; place-items:center; font-family:Georgia,serif; font-weight:900; }
 .mini-board span:nth-child(16n+1), .mini-board span:nth-child(16n+3), .mini-board span:nth-child(16n+5), .mini-board span:nth-child(16n+7),

@@ -85,6 +85,7 @@ QUICK_TESTS = [
     "test_chess_study_structure.py",
     "test_chess_study_pipeline.py",
     "test_chess_study_render.py",
+    "test_chess_reader_semantic_book.py",
     "test_converter_publication_budget.py",
     "test_fixed_layout_render_budget.py",
     "test_converter_fixed_layout_budget_enforcement.py",

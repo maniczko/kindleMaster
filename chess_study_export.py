@@ -4206,18 +4206,266 @@ def _semantic_best_move_from_line(text: str) -> str:
 
 def _semantic_book_flow_html(semantic_book: Mapping[str, Any]) -> str:
     pages = [page for page in semantic_book.get("pages") or [] if isinstance(page, Mapping)]
+    exercises_by_page = _semantic_exercise_items_by_page(semantic_book)
+    multi_exercise_pages = {page_number for page_number, items in exercises_by_page.items() if len(items) > 1}
+    exercise_ids = {
+        str(item.get("exercise_id") or "")
+        for page_number, items in exercises_by_page.items()
+        if page_number in multi_exercise_pages
+        for item in items
+        if str(item.get("exercise_id") or "")
+    }
     parts: list[str] = []
     for page in pages:
         page_number = int(page.get("page_number") or 0)
         page_parts = [f'<span class="page-anchor" id="page-{page_number:03d}" aria-label="Source page {page_number}"></span>']
+        if exercises_by_page.get(page_number):
+            page_parts.append(_semantic_exercise_grid_html(page_number, exercises_by_page[page_number]))
         for block in page.get("blocks") or []:
             if isinstance(block, Mapping):
+                block_type = str(block.get("type") or "")
+                block_exercise_id = str(block.get("exercise_id") or "")
+                if block_exercise_id in exercise_ids and block_type in {"diagram", "exercise", "pgn", "solution"}:
+                    continue
                 rendered = _semantic_book_block_html(block, page_number=page_number)
                 if rendered:
                     page_parts.append(rendered)
         if len(page_parts) > 1:
             parts.extend(page_parts)
     return "\n".join(parts) or '<p class="empty-page">No extractable reader content found.</p>'
+
+
+def _semantic_exercise_items_by_page(semantic_book: Mapping[str, Any]) -> dict[int, list[dict[str, Any]]]:
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for item in _semantic_exercise_items(semantic_book):
+        grouped.setdefault(int(item.get("source_page") or 0), []).append(item)
+    return grouped
+
+
+def _semantic_exercise_items(semantic_book: Mapping[str, Any]) -> list[dict[str, Any]]:
+    pages = [page for page in semantic_book.get("pages") or [] if isinstance(page, Mapping)]
+    diagrams_by_exercise: dict[str, dict[str, Any]] = {}
+    exercises_by_id: dict[str, dict[str, Any]] = {}
+    pgn_by_exercise: dict[str, dict[str, Any]] = {}
+    solutions_by_exercise: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+
+    def remember(exercise_id: str) -> None:
+        if exercise_id and exercise_id not in order:
+            order.append(exercise_id)
+
+    for page in pages:
+        page_number = int(page.get("page_number") or 0)
+        for block in page.get("blocks") or []:
+            if not isinstance(block, Mapping):
+                continue
+            exercise_id = str(block.get("exercise_id") or "")
+            if not exercise_id:
+                continue
+            remember(exercise_id)
+            block_type = str(block.get("type") or "")
+            payload = {**dict(block), "_semantic_page_number": page_number}
+            if block_type == "diagram":
+                diagrams_by_exercise.setdefault(exercise_id, payload)
+            elif block_type == "exercise":
+                exercises_by_id.setdefault(exercise_id, payload)
+            elif block_type == "pgn":
+                pgn_by_exercise.setdefault(exercise_id, payload)
+            elif block_type == "solution":
+                solutions_by_exercise.setdefault(exercise_id, payload)
+
+    items: list[dict[str, Any]] = []
+    for exercise_id in order:
+        exercise = exercises_by_id.get(exercise_id, {})
+        diagram = diagrams_by_exercise.get(exercise_id, {})
+        pgn = pgn_by_exercise.get(exercise_id, {})
+        solution = solutions_by_exercise.get(exercise_id, {})
+        source_page = int(
+            exercise.get("source_page")
+            or diagram.get("source_page")
+            or diagram.get("_semantic_page_number")
+            or exercise.get("_semantic_page_number")
+            or 0
+        )
+        solution_text = str(solution.get("book_line") or pgn.get("pgn") or pgn.get("book_line") or "").strip()
+        items.append(
+            {
+                "exercise_id": exercise_id,
+                "label": _semantic_exercise_label(exercise_id),
+                "diagram_id": str(diagram.get("diagram_id") or exercise.get("diagram_id") or ""),
+                "source_page": source_page,
+                "solution_id": f"solution-{exercise_id}" if solution_text else "",
+                "solution_page": int(solution.get("_semantic_page_number") or 0),
+                "fen": str(diagram.get("fen") or ""),
+                "fen_status": str(diagram.get("fen_status") or "unavailable"),
+                "side_to_move": str(diagram.get("side_to_move") or "unknown"),
+                "difficulty": str(exercise.get("difficulty") or "unknown"),
+                "review_status": str(diagram.get("review_status") or "needs_review"),
+                "board_crop_path": str(diagram.get("board_crop_path") or ""),
+                "original_crop_path": str(diagram.get("original_crop_path") or diagram.get("board_crop_path") or ""),
+                "asset_missing_reason": str(diagram.get("asset_missing_reason") or "source_asset_unavailable"),
+                "pgn": str(pgn.get("pgn") or diagram.get("pgn") or ""),
+                "book_line": str(solution.get("book_line") or pgn.get("book_line") or diagram.get("book_line") or ""),
+                "best_move": str(solution.get("best_move") or _semantic_best_move_from_line(solution_text)),
+                "commentary": str(solution.get("commentary") or ""),
+            }
+        )
+    return items
+
+
+def _semantic_exercise_label(exercise_id: str) -> str:
+    value = str(exercise_id or "").strip()
+    match = re.fullmatch(r"ex_(\d+)_(\d+)", value)
+    if match:
+        return f"Ex. {int(match.group(1))}-{int(match.group(2))}"
+    final_match = re.fullmatch(r"final_(\d+)", value)
+    if final_match:
+        return f"Final {int(final_match.group(1))}"
+    return value.replace("_", " ").strip().title() or "Exercise"
+
+
+def _semantic_exercise_grid_html(page_number: int, items: list[dict[str, Any]]) -> str:
+    cards = "\n".join(_semantic_exercise_card_html(item, compact=True) for item in items)
+    return f"""<section class="exercise-grid-section" data-kind="exercise-grid" data-page="{page_number}" data-exercise-count="{len(items)}">
+  <header class="exercise-grid-header">
+    <div>
+      <p class="eyebrow">Exercise Grid</p>
+      <h2>Exercises - Page {page_number}</h2>
+    </div>
+    <span class="status-chip">{len(items)} exercises</span>
+  </header>
+  <div class="exercise-grid" data-count="{len(items)}">{cards}</div>
+</section>"""
+
+
+def _semantic_study_mode_html(items: list[dict[str, Any]]) -> str:
+    if not items:
+        return ""
+    cards = "\n".join(_semantic_study_mode_card_html(item, index=index, total=len(items)) for index, item in enumerate(items))
+    return f"""<section class="study-mode-panel" id="study-mode" data-study-mode data-kind="study-mode">
+  <header class="study-mode-header">
+    <div>
+      <p class="eyebrow">Study Mode</p>
+      <h2>Practice one position at a time</h2>
+      <p>Solutions stay hidden until you reveal them.</p>
+    </div>
+    <span class="study-mode-counter" data-study-counter>1 / {len(items)}</span>
+  </header>
+  <div class="study-mode-stage">{cards}</div>
+  <div class="study-mode-controls">
+    <button type="button" class="copy-button secondary" data-study-prev>Previous exercise</button>
+    <button type="button" class="copy-button" data-study-next>Next exercise</button>
+  </div>
+</section>"""
+
+
+def _semantic_study_mode_card_html(item: Mapping[str, Any], *, index: int, total: int) -> str:
+    hidden = " hidden" if index else ""
+    return f"""<article class="study-mode-card" data-study-card data-study-index="{index}"{hidden}>
+  {_semantic_exercise_card_html(dict(item), compact=False)}
+  <p class="flow-meta">Exercise {index + 1} of {total}</p>
+</article>"""
+
+
+def _semantic_exercise_card_html(item: Mapping[str, Any], *, compact: bool) -> str:
+    exercise_id = str(item.get("exercise_id") or "")
+    card_id = exercise_id if compact else f"study-{exercise_id}"
+    label = str(item.get("label") or _semantic_exercise_label(exercise_id))
+    fen = str(item.get("fen") or "")
+    fen_valid = False
+    if fen:
+        fen_valid, _warnings = validate_fen(fen)
+    fen_available = bool(fen and fen_valid and str(item.get("fen_status") or "") == "available")
+    side = str(item.get("side_to_move") or "unknown")
+    side_label = {"white": "White to move", "w": "White to move", "black": "Black to move", "b": "Black to move"}.get(side, "Unknown side to move")
+    difficulty = str(item.get("difficulty") or "unknown")
+    difficulty_label = difficulty if difficulty != "unknown" else "not rated"
+    board_crop_path = str(item.get("board_crop_path") or "")
+    original_crop_path = str(item.get("original_crop_path") or board_crop_path)
+    missing_reason = str(item.get("asset_missing_reason") or "source_asset_unavailable")
+    pgn = str(item.get("pgn") or "").strip()
+    book_line = str(item.get("book_line") or "").strip()
+    best_move = str(item.get("best_move") or _semantic_best_move_from_line(pgn or book_line)).strip()
+    commentary = str(item.get("commentary") or "").strip()
+    board_html = _fen_board_placeholder(fen) if fen_available else (
+        f'<img class="board-crop-fallback" src="{html.escape(board_crop_path, quote=True)}" alt="{html.escape(label, quote=True)} board crop">'
+        if board_crop_path
+        else (
+            '<div class="diagram-asset-placeholder" '
+            f'data-asset-missing-reason="{html.escape(missing_reason, quote=True)}">'
+            f'Board unavailable: {html.escape(missing_reason.replace("_", " "))}</div>'
+        )
+    )
+    copy_fen_html = (
+        f'<button type="button" class="copy-button" data-copy-value="{html.escape(fen, quote=True)}">Copy FEN</button>'
+        if fen_available
+        else '<span class="component-status review"><strong>FEN unavailable</strong></span>'
+    )
+    solution_body = _semantic_exercise_solution_html(
+        best_move=best_move,
+        pgn=pgn,
+        book_line=book_line,
+        commentary=commentary,
+    )
+    original_html = (
+        f'<a class="copy-button secondary" href="{html.escape(original_crop_path, quote=True)}">Open original crop</a>'
+        if original_crop_path
+        else (
+            '<span class="component-status review" '
+            f'data-asset-missing-reason="{html.escape(missing_reason, quote=True)}">'
+            '<strong>Original crop unavailable</strong></span>'
+        )
+    )
+    analysis_link = f'<a class="copy-button secondary" href="#{html.escape(card_id, quote=True)}">Open analysis / board</a>'
+    return f"""<article class="exercise-card {'exercise-card-large' if not compact else ''}" id="{html.escape(card_id, quote=True)}" data-kind="exercise" data-exercise-id="{html.escape(exercise_id, quote=True)}" data-review-status="{html.escape(str(item.get('review_status') or ''), quote=True)}">
+  <header class="card-header exercise-card-header">
+    <div>
+      <h3>{html.escape(label)}</h3>
+      <p class="diagram-source-line">Page {int(item.get('source_page') or 0)} · {html.escape(side_label)} · Difficulty {html.escape(difficulty_label)}</p>
+    </div>
+    <span class="review-badge {html.escape(str(item.get('review_status') or 'needs_review'), quote=True)}">{html.escape(str(item.get('review_status') or 'needs_review').replace('_', ' '))}</span>
+  </header>
+  <div class="exercise-card-body">
+    <div class="board-placeholder exercise-board" data-fen="{html.escape(fen if fen_available else '', quote=True)}">{board_html}</div>
+    <div class="exercise-actions">
+      {copy_fen_html}
+      {analysis_link}
+      {original_html}
+    </div>
+    <details class="exercise-solution" data-solution-toggle data-show-label="Show solution" data-hide-label="Hide solution">
+      <summary>Show solution</summary>
+      {solution_body}
+    </details>
+  </div>
+</article>"""
+
+
+def _semantic_exercise_solution_html(*, best_move: str, pgn: str, book_line: str, commentary: str) -> str:
+    if not any([best_move, pgn, book_line, commentary]):
+        return '<p class="component-status review"><strong>Solution not linked</strong></p>'
+    copy_value = pgn or book_line
+    copy_html = (
+        f'<button type="button" class="copy-button" data-copy-value="{html.escape(copy_value, quote=True)}">Copy PGN</button>'
+        if copy_value
+        else ""
+    )
+    line_html = (
+        f"""<div class="pgn-copy-block code-copy-block">
+  <div class="code-block-header"><span>{'PGN' if pgn else 'Book line'}</span>{copy_html}</div>
+  <pre class="pgn"><code>{html.escape(copy_value)}</code></pre>
+</div>"""
+        if copy_value
+        else ""
+    )
+    return "\n".join(
+        part
+        for part in [
+            f'<p><strong>Best move:</strong> {html.escape(best_move)}</p>' if best_move else "",
+            line_html,
+            f'<p>{html.escape(commentary)}</p>' if commentary else "",
+        ]
+        if part
+    )
 
 
 def _semantic_book_block_html(block: Mapping[str, Any], *, page_number: int) -> str:
@@ -4290,7 +4538,7 @@ def _semantic_source_index_html(book: dict[str, Any]) -> str:
     )
     semantic_book = book.get("semantic_book") if isinstance(book.get("semantic_book"), Mapping) else {}
     flow_html = (
-        _semantic_book_flow_html(semantic_book)
+        _semantic_study_mode_html(_semantic_exercise_items(semantic_book)) + _semantic_book_flow_html(semantic_book)
         if semantic_book.get("schema") == SEMANTIC_BOOK_SCHEMA
         else _semantic_source_book_flow_html(pages)
     )
@@ -5222,6 +5470,27 @@ h2.reader-text { margin-top:1.4rem; color:#5c3215; font-size:1.45rem; }
 .notation-panel { min-width:0; }
 .diagram-card, .pgn-card, .exercise-card, .solution-card { border:1px solid var(--km-border); border-radius:var(--km-radius-card); background:var(--km-surface); padding:1rem; margin:0 0 1rem; box-shadow:0 12px 30px rgba(63,42,20,.07); }
 .diagram-panel .diagram-card { margin-bottom:0; }
+.exercise-grid-section, .study-mode-panel { border:1px solid var(--km-border); border-radius:var(--km-radius-card); background:linear-gradient(180deg,#FFFDF8 0%,#FFF8EC 100%); padding:1.15rem; margin:0 0 1.15rem; box-shadow:var(--km-shadow); }
+.exercise-grid-header, .study-mode-header { display:flex; align-items:flex-start; justify-content:space-between; gap:1rem; border-bottom:1px solid var(--km-border); margin-bottom:1rem; padding-bottom:.85rem; }
+.exercise-grid-header h2, .study-mode-header h2 { margin:.05rem 0 .25rem; font-size:clamp(1.35rem,2.4vw,2rem); line-height:1.1; }
+.study-mode-header p { margin:.25rem 0 0; color:var(--km-muted); }
+.exercise-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:.9rem; align-items:stretch; }
+.exercise-card { min-width:0; }
+.exercise-grid .exercise-card { margin:0; display:flex; flex-direction:column; }
+.exercise-card-large { max-width:760px; margin:0 auto 1rem; }
+.exercise-card-header { align-items:flex-start; }
+.exercise-card-body { display:grid; gap:.75rem; }
+.exercise-board { min-height:220px; padding:.75rem; }
+.study-mode-card .exercise-board { min-height:330px; }
+.exercise-actions { min-width:0; display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:.55rem; }
+.exercise-actions > * { min-width:0; }
+.copy-button.secondary { background:#FFF8EC; color:var(--km-text); }
+.exercise-solution { border:1px solid #ead8bf; border-radius:14px; background:#fffaf1; padding:0 .75rem; }
+.exercise-solution summary { cursor:pointer; min-height:44px; display:flex; align-items:center; font-weight:900; color:var(--accent); }
+.study-mode-stage { min-width:0; }
+.study-mode-card[hidden] { display:none; }
+.study-mode-controls { display:flex; flex-wrap:wrap; gap:.6rem; justify-content:flex-end; border-top:1px solid var(--km-border); padding-top:.85rem; margin-top:.85rem; }
+.study-mode-counter { border:1px solid var(--km-border); border-radius:999px; background:#FFF8EC; padding:.35rem .75rem; font-family:Inter, ui-sans-serif, system-ui, sans-serif; font-weight:900; white-space:nowrap; }
 .card-header { display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; justify-content:space-between; margin-bottom:.75rem; }
 .card-header h3 { margin:0; font-size:1.2rem; }
 .diagram-source-line { margin:.2rem 0 0; color:var(--km-muted); font-family:Inter, ui-sans-serif, system-ui, sans-serif; font-size:.88rem; }
@@ -5231,7 +5500,7 @@ h2.reader-text { margin-top:1.4rem; color:#5c3215; font-size:1.45rem; }
 .component-status.ok { border-color:#8ec3a0; background:#eefaf1; color:#124d2d; }
 .review-action { margin-left:auto; font-weight:800; white-space:nowrap; }
 .review-badge, .status-chip { border:1px solid var(--line); border-radius:999px; padding:.18rem .55rem; font-size:.82rem; font-weight:900; }
-.review-badge.accepted { color:var(--ok); border-color:rgba(20,107,58,.35); }
+.review-badge.accepted, .review-badge.verified { color:var(--ok); border-color:rgba(20,107,58,.35); }
 .review-badge.needs-human-review, .review-badge.needs_review { color:var(--warn); border-color:rgba(167,97,0,.35); }
 .diagram-grid { display:grid; grid-template-columns:minmax(280px,340px) minmax(0,1fr); gap:1rem; align-items:start; }
 .diagram-panel .diagram-grid { grid-template-columns:1fr; }
@@ -5276,7 +5545,7 @@ body.reader-mode .page-preview-link, body.reader-mode .warnings { display:none; 
 @media (max-width: 1180px) { .study-block-grid { grid-template-columns:1fr; } .diagram-grid { grid-template-columns:minmax(280px,340px) minmax(0,1fr); } }
 @media (max-width: 940px) { .layout { grid-template-columns:1fr; } .sidebar { position:relative; top:auto; max-height:none; } .scorebar { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 @media (max-width: 840px) { .study-block-grid { grid-template-columns:1fr; } }
-@media (max-width: 720px) { .layout,.app-header { padding-left:.85rem; padding-right:.85rem; } .scorebar,.diagram-grid,.study-actions { grid-template-columns:1fr; } .chapter-page,.study-block { border-radius:0; margin-left:-.85rem; margin-right:-.85rem; } .flow-prose { padding-left:.75rem; } .study-block-header { display:block; } .code-block-header { align-items:stretch; flex-direction:column; } .copy-button { width:100%; } }
+@media (max-width: 720px) { .layout,.app-header { padding-left:.85rem; padding-right:.85rem; } .scorebar,.diagram-grid,.study-actions,.exercise-actions { grid-template-columns:1fr; } .chapter-page,.study-block,.exercise-grid-section,.study-mode-panel { border-radius:0; margin-left:-.85rem; margin-right:-.85rem; } .flow-prose { padding-left:.75rem; } .study-block-header,.exercise-grid-header,.study-mode-header { display:block; } .code-block-header { align-items:stretch; flex-direction:column; } .copy-button { width:100%; } .study-mode-controls { display:grid; grid-template-columns:1fr; } .study-mode-card .exercise-board { min-height:260px; } }
 """
 
 
@@ -5304,6 +5573,41 @@ if (readerMode) {
     document.body.classList.toggle('reader-mode', readerMode.checked);
   });
 }
+
+document.querySelectorAll('[data-solution-toggle]').forEach((details) => {
+  const summary = details.querySelector('summary');
+  if (!summary) return;
+  const showLabel = details.getAttribute('data-show-label') || 'Show solution';
+  const hideLabel = details.getAttribute('data-hide-label') || 'Hide solution';
+  details.addEventListener('toggle', () => {
+    summary.textContent = details.open ? hideLabel : showLabel;
+  });
+});
+
+document.querySelectorAll('[data-study-mode]').forEach((panel) => {
+  const cards = Array.from(panel.querySelectorAll('[data-study-card]'));
+  const counter = panel.querySelector('[data-study-counter]');
+  const previous = panel.querySelector('[data-study-prev]');
+  const next = panel.querySelector('[data-study-next]');
+  let active = 0;
+  const render = () => {
+    cards.forEach((card, index) => {
+      card.hidden = index !== active;
+    });
+    if (counter) counter.textContent = `${active + 1} / ${cards.length}`;
+    if (previous) previous.disabled = active === 0;
+    if (next) next.disabled = active === cards.length - 1;
+  };
+  previous?.addEventListener('click', () => {
+    active = Math.max(0, active - 1);
+    render();
+  });
+  next?.addEventListener('click', () => {
+    active = Math.min(cards.length - 1, active + 1);
+    render();
+  });
+  render();
+});
 """
 
 

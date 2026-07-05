@@ -347,7 +347,7 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
         self.assertIn(fen, html_text)
         self.assertNotIn("Source evidence HTML", html_text)
 
-    def test_store_extra_artifacts_blocks_reader_without_accepted_fen_or_marker(self) -> None:
+    def test_store_extra_artifacts_opens_reader_with_component_review_without_accepted_fen_or_marker(self) -> None:
         job_id = "real-extra-artifact-blocked-sidecar"
         self._artifact_root(job_id)
         stored = app_module._store_extra_conversion_artifacts(
@@ -407,23 +407,20 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
                 "artifacts": stored,
             }
 
-        response = self.client.get(f"/convert/artifact/{job_id}/chess_pgn_html")
+        response = self.client.get(f"/convert/artifact/{job_id}/chess_reader")
         status_response = self.client.get(f"/convert/status/{job_id}")
 
-        self.assertEqual(response.status_code, 409)
-        payload = response.get_json()
-        self.assertEqual(payload["error_code"], "final_reader_health_gate_failed")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("X-KindleMaster-Reader-Health"), "component-review")
         self.assertNotIn("Bad source evidence HTML", response.get_data(as_text=True))
-        self.assertIn("fen_accepted_zero", payload["final_reader_health_gate"]["blockers"])
-        self.assertIn("missing_side_marker_evidence", payload["final_reader_health_gate"]["blockers"])
         self.assertEqual(status_response.status_code, 200)
         status_payload = status_response.get_json()
-        self.assertFalse(status_payload["final_reader_available"])
+        self.assertTrue(status_payload["final_reader_available"])
         self.assertIn("fen_accepted_zero", status_payload["final_reader_blockers"])
         self.assertIn("missing_side_marker_evidence", status_payload["final_reader_blockers"])
-        self.assertFalse(status_payload["chess_files"]["chess_pgn_html"]["available"])
+        self.assertTrue(status_payload["chess_files"]["chess_reader"]["available"])
 
-    def test_yusupov_style_conversion_downloads_block_bad_final_reader_and_keep_preview_audit_only(self) -> None:
+    def test_yusupov_style_conversion_opens_component_review_reader_and_keeps_preview_audit_only(self) -> None:
         job_id = "yusupov-style-artifact-e2e-blocked"
         self._artifact_root(job_id)
         stored = app_module._store_extra_conversion_artifacts(
@@ -530,8 +527,9 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
         self.assertEqual(status_response.status_code, 200)
         status_payload = status_response.get_json()
         self.assertIn("chess_pgn_html", status_payload["chess_files"])
-        self.assertFalse(status_payload["chess_files"]["chess_pgn_html"]["available"])
-        self.assertFalse(status_payload["final_reader_available"])
+        self.assertTrue(status_payload["chess_files"]["chess_reader"]["available"])
+        self.assertTrue(status_payload["chess_files"]["chess_pgn_html"]["available"])
+        self.assertTrue(status_payload["final_reader_available"])
         self.assertIn("fen_accepted_zero", status_payload["final_reader_blockers"])
         self.assertIn("missing_side_marker_evidence", status_payload["final_reader_blockers"])
         self.assertIn("chess_diagrams", status_payload["artifacts"])
@@ -540,12 +538,11 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
         self.assertNotIn("chess_diagrams", status_payload["chess_files"])
         self.assertNotIn("chess_glyph_diagnostics", status_payload["chess_files"])
 
-        self.assertEqual(html_response.status_code, 409)
-        html_payload = html_response.get_json()
-        self.assertEqual(html_payload["error_code"], "final_reader_health_gate_failed")
+        self.assertEqual(html_response.status_code, 200)
+        html_payload = status_payload
         self.assertNotIn("Bad Yusupov-style source evidence HTML", html_response.get_data(as_text=True))
-        self.assertIn("fen_accepted_zero", html_payload["final_reader_health_gate"]["blockers"])
-        self.assertIn("missing_side_marker_evidence", html_payload["final_reader_health_gate"]["blockers"])
+        self.assertIn("fen_accepted_zero", html_payload["final_reader_blockers"])
+        self.assertIn("missing_side_marker_evidence", html_payload["final_reader_blockers"])
 
         self.assertEqual(preview_response.status_code, 200)
         preview_text = preview_response.get_data(as_text=True)
@@ -926,6 +923,7 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
 
         status_response = self.client.get(f"/convert/status/{job_id}")
         pgn_response = self.client.get(f"/convert/artifact/{job_id}/chess_pgn")
+        reader_response = self.client.get(f"/convert/artifact/{job_id}/chess_reader")
         html_response = self.client.get(f"/convert/artifact/{job_id}/chess_pgn_html")
         preview_response = self.client.get(f"/convert/artifact/{job_id}/pdf_layout_preview")
 
@@ -934,6 +932,10 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
         self.assertEqual(status_payload["chess_files"]["chess_pgn"]["label"], "PGN")
         self.assertTrue(status_payload["chess_files"]["chess_pgn"]["available"])
         self.assertEqual(status_payload["chess_files"]["chess_pgn"]["download_url"], f"/convert/artifact/{job_id}/chess_pgn")
+        self.assertEqual(status_payload["chess_files"]["chess_reader"]["label"], "Chess Reader")
+        self.assertTrue(status_payload["chess_files"]["chess_reader"]["available"])
+        self.assertEqual(status_payload["chess_files"]["chess_reader"]["artifact_type"], "final_pdf_two_crop_reader")
+        self.assertEqual(status_payload["chess_files"]["chess_reader"]["download_url"], f"/convert/artifact/{job_id}/chess_reader")
         self.assertEqual(status_payload["chess_files"]["chess_pgn_html"]["label"], "HTML PGN/FEN")
         self.assertTrue(status_payload["chess_files"]["chess_pgn_html"]["available"])
         self.assertEqual(status_payload["chess_files"]["chess_pgn_html"]["artifact_type"], "final_pdf_two_crop_reader")
@@ -950,23 +952,29 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
         self.assertIn('[Event "Study"]', pgn_response.get_data(as_text=True))
         self.assertIn("attachment", pgn_response.headers.get("Content-Disposition", ""))
 
+        self.assertEqual(reader_response.status_code, 200)
+        self.assertEqual(reader_response.headers.get("X-KindleMaster-Artifact-View"), "chess_reader")
+        reader_text = reader_response.get_data(as_text=True)
+        self.assertIn('data-artifact-type="final_pdf_two_crop_reader"', reader_text)
+        self.assertIn('data-side-marker-status="trusted_marker"', reader_text)
+        self.assertIn("side_to_move: white", reader_text)
+        self.assertIn("FEN: 8/8/8/8/8/8/4K3/4k3 w - - 0 1", reader_text)
+        self.assertIn("Review reason: board_grid_not_detected", reader_text)
+        self.assertNotIn('src=""', reader_text)
+        self.assertNotIn("Source evidence report should not be served.", reader_text)
+        self.assertNotIn("PDF layout audit only", reader_text)
+        self.assertNotIn("Side to move: unknown", reader_text)
+
         self.assertEqual(html_response.status_code, 200)
         html_text = html_response.get_data(as_text=True)
         self.assertIn('data-artifact-type="final_pdf_two_crop_reader"', html_text)
-        self.assertIn('data-side-marker-status="trusted_marker"', html_text)
-        self.assertIn("side_to_move: white", html_text)
-        self.assertIn("FEN: 8/8/8/8/8/8/4K3/4k3 w - - 0 1", html_text)
-        self.assertIn("Review reason: board_grid_not_detected", html_text)
-        self.assertNotIn('src=""', html_text)
         self.assertNotIn("Source evidence report should not be served.", html_text)
-        self.assertNotIn("PDF layout audit only", html_text)
-        self.assertNotIn("Side to move: unknown", html_text)
 
         self.assertEqual(preview_response.status_code, 200)
         preview_text = preview_response.get_data(as_text=True)
         self.assertIn("To nie jest finalny reader szachowy", preview_text)
-        self.assertIn(f'href="/convert/artifact/{job_id}/chess_pgn_html"', preview_text)
-        self.assertIn('data-primary-chess-artifact="chess_pgn_html"', preview_text)
+        self.assertIn(f'href="/convert/artifact/{job_id}/chess_reader"', preview_text)
+        self.assertIn('data-primary-chess-artifact="chess_reader"', preview_text)
         self.assertIn("PDF layout audit only", preview_text)
         self.assertNotIn('data-primary-chess-artifact="pdf_layout_preview"', preview_text)
         pgn_response.close()
@@ -1007,7 +1015,7 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
         self.assertEqual(error_payload["chess_pgn"]["reason"], "no_accepted_pgn_records")
         self.assertEqual(error_payload["chess_pgn"]["message"], "PGN niedostepny: brak zaakceptowanych partii")
 
-    def test_unhealthy_final_reader_with_mass_unknown_is_blocked(self) -> None:
+    def test_partial_final_reader_with_mass_unknown_opens_as_component_review(self) -> None:
         job_id = "routing-unhealthy-final-reader"
         source_html = self._register_chess_html_job(
             job_id,
@@ -1082,29 +1090,29 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        response = self.client.get(f"/convert/artifact/{job_id}/chess_pgn_html")
+        response = self.client.get(f"/convert/artifact/{job_id}/chess_reader")
         status_response = self.client.get(f"/convert/status/{job_id}")
 
-        self.assertEqual(response.status_code, 409)
-        payload = response.get_json()
-        self.assertEqual(payload["error_code"], "final_reader_health_gate_failed")
-        self.assertEqual(payload["artifact_type"], "final_pdf_two_crop_reader")
-        self.assertTrue(payload["source_html_evidence_path"].endswith("chess_games.html"))
-        health_gate = payload["final_reader_health_gate"]
-        self.assertEqual(health_gate["decision"], "fail")
-        self.assertIn("mass_side_to_move_unknown", health_gate["blockers"])
-        self.assertIn("empty_img_src", health_gate["blockers"])
-        self.assertIn("missing_side_marker_evidence", health_gate["blockers"])
-        self.assertNotIn("Side to move: unknown", response.get_data(as_text=True))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("X-KindleMaster-Artifact-View"), "chess_reader")
+        self.assertEqual(response.headers.get("X-KindleMaster-Reader-Health"), "component-review")
+        response_text = response.get_data(as_text=True)
+        self.assertIn('data-artifact-type="final_pdf_two_crop_reader"', response_text)
+        self.assertIn("Side to move unavailable", response_text)
+        self.assertNotIn("Side to move: unknown", response_text)
+        self.assertNotIn("mass_side_to_move_unknown", response_text)
+        self.assertNotIn('src=""', response_text)
         self.assertEqual(status_response.status_code, 200)
         status_payload = status_response.get_json()
         self.assertEqual(status_payload["artifact_type"], "final_pdf_two_crop_reader")
-        self.assertFalse(status_payload["final_reader_available"])
+        self.assertTrue(status_payload["final_reader_available"])
         self.assertEqual(status_payload["final_reader_health"]["status"], "FAIL")
         self.assertIn("mass_side_to_move_unknown", status_payload["final_reader_blockers"])
-        self.assertEqual(status_payload["artifacts"]["chess_pgn_html"]["download_url"], f"/convert/artifact/{job_id}/chess_pgn_html")
+        self.assertEqual(status_payload["chess_files"]["chess_reader"]["download_url"], f"/convert/artifact/{job_id}/chess_reader")
+        self.assertTrue(status_payload["chess_files"]["chess_reader"]["available"])
+        self.assertEqual(status_payload["artifacts"]["chess_reader"]["download_url"], f"/convert/artifact/{job_id}/chess_reader")
         self.assertEqual(status_payload["artifacts"]["pdf_layout_preview"]["download_url"], f"/convert/artifact/{job_id}/pdf_layout_preview")
-        self.assertFalse(status_payload["artifacts"]["chess_pgn_html"]["final_reader_available"])
+        self.assertTrue(status_payload["artifacts"]["chess_reader"]["final_reader_available"])
 
 
 if __name__ == "__main__":

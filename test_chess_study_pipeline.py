@@ -940,6 +940,54 @@ class ChessStudyPipelineTests(unittest.TestCase):
             self.assertNotIn("localhost", source_index)
             self.assertNotIn("fen_not_recognized", source_index)
 
+    def test_semantic_reader_uses_component_statuses_not_raw_technical_tokens(self) -> None:
+        source_index = chess_study_export._semantic_source_index_html(
+            {
+                "title": "Reader split sample",
+                "summary": {"html_pages": 1, "diagrams_total": 1, "fen_accepted": 0, "accepted_pgn": 0},
+                "artifact_manifest": {
+                    "artifact_type": "final_pdf_two_crop_reader",
+                    "pipeline_mode": "source_html_semantic_reader",
+                },
+                "chapters": [{"title": "Chapter 1", "start_page": 1}],
+                "pages": [
+                    {
+                        "page": 1,
+                        "text_chunks": [
+                            {"text": "A clean reader paragraph.", "reading_order": 1},
+                            {"text": "fen_not_recognized board_crop_quality=fail", "reading_order": 2},
+                        ],
+                        "diagrams": [
+                            {
+                                "id": "p001_d001",
+                                "page": 1,
+                                "reading_order": 3,
+                                "caption": "Diagram 1",
+                                "validation_status": "needs-human-review",
+                                "review_reason": "fen_not_recognized marker_crop_quality=fail",
+                                "side_to_move": "",
+                                "fen": "",
+                                "fen_candidate": "8/8/8/8/8/8/4K3/4k3 w - - 0 1",
+                                "image_path": "",
+                            }
+                        ],
+                        "pgn_records": [],
+                    }
+                ],
+            }
+        )
+
+        self.assertIn("Reader", source_index)
+        self.assertIn("Study", source_index)
+        self.assertIn("Audit", source_index)
+        self.assertIn("FEN unavailable", source_index)
+        self.assertIn("Side to move unavailable", source_index)
+        self.assertIn("Send to review", source_index)
+        self.assertNotIn("Side to move: unknown", source_index)
+        self.assertNotIn("fen_not_recognized", source_index)
+        self.assertNotIn("board_crop_quality=fail", source_index)
+        self.assertNotIn("marker_crop_quality=fail", source_index)
+
     def test_source_reader_resolves_diagram_assets_and_uses_placeholders(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

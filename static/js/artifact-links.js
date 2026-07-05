@@ -16,7 +16,7 @@
           const artifact = normalizeObject(artifacts[key]);
           if (!artifact) continue;
           const artifactType = artifact.artifact_type || artifact.artifactType || "";
-          if (key === "chess_pgn_html" && artifactType !== "final_pdf_two_crop_reader") {
+          if ((key === "chess_reader" || key === "chess_pgn_html") && artifactType !== "final_pdf_two_crop_reader") {
             return "";
           }
           const jobId = source.job_id || source.jobId || artifact.job_id || artifact.jobId || "";

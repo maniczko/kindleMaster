@@ -385,7 +385,7 @@ def _send_local_input_artifact_fallback(job_id: str, job: dict, artifact: dict):
 
 def _artifact_should_download_as_attachment(artifact_key: str, artifact: dict) -> bool:
     key = _safe_artifact_key(artifact_key)
-    if key in {"input", "pdf_layout_preview", "chess_pgn_html", "chess_glyph_diagnostics", "deepseek_audit"}:
+    if key in {"input", "pdf_layout_preview", "chess_reader", "chess_pgn_html", "chess_glyph_diagnostics", "deepseek_audit"}:
         return False
     content_type = str(artifact.get("content_type") or "").strip().lower()
     if key.startswith("chess_") and (content_type.startswith("text/html") or content_type.startswith("application/json")):
@@ -405,8 +405,8 @@ def _pdf_layout_preview_warning_payload(job_id: str, job: dict) -> dict[str, obj
         or _artifact_signed_url(artifact_mapping)
         or ""
     ).strip()
-    if not href and artifact_type == FINAL_READER_ARTIFACT_TYPE:
-        href = f"/convert/artifact/{job_id}/chess_pgn_html"
+    if artifact_type == FINAL_READER_ARTIFACT_TYPE:
+        href = f"/convert/artifact/{job_id}/chess_reader"
     blockers = [str(blocker) for blocker in list(reader_payload.get("final_reader_blockers", []) or []) if str(blocker)]
     final_reader_available = bool(reader_payload.get("final_reader_available", False)) and bool(href)
     if not final_reader_available and not blockers:
@@ -515,25 +515,72 @@ def _send_remote_artifact_proxy(artifact: dict, *, job_id: str, artifact_key: st
     return response
 
 
-def _render_chess_pgn_semantic_artifact(job_id: str, job: dict, artifact: dict, artifact_path: Path):
+def _reader_health_blocks_whole_artifact(health_gate: Mapping[str, object] | None) -> bool:
+    """Only structural reader failures block the whole reader.
+
+    Content-quality blockers such as unknown side-to-move, missing FEN, or missing
+    PGN are rendered as component status inside Chess Reader. This keeps the book
+    readable while preserving the audit trail.
+    """
+    if not _final_reader_health_gate_failed(health_gate):
+        return False
+    blockers = {str(blocker) for blocker in (health_gate or {}).get("blockers", []) or [] if str(blocker)}
+    hard_blockers = {
+        "final_reader_health_gate_missing",
+        "final_reader_missing",
+        "artifact_manifest_missing",
+        "semantic_chess_reader_missing",
+        "diagram_cards_missing",
+    }
+    return bool(blockers & hard_blockers)
+
+
+def _sanitize_chess_reader_html(html_text: str) -> str:
+    replacements = {
+        "fen_not_recognized": "FEN unavailable",
+        "mass_side_to_move_unknown": "Side marker review required",
+        "board_crop_quality=fail": "Board crop needs review",
+        "marker_crop_quality=fail": "Marker crop needs review",
+        "Side to move: unknown": "Side to move unavailable",
+        "side_to_move_unknown": "side to move unavailable",
+    }
+    for raw, replacement in replacements.items():
+        html_text = html_text.replace(raw, replacement)
+    html_text = html_text.replace('src=""', 'data-empty-src="true"')
+    html_text = html_text.replace("src=''", "data-empty-src='true'")
+    return html_text
+
+
+def _render_chess_pgn_semantic_artifact(
+    job_id: str,
+    job: dict,
+    artifact: dict,
+    artifact_path: Path,
+    *,
+    asset_route: str = "chess_pgn_html_asset",
+):
     semantic_index = _ensure_semantic_chess_html_artifact(job_id, job, artifact_path)
     if semantic_index is None or not semantic_index.is_file():
         return None
     health_gate = _semantic_chess_reader_health_gate(semantic_index)
     if not health_gate:
         health_gate = _missing_final_reader_health_gate(semantic_index)
-    if _final_reader_health_gate_failed(health_gate):
+    if _reader_health_blocks_whole_artifact(health_gate):
         return _final_reader_health_gate_failed_response(job_id, semantic_index, artifact_path, artifact, health_gate)
     try:
         html_text = semantic_index.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         html_text = semantic_index.read_text(encoding="utf-8", errors="replace")
-    asset_base = f"/convert/artifact/{quote(job_id)}/chess_pgn_html_asset/"
+    html_text = _sanitize_chess_reader_html(html_text)
+    asset_base = f"/convert/artifact/{quote(job_id)}/{asset_route}/"
     html_text = _rewrite_semantic_chess_asset_urls(html_text, asset_base=asset_base)
     response = app.make_response(html_text)
     response.headers["Cache-Control"] = "no-store, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["X-KindleMaster-Artifact-Source"] = "semantic-chess-reader"
+    response.headers["X-KindleMaster-Artifact-View"] = "chess_reader"
+    if _final_reader_health_gate_failed(health_gate):
+        response.headers["X-KindleMaster-Reader-Health"] = "component-review"
     response.headers["Content-Type"] = "text/html; charset=utf-8"
     return response
 
@@ -1315,9 +1362,15 @@ def _chess_reader_routing_metadata(
     final_reader_available = bool(
         artifact_type == FINAL_READER_ARTIFACT_TYPE
         and (final_reader_path or remote_reader_available)
-        and not final_reader_health_failed
+        and not _reader_health_blocks_whole_artifact(health_gate)
     )
     final_reader_blockers: list[str] = []
+    if final_reader_health_failed:
+        raw_blockers = final_reader_health.get("blockers", [])
+        if isinstance(raw_blockers, list):
+            final_reader_blockers = [str(blocker) for blocker in raw_blockers if str(blocker)]
+        if not final_reader_blockers:
+            final_reader_blockers = ["final_reader_health_gate_failed"]
     if not final_reader_available:
         if artifact_type != FINAL_READER_ARTIFACT_TYPE:
             final_reader_blockers = [str(reason) for reason in source_html_quality_gate.get("reasons", []) if str(reason)]
@@ -1325,12 +1378,6 @@ def _chess_reader_routing_metadata(
                 final_reader_blockers = ["final_reader_missing"]
         elif not final_reader_path and not remote_reader_available:
             final_reader_blockers = ["final_reader_missing"]
-        elif final_reader_health_failed:
-            raw_blockers = final_reader_health.get("blockers", [])
-            if isinstance(raw_blockers, list):
-                final_reader_blockers = [str(blocker) for blocker in raw_blockers if str(blocker)]
-            if not final_reader_blockers:
-                final_reader_blockers = ["final_reader_health_gate_failed"]
     routing: dict[str, object] = {
         "artifact_type": artifact_type,
         "final_reader_path": final_reader_path,
@@ -1532,6 +1579,44 @@ def _chess_reader_file_payload(job_id: str, job: Mapping[str, object], reader_pa
     return payload
 
 
+def _chess_reader_primary_file_payload(job_id: str, reader_payload: Mapping[str, object]) -> dict[str, object]:
+    href = f"/convert/artifact/{job_id}/chess_reader"
+    blockers = list(reader_payload.get("final_reader_blockers", []) or [])
+    available = bool(reader_payload.get("final_reader_available", False))
+    message = (
+        "Chess Reader gotowy; czesc FEN/PGN moze wymagac review."
+        if available and blockers
+        else ("Chess Reader gotowy do otwarcia." if available else "Chess Reader niedostepny.")
+    )
+    payload: dict[str, object] = {
+        "key": "chess_reader",
+        "label": "Chess Reader",
+        "filename": "chess_reader.html",
+        "content_type": "text/html; charset=utf-8",
+        "artifact_type": str(reader_payload.get("artifact_type") or ""),
+        "available": available,
+        "status": "available" if available else "blocked",
+        "download_url": href if available else "",
+        "message": message,
+        "final_reader_available": available,
+        "final_reader_health": dict(reader_payload.get("final_reader_health", {}) or {}),
+        "final_reader_blockers": blockers,
+        "source_html_quality_gate": dict(reader_payload.get("source_html_quality_gate", {}) or {}),
+    }
+    for key in (
+        "final_reader_path",
+        "source_html_evidence_path",
+        "side_unknown_count",
+        "trusted_marker_count",
+        "empty_img_src_count",
+        "diagrams_total",
+        "fen_accepted",
+    ):
+        if key in reader_payload:
+            payload[key] = reader_payload.get(key)
+    return payload
+
+
 def _enrich_job_chess_delivery_artifacts(job_id: str, job: dict) -> dict[str, object]:
     reader_payload = _enrich_job_chess_reader_artifact_routing(job_id, job)
     pgn_payload = _enrich_job_chess_pgn_artifact_routing(job_id, job)
@@ -1543,6 +1628,12 @@ def _enrich_job_chess_delivery_artifacts(job_id: str, job: dict) -> dict[str, ob
         payload["chess_pgn"] = pgn_payload
         chess_files["chess_pgn"] = pgn_payload
     if reader_payload:
+        reader_file_payload = _chess_reader_primary_file_payload(job_id, reader_payload)
+        payload["chess_reader"] = reader_file_payload
+        chess_files["chess_reader"] = reader_file_payload
+        artifacts = dict(job.get("artifacts", {}) or {})
+        artifacts["chess_reader"] = reader_file_payload
+        job["artifacts"] = artifacts
         html_payload = _chess_reader_file_payload(job_id, job, reader_payload)
         payload["chess_pgn_html"] = html_payload
         chess_files["chess_pgn_html"] = html_payload
@@ -5953,6 +6044,10 @@ def convert_artifact_download(job_id: str, artifact_key: str):
     chess_delivery_payload = _enrich_job_chess_delivery_artifacts(job_id, job)
     artifacts = dict(job.get("artifacts", {}) or {})
     artifact = artifacts.get(key)
+    if key == "chess_reader":
+        source_reader_artifact = artifacts.get("chess_pgn_html")
+        if isinstance(source_reader_artifact, dict):
+            artifact = source_reader_artifact
     if not isinstance(artifact, dict):
         if key == "chess_pgn" and isinstance(chess_delivery_payload.get("chess_pgn"), Mapping):
             return _chess_pgn_unavailable_response(job_id, chess_delivery_payload.get("chess_pgn"))
@@ -5982,8 +6077,14 @@ def convert_artifact_download(job_id: str, artifact_key: str):
         return _send_remote_artifact_proxy(artifact, job_id=job_id, artifact_key=key)
     if key == "pdf_layout_preview":
         return _render_pdf_layout_preview_shell(job_id, job, artifact, artifact_path)
-    if key == "chess_pgn_html":
-        semantic_response = _render_chess_pgn_semantic_artifact(job_id, job, artifact, artifact_path)
+    if key in {"chess_reader", "chess_pgn_html"}:
+        semantic_response = _render_chess_pgn_semantic_artifact(
+            job_id,
+            job,
+            artifact,
+            artifact_path,
+            asset_route="chess_reader_asset" if key == "chess_reader" else "chess_pgn_html_asset",
+        )
         if semantic_response is not None:
             return semantic_response
         return _final_reader_missing_response(job_id, artifact_path, artifact)
@@ -5999,6 +6100,7 @@ def convert_artifact_download(job_id: str, artifact_key: str):
     return response
 
 
+@app.route("/convert/artifact/<job_id>/chess_reader_asset/<path:asset_path>", methods=["GET"])
 @app.route("/convert/artifact/<job_id>/chess_pgn_html_asset/<path:asset_path>", methods=["GET"])
 def convert_chess_pgn_html_asset(job_id: str, asset_path: str):
     _mark_timed_out_conversion_jobs()

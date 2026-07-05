@@ -114,7 +114,7 @@
         const url = artifact.download_url || artifact.downloadUrl || "";
         if (!url) return items;
         const artifactType = artifact.artifact_type || artifact.artifactType || "";
-        if (key === "chess_pgn_html" && artifactType !== "final_pdf_two_crop_reader") {
+        if ((key === "chess_reader" || key === "chess_pgn_html") && artifactType !== "final_pdf_two_crop_reader") {
           return items;
         }
         items[key] = {
@@ -132,6 +132,7 @@
       const labels = {
         pdf_layout_preview: "PDF layout preview (audyt layoutu)",
         chess_glyph_diagnostics: "Glyph diagnostics",
+        chess_reader: "Chess Reader",
         chess_pgn_html: "HTML PGN/FEN",
         chess_pgn: "PGN",
       };
@@ -160,7 +161,13 @@
 
     function normalizeFinalChessReader(payload, rawArtifacts) {
       const artifacts = normalizeObject(rawArtifacts);
-      const artifact = normalizeObject(artifacts.chess_pgn_html);
+      const chessFiles = normalizeObject(payload && payload.chess_files);
+      const artifact = normalizeObject(
+        artifacts.chess_reader
+        || chessFiles.chess_reader
+        || artifacts.chess_pgn_html
+        || chessFiles.chess_pgn_html,
+      );
       const conversion = normalizeObject(payload && payload.conversion);
       const sourceGate = normalizeObject(artifact.source_html_quality_gate || payload.source_html_quality_gate || conversion.source_html_quality_gate);
       const health = normalizeObject(artifact.final_reader_health || payload.final_reader_health || conversion.final_reader_health);
@@ -173,12 +180,13 @@
       );
       let url = "";
       if (typeof window !== "undefined" && window.KindleMasterArtifactLinks) {
-        url = window.KindleMasterArtifactLinks.artifactShellUrl(payload, "chess_pgn_html");
+        url = window.KindleMasterArtifactLinks.artifactShellUrl(payload, "chess_reader")
+          || window.KindleMasterArtifactLinks.artifactShellUrl(payload, "chess_pgn_html");
       }
       if (!url) url = artifact.download_url || artifact.downloadUrl || "";
       const jobId = payload.job_id || payload.jobId || artifact.job_id || artifact.jobId || "";
       if (!url && artifactType === FINAL_CHESS_READER_ARTIFACT_TYPE && jobId) {
-        url = `/convert/artifact/${encodeURIComponent(jobId)}/chess_pgn_html`;
+        url = `/convert/artifact/${encodeURIComponent(jobId)}/chess_reader`;
       }
       const availabilityValues = [
         optionalBoolean(artifact.final_reader_available),
@@ -196,8 +204,7 @@
       );
       const available = artifactType === FINAL_CHESS_READER_ARTIFACT_TYPE
         && Boolean(url)
-        && !explicitlyUnavailable
-        && !finalReaderHealthFailed(health);
+        && !explicitlyUnavailable;
       let blockers = [
         ...arrayOfStrings(artifact.final_reader_blockers),
         ...arrayOfStrings(payload.final_reader_blockers),
@@ -222,9 +229,9 @@
     function renderChessReaderAction(chessReader) {
       if (!chessReader || !chessReader.present) return "";
       if (chessReader.available && chessReader.url) {
-        return `<a data-primary="true" href="${escapeHtml(chessReader.url)}" target="_blank" rel="noreferrer">HTML PGN/FEN</a>`;
+        return `<a data-primary="true" href="${escapeHtml(chessReader.url)}" target="_blank" rel="noreferrer">Chess Reader</a>`;
       }
-      return `<span class="chess-reader-blocker">HTML PGN/FEN niedostepny: ${escapeHtml(chessReader.blockerText || "final reader niedostepny")}</span>`;
+      return `<span class="chess-reader-blocker">Chess Reader niedostepny: ${escapeHtml(chessReader.blockerText || "final reader niedostepny")}</span>`;
     }
 
     function normalizeChessPgnFile(payload, rawArtifacts, chessReader) {
@@ -266,8 +273,8 @@
         ? `<a href="${escapeHtml(chessPgn.url)}">Pobierz PGN</a>`
         : `<span class="chess-reader-blocker">PGN niedostepny: ${escapeHtml((chessPgn && chessPgn.blockerText) || "brak zaakceptowanych partii")}</span>`;
       const readerAction = chessReader && chessReader.available && chessReader.url
-        ? `<a data-primary="true" href="${escapeHtml(chessReader.url)}" target="_blank" rel="noreferrer">Otworz / pobierz HTML PGN/FEN</a>`
-        : `<span class="chess-reader-blocker">HTML PGN/FEN niedostepny: ${escapeHtml((chessReader && chessReader.blockerText) || "final reader niedostepny")}</span>`;
+        ? `<a data-primary="true" href="${escapeHtml(chessReader.url)}" target="_blank" rel="noreferrer">Otworz Chess Reader</a>`
+        : `<span class="chess-reader-blocker">Chess Reader niedostepny: ${escapeHtml((chessReader && chessReader.blockerText) || "final reader niedostepny")}</span>`;
       return `<div class="chess-download-files"><b>Pliki szachowe do pobrania</b>${pgnAction}${readerAction}</div>`;
     }
 

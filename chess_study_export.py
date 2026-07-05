@@ -49,6 +49,7 @@ STUDY_STATUSES = {
 QUALITY_PROFILES = {"smoke", "default", "masterkindle"}
 FINAL_READER_ARTIFACT_TYPE = "final_pdf_two_crop_reader"
 SOURCE_HTML_EVIDENCE_ARTIFACT_TYPE = "source_html_evidence_only"
+SEMANTIC_BOOK_SCHEMA = "kindlemaster.chess_reader.semantic_book.v1"
 QUALITY_THRESHOLDS = {
     "smoke": {
         "pages": 1,
@@ -591,6 +592,8 @@ def rebuild_chess_source_html_export(
         diagrams=[diagram for page in pages for diagram in page.get("diagrams", [])],
     )
     book_payload["artifact_manifest"] = artifact_manifest
+    semantic_book = build_chess_reader_semantic_book(book_payload)
+    book_payload["semantic_book"] = semantic_book
     diagrams_payload = {
         "schema": "kindlemaster.semantic_chess_diagrams.v1",
         "diagrams": [diagram for page in pages for diagram in page.get("diagrams", [])],
@@ -599,6 +602,7 @@ def rebuild_chess_source_html_export(
     _write_json(data_dir / "book.json", book_payload)
     _write_json(data_dir / "diagrams.json", diagrams_payload)
     _write_source_html_reports(book_payload, diagrams_payload, reports_dir)
+    _write_chess_reader_semantic_book_reports(out, semantic_book)
     _write_artifact_manifest(data_dir / "artifact_manifest.json", artifact_manifest)
     (out / "styles.css").write_text(_semantic_source_styles_css(), encoding="utf-8")
     (out / "app.js").write_text(_semantic_source_app_js(), encoding="utf-8")
@@ -2656,6 +2660,12 @@ def render_semantic_source_reader(out_dir: str | Path) -> dict[str, Any]:
             "out_dir": str(out),
         }
     book = _attach_engine_analysis_to_book(book, out)
+    semantic_book = book.get("semantic_book") if isinstance(book.get("semantic_book"), Mapping) else {}
+    if semantic_book.get("schema") != SEMANTIC_BOOK_SCHEMA:
+        semantic_book = build_chess_reader_semantic_book(book)
+        book["semantic_book"] = semantic_book
+        _write_json(out / "data" / "book.json", book)
+    _write_chess_reader_semantic_book_reports(out, semantic_book)
     (out / "styles.css").write_text(_semantic_source_styles_css(), encoding="utf-8")
     (out / "app.js").write_text(_semantic_source_app_js(), encoding="utf-8")
     (out / "index.html").write_text(_semantic_source_index_html(book), encoding="utf-8")
@@ -3906,6 +3916,362 @@ def _quality_dashboard_row(row: dict[str, Any]) -> str:
     )
 
 
+def build_chess_reader_semantic_book(book: Mapping[str, Any]) -> dict[str, Any]:
+    """Build the versioned semantic model used by Chess Reader.
+
+    The model is intentionally reader-facing: raw OCR diagnostics, board
+    coordinates, and technical blockers are kept out of paragraph text and
+    represented as component metadata/status instead.
+    """
+
+    source = dict(book or {})
+    pages = _semantic_pages_with_logical_pgn(source)
+    semantic_pages: list[dict[str, Any]] = []
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        page_number = int(page.get("page") or page.get("page_number") or 0)
+        elements = _semantic_source_page_elements(page)
+        study_blocks = _semantic_source_study_blocks(page, elements)
+        blocks: list[dict[str, Any]] = []
+        for block in study_blocks:
+            blocks.extend(_semantic_book_blocks_from_study_block(page, block))
+        blocks = [block for block in blocks if _semantic_book_block_has_value(block)]
+        if blocks:
+            semantic_pages.append({"page_number": page_number, "blocks": blocks})
+    return {
+        "schema": SEMANTIC_BOOK_SCHEMA,
+        "book_title": str(source.get("title") or "Chess Study Reader"),
+        "source_pdf": str(source.get("source_pdf") or ""),
+        "source_html": str(source.get("source_html") or ""),
+        "summary": _semantic_book_summary(semantic_pages),
+        "pages": semantic_pages,
+    }
+
+
+def _write_chess_reader_semantic_book_reports(out: Path, semantic_book: Mapping[str, Any]) -> None:
+    report_dir = out / "reports" / "chess_reader"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    payload = dict(semantic_book or {})
+    _write_json(report_dir / "semantic_book.json", payload)
+    (report_dir / "semantic_book.md").write_text(_semantic_book_markdown(payload), encoding="utf-8")
+
+
+def _semantic_book_markdown(semantic_book: Mapping[str, Any]) -> str:
+    summary = dict(semantic_book.get("summary") or {})
+    pages = list(semantic_book.get("pages") or [])
+    first_page = pages[0] if pages else {}
+    lines = [
+        "# Chess Reader Semantic Book",
+        "",
+        f"- Schema: `{semantic_book.get('schema')}`",
+        f"- Title: `{semantic_book.get('book_title')}`",
+        f"- Pages: `{summary.get('page_count', 0)}`",
+        f"- Blocks: `{summary.get('block_count', 0)}`",
+        f"- Diagrams: `{summary.get('diagram_count', 0)}`",
+        f"- Exercises: `{summary.get('exercise_count', 0)}`",
+        f"- Solutions: `{summary.get('solution_count', 0)}`",
+        f"- PGN blocks: `{summary.get('pgn_count', 0)}`",
+        "",
+        "## First Page Sample",
+        "",
+        "```json",
+        json.dumps(first_page, ensure_ascii=False, indent=2)[:4000],
+        "```",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _semantic_book_summary(pages: list[dict[str, Any]]) -> dict[str, int]:
+    blocks = [block for page in pages for block in page.get("blocks", []) if isinstance(block, dict)]
+    return {
+        "page_count": len(pages),
+        "block_count": len(blocks),
+        "paragraph_count": len([block for block in blocks if block.get("type") == "paragraph"]),
+        "heading_count": len([block for block in blocks if block.get("type") == "heading"]),
+        "diagram_count": len([block for block in blocks if block.get("type") == "diagram"]),
+        "exercise_count": len([block for block in blocks if block.get("type") == "exercise"]),
+        "solution_count": len([block for block in blocks if block.get("type") == "solution"]),
+        "pgn_count": len([block for block in blocks if block.get("type") == "pgn"]),
+    }
+
+
+def _semantic_book_blocks_from_study_block(page: Mapping[str, Any], block: Mapping[str, Any]) -> list[dict[str, Any]]:
+    if block.get("kind") == "prose":
+        return _semantic_book_text_blocks(block.get("prose") or [])
+    page_number = int(page.get("page") or page.get("page_number") or 0)
+    output: list[dict[str, Any]] = []
+    output.extend(_semantic_book_text_blocks(block.get("prose_before") or []))
+    diagram = block.get("diagram") if isinstance(block.get("diagram"), Mapping) else None
+    pgn = block.get("pgn") if isinstance(block.get("pgn"), Mapping) else None
+    exercise_id = _semantic_exercise_id_for(diagram, pgn)
+    if diagram:
+        output.append(_semantic_book_diagram_block(page, diagram, pgn, exercise_id=exercise_id))
+        if exercise_id:
+            output.append(_semantic_book_exercise_block(page_number, diagram, exercise_id))
+    if pgn:
+        output.append(_semantic_book_pgn_block(pgn, exercise_id=exercise_id))
+        solution = _semantic_book_solution_block(pgn, exercise_id=exercise_id, diagram_id=str((diagram or {}).get("id") or ""))
+        if solution:
+            output.append(solution)
+    output.extend(_semantic_book_text_blocks(block.get("prose_after") or []))
+    return output
+
+
+def _semantic_book_text_blocks(chunks: Iterable[Any]) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    for chunk in chunks:
+        if not isinstance(chunk, Mapping):
+            continue
+        text = _normalize_book_text(str(chunk.get("text") or ""))
+        if not text or _is_reader_noise_text(text) or _is_technical_audit_text(text):
+            continue
+        if _semantic_text_is_coordinates_or_marker(text):
+            continue
+        if _source_text_kind(text) == "heading" or str(chunk.get("text_kind") or "") == "heading":
+            blocks.append({"type": "heading", "level": 2, "text": text})
+        else:
+            blocks.append({"type": "paragraph", "text": text})
+    return blocks
+
+
+def _semantic_text_is_coordinates_or_marker(text: str) -> bool:
+    value = re.sub(r"\s+", " ", str(text or "").strip())
+    compact = value.replace(" ", "")
+    if re.fullmatch(r"[a-h]{4,8}", compact, flags=re.IGNORECASE):
+        return True
+    if re.fullmatch(r"[1-8]{4,8}", compact):
+        return True
+    if value in {"△", "▼"}:
+        return True
+    if re.fullmatch(r"(?:bbox|raw bbox|debug id|ocr id).+", value, flags=re.IGNORECASE):
+        return True
+    return False
+
+
+def _semantic_book_diagram_block(
+    page: Mapping[str, Any],
+    diagram: Mapping[str, Any],
+    pgn: Mapping[str, Any] | None,
+    *,
+    exercise_id: str,
+) -> dict[str, Any]:
+    fen = str(diagram.get("fen") or diagram.get("full_fen") or "").strip() or None
+    fen_candidate = str(diagram.get("fen_candidate") or "").strip()
+    side = _semantic_side_to_move(diagram.get("side_to_move"))
+    status = str(diagram.get("validation_status") or diagram.get("full_fen_status") or "")
+    review_reason = str(
+        diagram.get("review_reason")
+        or diagram.get("full_fen_blocker")
+        or diagram.get("fen_status")
+        or ""
+    ).lower()
+    review_status = "verified" if status == "accepted" else "needs_review"
+    pgn_text = str((pgn or {}).get("pgn") or "").strip() or None
+    fen_status = "available" if fen else ("needs_review" if fen_candidate else "unavailable")
+    if "fen_not_recognized" in review_reason:
+        fen_status = "unavailable"
+    return {
+        "type": "diagram",
+        "diagram_id": str(diagram.get("id") or diagram.get("diagram_id") or ""),
+        "caption": str(diagram.get("caption") or diagram.get("label") or diagram.get("id") or "Diagram"),
+        "source_page": int(diagram.get("page") or page.get("page") or page.get("page_number") or 0),
+        "side_to_move": side,
+        "fen": fen,
+        "fen_status": fen_status,
+        "pgn": pgn_text,
+        "pgn_status": "available" if pgn_text else ("needs_review" if pgn else "unavailable"),
+        "board_crop_path": str(diagram.get("board_crop_path") or diagram.get("source_crop") or diagram.get("image_path") or ""),
+        "side_marker_crop_path": str(diagram.get("side_marker_crop_path") or ""),
+        "side_marker_status": str(diagram.get("side_marker_status") or ""),
+        "asset_missing_reason": str(diagram.get("asset_missing_reason") or ""),
+        "original_page_path": str(page.get("page_preview") or ""),
+        "review_status": review_status,
+        "exercise_id": exercise_id,
+    }
+
+
+def _semantic_book_exercise_block(page_number: int, diagram: Mapping[str, Any], exercise_id: str) -> dict[str, Any]:
+    caption = str(diagram.get("caption") or diagram.get("label") or diagram.get("id") or "")
+    return {
+        "type": "exercise",
+        "exercise_id": exercise_id,
+        "diagram_id": str(diagram.get("id") or diagram.get("diagram_id") or ""),
+        "source_page": page_number,
+        "difficulty": _semantic_difficulty_from_text(caption),
+    }
+
+
+def _semantic_book_pgn_block(pgn: Mapping[str, Any], *, exercise_id: str) -> dict[str, Any]:
+    pgn_text = str(pgn.get("pgn") or "").strip()
+    visible_text = str(pgn.get("visible_review_text") or pgn.get("raw_text") or "").strip()
+    status = "available" if pgn_text else ("needs_review" if visible_text else "unavailable")
+    return {
+        "type": "pgn",
+        "exercise_id": exercise_id,
+        "label": str(pgn.get("label") or pgn.get("id") or "PGN / book line"),
+        "pgn": pgn_text or None,
+        "book_line": visible_text or None,
+        "pgn_status": status,
+    }
+
+
+def _semantic_book_solution_block(
+    pgn: Mapping[str, Any],
+    *,
+    exercise_id: str,
+    diagram_id: str,
+) -> dict[str, Any] | None:
+    pgn_text = str(pgn.get("pgn") or "").strip()
+    visible_text = str(pgn.get("visible_review_text") or pgn.get("raw_text") or "").strip()
+    book_line = pgn_text or visible_text
+    if not book_line:
+        return None
+    return {
+        "type": "solution",
+        "exercise_id": exercise_id,
+        "diagram_id": diagram_id,
+        "best_move": _semantic_best_move_from_line(book_line),
+        "book_line": book_line,
+        "commentary": visible_text if visible_text and visible_text != pgn_text else "",
+    }
+
+
+def _semantic_book_block_has_value(block: Mapping[str, Any]) -> bool:
+    block_type = str(block.get("type") or "")
+    if block_type in {"paragraph", "heading"}:
+        return bool(str(block.get("text") or "").strip())
+    if block_type == "diagram":
+        return bool(str(block.get("diagram_id") or block.get("caption") or "").strip())
+    return bool(block_type)
+
+
+def _semantic_side_to_move(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"w", "white"}:
+        return "white"
+    if normalized in {"b", "black"}:
+        return "black"
+    return "unknown"
+
+
+def _semantic_exercise_id_for(diagram: Mapping[str, Any] | None, pgn: Mapping[str, Any] | None) -> str:
+    candidates = [
+        str((diagram or {}).get("caption") or ""),
+        str((diagram or {}).get("label") or ""),
+        str((diagram or {}).get("id") or ""),
+        str((pgn or {}).get("label") or ""),
+        str((pgn or {}).get("visible_review_text") or ""),
+    ]
+    for candidate in candidates:
+        exercise_id = _semantic_exercise_id_from_text(candidate)
+        if exercise_id:
+            return exercise_id
+    diagram_id = str((diagram or {}).get("id") or "")
+    return f"ex_{_safe_filename(diagram_id)}" if diagram_id else ""
+
+
+def _semantic_exercise_id_from_text(text: str) -> str:
+    value = str(text or "")
+    match = EXERCISE_LABEL_RE.search(value)
+    if match:
+        return f"ex_{int(match.group('chapter'))}_{int(match.group('number'))}"
+    diagram_match = re.search(r"\bDiagram\s+(?P<chapter>\d{1,2})[-.](?P<number>\d{1,2})\b", value, flags=re.IGNORECASE)
+    if diagram_match:
+        return f"ex_{int(diagram_match.group('chapter'))}_{int(diagram_match.group('number'))}"
+    final_match = FINAL_LABEL_RE.search(value)
+    if final_match:
+        return f"final_{int(final_match.group('number'))}"
+    return ""
+
+
+def _semantic_difficulty_from_text(text: str) -> str:
+    match = re.search(r"(?<!\*)\*{1,3}(?!\*)", str(text or ""))
+    if not match:
+        return "unknown"
+    return match.group(0)
+
+
+def _semantic_best_move_from_line(text: str) -> str:
+    value = str(text or "")
+    match = re.search(
+        r"\b\d+\.(?:\.\.)?\s*(?P<move>O-O-O|O-O|0-0-0|0-0|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[+#]?|[a-h]x[a-h][1-8](?:=[QRBN])?[+#]?)",
+        value,
+    )
+    return str(match.group("move")).replace("0", "O") if match else ""
+
+
+def _semantic_book_flow_html(semantic_book: Mapping[str, Any]) -> str:
+    pages = [page for page in semantic_book.get("pages") or [] if isinstance(page, Mapping)]
+    parts: list[str] = []
+    for page in pages:
+        page_number = int(page.get("page_number") or 0)
+        page_parts = [f'<span class="page-anchor" id="page-{page_number:03d}" aria-label="Source page {page_number}"></span>']
+        for block in page.get("blocks") or []:
+            if isinstance(block, Mapping):
+                rendered = _semantic_book_block_html(block, page_number=page_number)
+                if rendered:
+                    page_parts.append(rendered)
+        if len(page_parts) > 1:
+            parts.extend(page_parts)
+    return "\n".join(parts) or '<p class="empty-page">No extractable reader content found.</p>'
+
+
+def _semantic_book_block_html(block: Mapping[str, Any], *, page_number: int) -> str:
+    block_type = str(block.get("type") or "")
+    if block_type == "heading":
+        level = min(3, max(2, int(block.get("level") or 2)))
+        return f'<h{level} class="reader-text semantic-heading" data-page="{page_number}">{html.escape(str(block.get("text") or ""))}</h{level}>'
+    if block_type == "paragraph":
+        return f'<p class="reader-text semantic-paragraph" data-page="{page_number}">{html.escape(str(block.get("text") or ""))}</p>'
+    if block_type == "diagram":
+        return _semantic_source_diagram_html(_diagram_record_from_semantic_block(block, page_number=page_number))
+    if block_type == "exercise":
+        return f"""<section class="exercise-card" data-kind="exercise" data-exercise-id="{html.escape(str(block.get('exercise_id') or ''), quote=True)}">
+  <h3>{html.escape(str(block.get('exercise_id') or 'Exercise'))}</h3>
+  <p>Difficulty: <strong>{html.escape(str(block.get('difficulty') or 'unknown'))}</strong></p>
+</section>"""
+    if block_type == "pgn":
+        return _semantic_source_pgn_html(
+            {
+                "id": str(block.get("exercise_id") or block.get("label") or ""),
+                "label": str(block.get("label") or "PGN / book line"),
+                "status": "accepted" if block.get("pgn_status") == "available" and block.get("pgn") else "needs-human-review",
+                "pgn": str(block.get("pgn") or ""),
+                "visible_review_text": str(block.get("book_line") or ""),
+                "logical_page": page_number,
+            }
+        )
+    if block_type == "solution":
+        return f"""<section class="solution-card" data-kind="solution" data-exercise-id="{html.escape(str(block.get('exercise_id') or ''), quote=True)}">
+  <h3>Solution</h3>
+  {f'<p><strong>Best move</strong> {html.escape(str(block.get("best_move") or ""))}</p>' if block.get("best_move") else ''}
+  {f'<pre class="pgn"><code>{html.escape(str(block.get("book_line") or ""))}</code></pre>' if block.get("book_line") else ''}
+  {f'<p>{html.escape(str(block.get("commentary") or ""))}</p>' if block.get("commentary") else ''}
+</section>"""
+    return ""
+
+
+def _diagram_record_from_semantic_block(block: Mapping[str, Any], *, page_number: int) -> dict[str, Any]:
+    side = str(block.get("side_to_move") or "unknown")
+    side_value = "w" if side == "white" else ("b" if side == "black" else "")
+    fen = str(block.get("fen") or "")
+    return {
+        "id": str(block.get("diagram_id") or ""),
+        "caption": str(block.get("caption") or block.get("diagram_id") or "Diagram"),
+        "page": int(block.get("source_page") or page_number),
+        "validation_status": "accepted" if block.get("review_status") == "verified" else "needs-human-review",
+        "review_reason": "FEN unavailable" if block.get("fen_status") != "available" else "",
+        "side_to_move": side_value,
+        "fen": fen,
+        "image_path": str(block.get("board_crop_path") or ""),
+        "side_marker_crop_path": str(block.get("side_marker_crop_path") or ""),
+        "side_marker_status": str(block.get("side_marker_status") or ""),
+        "asset_missing_reason": str(block.get("asset_missing_reason") or "source_asset_unavailable"),
+    }
+
+
 def _semantic_source_index_html(book: dict[str, Any]) -> str:
     summary = dict(book.get("summary") or {})
     artifact_manifest = dict(book.get("artifact_manifest") or {})
@@ -3916,7 +4282,12 @@ def _semantic_source_index_html(book: dict[str, Any]) -> str:
         for chapter in chapters
         if int(chapter.get("start_page") or 0)
     )
-    flow_html = _semantic_source_book_flow_html(pages)
+    semantic_book = book.get("semantic_book") if isinstance(book.get("semantic_book"), Mapping) else {}
+    flow_html = (
+        _semantic_book_flow_html(semantic_book)
+        if semantic_book.get("schema") == SEMANTIC_BOOK_SCHEMA
+        else _semantic_source_book_flow_html(pages)
+    )
     mode_switch = """<nav class="reader-mode-switch" aria-label="Reader view modes">
       <a href="#book" class="active" data-reader-mode-option="reader">Reader</a>
       <a href="#book" data-reader-mode-option="study">Study</a>

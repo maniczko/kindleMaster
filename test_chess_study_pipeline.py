@@ -889,6 +889,8 @@ class ChessStudyPipelineTests(unittest.TestCase):
                 "data/games.pgn",
                 "reports/conversion-audit.md",
                 "reports/source_html_quality_gate.json",
+                "reports/chess_reader/semantic_book.json",
+                "reports/chess_reader/semantic_book.md",
                 "reports/fen-review.csv",
                 "reports/pgn-review.csv",
                 "reports/ocr-issues.md",
@@ -907,8 +909,13 @@ class ChessStudyPipelineTests(unittest.TestCase):
             qa = json.loads((out / "qa_report.json").read_text(encoding="utf-8"))
             audit = json.loads((out / "audit_summary.json").read_text(encoding="utf-8"))
             pages_summary = json.loads((out / "pages_summary.json").read_text(encoding="utf-8"))
+            semantic_book = json.loads(
+                (out / "reports" / "chess_reader" / "semantic_book.json").read_text(encoding="utf-8")
+            )
             self.assertEqual(report["summary"]["expected_chapters"], 24)
             self.assertEqual(qa["summary"]["expected_chapters"], 24)
+            self.assertEqual(semantic_book["schema"], chess_study_export.SEMANTIC_BOOK_SCHEMA)
+            self.assertIn("pages", semantic_book)
             self.assertIn(qa["status"], {"PASS", "PASS_WITH_REVIEW_ITEMS", "FAIL"})
             self.assertEqual(pages_summary["page_count"], 27)
             self.assertGreater(pages_summary["pages_with_extractable_text"], 0)

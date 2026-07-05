@@ -7,6 +7,7 @@ from pathlib import Path
 
 from chess_study_export import (
     SEMANTIC_BOOK_SCHEMA,
+    _semantic_source_styles_css,
     _semantic_source_index_html,
     _write_chess_reader_semantic_book_reports,
     build_chess_reader_semantic_book,
@@ -111,6 +112,28 @@ class ChessReaderSemanticBookTests(unittest.TestCase):
         self.assertIn("solution-card", html)
         self.assertNotIn("fen_not_recognized", html)
         self.assertNotIn("raw bbox", html)
+
+    def test_reader_design_system_tokens_and_copy_blocks_are_present(self) -> None:
+        book = self._sample_book()
+        diagram = book["pages"][0]["diagrams"][0]
+        diagram["fen"] = "8/8/8/8/8/8/4K3/4k3 b - - 0 1"
+        diagram["validation_status"] = "accepted"
+        book["semantic_book"] = build_chess_reader_semantic_book(book)
+
+        html = _semantic_source_index_html(book)
+        css = _semantic_source_styles_css()
+
+        self.assertIn('class="reader-shell"', html)
+        self.assertIn("fen-copy-block", html)
+        self.assertIn("pgn-copy-block", html)
+        self.assertIn("Copy FEN", html)
+        self.assertIn("Copy PGN", html)
+        self.assertIn("--km-bg-paper:#F6F0E6", css)
+        self.assertIn("--km-surface:#FFFDF8", css)
+        self.assertIn("--km-code-bg:#F1E7D6", css)
+        self.assertIn("grid-template-columns:minmax(620px,var(--reader-text-width)) minmax(300px,var(--reader-diagram-width))", css)
+        self.assertIn("@media (max-width: 1180px)", css)
+        self.assertIn("@media (max-width: 720px)", css)
 
     def test_writes_json_and_markdown_reports(self) -> None:
         semantic_book = build_chess_reader_semantic_book(self._sample_book())

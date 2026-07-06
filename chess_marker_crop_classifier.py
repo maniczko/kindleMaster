@@ -22,6 +22,13 @@ MARKER_CLASS_EXPECTED_SYMBOL = {
     "white_outline_triangle": "△",
     "black_filled_triangle": "▼",
 }
+MARKER_CROP_CORPUS_CLASSES = (
+    "white_outline_triangle",
+    "black_filled_triangle",
+    "bad_crop",
+    "multiple",
+    "unclear",
+)
 
 
 def evaluate_marker_crop_corpus(
@@ -33,64 +40,60 @@ def evaluate_marker_crop_corpus(
     """Evaluate the deterministic marker crop classifier against a corpus manifest."""
 
     root = Path(corpus_root)
-    manifest_path = root / "manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     items: list[dict[str, Any]] = []
     by_class: dict[str, dict[str, Any]] = {}
 
-    for source_item in manifest.get("items") or []:
-        if not isinstance(source_item, dict):
-            continue
-        item_class = str(source_item.get("class") or "")
+    for item_class in MARKER_CROP_CORPUS_CLASSES:
         expected_side = MARKER_CLASS_EXPECTED_SIDE.get(item_class, "")
-        image_path = root / str(source_item.get("path") or "")
-        classification = classify_scan_chess_side_marker_crop(Image.open(image_path))
-        trusted = classification.get("status") == "trusted_marker" and classification.get("side") in {"w", "b"}
-        predicted_side = str(classification.get("side") or "")
-        if expected_side in {"w", "b"}:
-            correct = trusted and predicted_side == expected_side
-            false_trusted = False
-        else:
-            correct = not trusted
-            false_trusted = bool(trusted)
+        class_dir = root / item_class
+        for image_path in sorted(class_dir.glob("*.png")):
+            classification = classify_scan_chess_side_marker_crop(Image.open(image_path))
+            trusted = classification.get("status") == "trusted_marker" and classification.get("side") in {"w", "b"}
+            predicted_side = str(classification.get("side") or "")
+            if expected_side in {"w", "b"}:
+                correct = trusted and predicted_side == expected_side
+                false_trusted = False
+            else:
+                correct = not trusted
+                false_trusted = bool(trusted)
 
-        class_stats = by_class.setdefault(
-            item_class,
-            {
-                "total": 0,
-                "correct": 0,
-                "trusted": 0,
-                "false_trusted": 0,
-                "marker_classification_accuracy": 0.0,
-                "false_trusted_rate": 0.0,
-                "reasons": {},
-            },
-        )
-        class_stats["total"] += 1
-        class_stats["correct"] += 1 if correct else 0
-        class_stats["trusted"] += 1 if trusted else 0
-        class_stats["false_trusted"] += 1 if false_trusted else 0
-        reason = str(classification.get("reason") or "")
-        class_stats["reasons"][reason] = int(class_stats["reasons"].get(reason, 0)) + 1
+            class_stats = by_class.setdefault(
+                item_class,
+                {
+                    "total": 0,
+                    "correct": 0,
+                    "trusted": 0,
+                    "false_trusted": 0,
+                    "marker_classification_accuracy": 0.0,
+                    "false_trusted_rate": 0.0,
+                    "reasons": {},
+                },
+            )
+            class_stats["total"] += 1
+            class_stats["correct"] += 1 if correct else 0
+            class_stats["trusted"] += 1 if trusted else 0
+            class_stats["false_trusted"] += 1 if false_trusted else 0
+            reason = str(classification.get("reason") or "")
+            class_stats["reasons"][reason] = int(class_stats["reasons"].get(reason, 0)) + 1
 
-        items.append(
-            {
-                "id": source_item.get("id") or "",
-                "class": item_class,
-                "path": source_item.get("path") or "",
-                "expected_side": expected_side or "unknown",
-                "expected_symbol": MARKER_CLASS_EXPECTED_SYMBOL.get(item_class, ""),
-                "predicted_side": predicted_side or "unknown",
-                "predicted_symbol": classification.get("symbol") or "",
-                "status": classification.get("status") or "",
-                "trusted": trusted,
-                "confidence": classification.get("confidence") or 0.0,
-                "classifier_version": classification.get("classifier_version") or MARKER_CLASSIFIER_VERSION,
-                "reason": reason,
-                "correct": correct,
-                "false_trusted": false_trusted,
-            }
-        )
+            items.append(
+                {
+                    "id": image_path.stem,
+                    "class": item_class,
+                    "path": image_path.relative_to(root).as_posix(),
+                    "expected_side": expected_side or "unknown",
+                    "expected_symbol": MARKER_CLASS_EXPECTED_SYMBOL.get(item_class, ""),
+                    "predicted_side": predicted_side or "unknown",
+                    "predicted_symbol": classification.get("symbol") or "",
+                    "status": classification.get("status") or "",
+                    "trusted": trusted,
+                    "confidence": classification.get("confidence") or 0.0,
+                    "classifier_version": classification.get("classifier_version") or MARKER_CLASSIFIER_VERSION,
+                    "reason": reason,
+                    "correct": correct,
+                    "false_trusted": false_trusted,
+                }
+            )
 
     for class_stats in by_class.values():
         total = int(class_stats.get("total") or 0)

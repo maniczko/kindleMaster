@@ -14,6 +14,14 @@ MARKER_CLASSIFIER_REPORT_SCHEMA = "kindlemaster.chess_fen.marker_crop_classifier
 MARKER_CLASSIFIER_VERSION = "marker_shape_v2"
 DEFAULT_MARKER_CORPUS_ROOT = Path("reference_inputs/chess_fen/marker_crops")
 DEFAULT_MARKER_CLASSIFIER_REPORT = Path("reports/chess_fen/marker_crop_classifier_report.json")
+MARKER_CLASS_EXPECTED_SIDE = {
+    "white_outline_triangle": "w",
+    "black_filled_triangle": "b",
+}
+MARKER_CLASS_EXPECTED_SYMBOL = {
+    "white_outline_triangle": "△",
+    "black_filled_triangle": "▼",
+}
 
 
 def evaluate_marker_crop_corpus(
@@ -34,7 +42,7 @@ def evaluate_marker_crop_corpus(
         if not isinstance(source_item, dict):
             continue
         item_class = str(source_item.get("class") or "")
-        expected_side = str(source_item.get("label") or "")
+        expected_side = MARKER_CLASS_EXPECTED_SIDE.get(item_class, "")
         image_path = root / str(source_item.get("path") or "")
         classification = classify_scan_chess_side_marker_crop(Image.open(image_path))
         trusted = classification.get("status") == "trusted_marker" and classification.get("side") in {"w", "b"}
@@ -71,7 +79,7 @@ def evaluate_marker_crop_corpus(
                 "class": item_class,
                 "path": source_item.get("path") or "",
                 "expected_side": expected_side or "unknown",
-                "expected_symbol": source_item.get("symbol") or "",
+                "expected_symbol": MARKER_CLASS_EXPECTED_SYMBOL.get(item_class, ""),
                 "predicted_side": predicted_side or "unknown",
                 "predicted_symbol": classification.get("symbol") or "",
                 "status": classification.get("status") or "",
@@ -131,11 +139,7 @@ def evaluate_marker_crop_corpus(
     if report_path:
         path = Path(report_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        # The marker-crop corpus stores public fixture labels for classifier QA, not credentials or user secrets.
-        # codeql[py/clear-text-storage-sensitive-data]
         path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        # The markdown mirrors the same public benchmark metrics and fixture classes for auditability.
-        # codeql[py/clear-text-storage-sensitive-data]
         path.with_suffix(".md").write_text(marker_crop_classifier_markdown(report), encoding="utf-8")
     return report
 

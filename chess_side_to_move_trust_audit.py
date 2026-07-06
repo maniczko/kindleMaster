@@ -40,6 +40,9 @@ def build_side_to_move_diagnostic_report(
         "marker_search_zone_coverage_count": len([row for row in rows if int(row.get("marker_search_zone_count") or 0) > 0]),
         "marker_bbox_detection_count": len([row for row in rows if row.get("marker_bbox_exists")]),
         "marker_crop_generation_count": len([row for row in rows if row.get("side_marker_crop_exists")]),
+        "marker_crop_not_generated_count": len(
+            [row for row in rows if row.get("marker_bbox_exists") and not row.get("side_marker_crop_exists")]
+        ),
         "marker_crop_quality_pass_count": len([row for row in rows if row.get("marker_crop_quality") == "pass"]),
         "trusted_marker_count": len([row for row in rows if row.get("trusted_marker")]),
         "side_to_move_coverage_count": len([row for row in rows if _normalize_side(row.get("side_to_move_detected")) in {"w", "b"}]),
@@ -79,6 +82,7 @@ def side_to_move_diagnostic_markdown(report: Mapping[str, Any]) -> str:
         f"- marker search zone coverage rate: {summary.get('marker_search_zone_coverage_rate', 0.0)}",
         f"- marker bbox detection rate: {summary.get('marker_bbox_detection_rate', 0.0)}",
         f"- marker crop generation rate: {summary.get('marker_crop_generation_rate', 0.0)}",
+        f"- marker crop not generated after bbox: {summary.get('marker_crop_not_generated_count', 0)}",
         f"- marker crop quality pass rate: {summary.get('marker_crop_quality_pass_rate', 0.0)}",
         f"- trusted marker rate: {summary.get('trusted_marker_rate', 0.0)}",
         f"- side-to-move coverage rate: {summary.get('side_to_move_coverage_rate', 0.0)}",
@@ -136,6 +140,7 @@ def side_to_move_diagnostic_html(report: Mapping[str, Any]) -> str:
         ("Search zones", summary.get("marker_search_zone_coverage_rate", 0.0)),
         ("Marker bbox", summary.get("marker_bbox_detection_rate", 0.0)),
         ("Marker crops", summary.get("marker_crop_generation_rate", 0.0)),
+        ("BBox no crop", summary.get("marker_crop_not_generated_count", 0)),
         ("Crop pass", summary.get("marker_crop_quality_pass_rate", 0.0)),
         ("Trusted markers", summary.get("trusted_marker_rate", 0.0)),
         ("Side coverage", summary.get("side_to_move_coverage_rate", 0.0)),
@@ -217,7 +222,8 @@ def _audit_row(
     marker_search_zones = record.get("marker_search_zones") if isinstance(record.get("marker_search_zones"), Mapping) else {}
     marker_search_zone_count = len(marker_search_zones)
     if marker_search_zone_count == 0 and (
-        _bbox4(record.get("marker_search_zone_preview_bbox"))
+        _bbox4(record.get("side_marker_search_bbox"))
+        or _bbox4(record.get("marker_search_zone_preview_bbox"))
         or _path_exists(str(_first(record, "side_marker_search_crop_path", "marker_search_zone_preview_path") or ""), artifact_root)
     ):
         marker_search_zone_count = 1

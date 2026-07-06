@@ -174,8 +174,27 @@ class ChessSideToMoveTrustAuditTests(unittest.TestCase):
         self.assertEqual(report["summary"]["marker_search_zone_coverage_count"], 9)
         self.assertEqual(report["summary"]["marker_bbox_detection_count"], 8)
         self.assertEqual(report["summary"]["marker_crop_generation_count"], 7)
+        self.assertEqual(report["summary"]["marker_crop_not_generated_count"], 1)
         self.assertEqual(report["summary"]["trusted_marker_count"], 2)
         self.assertIn("marker_classifier_missing", report["summary"]["by_primary_blocker"])
+
+    def test_audit_counts_runtime_search_bbox_without_full_zone_map(self) -> None:
+        report = build_side_to_move_diagnostic_report(
+            [
+                {
+                    "diagram_id": "runtime-search-bbox",
+                    "page": 1,
+                    "board_bbox": [10, 10, 90, 90],
+                    "board_crop_quality": "pass",
+                    "side_marker_search_bbox": [90, 4, 120, 96],
+                    "side_marker_status": "marker_missing",
+                }
+            ]
+        )
+
+        self.assertEqual(report["summary"]["marker_search_zone_coverage_count"], 1)
+        self.assertEqual(report["summary"]["marker_search_zone_coverage_rate"], 1.0)
+        self.assertEqual(report["items"][0]["primary_blocker"], "marker_bbox_not_found")
 
     def test_markdown_and_html_include_top_blockers_and_samples(self) -> None:
         report = build_side_to_move_diagnostic_report(

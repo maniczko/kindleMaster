@@ -17,6 +17,12 @@ from chess_crop_qa_benchmark import evaluate_crop_qa_benchmark, write_crop_qa_di
 from chess_engine_analysis import build_engine_analysis_artifacts
 from chess_engine_hints import build_engine_study_hint_artifacts
 from chess_side_marker_blockers import build_side_marker_blocker_attribution, side_marker_blocker_attribution_markdown
+from chess_side_to_move_evidence import (
+    build_side_to_move_coverage_dashboard,
+    resolve_side_to_move_evidence,
+    side_to_move_coverage_dashboard_html,
+    side_to_move_coverage_dashboard_markdown,
+)
 from chess_side_to_move_trust_audit import (
     build_side_to_move_diagnostic_report,
     side_to_move_diagnostic_html,
@@ -342,6 +348,9 @@ def build_auto_chess_flow_artifacts(
         source_gate=source_gate,
         artifact_root=out,
     )
+    side_to_move_coverage_dashboard = build_side_to_move_coverage_dashboard(
+        two_crop_quality_metrics.get("items") or [],
+    )
     side_marker_learning = build_side_marker_learning_artifacts(
         two_crop_quality_metrics.get("items") or [],
         blocker_report=side_marker_blockers,
@@ -430,6 +439,15 @@ def build_auto_chess_flow_artifacts(
         side_to_move_diagnostic_html(side_to_move_diagnostic_report),
         encoding="utf-8",
     )
+    _write_json(chess_fen_report_dir / "side_to_move_coverage_dashboard.json", side_to_move_coverage_dashboard)
+    (chess_fen_report_dir / "side_to_move_coverage_dashboard.md").write_text(
+        side_to_move_coverage_dashboard_markdown(side_to_move_coverage_dashboard),
+        encoding="utf-8",
+    )
+    (chess_fen_report_dir / "side_to_move_coverage_dashboard.html").write_text(
+        side_to_move_coverage_dashboard_html(side_to_move_coverage_dashboard),
+        encoding="utf-8",
+    )
     crop_qa_labels = Path("reference_inputs") / "chess_fen" / "qa" / "qa_crop_validation_rows.jsonl"
     crop_qa_manifest = Path("reference_inputs") / "chess_fen" / "qa" / "qa_crop_validation_manifest.json"
     if crop_qa_labels.is_file():
@@ -502,6 +520,9 @@ def build_auto_chess_flow_artifacts(
                 "why_side_to_move_not_trusted": chess_fen_report_dir / "why_side_to_move_not_trusted.json",
                 "why_side_to_move_not_trusted_md": chess_fen_report_dir / "why_side_to_move_not_trusted.md",
                 "why_side_to_move_not_trusted_html": chess_fen_report_dir / "why_side_to_move_not_trusted.html",
+                "side_to_move_coverage_dashboard": chess_fen_report_dir / "side_to_move_coverage_dashboard.json",
+                "side_to_move_coverage_dashboard_md": chess_fen_report_dir / "side_to_move_coverage_dashboard.md",
+                "side_to_move_coverage_dashboard_html": chess_fen_report_dir / "side_to_move_coverage_dashboard.html",
                 "crop_qa_regression_diff": chess_fen_report_dir / "crop_qa_regression_diff.json",
                 "crop_qa_regression_diff_md": chess_fen_report_dir / "crop_qa_regression_diff.md",
                 "side_marker_learning_queue": chess_fen_report_dir / "side_marker_learning_queue.json",
@@ -619,6 +640,7 @@ def review_auto_chess_output(out_dir: str | Path) -> dict[str, Any]:
         ("PGN replay blockers", review_dir / "pgn_replay_blockers_top10.md"),
         ("Runtime acceptance blockers", out / "report" / "acceptance_blockers.html"),
         ("Why side to move is not trusted", out / "reports" / "chess_fen" / "why_side_to_move_not_trusted.html"),
+        ("Side-to-move coverage dashboard", out / "reports" / "chess_fen" / "side_to_move_coverage_dashboard.html"),
         ("Crop QA runtime regression diff", out / "reports" / "chess_fen" / "crop_qa_regression_diff.md"),
     ]
     items = [
@@ -742,6 +764,8 @@ def _auto_chess_artifacts_current(out: Path) -> bool:
     if not (out / "report" / "acceptance_blockers.json").is_file():
         return False
     if not (out / "reports" / "chess_fen" / "why_side_to_move_not_trusted.json").is_file():
+        return False
+    if not (out / "reports" / "chess_fen" / "side_to_move_coverage_dashboard.json").is_file():
         return False
     if not (out / "reports" / "chess_fen" / "crop_qa_regression_diff.json").is_file():
         return False
@@ -1085,6 +1109,12 @@ def _side_marker_fields(source: dict[str, Any]) -> dict[str, Any]:
         "side_to_move",
         "side_to_move_status",
         "side_to_move_evidence",
+        "side_to_move_source",
+        "side_to_move_confidence",
+        "side_to_move_evidence_tier",
+        "side_to_move_evidence_confidence",
+        "full_fen_allowed",
+        "full_fen_blocker",
         "side_marker_symbol",
         "side_marker_status",
         "side_marker_source",
@@ -2246,60 +2276,71 @@ def _two_crop_quality_rows(diagrams: list[dict[str, Any]], fen_payload: dict[str
             else "",
             "system_suggestion_mismatch": system_suggestion_mismatch,
         }
-        rows.append(
-            {
-                "diagram_id": diagram_id,
-                "page": merged.get("page") or merged.get("page_number") or "",
-                "board_crop_path": str(_first_non_empty(merged.get("board_crop_path"))),
-                "side_marker_crop_path": str(_first_non_empty(merged.get("side_marker_crop_path"))),
-                "side_marker_search_crop_path": str(_first_non_empty(merged.get("side_marker_search_crop_path"))),
-                "side_marker_search_bbox": list(merged.get("side_marker_search_bbox") or []),
-                "marker_search_zone_preview_path": str(_first_non_empty(merged.get("marker_search_zone_preview_path"))),
-                "marker_search_zone_preview_bbox": list(merged.get("marker_search_zone_preview_bbox") or []),
-                "side_marker_review_crop_path": str(_first_non_empty(merged.get("side_marker_review_crop_path"))),
-                "side_marker_review_crop_kind": str(_first_non_empty(merged.get("side_marker_review_crop_kind"))),
-                "debug_overlay_path": str(_first_non_empty(merged.get("debug_overlay_path"))),
-                "debug_context_crop_path": str(_first_non_empty(merged.get("debug_context_crop_path"))),
-                "raw_board_candidate_bbox": list(merged.get("raw_board_candidate_bbox") or []),
-                "tight_board_bbox": list(merged.get("tight_board_bbox") or []),
-                "board_bbox": list(merged.get("board_bbox") or []),
-                "has_board_crop": has_board_crop,
-                "has_side_marker_crop": has_marker_crop,
-                "has_side_marker_search_crop": bool(_first_non_empty(merged.get("side_marker_search_crop_path"))),
-                "has_debug_overlay": has_debug_overlay,
-                "board_crop_quality": row["board_crop_quality"],
-                "board_crop_fail_reason": row["board_crop_fail_reason"],
-                "board_crop_quality_gate": dict(merged.get("board_crop_quality_gate") or {}),
-                "marker_search_zones": marker_search_zones,
-                "selected_marker_zone": merged.get("selected_marker_zone"),
-                "marker_bbox": marker_bbox,
-                "marker_crop_bbox": marker_crop_bbox,
-                "marker_crop_quality": row["marker_crop_quality"],
-                "marker_crop_fail_reason": row["marker_crop_fail_reason"],
-                "marker_crop_quality_gate": dict(merged.get("marker_crop_quality_gate") or {}),
-                "side_to_move_detected": merged.get("side_to_move_detected"),
-                "side_to_move_confidence": merged.get("side_to_move_confidence"),
-                "manual_review_required": row["manual_review_required"],
-                "manual_review_reason": row["manual_review_reason"],
-                "system_suggestion_mismatch": row["system_suggestion_mismatch"],
-                "side_marker_status": marker_status,
-                "side_to_move": str(_first_non_empty(merged.get("side_to_move"), "unknown")),
-                "trusted_marker": trusted_marker,
-                "marker_missing": marker_missing,
-                "marker_conflict": marker_conflict,
-                "marker_ambiguous": marker_ambiguous,
-                "placement_status": placement_status,
-                "full_fen_status": full_fen_status,
-                "blocked_by_marker": bool(blocker_codes & marker_blocker_codes)
-                or marker_missing
-                or marker_conflict
-                or marker_ambiguous,
-                "blocked_by_placement": "full_fen_blocked_by_placement" in blocker_codes
-                or (not placement_accepted and bool(blocker_codes & placement_blocker_codes))
-                or placement_status == "FEN_PLACEMENT_REVIEW_REQUIRED",
-                "acceptance_blocker_codes": sorted(blocker_codes),
-            }
-        )
+        quality_row = {
+            "diagram_id": diagram_id,
+            "page": merged.get("page") or merged.get("page_number") or "",
+            "board_crop_path": str(_first_non_empty(merged.get("board_crop_path"))),
+            "side_marker_crop_path": str(_first_non_empty(merged.get("side_marker_crop_path"))),
+            "side_marker_search_crop_path": str(_first_non_empty(merged.get("side_marker_search_crop_path"))),
+            "side_marker_search_bbox": list(merged.get("side_marker_search_bbox") or []),
+            "marker_search_zone_preview_path": str(_first_non_empty(merged.get("marker_search_zone_preview_path"))),
+            "marker_search_zone_preview_bbox": list(merged.get("marker_search_zone_preview_bbox") or []),
+            "side_marker_review_crop_path": str(_first_non_empty(merged.get("side_marker_review_crop_path"))),
+            "side_marker_review_crop_kind": str(_first_non_empty(merged.get("side_marker_review_crop_kind"))),
+            "debug_overlay_path": str(_first_non_empty(merged.get("debug_overlay_path"))),
+            "debug_context_crop_path": str(_first_non_empty(merged.get("debug_context_crop_path"))),
+            "raw_board_candidate_bbox": list(merged.get("raw_board_candidate_bbox") or []),
+            "tight_board_bbox": list(merged.get("tight_board_bbox") or []),
+            "board_bbox": list(merged.get("board_bbox") or []),
+            "has_board_crop": has_board_crop,
+            "has_side_marker_crop": has_marker_crop,
+            "has_side_marker_search_crop": bool(_first_non_empty(merged.get("side_marker_search_crop_path"))),
+            "has_debug_overlay": has_debug_overlay,
+            "board_crop_quality": row["board_crop_quality"],
+            "board_crop_fail_reason": row["board_crop_fail_reason"],
+            "board_crop_quality_gate": dict(merged.get("board_crop_quality_gate") or {}),
+            "marker_search_zones": marker_search_zones,
+            "selected_marker_zone": merged.get("selected_marker_zone"),
+            "marker_bbox": marker_bbox,
+            "marker_crop_bbox": marker_crop_bbox,
+            "marker_crop_quality": row["marker_crop_quality"],
+            "marker_crop_fail_reason": row["marker_crop_fail_reason"],
+            "marker_crop_quality_gate": dict(merged.get("marker_crop_quality_gate") or {}),
+            "side_to_move_detected": merged.get("side_to_move_detected"),
+            "side_to_move_status": merged.get("side_to_move_status"),
+            "side_to_move_evidence": merged.get("side_to_move_evidence"),
+            "side_to_move_evidence_confidence": merged.get("side_to_move_evidence_confidence"),
+            "side_to_move_confidence": merged.get("side_to_move_confidence"),
+            "human_verified": bool(merged.get("human_verified") is True),
+            "verification_source": str(merged.get("verification_source") or ""),
+            "label_status": str(merged.get("label_status") or ""),
+            "manual_side_to_move": str(_first_non_empty(merged.get("manual_side_to_move"), merged.get("expected_side_to_move"))),
+            "manual_review_required": row["manual_review_required"],
+            "manual_review_reason": row["manual_review_reason"],
+            "system_suggestion_mismatch": row["system_suggestion_mismatch"],
+            "side_marker_status": marker_status,
+            "side_marker_confidence": merged.get("side_marker_confidence"),
+            "marker_classifier_reason": str(merged.get("marker_classifier_reason") or ""),
+            "marker_classifier_confidence": merged.get("marker_classifier_confidence"),
+            "side_to_move": str(_first_non_empty(merged.get("side_to_move"), "unknown")),
+            "trusted_marker": trusted_marker,
+            "marker_missing": marker_missing,
+            "marker_conflict": marker_conflict,
+            "marker_ambiguous": marker_ambiguous,
+            "placement_status": placement_status,
+            "full_fen_status": full_fen_status,
+            "blocked_by_marker": bool(blocker_codes & marker_blocker_codes)
+            or marker_missing
+            or marker_conflict
+            or marker_ambiguous,
+            "blocked_by_placement": "full_fen_blocked_by_placement" in blocker_codes
+            or (not placement_accepted and bool(blocker_codes & placement_blocker_codes))
+            or placement_status == "FEN_PLACEMENT_REVIEW_REQUIRED",
+            "acceptance_blocker_codes": sorted(blocker_codes),
+        }
+        quality_row.update(resolve_side_to_move_evidence({**merged, **quality_row}))
+        quality_row["trusted_marker"] = quality_row.get("side_to_move_source") == "trusted_marker"
+        rows.append(quality_row)
     return rows
 
 

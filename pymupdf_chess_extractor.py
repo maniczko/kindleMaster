@@ -7564,7 +7564,7 @@ def classify_scan_chess_side_marker_crop(crop: Image.Image) -> dict[str, Any]:
             "inner_density": round(inner_density, 4),
             "ink_density": round(ink_density, 4),
         }
-        if aspect >= 1.45:
+        if aspect >= 1.45 and not (inner_density >= 0.55 and density >= 0.35):
             row.update(
                 {
                     "status": "side_to_move_marker_local_ambiguous",

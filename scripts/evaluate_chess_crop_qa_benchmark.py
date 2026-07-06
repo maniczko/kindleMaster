@@ -15,7 +15,9 @@ from chess_crop_qa_benchmark import evaluate_crop_qa_benchmark, write_crop_qa_di
 def main() -> int:
     parser = argparse.ArgumentParser(description="Evaluate chess crop QA benchmark against runtime rows.")
     parser.add_argument("--labels", required=True, help="Path to qa_crop_validation_rows.jsonl")
-    parser.add_argument("--actual", help="Optional runtime JSON/JSONL rows to compare by diagram_id")
+    runtime = parser.add_mutually_exclusive_group()
+    runtime.add_argument("--actual", help="Optional runtime JSON/JSONL rows to compare by diagram_id")
+    runtime.add_argument("--job-output", help="Optional conversion output directory with chess FEN runtime reports")
     parser.add_argument("--manifest", help="Optional benchmark manifest JSON")
     parser.add_argument("--out", required=True, help="Output JSON report path")
     args = parser.parse_args()
@@ -25,6 +27,7 @@ def main() -> int:
     report = evaluate_crop_qa_benchmark(
         labels,
         actual_path=Path(args.actual) if args.actual else None,
+        job_output_path=Path(args.job_output) if args.job_output else None,
         manifest_path=manifest if manifest.is_file() else None,
     )
     json_path, md_path = write_crop_qa_diff_reports(report, args.out)

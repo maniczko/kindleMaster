@@ -13,6 +13,7 @@ from typing import Any, Iterable, Mapping
 
 from chess_fen_hardening import machine_accept_fen, machine_accept_placement, placement_from_fen_or_placement, validate_fen_detailed
 from chess_book_move_comparison import build_book_move_engine_comparison
+from chess_crop_qa_benchmark import evaluate_crop_qa_benchmark, write_crop_qa_diff_reports
 from chess_engine_analysis import build_engine_analysis_artifacts
 from chess_engine_hints import build_engine_study_hint_artifacts
 from chess_side_marker_blockers import build_side_marker_blocker_attribution, side_marker_blocker_attribution_markdown
@@ -429,6 +430,15 @@ def build_auto_chess_flow_artifacts(
         side_to_move_diagnostic_html(side_to_move_diagnostic_report),
         encoding="utf-8",
     )
+    crop_qa_labels = Path("reference_inputs") / "chess_fen" / "qa" / "qa_crop_validation_rows.jsonl"
+    crop_qa_manifest = Path("reference_inputs") / "chess_fen" / "qa" / "qa_crop_validation_manifest.json"
+    if crop_qa_labels.is_file():
+        crop_qa_diff_report = evaluate_crop_qa_benchmark(
+            crop_qa_labels,
+            job_output_path=out,
+            manifest_path=crop_qa_manifest if crop_qa_manifest.is_file() else None,
+        )
+        write_crop_qa_diff_reports(crop_qa_diff_report, chess_fen_report_dir / "crop_qa_regression_diff.json")
     side_marker_learning_report = persisted_side_marker_learning_report(side_marker_learning.get("learning_report") or {})
     side_marker_learning_payload = {
         **side_marker_learning,
@@ -492,6 +502,8 @@ def build_auto_chess_flow_artifacts(
                 "why_side_to_move_not_trusted": chess_fen_report_dir / "why_side_to_move_not_trusted.json",
                 "why_side_to_move_not_trusted_md": chess_fen_report_dir / "why_side_to_move_not_trusted.md",
                 "why_side_to_move_not_trusted_html": chess_fen_report_dir / "why_side_to_move_not_trusted.html",
+                "crop_qa_regression_diff": chess_fen_report_dir / "crop_qa_regression_diff.json",
+                "crop_qa_regression_diff_md": chess_fen_report_dir / "crop_qa_regression_diff.md",
                 "side_marker_learning_queue": chess_fen_report_dir / "side_marker_learning_queue.json",
                 "side_marker_learning_queue_jsonl": chess_fen_report_dir / "side_marker_learning_queue.jsonl",
                 "side_marker_learning_label_template": chess_fen_report_dir / "side_marker_learning_labels_template.jsonl",
@@ -607,6 +619,7 @@ def review_auto_chess_output(out_dir: str | Path) -> dict[str, Any]:
         ("PGN replay blockers", review_dir / "pgn_replay_blockers_top10.md"),
         ("Runtime acceptance blockers", out / "report" / "acceptance_blockers.html"),
         ("Why side to move is not trusted", out / "reports" / "chess_fen" / "why_side_to_move_not_trusted.html"),
+        ("Crop QA runtime regression diff", out / "reports" / "chess_fen" / "crop_qa_regression_diff.md"),
     ]
     items = [
         {"label": label, "path": str(path), "exists": path.is_file()}
@@ -729,6 +742,8 @@ def _auto_chess_artifacts_current(out: Path) -> bool:
     if not (out / "report" / "acceptance_blockers.json").is_file():
         return False
     if not (out / "reports" / "chess_fen" / "why_side_to_move_not_trusted.json").is_file():
+        return False
+    if not (out / "reports" / "chess_fen" / "crop_qa_regression_diff.json").is_file():
         return False
     return True
 

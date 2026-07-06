@@ -1084,7 +1084,6 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
                     "pgn_records": [],
                 },
             )
-
             flow_payload = build_auto_chess_flow_artifacts(out)
             report_path = out / "reports" / "chess_fen" / "two_crop_quality_metrics.json"
             markdown_path = out / "reports" / "chess_fen" / "two_crop_quality_metrics.md"
@@ -1179,8 +1178,12 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
                                     "diagram_id": "not-propagated",
                                     "page": 1,
                                     "image_path": "assets/diagrams/not-propagated.png",
+                                    "board_bbox": [1, 2, 101, 102],
                                     "board_crop_path": "review/chess_fen/two_crop/not-propagated_board.png",
                                     "side_marker_crop_path": "review/chess_fen/two_crop/not-propagated_marker.png",
+                                    "marker_search_zones": {"top": [0, 0, 120, 24]},
+                                    "selected_marker_zone": "top",
+                                    "marker_bbox": [80, 4, 96, 18],
                                     "side_to_move": "unknown",
                                     "side_marker_status": "trusted_marker",
                                     "side_marker_symbol": "\u25b3",
@@ -1195,7 +1198,9 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
                                     "diagram_id": "missing-marker",
                                     "page": 2,
                                     "image_path": "assets/diagrams/missing-marker.png",
+                                    "board_bbox": [1, 2, 101, 102],
                                     "board_crop_path": "review/chess_fen/two_crop/missing-marker_board.png",
+                                    "marker_search_zones": {"top": [0, 0, 120, 24]},
                                     "side_to_move": "unknown",
                                     "side_marker_status": "marker_missing",
                                     "board_crop_quality": "pass",
@@ -1209,8 +1214,12 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
                                     "diagram_id": "placement-blocked",
                                     "page": 3,
                                     "image_path": "assets/diagrams/placement-blocked.png",
+                                    "board_bbox": [1, 2, 101, 102],
                                     "board_crop_path": "review/chess_fen/two_crop/placement-blocked_board.png",
                                     "side_marker_crop_path": "review/chess_fen/two_crop/placement-blocked_marker.png",
+                                    "marker_search_zones": {"top": [0, 0, 120, 24]},
+                                    "selected_marker_zone": "top",
+                                    "marker_bbox": [80, 4, 96, 18],
                                     "side_to_move": "w",
                                     "side_marker_status": "trusted_marker",
                                     "side_marker_symbol": "\u25b3",
@@ -1229,12 +1238,28 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
                     "pgn_records": [],
                 },
             )
+            crop_dir = out / "review" / "chess_fen" / "two_crop"
+            crop_dir.mkdir(parents=True, exist_ok=True)
+            for name in (
+                "not-propagated_board.png",
+                "not-propagated_marker.png",
+                "missing-marker_board.png",
+                "placement-blocked_board.png",
+                "placement-blocked_marker.png",
+            ):
+                (crop_dir / name).write_bytes(b"crop")
 
             flow_payload = build_auto_chess_flow_artifacts(out)
             report_path = out / "reports" / "chess_fen" / "side_marker_blocker_attribution.json"
             markdown_path = out / "reports" / "chess_fen" / "side_marker_blocker_attribution.md"
+            trust_audit_path = out / "reports" / "chess_fen" / "why_side_to_move_not_trusted.json"
+            trust_audit_md_path = out / "reports" / "chess_fen" / "why_side_to_move_not_trusted.md"
+            trust_audit_html_path = out / "reports" / "chess_fen" / "why_side_to_move_not_trusted.html"
             report = json.loads(report_path.read_text(encoding="utf-8"))
             markdown = markdown_path.read_text(encoding="utf-8")
+            trust_audit = json.loads(trust_audit_path.read_text(encoding="utf-8"))
+            trust_audit_md = trust_audit_md_path.read_text(encoding="utf-8")
+            trust_audit_html = trust_audit_html_path.read_text(encoding="utf-8")
 
         by_id = {item["diagram_id"]: item for item in report["items"]}
         counts = report["summary"]["by_primary_side_marker_blocker"]
@@ -1247,6 +1272,14 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertEqual(report["summary"]["placement_blocks_full_fen_count"], 1)
         self.assertIn("side_marker_blocker_attribution", flow_payload["artifacts"])
         self.assertIn("trusted_marker_not_propagated", markdown)
+        self.assertEqual(trust_audit["schema"], "kindlemaster.chess_fen.why_side_to_move_not_trusted.v1")
+        self.assertEqual(trust_audit["summary"]["diagram_count"], 3)
+        self.assertTrue(all(item["primary_blocker"] and item["next_action"] for item in trust_audit["items"]))
+        self.assertIn("trusted_marker_not_propagated", trust_audit["summary"]["by_primary_blocker"])
+        self.assertIn("why_side_to_move_not_trusted", flow_payload["artifacts"])
+        self.assertIn("why_side_to_move_not_trusted_html", flow_payload["artifacts"])
+        self.assertIn("Top Blockers", trust_audit_md)
+        self.assertIn("Why Side To Move Is Not Trusted", trust_audit_html)
 
     def test_side_marker_blocker_attribution_counts_quality_gate_blockers(self) -> None:
         report = build_side_marker_blocker_attribution(

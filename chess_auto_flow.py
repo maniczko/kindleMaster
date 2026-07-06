@@ -16,6 +16,11 @@ from chess_book_move_comparison import build_book_move_engine_comparison
 from chess_engine_analysis import build_engine_analysis_artifacts
 from chess_engine_hints import build_engine_study_hint_artifacts
 from chess_side_marker_blockers import build_side_marker_blocker_attribution, side_marker_blocker_attribution_markdown
+from chess_side_to_move_trust_audit import (
+    build_side_to_move_diagnostic_report,
+    side_to_move_diagnostic_html,
+    side_to_move_diagnostic_markdown,
+)
 from chess_side_marker_learning import (
     build_side_marker_learning_artifacts,
     persisted_side_marker_learning_report,
@@ -331,6 +336,11 @@ def build_auto_chess_flow_artifacts(
         two_crop_quality_metrics.get("items") or [],
         source_gate=source_gate,
     )
+    side_to_move_diagnostic_report = build_side_to_move_diagnostic_report(
+        two_crop_quality_metrics.get("items") or [],
+        source_gate=source_gate,
+        artifact_root=out,
+    )
     side_marker_learning = build_side_marker_learning_artifacts(
         two_crop_quality_metrics.get("items") or [],
         blocker_report=side_marker_blockers,
@@ -410,6 +420,15 @@ def build_auto_chess_flow_artifacts(
         side_marker_blocker_attribution_markdown(side_marker_blockers),
         encoding="utf-8",
     )
+    _write_json(chess_fen_report_dir / "why_side_to_move_not_trusted.json", side_to_move_diagnostic_report)
+    (chess_fen_report_dir / "why_side_to_move_not_trusted.md").write_text(
+        side_to_move_diagnostic_markdown(side_to_move_diagnostic_report),
+        encoding="utf-8",
+    )
+    (chess_fen_report_dir / "why_side_to_move_not_trusted.html").write_text(
+        side_to_move_diagnostic_html(side_to_move_diagnostic_report),
+        encoding="utf-8",
+    )
     side_marker_learning_report = persisted_side_marker_learning_report(side_marker_learning.get("learning_report") or {})
     side_marker_learning_payload = {
         **side_marker_learning,
@@ -470,6 +489,9 @@ def build_auto_chess_flow_artifacts(
                 "two_crop_quality_metrics_md": chess_fen_report_dir / "two_crop_quality_metrics.md",
                 "side_marker_blocker_attribution": chess_fen_report_dir / "side_marker_blocker_attribution.json",
                 "side_marker_blocker_attribution_md": chess_fen_report_dir / "side_marker_blocker_attribution.md",
+                "why_side_to_move_not_trusted": chess_fen_report_dir / "why_side_to_move_not_trusted.json",
+                "why_side_to_move_not_trusted_md": chess_fen_report_dir / "why_side_to_move_not_trusted.md",
+                "why_side_to_move_not_trusted_html": chess_fen_report_dir / "why_side_to_move_not_trusted.html",
                 "side_marker_learning_queue": chess_fen_report_dir / "side_marker_learning_queue.json",
                 "side_marker_learning_queue_jsonl": chess_fen_report_dir / "side_marker_learning_queue.jsonl",
                 "side_marker_learning_label_template": chess_fen_report_dir / "side_marker_learning_labels_template.jsonl",
@@ -584,6 +606,7 @@ def review_auto_chess_output(out_dir: str | Path) -> dict[str, Any]:
         ("Glyph mapping review", review_dir / "glyph_mapping_review.html"),
         ("PGN replay blockers", review_dir / "pgn_replay_blockers_top10.md"),
         ("Runtime acceptance blockers", out / "report" / "acceptance_blockers.html"),
+        ("Why side to move is not trusted", out / "reports" / "chess_fen" / "why_side_to_move_not_trusted.html"),
     ]
     items = [
         {"label": label, "path": str(path), "exists": path.is_file()}
@@ -704,6 +727,8 @@ def _auto_chess_artifacts_current(out: Path) -> bool:
     if "acceptance_blockers_summary" not in report:
         return False
     if not (out / "report" / "acceptance_blockers.json").is_file():
+        return False
+    if not (out / "reports" / "chess_fen" / "why_side_to_move_not_trusted.json").is_file():
         return False
     return True
 
@@ -2026,6 +2051,14 @@ def _first_non_empty(*values: Any) -> Any:
     return ""
 
 
+def _merge_non_empty(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in override.items():
+        if value not in (None, "", [], {}):
+            merged[key] = value
+    return merged
+
+
 def _fen_items_by_diagram_id(fen_payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {
         str(item.get("id") or ""): item
@@ -2117,7 +2150,7 @@ def _two_crop_quality_rows(diagrams: list[dict[str, Any]], fen_payload: dict[str
             continue
         diagram_id = _diagram_record_id(diagram, index)
         fen_item = fen_by_id.get(diagram_id, {})
-        merged = {**diagram, **fen_item}
+        merged = _merge_non_empty(diagram, fen_item)
         blocker_codes = _two_crop_blocker_codes(merged)
         marker_status = str(_first_non_empty(merged.get("side_marker_status"), "marker_missing"))
         placement_status = str(_first_non_empty(merged.get("placement_runtime_status"), merged.get("placement_status")))

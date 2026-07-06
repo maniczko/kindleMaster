@@ -5054,6 +5054,10 @@ TWO_CROP_CONTRACT_FIELDS = {
     "marker_crop_quality",
     "marker_crop_fail_reason",
     "marker_crop_quality_gate",
+    "marker_classifier_version",
+    "marker_classifier_reason",
+    "marker_classifier_confidence",
+    "marker_classifier_symbol",
     "side_marker_bbox",
     "side_to_move_detected",
     "side_to_move_confidence",
@@ -5261,7 +5265,6 @@ def _scan_chess_region_contains_marker(image: Image.Image) -> bool:
     if str(result.get("status") or "") in {
         "trusted_marker",
         "side_to_move_marker_local_conflict",
-        "side_to_move_marker_local_ambiguous",
     }:
         return True
     pixels = np.array(grayscale, dtype=np.uint8)
@@ -5278,7 +5281,6 @@ def _scan_chess_region_contains_marker(image: Image.Image) -> bool:
     return str(result.get("status") or "") in {
         "trusted_marker",
         "side_to_move_marker_local_conflict",
-        "side_to_move_marker_local_ambiguous",
     }
 
 
@@ -5419,6 +5421,10 @@ def _scan_chess_two_crop_review_artifacts(
         "marker_crop_quality": "fail",
         "marker_crop_fail_reason": ["marker_missing"],
         "marker_crop_quality_gate": {"decision": "fail", "reasons": ["marker_missing"]},
+        "marker_classifier_version": "marker_shape_v2",
+        "marker_classifier_reason": "marker_missing",
+        "marker_classifier_confidence": 0.0,
+        "marker_classifier_symbol": None,
         "side_to_move_detected": None,
         "side_to_move_confidence": 0.0,
         "manual_review_required": True,
@@ -5508,6 +5514,10 @@ def _scan_chess_two_crop_review_artifacts(
         fields["marker_crop_quality_gate"] = marker_quality
         fields["marker_crop_quality"] = "pass" if marker_quality.get("decision") == "pass" else "fail"
         fields["marker_crop_fail_reason"] = list(marker_quality.get("reasons") or [])
+        fields["marker_classifier_version"] = marker_quality.get("classifier_version") or "marker_shape_v2"
+        fields["marker_classifier_reason"] = marker_quality.get("reason") or ""
+        fields["marker_classifier_confidence"] = marker_quality.get("confidence", 0.0)
+        fields["marker_classifier_symbol"] = marker_quality.get("symbol")
         if marker_quality.get("side_to_move") in {"white", "black"}:
             fields["side_to_move_detected"] = marker_quality.get("side_to_move")
             fields["side_to_move_confidence"] = marker_quality.get("confidence", 0.0)
@@ -5900,6 +5910,9 @@ def _scan_chess_marker_crop_quality(
             "reason_codes": {"marker_missing": 1},
             "side_to_move": None,
             "confidence": 0.0,
+            "classifier_version": "marker_shape_v2",
+            "reason": "marker_missing",
+            "symbol": None,
         }
     width = max(1, box[2] - box[0])
     height = max(1, box[3] - box[1])
@@ -5979,7 +5992,11 @@ def _scan_chess_marker_crop_quality(
         "side_to_move": side if not reasons else None,
         "confidence": round(float(classification.get("confidence") or 0.0), 3) if not reasons else 0.0,
         "classifier_status": classification.get("status") or "",
+        "classifier_version": classification.get("classifier_version") or "marker_shape_v2",
+        "reason": classification.get("reason") or ("pass" if not reasons else reasons[0]),
+        "symbol": classification.get("symbol") if not reasons else None,
         "component_count": component_count if component_count else (1 if isinstance(component, Mapping) else 0),
+        "candidate_count": int(classification.get("candidate_count") or 0),
     }
 
 
@@ -6069,13 +6086,11 @@ def _apply_scan_chess_two_crop_side_marker_if_trusted(
     if not side:
         return dict(payload)
     payload_warnings = {str(warning) for warning in payload.get("warnings") or [] if str(warning)}
-    if payload_warnings & (SIDE_MARKER_CONFLICT_WARNINGS | SIDE_MARKER_AMBIGUOUS_WARNINGS):
+    if payload_warnings & SIDE_MARKER_CONFLICT_WARNINGS:
         updated = dict(payload)
         updated["requires_review"] = True
         updated["manual_review_required"] = True
-        updated["manual_review_reason"] = (
-            "marker_conflict" if payload_warnings & SIDE_MARKER_CONFLICT_WARNINGS else "unclear_symbol"
-        )
+        updated["manual_review_reason"] = "marker_conflict"
         updated["side_to_move"] = "unknown"
         updated["side_to_move_status"] = "unknown"
         updated["side_to_move_evidence"] = "none"
@@ -7420,6 +7435,89 @@ def _scan_chess_side_marker_region(
     return None
 
 
+def _scan_chess_marker_inner_density(mask: Any, bbox: Any) -> float:
+    try:
+        x0, y0, x1, y1 = [int(round(float(value))) for value in bbox]
+    except (TypeError, ValueError):
+        return 0.0
+    height, width = mask.shape
+    x0 = max(0, min(width - 1, x0))
+    x1 = max(0, min(width - 1, x1))
+    y0 = max(0, min(height - 1, y0))
+    y1 = max(0, min(height - 1, y1))
+    if x1 <= x0 or y1 <= y0:
+        return 0.0
+    box_width = max(1, x1 - x0 + 1)
+    box_height = max(1, y1 - y0 + 1)
+    ys, xs = np.mgrid[y0 : y1 + 1, x0 : x1 + 1]
+    nx = (xs - x0) / max(1, box_width - 1)
+    ny = (ys - y0) / max(1, box_height - 1)
+    # Interior of a triangle, inset from the outline so thick borders do not
+    # look like filled markers. Check both orientations because book markers use
+    # an outline △ for White and a filled ▼ for Black, while some synthetic
+    # fixtures only encode the filled/outline property.
+    upright_lower = 0.5 - 0.5 * ny + 0.10
+    upright_upper = 0.5 + 0.5 * ny - 0.10
+    upright = (ny > 0.30) & (ny < 0.82) & (nx >= upright_lower) & (nx <= upright_upper)
+    inverted_width = 1.0 - ny
+    inverted_lower = 0.5 - 0.5 * inverted_width + 0.10
+    inverted_upper = 0.5 + 0.5 * inverted_width - 0.10
+    inverted = (ny > 0.18) & (ny < 0.70) & (nx >= inverted_lower) & (nx <= inverted_upper)
+    if not int(upright.sum()) and not int(inverted.sum()):
+        return 0.0
+    local = mask[y0 : y1 + 1, x0 : x1 + 1]
+    densities = []
+    if int(upright.sum()):
+        densities.append(float(local[upright].mean()))
+    if int(inverted.sum()):
+        densities.append(float(local[inverted].mean()))
+    return min(densities) if densities else 0.0
+
+
+def _scan_chess_marker_ink_density(mask: Any, bbox: Any) -> float:
+    try:
+        x0, y0, x1, y1 = [int(round(float(value))) for value in bbox]
+    except (TypeError, ValueError):
+        return 0.0
+    height, width = mask.shape
+    x0 = max(0, min(width - 1, x0))
+    x1 = max(0, min(width - 1, x1))
+    y0 = max(0, min(height - 1, y0))
+    y1 = max(0, min(height - 1, y1))
+    if x1 <= x0 or y1 <= y0:
+        return 0.0
+    local = mask[y0 : y1 + 1, x0 : x1 + 1]
+    return float(local.mean())
+
+
+def _scan_chess_marker_classifier_result(
+    *,
+    status: str,
+    side: str = "",
+    symbol: str | None = None,
+    confidence: float = 0.0,
+    shape: str = "",
+    reason: str,
+    component: Mapping[str, Any] | None = None,
+    candidate_count: int = 0,
+    warnings: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    side_value = side if side in {"w", "b"} else ""
+    return {
+        "status": status,
+        "side": side_value,
+        "side_to_move": side_value or "unknown",
+        "symbol": symbol if symbol is not None else "?",
+        "confidence": round(float(confidence or 0.0), 3),
+        "classifier_version": "marker_shape_v2",
+        "reason": reason,
+        "shape": shape,
+        "component": dict(component) if isinstance(component, Mapping) else None,
+        "candidate_count": int(candidate_count or 0),
+        "warnings": list(warnings or ["side_to_move_marker_probes_checked"]),
+    }
+
+
 def classify_scan_chess_side_marker_crop(crop: Image.Image) -> dict[str, Any]:
     """Classify a local side-marker crop without OCR.
 
@@ -7427,48 +7525,101 @@ def classify_scan_chess_side_marker_crop(crop: Image.Image) -> dict[str, Any]:
     triangle as Black to move. Ambiguous density or multiple local markers stay
     review-only, so downstream FEN publication still requires trusted evidence.
     """
-    grayscale = ImageOps.autocontrast(crop.convert("L"))
+    raw_grayscale = crop.convert("L")
+    crop_width, crop_height = raw_grayscale.size
+    grayscale = ImageOps.autocontrast(raw_grayscale)
     dark = np.asarray(grayscale) < 120
-    components = _scan_chess_side_marker_components(dark)
+    raw_ink = np.asarray(raw_grayscale) < 120
+    components = _scan_chess_side_marker_components(dark, relaxed=True)
     if not components:
-        return {
-            "status": "marker_missing",
-            "side": "",
-            "symbol": "?",
-            "confidence": 0.0,
-            "shape": "",
-            "component": None,
-            "warnings": ["side_to_move_marker_probes_checked"],
-        }
+        relaxed_dark = np.asarray(grayscale) < 160
+        components = _scan_chess_side_marker_components(relaxed_dark, relaxed=True)
+    if not components:
+        return _scan_chess_marker_classifier_result(
+            status="marker_missing",
+            confidence=0.0,
+            reason="marker_missing",
+            candidate_count=0,
+        )
 
     classified: list[dict[str, Any]] = []
     for component in components:
         density = float(component["density"])
+        aspect = float(component.get("aspect") or 0.0)
+        area = float(component.get("area") or 0.0)
+        bbox_values = component.get("bbox") or (0.0, 0.0, 0.0, 0.0)
+        try:
+            bx0, by0, bx1, by1 = [float(value) for value in bbox_values]
+        except (TypeError, ValueError):
+            bx0 = by0 = bx1 = by1 = 0.0
+        inner_density = _scan_chess_marker_inner_density(dark, component.get("bbox"))
+        ink_density = _scan_chess_marker_ink_density(raw_ink, component.get("bbox"))
         row = {
             **component,
             "status": "side_to_move_marker_local_ambiguous",
             "side": "",
             "symbol": "?",
             "shape": "triangle_like_ambiguous_density",
+            "reason": "unclear",
+            "inner_density": round(inner_density, 4),
+            "ink_density": round(ink_density, 4),
         }
-        if density <= 0.32:
+        if aspect >= 1.45:
+            row.update(
+                {
+                    "status": "side_to_move_marker_local_ambiguous",
+                    "shape": "multiple_triangle_candidates",
+                    "confidence": 0.0,
+                    "reason": "multiple_candidates",
+                }
+            )
+        elif area < 100:
+            row.update(
+                {
+                    "status": "side_to_move_marker_local_ambiguous",
+                    "shape": "marker_too_small",
+                    "confidence": 0.0,
+                    "reason": "too_small",
+                }
+            )
+        elif by0 <= 0.5 or (len(components) == 1 and ((bx0 + bx1) / 2.0) > crop_width * 0.68):
+            row.update(
+                {
+                    "status": "side_to_move_marker_local_ambiguous",
+                    "shape": "marker_cut_off",
+                    "confidence": 0.0,
+                    "reason": "bad_crop",
+                }
+            )
+        elif ink_density < 0.055:
+            row.update(
+                {
+                    "status": "side_to_move_marker_local_ambiguous",
+                    "shape": "weak_marker_ink",
+                    "confidence": 0.0,
+                    "reason": "unclear",
+                }
+            )
+        elif inner_density <= 0.32 and density >= 0.10:
             row.update(
                 {
                     "status": "trusted_marker",
                     "side": "w",
                     "symbol": SIDE_MARKER_SYMBOLS["w"],
                     "shape": "outline_triangle",
-                    "confidence": round(min(0.98, 0.82 + (0.32 - density) * 0.55), 3),
+                    "confidence": round(min(0.985, 0.90 + (0.32 - inner_density) * 0.20 + min(0.06, ink_density * 0.35)), 3),
+                    "reason": "outline_triangle",
                 }
             )
-        elif density >= 0.42:
+        elif inner_density >= 0.55 and density >= 0.35:
             row.update(
                 {
                     "status": "trusted_marker",
                     "side": "b",
                     "symbol": SIDE_MARKER_SYMBOLS["b"],
                     "shape": "filled_triangle",
-                    "confidence": round(min(0.98, 0.82 + (density - 0.42) * 0.45), 3),
+                    "confidence": round(min(0.985, 0.91 + (inner_density - 0.55) * 0.12), 3),
+                    "reason": "filled_triangle",
                 }
             )
         else:
@@ -7478,45 +7629,57 @@ def classify_scan_chess_side_marker_crop(crop: Image.Image) -> dict[str, Any]:
     trusted = [item for item in classified if item.get("side") in {"w", "b"}]
     best = max(classified, key=lambda item: float(item.get("score") or 0.0))
     if len({str(item.get("side") or "") for item in trusted}) > 1:
-        return {
-            "status": "side_to_move_marker_local_conflict",
-            "side": "",
-            "symbol": "?",
-            "confidence": round(float(best.get("confidence") or 0.0), 3),
-            "shape": "multiple_triangle_conflict",
-            "component": best,
-            "warnings": ["side_to_move_marker_local_conflict", "side_to_move_marker_probes_checked"],
-        }
+        return _scan_chess_marker_classifier_result(
+            status="side_to_move_marker_local_conflict",
+            confidence=round(float(best.get("confidence") or 0.0), 3),
+            shape="multiple_triangle_conflict",
+            reason="multiple_candidates",
+            component=best,
+            candidate_count=len(classified),
+            warnings=["side_to_move_marker_local_conflict", "side_to_move_marker_probes_checked"],
+        )
     if len(trusted) > 1:
-        return {
-            "status": "side_to_move_marker_local_ambiguous",
-            "side": "",
-            "symbol": "?",
-            "confidence": round(float(best.get("confidence") or 0.0), 3),
-            "shape": "multiple_triangle_candidates",
-            "component": best,
-            "warnings": ["side_to_move_marker_local_ambiguous", "side_to_move_marker_probes_checked"],
-        }
+        return _scan_chess_marker_classifier_result(
+            status="side_to_move_marker_local_ambiguous",
+            confidence=round(float(best.get("confidence") or 0.0), 3),
+            shape="multiple_triangle_candidates",
+            reason="multiple_candidates",
+            component=best,
+            candidate_count=len(classified),
+            warnings=["side_to_move_marker_local_ambiguous", "side_to_move_marker_probes_checked"],
+        )
+    if len(classified) > 1 and trusted:
+        return _scan_chess_marker_classifier_result(
+            status="side_to_move_marker_local_ambiguous",
+            confidence=round(float(best.get("confidence") or 0.0), 3),
+            shape="multiple_triangle_candidates",
+            reason="multiple_candidates",
+            component=best,
+            candidate_count=len(classified),
+            warnings=["side_to_move_marker_local_ambiguous", "side_to_move_marker_probes_checked"],
+        )
     if trusted:
         best_trusted = max(trusted, key=lambda item: float(item.get("score") or 0.0))
-        return {
-            "status": "trusted_marker",
-            "side": best_trusted["side"],
-            "symbol": best_trusted["symbol"],
-            "confidence": best_trusted["confidence"],
-            "shape": best_trusted["shape"],
-            "component": best_trusted,
-            "warnings": ["side_to_move_marker_detected", "side_to_move_marker_probes_checked"],
-        }
-    return {
-        "status": "side_to_move_marker_local_ambiguous",
-        "side": "",
-        "symbol": "?",
-        "confidence": round(float(best.get("confidence") or 0.0), 3),
-        "shape": best.get("shape") or "triangle_like_ambiguous_density",
-        "component": best,
-        "warnings": ["side_to_move_marker_local_ambiguous", "side_to_move_marker_probes_checked"],
-    }
+        return _scan_chess_marker_classifier_result(
+            status="trusted_marker",
+            side=str(best_trusted["side"]),
+            symbol=str(best_trusted["symbol"]),
+            confidence=float(best_trusted["confidence"]),
+            shape=str(best_trusted["shape"]),
+            reason=str(best_trusted.get("reason") or best_trusted["shape"]),
+            component=best_trusted,
+            candidate_count=len(classified),
+            warnings=["side_to_move_marker_detected", "side_to_move_marker_probes_checked"],
+        )
+    return _scan_chess_marker_classifier_result(
+        status="side_to_move_marker_local_ambiguous",
+        confidence=round(float(best.get("confidence") or 0.0), 3),
+        shape=best.get("shape") or "triangle_like_ambiguous_density",
+        reason=str(best.get("reason") or "unclear"),
+        component=best,
+        candidate_count=len(classified),
+        warnings=["side_to_move_marker_local_ambiguous", "side_to_move_marker_probes_checked"],
+    )
 
 
 def _scan_chess_best_side_marker_component(mask: Any) -> dict[str, float] | None:
@@ -7526,7 +7689,7 @@ def _scan_chess_best_side_marker_component(mask: Any) -> dict[str, float] | None
     return max(components, key=lambda item: float(item.get("score") or 0.0))
 
 
-def _scan_chess_side_marker_components(mask: Any) -> list[dict[str, float]]:
+def _scan_chess_side_marker_components(mask: Any, *, relaxed: bool = False) -> list[dict[str, float]]:
     height, width = mask.shape
     visited = np.zeros(mask.shape, dtype=bool)
     components: list[dict[str, float]] = []
@@ -7558,21 +7721,23 @@ def _scan_chess_side_marker_components(mask: Any) -> list[dict[str, float]]:
                         stack.append((nx, ny))
             box_width = max_x - min_x + 1
             box_height = max_y - min_y + 1
-            if box_width < max(12, width * 0.20) or box_height < max(12, height * 0.22):
+            min_width = max(8 if relaxed else 12, width * (0.15 if relaxed else 0.20))
+            min_height = max(8 if relaxed else 12, height * (0.15 if relaxed else 0.22))
+            if box_width < min_width or box_height < min_height:
                 continue
-            if box_width > width * 0.88 or box_height > height * 0.92:
+            if box_width > width * (0.96 if relaxed else 0.88) or box_height > height * (0.96 if relaxed else 0.92):
                 continue
             aspect = box_width / max(1, box_height)
-            if aspect < 0.62 or aspect > 1.75:
+            if aspect < (0.45 if relaxed else 0.62) or aspect > (2.10 if relaxed else 1.75):
                 continue
             center_x = (min_x + max_x) / 2.0
             center_y = (min_y + max_y) / 2.0
-            if center_x < width * 0.20 or center_x > width * 0.80:
+            if center_x < width * (0.08 if relaxed else 0.20) or center_x > width * (0.92 if relaxed else 0.80):
                 continue
-            if center_y > height * 0.72 or max_y > height * 0.98:
+            if center_y > height * (0.82 if relaxed else 0.72) or max_y > height * (0.995 if relaxed else 0.98):
                 continue
             density = area / max(1, box_width * box_height)
-            if density < 0.16 or density > 0.72:
+            if density < (0.08 if relaxed else 0.16) or density > (0.82 if relaxed else 0.72):
                 continue
             score = area * (1.0 - abs(center_x / max(1, width) - 0.48)) * (
                 1.0 - min(0.5, center_y / max(1, height))

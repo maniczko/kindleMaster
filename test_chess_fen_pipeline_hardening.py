@@ -190,6 +190,30 @@ class ChessFenPipelineHardeningTests(unittest.TestCase):
         self.assertEqual(result["runtime_status"], "FEN_MACHINE_ACCEPTED")
         self.assertEqual(result["selected_value"], self.STARTING_FEN)
 
+    def test_machine_accept_fen_blocks_text_and_pgn_inferred_side_sources(self) -> None:
+        for evidence_source in ("caption_text", "pgn_inferred"):
+            with self.subTest(evidence_source=evidence_source):
+                result = machine_accept_fen(
+                    {
+                        "source": "deterministic",
+                        "fen": self.STARTING_FEN,
+                        "confidence": 0.99,
+                        "warnings": [],
+                        "side_to_move": "w",
+                        "side_to_move_status": "inferred",
+                        "side_to_move_evidence": evidence_source,
+                        "side_marker_status": "marker_missing",
+                        "board_crop_quality": "pass",
+                        "board_crop_quality_gate": {"decision": "pass", "reasons": []},
+                    },
+                    {"min_confidence": 0.90},
+                )
+
+                codes = {blocker["code"] for blocker in result["acceptance_blockers"]}
+                self.assertEqual(result["runtime_status"], "FEN_REVIEW_REQUIRED")
+                self.assertIn("side_to_move_inferred", codes)
+                self.assertIn("full_fen_blocked_by_marker", codes)
+
     def test_machine_accept_fen_rejects_trusted_marker_when_marker_crop_quality_fails(self) -> None:
         result = machine_accept_fen(
             {

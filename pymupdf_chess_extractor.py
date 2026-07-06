@@ -4703,6 +4703,7 @@ def _chess_diagram_record_from_image(
         "side_marker_search_crop_path": str(
             fen_result.get("side_marker_search_crop_path") or chess_img.get("side_marker_search_crop_path") or ""
         ).strip(),
+        "side_marker_search_bbox": list(fen_result.get("side_marker_search_bbox") or chess_img.get("side_marker_search_bbox") or []),
         "marker_search_zone_preview_path": str(
             fen_result.get("marker_search_zone_preview_path") or chess_img.get("marker_search_zone_preview_path") or ""
         ).strip(),
@@ -4724,12 +4725,26 @@ def _chess_diagram_record_from_image(
         "debug_overlay_path": str(fen_result.get("debug_overlay_path") or chess_img.get("debug_overlay_path") or "").strip(),
         "board_crop_quality": str(fen_result.get("board_crop_quality") or chess_img.get("board_crop_quality") or ""),
         "board_crop_fail_reason": list(fen_result.get("board_crop_fail_reason") or chess_img.get("board_crop_fail_reason") or []),
+        "board_crop_quality_gate": dict(fen_result.get("board_crop_quality_gate") or chess_img.get("board_crop_quality_gate") or {}),
         "marker_search_zones": dict(fen_result.get("marker_search_zones") or chess_img.get("marker_search_zones") or {}),
         "selected_marker_zone": fen_result.get("selected_marker_zone") or chess_img.get("selected_marker_zone") or "",
-        "marker_bbox": list(fen_result.get("marker_bbox") or chess_img.get("marker_bbox") or []),
-        "marker_crop_bbox": list(fen_result.get("marker_crop_bbox") or chess_img.get("marker_crop_bbox") or []),
+        "marker_bbox": list(
+            fen_result.get("marker_bbox")
+            or chess_img.get("marker_bbox")
+            or fen_result.get("side_marker_bbox")
+            or chess_img.get("side_marker_bbox")
+            or []
+        ),
+        "marker_crop_bbox": list(
+            fen_result.get("marker_crop_bbox")
+            or chess_img.get("marker_crop_bbox")
+            or fen_result.get("marker_bbox")
+            or chess_img.get("marker_bbox")
+            or []
+        ),
         "marker_crop_quality": str(fen_result.get("marker_crop_quality") or chess_img.get("marker_crop_quality") or ""),
         "marker_crop_fail_reason": list(fen_result.get("marker_crop_fail_reason") or chess_img.get("marker_crop_fail_reason") or []),
+        "marker_crop_quality_gate": dict(fen_result.get("marker_crop_quality_gate") or chess_img.get("marker_crop_quality_gate") or {}),
         "side_to_move_detected": fen_result.get("side_to_move_detected") or chess_img.get("side_to_move_detected"),
         "side_to_move_confidence": fen_result.get("side_to_move_confidence") or chess_img.get("side_to_move_confidence"),
         "manual_review_required": bool(
@@ -5018,6 +5033,7 @@ TWO_CROP_CONTRACT_FIELDS = {
     "board_crop_path",
     "side_marker_crop_path",
     "side_marker_search_crop_path",
+    "side_marker_search_bbox",
     "marker_search_zone_preview_path",
     "marker_search_zone_preview_bbox",
     "side_marker_review_crop_path",
@@ -5067,6 +5083,7 @@ MARKER_CROP_REASON_CODES = {
     "marker_too_small",
     "unclear_symbol",
     "wrong_marker_candidate",
+    "marker_crop_not_generated",
     "outside_expected_zone",
 }
 
@@ -5380,6 +5397,7 @@ def _scan_chess_two_crop_review_artifacts(
         "board_crop_path": f"review/chess_fen/two_crop/{stem}_board.png",
         "side_marker_crop_path": "",
         "side_marker_search_crop_path": "",
+        "side_marker_search_bbox": [],
         "marker_search_zone_preview_path": "",
         "marker_search_zone_preview_bbox": [],
         "side_marker_review_crop_path": "",
@@ -5504,6 +5522,18 @@ def _scan_chess_two_crop_review_artifacts(
             fields["manual_review_reason"] = "" if not fields["manual_review_required"] else _scan_chess_manual_review_reason(fields["marker_crop_fail_reason"])
         else:
             fields["side_marker_crop_path"] = ""
+            reasons = sorted(set(list(fields.get("marker_crop_fail_reason") or []) + ["marker_crop_not_generated"]))
+            gate = dict(fields.get("marker_crop_quality_gate") or {})
+            gate["decision"] = "fail"
+            gate["reasons"] = reasons
+            gate["reason_codes"] = {
+                reason: reasons.count(reason)
+                for reason in sorted(MARKER_CROP_REASON_CODES)
+                if reason in reasons
+            }
+            fields["marker_crop_quality_gate"] = gate
+            fields["marker_crop_quality"] = "fail"
+            fields["marker_crop_fail_reason"] = reasons
             fields["side_marker_review_crop_path"] = fields["side_marker_search_crop_path"]
             fields["side_marker_review_crop_kind"] = "marker_search_zone_preview" if fields["side_marker_search_crop_path"] else "missing"
             fields["manual_review_required"] = True

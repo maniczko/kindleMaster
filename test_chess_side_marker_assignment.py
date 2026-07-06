@@ -11,7 +11,13 @@ from unittest import mock
 import fitz
 from PIL import Image, ImageDraw
 
-from chess_auto_flow import build_auto_chess_flow_artifacts
+import pymupdf_chess_extractor as chess_extractor
+
+from chess_auto_flow import (
+    _side_marker_assignment_report,
+    _two_crop_quality_metrics_report,
+    build_auto_chess_flow_artifacts,
+)
 from chess_study_export import _attach_pdf_side_marker_evidence_to_study_diagrams
 from chess_fen_hardening import machine_accept_fen, machine_accept_placement
 from chess_position_recognizer import ChessFenResult, summarize_chess_fen_results
@@ -211,6 +217,83 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertEqual(fields["marker_crop_quality"], "pass")
         self.assertNotIn("marker_cut_off", fields["marker_crop_fail_reason"])
         self.assertEqual(fields["side_to_move_detected"], "black")
+
+    def test_marker_bbox_without_written_crop_gets_generation_blocker(self) -> None:
+        page = Image.new("RGB", (420, 440), "white")
+        draw = ImageDraw.Draw(page)
+        board_bbox = [100.0, 170.0, 300.0, 370.0]
+        _draw_checkerboard(draw, board_bbox)
+        marker_bbox = [308.0, 188.0, 342.0, 224.0]
+        draw.polygon([(324, 188), (306, 224), (342, 224)], fill="black")
+        original_crop = chess_extractor._crop_bbox_from_image
+
+        def fail_marker_crop(image: Image.Image, bbox: object) -> Image.Image | None:
+            values = list(bbox) if isinstance(bbox, (list, tuple)) else []
+            if values and float(values[2]) > board_bbox[2] and float(values[0]) >= board_bbox[2] - 12:
+                return None
+            return original_crop(image, bbox)
+
+        with mock.patch("pymupdf_chess_extractor._crop_bbox_from_image", side_effect=fail_marker_crop):
+            fields, files = _scan_chess_two_crop_review_artifacts(
+                page,
+                filename="crop-write-failure.png",
+                board_bbox=board_bbox,
+                side_marker_bbox=marker_bbox,
+            )
+
+        paths = {str(item.get("path") or "") for item in files}
+        self.assertTrue(fields["marker_bbox"])
+        self.assertGreaterEqual(fields["marker_bbox"][0], board_bbox[2])
+        self.assertEqual(fields["marker_crop_quality"], "fail")
+        self.assertIn("marker_crop_not_generated", fields["marker_crop_fail_reason"])
+        self.assertEqual(fields["marker_crop_quality_gate"]["decision"], "fail")
+        self.assertIn("marker_crop_not_generated", fields["marker_crop_quality_gate"]["reason_codes"])
+        self.assertFalse(fields["side_marker_crop_path"])
+        self.assertNotIn("review/chess_fen/two_crop/crop-write-failure_marker.png", paths)
+
+    def test_two_crop_reports_count_runtime_side_marker_bbox_and_generation_rates(self) -> None:
+        diagrams = [
+            {
+                "diagram_id": "runtime-side-marker",
+                "page": 1,
+                "board_crop_path": "review/chess_fen/two_crop/runtime_board.png",
+                "board_crop_quality": "pass",
+                "side_marker_bbox": [302.0, 214.0, 342.0, 260.0],
+                "side_marker_search_bbox": [290.0, 160.0, 360.0, 300.0],
+                "side_marker_crop_path": "review/chess_fen/two_crop/runtime_marker.png",
+                "marker_crop_quality": "pass",
+                "side_marker_status": "trusted_marker",
+                "side_to_move": "b",
+            },
+            {
+                "diagram_id": "bbox-no-crop",
+                "page": 1,
+                "board_crop_path": "review/chess_fen/two_crop/missing_board.png",
+                "board_crop_quality": "pass",
+                "side_marker_bbox": [102.0, 20.0, 130.0, 48.0],
+                "side_marker_search_bbox": [90.0, 0.0, 160.0, 60.0],
+                "marker_crop_quality": "fail",
+                "marker_crop_fail_reason": ["marker_crop_not_generated"],
+                "side_marker_status": "marker_missing",
+                "side_to_move": "unknown",
+            },
+        ]
+
+        quality = _two_crop_quality_metrics_report(diagrams, {"items": []})
+        assignment = _side_marker_assignment_report(diagrams, {"items": []})
+
+        self.assertEqual(quality["summary"]["marker_search_zone_count"], 2)
+        self.assertEqual(quality["summary"]["marker_bbox_count"], 2)
+        self.assertEqual(quality["summary"]["side_marker_crop_count"], 1)
+        self.assertEqual(quality["summary"]["marker_crop_generation_count"], 1)
+        self.assertEqual(quality["summary"]["marker_crop_not_generated_count"], 1)
+        self.assertEqual(quality["summary"]["marker_crop_generation_rate"], 0.5)
+        by_id = {item["diagram_id"]: item for item in quality["items"]}
+        self.assertEqual(by_id["runtime-side-marker"]["marker_bbox"], [302.0, 214.0, 342.0, 260.0])
+        self.assertEqual(by_id["bbox-no-crop"]["marker_crop_fail_reason"], ["marker_crop_not_generated"])
+        self.assertEqual(assignment["summary"]["marker_bbox_count"], 2)
+        self.assertEqual(assignment["summary"]["side_marker_crop_count"], 1)
+        self.assertEqual(assignment["summary"]["marker_crop_not_generated_count"], 1)
 
     def test_tight_board_crop_quality_passes_for_clean_8x8_board(self) -> None:
         page = Image.new("RGB", (320, 320), "white")

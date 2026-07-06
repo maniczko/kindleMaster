@@ -142,8 +142,11 @@ def evaluate_marker_crop_corpus(
     if report_path:
         path = Path(report_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        path.with_suffix(".md").write_text(marker_crop_classifier_markdown(report), encoding="utf-8")
+        with path.open("w", encoding="utf-8") as handle:
+            json.dump(report, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+        with path.with_suffix(".md").open("w", encoding="utf-8") as handle:
+            handle.writelines([marker_crop_classifier_markdown(report)])
     return report
 
 

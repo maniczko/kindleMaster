@@ -110,19 +110,20 @@ def side_to_move_diagnostic_markdown(report: Mapping[str, Any]) -> str:
             "",
             "## Diagram Audit",
             "",
-            "| Diagram | Page | Search zones | Marker bbox | Marker crop | Classifier | Side | Trusted | Primary blocker | Next action |",
-            "| --- | ---: | ---: | --- | --- | --- | --- | --- | --- | --- |",
+            "| Diagram | Page | Search zones | Marker bbox | Marker crop | Classifier | Reason | Side | Trusted | Primary blocker | Next action |",
+            "| --- | ---: | ---: | --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
     )
     for item in report.get("items") or []:
         lines.append(
-            "| {id} | {page} | {zones} | {bbox} | {crop} | {status} | {side} | {trusted} | {blocker} | {action} |".format(
+            "| {id} | {page} | {zones} | {bbox} | {crop} | {status} | {reason} | {side} | {trusted} | {blocker} | {action} |".format(
                 id=_md(str(item.get("diagram_id") or "")),
                 page=_md(str(item.get("page") or "")),
                 zones=_md(str(item.get("marker_search_zone_count") or 0)),
                 bbox="yes" if item.get("marker_bbox_exists") else "no",
                 crop="yes" if item.get("side_marker_crop_exists") else "no",
                 status=_md(str(item.get("side_marker_status") or "")),
+                reason=_md(str(item.get("marker_classifier_reason") or "")),
                 side=_md(str(item.get("side_to_move_detected") or "")),
                 trusted="yes" if item.get("trusted_marker") else "no",
                 blocker=_md(str(item.get("primary_blocker") or "")),
@@ -194,7 +195,7 @@ def side_to_move_diagnostic_html(report: Mapping[str, Any]) -> str:
   </table>
   <h2>Per Diagram Chain</h2>
   <table>
-    <thead><tr><th>Diagram</th><th>Page</th><th>Board quality</th><th>Board reason</th><th>Search zones</th><th>Selected zone</th><th>Marker bbox</th><th>Marker crop</th><th>Marker quality</th><th>Marker reason</th><th>Symbol</th><th>Side</th><th>Status</th><th>Trusted</th><th>Primary blocker</th><th>Next action</th></tr></thead>
+    <thead><tr><th>Diagram</th><th>Page</th><th>Board quality</th><th>Board reason</th><th>Search zones</th><th>Selected zone</th><th>Marker bbox</th><th>Marker crop</th><th>Marker quality</th><th>Marker reason</th><th>Classifier reason</th><th>Symbol</th><th>Side</th><th>Status</th><th>Trusted</th><th>Primary blocker</th><th>Next action</th></tr></thead>
     <tbody>{item_rows}</tbody>
   </table>
 </body>
@@ -285,6 +286,10 @@ def _audit_row(
         "side_marker_crop_exists": side_marker_crop_exists,
         "marker_crop_quality": marker_crop_quality,
         "marker_crop_fail_reason": marker_crop_fail_reason,
+        "marker_classifier_version": str(_first(record, "marker_classifier_version") or ""),
+        "marker_classifier_reason": str(_first(record, "marker_classifier_reason") or ""),
+        "marker_classifier_confidence": _first(record, "marker_classifier_confidence"),
+        "marker_classifier_symbol": str(_first(record, "marker_classifier_symbol") or ""),
         "detected_marker_symbol": detected_marker_symbol,
         "side_to_move_detected": side_to_move_detected,
         "side_marker_status": side_marker_status or "marker_missing",
@@ -522,6 +527,7 @@ def _html_item_row(item: Mapping[str, Any]) -> str:
         f"<td>{crop_html}</td>"
         f"<td>{html.escape(str(item.get('marker_crop_quality') or ''))}</td>"
         f"<td>{html.escape(', '.join(str(reason) for reason in (item.get('marker_crop_fail_reason') or [])))}</td>"
+        f"<td>{html.escape(str(item.get('marker_classifier_reason') or ''))}</td>"
         f"<td>{html.escape(str(item.get('detected_marker_symbol') or ''))}</td>"
         f"<td>{html.escape(str(item.get('side_to_move_detected') or ''))}</td>"
         f"<td>{html.escape(str(item.get('side_marker_status') or ''))}</td>"

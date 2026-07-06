@@ -1109,6 +1109,10 @@ def _side_marker_fields(source: dict[str, Any]) -> dict[str, Any]:
         "marker_crop_quality",
         "marker_crop_fail_reason",
         "marker_crop_quality_gate",
+        "marker_classifier_version",
+        "marker_classifier_reason",
+        "marker_classifier_confidence",
+        "marker_classifier_symbol",
         "marker_bbox",
         "marker_crop_bbox",
         "selected_marker_zone",
@@ -2894,6 +2898,22 @@ def _side_marker_assignment_report(diagrams: list[dict[str, Any]], fen_payload: 
                 "marker_crop_quality": diagram.get("marker_crop_quality") or fen_item.get("marker_crop_quality") or "",
                 "marker_crop_fail_reason": diagram.get("marker_crop_fail_reason") or fen_item.get("marker_crop_fail_reason") or [],
                 "marker_crop_quality_gate": diagram.get("marker_crop_quality_gate") or fen_item.get("marker_crop_quality_gate") or {},
+                "marker_classifier_version": diagram.get("marker_classifier_version")
+                or fen_item.get("marker_classifier_version")
+                or (diagram.get("marker_crop_quality_gate") or fen_item.get("marker_crop_quality_gate") or {}).get("classifier_version")
+                or "",
+                "marker_classifier_reason": diagram.get("marker_classifier_reason")
+                or fen_item.get("marker_classifier_reason")
+                or (diagram.get("marker_crop_quality_gate") or fen_item.get("marker_crop_quality_gate") or {}).get("reason")
+                or "",
+                "marker_classifier_confidence": diagram.get("marker_classifier_confidence")
+                or fen_item.get("marker_classifier_confidence")
+                or (diagram.get("marker_crop_quality_gate") or fen_item.get("marker_crop_quality_gate") or {}).get("confidence")
+                or 0.0,
+                "marker_classifier_symbol": diagram.get("marker_classifier_symbol")
+                or fen_item.get("marker_classifier_symbol")
+                or (diagram.get("marker_crop_quality_gate") or fen_item.get("marker_crop_quality_gate") or {}).get("symbol")
+                or "",
                 "manual_review_required": bool(diagram.get("manual_review_required", fen_item.get("manual_review_required", True))),
                 "manual_review_reason": diagram.get("manual_review_reason") or fen_item.get("manual_review_reason") or "",
                 "runtime_status": fen_item.get("runtime_status") or diagram.get("runtime_status") or "",

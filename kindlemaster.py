@@ -78,6 +78,7 @@ QUICK_TESTS = [
     "test_chess_side_marker_final_reader_e2e.py",
     "test_chess_crop_qa_benchmark.py",
     "test_chess_marker_crop_corpus.py",
+    "test_chess_marker_classifier.py",
     "test_chess_fen_pipeline_hardening.py",
     "test_chess_fen_ml_acceptance.py",
     "test_chess_fen_model_pipeline.py",
@@ -438,6 +439,11 @@ def main() -> int:
     ml_chess_benchmark.add_argument("--report", default="reports/ml/datasets/chess_learning_benchmark_report.json")
     ml_chess_benchmark.add_argument("--min-per-type", type=int, default=30)
     ml_chess_benchmark.add_argument("--write-ledger", action="store_true")
+
+    ml_marker_crops = ml_subparsers.add_parser("evaluate-marker-crops", help="Evaluate the chess side-marker crop classifier corpus.")
+    ml_marker_crops.add_argument("--corpus", default="reference_inputs/chess_fen/marker_crops")
+    ml_marker_crops.add_argument("--report", default="reports/chess_fen/marker_crop_classifier_report.json")
+    ml_marker_crops.add_argument("--min-triangle-accuracy", type=float, default=0.90)
 
     ml_feedback = ml_subparsers.add_parser("feedback-export", help="Export local conversion/user feedback events into an ML JSONL dataset.")
     ml_feedback.add_argument("--feedback-log", default="reports/ml/feedback/conversion_feedback.jsonl")
@@ -1342,6 +1348,28 @@ def _run_ml(args: argparse.Namespace) -> int:
             }
         )
         return 0
+    if args.ml_command == "evaluate-marker-crops":
+        from chess_marker_crop_classifier import evaluate_marker_crop_corpus
+
+        payload = evaluate_marker_crop_corpus(
+            args.corpus,
+            report_path=args.report,
+            min_triangle_accuracy=args.min_triangle_accuracy,
+        )
+        summary = payload.get("summary") or {}
+        _print_json(
+            {
+                "status": "ok" if summary.get("decision") == "pass" else "failed",
+                "decision": summary.get("decision"),
+                "report_path": str(args.report),
+                "classifier_version": summary.get("classifier_version"),
+                "marker_classification_accuracy": summary.get("marker_classification_accuracy"),
+                "white_outline_triangle_accuracy": summary.get("white_outline_triangle_accuracy"),
+                "black_filled_triangle_accuracy": summary.get("black_filled_triangle_accuracy"),
+                "negative_false_trusted_count": summary.get("negative_false_trusted_count"),
+            }
+        )
+        return 0 if summary.get("decision") == "pass" else 1
     if args.ml_command == "promote":
         from scripts.train_route_classifier import promote_route_classifier
 
@@ -1371,7 +1399,7 @@ def _run_ml(args: argparse.Namespace) -> int:
         payload = rollback_model(model_name=args.model, to_version=args.to_version)
         _print_json(payload)
         return 0 if payload.get("status") == "rolled_back" else 1
-    _print_json({"status": "failed", "error": "Missing ml subcommand. Use dataset, feedback, feedback-export, train, evaluate, retrain-all, rollback, evaluate-fen-experiment, evaluate-fen-alternatives, chess-benchmark, or promote."})
+    _print_json({"status": "failed", "error": "Missing ml subcommand. Use dataset, feedback, feedback-export, train, evaluate, retrain-all, rollback, evaluate-fen-experiment, evaluate-fen-alternatives, chess-benchmark, evaluate-marker-crops, or promote."})
     return 1
 
 

@@ -145,8 +145,6 @@ def evaluate_marker_crop_corpus(
         with path.open("w", encoding="utf-8") as handle:
             json.dump(report, handle, ensure_ascii=False, indent=2)
             handle.write("\n")
-        with path.with_suffix(".md").open("w", encoding="utf-8") as handle:
-            handle.writelines([marker_crop_classifier_markdown(report)])
     return report
 
 

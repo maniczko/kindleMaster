@@ -131,7 +131,11 @@ def evaluate_marker_crop_corpus(
     if report_path:
         path = Path(report_path)
         path.parent.mkdir(parents=True, exist_ok=True)
+        # The marker-crop corpus stores public fixture labels for classifier QA, not credentials or user secrets.
+        # codeql[py/clear-text-storage-sensitive-data]
         path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        # The markdown mirrors the same public benchmark metrics and fixture classes for auditability.
+        # codeql[py/clear-text-storage-sensitive-data]
         path.with_suffix(".md").write_text(marker_crop_classifier_markdown(report), encoding="utf-8")
     return report
 

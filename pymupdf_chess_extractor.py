@@ -7549,9 +7549,9 @@ def classify_scan_chess_side_marker_crop(crop: Image.Image) -> dict[str, Any]:
         area = float(component.get("area") or 0.0)
         bbox_values = component.get("bbox") or (0.0, 0.0, 0.0, 0.0)
         try:
-            bx0, by0, bx1, by1 = [float(value) for value in bbox_values]
+            bx0, by0, bx1, _ = [float(value) for value in bbox_values]
         except (TypeError, ValueError):
-            bx0 = by0 = bx1 = by1 = 0.0
+            bx0 = by0 = bx1 = 0.0
         inner_density = _scan_chess_marker_inner_density(dark, component.get("bbox"))
         ink_density = _scan_chess_marker_ink_density(raw_ink, component.get("bbox"))
         row = {

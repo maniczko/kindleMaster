@@ -46,6 +46,38 @@ def load_runtime_rows(path: str | Path | None) -> list[dict[str, Any]]:
     return []
 
 
+JOB_OUTPUT_RUNTIME_FILES = (
+    "reports/chess_fen/why_side_to_move_not_trusted.json",
+    "reports/chess_fen/two_crop_quality_metrics.json",
+    "reports/chess_fen/side_marker_assignment.json",
+    "reports/chess_fen/side_marker_blocker_attribution.json",
+    "chess_diagrams.json",
+    "positions.json",
+    "data/diagrams.json",
+)
+
+
+def load_runtime_rows_from_job_output(job_output: str | Path | None) -> list[dict[str, Any]]:
+    if job_output is None:
+        return []
+    root = Path(job_output)
+    if not root.is_dir():
+        return []
+    merged: dict[str, dict[str, Any]] = {}
+    for relative in JOB_OUTPUT_RUNTIME_FILES:
+        path = root / relative
+        if not path.is_file():
+            continue
+        for row in load_runtime_rows(path):
+            diagram_id = str(row.get("diagram_id") or row.get("id") or "").strip()
+            if not diagram_id:
+                continue
+            target = merged.setdefault(diagram_id, {"diagram_id": diagram_id, "runtime_sources": []})
+            target["runtime_sources"].append(relative)
+            _merge_non_empty(target, row)
+    return list(merged.values())
+
+
 def load_manifest(path: str | Path | None) -> dict[str, Any]:
     if path is None:
         return {}
@@ -60,15 +92,17 @@ def evaluate_crop_qa_benchmark(
     labels_path: str | Path,
     *,
     actual_path: str | Path | None = None,
+    job_output_path: str | Path | None = None,
     manifest_path: str | Path | None = None,
 ) -> dict[str, Any]:
     labels = [_normalize_expected(row) for row in load_jsonl(labels_path)]
     manifest = load_manifest(manifest_path)
     expected_by_id: dict[str, dict[str, Any]] = {str(row.get("diagram_id")): row for row in labels}
     _merge_acceptance_subsets(expected_by_id, manifest)
+    actual_rows = load_runtime_rows_from_job_output(job_output_path) if job_output_path else load_runtime_rows(actual_path)
     actual_by_id = {
         str(row.get("diagram_id") or row.get("id") or ""): dict(row)
-        for row in load_runtime_rows(actual_path)
+        for row in actual_rows
         if str(row.get("diagram_id") or row.get("id") or "").strip()
     }
 
@@ -78,15 +112,21 @@ def evaluate_crop_qa_benchmark(
     missing_actual: list[dict[str, Any]] = []
     matched: list[dict[str, Any]] = []
     by_issue_type: Counter[str] = Counter()
+    by_primary_blocker: Counter[str] = Counter()
+    by_runtime_classification: Counter[str] = Counter()
 
     for diagram_id, expected in sorted(expected_by_id.items()):
         by_issue_type[str(expected.get("issue_type") or "unknown")] += 1
         actual = actual_by_id.get(diagram_id)
         if actual is None:
-            missing_actual.append(_row_result(expected, {}, "missing_actual", "runtime_record_missing"))
+            result = _row_result(expected, {}, "missing_actual", "runtime_record_missing")
+            missing_actual.append(result)
+            by_runtime_classification[str(result.get("runtime_classification") or "unknown")] += 1
             continue
         result = _classify_result(expected, actual)
         matched.append(result)
+        by_primary_blocker[str(result.get("primary_blocker") or "unknown")] += 1
+        by_runtime_classification[str(result.get("runtime_classification") or "unknown")] += 1
         status = str(result.get("status") or "")
         if status == "regression":
             regressions.append(result)
@@ -104,6 +144,10 @@ def evaluate_crop_qa_benchmark(
         "improved_count": len(improved),
         "manual_review_required_count": len(manual_review_required),
         "by_issue_type": dict(sorted(by_issue_type.items())),
+        "by_primary_blocker": dict(sorted(by_primary_blocker.items())),
+        "by_runtime_classification": dict(sorted(by_runtime_classification.items())),
+        "actual_runtime_source_count": len(actual_rows),
+        "job_output": str(job_output_path or ""),
         "policy": REVIEW_ONLY_POLICY,
     }
     status = "failed" if regressions else "ok"
@@ -115,6 +159,7 @@ def evaluate_crop_qa_benchmark(
         "improved": improved,
         "manual_review_required": manual_review_required,
         "missing_actual": missing_actual,
+        "matched": matched,
     }
 
 
@@ -135,6 +180,7 @@ def crop_qa_diff_markdown(report: Mapping[str, Any]) -> str:
         f"- status: {report.get('status', 'unknown')}",
         f"- benchmark records: {summary.get('benchmark_record_count', 0)}",
         f"- expected cases incl. subsets: {summary.get('expected_case_count', 0)}",
+        f"- actual runtime rows: {summary.get('actual_runtime_source_count', 0)}",
         f"- matched actual rows: {summary.get('matched_actual_count', 0)}",
         f"- regressions: {summary.get('regression_count', 0)}",
         f"- improved: {summary.get('improved_count', 0)}",
@@ -143,11 +189,32 @@ def crop_qa_diff_markdown(report: Mapping[str, Any]) -> str:
         f"- policy: {summary.get('policy', REVIEW_ONLY_POLICY)}",
         "",
     ]
+    lines.extend(["## Runtime Classifications", ""])
+    runtime_counts = summary.get("by_runtime_classification") if isinstance(summary.get("by_runtime_classification"), Mapping) else {}
+    if runtime_counts:
+        lines.extend(["| Classification | Count |", "| --- | ---: |"])
+        for key, count in runtime_counts.items():
+            lines.append(f"| {_md(str(key))} | {count} |")
+        lines.append("")
+    else:
+        lines.extend(["- none", ""])
+
+    lines.extend(["## Primary Blockers", ""])
+    blocker_counts = summary.get("by_primary_blocker") if isinstance(summary.get("by_primary_blocker"), Mapping) else {}
+    if blocker_counts:
+        lines.extend(["| Blocker | Count |", "| --- | ---: |"])
+        for key, count in blocker_counts.items():
+            lines.append(f"| {_md(str(key))} | {count} |")
+        lines.append("")
+    else:
+        lines.extend(["- none", ""])
+
     for section_key, title in (
         ("regressions", "Regressions"),
         ("improved", "Improved"),
         ("manual_review_required", "Manual Review Required"),
         ("missing_actual", "Missing Actual Rows"),
+        ("matched", "Matched Actual Rows"),
     ):
         rows = report.get(section_key) if isinstance(report.get(section_key), list) else []
         lines.extend([f"## {title}", ""])
@@ -233,16 +300,19 @@ def _subset_row(diagram_id: str) -> dict[str, Any]:
 def _classify_result(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> dict[str, Any]:
     expected_issue = str(expected.get("issue_type") or "")
     expected_marker_status = str(expected.get("marker_crop_status") or "")
-    actual_side = str(actual.get("side_to_move") or actual.get("system_side_to_move") or "").strip().lower()
+    actual_side = str(actual.get("side_to_move") or actual.get("side_to_move_detected") or actual.get("system_side_to_move") or "").strip().lower()
     actual_marker_status = str(actual.get("side_marker_status") or actual.get("system_side_marker_status") or "").strip()
     actual_board_quality = str(actual.get("board_crop_quality") or actual.get("diagram_crop_status") or "").strip()
     actual_marker_quality = str(actual.get("marker_crop_quality") or actual.get("marker_crop_status") or "").strip()
-    trusted = actual_marker_status == "trusted_marker"
+    trusted = _trusted_marker(actual_marker_status)
+    expected_side = str(expected.get("final_label") or "").strip().lower()
 
     if expected_issue == FRAGMENTARY_ISSUE_TYPE and actual_board_quality in {"pass", "ok"}:
         return _row_result(expected, actual, "regression", "fragmentary_board_crop_passed")
     if expected_issue == CONFLICT_ISSUE_TYPE and actual_side == "w":
         return _row_result(expected, actual, "regression", "visible_black_marker_promoted_to_white")
+    if trusted and expected_side in {"w", "b"} and actual_side in {"w", "b"} and actual_side != expected_side:
+        return _row_result(expected, actual, "regression", "trusted_marker_wrong_side")
     if expected_issue == MARKER_REVIEW_ISSUE_TYPE and trusted:
         return _row_result(expected, actual, "regression", "review_only_marker_promoted_to_trusted")
     if expected_marker_status in {"none", "unclear", "multiple", "bad_crop", "cropped_marker"} and trusted:
@@ -253,6 +323,8 @@ def _classify_result(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> 
     if expected_issue == CONFLICT_ISSUE_TYPE and actual_side in {"b", "unknown", ""}:
         status = "improved" if actual_side == "b" and trusted else "manual_review_required"
         return _row_result(expected, actual, status, "black_marker_not_promoted_to_white")
+    if trusted and expected_side in {"w", "b"} and actual_side == expected_side:
+        return _row_result(expected, actual, "improved", "trusted_classifier_correct_side")
     if expected_issue == MARKER_REVIEW_ISSUE_TYPE and not trusted:
         return _row_result(expected, actual, "manual_review_required", "review_only_marker_not_trusted")
     if actual_marker_quality == "fail" or actual_marker_status in {"marker_conflict", "ambiguous_marker", "marker_missing"}:
@@ -261,11 +333,15 @@ def _classify_result(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> 
 
 
 def _row_result(expected: Mapping[str, Any], actual: Mapping[str, Any], status: str, reason: str) -> dict[str, Any]:
+    side_marker_status = actual.get("side_marker_status") or actual.get("system_side_marker_status")
+    side_to_move = actual.get("side_to_move") or actual.get("side_to_move_detected") or actual.get("system_side_to_move")
     return {
         "diagram_id": str(expected.get("diagram_id") or actual.get("diagram_id") or ""),
         "issue_type": str(expected.get("issue_type") or ""),
         "status": status,
         "reason": reason,
+        "runtime_classification": _runtime_classification(expected, actual),
+        "primary_blocker": _primary_blocker(actual),
         "expected": {
             "diagram_crop_status": expected.get("diagram_crop_status"),
             "marker_crop_status": expected.get("marker_crop_status"),
@@ -275,8 +351,10 @@ def _row_result(expected: Mapping[str, Any], actual: Mapping[str, Any], status: 
         "actual": {
             "board_crop_quality": actual.get("board_crop_quality") or actual.get("diagram_crop_status"),
             "marker_crop_quality": actual.get("marker_crop_quality") or actual.get("marker_crop_status"),
-            "side_marker_status": actual.get("side_marker_status") or actual.get("system_side_marker_status"),
-            "side_to_move": actual.get("side_to_move") or actual.get("system_side_to_move"),
+            "side_marker_status": side_marker_status,
+            "side_to_move": side_to_move,
+            "primary_blocker": _primary_blocker(actual),
+            "runtime_sources": actual.get("runtime_sources") or [],
         },
     }
 
@@ -299,3 +377,80 @@ def _visible_marker_symbol(value: str) -> str:
 
 def _md(value: str) -> str:
     return value.replace("|", "\\|").replace("\n", " ")
+
+
+def _merge_non_empty(target: dict[str, Any], row: Mapping[str, Any]) -> None:
+    for key, value in row.items():
+        if key == "runtime_sources":
+            continue
+        if value in (None, "", [], {}):
+            continue
+        existing = target.get(key)
+        if existing in (None, "", [], {}):
+            target[key] = value
+
+
+def _primary_blocker(actual: Mapping[str, Any]) -> str:
+    return str(
+        actual.get("primary_blocker")
+        or actual.get("primary_side_marker_blocker")
+        or actual.get("full_fen_blocker")
+        or actual.get("manual_review_reason")
+        or ""
+    )
+
+
+def _runtime_classification(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> str:
+    if not actual:
+        return "runtime_did_not_find_diagram"
+    side = _side(actual)
+    expected_side = str(expected.get("final_label") or "").strip().lower()
+    marker_status = str(actual.get("side_marker_status") or actual.get("system_side_marker_status") or "").strip().lower()
+    marker_crop_exists = _truthy(actual.get("side_marker_crop_exists")) or _truthy(actual.get("has_side_marker_crop")) or bool(
+        actual.get("side_marker_crop_path")
+    )
+    marker_bbox_exists = _truthy(actual.get("marker_bbox_exists")) or bool(actual.get("marker_bbox") or actual.get("side_marker_bbox"))
+    marker_search_zone_count = _int(actual.get("marker_search_zone_count"))
+    if marker_search_zone_count <= 0 and actual.get("marker_search_zones"):
+        marker_search_zone_count = len(actual.get("marker_search_zones") or {})
+    trusted = _trusted_marker(marker_status)
+
+    if trusted and expected_side in {"w", "b"} and side == expected_side:
+        return "runtime_classifier_trusted_correct_side"
+    if trusted and expected_side in {"w", "b"} and side in {"w", "b"} and side != expected_side:
+        return "runtime_classifier_trusted_wrong_side"
+    if marker_crop_exists and marker_status in {"", "marker_missing", "side_to_move_marker_missing", "missing", "no_marker", "inferred_only"}:
+        return "runtime_created_marker_crop_but_classifier_missing"
+    if marker_bbox_exists and not marker_crop_exists:
+        return "runtime_found_marker_bbox_but_crop_missing"
+    if marker_search_zone_count > 0 and marker_status in {"", "marker_missing", "side_to_move_marker_missing", "missing", "no_marker", "inferred_only"}:
+        return "runtime_found_diagram_but_marker_missing"
+    if marker_status in {"marker_conflict", "ambiguous_marker"} or "conflict" in marker_status or "ambiguous" in marker_status:
+        return "runtime_kept_manual_review_safe"
+    if not trusted and side not in {"w", "b"}:
+        return "runtime_kept_manual_review_safe"
+    if trusted:
+        return "runtime_classifier_trusted_without_manual_label"
+    return "runtime_matched_without_regression"
+
+
+def _side(actual: Mapping[str, Any]) -> str:
+    return str(actual.get("side_to_move") or actual.get("side_to_move_detected") or actual.get("system_side_to_move") or "").strip().lower()
+
+
+def _trusted_marker(status: str) -> bool:
+    status_lower = str(status or "").strip().lower()
+    return status_lower == "trusted_marker" or status_lower.startswith("trusted_")
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "pass"}
+    return bool(value)
+
+
+def _int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0

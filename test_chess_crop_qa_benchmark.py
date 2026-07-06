@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from chess_crop_qa_benchmark import evaluate_crop_qa_benchmark, write_crop_qa_diff_reports
+from chess_crop_qa_benchmark import evaluate_crop_qa_benchmark, load_runtime_rows_from_job_output, write_crop_qa_diff_reports
 
 
 BENCHMARK = Path("reference_inputs/chess_fen/qa/qa_crop_validation_rows.jsonl")
@@ -151,6 +153,123 @@ class ChessCropQaBenchmarkTests(unittest.TestCase):
 
         self.assertEqual(report["summary"]["regression_count"], 0)
         self.assertEqual(report["summary"]["manual_review_required_count"], 2)
+
+    def test_job_output_fixture_reports_trusted_review_missing_and_regression(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            labels = root / "labels.jsonl"
+            labels.write_text(
+                "\n".join(
+                    json.dumps(row, ensure_ascii=False)
+                    for row in [
+                        {"diagram_id": "trusted_ok", "visible_marker": "outline_triangle", "final_label": "w", "issue_type": "manual_label"},
+                        {"diagram_id": "review_only", "marker_crop_status": "bad_crop", "issue_type": "marker_search_review_only"},
+                        {"diagram_id": "missing_actual", "visible_marker": "outline_triangle", "final_label": "w", "issue_type": "manual_label"},
+                        {"diagram_id": "wrong_side", "visible_marker": "filled_triangle", "final_label": "b", "issue_type": "system_suggestion_mismatch"},
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            report_dir = root / "job" / "reports" / "chess_fen"
+            report_dir.mkdir(parents=True)
+            (report_dir / "why_side_to_move_not_trusted.json").write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "diagram_id": "trusted_ok",
+                                "board_crop_quality": "pass",
+                                "marker_crop_quality": "pass",
+                                "side_marker_status": "trusted_marker",
+                                "side_to_move_detected": "w",
+                                "primary_blocker": "no_blocker_trusted",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (report_dir / "two_crop_quality_metrics.json").write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "diagram_id": "review_only",
+                                "board_crop_quality": "pass",
+                                "marker_crop_quality": "fail",
+                                "side_marker_status": "marker_missing",
+                                "side_to_move": "unknown",
+                                "primary_blocker": "marker_classifier_missing",
+                            },
+                            {
+                                "diagram_id": "wrong_side",
+                                "board_crop_quality": "pass",
+                                "marker_crop_quality": "pass",
+                                "side_marker_status": "trusted_marker",
+                                "side_to_move": "w",
+                                "primary_blocker": "no_blocker_trusted",
+                            },
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            loaded = load_runtime_rows_from_job_output(root / "job")
+            report = evaluate_crop_qa_benchmark(labels, job_output_path=root / "job")
+
+        self.assertEqual({row["diagram_id"] for row in loaded}, {"trusted_ok", "review_only", "wrong_side"})
+        self.assertEqual(report["summary"]["matched_actual_count"], 3)
+        self.assertEqual(report["summary"]["missing_actual_count"], 1)
+        self.assertEqual(report["summary"]["regression_count"], 1)
+        self.assertEqual(report["summary"]["improved_count"], 1)
+        self.assertEqual(report["summary"]["manual_review_required_count"], 1)
+        self.assertEqual(report["regressions"][0]["diagram_id"], "wrong_side")
+        self.assertEqual(report["regressions"][0]["runtime_classification"], "runtime_classifier_trusted_wrong_side")
+        self.assertIn("marker_classifier_missing", report["summary"]["by_primary_blocker"])
+        self.assertIn("runtime_did_not_find_diagram", report["summary"]["by_runtime_classification"])
+
+    def test_cli_accepts_job_output_directory_and_writes_json_and_markdown(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            labels = root / "labels.jsonl"
+            labels.write_text(
+                json.dumps({"diagram_id": "one", "visible_marker": "outline_triangle", "final_label": "w"}, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            report_dir = root / "job" / "reports" / "chess_fen"
+            report_dir.mkdir(parents=True)
+            (report_dir / "side_marker_assignment.json").write_text(
+                json.dumps({"items": [{"diagram_id": "one", "side_marker_status": "trusted_marker", "side_to_move": "w"}]}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            out = root / "crop_qa_regression_diff.json"
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/evaluate_chess_crop_qa_benchmark.py",
+                    "--labels",
+                    str(labels),
+                    "--job-output",
+                    str(root / "job"),
+                    "--out",
+                    str(out),
+                ],
+                cwd=Path(__file__).resolve().parent,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+            payload = json.loads(out.read_text(encoding="utf-8"))
+            markdown = out.with_suffix(".md").read_text(encoding="utf-8")
+
+        self.assertEqual(payload["summary"]["matched_actual_count"], 1)
+        self.assertIn("Runtime Classifications", markdown)
 
 
 if __name__ == "__main__":

@@ -850,9 +850,10 @@ Supported first-class commands:
 - `ml` with `dataset`, `train`, and `evaluate` subcommands
 - `test`
 - `audit`
+- `chess` with `validate-side-markers` for the private fixed-edition marker acceptance gate
 - `chess-study` with `run-all`, `audit-current`, `extract-structure`, `segment-pages`, `detect-diagrams`, `recognize-fen`, `extract-pgn`, `link-exercises`, `validate`, `render`, `fen-review`, `build-fen-templates`, `evaluate-fen-profile`, `pgn-review`, `quality-dashboard`, `ai-fen-candidates`, `ai-pgn-candidates`, `ai-quality-eval`, `quality-baseline`, `preprocess-boards`, `build-square-dataset`, `train-fen-classifier`, `evaluate-fen-classifier`, `recognize-fen-local`, `evaluate-fen-ensemble`, `calibrate-fen-confidence`, and `export-fen-corpus-manifest` subcommands; use `--quality-profile smoke|default|masterkindle` for study-export gates
 
-Use `process` as the front-door automatic chess PDF flow when the goal is one command that runs extraction, deterministic FEN/PGN validation, safe candidate mapping, canonical reports, and strict export gating. Use `report` and `review` for the derived auto-flow report and manual review index. Keep `chess-study` as the stage/debug backend for semantic reading order, diagram/FEN recognition, and PGN/comment extraction. Exact PDF visual layout and full page-image rendering are audit/debug aids only; use `--render-pages` explicitly when page images are needed.
+Use `process` as the front-door automatic chess PDF flow when the goal is one command that runs extraction, deterministic FEN/PGN validation, safe candidate mapping, canonical reports, and strict export gating. Use `chess validate-side-markers` for source-SHA-bound acceptance against the non-committed verified fixed-edition corpus; synthetic fixtures must never satisfy that gate. Use `report` and `review` for the derived auto-flow report and manual review index. Keep `chess-study` as the stage/debug backend for semantic reading order, diagram/FEN recognition, and PGN/comment extraction. Exact PDF visual layout and full page-image rendering are audit/debug aids only; use `--render-pages` explicitly when page images are needed.
 - `workflow` with `baseline` and `verify` subcommands
 - `orchestrate` with `doctor`, `sync`, `claim`, `execute`, and `report` subcommands
 

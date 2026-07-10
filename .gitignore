@@ -41,6 +41,8 @@ test_result.txt
 # Generated runtime artifacts
 reports/
 output/
+reference_inputs/chess_marker_acceptance/private/
+reference_inputs_local/chess_marker_acceptance/
 .playwright-mcp/
 .playwright-cli/
 live_test_v9_unzipped/

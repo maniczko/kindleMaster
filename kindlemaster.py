@@ -74,6 +74,7 @@ QUICK_TESTS = [
     "test_ai_consensus_fen_promotion_queue.py",
     "test_chess_auto_flow.py",
     "test_chess_side_marker_assignment.py",
+    "test_chess_marker_semantic_gate.py",
     "test_chess_side_to_move_trust_audit.py",
     "test_chess_side_to_move_evidence_tiers.py",
     "test_chess_side_marker_final_reader_e2e.py",

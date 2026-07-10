@@ -4771,6 +4771,14 @@ def _chess_diagram_record_from_image(
         "side_marker_bbox": side_marker.get("side_marker_bbox") or [],
         "side_marker_confidence": side_marker.get("side_marker_confidence") or "",
         "side_marker_assignment_trace": side_marker.get("side_marker_assignment_trace") or {},
+        "marker_semantic_status": str(side_marker.get("marker_semantic_status") or "missing"),
+        "marker_semantic_side": str(side_marker.get("marker_semantic_side") or "unknown"),
+        "marker_semantic_confidence": float(side_marker.get("marker_semantic_confidence") or 0.0),
+        "marker_ownership_status": str(side_marker.get("marker_ownership_status") or "unassigned"),
+        "board_placement_status": str(side_marker.get("board_placement_status") or "review"),
+        "full_fen_allowed": bool(side_marker.get("full_fen_allowed")),
+        "full_fen_blockers": list(side_marker.get("full_fen_blockers") or []),
+        "full_fen_blocker": str(side_marker.get("full_fen_blocker") or ""),
         "strict_fen_side_evidence_trusted": bool(side_marker.get("strict_fen_side_evidence_trusted")),
         "fen_suppressed_reason": str(fen_result.get("fen_suppressed_reason") or ""),
         "fen_confidence": float(fen_result.get("confidence", 0.0) or 0.0),
@@ -5063,6 +5071,14 @@ TWO_CROP_CONTRACT_FIELDS = {
     "side_to_move_confidence",
     "manual_review_required",
     "manual_review_reason",
+    "marker_semantic_status",
+    "marker_semantic_side",
+    "marker_semantic_confidence",
+    "marker_ownership_status",
+    "board_placement_status",
+    "full_fen_allowed",
+    "full_fen_blockers",
+    "full_fen_blocker",
 }
 
 BOARD_CROP_REASON_CODES = {
@@ -6023,6 +6039,7 @@ def _apply_scan_chess_two_crop_quality_gate(payload: dict[str, Any], fields: Map
     ).lower() == "marker"
     if board_failed:
         warnings.add("board_crop_quality_failed")
+        updated["board_placement_status"] = "review"
     if marker_failed:
         warnings.add("marker_crop_quality_failed")
     if board_failed or (marker_failed and trusted_side):
@@ -6030,7 +6047,15 @@ def _apply_scan_chess_two_crop_quality_gate(payload: dict[str, Any], fields: Map
         updated["requires_review"] = True
         updated["fen_suppressed_reason"] = "crop_quality_gate"
         updated["full_fen_runtime_status"] = "FEN_REVIEW_REQUIRED"
-        if trusted_side:
+        updated["full_fen_allowed"] = False
+        blockers = [str(blocker) for blocker in updated.get("full_fen_blockers") or [] if str(blocker)]
+        if board_failed:
+            blockers.extend(["board_placement_not_accepted", "board_crop_quality_failed"])
+        if marker_failed:
+            blockers.append("marker_semantic_not_trusted")
+        updated["full_fen_blockers"] = list(dict.fromkeys(blockers))
+        updated["full_fen_blocker"] = updated["full_fen_blockers"][0]
+        if marker_failed and trusted_side:
             updated["side_to_move"] = "unknown"
             updated["side_to_move_status"] = "unknown"
             updated["side_to_move_evidence"] = "none"
@@ -6041,8 +6066,6 @@ def _apply_scan_chess_two_crop_quality_gate(payload: dict[str, Any], fields: Map
 
 
 def _scan_chess_two_crop_trusted_side(fields: Mapping[str, Any]) -> str:
-    if str(fields.get("board_crop_quality") or "").lower() != "pass":
-        return ""
     if str(fields.get("marker_crop_quality") or "").lower() != "pass":
         return ""
     if not _coerce_side_marker_bbox(fields.get("marker_bbox")):
@@ -6796,7 +6819,7 @@ def _scan_chess_side_marker_metadata_from_payload(payload: Mapping[str, Any]) ->
                 )
             trace["rejected_candidate_reasons"] = rejected
 
-    return {
+    metadata = {
         "side_to_move": side,
         "side_marker_symbol": SIDE_MARKER_SYMBOLS[symbol_key],
         "side_marker_status": marker_status,
@@ -6805,6 +6828,12 @@ def _scan_chess_side_marker_metadata_from_payload(payload: Mapping[str, Any]) ->
         "side_marker_confidence": confidence_value,
         "side_marker_assignment_trace": trace,
         "strict_fen_side_evidence_trusted": marker_status in SIDE_MARKER_TRUSTED_STATUSES,
+    }
+    from chess_side_to_move_evidence import resolve_marker_semantic_contract
+
+    return {
+        **metadata,
+        **resolve_marker_semantic_contract({**dict(payload), **metadata}),
     }
 
 

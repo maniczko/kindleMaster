@@ -34,6 +34,7 @@ class ChessSideToMoveEvidenceTierTests(unittest.TestCase):
                 "marker_crop_quality": "pass",
                 "marker_bbox": [10, 20, 30, 40],
                 "selected_marker_zone": "right",
+                "placement_status": "FEN_PLACEMENT_MACHINE_ACCEPTED",
                 "marker_crop_quality_gate": {"decision": "pass", "component_count": 1, "reasons": []},
             }
         )
@@ -79,6 +80,7 @@ class ChessSideToMoveEvidenceTierTests(unittest.TestCase):
             "manual_visible_marker": "outline_triangle",
             "human_verified": True,
             "verification_source": "human_visual",
+            "board_placement_status": "accepted",
         }
 
         default = resolve_side_to_move_evidence(record)
@@ -179,6 +181,8 @@ class ChessSideToMoveEvidenceTierTests(unittest.TestCase):
                                     "marker_bbox": [10.0, 20.0, 30.0, 40.0],
                                     "selected_marker_zone": "right",
                                     "marker_crop_quality_gate": {"decision": "pass", "component_count": 1, "reasons": []},
+                                    "placement_status": "FEN_PLACEMENT_MACHINE_ACCEPTED",
+                                    "full_fen_status": "FEN_MACHINE_ACCEPTED",
                                 }
                             ],
                             "pgn_records": [],

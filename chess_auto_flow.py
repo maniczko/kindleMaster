@@ -24,6 +24,7 @@ from chess_side_to_move_evidence import (
     side_to_move_coverage_dashboard_html,
     side_to_move_coverage_dashboard_markdown,
 )
+from chess_side_to_move_fusion import verified_side_labels_from_acceptance_manifest
 from chess_side_to_move_trust_audit import (
     build_side_to_move_diagnostic_report,
     side_to_move_diagnostic_html,
@@ -331,6 +332,7 @@ def build_auto_chess_flow_artifacts(
     beam_fen_rows = _read_jsonl(out / "review" / "fen_beam_candidates.jsonl")
     ensemble_eval = _read_optional_json(out / "reports" / "fen_ensemble_eval.json")
     pgn_lattice_rows = _read_jsonl(out / "review" / "pgn_lattice_review.jsonl")
+    verified_side_labels = _load_exact_side_to_move_labels(out)
 
     page_payload = _canonical_pages(pages)
     layout_payload = _canonical_layout(pages)
@@ -345,7 +347,11 @@ def build_auto_chess_flow_artifacts(
         max_diagrams=chess_fen_recognition_max_diagrams,
     )
     side_marker_report = _side_marker_assignment_report(diagrams, fen_payload)
-    two_crop_quality_metrics = _two_crop_quality_metrics_report(diagrams, fen_payload)
+    two_crop_quality_metrics = _two_crop_quality_metrics_report(
+        diagrams,
+        fen_payload,
+        verified_labels=verified_side_labels,
+    )
     source_gate = _read_optional_json(out / "reports" / "source_html_quality_gate.json")
     side_marker_blockers = build_side_marker_blocker_attribution(
         two_crop_quality_metrics.get("items") or [],
@@ -357,7 +363,8 @@ def build_auto_chess_flow_artifacts(
         artifact_root=out,
     )
     side_to_move_coverage_dashboard = build_side_to_move_coverage_dashboard(
-        two_crop_quality_metrics.get("items") or [],
+        diagrams,
+        verified_labels=verified_side_labels,
     )
     side_marker_learning = build_side_marker_learning_artifacts(
         two_crop_quality_metrics.get("items") or [],
@@ -2212,7 +2219,13 @@ def _two_crop_manual_review_reason(row: Mapping[str, Any]) -> str:
     return ""
 
 
-def _two_crop_quality_rows(diagrams: list[dict[str, Any]], fen_payload: dict[str, Any]) -> list[dict[str, Any]]:
+def _two_crop_quality_rows(
+    diagrams: list[dict[str, Any]],
+    fen_payload: dict[str, Any],
+    *,
+    verified_labels: Iterable[Mapping[str, Any]] = (),
+) -> list[dict[str, Any]]:
+    label_rows = [dict(row) for row in verified_labels if isinstance(row, Mapping)]
     fen_by_id = _fen_items_by_diagram_id(fen_payload)
     marker_blocker_codes = {
         "full_fen_blocked_by_marker",
@@ -2321,6 +2334,13 @@ def _two_crop_quality_rows(diagrams: list[dict[str, Any]], fen_payload: dict[str
         }
         quality_row = {
             "diagram_id": diagram_id,
+            "diagram_fingerprint": str(merged.get("diagram_fingerprint") or ""),
+            "source_document_sha256": str(
+                _first_non_empty(
+                    merged.get("source_document_sha256"),
+                    merged.get("source_pdf_sha256"),
+                )
+            ),
             "page": merged.get("page") or merged.get("page_number") or "",
             "board_crop_path": str(_first_non_empty(merged.get("board_crop_path"))),
             "side_marker_crop_path": str(_first_non_empty(merged.get("side_marker_crop_path"))),
@@ -2367,6 +2387,32 @@ def _two_crop_quality_rows(diagrams: list[dict[str, Any]], fen_payload: dict[str
             "marker_classifier_confidence": merged.get("marker_classifier_confidence"),
             "two_crop_performance": dict(merged.get("two_crop_performance") or {}),
             "side_to_move": str(_first_non_empty(merged.get("side_to_move"), "unknown")),
+            "caption": str(merged.get("caption") or ""),
+            "caption_text": str(merged.get("caption_text") or ""),
+            "ocr_caption": str(merged.get("ocr_caption") or ""),
+            "diagram_caption": str(merged.get("diagram_caption") or ""),
+            "label": str(merged.get("label") or ""),
+            "solution_heading": str(merged.get("solution_heading") or ""),
+            "pgn": str(merged.get("pgn") or ""),
+            "movetext": str(merged.get("movetext") or ""),
+            "linked_pgn": str(merged.get("linked_pgn") or ""),
+            "solution_pgn": str(merged.get("solution_pgn") or ""),
+            "solution_movetext": str(merged.get("solution_movetext") or ""),
+            "solution_text": str(merged.get("solution_text") or ""),
+            "notation": str(merged.get("notation") or ""),
+            "pgn_first_mover": str(merged.get("pgn_first_mover") or ""),
+            "linked_first_mover": str(merged.get("linked_first_mover") or ""),
+            "linked_pgn_record": (
+                dict(merged.get("linked_pgn_record") or {})
+                if isinstance(merged.get("linked_pgn_record"), Mapping)
+                else {}
+            ),
+            "pgn_records": (
+                list(merged.get("pgn_records") or [])
+                if isinstance(merged.get("pgn_records"), list)
+                else []
+            ),
+            "source_profile_layout_prior": merged.get("source_profile_layout_prior"),
             "trusted_marker": trusted_marker,
             "marker_missing": marker_missing,
             "marker_conflict": marker_conflict,
@@ -2382,7 +2428,12 @@ def _two_crop_quality_rows(diagrams: list[dict[str, Any]], fen_payload: dict[str
             or placement_status == "FEN_PLACEMENT_REVIEW_REQUIRED",
             "acceptance_blocker_codes": sorted(blocker_codes),
         }
-        quality_row.update(resolve_side_to_move_evidence({**merged, **quality_row}))
+        quality_row.update(
+            resolve_side_to_move_evidence(
+                {**merged, **quality_row},
+                verified_labels=label_rows,
+            )
+        )
         quality_row["trusted_marker"] = quality_row.get("side_to_move_source") == "trusted_marker"
         rows.append(quality_row)
     return rows
@@ -2442,8 +2493,17 @@ def _two_crop_accuracy_data_gap(diagrams: list[dict[str, Any]]) -> dict[str, Any
     }
 
 
-def _two_crop_quality_metrics_report(diagrams: list[dict[str, Any]], fen_payload: dict[str, Any]) -> dict[str, Any]:
-    rows = _two_crop_quality_rows(diagrams, fen_payload)
+def _two_crop_quality_metrics_report(
+    diagrams: list[dict[str, Any]],
+    fen_payload: dict[str, Any],
+    *,
+    verified_labels: Iterable[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    rows = _two_crop_quality_rows(
+        diagrams,
+        fen_payload,
+        verified_labels=verified_labels,
+    )
     board_fail_reasons = [
         str(reason)
         for row in rows
@@ -3212,6 +3272,7 @@ def _load_or_build_dashboard(out: Path) -> dict[str, Any]:
 
         return build_chess_quality_dashboard(out)
     except Exception:
+        # The dashboard is optional here; callers already handle an empty fallback.
         return {}
 
 
@@ -3308,6 +3369,51 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
         if isinstance(value, dict):
             rows.append(value)
     return rows
+
+
+def _load_exact_side_to_move_labels(out: Path) -> list[dict[str, Any]]:
+    labels = _read_jsonl(out / "review" / "side_to_move_verified_labels.jsonl")
+    local_json = _read_optional_json(
+        out / "reports" / "chess_fen" / "verified_side_to_move_labels.json"
+    )
+    for row in local_json.get("labels") or []:
+        if isinstance(row, dict):
+            labels.append(row)
+    try:
+        from chess_yusupov_acceptance import (
+            DEFAULT_PROFILE,
+            resolve_secure_manifest_path,
+            validate_acceptance_manifest,
+        )
+
+        manifest_path = resolve_secure_manifest_path(
+            DEFAULT_PROFILE,
+            repo_root=Path(__file__).parent,
+        )
+        manifest = _read_optional_json(manifest_path) if manifest_path else {}
+        if (
+            manifest
+            and validate_acceptance_manifest(
+                manifest,
+                source_profile=DEFAULT_PROFILE,
+            ).get("status")
+            == "valid"
+        ):
+            labels.extend(verified_side_labels_from_acceptance_manifest(manifest))
+    except (OSError, UnicodeError, ValueError):
+        pass
+    unique: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for row in labels:
+        if not isinstance(row, Mapping):
+            continue
+        key = (
+            str(row.get("source_document_sha256") or row.get("source_pdf_sha256") or ""),
+            str(row.get("diagram_fingerprint") or ""),
+            str(row.get("side_to_move") or row.get("expected_side") or ""),
+            str(row.get("verified_at") or ""),
+        )
+        unique[key] = dict(row)
+    return list(unique.values())
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:

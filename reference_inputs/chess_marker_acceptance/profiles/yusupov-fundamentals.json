@@ -33,7 +33,15 @@
     ],
     "calibration_split": "calibration",
     "optional_model_training_split": "train",
-    "holdout_used_for_tuning": false
+    "holdout_used_for_tuning": false,
+    "layout_prior_role": "supporting_only",
+    "exact_verified_label_scope": [
+      "source_document_sha256",
+      "diagram_fingerprint",
+      "verification_source",
+      "verified_by",
+      "verified_at"
+    ]
   },
   "thresholds": {
     "minimum_expected_diagram_recall": 1.0,

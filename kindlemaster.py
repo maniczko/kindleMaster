@@ -82,6 +82,8 @@ QUICK_TESTS = [
     "test_chess_side_to_move_trust_audit.py",
     "test_chess_side_to_move_audit_export.py",
     "test_chess_side_to_move_evidence_tiers.py",
+    "test_chess_side_to_move_fusion.py",
+    "test_chess_verified_label_fingerprint.py",
     "test_chess_side_marker_final_reader_e2e.py",
     "test_chess_crop_qa_benchmark.py",
     "test_chess_two_crop_performance.py",

@@ -25,11 +25,10 @@ from chess_position_recognizer import validate_fen
 from chess_side_marker_blockers import build_side_marker_blocker_attribution, side_marker_blocker_attribution_markdown
 from chess_side_to_move_trust_audit import build_side_to_move_diagnostic_report
 from pymupdf_chess_extractor import (
-    _apply_scan_chess_side_to_move_context_evidence,
     _apply_scan_chess_two_crop_quality_gate,
     _apply_scan_chess_two_crop_side_marker_if_trusted,
-    _infer_scan_chess_side_to_move_marker_evidence,
-    _scan_chess_local_side_marker_assignment_evidence,
+    _scan_chess_apply_page_marker_assignment,
+    _scan_chess_page_marker_pipeline,
     _scan_chess_side_marker_metadata_from_payload,
     _scan_chess_two_crop_review_artifacts,
 )
@@ -296,6 +295,16 @@ class StudyDiagram:
     side_marker_source: str
     side_marker_confidence: float | str
     side_marker_assignment_trace: dict[str, Any]
+    marker_candidate_id: str
+    marker_candidate_bbox: list[float]
+    marker_candidate_crop_path: str
+    marker_candidate_features: dict[str, Any]
+    marker_candidate_class: str
+    marker_candidate_confidence: float
+    marker_assignment_status: str
+    marker_assignment_confidence: float
+    marker_assignment_runner_up_margin: float
+    marker_assignment_rejected_reasons: list[str]
     strict_fen_side_evidence_trusted: bool
     placement: str
     placement_status: str
@@ -349,6 +358,18 @@ class StudyDiagram:
             "side_marker_source": self.side_marker_source,
             "side_marker_confidence": self.side_marker_confidence,
             "side_marker_assignment_trace": dict(self.side_marker_assignment_trace),
+            "marker_candidate_id": self.marker_candidate_id,
+            "marker_candidate_bbox": list(self.marker_candidate_bbox),
+            "marker_candidate_crop_path": self.marker_candidate_crop_path,
+            "marker_candidate_features": dict(self.marker_candidate_features),
+            "marker_candidate_class": self.marker_candidate_class,
+            "marker_candidate_confidence": round(float(self.marker_candidate_confidence or 0.0), 4),
+            "marker_assignment_status": self.marker_assignment_status,
+            "marker_assignment_confidence": round(float(self.marker_assignment_confidence or 0.0), 4),
+            "marker_assignment_runner_up_margin": round(
+                float(self.marker_assignment_runner_up_margin or 0.0), 4
+            ),
+            "marker_assignment_rejected_reasons": list(self.marker_assignment_rejected_reasons),
             "strict_fen_side_evidence_trusted": bool(self.strict_fen_side_evidence_trusted),
             "placement": self.placement,
             "placement_status": self.placement_status,
@@ -6661,6 +6682,7 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
     out = Path(out_dir)
     if not diagrams:
         summary = _study_side_marker_summary([])
+        _write_study_page_marker_assignment_report(out, [], summary)
         _write_study_side_marker_report(out, [], summary)
         _write_study_two_crop_quality_metrics(out, [], summary)
         _write_study_side_marker_blocker_attribution(out, [], source_gate=None)
@@ -6668,6 +6690,7 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
         return summary
     if not Path(pdf_path).is_file():
         summary = {**_study_side_marker_summary(diagrams), "status": "pdf_source_missing"}
+        _write_study_page_marker_assignment_report(out, [], summary)
         _write_study_side_marker_report(out, diagrams, summary)
         _write_study_two_crop_quality_metrics(out, diagrams, summary)
         _write_study_side_marker_blocker_attribution(out, diagrams, source_gate=None)
@@ -6679,6 +6702,7 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
         if page_number > 0:
             diagrams_by_page.setdefault(page_number, []).append(diagram)
 
+    page_assignment_reports: list[dict[str, Any]] = []
     with fitz.open(pdf_path) as document:
         zoom = max(72, int(dpi or 72)) / 72.0
         matrix = fitz.Matrix(zoom, zoom)
@@ -6688,41 +6712,47 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
                 continue
             pixmap = document[page_index].get_pixmap(matrix=matrix, alpha=False)
             page_image = Image.frombytes("RGB", (pixmap.width, pixmap.height), pixmap.samples)
-            page_bboxes = [
-                bbox
-                for bbox in (_study_pixel_bbox_xyxy(diagram) for diagram in page_diagrams)
-                if bbox is not None
+            page_boards = [
+                {
+                    "diagram_id": str(diagram.get("diagram_id") or diagram.get("id") or ""),
+                    "bbox": board_bbox,
+                }
+                for diagram in page_diagrams
+                for board_bbox in [_study_pixel_bbox_xyxy(diagram)]
+                if board_bbox is not None
             ]
+            page_assignment = _scan_chess_page_marker_pipeline(
+                page_image,
+                page_boards,
+                page_number=page_number,
+            )
+            page_assignment_reports.append(
+                {key: value for key, value in page_assignment.items() if key != "files"}
+            )
+            _write_study_side_marker_artifact_files(out, list(page_assignment.get("files") or []))
+            assignments_by_id = {
+                str(item.get("diagram_id") or ""): dict(item)
+                for item in page_assignment.get("assignments") or []
+                if isinstance(item, Mapping)
+            }
             for diagram in page_diagrams:
                 board_bbox = _study_pixel_bbox_xyxy(diagram)
                 if board_bbox is None:
                     continue
+                diagram_id = str(diagram.get("diagram_id") or diagram.get("id") or "")
+                marker_assignment = assignments_by_id.get(diagram_id) or {}
                 payload = _study_side_marker_payload(diagram)
-                evidence = _infer_scan_chess_side_to_move_marker_evidence(page_image, board_bbox)
-                payload = _apply_scan_chess_side_to_move_context_evidence(
+                payload = _scan_chess_apply_page_marker_assignment(
                     payload,
-                    evidence,
-                    min_confidence=min_confidence,
+                    marker_assignment,
+                    page_assignment.get("candidates") or [],
                 )
-                if bool(payload.get("requires_review")) and "side_to_move_inferred" in {
-                    str(warning) for warning in list(payload.get("warnings") or [])
-                }:
-                    local_evidence = _scan_chess_local_side_marker_assignment_evidence(
-                        page_image,
-                        board_bbox,
-                        payload,
-                        diagram_bboxes=page_bboxes,
-                    )
-                    payload = _apply_scan_chess_side_to_move_context_evidence(
-                        payload,
-                        local_evidence,
-                        min_confidence=min_confidence,
-                    )
                 two_crop_fields, two_crop_files = _scan_chess_two_crop_review_artifacts(
                     page_image,
-                    filename=f"{diagram.get('diagram_id') or diagram.get('id') or 'diagram'}.png",
+                    filename=f"{diagram_id or 'diagram'}.png",
                     board_bbox=board_bbox,
-                    side_marker_bbox=payload.get("side_marker_bbox"),
+                    side_marker_bbox=None,
+                    marker_assignment=marker_assignment,
                 )
                 payload.update(two_crop_fields)
                 payload = _apply_scan_chess_two_crop_quality_gate(payload, two_crop_fields)
@@ -6735,7 +6765,11 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
                 _write_study_side_marker_artifact_files(out, two_crop_files)
                 _apply_study_side_marker_payload(diagram, payload)
 
-    summary = _study_side_marker_summary(diagrams)
+    summary = {
+        **_study_side_marker_summary(diagrams),
+        **_study_page_marker_assignment_summary(page_assignment_reports),
+    }
+    _write_study_page_marker_assignment_report(out, page_assignment_reports, summary)
     _write_study_side_marker_report(out, diagrams, summary)
     _write_study_two_crop_quality_metrics(out, diagrams, summary)
     _write_study_side_marker_blocker_attribution(out, diagrams, source_gate=None)
@@ -6825,6 +6859,20 @@ def _apply_study_side_marker_payload(diagram: dict[str, Any], payload: Mapping[s
             "side_marker_bbox": marker.get("side_marker_bbox") or [],
             "side_marker_confidence": marker.get("side_marker_confidence") or "",
             "side_marker_assignment_trace": marker.get("side_marker_assignment_trace") or {},
+            "marker_candidate_id": str(payload.get("marker_candidate_id") or ""),
+            "marker_candidate_bbox": list(payload.get("marker_candidate_bbox") or []),
+            "marker_candidate_crop_path": str(payload.get("marker_candidate_crop_path") or ""),
+            "marker_candidate_features": dict(payload.get("marker_candidate_features") or {}),
+            "marker_candidate_class": str(payload.get("marker_candidate_class") or ""),
+            "marker_candidate_confidence": float(payload.get("marker_candidate_confidence") or 0.0),
+            "marker_assignment_status": str(payload.get("marker_assignment_status") or "unassigned"),
+            "marker_assignment_confidence": float(payload.get("marker_assignment_confidence") or 0.0),
+            "marker_assignment_runner_up_margin": float(
+                payload.get("marker_assignment_runner_up_margin") or 0.0
+            ),
+            "marker_assignment_rejected_reasons": list(
+                payload.get("marker_assignment_rejected_reasons") or []
+            ),
             "strict_fen_side_evidence_trusted": bool(marker.get("strict_fen_side_evidence_trusted")),
             "board_crop_path": str(payload.get("board_crop_path") or diagram.get("source_crop") or ""),
             "side_marker_crop_path": str(payload.get("side_marker_crop_path") or ""),
@@ -6871,6 +6919,85 @@ def _write_study_side_marker_artifact_files(out: Path, files: list[Mapping[str, 
         target = out / rel_path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(bytes(data))
+
+
+def _study_page_marker_assignment_summary(pages: list[Mapping[str, Any]]) -> dict[str, Any]:
+    page_summaries = [
+        dict(page.get("summary") or {})
+        for page in pages
+        if isinstance(page.get("summary"), Mapping)
+    ]
+    board_count = sum(int(summary.get("board_count") or 0) for summary in page_summaries)
+    candidate_count = sum(int(summary.get("marker_candidate_count") or 0) for summary in page_summaries)
+    assigned_count = sum(int(summary.get("assigned_marker_count") or 0) for summary in page_summaries)
+    confident_count = sum(int(summary.get("confident_ownership_count") or 0) for summary in page_summaries)
+    duplicate_count = sum(
+        int(summary.get("duplicate_marker_ownership_count") or 0) for summary in page_summaries
+    )
+    candidate_crop_count = sum(
+        len(
+            [
+                candidate
+                for candidate in page.get("candidates") or []
+                if candidate.get("marker_candidate_crop_path")
+            ]
+        )
+        for page in pages
+    )
+    return {
+        "page_marker_detection_run_count": len(pages),
+        "page_marker_board_count": board_count,
+        "marker_candidate_count": candidate_count,
+        "marker_candidate_crop_count": candidate_crop_count,
+        "marker_candidate_assigned_count": assigned_count,
+        "marker_candidate_recall_proxy_rate": round(assigned_count / board_count, 4)
+        if board_count
+        else 0.0,
+        "marker_ownership_confident_count": confident_count,
+        "marker_ownership_confident_rate": round(confident_count / assigned_count, 4)
+        if assigned_count
+        else 0.0,
+        "duplicate_marker_ownership_count": duplicate_count,
+    }
+
+
+def _write_study_page_marker_assignment_report(
+    out: Path,
+    pages: list[Mapping[str, Any]],
+    summary: Mapping[str, Any],
+) -> None:
+    reports_dir = out / "reports" / "chess_fen"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    assignment_summary = _study_page_marker_assignment_summary(pages)
+    payload = {
+        "schema": "kindlemaster.chess.page_marker_assignment_report.v1",
+        "status": "ok" if pages else str(summary.get("status") or "not_run"),
+        "summary": assignment_summary,
+        "pages": [dict(page) for page in pages],
+        "policy": (
+            "Page-level candidates are generated before trust classification; ownership is one-to-one, "
+            "and semantic/FEN promotion still requires the existing tight-crop quality gate."
+        ),
+    }
+    _write_json(reports_dir / "page_marker_assignment.json", payload)
+    lines = [
+        "# Page-Level Marker Assignment",
+        "",
+        f"- page detection runs: {assignment_summary.get('page_marker_detection_run_count', 0)}",
+        f"- boards: {assignment_summary.get('page_marker_board_count', 0)}",
+        f"- candidates: {assignment_summary.get('marker_candidate_count', 0)}",
+        f"- candidate crops: {assignment_summary.get('marker_candidate_crop_count', 0)}",
+        f"- assigned: {assignment_summary.get('marker_candidate_assigned_count', 0)}",
+        f"- candidate recall proxy: {assignment_summary.get('marker_candidate_recall_proxy_rate', 0.0)}",
+        f"- confident ownership: {assignment_summary.get('marker_ownership_confident_rate', 0.0)}",
+        f"- duplicate ownership: {assignment_summary.get('duplicate_marker_ownership_count', 0)}",
+        "",
+        "Candidates are evidence-first. Assignment alone never promotes ambiguous marker semantics or FEN.",
+    ]
+    (reports_dir / "page_marker_assignment.md").write_text(
+        "\n".join(lines).rstrip() + "\n",
+        encoding="utf-8",
+    )
 
 
 def _study_side_marker_summary(diagrams: list[Mapping[str, Any]]) -> dict[str, Any]:
@@ -9110,6 +9237,20 @@ def _study_diagram_record(record: dict[str, Any]) -> StudyDiagram:
         side_marker_source=str(record.get("side_marker_source") or ""),
         side_marker_confidence=record.get("side_marker_confidence", ""),
         side_marker_assignment_trace=dict(record.get("side_marker_assignment_trace") or {}),
+        marker_candidate_id=str(record.get("marker_candidate_id") or ""),
+        marker_candidate_bbox=_bbox4(record.get("marker_candidate_bbox") or []),
+        marker_candidate_crop_path=str(record.get("marker_candidate_crop_path") or ""),
+        marker_candidate_features=dict(record.get("marker_candidate_features") or {}),
+        marker_candidate_class=str(record.get("marker_candidate_class") or ""),
+        marker_candidate_confidence=float(record.get("marker_candidate_confidence") or 0.0),
+        marker_assignment_status=str(record.get("marker_assignment_status") or "unassigned"),
+        marker_assignment_confidence=float(record.get("marker_assignment_confidence") or 0.0),
+        marker_assignment_runner_up_margin=float(
+            record.get("marker_assignment_runner_up_margin") or 0.0
+        ),
+        marker_assignment_rejected_reasons=[
+            str(reason) for reason in record.get("marker_assignment_rejected_reasons") or []
+        ],
         strict_fen_side_evidence_trusted=bool(record.get("strict_fen_side_evidence_trusted")),
         placement=str(record.get("placement") or record.get("placement_fen") or ""),
         placement_status=str(record.get("placement_status") or record.get("placement_runtime_status") or ""),

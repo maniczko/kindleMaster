@@ -2568,6 +2568,10 @@ def _two_crop_quality_metrics_markdown(report: dict[str, Any]) -> str:
         f"- marker bbox detection rate: {summary.get('marker_bbox_detection_rate', 0.0)}",
         f"- marker crop generation rate: {summary.get('marker_crop_generation_rate', 0.0)}",
         f"- marker crop not generated after bbox: {summary.get('marker_crop_not_generated_count', 0)}",
+        f"- page-level marker candidates assigned: {summary.get('marker_candidate_assigned_count', 0)}",
+        f"- marker candidate recall proxy: {summary.get('marker_candidate_recall_proxy_rate', 0.0)}",
+        f"- confident ownership: {summary.get('marker_ownership_confident_count', 0)}",
+        f"- duplicate marker ownership: {summary.get('duplicate_marker_ownership_count', 0)}",
         f"- trusted markers: {summary.get('trusted_marker_count', 0)}",
         f"- marker missing: {summary.get('marker_missing_count', 0)}",
         f"- marker conflicts: {summary.get('marker_conflict_count', 0)}",
@@ -2912,6 +2916,32 @@ def _side_marker_assignment_report(diagrams: list[dict[str, Any]], fen_payload: 
                 "side_marker_search_bbox": diagram.get("side_marker_search_bbox") or fen_item.get("side_marker_search_bbox") or [],
                 "side_marker_confidence": diagram.get("side_marker_confidence") or fen_item.get("side_marker_confidence") or "",
                 "side_marker_assignment_trace": diagram.get("side_marker_assignment_trace") or fen_item.get("side_marker_assignment_trace") or {},
+                "marker_candidate_id": diagram.get("marker_candidate_id") or fen_item.get("marker_candidate_id") or "",
+                "marker_candidate_bbox": diagram.get("marker_candidate_bbox") or fen_item.get("marker_candidate_bbox") or [],
+                "marker_candidate_crop_path": diagram.get("marker_candidate_crop_path")
+                or fen_item.get("marker_candidate_crop_path")
+                or "",
+                "marker_candidate_features": diagram.get("marker_candidate_features")
+                or fen_item.get("marker_candidate_features")
+                or {},
+                "marker_candidate_class": diagram.get("marker_candidate_class")
+                or fen_item.get("marker_candidate_class")
+                or "",
+                "marker_candidate_confidence": diagram.get("marker_candidate_confidence")
+                or fen_item.get("marker_candidate_confidence")
+                or 0.0,
+                "marker_assignment_status": diagram.get("marker_assignment_status")
+                or fen_item.get("marker_assignment_status")
+                or "unassigned",
+                "marker_assignment_confidence": diagram.get("marker_assignment_confidence")
+                or fen_item.get("marker_assignment_confidence")
+                or 0.0,
+                "marker_assignment_runner_up_margin": diagram.get("marker_assignment_runner_up_margin")
+                or fen_item.get("marker_assignment_runner_up_margin")
+                or 0.0,
+                "marker_assignment_rejected_reasons": diagram.get("marker_assignment_rejected_reasons")
+                or fen_item.get("marker_assignment_rejected_reasons")
+                or [],
                 "board_crop_path": diagram.get("board_crop_path") or fen_item.get("board_crop_path") or "",
                 "side_marker_crop_path": diagram.get("side_marker_crop_path") or fen_item.get("side_marker_crop_path") or "",
                 "marker_search_zone_preview_path": diagram.get("marker_search_zone_preview_path")
@@ -2979,6 +3009,43 @@ def _side_marker_assignment_report(diagrams: list[dict[str, Any]], fen_payload: 
         else 0.0,
         "marker_crop_not_generated_count": len(
             [row for row in rows if row.get("marker_bbox") and not row.get("side_marker_crop_path")]
+        ),
+        "marker_candidate_count": len(
+            {
+                str(row.get("marker_candidate_id"))
+                for row in rows
+                if str(row.get("marker_candidate_id") or "")
+            }
+        ),
+        "marker_candidate_crop_count": len(
+            [row for row in rows if row.get("marker_candidate_crop_path")]
+        ),
+        "marker_candidate_assigned_count": len(
+            [row for row in rows if str(row.get("marker_assignment_status") or "") != "unassigned"]
+        ),
+        "marker_candidate_recall_proxy_rate": round(
+            len([row for row in rows if str(row.get("marker_assignment_status") or "") != "unassigned"])
+            / len(rows),
+            4,
+        )
+        if rows
+        else 0.0,
+        "marker_ownership_confident_count": len(
+            [row for row in rows if str(row.get("marker_assignment_status") or "") == "assigned"]
+        ),
+        "duplicate_marker_ownership_count": len(
+            [
+                candidate_id
+                for candidate_id in {
+                    str(row.get("marker_candidate_id") or "")
+                    for row in rows
+                    if str(row.get("marker_candidate_id") or "")
+                }
+                if len(
+                    [row for row in rows if str(row.get("marker_candidate_id") or "") == candidate_id]
+                )
+                > 1
+            ]
         ),
         "strict_full_fen_accepted": len([row for row in rows if row.get("strict_fen_allowed")]),
         "placement_accepted_count": len([row for row in rows if row.get("placement_status") == "FEN_PLACEMENT_MACHINE_ACCEPTED"]),

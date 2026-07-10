@@ -25,6 +25,7 @@
 # - auto chess validation: python kindlemaster.py validate output\chess_auto --strict
 # - auto chess report: python kindlemaster.py report output\chess_auto
 # - auto chess review: python kindlemaster.py review output\chess_auto
+# - safe side-to-move audit export: python kindlemaster.py chess export-side-to-move-audit --latest
 # - chess study export: python kindlemaster.py chess-study run-all --pdf path\to\chess.pdf --html path\to\current.html --out output\yusupov_study --quality-profile default
 # - chess study audit with page images: python kindlemaster.py chess-study run-all --pdf path\to\chess.pdf --html path\to\current.html --out output\yusupov_study_audit --quality-profile smoke --render-pages
 # - browser tests: python kindlemaster.py test --suite browser

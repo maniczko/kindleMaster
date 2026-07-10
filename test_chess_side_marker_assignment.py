@@ -94,7 +94,7 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         draw_outline.line([(40, 12), (18, 56), (62, 56), (40, 12)], fill="black", width=4, joint="curve")
         filled = Image.new("L", (80, 80), "white")
         draw_filled = ImageDraw.Draw(filled)
-        draw_filled.polygon([(40, 12), (18, 56), (62, 56)], fill="black")
+        draw_filled.polygon([(18, 12), (62, 12), (40, 56)], fill="black")
 
         outline_result = classify_scan_chess_side_marker_crop(outline)
         filled_result = classify_scan_chess_side_marker_crop(filled)
@@ -111,7 +111,7 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         conflict = Image.new("L", (130, 80), "white")
         draw = ImageDraw.Draw(conflict)
         draw.line([(34, 12), (16, 56), (54, 56), (34, 12)], fill="black", width=4, joint="curve")
-        draw.polygon([(94, 12), (76, 56), (114, 56)], fill="black")
+        draw.polygon([(76, 12), (114, 12), (94, 56)], fill="black")
 
         missing_result = classify_scan_chess_side_marker_crop(blank)
         conflict_result = classify_scan_chess_side_marker_crop(conflict)
@@ -186,7 +186,7 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         draw = ImageDraw.Draw(page)
         board_bbox = [100.0, 170.0, 300.0, 370.0]
         _draw_checkerboard(draw, board_bbox)
-        draw.polygon([(324, 188), (306, 224), (342, 224)], fill="black")
+        draw.polygon([(306, 188), (342, 188), (324, 224)], fill="black")
 
         fields, _files = _scan_chess_two_crop_review_artifacts(
             page,
@@ -205,7 +205,7 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         draw = ImageDraw.Draw(page)
         board_bbox = [100.0, 170.0, 300.0, 370.0]
         _draw_checkerboard(draw, board_bbox)
-        draw.polygon([(318, 154), (304, 184), (332, 184)], fill="black")
+        draw.polygon([(304, 154), (332, 154), (318, 184)], fill="black")
 
         fields, _files = _scan_chess_two_crop_review_artifacts(
             page,
@@ -224,7 +224,7 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         board_bbox = [100.0, 170.0, 300.0, 370.0]
         _draw_checkerboard(draw, board_bbox)
         marker_bbox = [308.0, 188.0, 342.0, 224.0]
-        draw.polygon([(324, 188), (306, 224), (342, 224)], fill="black")
+        draw.polygon([(306, 188), (342, 188), (324, 224)], fill="black")
         original_crop = chess_extractor._crop_bbox_from_image
 
         def fail_marker_crop(image: Image.Image, bbox: object) -> Image.Image | None:
@@ -433,7 +433,7 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         draw = ImageDraw.Draw(page)
         board_bbox = [100.0, 170.0, 300.0, 370.0]
         _draw_checkerboard(draw, board_bbox)
-        draw.polygon([(324, 188), (306, 224), (342, 224)], fill="black")
+        draw.polygon([(306, 188), (342, 188), (324, 224)], fill="black")
         draw.line([(324, 290), (306, 326), (342, 326), (324, 290)], fill="black", width=4, joint="curve")
 
         fields, _files = _scan_chess_two_crop_review_artifacts(
@@ -516,7 +516,7 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         draw = ImageDraw.Draw(page)
         board_bbox = [100.0, 170.0, 300.0, 370.0]
         _draw_checkerboard(draw, board_bbox)
-        draw.polygon([(324, 188), (306, 224), (342, 224)], fill="black")
+        draw.polygon([(306, 188), (342, 188), (324, 224)], fill="black")
         fields, _files = _scan_chess_two_crop_review_artifacts(
             page,
             filename="promote-filled.png",
@@ -553,7 +553,7 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         draw = ImageDraw.Draw(page)
         board_bbox = [100.0, 170.0, 300.0, 370.0]
         _draw_checkerboard(draw, board_bbox)
-        draw.polygon([(324, 188), (306, 224), (342, 224)], fill="black")
+        draw.polygon([(306, 188), (342, 188), (324, 224)], fill="black")
         fields, _files = _scan_chess_two_crop_review_artifacts(
             page,
             filename="conflict-filled.png",
@@ -942,7 +942,7 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
                     y = round(board[1] + step * index)
                     draw.line((x, board[1], x, board[3]), fill="black", width=1)
                     draw.line((board[0], y, board[2], y), fill="black", width=1)
-            draw.line([(242, 144), (274, 144), (258, 174), (242, 144)], fill="black", width=4)
+            draw.line([(258, 144), (242, 174), (274, 174), (258, 144)], fill="black", width=4)
             draw.polygon([(492, 144), (524, 144), (508, 174)], fill="black")
             _write_image_pdf(pdf_path, page)
 
@@ -1020,7 +1020,7 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
             draw = ImageDraw.Draw(page)
             draw.rectangle((100, 170, 300, 370), outline="black", width=3)
             draw.polygon([(210, 132), (254, 132), (232, 164)], fill="black")
-            draw.line([(130, 132), (174, 132), (152, 164), (130, 132)], fill="black", width=4)
+            draw.line([(152, 132), (130, 164), (174, 164), (152, 132)], fill="black", width=4)
             pdf_path = root / "marker-conflict.pdf"
             _write_image_pdf(pdf_path, page)
             diagrams = [

@@ -83,6 +83,7 @@ QUICK_TESTS = [
     "test_chess_crop_qa_benchmark.py",
     "test_chess_marker_crop_corpus.py",
     "test_chess_marker_classifier.py",
+    "test_chess_marker_classifier_adaptive.py",
     "test_chess_fen_pipeline_hardening.py",
     "test_chess_fen_ml_acceptance.py",
     "test_chess_fen_model_pipeline.py",
@@ -445,9 +446,15 @@ def main() -> int:
     ml_chess_benchmark.add_argument("--write-ledger", action="store_true")
 
     ml_marker_crops = ml_subparsers.add_parser("evaluate-marker-crops", help="Evaluate the chess side-marker crop classifier corpus.")
-    ml_marker_crops.add_argument("--corpus", default="reference_inputs/chess_fen/marker_crops")
+    ml_marker_crops.add_argument(
+        "--corpus",
+        "--corpus-root",
+        dest="corpus",
+        default="reference_inputs/chess_fen/marker_crops",
+    )
     ml_marker_crops.add_argument("--report", default="reports/chess_fen/marker_crop_classifier_report.json")
     ml_marker_crops.add_argument("--min-triangle-accuracy", type=float, default=0.90)
+    ml_marker_crops.add_argument("--source-profile", default="yusupov-fundamentals")
 
     ml_feedback = ml_subparsers.add_parser("feedback-export", help="Export local conversion/user feedback events into an ML JSONL dataset.")
     ml_feedback.add_argument("--feedback-log", default="reports/ml/feedback/conversion_feedback.jsonl")
@@ -1406,6 +1413,7 @@ def _run_ml(args: argparse.Namespace) -> int:
             args.corpus,
             report_path=args.report,
             min_triangle_accuracy=args.min_triangle_accuracy,
+            source_profile=args.source_profile,
         )
         summary = payload.get("summary") or {}
         _print_json(
@@ -1418,6 +1426,10 @@ def _run_ml(args: argparse.Namespace) -> int:
                 "white_outline_triangle_accuracy": summary.get("white_outline_triangle_accuracy"),
                 "black_filled_triangle_accuracy": summary.get("black_filled_triangle_accuracy"),
                 "negative_false_trusted_count": summary.get("negative_false_trusted_count"),
+                "corpus_kind": summary.get("corpus_kind"),
+                "real_holdout_clear_marker_accuracy": summary.get("real_holdout_clear_marker_accuracy"),
+                "real_holdout_false_trusted_count": summary.get("real_holdout_false_trusted_count"),
+                "calibration_status": (payload.get("calibration") or {}).get("status"),
             }
         )
         return 0 if summary.get("decision") == "pass" else 1

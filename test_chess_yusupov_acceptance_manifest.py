@@ -252,6 +252,31 @@ class ChessYusupovAcceptanceManifestTests(unittest.TestCase):
         self.assertTrue(any("chapter_split_leakage" in error for error in validation["errors"]))
         self.assertTrue(any("holdout_must_forbid_tuning" in error for error in validation["errors"]))
 
+    def test_invalid_page_and_threshold_fail_closed_without_crashing(self) -> None:
+        manifest = _manifest()
+        manifest["diagrams"][0]["page"] = "not-a-page"
+
+        validation = validate_acceptance_manifest(manifest, source_profile=DEFAULT_PROFILE)
+        report = evaluate_acceptance(
+            _manifest(),
+            detected_records=_detected_records(_manifest()),
+            source_document_sha256=SOURCE_SHA,
+            runtime_commit_sha=COMMIT_SHA,
+            validator_commit_sha=COMMIT_SHA,
+            thresholds={"minimum_expected_diagram_recall": "not-a-number"},
+        )
+
+        self.assertEqual(validation["status"], "invalid")
+        self.assertTrue(any("page_invalid" in error for error in validation["errors"]))
+        self.assertEqual(report["status"], "failed")
+        self.assertFalse(
+            next(
+                check["passed"]
+                for check in report["checks"]
+                if check["name"] == "minimum_expected_diagram_recall"
+            )
+        )
+
     def test_gate_reports_all_required_metrics_and_zero_false_trust(self) -> None:
         manifest = _manifest()
         profile = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
@@ -364,11 +389,16 @@ class ChessYusupovAcceptanceManifestTests(unittest.TestCase):
             )
 
             self.assertTrue((report_dir / f"{DEFAULT_PROFILE}.json").is_file())
+            persisted_json = (report_dir / f"{DEFAULT_PROFILE}.json").read_text(
+                encoding="utf-8"
+            )
             markdown = (report_dir / f"{DEFAULT_PROFILE}.md").read_text(encoding="utf-8")
 
         self.assertEqual(report["status"], "failed")
         self.assertIn("source_document_sha256_match", report["errors"])
         self.assertIn("synthetic fixtures may claim real acceptance: `false`", markdown)
+        self.assertNotIn(str(job), persisted_json)
+        self.assertNotIn(str(manifest_path), persisted_json)
 
     def test_missing_private_pack_is_unavailable_and_available_pack_is_mandatory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

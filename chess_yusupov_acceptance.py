@@ -570,8 +570,8 @@ def run_fixed_edition_acceptance(
         "schema": ACCEPTANCE_REPORT_SCHEMA,
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "source_profile": source_profile,
-        "job_output": str(job_output),
-        "manifest_path": str(resolved_manifest or ""),
+        "job_output_supplied": bool(str(job_output)),
+        "secure_manifest_available": resolved_manifest is not None,
         "synthetic_fixture_claim_allowed": False,
         "profile": profile,
     }
@@ -753,7 +753,7 @@ def _fingerprint_component_errors(
     material = json.dumps(
         {
             "source_sha256": source_sha256,
-            "page": int(row.get("page") or 0),
+            "page": _positive_int(row.get("page")) or 0,
             "bbox_grid": tuple(quantized),
             "perceptual_hash": perceptual_hash,
         },
@@ -868,9 +868,11 @@ def _threshold_checks(metrics: Mapping[str, Any], thresholds: Mapping[str, Any])
     )
     checks = []
     for metric, threshold_key, operator in specs:
-        expected = float(thresholds.get(threshold_key, 0.0))
-        actual = float(metrics.get(metric, 0.0))
-        passed = actual >= expected if operator == ">=" else actual <= expected
+        expected = _optional_float(thresholds.get(threshold_key))
+        actual = _optional_float(metrics.get(metric))
+        passed = False
+        if expected is not None and actual is not None:
+            passed = actual >= expected if operator == ">=" else actual <= expected
         checks.append(
             {
                 "name": threshold_key,
@@ -882,6 +884,13 @@ def _threshold_checks(metrics: Mapping[str, Any], thresholds: Mapping[str, Any])
             }
         )
     return checks
+
+
+def _optional_float(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _candidate_present(row: Mapping[str, Any]) -> bool:

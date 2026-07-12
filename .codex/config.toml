@@ -27,6 +27,7 @@
 # - auto chess review: python kindlemaster.py review output\chess_auto
 # - chess study export: python kindlemaster.py chess-study run-all --pdf path\to\chess.pdf --html path\to\current.html --out output\yusupov_study --quality-profile default
 # - chess study audit with page images: python kindlemaster.py chess-study run-all --pdf path\to\chess.pdf --html path\to\current.html --out output\yusupov_study_audit --quality-profile smoke --render-pages
+# - two-crop performance report: python kindlemaster.py chess-study two-crop-performance --job-output output\chess_auto --report-dir reports\performance\chess_two_crop
 # - browser tests: python kindlemaster.py test --suite browser
 # - runtime tests: python kindlemaster.py test --suite runtime
 # - release tests: python kindlemaster.py test --suite release

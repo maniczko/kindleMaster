@@ -807,8 +807,8 @@ def _write_acceptance_reports(
         json.dumps(persisted_payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    # The allowlisted payload is provenance-redacted; keep the suppression local to this sink.
-    md_path.write_text(acceptance_report_markdown(persisted_payload), encoding="utf-8")  # lgtm[py/clear-text-storage-sensitive-data]
+    persisted_summary = json.loads(json_path.read_text(encoding="utf-8"))
+    md_path.write_text(acceptance_report_markdown(persisted_summary), encoding="utf-8")
     return {**payload, "report_json": str(json_path), "report_markdown": str(md_path)}
 
 

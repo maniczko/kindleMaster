@@ -18,6 +18,7 @@ TIMING_KEYS = (
     "marker_analysis_seconds",
     "png_encoding_seconds",
     "file_write_seconds",
+    "ambiguity_probe_seconds",
     "total_seconds",
 )
 SEMANTIC_FIELDS = (
@@ -110,6 +111,20 @@ def build_two_crop_performance_report(job_output: str | Path) -> dict[str, Any]:
             "png_encoded_bytes": _sum_int(performance_rows, "png_encoded_bytes"),
             "file_written_artifact_count": _sum_int(performance_rows, "file_written_artifact_count"),
             "file_written_bytes": _sum_int(performance_rows, "file_written_bytes"),
+            "single_pass_record_count": sum(
+                1 for row in performance_rows if row.get("board_analysis_mode") == "single_pass"
+            ),
+            "legacy_fallback_record_count": sum(
+                1 for row in performance_rows if bool(row.get("legacy_localization_fallback_used"))
+            ),
+            "legacy_fallback_reasons": _count_strings(
+                performance_rows,
+                "legacy_localization_fallback_reason",
+            ),
+            "ambiguity_probe_evaluations": _sum_int(
+                performance_rows,
+                "ambiguity_probe_evaluations",
+            ),
             "artifact_count": artifact_inventory["artifact_count"],
             "artifact_bytes": artifact_inventory["artifact_bytes"],
         },
@@ -158,6 +173,10 @@ def two_crop_performance_markdown(report: Mapping[str, Any]) -> str:
         f"- semantic digest: `{summary.get('semantic_digest', '')}`",
         f"- localization calls: `{summary.get('tight_board_localization_call_count', 0)}`",
         f"- sliding-window evaluations: `{summary.get('sliding_window_candidate_evaluations', 0)}`",
+        f"- single-pass records: `{summary.get('single_pass_record_count', 0)}`",
+        f"- legacy fallback records: `{summary.get('legacy_fallback_record_count', 0)}`",
+        f"- legacy fallback reasons: `{json.dumps(summary.get('legacy_fallback_reasons', {}), sort_keys=True)}`",
+        f"- ambiguity probe evaluations: `{summary.get('ambiguity_probe_evaluations', 0)}`",
         f"- artifacts: `{summary.get('artifact_count', 0)}` files / `{summary.get('artifact_bytes', 0)}` bytes",
         "",
         "## Stage Timings",
@@ -201,6 +220,15 @@ def _metric_summary(rows: list[Mapping[str, Any]], key: str) -> dict[str, Any]:
 
 def _sum_int(rows: list[Mapping[str, Any]], key: str) -> int:
     return sum(int(row.get(key) or 0) for row in rows)
+
+
+def _count_strings(rows: list[Mapping[str, Any]], key: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        value = str(row.get(key) or "").strip()
+        if value:
+            counts[value] = counts.get(value, 0) + 1
+    return dict(sorted(counts.items()))
 
 
 def _artifact_inventory(root: Path, rows: list[Mapping[str, Any]]) -> dict[str, Any]:

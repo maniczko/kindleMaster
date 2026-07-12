@@ -116,6 +116,7 @@ python kindlemaster.py test --suite quality-critical
 python kindlemaster.py test --suite corpus
 python kindlemaster.py validate path\to\file.epub
 python kindlemaster.py process path\to\chess.pdf --out output\chess_auto --mode auto
+python kindlemaster.py process path\to\chess.pdf --out output\chess_auto --mode auto --resume
 python kindlemaster.py validate output\chess_auto --strict
 python kindlemaster.py report output\chess_auto
 python kindlemaster.py review output\chess_auto
@@ -145,6 +146,9 @@ python scripts\audit_chess_fen_false_positives.py output\yusupov_study\review\ai
 `two-crop-performance` reads an existing job output and writes timing, candidate-count,
 artifact-I/O, and semantic-digest evidence. It never substitutes generated fixtures for
 missing real-corpus output and does not package source PDFs or crop bytes in the report.
+
+`process --resume` reuses only compatible, atomically checkpointed two-crop pages. Omitting
+the flag always starts a cold two-crop run and ignores existing checkpoints.
 
 `python kindlemaster.py test --suite full` is a diagnostic all-discovery lane. It delegates to `unittest discover -p test*.py`, so it also runs tests intentionally kept out of the explicit `quick`, `release`, `corpus`, `browser`, and `runtime` suite registry.
 

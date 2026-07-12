@@ -346,7 +346,7 @@ def _recovery_only_envelopes(
     *,
     max_count: int,
 ) -> list[dict[str, Any]]:
-    merged_recovery = _merge_detection_envelopes(recovery, max_count=max_count)
+    merged_recovery = _merge_detection_envelopes(recovery, max_count=0)
     return [
         envelope
         for envelope in merged_recovery

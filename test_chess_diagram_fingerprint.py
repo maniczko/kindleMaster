@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image, ImageDraw
 
@@ -40,6 +41,11 @@ def _checkerboard(size: int) -> Image.Image:
 
 
 class ChessDiagramFingerprintTests(unittest.TestCase):
+    def test_perceptual_hash_supports_legacy_pillow_pixel_reader(self) -> None:
+        board = _checkerboard(128)
+        with patch.object(Image.Image, "get_flattened_data", None, create=True):
+            self.assertEqual(len(diagram_perceptual_hash(board)), 16)
+
     def test_fingerprint_is_stable_across_render_scale_and_tiny_bbox_drift(self) -> None:
         board = _checkerboard(256)
         scaled = board.resize((512, 512), Image.Resampling.NEAREST)

@@ -10616,7 +10616,11 @@ def _predict_fen_for_source(source: dict[str, Any], out_dir: Path, model: dict[s
         cells = [str(result.get("class") or "") for result in square_results]
         placement = _cells_to_placement(cells)
         side_label = _infer_side_to_move(str(source.get("caption") or ""))
-        side = {"white": "w", "black": "b", "w": "w", "b": "b"}.get(side_label, "unknown")
+        side_label_normalized = str(side_label or "").strip().lower()
+        side = {"white": "w", "black": "b", "w": "w", "b": "b"}.get(
+            side_label_normalized,
+            "unknown",
+        )
         fen = f"{placement} {side} - - 0 1" if side in {"w", "b"} else ""
         valid, warnings = validate_fen(fen) if fen else (False, ["side_to_move_unknown"])
         confidences = [float(result.get("confidence") or 0.0) for result in square_results]

@@ -727,10 +727,20 @@ def _write_acceptance_reports(
     target.mkdir(parents=True, exist_ok=True)
     json_path = target / f"{source_profile}.json"
     md_path = target / f"{source_profile}.md"
-    payload = {**payload, "report_json": str(json_path), "report_markdown": str(md_path)}
-    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    md_path.write_text(acceptance_report_markdown(payload), encoding="utf-8")
-    return payload
+    persisted_payload = dict(payload)
+    job_evidence = persisted_payload.get("job_evidence")
+    if isinstance(job_evidence, Mapping):
+        persisted_payload["job_evidence"] = {
+            key: value
+            for key, value in job_evidence.items()
+            if key not in {"job_output", "records"}
+        }
+    json_path.write_text(
+        json.dumps(persisted_payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    md_path.write_text(acceptance_report_markdown(persisted_payload), encoding="utf-8")
+    return {**payload, "report_json": str(json_path), "report_markdown": str(md_path)}
 
 
 def _fingerprint_component_errors(

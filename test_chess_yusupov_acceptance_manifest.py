@@ -243,6 +243,30 @@ class ChessYusupovAcceptanceManifestTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 write_markdown_summary(source, root / "summary.md")
 
+    def test_redacted_summary_renderer_does_not_copy_arbitrary_text(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "summary.json"
+            target = root / "summary.md"
+            source.write_text(
+                json.dumps(
+                    {
+                        "status": "private-status",
+                        "errors": ["private-blocker"],
+                        "metrics": {"expected_diagram_recall": "private-value"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            write_markdown_summary(source, target)
+            markdown = target.read_text(encoding="utf-8")
+
+        self.assertNotIn("private-status", markdown)
+        self.assertNotIn("private-blocker", markdown)
+        self.assertNotIn("private-value", markdown)
+        self.assertIn("unclassified_acceptance_blocker", markdown)
+
     def test_corrupt_profile_fails_closed_without_json_exception(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             profile_path = Path(temp_dir) / "profile.json"

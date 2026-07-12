@@ -6,7 +6,6 @@ import json
 import sys
 import tempfile
 import unittest
-import zipfile
 from contextlib import redirect_stdout
 from hashlib import sha256
 from pathlib import Path
@@ -15,6 +14,7 @@ from unittest.mock import patch
 from PIL import Image, ImageDraw
 
 from chess_diagram_fingerprint import build_diagram_fingerprint
+from chess_side_to_move_audit_export import export_side_to_move_audit
 from chess_yusupov_acceptance import (
     ACCEPTANCE_MANIFEST_SCHEMA,
     DEFAULT_PROFILE,
@@ -180,6 +180,19 @@ def _detected_records(manifest: dict[str, object]) -> list[dict[str, object]]:
     ]
 
 
+def _hard_negative_records(manifest: dict[str, object]) -> list[dict[str, object]]:
+    hard_negatives = manifest["hard_negatives"]
+    assert isinstance(hard_negatives, list)
+    return [
+        {
+            "hard_negative_fingerprint": row["hard_negative_fingerprint"],
+            "side_marker_status": "marker_rejected",
+            "marker_semantic_status": "rejected",
+        }
+        for row in hard_negatives
+    ]
+
+
 def _write_job_output(
     root: Path,
     manifest: dict[str, object],
@@ -195,6 +208,7 @@ def _write_job_output(
                 "schema": "kindlemaster.test.diagrams.v1",
                 "source_document_sha256": source_sha,
                 "diagrams": _detected_records(manifest),
+                "hard_negatives": _hard_negative_records(manifest),
             }
         ),
         encoding="utf-8",
@@ -259,7 +273,10 @@ class ChessYusupovAcceptanceManifestTests(unittest.TestCase):
         validation = validate_acceptance_manifest(manifest, source_profile=DEFAULT_PROFILE)
         report = evaluate_acceptance(
             _manifest(),
-            detected_records=_detected_records(_manifest()),
+            detected_records=[
+                *_detected_records(_manifest()),
+                *_hard_negative_records(_manifest()),
+            ],
             source_document_sha256=SOURCE_SHA,
             runtime_commit_sha=COMMIT_SHA,
             validator_commit_sha=COMMIT_SHA,
@@ -280,7 +297,7 @@ class ChessYusupovAcceptanceManifestTests(unittest.TestCase):
     def test_gate_reports_all_required_metrics_and_zero_false_trust(self) -> None:
         manifest = _manifest()
         profile = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
-        detected = _detected_records(manifest)
+        detected = [*_detected_records(manifest), *_hard_negative_records(manifest)]
         detected[0]["diagram_fingerprint"] = (
             f"  {detected[0]['diagram_fingerprint']}  "
         )
@@ -304,12 +321,14 @@ class ChessYusupovAcceptanceManifestTests(unittest.TestCase):
         self.assertEqual(report["metrics"]["side_to_move_coverage_rate"], 1.0)
         self.assertEqual(report["metrics"]["unknown_count"], 0)
         self.assertEqual(report["metrics"]["full_fen_safe_acceptance_rate"], 0.3333)
+        self.assertEqual(report["metrics"]["hard_negative_evidence_rate"], 1.0)
+        self.assertEqual(report["subsets"]["hard_negatives"]["exercised_count"], 6)
         self.assertEqual(report["subsets"]["damaged_ambiguous"]["expected_count"], 1)
         self.assertTrue(report["closing_evidence_eligible"])
 
     def test_false_trusted_ambiguous_marker_and_extra_detection_fail_gate(self) -> None:
         manifest = _manifest()
-        detected = _detected_records(manifest)
+        detected = [*_detected_records(manifest), *_hard_negative_records(manifest)]
         detected[1].update(
             {
                 "marker_semantic_status": "trusted",
@@ -339,6 +358,36 @@ class ChessYusupovAcceptanceManifestTests(unittest.TestCase):
         self.assertEqual(report["metrics"]["false_trusted_marker_count"], 2)
         self.assertFalse(report["closing_evidence_eligible"])
 
+    def test_missing_or_trusted_hard_negative_fails_gate(self) -> None:
+        manifest = _manifest()
+        profile = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
+        incomplete = [*_detected_records(manifest), *_hard_negative_records(manifest)[:-1]]
+
+        missing_report = evaluate_acceptance(
+            manifest,
+            detected_records=incomplete,
+            source_document_sha256=SOURCE_SHA,
+            runtime_commit_sha=COMMIT_SHA,
+            validator_commit_sha=COMMIT_SHA,
+            thresholds=profile["thresholds"],
+        )
+        trusted = [*_detected_records(manifest), *_hard_negative_records(manifest)]
+        trusted[-1]["side_marker_status"] = "trusted_marker"
+        trusted[-1]["marker_semantic_status"] = "trusted"
+        trusted_report = evaluate_acceptance(
+            manifest,
+            detected_records=trusted,
+            source_document_sha256=SOURCE_SHA,
+            runtime_commit_sha=COMMIT_SHA,
+            validator_commit_sha=COMMIT_SHA,
+            thresholds=profile["thresholds"],
+        )
+
+        self.assertEqual(missing_report["status"], "failed")
+        self.assertLess(missing_report["metrics"]["hard_negative_evidence_rate"], 1.0)
+        self.assertEqual(trusted_report["status"], "failed")
+        self.assertEqual(trusted_report["metrics"]["false_trusted_marker_count"], 1)
+
     def test_directory_and_safe_audit_zip_evidence_load_by_fingerprint(self) -> None:
         manifest = _manifest()
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -347,23 +396,22 @@ class ChessYusupovAcceptanceManifestTests(unittest.TestCase):
             _write_job_output(job, manifest)
             directory = load_job_evidence(job)
             archive = root / "audit.zip"
-            with zipfile.ZipFile(archive, "w") as bundle:
-                bundle.write(job / "chess_diagrams.json", "chess_diagrams.json")
-                bundle.write(job / "data" / "artifact_manifest.json", "data/artifact_manifest.json")
-                bundle.write(
-                    job / "reports" / "chess_fen" / "side_marker_assignment.json",
-                    "reports/chess_fen/side_marker_assignment.json",
-                )
+            exported = export_side_to_move_audit(job_output=job, out_path=archive)
             zipped = load_job_evidence(archive)
 
+        self.assertEqual(exported["status"], "created", exported)
         self.assertEqual(directory["status"], "loaded", directory)
         self.assertEqual(zipped["status"], "loaded", zipped)
         self.assertEqual(directory["source_document_sha256"], SOURCE_SHA)
         self.assertEqual(zipped["runtime_commit_sha"], COMMIT_SHA)
-        self.assertEqual(len(directory["records"]), 3)
-        self.assertEqual(len(zipped["records"]), 3)
+        self.assertEqual(len(directory["records"]), 9)
+        self.assertEqual(len(zipped["records"]), 9)
         self.assertEqual(
-            {row.get("marker_classifier_version") for row in directory["records"]},
+            {
+                row.get("marker_classifier_version")
+                for row in directory["records"]
+                if row.get("diagram_fingerprint")
+            },
             {"real-v1"},
         )
 

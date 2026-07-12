@@ -287,6 +287,14 @@ def load_job_evidence(job_output: str | Path) -> dict[str, Any]:
     elif source.is_file() and source.suffix.lower() == ".zip":
         try:
             with zipfile.ZipFile(source) as archive:
+                if archive.comment:
+                    try:
+                        archive_metadata = json.loads(archive.comment.decode("utf-8"))
+                    except (UnicodeError, json.JSONDecodeError) as error:
+                        errors.append(f"zip_metadata:{type(error).__name__}")
+                    else:
+                        if isinstance(archive_metadata, Mapping):
+                            payloads["__zip_metadata__.json"] = dict(archive_metadata)
                 names = set(archive.namelist())
                 for relative in EVIDENCE_PATHS:
                     name = relative.as_posix()
@@ -364,6 +372,7 @@ def evaluate_acceptance(
     thresholds: Mapping[str, Any],
 ) -> dict[str, Any]:
     expected = _mapping_rows(manifest.get("diagrams"))
+    expected_hard_negatives = _mapping_rows(manifest.get("hard_negatives"))
     detected = [dict(row) for row in detected_records if isinstance(row, Mapping)]
     detected_by_fingerprint = {
         _fingerprint(row.get("diagram_fingerprint")): row
@@ -372,6 +381,20 @@ def evaluate_acceptance(
     }
     expected_fingerprints = {
         _fingerprint(row.get("diagram_fingerprint")) for row in expected
+    }
+    detected_hard_negatives = {
+        str(row.get("hard_negative_fingerprint") or "").strip(): row
+        for row in detected
+        if str(row.get("hard_negative_fingerprint") or "").strip()
+    }
+    expected_hard_negative_fingerprints = {
+        str(row.get("hard_negative_fingerprint") or "").strip()
+        for row in expected_hard_negatives
+    }
+    rejected_hard_negative_fingerprints = {
+        fingerprint
+        for fingerprint, row in detected_hard_negatives.items()
+        if _hard_negative_rejected(row)
     }
     matched = [
         row
@@ -437,9 +460,28 @@ def evaluate_acceptance(
                     "actual_side": _predicted_marker_side(actual),
                 }
             )
+    for row in expected_hard_negatives:
+        fingerprint = str(row.get("hard_negative_fingerprint") or "").strip()
+        actual = detected_hard_negatives.get(fingerprint, {})
+        if _trusted_marker(actual):
+            false_trusted.append(
+                {
+                    "hard_negative_fingerprint": fingerprint,
+                    "page": row.get("page"),
+                    "kind": row.get("kind"),
+                    "reason": "trusted_marker_on_verified_hard_negative",
+                }
+            )
     for row in detected:
         fingerprint = _fingerprint(row.get("diagram_fingerprint"))
-        if fingerprint not in expected_fingerprints and _trusted_marker(row):
+        hard_negative_fingerprint = str(
+            row.get("hard_negative_fingerprint") or ""
+        ).strip()
+        if (
+            fingerprint not in expected_fingerprints
+            and hard_negative_fingerprint not in expected_hard_negative_fingerprints
+            and _trusted_marker(row)
+        ):
             false_trusted.append(
                 {
                     "diagram_fingerprint": fingerprint,
@@ -487,8 +529,22 @@ def evaluate_acceptance(
         "side_to_move_coverage_rate": _rate(covered_count, total),
         "unknown_count": max(0, total - covered_count),
         "full_fen_safe_acceptance_rate": _rate(full_fen_count, total),
+        "hard_negative_evidence_rate": _rate(
+            len(expected_hard_negative_fingerprints & rejected_hard_negative_fingerprints),
+            len(expected_hard_negative_fingerprints),
+        ),
     }
     checks = _threshold_checks(metrics, thresholds)
+    checks.append(
+        {
+            "name": "hard_negative_evidence_complete",
+            "metric": "hard_negative_evidence_rate",
+            "operator": ">=",
+            "expected": 1.0,
+            "actual": metrics["hard_negative_evidence_rate"],
+            "passed": metrics["hard_negative_evidence_rate"] == 1.0,
+        }
+    )
     expected_source = _normalize_sha(
         (manifest.get("source") or {}).get("sha256")
         if isinstance(manifest.get("source"), Mapping)
@@ -533,6 +589,25 @@ def evaluate_acceptance(
                 detected_by_fingerprint,
             ),
             "all": _subset_metrics(expected, detected_by_fingerprint),
+            "hard_negatives": {
+                "expected_count": len(expected_hard_negative_fingerprints),
+                "exercised_count": len(
+                    expected_hard_negative_fingerprints
+                    & rejected_hard_negative_fingerprints
+                ),
+                "false_trusted_count": len(
+                    [
+                        row
+                        for row in expected_hard_negatives
+                        if _trusted_marker(
+                            detected_hard_negatives.get(
+                                str(row.get("hard_negative_fingerprint") or "").strip(),
+                                {},
+                            )
+                        )
+                    ]
+                ),
+            },
         },
         "false_trusted_markers": false_trusted,
         "missing_expected_fingerprints": [
@@ -797,11 +872,12 @@ def _check_split_isolation(
 
 
 def _payload_records(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    hard_negatives = _mapping_rows(payload.get("hard_negatives"))
     for key in ("items", "diagrams", "positions", "records", "expected_diagrams"):
         value = payload.get(key)
         if isinstance(value, list):
-            return _mapping_rows(value)
-    return []
+            return [*_mapping_rows(value), *hard_negatives]
+    return hard_negatives
 
 
 def _mapping_rows(value: Any) -> list[dict[str, Any]]:
@@ -809,6 +885,11 @@ def _mapping_rows(value: Any) -> list[dict[str, Any]]:
 
 
 def _record_key(row: Mapping[str, Any]) -> str:
+    hard_negative_fingerprint = str(
+        row.get("hard_negative_fingerprint") or ""
+    ).strip()
+    if hard_negative_fingerprint:
+        return f"hard-negative:{hard_negative_fingerprint}"
     fingerprint = str(row.get("diagram_fingerprint") or "").strip()
     if fingerprint:
         return f"fingerprint:{fingerprint}"
@@ -923,6 +1004,16 @@ def _trusted_marker(row: Mapping[str, Any]) -> bool:
         "trusted",
         "trusted_marker",
         "trusted_side_marker",
+    }
+
+
+def _hard_negative_rejected(row: Mapping[str, Any]) -> bool:
+    semantic_status = str(row.get("marker_semantic_status") or "").strip().lower()
+    side_marker_status = str(row.get("side_marker_status") or "").strip().lower()
+    return semantic_status in {"rejected", "not_marker", "hard_negative"} or side_marker_status in {
+        "marker_rejected",
+        "not_marker",
+        "hard_negative",
     }
 
 

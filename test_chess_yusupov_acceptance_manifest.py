@@ -447,6 +447,12 @@ class ChessYusupovAcceptanceManifestTests(unittest.TestCase):
         self.assertIn("synthetic fixtures may claim real acceptance: `false`", markdown)
         self.assertNotIn(str(job), persisted_json)
         self.assertNotIn(str(manifest_path), persisted_json)
+        self.assertNotIn(SOURCE_SHA, persisted_json)
+        self.assertNotIn(OTHER_SOURCE_SHA, persisted_json)
+        self.assertNotIn(COMMIT_SHA, persisted_json)
+        self.assertNotIn(SOURCE_SHA, markdown)
+        self.assertNotIn(OTHER_SOURCE_SHA, markdown)
+        self.assertNotIn(COMMIT_SHA, markdown)
 
     def test_missing_private_pack_is_unavailable_and_available_pack_is_mandatory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

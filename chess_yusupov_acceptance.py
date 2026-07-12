@@ -802,20 +802,63 @@ def _write_acceptance_reports(
     target.mkdir(parents=True, exist_ok=True)
     json_path = target / f"{source_profile}.json"
     md_path = target / f"{source_profile}.md"
-    persisted_payload = dict(payload)
-    job_evidence = persisted_payload.get("job_evidence")
-    if isinstance(job_evidence, Mapping):
-        persisted_payload["job_evidence"] = {
-            key: value
-            for key, value in job_evidence.items()
-            if key not in {"job_output", "records"}
-        }
+    persisted_payload = _safe_persisted_acceptance_payload(payload)
     json_path.write_text(
         json.dumps(persisted_payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
     md_path.write_text(acceptance_report_markdown(persisted_payload), encoding="utf-8")
     return {**payload, "report_json": str(json_path), "report_markdown": str(md_path)}
+
+
+def _safe_persisted_acceptance_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    safe = {
+        key: value
+        for key, value in payload.items()
+        if key
+        not in {
+            "source_document_sha256",
+            "expected_source_document_sha256",
+            "runtime_commit_sha",
+            "validator_commit_sha",
+            "report_json",
+            "report_markdown",
+        }
+    }
+    checks = []
+    for check in _mapping_rows(payload.get("checks")):
+        safe_check = {
+            key: check.get(key)
+            for key in ("name", "metric", "operator", "passed")
+            if key in check
+        }
+        if check.get("metric"):
+            safe_check["expected"] = check.get("expected")
+            safe_check["actual"] = check.get("actual")
+        checks.append(safe_check)
+    if checks:
+        safe["checks"] = checks
+    manifest_validation = payload.get("manifest_validation")
+    if isinstance(manifest_validation, Mapping):
+        safe["manifest_validation"] = {
+            key: value
+            for key, value in manifest_validation.items()
+            if key != "source_document_sha256"
+        }
+    job_evidence = payload.get("job_evidence")
+    if isinstance(job_evidence, Mapping):
+        safe["job_evidence"] = {
+            key: value
+            for key, value in job_evidence.items()
+            if key
+            not in {
+                "job_output",
+                "records",
+                "source_document_sha256",
+                "runtime_commit_sha",
+            }
+        }
+    return safe
 
 
 def _fingerprint_component_errors(

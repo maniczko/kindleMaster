@@ -64,6 +64,8 @@ QUICK_TESTS = [
     "test_chess_pgn_extraction.py",
     "test_chess_html_audit.py",
     "test_chess_diagram_detection.py",
+    "test_chess_diagram_multi_pass_detection.py",
+    "test_chess_diagram_fingerprint.py",
     "test_chess_glyph_diagnostics.py",
     "test_chess_fen_square_diff.py",
     "test_chess_fen_hard_cases.py",
@@ -527,8 +529,9 @@ def main() -> int:
         stage_parser.add_argument("--max-candidates-per-page", type=int, default=6)
         stage_parser.add_argument(
             "--low-confidence-diagram-review",
-            action="store_true",
-            help="Add extra low-confidence diagram candidates to review artifacts only; never to accepted FEN.",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help="Route recovered low-confidence diagrams through marker review; never accept their FEN automatically.",
         )
         stage_parser.add_argument("--low-confidence-min-grid-confidence", type=float, default=0.30)
         stage_parser.add_argument("--low-confidence-max-candidates-per-page", type=int, default=12)
@@ -536,6 +539,7 @@ def main() -> int:
         stage_parser.add_argument("--review-sample-limit", type=int, default=0, help="Limit rows written to review datasets; 0 writes all rows.")
         stage_parser.add_argument("--fen-review-min-count", type=int, default=50, help="When --diagram-page-ranges is used for fen-review, extend with later diagram pages until this many rows are queued; 0 disables extension.")
         stage_parser.add_argument("--diagram-review-labels", default="", help="CSV or JSONL manual diagram labels exported from review/diagram_review.")
+        stage_parser.add_argument("--expected-diagram-manifest", default="", help="Optional fixed-edition expected-diagram manifest used to measure recall.")
         stage_parser.add_argument("--glyph-mapping-file", default="", help="JSON file with accepted OCR token mappings for chess notation review.")
         stage_parser.add_argument("--diagram-alignment-review", action="store_true", help="Generate crop alignment review variants for manually labeled diagrams.")
         stage_parser.add_argument("--labels", default="", help="Verified/draft FEN labels JSONL for template build or holdout evaluation.")
@@ -963,6 +967,7 @@ def _run_chess_study(args: argparse.Namespace) -> int:
             diagram_review_labels=args.diagram_review_labels or None,
             glyph_mapping_file=args.glyph_mapping_file or None,
             diagram_alignment_review=args.diagram_alignment_review,
+            expected_diagram_manifest=args.expected_diagram_manifest or None,
         )
         _print_json(payload)
         return 0 if payload.get("status") != "FAIL" else 1
@@ -988,6 +993,11 @@ def _run_chess_study(args: argparse.Namespace) -> int:
         diagram_review_labels=Path(args.diagram_review_labels) if str(args.diagram_review_labels or "").strip() else None,
         glyph_mapping_file=Path(args.glyph_mapping_file) if str(args.glyph_mapping_file or "").strip() else None,
         diagram_alignment_review=args.diagram_alignment_review,
+        expected_diagram_manifest=(
+            Path(args.expected_diagram_manifest)
+            if str(args.expected_diagram_manifest or "").strip()
+            else None
+        ),
     )
     if args.chess_study_command == "fen-review":
         payload = build_chess_fen_manual_review(

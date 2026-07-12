@@ -96,7 +96,7 @@ The preferred local UI at `http://127.0.0.1:5001/` uses the Sprint 4 React shell
 
 ## Core Commands
 
-The supported first-class command set is `bootstrap`, `doctor`, `prepare-reference-inputs`, `serve`, `convert`, `process`, `validate`, `report`, `review`, `smoke`, `corpus`, `status`, `ml`, `test`, `audit`, `chess-study`, and `workflow`.
+The supported first-class command set is `bootstrap`, `doctor`, `prepare-reference-inputs`, `serve`, `convert`, `process`, `validate`, `report`, `review`, `smoke`, `corpus`, `status`, `ml`, `test`, `audit`, `chess`, `chess-study`, and `workflow`.
 
 ```powershell
 python kindlemaster.py doctor
@@ -116,10 +116,12 @@ python kindlemaster.py test --suite quality-critical
 python kindlemaster.py test --suite corpus
 python kindlemaster.py validate path\to\file.epub
 python kindlemaster.py process path\to\chess.pdf --out output\chess_auto --mode auto
+python kindlemaster.py process path\to\chess.pdf --out output\chess_auto --mode auto --resume
 python kindlemaster.py validate output\chess_auto --strict
 python kindlemaster.py report output\chess_auto
 python kindlemaster.py review output\chess_auto
 python kindlemaster.py audit path\to\file.epub
+python kindlemaster.py chess export-side-to-move-audit --latest
 python kindlemaster.py chess-study run-all --pdf path\to\chess.pdf --html path\to\current.html --out output\yusupov_study --quality-profile default
 python kindlemaster.py chess-study run-all --pdf path\to\chess.pdf --html path\to\current.html --out output\yusupov_study_audit --quality-profile smoke --render-pages
 python kindlemaster.py workflow baseline path\to\input.pdf --change-area reference
@@ -132,6 +134,7 @@ Chess-study FEN quality loop commands are also available under the same entrypoi
 
 ```powershell
 python kindlemaster.py chess-study quality-baseline --out output\yusupov_study
+python kindlemaster.py chess-study two-crop-performance --job-output output\chess_auto --report-dir reports\performance\chess_two_crop
 python kindlemaster.py chess-study preprocess-boards --out output\yusupov_study
 python kindlemaster.py chess-study build-square-dataset --out output\yusupov_study --labels output\yusupov_study\review\fen_verified_labels.jsonl
 python kindlemaster.py chess-study train-fen-classifier --out output\yusupov_study
@@ -140,6 +143,13 @@ python kindlemaster.py chess-study evaluate-fen-ensemble --out output\yusupov_st
 python kindlemaster.py chess-study export-fen-corpus-manifest --out output\yusupov_study
 python scripts\audit_chess_fen_false_positives.py output\yusupov_study\review\ai_fen_candidates.jsonl output\yusupov_study\review\fen_verified_labels.jsonl --output output\yusupov_study\reports\fen_false_positive_audit.json
 ```
+
+`two-crop-performance` reads an existing job output and writes timing, candidate-count,
+artifact-I/O, and semantic-digest evidence. It never substitutes generated fixtures for
+missing real-corpus output and does not package source PDFs or crop bytes in the report.
+
+`process --resume` reuses only compatible, atomically checkpointed two-crop pages. Omitting
+the flag always starts a cold two-crop run and ignores existing checkpoints.
 
 `python kindlemaster.py test --suite full` is a diagnostic all-discovery lane. It delegates to `unittest discover -p test*.py`, so it also runs tests intentionally kept out of the explicit `quick`, `release`, `corpus`, `browser`, and `runtime` suite registry.
 

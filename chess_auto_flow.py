@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 import time
+from collections import Counter
 from dataclasses import asdict
 from io import StringIO
 from pathlib import Path
@@ -34,6 +35,7 @@ from chess_side_marker_learning import (
     side_marker_learning_markdown,
     side_marker_learning_review_html,
 )
+from chess_two_crop_checkpoint import checkpoint_provenance
 
 PIPELINE_STATUSES = {
     "AUTO_SUCCESS",
@@ -150,6 +152,7 @@ def run_auto_chess_process(
     chess_fen_recognition_max_diagrams: str | int = "all",
     diagram_page_ranges: str = "",
     glyph_mapping_file: str | Path | None = None,
+    resume: bool = False,
 ) -> dict[str, Any]:
     """Run the front-door chess flow and map existing chess-study outputs.
 
@@ -188,6 +191,7 @@ def run_auto_chess_process(
                 render_pages=render_pages,
                 diagram_page_ranges=diagram_page_ranges,
                 glyph_mapping_file=glyph_mapping_file,
+                resume=resume,
             ),
             stages,
         )
@@ -309,6 +313,10 @@ def build_auto_chess_flow_artifacts(
     book = _read_optional_json(out / "data" / "book.json")
     diagrams_payload = _read_optional_json(out / "data" / "diagrams.json")
     export_diagrams_payload = _read_optional_json(out / "chess_diagrams.json")
+    two_crop_checkpoint = _read_optional_json(
+        out / "reports" / "chess_fen" / "two_crop_progress.json"
+    )
+    two_crop_resume = checkpoint_provenance(two_crop_checkpoint)
     dashboard = _load_or_build_dashboard(out)
     pages = list(book.get("pages") or [])
     diagrams = _extract_diagrams(
@@ -544,6 +552,8 @@ def build_auto_chess_flow_artifacts(
         "engine_hints": (engine_hints.get("report") or {}).get("summary") or {},
         "book_move_comparison": (book_move_comparison.get("report") or {}).get("summary") or {},
         "side_marker_learning": side_marker_learning.get("summary") or {},
+        "two_crop_resume": two_crop_resume,
+        **two_crop_resume,
         "strict_failed": bool(mode == "auto-strict" and status != "AUTO_SUCCESS"),
     }
     _write_json(out / "auto_chess_flow.json", payload)
@@ -2355,6 +2365,7 @@ def _two_crop_quality_rows(diagrams: list[dict[str, Any]], fen_payload: dict[str
             "side_marker_confidence": merged.get("side_marker_confidence"),
             "marker_classifier_reason": str(merged.get("marker_classifier_reason") or ""),
             "marker_classifier_confidence": merged.get("marker_classifier_confidence"),
+            "two_crop_performance": dict(merged.get("two_crop_performance") or {}),
             "side_to_move": str(_first_non_empty(merged.get("side_to_move"), "unknown")),
             "trusted_marker": trusted_marker,
             "marker_missing": marker_missing,
@@ -2601,6 +2612,10 @@ def _two_crop_quality_metrics_markdown(report: dict[str, Any]) -> str:
         f"- marker bbox detection rate: {summary.get('marker_bbox_detection_rate', 0.0)}",
         f"- marker crop generation rate: {summary.get('marker_crop_generation_rate', 0.0)}",
         f"- marker crop not generated after bbox: {summary.get('marker_crop_not_generated_count', 0)}",
+        f"- page-level marker candidates assigned: {summary.get('marker_candidate_assigned_count', 0)}",
+        f"- marker candidate recall proxy: {summary.get('marker_candidate_recall_proxy_rate', 0.0)}",
+        f"- confident ownership: {summary.get('marker_ownership_confident_count', 0)}",
+        f"- duplicate marker ownership: {summary.get('duplicate_marker_ownership_count', 0)}",
         f"- trusted markers: {summary.get('trusted_marker_count', 0)}",
         f"- marker missing: {summary.get('marker_missing_count', 0)}",
         f"- marker conflicts: {summary.get('marker_conflict_count', 0)}",
@@ -2945,6 +2960,38 @@ def _side_marker_assignment_report(diagrams: list[dict[str, Any]], fen_payload: 
                 "side_marker_search_bbox": diagram.get("side_marker_search_bbox") or fen_item.get("side_marker_search_bbox") or [],
                 "side_marker_confidence": diagram.get("side_marker_confidence") or fen_item.get("side_marker_confidence") or "",
                 "side_marker_assignment_trace": diagram.get("side_marker_assignment_trace") or fen_item.get("side_marker_assignment_trace") or {},
+                "marker_candidate_id": diagram.get("marker_candidate_id") or fen_item.get("marker_candidate_id") or "",
+                "marker_candidate_bbox": diagram.get("marker_candidate_bbox") or fen_item.get("marker_candidate_bbox") or [],
+                "marker_candidate_crop_path": diagram.get("marker_candidate_crop_path")
+                or fen_item.get("marker_candidate_crop_path")
+                or "",
+                "marker_candidate_features": diagram.get("marker_candidate_features")
+                or fen_item.get("marker_candidate_features")
+                or {},
+                "marker_candidate_class": diagram.get("marker_candidate_class")
+                or fen_item.get("marker_candidate_class")
+                or "",
+                "marker_candidate_confidence": (
+                    diagram.get("marker_candidate_confidence")
+                    if diagram.get("marker_candidate_confidence") is not None
+                    else fen_item.get("marker_candidate_confidence") or 0.0
+                ),
+                "marker_assignment_status": diagram.get("marker_assignment_status")
+                or fen_item.get("marker_assignment_status")
+                or "unassigned",
+                "marker_assignment_confidence": (
+                    diagram.get("marker_assignment_confidence")
+                    if diagram.get("marker_assignment_confidence") is not None
+                    else fen_item.get("marker_assignment_confidence") or 0.0
+                ),
+                "marker_assignment_runner_up_margin": (
+                    diagram.get("marker_assignment_runner_up_margin")
+                    if diagram.get("marker_assignment_runner_up_margin") is not None
+                    else fen_item.get("marker_assignment_runner_up_margin") or 0.0
+                ),
+                "marker_assignment_rejected_reasons": diagram.get("marker_assignment_rejected_reasons")
+                or fen_item.get("marker_assignment_rejected_reasons")
+                or [],
                 "board_crop_path": diagram.get("board_crop_path") or fen_item.get("board_crop_path") or "",
                 "side_marker_crop_path": diagram.get("side_marker_crop_path") or fen_item.get("side_marker_crop_path") or "",
                 "marker_search_zone_preview_path": diagram.get("marker_search_zone_preview_path")
@@ -3012,6 +3059,40 @@ def _side_marker_assignment_report(diagrams: list[dict[str, Any]], fen_payload: 
         else 0.0,
         "marker_crop_not_generated_count": len(
             [row for row in rows if row.get("marker_bbox") and not row.get("side_marker_crop_path")]
+        ),
+        "marker_candidate_count": len(
+            {
+                str(row.get("marker_candidate_id"))
+                for row in rows
+                if str(row.get("marker_candidate_id") or "")
+            }
+        ),
+        "marker_candidate_crop_count": len(
+            [row for row in rows if row.get("marker_candidate_crop_path")]
+        ),
+        "marker_candidate_assigned_count": len(
+            [row for row in rows if str(row.get("marker_assignment_status") or "") != "unassigned"]
+        ),
+        "marker_candidate_recall_proxy_rate": round(
+            len([row for row in rows if str(row.get("marker_assignment_status") or "") != "unassigned"])
+            / len(rows),
+            4,
+        )
+        if rows
+        else 0.0,
+        "marker_ownership_confident_count": len(
+            [row for row in rows if str(row.get("marker_assignment_status") or "") == "assigned"]
+        ),
+        "duplicate_marker_ownership_count": len(
+            [
+                candidate_id
+                for candidate_id, count in Counter(
+                    str(row.get("marker_candidate_id") or "")
+                    for row in rows
+                    if str(row.get("marker_candidate_id") or "")
+                ).items()
+                if count > 1
+            ]
         ),
         "strict_full_fen_accepted": len([row for row in rows if row.get("strict_fen_allowed")]),
         "placement_accepted_count": len([row for row in rows if row.get("placement_status") == "FEN_PLACEMENT_MACHINE_ACCEPTED"]),

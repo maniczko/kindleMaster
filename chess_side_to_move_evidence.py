@@ -641,7 +641,12 @@ def _first_float(*values: Any) -> float:
 def _string_values(value: Any) -> list[str]:
     if value in (None, ""):
         return []
-    values = value if isinstance(value, (list, tuple, set)) else [value]
+    if isinstance(value, (str, bytes)):
+        values = [value]
+    elif isinstance(value, Iterable) and not isinstance(value, Mapping):
+        values = value
+    else:
+        values = [value]
     return [str(item).strip() for item in values if str(item).strip()]
 
 

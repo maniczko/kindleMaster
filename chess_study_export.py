@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import base64
+import copy
 import csv
 import hashlib
 import io
@@ -22,9 +23,21 @@ import fitz
 from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageOps
 
+from chess_diagram_fingerprint import DIAGRAM_FINGERPRINT_SCHEMA, source_document_sha256
 from chess_position_recognizer import validate_fen
 from chess_side_marker_blockers import build_side_marker_blocker_attribution, side_marker_blocker_attribution_markdown
 from chess_side_to_move_trust_audit import build_side_to_move_diagnostic_report
+from chess_two_crop_checkpoint import (
+    atomic_write_checkpoint,
+    build_checkpoint_identity,
+    checkpoint_path,
+    checkpoint_provenance,
+    complete_checkpoint,
+    load_compatible_checkpoint,
+    new_checkpoint,
+    reusable_page_records,
+    update_checkpoint_page,
+)
 from pymupdf_chess_extractor import (
     _apply_scan_chess_side_to_move_context_evidence,
     _apply_scan_chess_two_crop_quality_gate,
@@ -170,6 +183,7 @@ class ChessStudyConfig:
     glyph_mapping_file: Path | None = None
     diagram_alignment_review: bool = False
     expected_diagram_manifest: Path | None = None
+    resume: bool = False
 
 
 @dataclass(frozen=True)
@@ -465,6 +479,7 @@ def run_chess_study_export(
     glyph_mapping_file: str | Path | None = None,
     diagram_alignment_review: bool = False,
     expected_diagram_manifest: str | Path | None = None,
+    resume: bool = False,
 ) -> dict[str, Any]:
     normalized_profile = _normalize_quality_profile(quality_profile)
     effective_render_pages = bool(render_pages) or normalized_profile == "masterkindle"
@@ -490,6 +505,7 @@ def run_chess_study_export(
         glyph_mapping_file=Path(glyph_mapping_file) if glyph_mapping_file else None,
         diagram_alignment_review=diagram_alignment_review,
         expected_diagram_manifest=Path(expected_diagram_manifest) if expected_diagram_manifest else None,
+        resume=bool(resume),
     )
     _ensure_output_dirs(config.out)
 
@@ -6643,6 +6659,8 @@ def detect_study_diagrams(config: ChessStudyConfig) -> dict[str, Any]:
         config.out,
         dpi=config.diagram_dpi,
         min_confidence=config.min_grid_confidence,
+        quality_profile=config.quality_profile,
+        resume=config.resume,
     )
     for record in normalized:
         rendered = _render_valid_fen_assets(
@@ -6698,6 +6716,8 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
     *,
     dpi: int,
     min_confidence: float,
+    quality_profile: str = "default",
+    resume: bool = False,
 ) -> dict[str, Any]:
     out = Path(out_dir)
     if not diagrams:
@@ -6720,12 +6740,113 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
         if page_number > 0:
             diagrams_by_page.setdefault(page_number, []).append(diagram)
 
+    progress_path = checkpoint_path(out)
+    checkpoint_started = time.perf_counter()
+    checkpoint_enabled = all(
+        str(diagram.get("diagram_fingerprint") or "").strip()
+        for page_diagrams in diagrams_by_page.values()
+        for diagram in page_diagrams
+    )
+    checkpoint: dict[str, Any] | None = None
+    resume_compatible = False
+    resume_reason_code = "diagram_fingerprint_missing"
+    reused_diagram_count = 0
+    computed_diagram_count = 0
+    if checkpoint_enabled:
+        source_hashes = {
+            str(diagram.get("source_document_sha256") or "").strip().lower()
+            for page_diagrams in diagrams_by_page.values()
+            for diagram in page_diagrams
+            if str(diagram.get("source_document_sha256") or "").strip()
+        }
+        source_hash = next(iter(source_hashes)) if len(source_hashes) == 1 else source_document_sha256(pdf_path)
+        identity = build_checkpoint_identity(
+            source_pdf_sha256=source_hash,
+            fingerprint_schema=DIAGRAM_FINGERPRINT_SCHEMA,
+            dpi=dpi,
+            quality_profile=quality_profile,
+        )
+        loaded = load_compatible_checkpoint(progress_path, identity) if resume else None
+        if loaded is not None and loaded.compatible and loaded.checkpoint is not None:
+            checkpoint = loaded.checkpoint
+            resume_compatible = True
+            resume_reason_code = loaded.reason_code
+            checkpoint.update(
+                {
+                    "status": "in_progress",
+                    "cache_policy": "resume_opt_in",
+                    "resume_requested": True,
+                    "resume_used": False,
+                    "resume_reason_code": resume_reason_code,
+                    "reused_diagram_count": 0,
+                    "computed_diagram_count": 0,
+                }
+            )
+        else:
+            resume_reason_code = loaded.reason_code if loaded is not None else "resume_not_requested"
+            checkpoint = new_checkpoint(
+                identity,
+                total_pages=len(diagrams_by_page),
+                total_diagrams=sum(len(rows) for rows in diagrams_by_page.values()),
+                resume_requested=resume,
+                resume_reason_code=resume_reason_code,
+            )
+        atomic_write_checkpoint(progress_path, checkpoint)
+
     with fitz.open(pdf_path) as document:
         zoom = max(72, int(dpi or 72)) / 72.0
         matrix = fitz.Matrix(zoom, zoom)
-        for page_number, page_diagrams in diagrams_by_page.items():
+        for page_number, page_diagrams in sorted(diagrams_by_page.items()):
+            page_started = time.perf_counter()
+            expected_fingerprints = [
+                str(diagram.get("diagram_fingerprint") or "").strip()
+                for diagram in page_diagrams
+            ]
+            reused_records = (
+                reusable_page_records(
+                    checkpoint,
+                    page_number=page_number,
+                    expected_fingerprints=expected_fingerprints,
+                    artifact_root=out,
+                )
+                if checkpoint is not None and resume_compatible
+                else None
+            )
+            if reused_records is not None:
+                _apply_two_crop_checkpoint_records(page_diagrams, reused_records)
+                reused_diagram_count += len(reused_records)
+                existing_page = dict((checkpoint.get("pages") or {}).get(str(page_number)) or {})
+                checkpoint["resume_used"] = reused_diagram_count > 0
+                update_checkpoint_page(
+                    checkpoint,
+                    page_number=page_number,
+                    elapsed_seconds=float(existing_page.get("elapsed_seconds") or 0.0),
+                    records=reused_records,
+                    elapsed_total_seconds=time.perf_counter() - checkpoint_started,
+                    reused_diagram_count=reused_diagram_count,
+                    computed_diagram_count=computed_diagram_count,
+                )
+                atomic_write_checkpoint(progress_path, checkpoint)
+                _print_two_crop_progress(checkpoint, page_number=page_number, mode="reused")
+                continue
             page_index = page_number - 1
+            page_checkpoint_records: list[dict[str, Any]] = []
             if page_index < 0 or page_index >= len(document):
+                for diagram in page_diagrams:
+                    page_checkpoint_records.append(_two_crop_checkpoint_record(diagram, diagram, []))
+                    computed_diagram_count += 1
+                if checkpoint is not None:
+                    update_checkpoint_page(
+                        checkpoint,
+                        page_number=page_number,
+                        elapsed_seconds=time.perf_counter() - page_started,
+                        records=page_checkpoint_records,
+                        elapsed_total_seconds=time.perf_counter() - checkpoint_started,
+                        reused_diagram_count=reused_diagram_count,
+                        computed_diagram_count=computed_diagram_count,
+                    )
+                    atomic_write_checkpoint(progress_path, checkpoint)
+                    _print_two_crop_progress(checkpoint, page_number=page_number, mode="computed")
                 continue
             pixmap = document[page_index].get_pixmap(matrix=matrix, alpha=False)
             page_image = Image.frombytes("RGB", (pixmap.width, pixmap.height), pixmap.samples)
@@ -6735,8 +6856,11 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
                 if bbox is not None
             ]
             for diagram in page_diagrams:
+                before = copy.deepcopy(diagram)
                 board_bbox = _study_pixel_bbox_xyxy(diagram)
                 if board_bbox is None:
+                    page_checkpoint_records.append(_two_crop_checkpoint_record(diagram, before, []))
+                    computed_diagram_count += 1
                     continue
                 payload = _study_side_marker_payload(diagram)
                 evidence = _infer_scan_chess_side_to_move_marker_evidence(page_image, board_bbox)
@@ -6783,13 +6907,98 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
                 two_crop_fields["two_crop_performance"] = performance
                 payload.update(two_crop_fields)
                 _apply_study_side_marker_payload(diagram, payload)
+                page_checkpoint_records.append(
+                    _two_crop_checkpoint_record(diagram, before, two_crop_files)
+                )
+                computed_diagram_count += 1
+            if checkpoint is not None:
+                update_checkpoint_page(
+                    checkpoint,
+                    page_number=page_number,
+                    elapsed_seconds=time.perf_counter() - page_started,
+                    records=page_checkpoint_records,
+                    elapsed_total_seconds=time.perf_counter() - checkpoint_started,
+                    reused_diagram_count=reused_diagram_count,
+                    computed_diagram_count=computed_diagram_count,
+                )
+                atomic_write_checkpoint(progress_path, checkpoint)
+                _print_two_crop_progress(checkpoint, page_number=page_number, mode="computed")
 
     summary = _study_side_marker_summary(diagrams)
+    if checkpoint is not None:
+        complete_checkpoint(
+            checkpoint,
+            elapsed_total_seconds=time.perf_counter() - checkpoint_started,
+            reused_diagram_count=reused_diagram_count,
+            computed_diagram_count=computed_diagram_count,
+        )
+        atomic_write_checkpoint(progress_path, checkpoint)
+    summary.update(checkpoint_provenance(checkpoint))
+    summary["checkpoint_path"] = str(progress_path) if checkpoint is not None else ""
     _write_study_side_marker_report(out, diagrams, summary)
     _write_study_two_crop_quality_metrics(out, diagrams, summary)
     _write_study_side_marker_blocker_attribution(out, diagrams, source_gate=None)
     _write_study_side_to_move_diagnostic_report(out, diagrams, source_gate=None)
     return summary
+
+
+def _two_crop_checkpoint_record(
+    diagram: Mapping[str, Any],
+    before: Mapping[str, Any],
+    files: list[Mapping[str, Any]],
+) -> dict[str, Any]:
+    updates = {
+        str(key): copy.deepcopy(value)
+        for key, value in diagram.items()
+        if key not in before or before.get(key) != value
+    }
+    return {
+        "diagram_id": str(diagram.get("diagram_id") or diagram.get("id") or ""),
+        "diagram_fingerprint": str(diagram.get("diagram_fingerprint") or ""),
+        "updates": updates,
+        "artifact_paths": sorted(
+            {
+                str(item.get("path") or "").strip().replace("\\", "/")
+                for item in files
+                if str(item.get("path") or "").strip()
+            }
+        ),
+    }
+
+
+def _apply_two_crop_checkpoint_records(
+    diagrams: list[dict[str, Any]],
+    records: list[dict[str, Any]],
+) -> None:
+    records_by_fingerprint = {
+        str(record.get("diagram_fingerprint") or ""): record
+        for record in records
+    }
+    for diagram in diagrams:
+        fingerprint = str(diagram.get("diagram_fingerprint") or "")
+        record = records_by_fingerprint.get(fingerprint) or {}
+        updates = record.get("updates")
+        if isinstance(updates, Mapping):
+            diagram.update(copy.deepcopy(dict(updates)))
+
+
+def _print_two_crop_progress(
+    checkpoint: Mapping[str, Any],
+    *,
+    page_number: int,
+    mode: str,
+) -> None:
+    eta = checkpoint.get("eta_seconds")
+    eta_text = "unknown" if eta is None else f"{float(eta):.1f}s"
+    print(
+        "two-crop progress: "
+        f"page={page_number} mode={mode} "
+        f"diagrams={int(checkpoint.get('completed_diagram_count') or 0)}/"
+        f"{int(checkpoint.get('total_diagram_count') or 0)} "
+        f"progress={float(checkpoint.get('progress_percent') or 0.0):.2f}% "
+        f"eta={eta_text}",
+        flush=True,
+    )
 
 
 def _study_pixel_bbox_xyxy(diagram: Mapping[str, Any]) -> tuple[float, float, float, float] | None:

@@ -81,6 +81,7 @@ QUICK_TESTS = [
     "test_chess_side_marker_final_reader_e2e.py",
     "test_chess_crop_qa_benchmark.py",
     "test_chess_two_crop_performance.py",
+    "test_chess_two_crop_checkpoint.py",
     "test_chess_marker_crop_corpus.py",
     "test_chess_marker_classifier.py",
     "test_chess_fen_pipeline_hardening.py",
@@ -295,6 +296,11 @@ def main() -> int:
     process_parser.add_argument("--html", default="")
     process_parser.add_argument("--quality-profile", choices=("smoke", "default", "masterkindle"), default="default")
     process_parser.add_argument("--render-pages", action="store_true")
+    process_parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume compatible completed two-crop pages; omitted means a fresh cold run.",
+    )
     process_parser.add_argument("--diagram-page-ranges", default="")
     process_parser.add_argument("--glyph-mapping-file", default="")
     process_parser.add_argument("--with-ai", action="store_true", help="Run optional AI candidate passes; AI remains review-only.")
@@ -721,6 +727,7 @@ def main() -> int:
             chess_fen_recognition_max_diagrams=args.chess_fen_recognition_max_diagrams,
             diagram_page_ranges=args.diagram_page_ranges,
             glyph_mapping_file=args.glyph_mapping_file or None,
+            resume=args.resume,
         )
         _print_json(payload)
         return 1 if payload.get("strict_failed") or payload.get("status") == "AUTO_FAILED_WITH_REASON" else 0

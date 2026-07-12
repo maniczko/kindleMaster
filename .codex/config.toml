@@ -22,6 +22,7 @@
 # - ML training: python kindlemaster.py ml train
 # - ML evaluation: python kindlemaster.py ml evaluate
 # - auto chess flow: python kindlemaster.py process path\to\chess.pdf --out output\chess_auto --mode auto
+# - resume compatible two-crop pages: python kindlemaster.py process path\to\chess.pdf --out output\chess_auto --mode auto --resume
 # - auto chess validation: python kindlemaster.py validate output\chess_auto --strict
 # - auto chess report: python kindlemaster.py report output\chess_auto
 # - auto chess review: python kindlemaster.py review output\chess_auto

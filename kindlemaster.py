@@ -77,6 +77,7 @@ QUICK_TESTS = [
     "test_chess_auto_flow.py",
     "test_chess_side_marker_assignment.py",
     "test_chess_side_to_move_trust_audit.py",
+    "test_chess_side_to_move_audit_export.py",
     "test_chess_side_to_move_evidence_tiers.py",
     "test_chess_side_marker_final_reader_e2e.py",
     "test_chess_crop_qa_benchmark.py",
@@ -493,6 +494,24 @@ def main() -> int:
         help="Stop the release audit after N seconds and return partial evidence instead of hanging.",
     )
 
+    chess_parser = subparsers.add_parser("chess", help="Run focused chess diagnostics and handoff utilities.")
+    chess_subparsers = chess_parser.add_subparsers(dest="chess_command")
+    chess_audit_export = chess_subparsers.add_parser(
+        "export-side-to-move-audit",
+        help="Export a safe ZIP bundle of side-to-move runtime diagnostics.",
+    )
+    chess_audit_source = chess_audit_export.add_mutually_exclusive_group(required=True)
+    chess_audit_source.add_argument("--latest", action="store_true", help="Use the newest job containing allowlisted diagnostics.")
+    chess_audit_source.add_argument("--job-output", default="", help="Use an explicit conversion job output directory.")
+    chess_audit_export.add_argument("--out", default="", help="ZIP output path. Defaults to the selected job output directory.")
+    chess_audit_export.add_argument(
+        "--include-html",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include allowlisted HTML diagnostics (default: enabled; use --no-include-html to disable).",
+    )
+    chess_audit_export.add_argument("--json-summary", default="", help="Optional path for a standalone summary JSON.")
+
     chess_study_parser = subparsers.add_parser("chess-study", help="Build a static chess training-book study export.")
     chess_study_subparsers = chess_study_parser.add_subparsers(dest="chess_study_command")
     for command_name in [
@@ -847,6 +866,8 @@ def main() -> int:
             )
             _print_json(partial_payload)
             return RELEASE_TIMEOUT_RETURN_CODE
+    if args.command == "chess":
+        return _run_chess(args, parser=chess_parser)
     if args.command == "chess-study":
         return _run_chess_study(args)
     if args.command == "workflow":
@@ -888,6 +909,25 @@ def main() -> int:
         return 0 if payload.get("status") in {"passed", "passed_with_warnings", "ready"} else 1
     parser.print_help()
     return 0
+
+
+def _run_chess(args: argparse.Namespace, *, parser: argparse.ArgumentParser | None = None) -> int:
+    if args.chess_command != "export-side-to-move-audit":
+        if parser is not None:
+            parser.print_help()
+        return 1
+
+    from chess_side_to_move_audit_export import export_side_to_move_audit, format_audit_export_console
+
+    payload = export_side_to_move_audit(
+        job_output=args.job_output or None,
+        latest=bool(args.latest),
+        out_path=args.out or None,
+        include_html=bool(args.include_html),
+        json_summary_path=args.json_summary or None,
+    )
+    print(format_audit_export_console(payload), end="")
+    return 0 if payload.get("status") == "created" else 1
 
 
 def _run_chess_study(args: argparse.Namespace) -> int:

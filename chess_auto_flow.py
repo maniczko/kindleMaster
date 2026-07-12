@@ -34,6 +34,7 @@ from chess_side_marker_learning import (
     side_marker_learning_markdown,
     side_marker_learning_review_html,
 )
+from chess_two_crop_checkpoint import checkpoint_provenance
 
 PIPELINE_STATUSES = {
     "AUTO_SUCCESS",
@@ -150,6 +151,7 @@ def run_auto_chess_process(
     chess_fen_recognition_max_diagrams: str | int = "all",
     diagram_page_ranges: str = "",
     glyph_mapping_file: str | Path | None = None,
+    resume: bool = False,
 ) -> dict[str, Any]:
     """Run the front-door chess flow and map existing chess-study outputs.
 
@@ -188,6 +190,7 @@ def run_auto_chess_process(
                 render_pages=render_pages,
                 diagram_page_ranges=diagram_page_ranges,
                 glyph_mapping_file=glyph_mapping_file,
+                resume=resume,
             ),
             stages,
         )
@@ -309,6 +312,10 @@ def build_auto_chess_flow_artifacts(
     book = _read_optional_json(out / "data" / "book.json")
     diagrams_payload = _read_optional_json(out / "data" / "diagrams.json")
     export_diagrams_payload = _read_optional_json(out / "chess_diagrams.json")
+    two_crop_checkpoint = _read_optional_json(
+        out / "reports" / "chess_fen" / "two_crop_progress.json"
+    )
+    two_crop_resume = checkpoint_provenance(two_crop_checkpoint)
     dashboard = _load_or_build_dashboard(out)
     pages = list(book.get("pages") or [])
     diagrams = _extract_diagrams(
@@ -544,6 +551,8 @@ def build_auto_chess_flow_artifacts(
         "engine_hints": (engine_hints.get("report") or {}).get("summary") or {},
         "book_move_comparison": (book_move_comparison.get("report") or {}).get("summary") or {},
         "side_marker_learning": side_marker_learning.get("summary") or {},
+        "two_crop_resume": two_crop_resume,
+        **two_crop_resume,
         "strict_failed": bool(mode == "auto-strict" and status != "AUTO_SUCCESS"),
     }
     _write_json(out / "auto_chess_flow.json", payload)
@@ -2322,6 +2331,7 @@ def _two_crop_quality_rows(diagrams: list[dict[str, Any]], fen_payload: dict[str
             "side_marker_confidence": merged.get("side_marker_confidence"),
             "marker_classifier_reason": str(merged.get("marker_classifier_reason") or ""),
             "marker_classifier_confidence": merged.get("marker_classifier_confidence"),
+            "two_crop_performance": dict(merged.get("two_crop_performance") or {}),
             "side_to_move": str(_first_non_empty(merged.get("side_to_move"), "unknown")),
             "trusted_marker": trusted_marker,
             "marker_missing": marker_missing,

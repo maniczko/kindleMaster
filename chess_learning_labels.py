@@ -154,6 +154,7 @@ def normalize_chess_learning_label(row: Mapping[str, Any], *, line: int = 0) -> 
     label_type = _normalize_label_type(row)
     label_value = _normalize_label_value(label_type, row)
     diagram_id = str(row.get("diagram_id") or row.get("id") or "").strip()
+    diagram_fingerprint = str(row.get("diagram_fingerprint") or "").strip()
     reviewer = str(row.get("reviewer") or row.get("verified_by") or "").strip()
     created_at = str(row.get("created_at") or row.get("verified_at") or "").strip()
     verification_source = str(row.get("verification_source") or row.get("label_source") or "").strip().lower()
@@ -163,7 +164,7 @@ def normalize_chess_learning_label(row: Mapping[str, Any], *, line: int = 0) -> 
     marker_crop_hash = _normalize_hash(row.get("marker_crop_hash") or row.get("marker_crop_sha256"))
 
     issues: list[str] = []
-    if not diagram_id:
+    if not diagram_id and not diagram_fingerprint:
         issues.append("diagram_id_missing")
     if not label_type:
         issues.append("label_type_missing")
@@ -188,8 +189,12 @@ def normalize_chess_learning_label(row: Mapping[str, Any], *, line: int = 0) -> 
 
     normalized = {
         "schema": CHESS_LABEL_SCHEMA,
-        "label_id": str(row.get("label_id") or _label_id(diagram_id, label_type, board_crop_hash, marker_crop_hash)),
+        "label_id": str(
+            row.get("label_id")
+            or _label_id(diagram_fingerprint or diagram_id, label_type, board_crop_hash, marker_crop_hash)
+        ),
         "diagram_id": diagram_id,
+        "diagram_fingerprint": diagram_fingerprint,
         "page": row.get("page") or "",
         "board_crop_hash": board_crop_hash,
         "marker_crop_hash": marker_crop_hash,
@@ -218,6 +223,7 @@ def label_rows_from_review_record(record: Mapping[str, Any]) -> list[dict[str, A
     base = {
         "schema": CHESS_LABEL_SCHEMA,
         "diagram_id": str(record.get("diagram_id") or ""),
+        "diagram_fingerprint": str(record.get("diagram_fingerprint") or ""),
         "page": record.get("page") or "",
         "board_crop_hash": _normalize_hash(record.get("board_crop_hash")),
         "marker_crop_hash": _normalize_hash(record.get("marker_crop_hash")),
@@ -245,7 +251,12 @@ def label_rows_from_review_record(record: Mapping[str, Any]) -> list[dict[str, A
         if not label_value:
             continue
         row = {**base, "label_type": label_type, "label_value": label_value}
-        row["label_id"] = _label_id(row["diagram_id"], label_type, row["board_crop_hash"], row["marker_crop_hash"])
+        row["label_id"] = _label_id(
+            row["diagram_fingerprint"] or row["diagram_id"],
+            label_type,
+            row["board_crop_hash"],
+            row["marker_crop_hash"],
+        )
         rows.append(row)
     return rows
 
@@ -315,8 +326,8 @@ def _normalize_hash(value: Any) -> str:
     return text
 
 
-def _label_id(diagram_id: str, label_type: str, board_crop_hash: str, marker_crop_hash: str) -> str:
-    raw = "|".join([diagram_id, label_type, board_crop_hash, marker_crop_hash])
+def _label_id(diagram_identity: str, label_type: str, board_crop_hash: str, marker_crop_hash: str) -> str:
+    raw = "|".join([diagram_identity, label_type, board_crop_hash, marker_crop_hash])
     return "cl_" + sha256(raw.encode("utf-8")).hexdigest()[:20]
 
 

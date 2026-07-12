@@ -5,7 +5,7 @@ import os
 import tempfile
 import zipfile
 from collections.abc import Iterable, Mapping
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -85,7 +85,14 @@ def discover_latest_audit_job(search_roots: Iterable[str | Path]) -> dict[str, A
     for search_root in checked_roots:
         if not search_root.is_dir():
             continue
-        for directory, _, filenames in os.walk(search_root, followlinks=False):
+        for directory, child_directories, filenames in os.walk(
+            search_root, followlinks=False
+        ):
+            child_directories[:] = [
+                name
+                for name in child_directories
+                if name not in {".git", ".venv", "node_modules", "__pycache__"}
+            ]
             directory_path = Path(directory)
             for filename in filenames:
                 allowed_paths = allowed_by_name.get(filename)
@@ -165,7 +172,7 @@ def export_side_to_move_audit(
 
     base_payload: dict[str, Any] = {
         "schema": AUDIT_EXPORT_SCHEMA,
-        "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         **discovery,
         "include_html": bool(include_html),
         "zip_path": "",

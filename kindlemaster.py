@@ -64,6 +64,8 @@ QUICK_TESTS = [
     "test_chess_pgn_extraction.py",
     "test_chess_html_audit.py",
     "test_chess_diagram_detection.py",
+    "test_chess_diagram_multi_pass_detection.py",
+    "test_chess_diagram_fingerprint.py",
     "test_chess_glyph_diagnostics.py",
     "test_chess_fen_square_diff.py",
     "test_chess_fen_hard_cases.py",
@@ -79,6 +81,8 @@ QUICK_TESTS = [
     "test_chess_side_to_move_evidence_tiers.py",
     "test_chess_side_marker_final_reader_e2e.py",
     "test_chess_crop_qa_benchmark.py",
+    "test_chess_two_crop_performance.py",
+    "test_chess_two_crop_checkpoint.py",
     "test_chess_marker_crop_corpus.py",
     "test_chess_marker_classifier.py",
     "test_chess_fen_pipeline_hardening.py",
@@ -293,6 +297,11 @@ def main() -> int:
     process_parser.add_argument("--html", default="")
     process_parser.add_argument("--quality-profile", choices=("smoke", "default", "masterkindle"), default="default")
     process_parser.add_argument("--render-pages", action="store_true")
+    process_parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume compatible completed two-crop pages; omitted means a fresh cold run.",
+    )
     process_parser.add_argument("--diagram-page-ranges", default="")
     process_parser.add_argument("--glyph-mapping-file", default="")
     process_parser.add_argument("--with-ai", action="store_true", help="Run optional AI candidate passes; AI remains review-only.")
@@ -545,8 +554,9 @@ def main() -> int:
         stage_parser.add_argument("--max-candidates-per-page", type=int, default=6)
         stage_parser.add_argument(
             "--low-confidence-diagram-review",
-            action="store_true",
-            help="Add extra low-confidence diagram candidates to review artifacts only; never to accepted FEN.",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help="Route recovered low-confidence diagrams through marker review; never accept their FEN automatically.",
         )
         stage_parser.add_argument("--low-confidence-min-grid-confidence", type=float, default=0.30)
         stage_parser.add_argument("--low-confidence-max-candidates-per-page", type=int, default=12)
@@ -554,6 +564,7 @@ def main() -> int:
         stage_parser.add_argument("--review-sample-limit", type=int, default=0, help="Limit rows written to review datasets; 0 writes all rows.")
         stage_parser.add_argument("--fen-review-min-count", type=int, default=50, help="When --diagram-page-ranges is used for fen-review, extend with later diagram pages until this many rows are queued; 0 disables extension.")
         stage_parser.add_argument("--diagram-review-labels", default="", help="CSV or JSONL manual diagram labels exported from review/diagram_review.")
+        stage_parser.add_argument("--expected-diagram-manifest", default="", help="Optional fixed-edition expected-diagram manifest used to measure recall.")
         stage_parser.add_argument("--glyph-mapping-file", default="", help="JSON file with accepted OCR token mappings for chess notation review.")
         stage_parser.add_argument("--diagram-alignment-review", action="store_true", help="Generate crop alignment review variants for manually labeled diagrams.")
         stage_parser.add_argument("--labels", default="", help="Verified/draft FEN labels JSONL for template build or holdout evaluation.")
@@ -577,6 +588,16 @@ def main() -> int:
         stage_parser.add_argument("--ai-pgn-limit", type=int, default=30, help="Limit AI-assisted PGN repair rows.")
         stage_parser.add_argument("--model-path", default="", help="Optional local FEN model path for classifier/inference commands.")
         stage_parser.add_argument("--min-confidence", type=float, default=0.92, help="Minimum local/ensemble confidence for review gates.")
+
+    two_crop_performance_parser = chess_study_subparsers.add_parser(
+        "two-crop-performance",
+        help="Build a safe performance and semantic-equivalence report from an existing chess job output.",
+    )
+    two_crop_performance_parser.add_argument("--job-output", required=True)
+    two_crop_performance_parser.add_argument(
+        "--report-dir",
+        default="reports/performance/chess_two_crop",
+    )
 
     workflow_parser = subparsers.add_parser(
         "workflow",
@@ -725,6 +746,7 @@ def main() -> int:
             chess_fen_recognition_max_diagrams=args.chess_fen_recognition_max_diagrams,
             diagram_page_ranges=args.diagram_page_ranges,
             glyph_mapping_file=args.glyph_mapping_file or None,
+            resume=args.resume,
         )
         _print_json(payload)
         return 1 if payload.get("strict_failed") or payload.get("status") == "AUTO_FAILED_WITH_REASON" else 0
@@ -947,6 +969,26 @@ def _run_chess_study(args: argparse.Namespace) -> int:
     if not args.chess_study_command:
         _print_json({"status": "failed", "error": "Missing chess-study subcommand."})
         return 1
+    if args.chess_study_command == "two-crop-performance":
+        from chess_two_crop_performance import build_two_crop_performance_report, write_two_crop_performance_reports
+
+        payload = build_two_crop_performance_report(args.job_output)
+        json_path, markdown_path = write_two_crop_performance_reports(payload, args.report_dir)
+        payload["artifacts"] = {
+            "json": str(json_path),
+            "markdown": str(markdown_path),
+        }
+        _print_json(
+            {
+                "schema": payload.get("schema"),
+                "status": payload.get("status"),
+                "evidence": payload.get("evidence"),
+                "summary": payload.get("summary"),
+                "stage_timings": payload.get("stage_timings"),
+                "artifacts": payload.get("artifacts"),
+            }
+        )
+        return 0 if (payload.get("evidence") or {}).get("corpus_available") else 1
     pdf = Path(args.pdf) if str(args.pdf or "").strip() else _default_chess_study_pdf()
     out = Path(args.out)
     html_path = Path(args.html) if str(args.html or "").strip() else None
@@ -972,6 +1014,7 @@ def _run_chess_study(args: argparse.Namespace) -> int:
             diagram_review_labels=args.diagram_review_labels or None,
             glyph_mapping_file=args.glyph_mapping_file or None,
             diagram_alignment_review=args.diagram_alignment_review,
+            expected_diagram_manifest=args.expected_diagram_manifest or None,
         )
         _print_json(payload)
         return 0 if payload.get("status") != "FAIL" else 1
@@ -997,6 +1040,11 @@ def _run_chess_study(args: argparse.Namespace) -> int:
         diagram_review_labels=Path(args.diagram_review_labels) if str(args.diagram_review_labels or "").strip() else None,
         glyph_mapping_file=Path(args.glyph_mapping_file) if str(args.glyph_mapping_file or "").strip() else None,
         diagram_alignment_review=args.diagram_alignment_review,
+        expected_diagram_manifest=(
+            Path(args.expected_diagram_manifest)
+            if str(args.expected_diagram_manifest or "").strip()
+            else None
+        ),
     )
     if args.chess_study_command == "fen-review":
         payload = build_chess_fen_manual_review(

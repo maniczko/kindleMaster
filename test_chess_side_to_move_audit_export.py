@@ -42,8 +42,18 @@ class ChessSideToMoveAuditExportTests(unittest.TestCase):
             )
             self._write_json(older, {"summary": {"diagram_count": 1}})
             self._write_json(newer, {"summary": {"diagram_count": 2}})
+            ignored = (
+                root
+                / "node_modules"
+                / "fake-job"
+                / "reports"
+                / "chess_fen"
+                / "why_side_to_move_not_trusted.json"
+            )
+            self._write_json(ignored, {"summary": {"diagram_count": 999}})
             os.utime(older, (100, 100))
             os.utime(newer, (200, 200))
+            os.utime(ignored, (300, 300))
 
             result = discover_latest_audit_job([root, root])
 

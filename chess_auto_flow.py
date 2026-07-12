@@ -2322,6 +2322,7 @@ def _two_crop_quality_rows(diagrams: list[dict[str, Any]], fen_payload: dict[str
             "side_marker_confidence": merged.get("side_marker_confidence"),
             "marker_classifier_reason": str(merged.get("marker_classifier_reason") or ""),
             "marker_classifier_confidence": merged.get("marker_classifier_confidence"),
+            "two_crop_performance": dict(merged.get("two_crop_performance") or {}),
             "side_to_move": str(_first_non_empty(merged.get("side_to_move"), "unknown")),
             "trusted_marker": trusted_marker,
             "marker_missing": marker_missing,

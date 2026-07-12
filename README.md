@@ -132,6 +132,7 @@ Chess-study FEN quality loop commands are also available under the same entrypoi
 
 ```powershell
 python kindlemaster.py chess-study quality-baseline --out output\yusupov_study
+python kindlemaster.py chess-study two-crop-performance --job-output output\chess_auto --report-dir reports\performance\chess_two_crop
 python kindlemaster.py chess-study preprocess-boards --out output\yusupov_study
 python kindlemaster.py chess-study build-square-dataset --out output\yusupov_study --labels output\yusupov_study\review\fen_verified_labels.jsonl
 python kindlemaster.py chess-study train-fen-classifier --out output\yusupov_study
@@ -140,6 +141,10 @@ python kindlemaster.py chess-study evaluate-fen-ensemble --out output\yusupov_st
 python kindlemaster.py chess-study export-fen-corpus-manifest --out output\yusupov_study
 python scripts\audit_chess_fen_false_positives.py output\yusupov_study\review\ai_fen_candidates.jsonl output\yusupov_study\review\fen_verified_labels.jsonl --output output\yusupov_study\reports\fen_false_positive_audit.json
 ```
+
+`two-crop-performance` reads an existing job output and writes timing, candidate-count,
+artifact-I/O, and semantic-digest evidence. It never substitutes generated fixtures for
+missing real-corpus output and does not package source PDFs or crop bytes in the report.
 
 `python kindlemaster.py test --suite full` is a diagnostic all-discovery lane. It delegates to `unittest discover -p test*.py`, so it also runs tests intentionally kept out of the explicit `quick`, `release`, `corpus`, `browser`, and `runtime` suite registry.
 

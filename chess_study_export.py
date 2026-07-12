@@ -9,6 +9,7 @@ import json
 import math
 import re
 import shutil
+import time
 import zipfile
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -6731,8 +6732,16 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
                     two_crop_fields,
                     min_confidence=min_confidence,
                 )
+                write_metrics = _write_study_side_marker_artifact_files(out, two_crop_files)
+                performance = dict(two_crop_fields.get("two_crop_performance") or {})
+                performance.update(write_metrics)
+                performance["total_seconds"] = round(
+                    float(performance.get("total_seconds") or 0.0)
+                    + float(write_metrics.get("file_write_seconds") or 0.0),
+                    6,
+                )
+                two_crop_fields["two_crop_performance"] = performance
                 payload.update(two_crop_fields)
-                _write_study_side_marker_artifact_files(out, two_crop_files)
                 _apply_study_side_marker_payload(diagram, payload)
 
     summary = _study_side_marker_summary(diagrams)
@@ -6849,6 +6858,7 @@ def _apply_study_side_marker_payload(diagram: dict[str, Any], payload: Mapping[s
             "side_to_move_confidence": payload.get("side_to_move_confidence"),
             "manual_review_required": bool(payload.get("manual_review_required", True)),
             "manual_review_reason": str(payload.get("manual_review_reason") or ""),
+            "two_crop_performance": dict(payload.get("two_crop_performance") or {}),
             "warnings": sorted({str(warning) for warning in payload.get("warnings") or [] if str(warning)}),
         }
     )
@@ -6862,7 +6872,10 @@ def _apply_study_side_marker_payload(diagram: dict[str, Any], payload: Mapping[s
         diagram["review_reason"] = diagram["reason"]
 
 
-def _write_study_side_marker_artifact_files(out: Path, files: list[Mapping[str, Any]]) -> None:
+def _write_study_side_marker_artifact_files(out: Path, files: list[Mapping[str, Any]]) -> dict[str, Any]:
+    started = time.perf_counter()
+    written_count = 0
+    written_bytes = 0
     for item in files:
         rel_path = str(item.get("path") or "").strip()
         data = item.get("data")
@@ -6870,7 +6883,16 @@ def _write_study_side_marker_artifact_files(out: Path, files: list[Mapping[str, 
             continue
         target = out / rel_path
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(bytes(data))
+        payload = bytes(data)
+        target.write_bytes(payload)
+        written_count += 1
+        written_bytes += len(payload)
+    return {
+        "file_write_measured": True,
+        "file_write_seconds": round(time.perf_counter() - started, 6),
+        "file_written_artifact_count": written_count,
+        "file_written_bytes": written_bytes,
+    }
 
 
 def _study_side_marker_summary(diagrams: list[Mapping[str, Any]]) -> dict[str, Any]:
@@ -7084,6 +7106,7 @@ def _study_two_crop_quality_rows(diagrams: list[Mapping[str, Any]]) -> list[dict
                 "side_to_move_confidence": item.get("side_to_move_confidence"),
                 "manual_review_required": bool(item.get("manual_review_required", True)),
                 "manual_review_reason": str(item.get("manual_review_reason") or ""),
+                "two_crop_performance": dict(item.get("two_crop_performance") or {}),
                 "side_marker_status": side_status or "marker_missing",
                 "side_marker_symbol": str(item.get("side_marker_symbol") or ""),
                 "side_to_move": str(item.get("side_to_move") or "unknown"),

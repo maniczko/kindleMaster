@@ -78,6 +78,7 @@ QUICK_TESTS = [
     "test_chess_side_to_move_evidence_tiers.py",
     "test_chess_side_marker_final_reader_e2e.py",
     "test_chess_crop_qa_benchmark.py",
+    "test_chess_two_crop_performance.py",
     "test_chess_marker_crop_corpus.py",
     "test_chess_marker_classifier.py",
     "test_chess_fen_pipeline_hardening.py",
@@ -559,6 +560,16 @@ def main() -> int:
         stage_parser.add_argument("--model-path", default="", help="Optional local FEN model path for classifier/inference commands.")
         stage_parser.add_argument("--min-confidence", type=float, default=0.92, help="Minimum local/ensemble confidence for review gates.")
 
+    two_crop_performance_parser = chess_study_subparsers.add_parser(
+        "two-crop-performance",
+        help="Build a safe performance and semantic-equivalence report from an existing chess job output.",
+    )
+    two_crop_performance_parser.add_argument("--job-output", required=True)
+    two_crop_performance_parser.add_argument(
+        "--report-dir",
+        default="reports/performance/chess_two_crop",
+    )
+
     workflow_parser = subparsers.add_parser(
         "workflow",
         help="Run the standard engineering workflow: reproduce, isolate, validate, and compare.",
@@ -907,6 +918,26 @@ def _run_chess_study(args: argparse.Namespace) -> int:
     if not args.chess_study_command:
         _print_json({"status": "failed", "error": "Missing chess-study subcommand."})
         return 1
+    if args.chess_study_command == "two-crop-performance":
+        from chess_two_crop_performance import build_two_crop_performance_report, write_two_crop_performance_reports
+
+        payload = build_two_crop_performance_report(args.job_output)
+        json_path, markdown_path = write_two_crop_performance_reports(payload, args.report_dir)
+        payload["artifacts"] = {
+            "json": str(json_path),
+            "markdown": str(markdown_path),
+        }
+        _print_json(
+            {
+                "schema": payload.get("schema"),
+                "status": payload.get("status"),
+                "evidence": payload.get("evidence"),
+                "summary": payload.get("summary"),
+                "stage_timings": payload.get("stage_timings"),
+                "artifacts": payload.get("artifacts"),
+            }
+        )
+        return 0 if (payload.get("evidence") or {}).get("corpus_available") else 1
     pdf = Path(args.pdf) if str(args.pdf or "").strip() else _default_chess_study_pdf()
     out = Path(args.out)
     html_path = Path(args.html) if str(args.html or "").strip() else None

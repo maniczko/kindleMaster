@@ -26,6 +26,7 @@ from chess_yusupov_acceptance import (
     secure_acceptance_for_quick,
     validate_acceptance_manifest,
 )
+from chess_yusupov_acceptance_summary import write_markdown_summary
 from kindlemaster import main as kindlemaster_main
 
 
@@ -233,6 +234,15 @@ def _write_job_output(
 
 
 class ChessYusupovAcceptanceManifestTests(unittest.TestCase):
+    def test_redacted_summary_renderer_rejects_non_object_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "summary.json"
+            source.write_text("[]", encoding="utf-8")
+
+            with self.assertRaises(ValueError):
+                write_markdown_summary(source, root / "summary.md")
+
     def test_corrupt_profile_fails_closed_without_json_exception(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             profile_path = Path(temp_dir) / "profile.json"

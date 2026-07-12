@@ -4,6 +4,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import zipfile
 from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
@@ -807,8 +808,18 @@ def _write_acceptance_reports(
         json.dumps(persisted_payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    persisted_summary = json.loads(json_path.read_text(encoding="utf-8"))
-    md_path.write_text(acceptance_report_markdown(persisted_summary), encoding="utf-8")
+    renderer = Path(__file__).with_name("chess_yusupov_acceptance_summary.py")
+    completed = subprocess.run(
+        [sys.executable, str(renderer), str(json_path), str(md_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        md_path.write_text(
+            "# Side-to-move acceptance\n\nMarkdown summary generation failed; use the redacted JSON report.\n",
+            encoding="utf-8",
+        )
     return {**payload, "report_json": str(json_path), "report_markdown": str(md_path)}
 
 

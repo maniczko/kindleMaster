@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Mapping
 
 
 SCHEMA = "kindlemaster.chess_fen.crop_qa_benchmark.v1"
@@ -105,6 +105,11 @@ def evaluate_crop_qa_benchmark(
         for row in actual_rows
         if str(row.get("diagram_id") or row.get("id") or "").strip()
     }
+    actual_by_fingerprint = {
+        str(row.get("diagram_fingerprint")): dict(row)
+        for row in actual_rows
+        if str(row.get("diagram_fingerprint") or "").strip()
+    }
 
     regressions: list[dict[str, Any]] = []
     improved: list[dict[str, Any]] = []
@@ -117,13 +122,19 @@ def evaluate_crop_qa_benchmark(
 
     for diagram_id, expected in sorted(expected_by_id.items()):
         by_issue_type[str(expected.get("issue_type") or "unknown")] += 1
-        actual = actual_by_id.get(diagram_id)
+        expected_fingerprint = str(expected.get("diagram_fingerprint") or "").strip()
+        actual = actual_by_fingerprint.get(expected_fingerprint) if expected_fingerprint else None
+        match_method = "diagram_fingerprint" if actual is not None else ""
+        if actual is None:
+            actual = actual_by_id.get(diagram_id)
+            match_method = "diagram_id" if actual is not None else ""
         if actual is None:
             result = _row_result(expected, {}, "missing_actual", "runtime_record_missing")
             missing_actual.append(result)
             by_runtime_classification[str(result.get("runtime_classification") or "unknown")] += 1
             continue
         result = _classify_result(expected, actual)
+        result["match_method"] = match_method
         matched.append(result)
         by_primary_blocker[str(result.get("primary_blocker") or "unknown")] += 1
         by_runtime_classification[str(result.get("runtime_classification") or "unknown")] += 1
@@ -251,6 +262,7 @@ def _normalize_expected(row: Mapping[str, Any]) -> dict[str, Any]:
         issue_type = MARKER_REVIEW_ISSUE_TYPE
     return {
         "diagram_id": diagram_id,
+        "diagram_fingerprint": str(row.get("diagram_fingerprint") or ""),
         "page": row.get("page"),
         "diagram_crop_status": str(row.get("diagram_crop_status") or "ok"),
         "marker_crop_status": str(row.get("marker_crop_status") or marker_status),
@@ -337,6 +349,9 @@ def _row_result(expected: Mapping[str, Any], actual: Mapping[str, Any], status: 
     side_to_move = actual.get("side_to_move") or actual.get("side_to_move_detected") or actual.get("system_side_to_move")
     return {
         "diagram_id": str(expected.get("diagram_id") or actual.get("diagram_id") or ""),
+        "diagram_fingerprint": str(
+            expected.get("diagram_fingerprint") or actual.get("diagram_fingerprint") or ""
+        ),
         "issue_type": str(expected.get("issue_type") or ""),
         "status": status,
         "reason": reason,

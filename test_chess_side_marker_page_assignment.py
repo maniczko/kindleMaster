@@ -10,7 +10,6 @@ import fitz
 from PIL import Image, ImageDraw
 
 import chess_study_export
-from chess_study_export import _attach_pdf_side_marker_evidence_to_study_diagrams
 from pymupdf_chess_extractor import (
     _scan_chess_page_marker_pipeline,
     _scan_chess_two_crop_review_artifacts,
@@ -172,6 +171,7 @@ class ChessSideMarkerPageAssignmentTests(unittest.TestCase):
             diagrams = [
                 {
                     "diagram_id": str(board["diagram_id"]),
+                    "diagram_fingerprint": f"dfp_{board['diagram_id']}",
                     "page": 1,
                     "pixel_bbox": [
                         board["bbox"][0],  # type: ignore[index]
@@ -190,12 +190,13 @@ class ChessSideMarkerPageAssignmentTests(unittest.TestCase):
                 }
                 for board in boards
             ]
+            initial_diagrams = json.loads(json.dumps(diagrams))
 
             with patch(
                 "chess_study_export._scan_chess_page_marker_pipeline",
                 wraps=chess_study_export._scan_chess_page_marker_pipeline,
             ) as page_pipeline:
-                summary = _attach_pdf_side_marker_evidence_to_study_diagrams(
+                summary = chess_study_export._attach_pdf_side_marker_evidence_to_study_diagrams(
                     pdf_path,
                     diagrams,
                     root / "out",
@@ -212,6 +213,30 @@ class ChessSideMarkerPageAssignmentTests(unittest.TestCase):
                 (root / "out" / item["marker_candidate_crop_path"]).is_file()
                 for item in diagrams
             )
+            resumed_diagrams = json.loads(json.dumps(initial_diagrams))
+            with patch(
+                "chess_study_export._scan_chess_page_marker_pipeline",
+                wraps=chess_study_export._scan_chess_page_marker_pipeline,
+            ) as resumed_page_pipeline:
+                resumed_summary = (
+                    chess_study_export._attach_pdf_side_marker_evidence_to_study_diagrams(
+                        pdf_path,
+                        resumed_diagrams,
+                        root / "out",
+                        dpi=72,
+                        min_confidence=0.5,
+                        resume=True,
+                    )
+                )
+            resumed_report = json.loads(
+                (
+                    root
+                    / "out"
+                    / "reports"
+                    / "chess_fen"
+                    / "page_marker_assignment.json"
+                ).read_text(encoding="utf-8")
+            )
 
         page_pipeline.assert_called_once()
         self.assertEqual(summary["page_marker_detection_run_count"], 1)
@@ -220,6 +245,9 @@ class ChessSideMarkerPageAssignmentTests(unittest.TestCase):
         self.assertEqual(len({item["marker_candidate_id"] for item in diagrams}), 2)
         self.assertTrue(all(REQUIRED_ASSIGNMENT_FIELDS.issubset(item) for item in diagrams))
         self.assertTrue(candidate_files_exist)
+        resumed_page_pipeline.assert_not_called()
+        self.assertTrue(resumed_summary["resume_used"])
+        self.assertEqual(report, resumed_report)
 
 
 if __name__ == "__main__":

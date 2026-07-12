@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import base64
+import copy
 import csv
 import hashlib
 import io
@@ -9,6 +10,7 @@ import json
 import math
 import re
 import shutil
+import time
 import zipfile
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -21,9 +23,21 @@ import fitz
 from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageOps
 
+from chess_diagram_fingerprint import DIAGRAM_FINGERPRINT_SCHEMA, source_document_sha256
 from chess_position_recognizer import validate_fen
 from chess_side_marker_blockers import build_side_marker_blocker_attribution, side_marker_blocker_attribution_markdown
 from chess_side_to_move_trust_audit import build_side_to_move_diagnostic_report
+from chess_two_crop_checkpoint import (
+    atomic_write_checkpoint,
+    build_checkpoint_identity,
+    checkpoint_path,
+    checkpoint_provenance,
+    complete_checkpoint,
+    load_compatible_checkpoint,
+    new_checkpoint,
+    reusable_page_records,
+    update_checkpoint_page,
+)
 from pymupdf_chess_extractor import (
     _apply_scan_chess_two_crop_quality_gate,
     _apply_scan_chess_two_crop_side_marker_if_trusted,
@@ -159,7 +173,7 @@ class ChessStudyConfig:
     render_pages: bool = False
     ocr_fallback: bool = False
     strict_thresholds: bool = False
-    low_confidence_diagram_review: bool = False
+    low_confidence_diagram_review: bool = True
     low_confidence_min_grid_confidence: float = 0.30
     low_confidence_max_candidates_per_page: int = 12
     glyph_context_pages: str = ""
@@ -167,6 +181,8 @@ class ChessStudyConfig:
     diagram_review_labels: Path | None = None
     glyph_mapping_file: Path | None = None
     diagram_alignment_review: bool = False
+    expected_diagram_manifest: Path | None = None
+    resume: bool = False
 
 
 @dataclass(frozen=True)
@@ -256,6 +272,11 @@ class StudyPage:
 @dataclass(frozen=True)
 class StudyDiagram:
     id: str
+    legacy_diagram_id: str
+    diagram_fingerprint: str
+    source_document_sha256: str
+    normalized_bbox_xyxy: list[float]
+    candidate_tier: str
     page: int
     visual_order_on_page: int
     bbox: list[float]
@@ -319,6 +340,11 @@ class StudyDiagram:
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
+            "legacy_diagram_id": self.legacy_diagram_id,
+            "diagram_fingerprint": self.diagram_fingerprint,
+            "source_document_sha256": self.source_document_sha256,
+            "normalized_bbox_xyxy": list(self.normalized_bbox_xyxy),
+            "candidate_tier": self.candidate_tier,
             "page": self.page,
             "visual_order_on_page": self.visual_order_on_page,
             "bbox": list(self.bbox),
@@ -465,7 +491,7 @@ def run_chess_study_export(
     render_pages: bool = False,
     ocr_fallback: bool = False,
     strict_thresholds: bool = False,
-    low_confidence_diagram_review: bool = False,
+    low_confidence_diagram_review: bool = True,
     low_confidence_min_grid_confidence: float = 0.30,
     low_confidence_max_candidates_per_page: int = 12,
     glyph_context_pages: str = "",
@@ -473,6 +499,8 @@ def run_chess_study_export(
     diagram_review_labels: str | Path | None = None,
     glyph_mapping_file: str | Path | None = None,
     diagram_alignment_review: bool = False,
+    expected_diagram_manifest: str | Path | None = None,
+    resume: bool = False,
 ) -> dict[str, Any]:
     normalized_profile = _normalize_quality_profile(quality_profile)
     effective_render_pages = bool(render_pages) or normalized_profile == "masterkindle"
@@ -497,6 +525,8 @@ def run_chess_study_export(
         diagram_review_labels=Path(diagram_review_labels) if diagram_review_labels else None,
         glyph_mapping_file=Path(glyph_mapping_file) if glyph_mapping_file else None,
         diagram_alignment_review=diagram_alignment_review,
+        expected_diagram_manifest=Path(expected_diagram_manifest) if expected_diagram_manifest else None,
+        resume=bool(resume),
     )
     _ensure_output_dirs(config.out)
 
@@ -2361,11 +2391,11 @@ def evaluate_fen_ensemble(
     review_dir.mkdir(parents=True, exist_ok=True)
     predictions = _read_jsonl_rows(review_dir / "fen_model_predictions.jsonl")
     labels = _read_jsonl_rows(review_dir / "fen_verified_labels.jsonl")
-    verified_by_id = {str(row.get("diagram_id") or ""): row for row in labels}
+    verified_labels = _verified_label_indexes(labels)
     accepted: list[dict[str, Any]] = []
     conflicts: list[dict[str, Any]] = []
     for prediction in predictions:
-        verdict = _fen_ensemble_verdict(prediction, verified_by_id, min_confidence=min_confidence)
+        verdict = _fen_ensemble_verdict(prediction, verified_labels, min_confidence=min_confidence)
         if verdict["status"] == "accepted_candidate":
             accepted.append(verdict)
         else:
@@ -2398,14 +2428,15 @@ def calibrate_fen_confidence(out_dir: str | Path) -> dict[str, Any]:
     reports_dir.mkdir(parents=True, exist_ok=True)
     predictions = _read_jsonl_rows(out / "review" / "fen_model_predictions.jsonl")
     labels = _read_jsonl_rows(out / "review" / "fen_verified_labels.jsonl")
-    label_by_id = {str(row.get("diagram_id") or ""): str(row.get("fen") or "") for row in labels}
+    verified_labels = _verified_label_indexes(labels)
     buckets: dict[str, dict[str, int]] = {}
     for row in predictions:
         confidence = float(row.get("global_confidence") or 0.0)
         bucket = f"{int(confidence * 10) / 10:.1f}"
         stats = buckets.setdefault(bucket, {"total": 0, "exact": 0})
         stats["total"] += 1
-        if label_by_id.get(str(row.get("diagram_id") or "")) == str(row.get("fen_candidate") or ""):
+        label, _match_method = _verified_label_for_record(row, verified_labels)
+        if label and str(label.get("fen") or "") == str(row.get("fen_candidate") or ""):
             stats["exact"] += 1
     reliability = {
         key: {
@@ -3163,6 +3194,8 @@ def _promote_verified_fen_labels(labels_path: Path, out_dir: Path) -> list[dict[
         promoted.append(
             {
                 "diagram_id": row.get("diagram_id") or row.get("id") or crop_path.stem,
+                "diagram_fingerprint": str(row.get("diagram_fingerprint") or ""),
+                "source_document_sha256": str(row.get("source_document_sha256") or ""),
                 "fen": fen,
                 "crop_path": str(crop_path),
                 "page": _safe_int(row.get("page")),
@@ -3215,9 +3248,13 @@ def _load_verified_fen_labels_by_diagram(path: Path) -> dict[str, str]:
         if str(row.get("label_status") or "").strip().lower() != "verified":
             continue
         diagram_id = str(row.get("diagram_id") or row.get("id") or "").strip()
+        diagram_fingerprint = str(row.get("diagram_fingerprint") or "").strip()
         fen = str(row.get("fen") or row.get("manual_fen") or "").strip()
         if diagram_id and fen:
             labels[diagram_id] = fen
+            labels[f"id:{diagram_id}"] = fen
+        if diagram_fingerprint and fen:
+            labels[f"fp:{diagram_fingerprint}"] = fen
     return labels
 
 
@@ -3421,6 +3458,7 @@ def _ai_fen_candidate_row(
     verified_fen_by_diagram: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     diagram_id = str(diagram.get("id") or diagram.get("diagram_id") or f"diagram_{len(str(diagram))}")
+    diagram_fingerprint = str(diagram.get("diagram_fingerprint") or "")
     crop_path = _diagram_crop_path(out_dir, diagram)
     image_bytes = crop_path.read_bytes() if crop_path.is_file() and not dry_run else b""
     image_sha = _file_sha256(crop_path) if crop_path.is_file() else ""
@@ -3492,7 +3530,12 @@ def _ai_fen_candidate_row(
     if local_fen:
         local_valid, local_warnings = validate_fen(local_fen)
         local_valid = local_valid and not local_warnings
-    verified_fen = str((verified_fen_by_diagram or {}).get(diagram_id) or "").strip()
+    verified_fen = str(
+        (verified_fen_by_diagram or {}).get(f"fp:{diagram_fingerprint}")
+        or (verified_fen_by_diagram or {}).get(f"id:{diagram_id}")
+        or (verified_fen_by_diagram or {}).get(diagram_id)
+        or ""
+    ).strip()
     verified_valid = False
     if verified_fen:
         verified_valid, verified_warnings = validate_fen(verified_fen)
@@ -3508,6 +3551,7 @@ def _ai_fen_candidate_row(
     return {
         "schema": "kindlemaster.ai_fen_candidate.v1",
         "diagram_id": diagram_id,
+        "diagram_fingerprint": diagram_fingerprint,
         "page": int(diagram.get("page") or 0),
         "caption": str(diagram.get("caption") or diagram.get("label") or ""),
         "bbox": diagram.get("bbox") or [0, 0, 0, 0],
@@ -6586,6 +6630,7 @@ def detect_study_diagrams(config: ChessStudyConfig) -> dict[str, Any]:
         low_confidence_min_grid_confidence=config.low_confidence_min_grid_confidence,
         low_confidence_max_candidates_per_page=config.low_confidence_max_candidates_per_page,
         review_sample_limit=config.review_sample_limit,
+        expected_diagram_manifest=config.expected_diagram_manifest,
     )
     source_dir = config.out / "diagrams" / "source"
     crop_dir = config.out / "assets" / "diagram_crops"
@@ -6619,17 +6664,24 @@ def detect_study_diagrams(config: ChessStudyConfig) -> dict[str, Any]:
         record["visual_order_on_page"] = _visual_order_for_diagram(record, normalized)
         record["review_reason"] = record.get("reason") or ""
         normalized.append(record)
-    low_confidence = []
+    normalized_ids = {str(record.get("diagram_fingerprint") or record.get("diagram_id") or "") for record in normalized}
     for item in manifest.get("low_confidence_review_candidates", []) or []:
+        key = str(item.get("diagram_fingerprint") or item.get("diagram_id") or "")
+        if key in normalized_ids:
+            continue
         record = dict(item)
         _apply_diagram_manual_label(record, manual_labels)
-        low_confidence.append(record)
+        normalized.append(record)
+        normalized_ids.add(key)
+    low_confidence = [dict(record) for record in normalized if str(record.get("candidate_tier") or "") == "recovered"]
     side_marker_summary = _attach_pdf_side_marker_evidence_to_study_diagrams(
         config.pdf,
         normalized,
         config.out,
         dpi=config.diagram_dpi,
         min_confidence=config.min_grid_confidence,
+        quality_profile=config.quality_profile,
+        resume=config.resume,
     )
     for record in normalized:
         rendered = _render_valid_fen_assets(
@@ -6641,11 +6693,18 @@ def detect_study_diagrams(config: ChessStudyConfig) -> dict[str, Any]:
         record["rendered_png"] = rendered.get("png", "")
         record["rendered_diagram"] = record["rendered_svg"] or record["rendered_png"]
     if config.diagram_alignment_review or manual_labels:
-        alignment_payload = _write_diagram_alignment_review(config.out, [*normalized, *low_confidence])
+        alignment_payload = _write_diagram_alignment_review(config.out, normalized)
     else:
         alignment_payload = _empty_diagram_alignment_payload(config.out)
-    label_counts = _diagram_manual_label_counts([*normalized, *low_confidence])
-    strict_after_review = len([item for item in normalized if item.get("manual_label") != "false_positive"])
+    label_counts = _diagram_manual_label_counts(normalized)
+    strict_after_review = len(
+        [
+            item
+            for item in normalized
+            if item.get("manual_label") != "false_positive"
+            and str(item.get("candidate_tier") or "strict") != "recovered"
+        ]
+    )
     payload = {
         **manifest,
         "diagrams": normalized,
@@ -6678,6 +6737,8 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
     *,
     dpi: int,
     min_confidence: float,
+    quality_profile: str = "default",
+    resume: bool = False,
 ) -> dict[str, Any]:
     out = Path(out_dir)
     if not diagrams:
@@ -6703,12 +6764,116 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
             diagrams_by_page.setdefault(page_number, []).append(diagram)
 
     page_assignment_reports: list[dict[str, Any]] = []
+    progress_path = checkpoint_path(out)
+    checkpoint_started = time.perf_counter()
+    checkpoint_enabled = all(
+        str(diagram.get("diagram_fingerprint") or "").strip()
+        for page_diagrams in diagrams_by_page.values()
+        for diagram in page_diagrams
+    )
+    checkpoint: dict[str, Any] | None = None
+    resume_compatible = False
+    resume_reason_code = "diagram_fingerprint_missing"
+    reused_diagram_count = 0
+    computed_diagram_count = 0
+    if checkpoint_enabled:
+        source_hashes = {
+            str(diagram.get("source_document_sha256") or "").strip().lower()
+            for page_diagrams in diagrams_by_page.values()
+            for diagram in page_diagrams
+            if str(diagram.get("source_document_sha256") or "").strip()
+        }
+        source_hash = next(iter(source_hashes)) if len(source_hashes) == 1 else source_document_sha256(pdf_path)
+        identity = build_checkpoint_identity(
+            source_pdf_sha256=source_hash,
+            fingerprint_schema=DIAGRAM_FINGERPRINT_SCHEMA,
+            dpi=dpi,
+            quality_profile=quality_profile,
+        )
+        loaded = load_compatible_checkpoint(progress_path, identity) if resume else None
+        if loaded is not None and loaded.compatible and loaded.checkpoint is not None:
+            checkpoint = loaded.checkpoint
+            resume_compatible = True
+            resume_reason_code = loaded.reason_code
+            checkpoint.update(
+                {
+                    "status": "in_progress",
+                    "cache_policy": "resume_opt_in",
+                    "resume_requested": True,
+                    "resume_used": False,
+                    "resume_reason_code": resume_reason_code,
+                    "reused_diagram_count": 0,
+                    "computed_diagram_count": 0,
+                }
+            )
+        else:
+            resume_reason_code = loaded.reason_code if loaded is not None else "resume_not_requested"
+            checkpoint = new_checkpoint(
+                identity,
+                total_pages=len(diagrams_by_page),
+                total_diagrams=sum(len(rows) for rows in diagrams_by_page.values()),
+                resume_requested=resume,
+                resume_reason_code=resume_reason_code,
+            )
+        atomic_write_checkpoint(progress_path, checkpoint)
+
     with fitz.open(pdf_path) as document:
         zoom = max(72, int(dpi or 72)) / 72.0
         matrix = fitz.Matrix(zoom, zoom)
-        for page_number, page_diagrams in diagrams_by_page.items():
+        for page_number, page_diagrams in sorted(diagrams_by_page.items()):
+            page_started = time.perf_counter()
+            expected_fingerprints = [
+                str(diagram.get("diagram_fingerprint") or "").strip()
+                for diagram in page_diagrams
+            ]
+            reused_records = (
+                reusable_page_records(
+                    checkpoint,
+                    page_number=page_number,
+                    expected_fingerprints=expected_fingerprints,
+                    artifact_root=out,
+                )
+                if checkpoint is not None and resume_compatible
+                else None
+            )
+            if reused_records is not None:
+                _apply_two_crop_checkpoint_records(page_diagrams, reused_records)
+                reused_diagram_count += len(reused_records)
+                existing_page = dict((checkpoint.get("pages") or {}).get(str(page_number)) or {})
+                reused_assignment = existing_page.get("page_marker_assignment")
+                if isinstance(reused_assignment, Mapping):
+                    page_assignment_reports.append(dict(reused_assignment))
+                checkpoint["resume_used"] = reused_diagram_count > 0
+                update_checkpoint_page(
+                    checkpoint,
+                    page_number=page_number,
+                    elapsed_seconds=float(existing_page.get("elapsed_seconds") or 0.0),
+                    records=reused_records,
+                    elapsed_total_seconds=time.perf_counter() - checkpoint_started,
+                    reused_diagram_count=reused_diagram_count,
+                    computed_diagram_count=computed_diagram_count,
+                )
+                atomic_write_checkpoint(progress_path, checkpoint)
+                _print_two_crop_progress(checkpoint, page_number=page_number, mode="reused")
+                continue
             page_index = page_number - 1
+            page_checkpoint_records: list[dict[str, Any]] = []
             if page_index < 0 or page_index >= len(document):
+                for diagram in page_diagrams:
+                    page_checkpoint_records.append(_two_crop_checkpoint_record(diagram, diagram, []))
+                    computed_diagram_count += 1
+                if checkpoint is not None:
+                    update_checkpoint_page(
+                        checkpoint,
+                        page_number=page_number,
+                        elapsed_seconds=time.perf_counter() - page_started,
+                        records=page_checkpoint_records,
+                        elapsed_total_seconds=time.perf_counter() - checkpoint_started,
+                        reused_diagram_count=reused_diagram_count,
+                        computed_diagram_count=computed_diagram_count,
+                    )
+                    atomic_write_checkpoint(progress_path, checkpoint)
+                    _print_two_crop_progress(checkpoint, page_number=page_number, mode="computed")
                 continue
             pixmap = document[page_index].get_pixmap(matrix=matrix, alpha=False)
             page_image = Image.frombytes("RGB", (pixmap.width, pixmap.height), pixmap.samples)
@@ -6726,18 +6891,23 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
                 page_boards,
                 page_number=page_number,
             )
-            page_assignment_reports.append(
-                {key: value for key, value in page_assignment.items() if key != "files"}
-            )
-            _write_study_side_marker_artifact_files(out, list(page_assignment.get("files") or []))
+            safe_page_assignment = {
+                key: value for key, value in page_assignment.items() if key != "files"
+            }
+            page_assignment_reports.append(safe_page_assignment)
+            page_assignment_files = list(page_assignment.get("files") or [])
+            _write_study_side_marker_artifact_files(out, page_assignment_files)
             assignments_by_id = {
                 str(item.get("diagram_id") or ""): dict(item)
                 for item in page_assignment.get("assignments") or []
                 if isinstance(item, Mapping)
             }
             for diagram in page_diagrams:
+                before = copy.deepcopy(diagram)
                 board_bbox = _study_pixel_bbox_xyxy(diagram)
                 if board_bbox is None:
+                    page_checkpoint_records.append(_two_crop_checkpoint_record(diagram, before, []))
+                    computed_diagram_count += 1
                     continue
                 diagram_id = str(diagram.get("diagram_id") or diagram.get("id") or "")
                 marker_assignment = assignments_by_id.get(diagram_id) or {}
@@ -6761,20 +6931,118 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
                     two_crop_fields,
                     min_confidence=min_confidence,
                 )
+                write_metrics = _write_study_side_marker_artifact_files(out, two_crop_files)
+                performance = dict(two_crop_fields.get("two_crop_performance") or {})
+                performance.update(write_metrics)
+                performance["total_seconds"] = round(
+                    float(performance.get("total_seconds") or 0.0)
+                    + float(write_metrics.get("file_write_seconds") or 0.0),
+                    6,
+                )
+                two_crop_fields["two_crop_performance"] = performance
                 payload.update(two_crop_fields)
-                _write_study_side_marker_artifact_files(out, two_crop_files)
                 _apply_study_side_marker_payload(diagram, payload)
+                page_checkpoint_records.append(
+                    _two_crop_checkpoint_record(
+                        diagram,
+                        before,
+                        [*two_crop_files, *page_assignment_files],
+                    )
+                )
+                computed_diagram_count += 1
+            if checkpoint is not None:
+                update_checkpoint_page(
+                    checkpoint,
+                    page_number=page_number,
+                    elapsed_seconds=time.perf_counter() - page_started,
+                    records=page_checkpoint_records,
+                    elapsed_total_seconds=time.perf_counter() - checkpoint_started,
+                    reused_diagram_count=reused_diagram_count,
+                    computed_diagram_count=computed_diagram_count,
+                    page_metadata={"page_marker_assignment": safe_page_assignment},
+                )
+                atomic_write_checkpoint(progress_path, checkpoint)
+                _print_two_crop_progress(checkpoint, page_number=page_number, mode="computed")
 
     summary = {
         **_study_side_marker_summary(diagrams),
         **_study_page_marker_assignment_summary(page_assignment_reports),
     }
+    if checkpoint is not None:
+        complete_checkpoint(
+            checkpoint,
+            elapsed_total_seconds=time.perf_counter() - checkpoint_started,
+            reused_diagram_count=reused_diagram_count,
+            computed_diagram_count=computed_diagram_count,
+        )
+        atomic_write_checkpoint(progress_path, checkpoint)
+    summary.update(checkpoint_provenance(checkpoint))
+    summary["checkpoint_path"] = str(progress_path) if checkpoint is not None else ""
     _write_study_page_marker_assignment_report(out, page_assignment_reports, summary)
     _write_study_side_marker_report(out, diagrams, summary)
     _write_study_two_crop_quality_metrics(out, diagrams, summary)
     _write_study_side_marker_blocker_attribution(out, diagrams, source_gate=None)
     _write_study_side_to_move_diagnostic_report(out, diagrams, source_gate=None)
     return summary
+
+
+def _two_crop_checkpoint_record(
+    diagram: Mapping[str, Any],
+    before: Mapping[str, Any],
+    files: list[Mapping[str, Any]],
+) -> dict[str, Any]:
+    updates = {
+        str(key): copy.deepcopy(value)
+        for key, value in diagram.items()
+        if key not in before or before.get(key) != value
+    }
+    return {
+        "diagram_id": str(diagram.get("diagram_id") or diagram.get("id") or ""),
+        "diagram_fingerprint": str(diagram.get("diagram_fingerprint") or ""),
+        "updates": updates,
+        "artifact_paths": sorted(
+            {
+                str(item.get("path") or "").strip().replace("\\", "/")
+                for item in files
+                if str(item.get("path") or "").strip()
+            }
+        ),
+    }
+
+
+def _apply_two_crop_checkpoint_records(
+    diagrams: list[dict[str, Any]],
+    records: list[dict[str, Any]],
+) -> None:
+    records_by_fingerprint = {
+        str(record.get("diagram_fingerprint") or ""): record
+        for record in records
+    }
+    for diagram in diagrams:
+        fingerprint = str(diagram.get("diagram_fingerprint") or "")
+        record = records_by_fingerprint.get(fingerprint) or {}
+        updates = record.get("updates")
+        if isinstance(updates, Mapping):
+            diagram.update(copy.deepcopy(dict(updates)))
+
+
+def _print_two_crop_progress(
+    checkpoint: Mapping[str, Any],
+    *,
+    page_number: int,
+    mode: str,
+) -> None:
+    eta = checkpoint.get("eta_seconds")
+    eta_text = "unknown" if eta is None else f"{float(eta):.1f}s"
+    print(
+        "two-crop progress: "
+        f"page={page_number} mode={mode} "
+        f"diagrams={int(checkpoint.get('completed_diagram_count') or 0)}/"
+        f"{int(checkpoint.get('total_diagram_count') or 0)} "
+        f"progress={float(checkpoint.get('progress_percent') or 0.0):.2f}% "
+        f"eta={eta_text}",
+        flush=True,
+    )
 
 
 def _study_pixel_bbox_xyxy(diagram: Mapping[str, Any]) -> tuple[float, float, float, float] | None:
@@ -6897,6 +7165,7 @@ def _apply_study_side_marker_payload(diagram: dict[str, Any], payload: Mapping[s
             "side_to_move_confidence": payload.get("side_to_move_confidence"),
             "manual_review_required": bool(payload.get("manual_review_required", True)),
             "manual_review_reason": str(payload.get("manual_review_reason") or ""),
+            "two_crop_performance": dict(payload.get("two_crop_performance") or {}),
             "warnings": sorted({str(warning) for warning in payload.get("warnings") or [] if str(warning)}),
         }
     )
@@ -6910,7 +7179,10 @@ def _apply_study_side_marker_payload(diagram: dict[str, Any], payload: Mapping[s
         diagram["review_reason"] = diagram["reason"]
 
 
-def _write_study_side_marker_artifact_files(out: Path, files: list[Mapping[str, Any]]) -> None:
+def _write_study_side_marker_artifact_files(out: Path, files: list[Mapping[str, Any]]) -> dict[str, Any]:
+    started = time.perf_counter()
+    written_count = 0
+    written_bytes = 0
     for item in files:
         rel_path = str(item.get("path") or "").strip()
         data = item.get("data")
@@ -6918,7 +7190,16 @@ def _write_study_side_marker_artifact_files(out: Path, files: list[Mapping[str, 
             continue
         target = out / rel_path
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(bytes(data))
+        payload = bytes(data)
+        target.write_bytes(payload)
+        written_count += 1
+        written_bytes += len(payload)
+    return {
+        "file_write_measured": True,
+        "file_write_seconds": round(time.perf_counter() - started, 6),
+        "file_written_artifact_count": written_count,
+        "file_written_bytes": written_bytes,
+    }
 
 
 def _study_page_marker_assignment_summary(pages: list[Mapping[str, Any]]) -> dict[str, Any]:
@@ -7211,6 +7492,7 @@ def _study_two_crop_quality_rows(diagrams: list[Mapping[str, Any]]) -> list[dict
                 "side_to_move_confidence": item.get("side_to_move_confidence"),
                 "manual_review_required": bool(item.get("manual_review_required", True)),
                 "manual_review_reason": str(item.get("manual_review_reason") or ""),
+                "two_crop_performance": dict(item.get("two_crop_performance") or {}),
                 "side_marker_status": side_status or "marker_missing",
                 "side_marker_symbol": str(item.get("side_marker_symbol") or ""),
                 "side_to_move": str(item.get("side_to_move") or "unknown"),
@@ -7477,6 +7759,14 @@ def build_study_positions(diagrams: dict[str, Any], segments: dict[str, Any], ou
         positions.append(
             {
                 "id": position_id,
+                "source_diagram_id": str(diagram.get("diagram_id") or diagram.get("id") or ""),
+                "legacy_diagram_id": str(
+                    diagram.get("legacy_diagram_id") or diagram.get("diagram_id") or diagram.get("id") or ""
+                ),
+                "diagram_fingerprint": str(diagram.get("diagram_fingerprint") or ""),
+                "source_document_sha256": str(diagram.get("source_document_sha256") or ""),
+                "normalized_bbox_xyxy": list(diagram.get("normalized_bbox_xyxy") or []),
+                "candidate_tier": str(diagram.get("candidate_tier") or "strict"),
                 "type": item_type,
                 "chapter_no": chapter_no,
                 "chapter_title": _chapter_title(chapter_no),
@@ -9193,11 +9483,18 @@ def _book_text_markdown(pages: list[dict[str, Any]]) -> str:
 def _study_diagram_record(record: dict[str, Any]) -> StudyDiagram:
     return StudyDiagram(
         id=str(record.get("diagram_id") or record.get("id") or ""),
+        legacy_diagram_id=str(record.get("legacy_diagram_id") or record.get("diagram_id") or record.get("id") or ""),
+        diagram_fingerprint=str(record.get("diagram_fingerprint") or ""),
+        source_document_sha256=str(record.get("source_document_sha256") or ""),
+        normalized_bbox_xyxy=[
+            float(value) for value in (record.get("normalized_bbox_xyxy") or [0, 0, 0, 0])[:4]
+        ],
+        candidate_tier=str(record.get("candidate_tier") or "strict"),
         page=int(record.get("page") or 0),
         visual_order_on_page=int(record.get("visual_order_on_page") or 0),
         bbox=[float(value) for value in (record.get("bbox") or [0, 0, 0, 0])[:4]],
         label=str(record.get("label") or record.get("diagram_id") or ""),
-        side_to_move=str(record.get("side_to_move") or "w"),
+        side_to_move=str(record.get("side_to_move") or "unknown"),
         fen=str(record.get("fen") or ""),
         fen_candidate=str(record.get("fen_candidate") or ""),
         status=str(record.get("status") or "needs_review"),
@@ -10345,6 +10642,8 @@ def _board_preprocess_sources(out_dir: Path, *, labels_path: str | Path | None) 
         return [
             {
                 "diagram_id": row.get("diagram_id") or Path(str(row.get("crop_path") or "")).stem,
+                "diagram_fingerprint": row.get("diagram_fingerprint") or "",
+                "source_document_sha256": row.get("source_document_sha256") or "",
                 "page": int(row.get("page") or 0),
                 "crop_path": str(row.get("crop_path") or ""),
                 "crop_rel_path": _relative_to_out(out_dir, Path(str(row.get("crop_path") or ""))),
@@ -10360,6 +10659,8 @@ def _board_preprocess_sources(out_dir: Path, *, labels_path: str | Path | None) 
         return [
             {
                 "diagram_id": diagram.get("id") or diagram.get("diagram_id") or f"diagram_{index:04d}",
+                "diagram_fingerprint": diagram.get("diagram_fingerprint") or "",
+                "source_document_sha256": diagram.get("source_document_sha256") or "",
                 "page": int(diagram.get("page") or 0),
                 "crop_path": str(out_dir / str(diagram.get("image_path") or "")),
                 "crop_rel_path": str(diagram.get("image_path") or ""),
@@ -10375,6 +10676,8 @@ def _board_preprocess_sources(out_dir: Path, *, labels_path: str | Path | None) 
     return [
         {
             "diagram_id": path.stem,
+            "diagram_fingerprint": "",
+            "source_document_sha256": "",
             "page": _safe_int(re.search(r"p(\d+)", path.stem).group(1)) if re.search(r"p(\d+)", path.stem) else 0,
             "crop_path": str(path),
             "crop_rel_path": _relative_to_out(out_dir, path),
@@ -10394,6 +10697,8 @@ def _preprocess_board_record(record: dict[str, Any], out_dir: Path, normalized_d
     row: dict[str, Any] = {
         "schema": "kindlemaster.board_preprocess_row.v1",
         "diagram_id": diagram_id,
+        "diagram_fingerprint": str(record.get("diagram_fingerprint") or ""),
+        "source_document_sha256": str(record.get("source_document_sha256") or ""),
         "page": int(record.get("page") or 0),
         "caption": str(record.get("caption") or ""),
         "source_crop": str(crop_path),
@@ -10673,6 +10978,8 @@ def _predict_fen_for_source(source: dict[str, Any], out_dir: Path, model: dict[s
     row: dict[str, Any] = {
         "schema": "kindlemaster.fen_model_prediction.v1",
         "diagram_id": diagram_id,
+        "diagram_fingerprint": str(source.get("diagram_fingerprint") or ""),
+        "source_document_sha256": str(source.get("source_document_sha256") or ""),
         "page": int(source.get("page") or 0),
         "source_crop": str(crop_path),
         "status": "needs_review",
@@ -10691,9 +10998,14 @@ def _predict_fen_for_source(source: dict[str, Any], out_dir: Path, model: dict[s
         square_results = [_predict_square_class(square, model) for square in _split_board_into_squares(board)]
         cells = [str(result.get("class") or "") for result in square_results]
         placement = _cells_to_placement(cells)
-        side = _infer_side_to_move(str(source.get("caption") or "")) or "w"
-        fen = f"{placement} {side if side in {'w', 'b'} else 'w'} - - 0 1"
-        valid, warnings = validate_fen(fen)
+        side_label = _infer_side_to_move(str(source.get("caption") or ""))
+        side_label_normalized = str(side_label or "").strip().lower()
+        side = {"white": "w", "black": "b", "w": "w", "b": "b"}.get(
+            side_label_normalized,
+            "unknown",
+        )
+        fen = f"{placement} {side} - - 0 1" if side in {"w", "b"} else ""
+        valid, warnings = validate_fen(fen) if fen else (False, ["side_to_move_unknown"])
         confidences = [float(result.get("confidence") or 0.0) for result in square_results]
         entropies = [float(result.get("entropy") or 1.0) for result in square_results]
         row.update(
@@ -10727,11 +11039,12 @@ def _predict_fen_for_source(source: dict[str, Any], out_dir: Path, model: dict[s
 
 def _fen_ensemble_verdict(
     prediction: dict[str, Any],
-    verified_by_id: dict[str, dict[str, Any]],
+    verified_labels: dict[str, dict[str, dict[str, Any]]],
     *,
     min_confidence: float,
 ) -> dict[str, Any]:
     diagram_id = str(prediction.get("diagram_id") or "")
+    diagram_fingerprint = str(prediction.get("diagram_fingerprint") or "")
     fen = str(prediction.get("fen_candidate") or "")
     reasons: list[str] = []
     validation = prediction.get("deterministic_validation") or {}
@@ -10739,20 +11052,56 @@ def _fen_ensemble_verdict(
         reasons.append("deterministic_validation_failed")
     if float(prediction.get("global_confidence") or 0.0) < float(min_confidence):
         reasons.append("confidence_below_threshold")
-    label = verified_by_id.get(diagram_id)
+    label, verified_match_method = _verified_label_for_record(prediction, verified_labels)
     if label and str(label.get("fen") or "") != fen:
         reasons.append("verified_label_disagrees")
     if not label:
         reasons.append("no_verified_label_for_ensemble_acceptance")
     return {
         "diagram_id": diagram_id,
+        "diagram_fingerprint": diagram_fingerprint,
         "fen_candidate": fen,
         "global_confidence": prediction.get("global_confidence"),
         "status": "accepted_candidate" if not reasons else "needs_review",
         "reasons": reasons,
         "source": "local_model_ensemble",
+        "verified_label_match_method": verified_match_method,
         "accepted_fen_changed": 0,
     }
+
+
+def _verified_label_indexes(
+    labels: list[dict[str, Any]],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    return {
+        "by_fingerprint": {
+            str(row.get("diagram_fingerprint")): row
+            for row in labels
+            if str(row.get("diagram_fingerprint") or "").strip()
+        },
+        "by_id": {
+            str(row.get("diagram_id")): row
+            for row in labels
+            if str(row.get("diagram_id") or "").strip()
+        },
+    }
+
+
+def _verified_label_for_record(
+    record: dict[str, Any],
+    indexes: dict[str, dict[str, dict[str, Any]]],
+) -> tuple[dict[str, Any] | None, str]:
+    fingerprint = str(record.get("diagram_fingerprint") or "").strip()
+    if fingerprint:
+        label = indexes.get("by_fingerprint", {}).get(fingerprint)
+        if label is not None:
+            return label, "diagram_fingerprint"
+    diagram_id = str(record.get("diagram_id") or "").strip()
+    if diagram_id:
+        label = indexes.get("by_id", {}).get(diagram_id)
+        if label is not None:
+            return label, "diagram_id"
+    return None, ""
 
 
 def _board_preprocess_review_html(rows: list[dict[str, Any]]) -> str:

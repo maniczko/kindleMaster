@@ -120,15 +120,18 @@ def update_checkpoint_page(
     elapsed_total_seconds: float,
     reused_diagram_count: int,
     computed_diagram_count: int,
+    page_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     pages = checkpoint.setdefault("pages", {})
-    pages[str(int(page_number))] = {
+    page_payload = {
         "page": int(page_number),
         "elapsed_seconds": round(max(0.0, float(elapsed_seconds)), 6),
         "diagram_count": len(records),
         "diagram_fingerprints": sorted(str(row.get("diagram_fingerprint") or "") for row in records),
         "records": records,
     }
+    page_payload.update(dict(page_metadata or {}))
+    pages[str(int(page_number))] = page_payload
     _refresh_progress(
         checkpoint,
         elapsed_total_seconds=elapsed_total_seconds,

@@ -317,8 +317,19 @@ def _semantic_results(diagrams: list[dict[str, object]]) -> list[tuple[str, obje
 def _patched_two_crop_runtime(scan_side_effect):
     return _PatchStack(
         patch("chess_study_export._scan_chess_two_crop_review_artifacts", side_effect=scan_side_effect),
-        patch("chess_study_export._infer_scan_chess_side_to_move_marker_evidence", return_value={}),
-        patch("chess_study_export._apply_scan_chess_side_to_move_context_evidence", side_effect=lambda payload, *_args, **_kwargs: payload),
+        patch(
+            "chess_study_export._scan_chess_page_marker_pipeline",
+            return_value={
+                "candidates": [],
+                "assignments": [],
+                "files": [],
+                "summary": {},
+            },
+        ),
+        patch(
+            "chess_study_export._scan_chess_apply_page_marker_assignment",
+            side_effect=lambda payload, *_args, **_kwargs: payload,
+        ),
         patch("chess_study_export._apply_scan_chess_two_crop_quality_gate", side_effect=lambda payload, *_args, **_kwargs: payload),
         patch("chess_study_export._apply_scan_chess_two_crop_side_marker_if_trusted", side_effect=lambda payload, *_args, **_kwargs: payload),
         patch(

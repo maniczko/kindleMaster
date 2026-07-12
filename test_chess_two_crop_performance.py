@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,6 +17,7 @@ from chess_two_crop_performance import (
     write_two_crop_performance_reports,
 )
 from pymupdf_chess_extractor import (
+    _scan_chess_board_crop_quality,
     _scan_chess_tight_board_box_in_crop,
     _scan_chess_two_crop_review_artifacts,
 )
@@ -58,7 +60,7 @@ class ChessTwoCropPerformanceTests(unittest.TestCase):
             build_two_crop_semantic_digest(list(reversed(records))),
         )
 
-    def test_runtime_instrumentation_detects_repeated_localization_and_split_timings(self) -> None:
+    def test_runtime_uses_single_localization_and_split_timings(self) -> None:
         _name, image, board_bbox = _generated_fixture_cases()[0]
         with (
             patch("pymupdf_chess_extractor._scan_chess_board_square_score", return_value=0.0),
@@ -75,8 +77,10 @@ class ChessTwoCropPerformanceTests(unittest.TestCase):
             )
 
         performance = fields["two_crop_performance"]
-        self.assertEqual(localization.call_count, 2)
-        self.assertEqual(performance["tight_board_localization_call_count"], 2)
+        self.assertEqual(localization.call_count, 1)
+        self.assertEqual(performance["tight_board_localization_call_count"], 1)
+        self.assertEqual(performance["board_analysis_mode"], "single_pass")
+        self.assertFalse(performance["legacy_localization_fallback_used"])
         self.assertGreaterEqual(performance["png_encoded_artifact_count"], 3)
         self.assertEqual(performance["png_encoded_artifact_count"], len(files))
         self.assertGreater(performance["png_encoded_bytes"], 0)
@@ -84,6 +88,69 @@ class ChessTwoCropPerformanceTests(unittest.TestCase):
         self.assertGreaterEqual(performance["marker_analysis_seconds"], 0.0)
         self.assertGreaterEqual(performance["png_encoding_seconds"], 0.0)
         self.assertFalse(performance["file_write_measured"])
+
+    def test_single_pass_semantics_match_legacy_quality_for_all_fixture_classes(self) -> None:
+        single_pass_records = []
+        legacy_records = []
+        for name, image, board_bbox in _generated_fixture_cases():
+            fields, _files = _scan_chess_two_crop_review_artifacts(
+                image,
+                filename=f"{name}.png",
+                board_bbox=board_bbox,
+                side_marker_bbox=None,
+            )
+            legacy_quality = _scan_chess_board_crop_quality(image, fields["board_bbox"])
+            legacy_fields = deepcopy(fields)
+            legacy_fields["board_crop_quality_gate"] = legacy_quality
+            legacy_fields["board_crop_quality"] = (
+                "pass" if legacy_quality.get("decision") == "pass" else "fail"
+            )
+            legacy_fields["board_crop_fail_reason"] = list(legacy_quality.get("reasons") or [])
+            single_pass_records.append({"diagram_id": name, "page": 1, **fields})
+            legacy_records.append({"diagram_id": name, "page": 1, **legacy_fields})
+
+        self.assertEqual(
+            build_two_crop_semantic_digest(single_pass_records),
+            build_two_crop_semantic_digest(legacy_records),
+        )
+
+    def test_ambiguous_single_pass_uses_reported_legacy_fallback(self) -> None:
+        _name, image, board_bbox = _generated_fixture_cases()[0]
+
+        def localized_box(_image, *, performance=None):
+            if performance is not None:
+                performance["tight_board_localization_call_count"] = int(
+                    performance.get("tight_board_localization_call_count") or 0
+                ) + 1
+            return (0, 0, 96, 96)
+
+        with (
+            patch(
+                "pymupdf_chess_extractor._scan_chess_tight_board_box_in_crop",
+                side_effect=localized_box,
+            ) as localization,
+            patch(
+                "pymupdf_chess_extractor._scan_chess_single_pass_needs_fallback",
+                return_value=True,
+            ),
+        ):
+            fields, _files = _scan_chess_two_crop_review_artifacts(
+                image,
+                filename="fallback.png",
+                board_bbox=board_bbox,
+                side_marker_bbox=None,
+            )
+
+        performance = fields["two_crop_performance"]
+        self.assertEqual(localization.call_count, 2)
+        self.assertEqual(performance["tight_board_localization_call_count"], 2)
+        self.assertEqual(performance["board_analysis_mode"], "legacy_fallback")
+        self.assertTrue(performance["legacy_localization_fallback_used"])
+        self.assertEqual(performance["legacy_localization_fallback_count"], 1)
+        self.assertEqual(
+            performance["legacy_localization_fallback_reason"],
+            "residual_board_candidate_gain",
+        )
 
     def test_job_output_report_aggregates_timings_candidates_artifacts_and_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -119,8 +186,15 @@ class ChessTwoCropPerformanceTests(unittest.TestCase):
             self.assertFalse(report["evidence"]["synthetic_substitution_used"])
             self.assertEqual(report["summary"]["runtime_record_count"], 2)
             self.assertEqual(report["summary"]["instrumented_record_count"], 2)
-            self.assertEqual(report["summary"]["tight_board_localization_call_count"], 4)
+            self.assertEqual(report["summary"]["tight_board_localization_call_count"], 3)
             self.assertEqual(report["summary"]["sliding_window_candidate_evaluations"], 404)
+            self.assertEqual(report["summary"]["single_pass_record_count"], 1)
+            self.assertEqual(report["summary"]["legacy_fallback_record_count"], 1)
+            self.assertEqual(
+                report["summary"]["legacy_fallback_reasons"],
+                {"residual_board_candidate_gain": 1},
+            )
+            self.assertEqual(report["summary"]["ambiguity_probe_evaluations"], 20)
             self.assertEqual(report["summary"]["artifact_count"], 2)
             self.assertEqual(report["summary"]["artifact_bytes"], len(b"board-one") + len(b"board-two-longer"))
             self.assertEqual(report["stage_timings"]["localization_seconds"]["median"], 2.0)
@@ -214,6 +288,7 @@ def _board_image(
 
 
 def _runtime_row(diagram_id: str, seconds: float, candidates: int, board_path: str) -> dict[str, object]:
+    fallback = diagram_id == "two"
     return {
         "diagram_id": diagram_id,
         "page": 1,
@@ -228,7 +303,7 @@ def _runtime_row(diagram_id: str, seconds: float, candidates: int, board_path: s
         "manual_review_required": True,
         "manual_review_reason": "marker_missing",
         "two_crop_performance": {
-            "tight_board_localization_call_count": 2,
+            "tight_board_localization_call_count": 2 if fallback else 1,
             "sliding_window_candidate_evaluations": candidates,
             "localization_seconds": seconds,
             "marker_analysis_seconds": seconds / 2,
@@ -239,6 +314,14 @@ def _runtime_row(diagram_id: str, seconds: float, candidates: int, board_path: s
             "file_write_seconds": seconds / 10,
             "file_written_artifact_count": 1,
             "file_written_bytes": 10,
+            "board_analysis_mode": "legacy_fallback" if fallback else "single_pass",
+            "legacy_localization_fallback_used": fallback,
+            "legacy_localization_fallback_count": 1 if fallback else 0,
+            "legacy_localization_fallback_reason": (
+                "residual_board_candidate_gain" if fallback else ""
+            ),
+            "ambiguity_probe_evaluations": 10,
+            "ambiguity_probe_seconds": seconds / 20,
             "total_seconds": seconds * 2,
         },
     }

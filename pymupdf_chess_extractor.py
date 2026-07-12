@@ -5187,6 +5187,14 @@ def _increment_two_crop_metric(metrics: dict[str, Any] | None, key: str, amount:
         metrics[key] = int(metrics.get(key) or 0) + amount
 
 
+@dataclass(frozen=True)
+class _ScanChessBoardAnalysis:
+    raw_box: tuple[int, int, int, int] | None
+    selected_box: tuple[int, int, int, int] | None
+    local_tight_box: tuple[int, int, int, int] | None
+    derivation: dict[str, Any]
+
+
 def _scan_chess_tight_board_box_in_crop(
     image: Image.Image,
     *,
@@ -5375,9 +5383,29 @@ def _scan_chess_tight_board_bbox_from_candidate(
     *,
     performance: dict[str, Any] | None = None,
 ) -> tuple[list[float], dict[str, Any]]:
+    analysis = _scan_chess_board_analysis_from_candidate(
+        page_image,
+        board_bbox,
+        performance=performance,
+    )
+    selected = analysis.selected_box or ()
+    return [float(value) for value in selected], dict(analysis.derivation)
+
+
+def _scan_chess_board_analysis_from_candidate(
+    page_image: Image.Image,
+    board_bbox: Any,
+    *,
+    performance: dict[str, Any] | None = None,
+) -> _ScanChessBoardAnalysis:
     raw_box = _bbox_to_int_box(_coerce_side_marker_bbox(board_bbox), page_image.size)
     if raw_box is None:
-        return [], {"decision": "fail", "reasons": ["board_bbox_missing"]}
+        return _ScanChessBoardAnalysis(
+            raw_box=None,
+            selected_box=None,
+            local_tight_box=None,
+            derivation={"decision": "fail", "reasons": ["board_bbox_missing"]},
+        )
     crop = page_image.crop(raw_box).convert("RGB")
     local_tight = _scan_chess_tight_board_box_in_crop(crop, performance=performance)
     if local_tight is None:
@@ -5391,12 +5419,17 @@ def _scan_chess_tight_board_bbox_from_candidate(
             raw_box[1] + local_tight[3],
         )
         reasons = _scan_chess_board_margin_reasons(crop, local_tight)
-    return [float(value) for value in tight_box], {
-        "decision": "adjusted" if local_tight is not None else "unchanged",
-        "reasons": reasons,
-        "raw_bbox": [float(value) for value in raw_box],
-        "tight_bbox": [float(value) for value in tight_box],
-    }
+    return _ScanChessBoardAnalysis(
+        raw_box=raw_box,
+        selected_box=tight_box,
+        local_tight_box=local_tight,
+        derivation={
+            "decision": "adjusted" if local_tight is not None else "unchanged",
+            "reasons": reasons,
+            "raw_bbox": [float(value) for value in raw_box],
+            "tight_bbox": [float(value) for value in tight_box],
+        },
+    )
 
 
 def _scan_chess_two_crop_review_artifacts(
@@ -5419,16 +5452,24 @@ def _scan_chess_two_crop_review_artifacts(
         "file_write_seconds": 0.0,
         "file_written_artifact_count": 0,
         "file_written_bytes": 0,
+        "board_analysis_mode": "single_pass",
+        "legacy_localization_fallback_used": False,
+        "legacy_localization_fallback_count": 0,
+        "legacy_localization_fallback_reason": "",
+        "ambiguity_probe_evaluations": 0,
+        "ambiguity_probe_seconds": 0.0,
         "total_seconds": 0.0,
     }
     stem = Path(str(filename or "diagram")).stem or "diagram"
     raw_board_bbox = _coerce_side_marker_bbox(board_bbox)
     localization_started = time.perf_counter()
-    tight_board_bbox, tight_board_trace = _scan_chess_tight_board_bbox_from_candidate(
+    board_analysis = _scan_chess_board_analysis_from_candidate(
         page_image,
         raw_board_bbox,
         performance=performance,
     )
+    tight_board_bbox = [float(value) for value in (board_analysis.selected_box or ())]
+    tight_board_trace = dict(board_analysis.derivation)
     board_bbox_for_crop = tight_board_bbox or raw_board_bbox
     fields: dict[str, Any] = {
         "board_crop_path": f"review/chess_fen/two_crop/{stem}_board.png",
@@ -5469,6 +5510,7 @@ def _scan_chess_two_crop_review_artifacts(
     board_quality = _scan_chess_board_crop_quality(
         page_image,
         fields["board_bbox"],
+        board_analysis=board_analysis,
         performance=performance,
     )
     performance["localization_seconds"] = time.perf_counter() - localization_started
@@ -5623,6 +5665,7 @@ def _scan_chess_board_crop_quality(
     page_image: Image.Image,
     board_bbox: Any,
     *,
+    board_analysis: _ScanChessBoardAnalysis | None = None,
     performance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     board = _coerce_side_marker_bbox(board_bbox)
@@ -5643,7 +5686,22 @@ def _scan_chess_board_crop_quality(
     if box[0] <= 0 or box[1] <= 0 or box[2] >= page_image.width or box[3] >= page_image.height:
         reasons.append("board_cut_off")
     crop = page_image.crop(box).convert("RGB")
-    local_tight = _scan_chess_tight_board_box_in_crop(crop, performance=performance)
+    fallback_reason = ""
+    if board_analysis is None or board_analysis.selected_box != box:
+        fallback_reason = "board_analysis_missing_or_mismatch"
+    elif board_analysis.local_tight_box is not None and _scan_chess_single_pass_needs_fallback(
+        crop,
+        performance=performance,
+    ):
+        fallback_reason = "residual_board_candidate_gain"
+    local_tight = None
+    if fallback_reason:
+        if performance is not None:
+            performance["board_analysis_mode"] = "legacy_fallback"
+            performance["legacy_localization_fallback_used"] = True
+            performance["legacy_localization_fallback_reason"] = fallback_reason
+        _increment_two_crop_metric(performance, "legacy_localization_fallback_count")
+        local_tight = _scan_chess_tight_board_box_in_crop(crop, performance=performance)
     if local_tight is not None:
         reasons.extend(_scan_chess_board_margin_reasons(crop, local_tight))
     reasons = sorted(set(reasons))
@@ -5655,6 +5713,55 @@ def _scan_chess_board_crop_quality(
         "cell_size_y": round(cell_size_y, 2),
         "reason_codes": {reason: reasons.count(reason) for reason in sorted(BOARD_CROP_REASON_CODES) if reason in reasons},
     }
+
+
+def _scan_chess_single_pass_needs_fallback(
+    crop: Image.Image,
+    *,
+    performance: dict[str, Any] | None = None,
+) -> bool:
+    started = time.perf_counter()
+    grayscale = ImageOps.autocontrast(crop.convert("L"))
+    width, height = grayscale.size
+    min_axis = min(width, height)
+    if min_axis < 64:
+        if performance is not None:
+            performance["ambiguity_probe_seconds"] = float(
+                performance.get("ambiguity_probe_seconds") or 0.0
+            ) + (time.perf_counter() - started)
+        return False
+    baseline_score = _scan_chess_board_square_score(grayscale)
+    ambiguous = False
+    for ratio in (0.96, 0.92):
+        side = int(round(min_axis * ratio))
+        if side < 64 or side >= min_axis:
+            continue
+        candidates = {
+            (0, 0),
+            (max(0, width - side), 0),
+            (0, max(0, height - side)),
+            (max(0, width - side), max(0, height - side)),
+            (max(0, (width - side) // 2), max(0, (height - side) // 2)),
+        }
+        for left, top in candidates:
+            _increment_two_crop_metric(performance, "ambiguity_probe_evaluations")
+            score = _scan_chess_board_square_score(
+                grayscale.crop((left, top, left + side, top + side))
+            )
+            center_penalty = (
+                abs((left + side / 2.0) - width / 2.0) / max(1.0, float(width))
+                + abs((top + side / 2.0) - height / 2.0) / max(1.0, float(height))
+            ) * 0.08
+            if score - center_penalty >= baseline_score + 0.05:
+                ambiguous = True
+                break
+        if ambiguous:
+            break
+    if performance is not None:
+        performance["ambiguity_probe_seconds"] = float(
+            performance.get("ambiguity_probe_seconds") or 0.0
+        ) + (time.perf_counter() - started)
+    return ambiguous
 
 
 def _scan_chess_marker_search_zones(board_bbox: Any, page_size: tuple[int, int]) -> dict[str, list[float]]:
@@ -6235,6 +6342,7 @@ def _rounded_two_crop_performance(performance: Mapping[str, Any]) -> dict[str, A
         "marker_analysis_seconds",
         "png_encoding_seconds",
         "file_write_seconds",
+        "ambiguity_probe_seconds",
         "total_seconds",
     ):
         rounded[key] = round(float(rounded.get(key) or 0.0), 6)

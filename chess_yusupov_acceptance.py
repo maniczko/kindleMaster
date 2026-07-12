@@ -807,23 +807,33 @@ def _write_acceptance_reports(
         json.dumps(persisted_payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    md_path.write_text(acceptance_report_markdown(persisted_payload), encoding="utf-8")
+    # The allowlisted payload below is provenance-redacted; keep the suppression local to this sink.
+    md_path.write_text(  # lgtm[py/clear-text-storage-sensitive-data]
+        acceptance_report_markdown(persisted_payload), encoding="utf-8"
+    )
     return {**payload, "report_json": str(json_path), "report_markdown": str(md_path)}
 
 
 def _safe_persisted_acceptance_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    allowed_keys = {
+        "schema",
+        "generated_at",
+        "source_profile",
+        "job_output_supplied",
+        "secure_manifest_available",
+        "synthetic_fixture_claim_allowed",
+        "profile",
+        "status",
+        "metrics",
+        "subsets",
+        "closing_evidence_eligible",
+        "errors",
+        "next_actions",
+    }
     safe = {
         key: value
         for key, value in payload.items()
-        if key
-        not in {
-            "source_document_sha256",
-            "expected_source_document_sha256",
-            "runtime_commit_sha",
-            "validator_commit_sha",
-            "report_json",
-            "report_markdown",
-        }
+        if key in allowed_keys
     }
     checks = []
     for check in _mapping_rows(payload.get("checks")):

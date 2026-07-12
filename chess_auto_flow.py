@@ -956,6 +956,25 @@ def _canonical_fen(
                 "placement_runtime_status": selected.get("placement_runtime_status"),
                 "full_fen_status": selected.get("full_fen_status"),
                 "full_fen_runtime_status": selected.get("full_fen_runtime_status"),
+                "board_placement_status": (
+                    "accepted"
+                    if selected.get("placement_runtime_status") == "FEN_PLACEMENT_MACHINE_ACCEPTED"
+                    or selected.get("runtime_status") in {"FEN_MACHINE_ACCEPTED", "FEN_CORPUS_VERIFIED"}
+                    else "review"
+                ),
+                "full_fen_allowed": selected.get("runtime_status")
+                in {"FEN_MACHINE_ACCEPTED", "FEN_CORPUS_VERIFIED"},
+                "full_fen_blockers": [
+                    str(blocker.get("code") or "unknown_blocker")
+                    for blocker in selected.get("acceptance_blockers") or []
+                ],
+                "full_fen_blocker": next(
+                    (
+                        str(blocker.get("code") or "unknown_blocker")
+                        for blocker in selected.get("acceptance_blockers") or []
+                    ),
+                    "",
+                ),
                 "placement_acceptance_policy": selected.get("placement_acceptance_policy"),
                 "placement_acceptance_blockers": selected.get("placement_acceptance_blockers", []),
                 "placement_acceptance_trace": selected.get("placement_acceptance_trace", {}),
@@ -1125,6 +1144,12 @@ def _side_marker_fields(source: dict[str, Any]) -> dict[str, Any]:
         "side_to_move_evidence_confidence",
         "full_fen_allowed",
         "full_fen_blocker",
+        "full_fen_blockers",
+        "marker_semantic_status",
+        "marker_semantic_side",
+        "marker_semantic_confidence",
+        "marker_ownership_status",
+        "board_placement_status",
         "side_marker_symbol",
         "side_marker_status",
         "side_marker_source",
@@ -1179,6 +1204,14 @@ def _fen_candidate_row(candidate: dict[str, Any]) -> dict[str, Any]:
         "errors": [asdict(error) for error in validation.errors],
         "validation_warnings": [asdict(warning) for warning in validation.warnings],
         "runtime_status": machine["runtime_status"],
+        "marker_semantic_status": machine.get("marker_semantic_status"),
+        "marker_semantic_side": machine.get("marker_semantic_side"),
+        "marker_semantic_confidence": machine.get("marker_semantic_confidence", 0.0),
+        "marker_ownership_status": machine.get("marker_ownership_status"),
+        "board_placement_status": placement_machine.get("board_placement_status"),
+        "full_fen_allowed": bool(machine.get("full_fen_allowed")),
+        "full_fen_blockers": list(machine.get("full_fen_blockers") or []),
+        "full_fen_blocker": str(machine.get("full_fen_blocker") or ""),
         "full_fen_status": machine["runtime_status"],
         "full_fen_runtime_status": machine["runtime_status"],
         "acceptance_policy": machine["acceptance_policy"],

@@ -18,6 +18,106 @@ TRUSTED_MARKER_STATUSES = {"trusted_marker", "trusted_side_marker", "trusted"}
 HUMAN_VERIFICATION_SOURCES = {"human", "human_visual", "human_manual", "legacy_human_visual"}
 FULL_FEN_BLOCKER_NOT_TRUSTED = "not_trusted_side_to_move"
 FULL_FEN_BLOCKER_HUMAN_POLICY = "human_verified_policy_required"
+MARKER_SEMANTIC_STATUSES = {"trusted", "review", "missing"}
+MARKER_OWNERSHIP_STATUSES = {"assigned", "ambiguous", "unassigned"}
+BOARD_PLACEMENT_STATUSES = {"accepted", "review"}
+MARKER_CONFLICT_WARNINGS = {
+    "side_to_move_evidence_conflict",
+    "side_to_move_marker_local_conflict",
+    "side_to_move_marker_multi_region_conflict",
+    "side_to_move_marker_ambiguous",
+    "side_to_move_marker_local_ambiguous",
+}
+MARKER_REVIEW_REASONS = {
+    "marker_conflict",
+    "marker_missing",
+    "multiple",
+    "multiple_candidates",
+    "unclear",
+    "unclear_symbol",
+    "ambiguous",
+    "conflict",
+}
+
+
+def resolve_marker_semantic_contract(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Resolve marker meaning independently from board placement and full-FEN safety."""
+    runtime_side = _normalize_side(
+        _first(record, "marker_semantic_side", "side_to_move", "side_to_move_detected", "side")
+    )
+    raw_status = str(
+        _first(record, "side_marker_status", "marker_status") or "marker_missing"
+    ).strip().lower()
+    ownership_status = _marker_ownership_status(record, raw_status=raw_status)
+    marker_quality = _quality(
+        _first(record, "marker_crop_quality", "side_marker_crop_status")
+    )
+    gate = (
+        record.get("marker_crop_quality_gate")
+        if isinstance(record.get("marker_crop_quality_gate"), Mapping)
+        else {}
+    )
+    gate_decision = str(gate.get("decision") or "").strip().lower()
+    marker_fail_reasons = {
+        reason.lower()
+        for reason in [
+            *_string_values(record.get("marker_crop_fail_reason")),
+            *_string_values(gate.get("reasons")),
+        ]
+    }
+    warnings = {
+        warning.lower()
+        for warning in _string_values(record.get("warnings"))
+    }
+    manual_reason = str(record.get("manual_review_reason") or "").strip().lower()
+    classifier_reason = str(record.get("marker_classifier_reason") or "").strip().lower()
+    blocking_classifier_reasons = {
+        "bad_crop",
+        "multiple",
+        "multiple_components",
+        "unclear",
+        "ambiguous",
+        "conflict",
+    }
+    trusted = (
+        runtime_side in {"w", "b"}
+        and raw_status in TRUSTED_MARKER_STATUSES
+        and ownership_status == "assigned"
+        and marker_quality == "pass"
+        and gate_decision in {"", "pass"}
+        and not marker_fail_reasons
+        and not (warnings & MARKER_CONFLICT_WARNINGS)
+        and manual_reason not in MARKER_REVIEW_REASONS
+        and classifier_reason not in blocking_classifier_reasons
+        and _has_marker_crop_contract(record)
+    )
+    marker_present = bool(
+        raw_status not in {"", "marker_missing", "missing", "none"}
+        or _has_marker_crop_contract(record)
+        or marker_quality != "missing"
+    )
+    semantic_status = "trusted" if trusted else "review" if marker_present else "missing"
+    confidence = _first_float(
+        record.get("marker_semantic_confidence"),
+        record.get("side_marker_confidence"),
+        record.get("marker_classifier_confidence"),
+        record.get("side_to_move_confidence"),
+    )
+    placement_status = _board_placement_status(record)
+    full_fen = _full_fen_contract(
+        record,
+        side_gate_allowed=trusted,
+        side_blocker="marker_semantic_not_trusted",
+        board_placement_status=placement_status,
+    )
+    return {
+        "marker_semantic_status": semantic_status,
+        "marker_semantic_side": runtime_side if trusted else "unknown",
+        "marker_semantic_confidence": round(confidence, 4) if marker_present else 0.0,
+        "marker_ownership_status": ownership_status,
+        "board_placement_status": placement_status,
+        **full_fen,
+    }
 
 
 def resolve_side_to_move_evidence(
@@ -26,10 +126,11 @@ def resolve_side_to_move_evidence(
     allow_human_verified_full_fen: bool = False,
 ) -> dict[str, Any]:
     """Return the normalized side-to-move evidence contract for one diagram."""
+    marker_contract = resolve_marker_semantic_contract(record)
     runtime_side = _normalize_side(
         _first(record, "side_to_move", "side_to_move_detected", "side_to_move_code", "side")
     )
-    if _is_trusted_marker_record(record, runtime_side=runtime_side):
+    if marker_contract["marker_semantic_status"] == "trusted":
         confidence = _first_float(
             record.get("side_marker_confidence"),
             record.get("side_to_move_evidence_confidence"),
@@ -37,29 +138,45 @@ def resolve_side_to_move_evidence(
             record.get("side_to_move_confidence"),
         )
         return _evidence_payload(
-            side=runtime_side,
+            side=str(marker_contract.get("marker_semantic_side") or runtime_side),
             source="trusted_marker",
             tier="trusted",
             confidence=confidence,
-            full_fen_allowed=True,
-            full_fen_blocker="",
+            full_fen_allowed=bool(marker_contract.get("full_fen_allowed")),
+            full_fen_blocker=str(marker_contract.get("full_fen_blocker") or ""),
+            full_fen_blockers=list(marker_contract.get("full_fen_blockers") or []),
             manual_review_required=False,
+            marker_contract=marker_contract,
         )
 
     manual_side = _manual_side(record)
     if _is_human_verified(record) and manual_side in {"w", "b"}:
+        human_full_fen = _full_fen_contract(
+            record,
+            side_gate_allowed=bool(allow_human_verified_full_fen),
+            side_blocker=FULL_FEN_BLOCKER_HUMAN_POLICY,
+            board_placement_status=str(marker_contract.get("board_placement_status") or "review"),
+        )
         return _evidence_payload(
             side=manual_side,
             source="human_verified",
             tier="verified",
             confidence=_first_float(record.get("side_to_move_confidence"), 1.0),
-            full_fen_allowed=bool(allow_human_verified_full_fen),
-            full_fen_blocker="" if allow_human_verified_full_fen else FULL_FEN_BLOCKER_HUMAN_POLICY,
+            full_fen_allowed=bool(human_full_fen.get("full_fen_allowed")),
+            full_fen_blocker=str(human_full_fen.get("full_fen_blocker") or ""),
+            full_fen_blockers=list(human_full_fen.get("full_fen_blockers") or []),
             manual_review_required=not allow_human_verified_full_fen,
+            marker_contract=marker_contract,
         )
 
     inferred_source = _inferred_source(record)
     if runtime_side in {"w", "b"} and inferred_source in {"text_inferred", "pgn_inferred"}:
+        inferred_full_fen = _full_fen_contract(
+            record,
+            side_gate_allowed=False,
+            side_blocker=FULL_FEN_BLOCKER_NOT_TRUSTED,
+            board_placement_status=str(marker_contract.get("board_placement_status") or "review"),
+        )
         return _evidence_payload(
             side=runtime_side,
             source=inferred_source,
@@ -70,18 +187,28 @@ def resolve_side_to_move_evidence(
                 record.get("confidence"),
             ),
             full_fen_allowed=False,
-            full_fen_blocker=FULL_FEN_BLOCKER_NOT_TRUSTED,
+            full_fen_blocker=str(inferred_full_fen.get("full_fen_blocker") or FULL_FEN_BLOCKER_NOT_TRUSTED),
+            full_fen_blockers=list(inferred_full_fen.get("full_fen_blockers") or []),
             manual_review_required=True,
+            marker_contract=marker_contract,
         )
 
+    unknown_full_fen = _full_fen_contract(
+        record,
+        side_gate_allowed=False,
+        side_blocker=FULL_FEN_BLOCKER_NOT_TRUSTED,
+        board_placement_status=str(marker_contract.get("board_placement_status") or "review"),
+    )
     return _evidence_payload(
         side="unknown",
         source="unknown",
         tier="unknown",
         confidence=0.0,
         full_fen_allowed=False,
-        full_fen_blocker=FULL_FEN_BLOCKER_NOT_TRUSTED,
+        full_fen_blocker=str(unknown_full_fen.get("full_fen_blocker") or FULL_FEN_BLOCKER_NOT_TRUSTED),
+        full_fen_blockers=list(unknown_full_fen.get("full_fen_blockers") or []),
         manual_review_required=True,
+        marker_contract=marker_contract,
     )
 
 
@@ -309,42 +436,112 @@ def _evidence_payload(
     confidence: float,
     full_fen_allowed: bool,
     full_fen_blocker: str,
+    full_fen_blockers: list[str],
     manual_review_required: bool,
+    marker_contract: Mapping[str, Any],
 ) -> dict[str, Any]:
     return {
+        **dict(marker_contract),
         "side_to_move": _normalize_side(side),
         "side_to_move_source": source if source in SIDE_TO_MOVE_SOURCES else "unknown",
         "side_to_move_confidence": round(max(0.0, min(float(confidence or 0.0), 1.0)), 4),
         "side_to_move_evidence_tier": tier if tier in SIDE_TO_MOVE_TIERS else "unknown",
         "full_fen_allowed": bool(full_fen_allowed),
         "full_fen_blocker": str(full_fen_blocker or ""),
+        "full_fen_blockers": list(full_fen_blockers),
+        "full_fen_review_required": not bool(full_fen_allowed),
         "manual_review_required": bool(manual_review_required),
     }
 
 
 def _is_trusted_marker_record(record: Mapping[str, Any], *, runtime_side: str) -> bool:
-    if runtime_side not in {"w", "b"}:
-        return False
-    status = str(_first(record, "side_marker_status", "marker_status") or "").strip().lower()
-    if status not in TRUSTED_MARKER_STATUSES:
-        return False
-    if _truthy(record.get("manual_review_required")):
-        return False
-    if _quality(record.get("board_crop_quality")) != "pass":
-        return False
-    if _quality(record.get("marker_crop_quality")) != "pass":
-        return False
-    gate = record.get("marker_crop_quality_gate") if isinstance(record.get("marker_crop_quality_gate"), Mapping) else {}
-    decision = str(gate.get("decision") or "").strip().lower()
-    if decision and decision != "pass":
-        return False
-    classifier_reason = str(record.get("marker_classifier_reason") or "").strip().lower()
-    blocking_reasons = {"bad_crop", "multiple", "multiple_components", "unclear", "ambiguous", "conflict"}
-    if classifier_reason in blocking_reasons:
-        return False
-    if not _has_marker_crop_contract(record):
-        return False
-    return True
+    contract = resolve_marker_semantic_contract(record)
+    return runtime_side in {"w", "b"} and contract.get("marker_semantic_status") == "trusted"
+
+
+def _marker_ownership_status(record: Mapping[str, Any], *, raw_status: str) -> str:
+    explicit = str(record.get("marker_ownership_status") or "").strip().lower()
+    if explicit in MARKER_OWNERSHIP_STATUSES:
+        return explicit
+    assignment = str(record.get("marker_assignment_status") or "").strip().lower()
+    if assignment == "assigned":
+        return "assigned"
+    if "ambiguous" in assignment or "conflict" in assignment:
+        return "ambiguous"
+    if assignment == "unassigned":
+        return "unassigned"
+    if "conflict" in raw_status or "ambiguous" in raw_status or "multi" in raw_status:
+        return "ambiguous"
+    if raw_status in TRUSTED_MARKER_STATUSES and _has_marker_crop_contract(record):
+        return "assigned"
+    return "unassigned"
+
+
+def _board_placement_status(record: Mapping[str, Any]) -> str:
+    if _quality(record.get("board_crop_quality")) == "fail":
+        return "review"
+    explicit = str(record.get("board_placement_status") or "").strip().lower()
+    if explicit in BOARD_PLACEMENT_STATUSES:
+        return explicit
+    statuses = {
+        str(_first(record, "placement_runtime_status", "placement_status") or "").strip().lower(),
+        str(_first(record, "full_fen_runtime_status", "full_fen_status", "runtime_status") or "")
+        .strip()
+        .lower(),
+    }
+    accepted = {
+        "accepted",
+        "fen_placement_machine_accepted",
+        "fen_machine_accepted",
+        "fen_corpus_verified",
+        "full_fen_accepted",
+    }
+    return "accepted" if statuses & accepted else "review"
+
+
+def _full_fen_contract(
+    record: Mapping[str, Any],
+    *,
+    side_gate_allowed: bool,
+    side_blocker: str,
+    board_placement_status: str,
+) -> dict[str, Any]:
+    blockers: list[str] = []
+    raw_blockers = record.get("full_fen_blockers")
+    if isinstance(raw_blockers, (list, tuple, set)):
+        for blocker in raw_blockers:
+            if isinstance(blocker, Mapping):
+                value = str(blocker.get("code") or blocker.get("reason") or "")
+            else:
+                value = str(blocker or "")
+            if value:
+                blockers.append(value)
+    legacy_blocker = str(record.get("full_fen_blocker") or "").strip()
+    if legacy_blocker:
+        blockers.append(legacy_blocker)
+    if not side_gate_allowed:
+        blockers.append(side_blocker or FULL_FEN_BLOCKER_NOT_TRUSTED)
+    if board_placement_status != "accepted":
+        blockers.append("board_placement_not_accepted")
+    if _quality(record.get("board_crop_quality")) == "fail":
+        blockers.append("board_crop_quality_failed")
+    full_fen_status = str(
+        _first(record, "full_fen_runtime_status", "full_fen_status") or ""
+    ).strip().lower()
+    if full_fen_status in {
+        "review",
+        "review_required",
+        "fen_review_required",
+        "blocked",
+        "failed",
+    }:
+        blockers.append("full_fen_gate_not_accepted")
+    unique = list(dict.fromkeys(blockers))
+    return {
+        "full_fen_allowed": not unique,
+        "full_fen_blockers": unique,
+        "full_fen_blocker": unique[0] if unique else "",
+    }
 
 
 def _has_marker_crop_contract(record: Mapping[str, Any]) -> bool:
@@ -439,6 +636,18 @@ def _first_float(*values: Any) -> float:
         except (TypeError, ValueError):
             continue
     return 0.0
+
+
+def _string_values(value: Any) -> list[str]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, (str, bytes)):
+        values = [value]
+    elif isinstance(value, Iterable) and not isinstance(value, Mapping):
+        values = value
+    else:
+        values = [value]
+    return [str(item).strip() for item in values if str(item).strip()]
 
 
 def _truthy(value: Any) -> bool:

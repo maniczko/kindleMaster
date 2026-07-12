@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from chess_side_to_move_evidence import resolve_marker_semantic_contract
+
 PIECE_CHARS = set("KQRBNPkqrbnp")
 SQUARE_NAMES = [f"{file}{rank}" for rank in range(8, 0, -1) for file in "abcdefgh"]
 FEN_SQUARES = SQUARE_NAMES
@@ -507,6 +509,7 @@ def machine_accept_placement(candidate: dict[str, Any], context: dict[str, Any] 
     return {
         "status": "accepted" if accepted else "review_required",
         "runtime_status": "FEN_PLACEMENT_MACHINE_ACCEPTED" if accepted else "FEN_PLACEMENT_REVIEW_REQUIRED",
+        "board_placement_status": "accepted" if accepted else "review",
         "selected_placement": validation.normalized_placement if accepted else None,
         "normalized_placement": validation.normalized_placement,
         "acceptance_blockers": blockers,
@@ -604,6 +607,7 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
     except (TypeError, ValueError):
         marker_crop_component_count = 0
     marker_bbox = candidate.get("marker_bbox") or candidate.get("side_marker_bbox")
+    marker_semantic_contract = resolve_marker_semantic_contract(candidate)
     marker_bbox_valid = False
     if isinstance(marker_bbox, (list, tuple)) and len(marker_bbox) == 4:
         try:
@@ -623,6 +627,9 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
         "selected_marker_zone": selected_marker_zone or None,
         "marker_bbox_present": marker_bbox_valid,
         "marker_crop_component_count": marker_crop_component_count,
+        "marker_semantic_status": marker_semantic_contract.get("marker_semantic_status"),
+        "marker_semantic_side": marker_semantic_contract.get("marker_semantic_side"),
+        "marker_ownership_status": marker_semantic_contract.get("marker_ownership_status"),
     }
     trace["crop_quality"]["marker_crop_quality"] = marker_crop_quality or "missing"
     trace["crop_quality"]["marker_crop_fail_reason"] = marker_crop_fail_reason
@@ -771,11 +778,29 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
             )
 
     accepted = not blockers
+    full_fen_blockers = list(
+        dict.fromkeys(
+            str(blocker.get("code") or "unknown_blocker")
+            for blocker in blockers
+        )
+    )
     return {
         "status": "accepted" if accepted else "review_required",
         "runtime_status": "FEN_MACHINE_ACCEPTED" if accepted else "FEN_REVIEW_REQUIRED",
         "selected_value": validation.normalized_fen if accepted else None,
         "normalized_fen": validation.normalized_fen,
+        "marker_semantic_status": marker_semantic_contract.get("marker_semantic_status"),
+        "marker_semantic_side": marker_semantic_contract.get("marker_semantic_side"),
+        "marker_semantic_confidence": marker_semantic_contract.get("marker_semantic_confidence"),
+        "marker_ownership_status": marker_semantic_contract.get("marker_ownership_status"),
+        "board_placement_status": (
+            "accepted"
+            if placement_gate.get("runtime_status") == "FEN_PLACEMENT_MACHINE_ACCEPTED"
+            else "review"
+        ),
+        "full_fen_allowed": accepted,
+        "full_fen_blockers": full_fen_blockers,
+        "full_fen_blocker": full_fen_blockers[0] if full_fen_blockers else "",
         "acceptance_blockers": blockers,
         "acceptance_trace": trace,
         "acceptance_policy": "runtime_machine_acceptance_v1",

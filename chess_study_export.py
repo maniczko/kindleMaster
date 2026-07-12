@@ -316,6 +316,13 @@ class StudyDiagram:
     side_marker_source: str
     side_marker_confidence: float | str
     side_marker_assignment_trace: dict[str, Any]
+    marker_semantic_status: str
+    marker_semantic_side: str
+    marker_semantic_confidence: float
+    marker_ownership_status: str
+    board_placement_status: str
+    full_fen_allowed: bool
+    full_fen_blockers: list[str]
     marker_candidate_id: str
     marker_candidate_bbox: list[float]
     marker_candidate_crop_path: str
@@ -384,6 +391,13 @@ class StudyDiagram:
             "side_marker_source": self.side_marker_source,
             "side_marker_confidence": self.side_marker_confidence,
             "side_marker_assignment_trace": dict(self.side_marker_assignment_trace),
+            "marker_semantic_status": self.marker_semantic_status,
+            "marker_semantic_side": self.marker_semantic_side,
+            "marker_semantic_confidence": round(float(self.marker_semantic_confidence or 0.0), 4),
+            "marker_ownership_status": self.marker_ownership_status,
+            "board_placement_status": self.board_placement_status,
+            "full_fen_allowed": bool(self.full_fen_allowed),
+            "full_fen_blockers": list(self.full_fen_blockers),
             "marker_candidate_id": self.marker_candidate_id,
             "marker_candidate_bbox": list(self.marker_candidate_bbox),
             "marker_candidate_crop_path": self.marker_candidate_crop_path,
@@ -7127,6 +7141,13 @@ def _apply_study_side_marker_payload(diagram: dict[str, Any], payload: Mapping[s
             "side_marker_bbox": marker.get("side_marker_bbox") or [],
             "side_marker_confidence": marker.get("side_marker_confidence") or "",
             "side_marker_assignment_trace": marker.get("side_marker_assignment_trace") or {},
+            "marker_semantic_status": str(marker.get("marker_semantic_status") or "missing"),
+            "marker_semantic_side": str(marker.get("marker_semantic_side") or "unknown"),
+            "marker_semantic_confidence": float(marker.get("marker_semantic_confidence") or 0.0),
+            "marker_ownership_status": str(marker.get("marker_ownership_status") or "unassigned"),
+            "board_placement_status": str(marker.get("board_placement_status") or "review"),
+            "full_fen_allowed": bool(marker.get("full_fen_allowed")),
+            "full_fen_blockers": list(marker.get("full_fen_blockers") or []),
             "marker_candidate_id": str(payload.get("marker_candidate_id") or ""),
             "marker_candidate_bbox": list(payload.get("marker_candidate_bbox") or []),
             "marker_candidate_crop_path": str(payload.get("marker_candidate_crop_path") or ""),
@@ -7784,6 +7805,13 @@ def build_study_positions(diagrams: dict[str, Any], segments: dict[str, Any], ou
                 "side_marker_confidence": diagram.get("side_marker_confidence", ""),
                 "side_marker_crop_path": str(diagram.get("side_marker_crop_path") or ""),
                 "side_marker_assignment_trace": dict(diagram.get("side_marker_assignment_trace") or {}),
+                "marker_semantic_status": str(diagram.get("marker_semantic_status") or "missing"),
+                "marker_semantic_side": str(diagram.get("marker_semantic_side") or "unknown"),
+                "marker_semantic_confidence": float(diagram.get("marker_semantic_confidence") or 0.0),
+                "marker_ownership_status": str(diagram.get("marker_ownership_status") or "unassigned"),
+                "board_placement_status": str(diagram.get("board_placement_status") or "review"),
+                "full_fen_allowed": bool(diagram.get("full_fen_allowed")),
+                "full_fen_blockers": list(diagram.get("full_fen_blockers") or []),
                 "strict_fen_side_evidence_trusted": bool(diagram.get("strict_fen_side_evidence_trusted")),
                 "bbox": _bbox4(diagram.get("bbox") or []),
                 "board_bbox": _bbox4(diagram.get("board_bbox") or diagram.get("bbox_xyxy") or []),
@@ -9534,6 +9562,13 @@ def _study_diagram_record(record: dict[str, Any]) -> StudyDiagram:
         side_marker_source=str(record.get("side_marker_source") or ""),
         side_marker_confidence=record.get("side_marker_confidence", ""),
         side_marker_assignment_trace=dict(record.get("side_marker_assignment_trace") or {}),
+        marker_semantic_status=str(record.get("marker_semantic_status") or "missing"),
+        marker_semantic_side=str(record.get("marker_semantic_side") or "unknown"),
+        marker_semantic_confidence=float(record.get("marker_semantic_confidence") or 0.0),
+        marker_ownership_status=str(record.get("marker_ownership_status") or "unassigned"),
+        board_placement_status=str(record.get("board_placement_status") or "review"),
+        full_fen_allowed=bool(record.get("full_fen_allowed")),
+        full_fen_blockers=[str(blocker) for blocker in record.get("full_fen_blockers") or []],
         marker_candidate_id=str(record.get("marker_candidate_id") or ""),
         marker_candidate_bbox=_bbox4(record.get("marker_candidate_bbox") or []),
         marker_candidate_crop_path=str(record.get("marker_candidate_crop_path") or ""),

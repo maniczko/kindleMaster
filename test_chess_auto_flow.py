@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import kindlemaster
 from chess_auto_flow import (
+    _side_marker_assignment_report,
     apply_runtime_accepted_fen,
     apply_runtime_accepted_pgn,
     build_auto_chess_flow_artifacts,
@@ -62,6 +63,33 @@ def _squares_from_fen(fen: str, *, confidence: float = 0.99) -> list[dict]:
 
 
 class AutoChessFlowTests(unittest.TestCase):
+    def test_side_marker_report_preserves_explicit_zero_assignment_scores(self) -> None:
+        report = _side_marker_assignment_report(
+            [
+                {
+                    "diagram_id": "d1",
+                    "marker_candidate_confidence": 0.0,
+                    "marker_assignment_confidence": 0.0,
+                    "marker_assignment_runner_up_margin": 0.0,
+                }
+            ],
+            {
+                "items": [
+                    {
+                        "id": "d1",
+                        "marker_candidate_confidence": 0.8,
+                        "marker_assignment_confidence": 0.7,
+                        "marker_assignment_runner_up_margin": 0.6,
+                    }
+                ]
+            },
+        )
+
+        row = report["items"][0]
+        self.assertEqual(row["marker_candidate_confidence"], 0.0)
+        self.assertEqual(row["marker_assignment_confidence"], 0.0)
+        self.assertEqual(row["marker_assignment_runner_up_margin"], 0.0)
+
     def test_build_auto_flow_writes_canonical_artifacts_for_accepted_data(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             out = Path(temp_dir)

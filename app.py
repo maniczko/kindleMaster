@@ -791,18 +791,36 @@ def _full_fen_status_accepted(value: object) -> bool:
         "fen_full_accepted",
         "trusted",
         "trusted_marker",
+        "fen_machine_accepted",
+        "fen_corpus_verified",
     }
 
 
 def _diagram_record_to_reader_position(record: Mapping[str, object], index: int) -> dict[str, object]:
-    trusted_marker = _app_trusted_marker_status(record.get("side_marker_status"))
+    marker_semantic_status = str(record.get("marker_semantic_status") or "").strip().lower()
+    raw_marker_status = str(record.get("side_marker_status") or "").strip().lower()
+    trusted_marker = (
+        marker_semantic_status == "trusted"
+        if marker_semantic_status
+        else _app_trusted_marker_status(record.get("side_marker_status"))
+    )
+    if not marker_semantic_status:
+        marker_semantic_status = (
+            "trusted"
+            if trusted_marker
+            else "missing"
+            if raw_marker_status in {"", "missing", "marker_missing", "none"}
+            else "review"
+        )
     full_fen = str(record.get("full_fen") or "").strip()
     placement_fen = str(record.get("fen") or record.get("fen_candidate") or "").strip()
     fen_value = full_fen or placement_fen
     requires_review = bool(record.get("requires_review"))
     status_text = str(record.get("status") or "").strip().lower()
-    accepted_full_fen = _full_fen_status_accepted(record.get("full_fen_status")) or (
-        not str(record.get("full_fen_status") or "").strip() and trusted_marker
+    accepted_full_fen = (
+        record.get("full_fen_allowed") is True
+        if "full_fen_allowed" in record
+        else _full_fen_status_accepted(record.get("full_fen_status"))
     )
     accepted = bool(fen_value and not requires_review and accepted_full_fen and status_text not in {"review", "requires_review"})
     source_crop = str(
@@ -840,6 +858,16 @@ def _diagram_record_to_reader_position(record: Mapping[str, object], index: int)
         "side_marker_symbol": str(record.get("side_marker_symbol") or "").strip(),
         "side_marker_bbox": record.get("side_marker_bbox") or record.get("side_marker_bbox_pixels") or [],
         "side_marker_assignment_trace": record.get("side_marker_assignment_trace") or record.get("acceptance_trace") or [],
+        "marker_semantic_status": marker_semantic_status,
+        "marker_semantic_side": str(
+            record.get("marker_semantic_side")
+            or _side_to_move_from_diagram_record(record, trusted_marker=trusted_marker)
+        ),
+        "marker_semantic_confidence": record.get("marker_semantic_confidence") or 0.0,
+        "marker_ownership_status": str(record.get("marker_ownership_status") or "unassigned"),
+        "board_placement_status": str(record.get("board_placement_status") or "review"),
+        "full_fen_allowed": bool(accepted_full_fen),
+        "full_fen_blockers": list(record.get("full_fen_blockers") or []),
         "warnings": list(warnings),
         "review_reason": review_reason,
     }

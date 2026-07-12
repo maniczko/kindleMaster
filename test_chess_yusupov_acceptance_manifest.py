@@ -20,6 +20,7 @@ from chess_yusupov_acceptance import (
     DEFAULT_PROFILE,
     SECURE_CORPUS_ENV,
     evaluate_acceptance,
+    load_acceptance_profile,
     load_job_evidence,
     run_fixed_edition_acceptance,
     secure_acceptance_for_quick,
@@ -218,6 +219,18 @@ def _write_job_output(
 
 
 class ChessYusupovAcceptanceManifestTests(unittest.TestCase):
+    def test_corrupt_profile_fails_closed_without_json_exception(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profile_path = Path(temp_dir) / "profile.json"
+            profile_path.write_text("{broken", encoding="utf-8")
+
+            profile = load_acceptance_profile(
+                DEFAULT_PROFILE,
+                profile_path=profile_path,
+            )
+
+        self.assertEqual(profile, {})
+
     def test_verified_manifest_requires_stable_fingerprints_and_separated_splits(self) -> None:
         validation = validate_acceptance_manifest(_manifest(), source_profile=DEFAULT_PROFILE)
 
@@ -242,10 +255,14 @@ class ChessYusupovAcceptanceManifestTests(unittest.TestCase):
     def test_gate_reports_all_required_metrics_and_zero_false_trust(self) -> None:
         manifest = _manifest()
         profile = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
+        detected = _detected_records(manifest)
+        detected[0]["diagram_fingerprint"] = (
+            f"  {detected[0]['diagram_fingerprint']}  "
+        )
 
         report = evaluate_acceptance(
             manifest,
-            detected_records=_detected_records(manifest),
+            detected_records=detected,
             source_document_sha256=SOURCE_SHA,
             runtime_commit_sha=COMMIT_SHA,
             validator_commit_sha=COMMIT_SHA,

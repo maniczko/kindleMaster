@@ -2516,6 +2516,7 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
         chess_pgn_records = []
         chess_diagram_records: list[dict[str, Any]] = []
         chess_fen_review_artifact_files: list[dict[str, Any]] = []
+        page_marker_assignment_reports: list[dict[str, Any]] = []
         book_layout_pages: list[dict[str, Any]] = []
         diagram_total = 0
         raw_candidate_total = 0
@@ -2567,11 +2568,44 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
             )
             chapter_images: list[dict[str, Any]] = []
             page_fen_values: list[str] = []
-            diagram_bboxes: list[tuple[float, float, float, float]] = []
-            for page_candidate in candidates:
+            page_marker_boards: list[dict[str, Any]] = []
+            for board_index, page_candidate in enumerate(candidates, start=1):
                 page_bbox = _clamp_bbox(page_candidate.get("bbox"), page_image.size, pad_ratio=0.0, min_pad=0.0)
                 if page_bbox is not None:
-                    diagram_bboxes.append(tuple(float(value) for value in page_bbox))
+                    page_marker_boards.append(
+                        {
+                            "diagram_id": f"scan-chess-p{page_num + 1:03d}-d{board_index:02d}",
+                            "bbox": tuple(float(value) for value in page_bbox),
+                        }
+                    )
+            page_marker_assignment = (
+                _scan_chess_page_marker_pipeline(
+                    page_image,
+                    page_marker_boards,
+                    page_number=page_num + 1,
+                )
+                if bool(getattr(config, "chess_fen_apply_side_marker", False))
+                else {
+                    "candidates": [],
+                    "assignments": [],
+                    "files": [],
+                    "summary": {},
+                }
+            )
+            if bool(getattr(config, "chess_fen_apply_side_marker", False)):
+                page_marker_assignment_reports.append(
+                    {
+                        key: value
+                        for key, value in page_marker_assignment.items()
+                        if key != "files"
+                    }
+                )
+            chess_fen_review_artifact_files.extend(page_marker_assignment.get("files") or [])
+            marker_assignments_by_id = {
+                str(item.get("diagram_id") or ""): dict(item)
+                for item in page_marker_assignment.get("assignments") or []
+                if isinstance(item, Mapping)
+            }
             for candidate_index, candidate in enumerate(candidates, start=1):
                 bbox = _clamp_bbox(candidate.get("bbox"), page_image.size)
                 if bbox is None:
@@ -2625,36 +2659,29 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
                     candidate_payload = _scan_chess_fen_payload(candidate, recognition)
                 else:
                     candidate_payload = _scan_chess_candidate_review_payload(candidate)
+                diagram_id = f"scan-chess-p{page_num + 1:03d}-d{candidate_index:02d}"
+                marker_assignment = marker_assignments_by_id.get(diagram_id) or {}
                 if bool(getattr(config, "chess_fen_apply_side_marker", False)):
                     side_min_confidence = float(getattr(config, "chess_fen_min_confidence", 0.835) or 0.835)
-                    marker_evidence = _infer_scan_chess_side_to_move_marker_evidence(
-                        page_image,
-                        tuple(float(value) for value in recognition_bbox),
-                    )
-                    candidate_payload = _apply_scan_chess_side_to_move_context_evidence(
+                    candidate_payload = _scan_chess_apply_page_marker_assignment(
                         candidate_payload,
-                        marker_evidence,
-                        min_confidence=side_min_confidence,
+                        marker_assignment,
+                        page_marker_assignment.get("candidates") or [],
                     )
-                    if bool(candidate_payload.get("requires_review")) and "side_to_move_inferred" in {
-                        str(warning) for warning in list(candidate_payload.get("warnings") or [])
-                    }:
-                        local_evidence = _scan_chess_local_side_marker_assignment_evidence(
-                            page_image,
-                            tuple(float(value) for value in recognition_bbox),
-                            candidate_payload,
-                            diagram_bboxes=diagram_bboxes,
-                        )
-                        candidate_payload = _apply_scan_chess_side_to_move_context_evidence(
-                            candidate_payload,
-                            local_evidence,
-                            min_confidence=side_min_confidence,
-                        )
                 two_crop_fields, two_crop_files = _scan_chess_two_crop_review_artifacts(
                     page_image,
                     filename=filename,
                     board_bbox=recognition_bbox,
-                    side_marker_bbox=candidate_payload.get("side_marker_bbox"),
+                    side_marker_bbox=(
+                        None
+                        if bool(getattr(config, "chess_fen_apply_side_marker", False))
+                        else candidate_payload.get("side_marker_bbox")
+                    ),
+                    marker_assignment=(
+                        marker_assignment
+                        if bool(getattr(config, "chess_fen_apply_side_marker", False))
+                        else None
+                    ),
                 )
                 candidate_payload.update(two_crop_fields)
                 candidate_payload = _apply_scan_chess_two_crop_quality_gate(candidate_payload, two_crop_fields)
@@ -2692,7 +2719,7 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
                 chess_diagram_records.append(
                     _chess_diagram_record_from_image(
                         chess_img,
-                        diagram_id=f"scan-chess-p{page_num + 1:03d}-d{candidate_index:02d}",
+                        diagram_id=diagram_id,
                         caption=diagram_caption,
                         page_num=page_num,
                         nearby_text=str((ocr_record or {}).get("text") or ""),
@@ -2847,6 +2874,9 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
                 "side_unknown_count",
             )
         }
+        page_marker_runtime_summary = _scan_chess_page_marker_runtime_summary(
+            page_marker_assignment_reports
+        )
         ocr_quality = {
             "status": "passed_with_warnings",
             "quality_gate_status": "passed_with_warnings",
@@ -2863,6 +2893,7 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
             "diagram_crop_count": diagram_total,
             "non_board_rejected_count": non_board_rejected_count,
             **side_marker_runtime_counts,
+            **page_marker_runtime_summary,
             "selective_ocr": selective_ocr_summary,
         }
         metadata.update(
@@ -2877,6 +2908,7 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
                     "non_board_rejected_count": non_board_rejected_count,
                 },
                 "chess_fen": chess_fen_summary,
+                "page_marker_assignment": page_marker_runtime_summary,
                 "ocr_quality": ocr_quality,
                 "reading_flow": {
                     "status": "passed_with_warnings",
@@ -2887,6 +2919,22 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
             }
         )
         book_layout_pages = _ensure_book_layout_pages_cover_document(doc, book_layout_pages, config)
+        page_marker_report = {
+            "schema": "kindlemaster.chess.page_marker_assignment_report.v1",
+            "status": "ok" if page_marker_assignment_reports else "not_run",
+            "summary": page_marker_runtime_summary,
+            "pages": page_marker_assignment_reports,
+            "policy": (
+                "Page-level candidates are generated before trust classification; ownership is one-to-one, "
+                "and semantic/FEN promotion still requires the existing tight-crop quality gate."
+            ),
+        }
+        chess_fen_review_artifact_files.append(
+            {
+                "path": "reports/chess_fen/page_marker_assignment.json",
+                "data": json.dumps(page_marker_report, ensure_ascii=False, indent=2).encode("utf-8"),
+            }
+        )
         extra_artifacts = _chess_pdf_extra_artifacts(
             pdf_path,
             config,
@@ -2922,6 +2970,7 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
                     "pgn_candidate_count": int(chess_pgn_summary.get("candidate_game_count", 0) or 0),
                     "manual_review_count": manual_review_count,
                     **side_marker_runtime_counts,
+                    **page_marker_runtime_summary,
                 },
             },
         }
@@ -4771,6 +4820,34 @@ def _chess_diagram_record_from_image(
         "side_marker_bbox": side_marker.get("side_marker_bbox") or [],
         "side_marker_confidence": side_marker.get("side_marker_confidence") or "",
         "side_marker_assignment_trace": side_marker.get("side_marker_assignment_trace") or {},
+        "marker_semantic_status": str(side_marker.get("marker_semantic_status") or "missing"),
+        "marker_semantic_side": str(side_marker.get("marker_semantic_side") or "unknown"),
+        "marker_semantic_confidence": float(side_marker.get("marker_semantic_confidence") or 0.0),
+        "marker_ownership_status": str(side_marker.get("marker_ownership_status") or "unassigned"),
+        "board_placement_status": str(side_marker.get("board_placement_status") or "review"),
+        "full_fen_allowed": bool(side_marker.get("full_fen_allowed")),
+        "full_fen_blockers": list(side_marker.get("full_fen_blockers") or []),
+        "full_fen_blocker": str(side_marker.get("full_fen_blocker") or ""),
+        "marker_candidate_id": str(fen_result.get("marker_candidate_id") or ""),
+        "marker_candidate_bbox": list(fen_result.get("marker_candidate_bbox") or []),
+        "marker_candidate_crop_path": str(fen_result.get("marker_candidate_crop_path") or ""),
+        "marker_candidate_features": dict(fen_result.get("marker_candidate_features") or {}),
+        "marker_candidate_class": str(fen_result.get("marker_candidate_class") or ""),
+        "marker_candidate_confidence": float(
+            fen_result.get("marker_candidate_confidence") or 0.0
+        ),
+        "marker_assignment_status": str(
+            fen_result.get("marker_assignment_status") or "unassigned"
+        ),
+        "marker_assignment_confidence": float(
+            fen_result.get("marker_assignment_confidence") or 0.0
+        ),
+        "marker_assignment_runner_up_margin": float(
+            fen_result.get("marker_assignment_runner_up_margin") or 0.0
+        ),
+        "marker_assignment_rejected_reasons": list(
+            fen_result.get("marker_assignment_rejected_reasons") or []
+        ),
         "strict_fen_side_evidence_trusted": bool(side_marker.get("strict_fen_side_evidence_trusted")),
         "fen_suppressed_reason": str(fen_result.get("fen_suppressed_reason") or ""),
         "fen_confidence": float(fen_result.get("confidence", 0.0) or 0.0),
@@ -5063,6 +5140,31 @@ TWO_CROP_CONTRACT_FIELDS = {
     "side_to_move_confidence",
     "manual_review_required",
     "manual_review_reason",
+    "marker_semantic_status",
+    "marker_semantic_side",
+    "marker_semantic_confidence",
+    "marker_ownership_status",
+    "board_placement_status",
+    "full_fen_allowed",
+    "full_fen_blockers",
+    "full_fen_blocker",
+    "marker_candidate_id",
+    "marker_candidate_bbox",
+    "marker_candidate_crop_bbox",
+    "marker_candidate_crop_path",
+    "marker_candidate_features",
+    "marker_candidate_class",
+    "marker_candidate_classifier_status",
+    "marker_candidate_side",
+    "marker_candidate_confidence",
+    "marker_assignment_status",
+    "marker_assignment_confidence",
+    "marker_assignment_runner_up_margin",
+    "marker_assignment_ownership_margin",
+    "marker_assignment_cost",
+    "marker_assignment_zone",
+    "marker_assignment_rejected_reasons",
+    "two_crop_performance",
 }
 
 BOARD_CROP_REASON_CODES = {
@@ -5181,7 +5283,25 @@ def _scan_chess_grid_line_board_box(image: Image.Image) -> tuple[int, int, int, 
     return (left, top, left + side, top + side)
 
 
-def _scan_chess_tight_board_box_in_crop(image: Image.Image) -> tuple[int, int, int, int] | None:
+def _increment_two_crop_metric(metrics: dict[str, Any] | None, key: str, amount: int = 1) -> None:
+    if metrics is not None:
+        metrics[key] = int(metrics.get(key) or 0) + amount
+
+
+@dataclass(frozen=True)
+class _ScanChessBoardAnalysis:
+    raw_box: tuple[int, int, int, int] | None
+    selected_box: tuple[int, int, int, int] | None
+    local_tight_box: tuple[int, int, int, int] | None
+    derivation: dict[str, Any]
+
+
+def _scan_chess_tight_board_box_in_crop(
+    image: Image.Image,
+    *,
+    performance: dict[str, Any] | None = None,
+) -> tuple[int, int, int, int] | None:
+    _increment_two_crop_metric(performance, "tight_board_localization_call_count")
     grayscale = ImageOps.autocontrast(image.convert("L"))
     width, height = grayscale.size
     min_axis = min(width, height)
@@ -5202,6 +5322,7 @@ def _scan_chess_tight_board_box_in_crop(image: Image.Image) -> tuple[int, int, i
     baseline_left = max(0, (width - baseline_side) // 2)
     baseline_top = max(0, (height - baseline_side) // 2)
     baseline_box = (baseline_left, baseline_top, baseline_left + baseline_side, baseline_top + baseline_side)
+    _increment_two_crop_metric(performance, "sliding_window_candidate_evaluations")
     baseline_score = _scan_chess_board_square_score(grayscale.crop(baseline_box))
 
     side_values = sorted(
@@ -5223,6 +5344,7 @@ def _scan_chess_tight_board_box_in_crop(image: Image.Image) -> tuple[int, int, i
         for top in sorted(top_values):
             for left in sorted(left_values):
                 box = (left, top, left + side, top + side)
+                _increment_two_crop_metric(performance, "sliding_window_candidate_evaluations")
                 score = _scan_chess_board_square_score(grayscale.crop(box))
                 if score <= 0.0:
                     continue
@@ -5359,12 +5481,34 @@ def _scan_chess_board_margin_reasons(image: Image.Image, local_board_box: tuple[
 def _scan_chess_tight_board_bbox_from_candidate(
     page_image: Image.Image,
     board_bbox: Any,
+    *,
+    performance: dict[str, Any] | None = None,
 ) -> tuple[list[float], dict[str, Any]]:
+    analysis = _scan_chess_board_analysis_from_candidate(
+        page_image,
+        board_bbox,
+        performance=performance,
+    )
+    selected = analysis.selected_box or ()
+    return [float(value) for value in selected], dict(analysis.derivation)
+
+
+def _scan_chess_board_analysis_from_candidate(
+    page_image: Image.Image,
+    board_bbox: Any,
+    *,
+    performance: dict[str, Any] | None = None,
+) -> _ScanChessBoardAnalysis:
     raw_box = _bbox_to_int_box(_coerce_side_marker_bbox(board_bbox), page_image.size)
     if raw_box is None:
-        return [], {"decision": "fail", "reasons": ["board_bbox_missing"]}
+        return _ScanChessBoardAnalysis(
+            raw_box=None,
+            selected_box=None,
+            local_tight_box=None,
+            derivation={"decision": "fail", "reasons": ["board_bbox_missing"]},
+        )
     crop = page_image.crop(raw_box).convert("RGB")
-    local_tight = _scan_chess_tight_board_box_in_crop(crop)
+    local_tight = _scan_chess_tight_board_box_in_crop(crop, performance=performance)
     if local_tight is None:
         tight_box = raw_box
         reasons: list[str] = []
@@ -5376,12 +5520,17 @@ def _scan_chess_tight_board_bbox_from_candidate(
             raw_box[1] + local_tight[3],
         )
         reasons = _scan_chess_board_margin_reasons(crop, local_tight)
-    return [float(value) for value in tight_box], {
-        "decision": "adjusted" if local_tight is not None else "unchanged",
-        "reasons": reasons,
-        "raw_bbox": [float(value) for value in raw_box],
-        "tight_bbox": [float(value) for value in tight_box],
-    }
+    return _ScanChessBoardAnalysis(
+        raw_box=raw_box,
+        selected_box=tight_box,
+        local_tight_box=local_tight,
+        derivation={
+            "decision": "adjusted" if local_tight is not None else "unchanged",
+            "reasons": reasons,
+            "raw_bbox": [float(value) for value in raw_box],
+            "tight_bbox": [float(value) for value in tight_box],
+        },
+    )
 
 
 def _scan_chess_two_crop_review_artifacts(
@@ -5390,10 +5539,39 @@ def _scan_chess_two_crop_review_artifacts(
     filename: str,
     board_bbox: Any,
     side_marker_bbox: Any,
+    marker_assignment: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    total_started = time.perf_counter()
+    performance: dict[str, Any] = {
+        "tight_board_localization_call_count": 0,
+        "sliding_window_candidate_evaluations": 0,
+        "localization_seconds": 0.0,
+        "marker_analysis_seconds": 0.0,
+        "png_encoding_seconds": 0.0,
+        "png_encoded_artifact_count": 0,
+        "png_encoded_bytes": 0,
+        "file_write_measured": False,
+        "file_write_seconds": 0.0,
+        "file_written_artifact_count": 0,
+        "file_written_bytes": 0,
+        "board_analysis_mode": "single_pass",
+        "legacy_localization_fallback_used": False,
+        "legacy_localization_fallback_count": 0,
+        "legacy_localization_fallback_reason": "",
+        "ambiguity_probe_evaluations": 0,
+        "ambiguity_probe_seconds": 0.0,
+        "total_seconds": 0.0,
+    }
     stem = Path(str(filename or "diagram")).stem or "diagram"
     raw_board_bbox = _coerce_side_marker_bbox(board_bbox)
-    tight_board_bbox, tight_board_trace = _scan_chess_tight_board_bbox_from_candidate(page_image, raw_board_bbox)
+    localization_started = time.perf_counter()
+    board_analysis = _scan_chess_board_analysis_from_candidate(
+        page_image,
+        raw_board_bbox,
+        performance=performance,
+    )
+    tight_board_bbox = [float(value) for value in (board_analysis.selected_box or ())]
+    tight_board_trace = dict(board_analysis.derivation)
     board_bbox_for_crop = tight_board_bbox or raw_board_bbox
     fields: dict[str, Any] = {
         "board_crop_path": f"review/chess_fen/two_crop/{stem}_board.png",
@@ -5429,24 +5607,40 @@ def _scan_chess_two_crop_review_artifacts(
         "side_to_move_confidence": 0.0,
         "manual_review_required": True,
         "manual_review_reason": "marker_missing",
+        **_scan_chess_empty_marker_assignment_fields(),
     }
+    if marker_assignment is not None:
+        fields.update(
+            {
+                key: marker_assignment.get(key, fields.get(key))
+                for key in _scan_chess_empty_marker_assignment_fields()
+            }
+        )
     files: list[dict[str, Any]] = []
-    board_quality = _scan_chess_board_crop_quality(page_image, fields["board_bbox"])
+    board_quality = _scan_chess_board_crop_quality(
+        page_image,
+        fields["board_bbox"],
+        board_analysis=board_analysis,
+        performance=performance,
+    )
+    performance["localization_seconds"] = time.perf_counter() - localization_started
     fields["board_crop_quality_gate"] = board_quality
     fields["board_crop_quality"] = "pass" if board_quality.get("decision") == "pass" else "fail"
     fields["board_crop_fail_reason"] = list(board_quality.get("reasons") or [])
 
     board_crop = _crop_bbox_from_image(page_image, fields["board_bbox"])
     if board_crop is not None:
-        files.append({"path": fields["board_crop_path"], "data": _png_bytes(board_crop)})
+        files.append({"path": fields["board_crop_path"], "data": _timed_png_bytes(board_crop, performance)})
     raw_box = _bbox_to_int_box(raw_board_bbox, page_image.size)
     tight_box = _bbox_to_int_box(fields["board_bbox"], page_image.size)
     if raw_box is not None and tight_box is not None and raw_box != tight_box:
         context_crop = _crop_bbox_from_image(page_image, raw_board_bbox)
         if context_crop is not None:
             fields["debug_context_crop_path"] = f"review/chess_fen/two_crop/{stem}_context.png"
-            files.append({"path": fields["debug_context_crop_path"], "data": _png_bytes(context_crop)})
+            files.append({"path": fields["debug_context_crop_path"], "data": _timed_png_bytes(context_crop, performance)})
 
+    marker_started = time.perf_counter()
+    marker_png_seconds_before = float(performance["png_encoding_seconds"])
     zones = _scan_chess_marker_search_zones(fields["board_bbox"], page_image.size)
     fields["marker_search_zones"] = zones
     search_bbox, search_crop = _scan_chess_marker_search_zone_preview(page_image, fields["board_bbox"], zones)
@@ -5455,26 +5649,38 @@ def _scan_chess_two_crop_review_artifacts(
         fields["side_marker_search_bbox"] = search_bbox
         fields["marker_search_zone_preview_path"] = fields["side_marker_search_crop_path"]
         fields["marker_search_zone_preview_bbox"] = search_bbox
-        files.append({"path": fields["side_marker_search_crop_path"], "data": _png_bytes(search_crop)})
+        files.append({"path": fields["side_marker_search_crop_path"], "data": _timed_png_bytes(search_crop, performance)})
 
     marker_source = ""
     marker_bbox = []
     marker_crop_bbox = []
-    region_candidate = _scan_chess_marker_component_candidate_from_region(
-        page_image,
-        side_marker_bbox,
-        fields["board_bbox"],
-        source="side_marker_bbox",
-    )
-    if region_candidate:
-        marker_bbox = _coerce_side_marker_bbox(region_candidate.get("marker_bbox"))
-        marker_crop_bbox = _coerce_side_marker_bbox(region_candidate.get("marker_crop_bbox"))
-        marker_source = str(region_candidate.get("source") or "")
-    elif _coerce_side_marker_bbox(side_marker_bbox):
-        marker_bbox = _coerce_side_marker_bbox(side_marker_bbox)
+    candidate = None
+    if marker_assignment is not None:
+        assignment_status = str(marker_assignment.get("marker_assignment_status") or "unassigned")
+        if assignment_status != "unassigned":
+            marker_bbox = _coerce_side_marker_bbox(marker_assignment.get("marker_candidate_bbox"))
+            marker_crop_bbox = _coerce_side_marker_bbox(
+                marker_assignment.get("marker_candidate_crop_bbox")
+            )
+            marker_source = "page_level_assignment"
+    else:
+        region_candidate = _scan_chess_marker_component_candidate_from_region(
+            page_image,
+            side_marker_bbox,
+            fields["board_bbox"],
+            source="side_marker_bbox",
+        )
+        if region_candidate:
+            marker_bbox = _coerce_side_marker_bbox(region_candidate.get("marker_bbox"))
+            marker_crop_bbox = _coerce_side_marker_bbox(region_candidate.get("marker_crop_bbox"))
+            marker_source = str(region_candidate.get("source") or "")
+        elif _coerce_side_marker_bbox(side_marker_bbox):
+            marker_bbox = _coerce_side_marker_bbox(side_marker_bbox)
+            marker_crop_bbox = _scan_chess_padded_marker_bbox(marker_bbox, fields["board_bbox"], page_image.size)
+            marker_source = "side_marker_bbox"
+        candidate = _scan_chess_best_marker_zone_candidate(page_image, fields["board_bbox"], zones)
+    if marker_bbox and not marker_crop_bbox:
         marker_crop_bbox = _scan_chess_padded_marker_bbox(marker_bbox, fields["board_bbox"], page_image.size)
-        marker_source = "side_marker_bbox"
-    candidate = _scan_chess_best_marker_zone_candidate(page_image, fields["board_bbox"], zones)
     if not marker_bbox and candidate and candidate.get("status") == "trusted_marker":
         marker_bbox = _coerce_side_marker_bbox(candidate.get("marker_bbox"))
         marker_crop_bbox = _coerce_side_marker_bbox(candidate.get("marker_crop_bbox"))
@@ -5523,7 +5729,7 @@ def _scan_chess_two_crop_review_artifacts(
             fields["side_to_move_confidence"] = marker_quality.get("confidence", 0.0)
         marker_crop = _crop_bbox_from_image(page_image, fields["marker_crop_bbox"])
         if marker_crop is not None:
-            files.append({"path": fields["side_marker_crop_path"], "data": _png_bytes(marker_crop)})
+            files.append({"path": fields["side_marker_crop_path"], "data": _timed_png_bytes(marker_crop, performance)})
             fields["side_marker_review_crop_path"] = fields["side_marker_crop_path"]
             fields["side_marker_review_crop_kind"] = (
                 "detected_marker_bbox" if marker_quality.get("decision") == "pass" else "detected_marker_bbox_quality_failed"
@@ -5552,6 +5758,10 @@ def _scan_chess_two_crop_review_artifacts(
         fields["side_marker_review_crop_path"] = fields["side_marker_search_crop_path"]
         fields["side_marker_review_crop_kind"] = "marker_search_zone_preview"
 
+    marker_elapsed = time.perf_counter() - marker_started
+    marker_png_elapsed = float(performance["png_encoding_seconds"]) - marker_png_seconds_before
+    performance["marker_analysis_seconds"] = max(0.0, marker_elapsed - marker_png_elapsed)
+
     if fields["board_crop_quality"] != "pass":
         fields["manual_review_required"] = True
         fields["manual_review_reason"] = "bad_crop"
@@ -5565,13 +5775,21 @@ def _scan_chess_two_crop_review_artifacts(
         marker_crop_quality=str(fields.get("marker_crop_quality") or ""),
     )
     if overlay is not None:
-        files.append({"path": fields["debug_overlay_path"], "data": _png_bytes(overlay)})
+        files.append({"path": fields["debug_overlay_path"], "data": _timed_png_bytes(overlay, performance)})
     else:
         fields["debug_overlay_path"] = ""
+    performance["total_seconds"] = time.perf_counter() - total_started
+    fields["two_crop_performance"] = _rounded_two_crop_performance(performance)
     return fields, files
 
 
-def _scan_chess_board_crop_quality(page_image: Image.Image, board_bbox: Any) -> dict[str, Any]:
+def _scan_chess_board_crop_quality(
+    page_image: Image.Image,
+    board_bbox: Any,
+    *,
+    board_analysis: _ScanChessBoardAnalysis | None = None,
+    performance: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     board = _coerce_side_marker_bbox(board_bbox)
     box = _bbox_to_int_box(board, page_image.size)
     reasons: list[str] = []
@@ -5590,7 +5808,22 @@ def _scan_chess_board_crop_quality(page_image: Image.Image, board_bbox: Any) -> 
     if box[0] <= 0 or box[1] <= 0 or box[2] >= page_image.width or box[3] >= page_image.height:
         reasons.append("board_cut_off")
     crop = page_image.crop(box).convert("RGB")
-    local_tight = _scan_chess_tight_board_box_in_crop(crop)
+    fallback_reason = ""
+    if board_analysis is None or board_analysis.selected_box != box:
+        fallback_reason = "board_analysis_missing_or_mismatch"
+    elif board_analysis.local_tight_box is not None and _scan_chess_single_pass_needs_fallback(
+        crop,
+        performance=performance,
+    ):
+        fallback_reason = "residual_board_candidate_gain"
+    local_tight = None
+    if fallback_reason:
+        if performance is not None:
+            performance["board_analysis_mode"] = "legacy_fallback"
+            performance["legacy_localization_fallback_used"] = True
+            performance["legacy_localization_fallback_reason"] = fallback_reason
+        _increment_two_crop_metric(performance, "legacy_localization_fallback_count")
+        local_tight = _scan_chess_tight_board_box_in_crop(crop, performance=performance)
     if local_tight is not None:
         reasons.extend(_scan_chess_board_margin_reasons(crop, local_tight))
     reasons = sorted(set(reasons))
@@ -5602,6 +5835,55 @@ def _scan_chess_board_crop_quality(page_image: Image.Image, board_bbox: Any) -> 
         "cell_size_y": round(cell_size_y, 2),
         "reason_codes": {reason: reasons.count(reason) for reason in sorted(BOARD_CROP_REASON_CODES) if reason in reasons},
     }
+
+
+def _scan_chess_single_pass_needs_fallback(
+    crop: Image.Image,
+    *,
+    performance: dict[str, Any] | None = None,
+) -> bool:
+    started = time.perf_counter()
+    grayscale = ImageOps.autocontrast(crop.convert("L"))
+    width, height = grayscale.size
+    min_axis = min(width, height)
+    if min_axis < 64:
+        if performance is not None:
+            performance["ambiguity_probe_seconds"] = float(
+                performance.get("ambiguity_probe_seconds") or 0.0
+            ) + (time.perf_counter() - started)
+        return False
+    baseline_score = _scan_chess_board_square_score(grayscale)
+    ambiguous = False
+    for ratio in (0.96, 0.92):
+        side = int(round(min_axis * ratio))
+        if side < 64 or side >= min_axis:
+            continue
+        candidates = {
+            (0, 0),
+            (max(0, width - side), 0),
+            (0, max(0, height - side)),
+            (max(0, width - side), max(0, height - side)),
+            (max(0, (width - side) // 2), max(0, (height - side) // 2)),
+        }
+        for left, top in candidates:
+            _increment_two_crop_metric(performance, "ambiguity_probe_evaluations")
+            score = _scan_chess_board_square_score(
+                grayscale.crop((left, top, left + side, top + side))
+            )
+            center_penalty = (
+                abs((left + side / 2.0) - width / 2.0) / max(1.0, float(width))
+                + abs((top + side / 2.0) - height / 2.0) / max(1.0, float(height))
+            ) * 0.08
+            if score - center_penalty >= baseline_score + 0.05:
+                ambiguous = True
+                break
+        if ambiguous:
+            break
+    if performance is not None:
+        performance["ambiguity_probe_seconds"] = float(
+            performance.get("ambiguity_probe_seconds") or 0.0
+        ) + (time.perf_counter() - started)
+    return ambiguous
 
 
 def _scan_chess_marker_search_zones(board_bbox: Any, page_size: tuple[int, int]) -> dict[str, list[float]]:
@@ -5844,6 +6126,638 @@ def _scan_chess_best_marker_zone_candidate(
     return max(trusted, key=lambda item: float(item.get("score") or 0.0))
 
 
+PAGE_MARKER_ASSIGNMENT_SCHEMA = "kindlemaster.chess.page_marker_assignment.v1"
+PAGE_MARKER_UNASSIGNED_COST = 2.75
+
+
+def _scan_chess_page_marker_pipeline(
+    page_image: Image.Image,
+    boards: Iterable[Mapping[str, Any]],
+    *,
+    page_number: int,
+    top_k: int = 0,
+) -> dict[str, Any]:
+    """Detect marker candidates once and assign each candidate to at most one board."""
+    normalized_boards = _scan_chess_normalized_page_boards(boards)
+    candidates, files = _scan_chess_page_marker_candidates(
+        page_image,
+        normalized_boards,
+        page_number=page_number,
+        top_k=top_k,
+    )
+    assignment = _scan_chess_assign_page_marker_candidates(
+        normalized_boards,
+        candidates,
+        page_size=page_image.size,
+    )
+    return {
+        "schema": PAGE_MARKER_ASSIGNMENT_SCHEMA,
+        "page": max(1, int(page_number or 1)),
+        "board_count": len(normalized_boards),
+        "marker_candidate_count": len(candidates),
+        "marker_candidate_crop_count": len(
+            [candidate for candidate in candidates if candidate.get("marker_candidate_crop_path")]
+        ),
+        "candidates": assignment["candidates"],
+        "assignments": assignment["assignments"],
+        "cost_matrix": assignment["cost_matrix"],
+        "summary": assignment["summary"],
+        "files": files,
+    }
+
+
+def _scan_chess_page_marker_runtime_summary(
+    pages: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    page_rows = [dict(page) for page in pages]
+    summaries = [
+        dict(page.get("summary") or {})
+        for page in page_rows
+        if isinstance(page.get("summary"), Mapping)
+    ]
+    board_count = sum(int(summary.get("board_count") or 0) for summary in summaries)
+    candidate_count = sum(int(summary.get("marker_candidate_count") or 0) for summary in summaries)
+    assigned_count = sum(int(summary.get("assigned_marker_count") or 0) for summary in summaries)
+    confident_count = sum(int(summary.get("confident_ownership_count") or 0) for summary in summaries)
+    duplicate_count = sum(
+        int(summary.get("duplicate_marker_ownership_count") or 0) for summary in summaries
+    )
+    crop_count = sum(
+        len(
+            [
+                candidate
+                for candidate in page.get("candidates") or []
+                if candidate.get("marker_candidate_crop_path")
+            ]
+        )
+        for page in page_rows
+    )
+    return {
+        "page_marker_detection_run_count": len(page_rows),
+        "page_marker_board_count": board_count,
+        "marker_candidate_count": candidate_count,
+        "marker_candidate_crop_count": crop_count,
+        "marker_candidate_assigned_count": assigned_count,
+        "marker_candidate_recall_proxy_rate": round(assigned_count / board_count, 4)
+        if board_count
+        else 0.0,
+        "marker_ownership_confident_count": confident_count,
+        "marker_ownership_confident_rate": round(confident_count / assigned_count, 4)
+        if assigned_count
+        else 0.0,
+        "duplicate_marker_ownership_count": duplicate_count,
+    }
+
+
+def _scan_chess_normalized_page_boards(
+    boards: Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for index, board in enumerate(boards, start=1):
+        bbox = _coerce_side_marker_bbox(board.get("bbox") or board.get("board_bbox"))
+        if not bbox:
+            continue
+        board_id = str(board.get("diagram_id") or board.get("id") or f"diagram_{index:03d}")
+        normalized.append(
+            {
+                "diagram_id": board_id,
+                "bbox": bbox,
+                "board_index": int(board.get("board_index") or index),
+            }
+        )
+    normalized.sort(key=lambda item: (item["bbox"][1], item["bbox"][0], item["diagram_id"]))
+    return normalized
+
+
+def _scan_chess_page_marker_candidates(
+    page_image: Image.Image,
+    boards: Iterable[Mapping[str, Any]],
+    *,
+    page_number: int,
+    top_k: int = 0,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    normalized_boards = _scan_chess_normalized_page_boards(boards)
+    if not normalized_boards:
+        return [], []
+    allowed = np.zeros((page_image.height, page_image.width), dtype=bool)
+    board_boxes = [board["bbox"] for board in normalized_boards]
+    cell_sizes = [
+        min(max(1.0, bbox[2] - bbox[0]), max(1.0, bbox[3] - bbox[1])) / 8.0
+        for bbox in board_boxes
+    ]
+    for board_bbox in board_boxes:
+        for zone_bbox in _scan_chess_marker_search_zones(board_bbox, page_image.size).values():
+            zone = _bbox_to_int_box(zone_bbox, page_image.size)
+            if zone is not None:
+                allowed[zone[1] : zone[3], zone[0] : zone[2]] = True
+    for board_bbox in board_boxes:
+        board = _bbox_to_int_box(board_bbox, page_image.size)
+        if board is not None:
+            allowed[board[1] : board[3], board[0] : board[2]] = False
+
+    grayscale = ImageOps.autocontrast(page_image.convert("L"))
+    components = _scan_chess_page_dark_components((np.asarray(grayscale) < 120) & allowed)
+    plausible: list[dict[str, Any]] = []
+    for component in components:
+        raw_bbox = component.get("bbox")
+        if not isinstance(raw_bbox, (list, tuple)) or len(raw_bbox) != 4:
+            continue
+        x0, y0, x1, y1 = [float(value) for value in raw_bbox]
+        width = max(1.0, x1 - x0 + 1.0)
+        height = max(1.0, y1 - y0 + 1.0)
+        aspect = width / max(1.0, height)
+        density = float(component.get("density") or 0.0)
+        matching_cells = [
+            cell
+            for cell in cell_sizes
+            if width >= max(6.0, cell * 0.18)
+            and height >= max(6.0, cell * 0.18)
+            and width <= max(30.0, cell * 2.25)
+            and height <= max(30.0, cell * 2.25)
+        ]
+        if not matching_cells or not (0.45 <= aspect <= 2.1) or not (0.06 <= density <= 0.88):
+            continue
+        marker_bbox = [round(x0, 2), round(y0, 2), round(x1, 2), round(y1, 2)]
+        if any(
+            _bbox_overlap_ratio(tuple(marker_bbox), tuple(board_bbox)) > 0.02
+            for board_bbox in board_boxes
+        ):
+            continue
+        nearest_board = min(
+            normalized_boards,
+            key=lambda board: _scan_chess_bbox_edge_distance(tuple(marker_bbox), tuple(board["bbox"])),
+        )
+        crop_bbox = _scan_chess_padded_marker_bbox(marker_bbox, nearest_board["bbox"], page_image.size)
+        crop = _crop_bbox_from_image(page_image, crop_bbox)
+        if crop is None:
+            continue
+        classification = classify_scan_chess_side_marker_crop(crop)
+        classifier_status = str(classification.get("status") or "marker_missing")
+        candidate_class = str(
+            classification.get("shape")
+            or ("white" if classification.get("side") == "w" else "black" if classification.get("side") == "b" else "unclear")
+        )
+        confidence = round(float(classification.get("confidence") or 0.0), 4)
+        compactness = min(1.0, float(component.get("area") or 0.0) / max(1.0, width * height))
+        shape_score = 1.0 if classifier_status == "trusted_marker" else 0.65 if classifier_status != "marker_missing" else 0.3
+        plausibility = round(
+            0.35 * min(1.0, float(component.get("area") or 0.0) / 180.0)
+            + 0.25 * compactness
+            + 0.20 * (1.0 - min(1.0, abs(1.0 - aspect)))
+            + 0.20 * shape_score,
+            4,
+        )
+        plausible.append(
+            {
+                "marker_candidate_bbox": marker_bbox,
+                "marker_candidate_crop_bbox": crop_bbox,
+                "marker_candidate_features": {
+                    "area": round(float(component.get("area") or 0.0), 2),
+                    "density": round(density, 4),
+                    "width": round(width, 2),
+                    "height": round(height, 2),
+                    "aspect_ratio": round(aspect, 4),
+                    "plausibility": plausibility,
+                },
+                "marker_candidate_class": candidate_class,
+                "marker_candidate_classifier_status": classifier_status,
+                "marker_candidate_side": str(classification.get("side") or ""),
+                "marker_candidate_confidence": confidence,
+                "marker_candidate_plausibility": plausibility,
+                "marker_candidate_source": "page_level_dark_components",
+            }
+        )
+    candidate_limit = int(top_k or 0) or max(12, len(normalized_boards) * 8)
+    plausible.sort(
+        key=lambda item: (
+            float(item.get("marker_candidate_plausibility") or 0.0),
+            float(item.get("marker_candidate_confidence") or 0.0),
+        ),
+        reverse=True,
+    )
+    selected = plausible[:candidate_limit]
+    selected.sort(
+        key=lambda item: (
+            item["marker_candidate_bbox"][1],
+            item["marker_candidate_bbox"][0],
+        )
+    )
+    files: list[dict[str, Any]] = []
+    page_value = max(1, int(page_number or 1))
+    for index, candidate in enumerate(selected, start=1):
+        candidate_id = f"p{page_value:03d}_m{index:03d}"
+        crop_path = f"review/chess_fen/marker_candidates/page-{page_value:03d}/{candidate_id}.png"
+        candidate["marker_candidate_id"] = candidate_id
+        candidate["marker_candidate_crop_path"] = crop_path
+        candidate["marker_assignment_status"] = "unassigned"
+        candidate["marker_assignment_confidence"] = 0.0
+        candidate["marker_assignment_runner_up_margin"] = 0.0
+        candidate["marker_assignment_rejected_reasons"] = []
+        crop = _crop_bbox_from_image(page_image, candidate["marker_candidate_crop_bbox"])
+        if crop is not None:
+            files.append({"path": crop_path, "data": _png_bytes(crop)})
+    return selected, files
+
+
+def _scan_chess_page_dark_components(mask: Any) -> list[dict[str, float]]:
+    """Use the optional CV backend for the full-page pass and keep a deterministic fallback."""
+    try:
+        import cv2  # type: ignore
+
+        count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(
+            np.asarray(mask, dtype=np.uint8),
+            connectivity=8,
+        )
+        components: list[dict[str, float]] = []
+        for index in range(1, int(count)):
+            x, y, width, height, area = [int(value) for value in stats[index]]
+            density = area / max(1, width * height)
+            components.append(
+                {
+                    "area": float(area),
+                    "density": float(density),
+                    "bbox": (
+                        float(x),
+                        float(y),
+                        float(x + width - 1),
+                        float(y + height - 1),
+                    ),
+                    "width": float(width),
+                    "height": float(height),
+                    "score": float(area),
+                }
+            )
+        return components
+    except Exception:
+        return _scan_chess_sparse_dark_components(mask)
+
+
+def _scan_chess_sparse_dark_components(mask: Any) -> list[dict[str, float]]:
+    remaining = {
+        (int(x), int(y))
+        for y, x in np.argwhere(np.asarray(mask, dtype=bool))
+    }
+    components: list[dict[str, float]] = []
+    while remaining:
+        start_x, start_y = remaining.pop()
+        stack = [(start_x, start_y)]
+        area = 0
+        min_x = max_x = start_x
+        min_y = max_y = start_y
+        while stack:
+            x, y = stack.pop()
+            area += 1
+            min_x = min(min_x, x)
+            max_x = max(max_x, x)
+            min_y = min(min_y, y)
+            max_y = max(max_y, y)
+            for neighbor_x in (x - 1, x, x + 1):
+                for neighbor_y in (y - 1, y, y + 1):
+                    neighbor = (neighbor_x, neighbor_y)
+                    if neighbor in remaining:
+                        remaining.remove(neighbor)
+                        stack.append(neighbor)
+        width = max_x - min_x + 1
+        height = max_y - min_y + 1
+        components.append(
+            {
+                "area": float(area),
+                "density": float(area / max(1, width * height)),
+                "bbox": (float(min_x), float(min_y), float(max_x), float(max_y)),
+                "width": float(width),
+                "height": float(height),
+                "score": float(area),
+            }
+        )
+    return components
+
+
+def _scan_chess_assign_page_marker_candidates(
+    boards: Iterable[Mapping[str, Any]],
+    candidates: Iterable[Mapping[str, Any]],
+    *,
+    page_size: tuple[int, int],
+) -> dict[str, Any]:
+    normalized_boards = _scan_chess_normalized_page_boards(boards)
+    normalized_candidates = [dict(candidate) for candidate in candidates]
+    real_candidate_count = len(normalized_candidates)
+    cost_matrix: list[list[float]] = []
+    cost_details: list[list[dict[str, Any]]] = []
+    for board in normalized_boards:
+        row: list[float] = []
+        detail_row: list[dict[str, Any]] = []
+        for candidate in normalized_candidates:
+            detail = _scan_chess_board_marker_assignment_cost(
+                board["bbox"],
+                candidate,
+                page_size=page_size,
+            )
+            row.append(float(detail["cost"]))
+            detail_row.append(detail)
+        row.extend([PAGE_MARKER_UNASSIGNED_COST] * len(normalized_boards))
+        cost_matrix.append(row)
+        cost_details.append(detail_row)
+    selected_columns = _scan_chess_min_cost_columns(cost_matrix)
+    assignments: list[dict[str, Any]] = []
+    assigned_candidate_ids: set[str] = set()
+    for board_index, board in enumerate(normalized_boards):
+        column = selected_columns[board_index] if board_index < len(selected_columns) else -1
+        if 0 <= column < real_candidate_count:
+            candidate = normalized_candidates[column]
+            detail = cost_details[board_index][column]
+            candidate_id = str(candidate.get("marker_candidate_id") or "")
+            candidate_costs = sorted(
+                float(cost_details[board_index][index]["cost"])
+                for index in range(real_candidate_count)
+                if index != column
+            )
+            runner_up_cost = candidate_costs[0] if candidate_costs else PAGE_MARKER_UNASSIGNED_COST
+            runner_up_cost = min(runner_up_cost, PAGE_MARKER_UNASSIGNED_COST)
+            runner_up_margin = max(0.0, runner_up_cost - float(detail["cost"]))
+            competing_candidates = [
+                normalized_candidates[index]
+                for index in range(real_candidate_count)
+                if index != column
+                and float(cost_details[board_index][index]["cost"])
+                <= float(detail["cost"]) + 0.12
+            ]
+            competing_sides = sorted(
+                {
+                    str(item.get("marker_candidate_side") or "")
+                    for item in [candidate, *competing_candidates]
+                    if str(item.get("marker_candidate_side") or "") in {"w", "b"}
+                }
+            )
+            other_owner_costs = [
+                float(cost_details[index][column]["cost"])
+                for index in range(len(normalized_boards))
+                if index != board_index
+            ]
+            nearest_other_owner = min(other_owner_costs) if other_owner_costs else PAGE_MARKER_UNASSIGNED_COST
+            ownership_margin = max(0.0, nearest_other_owner - float(detail["cost"]))
+            assignment_confidence = _scan_chess_assignment_confidence(
+                float(detail["cost"]),
+                runner_up_margin=runner_up_margin,
+                ownership_margin=ownership_margin,
+            )
+            rejected_reasons = list(detail.get("rejected_reasons") or [])
+            status = "assigned"
+            if float(detail["cost"]) >= PAGE_MARKER_UNASSIGNED_COST:
+                status = "unassigned"
+                rejected_reasons.append("assignment_cost_above_threshold")
+            elif ownership_margin < 0.12:
+                status = "needs_review_ambiguous_ownership"
+                rejected_reasons.append("ownership_margin_too_small")
+            elif runner_up_margin < 0.12:
+                status = (
+                    "needs_review_candidate_conflict"
+                    if len(competing_sides) > 1
+                    else "needs_review_ambiguous_candidate"
+                )
+                rejected_reasons.append("candidate_runner_up_margin_too_small")
+            assignment = {
+                "diagram_id": board["diagram_id"],
+                **_scan_chess_empty_marker_assignment_fields(),
+                **{
+                    key: candidate.get(key)
+                    for key in (
+                        "marker_candidate_id",
+                        "marker_candidate_bbox",
+                        "marker_candidate_crop_bbox",
+                        "marker_candidate_crop_path",
+                        "marker_candidate_features",
+                        "marker_candidate_class",
+                        "marker_candidate_classifier_status",
+                        "marker_candidate_side",
+                        "marker_candidate_confidence",
+                    )
+                },
+                "marker_assignment_status": status,
+                "marker_assignment_confidence": assignment_confidence,
+                "marker_assignment_runner_up_margin": round(runner_up_margin, 4),
+                "marker_assignment_ownership_margin": round(ownership_margin, 4),
+                "marker_assignment_cost": round(float(detail["cost"]), 4),
+                "marker_assignment_zone": str(detail.get("zone") or ""),
+                "marker_assignment_competing_candidate_ids": [
+                    str(item.get("marker_candidate_id") or "")
+                    for item in competing_candidates
+                    if str(item.get("marker_candidate_id") or "")
+                ],
+                "marker_assignment_competing_candidate_sides": competing_sides,
+                "marker_assignment_rejected_reasons": sorted(set(rejected_reasons)),
+            }
+            if status != "unassigned" and candidate_id:
+                assigned_candidate_ids.add(candidate_id)
+                candidate.update(
+                    {
+                        "marker_assignment_status": status,
+                        "marker_assignment_confidence": assignment_confidence,
+                        "marker_assignment_runner_up_margin": round(runner_up_margin, 4),
+                        "marker_assignment_ownership_margin": round(ownership_margin, 4),
+                        "marker_assignment_rejected_reasons": sorted(set(rejected_reasons)),
+                        "assigned_diagram_id": board["diagram_id"],
+                    }
+                )
+            assignments.append(assignment)
+            continue
+        assignments.append(
+            {
+                "diagram_id": board["diagram_id"],
+                **_scan_chess_empty_marker_assignment_fields(),
+                "marker_assignment_rejected_reasons": ["no_candidate_selected_by_global_assignment"],
+            }
+        )
+    for candidate in normalized_candidates:
+        candidate_id = str(candidate.get("marker_candidate_id") or "")
+        if candidate_id in assigned_candidate_ids:
+            continue
+        candidate["marker_assignment_status"] = "unassigned"
+        candidate["marker_assignment_confidence"] = 0.0
+        candidate["marker_assignment_runner_up_margin"] = 0.0
+        candidate["marker_assignment_rejected_reasons"] = ["not_selected_by_global_assignment"]
+    assigned = [item for item in assignments if item.get("marker_assignment_status") != "unassigned"]
+    owned_ids = [str(item.get("marker_candidate_id") or "") for item in assigned if item.get("marker_candidate_id")]
+    confident = [item for item in assigned if item.get("marker_assignment_status") == "assigned"]
+    return {
+        "assignments": assignments,
+        "candidates": normalized_candidates,
+        "cost_matrix": [
+            {
+                "diagram_id": board["diagram_id"],
+                "candidate_costs": {
+                    str(normalized_candidates[index].get("marker_candidate_id") or index): round(cost, 4)
+                    for index, cost in enumerate(row[:real_candidate_count])
+                },
+            }
+            for board, row in zip(normalized_boards, cost_matrix)
+        ],
+        "summary": {
+            "board_count": len(normalized_boards),
+            "marker_candidate_count": real_candidate_count,
+            "assigned_marker_count": len(assigned),
+            "confident_ownership_count": len(confident),
+            "unassigned_board_count": len(normalized_boards) - len(assigned),
+            "unassigned_candidate_count": real_candidate_count - len(set(owned_ids)),
+            "duplicate_marker_ownership_count": len(owned_ids) - len(set(owned_ids)),
+            "marker_candidate_assignment_rate": round(len(assigned) / len(normalized_boards), 4)
+            if normalized_boards
+            else 0.0,
+            "ownership_confident_rate": round(len(confident) / len(assigned), 4) if assigned else 0.0,
+        },
+    }
+
+
+def _scan_chess_empty_marker_assignment_fields() -> dict[str, Any]:
+    return {
+        "marker_candidate_id": "",
+        "marker_candidate_bbox": [],
+        "marker_candidate_crop_bbox": [],
+        "marker_candidate_crop_path": "",
+        "marker_candidate_features": {},
+        "marker_candidate_class": "",
+        "marker_candidate_classifier_status": "",
+        "marker_candidate_side": "",
+        "marker_candidate_confidence": 0.0,
+        "marker_assignment_status": "unassigned",
+        "marker_assignment_confidence": 0.0,
+        "marker_assignment_runner_up_margin": 0.0,
+        "marker_assignment_ownership_margin": 0.0,
+        "marker_assignment_cost": PAGE_MARKER_UNASSIGNED_COST,
+        "marker_assignment_zone": "",
+        "marker_assignment_competing_candidate_ids": [],
+        "marker_assignment_competing_candidate_sides": [],
+        "marker_assignment_rejected_reasons": [],
+    }
+
+
+def _scan_chess_apply_page_marker_assignment(
+    payload: Mapping[str, Any],
+    assignment: Mapping[str, Any],
+    candidates: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    updated = dict(payload)
+    updated["side_marker_candidates"] = [dict(candidate) for candidate in candidates]
+    updated.update(dict(assignment))
+    warnings = {str(warning) for warning in updated.get("warnings") or [] if str(warning)}
+    warnings.update({"side_to_move_marker_probes_checked", "side_to_move_marker_page_assignment_checked"})
+    status = str(assignment.get("marker_assignment_status") or "unassigned")
+    if status == "needs_review_candidate_conflict":
+        warnings.update({"side_to_move_marker_detected", "side_to_move_marker_local_conflict"})
+    elif status in {"needs_review_ambiguous_candidate", "needs_review_ambiguous_ownership"}:
+        warnings.update({"side_to_move_marker_detected", "side_to_move_marker_local_ambiguous"})
+    updated["warnings"] = sorted(warnings)
+    if status.startswith("needs_review_"):
+        updated["fen"] = ""
+        updated["requires_review"] = True
+        updated["manual_review_required"] = True
+        updated["manual_review_reason"] = (
+            "marker_conflict" if status == "needs_review_candidate_conflict" else "unclear_symbol"
+        )
+        updated["side_to_move"] = "unknown"
+        updated["side_to_move_status"] = "unknown"
+        updated["side_to_move_evidence"] = "none"
+    updated.update(_scan_chess_side_marker_metadata_from_payload(updated))
+    return updated
+
+
+def _scan_chess_board_marker_assignment_cost(
+    board_bbox: list[float],
+    candidate: Mapping[str, Any],
+    *,
+    page_size: tuple[int, int],
+) -> dict[str, Any]:
+    marker_bbox = _coerce_side_marker_bbox(candidate.get("marker_candidate_bbox"))
+    if not marker_bbox:
+        return {"cost": PAGE_MARKER_UNASSIGNED_COST + 10.0, "zone": "", "rejected_reasons": ["candidate_bbox_missing"]}
+    cell = min(max(1.0, board_bbox[2] - board_bbox[0]), max(1.0, board_bbox[3] - board_bbox[1])) / 8.0
+    distance = _scan_chess_bbox_edge_distance(tuple(marker_bbox), tuple(board_bbox))
+    normalized_distance = distance / max(1.0, cell)
+    zones = _scan_chess_marker_search_zones(board_bbox, page_size)
+    zone = _scan_chess_selected_marker_zone(marker_bbox, zones)
+    rejected_reasons: list[str] = []
+    if not zone:
+        rejected_reasons.append("outside_board_marker_search_zones")
+    if normalized_distance > 2.25:
+        rejected_reasons.append("candidate_too_far_from_board")
+    cost = normalized_distance + (0.0 if zone else 1.15)
+    if "candidate_too_far_from_board" in rejected_reasons:
+        cost += 6.0
+    return {
+        "cost": round(cost, 6),
+        "zone": zone,
+        "distance": round(distance, 4),
+        "normalized_distance": round(normalized_distance, 4),
+        "rejected_reasons": rejected_reasons,
+    }
+
+
+def _scan_chess_assignment_confidence(
+    cost: float,
+    *,
+    runner_up_margin: float,
+    ownership_margin: float,
+) -> float:
+    distance_score = max(0.0, 1.0 - cost / PAGE_MARKER_UNASSIGNED_COST)
+    runner_score = min(1.0, max(0.0, runner_up_margin) / 1.25)
+    ownership_score = min(1.0, max(0.0, ownership_margin) / 1.25)
+    return round(0.55 * distance_score + 0.20 * runner_score + 0.25 * ownership_score, 4)
+
+
+def _scan_chess_min_cost_columns(costs: list[list[float]]) -> list[int]:
+    """Return an exact minimum-cost rectangular assignment (Hungarian algorithm)."""
+    if not costs:
+        return []
+    row_count = len(costs)
+    column_count = max((len(row) for row in costs), default=0)
+    if column_count < row_count:
+        raise ValueError("assignment matrix must have at least as many columns as rows")
+    matrix = [row + [PAGE_MARKER_UNASSIGNED_COST] * (column_count - len(row)) for row in costs]
+    u = [0.0] * (row_count + 1)
+    v = [0.0] * (column_count + 1)
+    p = [0] * (column_count + 1)
+    way = [0] * (column_count + 1)
+    for row_index in range(1, row_count + 1):
+        p[0] = row_index
+        column0 = 0
+        min_values = [float("inf")] * (column_count + 1)
+        used = [False] * (column_count + 1)
+        while True:
+            used[column0] = True
+            current_row = p[column0]
+            delta = float("inf")
+            column1 = 0
+            for column in range(1, column_count + 1):
+                if used[column]:
+                    continue
+                current = matrix[current_row - 1][column - 1] - u[current_row] - v[column]
+                if current < min_values[column]:
+                    min_values[column] = current
+                    way[column] = column0
+                if min_values[column] < delta:
+                    delta = min_values[column]
+                    column1 = column
+            for column in range(column_count + 1):
+                if used[column]:
+                    u[p[column]] += delta
+                    v[column] -= delta
+                else:
+                    min_values[column] -= delta
+            column0 = column1
+            if p[column0] == 0:
+                break
+        while True:
+            column1 = way[column0]
+            p[column0] = p[column1]
+            column0 = column1
+            if column0 == 0:
+                break
+    result = [-1] * row_count
+    for column in range(1, column_count + 1):
+        if p[column] > 0:
+            result[p[column] - 1] = column - 1
+    return result
+
+
 def _scan_chess_padded_marker_bbox(marker_bbox: Any, board_bbox: Any, image_size: tuple[int, int]) -> list[float]:
     marker = _coerce_side_marker_bbox(marker_bbox)
     board = _coerce_side_marker_bbox(board_bbox)
@@ -6023,6 +6937,7 @@ def _apply_scan_chess_two_crop_quality_gate(payload: dict[str, Any], fields: Map
     ).lower() == "marker"
     if board_failed:
         warnings.add("board_crop_quality_failed")
+        updated["board_placement_status"] = "review"
     if marker_failed:
         warnings.add("marker_crop_quality_failed")
     if board_failed or (marker_failed and trusted_side):
@@ -6030,7 +6945,20 @@ def _apply_scan_chess_two_crop_quality_gate(payload: dict[str, Any], fields: Map
         updated["requires_review"] = True
         updated["fen_suppressed_reason"] = "crop_quality_gate"
         updated["full_fen_runtime_status"] = "FEN_REVIEW_REQUIRED"
-        if trusted_side:
+        updated["full_fen_allowed"] = False
+        raw_blockers = updated.get("full_fen_blockers") or []
+        if isinstance(raw_blockers, (str, bytes)):
+            raw_blockers = [raw_blockers]
+        blockers = [str(blocker) for blocker in raw_blockers if str(blocker)]
+        if board_failed:
+            blockers.extend(["board_placement_not_accepted", "board_crop_quality_failed"])
+        if marker_failed:
+            blockers.append("marker_semantic_not_trusted")
+        updated["full_fen_blockers"] = list(dict.fromkeys(blockers))
+        updated["full_fen_blocker"] = (
+            updated["full_fen_blockers"][0] if updated["full_fen_blockers"] else ""
+        )
+        if marker_failed and trusted_side:
             updated["side_to_move"] = "unknown"
             updated["side_to_move_status"] = "unknown"
             updated["side_to_move_evidence"] = "none"
@@ -6041,7 +6969,9 @@ def _apply_scan_chess_two_crop_quality_gate(payload: dict[str, Any], fields: Map
 
 
 def _scan_chess_two_crop_trusted_side(fields: Mapping[str, Any]) -> str:
-    if str(fields.get("board_crop_quality") or "").lower() != "pass":
+    if fields.get("marker_candidate_id") and str(
+        fields.get("marker_assignment_status") or ""
+    ) != "assigned":
         return ""
     if str(fields.get("marker_crop_quality") or "").lower() != "pass":
         return ""
@@ -6162,6 +7092,31 @@ def _png_bytes(image: Image.Image) -> bytes:
     output = io.BytesIO()
     image.save(output, format="PNG")
     return output.getvalue()
+
+
+def _timed_png_bytes(image: Image.Image, performance: dict[str, Any]) -> bytes:
+    started = time.perf_counter()
+    data = _png_bytes(image)
+    performance["png_encoding_seconds"] = float(performance.get("png_encoding_seconds") or 0.0) + (
+        time.perf_counter() - started
+    )
+    _increment_two_crop_metric(performance, "png_encoded_artifact_count")
+    _increment_two_crop_metric(performance, "png_encoded_bytes", len(data))
+    return data
+
+
+def _rounded_two_crop_performance(performance: Mapping[str, Any]) -> dict[str, Any]:
+    rounded = dict(performance)
+    for key in (
+        "localization_seconds",
+        "marker_analysis_seconds",
+        "png_encoding_seconds",
+        "file_write_seconds",
+        "ambiguity_probe_seconds",
+        "total_seconds",
+    ):
+        rounded[key] = round(float(rounded.get(key) or 0.0), 6)
+    return rounded
 
 
 def _scan_chess_debug_overlay(
@@ -6729,7 +7684,13 @@ def _scan_chess_side_marker_metadata_from_payload(payload: Mapping[str, Any]) ->
         confidence_value: float | str = round(float(confidence), 3)
     except (TypeError, ValueError):
         confidence_value = ""
+    existing_trace = (
+        dict(payload.get("side_marker_assignment_trace") or {})
+        if isinstance(payload.get("side_marker_assignment_trace"), Mapping)
+        else {}
+    )
     trace = {
+        **existing_trace,
         "candidate_count": len(candidates),
         "candidate_roles": [
             str(candidate.get("role") or candidate.get("zone") or candidate.get("source") or "")
@@ -6740,6 +7701,18 @@ def _scan_chess_side_marker_metadata_from_payload(payload: Mapping[str, Any]) ->
         "warnings": sorted(warnings),
         "marker_crop_fail_reason": list(payload.get("marker_crop_fail_reason") or []),
         "rejected_candidate_reasons": [],
+        "marker_candidate_id": str(payload.get("marker_candidate_id") or ""),
+        "marker_assignment_status": str(payload.get("marker_assignment_status") or "unassigned"),
+        "marker_assignment_confidence": payload.get("marker_assignment_confidence") or 0.0,
+        "marker_assignment_runner_up_margin": payload.get(
+            "marker_assignment_runner_up_margin"
+        ) or 0.0,
+        "marker_assignment_ownership_margin": payload.get(
+            "marker_assignment_ownership_margin"
+        ) or 0.0,
+        "marker_assignment_rejected_reasons": list(
+            payload.get("marker_assignment_rejected_reasons") or []
+        ),
     }
     if payload.get("side_marker_probe_role"):
         trace["selected_candidate_role"] = str(payload.get("side_marker_probe_role") or "")
@@ -6757,12 +7730,21 @@ def _scan_chess_side_marker_metadata_from_payload(payload: Mapping[str, Any]) ->
             trace["nearest_candidate_side"] = nearest.get("detected_side") or nearest.get("side_candidate") or ""
         if isinstance(selected, Mapping):
             selected_role = str(selected.get("role") or selected.get("zone") or selected.get("source") or "")
-            selected_side = str(selected.get("detected_side") or selected.get("side_candidate") or "")
+            selected_side = str(
+                selected.get("detected_side")
+                or selected.get("side_candidate")
+                or selected.get("marker_candidate_side")
+                or ""
+            )
             trace["selected_candidate_role"] = selected_role
             trace["selected_candidate_score"] = selected.get("score")
             trace["selected_candidate_density"] = selected.get("density")
             trace["selected_candidate_distance_to_board"] = selected.get("distance_to_board")
-            trace["selected_candidate_bbox"] = _coerce_side_marker_bbox(selected.get("bbox") or selected.get("marker_bbox"))
+            trace["selected_candidate_bbox"] = _coerce_side_marker_bbox(
+                selected.get("bbox")
+                or selected.get("marker_bbox")
+                or selected.get("marker_candidate_bbox")
+            )
             trace["selected_candidate_role"] = selected_role
             trace["selected_candidate_side"] = selected_side
             trace["detected_side"] = selected_side
@@ -6773,7 +7755,12 @@ def _scan_chess_side_marker_metadata_from_payload(payload: Mapping[str, Any]) ->
                 if not isinstance(candidate, Mapping) or candidate is selected:
                     continue
                 role = str(candidate.get("role") or candidate.get("zone") or candidate.get("source") or "")
-                side_candidate = str(candidate.get("detected_side") or candidate.get("side_candidate") or "")
+                side_candidate = str(
+                    candidate.get("detected_side")
+                    or candidate.get("side_candidate")
+                    or candidate.get("marker_candidate_side")
+                    or ""
+                )
                 classifier_status = str(candidate.get("marker_classifier_status") or candidate.get("status") or "")
                 if selected_side in {"w", "b"} and side_candidate in {"w", "b"} and side_candidate != selected_side:
                     reason = "opposite_side_candidate"
@@ -6791,12 +7778,16 @@ def _scan_chess_side_marker_metadata_from_payload(payload: Mapping[str, Any]) ->
                         "score": candidate.get("score"),
                         "density": candidate.get("density"),
                         "distance_to_board": candidate.get("distance_to_board"),
-                        "bbox": _coerce_side_marker_bbox(candidate.get("bbox") or candidate.get("marker_bbox")),
+                        "bbox": _coerce_side_marker_bbox(
+                            candidate.get("bbox")
+                            or candidate.get("marker_bbox")
+                            or candidate.get("marker_candidate_bbox")
+                        ),
                     }
                 )
             trace["rejected_candidate_reasons"] = rejected
 
-    return {
+    metadata = {
         "side_to_move": side,
         "side_marker_symbol": SIDE_MARKER_SYMBOLS[symbol_key],
         "side_marker_status": marker_status,
@@ -6805,6 +7796,12 @@ def _scan_chess_side_marker_metadata_from_payload(payload: Mapping[str, Any]) ->
         "side_marker_confidence": confidence_value,
         "side_marker_assignment_trace": trace,
         "strict_fen_side_evidence_trusted": marker_status in SIDE_MARKER_TRUSTED_STATUSES,
+    }
+    from chess_side_to_move_evidence import resolve_marker_semantic_contract
+
+    return {
+        **metadata,
+        **resolve_marker_semantic_contract({**dict(payload), **metadata}),
     }
 
 
@@ -6822,13 +7819,18 @@ def _scan_chess_best_marker_candidate(candidates: Iterable[Mapping[str, Any]]) -
     for candidate in candidates:
         if not isinstance(candidate, Mapping):
             continue
-        if not _coerce_side_marker_bbox(candidate.get("bbox")):
+        if not _coerce_side_marker_bbox(
+            candidate.get("bbox")
+            or candidate.get("marker_bbox")
+            or candidate.get("marker_candidate_bbox")
+        ):
             continue
         has_marker_signal = bool(
             candidate.get("component_bbox")
             or candidate.get("detected_side")
             or candidate.get("side_candidate")
             or candidate.get("detected_shape")
+            or candidate.get("marker_candidate_class")
         )
         if has_marker_signal:
             ranked.append(candidate)
@@ -6836,7 +7838,13 @@ def _scan_chess_best_marker_candidate(candidates: Iterable[Mapping[str, Any]]) -
         return None
 
     def rank(candidate: Mapping[str, Any]) -> tuple[int, float, float]:
-        trusted_signal = 1 if candidate.get("detected_side") in {"w", "b"} or candidate.get("side_candidate") in {"w", "b"} else 0
+        trusted_signal = (
+            1
+            if candidate.get("detected_side") in {"w", "b"}
+            or candidate.get("side_candidate") in {"w", "b"}
+            or candidate.get("marker_candidate_side") in {"w", "b"}
+            else 0
+        )
         try:
             score = float(candidate.get("score") or 0.0)
         except (TypeError, ValueError):

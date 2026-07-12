@@ -6,7 +6,7 @@ import re
 import subprocess
 import zipfile
 from collections.abc import Iterable, Mapping
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -61,7 +61,10 @@ def load_acceptance_profile(
     )
     if not path.is_file():
         return {}
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
     return dict(payload) if isinstance(payload, Mapping) else {}
 
 
@@ -363,20 +366,26 @@ def evaluate_acceptance(
     expected = _mapping_rows(manifest.get("diagrams"))
     detected = [dict(row) for row in detected_records if isinstance(row, Mapping)]
     detected_by_fingerprint = {
-        str(row.get("diagram_fingerprint")): row
+        _fingerprint(row.get("diagram_fingerprint")): row
         for row in detected
-        if str(row.get("diagram_fingerprint") or "").strip()
+        if _fingerprint(row.get("diagram_fingerprint"))
     }
     expected_fingerprints = {
-        str(row.get("diagram_fingerprint") or "") for row in expected
+        _fingerprint(row.get("diagram_fingerprint")) for row in expected
     }
-    matched = [row for row in expected if str(row.get("diagram_fingerprint") or "") in detected_by_fingerprint]
+    matched = [
+        row
+        for row in expected
+        if _fingerprint(row.get("diagram_fingerprint")) in detected_by_fingerprint
+    ]
     visible = [row for row in expected if str(row.get("marker_status") or "") == "present"]
     candidate_hits = len(
         [
             row
             for row in visible
-            if _candidate_present(detected_by_fingerprint.get(str(row.get("diagram_fingerprint") or ""), {}))
+            if _candidate_present(
+                detected_by_fingerprint.get(_fingerprint(row.get("diagram_fingerprint")), {})
+            )
         ]
     )
     ownership_rows = [row for row in expected if row.get("marker_ownership") in OWNERSHIP_STATUSES]
@@ -385,7 +394,7 @@ def evaluate_acceptance(
             row
             for row in ownership_rows
             if _predicted_ownership(
-                detected_by_fingerprint.get(str(row.get("diagram_fingerprint") or ""), {})
+                detected_by_fingerprint.get(_fingerprint(row.get("diagram_fingerprint")), {})
             )
             == row.get("marker_ownership")
         ]
@@ -400,7 +409,7 @@ def evaluate_acceptance(
             row
             for row in clear
             if _trusted_and_correct(
-                detected_by_fingerprint.get(str(row.get("diagram_fingerprint") or ""), {}),
+                detected_by_fingerprint.get(_fingerprint(row.get("diagram_fingerprint")), {}),
                 expected_side=_side(row.get("expected_side")),
             )
         ]
@@ -408,7 +417,7 @@ def evaluate_acceptance(
 
     false_trusted: list[dict[str, Any]] = []
     for row in expected:
-        fingerprint = str(row.get("diagram_fingerprint") or "")
+        fingerprint = _fingerprint(row.get("diagram_fingerprint"))
         actual = detected_by_fingerprint.get(fingerprint, {})
         if not _trusted_marker(actual):
             continue
@@ -429,7 +438,7 @@ def evaluate_acceptance(
                 }
             )
     for row in detected:
-        fingerprint = str(row.get("diagram_fingerprint") or "")
+        fingerprint = _fingerprint(row.get("diagram_fingerprint"))
         if fingerprint not in expected_fingerprints and _trusted_marker(row):
             false_trusted.append(
                 {
@@ -444,7 +453,7 @@ def evaluate_acceptance(
             row
             for row in expected
             if _predicted_side(
-                detected_by_fingerprint.get(str(row.get("diagram_fingerprint") or ""), {})
+                detected_by_fingerprint.get(_fingerprint(row.get("diagram_fingerprint")), {})
             )
             in {"w", "b"}
         ]
@@ -454,7 +463,7 @@ def evaluate_acceptance(
             row
             for row in expected
             if _trusted_marker(
-                detected_by_fingerprint.get(str(row.get("diagram_fingerprint") or ""), {})
+                detected_by_fingerprint.get(_fingerprint(row.get("diagram_fingerprint")), {})
             )
         ]
     )
@@ -463,7 +472,7 @@ def evaluate_acceptance(
             row
             for row in expected
             if _full_fen_allowed(
-                detected_by_fingerprint.get(str(row.get("diagram_fingerprint") or ""), {})
+                detected_by_fingerprint.get(_fingerprint(row.get("diagram_fingerprint")), {})
             )
         ]
     )
@@ -527,9 +536,9 @@ def evaluate_acceptance(
         },
         "false_trusted_markers": false_trusted,
         "missing_expected_fingerprints": [
-            str(row.get("diagram_fingerprint") or "")
+            _fingerprint(row.get("diagram_fingerprint"))
             for row in expected
-            if str(row.get("diagram_fingerprint") or "") not in detected_by_fingerprint
+            if _fingerprint(row.get("diagram_fingerprint")) not in detected_by_fingerprint
         ],
         "closing_evidence_eligible": all(check.get("passed") for check in all_checks),
     }
@@ -559,7 +568,7 @@ def run_fixed_edition_acceptance(
     )
     base: dict[str, Any] = {
         "schema": ACCEPTANCE_REPORT_SCHEMA,
-        "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "source_profile": source_profile,
         "job_output": str(job_output),
         "manifest_path": str(resolved_manifest or ""),
@@ -752,7 +761,7 @@ def _fingerprint_component_errors(
         separators=(",", ":"),
     )
     expected = "dfp_" + sha256(material.encode("utf-8")).hexdigest()[:32]
-    if str(row.get("diagram_fingerprint") or "") != expected:
+    if _fingerprint(row.get("diagram_fingerprint")) != expected:
         errors.append(f"{prefix}:diagram_fingerprint_components_mismatch")
     return errors
 
@@ -822,11 +831,14 @@ def _subset_metrics(
     expected: list[dict[str, Any]],
     detected_by_fingerprint: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Any]:
-    actual = [detected_by_fingerprint.get(str(row.get("diagram_fingerprint") or ""), {}) for row in expected]
+    actual = [
+        detected_by_fingerprint.get(_fingerprint(row.get("diagram_fingerprint")), {})
+        for row in expected
+    ]
     trusted = [row for row in actual if _trusted_marker(row)]
     covered = [row for row in actual if _predicted_side(row) in {"w", "b"}]
     false_trusted = 0
-    for expected_row, actual_row in zip(expected, actual, strict=True):
+    for expected_row, actual_row in zip(expected, actual):
         if _trusted_marker(actual_row) and not (
             expected_row.get("marker_status") == "present"
             and expected_row.get("crop_quality") == "clear"
@@ -963,6 +975,10 @@ def _side(value: Any) -> str:
     if text in {"b", "black"}:
         return "b"
     return "unknown"
+
+
+def _fingerprint(value: Any) -> str:
+    return str(value or "").strip()
 
 
 def _rate(count: int, total: int) -> float:

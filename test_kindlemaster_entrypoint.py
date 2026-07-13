@@ -508,6 +508,135 @@ class KindleMasterEntrypointTests(unittest.TestCase):
         prepare_mock.assert_called_once()
         print_mock.assert_called_once_with(payload)
 
+    def test_prepare_fen_gold_corpus_command_routes_arguments(self) -> None:
+        payload = {"status": "ready_for_human_review", "review_row_count": 5}
+        with patch("chess_fen_gold_corpus.build_fen_gold_corpus_review", return_value=payload) as build_mock:
+            with patch.object(kindlemaster, "_print_json") as print_mock:
+                with patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "kindlemaster.py",
+                        "chess",
+                        "prepare-fen-gold-corpus",
+                        "--source-pdf",
+                        "source.pdf",
+                        "--job-output",
+                        "job",
+                        "--marker-labels",
+                        "markers.jsonl",
+                        "--out",
+                        "secure-pack",
+                        "--source-profile",
+                        "fixed-edition",
+                        "--asset-root",
+                        "assets-a",
+                        "--asset-root",
+                        "assets-b",
+                    ],
+                ):
+                    exit_code = kindlemaster.main()
+
+        self.assertEqual(exit_code, 0)
+        build_mock.assert_called_once_with(
+            source_pdf="source.pdf",
+            job_output="job",
+            marker_labels="markers.jsonl",
+            output_dir="secure-pack",
+            source_profile="fixed-edition",
+            asset_roots=["assets-a", "assets-b"],
+        )
+        print_mock.assert_called_once_with(payload)
+
+    def test_prepare_fen_gold_corpus_command_reports_exception(self) -> None:
+        with patch(
+            "chess_fen_gold_corpus.build_fen_gold_corpus_review",
+            side_effect=ValueError("source_sha_mismatch"),
+        ):
+            with patch.object(kindlemaster, "_print_json") as print_mock:
+                with patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "kindlemaster.py",
+                        "chess",
+                        "prepare-fen-gold-corpus",
+                        "--source-pdf",
+                        "source.pdf",
+                        "--job-output",
+                        "job",
+                        "--marker-labels",
+                        "markers.jsonl",
+                        "--out",
+                        "secure-pack",
+                    ],
+                ):
+                    exit_code = kindlemaster.main()
+
+        self.assertEqual(exit_code, 1)
+        payload = print_mock.call_args.args[0]
+        self.assertEqual(payload["status"], "failed")
+        self.assertEqual(payload["error"], "ValueError")
+        self.assertEqual(payload["message"], "source_sha_mismatch")
+
+    def test_import_fen_gold_labels_command_routes_arguments(self) -> None:
+        payload = {"status": "passed", "verified_row_count": 5}
+        with patch("chess_fen_gold_corpus.validate_fen_gold_corpus_labels", return_value=payload) as import_mock:
+            with patch.object(kindlemaster, "_print_json") as print_mock:
+                with patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "kindlemaster.py",
+                        "chess",
+                        "import-fen-gold-labels",
+                        "--source-pdf",
+                        "source.pdf",
+                        "--manifest",
+                        "intake.json",
+                        "--filled-labels",
+                        "filled.jsonl",
+                        "--out",
+                        "import-report",
+                    ],
+                ):
+                    exit_code = kindlemaster.main()
+
+        self.assertEqual(exit_code, 0)
+        import_mock.assert_called_once_with(
+            source_pdf="source.pdf",
+            intake_manifest="intake.json",
+            filled_labels="filled.jsonl",
+            output_dir="import-report",
+        )
+        print_mock.assert_called_once_with(payload)
+
+    def test_import_fen_gold_labels_command_preserves_needs_review_exit_code(self) -> None:
+        payload = {"status": "needs_review", "pending_row_count": 3}
+        with patch("chess_fen_gold_corpus.validate_fen_gold_corpus_labels", return_value=payload):
+            with patch.object(kindlemaster, "_print_json") as print_mock:
+                with patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "kindlemaster.py",
+                        "chess",
+                        "import-fen-gold-labels",
+                        "--source-pdf",
+                        "source.pdf",
+                        "--manifest",
+                        "intake.json",
+                        "--filled-labels",
+                        "filled.jsonl",
+                        "--out",
+                        "import-report",
+                    ],
+                ):
+                    exit_code = kindlemaster.main()
+
+        self.assertEqual(exit_code, 2)
+        print_mock.assert_called_once_with(payload)
+
     def test_smoke_command_routes_to_runner_and_preserves_filters(self) -> None:
         payload = {"summary": {"overall_status": "passed"}}
         with patch("scripts.run_smoke_tests.run_smoke_tests", return_value=payload) as smoke_mock:

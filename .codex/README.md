@@ -149,6 +149,8 @@ python kindlemaster.py validate output\chess_auto --strict
 python kindlemaster.py report output\chess_auto
 python kindlemaster.py review output\chess_auto
 python kindlemaster.py chess export-side-to-move-audit --latest
+python kindlemaster.py chess prepare-fen-gold-corpus --source-pdf path\to\source.pdf --job-output path\to\source-run --marker-labels path\to\labels.jsonl --out path\to\secure-pack
+python kindlemaster.py chess import-fen-gold-labels --source-pdf path\to\source.pdf --manifest path\to\secure-pack\intake_manifest.json --filled-labels path\to\filled.jsonl --out path\to\import-report
 python kindlemaster.py chess-study run-all --pdf path\to\chess.pdf --html path\to\current.html --out output\yusupov_study --quality-profile default
 python kindlemaster.py chess-study run-all --pdf path\to\chess.pdf --html path\to\current.html --out output\yusupov_study_audit --quality-profile smoke --render-pages
 python kindlemaster.py chess-study two-crop-performance --job-output output\chess_auto --report-dir reports\performance\chess_two_crop

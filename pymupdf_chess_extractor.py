@@ -5229,11 +5229,28 @@ def _scan_chess_board_square_score(image: Image.Image) -> float:
     return float(signal) * 2.0 + float(grid)
 
 
-def _scan_chess_regular_grid_axis(groups: list[tuple[int, int]]) -> tuple[int, int] | None:
+_SCAN_CHESS_IMPLICIT_GRID_MIN_CONFIDENCE = 0.62
+_SCAN_CHESS_IMPLICIT_GRID_MIN_PATTERN_SIGNAL = 0.88
+_SCAN_CHESS_IMPLICIT_GRID_MAX_INSET_GAIN = 0.04
+_SCAN_CHESS_IMPLICIT_GRID_PROBE_RATIOS = (0.96, 0.92, 0.88)
+
+
+@dataclass(frozen=True)
+class _ScanChessGridAxisEvidence:
+    bounds: tuple[int, int]
+    group_count: int
+    spacing: float
+    max_deviation: float
+    deviation_ratio: float
+
+
+def _scan_chess_regular_grid_axis_evidence(
+    groups: list[tuple[int, int]],
+) -> _ScanChessGridAxisEvidence | None:
     if len(groups) < 9:
         return None
     centers = [(start + end) / 2.0 for start, end in groups]
-    best: tuple[float, int, int] | None = None
+    best: tuple[float, int, int, float, float] | None = None
     for start_index in range(0, len(groups) - 8):
         window = centers[start_index : start_index + 9]
         spacing = (window[-1] - window[0]) / 8.0
@@ -5245,47 +5262,293 @@ def _scan_chess_regular_grid_axis(groups: list[tuple[int, int]]) -> tuple[int, i
             continue
         score = spacing - max_deviation * 0.8
         if best is None or score > best[0]:
-            best = (score, start_index, start_index + 8)
+            best = (score, start_index, start_index + 8, spacing, max_deviation)
     if best is None:
         return None
-    _score, first, last = best
-    return groups[first][0], groups[last][1] + 1
+    _score, first, last, spacing, max_deviation = best
+    return _ScanChessGridAxisEvidence(
+        bounds=(groups[first][0], groups[last][1] + 1),
+        group_count=len(groups),
+        spacing=spacing,
+        max_deviation=max_deviation,
+        deviation_ratio=max_deviation / max(1.0, spacing),
+    )
 
 
-def _scan_chess_grid_line_board_box(image: Image.Image) -> tuple[int, int, int, int] | None:
+def _scan_chess_regular_grid_axis(groups: list[tuple[int, int]]) -> tuple[int, int] | None:
+    evidence = _scan_chess_regular_grid_axis_evidence(groups)
+    return evidence.bounds if evidence is not None else None
+
+
+def _scan_chess_grid_line_board_analysis(image: Image.Image) -> dict[str, Any]:
     grayscale = ImageOps.autocontrast(image.convert("L"))
     pixels = np.array(grayscale, dtype=np.uint8)
     if pixels.size == 0:
-        return None
+        return {
+            "box": None,
+            "full_grid_confident": False,
+            "confidence": 0.0,
+            "reason_codes": ["grid_pixels_missing"],
+            "metrics": {},
+        }
     dark = pixels < 100
     row_groups = _scan_chess_projection_groups(dark.mean(axis=1), threshold=0.34, min_length=1)
     col_groups = _scan_chess_projection_groups(dark.mean(axis=0), threshold=0.34, min_length=1)
-    x_axis = _scan_chess_regular_grid_axis(col_groups)
-    y_axis = _scan_chess_regular_grid_axis(row_groups)
+    x_axis = _scan_chess_regular_grid_axis_evidence(col_groups)
+    y_axis = _scan_chess_regular_grid_axis_evidence(row_groups)
     if x_axis is None or y_axis is None:
-        return None
-    x0, x1 = x_axis
-    y0, y1 = y_axis
+        missing = []
+        if x_axis is None:
+            missing.append(
+                "vertical_grid_line_count_not_nine"
+                if len(col_groups) != 9
+                else "vertical_grid_lines_irregular"
+            )
+        if y_axis is None:
+            missing.append(
+                "horizontal_grid_line_count_not_nine"
+                if len(row_groups) != 9
+                else "horizontal_grid_lines_irregular"
+            )
+        return {
+            "box": None,
+            "full_grid_confident": False,
+            "confidence": 0.0,
+            "reason_codes": missing,
+            "metrics": {
+                "vertical_group_count": len(col_groups),
+                "horizontal_group_count": len(row_groups),
+            },
+        }
+
+    x0, x1 = x_axis.bounds
+    y0, y1 = y_axis.bounds
     width = x1 - x0
     height = y1 - y0
-    if width < 64 or height < 64:
-        return None
     ratio = width / max(1.0, float(height))
-    if not (0.90 <= ratio <= 1.10):
-        return None
-    side = int(round((width + height) / 2.0))
+    if width < 64 or height < 64 or not (0.90 <= ratio <= 1.10):
+        return {
+            "box": None,
+            "full_grid_confident": False,
+            "confidence": 0.0,
+            "reason_codes": [
+                "grid_resolution_below_localization_minimum"
+                if width < 64 or height < 64
+                else "grid_aspect_ratio_out_of_localization_range"
+            ],
+            "metrics": {
+                "grid_width": width,
+                "grid_height": height,
+                "aspect_ratio": round(ratio, 6),
+            },
+        }
+
+    side = min(int(round((width + height) / 2.0)), image.width, image.height)
     cx = (x0 + x1) / 2.0
     cy = (y0 + y1) / 2.0
     left = int(round(cx - side / 2.0))
     top = int(round(cy - side / 2.0))
     left = min(max(0, left), max(0, image.width - side))
     top = min(max(0, top), max(0, image.height - side))
-    return (left, top, left + side, top + side)
+    box = (left, top, left + side, top + side)
+
+    coverage_x = width / max(1.0, float(image.width))
+    coverage_y = height / max(1.0, float(image.height))
+    edge_gaps = (x0, y0, image.width - x1, image.height - y1)
+    max_edge_gap_ratio = max(edge_gaps) / max(1.0, float(min(image.size)))
+    spacing_mismatch_ratio = abs(x_axis.spacing - y_axis.spacing) / max(
+        1.0, x_axis.spacing, y_axis.spacing
+    )
+    reasons: list[str] = []
+    if min(image.size) < 96:
+        reasons.append("full_grid_resolution_below_minimum")
+    if x_axis.group_count != 9:
+        reasons.append("vertical_grid_line_count_not_nine")
+    if y_axis.group_count != 9:
+        reasons.append("horizontal_grid_line_count_not_nine")
+    if x_axis.deviation_ratio > 0.08:
+        reasons.append("vertical_grid_spacing_irregular")
+    if y_axis.deviation_ratio > 0.08:
+        reasons.append("horizontal_grid_spacing_irregular")
+    if spacing_mismatch_ratio > 0.05:
+        reasons.append("grid_axis_spacing_mismatch")
+    if not (0.98 <= ratio <= 1.02):
+        reasons.append("full_grid_aspect_ratio_out_of_range")
+    if coverage_x < 0.96 or coverage_y < 0.96:
+        reasons.append("full_grid_coverage_too_low")
+    if max(edge_gaps) > 2 or max_edge_gap_ratio > 0.015:
+        reasons.append("full_grid_edge_gap_too_large")
+
+    confidence_penalty = max(
+        x_axis.deviation_ratio,
+        y_axis.deviation_ratio,
+        spacing_mismatch_ratio,
+        abs(1.0 - ratio),
+        max(0.0, 1.0 - coverage_x),
+        max(0.0, 1.0 - coverage_y),
+        max_edge_gap_ratio,
+    )
+    metrics = {
+        "vertical_group_count": x_axis.group_count,
+        "horizontal_group_count": y_axis.group_count,
+        "vertical_spacing": round(x_axis.spacing, 6),
+        "horizontal_spacing": round(y_axis.spacing, 6),
+        "vertical_spacing_deviation_ratio": round(x_axis.deviation_ratio, 6),
+        "horizontal_spacing_deviation_ratio": round(y_axis.deviation_ratio, 6),
+        "axis_spacing_mismatch_ratio": round(spacing_mismatch_ratio, 6),
+        "aspect_ratio": round(ratio, 6),
+        "coverage_x": round(coverage_x, 6),
+        "coverage_y": round(coverage_y, 6),
+        "max_edge_gap_ratio": round(max_edge_gap_ratio, 6),
+        "minimum_resolution": min(image.size),
+    }
+    return {
+        "box": box,
+        "full_grid_confident": not reasons,
+        "confidence": round(max(0.0, 1.0 - confidence_penalty), 6),
+        "reason_codes": reasons or ["full_grid_confident"],
+        "metrics": metrics,
+    }
+
+
+def _scan_chess_grid_line_board_box(image: Image.Image) -> tuple[int, int, int, int] | None:
+    return _scan_chess_grid_line_board_analysis(image).get("box")
 
 
 def _increment_two_crop_metric(metrics: dict[str, Any] | None, key: str, amount: int = 1) -> None:
     if metrics is not None:
         metrics[key] = int(metrics.get(key) or 0) + amount
+
+
+def _scan_chess_best_inset_gain(
+    image: Image.Image,
+    baseline_score: float,
+    *,
+    performance: dict[str, Any] | None = None,
+) -> tuple[float, dict[str, Any]]:
+    width, height = image.size
+    min_axis = min(width, height)
+    best_gain = float("-inf")
+    best_candidate: dict[str, Any] = {}
+    for ratio in _SCAN_CHESS_IMPLICIT_GRID_PROBE_RATIOS:
+        side = int(round(min_axis * ratio))
+        if side < 64 or side >= min_axis:
+            continue
+        candidates = {
+            (0, 0),
+            (max(0, width - side), 0),
+            (0, max(0, height - side)),
+            (max(0, width - side), max(0, height - side)),
+            (max(0, (width - side) // 2), max(0, (height - side) // 2)),
+        }
+        for left, top in candidates:
+            _increment_two_crop_metric(performance, "full_grid_probe_evaluations")
+            score = _scan_chess_board_square_score(
+                image.crop((left, top, left + side, top + side))
+            )
+            center_penalty = (
+                abs((left + side / 2.0) - width / 2.0) / max(1.0, float(width))
+                + abs((top + side / 2.0) - height / 2.0) / max(1.0, float(height))
+            ) * 0.08
+            gain = score - center_penalty - baseline_score
+            if gain > best_gain:
+                best_gain = gain
+                best_candidate = {
+                    "ratio": ratio,
+                    "box": [left, top, left + side, top + side],
+                    "score": round(score, 6),
+                }
+    if best_gain == float("-inf"):
+        best_gain = 0.0
+    return best_gain, best_candidate
+
+
+def _scan_chess_implicit_full_grid_analysis(
+    image: Image.Image,
+    *,
+    performance: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    grayscale = ImageOps.autocontrast(image.convert("L"))
+    width, height = grayscale.size
+    min_axis = min(width, height)
+    aspect_ratio = width / max(1.0, float(height))
+    spacing_x = width / 8.0
+    spacing_y = height / 8.0
+    spacing_mismatch_ratio = abs(spacing_x - spacing_y) / max(1.0, spacing_x, spacing_y)
+    reasons: list[str] = []
+    if min_axis < 96:
+        reasons.append("implicit_grid_resolution_below_minimum")
+    if not (0.98 <= aspect_ratio <= 1.02):
+        reasons.append("implicit_grid_aspect_ratio_out_of_range")
+
+    base_metrics = {
+        "evidence_type": "implicit_8x8_periodicity",
+        "vertical_boundary_count": 9,
+        "horizontal_boundary_count": 9,
+        "vertical_spacing": round(spacing_x, 6),
+        "horizontal_spacing": round(spacing_y, 6),
+        "axis_spacing_mismatch_ratio": round(spacing_mismatch_ratio, 6),
+        "aspect_ratio": round(aspect_ratio, 6),
+        "minimum_resolution": min_axis,
+    }
+    if reasons:
+        return {
+            "box": None,
+            "full_grid_confident": False,
+            "confidence": 0.0,
+            "reason_codes": reasons,
+            "metrics": base_metrics,
+        }
+
+    pattern_detected, pattern_signal = _has_board_visual_pattern(grayscale)
+    if not pattern_detected:
+        reasons.append("implicit_grid_visual_pattern_missing")
+    if pattern_signal < _SCAN_CHESS_IMPLICIT_GRID_MIN_PATTERN_SIGNAL:
+        reasons.append("implicit_grid_pattern_signal_below_threshold")
+    if reasons:
+        return {
+            "box": None,
+            "full_grid_confident": False,
+            "confidence": round(float(pattern_signal), 6),
+            "reason_codes": reasons,
+            "metrics": {
+                **base_metrics,
+                "pattern_signal": round(float(pattern_signal), 6),
+            },
+        }
+
+    grid_confidence = _estimate_board_grid_confidence(grayscale)
+    if grid_confidence < _SCAN_CHESS_IMPLICIT_GRID_MIN_CONFIDENCE:
+        reasons.append("implicit_grid_confidence_below_threshold")
+
+    baseline_score = float(pattern_signal) * 2.0 + float(grid_confidence)
+    best_inset_gain = 0.0
+    best_inset_candidate: dict[str, Any] = {}
+    if not reasons:
+        best_inset_gain, best_inset_candidate = _scan_chess_best_inset_gain(
+            grayscale,
+            baseline_score,
+            performance=performance,
+        )
+        if best_inset_gain >= _SCAN_CHESS_IMPLICIT_GRID_MAX_INSET_GAIN:
+            reasons.append("implicit_grid_inset_candidate_gain")
+
+    metrics = {
+        **base_metrics,
+        "grid_confidence": round(float(grid_confidence), 6),
+        "pattern_signal": round(float(pattern_signal), 6),
+        "baseline_score": round(baseline_score, 6),
+        "maximum_inset_candidate_gain": round(best_inset_gain, 6),
+        "maximum_inset_candidate": best_inset_candidate,
+        "coverage_evidence": "no_better_inset_candidate" if not reasons else "insufficient",
+    }
+    return {
+        "box": (0, 0, width, height) if not reasons else None,
+        "full_grid_confident": not reasons,
+        "confidence": round(min(float(grid_confidence), float(pattern_signal)), 6),
+        "reason_codes": reasons or ["implicit_full_grid_confident"],
+        "metrics": metrics,
+    }
 
 
 @dataclass(frozen=True)
@@ -5300,14 +5563,43 @@ def _scan_chess_tight_board_box_in_crop(
     image: Image.Image,
     *,
     performance: dict[str, Any] | None = None,
+    allow_full_grid_fast_path: bool = True,
 ) -> tuple[int, int, int, int] | None:
     _increment_two_crop_metric(performance, "tight_board_localization_call_count")
+    if performance is not None:
+        performance.setdefault("sliding_window_candidate_evaluations", 0)
+        performance.setdefault("full_grid_fast_path_count", 0)
+        performance.setdefault("full_grid_fallback_count", 0)
     grayscale = ImageOps.autocontrast(image.convert("L"))
     width, height = grayscale.size
     min_axis = min(width, height)
     if min_axis < 64:
         return None
-    grid_box = _scan_chess_grid_line_board_box(grayscale)
+    grid_analysis = _scan_chess_grid_line_board_analysis(grayscale)
+    grid_box = grid_analysis.get("box")
+    if grid_box is None and allow_full_grid_fast_path:
+        implicit_analysis = _scan_chess_implicit_full_grid_analysis(
+            grayscale,
+            performance=performance,
+        )
+        if bool(implicit_analysis.get("full_grid_confident")):
+            grid_analysis = implicit_analysis
+            grid_box = implicit_analysis.get("box")
+        else:
+            grid_analysis = {
+                "box": None,
+                "full_grid_confident": False,
+                "confidence": max(
+                    float(grid_analysis.get("confidence") or 0.0),
+                    float(implicit_analysis.get("confidence") or 0.0),
+                ),
+                "reason_codes": list(grid_analysis.get("reason_codes") or [])
+                + list(implicit_analysis.get("reason_codes") or []),
+                "metrics": {
+                    "literal_grid": dict(grid_analysis.get("metrics") or {}),
+                    "implicit_grid": dict(implicit_analysis.get("metrics") or {}),
+                },
+            }
     if grid_box is not None:
         fullish_grid = (
             grid_box[0] <= 2
@@ -5315,8 +5607,37 @@ def _scan_chess_tight_board_box_in_crop(
             and abs(grid_box[2] - width) <= 4
             and abs(grid_box[3] - height) <= 4
         )
+        if (
+            fullish_grid
+            and allow_full_grid_fast_path
+            and bool(grid_analysis.get("full_grid_confident"))
+        ):
+            fast_path_reasons = list(grid_analysis.get("reason_codes") or [])
+            if performance is not None:
+                performance["localization_path"] = "full_grid_fast_path"
+                performance["localization_reason_codes"] = fast_path_reasons
+                performance["full_grid_confidence"] = float(grid_analysis.get("confidence") or 0.0)
+                performance["full_grid_metrics"] = dict(grid_analysis.get("metrics") or {})
+            _increment_two_crop_metric(performance, "full_grid_fast_path_count")
+            return None
         if not fullish_grid:
+            if performance is not None:
+                performance["localization_path"] = "sliding_window_fallback"
+                performance["localization_reason_codes"] = ["partial_grid_direct_box"]
+                performance["full_grid_confidence"] = float(grid_analysis.get("confidence") or 0.0)
+                performance["full_grid_metrics"] = dict(grid_analysis.get("metrics") or {})
+            _increment_two_crop_metric(performance, "full_grid_fallback_count")
             return grid_box
+
+    if performance is not None:
+        reasons = list(grid_analysis.get("reason_codes") or [])
+        if bool(grid_analysis.get("full_grid_confident")) and not allow_full_grid_fast_path:
+            reasons = ["full_grid_fast_path_disabled"]
+        performance["localization_path"] = "sliding_window_fallback"
+        performance["localization_reason_codes"] = reasons or ["full_grid_confidence_insufficient"]
+        performance["full_grid_confidence"] = float(grid_analysis.get("confidence") or 0.0)
+        performance["full_grid_metrics"] = dict(grid_analysis.get("metrics") or {})
+    _increment_two_crop_metric(performance, "full_grid_fallback_count")
 
     baseline_side = min_axis
     baseline_left = max(0, (width - baseline_side) // 2)
@@ -5545,6 +5866,14 @@ def _scan_chess_two_crop_review_artifacts(
     performance: dict[str, Any] = {
         "tight_board_localization_call_count": 0,
         "sliding_window_candidate_evaluations": 0,
+        "localization_path": "sliding_window_fallback",
+        "localization_reason_codes": [],
+        "full_grid_confidence": 0.0,
+        "full_grid_metrics": {},
+        "full_grid_fast_path_count": 0,
+        "full_grid_fallback_count": 0,
+        "full_grid_probe_evaluations": 0,
+        "false_fast_path_count": 0,
         "localization_seconds": 0.0,
         "marker_analysis_seconds": 0.0,
         "png_encoding_seconds": 0.0,

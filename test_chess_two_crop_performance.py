@@ -18,12 +18,97 @@ from chess_two_crop_performance import (
 )
 from pymupdf_chess_extractor import (
     _scan_chess_board_crop_quality,
+    _scan_chess_grid_line_board_analysis,
+    _scan_chess_implicit_full_grid_analysis,
     _scan_chess_tight_board_box_in_crop,
     _scan_chess_two_crop_review_artifacts,
 )
 
 
 class ChessTwoCropPerformanceTests(unittest.TestCase):
+    def test_confident_full_grid_skips_sliding_window_with_identical_bbox_result(self) -> None:
+        image = _full_grid_image()
+        fast_performance: dict[str, object] = {}
+        legacy_performance: dict[str, object] = {}
+
+        with patch("pymupdf_chess_extractor._scan_chess_board_square_score", return_value=0.0):
+            fast_result = _scan_chess_tight_board_box_in_crop(
+                image,
+                performance=fast_performance,
+            )
+            legacy_result = _scan_chess_tight_board_box_in_crop(
+                image,
+                performance=legacy_performance,
+                allow_full_grid_fast_path=False,
+            )
+
+        self.assertEqual(fast_result, legacy_result)
+        self.assertIsNone(fast_result)
+        self.assertEqual(fast_performance["localization_path"], "full_grid_fast_path")
+        self.assertEqual(fast_performance["localization_reason_codes"], ["full_grid_confident"])
+        self.assertEqual(fast_performance["sliding_window_candidate_evaluations"], 0)
+        self.assertEqual(fast_performance["full_grid_fast_path_count"], 1)
+        self.assertGreater(legacy_performance["sliding_window_candidate_evaluations"], 0)
+        self.assertEqual(legacy_performance["localization_path"], "sliding_window_fallback")
+
+    def test_extra_grid_line_and_low_resolution_fail_closed_to_fallback(self) -> None:
+        extra_line = _full_grid_image(extra_vertical_line=True)
+        low_resolution = _full_grid_image(size=65, spacing=8)
+
+        extra_analysis = _scan_chess_grid_line_board_analysis(extra_line)
+        low_analysis = _scan_chess_grid_line_board_analysis(low_resolution)
+        extra_performance: dict[str, object] = {}
+        low_performance: dict[str, object] = {}
+        with patch("pymupdf_chess_extractor._scan_chess_board_square_score", return_value=0.0):
+            _scan_chess_tight_board_box_in_crop(extra_line, performance=extra_performance)
+            _scan_chess_tight_board_box_in_crop(low_resolution, performance=low_performance)
+
+        self.assertFalse(extra_analysis["full_grid_confident"])
+        self.assertIn("vertical_grid_line_count_not_nine", extra_analysis["reason_codes"])
+        self.assertEqual(extra_performance["localization_path"], "sliding_window_fallback")
+        self.assertGreater(extra_performance["sliding_window_candidate_evaluations"], 0)
+        self.assertFalse(low_analysis["full_grid_confident"])
+        self.assertIn("full_grid_resolution_below_minimum", low_analysis["reason_codes"])
+        self.assertEqual(low_performance["localization_path"], "sliding_window_fallback")
+
+    def test_rectangular_grid_box_stays_within_image_bounds(self) -> None:
+        image = _rectangular_grid_image(width=101, height=111)
+
+        analysis = _scan_chess_grid_line_board_analysis(image)
+
+        self.assertIsNotNone(analysis["box"])
+        left, top, right, bottom = analysis["box"]
+        self.assertGreaterEqual(left, 0)
+        self.assertGreaterEqual(top, 0)
+        self.assertLessEqual(right, image.width)
+        self.assertLessEqual(bottom, image.height)
+
+    def test_implicit_periodic_grid_fast_path_requires_no_better_inset(self) -> None:
+        full_grid = _implicit_grid_image(size=256, inset=8)
+        partial_grid = _implicit_grid_image(size=256, inset=16)
+        performance: dict[str, object] = {}
+
+        full_analysis = _scan_chess_implicit_full_grid_analysis(full_grid)
+        partial_analysis = _scan_chess_implicit_full_grid_analysis(partial_grid)
+        result = _scan_chess_tight_board_box_in_crop(full_grid, performance=performance)
+
+        self.assertTrue(full_analysis["full_grid_confident"])
+        self.assertEqual(full_analysis["reason_codes"], ["implicit_full_grid_confident"])
+        self.assertEqual(
+            full_analysis["metrics"]["evidence_type"],
+            "implicit_8x8_periodicity",
+        )
+        self.assertIsNone(result)
+        self.assertEqual(performance["localization_path"], "full_grid_fast_path")
+        self.assertEqual(
+            performance["localization_reason_codes"],
+            ["implicit_full_grid_confident"],
+        )
+        self.assertEqual(performance["sliding_window_candidate_evaluations"], 0)
+        self.assertGreater(performance["full_grid_probe_evaluations"], 0)
+        self.assertFalse(partial_analysis["full_grid_confident"])
+        self.assertIn("implicit_grid_inset_candidate_gain", partial_analysis["reason_codes"])
+
     def test_generated_fixture_classes_produce_stable_semantic_digest(self) -> None:
         records = []
         with patch("pymupdf_chess_extractor._scan_chess_tight_board_box_in_crop", return_value=None):
@@ -188,6 +273,16 @@ class ChessTwoCropPerformanceTests(unittest.TestCase):
             self.assertEqual(report["summary"]["instrumented_record_count"], 2)
             self.assertEqual(report["summary"]["tight_board_localization_call_count"], 3)
             self.assertEqual(report["summary"]["sliding_window_candidate_evaluations"], 404)
+            self.assertEqual(
+                report["summary"]["localization_paths"],
+                {"full_grid_fast_path": 1, "sliding_window_fallback": 1},
+            )
+            self.assertEqual(report["summary"]["full_grid_fast_path_count"], 1)
+            self.assertEqual(report["summary"]["full_grid_fallback_count"], 1)
+            self.assertEqual(report["summary"]["full_grid_fast_path_coverage_rate"], 0.5)
+            self.assertEqual(report["summary"]["full_grid_fallback_rate"], 0.5)
+            self.assertEqual(report["summary"]["full_grid_probe_evaluations"], 15)
+            self.assertEqual(report["summary"]["false_fast_path_count"], 0)
             self.assertEqual(report["summary"]["single_pass_record_count"], 1)
             self.assertEqual(report["summary"]["legacy_fallback_record_count"], 1)
             self.assertEqual(
@@ -199,6 +294,14 @@ class ChessTwoCropPerformanceTests(unittest.TestCase):
             self.assertEqual(report["summary"]["artifact_bytes"], len(b"board-one") + len(b"board-two-longer"))
             self.assertEqual(report["stage_timings"]["localization_seconds"]["median"], 2.0)
             self.assertEqual(report["stage_timings"]["localization_seconds"]["p95"], 3.0)
+            self.assertEqual(
+                report["localization_path_timings"]["full_grid_fast_path"]["median"],
+                1.0,
+            )
+            self.assertEqual(
+                report["localization_path_timings"]["sliding_window_fallback"]["median"],
+                3.0,
+            )
             self.assertTrue(report["summary"]["semantic_digest"])
             self.assertTrue(json_path.is_file())
             self.assertIn("Stage Timings", markdown_path.read_text(encoding="utf-8"))
@@ -265,6 +368,50 @@ def _generated_fixture_cases() -> list[tuple[str, Image.Image, tuple[int, int, i
     return cases
 
 
+def _full_grid_image(
+    *,
+    size: int = 97,
+    spacing: int = 12,
+    extra_vertical_line: bool = False,
+) -> Image.Image:
+    image = Image.new("L", (size, size), "white")
+    draw = ImageDraw.Draw(image)
+    coordinates = [index * spacing for index in range(9)]
+    for coordinate in coordinates:
+        draw.line((coordinate, 0, coordinate, size - 1), fill="black", width=1)
+        draw.line((0, coordinate, size - 1, coordinate), fill="black", width=1)
+    if extra_vertical_line:
+        draw.line((spacing // 2, 0, spacing // 2, size - 1), fill="black", width=1)
+    return image.convert("RGB")
+
+
+def _implicit_grid_image(*, size: int, inset: int) -> Image.Image:
+    image = Image.new("RGB", (size, size), "white")
+    draw = ImageDraw.Draw(image)
+    board_side = size - inset * 2
+    cell = board_side // 8
+    for rank in range(8):
+        for file_index in range(8):
+            left = inset + file_index * cell
+            top = inset + rank * cell
+            color = "#444444" if (rank + file_index) % 2 else "#eeeeee"
+            draw.rectangle((left, top, left + cell - 1, top + cell - 1), fill=color)
+    draw.rectangle((inset, inset, size - inset - 1, size - inset - 1), outline="black", width=2)
+    return image
+
+
+def _rectangular_grid_image(*, width: int, height: int) -> Image.Image:
+    image = Image.new("L", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+    x_coordinates = [round(index * (width - 1) / 8) for index in range(9)]
+    y_coordinates = [round(index * (height - 1) / 8) for index in range(9)]
+    for coordinate in x_coordinates:
+        draw.line((coordinate, 0, coordinate, height - 1), fill="black", width=1)
+    for coordinate in y_coordinates:
+        draw.line((0, coordinate, width - 1, coordinate), fill="black", width=1)
+    return image.convert("RGB")
+
+
 def _board_image(
     *,
     canvas: int,
@@ -305,6 +452,16 @@ def _runtime_row(diagram_id: str, seconds: float, candidates: int, board_path: s
         "two_crop_performance": {
             "tight_board_localization_call_count": 2 if fallback else 1,
             "sliding_window_candidate_evaluations": candidates,
+            "localization_path": (
+                "sliding_window_fallback" if fallback else "full_grid_fast_path"
+            ),
+            "localization_reason_codes": (
+                ["residual_board_candidate_gain"] if fallback else ["full_grid_confident"]
+            ),
+            "full_grid_fast_path_count": 0 if fallback else 1,
+            "full_grid_fallback_count": 1 if fallback else 0,
+            "full_grid_probe_evaluations": 0 if fallback else 15,
+            "false_fast_path_count": 0,
             "localization_seconds": seconds,
             "marker_analysis_seconds": seconds / 2,
             "png_encoding_seconds": seconds / 4,

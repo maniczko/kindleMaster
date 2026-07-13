@@ -170,6 +170,7 @@ class ChessStudyConfig:
     min_grid_confidence: float = 0.50
     max_candidates_per_page: int = 6
     quality_profile: str = "default"
+    debug_artifact_policy: str = "all"
     render_pages: bool = False
     ocr_fallback: bool = False
     strict_thresholds: bool = False
@@ -503,6 +504,7 @@ def run_chess_study_export(
     max_candidates_per_page: int = 6,
     quality_profile: str = "default",
     render_pages: bool = False,
+    debug_artifact_policy: str = "all",
     ocr_fallback: bool = False,
     strict_thresholds: bool = False,
     low_confidence_diagram_review: bool = True,
@@ -528,6 +530,7 @@ def run_chess_study_export(
         min_grid_confidence=min_grid_confidence,
         max_candidates_per_page=max_candidates_per_page,
         quality_profile=normalized_profile,
+        debug_artifact_policy=_normalize_debug_artifact_policy(debug_artifact_policy),
         render_pages=effective_render_pages,
         ocr_fallback=ocr_fallback,
         strict_thresholds=strict_thresholds,
@@ -6695,6 +6698,7 @@ def detect_study_diagrams(config: ChessStudyConfig) -> dict[str, Any]:
         dpi=config.diagram_dpi,
         min_confidence=config.min_grid_confidence,
         quality_profile=config.quality_profile,
+        debug_artifact_policy=config.debug_artifact_policy,
         resume=config.resume,
     )
     for record in normalized:
@@ -6752,6 +6756,7 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
     dpi: int,
     min_confidence: float,
     quality_profile: str = "default",
+    debug_artifact_policy: str = "all",
     resume: bool = False,
 ) -> dict[str, Any]:
     out = Path(out_dir)
@@ -6803,6 +6808,7 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
             fingerprint_schema=DIAGRAM_FINGERPRINT_SCHEMA,
             dpi=dpi,
             quality_profile=quality_profile,
+            debug_artifact_policy=debug_artifact_policy,
         )
         loaded = load_compatible_checkpoint(progress_path, identity) if resume else None
         if loaded is not None and loaded.compatible and loaded.checkpoint is not None:
@@ -6937,6 +6943,8 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
                     board_bbox=board_bbox,
                     side_marker_bbox=None,
                     marker_assignment=marker_assignment,
+                    debug_artifact_policy=debug_artifact_policy,
+                    blocker_context=payload,
                 )
                 payload.update(two_crop_fields)
                 payload = _apply_scan_chess_two_crop_quality_gate(payload, two_crop_fields)
@@ -7171,6 +7179,7 @@ def _apply_study_side_marker_payload(diagram: dict[str, Any], payload: Mapping[s
             "side_marker_review_crop_path": str(payload.get("side_marker_review_crop_path") or ""),
             "side_marker_review_crop_kind": str(payload.get("side_marker_review_crop_kind") or ""),
             "debug_overlay_path": str(payload.get("debug_overlay_path") or ""),
+            "debug_context_crop_path": str(payload.get("debug_context_crop_path") or ""),
             "board_bbox": list(payload.get("board_bbox") or []),
             "board_crop_quality": str(payload.get("board_crop_quality") or ""),
             "board_crop_fail_reason": list(payload.get("board_crop_fail_reason") or []),
@@ -7204,6 +7213,9 @@ def _write_study_side_marker_artifact_files(out: Path, files: list[Mapping[str, 
     started = time.perf_counter()
     written_count = 0
     written_bytes = 0
+    class_counts = {"required": 0, "optional": 0}
+    class_bytes = {"required": 0, "optional": 0}
+    class_seconds = {"required": 0.0, "optional": 0.0}
     for item in files:
         rel_path = str(item.get("path") or "").strip()
         data = item.get("data")
@@ -7212,14 +7224,27 @@ def _write_study_side_marker_artifact_files(out: Path, files: list[Mapping[str, 
         target = out / rel_path
         target.parent.mkdir(parents=True, exist_ok=True)
         payload = bytes(data)
+        artifact_class = str(item.get("artifact_class") or "required").strip().lower()
+        if artifact_class not in class_counts:
+            artifact_class = "required"
+        item_started = time.perf_counter()
         target.write_bytes(payload)
+        class_seconds[artifact_class] += time.perf_counter() - item_started
         written_count += 1
         written_bytes += len(payload)
+        class_counts[artifact_class] += 1
+        class_bytes[artifact_class] += len(payload)
     return {
         "file_write_measured": True,
         "file_write_seconds": round(time.perf_counter() - started, 6),
         "file_written_artifact_count": written_count,
         "file_written_bytes": written_bytes,
+        "required_file_write_seconds": round(class_seconds["required"], 6),
+        "required_file_written_artifact_count": class_counts["required"],
+        "required_file_written_bytes": class_bytes["required"],
+        "optional_file_write_seconds": round(class_seconds["optional"], 6),
+        "optional_file_written_artifact_count": class_counts["optional"],
+        "optional_file_written_bytes": class_bytes["optional"],
     }
 
 
@@ -8998,6 +9023,13 @@ def _ensure_output_dirs(out: Path) -> None:
 def _normalize_quality_profile(value: str) -> str:
     normalized = str(value or "default").strip().lower()
     return normalized if normalized in QUALITY_PROFILES else "default"
+
+
+def _normalize_debug_artifact_policy(value: str) -> str:
+    normalized = str(value or "all").strip().lower()
+    if normalized not in {"all", "blockers", "none"}:
+        raise ValueError(f"unsupported chess debug artifact policy: {value}")
+    return normalized
 
 
 def _render_pdf_page_image(

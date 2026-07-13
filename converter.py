@@ -830,6 +830,7 @@ class ConversionConfig:
     chess_fen_verified_crop_labels_path: str = "reference_inputs/chess_fen/labels/fundamenty_verified_crop_labels.jsonl"
     chess_fen_emit_review_notes: bool = False
     chess_fen_apply_side_marker: bool = True
+    chess_debug_artifact_policy: str = "all"
     chess_fen_review_provider_enabled: bool = False
     chess_fen_scan_enable_sliding_probe: bool = False
     chess_notation_chapter_pages: int = 40

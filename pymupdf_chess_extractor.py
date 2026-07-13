@@ -2682,6 +2682,10 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
                         if bool(getattr(config, "chess_fen_apply_side_marker", False))
                         else None
                     ),
+                    debug_artifact_policy=str(
+                        getattr(config, "chess_debug_artifact_policy", "all") or "all"
+                    ),
+                    blocker_context=candidate_payload,
                 )
                 candidate_payload.update(two_crop_fields)
                 candidate_payload = _apply_scan_chess_two_crop_quality_gate(candidate_payload, two_crop_fields)
@@ -5854,6 +5858,71 @@ def _scan_chess_board_analysis_from_candidate(
     )
 
 
+_CHESS_DEBUG_ARTIFACT_POLICIES = {"all", "blockers", "none"}
+
+
+def _normalize_chess_debug_artifact_policy(value: Any) -> str:
+    policy = str(value or "all").strip().lower()
+    if policy not in _CHESS_DEBUG_ARTIFACT_POLICIES:
+        raise ValueError(f"unsupported chess debug artifact policy: {value}")
+    return policy
+
+
+def _two_crop_optional_debug_required(
+    policy: str,
+    fields: Mapping[str, Any],
+    blocker_context: Mapping[str, Any] | None,
+) -> bool:
+    if policy == "all":
+        return True
+    if policy == "none":
+        return False
+    if bool(fields.get("manual_review_required")):
+        return True
+    if fields.get("board_crop_quality") != "pass" or fields.get("marker_crop_quality") != "pass":
+        return True
+    context = {**(blocker_context or {}), **fields}
+    if any(
+        bool(context.get(key))
+        for key in (
+            "blocked_by_marker",
+            "blocked_by_placement",
+            "marker_conflict",
+            "marker_missing",
+            "marker_ambiguous",
+            "requires_review",
+            "review_required",
+        )
+    ):
+        return True
+    if any(context.get(key) for key in ("acceptance_blocker_codes", "blocker_codes", "blockers")):
+        return True
+    blocker_tokens = (
+        "REVIEW_REQUIRED",
+        "REQUIRES_REVIEW",
+        "BLOCKED",
+        "FAIL",
+        "ERROR",
+        "UNKNOWN",
+        "MISSING",
+        "CONFLICT",
+        "AMBIGUOUS",
+    )
+    for key, value in context.items():
+        if "status" not in str(key).lower() and "reason" not in str(key).lower():
+            continue
+        normalized = str(value or "").strip().upper()
+        if any(token in normalized for token in blocker_tokens):
+            return True
+    return False
+
+
+def _estimated_image_raw_bytes(image: Image.Image | None) -> int:
+    if image is None:
+        return 0
+    return int(image.width) * int(image.height) * max(1, len(image.getbands()))
+
+
 def _scan_chess_two_crop_review_artifacts(
     page_image: Image.Image,
     *,
@@ -5861,9 +5930,13 @@ def _scan_chess_two_crop_review_artifacts(
     board_bbox: Any,
     side_marker_bbox: Any,
     marker_assignment: Mapping[str, Any] | None = None,
+    debug_artifact_policy: str = "all",
+    blocker_context: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     total_started = time.perf_counter()
+    artifact_policy = _normalize_chess_debug_artifact_policy(debug_artifact_policy)
     performance: dict[str, Any] = {
+        "artifact_policy": artifact_policy,
         "tight_board_localization_call_count": 0,
         "sliding_window_candidate_evaluations": 0,
         "localization_path": "sliding_window_fallback",
@@ -5879,6 +5952,15 @@ def _scan_chess_two_crop_review_artifacts(
         "png_encoding_seconds": 0.0,
         "png_encoded_artifact_count": 0,
         "png_encoded_bytes": 0,
+        "required_png_encoding_seconds": 0.0,
+        "required_png_encoded_artifact_count": 0,
+        "required_png_encoded_bytes": 0,
+        "optional_png_encoding_seconds": 0.0,
+        "optional_png_encoded_artifact_count": 0,
+        "optional_png_encoded_bytes": 0,
+        "optional_debug_candidate_count": 0,
+        "optional_debug_skipped_count": 0,
+        "optional_debug_skipped_estimated_raw_bytes": 0,
         "file_write_measured": False,
         "file_write_seconds": 0.0,
         "file_written_artifact_count": 0,
@@ -5911,7 +5993,7 @@ def _scan_chess_two_crop_review_artifacts(
         "marker_search_zone_preview_bbox": [],
         "side_marker_review_crop_path": "",
         "side_marker_review_crop_kind": "missing",
-        "debug_overlay_path": f"review/chess_fen/two_crop/{stem}_overlay.png",
+        "debug_overlay_path": "",
         "debug_context_crop_path": "",
         "debug_context_bbox": raw_board_bbox,
         "raw_board_candidate_bbox": raw_board_bbox,
@@ -5959,14 +6041,18 @@ def _scan_chess_two_crop_review_artifacts(
 
     board_crop = _crop_bbox_from_image(page_image, fields["board_bbox"])
     if board_crop is not None:
-        files.append({"path": fields["board_crop_path"], "data": _timed_png_bytes(board_crop, performance)})
+        files.append(
+            {
+                "path": fields["board_crop_path"],
+                "data": _timed_png_bytes(board_crop, performance, artifact_class="required"),
+                "artifact_class": "required",
+            }
+        )
     raw_box = _bbox_to_int_box(raw_board_bbox, page_image.size)
     tight_box = _bbox_to_int_box(fields["board_bbox"], page_image.size)
+    context_crop = None
     if raw_box is not None and tight_box is not None and raw_box != tight_box:
         context_crop = _crop_bbox_from_image(page_image, raw_board_bbox)
-        if context_crop is not None:
-            fields["debug_context_crop_path"] = f"review/chess_fen/two_crop/{stem}_context.png"
-            files.append({"path": fields["debug_context_crop_path"], "data": _timed_png_bytes(context_crop, performance)})
 
     marker_started = time.perf_counter()
     marker_png_seconds_before = float(performance["png_encoding_seconds"])
@@ -5978,7 +6064,13 @@ def _scan_chess_two_crop_review_artifacts(
         fields["side_marker_search_bbox"] = search_bbox
         fields["marker_search_zone_preview_path"] = fields["side_marker_search_crop_path"]
         fields["marker_search_zone_preview_bbox"] = search_bbox
-        files.append({"path": fields["side_marker_search_crop_path"], "data": _timed_png_bytes(search_crop, performance)})
+        files.append(
+            {
+                "path": fields["side_marker_search_crop_path"],
+                "data": _timed_png_bytes(search_crop, performance, artifact_class="required"),
+                "artifact_class": "required",
+            }
+        )
 
     marker_source = ""
     marker_bbox = []
@@ -6058,7 +6150,13 @@ def _scan_chess_two_crop_review_artifacts(
             fields["side_to_move_confidence"] = marker_quality.get("confidence", 0.0)
         marker_crop = _crop_bbox_from_image(page_image, fields["marker_crop_bbox"])
         if marker_crop is not None:
-            files.append({"path": fields["side_marker_crop_path"], "data": _timed_png_bytes(marker_crop, performance)})
+            files.append(
+                {
+                    "path": fields["side_marker_crop_path"],
+                    "data": _timed_png_bytes(marker_crop, performance, artifact_class="required"),
+                    "artifact_class": "required",
+                }
+            )
             fields["side_marker_review_crop_path"] = fields["side_marker_crop_path"]
             fields["side_marker_review_crop_kind"] = (
                 "detected_marker_bbox" if marker_quality.get("decision") == "pass" else "detected_marker_bbox_quality_failed"
@@ -6094,19 +6192,51 @@ def _scan_chess_two_crop_review_artifacts(
     if fields["board_crop_quality"] != "pass":
         fields["manual_review_required"] = True
         fields["manual_review_reason"] = "bad_crop"
-    overlay = _scan_chess_debug_overlay(
-        page_image,
-        fields["board_bbox"],
-        marker_bbox,
-        marker_search_zones=zones,
-        selected_marker_zone=str(fields.get("selected_marker_zone") or ""),
-        board_crop_quality=str(fields.get("board_crop_quality") or ""),
-        marker_crop_quality=str(fields.get("marker_crop_quality") or ""),
+    include_optional = _two_crop_optional_debug_required(
+        artifact_policy,
+        fields,
+        blocker_context,
     )
-    if overlay is not None:
-        files.append({"path": fields["debug_overlay_path"], "data": _timed_png_bytes(overlay, performance)})
+    optional_candidates: list[tuple[str, Image.Image | None]] = []
+    if context_crop is not None:
+        optional_candidates.append((f"review/chess_fen/two_crop/{stem}_context.png", context_crop))
+    if fields.get("board_bbox"):
+        optional_candidates.append((f"review/chess_fen/two_crop/{stem}_overlay.png", None))
+    performance["optional_debug_candidate_count"] = len(optional_candidates)
+    if include_optional:
+        if context_crop is not None:
+            fields["debug_context_crop_path"] = f"review/chess_fen/two_crop/{stem}_context.png"
+            files.append(
+                {
+                    "path": fields["debug_context_crop_path"],
+                    "data": _timed_png_bytes(context_crop, performance, artifact_class="optional"),
+                    "artifact_class": "optional",
+                }
+            )
+        overlay = _scan_chess_debug_overlay(
+            page_image,
+            fields["board_bbox"],
+            marker_bbox,
+            marker_search_zones=zones,
+            selected_marker_zone=str(fields.get("selected_marker_zone") or ""),
+            board_crop_quality=str(fields.get("board_crop_quality") or ""),
+            marker_crop_quality=str(fields.get("marker_crop_quality") or ""),
+        )
+        if overlay is not None:
+            fields["debug_overlay_path"] = f"review/chess_fen/two_crop/{stem}_overlay.png"
+            files.append(
+                {
+                    "path": fields["debug_overlay_path"],
+                    "data": _timed_png_bytes(overlay, performance, artifact_class="optional"),
+                    "artifact_class": "optional",
+                }
+            )
     else:
-        fields["debug_overlay_path"] = ""
+        performance["optional_debug_skipped_count"] = len(optional_candidates)
+        performance["optional_debug_skipped_estimated_raw_bytes"] = (
+            _estimated_image_raw_bytes(context_crop)
+            + _estimated_image_raw_bytes(page_image if fields.get("board_bbox") else None)
+        )
     performance["total_seconds"] = time.perf_counter() - total_started
     fields["two_crop_performance"] = _rounded_two_crop_performance(performance)
     return fields, files
@@ -7532,14 +7662,23 @@ def _png_bytes(image: Image.Image) -> bytes:
     return output.getvalue()
 
 
-def _timed_png_bytes(image: Image.Image, performance: dict[str, Any]) -> bytes:
+def _timed_png_bytes(
+    image: Image.Image,
+    performance: dict[str, Any],
+    *,
+    artifact_class: str = "required",
+) -> bytes:
     started = time.perf_counter()
     data = _png_bytes(image)
-    performance["png_encoding_seconds"] = float(performance.get("png_encoding_seconds") or 0.0) + (
-        time.perf_counter() - started
-    )
+    elapsed = time.perf_counter() - started
+    performance["png_encoding_seconds"] = float(performance.get("png_encoding_seconds") or 0.0) + elapsed
     _increment_two_crop_metric(performance, "png_encoded_artifact_count")
     _increment_two_crop_metric(performance, "png_encoded_bytes", len(data))
+    performance[f"{artifact_class}_png_encoding_seconds"] = float(
+        performance.get(f"{artifact_class}_png_encoding_seconds") or 0.0
+    ) + elapsed
+    _increment_two_crop_metric(performance, f"{artifact_class}_png_encoded_artifact_count")
+    _increment_two_crop_metric(performance, f"{artifact_class}_png_encoded_bytes", len(data))
     return data
 
 
@@ -7549,6 +7688,8 @@ def _rounded_two_crop_performance(performance: Mapping[str, Any]) -> dict[str, A
         "localization_seconds",
         "marker_analysis_seconds",
         "png_encoding_seconds",
+        "required_png_encoding_seconds",
+        "optional_png_encoding_seconds",
         "file_write_seconds",
         "ambiguity_probe_seconds",
         "total_seconds",

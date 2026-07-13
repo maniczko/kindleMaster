@@ -23,6 +23,7 @@
 # - ML evaluation: python kindlemaster.py ml evaluate
 # - auto chess flow: python kindlemaster.py process path\to\chess.pdf --out output\chess_auto --mode auto
 # - resume compatible two-crop pages: python kindlemaster.py process path\to\chess.pdf --out output\chess_auto --mode auto --resume
+# - optional two-crop debug policy: python kindlemaster.py process path\to\chess.pdf --out output\chess_auto --debug-artifacts all|blockers|none
 # - auto chess validation: python kindlemaster.py validate output\chess_auto --strict
 # - auto chess report: python kindlemaster.py report output\chess_auto
 # - auto chess review: python kindlemaster.py review output\chess_auto

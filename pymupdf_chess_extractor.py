@@ -5343,7 +5343,7 @@ def _scan_chess_grid_line_board_analysis(image: Image.Image) -> dict[str, Any]:
             },
         }
 
-    side = int(round((width + height) / 2.0))
+    side = min(int(round((width + height) / 2.0)), image.width, image.height)
     cx = (x0 + x1) / 2.0
     cy = (y0 + y1) / 2.0
     left = int(round(cx - side / 2.0))

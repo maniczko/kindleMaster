@@ -71,6 +71,18 @@ class ChessTwoCropPerformanceTests(unittest.TestCase):
         self.assertIn("full_grid_resolution_below_minimum", low_analysis["reason_codes"])
         self.assertEqual(low_performance["localization_path"], "sliding_window_fallback")
 
+    def test_rectangular_grid_box_stays_within_image_bounds(self) -> None:
+        image = _rectangular_grid_image(width=101, height=111)
+
+        analysis = _scan_chess_grid_line_board_analysis(image)
+
+        self.assertIsNotNone(analysis["box"])
+        left, top, right, bottom = analysis["box"]
+        self.assertGreaterEqual(left, 0)
+        self.assertGreaterEqual(top, 0)
+        self.assertLessEqual(right, image.width)
+        self.assertLessEqual(bottom, image.height)
+
     def test_implicit_periodic_grid_fast_path_requires_no_better_inset(self) -> None:
         full_grid = _implicit_grid_image(size=256, inset=8)
         partial_grid = _implicit_grid_image(size=256, inset=16)
@@ -386,6 +398,18 @@ def _implicit_grid_image(*, size: int, inset: int) -> Image.Image:
             draw.rectangle((left, top, left + cell - 1, top + cell - 1), fill=color)
     draw.rectangle((inset, inset, size - inset - 1, size - inset - 1), outline="black", width=2)
     return image
+
+
+def _rectangular_grid_image(*, width: int, height: int) -> Image.Image:
+    image = Image.new("L", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+    x_coordinates = [round(index * (width - 1) / 8) for index in range(9)]
+    y_coordinates = [round(index * (height - 1) / 8) for index in range(9)]
+    for coordinate in x_coordinates:
+        draw.line((coordinate, 0, coordinate, height - 1), fill="black", width=1)
+    for coordinate in y_coordinates:
+        draw.line((0, coordinate, width - 1, coordinate), fill="black", width=1)
+    return image.convert("RGB")
 
 
 def _board_image(

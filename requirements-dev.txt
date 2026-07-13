@@ -4,7 +4,7 @@
 pytest>=8.4.0
 coverage[toml]>=7.15.0
 ruff>=0.15.20
-pip-audit>=2.7.0
+pip-audit>=2.10.1
 # Optional local verification surfaces:
 # - browser: Playwright Python package plus a separate Chromium install
 # - runtime: Waitress plus the browser surface toolchain

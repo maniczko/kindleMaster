@@ -7,7 +7,7 @@ waitress>=3.0.0
 sentry-sdk[flask]>=2.25.0
 PyMuPDF==1.28.0
 ebooklib==0.20
-Pillow>=12.2.0
+Pillow>=12.3.0
 beautifulsoup4>=4.15.0
 lxml>=6.1.1
 python-docx>=1.2.0

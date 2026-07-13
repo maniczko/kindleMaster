@@ -67,6 +67,7 @@ QUICK_TESTS = [
     "test_chess_diagram_multi_pass_detection.py",
     "test_chess_diagram_fingerprint.py",
     "test_chess_yusupov_acceptance_manifest.py",
+    "test_chess_fen_gold_corpus.py",
     "test_chess_glyph_diagnostics.py",
     "test_chess_fen_square_diff.py",
     "test_chess_fen_hard_cases.py",
@@ -547,6 +548,29 @@ def main() -> int:
         default="",
         help="Optional expected runtime commit; defaults to the validator checkout HEAD.",
     )
+    fen_gold_parser = chess_subparsers.add_parser(
+        "prepare-fen-gold-corpus",
+        help="Build a source-bound local full-FEN review package from a fixed-edition run.",
+    )
+    fen_gold_parser.add_argument("--source-pdf", required=True)
+    fen_gold_parser.add_argument("--job-output", required=True)
+    fen_gold_parser.add_argument("--marker-labels", required=True)
+    fen_gold_parser.add_argument("--out", required=True)
+    fen_gold_parser.add_argument("--source-profile", default="yusupov-fundamentals")
+    fen_gold_parser.add_argument(
+        "--asset-root",
+        action="append",
+        default=[],
+        help="Optional additional local asset root; may be repeated.",
+    )
+    fen_gold_import_parser = chess_subparsers.add_parser(
+        "import-fen-gold-labels",
+        help="Validate and import a completed source-bound full-FEN review JSONL.",
+    )
+    fen_gold_import_parser.add_argument("--source-pdf", required=True)
+    fen_gold_import_parser.add_argument("--manifest", required=True)
+    fen_gold_import_parser.add_argument("--filled-labels", required=True)
+    fen_gold_import_parser.add_argument("--out", required=True)
 
     chess_study_parser = subparsers.add_parser("chess-study", help="Build a static chess training-book study export.")
     chess_study_subparsers = chess_study_parser.add_subparsers(dest="chess_study_command")
@@ -949,6 +973,40 @@ def main() -> int:
 
 
 def _run_chess(args: argparse.Namespace, *, parser: argparse.ArgumentParser | None = None) -> int:
+    if args.chess_command == "prepare-fen-gold-corpus":
+        from chess_fen_gold_corpus import build_fen_gold_corpus_review
+
+        try:
+            payload = build_fen_gold_corpus_review(
+                source_pdf=args.source_pdf,
+                job_output=args.job_output,
+                marker_labels=args.marker_labels,
+                output_dir=args.out,
+                source_profile=args.source_profile,
+                asset_roots=args.asset_root,
+            )
+        except Exception as error:
+            payload = {"status": "failed", "error": type(error).__name__, "message": str(error)}
+        _print_json(payload)
+        return 0 if payload.get("status") == "ready_for_human_review" else 1
+
+    if args.chess_command == "import-fen-gold-labels":
+        from chess_fen_gold_corpus import validate_fen_gold_corpus_labels
+
+        try:
+            payload = validate_fen_gold_corpus_labels(
+                source_pdf=args.source_pdf,
+                intake_manifest=args.manifest,
+                filled_labels=args.filled_labels,
+                output_dir=args.out,
+            )
+        except Exception as error:
+            payload = {"status": "failed", "error": type(error).__name__, "message": str(error)}
+        _print_json(payload)
+        if payload.get("status") == "passed":
+            return 0
+        return 2 if payload.get("status") == "needs_review" else 1
+
     if args.chess_command == "validate-side-markers":
         from chess_yusupov_acceptance import run_fixed_edition_acceptance
 

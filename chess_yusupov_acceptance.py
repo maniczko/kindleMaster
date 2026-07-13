@@ -12,6 +12,15 @@ from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from chess_side_to_move_fusion import (
+    caption_evidence_candidates,
+    exact_verified_label_candidates,
+    fuse_side_to_move_candidates,
+    layout_prior_candidate,
+    pgn_evidence_candidates,
+    verified_side_labels_from_acceptance_manifest,
+)
+
 
 ACCEPTANCE_MANIFEST_SCHEMA = "kindlemaster.chess.marker_acceptance_manifest.v1"
 ACCEPTANCE_PROFILE_SCHEMA = "kindlemaster.chess.marker_acceptance_profile.v1"
@@ -363,6 +372,181 @@ def load_job_evidence(job_output: str | Path) -> dict[str, Any]:
     }
 
 
+def _acceptance_record_indexes(
+    manifest: Mapping[str, Any],
+    detected_records: Iterable[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    expected = _mapping_rows(manifest.get("diagrams"))
+    detected = [dict(row) for row in detected_records if isinstance(row, Mapping)]
+    detected_by_fingerprint = {
+        _fingerprint(row.get("diagram_fingerprint")): row
+        for row in detected
+        if _fingerprint(row.get("diagram_fingerprint"))
+    }
+    return expected, detected, detected_by_fingerprint
+
+
+def fuse_fixed_edition_side_to_move_records(
+    manifest: Mapping[str, Any],
+    detected_records: Iterable[Mapping[str, Any]],
+    *,
+    source_document_sha256: str,
+) -> list[dict[str, Any]]:
+    """Fuse marker, text, PGN, and exact verified labels for acceptance records."""
+    labels = verified_side_labels_from_acceptance_manifest(manifest)
+    fused_records: list[dict[str, Any]] = []
+    for raw in detected_records:
+        if not isinstance(raw, Mapping):
+            continue
+        record = dict(raw)
+        candidates: list[dict[str, Any]] = []
+        marker_side = _predicted_marker_side(record)
+        if _trusted_marker(record) and marker_side in {"w", "b"}:
+            candidates.append(
+                {
+                    "side": marker_side,
+                    "source": "trusted_marker",
+                    "confidence": _first_float(
+                        record.get("side_marker_confidence"),
+                        record.get("marker_classifier_confidence"),
+                        0.95,
+                    ),
+                    "kind": "visual_marker",
+                    "support_only": False,
+                    "provenance": {
+                        "diagram_fingerprint": str(
+                            record.get("diagram_fingerprint") or ""
+                        ),
+                        "marker_status": str(
+                            record.get("marker_semantic_status")
+                            or record.get("side_marker_status")
+                            or ""
+                        ),
+                    },
+                }
+            )
+        candidates.extend(caption_evidence_candidates(record))
+        candidates.extend(pgn_evidence_candidates(record))
+        existing_side = _predicted_side(record)
+        existing_source_text = " ".join(
+            str(record.get(key) or "")
+            for key in (
+                "side_to_move_source",
+                "side_to_move_status",
+                "side_to_move_evidence",
+            )
+        ).lower()
+        if existing_side in {"w", "b"} and not _trusted_marker(record):
+            if any(token in existing_source_text for token in ("caption", "text", "ocr")):
+                candidates.append(
+                    _legacy_fusion_candidate(
+                        record,
+                        side=existing_side,
+                        source="text_inferred",
+                    )
+                )
+            elif any(
+                token in existing_source_text
+                for token in ("pgn", "movetext", "move_number", "notation")
+            ):
+                candidates.append(
+                    _legacy_fusion_candidate(
+                        record,
+                        side=existing_side,
+                        source="pgn_inferred",
+                    )
+                )
+        exact, rejected = exact_verified_label_candidates(
+            record,
+            labels,
+            source_document_sha256=source_document_sha256,
+        )
+        candidates.extend(exact)
+        prior = layout_prior_candidate(record)
+        if prior:
+            candidates.append(prior)
+        fusion = fuse_side_to_move_candidates(
+            candidates,
+            rejected_evidence=rejected,
+        )
+        source = str(fusion.get("source") or "unknown")
+        tier = {
+            "trusted_marker": "trusted",
+            "human_verified": "verified",
+            "text_inferred": "inferred",
+            "pgn_inferred": "inferred",
+            "conflict": "conflict",
+        }.get(source, "unknown")
+        original_full_fen_allowed = record.get("full_fen_allowed") is True
+        record.update(
+            {
+                "side_to_move": str(fusion.get("side") or "unknown"),
+                "side_to_move_source": source,
+                "side_to_move_confidence": float(
+                    fusion.get("confidence") or 0.0
+                ),
+                "side_to_move_evidence_tier": tier,
+                "side_to_move_fusion_status": str(
+                    fusion.get("status") or "unknown"
+                ),
+                "side_to_move_primary_evidence": dict(
+                    fusion.get("primary_evidence") or {}
+                ),
+                "side_to_move_supporting_evidence": list(
+                    fusion.get("supporting_evidence") or []
+                ),
+                "side_to_move_conflicts": list(fusion.get("conflicts") or []),
+                "full_fen_allowed": bool(
+                    source == "trusted_marker" and original_full_fen_allowed
+                ),
+                "full_fen_blocker": (
+                    ""
+                    if source == "trusted_marker" and original_full_fen_allowed
+                    else "side_to_move_evidence_conflict"
+                    if source == "conflict"
+                    else "not_trusted_side_to_move"
+                ),
+            }
+        )
+        fused_records.append(record)
+    return fused_records
+
+
+def _legacy_fusion_candidate(
+    record: Mapping[str, Any],
+    *,
+    side: str,
+    source: str,
+) -> dict[str, Any]:
+    return {
+        "side": side,
+        "source": source,
+        "confidence": _first_float(
+            record.get("side_to_move_evidence_confidence"),
+            record.get("side_to_move_confidence"),
+            0.78,
+        ),
+        "kind": "legacy_preclassified_evidence",
+        "support_only": False,
+        "provenance": {
+            "side_to_move_evidence": str(
+                record.get("side_to_move_evidence") or ""
+            )
+        },
+    }
+
+
+def _first_float(*values: Any) -> float:
+    for value in values:
+        try:
+            if value in (None, ""):
+                continue
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
 def evaluate_acceptance(
     manifest: Mapping[str, Any],
     *,
@@ -372,14 +556,11 @@ def evaluate_acceptance(
     validator_commit_sha: str,
     thresholds: Mapping[str, Any],
 ) -> dict[str, Any]:
-    expected = _mapping_rows(manifest.get("diagrams"))
+    expected, detected, detected_by_fingerprint = _acceptance_record_indexes(
+        manifest,
+        detected_records,
+    )
     expected_hard_negatives = _mapping_rows(manifest.get("hard_negatives"))
-    detected = [dict(row) for row in detected_records if isinstance(row, Mapping)]
-    detected_by_fingerprint = {
-        _fingerprint(row.get("diagram_fingerprint")): row
-        for row in detected
-        if _fingerprint(row.get("diagram_fingerprint"))
-    }
     expected_fingerprints = {
         _fingerprint(row.get("diagram_fingerprint")) for row in expected
     }
@@ -692,9 +873,14 @@ def run_fixed_edition_acceptance(
         }
         return _write_acceptance_reports(payload, report_dir=report_dir, source_profile=source_profile)
     current_commit = validator_commit_sha or _current_main_commit(repo_root)
+    fused_records = fuse_fixed_edition_side_to_move_records(
+        manifest,
+        evidence.get("records") or [],
+        source_document_sha256=str(evidence.get("source_document_sha256") or ""),
+    )
     evaluation = evaluate_acceptance(
         manifest,
-        detected_records=evidence.get("records") or [],
+        detected_records=fused_records,
         source_document_sha256=str(evidence.get("source_document_sha256") or ""),
         runtime_commit_sha=str(evidence.get("runtime_commit_sha") or ""),
         validator_commit_sha=current_commit,
@@ -705,6 +891,34 @@ def run_fixed_edition_acceptance(
         **evaluation,
         "manifest_validation": validation,
         "job_evidence": {key: value for key, value in evidence.items() if key != "records"},
+        "side_to_move_fusion": {
+            "record_count": len(fused_records),
+            "exact_verified_label_reuse_count": len(
+                [
+                    row
+                    for row in fused_records
+                    if (row.get("side_to_move_primary_evidence") or {}).get("kind")
+                    == "exact_verified_label"
+                ]
+            ),
+            "conflict_count": len(
+                [
+                    row
+                    for row in fused_records
+                    if row.get("side_to_move_fusion_status") == "conflict"
+                ]
+            ),
+            "unknown_count": len(
+                [
+                    row
+                    for row in fused_records
+                    if _predicted_side(row) == "unknown"
+                ]
+            ),
+            "false_trusted_marker_count": evaluation.get("metrics", {}).get(
+                "false_trusted_marker_count", 0
+            ),
+        },
         "errors": (
             []
             if evaluation.get("status") == "passed"
@@ -835,6 +1049,7 @@ def _safe_persisted_acceptance_payload(payload: Mapping[str, Any]) -> dict[str, 
         "status",
         "metrics",
         "subsets",
+        "side_to_move_fusion",
         "closing_evidence_eligible",
         "errors",
         "next_actions",

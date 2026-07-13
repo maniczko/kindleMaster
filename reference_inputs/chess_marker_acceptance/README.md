@@ -46,3 +46,26 @@ When the private manifest is available, `python kindlemaster.py test --suite
 quick` also requires `KINDLEMASTER_CHESS_ACCEPTANCE_JOB_OUTPUT` and enforces the
 same gate. Without a private manifest, the gate reports `corpus_unavailable`
 and never turns synthetic tests into a real-edition pass.
+
+## Side-to-move evidence fusion
+
+The runtime derives side-to-move evidence from independent sources and keeps
+their provenance separate:
+
+- a trusted visual marker remains the only `trusted_marker` source;
+- explicit caption/OCR phrases such as `White to move` or `Ruch czarnych`
+  become `text_inferred`;
+- PGN FEN tags, linked first-mover metadata, and move-number `.` / `...`
+  notation become `pgn_inferred`;
+- source-profile layout priors are supporting evidence only and cannot fill an
+  unknown result;
+- exact verified labels remain `human_verified` and require the same source
+  SHA256, stable diagram fingerprint, verification source, reviewer, and
+  timestamp.
+
+High-confidence disagreement produces an explicit `conflict` with
+`side_to_move=unknown`; no source wins by priority. Text, PGN, and exact-label
+fallback may satisfy coverage, but they do not enable full FEN by default. The
+fixed-edition gate still requires `side_to_move_coverage_rate=1.0`,
+`unknown_count=0`, and `false_trusted_marker_count=0` before it can emit closing
+evidence.

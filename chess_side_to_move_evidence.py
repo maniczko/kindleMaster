@@ -5,19 +5,29 @@ from collections import Counter
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from chess_side_to_move_fusion import (
+    caption_evidence_candidates,
+    exact_verified_label_candidates,
+    fuse_side_to_move_candidates,
+    layout_prior_candidate,
+    pgn_evidence_candidates,
+)
+
 
 SIDE_TO_MOVE_SOURCES = {
     "trusted_marker",
     "human_verified",
     "text_inferred",
     "pgn_inferred",
+    "conflict",
     "unknown",
 }
-SIDE_TO_MOVE_TIERS = {"trusted", "verified", "inferred", "unknown"}
+SIDE_TO_MOVE_TIERS = {"trusted", "verified", "inferred", "conflict", "unknown"}
 TRUSTED_MARKER_STATUSES = {"trusted_marker", "trusted_side_marker", "trusted"}
 HUMAN_VERIFICATION_SOURCES = {"human", "human_visual", "human_manual", "legacy_human_visual"}
 FULL_FEN_BLOCKER_NOT_TRUSTED = "not_trusted_side_to_move"
 FULL_FEN_BLOCKER_HUMAN_POLICY = "human_verified_policy_required"
+FULL_FEN_BLOCKER_CONFLICT = "side_to_move_evidence_conflict"
 MARKER_SEMANTIC_STATUSES = {"trusted", "review", "missing"}
 MARKER_OWNERSHIP_STATUSES = {"assigned", "ambiguous", "unassigned"}
 BOARD_PLACEMENT_STATUSES = {"accepted", "review"}
@@ -118,18 +128,20 @@ def resolve_marker_semantic_contract(record: Mapping[str, Any]) -> dict[str, Any
         "board_placement_status": placement_status,
         **full_fen,
     }
-
-
 def resolve_side_to_move_evidence(
     record: Mapping[str, Any],
     *,
     allow_human_verified_full_fen: bool = False,
+    verified_labels: Iterable[Mapping[str, Any]] = (),
+    source_document_sha256: str = "",
+    source_profile_layout_prior: Mapping[str, Any] | str | None = None,
 ) -> dict[str, Any]:
-    """Return the normalized side-to-move evidence contract for one diagram."""
+    """Produce and fuse side-to-move evidence without bypassing FEN safety."""
     marker_contract = resolve_marker_semantic_contract(record)
     runtime_side = _normalize_side(
         _first(record, "side_to_move", "side_to_move_detected", "side_to_move_code", "side")
     )
+    candidates: list[dict[str, Any]] = []
     if marker_contract["marker_semantic_status"] == "trusted":
         confidence = _first_float(
             record.get("side_marker_confidence"),
@@ -137,78 +149,134 @@ def resolve_side_to_move_evidence(
             record.get("marker_classifier_confidence"),
             record.get("side_to_move_confidence"),
         )
-        return _evidence_payload(
-            side=str(marker_contract.get("marker_semantic_side") or runtime_side),
-            source="trusted_marker",
-            tier="trusted",
-            confidence=confidence,
-            full_fen_allowed=bool(marker_contract.get("full_fen_allowed")),
-            full_fen_blocker=str(marker_contract.get("full_fen_blocker") or ""),
-            full_fen_blockers=list(marker_contract.get("full_fen_blockers") or []),
-            manual_review_required=False,
-            marker_contract=marker_contract,
+        candidates.append(
+            {
+                "side": str(marker_contract.get("marker_semantic_side") or runtime_side),
+                "source": "trusted_marker",
+                "confidence": confidence or 0.95,
+                "kind": "visual_marker",
+                "support_only": False,
+                "provenance": {
+                    "marker_status": str(
+                        _first(record, "side_marker_status", "marker_status") or ""
+                    ),
+                    "marker_classifier_version": str(
+                        record.get("marker_classifier_version") or ""
+                    ),
+                    "marker_bbox": list(
+                        _first(record, "marker_bbox", "marker_crop_bbox", "side_marker_bbox")
+                        or []
+                    ),
+                },
+            }
         )
 
     manual_side = _manual_side(record)
     if _is_human_verified(record) and manual_side in {"w", "b"}:
-        human_full_fen = _full_fen_contract(
-            record,
-            side_gate_allowed=bool(allow_human_verified_full_fen),
-            side_blocker=FULL_FEN_BLOCKER_HUMAN_POLICY,
-            board_placement_status=str(marker_contract.get("board_placement_status") or "review"),
-        )
-        return _evidence_payload(
-            side=manual_side,
-            source="human_verified",
-            tier="verified",
-            confidence=_first_float(record.get("side_to_move_confidence"), 1.0),
-            full_fen_allowed=bool(human_full_fen.get("full_fen_allowed")),
-            full_fen_blocker=str(human_full_fen.get("full_fen_blocker") or ""),
-            full_fen_blockers=list(human_full_fen.get("full_fen_blockers") or []),
-            manual_review_required=not allow_human_verified_full_fen,
-            marker_contract=marker_contract,
+        candidates.append(
+            {
+                "side": manual_side,
+                "source": "human_verified",
+                "confidence": _first_float(record.get("side_to_move_confidence"), 1.0),
+                "kind": "inline_human_verified",
+                "support_only": False,
+                "provenance": {
+                    "verification_source": str(record.get("verification_source") or ""),
+                    "verified_by": str(record.get("verified_by") or ""),
+                    "verified_at": str(record.get("verified_at") or ""),
+                },
+            }
         )
 
+    candidates.extend(caption_evidence_candidates(record))
+    candidates.extend(pgn_evidence_candidates(record))
     inferred_source = _inferred_source(record)
     if runtime_side in {"w", "b"} and inferred_source in {"text_inferred", "pgn_inferred"}:
-        inferred_full_fen = _full_fen_contract(
-            record,
-            side_gate_allowed=False,
-            side_blocker=FULL_FEN_BLOCKER_NOT_TRUSTED,
-            board_placement_status=str(marker_contract.get("board_placement_status") or "review"),
+        candidates.append(
+            {
+                "side": runtime_side,
+                "source": inferred_source,
+                "confidence": _first_float(
+                    record.get("side_to_move_evidence_confidence"),
+                    record.get("side_to_move_confidence"),
+                    record.get("confidence"),
+                    0.78 if inferred_source == "text_inferred" else 0.76,
+                ),
+                "kind": "legacy_preclassified_evidence",
+                "support_only": False,
+                "provenance": {
+                    "side_to_move_evidence": str(record.get("side_to_move_evidence") or ""),
+                    "side_to_move_status": str(record.get("side_to_move_status") or ""),
+                },
+            }
         )
-        return _evidence_payload(
-            side=runtime_side,
-            source=inferred_source,
-            tier="inferred",
-            confidence=_first_float(
-                record.get("side_to_move_evidence_confidence"),
-                record.get("side_to_move_confidence"),
-                record.get("confidence"),
-            ),
-            full_fen_allowed=False,
-            full_fen_blocker=str(inferred_full_fen.get("full_fen_blocker") or FULL_FEN_BLOCKER_NOT_TRUSTED),
-            full_fen_blockers=list(inferred_full_fen.get("full_fen_blockers") or []),
-            manual_review_required=True,
-            marker_contract=marker_contract,
-        )
-
-    unknown_full_fen = _full_fen_contract(
+    exact_candidates, rejected_labels = exact_verified_label_candidates(
         record,
-        side_gate_allowed=False,
-        side_blocker=FULL_FEN_BLOCKER_NOT_TRUSTED,
+        verified_labels,
+        source_document_sha256=source_document_sha256,
+    )
+    candidates.extend(exact_candidates)
+    prior = layout_prior_candidate(
+        record,
+        source_profile_layout_prior=source_profile_layout_prior,
+    )
+    if prior:
+        candidates.append(prior)
+    fusion = fuse_side_to_move_candidates(
+        candidates,
+        rejected_evidence=rejected_labels,
+    )
+    source = str(fusion.get("source") or "unknown")
+    if source == "trusted_marker":
+        tier = "trusted"
+        side_gate_allowed = True
+        side_blocker = "marker_semantic_not_trusted"
+        manual_review_required = False
+    elif source == "human_verified":
+        tier = "verified"
+        side_gate_allowed = bool(allow_human_verified_full_fen)
+        side_blocker = FULL_FEN_BLOCKER_HUMAN_POLICY
+        manual_review_required = not allow_human_verified_full_fen
+    elif source in {"text_inferred", "pgn_inferred"}:
+        tier = "inferred"
+        side_gate_allowed = False
+        side_blocker = FULL_FEN_BLOCKER_NOT_TRUSTED
+        manual_review_required = True
+    elif source == "conflict":
+        tier = "conflict"
+        side_gate_allowed = False
+        side_blocker = FULL_FEN_BLOCKER_CONFLICT
+        manual_review_required = True
+    else:
+        tier = "unknown"
+        side_gate_allowed = False
+        side_blocker = FULL_FEN_BLOCKER_NOT_TRUSTED
+        manual_review_required = True
+    full_fen = _full_fen_contract(
+        record,
+        side_gate_allowed=side_gate_allowed,
+        side_blocker=side_blocker,
         board_placement_status=str(marker_contract.get("board_placement_status") or "review"),
     )
+    full_fen_allowed = bool(full_fen.get("full_fen_allowed"))
     return _evidence_payload(
-        side="unknown",
-        source="unknown",
-        tier="unknown",
-        confidence=0.0,
-        full_fen_allowed=False,
-        full_fen_blocker=str(unknown_full_fen.get("full_fen_blocker") or FULL_FEN_BLOCKER_NOT_TRUSTED),
-        full_fen_blockers=list(unknown_full_fen.get("full_fen_blockers") or []),
-        manual_review_required=True,
+        side=str(fusion.get("side") or "unknown"),
+        source=source,
+        tier=tier,
+        confidence=float(fusion.get("confidence") or 0.0),
+        full_fen_allowed=full_fen_allowed,
+        full_fen_blocker=(
+            ""
+            if full_fen_allowed
+            else str(full_fen.get("full_fen_blocker") or side_blocker)
+        ),
+        full_fen_blockers=list(full_fen.get("full_fen_blockers") or []),
+        manual_review_required=manual_review_required,
         marker_contract=marker_contract,
+        fusion_status=str(fusion.get("status") or "unknown"),
+        primary_evidence=fusion.get("primary_evidence") or {},
+        supporting_evidence=fusion.get("supporting_evidence") or [],
+        conflicts=fusion.get("conflicts") or [],
     )
 
 
@@ -216,12 +284,18 @@ def apply_side_to_move_evidence(
     record: Mapping[str, Any],
     *,
     allow_human_verified_full_fen: bool = False,
+    verified_labels: Iterable[Mapping[str, Any]] = (),
+    source_document_sha256: str = "",
+    source_profile_layout_prior: Mapping[str, Any] | str | None = None,
 ) -> dict[str, Any]:
     merged = dict(record)
     merged.update(
         resolve_side_to_move_evidence(
             merged,
             allow_human_verified_full_fen=allow_human_verified_full_fen,
+            verified_labels=verified_labels,
+            source_document_sha256=source_document_sha256,
+            source_profile_layout_prior=source_profile_layout_prior,
         )
     )
     return merged
@@ -231,9 +305,19 @@ def build_side_to_move_coverage_dashboard(
     records: Iterable[Mapping[str, Any]],
     *,
     allow_human_verified_full_fen: bool = False,
+    verified_labels: Iterable[Mapping[str, Any]] = (),
+    source_document_sha256: str = "",
+    source_profile_layout_prior: Mapping[str, Any] | str | None = None,
 ) -> dict[str, Any]:
+    label_rows = [dict(row) for row in verified_labels if isinstance(row, Mapping)]
     items = [
-        _dashboard_item(record, allow_human_verified_full_fen=allow_human_verified_full_fen)
+        _dashboard_item(
+            record,
+            allow_human_verified_full_fen=allow_human_verified_full_fen,
+            verified_labels=label_rows,
+            source_document_sha256=source_document_sha256,
+            source_profile_layout_prior=source_profile_layout_prior,
+        )
         for record in records
         if isinstance(record, Mapping)
     ]
@@ -258,7 +342,8 @@ def build_side_to_move_coverage_dashboard(
         "human_verified_count": int(by_source.get("human_verified", 0)),
         "text_inferred_count": int(by_source.get("text_inferred", 0)),
         "pgn_inferred_count": int(by_source.get("pgn_inferred", 0)),
-        "unknown_count": int(by_source.get("unknown", 0)),
+        "unknown_count": len([item for item in items if item.get("side_to_move") == "unknown"]),
+        "conflict_count": int(by_source.get("conflict", 0)),
         "manual_review_required_count": manual_review_count,
         "full_fen_safe_acceptance_count": full_fen_safe_count,
         "side_to_move_coverage_rate": _rate(covered_count, total),
@@ -267,7 +352,10 @@ def build_side_to_move_coverage_dashboard(
         "human_verified_rate": _rate(by_source.get("human_verified", 0), total),
         "text_inferred_rate": _rate(by_source.get("text_inferred", 0), total),
         "pgn_inferred_rate": _rate(by_source.get("pgn_inferred", 0), total),
-        "unknown_rate": _rate(by_source.get("unknown", 0), total),
+        "unknown_rate": _rate(
+            len([item for item in items if item.get("side_to_move") == "unknown"]),
+            total,
+        ),
         "manual_review_required_rate": _rate(manual_review_count, total),
         "full_fen_safe_acceptance_rate": _rate(full_fen_safe_count, total),
         "by_source": dict(sorted(by_source.items())),
@@ -409,10 +497,16 @@ def _dashboard_item(
     record: Mapping[str, Any],
     *,
     allow_human_verified_full_fen: bool,
+    verified_labels: Iterable[Mapping[str, Any]],
+    source_document_sha256: str,
+    source_profile_layout_prior: Mapping[str, Any] | str | None,
 ) -> dict[str, Any]:
     evidence = resolve_side_to_move_evidence(
         record,
         allow_human_verified_full_fen=allow_human_verified_full_fen,
+        verified_labels=verified_labels,
+        source_document_sha256=source_document_sha256,
+        source_profile_layout_prior=source_profile_layout_prior,
     )
     return {
         "diagram_id": str(_first(record, "diagram_id", "id") or ""),
@@ -439,6 +533,10 @@ def _evidence_payload(
     full_fen_blockers: list[str],
     manual_review_required: bool,
     marker_contract: Mapping[str, Any],
+    fusion_status: str,
+    primary_evidence: Mapping[str, Any],
+    supporting_evidence: Iterable[Mapping[str, Any]],
+    conflicts: Iterable[Mapping[str, Any]],
 ) -> dict[str, Any]:
     return {
         **dict(marker_contract),
@@ -451,6 +549,14 @@ def _evidence_payload(
         "full_fen_blockers": list(full_fen_blockers),
         "full_fen_review_required": not bool(full_fen_allowed),
         "manual_review_required": bool(manual_review_required),
+        "side_to_move_fusion_status": str(fusion_status or "unknown"),
+        "side_to_move_primary_evidence": dict(primary_evidence),
+        "side_to_move_supporting_evidence": [
+            dict(row) for row in supporting_evidence if isinstance(row, Mapping)
+        ],
+        "side_to_move_conflicts": [
+            dict(row) for row in conflicts if isinstance(row, Mapping)
+        ],
     }
 
 

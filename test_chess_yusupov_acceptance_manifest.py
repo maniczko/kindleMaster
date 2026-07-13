@@ -546,6 +546,11 @@ class ChessYusupovAcceptanceManifestTests(unittest.TestCase):
         self.assertEqual(returncode, 0, output.getvalue())
         self.assertEqual(report["status"], "passed")
         self.assertTrue(report["closing_evidence_eligible"])
+        self.assertEqual(report["metrics"]["side_to_move_coverage_rate"], 1.0)
+        self.assertEqual(report["metrics"]["unknown_count"], 0)
+        self.assertEqual(report["metrics"]["false_trusted_marker_count"], 0)
+        self.assertEqual(report["side_to_move_fusion"]["exact_verified_label_reuse_count"], 2)
+        self.assertEqual(report["side_to_move_fusion"]["conflict_count"], 0)
 
 
 if __name__ == "__main__":

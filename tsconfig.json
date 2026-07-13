@@ -16,9 +16,8 @@
     "noEmit": true,
     "jsx": "react-jsx",
     "ignoreDeprecations": "6.0",
-    "baseUrl": ".",
     "paths": {
-      "@/*": ["frontend/src/*"]
+      "@/*": ["./frontend/src/*"]
     }
   },
   "include": ["frontend/src", "vite.config.ts", "trigger.config.ts", "trigger/**/*.ts"]

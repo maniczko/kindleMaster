@@ -5890,6 +5890,8 @@ def _two_crop_optional_debug_required(
             "marker_conflict",
             "marker_missing",
             "marker_ambiguous",
+            "requires_review",
+            "review_required",
         )
     ):
         return True

@@ -111,15 +111,19 @@ class ChessTwoCropArtifactPolicyTests(unittest.TestCase):
     def test_blocker_policy_recognizes_failures_and_errors(self) -> None:
         image = _fixture_image()
         with _stable_quality_runtime():
-            for status in ("FAIL", "FAILURE", "FAILED", "ERROR"):
-                with self.subTest(status=status):
+            blocker_contexts = [
+                {"placement_status": status}
+                for status in ("FAIL", "FAILURE", "FAILED", "ERROR")
+            ] + [{"requires_review": True}, {"review_required": True}]
+            for blocker_context in blocker_contexts:
+                with self.subTest(blocker_context=blocker_context):
                     fields, files = _scan_chess_two_crop_review_artifacts(
                         image,
-                        filename=f"status-{status}.png",
+                        filename="blocker-signal.png",
                         board_bbox=[20, 20, 220, 220],
                         side_marker_bbox=[222, 100, 232, 112],
                         debug_artifact_policy="blockers",
-                        blocker_context={"placement_status": status},
+                        blocker_context=blocker_context,
                     )
                     self.assertTrue(
                         any(item.get("artifact_class") == "optional" for item in files)

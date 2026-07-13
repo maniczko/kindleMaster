@@ -40,7 +40,7 @@ def _side_marker_e2e_page() -> Image.Image:
             draw.line((offset, 120, offset, 270), fill="black", width=1)
             draw.line((x0, round(120 + step * index), x0 + 150, round(120 + step * index)), fill="black", width=1)
     draw.line([(266, 155), (255, 187), (277, 187), (266, 155)], fill="black", width=2, joint="curve")
-    draw.polygon([(526, 155), (515, 187), (537, 187)], fill="black")
+    draw.polygon([(515, 155), (537, 155), (526, 187)], fill="black")
     return image
 
 

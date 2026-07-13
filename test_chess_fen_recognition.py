@@ -5533,7 +5533,7 @@ class ChessFenRecognitionTests(unittest.TestCase):
             draw = ImageDraw.Draw(image)
             draw.rectangle(board_bbox, outline="black", width=3)
         ImageDraw.Draw(white_marker_page).line(
-            [(740, 145), (800, 145), (770, 198), (740, 145)],
+            [(770, 145), (740, 198), (800, 198), (770, 145)],
             fill="black",
             width=5,
         )
@@ -5548,8 +5548,8 @@ class ChessFenRecognitionTests(unittest.TestCase):
     def test_scan_chess_side_marker_infers_multi_region_markers(self) -> None:
         board_bbox = (100.0, 170.0, 300.0, 370.0)
         cases = {
-            "top_left": [(106, 176), (142, 176), (124, 208)],
-            "bottom_right": [(252, 334), (288, 334), (270, 366)],
+            "top_left": [(62, 172), (94, 172), (78, 202)],
+            "bottom_right": [(306, 340), (338, 340), (322, 368)],
             "left_side": [(66, 222), (96, 222), (81, 250)],
             "right_side": [(304, 222), (334, 222), (319, 250)],
             "caption_above": [(178, 138), (222, 138), (200, 166)],
@@ -5569,8 +5569,8 @@ class ChessFenRecognitionTests(unittest.TestCase):
         page = Image.new("RGB", (420, 440), "white")
         draw = ImageDraw.Draw(page)
         draw.rectangle(board_bbox, outline="black", width=3)
-        draw.polygon([(106, 176), (142, 176), (124, 208)], fill="black")
-        draw.line([(252, 334), (288, 334), (270, 366), (252, 334)], fill="black", width=4)
+        draw.polygon([(62, 172), (94, 172), (78, 202)], fill="black")
+        draw.line([(200, 374), (178, 402), (222, 402), (200, 374)], fill="black", width=4)
 
         evidence = _scan_chess_side_to_move_context_evidence(page, board_bbox)
 

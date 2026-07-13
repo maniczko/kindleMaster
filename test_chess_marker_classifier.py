@@ -9,34 +9,34 @@ from pymupdf_chess_extractor import classify_scan_chess_side_marker_crop
 
 
 class ChessMarkerClassifierTests(unittest.TestCase):
-    def test_outline_triangle_maps_to_white_with_v2_reason(self) -> None:
+    def test_outline_triangle_maps_to_white_with_adaptive_reason(self) -> None:
         crop = Image.new("L", (72, 72), "white")
         draw = ImageDraw.Draw(crop)
         draw.line([(36, 6), (6, 66), (66, 66), (36, 6)], fill="black", width=3, joint="curve")
 
         result = classify_scan_chess_side_marker_crop(crop)
 
-        self.assertEqual(result["classifier_version"], "marker_shape_v2")
+        self.assertEqual(result["classifier_version"], "marker_adaptive_v3")
         self.assertEqual(result["status"], "trusted_marker")
         self.assertEqual(result["side_to_move"], "w")
         self.assertEqual(result["side"], "w")
         self.assertEqual(result["symbol"], "\u25b3")
-        self.assertEqual(result["reason"], "outline_triangle")
+        self.assertEqual(result["reason"], "adaptive_outline_upright_triangle")
         self.assertGreaterEqual(result["confidence"], 0.90)
 
-    def test_filled_triangle_maps_to_black_with_v2_reason(self) -> None:
+    def test_filled_inverted_triangle_maps_to_black_with_adaptive_reason(self) -> None:
         crop = Image.new("L", (72, 72), "white")
         draw = ImageDraw.Draw(crop)
-        draw.polygon([(36, 6), (6, 66), (66, 66)], fill="black")
+        draw.polygon([(6, 6), (66, 6), (36, 66)], fill="black")
 
         result = classify_scan_chess_side_marker_crop(crop)
 
-        self.assertEqual(result["classifier_version"], "marker_shape_v2")
+        self.assertEqual(result["classifier_version"], "marker_adaptive_v3")
         self.assertEqual(result["status"], "trusted_marker")
         self.assertEqual(result["side_to_move"], "b")
         self.assertEqual(result["side"], "b")
         self.assertEqual(result["symbol"], "\u25bc")
-        self.assertEqual(result["reason"], "filled_triangle")
+        self.assertEqual(result["reason"], "adaptive_filled_inverted_triangle")
         self.assertGreaterEqual(result["confidence"], 0.90)
 
     def test_non_marker_crops_are_not_trusted(self) -> None:
@@ -57,7 +57,7 @@ class ChessMarkerClassifierTests(unittest.TestCase):
         crop = Image.new("L", (92, 56), "white")
         draw = ImageDraw.Draw(crop)
         draw.line([(24, 8), (7, 44), (41, 44), (24, 8)], fill="black", width=3, joint="curve")
-        draw.polygon([(62, 8), (45, 44), (79, 44)], fill="black")
+        draw.polygon([(45, 8), (79, 8), (62, 44)], fill="black")
 
         result = classify_scan_chess_side_marker_crop(crop)
 
@@ -74,7 +74,7 @@ class ChessMarkerClassifierTests(unittest.TestCase):
 
         summary = report["summary"]
         by_class = report["by_class"]
-        self.assertEqual(summary["classifier_version"], "marker_shape_v2")
+        self.assertEqual(summary["classifier_version"], "marker_adaptive_v3")
         self.assertEqual(summary["decision"], "pass")
         self.assertGreaterEqual(summary["white_outline_triangle_accuracy"], 0.90)
         self.assertGreaterEqual(summary["black_filled_triangle_accuracy"], 0.90)

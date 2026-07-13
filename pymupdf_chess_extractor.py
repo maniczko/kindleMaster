@@ -5599,7 +5599,7 @@ def _scan_chess_two_crop_review_artifacts(
         "marker_crop_quality": "fail",
         "marker_crop_fail_reason": ["marker_missing"],
         "marker_crop_quality_gate": {"decision": "fail", "reasons": ["marker_missing"]},
-        "marker_classifier_version": "marker_shape_v2",
+        "marker_classifier_version": "marker_adaptive_v3",
         "marker_classifier_reason": "marker_missing",
         "marker_classifier_confidence": 0.0,
         "marker_classifier_symbol": None,
@@ -5720,7 +5720,7 @@ def _scan_chess_two_crop_review_artifacts(
         fields["marker_crop_quality_gate"] = marker_quality
         fields["marker_crop_quality"] = "pass" if marker_quality.get("decision") == "pass" else "fail"
         fields["marker_crop_fail_reason"] = list(marker_quality.get("reasons") or [])
-        fields["marker_classifier_version"] = marker_quality.get("classifier_version") or "marker_shape_v2"
+        fields["marker_classifier_version"] = marker_quality.get("classifier_version") or "marker_adaptive_v3"
         fields["marker_classifier_reason"] = marker_quality.get("reason") or ""
         fields["marker_classifier_confidence"] = marker_quality.get("confidence", 0.0)
         fields["marker_classifier_symbol"] = marker_quality.get("symbol")
@@ -6028,10 +6028,18 @@ def _scan_chess_marker_component_candidates_from_region(
         if _bbox_overlap_ratio(tuple(float(value) for value in marker_bbox), tuple(float(value) for value in board)) > 0.12:
             continue
         marker_crop_bbox = _scan_chess_padded_marker_bbox(marker_bbox, board, page_image.size)
-        marker_crop = _crop_bbox_from_image(page_image, marker_crop_bbox)
+        classifier_bbox = _scan_chess_page_marker_classifier_bbox(
+            marker_bbox,
+            board,
+            page_image.size,
+        )
+        marker_crop = _crop_bbox_from_image(page_image, classifier_bbox)
         if marker_crop is None:
             continue
-        classification = classify_scan_chess_side_marker_crop(marker_crop)
+        classification = classify_scan_chess_side_marker_crop(
+            marker_crop,
+            board_cell_size=cell,
+        )
         score = float(component.get("score") or 0.0)
         candidates.append(
             {
@@ -6288,15 +6296,37 @@ def _scan_chess_page_marker_candidates(
             key=lambda board: _scan_chess_bbox_edge_distance(tuple(marker_bbox), tuple(board["bbox"])),
         )
         crop_bbox = _scan_chess_padded_marker_bbox(marker_bbox, nearest_board["bbox"], page_image.size)
-        crop = _crop_bbox_from_image(page_image, crop_bbox)
+        classifier_bbox = _scan_chess_page_marker_classifier_bbox(
+            marker_bbox,
+            nearest_board["bbox"],
+            page_image.size,
+        )
+        crop = _crop_bbox_from_image(page_image, classifier_bbox)
         if crop is None:
             continue
-        classification = classify_scan_chess_side_marker_crop(crop)
-        classifier_status = str(classification.get("status") or "marker_missing")
-        candidate_class = str(
-            classification.get("shape")
-            or ("white" if classification.get("side") == "w" else "black" if classification.get("side") == "b" else "unclear")
+        nearest_bbox = nearest_board["bbox"]
+        board_cell_size = min(
+            max(1.0, nearest_bbox[2] - nearest_bbox[0]),
+            max(1.0, nearest_bbox[3] - nearest_bbox[1]),
+        ) / 8.0
+        classification = classify_scan_chess_side_marker_crop(
+            crop,
+            board_cell_size=board_cell_size,
         )
+        classifier_status = str(classification.get("status") or "marker_missing")
+        adaptive_shape = str(classification.get("shape") or "")
+        if adaptive_shape.startswith("outline_"):
+            candidate_class = "outline_triangle"
+        elif adaptive_shape.startswith("filled_"):
+            candidate_class = "filled_triangle"
+        else:
+            candidate_class = str(
+                "white"
+                if classification.get("side") == "w"
+                else "black"
+                if classification.get("side") == "b"
+                else "unclear_triangle"
+            )
         confidence = round(float(classification.get("confidence") or 0.0), 4)
         compactness = min(1.0, float(component.get("area") or 0.0) / max(1.0, width * height))
         shape_score = 1.0 if classifier_status == "trusted_marker" else 0.65 if classifier_status != "marker_missing" else 0.3
@@ -6320,6 +6350,7 @@ def _scan_chess_page_marker_candidates(
                     "plausibility": plausibility,
                 },
                 "marker_candidate_class": candidate_class,
+                "marker_candidate_adaptive_shape": adaptive_shape,
                 "marker_candidate_classifier_status": classifier_status,
                 "marker_candidate_side": str(classification.get("side") or ""),
                 "marker_candidate_confidence": confidence,
@@ -6771,6 +6802,64 @@ def _scan_chess_padded_marker_bbox(marker_bbox: Any, board_bbox: Any, image_size
     return [float(value) for value in box] if box is not None else []
 
 
+def _scan_chess_classifier_crop_bbox(marker_bbox: Any, image_size: tuple[int, int]) -> list[float]:
+    marker = _coerce_side_marker_bbox(marker_bbox)
+    if not marker:
+        return []
+    padding = max(
+        6.0,
+        min(10.0, max(marker[2] - marker[0], marker[3] - marker[1]) * 0.22),
+    )
+    box = _bbox_to_int_box(
+        (
+            marker[0] - padding,
+            marker[1] - padding,
+            marker[2] + padding,
+            marker[3] + padding,
+        ),
+        image_size,
+    )
+    return [float(value) for value in box] if box is not None else []
+
+
+def _scan_chess_page_marker_classifier_bbox(
+    marker_bbox: Any,
+    board_bbox: Any,
+    image_size: tuple[int, int],
+) -> list[float]:
+    marker = _coerce_side_marker_bbox(marker_bbox)
+    board = _coerce_side_marker_bbox(board_bbox)
+    if not marker or not board:
+        return _scan_chess_classifier_crop_bbox(marker_bbox, image_size)
+    cell = min(
+        max(1.0, board[2] - board[0]),
+        max(1.0, board[3] - board[1]),
+    ) / 8.0
+    inward_padding = max(6.0, min(10.0, cell * 0.4))
+    outward_padding = max(inward_padding, cell * 1.25)
+    left = right = top = bottom = inward_padding
+    marker_cx = (marker[0] + marker[2]) / 2.0
+    marker_cy = (marker[1] + marker[3]) / 2.0
+    if marker_cx >= board[2]:
+        right = outward_padding
+    elif marker_cx <= board[0]:
+        left = outward_padding
+    if marker_cy <= board[1]:
+        top = outward_padding
+    elif marker_cy >= board[3]:
+        bottom = outward_padding
+    box = _bbox_to_int_box(
+        (
+            marker[0] - left,
+            marker[1] - top,
+            marker[2] + right,
+            marker[3] + bottom,
+        ),
+        image_size,
+    )
+    return [float(value) for value in box] if box is not None else []
+
+
 def _scan_chess_selected_marker_zone(marker_bbox: Any, zones: Mapping[str, Any]) -> str:
     marker = _coerce_side_marker_bbox(marker_bbox)
     if not marker:
@@ -6824,7 +6913,7 @@ def _scan_chess_marker_crop_quality(
             "reason_codes": {"marker_missing": 1},
             "side_to_move": None,
             "confidence": 0.0,
-            "classifier_version": "marker_shape_v2",
+            "classifier_version": "marker_adaptive_v3",
             "reason": "marker_missing",
             "symbol": None,
         }
@@ -6844,7 +6933,22 @@ def _scan_chess_marker_crop_quality(
         reasons.append("marker_cut_off")
     crop = ImageOps.autocontrast(page_image.crop(box).convert("L"))
     raw_components = _scan_chess_dark_components(np.asarray(crop) < 120)
-    classification = classify_scan_chess_side_marker_crop(crop)
+    classifier_bbox = _scan_chess_page_marker_classifier_bbox(
+        detected_marker,
+        board,
+        page_image.size,
+    )
+    classifier_crop = _crop_bbox_from_image(page_image, classifier_bbox) or crop
+    board_cell_size = (
+        min(max(1.0, board[2] - board[0]), max(1.0, board[3] - board[1])) / 8.0
+        if board
+        else None
+    )
+    classification = classify_scan_chess_side_marker_crop(
+        classifier_crop,
+        board_cell_size=board_cell_size,
+    )
+    classifier_width, classifier_height = classifier_crop.size
     component = classification.get("component")
     component_count = len(
         [
@@ -6879,10 +6983,15 @@ def _scan_chess_marker_crop_quality(
         component_bbox = component.get("bbox")
         if isinstance(component_bbox, (list, tuple)) and len(component_bbox) == 4:
             cx0, cy0, cx1, cy1 = [float(value) for value in component_bbox]
-            if cx0 < 0.5 or cy0 < 0.5 or cx1 >= width - 0.5 or cy1 >= height - 0.5:
+            if (
+                cx0 < 0.5
+                or cy0 < 0.5
+                or cx1 >= classifier_width - 0.5
+                or cy1 >= classifier_height - 0.5
+            ):
                 reasons.append("marker_cut_off")
             component_h = max(1.0, cy1 - cy0)
-            if component_h < max(8.0, height * 0.10):
+            if component_h < max(8.0, classifier_height * 0.10):
                 reasons.append("marker_too_small")
     side = None
     if classification.get("side") == "w":
@@ -6906,7 +7015,7 @@ def _scan_chess_marker_crop_quality(
         "side_to_move": side if not reasons else None,
         "confidence": round(float(classification.get("confidence") or 0.0), 3) if not reasons else 0.0,
         "classifier_status": classification.get("status") or "",
-        "classifier_version": classification.get("classifier_version") or "marker_shape_v2",
+        "classifier_version": classification.get("classifier_version") or "marker_adaptive_v3",
         "reason": classification.get("reason") or ("pass" if not reasons else reasons[0]),
         "symbol": classification.get("symbol") if not reasons else None,
         "component_count": component_count if component_count else (1 if isinstance(component, Mapping) else 0),
@@ -8353,7 +8462,14 @@ def _scan_chess_side_marker_probe_payloads(
             "conflict_group": _scan_chess_side_marker_conflict_group(probe.role),
         }
         crop = ImageOps.autocontrast(page_image.crop(probe.bbox).convert("L"))
-        classification = classify_scan_chess_side_marker_crop(crop)
+        board_cell_size = min(
+            max(1.0, float(bbox[2]) - float(bbox[0])),
+            max(1.0, float(bbox[3]) - float(bbox[1])),
+        ) / 8.0
+        classification = classify_scan_chess_side_marker_crop(
+            crop,
+            board_cell_size=board_cell_size,
+        )
         payload["marker_classifier_status"] = classification["status"]
         payload["marker_classifier_confidence"] = classification["confidence"]
         component = classification.get("component")
@@ -8517,7 +8633,7 @@ def _scan_chess_marker_classifier_result(
         "side_to_move": side_value or "unknown",
         "symbol": symbol if symbol is not None else "?",
         "confidence": round(float(confidence or 0.0), 3),
-        "classifier_version": "marker_shape_v2",
+        "classifier_version": "marker_adaptive_v3",
         "reason": reason,
         "shape": shape,
         "component": dict(component) if isinstance(component, Mapping) else None,
@@ -8526,167 +8642,21 @@ def _scan_chess_marker_classifier_result(
     }
 
 
-def classify_scan_chess_side_marker_crop(crop: Image.Image) -> dict[str, Any]:
-    """Classify a local side-marker crop without OCR.
+def classify_scan_chess_side_marker_crop(
+    crop: Image.Image,
+    *,
+    source_profile: str | Mapping[str, Any] = "yusupov-fundamentals",
+    board_cell_size: float | None = None,
+    confidence_calibration: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Classify a local marker with adaptive segmentation and source grammar."""
+    from chess_marker_classifier_adaptive import classify_marker_crop_adaptive
 
-    The classifier treats an outlined triangle as White to move and a filled
-    triangle as Black to move. Ambiguous density or multiple local markers stay
-    review-only, so downstream FEN publication still requires trusted evidence.
-    """
-    raw_grayscale = crop.convert("L")
-    crop_width, crop_height = raw_grayscale.size
-    grayscale = ImageOps.autocontrast(raw_grayscale)
-    dark = np.asarray(grayscale) < 120
-    raw_ink = np.asarray(raw_grayscale) < 120
-    components = _scan_chess_side_marker_components(dark, relaxed=True)
-    if not components:
-        relaxed_dark = np.asarray(grayscale) < 160
-        components = _scan_chess_side_marker_components(relaxed_dark, relaxed=True)
-    if not components:
-        return _scan_chess_marker_classifier_result(
-            status="marker_missing",
-            confidence=0.0,
-            reason="marker_missing",
-            candidate_count=0,
-        )
-
-    classified: list[dict[str, Any]] = []
-    for component in components:
-        density = float(component["density"])
-        aspect = float(component.get("aspect") or 0.0)
-        area = float(component.get("area") or 0.0)
-        bbox_values = component.get("bbox") or (0.0, 0.0, 0.0, 0.0)
-        try:
-            bx0, by0, bx1, _ = [float(value) for value in bbox_values]
-        except (TypeError, ValueError):
-            bx0 = by0 = bx1 = 0.0
-        inner_density = _scan_chess_marker_inner_density(dark, component.get("bbox"))
-        ink_density = _scan_chess_marker_ink_density(raw_ink, component.get("bbox"))
-        row = {
-            **component,
-            "status": "side_to_move_marker_local_ambiguous",
-            "side": "",
-            "symbol": "?",
-            "shape": "triangle_like_ambiguous_density",
-            "reason": "unclear",
-            "inner_density": round(inner_density, 4),
-            "ink_density": round(ink_density, 4),
-        }
-        if aspect >= 1.45 and not (inner_density >= 0.55 and density >= 0.35):
-            row.update(
-                {
-                    "status": "side_to_move_marker_local_ambiguous",
-                    "shape": "multiple_triangle_candidates",
-                    "confidence": 0.0,
-                    "reason": "multiple_candidates",
-                }
-            )
-        elif area < 100:
-            row.update(
-                {
-                    "status": "side_to_move_marker_local_ambiguous",
-                    "shape": "marker_too_small",
-                    "confidence": 0.0,
-                    "reason": "too_small",
-                }
-            )
-        elif by0 <= 0.5 or (len(components) == 1 and ((bx0 + bx1) / 2.0) > crop_width * 0.68):
-            row.update(
-                {
-                    "status": "side_to_move_marker_local_ambiguous",
-                    "shape": "marker_cut_off",
-                    "confidence": 0.0,
-                    "reason": "bad_crop",
-                }
-            )
-        elif ink_density < 0.055:
-            row.update(
-                {
-                    "status": "side_to_move_marker_local_ambiguous",
-                    "shape": "weak_marker_ink",
-                    "confidence": 0.0,
-                    "reason": "unclear",
-                }
-            )
-        elif inner_density <= 0.32 and density >= 0.10:
-            row.update(
-                {
-                    "status": "trusted_marker",
-                    "side": "w",
-                    "symbol": SIDE_MARKER_SYMBOLS["w"],
-                    "shape": "outline_triangle",
-                    "confidence": round(min(0.985, 0.90 + (0.32 - inner_density) * 0.20 + min(0.06, ink_density * 0.35)), 3),
-                    "reason": "outline_triangle",
-                }
-            )
-        elif inner_density >= 0.55 and density >= 0.35:
-            row.update(
-                {
-                    "status": "trusted_marker",
-                    "side": "b",
-                    "symbol": SIDE_MARKER_SYMBOLS["b"],
-                    "shape": "filled_triangle",
-                    "confidence": round(min(0.985, 0.91 + (inner_density - 0.55) * 0.12), 3),
-                    "reason": "filled_triangle",
-                }
-            )
-        else:
-            row["confidence"] = round(max(0.25, 0.52 - abs(density - 0.37)), 3)
-        classified.append(row)
-
-    trusted = [item for item in classified if item.get("side") in {"w", "b"}]
-    best = max(classified, key=lambda item: float(item.get("score") or 0.0))
-    if len({str(item.get("side") or "") for item in trusted}) > 1:
-        return _scan_chess_marker_classifier_result(
-            status="side_to_move_marker_local_conflict",
-            confidence=round(float(best.get("confidence") or 0.0), 3),
-            shape="multiple_triangle_conflict",
-            reason="multiple_candidates",
-            component=best,
-            candidate_count=len(classified),
-            warnings=["side_to_move_marker_local_conflict", "side_to_move_marker_probes_checked"],
-        )
-    if len(trusted) > 1:
-        return _scan_chess_marker_classifier_result(
-            status="side_to_move_marker_local_ambiguous",
-            confidence=round(float(best.get("confidence") or 0.0), 3),
-            shape="multiple_triangle_candidates",
-            reason="multiple_candidates",
-            component=best,
-            candidate_count=len(classified),
-            warnings=["side_to_move_marker_local_ambiguous", "side_to_move_marker_probes_checked"],
-        )
-    if len(classified) > 1 and trusted:
-        return _scan_chess_marker_classifier_result(
-            status="side_to_move_marker_local_ambiguous",
-            confidence=round(float(best.get("confidence") or 0.0), 3),
-            shape="multiple_triangle_candidates",
-            reason="multiple_candidates",
-            component=best,
-            candidate_count=len(classified),
-            warnings=["side_to_move_marker_local_ambiguous", "side_to_move_marker_probes_checked"],
-        )
-    if trusted:
-        best_trusted = max(trusted, key=lambda item: float(item.get("score") or 0.0))
-        return _scan_chess_marker_classifier_result(
-            status="trusted_marker",
-            side=str(best_trusted["side"]),
-            symbol=str(best_trusted["symbol"]),
-            confidence=float(best_trusted["confidence"]),
-            shape=str(best_trusted["shape"]),
-            reason=str(best_trusted.get("reason") or best_trusted["shape"]),
-            component=best_trusted,
-            candidate_count=len(classified),
-            warnings=["side_to_move_marker_detected", "side_to_move_marker_probes_checked"],
-        )
-    return _scan_chess_marker_classifier_result(
-        status="side_to_move_marker_local_ambiguous",
-        confidence=round(float(best.get("confidence") or 0.0), 3),
-        shape=best.get("shape") or "triangle_like_ambiguous_density",
-        reason=str(best.get("reason") or "unclear"),
-        component=best,
-        candidate_count=len(classified),
-        warnings=["side_to_move_marker_local_ambiguous", "side_to_move_marker_probes_checked"],
+    return classify_marker_crop_adaptive(
+        crop,
+        source_profile=source_profile,
+        board_cell_size=board_cell_size,
+        confidence_calibration=confidence_calibration,
     )
 
 

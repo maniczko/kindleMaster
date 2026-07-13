@@ -10,6 +10,31 @@
     "page_and_chapter_separated_splits_required": true,
     "matching_runtime_commit_required": true
   },
+  "marker_grammar": {
+    "white": {
+      "orientation": "upright",
+      "fill": "outline",
+      "side": "w",
+      "symbol": "△"
+    },
+    "black": {
+      "orientation": "inverted",
+      "fill": "filled",
+      "side": "b",
+      "symbol": "▼"
+    }
+  },
+  "classifier_policy": {
+    "segmentation": [
+      "otsu",
+      "sauvola",
+      "adaptive_mean",
+      "morphology"
+    ],
+    "calibration_split": "calibration",
+    "optional_model_training_split": "train",
+    "holdout_used_for_tuning": false
+  },
   "thresholds": {
     "minimum_expected_diagram_recall": 1.0,
     "minimum_marker_candidate_recall_visible_subset": 1.0,

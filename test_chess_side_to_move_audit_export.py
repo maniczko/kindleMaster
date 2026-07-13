@@ -69,6 +69,10 @@ class ChessSideToMoveAuditExportTests(unittest.TestCase):
             why_md = why.with_suffix(".md")
             why_html = why.with_suffix(".html")
             self._write_json(why, {"summary": {"diagram_count": 3}})
+            self._write_json(
+                job / "data" / "artifact_manifest.json",
+                {"commit_sha": "2" * 40, "private_path": "C:/private/source.pdf"},
+            )
             why_md.write_text("# audit\n", encoding="utf-8")
             why_html.write_text("<h1>audit</h1>\n", encoding="utf-8")
             (job / "source.pdf").write_bytes(b"%PDF")
@@ -85,6 +89,7 @@ class ChessSideToMoveAuditExportTests(unittest.TestCase):
 
             with zipfile.ZipFile(archive_path) as archive:
                 names = set(archive.namelist())
+                metadata = json.loads(archive.comment.decode("utf-8"))
 
         self.assertEqual(payload["status"], "created")
         self.assertEqual(
@@ -96,6 +101,8 @@ class ChessSideToMoveAuditExportTests(unittest.TestCase):
             },
         )
         self.assertNotIn("source.pdf", names)
+        self.assertEqual(metadata["runtime_commit_sha"], "2" * 40)
+        self.assertNotIn("private_path", metadata)
         self.assertNotIn(".env", names)
         self.assertFalse(any(name.endswith(".png") for name in names))
 

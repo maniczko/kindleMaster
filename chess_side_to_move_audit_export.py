@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import zipfile
 from collections.abc import Iterable, Mapping
@@ -11,6 +12,7 @@ from typing import Any
 
 
 AUDIT_EXPORT_SCHEMA = "kindlemaster.chess.side_to_move_audit_export.v1"
+AUDIT_ZIP_METADATA_SCHEMA = "kindlemaster.chess.side_to_move_audit_zip_metadata.v1"
 
 SAFE_AUDIT_PATHS = (
     PurePosixPath("reports/chess_fen/why_side_to_move_not_trusted.json"),
@@ -250,6 +252,9 @@ def export_side_to_move_audit(
     ) as archive:
         for relative_path, source_path in safe_files:
             archive.write(source_path, arcname=relative_path.as_posix())
+        zip_metadata = _safe_zip_metadata(selected)
+        if zip_metadata:
+            archive.comment = json.dumps(zip_metadata, sort_keys=True).encode("utf-8")
 
     payload = {
         **base_payload,
@@ -259,6 +264,27 @@ def export_side_to_move_audit(
     }
     _write_optional_summary(payload, json_summary_path)
     return payload
+
+
+def _safe_zip_metadata(job_output: Path) -> dict[str, str]:
+    for relative in (Path("data/artifact_manifest.json"), Path("artifact_manifest.json")):
+        candidate = job_output / relative
+        if not candidate.is_file() or candidate.is_symlink():
+            continue
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        for key in ("runtime_commit_sha", "commit_sha", "git_commit"):
+            commit = str(payload.get(key) or "").strip().lower()
+            if re.fullmatch(r"[0-9a-f]{40}", commit):
+                return {
+                    "schema": AUDIT_ZIP_METADATA_SCHEMA,
+                    "runtime_commit_sha": commit,
+                }
+    return {}
 
 
 def collect_safe_audit_files(

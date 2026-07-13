@@ -66,6 +66,7 @@ QUICK_TESTS = [
     "test_chess_diagram_detection.py",
     "test_chess_diagram_multi_pass_detection.py",
     "test_chess_diagram_fingerprint.py",
+    "test_chess_yusupov_acceptance_manifest.py",
     "test_chess_glyph_diagnostics.py",
     "test_chess_fen_square_diff.py",
     "test_chess_fen_hard_cases.py",
@@ -513,6 +514,23 @@ def main() -> int:
         help="Include allowlisted HTML diagnostics (default: enabled; use --no-include-html to disable).",
     )
     chess_audit_export.add_argument("--json-summary", default="", help="Optional path for a standalone summary JSON.")
+    marker_gate_parser = chess_subparsers.add_parser(
+        "validate-side-markers",
+        help="Validate a current fixed-edition run against the private verified marker corpus.",
+    )
+    marker_gate_parser.add_argument("--source-profile", default="yusupov-fundamentals")
+    marker_gate_parser.add_argument("--job-output", required=True)
+    marker_gate_parser.add_argument("--manifest", default="")
+    marker_gate_parser.add_argument("--profile-config", default="")
+    marker_gate_parser.add_argument(
+        "--report-dir",
+        default="reports/chess_fen/side_marker_acceptance",
+    )
+    marker_gate_parser.add_argument(
+        "--current-main-sha",
+        default="",
+        help="Optional expected runtime commit; defaults to the validator checkout HEAD.",
+    )
 
     chess_study_parser = subparsers.add_parser("chess-study", help="Build a static chess training-book study export.")
     chess_study_subparsers = chess_study_parser.add_subparsers(dest="chess_study_command")
@@ -914,6 +932,23 @@ def main() -> int:
 
 
 def _run_chess(args: argparse.Namespace, *, parser: argparse.ArgumentParser | None = None) -> int:
+    if args.chess_command == "validate-side-markers":
+        from chess_yusupov_acceptance import run_fixed_edition_acceptance
+
+        payload = run_fixed_edition_acceptance(
+            source_profile=args.source_profile,
+            job_output=args.job_output,
+            repo_root=Path(__file__).resolve().parent,
+            manifest_path=args.manifest or None,
+            profile_path=args.profile_config or None,
+            report_dir=args.report_dir,
+            validator_commit_sha=args.current_main_sha,
+        )
+        _print_json(payload)
+        if payload.get("status") == "passed":
+            return 0
+        return 2 if payload.get("status") == "corpus_unavailable" else 1
+
     if args.chess_command != "export-side-to-move-audit":
         if parser is not None:
             parser.print_help()
@@ -1707,16 +1742,35 @@ def _run_tests(suite: str) -> int:
         command = [sys.executable, "-m", "unittest", *SUITE_REGISTRY["quick"]]
         started = time.perf_counter()
         completed = subprocess.run(command, check=False, cwd=repo_root)
+        marker_gate = {"status": "not_run", "enforced": False}
+        returncode = completed.returncode
+        if returncode == 0:
+            from chess_yusupov_acceptance import secure_acceptance_for_quick
+
+            marker_gate = secure_acceptance_for_quick(repo_root=repo_root)
+            if marker_gate.get("enforced"):
+                _print_json(marker_gate)
+                if marker_gate.get("status") != "passed":
+                    returncode = 1
         payload = _governance_artifact_payload(
             command="python kindlemaster.py test --suite quick",
-            status="passed" if completed.returncode == 0 else "failed",
-            returncode=completed.returncode,
+            status="passed" if returncode == 0 else "failed",
+            returncode=returncode,
             started=started,
-            notes=["Quick suite completed."],
-            extra={"suite": "quick"},
+            notes=[
+                "Quick suite completed.",
+                "Fixed-edition marker acceptance is mandatory when the secure corpus is available.",
+            ],
+            extra={
+                "suite": "quick",
+                "secure_marker_acceptance": {
+                    "status": marker_gate.get("status"),
+                    "enforced": bool(marker_gate.get("enforced")),
+                },
+            },
         )
         _write_governance_artifact(lane="quick", payload=payload, repo_root=repo_root)
-        return completed.returncode
+        return returncode
     else:
         command = [sys.executable, "-m", "unittest", *SUITE_REGISTRY["quick"]]
     return subprocess.run(command, check=False, cwd=repo_root).returncode

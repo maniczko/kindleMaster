@@ -121,6 +121,7 @@ python kindlemaster.py validate output\chess_auto --strict
 python kindlemaster.py report output\chess_auto
 python kindlemaster.py review output\chess_auto
 python kindlemaster.py audit path\to\file.epub
+python kindlemaster.py chess validate-side-markers --source-profile yusupov-fundamentals --job-output path\to\current-run
 python kindlemaster.py chess export-side-to-move-audit --latest
 python kindlemaster.py chess-study run-all --pdf path\to\chess.pdf --html path\to\current.html --out output\yusupov_study --quality-profile default
 python kindlemaster.py chess-study run-all --pdf path\to\chess.pdf --html path\to\current.html --out output\yusupov_study_audit --quality-profile smoke --render-pages

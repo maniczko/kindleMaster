@@ -1,0 +1,33 @@
+{
+  "schema": "kindlemaster.chess.marker_acceptance_profile.v1",
+  "source_profile": "yusupov-fundamentals",
+  "description": "Strict fixed-edition gate for the private, verified Yusupov Fundamentals corpus.",
+  "corpus_policy": {
+    "committed_source_pdf_allowed": false,
+    "committed_full_page_images_allowed": false,
+    "synthetic_fixture_acceptance_allowed": false,
+    "secure_local_manifest_required": true,
+    "page_and_chapter_separated_splits_required": true,
+    "matching_runtime_commit_required": true
+  },
+  "thresholds": {
+    "minimum_expected_diagram_recall": 1.0,
+    "minimum_marker_candidate_recall_visible_subset": 1.0,
+    "minimum_marker_ownership_accuracy": 1.0,
+    "minimum_clear_marker_classification_accuracy": 1.0,
+    "maximum_false_trusted_marker_count": 0,
+    "minimum_side_to_move_coverage_rate": 1.0,
+    "maximum_unknown_count": 0
+  },
+  "required_metrics": [
+    "expected_diagram_recall",
+    "marker_candidate_recall_visible_subset",
+    "marker_ownership_accuracy",
+    "clear_marker_classification_accuracy",
+    "false_trusted_marker_count",
+    "trusted_marker_rate",
+    "side_to_move_coverage_rate",
+    "unknown_count",
+    "full_fen_safe_acceptance_rate"
+  ]
+}

@@ -108,6 +108,27 @@ class ChessTwoCropArtifactPolicyTests(unittest.TestCase):
                 debug_artifact_policy="sometimes",
             )
 
+    def test_blocker_policy_recognizes_failures_and_errors(self) -> None:
+        image = _fixture_image()
+        with _stable_quality_runtime():
+            for status in ("FAIL", "FAILURE", "FAILED", "ERROR"):
+                with self.subTest(status=status):
+                    fields, files = _scan_chess_two_crop_review_artifacts(
+                        image,
+                        filename=f"status-{status}.png",
+                        board_bbox=[20, 20, 220, 220],
+                        side_marker_bbox=[222, 100, 232, 112],
+                        debug_artifact_policy="blockers",
+                        blocker_context={"placement_status": status},
+                    )
+                    self.assertTrue(
+                        any(item.get("artifact_class") == "optional" for item in files)
+                    )
+                    self.assertGreater(
+                        fields["two_crop_performance"]["optional_png_encoded_artifact_count"],
+                        0,
+                    )
+
 
 def _fixture_image() -> Image.Image:
     image = Image.new("RGB", (256, 256), "white")

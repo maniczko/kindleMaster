@@ -5881,7 +5881,7 @@ def _two_crop_optional_debug_required(
         return True
     if fields.get("board_crop_quality") != "pass" or fields.get("marker_crop_quality") != "pass":
         return True
-    context = {**dict(blocker_context or {}), **dict(fields)}
+    context = {**(blocker_context or {}), **fields}
     if any(
         bool(context.get(key))
         for key in (
@@ -5899,7 +5899,8 @@ def _two_crop_optional_debug_required(
         "REVIEW_REQUIRED",
         "REQUIRES_REVIEW",
         "BLOCKED",
-        "FAILED",
+        "FAIL",
+        "ERROR",
         "UNKNOWN",
         "MISSING",
         "CONFLICT",

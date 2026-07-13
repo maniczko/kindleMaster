@@ -6314,10 +6314,19 @@ def _scan_chess_page_marker_candidates(
             board_cell_size=board_cell_size,
         )
         classifier_status = str(classification.get("status") or "marker_missing")
-        candidate_class = str(
-            classification.get("shape")
-            or ("white" if classification.get("side") == "w" else "black" if classification.get("side") == "b" else "unclear")
-        )
+        adaptive_shape = str(classification.get("shape") or "")
+        if adaptive_shape.startswith("outline_"):
+            candidate_class = "outline_triangle"
+        elif adaptive_shape.startswith("filled_"):
+            candidate_class = "filled_triangle"
+        else:
+            candidate_class = str(
+                "white"
+                if classification.get("side") == "w"
+                else "black"
+                if classification.get("side") == "b"
+                else "unclear_triangle"
+            )
         confidence = round(float(classification.get("confidence") or 0.0), 4)
         compactness = min(1.0, float(component.get("area") or 0.0) / max(1.0, width * height))
         shape_score = 1.0 if classifier_status == "trusted_marker" else 0.65 if classifier_status != "marker_missing" else 0.3
@@ -6341,6 +6350,7 @@ def _scan_chess_page_marker_candidates(
                     "plausibility": plausibility,
                 },
                 "marker_candidate_class": candidate_class,
+                "marker_candidate_adaptive_shape": adaptive_shape,
                 "marker_candidate_classifier_status": classifier_status,
                 "marker_candidate_side": str(classification.get("side") or ""),
                 "marker_candidate_confidence": confidence,

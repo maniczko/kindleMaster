@@ -144,6 +144,7 @@ python kindlemaster.py ml train
 python kindlemaster.py ml evaluate
 python kindlemaster.py process path\to\chess.pdf --out output\chess_auto --mode auto
 python kindlemaster.py process path\to\chess.pdf --out output\chess_auto --mode auto --resume
+python kindlemaster.py process path\to\chess.pdf --out output\chess_auto --debug-artifacts blockers
 python kindlemaster.py validate output\chess_auto --strict
 python kindlemaster.py report output\chess_auto
 python kindlemaster.py review output\chess_auto

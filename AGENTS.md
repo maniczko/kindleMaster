@@ -855,6 +855,7 @@ Supported first-class commands:
 
 Use `process` as the front-door automatic chess PDF flow when the goal is one command that runs extraction, deterministic FEN/PGN validation, safe candidate mapping, canonical reports, and strict export gating. Use `chess validate-side-markers` for source-SHA-bound acceptance against the non-committed verified fixed-edition corpus; synthetic fixtures must never satisfy that gate. Use `report` and `review` for the derived auto-flow report and manual review index. Keep `chess-study` as the stage/debug backend for semantic reading order, diagram/FEN recognition, and PGN/comment extraction. Exact PDF visual layout and full page-image rendering are audit/debug aids only; use `--render-pages` explicitly when page images are needed.
 Use `process --resume` only for an explicit warm continuation of compatible page-level two-crop checkpoints. Omitting `--resume` must remain a fresh cold run with no checkpoint reuse.
+Use `process --debug-artifacts all|blockers|none` to control only optional two-crop context and overlay PNGs. Keep `all` as the compatibility default; board, detected-marker, and marker-search review crops remain required in every mode.
 - `workflow` with `baseline` and `verify` subcommands
 - `orchestrate` with `doctor`, `sync`, `claim`, `execute`, and `report` subcommands
 

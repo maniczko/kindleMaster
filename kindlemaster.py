@@ -87,6 +87,7 @@ QUICK_TESTS = [
     "test_chess_side_marker_final_reader_e2e.py",
     "test_chess_crop_qa_benchmark.py",
     "test_chess_two_crop_performance.py",
+    "test_chess_two_crop_artifact_policy.py",
     "test_chess_two_crop_checkpoint.py",
     "test_chess_marker_crop_corpus.py",
     "test_chess_marker_classifier.py",
@@ -303,6 +304,12 @@ def main() -> int:
     process_parser.add_argument("--html", default="")
     process_parser.add_argument("--quality-profile", choices=("smoke", "default", "masterkindle"), default="default")
     process_parser.add_argument("--render-pages", action="store_true")
+    process_parser.add_argument(
+        "--debug-artifacts",
+        choices=("all", "blockers", "none"),
+        default="all",
+        help="Optional two-crop debug artifacts: all, blockers only, or none.",
+    )
     process_parser.add_argument(
         "--resume",
         action="store_true",
@@ -768,6 +775,7 @@ def main() -> int:
             html_path=args.html or None,
             quality_profile=args.quality_profile,
             render_pages=args.render_pages,
+            debug_artifact_policy=args.debug_artifacts,
             with_ai=args.with_ai,
             dry_run_ai=args.dry_run_ai,
             ai_limit=args.ai_limit,

@@ -10,7 +10,7 @@ from typing import Any, Mapping
 from chess_crop_qa_benchmark import load_runtime_rows_from_job_output
 
 
-SCHEMA = "kindlemaster.chess_fen.two_crop_performance.v1"
+SCHEMA = "kindlemaster.chess_fen.two_crop_performance.v2"
 DEFAULT_REPORT_DIR = Path("reports/performance/chess_two_crop")
 
 TIMING_KEYS = (
@@ -18,6 +18,10 @@ TIMING_KEYS = (
     "marker_analysis_seconds",
     "png_encoding_seconds",
     "file_write_seconds",
+    "required_png_encoding_seconds",
+    "optional_png_encoding_seconds",
+    "required_file_write_seconds",
+    "optional_file_write_seconds",
     "ambiguity_probe_seconds",
     "total_seconds",
 )
@@ -146,8 +150,42 @@ def build_two_crop_performance_report(job_output: str | Path) -> dict[str, Any]:
             "false_fast_path_count": _sum_int(performance_rows, "false_fast_path_count"),
             "png_encoded_artifact_count": _sum_int(performance_rows, "png_encoded_artifact_count"),
             "png_encoded_bytes": _sum_int(performance_rows, "png_encoded_bytes"),
+            "artifact_policies": _count_strings(performance_rows, "artifact_policy"),
+            "required_png_encoded_artifact_count": _sum_int(
+                performance_rows, "required_png_encoded_artifact_count"
+            ),
+            "required_png_encoded_bytes": _sum_int(
+                performance_rows, "required_png_encoded_bytes"
+            ),
+            "optional_png_encoded_artifact_count": _sum_int(
+                performance_rows, "optional_png_encoded_artifact_count"
+            ),
+            "optional_png_encoded_bytes": _sum_int(
+                performance_rows, "optional_png_encoded_bytes"
+            ),
+            "optional_debug_candidate_count": _sum_int(
+                performance_rows, "optional_debug_candidate_count"
+            ),
+            "optional_debug_skipped_count": _sum_int(
+                performance_rows, "optional_debug_skipped_count"
+            ),
+            "optional_debug_skipped_estimated_raw_bytes": _sum_int(
+                performance_rows, "optional_debug_skipped_estimated_raw_bytes"
+            ),
             "file_written_artifact_count": _sum_int(performance_rows, "file_written_artifact_count"),
             "file_written_bytes": _sum_int(performance_rows, "file_written_bytes"),
+            "required_file_written_artifact_count": _sum_int(
+                performance_rows, "required_file_written_artifact_count"
+            ),
+            "required_file_written_bytes": _sum_int(
+                performance_rows, "required_file_written_bytes"
+            ),
+            "optional_file_written_artifact_count": _sum_int(
+                performance_rows, "optional_file_written_artifact_count"
+            ),
+            "optional_file_written_bytes": _sum_int(
+                performance_rows, "optional_file_written_bytes"
+            ),
             "single_pass_record_count": sum(
                 1 for row in performance_rows if row.get("board_analysis_mode") == "single_pass"
             ),
@@ -228,6 +266,12 @@ def two_crop_performance_markdown(report: Mapping[str, Any]) -> str:
         f"- legacy fallback records: `{summary.get('legacy_fallback_record_count', 0)}`",
         f"- legacy fallback reasons: `{json.dumps(summary.get('legacy_fallback_reasons', {}), sort_keys=True)}`",
         f"- ambiguity probe evaluations: `{summary.get('ambiguity_probe_evaluations', 0)}`",
+        f"- artifact policies: `{json.dumps(summary.get('artifact_policies', {}), sort_keys=True)}`",
+        f"- required PNGs: `{summary.get('required_png_encoded_artifact_count', 0)}` encoded / `{summary.get('required_png_encoded_bytes', 0)}` bytes",
+        f"- optional PNGs: `{summary.get('optional_png_encoded_artifact_count', 0)}` encoded / `{summary.get('optional_png_encoded_bytes', 0)}` bytes",
+        f"- optional debug skipped: `{summary.get('optional_debug_skipped_count', 0)}` / estimated `{summary.get('optional_debug_skipped_estimated_raw_bytes', 0)}` raw bytes",
+        f"- required writes: `{summary.get('required_file_written_artifact_count', 0)}` / `{summary.get('required_file_written_bytes', 0)}` bytes",
+        f"- optional writes: `{summary.get('optional_file_written_artifact_count', 0)}` / `{summary.get('optional_file_written_bytes', 0)}` bytes",
         f"- artifacts: `{summary.get('artifact_count', 0)}` files / `{summary.get('artifact_bytes', 0)}` bytes",
         "",
         "## Stage Timings",

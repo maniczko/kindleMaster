@@ -51,6 +51,7 @@ class ChessTwoCropCheckpointTests(unittest.TestCase):
                 "crop_version": "other-crop",
                 "dpi": 999,
                 "quality_profile": "other-profile",
+                "debug_artifact_policy": "none",
             }.items():
                 mismatched = dict(identity)
                 mismatched[key] = replacement

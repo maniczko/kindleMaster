@@ -85,6 +85,16 @@ def build_two_crop_performance_report(job_output: str | Path) -> dict[str, Any]:
     complete_report = root / "reports" / "chess_fen" / "two_crop_quality_metrics.json"
     corpus_complete = complete_report.is_file() and len(performance_rows) == len(rows) and bool(rows)
     stage_timings = {key: _metric_summary(performance_rows, key) for key in TIMING_KEYS}
+    localization_paths = _count_strings(performance_rows, "localization_path")
+    measured_localization_count = sum(localization_paths.values())
+    fast_path_count = localization_paths.get("full_grid_fast_path", 0)
+    localization_path_timings = {
+        path: _metric_summary(
+            [row for row in performance_rows if row.get("localization_path") == path],
+            "localization_seconds",
+        )
+        for path in sorted(localization_paths)
+    }
     report = {
         "schema": SCHEMA,
         "status": "ok" if corpus_available else "corpus_unavailable",
@@ -107,6 +117,33 @@ def build_two_crop_performance_report(job_output: str | Path) -> dict[str, Any]:
             "sliding_window_candidate_evaluations": _sum_int(
                 performance_rows, "sliding_window_candidate_evaluations"
             ),
+            "localization_paths": localization_paths,
+            "localization_reason_codes": _count_list_values(
+                performance_rows, "localization_reason_codes"
+            ),
+            "full_grid_fast_path_count": _sum_int(
+                performance_rows, "full_grid_fast_path_count"
+            ),
+            "full_grid_fallback_count": _sum_int(
+                performance_rows, "full_grid_fallback_count"
+            ),
+            "full_grid_fast_path_coverage_rate": round(
+                fast_path_count / measured_localization_count,
+                6,
+            )
+            if measured_localization_count
+            else 0.0,
+            "full_grid_fallback_rate": round(
+                localization_paths.get("sliding_window_fallback", 0)
+                / measured_localization_count,
+                6,
+            )
+            if measured_localization_count
+            else 0.0,
+            "full_grid_probe_evaluations": _sum_int(
+                performance_rows, "full_grid_probe_evaluations"
+            ),
+            "false_fast_path_count": _sum_int(performance_rows, "false_fast_path_count"),
             "png_encoded_artifact_count": _sum_int(performance_rows, "png_encoded_artifact_count"),
             "png_encoded_bytes": _sum_int(performance_rows, "png_encoded_bytes"),
             "file_written_artifact_count": _sum_int(performance_rows, "file_written_artifact_count"),
@@ -129,6 +166,7 @@ def build_two_crop_performance_report(job_output: str | Path) -> dict[str, Any]:
             "artifact_bytes": artifact_inventory["artifact_bytes"],
         },
         "stage_timings": stage_timings,
+        "localization_path_timings": localization_path_timings,
         "artifact_inventory": artifact_inventory,
         "items": [
             {
@@ -160,6 +198,11 @@ def two_crop_performance_markdown(report: Mapping[str, Any]) -> str:
     evidence = report.get("evidence") if isinstance(report.get("evidence"), Mapping) else {}
     summary = report.get("summary") if isinstance(report.get("summary"), Mapping) else {}
     timings = report.get("stage_timings") if isinstance(report.get("stage_timings"), Mapping) else {}
+    path_timings = (
+        report.get("localization_path_timings")
+        if isinstance(report.get("localization_path_timings"), Mapping)
+        else {}
+    )
     lines = [
         "# Chess Two-Crop Performance Baseline",
         "",
@@ -173,6 +216,14 @@ def two_crop_performance_markdown(report: Mapping[str, Any]) -> str:
         f"- semantic digest: `{summary.get('semantic_digest', '')}`",
         f"- localization calls: `{summary.get('tight_board_localization_call_count', 0)}`",
         f"- sliding-window evaluations: `{summary.get('sliding_window_candidate_evaluations', 0)}`",
+        f"- localization paths: `{json.dumps(summary.get('localization_paths', {}), sort_keys=True)}`",
+        f"- localization reasons: `{json.dumps(summary.get('localization_reason_codes', {}), sort_keys=True)}`",
+        f"- full-grid fast paths: `{summary.get('full_grid_fast_path_count', 0)}`",
+        f"- full-grid fallbacks: `{summary.get('full_grid_fallback_count', 0)}`",
+        f"- full-grid fast-path coverage: `{summary.get('full_grid_fast_path_coverage_rate', 0.0)}`",
+        f"- full-grid fallback rate: `{summary.get('full_grid_fallback_rate', 0.0)}`",
+        f"- full-grid probe evaluations: `{summary.get('full_grid_probe_evaluations', 0)}`",
+        f"- false fast paths: `{summary.get('false_fast_path_count', 0)}`",
         f"- single-pass records: `{summary.get('single_pass_record_count', 0)}`",
         f"- legacy fallback records: `{summary.get('legacy_fallback_record_count', 0)}`",
         f"- legacy fallback reasons: `{json.dumps(summary.get('legacy_fallback_reasons', {}), sort_keys=True)}`",
@@ -188,6 +239,21 @@ def two_crop_performance_markdown(report: Mapping[str, Any]) -> str:
         metric = timings.get(key) if isinstance(timings.get(key), Mapping) else {}
         lines.append(
             f"| `{key}` | {metric.get('count', 0)} | {metric.get('median', 0.0)} | "
+            f"{metric.get('p95', 0.0)} | {metric.get('total', 0.0)} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Localization Path Timings",
+            "",
+            "| Path | Count | Median (s) | P95 (s) | Total (s) |",
+            "| --- | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for path in sorted(path_timings):
+        metric = path_timings.get(path) if isinstance(path_timings.get(path), Mapping) else {}
+        lines.append(
+            f"| `{path}` | {metric.get('count', 0)} | {metric.get('median', 0.0)} | "
             f"{metric.get('p95', 0.0)} | {metric.get('total', 0.0)} |"
         )
     lines.extend(
@@ -228,6 +294,17 @@ def _count_strings(rows: list[Mapping[str, Any]], key: str) -> dict[str, int]:
         value = str(row.get(key) or "").strip()
         if value:
             counts[value] = counts.get(value, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _count_list_values(rows: list[Mapping[str, Any]], key: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        values = row.get(key) if isinstance(row.get(key), list) else []
+        for raw in values:
+            value = str(raw or "").strip()
+            if value:
+                counts[value] = counts.get(value, 0) + 1
     return dict(sorted(counts.items()))
 
 

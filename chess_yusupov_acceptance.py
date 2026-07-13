@@ -4,9 +4,10 @@ import json
 import os
 import re
 import subprocess
+import sys
 import zipfile
 from collections.abc import Iterable, Mapping
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -61,7 +62,10 @@ def load_acceptance_profile(
     )
     if not path.is_file():
         return {}
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
     return dict(payload) if isinstance(payload, Mapping) else {}
 
 
@@ -284,6 +288,14 @@ def load_job_evidence(job_output: str | Path) -> dict[str, Any]:
     elif source.is_file() and source.suffix.lower() == ".zip":
         try:
             with zipfile.ZipFile(source) as archive:
+                if archive.comment:
+                    try:
+                        archive_metadata = json.loads(archive.comment.decode("utf-8"))
+                    except (UnicodeError, json.JSONDecodeError) as error:
+                        errors.append(f"zip_metadata:{type(error).__name__}")
+                    else:
+                        if isinstance(archive_metadata, Mapping):
+                            payloads["__zip_metadata__.json"] = dict(archive_metadata)
                 names = set(archive.namelist())
                 for relative in EVIDENCE_PATHS:
                     name = relative.as_posix()
@@ -361,22 +373,43 @@ def evaluate_acceptance(
     thresholds: Mapping[str, Any],
 ) -> dict[str, Any]:
     expected = _mapping_rows(manifest.get("diagrams"))
+    expected_hard_negatives = _mapping_rows(manifest.get("hard_negatives"))
     detected = [dict(row) for row in detected_records if isinstance(row, Mapping)]
     detected_by_fingerprint = {
-        str(row.get("diagram_fingerprint")): row
+        _fingerprint(row.get("diagram_fingerprint")): row
         for row in detected
-        if str(row.get("diagram_fingerprint") or "").strip()
+        if _fingerprint(row.get("diagram_fingerprint"))
     }
     expected_fingerprints = {
-        str(row.get("diagram_fingerprint") or "") for row in expected
+        _fingerprint(row.get("diagram_fingerprint")) for row in expected
     }
-    matched = [row for row in expected if str(row.get("diagram_fingerprint") or "") in detected_by_fingerprint]
+    detected_hard_negatives = {
+        str(row.get("hard_negative_fingerprint") or "").strip(): row
+        for row in detected
+        if str(row.get("hard_negative_fingerprint") or "").strip()
+    }
+    expected_hard_negative_fingerprints = {
+        str(row.get("hard_negative_fingerprint") or "").strip()
+        for row in expected_hard_negatives
+    }
+    rejected_hard_negative_fingerprints = {
+        fingerprint
+        for fingerprint, row in detected_hard_negatives.items()
+        if _hard_negative_rejected(row)
+    }
+    matched = [
+        row
+        for row in expected
+        if _fingerprint(row.get("diagram_fingerprint")) in detected_by_fingerprint
+    ]
     visible = [row for row in expected if str(row.get("marker_status") or "") == "present"]
     candidate_hits = len(
         [
             row
             for row in visible
-            if _candidate_present(detected_by_fingerprint.get(str(row.get("diagram_fingerprint") or ""), {}))
+            if _candidate_present(
+                detected_by_fingerprint.get(_fingerprint(row.get("diagram_fingerprint")), {})
+            )
         ]
     )
     ownership_rows = [row for row in expected if row.get("marker_ownership") in OWNERSHIP_STATUSES]
@@ -385,7 +418,7 @@ def evaluate_acceptance(
             row
             for row in ownership_rows
             if _predicted_ownership(
-                detected_by_fingerprint.get(str(row.get("diagram_fingerprint") or ""), {})
+                detected_by_fingerprint.get(_fingerprint(row.get("diagram_fingerprint")), {})
             )
             == row.get("marker_ownership")
         ]
@@ -400,7 +433,7 @@ def evaluate_acceptance(
             row
             for row in clear
             if _trusted_and_correct(
-                detected_by_fingerprint.get(str(row.get("diagram_fingerprint") or ""), {}),
+                detected_by_fingerprint.get(_fingerprint(row.get("diagram_fingerprint")), {}),
                 expected_side=_side(row.get("expected_side")),
             )
         ]
@@ -408,7 +441,7 @@ def evaluate_acceptance(
 
     false_trusted: list[dict[str, Any]] = []
     for row in expected:
-        fingerprint = str(row.get("diagram_fingerprint") or "")
+        fingerprint = _fingerprint(row.get("diagram_fingerprint"))
         actual = detected_by_fingerprint.get(fingerprint, {})
         if not _trusted_marker(actual):
             continue
@@ -428,9 +461,28 @@ def evaluate_acceptance(
                     "actual_side": _predicted_marker_side(actual),
                 }
             )
+    for row in expected_hard_negatives:
+        fingerprint = str(row.get("hard_negative_fingerprint") or "").strip()
+        actual = detected_hard_negatives.get(fingerprint, {})
+        if _trusted_marker(actual):
+            false_trusted.append(
+                {
+                    "hard_negative_fingerprint": fingerprint,
+                    "page": row.get("page"),
+                    "kind": row.get("kind"),
+                    "reason": "trusted_marker_on_verified_hard_negative",
+                }
+            )
     for row in detected:
-        fingerprint = str(row.get("diagram_fingerprint") or "")
-        if fingerprint not in expected_fingerprints and _trusted_marker(row):
+        fingerprint = _fingerprint(row.get("diagram_fingerprint"))
+        hard_negative_fingerprint = str(
+            row.get("hard_negative_fingerprint") or ""
+        ).strip()
+        if (
+            fingerprint not in expected_fingerprints
+            and hard_negative_fingerprint not in expected_hard_negative_fingerprints
+            and _trusted_marker(row)
+        ):
             false_trusted.append(
                 {
                     "diagram_fingerprint": fingerprint,
@@ -444,7 +496,7 @@ def evaluate_acceptance(
             row
             for row in expected
             if _predicted_side(
-                detected_by_fingerprint.get(str(row.get("diagram_fingerprint") or ""), {})
+                detected_by_fingerprint.get(_fingerprint(row.get("diagram_fingerprint")), {})
             )
             in {"w", "b"}
         ]
@@ -454,7 +506,7 @@ def evaluate_acceptance(
             row
             for row in expected
             if _trusted_marker(
-                detected_by_fingerprint.get(str(row.get("diagram_fingerprint") or ""), {})
+                detected_by_fingerprint.get(_fingerprint(row.get("diagram_fingerprint")), {})
             )
         ]
     )
@@ -463,7 +515,7 @@ def evaluate_acceptance(
             row
             for row in expected
             if _full_fen_allowed(
-                detected_by_fingerprint.get(str(row.get("diagram_fingerprint") or ""), {})
+                detected_by_fingerprint.get(_fingerprint(row.get("diagram_fingerprint")), {})
             )
         ]
     )
@@ -478,8 +530,22 @@ def evaluate_acceptance(
         "side_to_move_coverage_rate": _rate(covered_count, total),
         "unknown_count": max(0, total - covered_count),
         "full_fen_safe_acceptance_rate": _rate(full_fen_count, total),
+        "hard_negative_evidence_rate": _rate(
+            len(expected_hard_negative_fingerprints & rejected_hard_negative_fingerprints),
+            len(expected_hard_negative_fingerprints),
+        ),
     }
     checks = _threshold_checks(metrics, thresholds)
+    checks.append(
+        {
+            "name": "hard_negative_evidence_complete",
+            "metric": "hard_negative_evidence_rate",
+            "operator": ">=",
+            "expected": 1.0,
+            "actual": metrics["hard_negative_evidence_rate"],
+            "passed": metrics["hard_negative_evidence_rate"] == 1.0,
+        }
+    )
     expected_source = _normalize_sha(
         (manifest.get("source") or {}).get("sha256")
         if isinstance(manifest.get("source"), Mapping)
@@ -524,12 +590,31 @@ def evaluate_acceptance(
                 detected_by_fingerprint,
             ),
             "all": _subset_metrics(expected, detected_by_fingerprint),
+            "hard_negatives": {
+                "expected_count": len(expected_hard_negative_fingerprints),
+                "exercised_count": len(
+                    expected_hard_negative_fingerprints
+                    & rejected_hard_negative_fingerprints
+                ),
+                "false_trusted_count": len(
+                    [
+                        row
+                        for row in expected_hard_negatives
+                        if _trusted_marker(
+                            detected_hard_negatives.get(
+                                str(row.get("hard_negative_fingerprint") or "").strip(),
+                                {},
+                            )
+                        )
+                    ]
+                ),
+            },
         },
         "false_trusted_markers": false_trusted,
         "missing_expected_fingerprints": [
-            str(row.get("diagram_fingerprint") or "")
+            _fingerprint(row.get("diagram_fingerprint"))
             for row in expected
-            if str(row.get("diagram_fingerprint") or "") not in detected_by_fingerprint
+            if _fingerprint(row.get("diagram_fingerprint")) not in detected_by_fingerprint
         ],
         "closing_evidence_eligible": all(check.get("passed") for check in all_checks),
     }
@@ -559,10 +644,10 @@ def run_fixed_edition_acceptance(
     )
     base: dict[str, Any] = {
         "schema": ACCEPTANCE_REPORT_SCHEMA,
-        "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "source_profile": source_profile,
-        "job_output": str(job_output),
-        "manifest_path": str(resolved_manifest or ""),
+        "job_output_supplied": bool(str(job_output)),
+        "secure_manifest_available": resolved_manifest is not None,
         "synthetic_fixture_claim_allowed": False,
         "profile": profile,
     }
@@ -718,10 +803,81 @@ def _write_acceptance_reports(
     target.mkdir(parents=True, exist_ok=True)
     json_path = target / f"{source_profile}.json"
     md_path = target / f"{source_profile}.md"
-    payload = {**payload, "report_json": str(json_path), "report_markdown": str(md_path)}
-    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    md_path.write_text(acceptance_report_markdown(payload), encoding="utf-8")
-    return payload
+    persisted_payload = _safe_persisted_acceptance_payload(payload)
+    json_path.write_text(
+        json.dumps(persisted_payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    renderer = Path(__file__).with_name("chess_yusupov_acceptance_summary.py")
+    completed = subprocess.run(
+        [sys.executable, str(renderer), str(json_path), str(md_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        md_path.write_text(
+            "# Side-to-move acceptance\n\nMarkdown summary generation failed; use the redacted JSON report.\n",
+            encoding="utf-8",
+        )
+    return {**payload, "report_json": str(json_path), "report_markdown": str(md_path)}
+
+
+def _safe_persisted_acceptance_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    allowed_keys = {
+        "schema",
+        "generated_at",
+        "source_profile",
+        "job_output_supplied",
+        "secure_manifest_available",
+        "synthetic_fixture_claim_allowed",
+        "profile",
+        "status",
+        "metrics",
+        "subsets",
+        "closing_evidence_eligible",
+        "errors",
+        "next_actions",
+    }
+    safe = {
+        key: value
+        for key, value in payload.items()
+        if key in allowed_keys
+    }
+    checks = []
+    for check in _mapping_rows(payload.get("checks")):
+        safe_check = {
+            key: check.get(key)
+            for key in ("name", "metric", "operator", "passed")
+            if key in check
+        }
+        if check.get("metric"):
+            safe_check["expected"] = check.get("expected")
+            safe_check["actual"] = check.get("actual")
+        checks.append(safe_check)
+    if checks:
+        safe["checks"] = checks
+    manifest_validation = payload.get("manifest_validation")
+    if isinstance(manifest_validation, Mapping):
+        safe["manifest_validation"] = {
+            key: value
+            for key, value in manifest_validation.items()
+            if key != "source_document_sha256"
+        }
+    job_evidence = payload.get("job_evidence")
+    if isinstance(job_evidence, Mapping):
+        safe["job_evidence"] = {
+            key: value
+            for key, value in job_evidence.items()
+            if key
+            not in {
+                "job_output",
+                "records",
+                "source_document_sha256",
+                "runtime_commit_sha",
+            }
+        }
+    return safe
 
 
 def _fingerprint_component_errors(
@@ -744,7 +900,7 @@ def _fingerprint_component_errors(
     material = json.dumps(
         {
             "source_sha256": source_sha256,
-            "page": int(row.get("page") or 0),
+            "page": _positive_int(row.get("page")) or 0,
             "bbox_grid": tuple(quantized),
             "perceptual_hash": perceptual_hash,
         },
@@ -752,7 +908,7 @@ def _fingerprint_component_errors(
         separators=(",", ":"),
     )
     expected = "dfp_" + sha256(material.encode("utf-8")).hexdigest()[:32]
-    if str(row.get("diagram_fingerprint") or "") != expected:
+    if _fingerprint(row.get("diagram_fingerprint")) != expected:
         errors.append(f"{prefix}:diagram_fingerprint_components_mismatch")
     return errors
 
@@ -778,11 +934,12 @@ def _check_split_isolation(
 
 
 def _payload_records(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    hard_negatives = _mapping_rows(payload.get("hard_negatives"))
     for key in ("items", "diagrams", "positions", "records", "expected_diagrams"):
         value = payload.get(key)
         if isinstance(value, list):
-            return _mapping_rows(value)
-    return []
+            return [*_mapping_rows(value), *hard_negatives]
+    return hard_negatives
 
 
 def _mapping_rows(value: Any) -> list[dict[str, Any]]:
@@ -790,6 +947,11 @@ def _mapping_rows(value: Any) -> list[dict[str, Any]]:
 
 
 def _record_key(row: Mapping[str, Any]) -> str:
+    hard_negative_fingerprint = str(
+        row.get("hard_negative_fingerprint") or ""
+    ).strip()
+    if hard_negative_fingerprint:
+        return f"hard-negative:{hard_negative_fingerprint}"
     fingerprint = str(row.get("diagram_fingerprint") or "").strip()
     if fingerprint:
         return f"fingerprint:{fingerprint}"
@@ -822,11 +984,14 @@ def _subset_metrics(
     expected: list[dict[str, Any]],
     detected_by_fingerprint: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Any]:
-    actual = [detected_by_fingerprint.get(str(row.get("diagram_fingerprint") or ""), {}) for row in expected]
+    actual = [
+        detected_by_fingerprint.get(_fingerprint(row.get("diagram_fingerprint")), {})
+        for row in expected
+    ]
     trusted = [row for row in actual if _trusted_marker(row)]
     covered = [row for row in actual if _predicted_side(row) in {"w", "b"}]
     false_trusted = 0
-    for expected_row, actual_row in zip(expected, actual, strict=True):
+    for expected_row, actual_row in zip(expected, actual):
         if _trusted_marker(actual_row) and not (
             expected_row.get("marker_status") == "present"
             and expected_row.get("crop_quality") == "clear"
@@ -856,9 +1021,11 @@ def _threshold_checks(metrics: Mapping[str, Any], thresholds: Mapping[str, Any])
     )
     checks = []
     for metric, threshold_key, operator in specs:
-        expected = float(thresholds.get(threshold_key, 0.0))
-        actual = float(metrics.get(metric, 0.0))
-        passed = actual >= expected if operator == ">=" else actual <= expected
+        expected = _optional_float(thresholds.get(threshold_key))
+        actual = _optional_float(metrics.get(metric))
+        passed = False
+        if expected is not None and actual is not None:
+            passed = actual >= expected if operator == ">=" else actual <= expected
         checks.append(
             {
                 "name": threshold_key,
@@ -870,6 +1037,13 @@ def _threshold_checks(metrics: Mapping[str, Any], thresholds: Mapping[str, Any])
             }
         )
     return checks
+
+
+def _optional_float(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _candidate_present(row: Mapping[str, Any]) -> bool:
@@ -892,6 +1066,16 @@ def _trusted_marker(row: Mapping[str, Any]) -> bool:
         "trusted",
         "trusted_marker",
         "trusted_side_marker",
+    }
+
+
+def _hard_negative_rejected(row: Mapping[str, Any]) -> bool:
+    semantic_status = str(row.get("marker_semantic_status") or "").strip().lower()
+    side_marker_status = str(row.get("side_marker_status") or "").strip().lower()
+    return semantic_status in {"rejected", "not_marker", "hard_negative"} or side_marker_status in {
+        "marker_rejected",
+        "not_marker",
+        "hard_negative",
     }
 
 
@@ -963,6 +1147,10 @@ def _side(value: Any) -> str:
     if text in {"b", "black"}:
         return "b"
     return "unknown"
+
+
+def _fingerprint(value: Any) -> str:
+    return str(value or "").strip()
 
 
 def _rate(count: int, total: int) -> float:

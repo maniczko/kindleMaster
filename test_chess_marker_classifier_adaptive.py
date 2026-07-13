@@ -11,6 +11,8 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
 from chess_diagram_fingerprint import build_diagram_fingerprint
 from chess_marker_classifier_adaptive import (
     GRAMMAR_PROFILES,
+    _bbox_iou,
+    _correlation,
     fit_reliability_calibration,
     reliability_metrics,
 )
@@ -19,6 +21,15 @@ from pymupdf_chess_extractor import classify_scan_chess_side_marker_crop
 
 
 SOURCE_SHA = "3" * 64
+
+
+class AdaptiveMarkerDefensiveHelperTests(unittest.TestCase):
+    def test_correlation_rejects_mismatched_lengths(self) -> None:
+        self.assertEqual(_correlation([1.0, 2.0], [1.0, 2.0, 3.0]), 0.0)
+
+    def test_bbox_iou_rejects_short_sequences(self) -> None:
+        self.assertEqual(_bbox_iou([0, 0, 1], [0, 0, 1, 1]), 0.0)
+        self.assertEqual(_bbox_iou([0, 0, 1, 1], [0, 0, 1]), 0.0)
 
 
 def _outline(size: int = 96, *, ink: int = 20, background: int = 245) -> Image.Image:

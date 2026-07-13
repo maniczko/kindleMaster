@@ -18,7 +18,7 @@ from chess_study_export import (
     build_study_positions,
     detect_study_diagrams,
 )
-from scripts.chess_diagram_detection import detect_chess_diagrams
+from scripts.chess_diagram_detection import _recovery_only_envelopes, detect_chess_diagrams
 
 
 VALID_FEN = "4k3/8/8/8/8/8/8/4K3 w - - 0 1"
@@ -45,6 +45,28 @@ def _candidate(image_size: tuple[int, int], bbox: tuple[float, float, float, flo
 
 
 class ChessDiagramMultiPassDetectionTests(unittest.TestCase):
+    def test_recovery_limit_is_applied_after_strict_overlap_filtering(self) -> None:
+        strict = [{"normalized_bbox_xyxy": [0.0, 0.0, 0.4, 0.4]}]
+        recovery = [
+            {
+                "normalized_bbox_xyxy": [0.01, 0.01, 0.41, 0.41],
+                "confidence": 0.99,
+                "dpi": 160,
+                "detection_passes": [],
+            },
+            {
+                "normalized_bbox_xyxy": [0.55, 0.0, 0.95, 0.4],
+                "confidence": 0.80,
+                "dpi": 160,
+                "detection_passes": [],
+            },
+        ]
+
+        selected = _recovery_only_envelopes(strict, recovery, max_count=1)
+
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]["normalized_bbox_xyxy"], [0.55, 0.0, 0.95, 0.4])
+
     def test_multi_pass_nms_adaptive_recovery_and_expected_recall(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -239,6 +261,31 @@ class ChessDiagramMultiPassDetectionTests(unittest.TestCase):
         self.assertEqual(row["fen_candidate"], "")
         self.assertFalse(row["deterministic_validation"]["valid"])
         self.assertIn("side_to_move_unknown", row["deterministic_validation"]["warnings"])
+
+    def test_model_prediction_normalizes_mixed_case_side_label(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            crop_path = Path(temp_dir) / "board.png"
+            board = Image.new("RGB", (80, 80), "white")
+            board.save(crop_path)
+            square = Image.new("L", (10, 10), "white")
+            with (
+                patch("chess_study_export._normalize_board_image", return_value=board),
+                patch("chess_study_export._split_board_into_squares", return_value=[square] * 64),
+                patch(
+                    "chess_study_export._predict_square_class",
+                    return_value={"class": "", "label": "empty", "confidence": 1.0, "entropy": 0.0},
+                ),
+                patch("chess_study_export._infer_side_to_move", return_value="White"),
+                patch("chess_study_export.validate_fen", return_value=(True, [])),
+            ):
+                row = _predict_fen_for_source(
+                    {"diagram_id": "mixed-case-side", "crop_path": str(crop_path)},
+                    Path(temp_dir),
+                    {},
+                )
+
+        self.assertEqual(row["fen_candidate"].split()[1], "w")
+        self.assertTrue(row["deterministic_validation"]["valid"])
 
 
 if __name__ == "__main__":

@@ -45,7 +45,10 @@ def normalized_bbox(
 def diagram_perceptual_hash(image: Image.Image) -> str:
     grayscale = ImageOps.autocontrast(image.convert("L"), cutoff=1)
     reduced = grayscale.resize((9, 8), Image.Resampling.LANCZOS)
-    pixels = list(reduced.get_flattened_data())
+    pixel_reader = getattr(reduced, "get_flattened_data", None)
+    if not callable(pixel_reader):
+        pixel_reader = reduced.getdata
+    pixels = list(pixel_reader())
     bits = []
     for row in range(8):
         offset = row * 9

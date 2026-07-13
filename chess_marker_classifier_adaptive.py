@@ -659,8 +659,14 @@ def _connected_components(mask: np.ndarray) -> list[dict[str, Any]]:
             while stack:
                 x, y = stack.pop()
                 points.append((x, y))
-                for ny in range(max(0, y - 1), min(height, y + 2)):
-                    for nx in range(max(0, x - 1), min(width, x + 2)):
+                for dy in (-1, 0, 1):
+                    ny = y + dy
+                    if not 0 <= ny < height:
+                        continue
+                    for dx in (-1, 0, 1):
+                        nx = x + dx
+                        if not 0 <= nx < width:
+                            continue
                         if visited[ny, nx] or not mask[ny, nx]:
                             continue
                         visited[ny, nx] = True
@@ -691,7 +697,7 @@ def _ideal_triangle_mask(height: int, width: int, orientation: str, *, inset: fl
 
 
 def _correlation(left: Sequence[float], right: Sequence[float]) -> float:
-    if len(left) < 2 or len(right) < 2:
+    if len(left) < 2 or len(right) < 2 or len(left) != len(right):
         return 0.0
     left_array = np.asarray(left, dtype=np.float64)
     right_array = np.asarray(right, dtype=np.float64)
@@ -702,7 +708,9 @@ def _correlation(left: Sequence[float], right: Sequence[float]) -> float:
 
 
 def _bbox_iou(left: Any, right: Any) -> float:
-    if not isinstance(left, (list, tuple)) or not isinstance(right, (list, tuple)):
+    if not isinstance(left, (list, tuple)) or len(left) < 4:
+        return 0.0
+    if not isinstance(right, (list, tuple)) or len(right) < 4:
         return 0.0
     lx0, ly0, lx1, ly1 = (float(value) for value in left[:4])
     rx0, ry0, rx1, ry1 = (float(value) for value in right[:4])

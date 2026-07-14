@@ -68,6 +68,7 @@ QUICK_TESTS = [
     "test_chess_diagram_fingerprint.py",
     "test_chess_yusupov_acceptance_manifest.py",
     "test_chess_fen_gold_corpus.py",
+    "test_chess_fen_auto_adjudication.py",
     "test_chess_glyph_diagnostics.py",
     "test_chess_fen_square_diff.py",
     "test_chess_fen_hard_cases.py",
@@ -571,6 +572,14 @@ def main() -> int:
     fen_gold_import_parser.add_argument("--manifest", required=True)
     fen_gold_import_parser.add_argument("--filled-labels", required=True)
     fen_gold_import_parser.add_argument("--out", required=True)
+    fen_auto_parser = chess_subparsers.add_parser(
+        "auto-label-fen-corpus",
+        help="Build automatic full-FEN consensus and an exception-only adjudication queue.",
+    )
+    fen_auto_parser.add_argument("--manifest", required=True)
+    fen_auto_parser.add_argument("--out", required=True)
+    fen_auto_parser.add_argument("--vision-mode", choices=("off", "replay", "live"), default="replay")
+    fen_auto_parser.add_argument("--replay", default="")
 
     chess_study_parser = subparsers.add_parser("chess-study", help="Build a static chess training-book study export.")
     chess_study_subparsers = chess_study_parser.add_subparsers(dest="chess_study_command")
@@ -973,6 +982,21 @@ def main() -> int:
 
 
 def _run_chess(args: argparse.Namespace, *, parser: argparse.ArgumentParser | None = None) -> int:
+    if args.chess_command == "auto-label-fen-corpus":
+        from chess_fen_auto_adjudication import auto_label_fen_corpus
+
+        try:
+            payload = auto_label_fen_corpus(
+                intake_manifest=args.manifest,
+                output_dir=args.out,
+                vision_mode=args.vision_mode,
+                replay_path=args.replay or None,
+            )
+        except Exception as error:
+            payload = {"status": "failed", "error": type(error).__name__, "message": str(error)}
+        _print_json(payload)
+        return 0 if payload.get("status") == "passed" else 1
+
     if args.chess_command == "prepare-fen-gold-corpus":
         from chess_fen_gold_corpus import build_fen_gold_corpus_review
 

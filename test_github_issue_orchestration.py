@@ -23,6 +23,7 @@ from github_issue_orchestration import (
     evaluate_issue_contract,
     execute_issue,
     issue_contract_from_payload,
+    linked_issue_number_from_pr_body,
     load_issue_contracts,
     run_orchestration_command,
     sync_issues,
@@ -82,6 +83,26 @@ def _bilingual_issue() -> dict[str, object]:
 
 
 class GithubIssueOrchestrationTests(unittest.TestCase):
+    def test_linked_issue_parser_handles_multiline_pr_body_and_ignores_negative_prose(self) -> None:
+        body = "\n".join(
+            [
+                "## Summary",
+                "- preserve multiline Markdown",
+                "",
+                "Closes #259.",
+                "",
+                "Source SHA: `9faf77bf6f38fe584fb0c191a0bd61c4`",
+                "This PR does not close #257.",
+            ]
+        )
+
+        self.assertEqual(linked_issue_number_from_pr_body(body), 259)
+
+    def test_linked_issue_parser_ignores_fenced_examples_and_missing_explicit_reference(self) -> None:
+        body = "\n".join(["This does not close #257.", "```markdown", "Closes #999", "```"])
+
+        self.assertIsNone(linked_issue_number_from_pr_body(body))
+
     def test_complete_issue_contract_is_ready_and_maps_area_to_quality_gate(self) -> None:
         issue = issue_contract_from_payload(_complete_issue())
 

@@ -5,6 +5,13 @@ from pathlib import Path
 
 
 class GithubReadyEnforcementTests(unittest.TestCase):
+    def test_codex_queue_reads_multiline_pr_body_from_json_without_reusing_python_stdin(self) -> None:
+        workflow_text = Path(".github/workflows/codex-issue-queue.yml").read_text(encoding="utf-8")
+
+        self.assertIn('gh pr view "${PR_NUMBER}" --json body > reports/github/merged-pr.json', workflow_text)
+        self.assertIn("linked_issue_number_from_pr_body", workflow_text)
+        self.assertNotIn('<<< "${pr_body}"', workflow_text)
+
     def test_ready_workflow_exposes_stable_job_names_and_local_command_mapping(self) -> None:
         workflow_text = Path(".github/workflows/ready-enforcement.yml").read_text(encoding="utf-8")
 

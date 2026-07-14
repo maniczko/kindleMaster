@@ -90,13 +90,17 @@ jobs:
             exit 0
           fi
 
-          pr_body="$(gh pr view "${PR_NUMBER}" --json body --jq '.body // ""')"
-          linked_issue="$(python - <<'PY' <<< "${pr_body}"
-          import re
-          import sys
-          body = sys.stdin.read()
-          match = re.search(r'(?i)\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\s+#(\d+)\b', body)
-          print(match.group(3) if match else '')
+          mkdir -p reports/github
+          gh pr view "${PR_NUMBER}" --json body > reports/github/merged-pr.json
+          linked_issue="$(python - <<'PY'
+          import json
+          from pathlib import Path
+
+          from github_issue_orchestration import linked_issue_number_from_pr_body
+
+          payload = json.loads(Path("reports/github/merged-pr.json").read_text(encoding="utf-8"))
+          issue_number = linked_issue_number_from_pr_body(str(payload.get("body") or ""))
+          print(issue_number or "")
           PY
           )"
 

@@ -47,6 +47,7 @@ from converter import (
 )
 from chess_position_recognizer import (
     ChessFenResult,
+    _normalize_board_square_with_bbox,
     _estimate_board_grid_confidence,
     _bbox_overlap_ratio,
     _has_board_visual_pattern,
@@ -5152,6 +5153,9 @@ TWO_CROP_CONTRACT_FIELDS = {
     "full_fen_allowed",
     "full_fen_blockers",
     "full_fen_blocker",
+    "marker_board_bbox",
+    "marker_raw_board_bbox",
+    "marker_board_localization_method",
     "marker_candidate_id",
     "marker_candidate_bbox",
     "marker_candidate_crop_bbox",
@@ -5974,13 +5978,43 @@ def _scan_chess_two_crop_review_artifacts(
         "total_seconds": 0.0,
     }
     stem = Path(str(filename or "diagram")).stem or "diagram"
-    raw_board_bbox = _coerce_side_marker_bbox(board_bbox)
-    localization_started = time.perf_counter()
-    board_analysis = _scan_chess_board_analysis_from_candidate(
-        page_image,
-        raw_board_bbox,
-        performance=performance,
+    assigned_board_bbox = _coerce_side_marker_bbox(
+        marker_assignment.get("marker_board_bbox")
+        if isinstance(marker_assignment, Mapping)
+        else None
     )
+    raw_board_bbox = _coerce_side_marker_bbox(
+        marker_assignment.get("marker_raw_board_bbox")
+        if isinstance(marker_assignment, Mapping)
+        else None
+    ) or _coerce_side_marker_bbox(board_bbox)
+    localization_started = time.perf_counter()
+    if assigned_board_bbox:
+        raw_box = _bbox_to_int_box(raw_board_bbox, page_image.size)
+        selected_box = _bbox_to_int_box(assigned_board_bbox, page_image.size)
+        board_analysis = _ScanChessBoardAnalysis(
+            raw_box=raw_box,
+            selected_box=selected_box,
+            local_tight_box=None,
+            derivation={
+                "decision": "reused_page_marker_localization",
+                "reasons": ["page_marker_board_bbox_reused"],
+                "raw_bbox": [float(value) for value in (raw_box or ())],
+                "tight_bbox": [float(value) for value in (selected_box or ())],
+                "method": str(
+                    marker_assignment.get("marker_board_localization_method") or "provided"
+                ),
+            },
+        )
+        performance["localization_path"] = "page_marker_assignment_reuse"
+        performance["localization_reason_codes"] = ["page_marker_board_bbox_reused"]
+        performance["board_analysis_mode"] = "page_marker_assignment_reuse"
+    else:
+        board_analysis = _scan_chess_board_analysis_from_candidate(
+            page_image,
+            raw_board_bbox,
+            performance=performance,
+        )
     tight_board_bbox = [float(value) for value in (board_analysis.selected_box or ())]
     tight_board_trace = dict(board_analysis.derivation)
     board_bbox_for_crop = tight_board_bbox or raw_board_bbox
@@ -6056,7 +6090,11 @@ def _scan_chess_two_crop_review_artifacts(
 
     marker_started = time.perf_counter()
     marker_png_seconds_before = float(performance["png_encoding_seconds"])
-    zones = _scan_chess_marker_search_zones(fields["board_bbox"], page_image.size)
+    zones = (
+        _scan_chess_page_marker_search_zones(fields["board_bbox"], page_image.size)
+        if marker_assignment is not None
+        else _scan_chess_marker_search_zones(fields["board_bbox"], page_image.size)
+    )
     fields["marker_search_zones"] = zones
     search_bbox, search_crop = _scan_chess_marker_search_zone_preview(page_image, fields["board_bbox"], zones)
     if search_crop is not None:
@@ -6365,6 +6403,27 @@ def _scan_chess_marker_search_zones(board_bbox: Any, page_size: tuple[int, int])
     return zones
 
 
+def _scan_chess_page_marker_search_zones(
+    board_bbox: Any,
+    page_size: tuple[int, int],
+) -> dict[str, list[float]]:
+    """Use wider side bands for page-level extraction so components are not clipped."""
+    board = _coerce_side_marker_bbox(board_bbox)
+    if not board:
+        return {}
+    x0, y0, x1, y1 = board
+    cell = min(max(1.0, x1 - x0), max(1.0, y1 - y0)) / 8.0
+    zones = _scan_chess_marker_search_zones(board, page_size)
+    for name, bbox in {
+        "right": (x1, y0 - 0.5 * cell, x1 + 2.75 * cell, y1 + 0.5 * cell),
+        "left": (x0 - 2.75 * cell, y0 - 0.5 * cell, x0, y1 + 0.5 * cell),
+    }.items():
+        box = _bbox_to_int_box(bbox, page_size)
+        if box is not None:
+            zones[name] = [float(value) for value in box]
+    return zones
+
+
 def _scan_chess_marker_search_zone_preview(
     page_image: Image.Image,
     board_bbox: Any,
@@ -6605,7 +6664,7 @@ def _scan_chess_page_marker_pipeline(
     top_k: int = 0,
 ) -> dict[str, Any]:
     """Detect marker candidates once and assign each candidate to at most one board."""
-    normalized_boards = _scan_chess_normalized_page_boards(boards)
+    normalized_boards = _scan_chess_localize_page_marker_boards(page_image, boards)
     candidates, files = _scan_chess_page_marker_candidates(
         page_image,
         normalized_boards,
@@ -6621,6 +6680,15 @@ def _scan_chess_page_marker_pipeline(
         "schema": PAGE_MARKER_ASSIGNMENT_SCHEMA,
         "page": max(1, int(page_number or 1)),
         "board_count": len(normalized_boards),
+        "board_localizations": [
+            {
+                "diagram_id": board["diagram_id"],
+                "raw_bbox": list(board.get("raw_bbox") or board["bbox"]),
+                "marker_board_bbox": list(board["bbox"]),
+                "method": str(board.get("marker_board_localization_method") or "provided"),
+            }
+            for board in normalized_boards
+        ],
         "marker_candidate_count": len(candidates),
         "marker_candidate_crop_count": len(
             [candidate for candidate in candidates if candidate.get("marker_candidate_crop_path")]
@@ -6689,11 +6757,54 @@ def _scan_chess_normalized_page_boards(
             {
                 "diagram_id": board_id,
                 "bbox": bbox,
+                "raw_bbox": _coerce_side_marker_bbox(board.get("raw_bbox")) or bbox,
+                "marker_board_localization_method": str(
+                    board.get("marker_board_localization_method") or "provided"
+                ),
                 "board_index": int(board.get("board_index") or index),
             }
         )
     normalized.sort(key=lambda item: (item["bbox"][1], item["bbox"][0], item["diagram_id"]))
     return normalized
+
+
+def _scan_chess_localize_page_marker_boards(
+    page_image: Image.Image,
+    boards: Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Locate the 8x8 grid so the caption band remains available to marker OCR."""
+    localized: list[dict[str, Any]] = []
+    for board in _scan_chess_normalized_page_boards(boards):
+        raw_bbox = _coerce_side_marker_bbox(board.get("raw_bbox") or board.get("bbox"))
+        raw_box = _bbox_to_int_box(raw_bbox, page_image.size)
+        if raw_box is None:
+            continue
+        crop = page_image.crop(raw_box)
+        _normalized, local_box, method = _normalize_board_square_with_bbox(crop)
+        left, top, right, bottom = local_box
+        if method == "center_square" and crop.height > crop.width * 1.08:
+            side = min(crop.width, crop.height)
+            top = min(
+                max(top, int(round(crop.height * 0.10))),
+                max(0, crop.height - side),
+            )
+            bottom = top + side
+        marker_board_bbox = [
+            float(raw_box[0] + left),
+            float(raw_box[1] + top),
+            float(raw_box[0] + right),
+            float(raw_box[1] + bottom),
+        ]
+        localized.append(
+            {
+                **board,
+                "bbox": marker_board_bbox,
+                "raw_bbox": [float(value) for value in raw_box],
+                "marker_board_localization_method": method,
+            }
+        )
+    localized.sort(key=lambda item: (item["bbox"][1], item["bbox"][0], item["diagram_id"]))
+    return localized
 
 
 def _scan_chess_page_marker_candidates(
@@ -6713,7 +6824,10 @@ def _scan_chess_page_marker_candidates(
         for bbox in board_boxes
     ]
     for board_bbox in board_boxes:
-        for zone_bbox in _scan_chess_marker_search_zones(board_bbox, page_image.size).values():
+        for zone_bbox in _scan_chess_page_marker_search_zones(
+            board_bbox,
+            page_image.size,
+        ).values():
             zone = _bbox_to_int_box(zone_bbox, page_image.size)
             if zone is not None:
                 allowed[zone[1] : zone[3], zone[0] : zone[2]] = True
@@ -6724,7 +6838,7 @@ def _scan_chess_page_marker_candidates(
 
     grayscale = ImageOps.autocontrast(page_image.convert("L"))
     components = _scan_chess_page_dark_components((np.asarray(grayscale) < 120) & allowed)
-    plausible: list[dict[str, Any]] = []
+    raw_plausible: list[dict[str, Any]] = []
     for component in components:
         raw_bbox = component.get("bbox")
         if not isinstance(raw_bbox, (list, tuple)) or len(raw_bbox) != 4:
@@ -6750,9 +6864,19 @@ def _scan_chess_page_marker_candidates(
             for board_bbox in board_boxes
         ):
             continue
+        board_costs = {
+            board["diagram_id"]: float(
+                _scan_chess_board_marker_assignment_cost(
+                    board["bbox"],
+                    {"marker_candidate_bbox": marker_bbox},
+                    page_size=page_image.size,
+                )["cost"]
+            )
+            for board in normalized_boards
+        }
         nearest_board = min(
             normalized_boards,
-            key=lambda board: _scan_chess_bbox_edge_distance(tuple(marker_bbox), tuple(board["bbox"])),
+            key=lambda board: (board_costs[board["diagram_id"]], board["diagram_id"]),
         )
         crop_bbox = _scan_chess_padded_marker_bbox(marker_bbox, nearest_board["bbox"], page_image.size)
         classifier_bbox = _scan_chess_page_marker_classifier_bbox(
@@ -6760,10 +6884,59 @@ def _scan_chess_page_marker_candidates(
             nearest_board["bbox"],
             page_image.size,
         )
+        if not classifier_bbox:
+            continue
+        compactness = min(1.0, float(component.get("area") or 0.0) / max(1.0, width * height))
+        geometry_plausibility = round(
+            0.40 * min(1.0, float(component.get("area") or 0.0) / 180.0)
+            + 0.30 * compactness
+            + 0.30 * (1.0 - min(1.0, abs(1.0 - aspect))),
+            4,
+        )
+        nearest_cost = board_costs[nearest_board["diagram_id"]]
+        anchor_score = max(0.0, 1.0 - nearest_cost / PAGE_MARKER_UNASSIGNED_COST)
+        raw_plausible.append(
+            {
+                "_component_index": len(raw_plausible),
+                "_board_costs": board_costs,
+                "_nearest_board_bbox": list(nearest_board["bbox"]),
+                "_classifier_bbox": classifier_bbox,
+                "_preselection_score": round(
+                    0.60 * geometry_plausibility + 0.40 * anchor_score,
+                    4,
+                ),
+                "marker_candidate_bbox": marker_bbox,
+                "marker_candidate_crop_bbox": crop_bbox,
+                "marker_candidate_features": {
+                    "area": round(float(component.get("area") or 0.0), 2),
+                    "density": round(density, 4),
+                    "width": round(width, 2),
+                    "height": round(height, 2),
+                    "aspect_ratio": round(aspect, 4),
+                    "geometry_plausibility": geometry_plausibility,
+                    "nearest_board_cost": round(nearest_cost, 4),
+                },
+                "marker_candidate_geometry_plausibility": geometry_plausibility,
+                "marker_candidate_source": "page_level_dark_components",
+            }
+        )
+    candidate_limit = int(top_k or 0) or max(12, len(normalized_boards) * 6)
+    preselected = _scan_chess_preselect_page_marker_components(
+        raw_plausible,
+        normalized_boards,
+        candidate_limit=candidate_limit,
+    )
+    selected: list[dict[str, Any]] = []
+    for raw_candidate in preselected:
+        candidate = dict(raw_candidate)
+        nearest_bbox = list(candidate.pop("_nearest_board_bbox"))
+        classifier_bbox = list(candidate.pop("_classifier_bbox"))
+        candidate.pop("_board_costs", None)
+        candidate.pop("_component_index", None)
+        candidate.pop("_preselection_score", None)
         crop = _crop_bbox_from_image(page_image, classifier_bbox)
         if crop is None:
             continue
-        nearest_bbox = nearest_board["bbox"]
         board_cell_size = min(
             max(1.0, nearest_bbox[2] - nearest_bbox[0]),
             max(1.0, nearest_bbox[3] - nearest_bbox[1]),
@@ -6787,45 +6960,29 @@ def _scan_chess_page_marker_candidates(
                 else "unclear_triangle"
             )
         confidence = round(float(classification.get("confidence") or 0.0), 4)
-        compactness = min(1.0, float(component.get("area") or 0.0) / max(1.0, width * height))
-        shape_score = 1.0 if classifier_status == "trusted_marker" else 0.65 if classifier_status != "marker_missing" else 0.3
-        plausibility = round(
-            0.35 * min(1.0, float(component.get("area") or 0.0) / 180.0)
-            + 0.25 * compactness
-            + 0.20 * (1.0 - min(1.0, abs(1.0 - aspect)))
-            + 0.20 * shape_score,
-            4,
+        shape_score = (
+            1.0
+            if classifier_status == "trusted_marker"
+            else 0.65
+            if classifier_status != "marker_missing"
+            else 0.3
         )
-        plausible.append(
+        geometry_plausibility = float(
+            candidate.get("marker_candidate_geometry_plausibility") or 0.0
+        )
+        plausibility = round(0.80 * geometry_plausibility + 0.20 * shape_score, 4)
+        candidate["marker_candidate_features"]["plausibility"] = plausibility
+        candidate.update(
             {
-                "marker_candidate_bbox": marker_bbox,
-                "marker_candidate_crop_bbox": crop_bbox,
-                "marker_candidate_features": {
-                    "area": round(float(component.get("area") or 0.0), 2),
-                    "density": round(density, 4),
-                    "width": round(width, 2),
-                    "height": round(height, 2),
-                    "aspect_ratio": round(aspect, 4),
-                    "plausibility": plausibility,
-                },
                 "marker_candidate_class": candidate_class,
                 "marker_candidate_adaptive_shape": adaptive_shape,
                 "marker_candidate_classifier_status": classifier_status,
                 "marker_candidate_side": str(classification.get("side") or ""),
                 "marker_candidate_confidence": confidence,
                 "marker_candidate_plausibility": plausibility,
-                "marker_candidate_source": "page_level_dark_components",
             }
         )
-    candidate_limit = int(top_k or 0) or max(12, len(normalized_boards) * 8)
-    plausible.sort(
-        key=lambda item: (
-            float(item.get("marker_candidate_plausibility") or 0.0),
-            float(item.get("marker_candidate_confidence") or 0.0),
-        ),
-        reverse=True,
-    )
-    selected = plausible[:candidate_limit]
+        selected.append(candidate)
     selected.sort(
         key=lambda item: (
             item["marker_candidate_bbox"][1],
@@ -6847,6 +7004,75 @@ def _scan_chess_page_marker_candidates(
         if crop is not None:
             files.append({"path": crop_path, "data": _png_bytes(crop)})
     return selected, files
+
+
+def _scan_chess_preselect_page_marker_components(
+    candidates: Iterable[Mapping[str, Any]],
+    boards: Iterable[Mapping[str, Any]],
+    *,
+    candidate_limit: int,
+) -> list[dict[str, Any]]:
+    """Balance cheap geometry candidates across boards before adaptive classification."""
+    rows = [dict(candidate) for candidate in candidates]
+    board_rows = _scan_chess_normalized_page_boards(boards)
+    limit = min(len(rows), max(1, int(candidate_limit or 1)))
+    selected: list[dict[str, Any]] = []
+    selected_ids: set[int] = set()
+    ranked_by_board: dict[str, list[dict[str, Any]]] = {}
+    for board in board_rows:
+        board_id = board["diagram_id"]
+        ranked_by_board[board_id] = sorted(
+            rows,
+            key=lambda item: (
+                float((item.get("_board_costs") or {}).get(board_id, float("inf"))),
+                -float(item.get("_preselection_score") or 0.0),
+                int(item.get("_component_index") or 0),
+            ),
+        )
+
+    cursors = {board["diagram_id"]: 0 for board in board_rows}
+    while len(selected) < limit:
+        progressed = False
+        for board in board_rows:
+            board_id = board["diagram_id"]
+            ranked = ranked_by_board[board_id]
+            cursor = cursors[board_id]
+            while cursor < len(ranked):
+                candidate = ranked[cursor]
+                cursor += 1
+                component_id = int(candidate.get("_component_index") or 0)
+                if component_id in selected_ids:
+                    continue
+                selected.append(candidate)
+                selected_ids.add(component_id)
+                progressed = True
+                break
+            cursors[board_id] = cursor
+            if len(selected) >= limit:
+                break
+        if not progressed:
+            break
+
+    if len(selected) < limit:
+        for candidate in sorted(
+            rows,
+            key=lambda item: (
+                float(item.get("_preselection_score") or 0.0),
+                -min(
+                    [float(value) for value in (item.get("_board_costs") or {}).values()]
+                    or [float("inf")]
+                ),
+            ),
+            reverse=True,
+        ):
+            component_id = int(candidate.get("_component_index") or 0)
+            if component_id in selected_ids:
+                continue
+            selected.append(candidate)
+            selected_ids.add(component_id)
+            if len(selected) >= limit:
+                break
+    return selected
 
 
 def _scan_chess_page_dark_components(mask: Any) -> list[dict[str, float]]:
@@ -7008,6 +7234,11 @@ def _scan_chess_assign_page_marker_candidates(
             assignment = {
                 "diagram_id": board["diagram_id"],
                 **_scan_chess_empty_marker_assignment_fields(),
+                "marker_board_bbox": list(board["bbox"]),
+                "marker_raw_board_bbox": list(board.get("raw_bbox") or board["bbox"]),
+                "marker_board_localization_method": str(
+                    board.get("marker_board_localization_method") or "provided"
+                ),
                 **{
                     key: candidate.get(key)
                     for key in (
@@ -7054,6 +7285,11 @@ def _scan_chess_assign_page_marker_candidates(
             {
                 "diagram_id": board["diagram_id"],
                 **_scan_chess_empty_marker_assignment_fields(),
+                "marker_board_bbox": list(board["bbox"]),
+                "marker_raw_board_bbox": list(board.get("raw_bbox") or board["bbox"]),
+                "marker_board_localization_method": str(
+                    board.get("marker_board_localization_method") or "provided"
+                ),
                 "marker_assignment_rejected_reasons": ["no_candidate_selected_by_global_assignment"],
             }
         )
@@ -7099,6 +7335,9 @@ def _scan_chess_assign_page_marker_candidates(
 
 def _scan_chess_empty_marker_assignment_fields() -> dict[str, Any]:
     return {
+        "marker_board_bbox": [],
+        "marker_raw_board_bbox": [],
+        "marker_board_localization_method": "",
         "marker_candidate_id": "",
         "marker_candidate_bbox": [],
         "marker_candidate_crop_bbox": [],
@@ -7162,14 +7401,32 @@ def _scan_chess_board_marker_assignment_cost(
     cell = min(max(1.0, board_bbox[2] - board_bbox[0]), max(1.0, board_bbox[3] - board_bbox[1])) / 8.0
     distance = _scan_chess_bbox_edge_distance(tuple(marker_bbox), tuple(board_bbox))
     normalized_distance = distance / max(1.0, cell)
-    zones = _scan_chess_marker_search_zones(board_bbox, page_size)
+    zones = _scan_chess_page_marker_search_zones(board_bbox, page_size)
     zone = _scan_chess_selected_marker_zone(marker_bbox, zones)
+    marker_cx = (marker_bbox[0] + marker_bbox[2]) / 2.0
+    marker_cy = (marker_bbox[1] + marker_bbox[3]) / 2.0
+    caption_anchor_distance = 0.0
+    if zone in {"top", "bottom"}:
+        anchor_y = board_bbox[1] if zone == "top" else board_bbox[3]
+        horizontal_cells = min(2.0, abs(marker_cx - board_bbox[2]) / max(1.0, cell))
+        vertical_cells = abs(marker_cy - anchor_y) / max(1.0, cell)
+        caption_anchor_distance = (horizontal_cells**2 + vertical_cells**2) ** 0.5
     rejected_reasons: list[str] = []
     if not zone:
         rejected_reasons.append("outside_board_marker_search_zones")
     if normalized_distance > 2.25:
         rejected_reasons.append("candidate_too_far_from_board")
-    cost = normalized_distance + (0.0 if zone else 1.15)
+    if zone in {"top", "bottom"}:
+        cost = (
+            0.25 * normalized_distance
+            + 0.75 * caption_anchor_distance
+            + (0.50 if zone == "bottom" else 0.0)
+        )
+    else:
+        cost = normalized_distance + (1.0 if zone in {"left", "right"} else 1.15)
+    if zone in {"top", "bottom"} and normalized_distance < 0.04:
+        cost += 1.25
+        rejected_reasons.append("candidate_touches_board_edge")
     if "candidate_too_far_from_board" in rejected_reasons:
         cost += 6.0
     return {
@@ -7177,6 +7434,7 @@ def _scan_chess_board_marker_assignment_cost(
         "zone": zone,
         "distance": round(distance, 4),
         "normalized_distance": round(normalized_distance, 4),
+        "caption_anchor_distance": round(caption_anchor_distance, 4),
         "rejected_reasons": rejected_reasons,
     }
 

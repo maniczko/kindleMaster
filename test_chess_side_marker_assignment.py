@@ -545,6 +545,10 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertEqual(updated["side_to_move"], "b")
         self.assertEqual(updated["side_marker_symbol"], "\u25bc")
         self.assertEqual(updated["side_marker_status"], "trusted_marker")
+        self.assertEqual(updated["board_placement_status"], "accepted")
+        self.assertEqual(updated["full_fen_status"], "FEN_MACHINE_ACCEPTED")
+        self.assertTrue(updated["full_fen_allowed"])
+        self.assertEqual(updated["full_fen_blockers"], [])
         self.assertNotIn("side_to_move_marker_multi_region_conflict", updated["warnings"])
         self.assertEqual(updated["side_marker_assignment_trace"]["promotion_rule"], "marker_crop_quality_pass_v1")
 

@@ -62,7 +62,10 @@ class ChessEngineServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             engine = _write_fake_uci_engine(Path(temp_dir))
 
-            result = is_engine_available(engine_command=[sys.executable, str(engine)])
+            result = is_engine_available(
+                engine_command=[sys.executable, str(engine)],
+                timeout_ms=2000,
+            )
 
         self.assertEqual(result["status"], "ok")
         self.assertTrue(result["available"])

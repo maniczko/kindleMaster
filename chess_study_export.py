@@ -6903,7 +6903,7 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
                     "bbox": board_bbox,
                 }
                 for diagram in page_diagrams
-                for board_bbox in [_study_pixel_bbox_xyxy(diagram)]
+                for board_bbox in [_study_pixel_bbox_xyxy(diagram, page_size=page_image.size)]
                 if board_bbox is not None
             ]
             page_assignment = _scan_chess_page_marker_pipeline(
@@ -6924,7 +6924,7 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
             }
             for diagram in page_diagrams:
                 before = copy.deepcopy(diagram)
-                board_bbox = _study_pixel_bbox_xyxy(diagram)
+                board_bbox = _study_pixel_bbox_xyxy(diagram, page_size=page_image.size)
                 if board_bbox is None:
                     page_checkpoint_records.append(_two_crop_checkpoint_record(diagram, before, []))
                     computed_diagram_count += 1
@@ -7067,7 +7067,21 @@ def _print_two_crop_progress(
     )
 
 
-def _study_pixel_bbox_xyxy(diagram: Mapping[str, Any]) -> tuple[float, float, float, float] | None:
+def _study_pixel_bbox_xyxy(
+    diagram: Mapping[str, Any],
+    *,
+    page_size: tuple[int, int] | None = None,
+) -> tuple[float, float, float, float] | None:
+    normalized = diagram.get("normalized_bbox_xyxy")
+    if page_size and isinstance(normalized, (list, tuple)) and len(normalized) == 4:
+        try:
+            x0, y0, x1, y1 = [float(value) for value in normalized]
+        except (TypeError, ValueError):
+            pass
+        else:
+            if 0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0:
+                width, height = page_size
+                return (x0 * width, y0 * height, x1 * width, y1 * height)
     raw = diagram.get("pixel_bbox")
     if isinstance(raw, (list, tuple)) and len(raw) == 4:
         try:

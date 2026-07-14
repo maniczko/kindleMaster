@@ -1093,18 +1093,32 @@ def _normalize_board_square(image: Image.Image) -> Image.Image:
     shortest side keeps recognition and template extraction aligned without
     inventing any board content.
     """
+    normalized, _bbox, _method = _normalize_board_square_with_bbox(image)
+    return normalized
+
+
+def _normalize_board_square_with_bbox(
+    image: Image.Image,
+) -> tuple[Image.Image, tuple[int, int, int, int], str]:
+    """Return the normalized board plus its coordinates in the input crop."""
     grayscale = ImageOps.autocontrast(image.convert("L"))
-    border_crop = _strong_border_square_crop(grayscale)
-    if border_crop is not None:
-        return border_crop
-    inner_checkerboard_crop = _checkerboard_inner_square_crop(grayscale)
-    if inner_checkerboard_crop is not None:
-        return inner_checkerboard_crop
+    border_box = _strong_border_square_box(grayscale)
+    if border_box is not None:
+        return grayscale.crop(border_box), border_box, "strong_border"
+    checkerboard_box = _checkerboard_inner_square_box(grayscale)
+    if checkerboard_box is not None:
+        return grayscale.crop(checkerboard_box), checkerboard_box, "checkerboard_inner"
 
     side = max(1, min(grayscale.size))
     baseline_left = max(0, (grayscale.width - side) // 2)
     baseline_top = max(0, (grayscale.height - side) // 2)
-    return grayscale.crop((baseline_left, baseline_top, baseline_left + side, baseline_top + side))
+    baseline_box = (
+        baseline_left,
+        baseline_top,
+        baseline_left + side,
+        baseline_top + side,
+    )
+    return grayscale.crop(baseline_box), baseline_box, "center_square"
 
 
 def _recognition_trim_variant_crops(image: Image.Image) -> list[tuple[Image.Image, str]]:
@@ -1303,6 +1317,13 @@ def _recognition_marker_trim_candidates(
 
 
 def _checkerboard_inner_square_crop(image: Image.Image) -> Image.Image | None:
+    box = _checkerboard_inner_square_box(image)
+    return image.crop(box) if box is not None else None
+
+
+def _checkerboard_inner_square_box(
+    image: Image.Image,
+) -> tuple[int, int, int, int] | None:
     """Find the actual board square inside crops that include coordinates/captions.
 
     Many scanned chess books export a board plus file/rank labels and a caption
@@ -1378,7 +1399,12 @@ def _checkerboard_inner_square_crop(image: Image.Image) -> Image.Image | None:
     original_top = min(max(0, original_top), max(0, height - original_side))
     if original_side >= min_axis * 0.90:
         return None
-    return image.crop((original_left, original_top, original_left + original_side, original_top + original_side))
+    return (
+        original_left,
+        original_top,
+        original_left + original_side,
+        original_top + original_side,
+    )
 
 
 def _dominant_board_content_square_crop(image: Image.Image) -> Image.Image | None:
@@ -1462,6 +1488,13 @@ def _dominant_projection_group(values: np.ndarray, *, threshold: float, min_leng
 
 
 def _strong_border_square_crop(image: Image.Image) -> Image.Image | None:
+    box = _strong_border_square_box(image)
+    return image.crop(box) if box is not None else None
+
+
+def _strong_border_square_box(
+    image: Image.Image,
+) -> tuple[int, int, int, int] | None:
     pixels = np.array(image, dtype=np.uint8)
     if pixels.size == 0:
         return None
@@ -1492,7 +1525,7 @@ def _strong_border_square_crop(image: Image.Image) -> Image.Image | None:
     ratio = width / float(max(height, 1))
     if not (0.82 <= ratio <= 1.18):
         return None
-    return _square_crop_around_box(image, x0, y0, x1, y1)
+    return _square_box_around_box(image, x0, y0, x1, y1)
 
 
 def _dense_projection_groups(values: np.ndarray, *, threshold: float) -> list[tuple[int, int]]:
@@ -1567,6 +1600,16 @@ def _merge_close_projection_groups(groups: list[tuple[int, int]], *, max_gap: in
 
 
 def _square_crop_around_box(image: Image.Image, x0: int, y0: int, x1: int, y1: int) -> Image.Image:
+    return image.crop(_square_box_around_box(image, x0, y0, x1, y1))
+
+
+def _square_box_around_box(
+    image: Image.Image,
+    x0: int,
+    y0: int,
+    x1: int,
+    y1: int,
+) -> tuple[int, int, int, int]:
     width = max(1, x1 - x0)
     height = max(1, y1 - y0)
     side = max(width, height)
@@ -1576,7 +1619,7 @@ def _square_crop_around_box(image: Image.Image, x0: int, y0: int, x1: int, y1: i
     top = int(round(center_y - side / 2.0))
     left = min(max(0, left), max(0, image.width - side))
     top = min(max(0, top), max(0, image.height - side))
-    return image.crop((left, top, left + side, top + side))
+    return (left, top, left + side, top + side)
 
 
 def _match_piece_template(

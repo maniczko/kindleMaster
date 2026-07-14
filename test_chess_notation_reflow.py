@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import io
+import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 import fitz
@@ -11,6 +13,7 @@ from PIL import Image
 from converter import CHESS_REFLOW_CSS, ConversionConfig, dedupe_html_ids
 from publication_pipeline import _fragment_to_blocks
 from pymupdf_chess_extractor import (
+    _apply_notation_layout_placement_consensus_gate,
     _clean_chess_notation_line,
     _is_single_board_coordinate_line,
     _looks_like_board_coordinate_noise,
@@ -21,6 +24,53 @@ from chess_pgn_extractor import ChessPgnRecord
 
 
 class ChessNotationReflowTests(unittest.TestCase):
+    def test_notation_layout_consensus_conflict_blocks_fen_without_losing_marker(self) -> None:
+        payload = {
+            "fen": "8/8/8/8/8/2k5/7P/K7 b - - 0 1",
+            "full_fen": "8/8/8/8/8/2k5/7P/K7 b - - 0 1",
+            "placement": "8/8/8/8/8/2k5/7P/K7",
+            "requires_review": False,
+            "side_to_move": "b",
+            "side_to_move_status": "explicit",
+            "side_to_move_evidence": "marker",
+            "full_fen_allowed": True,
+            "warnings": ["side_to_move_marker_applied"],
+        }
+
+        updated = _apply_notation_layout_placement_consensus_gate(
+            payload,
+            {
+                "status": "conflict",
+                "dpis": [180, 216],
+                "expected_placement": payload["placement"],
+                "variants": [{"dpi": 180, "placement": "8/8/8/8/8/2k5/8/K7"}],
+            },
+        )
+
+        self.assertEqual(updated["fen"], "")
+        self.assertTrue(updated["requires_review"])
+        self.assertEqual(updated["side_to_move"], "b")
+        self.assertEqual(updated["side_to_move_evidence"], "marker")
+        self.assertFalse(updated["full_fen_allowed"])
+        self.assertIn("board_placement_multi_dpi_conflict", updated["full_fen_blockers"])
+        self.assertIn("notation_layout_multi_dpi_consensus_failed", updated["warnings"])
+
+    def test_notation_layout_exact_consensus_preserves_accepted_fen(self) -> None:
+        payload = {
+            "fen": "8/8/8/8/8/2k5/7P/K7 b - - 0 1",
+            "requires_review": False,
+            "warnings": ["side_to_move_marker_applied"],
+        }
+
+        updated = _apply_notation_layout_placement_consensus_gate(
+            payload,
+            {"status": "exact", "dpis": [180, 216], "variants": []},
+        )
+
+        self.assertEqual(updated["fen"], payload["fen"])
+        self.assertFalse(updated["requires_review"])
+        self.assertIn("notation_layout_multi_dpi_exact_consensus", updated["warnings"])
+
     def test_large_collection_extractor_preserves_notation_and_skips_raster_boards(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             pdf_path = Path(temp_dir) / "jobava-sample.pdf"
@@ -251,6 +301,38 @@ class ChessNotationReflowTests(unittest.TestCase):
 
         artifact_keys = sorted(artifact["key"] for artifact in content["extra_artifacts"])
         self.assertIn("chess_diagrams", artifact_keys)
+        self.assertIn("chess_fen_two_crop_review_artifacts", artifact_keys)
+        self.assertEqual(content["metadata"]["chess_fen"]["side_marker_crop_count"], 1)
+        self.assertEqual(content["metadata"]["chess_fen"]["trusted_marker_count"], 1)
+        self.assertEqual(
+            content["metadata"]["page_marker_assignment"]["page_marker_detection_run_count"],
+            1,
+        )
+        self.assertEqual(
+            content["metadata"]["page_marker_assignment"]["marker_candidate_assigned_count"],
+            1,
+        )
+        diagrams_artifact = next(
+            artifact for artifact in content["extra_artifacts"] if artifact["key"] == "chess_diagrams"
+        )
+        diagram_record = json.loads(diagrams_artifact["data"])["records"][0]
+        self.assertTrue(diagram_record["side_marker_crop_path"])
+        self.assertEqual(diagram_record["marker_assignment_status"], "assigned")
+        self.assertEqual(diagram_record["side_marker_status"], "trusted_marker")
+        self.assertEqual(diagram_record["side_to_move_status"], "explicit")
+        self.assertEqual(diagram_record["side_to_move_evidence"], "marker")
+        review_artifact = next(
+            artifact
+            for artifact in content["extra_artifacts"]
+            if artifact["key"] == "chess_fen_two_crop_review_artifacts"
+        )
+        with zipfile.ZipFile(io.BytesIO(review_artifact["data"])) as archive:
+            report = json.loads(
+                archive.read("reports/chess_fen/page_marker_assignment.json")
+            )
+            self.assertEqual(report["status"], "ok")
+            self.assertEqual(report["summary"]["marker_candidate_assigned_count"], 1)
+            self.assertIn(diagram_record["side_marker_crop_path"], archive.namelist())
         html_artifact = next(artifact for artifact in content["extra_artifacts"] if artifact["key"] == "chess_pgn_html")
         html = html_artifact["data"].decode("utf-8")
         preview_artifact = next(artifact for artifact in content["extra_artifacts"] if artifact["key"] == "pdf_layout_preview")

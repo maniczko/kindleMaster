@@ -59,7 +59,7 @@ from chess_position_recognizer import (
     summarize_chess_fen_results,
     validate_fen,
 )
-from chess_fen_hardening import machine_accept_fen
+from chess_fen_hardening import machine_accept_fen, machine_accept_placement
 from chess_pgn_extractor import (
     UNMAPPED_CHESS_GLYPH_WARNING,
     _detect_unmapped_pgn_glyphs,
@@ -1127,6 +1127,8 @@ def extract_chess_notation_pdf_reflow(
         chess_pgn_records: list[Any] = []
         chess_diagram_records: list[dict[str, Any]] = []
         chess_fen_records: list[dict[str, Any]] = []
+        chess_fen_review_artifact_files: list[dict[str, Any]] = []
+        page_marker_assignment_reports: list[dict[str, Any]] = []
         book_layout_pages: list[dict[str, Any]] = []
         text_extraction_seconds = 0.0
         pgn_extraction_seconds = 0.0
@@ -1198,6 +1200,8 @@ def extract_chess_notation_pdf_reflow(
                 config,
                 piece_templates=piece_templates,
                 nearby_text="\n".join(body_lines[:80]),
+                review_artifact_files=chess_fen_review_artifact_files,
+                page_marker_assignment_reports=page_marker_assignment_reports,
             )
             diagram_detection_seconds += time.perf_counter() - diagram_started
             chess_diagram_records.extend(page_diagram_records)
@@ -1237,6 +1241,27 @@ def extract_chess_notation_pdf_reflow(
 
     chess_pgn_records = merge_chess_pgn_continuation_records(chess_pgn_records)
     chess_pgn_summary = summarize_chess_pgn_records(chess_pgn_records, diagram_records=chess_diagram_records)
+    chess_fen_summary = summarize_chess_fen_results(chess_fen_records)
+    page_marker_runtime_summary = _scan_chess_page_marker_runtime_summary(
+        page_marker_assignment_reports
+    )
+    page_marker_report = {
+        "schema": "kindlemaster.chess.page_marker_assignment_report.v1",
+        "status": "ok" if page_marker_assignment_reports else "not_run",
+        "summary": page_marker_runtime_summary,
+        "pages": page_marker_assignment_reports,
+        "policy": (
+            "Notation-layout diagrams use the same page-level marker candidate generation, "
+            "one-to-one ownership, and tight-crop trust gate as scanned chess diagrams."
+        ),
+    }
+    if page_marker_assignment_reports:
+        chess_fen_review_artifact_files.append(
+            {
+                "path": "reports/chess_fen/page_marker_assignment.json",
+                "data": json.dumps(page_marker_report, ensure_ascii=False, indent=2).encode("utf-8"),
+            }
+        )
     audit_metadata = dict(metadata.get("audit") or {})
     audit_metadata.update(
         {
@@ -1269,11 +1294,19 @@ def extract_chess_notation_pdf_reflow(
             "chess_pgn": chess_pgn_summary,
             "audit": audit_metadata,
             "chess_fen": {
-                "status": "passed" if chess_pgn_summary.get("derived_final_fen_count") or chess_diagram_records else "requires_review",
+                "status": (
+                    str(chess_fen_summary.get("status") or "requires_review")
+                    if chess_diagram_records
+                    else (
+                        "passed"
+                        if chess_pgn_summary.get("derived_final_fen_count")
+                        else "requires_review"
+                    )
+                ),
                 "source": "html_diagram_preview_and_pgn_replay",
                 "diagram_count": len(chess_diagram_records) or int(chess_pgn_summary.get("candidate_game_count", 0) or 0),
-                "fen_count": len([record for record in chess_diagram_records if record.get("fen")]) + int(chess_pgn_summary.get("fen_count", 0) or 0),
-                "manual_review_count": int(chess_pgn_summary.get("manual_review_count", 0) or 0),
+                "fen_count": int(chess_fen_summary.get("fen_count", 0) or 0) + int(chess_pgn_summary.get("fen_count", 0) or 0),
+                "manual_review_count": int(chess_fen_summary.get("manual_review_count", 0) or 0),
                 "caption_match_count": len([record for record in chess_diagram_records if int(record.get("caption_match_score") or 0) > 0]),
                 "caption_number_count": len([record for record in chess_diagram_records if str(record.get("diagram_number") or "").strip()]),
                 "caption_guided_candidate_count": len(
@@ -1288,7 +1321,23 @@ def extract_chess_notation_pdf_reflow(
                 "global_candidate_without_caption_count": len(
                     [record for record in chess_diagram_records if record.get("board_detection_reason") == "global_candidate_without_caption"]
                 ),
+                **{
+                    key: chess_fen_summary.get(key, 0)
+                    for key in (
+                        "board_crop_count",
+                        "side_marker_crop_count",
+                        "debug_overlay_count",
+                        "side_marker_probe_checked_count",
+                        "side_to_move_inferred_count",
+                        "side_unknown_count",
+                        "trusted_marker_count",
+                        "marker_missing_count",
+                        "marker_conflict_count",
+                        "marker_ambiguous_count",
+                    )
+                },
             },
+            "page_marker_assignment": page_marker_runtime_summary,
         },
         "images": [],
         "chapters": chapters,
@@ -1297,6 +1346,7 @@ def extract_chess_notation_pdf_reflow(
             source_title=source_title,
             diagrams=chess_diagram_records,
             book_layout_pages=book_layout_pages,
+            review_artifact_files=chess_fen_review_artifact_files,
         ),
         "audit": {
             "status": "passed_with_warnings",
@@ -1877,6 +1927,165 @@ def _order_chess_notation_lines_for_reading(line_items: list[TextLineItem]) -> l
     )
 
 
+NOTATION_LAYOUT_FEN_CONSENSUS_DPIS = (180, 216)
+
+
+def _notation_layout_payload_is_machine_acceptable(
+    payload: Mapping[str, Any],
+    *,
+    min_confidence: float,
+) -> bool:
+    if str(payload.get("method") or "") == "verified-exact-crop-label":
+        return False
+    if "verified_exact_crop_label_used" in {
+        str(warning) for warning in payload.get("warnings") or [] if str(warning)
+    }:
+        return False
+    candidate = dict(payload)
+    gate = machine_accept_placement(candidate, {"min_confidence": min_confidence})
+    return str(gate.get("status") or "") == "accepted"
+
+
+def _notation_layout_placement_consensus(
+    page: fitz.Page,
+    page_bbox: tuple[float, float, float, float],
+    payload: dict[str, Any],
+    *,
+    config: ConversionConfig,
+    piece_templates: dict,
+    render_cache: dict[int, Image.Image],
+) -> dict[str, Any]:
+    min_confidence = float(
+        getattr(config, "chess_fen_min_confidence", 0.835) or 0.835
+    )
+    if not piece_templates or not _notation_layout_payload_is_machine_acceptable(
+        payload,
+        min_confidence=min_confidence,
+    ):
+        return {"status": "not_required", "dpis": []}
+    expected_placement = str(payload.get("placement") or payload.get("placement_fen") or "").strip()
+    if not expected_placement:
+        return {"status": "not_required", "dpis": []}
+
+    variants: list[dict[str, Any]] = []
+    for dpi in NOTATION_LAYOUT_FEN_CONSENSUS_DPIS:
+        image = render_cache.get(dpi)
+        if image is None:
+            try:
+                pixmap = page.get_pixmap(
+                    matrix=fitz.Matrix(float(dpi) / 72.0, float(dpi) / 72.0),
+                    alpha=False,
+                )
+                image = Image.open(io.BytesIO(pixmap.tobytes("png"))).convert("RGB")
+            except Exception as exc:
+                return {
+                    "status": "unavailable",
+                    "dpis": list(NOTATION_LAYOUT_FEN_CONSENSUS_DPIS),
+                    "expected_placement": expected_placement,
+                    "reason": f"render_failed:{type(exc).__name__}",
+                    "variants": variants,
+                }
+            render_cache[dpi] = image
+
+        scale_x = float(image.width) / max(1.0, float(page.rect.width or 1.0))
+        scale_y = float(image.height) / max(1.0, float(page.rect.height or 1.0))
+        rendered_bbox = _clamp_bbox(
+            (
+                page_bbox[0] * scale_x,
+                page_bbox[1] * scale_y,
+                page_bbox[2] * scale_x,
+                page_bbox[3] * scale_y,
+            ),
+            image.size,
+            pad_ratio=0.0,
+            min_pad=0.0,
+        )
+        if rendered_bbox is None:
+            return {
+                "status": "unavailable",
+                "dpis": list(NOTATION_LAYOUT_FEN_CONSENSUS_DPIS),
+                "expected_placement": expected_placement,
+                "reason": "consensus_bbox_missing",
+                "variants": variants,
+            }
+        crop = _resize_image_to_long_edge(
+            image.crop(rendered_bbox),
+            int(getattr(config, "scanned_chess_diagram_long_edge", 360) or 360),
+            resample=Image.Resampling.LANCZOS,
+        )
+        png_data, _width, _height = _encode_scan_chess_diagram_crop(crop, config)
+        result = recognize_chess_position_from_image(
+            png_data,
+            bbox=page_bbox,
+            min_confidence=min_confidence,
+            piece_templates=piece_templates,
+        )
+        result_payload = result.to_dict()
+        placement = str(result_payload.get("placement") or "").strip()
+        exact = (
+            placement == expected_placement
+            and _notation_layout_payload_is_machine_acceptable(
+                result_payload,
+                min_confidence=min_confidence,
+            )
+        )
+        variants.append(
+            {
+                "dpi": dpi,
+                "placement": placement,
+                "confidence": round(float(result_payload.get("confidence") or 0.0), 3),
+                "exact": exact,
+                "warnings": list(result_payload.get("warnings") or []),
+            }
+        )
+
+    return {
+        "status": "exact" if variants and all(item["exact"] for item in variants) else "conflict",
+        "dpis": list(NOTATION_LAYOUT_FEN_CONSENSUS_DPIS),
+        "expected_placement": expected_placement,
+        "variants": variants,
+    }
+
+
+def _apply_notation_layout_placement_consensus_gate(
+    payload: dict[str, Any],
+    consensus: Mapping[str, Any],
+) -> dict[str, Any]:
+    status = str(consensus.get("status") or "not_required")
+    if status == "not_required":
+        return dict(payload)
+    updated = dict(payload)
+    updated["notation_layout_placement_consensus"] = dict(consensus)
+    warnings = {str(warning) for warning in updated.get("warnings") or [] if str(warning)}
+    if status == "exact":
+        warnings.add("notation_layout_multi_dpi_exact_consensus")
+        updated["warnings"] = sorted(warnings)
+        return updated
+
+    warnings.add("notation_layout_multi_dpi_consensus_failed")
+    updated["warnings"] = sorted(warnings)
+    updated["fen"] = ""
+    updated["requires_review"] = True
+    updated["manual_review_required"] = True
+    updated["manual_review_reason"] = "placement_multi_dpi_conflict"
+    updated["fen_suppressed_reason"] = "notation_layout_multi_dpi_conflict"
+    updated["runtime_status"] = "FEN_REVIEW_REQUIRED"
+    updated["placement_status"] = "FEN_PLACEMENT_REVIEW_REQUIRED"
+    updated["placement_runtime_status"] = "FEN_PLACEMENT_REVIEW_REQUIRED"
+    updated["full_fen_status"] = "FEN_REVIEW_REQUIRED"
+    updated["full_fen_runtime_status"] = "FEN_REVIEW_REQUIRED"
+    updated["full_fen_allowed"] = False
+    blockers = [
+        str(blocker)
+        for blocker in updated.get("full_fen_blockers") or []
+        if str(blocker)
+    ]
+    blockers.append("board_placement_multi_dpi_conflict")
+    updated["full_fen_blockers"] = list(dict.fromkeys(blockers))
+    updated["full_fen_blocker"] = updated["full_fen_blockers"][0]
+    return updated
+
+
 def _notation_layout_diagrams_from_page(
     page: fitz.Page,
     page_num: int,
@@ -1884,6 +2093,8 @@ def _notation_layout_diagrams_from_page(
     *,
     piece_templates: dict,
     nearby_text: str = "",
+    review_artifact_files: list[dict[str, Any]] | None = None,
+    page_marker_assignment_reports: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     if not getattr(config, "chess_fen_recognition_enabled", True):
         return [], []
@@ -1908,8 +2119,7 @@ def _notation_layout_diagrams_from_page(
         min_grid_confidence=float(getattr(config, "scanned_chess_min_grid_confidence", 0.50) or 0.50),
         enable_sliding_probe=bool(getattr(config, "chess_fen_scan_enable_sliding_probe", False)),
     )
-    diagrams: list[dict[str, Any]] = []
-    fen_records: list[dict[str, Any]] = []
+    prepared_candidates: list[dict[str, Any]] = []
     seen_bboxes: list[tuple[float, float, float, float]] = []
     for candidate_index, candidate in enumerate(candidates, start=1):
         if not candidate.bbox:
@@ -1931,6 +2141,71 @@ def _notation_layout_diagrams_from_page(
         if any(_bbox_overlap_ratio(page_bbox, existing) > 0.70 for existing in seen_bboxes):
             continue
         seen_bboxes.append(page_bbox)
+        marker_board_bbox = _clamp_bbox(
+            candidate.bbox,
+            page_image.size,
+            pad_ratio=0.0,
+            min_pad=0.0,
+        )
+        if marker_board_bbox is None:
+            marker_board_bbox = pixel_bbox
+        prepared_candidates.append(
+            {
+                "candidate_index": candidate_index,
+                "diagram_id": (
+                    f"layout-chess-p{page_num + 1:03d}-d{len(prepared_candidates) + 1:02d}"
+                ),
+                "pixel_bbox": pixel_bbox,
+                "marker_board_bbox": marker_board_bbox,
+                "page_bbox": page_bbox,
+                "crop": crop,
+            }
+        )
+
+    marker_enabled = bool(getattr(config, "chess_fen_apply_side_marker", False))
+    page_marker_assignment = {
+        "candidates": [],
+        "assignments": [],
+        "files": [],
+        "summary": {},
+    }
+    if marker_enabled and prepared_candidates:
+        page_marker_assignment = _scan_chess_page_marker_pipeline(
+            page_image,
+            [
+                {
+                    "diagram_id": item["diagram_id"],
+                    "bbox": item["marker_board_bbox"],
+                }
+                for item in prepared_candidates
+            ],
+            page_number=page_num + 1,
+        )
+        if page_marker_assignment_reports is not None:
+            page_marker_assignment_reports.append(
+                {
+                    key: value
+                    for key, value in page_marker_assignment.items()
+                    if key != "files"
+                }
+            )
+        if review_artifact_files is not None:
+            review_artifact_files.extend(page_marker_assignment.get("files") or [])
+    marker_assignments_by_id = {
+        str(item.get("diagram_id") or ""): dict(item)
+        for item in page_marker_assignment.get("assignments") or []
+        if isinstance(item, Mapping)
+    }
+
+    diagrams: list[dict[str, Any]] = []
+    fen_records: list[dict[str, Any]] = []
+    consensus_render_cache: dict[int, Image.Image] = {}
+    for prepared in prepared_candidates:
+        candidate_index = int(prepared["candidate_index"])
+        diagram_id = str(prepared["diagram_id"])
+        marker_board_bbox = tuple(prepared["marker_board_bbox"])
+        page_bbox = tuple(prepared["page_bbox"])
+        crop = prepared["crop"]
 
         reader_crop = _resize_image_to_long_edge(
             crop,
@@ -1938,14 +2213,65 @@ def _notation_layout_diagrams_from_page(
             resample=Image.Resampling.LANCZOS,
         )
         png_data, width, height = _encode_scan_chess_diagram_crop(reader_crop, config)
+        min_fen_confidence = float(
+            getattr(config, "chess_fen_min_confidence", 0.835) or 0.835
+        )
         result = recognize_chess_position_from_image(
             png_data,
             bbox=page_bbox,
-            min_confidence=float(getattr(config, "chess_fen_min_confidence", 0.835) or 0.835),
+            min_confidence=min_fen_confidence,
             piece_templates=piece_templates,
         )
+        filename = f"notation_layout_p{page_num + 1:03d}_{candidate_index:02d}.png"
+        payload = result.to_dict()
+        placement_consensus = (
+            _notation_layout_placement_consensus(
+                page,
+                page_bbox,
+                payload,
+                config=config,
+                piece_templates=piece_templates,
+                render_cache=consensus_render_cache,
+            )
+            if marker_enabled
+            else {"status": "not_required", "dpis": []}
+        )
+        if marker_enabled:
+            marker_assignment = marker_assignments_by_id.get(diagram_id) or {
+                "diagram_id": diagram_id,
+                **_scan_chess_empty_marker_assignment_fields(),
+            }
+            payload = _scan_chess_apply_page_marker_assignment(
+                payload,
+                marker_assignment,
+                page_marker_assignment.get("candidates") or [],
+            )
+            two_crop_fields, two_crop_files = _scan_chess_two_crop_review_artifacts(
+                page_image,
+                filename=filename,
+                board_bbox=marker_board_bbox,
+                side_marker_bbox=None,
+                marker_assignment=marker_assignment,
+                debug_artifact_policy=str(
+                    getattr(config, "chess_debug_artifact_policy", "all") or "all"
+                ),
+                blocker_context=payload,
+            )
+            payload.update(two_crop_fields)
+            payload = _apply_scan_chess_two_crop_quality_gate(payload, two_crop_fields)
+            payload = _apply_scan_chess_two_crop_side_marker_if_trusted(
+                payload,
+                two_crop_fields,
+                min_confidence=min_fen_confidence,
+            )
+            payload = _apply_notation_layout_placement_consensus_gate(
+                payload,
+                placement_consensus,
+            )
+            if review_artifact_files is not None:
+                review_artifact_files.extend(two_crop_files)
         chess_img = {
-            "filename": f"notation_layout_p{page_num + 1:03d}_{candidate_index:02d}.png",
+            "filename": filename,
             "data": png_data,
             "extension": "png",
             "width": width,
@@ -1954,13 +2280,18 @@ def _notation_layout_diagrams_from_page(
             "page": page_num,
             "is_chess": True,
             "inline": True,
-            "fen_result": result.to_dict(),
-            "fen_confidence": result.confidence,
-            "fen_method": result.method,
+            "fen_result": payload,
+            "fen_confidence": payload.get("confidence", 0.0),
+            "fen_method": payload.get("method", ""),
+            **{
+                key: payload.get(key)
+                for key in TWO_CROP_CONTRACT_FIELDS
+                if payload.get(key) not in (None, "", [])
+            },
         }
-        if result.fen and not result.requires_review and _fen_string_is_parser_valid(result.fen):
-            chess_img["fen"] = result.fen
-        diagram_id = f"layout-chess-p{page_num + 1:03d}-d{len(diagrams) + 1:02d}"
+        runtime_fen = str(payload.get("fen") or "").strip()
+        if runtime_fen and not payload.get("requires_review") and _fen_string_is_parser_valid(runtime_fen):
+            chess_img["fen"] = runtime_fen
         diagrams.append(
             _chess_diagram_record_from_image(
                 chess_img,
@@ -1971,12 +2302,13 @@ def _notation_layout_diagrams_from_page(
             )
         )
         fen_records.append(
-            _chess_fen_record(
-                page_num=page_num,
-                filename=chess_img["filename"],
-                result=result,
-                source="notation-layout-page-render",
-            )
+            {
+                **payload,
+                "page_num": page_num,
+                "page_label": page_num + 1,
+                "filename": chess_img["filename"],
+                "source": "notation-layout-page-render",
+            }
         )
     return diagrams, fen_records
 
@@ -2696,7 +3028,6 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
                         two_crop_fields,
                         min_confidence=side_min_confidence,
                     )
-                candidate_payload.update(two_crop_fields)
                 chess_fen_review_artifact_files.extend(two_crop_files)
                 diagram_total += 1
                 chess_img = {
@@ -4857,6 +5188,9 @@ def _chess_diagram_record_from_image(
         "fen_suppressed_reason": str(fen_result.get("fen_suppressed_reason") or ""),
         "fen_confidence": float(fen_result.get("confidence", 0.0) or 0.0),
         "fen_method": str(fen_result.get("method") or chess_img.get("fen_method") or ""),
+        "notation_layout_placement_consensus": dict(
+            fen_result.get("notation_layout_placement_consensus") or {}
+        ),
         "nearby_text": nearby_text,
         "matched_record_id": matched_record_id,
         "match_confidence": 0.0,
@@ -7990,6 +8324,12 @@ def _apply_scan_chess_two_crop_side_marker_if_trusted(
     }
     cleaned_warnings.add("side_to_move_marker_tight_crop_resolved")
     cleaned_payload["warnings"] = sorted(cleaned_warnings)
+    cleaned_payload["marker_ownership_status"] = "assigned"
+    if str(cleaned_payload.get("marker_assignment_status") or "").lower() in {
+        "",
+        "unassigned",
+    }:
+        cleaned_payload["marker_assignment_status"] = "assigned"
     updated = _apply_scan_chess_side_to_move_evidence(
         cleaned_payload,
         side,
@@ -8759,9 +9099,16 @@ def _scan_chess_side_marker_metadata_from_payload(payload: Mapping[str, Any]) ->
     }
     from chess_side_to_move_evidence import resolve_marker_semantic_contract
 
+    semantic_payload = {**dict(payload), **metadata}
+    for key in (
+        "marker_semantic_status",
+        "marker_semantic_side",
+        "marker_semantic_confidence",
+    ):
+        semantic_payload.pop(key, None)
     return {
         **metadata,
-        **resolve_marker_semantic_contract({**dict(payload), **metadata}),
+        **resolve_marker_semantic_contract(semantic_payload),
     }
 
 
@@ -8876,9 +9223,16 @@ def _apply_scan_chess_side_to_move_evidence(
             updated["full_fen"] = updated["fen"]
             updated["requires_review"] = False
             updated["runtime_status"] = "FEN_MACHINE_ACCEPTED"
+            updated["board_placement_status"] = "accepted"
             updated["full_fen_status"] = "FEN_MACHINE_ACCEPTED"
             updated["full_fen_runtime_status"] = "FEN_MACHINE_ACCEPTED"
             updated.pop("fen_suppressed_reason", None)
+            # Marker promotion can follow an earlier review-only semantic pass.
+            # Drop its derived blockers so the final metadata pass recomputes
+            # the contract from the accepted placement and current marker.
+            updated.pop("full_fen_allowed", None)
+            updated.pop("full_fen_blockers", None)
+            updated.pop("full_fen_blocker", None)
         else:
             updated["fen"] = ""
             updated["full_fen"] = full_fen

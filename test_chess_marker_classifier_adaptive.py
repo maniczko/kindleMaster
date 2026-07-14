@@ -102,6 +102,16 @@ class ChessMarkerClassifierAdaptiveTests(unittest.TestCase):
             self.assertEqual(result["side_to_move"], "unknown")
             self.assertEqual(result["reason"], "orientation_fill_disagreement")
 
+    def test_board_cell_context_rejects_text_scale_triangle_like_component(self) -> None:
+        result = classify_scan_chess_side_marker_crop(
+            _outline(40),
+            board_cell_size=80,
+        )
+
+        self.assertNotEqual(result["status"], "trusted_marker", result)
+        self.assertEqual(result["reason"], "component_too_small_for_board_cell")
+        self.assertLess(result["component"]["minimum_extent_to_board_cell"], 0.45)
+
     def test_morphology_groups_one_broken_outline_triangle(self) -> None:
         crop = Image.new("L", (84, 84), "white")
         draw = ImageDraw.Draw(crop)

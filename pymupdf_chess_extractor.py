@@ -5163,6 +5163,10 @@ TWO_CROP_CONTRACT_FIELDS = {
     "marker_candidate_features",
     "marker_candidate_class",
     "marker_candidate_classifier_status",
+    "marker_candidate_classifier_reason",
+    "marker_candidate_classifier_crop_variant",
+    "marker_candidate_classifier_crop_bbox",
+    "marker_candidate_classifier_attempts",
     "marker_candidate_side",
     "marker_candidate_confidence",
     "marker_assignment_status",
@@ -6654,6 +6658,8 @@ def _scan_chess_best_marker_zone_candidate(
 
 PAGE_MARKER_ASSIGNMENT_SCHEMA = "kindlemaster.chess.page_marker_assignment.v1"
 PAGE_MARKER_UNASSIGNED_COST = 2.75
+PAGE_MARKER_MIN_COMPONENT_EXTENT_TO_CELL = 0.45
+PAGE_MARKER_TEXT_LIKE_COST_PENALTY = 1.25
 
 
 def _scan_chess_page_marker_pipeline(
@@ -6831,10 +6837,6 @@ def _scan_chess_page_marker_candidates(
             zone = _bbox_to_int_box(zone_bbox, page_image.size)
             if zone is not None:
                 allowed[zone[1] : zone[3], zone[0] : zone[2]] = True
-    for board_bbox in board_boxes:
-        board = _bbox_to_int_box(board_bbox, page_image.size)
-        if board is not None:
-            allowed[board[1] : board[3], board[0] : board[2]] = False
 
     grayscale = ImageOps.autocontrast(page_image.convert("L"))
     components = _scan_chess_page_dark_components((np.asarray(grayscale) < 120) & allowed)
@@ -6859,10 +6861,20 @@ def _scan_chess_page_marker_candidates(
         if not matching_cells or not (0.45 <= aspect <= 2.1) or not (0.06 <= density <= 0.88):
             continue
         marker_bbox = [round(x0, 2), round(y0, 2), round(x1, 2), round(y1, 2)]
-        if any(
-            _bbox_overlap_ratio(tuple(marker_bbox), tuple(board_bbox)) > 0.02
-            for board_bbox in board_boxes
-        ):
+        eligible_boards = [
+            board
+            for board in normalized_boards
+            if _scan_chess_selected_marker_zone(
+                marker_bbox,
+                _scan_chess_page_marker_search_zones(board["bbox"], page_image.size),
+            )
+            and _bbox_overlap_ratio(
+                tuple(marker_bbox),
+                tuple(board["bbox"]),
+            )
+            <= 0.12
+        ]
+        if not eligible_boards:
             continue
         board_costs = {
             board["diagram_id"]: float(
@@ -6875,16 +6887,11 @@ def _scan_chess_page_marker_candidates(
             for board in normalized_boards
         }
         nearest_board = min(
-            normalized_boards,
+            eligible_boards,
             key=lambda board: (board_costs[board["diagram_id"]], board["diagram_id"]),
         )
         crop_bbox = _scan_chess_padded_marker_bbox(marker_bbox, nearest_board["bbox"], page_image.size)
-        classifier_bbox = _scan_chess_page_marker_classifier_bbox(
-            marker_bbox,
-            nearest_board["bbox"],
-            page_image.size,
-        )
-        if not classifier_bbox:
+        if not crop_bbox:
             continue
         compactness = min(1.0, float(component.get("area") or 0.0) / max(1.0, width * height))
         geometry_plausibility = round(
@@ -6894,13 +6901,18 @@ def _scan_chess_page_marker_candidates(
             4,
         )
         nearest_cost = board_costs[nearest_board["diagram_id"]]
+        nearest_board_bbox = nearest_board["bbox"]
+        nearest_cell = min(
+            max(1.0, nearest_board_bbox[2] - nearest_board_bbox[0]),
+            max(1.0, nearest_board_bbox[3] - nearest_board_bbox[1]),
+        ) / 8.0
+        minimum_extent_to_cell = min(width, height) / max(1.0, nearest_cell)
         anchor_score = max(0.0, 1.0 - nearest_cost / PAGE_MARKER_UNASSIGNED_COST)
         raw_plausible.append(
             {
                 "_component_index": len(raw_plausible),
                 "_board_costs": board_costs,
                 "_nearest_board_bbox": list(nearest_board["bbox"]),
-                "_classifier_bbox": classifier_bbox,
                 "_preselection_score": round(
                     0.60 * geometry_plausibility + 0.40 * anchor_score,
                     4,
@@ -6915,6 +6927,10 @@ def _scan_chess_page_marker_candidates(
                     "aspect_ratio": round(aspect, 4),
                     "geometry_plausibility": geometry_plausibility,
                     "nearest_board_cost": round(nearest_cost, 4),
+                    "minimum_extent_to_board_cell": round(minimum_extent_to_cell, 4),
+                    "text_like_small_component": bool(
+                        minimum_extent_to_cell < PAGE_MARKER_MIN_COMPONENT_EXTENT_TO_CELL
+                    ),
                 },
                 "marker_candidate_geometry_plausibility": geometry_plausibility,
                 "marker_candidate_source": "page_level_dark_components",
@@ -6930,20 +6946,14 @@ def _scan_chess_page_marker_candidates(
     for raw_candidate in preselected:
         candidate = dict(raw_candidate)
         nearest_bbox = list(candidate.pop("_nearest_board_bbox"))
-        classifier_bbox = list(candidate.pop("_classifier_bbox"))
         candidate.pop("_board_costs", None)
         candidate.pop("_component_index", None)
         candidate.pop("_preselection_score", None)
-        crop = _crop_bbox_from_image(page_image, classifier_bbox)
-        if crop is None:
-            continue
-        board_cell_size = min(
-            max(1.0, nearest_bbox[2] - nearest_bbox[0]),
-            max(1.0, nearest_bbox[3] - nearest_bbox[1]),
-        ) / 8.0
-        classification = classify_scan_chess_side_marker_crop(
-            crop,
-            board_cell_size=board_cell_size,
+        classification = _scan_chess_classify_marker_candidate(
+            page_image,
+            marker_bbox=candidate["marker_candidate_bbox"],
+            marker_crop_bbox=candidate["marker_candidate_crop_bbox"],
+            board_bbox=nearest_bbox,
         )
         classifier_status = str(classification.get("status") or "marker_missing")
         adaptive_shape = str(classification.get("shape") or "")
@@ -6977,6 +6987,18 @@ def _scan_chess_page_marker_candidates(
                 "marker_candidate_class": candidate_class,
                 "marker_candidate_adaptive_shape": adaptive_shape,
                 "marker_candidate_classifier_status": classifier_status,
+                "marker_candidate_classifier_reason": str(
+                    classification.get("reason") or ""
+                ),
+                "marker_candidate_classifier_crop_variant": str(
+                    classification.get("classifier_crop_variant") or ""
+                ),
+                "marker_candidate_classifier_crop_bbox": list(
+                    classification.get("classifier_crop_bbox") or []
+                ),
+                "marker_candidate_classifier_attempts": list(
+                    classification.get("classifier_crop_attempts") or []
+                ),
                 "marker_candidate_side": str(classification.get("side") or ""),
                 "marker_candidate_confidence": confidence,
                 "marker_candidate_plausibility": plausibility,
@@ -7249,6 +7271,10 @@ def _scan_chess_assign_page_marker_candidates(
                         "marker_candidate_features",
                         "marker_candidate_class",
                         "marker_candidate_classifier_status",
+                        "marker_candidate_classifier_reason",
+                        "marker_candidate_classifier_crop_variant",
+                        "marker_candidate_classifier_crop_bbox",
+                        "marker_candidate_classifier_attempts",
                         "marker_candidate_side",
                         "marker_candidate_confidence",
                     )
@@ -7345,6 +7371,10 @@ def _scan_chess_empty_marker_assignment_fields() -> dict[str, Any]:
         "marker_candidate_features": {},
         "marker_candidate_class": "",
         "marker_candidate_classifier_status": "",
+        "marker_candidate_classifier_reason": "",
+        "marker_candidate_classifier_crop_variant": "",
+        "marker_candidate_classifier_crop_bbox": [],
+        "marker_candidate_classifier_attempts": [],
         "marker_candidate_side": "",
         "marker_candidate_confidence": 0.0,
         "marker_assignment_status": "unassigned",
@@ -7423,10 +7453,14 @@ def _scan_chess_board_marker_assignment_cost(
             + (0.50 if zone == "bottom" else 0.0)
         )
     else:
-        cost = normalized_distance + (1.0 if zone in {"left", "right"} else 1.15)
+        cost = normalized_distance + (1.0 if zone in {"left", "right"} else 1.35)
     if zone in {"top", "bottom"} and normalized_distance < 0.04:
         cost += 1.25
         rejected_reasons.append("candidate_touches_board_edge")
+    features = candidate.get("marker_candidate_features")
+    if isinstance(features, Mapping) and bool(features.get("text_like_small_component")):
+        cost += PAGE_MARKER_TEXT_LIKE_COST_PENALTY
+        rejected_reasons.append("candidate_text_like_small_component")
     if "candidate_too_far_from_board" in rejected_reasons:
         cost += 6.0
     return {
@@ -7577,6 +7611,99 @@ def _scan_chess_page_marker_classifier_bbox(
     return [float(value) for value in box] if box is not None else []
 
 
+def _scan_chess_classify_marker_candidate(
+    page_image: Image.Image,
+    *,
+    marker_bbox: Any,
+    marker_crop_bbox: Any,
+    board_bbox: Any,
+) -> dict[str, Any]:
+    """Classify the isolated component first and use broad context only as fallback."""
+    board = _coerce_side_marker_bbox(board_bbox)
+    tight_bbox = _coerce_side_marker_bbox(marker_crop_bbox)
+    if not tight_bbox:
+        tight_bbox = _scan_chess_padded_marker_bbox(
+            marker_bbox,
+            board,
+            page_image.size,
+        )
+    context_bbox = _scan_chess_page_marker_classifier_bbox(
+        marker_bbox,
+        board,
+        page_image.size,
+    )
+    board_cell_size = (
+        min(max(1.0, board[2] - board[0]), max(1.0, board[3] - board[1])) / 8.0
+        if board
+        else None
+    )
+    attempts: list[dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
+    seen_boxes: set[tuple[int, int, int, int]] = set()
+    for variant, raw_bbox in (("tight_component", tight_bbox), ("broad_context", context_bbox)):
+        box = _bbox_to_int_box(raw_bbox, page_image.size)
+        if box is None or box in seen_boxes:
+            continue
+        seen_boxes.add(box)
+        crop = page_image.crop(box)
+        classification = dict(
+            classify_scan_chess_side_marker_crop(
+                crop,
+                board_cell_size=board_cell_size,
+            )
+        )
+        classification["classifier_crop_variant"] = variant
+        classification["classifier_crop_bbox"] = [float(value) for value in box]
+        attempts.append(
+            {
+                "variant": variant,
+                "bbox": [float(value) for value in box],
+                "status": str(classification.get("status") or "marker_missing"),
+                "side": str(classification.get("side") or ""),
+                "confidence": round(float(classification.get("confidence") or 0.0), 4),
+                "reason": str(classification.get("reason") or ""),
+            }
+        )
+        results.append(classification)
+        status = str(classification.get("status") or "")
+        shape = str(classification.get("shape") or "")
+        if status == "trusted_marker" and classification.get("side") in {"w", "b"}:
+            classification["classifier_crop_attempts"] = attempts
+            return classification
+        if variant == "tight_component" and (
+            status == "side_to_move_marker_local_conflict"
+            or shape.startswith("multiple_triangle")
+        ):
+            classification["classifier_crop_attempts"] = attempts
+            return classification
+
+    if not results:
+        result = {
+            "status": "marker_missing",
+            "side": "",
+            "confidence": 0.0,
+            "reason": "marker_crop_not_generated",
+            "shape": "",
+            "classifier_crop_variant": "none",
+            "classifier_crop_bbox": [],
+        }
+    else:
+        status_priority = {
+            "side_to_move_marker_local_conflict": 3,
+            "side_to_move_marker_local_ambiguous": 2,
+            "marker_missing": 1,
+        }
+        result = max(
+            results,
+            key=lambda item: (
+                status_priority.get(str(item.get("status") or ""), 0),
+                float(item.get("raw_confidence") or item.get("confidence") or 0.0),
+            ),
+        )
+    result["classifier_crop_attempts"] = attempts
+    return result
+
+
 def _scan_chess_selected_marker_zone(marker_bbox: Any, zones: Mapping[str, Any]) -> str:
     marker = _coerce_side_marker_bbox(marker_bbox)
     if not marker:
@@ -7650,21 +7777,14 @@ def _scan_chess_marker_crop_quality(
         reasons.append("marker_cut_off")
     crop = ImageOps.autocontrast(page_image.crop(box).convert("L"))
     raw_components = _scan_chess_dark_components(np.asarray(crop) < 120)
-    classifier_bbox = _scan_chess_page_marker_classifier_bbox(
-        detected_marker,
-        board,
-        page_image.size,
+    classification = _scan_chess_classify_marker_candidate(
+        page_image,
+        marker_bbox=detected_marker,
+        marker_crop_bbox=marker,
+        board_bbox=board,
     )
+    classifier_bbox = classification.get("classifier_crop_bbox") or marker
     classifier_crop = _crop_bbox_from_image(page_image, classifier_bbox) or crop
-    board_cell_size = (
-        min(max(1.0, board[2] - board[0]), max(1.0, board[3] - board[1])) / 8.0
-        if board
-        else None
-    )
-    classification = classify_scan_chess_side_marker_crop(
-        classifier_crop,
-        board_cell_size=board_cell_size,
-    )
     classifier_width, classifier_height = classifier_crop.size
     component = classification.get("component")
     component_count = len(
@@ -7733,6 +7853,9 @@ def _scan_chess_marker_crop_quality(
         "confidence": round(float(classification.get("confidence") or 0.0), 3) if not reasons else 0.0,
         "classifier_status": classification.get("status") or "",
         "classifier_version": classification.get("classifier_version") or "marker_adaptive_v3",
+        "classifier_crop_variant": classification.get("classifier_crop_variant") or "",
+        "classifier_crop_bbox": list(classification.get("classifier_crop_bbox") or []),
+        "classifier_crop_attempts": list(classification.get("classifier_crop_attempts") or []),
         "reason": classification.get("reason") or ("pass" if not reasons else reasons[0]),
         "symbol": classification.get("symbol") if not reasons else None,
         "component_count": component_count if component_count else (1 if isinstance(component, Mapping) else 0),

@@ -324,15 +324,30 @@ class StudyDiagram:
     board_placement_status: str
     full_fen_allowed: bool
     full_fen_blockers: list[str]
+    marker_board_bbox: list[float]
+    marker_raw_board_bbox: list[float]
+    marker_board_localization_method: str
     marker_candidate_id: str
     marker_candidate_bbox: list[float]
+    marker_candidate_crop_bbox: list[float]
     marker_candidate_crop_path: str
     marker_candidate_features: dict[str, Any]
     marker_candidate_class: str
+    marker_candidate_classifier_status: str
+    marker_candidate_classifier_reason: str
+    marker_candidate_classifier_crop_variant: str
+    marker_candidate_classifier_crop_bbox: list[float]
+    marker_candidate_classifier_attempts: list[dict[str, Any]]
+    marker_candidate_side: str
     marker_candidate_confidence: float
     marker_assignment_status: str
     marker_assignment_confidence: float
     marker_assignment_runner_up_margin: float
+    marker_assignment_ownership_margin: float
+    marker_assignment_cost: float
+    marker_assignment_zone: str
+    marker_assignment_competing_candidate_ids: list[str]
+    marker_assignment_competing_candidate_sides: list[str]
     marker_assignment_rejected_reasons: list[str]
     strict_fen_side_evidence_trusted: bool
     placement: str
@@ -399,16 +414,41 @@ class StudyDiagram:
             "board_placement_status": self.board_placement_status,
             "full_fen_allowed": bool(self.full_fen_allowed),
             "full_fen_blockers": list(self.full_fen_blockers),
+            "marker_board_bbox": list(self.marker_board_bbox),
+            "marker_raw_board_bbox": list(self.marker_raw_board_bbox),
+            "marker_board_localization_method": self.marker_board_localization_method,
             "marker_candidate_id": self.marker_candidate_id,
             "marker_candidate_bbox": list(self.marker_candidate_bbox),
+            "marker_candidate_crop_bbox": list(self.marker_candidate_crop_bbox),
             "marker_candidate_crop_path": self.marker_candidate_crop_path,
             "marker_candidate_features": dict(self.marker_candidate_features),
             "marker_candidate_class": self.marker_candidate_class,
+            "marker_candidate_classifier_status": self.marker_candidate_classifier_status,
+            "marker_candidate_classifier_reason": self.marker_candidate_classifier_reason,
+            "marker_candidate_classifier_crop_variant": self.marker_candidate_classifier_crop_variant,
+            "marker_candidate_classifier_crop_bbox": list(
+                self.marker_candidate_classifier_crop_bbox
+            ),
+            "marker_candidate_classifier_attempts": list(
+                self.marker_candidate_classifier_attempts
+            ),
+            "marker_candidate_side": self.marker_candidate_side,
             "marker_candidate_confidence": round(float(self.marker_candidate_confidence or 0.0), 4),
             "marker_assignment_status": self.marker_assignment_status,
             "marker_assignment_confidence": round(float(self.marker_assignment_confidence or 0.0), 4),
             "marker_assignment_runner_up_margin": round(
                 float(self.marker_assignment_runner_up_margin or 0.0), 4
+            ),
+            "marker_assignment_ownership_margin": round(
+                float(self.marker_assignment_ownership_margin or 0.0), 4
+            ),
+            "marker_assignment_cost": round(float(self.marker_assignment_cost or 0.0), 4),
+            "marker_assignment_zone": self.marker_assignment_zone,
+            "marker_assignment_competing_candidate_ids": list(
+                self.marker_assignment_competing_candidate_ids
+            ),
+            "marker_assignment_competing_candidate_sides": list(
+                self.marker_assignment_competing_candidate_sides
             ),
             "marker_assignment_rejected_reasons": list(self.marker_assignment_rejected_reasons),
             "strict_fen_side_evidence_trusted": bool(self.strict_fen_side_evidence_trusted),
@@ -7170,16 +7210,51 @@ def _apply_study_side_marker_payload(diagram: dict[str, Any], payload: Mapping[s
             "board_placement_status": str(marker.get("board_placement_status") or "review"),
             "full_fen_allowed": bool(marker.get("full_fen_allowed")),
             "full_fen_blockers": list(marker.get("full_fen_blockers") or []),
+            "marker_board_bbox": list(payload.get("marker_board_bbox") or []),
+            "marker_raw_board_bbox": list(payload.get("marker_raw_board_bbox") or []),
+            "marker_board_localization_method": str(
+                payload.get("marker_board_localization_method") or ""
+            ),
             "marker_candidate_id": str(payload.get("marker_candidate_id") or ""),
             "marker_candidate_bbox": list(payload.get("marker_candidate_bbox") or []),
+            "marker_candidate_crop_bbox": list(
+                payload.get("marker_candidate_crop_bbox") or []
+            ),
             "marker_candidate_crop_path": str(payload.get("marker_candidate_crop_path") or ""),
             "marker_candidate_features": dict(payload.get("marker_candidate_features") or {}),
             "marker_candidate_class": str(payload.get("marker_candidate_class") or ""),
+            "marker_candidate_classifier_status": str(
+                payload.get("marker_candidate_classifier_status") or ""
+            ),
+            "marker_candidate_classifier_reason": str(
+                payload.get("marker_candidate_classifier_reason") or ""
+            ),
+            "marker_candidate_classifier_crop_variant": str(
+                payload.get("marker_candidate_classifier_crop_variant") or ""
+            ),
+            "marker_candidate_classifier_crop_bbox": list(
+                payload.get("marker_candidate_classifier_crop_bbox") or []
+            ),
+            "marker_candidate_classifier_attempts": list(
+                payload.get("marker_candidate_classifier_attempts") or []
+            ),
+            "marker_candidate_side": str(payload.get("marker_candidate_side") or ""),
             "marker_candidate_confidence": float(payload.get("marker_candidate_confidence") or 0.0),
             "marker_assignment_status": str(payload.get("marker_assignment_status") or "unassigned"),
             "marker_assignment_confidence": float(payload.get("marker_assignment_confidence") or 0.0),
             "marker_assignment_runner_up_margin": float(
                 payload.get("marker_assignment_runner_up_margin") or 0.0
+            ),
+            "marker_assignment_ownership_margin": float(
+                payload.get("marker_assignment_ownership_margin") or 0.0
+            ),
+            "marker_assignment_cost": float(payload.get("marker_assignment_cost") or 0.0),
+            "marker_assignment_zone": str(payload.get("marker_assignment_zone") or ""),
+            "marker_assignment_competing_candidate_ids": list(
+                payload.get("marker_assignment_competing_candidate_ids") or []
+            ),
+            "marker_assignment_competing_candidate_sides": list(
+                payload.get("marker_assignment_competing_candidate_sides") or []
             ),
             "marker_assignment_rejected_reasons": list(
                 payload.get("marker_assignment_rejected_reasons") or []
@@ -9615,17 +9690,56 @@ def _study_diagram_record(record: dict[str, Any]) -> StudyDiagram:
         board_placement_status=str(record.get("board_placement_status") or "review"),
         full_fen_allowed=bool(record.get("full_fen_allowed")),
         full_fen_blockers=[str(blocker) for blocker in record.get("full_fen_blockers") or []],
+        marker_board_bbox=_bbox4(record.get("marker_board_bbox") or []),
+        marker_raw_board_bbox=_bbox4(record.get("marker_raw_board_bbox") or []),
+        marker_board_localization_method=str(
+            record.get("marker_board_localization_method") or ""
+        ),
         marker_candidate_id=str(record.get("marker_candidate_id") or ""),
         marker_candidate_bbox=_bbox4(record.get("marker_candidate_bbox") or []),
+        marker_candidate_crop_bbox=_bbox4(record.get("marker_candidate_crop_bbox") or []),
         marker_candidate_crop_path=str(record.get("marker_candidate_crop_path") or ""),
         marker_candidate_features=dict(record.get("marker_candidate_features") or {}),
         marker_candidate_class=str(record.get("marker_candidate_class") or ""),
+        marker_candidate_classifier_status=str(
+            record.get("marker_candidate_classifier_status") or ""
+        ),
+        marker_candidate_classifier_reason=str(
+            record.get("marker_candidate_classifier_reason") or ""
+        ),
+        marker_candidate_classifier_crop_variant=str(
+            record.get("marker_candidate_classifier_crop_variant") or ""
+        ),
+        marker_candidate_classifier_crop_bbox=_bbox4(
+            record.get("marker_candidate_classifier_crop_bbox") or []
+        ),
+        marker_candidate_classifier_attempts=[
+            dict(attempt)
+            for attempt in record.get("marker_candidate_classifier_attempts") or []
+            if isinstance(attempt, Mapping)
+        ],
+        marker_candidate_side=str(record.get("marker_candidate_side") or ""),
         marker_candidate_confidence=float(record.get("marker_candidate_confidence") or 0.0),
         marker_assignment_status=str(record.get("marker_assignment_status") or "unassigned"),
         marker_assignment_confidence=float(record.get("marker_assignment_confidence") or 0.0),
         marker_assignment_runner_up_margin=float(
             record.get("marker_assignment_runner_up_margin") or 0.0
         ),
+        marker_assignment_ownership_margin=float(
+            record.get("marker_assignment_ownership_margin") or 0.0
+        ),
+        marker_assignment_cost=float(record.get("marker_assignment_cost") or 0.0),
+        marker_assignment_zone=str(record.get("marker_assignment_zone") or ""),
+        marker_assignment_competing_candidate_ids=[
+            str(candidate_id)
+            for candidate_id in record.get("marker_assignment_competing_candidate_ids") or []
+            if str(candidate_id)
+        ],
+        marker_assignment_competing_candidate_sides=[
+            str(side)
+            for side in record.get("marker_assignment_competing_candidate_sides") or []
+            if str(side)
+        ],
         marker_assignment_rejected_reasons=[
             str(reason) for reason in record.get("marker_assignment_rejected_reasons") or []
         ],

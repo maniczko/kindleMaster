@@ -22,6 +22,7 @@ GRAMMAR_PROFILES: dict[str, dict[str, Any]] = {
         "minimum_raw_contrast": 0.32,
         "maximum_component_aspect": 1.62,
         "minimum_stroke_evidence": 1.25,
+        "minimum_component_extent_to_board_cell": 0.45,
     },
     "synthetic-baseline": {
         "name": "synthetic-baseline",
@@ -35,6 +36,7 @@ GRAMMAR_PROFILES: dict[str, dict[str, Any]] = {
         "minimum_raw_contrast": 0.42,
         "maximum_component_aspect": 1.62,
         "minimum_stroke_evidence": 1.25,
+        "minimum_component_extent_to_board_cell": 0.0,
     },
 }
 
@@ -421,6 +423,7 @@ def _component_features(
         "fill_state": fill_state,
         "fill_confidence": round(fill_confidence, 4),
         "size_to_board_cell": round(max(width, height) / cell, 4),
+        "minimum_extent_to_board_cell": round(min(width, height) / cell, 4),
         "board_cell_context": board_cell_size is not None,
         "size_to_crop": round(max(width / crop_width, height / crop_height), 4),
         "touches_crop_edge": touches_edge,
@@ -436,6 +439,15 @@ def _classify_features(features: Mapping[str, Any], *, grammar: Mapping[str, Any
     triangularity = float(features.get("triangularity") or 0.0)
     orientation_confidence = float(features.get("orientation_confidence") or 0.0)
     size_to_crop = float(features.get("size_to_crop") or 0.0)
+    board_cell_context = bool(features.get("board_cell_context"))
+    minimum_extent_to_board_cell = float(
+        features.get("minimum_extent_to_board_cell") or 0.0
+    )
+    component_extent_ok = bool(
+        not board_cell_context
+        or minimum_extent_to_board_cell
+        >= float(grammar.get("minimum_component_extent_to_board_cell") or 0.0)
+    )
     grammar_row = None
     for role in ("white", "black"):
         expected = grammar.get(role) if isinstance(grammar.get(role), Mapping) else {}
@@ -450,6 +462,7 @@ def _classify_features(features: Mapping[str, Any], *, grammar: Mapping[str, Any
         triangularity >= float(grammar.get("minimum_triangularity") or 0.0)
         and orientation_confidence >= float(grammar.get("minimum_orientation_confidence") or 0.0)
         and 0.14 <= size_to_crop <= 0.92
+        and component_extent_ok
         and float(features.get("aspect") or 0.0)
         <= float(grammar.get("maximum_component_aspect") or 0.0)
         and (
@@ -485,6 +498,8 @@ def _classify_features(features: Mapping[str, Any], *, grammar: Mapping[str, Any
             "reason": (
                 f"adaptive_{fill_state}_{orientation}_triangle"
                 if grammar_row and geometry_ok
+                else "component_too_small_for_board_cell"
+                if grammar_row and not component_extent_ok
                 else "geometry_review"
                 if grammar_row
                 else "orientation_fill_disagreement"

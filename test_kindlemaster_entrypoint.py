@@ -611,6 +611,38 @@ class KindleMasterEntrypointTests(unittest.TestCase):
         )
         print_mock.assert_called_once_with(payload)
 
+    def test_auto_label_fen_corpus_command_routes_replay_arguments(self) -> None:
+        payload = {"status": "passed", "processed_count": 455}
+        with patch("chess_fen_auto_adjudication.auto_label_fen_corpus", return_value=payload) as auto_mock:
+            with patch.object(kindlemaster, "_print_json") as print_mock:
+                with patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "kindlemaster.py",
+                        "chess",
+                        "auto-label-fen-corpus",
+                        "--manifest",
+                        "intake.json",
+                        "--out",
+                        "auto-report",
+                        "--vision-mode",
+                        "replay",
+                        "--replay",
+                        "vision.jsonl",
+                    ],
+                ):
+                    exit_code = kindlemaster.main()
+
+        self.assertEqual(exit_code, 0)
+        auto_mock.assert_called_once_with(
+            intake_manifest="intake.json",
+            output_dir="auto-report",
+            vision_mode="replay",
+            replay_path="vision.jsonl",
+        )
+        print_mock.assert_called_once_with(payload)
+
     def test_import_fen_gold_labels_command_preserves_needs_review_exit_code(self) -> None:
         payload = {"status": "needs_review", "pending_row_count": 3}
         with patch("chess_fen_gold_corpus.validate_fen_gold_corpus_labels", return_value=payload):

@@ -30,6 +30,7 @@
 # - safe side-to-move audit export: python kindlemaster.py chess export-side-to-move-audit --latest
 # - source-bound FEN review: python kindlemaster.py chess prepare-fen-gold-corpus --source-pdf <pdf> --job-output <run> --marker-labels <jsonl> --out <secure-pack>
 # - verified FEN import: python kindlemaster.py chess import-fen-gold-labels --source-pdf <pdf> --manifest <manifest> --filled-labels <jsonl> --out <report-dir>
+# - automatic FEN consensus: python kindlemaster.py chess auto-label-fen-corpus --manifest <manifest> --out <report-dir> --vision-mode replay --replay <jsonl>
 # - chess study export: python kindlemaster.py chess-study run-all --pdf path\to\chess.pdf --html path\to\current.html --out output\yusupov_study --quality-profile default
 # - chess study audit with page images: python kindlemaster.py chess-study run-all --pdf path\to\chess.pdf --html path\to\current.html --out output\yusupov_study_audit --quality-profile smoke --render-pages
 # - two-crop performance report: python kindlemaster.py chess-study two-crop-performance --job-output output\chess_auto --report-dir reports\performance\chess_two_crop

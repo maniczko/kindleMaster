@@ -42,6 +42,7 @@ import {
   type AccountState,
   type AuthConfigPayload,
 } from "./lib/auth";
+import { apiRequestInput, apiUrl } from "./lib/api-base";
 import { normalizeQualityState, type NormalizedQualityState, type QualityStatePayload } from "./lib/quality-state";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -318,7 +319,7 @@ function App() {
 
   async function loadAuth() {
     try {
-      const response = await fetch("/auth/config", { cache: "no-store" });
+      const response = await fetch(apiRequestInput("/auth/config"), { cache: "no-store" });
       const payload = await response.json();
       const config = (payload.auth ?? {}) as AuthConfigPayload;
       setAuthConfig(config);
@@ -346,14 +347,15 @@ function App() {
 
   async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}) {
     const token = await accessTokenFromClient(authClientRef.current);
-    if (!token) return fetch(input, init);
+    const requestInput = apiRequestInput(input);
+    if (!token) return fetch(requestInput, init);
     const baseHeaders =
       init.headers instanceof Headers
         ? Object.fromEntries(init.headers.entries())
         : Array.isArray(init.headers)
           ? Object.fromEntries(init.headers)
           : { ...(init.headers as Record<string, string> | undefined) };
-    return fetch(input, {
+    return fetch(requestInput, {
       ...init,
       headers: {
         ...baseHeaders,
@@ -1735,7 +1737,7 @@ function LibraryJobRow({
           </a>
         ) : null}
         {job.download_url ? (
-          <a className="km-button km-button-outline km-button-sm" href={job.download_url}>
+          <a className="km-button km-button-outline km-button-sm" href={apiUrl(job.download_url)}>
             <Download data-icon="inline-start" aria-hidden="true" />
             EPUB
           </a>
@@ -2205,7 +2207,7 @@ function FileDetailsWorkspace({
             {compressionBusy ? <p className="km-secret-note">przygotowuję bezpieczny profil kompresji. Rekoduję obrazy.</p> : null}
             {compressionError ? <p className="km-delivery-error">{compressionError}</p> : null}
             {compressedPdfResult?.download_url ? (
-              <a className="km-button km-button-outline km-button-sm" href={compressedPdfResult.download_url}>
+              <a className="km-button km-button-outline km-button-sm" href={apiUrl(compressedPdfResult.download_url)}>
                 <Download data-icon="inline-start" aria-hidden="true" />
                 Pobierz mniejszy PDF
               </a>
@@ -3642,7 +3644,7 @@ function finalChessReaderState(job: ConversionJobPayload | null): FinalChessRead
   const artifactType = String(artifact.artifact_type || artifact.artifactType || job?.artifact_type || "");
   let href = artifactHref(artifact);
   if (!href && artifactType === FINAL_CHESS_READER_ARTIFACT_TYPE && job?.job_id) {
-    href = `/convert/artifact/${encodeURIComponent(job.job_id)}/${readerPayloadIsPresent ? "chess_reader" : "chess_pgn_html"}`;
+    href = apiUrl(`/convert/artifact/${encodeURIComponent(job.job_id)}/${readerPayloadIsPresent ? "chess_reader" : "chess_pgn_html"}`);
   }
   const availabilityValues = [
     optionalBoolean(artifact.available),
@@ -3687,7 +3689,7 @@ function chessPgnState(job: ConversionJobPayload | null, chessContext = false): 
   const status = String(file.status || "").trim().toLowerCase();
   const availability = optionalBoolean(file.available);
   if (!href && availability === true && job?.job_id) {
-    href = `/convert/artifact/${encodeURIComponent(job.job_id)}/chess_pgn`;
+    href = apiUrl(`/convert/artifact/${encodeURIComponent(job.job_id)}/chess_pgn`);
   }
   const present = Boolean(chessContext || Object.keys(file).length || href);
   const available = present
@@ -3934,7 +3936,7 @@ function buildArtifactSections(
 ): ArtifactSections {
   const finalRows: ArtifactRow[] = [];
   const diagnosticRows: ArtifactRow[] = [];
-  if (job?.download_url) finalRows.push({ key: "download_url", label: "Finalny EPUB", href: job.download_url });
+  if (job?.download_url) finalRows.push({ key: "download_url", label: "Finalny EPUB", href: apiUrl(job.download_url) });
   if (chessDownloads.reader.available) {
     finalRows.push({
       key: "chess_reader",
@@ -3961,7 +3963,7 @@ function buildArtifactSections(
     });
   }
   for (const [label, href] of Object.entries(quality.reports)) {
-    diagnosticRows.push({ key: label, label: reportLabel(label), href });
+    diagnosticRows.push({ key: label, label: reportLabel(label), href: apiUrl(href) });
   }
   return {
     finalRows: dedupeArtifactRows(finalRows),
@@ -3983,7 +3985,7 @@ function jobHasPdfDeliveryArtifact(job: ConversionJobPayload | null) {
 
 function resolvePdfArtifactUrl(job: ConversionJobPayload | null) {
   const direct = String(job?.source_preview_url || "").trim();
-  if (direct) return direct;
+  if (direct) return apiUrl(direct);
   const artifacts = job?.artifacts && typeof job.artifacts === "object" ? job.artifacts : {};
   for (const key of ["cropped_pdf", "pdf", "source_pdf", "input"]) {
     const artifact = artifacts[key];
@@ -3996,7 +3998,7 @@ function resolvePdfArtifactUrl(job: ConversionJobPayload | null) {
 
 function artifactHref(artifact: Record<string, unknown>) {
   const signed = artifact.signed_url && typeof artifact.signed_url === "object" && !Array.isArray(artifact.signed_url) ? artifact.signed_url as Record<string, unknown> : null;
-  return String(artifact.download_url || signed?.url || artifact.url || "").trim();
+  return apiUrl(String(artifact.download_url || signed?.url || artifact.url || "").trim());
 }
 
 function artifactLabel(key: string, artifact: Record<string, unknown>) {

@@ -133,7 +133,9 @@ SENTRY_BACKEND_STATE = configure_sentry_backend()
 
 UPLOAD_DIR = os.environ.get("KINDLEMASTER_UPLOAD_DIR") or os.path.join(tempfile.gettempdir(), "kindlemaster")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-ARTIFACT_STORAGE = build_artifact_storage(local_root=Path("output") / "artifacts")
+# Keep the storage writer and artifact routes on the same persistent root in hosted runtimes.
+ARTIFACT_ROOT = Path(os.environ.get("KINDLEMASTER_ARTIFACT_ROOT") or Path(app.root_path) / "output" / "artifacts")
+ARTIFACT_STORAGE = build_artifact_storage(local_root=ARTIFACT_ROOT)
 DEFAULT_CONVERSION_JOB_STORE_PATH = Path(UPLOAD_DIR) / "conversion_jobs.json"
 RUNTIME_JOB_ADAPTER = build_runtime_job_adapter(
     retry_policy=RetryPolicy(max_attempts=1),

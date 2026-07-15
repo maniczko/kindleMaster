@@ -6,6 +6,19 @@ KindleMaster uses a split deployment model:
 - Railway hosts the Flask conversion API and native PDF/OCR/EPUB toolchain in Docker.
 - Supabase can provide account history, login, cloud library metadata, and artifact storage metadata.
 
+## Production resource names
+
+Use these names consistently in dashboards, alerts, and release notes:
+
+- Vercel project: `kindlemaster` (public web application).
+- Railway project: `kindlemaster-production`.
+- Railway service: `kindlemaster-api`.
+- Supabase project display name: `kindlemaster-production`.
+- Supabase Storage bucket: `kindlemaster-artifacts`.
+
+Do not name the Railway service `kindlemaster`: the name would be ambiguous with
+the Vercel project and makes incident routing harder.
+
 Do not deploy the full converter as Vercel Functions. PDF to EPUB conversion can be long-running and depends on Java/EPUBCheck, OCRmyPDF, Tesseract, Ghostscript, qpdf, poppler, and durable artifacts.
 
 ## Vercel frontend

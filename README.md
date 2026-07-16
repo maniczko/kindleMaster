@@ -143,7 +143,8 @@ python kindlemaster.py chess-study two-crop-performance --job-output output\ches
 python kindlemaster.py chess-study preprocess-boards --out output\yusupov_study
 python kindlemaster.py chess-study export-fen-review-corpus --artifact-id <artifact-id> --service-base-url https://kindlemaster-production.up.railway.app --out output\fen_gold
 python kindlemaster.py chess-study build-square-dataset --out output\yusupov_study --labels output\yusupov_study\review\fen_verified_labels.jsonl
-python kindlemaster.py chess-study train-fen-classifier --out output\yusupov_study
+python kindlemaster.py chess-study train-fen-classifier --out output\yusupov_study --labels output\yusupov_study\data\fen_square_dataset.jsonl --profile yusupov-fixed-edition
+python kindlemaster.py chess-study evaluate-fen-classifier --out output\yusupov_study --labels output\yusupov_study\data\fen_square_dataset.jsonl --model-path output\yusupov_study\models\chess_fen_square_rbf_svm_v2.joblib
 python kindlemaster.py chess-study recognize-fen-local --out output\yusupov_study
 python kindlemaster.py chess-study evaluate-fen-ensemble --out output\yusupov_study
 python kindlemaster.py chess-study export-fen-corpus-manifest --out output\yusupov_study

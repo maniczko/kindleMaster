@@ -125,6 +125,10 @@ This artifact never changes accepted FEN.
 ## Square Dataset Contract
 
 `data/fen_square_dataset.jsonl` contains one row per board square.
+The split is assigned before square extraction. All diagrams from one chapter,
+or from one source-bound page when chapter metadata is unavailable, stay in the
+same `train`, `val`, or `holdout` partition. `val` calibrates confidence and the
+board-level abstention threshold; `holdout` is evaluation-only.
 
 Key fields:
 

@@ -3958,8 +3958,8 @@ function buildArtifactSections(
       key,
       label: artifactLabel(key, artifact),
       href,
-      fetchDownload: key !== "pdf_layout_preview",
-      targetBlank: key === "pdf_layout_preview",
+      fetchDownload: !["pdf_layout_preview", "chess_fen_review"].includes(key),
+      targetBlank: ["pdf_layout_preview", "chess_fen_review"].includes(key),
     });
   }
   for (const [label, href] of Object.entries(quality.reports)) {
@@ -4004,6 +4004,7 @@ function artifactHref(artifact: Record<string, unknown>) {
 function artifactLabel(key: string, artifact: Record<string, unknown>) {
   if (key === "chess_pgn_html") return "HTML PGN/FEN";
   if (key === "chess_pgn") return "PGN";
+  if (key === "chess_fen_review") return "Oznaczanie figur i markerów";
   if (key === "pdf_layout_preview") return "PDF layout preview (audyt layoutu)";
   if (key === "input" || key === "source_pdf") return "PDF źródłowy";
   if (key === "cropped_pdf") return "PDF po kadrowaniu";

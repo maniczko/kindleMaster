@@ -387,7 +387,7 @@ def _send_local_input_artifact_fallback(job_id: str, job: dict, artifact: dict):
 
 def _artifact_should_download_as_attachment(artifact_key: str, artifact: dict) -> bool:
     key = _safe_artifact_key(artifact_key)
-    if key in {"input", "pdf_layout_preview", "chess_reader", "chess_pgn_html", "chess_glyph_diagnostics", "deepseek_audit"}:
+    if key in {"input", "pdf_layout_preview", "chess_reader", "chess_pgn_html", "chess_fen_review", "chess_glyph_diagnostics", "deepseek_audit"}:
         return False
     content_type = str(artifact.get("content_type") or "").strip().lower()
     if key.startswith("chess_") and (content_type.startswith("text/html") or content_type.startswith("application/json")):
@@ -1761,8 +1761,9 @@ def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
         None,
     )
     chess_glyph_diagnostics_file = _first_file(job_dir / "report", "chess_glyph_diagnostics.json")
+    chess_fen_review_file = _first_file(job_dir / "review", "fen_manual_review.html")
     runtime_json_file = _first_file(job_dir / "log", "*.runtime.json")
-    if input_file is None and output_file is None and quality_json_file is None:
+    if input_file is None and output_file is None and quality_json_file is None and chess_fen_review_file is None:
         return None
 
     quality_payload = _read_json_file(quality_json_file)
@@ -1788,7 +1789,11 @@ def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
     status = str(report_job.get("status") or runtime_payload.get("status") or "").strip().lower()
     runtime_status = str(runtime.get("status") or "").strip().lower()
     if status not in {"queued", "running", "repairing_headings", "ready", "failed", "timed_out"}:
-        status = "ready" if output_file is not None or runtime_status == "succeeded" else "failed"
+        status = (
+            "ready"
+            if output_file is not None or chess_fen_review_file is not None or runtime_status == "succeeded"
+            else "failed"
+        )
 
     source_path = str(input_file) if input_file is not None else ""
     job = build_conversion_job_record(
@@ -1801,7 +1806,17 @@ def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
     job.update(
         {
             "status": status,
-            "message": str(report_job.get("message") or quality_state.get("message") or ("EPUB gotowy do pobrania." if status == "ready" else "Historia odtworzona z lokalnych artefaktow.")),
+            "message": str(
+                report_job.get("message")
+                or quality_state.get("message")
+                or (
+                    "Zestaw do oznaczania FEN jest gotowy."
+                    if chess_fen_review_file is not None and output_file is None
+                    else "EPUB gotowy do pobrania."
+                    if status == "ready"
+                    else "Historia odtworzona z lokalnych artefaktow."
+                )
+            ),
             "updated_at": updated_at,
             "output_path": str(output_file) if output_file is not None else "",
             "download_name": str(report_job.get("download_name") or (output_file.name if output_file is not None else Path(filename).with_suffix(".epub").name)),
@@ -1853,6 +1868,14 @@ def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
         )
         artifacts["chess_glyph_diagnostics"]["download_url"] = f"/convert/artifact/{job_id}/chess_glyph_diagnostics"
         artifacts["chess_glyph_diagnostics"]["label"] = "Chess glyph diagnostics"
+    if chess_fen_review_file is not None:
+        artifacts["chess_fen_review"] = _local_artifact_metadata(
+            job_id,
+            ArtifactKind.REPORT,
+            chess_fen_review_file,
+        )
+        artifacts["chess_fen_review"]["download_url"] = f"/convert/artifact/{job_id}/chess_fen_review"
+        artifacts["chess_fen_review"]["label"] = "Oznaczanie FEN i markerow"
     if pdf_layout_preview_file is not None:
         artifacts["pdf_layout_preview"] = _local_artifact_metadata(job_id, ArtifactKind.REPORT, pdf_layout_preview_file)
         artifacts["pdf_layout_preview"]["download_url"] = f"/convert/artifact/{job_id}/pdf_layout_preview"
@@ -2113,6 +2136,35 @@ def _resolve_local_artifact_path(artifact: dict | None) -> Path | None:
     if not resolved.is_file():
         return None
     return resolved
+
+
+def _ensure_local_fen_review_artifact(job_id: str, job: dict) -> dict | None:
+    safe_job_id = str(job_id or "").strip()
+    if not safe_job_id or not re.fullmatch(r"[A-Za-z0-9_.-]+", safe_job_id):
+        return None
+    configured_root = os.environ.get("KINDLEMASTER_ARTIFACT_ROOT")
+    root = (Path(configured_root) if configured_root else Path(app.root_path) / "output" / "artifacts").resolve()
+    review_path = (root / safe_job_id / "review" / "fen_manual_review.html").resolve()
+    if not _is_path_under(review_path, root) or not review_path.is_file():
+        return None
+    artifact = _local_artifact_metadata(safe_job_id, ArtifactKind.REPORT, review_path)
+    artifact["download_url"] = f"/convert/artifact/{safe_job_id}/chess_fen_review"
+    artifact["label"] = "Oznaczanie FEN i markerow"
+    artifacts = dict(job.get("artifacts", {}) or {})
+    artifacts["chess_fen_review"] = artifact
+    job["artifacts"] = artifacts
+    _set_conversion_job(safe_job_id, artifacts=artifacts)
+    return artifact
+
+
+def _resolve_local_fen_review_dir(job_id: str, job: dict) -> Path | None:
+    artifact = dict(job.get("artifacts", {}) or {}).get("chess_fen_review")
+    if not isinstance(artifact, dict):
+        artifact = _ensure_local_fen_review_artifact(job_id, job)
+    artifact_path = _resolve_local_artifact_path(artifact)
+    if artifact_path is None or not artifact_path.is_file():
+        return None
+    return artifact_path.parent
 
 
 def _resolve_retry_source_path(job: dict) -> Path | None:
@@ -6074,6 +6126,8 @@ def convert_artifact_download(job_id: str, artifact_key: str):
     chess_delivery_payload = _enrich_job_chess_delivery_artifacts(job_id, job)
     artifacts = dict(job.get("artifacts", {}) or {})
     artifact = artifacts.get(key)
+    if key == "chess_fen_review" and not isinstance(artifact, dict):
+        artifact = _ensure_local_fen_review_artifact(job_id, job)
     if key == "chess_reader":
         source_reader_artifact = artifacts.get("chess_pgn_html")
         if isinstance(source_reader_artifact, dict):
@@ -6127,6 +6181,138 @@ def convert_artifact_download(job_id: str, artifact_key: str):
     response.headers["Cache-Control"] = "no-store, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["X-KindleMaster-Artifact-Source"] = "local"
+    return response
+
+
+@app.route("/convert/artifact/<job_id>/chess_fen_review_progress", methods=["GET", "PUT"])
+def convert_fen_manual_review_progress(job_id: str):
+    _mark_timed_out_conversion_jobs()
+    _cleanup_expired_conversion_jobs()
+    job = _get_conversion_job(job_id)
+    if not job:
+        _ensure_local_artifact_history_loaded()
+        job = _get_conversion_job(job_id)
+    if not job:
+        job = _restore_local_artifact_job_by_id(job_id)
+    if not job:
+        return _json_error(
+            "Nie znaleziono zadania konwersji.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="fen_review",
+            job_id=job_id,
+        )
+    review_dir = _resolve_local_fen_review_dir(job_id, job)
+    if review_dir is None:
+        return _json_error(
+            "Nie znaleziono zestawu do oznaczania FEN.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="fen_review",
+            job_id=job_id,
+        )
+
+    from chess_fen_review_store import (
+        FenReviewStoreError,
+        load_fen_review_progress,
+        save_fen_review_progress,
+    )
+
+    try:
+        if request.method == "GET":
+            payload = load_fen_review_progress(review_dir)
+        else:
+            submitted = request.get_json(silent=True)
+            if not isinstance(submitted, dict):
+                raise FenReviewStoreError("Prze?lij obiekt JSON z polem rows.")
+            rows = submitted.get("rows")
+            if not isinstance(rows, list):
+                raise FenReviewStoreError("Pole rows musi by? list? rekord?w.")
+            payload = save_fen_review_progress(
+                review_dir,
+                rows,
+                artifact_id=job_id,
+                source_digest=str(submitted.get("source_digest") or ""),
+            )
+    except FenReviewStoreError as exc:
+        return _json_error(
+            str(exc),
+            error_code=ERROR_UPLOAD_FAILED,
+            status_code=400,
+            phase="fen_review",
+            job_id=job_id,
+        )
+    except OSError as exc:
+        return _json_error(
+            f"Nie uda?o si? zapisa? post?pu oznaczania: {exc}",
+            error_code=ERROR_UPLOAD_FAILED,
+            status_code=500,
+            phase="fen_review",
+            job_id=job_id,
+        )
+    response = jsonify({"success": True, "job_id": job_id, **payload})
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+
+@app.route("/convert/artifact/<job_id>/fen_manual_assets/<path:asset_path>", methods=["GET"])
+def convert_fen_manual_review_asset(job_id: str, asset_path: str):
+    _mark_timed_out_conversion_jobs()
+    _cleanup_expired_conversion_jobs()
+    job = _get_conversion_job(job_id)
+    if not job:
+        _ensure_local_artifact_history_loaded()
+        job = _get_conversion_job(job_id)
+    if not job:
+        job = _restore_local_artifact_job_by_id(job_id)
+    if not job:
+        return _json_error(
+            "Nie znaleziono zadania konwersji.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="download",
+            job_id=job_id,
+        )
+    artifact = dict(job.get("artifacts", {}) or {}).get("chess_fen_review")
+    if not isinstance(artifact, dict):
+        artifact = _ensure_local_fen_review_artifact(job_id, job)
+    if not isinstance(artifact, dict):
+        return _json_error(
+            "Nie znaleziono zestawu do oznaczania FEN.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="download",
+            job_id=job_id,
+        )
+    artifact_path = _resolve_local_artifact_path(artifact)
+    if artifact_path is None or not artifact_path.is_file():
+        return _json_error(
+            "Nie znaleziono lokalnego zestawu do oznaczania FEN.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="download",
+            job_id=job_id,
+        )
+    root = (artifact_path.parent / "fen_manual_assets").resolve()
+    requested = (root / asset_path).resolve()
+    if (root not in requested.parents and requested != root) or not requested.is_file():
+        return _json_error(
+            "Nieprawidlowa sciezka cropa FEN.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="download",
+            job_id=job_id,
+        )
+    response = send_file(
+        requested,
+        mimetype=mimetypes.guess_type(requested.name)[0] or "application/octet-stream",
+        as_attachment=False,
+        download_name=requested.name,
+    )
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["X-KindleMaster-Artifact-Source"] = "fen-manual-review-asset"
     return response
 
 

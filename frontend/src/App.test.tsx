@@ -1407,6 +1407,11 @@ describe("Premium React shell", () => {
                     download_url: "/convert/artifact/job-chess/chess_glyph_diagnostics",
                     content_type: "application/json",
                   },
+                  chess_fen_review: {
+                    filename: "fen_manual_review.html",
+                    download_url: "/convert/artifact/job-chess/chess_fen_review",
+                    content_type: "text/html",
+                  },
                 },
                 chess_files: {
                   chess_pgn: {
@@ -1507,6 +1512,14 @@ describe("Premium React shell", () => {
     expect(diagnostics.getByRole("link", { name: "chess_glyph_diagnostics.json" })).toHaveAttribute(
       "href",
       "/convert/artifact/job-chess/chess_glyph_diagnostics",
+    );
+    expect(diagnostics.getByRole("link", { name: "Oznaczanie figur i markerów" })).toHaveAttribute(
+      "href",
+      "/convert/artifact/job-chess/chess_fen_review",
+    );
+    expect(diagnostics.getByRole("link", { name: "Oznaczanie figur i markerów" })).toHaveAttribute(
+      "target",
+      "_blank",
     );
   });
 

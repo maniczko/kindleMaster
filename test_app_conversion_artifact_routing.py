@@ -83,6 +83,105 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
             }
         return html_path
 
+    def test_recovered_fen_review_is_served_with_source_bound_crop_assets(self) -> None:
+        job_id = "fen-review-artifact"
+        job_root = self._artifact_root(job_id)
+        input_dir = job_root / "input"
+        review_dir = job_root / "review"
+        assets_dir = review_dir / "fen_manual_assets"
+        input_dir.mkdir(parents=True)
+        assets_dir.mkdir(parents=True)
+        (input_dir / "study.pdf").write_bytes(b"%PDF-1.4\n")
+        (review_dir / "fen_manual_review.html").write_text(
+            '<!doctype html><html><body><img src="fen_manual_assets/diagram.png"></body></html>',
+            encoding="utf-8",
+        )
+        fingerprint = "1" * 64
+        source_digest = "a" * 64
+        (review_dir / "fen_manual_draft.jsonl").write_text(
+            json.dumps(
+                {
+                    "artifact_id": job_id,
+                    "diagram_id": "p001-d1",
+                    "diagram_fingerprint": fingerprint,
+                    "source_document_sha256": source_digest,
+                    "crop_sha256": "2" * 64,
+                    "square_labels": [""] * 64,
+                    "label_status": "needs_piece_labels",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        asset_bytes = b"\x89PNG\r\n\x1a\nsource-bound-crop"
+        (assets_dir / "diagram.png").write_bytes(asset_bytes)
+
+        job = app_module._rebuild_job_from_local_artifact_dir(job_root)
+
+        self.assertIsNotNone(job)
+        assert job is not None
+        self.assertIn("chess_fen_review", job["artifacts"])
+        self.assertEqual(
+            job["artifacts"]["chess_fen_review"]["download_url"],
+            f"/convert/artifact/{job_id}/chess_fen_review",
+        )
+        stale_job = dict(job)
+        stale_job["artifacts"] = {}
+        app_module._CONVERSION_JOB_STORE.create(stale_job)
+        html_response = self.client.get(f"/convert/artifact/{job_id}/chess_fen_review")
+        crop_response = self.client.get(f"/convert/artifact/{job_id}/fen_manual_assets/diagram.png")
+        cells = [""] * 64
+        cells[4] = "k"
+        cells[60] = "K"
+        save_response = self.client.put(
+            f"/convert/artifact/{job_id}/chess_fen_review_progress",
+            json={
+                "source_digest": source_digest,
+                "rows": [
+                    {
+                        "diagram_fingerprint": fingerprint,
+                        "square_labels": cells,
+                        "piece_labels_verified": True,
+                        "manual_side_to_move": "w",
+                        "manual_side_evidence": "marker",
+                        "manual_visible_marker": "outline_triangle",
+                        "board_crop_label": "correct",
+                        "marker_crop_label": "clear",
+                        "label_status": "verified",
+                        "verified_by": "PM",
+                    }
+                ],
+            },
+        )
+        progress_response = self.client.get(f"/convert/artifact/{job_id}/chess_fen_review_progress")
+
+        self.assertEqual(html_response.status_code, 200)
+        self.assertIn("text/html", html_response.content_type)
+        self.assertEqual(crop_response.status_code, 200)
+        self.assertEqual(crop_response.data, asset_bytes)
+        self.assertEqual(crop_response.headers.get("X-KindleMaster-Artifact-Source"), "fen-manual-review-asset")
+        self.assertEqual(save_response.status_code, 200)
+        self.assertEqual(save_response.get_json()["summary"]["verified"], 1)
+        self.assertEqual(progress_response.status_code, 200)
+        self.assertEqual(progress_response.get_json()["rows"][0]["manual_fen"], "4k3/8/8/8/8/8/8/4K3 w - - 0 1")
+        html_response.close()
+        crop_response.close()
+        save_response.close()
+        progress_response.close()
+
+    def test_fen_review_only_artifact_is_restored_without_epub_or_input(self) -> None:
+        job_id = "fen-review-only"
+        review_dir = self._artifact_root(job_id) / "review"
+        review_dir.mkdir(parents=True)
+        (review_dir / "fen_manual_review.html").write_text("<!doctype html><title>Review</title>", encoding="utf-8")
+
+        job = app_module._rebuild_job_from_local_artifact_dir(review_dir.parent)
+
+        self.assertIsNotNone(job)
+        assert job is not None
+        self.assertEqual(job["status"], "ready")
+        self.assertIn("chess_fen_review", job["artifacts"])
+
     def _register_chess_pgn_artifact(self, job_id: str, pgn_text: str) -> Path:
         job_root = self._artifact_root(job_id)
         report_dir = job_root / "report"

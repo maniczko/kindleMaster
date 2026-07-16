@@ -225,14 +225,6 @@ def evaluate_fen_square_candidate(
     split: str = "holdout",
 ) -> dict[str, Any]:
     """Evaluate an existing candidate without retraining or recalibrating it."""
-    dependencies = _import_training_dependencies()
-    if dependencies.get("status") != "available":
-        return {
-            "schema": MODEL_EVAL_SCHEMA,
-            "status": "evaluation_unavailable",
-            "error": "scikit-learn is required to load the candidate artifact.",
-            "exception": dependencies.get("exception", ""),
-        }
     artifact = Path(model_path)
     if not artifact.is_file():
         return {
@@ -240,6 +232,14 @@ def evaluate_fen_square_candidate(
             "status": "failed",
             "error": "model_missing",
             "model_path": str(artifact),
+        }
+    dependencies = _import_training_dependencies()
+    if dependencies.get("status") != "available":
+        return {
+            "schema": MODEL_EVAL_SCHEMA,
+            "status": "evaluation_unavailable",
+            "error": "scikit-learn is required to load the candidate artifact.",
+            "exception": dependencies.get("exception", ""),
         }
     bundle = dependencies["joblib"].load(artifact)
     if bundle.get("schema") != MODEL_SCHEMA or bundle.get("model_type") != MODEL_TYPE:

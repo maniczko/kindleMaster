@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image, ImageDraw
 
@@ -174,7 +175,11 @@ class ChessFenModelPipelineTests(unittest.TestCase):
             dataset.parent.mkdir(parents=True)
             dataset.write_text("", encoding="utf-8")
 
-            payload = evaluate_fen_square_classifier(out)
+            with patch(
+                "chess_fen_square_model._import_training_dependencies",
+                return_value={"status": "unavailable", "exception": "No module named 'sklearn'"},
+            ):
+                payload = evaluate_fen_square_classifier(out)
 
             self.assertEqual(payload["status"], "failed")
             self.assertEqual(payload["error"], "model_missing")

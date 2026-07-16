@@ -1088,6 +1088,7 @@ def _run_chess_study(args: argparse.Namespace) -> int:
         build_ai_pgn_candidates,
         build_chess_quality_baseline,
         build_fen_square_dataset,
+        evaluate_fen_square_classifier,
         build_study_exercises,
         build_study_final_test,
         build_study_pgn,
@@ -1261,11 +1262,22 @@ def _run_chess_study(args: argparse.Namespace) -> int:
             fold_count=args.fold_count,
             holdout_fold=args.holdout_fold,
         )
-    elif args.chess_study_command in {"train-fen-classifier", "evaluate-fen-classifier"}:
+    elif args.chess_study_command == "train-fen-classifier":
         payload = train_fen_square_classifier(
             config.out,
             dataset_path=args.labels or None,
-            model_name=Path(args.model_path).stem if str(args.model_path or "").strip() else "chess_fen_square_v1",
+            model_name=(
+                Path(args.model_path).stem
+                if str(args.model_path or "").strip()
+                else "chess_fen_square_rbf_svm_v2"
+            ),
+            profile=args.profile,
+        )
+    elif args.chess_study_command == "evaluate-fen-classifier":
+        payload = evaluate_fen_square_classifier(
+            config.out,
+            dataset_path=args.labels or None,
+            model_path=args.model_path or None,
         )
     elif args.chess_study_command == "recognize-fen-local":
         payload = recognize_fen_local(

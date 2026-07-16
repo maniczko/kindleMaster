@@ -20,6 +20,7 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 import fitz
+import numpy as np
 from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageOps
 
@@ -2297,6 +2298,7 @@ def build_fen_square_dataset(
     labels = _promote_verified_fen_labels(Path(labels_path), out)
     rows: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
+    split_groups: dict[str, str] = {}
     for label in labels:
         crop_path = Path(str(label.get("crop_path") or ""))
         diagram_id = str(label.get("diagram_id") or crop_path.stem)
@@ -2306,7 +2308,9 @@ def build_fen_square_dataset(
         except Exception as exc:
             skipped.append({"diagram_id": diagram_id, "crop_path": str(crop_path), "reason": str(exc)})
             continue
-        split = _dataset_split(diagram_id, fold_count=fold_count, holdout_fold=holdout_fold)
+        split_group, split_group_type = _dataset_split_group(label, diagram_id=diagram_id)
+        split = _dataset_split(split_group, fold_count=fold_count, holdout_fold=holdout_fold)
+        split_groups[split_group] = split
         for index, cell in enumerate(_split_board_into_squares(board)):
             square_name = _square_name(index)
             class_name = cells[index] or "empty"
@@ -2327,6 +2331,9 @@ def build_fen_square_dataset(
                     "source_crop": str(crop_path),
                     "fen": label.get("fen"),
                     "page": int(label.get("page") or 0),
+                    "chapter": str(label.get("chapter_id") or label.get("chapter") or ""),
+                    "split_group": split_group,
+                    "split_group_type": split_group_type,
                     "label_source": label.get("source") or str(labels_path),
                     "board_sha256": _image_sha256(board),
                 }
@@ -2336,6 +2343,18 @@ def build_fen_square_dataset(
     _write_jsonl(dataset_path, rows)
     class_counts = _count_by(rows, "class")
     split_counts = _count_by(rows, "split")
+    split_board_counts = {
+        split_name: len({row["diagram_id"] for row in rows if row.get("split") == split_name})
+        for split_name in ("train", "val", "holdout")
+    }
+    split_group_counts = {
+        split_name: len({row["split_group"] for row in rows if row.get("split") == split_name})
+        for split_name in ("train", "val", "holdout")
+    }
+    group_assignments: dict[str, set[str]] = {}
+    for row in rows:
+        group_assignments.setdefault(str(row.get("split_group") or ""), set()).add(str(row.get("split") or ""))
+    leaked_groups = sorted(group for group, assignments in group_assignments.items() if len(assignments) > 1)
     payload = {
         "schema": "kindlemaster.fen_square_dataset.v1",
         "status": "ok" if rows else "failed",
@@ -2345,13 +2364,20 @@ def build_fen_square_dataset(
         "sample_count": len(rows),
         "class_counts": class_counts,
         "split_counts": split_counts,
+        "split_board_counts": split_board_counts,
+        "split_group_counts": split_group_counts,
         "fold_count": max(2, int(fold_count or 5)),
         "holdout_fold": int(holdout_fold or 0),
         "dataset_path": str(dataset_path),
         "squares_root": str(squares_root),
         "skipped": skipped,
         "labels_validation": labels_validation,
-        "policy": "Holdout split is assigned by diagram id and must not be used for training.",
+        "leakage_check": {
+            "status": "passed" if not leaked_groups else "failed",
+            "group_count": len(split_groups),
+            "leaked_groups": leaked_groups,
+        },
+        "policy": "Split is assigned before square extraction by chapter when present, otherwise by source-bound page.",
     }
     _write_json(reports_dir / "fen_square_dataset_summary.json", payload)
     build_chess_quality_dashboard(out)
@@ -2362,14 +2388,10 @@ def train_fen_square_classifier(
     out_dir: str | Path,
     *,
     dataset_path: str | Path | None = None,
-    model_name: str = "chess_fen_square_v1",
+    model_name: str = "chess_fen_square_rbf_svm_v2",
+    profile: str = "yusupov-fixed-edition",
 ) -> dict[str, Any]:
-    """Train a lightweight local square classifier profile from dataset samples.
-
-    This v1 uses deterministic feature centroids so it has no heavyweight runtime
-    dependency. A later optional trainer can replace the JSON profile with ONNX
-    while keeping the same report/model-card contract.
-    """
+    """Train the fixed-edition candidate while preserving centroid rollback."""
     out = Path(out_dir)
     reports_dir = out / "reports"
     models_dir = out / "models"
@@ -2379,37 +2401,92 @@ def train_fen_square_classifier(
     rows = _read_jsonl_rows(source)
     train_rows = [row for row in rows if row.get("split") == "train"]
     centroids = _train_centroid_classifier(train_rows)
-    model_path = models_dir / f"{_safe_filename(model_name)}.json"
-    model = {
+    legacy_model_path = models_dir / "chess_fen_square_v1.json"
+    legacy_model = {
         "schema": "kindlemaster.fen_square_classifier.v1",
         "model_type": "feature_centroid",
-        "model_name": model_name,
+        "model_name": "chess_fen_square_v1",
         "dataset_path": str(source),
         "class_centroids": centroids,
         "feature_names": ["mean", "stddev", "dark_ratio", "edge_density"],
         "onnx_available": False,
         "policy": "This model produces candidates only; ensemble validation controls accepted FEN.",
     }
-    _write_json(model_path, model)
-    eval_payload = _evaluate_square_classifier(rows, model)
-    eval_payload.update(
-        {
-            "schema": "kindlemaster.fen_square_model_eval.v1",
-            "status": "ok" if centroids else "failed",
-            "model_path": str(model_path),
-            "model_type": "feature_centroid",
-            "onnx_path": "",
-            "onnx_available": False,
-        }
+    _write_json(legacy_model_path, legacy_model)
+    baseline = {
+        "model_path": str(legacy_model_path),
+        "model_type": "feature_centroid",
+        "validation": _evaluate_square_classifier(rows, legacy_model, splits={"val"}),
+        "holdout": _evaluate_square_classifier(rows, legacy_model, splits={"holdout"}),
+    }
+    from chess_fen_square_model import train_fen_square_candidate
+
+    candidate = train_fen_square_candidate(
+        rows,
+        dataset_path=source,
+        models_dir=models_dir,
+        reports_dir=reports_dir,
+        model_name=model_name,
+        profile=profile,
+        baseline=baseline,
     )
+    candidate_holdout = candidate.get("holdout") if isinstance(candidate.get("holdout"), dict) else {}
+    eval_payload = {
+        "schema": "kindlemaster.fen_square_training_run.v2",
+        "status": candidate.get("status"),
+        "dataset_path": str(source),
+        "profile": profile,
+        "baseline": baseline,
+        "candidate": candidate,
+        "model_path": candidate.get("model_path") or "",
+        "manifest_path": candidate.get("manifest_path") or "",
+        "model_type": candidate.get("model_type") or "",
+        "sample_count": candidate_holdout.get("sample_count") or 0,
+        "square_accuracy": candidate_holdout.get("square_accuracy") or 0.0,
+        "exact_board_accuracy": candidate_holdout.get("exact_board_accuracy") or 0.0,
+        "confusion": candidate_holdout.get("confusion") or {},
+        "promotion": candidate.get("promotion") or {"status": "blocked", "passed": False},
+        "rollback_model_path": str(legacy_model_path),
+    }
     _write_json(reports_dir / "fen_square_model_eval.json", eval_payload)
-    _write_square_confusion_csv(reports_dir / "fen_square_confusion_matrix.csv", eval_payload.get("confusion") or {})
+    _write_square_confusion_csv(
+        reports_dir / "fen_square_confusion_matrix.csv",
+        candidate_holdout.get("confusion") or {},
+    )
     _write_json(
         models_dir / f"{_safe_filename(model_name)}.model-card.json",
-        _fen_model_card(out, source, model_path, eval_payload),
+        _fen_model_card(out, source, Path(str(candidate.get("model_path") or "")), eval_payload),
     )
     build_chess_quality_dashboard(out)
     return eval_payload
+
+
+def evaluate_fen_square_classifier(
+    out_dir: str | Path,
+    *,
+    dataset_path: str | Path | None = None,
+    model_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Evaluate an existing candidate on holdout without changing the model."""
+    out = Path(out_dir)
+    reports_dir = out / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    source = Path(dataset_path) if dataset_path else out / "data" / "fen_square_dataset.jsonl"
+    resolved_model = (
+        Path(model_path)
+        if model_path
+        else out / "models" / "chess_fen_square_rbf_svm_v2.joblib"
+    )
+    from chess_fen_square_model import evaluate_fen_square_candidate
+
+    payload = evaluate_fen_square_candidate(
+        _read_jsonl_rows(source),
+        model_path=resolved_model,
+        split="holdout",
+    )
+    payload["dataset_path"] = str(source)
+    _write_json(reports_dir / "fen_square_holdout_eval.json", payload)
+    return payload
 
 
 def recognize_fen_local(
@@ -11073,9 +11150,20 @@ def _square_name(index: int) -> str:
     return f"{chr(ord('a') + file_index)}{8 - rank_index}"
 
 
-def _dataset_split(diagram_id: str, *, fold_count: int, holdout_fold: int) -> str:
+def _dataset_split_group(label: Mapping[str, Any], *, diagram_id: str) -> tuple[str, str]:
+    source_sha = str(label.get("source_document_sha256") or "source-unknown")
+    chapter = str(label.get("chapter_id") or label.get("chapter") or "").strip()
+    if chapter:
+        return f"{source_sha}:chapter:{chapter}", "chapter"
+    page = int(label.get("page") or 0)
+    if page > 0:
+        return f"{source_sha}:page:{page}", "page"
+    return f"{source_sha}:diagram:{diagram_id}", "diagram_fallback"
+
+
+def _dataset_split(split_group: str, *, fold_count: int, holdout_fold: int) -> str:
     folds = max(2, int(fold_count or 5))
-    fold = int(hashlib.sha256(str(diagram_id).encode("utf-8")).hexdigest()[:8], 16) % folds
+    fold = int(hashlib.sha256(str(split_group).encode("utf-8")).hexdigest()[:8], 16) % folds
     if fold == int(holdout_fold or 0) % folds:
         return "holdout"
     if fold == (int(holdout_fold or 0) + 1) % folds:
@@ -11085,17 +11173,15 @@ def _dataset_split(diagram_id: str, *, fold_count: int, holdout_fold: int) -> st
 
 def _square_features(image: Image.Image) -> list[float]:
     gray = ImageOps.autocontrast(image.convert("L")).resize((32, 32), Image.Resampling.LANCZOS)
-    pixels = [float(pixel) for pixel in gray.tobytes()]
-    mean = sum(pixels) / max(1, len(pixels)) / 255.0
-    variance = sum((pixel / 255.0 - mean) ** 2 for pixel in pixels) / max(1, len(pixels))
-    dark_ratio = len([pixel for pixel in pixels if pixel < 120]) / max(1, len(pixels))
-    edge = 0.0
-    width, height = gray.size
-    for y in range(height - 1):
-        for x in range(width - 1):
-            edge += abs(gray.getpixel((x, y)) - gray.getpixel((x + 1, y)))
-            edge += abs(gray.getpixel((x, y)) - gray.getpixel((x, y + 1)))
-    edge_density = edge / max(1, (width - 1) * (height - 1) * 2 * 255)
+    pixels = np.asarray(gray, dtype=np.float64)
+    normalized = pixels / 255.0
+    mean = float(normalized.mean())
+    variance = float(normalized.var())
+    dark_ratio = float((pixels < 120).mean())
+    horizontal_edges = np.abs(pixels[:-1, 1:] - pixels[:-1, :-1]).sum()
+    vertical_edges = np.abs(pixels[1:, :-1] - pixels[:-1, :-1]).sum()
+    edge_count = pixels[:-1, :-1].size * 2
+    edge_density = float((horizontal_edges + vertical_edges) / max(1, edge_count * 255))
     return [round(mean, 6), round(math.sqrt(variance), 6), round(dark_ratio, 6), round(edge_density, 6)]
 
 
@@ -11106,7 +11192,8 @@ def _train_centroid_classifier(rows: list[dict[str, Any]]) -> dict[str, list[flo
         if not image_path.is_file():
             continue
         label = str(row.get("class") or "empty")
-        grouped.setdefault(label, []).append(_square_features(Image.open(image_path)))
+        with Image.open(image_path) as image:
+            grouped.setdefault(label, []).append(_square_features(image))
     centroids: dict[str, list[float]] = {}
     for label, vectors in grouped.items():
         if not vectors:
@@ -11167,27 +11254,41 @@ def _square_prediction_alternatives(result: dict[str, Any], *, top_n: int = 3) -
     return rows
 
 
-def _evaluate_square_classifier(rows: list[dict[str, Any]], model: dict[str, Any]) -> dict[str, Any]:
-    eval_rows = [row for row in rows if row.get("split") in {"val", "holdout"}]
+def _evaluate_square_classifier(
+    rows: list[dict[str, Any]],
+    model: dict[str, Any],
+    *,
+    splits: set[str] | None = None,
+) -> dict[str, Any]:
+    selected_splits = splits or {"val", "holdout"}
+    eval_rows = [row for row in rows if row.get("split") in selected_splits]
     if not eval_rows:
         eval_rows = rows
     confusion: dict[str, dict[str, int]] = {}
     correct = 0
     total = 0
+    board_correct: dict[str, bool] = {}
     for row in eval_rows:
         path = Path(str(row.get("image_path") or ""))
         if not path.is_file():
             continue
         expected = str(row.get("class") or "empty")
-        predicted = str(_predict_square_class(Image.open(path), model).get("label") or "empty")
+        with Image.open(path) as image:
+            predicted = str(_predict_square_class(image, model).get("label") or "empty")
         confusion.setdefault(expected, {})
         confusion[expected][predicted] = confusion[expected].get(predicted, 0) + 1
         correct += int(expected == predicted)
         total += 1
+        diagram_id = str(row.get("diagram_id") or "")
+        board_correct[diagram_id] = board_correct.get(diagram_id, True) and expected == predicted
+    exact_boards = sum(1 for value in board_correct.values() if value)
     return {
         "sample_count": total,
         "exact_square_count": correct,
         "square_accuracy": round(correct / max(1, total), 4),
+        "board_count": len(board_correct),
+        "exact_board_count": exact_boards,
+        "exact_board_accuracy": round(exact_boards / max(1, len(board_correct)), 4),
         "confusion": confusion,
         "per_class_accuracy": {
             label: round(values.get(label, 0) / max(1, sum(values.values())), 4)

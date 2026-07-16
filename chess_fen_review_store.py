@@ -194,7 +194,7 @@ def save_fen_review_progress(
 
 def summarize_fen_review_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, int]:
     verified = 0
-    closed = 0
+    excluded = 0
     pending = 0
     invalid = 0
     for row in rows:
@@ -203,15 +203,18 @@ def summarize_fen_review_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, in
         if status == "verified" and not errors:
             verified += 1
         elif status in {"rejected", "unreadable"} and not errors:
-            closed += 1
+            excluded += 1
         elif status in {"verified", "rejected", "unreadable"}:
             invalid += 1
         else:
             pending += 1
     return {
         "total": len(rows),
+        "completed": verified + excluded,
         "verified": verified,
-        "closed": closed,
+        "excluded": excluded,
+        # Backward-compatible alias used by older review pages.
+        "closed": excluded,
         "pending": pending,
         "invalid": invalid,
     }

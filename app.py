@@ -6172,6 +6172,36 @@ def convert_artifact_download(job_id: str, artifact_key: str):
         if semantic_response is not None:
             return semantic_response
         return _final_reader_missing_response(job_id, artifact_path, artifact)
+    if key == "chess_fen_review":
+        from chess_fen_review_repository import ChessFenReviewRepository
+        from chess_fen_review_ui import render_fen_manual_review_html
+
+        try:
+            review_payload = ChessFenReviewRepository(
+                artifact_path.parent,
+                artifact_id=job_id,
+            ).load()
+            review_rows = list(review_payload.get("rows") or [])
+            response = app.response_class(
+                render_fen_manual_review_html(
+                    review_rows,
+                    source_identity=review_rows[0] if review_rows else {},
+                    artifact_id=job_id,
+                ),
+                mimetype="text/html",
+            )
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["X-KindleMaster-Artifact-Source"] = str(
+                review_payload.get("storage") or "local"
+            )
+            return response
+        except Exception as exc:
+            app.logger.warning(
+                "FEN review dynamic render failed for %s; serving stored HTML: %s",
+                job_id,
+                exc,
+            )
     response = send_file(
         artifact_path,
         mimetype=str(artifact.get("content_type") or mimetypes.guess_type(artifact_path.name)[0] or "application/octet-stream"),

@@ -157,6 +157,9 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
 
         self.assertEqual(html_response.status_code, 200)
         self.assertIn("text/html", html_response.content_type)
+        self.assertIn(b'id="metric-completed"', html_response.data)
+        self.assertIn(b'id="metric-excluded"', html_response.data)
+        self.assertNotIn(b'id="metric-closed"', html_response.data)
         self.assertEqual(crop_response.status_code, 200)
         self.assertEqual(crop_response.data, asset_bytes)
         self.assertEqual(crop_response.headers.get("X-KindleMaster-Artifact-Source"), "fen-manual-review-asset")

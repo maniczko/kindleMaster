@@ -68,6 +68,8 @@ class ChessFenReviewStoreTests(unittest.TestCase):
             )
 
             self.assertEqual(payload["summary"]["verified"], 1)
+            self.assertEqual(payload["summary"]["completed"], 1)
+            self.assertEqual(payload["summary"]["excluded"], 0)
             self.assertEqual(payload["summary"]["pending"], 1)
             loaded = load_fen_review_progress(review_dir)
             self.assertEqual(len(loaded["rows"]), 2)

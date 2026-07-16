@@ -279,7 +279,7 @@ _PAGE_TEMPLATE = r"""<!doctype html>
   <main class="shell">
     <header class="hero"><div><div class="eyebrow">KindleMaster · etykiety źródłowe</div><h1>Oznacz figury, nie zapis FEN</h1><p>Model wstępnie wypełnia planszę. Popraw błędne pola, potwierdź 64 pola i niezależnie sprawdź marker. Pełny FEN powstanie automatycznie.</p></div><div class="source"><b>Artefakt:</b> __ARTIFACT_ID__<br><b>Powiązanie:</b> __SOURCE_BINDING__<br><b>SHA:</b> __SOURCE_DIGEST__</div></header>
     <section class="guide" aria-label="Instrukcja"><div class="guide-step"><b>1. Crop planszy</b><span>Jeśli brakuje rzędu albo widzisz dwa diagramy, oznacz zły crop. Nie zgaduj.</span></div><div class="guide-step"><b>2. Siatka 8×8</b><span>Wybierz figurę i klikaj tylko pola różniące się od sugestii. Potem potwierdź 64 pola.</span></div><div class="guide-step"><b>3. Marker</b><span>△ = białe, ▼ = czarne. Strona ruchu trafia do wygenerowanego FEN.</span></div></section>
-    <section class="control-deck" aria-label="Sterowanie kolejką"><div class="metrics"><div class="metric"><strong>__ROW_COUNT__</strong><span>diagramów</span></div><div class="metric"><strong id="metric-verified">0</strong><span>zweryfikowanych</span></div><div class="metric"><strong id="metric-closed">0</strong><span>zamkniętych</span></div><div class="metric"><strong id="metric-pending">0</strong><span>pozostało</span></div><div class="metric"><strong id="metric-invalid">0</strong><span>wymaga poprawy</span></div></div><div class="controls"><input id="search" type="search" placeholder="Szukaj ID, strony lub FEN" aria-label="Szukaj diagramu"><select id="status-filter" aria-label="Filtr statusu"><option value="">Wszystkie statusy</option><option value="pending">Figury do sprawdzenia</option><option value="verified">Zweryfikowane</option><option value="closed">Odrzucone / nieczytelne</option><option value="invalid">Z błędem</option></select><select id="priority-filter" aria-label="Filtr priorytetu"><option value="">Wszystkie priorytety</option><option value="0">Najpierw: konflikt modelu</option><option value="10">Kandydat modelu</option><option value="20">Pozostałe</option></select><input id="reviewer" autocomplete="name" placeholder="Kto oznacza? np. PM" aria-label="Identyfikator osoby oznaczającej"><div class="toolbar-actions"><button type="button" id="next-pending">Następny</button><button type="button" id="import-jsonl">Wczytaj JSONL</button><button type="button" id="save-server">Zapisz na stronie</button><button type="button" class="primary" id="export-jsonl">Eksportuj JSONL</button><span class="save-state" id="save-state" data-state="loading">Łączenie z zapisem…</span></div><input id="import-file" type="file" accept=".jsonl,.ndjson,application/x-ndjson" hidden></div></section>
+    <section class="control-deck" aria-label="Sterowanie kolejką"><div class="metrics"><div class="metric"><strong>__ROW_COUNT__</strong><span>diagramów</span></div><div class="metric"><strong id="metric-completed">0</strong><span>zakończonych</span></div><div class="metric"><strong id="metric-verified">0</strong><span>zweryfikowanych</span></div><div class="metric"><strong id="metric-excluded">0</strong><span>wykluczonych</span></div><div class="metric"><strong id="metric-pending">0</strong><span>pozostało</span></div><div class="metric"><strong id="metric-invalid">0</strong><span>wymaga poprawy</span></div></div><div class="controls"><input id="search" type="search" placeholder="Szukaj ID, strony lub FEN" aria-label="Szukaj diagramu"><select id="status-filter" aria-label="Filtr statusu"><option value="">Wszystkie statusy</option><option value="pending">Figury do sprawdzenia</option><option value="verified">Zweryfikowane</option><option value="closed">Wykluczone: odrzucone / nieczytelne</option><option value="invalid">Z błędem</option></select><select id="priority-filter" aria-label="Filtr priorytetu"><option value="">Wszystkie priorytety</option><option value="0">Najpierw: konflikt modelu</option><option value="10">Kandydat modelu</option><option value="20">Pozostałe</option></select><input id="reviewer" autocomplete="name" placeholder="Kto oznacza? np. PM" aria-label="Identyfikator osoby oznaczającej"><div class="toolbar-actions"><button type="button" id="next-pending">Następny</button><button type="button" id="import-jsonl">Wczytaj JSONL</button><button type="button" id="save-server">Zapisz na stronie</button><button type="button" class="primary" id="export-jsonl">Eksportuj JSONL</button><span class="save-state" id="save-state" data-state="loading">Łączenie z zapisem…</span></div><input id="import-file" type="file" accept=".jsonl,.ndjson,application/x-ndjson" hidden></div></section>
     <section class="review-grid">__CARDS__</section>
   </main>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -523,17 +523,18 @@ _PAGE_TEMPLATE = r"""<!doctype html>
       box.textContent = result.errors[0] || (row.label_status === 'verified' ? 'Komplet gotowy do eksportu i walidacji backendu.' : 'Sprawdź siatkę 8×8, następnie marker.');
     }
     function refresh(runFilter=true) {
-      let verified=0,closed=0,pending=0,invalid=0;
+      let verified=0,excluded=0,pending=0,invalid=0;
       for (const card of cards) {
         updateCard(card);
         if (card.dataset.state === 'verified') verified += 1;
-        else if (card.dataset.state === 'closed') closed += 1;
+        else if (card.dataset.state === 'closed') excluded += 1;
         else if (card.dataset.state === 'invalid') invalid += 1;
         else pending += 1;
       }
+      document.getElementById('metric-completed').textContent=verified+excluded;
       document.getElementById('metric-verified').textContent=verified;
-      document.getElementById('metric-closed').textContent=closed;
-      document.getElementById('metric-pending').textContent=pending+invalid;
+      document.getElementById('metric-excluded').textContent=excluded;
+      document.getElementById('metric-pending').textContent=pending;
       document.getElementById('metric-invalid').textContent=invalid;
       if (runFilter) filterCards();
     }
@@ -575,7 +576,7 @@ _PAGE_TEMPLATE = r"""<!doctype html>
         localStorage.setItem(localModifiedKey,payload.saved_at || nowIso());
         if (serverSavePending) scheduleServerSave();
         else setSaveState('saved',`Zapisano ${new Date(payload.saved_at || Date.now()).toLocaleTimeString('pl-PL',{hour:'2-digit',minute:'2-digit'})}`);
-        if (showToast) toast(`Postęp zapisany na stronie: ${payload.summary?.verified || 0} zweryfikowanych, ${payload.summary?.pending || 0} oczekujących.`);
+        if (showToast) toast(`Postęp zapisany: ${payload.summary?.completed || 0} zakończonych, ${payload.summary?.verified || 0} zweryfikowanych, ${payload.summary?.pending || 0} oczekujących.`);
         return true;
       } catch (error) {
         serverSavePending = true;

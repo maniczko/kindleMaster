@@ -127,7 +127,7 @@ class SupabaseLibraryClient:
         transport: HttpRequest | None = None,
     ) -> None:
         self.config = config or load_supabase_library_config()
-        self._transport = transport or _default_json_request
+        self._transport = transport or default_supabase_json_request
 
     @property
     def available(self) -> bool:
@@ -413,7 +413,7 @@ def _job_to_row_payload(
     }
 
 
-def _default_json_request(
+def default_supabase_json_request(
     url: str,
     *,
     method: str = "GET",

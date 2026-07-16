@@ -6212,15 +6212,14 @@ def convert_fen_manual_review_progress(job_id: str):
             job_id=job_id,
         )
 
-    from chess_fen_review_store import (
-        FenReviewStoreError,
-        load_fen_review_progress,
-        save_fen_review_progress,
-    )
+    from chess_fen_review_repository import ChessFenReviewRepository
+    from chess_fen_review_store import FenReviewStoreError
+
+    repository = ChessFenReviewRepository(review_dir, artifact_id=job_id)
 
     try:
         if request.method == "GET":
-            payload = load_fen_review_progress(review_dir)
+            payload = repository.load()
         else:
             submitted = request.get_json(silent=True)
             if not isinstance(submitted, dict):
@@ -6228,11 +6227,10 @@ def convert_fen_manual_review_progress(job_id: str):
             rows = submitted.get("rows")
             if not isinstance(rows, list):
                 raise FenReviewStoreError("Pole rows musi by? list? rekord?w.")
-            payload = save_fen_review_progress(
-                review_dir,
+            payload = repository.save(
                 rows,
-                artifact_id=job_id,
                 source_digest=str(submitted.get("source_digest") or ""),
+                owner_user_id=str(job.get("user_id") or ""),
             )
     except FenReviewStoreError as exc:
         return _json_error(

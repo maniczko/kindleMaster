@@ -32,6 +32,27 @@ Rows with `draft`, `rejected`, `false_positive`, or invalid FEN are ignored.
 AI-only values such as `ai_suggested_fen`, `ai_approved`, `arbiter_approved`,
 or high confidence are never verification proof.
 
+## Manual Review Persistence Contract
+
+When Supabase is configured, `chess_fen_review_sessions` and
+`chess_fen_review_labels` are the primary source of truth for browser review
+progress. One label row is stored per source-bound diagram fingerprint so the
+training and evaluation pipeline can query verified, rejected, unreadable, and
+pending records without parsing an uploaded JSONL file.
+
+The Railway JSONL progress file is a recovery cache and export snapshot only.
+It must not override a newer database record. JSONL export remains supported
+for offline backup and deterministic dataset-building commands.
+
+Database payloads must:
+
+- retain the source document SHA-256, crop hashes, relative asset paths, 64
+  square labels, marker evidence, reviewer, and derived placement/FEN;
+- exclude local absolute paths and unrelated OCR page text;
+- remain review/training evidence only and never directly authorize publication;
+- be writable only through the backend service role after source-binding
+  validation.
+
 ## FEN Profile/Corpus Gate Contract
 
 Profile readiness is a separate gate after label validation. A manifest-ready

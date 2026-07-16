@@ -32,29 +32,44 @@ class FenReviewStoreError(ValueError):
     pass
 
 
-def load_fen_review_progress(review_dir: str | Path) -> dict[str, Any]:
+def load_fen_review_progress(
+    review_dir: str | Path,
+    *,
+    persisted_rows: Sequence[Mapping[str, Any]] | None = None,
+    persisted_saved_at: str = "",
+    storage: str = "",
+) -> dict[str, Any]:
     review_path = Path(review_dir)
     seed_rows = _read_jsonl(review_path / FEN_REVIEW_DRAFT_FILENAME)
-    progress_path = review_path / FEN_REVIEW_PROGRESS_FILENAME
-    progress_rows = _read_jsonl(progress_path) if progress_path.is_file() else []
-    rows = _merge_rows(seed_rows, progress_rows) if progress_rows else seed_rows
+    if persisted_rows is not None:
+        progress_rows = [dict(row) for row in persisted_rows]
+        rows = _merge_rows(seed_rows, progress_rows) if progress_rows else seed_rows
+        saved_at = persisted_saved_at
+        resolved_storage = storage or "database"
+    else:
+        progress_path = review_path / FEN_REVIEW_PROGRESS_FILENAME
+        progress_rows = _read_jsonl(progress_path) if progress_path.is_file() else []
+        rows = _merge_rows(seed_rows, progress_rows) if progress_rows else seed_rows
+        saved_at = _progress_saved_at(review_path)
+        resolved_storage = storage or ("server" if progress_path.is_file() else "seed")
     summary = summarize_fen_review_rows(rows)
     return {
         "schema": "kindlemaster.fen_review_progress.v1",
         "status": "ok",
         "rows": rows,
         "summary": summary,
-        "saved_at": _progress_saved_at(review_path),
-        "storage": "server" if progress_path.is_file() else "seed",
+        "saved_at": saved_at,
+        "storage": resolved_storage,
     }
 
 
-def save_fen_review_progress(
+def prepare_fen_review_progress(
     review_dir: str | Path,
     submitted_rows: Sequence[Mapping[str, Any]],
     *,
     artifact_id: str,
     source_digest: str = "",
+    existing_rows: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     review_path = Path(review_dir)
     seed_rows = _read_jsonl(review_path / FEN_REVIEW_DRAFT_FILENAME)
@@ -72,9 +87,12 @@ def save_fen_review_progress(
     if source_digest and expected_digest and str(source_digest).strip() != expected_digest:
         raise FenReviewStoreError("SHA źródła nie zgadza się ze źródłowym raportem.")
 
-    existing_path = review_path / FEN_REVIEW_PROGRESS_FILENAME
-    existing_rows = _read_jsonl(existing_path) if existing_path.is_file() else []
-    base_rows = _merge_rows(seed_rows, existing_rows) if existing_rows else seed_rows
+    if existing_rows is None:
+        existing_path = review_path / FEN_REVIEW_PROGRESS_FILENAME
+        resolved_existing_rows = _read_jsonl(existing_path) if existing_path.is_file() else []
+    else:
+        resolved_existing_rows = [dict(row) for row in existing_rows]
+    base_rows = _merge_rows(seed_rows, resolved_existing_rows) if resolved_existing_rows else seed_rows
     submitted_by_fingerprint: dict[str, Mapping[str, Any]] = {}
     known_fingerprints = {_fingerprint(row) for row in seed_rows}
     for raw_row in submitted_rows:
@@ -93,32 +111,85 @@ def save_fen_review_progress(
         submitted = submitted_by_fingerprint.get(fingerprint)
         normalized_rows.append(_normalize_progress_row(base_row, submitted) if submitted else dict(base_row))
 
+    saved_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    summary = summarize_fen_review_rows(normalized_rows)
+    return {
+        "schema": "kindlemaster.fen_review_progress.v1",
+        "status": "prepared",
+        "artifact_id": expected_artifact or artifact_id,
+        "source_document_sha256": expected_digest,
+        "saved_at": saved_at,
+        "submitted_count": len(submitted_by_fingerprint),
+        "summary": summary,
+        "rows": normalized_rows,
+    }
+
+
+def persist_fen_review_progress_snapshot(
+    review_dir: str | Path,
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    artifact_id: str,
+    source_digest: str,
+    saved_at: str = "",
+    submitted_count: int | None = None,
+) -> dict[str, Any]:
+    review_path = Path(review_dir)
     review_path.mkdir(parents=True, exist_ok=True)
+    existing_path = review_path / FEN_REVIEW_PROGRESS_FILENAME
     if existing_path.is_file():
         shutil.copy2(existing_path, review_path / FEN_REVIEW_PROGRESS_BACKUP_FILENAME)
+    normalized_rows = [dict(row) for row in rows]
     _atomic_write_jsonl(existing_path, normalized_rows)
-    saved_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    resolved_saved_at = saved_at or datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    resolved_submitted_count = len(normalized_rows) if submitted_count is None else submitted_count
     summary = summarize_fen_review_rows(normalized_rows)
     _atomic_write_json(
         review_path / FEN_REVIEW_PROGRESS_META_FILENAME,
         {
             "schema": "kindlemaster.fen_review_progress.meta.v1",
-            "artifact_id": expected_artifact or artifact_id,
-            "source_document_sha256": expected_digest,
-            "saved_at": saved_at,
-            "submitted_count": len(submitted_by_fingerprint),
+            "artifact_id": artifact_id,
+            "source_document_sha256": source_digest,
+            "saved_at": resolved_saved_at,
+            "submitted_count": resolved_submitted_count,
             "summary": summary,
-            "policy": "Human labels remain training and evaluation evidence; this save never accepts FEN for publication.",
+            "policy": (
+                "This file is a server cache and export snapshot. Supabase is the primary store when configured. "
+                "Human labels remain training and evaluation evidence; this save never accepts FEN for publication."
+            ),
         },
     )
     return {
         "schema": "kindlemaster.fen_review_progress.v1",
         "status": "saved",
-        "saved_at": saved_at,
-        "submitted_count": len(submitted_by_fingerprint),
+        "saved_at": resolved_saved_at,
+        "submitted_count": resolved_submitted_count,
         "summary": summary,
         "storage": "server",
     }
+
+
+def save_fen_review_progress(
+    review_dir: str | Path,
+    submitted_rows: Sequence[Mapping[str, Any]],
+    *,
+    artifact_id: str,
+    source_digest: str = "",
+) -> dict[str, Any]:
+    prepared = prepare_fen_review_progress(
+        review_dir,
+        submitted_rows,
+        artifact_id=artifact_id,
+        source_digest=source_digest,
+    )
+    return persist_fen_review_progress_snapshot(
+        review_dir,
+        prepared["rows"],
+        artifact_id=str(prepared["artifact_id"]),
+        source_digest=str(prepared["source_document_sha256"]),
+        saved_at=str(prepared["saved_at"]),
+        submitted_count=int(prepared["submitted_count"]),
+    )
 
 
 def summarize_fen_review_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, int]:

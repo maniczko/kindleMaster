@@ -1,0 +1,172 @@
+name: tmp-fen-review-assets
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/tmp_fen_review_assets.yml
+      - tmp/fen_review_batch_links.md
+
+permissions:
+  contents: read
+
+jobs:
+  fetch-assets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Install image tools
+        run: python -m pip install --disable-pip-version-check pillow
+
+      - name: Fetch source-bound review images
+        env:
+          BASE_URL: https://kindlemaster-production.up.railway.app
+          ARTIFACT_ID: 758f23fa54e4484785d08d0a307d2675
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          import os
+          import pathlib
+          import time
+          import urllib.error
+          import urllib.request
+          from PIL import Image, ImageDraw, ImageFont, ImageOps
+
+          base = os.environ['BASE_URL'].rstrip('/')
+          artifact_id = os.environ['ARTIFACT_ID']
+          root = pathlib.Path('fen_review_assets')
+          raw_dir = root / 'raw'
+          combined_dir = root / 'combined'
+          board_sheets_dir = root / 'board_sheets'
+          combined_sheets_dir = root / 'combined_sheets'
+          for path in (raw_dir, combined_dir, board_sheets_dir, combined_sheets_dir):
+              path.mkdir(parents=True, exist_ok=True)
+
+          progress_url = f'{base}/convert/artifact/{artifact_id}/chess_fen_review_progress'
+          with urllib.request.urlopen(progress_url, timeout=90) as response:
+              progress = json.loads(response.read().decode('utf-8'))
+          rows = sorted(progress.get('rows') or [], key=lambda row: int(row.get('review_index') or 0))
+          if len(rows) != 266:
+              raise RuntimeError(f'Expected 266 rows, got {len(rows)}')
+          (root / 'progress.json').write_text(json.dumps(progress, ensure_ascii=False, indent=2), encoding='utf-8')
+
+          def fetch_bytes(url: str, attempts: int = 4) -> bytes:
+              last_error = None
+              for attempt in range(attempts):
+                  try:
+                      request = urllib.request.Request(url, headers={'User-Agent': 'KindleMaster-FEN-review/1.0'})
+                      with urllib.request.urlopen(request, timeout=90) as response:
+                          return response.read()
+                  except (urllib.error.URLError, TimeoutError) as exc:
+                      last_error = exc
+                      time.sleep(1.5 * (attempt + 1))
+              raise RuntimeError(f'Failed to fetch {url}: {last_error}')
+
+          def resolve_url(rel_path: str) -> str:
+              return f'{base}/convert/artifact/{artifact_id}/{rel_path.lstrip("/")}'
+
+          def download(row: dict, key: str, suffix: str) -> pathlib.Path | None:
+              rel_path = str(row.get(key) or '').strip()
+              if not rel_path:
+                  return None
+              index = int(row.get('review_index') or 0)
+              ext = pathlib.Path(rel_path).suffix or '.png'
+              out = raw_dir / f'{index:03d}_{suffix}{ext}'
+              out.write_bytes(fetch_bytes(resolve_url(rel_path)))
+              return out
+
+          font = ImageFont.load_default()
+          manifest_rows = []
+          combined_paths = []
+          board_paths = []
+          for row in rows:
+              index = int(row.get('review_index') or 0)
+              board_path = download(row, 'board_crop_rel_path', 'board')
+              marker_path = download(row, 'marker_crop_rel_path', 'marker')
+              marker_status = str(row.get('detected_marker_status') or '')
+              context_path = None
+              search_path = None
+              if marker_status != 'trusted_marker':
+                  context_path = download(row, 'context_crop_rel_path', 'context')
+                  search_path = download(row, 'marker_search_crop_rel_path', 'marker_search')
+              manifest_rows.append({
+                  'review_index': index,
+                  'diagram_id': row.get('diagram_id'),
+                  'page': row.get('page'),
+                  'fen_candidate': row.get('fen_candidate'),
+                  'square_labels': row.get('square_labels'),
+                  'diagram_fingerprint': row.get('diagram_fingerprint'),
+                  'detected_marker_status': marker_status,
+                  'detected_marker_symbol': row.get('detected_marker_symbol'),
+                  'board_crop_rel_path': row.get('board_crop_rel_path'),
+                  'marker_crop_rel_path': row.get('marker_crop_rel_path'),
+                  'context_crop_rel_path': row.get('context_crop_rel_path'),
+                  'marker_search_crop_rel_path': row.get('marker_search_crop_rel_path'),
+                  'board_file': str(board_path.relative_to(root)) if board_path else '',
+                  'marker_file': str(marker_path.relative_to(root)) if marker_path else '',
+                  'context_file': str(context_path.relative_to(root)) if context_path else '',
+                  'marker_search_file': str(search_path.relative_to(root)) if search_path else '',
+              })
+              if not board_path:
+                  continue
+              board = Image.open(board_path).convert('RGB')
+              board_paths.append((index, board_path))
+              canvas = Image.new('RGB', (1200, 820), 'white')
+              board_fit = ImageOps.contain(board, (760, 760))
+              canvas.paste(board_fit, (20 + (760 - board_fit.width)//2, 40 + (760 - board_fit.height)//2))
+              draw = ImageDraw.Draw(canvas)
+              draw.text((20, 10), f'#{index:03d}  {row.get("diagram_id", "")}  page {row.get("page", "")}', fill='black', font=font)
+              x = 810
+              draw.multiline_text((x, 20), f'FEN candidate:\n{row.get("fen_candidate", "")}', fill='black', font=font, spacing=4)
+              draw.multiline_text((x, 105), f'Marker: {row.get("detected_marker_symbol", "")}\nStatus: {marker_status}', fill='black', font=font, spacing=4)
+              if marker_path:
+                  marker = Image.open(marker_path).convert('RGB')
+                  marker_fit = ImageOps.contain(marker, (360, 250))
+                  canvas.paste(marker_fit, (x, 180))
+              if context_path:
+                  context = Image.open(context_path).convert('RGB')
+                  context_fit = ImageOps.contain(context, (360, 210))
+                  canvas.paste(context_fit, (x, 455))
+              if search_path:
+                  search = Image.open(search_path).convert('RGB')
+                  search_fit = ImageOps.contain(search, (360, 130))
+                  canvas.paste(search_fit, (x, 675))
+              combined_path = combined_dir / f'{index:03d}.jpg'
+              canvas.save(combined_path, quality=92, optimize=True)
+              combined_paths.append((index, combined_path))
+
+          (root / 'manifest.json').write_text(json.dumps({'artifact_id': artifact_id, 'rows': manifest_rows}, ensure_ascii=False, indent=2), encoding='utf-8')
+
+          def make_sheets(items, out_dir: pathlib.Path, cell_size: tuple[int, int], columns: int, prefix: str):
+              rows_per_sheet = 3 if columns == 3 else 4
+              per_sheet = columns * rows_per_sheet
+              for sheet_no in range(0, len(items), per_sheet):
+                  chunk = items[sheet_no:sheet_no+per_sheet]
+                  sheet = Image.new('RGB', (cell_size[0]*columns, cell_size[1]*rows_per_sheet), '#e8e8e8')
+                  draw = ImageDraw.Draw(sheet)
+                  for pos, (index, image_path) in enumerate(chunk):
+                      image = Image.open(image_path).convert('RGB')
+                      fit = ImageOps.contain(image, (cell_size[0]-12, cell_size[1]-28))
+                      col = pos % columns
+                      row_no = pos // columns
+                      x = col * cell_size[0] + (cell_size[0]-fit.width)//2
+                      y = row_no * cell_size[1] + 22 + (cell_size[1]-28-fit.height)//2
+                      sheet.paste(fit, (x, y))
+                      draw.rectangle((col*cell_size[0], row_no*cell_size[1], (col+1)*cell_size[0]-1, (row_no+1)*cell_size[1]-1), outline='black')
+                      draw.text((col*cell_size[0]+6, row_no*cell_size[1]+4), f'#{index:03d}', fill='black', font=font)
+                  output = out_dir / f'{prefix}_{sheet_no//per_sheet+1:03d}.jpg'
+                  sheet.save(output, quality=94, optimize=True)
+
+          make_sheets(board_paths, board_sheets_dir, (500, 520), 4, 'boards')
+          make_sheets(combined_paths, combined_sheets_dir, (600, 420), 3, 'combined')
+          print(f'Prepared {len(rows)} rows, {len(board_paths)} board images, {len(combined_paths)} combined images')
+          PY
+
+      - name: Upload review evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: fen-review-assets
+          path: fen_review_assets
+          retention-days: 1
+          compression-level: 6

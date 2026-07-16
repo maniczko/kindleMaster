@@ -45,6 +45,18 @@ class SupabaseMigrationTests(unittest.TestCase):
         self.assertIn("grant execute on function public.save_chess_fen_review", sql)
         self.assertNotIn("security definer", sql)
 
+    def test_fen_review_gold_contract_backfill_is_explicit(self) -> None:
+        migration = Path("supabase/migrations/20260716194751_chess_fen_review_gold_contract.sql")
+        self.assertTrue(migration.exists(), "Supabase FEN gold-contract migration is missing.")
+        sql = migration.read_text(encoding="utf-8").lower()
+
+        self.assertIn("update public.chess_fen_review_labels", sql)
+        self.assertIn("'verification_source', 'human_visual'", sql)
+        self.assertIn("'square_diff_ack', true", sql)
+        self.assertIn("'human_verified', true", sql)
+        self.assertIn("label_status = 'verified'", sql)
+        self.assertIn("piece_labels_verified is true", sql)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -45,6 +45,9 @@ class SupabaseFenReviewTests(unittest.TestCase):
             "source_document_sha256": "a" * 64,
             "square_labels": [""] * 64,
             "label_status": "needs_piece_labels",
+            "id": "p001-d1",
+            "fen": "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+            "square_diff_ack": True,
             "source_pdf": "C:/private/source.pdf",
             "crop_path": "C:/private/crop.png",
         }
@@ -120,6 +123,8 @@ class SupabaseFenReviewTests(unittest.TestCase):
         self.assertIn("/rest/v1/rpc/save_chess_fen_review", call["url"])
         self.assertEqual(body["p_rows"][0]["diagram_fingerprint"], "1" * 64)
         self.assertEqual(len(body["p_rows"][0]["square_labels"]), 64)
+        self.assertEqual(body["p_rows"][0]["id"], "p001-d1")
+        self.assertTrue(body["p_rows"][0]["square_diff_ack"])
         self.assertNotIn("source_pdf", body["p_rows"][0])
         self.assertNotIn("crop_path", body["p_rows"][0])
         self.assertEqual(result["storage"], "database")

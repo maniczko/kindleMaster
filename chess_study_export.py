@@ -2256,6 +2256,7 @@ def build_fen_square_dataset(
     out_dir: str | Path,
     fold_count: int = 5,
     holdout_fold: int = 0,
+    require_canonical_labels: bool = True,
 ) -> dict[str, Any]:
     """Build a 64-square supervised dataset from verified FEN labels."""
     out = Path(out_dir)
@@ -2265,6 +2266,33 @@ def build_fen_square_dataset(
     reports_dir.mkdir(parents=True, exist_ok=True)
     data_dir.mkdir(parents=True, exist_ok=True)
     squares_root.mkdir(parents=True, exist_ok=True)
+
+    labels_validation: dict[str, Any] = {"status": "not_required"}
+    if require_canonical_labels:
+        from scripts.validate_chess_fen_labels import validate_chess_fen_labels
+
+        labels_validation = validate_chess_fen_labels(Path(labels_path))
+        if labels_validation.get("status") != "passed":
+            payload = {
+                "schema": "kindlemaster.fen_square_dataset.v1",
+                "status": "failed",
+                "reason": "canonical_labels_validation_failed",
+                "labels_path": str(labels_path),
+                "verified_label_count": 0,
+                "board_count": 0,
+                "sample_count": 0,
+                "class_counts": {},
+                "split_counts": {},
+                "fold_count": max(2, int(fold_count or 5)),
+                "holdout_fold": int(holdout_fold or 0),
+                "dataset_path": "",
+                "squares_root": str(squares_root),
+                "skipped": [],
+                "labels_validation": labels_validation,
+                "policy": "Dataset generation fails closed unless every canonical label passes provenance validation.",
+            }
+            _write_json(reports_dir / "fen_square_dataset_summary.json", payload)
+            return payload
 
     labels = _promote_verified_fen_labels(Path(labels_path), out)
     rows: list[dict[str, Any]] = []
@@ -2322,6 +2350,7 @@ def build_fen_square_dataset(
         "dataset_path": str(dataset_path),
         "squares_root": str(squares_root),
         "skipped": skipped,
+        "labels_validation": labels_validation,
         "policy": "Holdout split is assigned by diagram id and must not be used for training.",
     }
     _write_json(reports_dir / "fen_square_dataset_summary.json", payload)

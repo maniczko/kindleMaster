@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from chess_fen_review_contract import normalize_review_row_for_gold_contract
+
 
 FEN_REVIEW_DRAFT_FILENAME = "fen_manual_draft.jsonl"
 FEN_REVIEW_PROGRESS_FILENAME = "fen_piece_grid_progress.jsonl"
@@ -302,7 +304,7 @@ def _normalize_progress_row(base_row: Mapping[str, Any], submitted: Mapping[str,
             "label_provenance": "human_visual_source_bound_piece_grid_review" if terminal else "",
         }
     )
-    return row
+    return normalize_review_row_for_gold_contract(row)
 
 
 def _merge_rows(seed_rows: Sequence[Mapping[str, Any]], progress_rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:

@@ -100,6 +100,7 @@ QUICK_TESTS = [
     "test_chess_fen_model_pipeline.py",
     "test_chess_fen_review_store.py",
     "test_chess_fen_review_repository.py",
+    "test_chess_fen_review_corpus.py",
     "test_chess_study_data_contracts.py",
     "test_pdf_layout_preview.py",
     "test_deepseek_quality_provider.py",
@@ -613,6 +614,7 @@ def main() -> int:
         "recognize-fen-local",
         "evaluate-fen-ensemble",
         "calibrate-fen-confidence",
+        "export-fen-review-corpus",
         "export-fen-corpus-manifest",
     ]:
         stage_parser = chess_study_subparsers.add_parser(command_name, help=f"Run chess-study {command_name}.")
@@ -660,6 +662,9 @@ def main() -> int:
         stage_parser.add_argument("--ai-pgn-limit", type=int, default=30, help="Limit AI-assisted PGN repair rows.")
         stage_parser.add_argument("--model-path", default="", help="Optional local FEN model path for classifier/inference commands.")
         stage_parser.add_argument("--min-confidence", type=float, default=0.92, help="Minimum local/ensemble confidence for review gates.")
+        stage_parser.add_argument("--artifact-id", default="", help="Conversion artifact ID for database-backed FEN review export.")
+        stage_parser.add_argument("--service-base-url", default="", help="Optional service base URL used to read Supabase-backed review rows and assets.")
+        stage_parser.add_argument("--review-dir", default="", help="Optional trusted local review directory containing fen_manual_assets.")
 
     two_crop_performance_parser = chess_study_subparsers.add_parser(
         "two-crop-performance",
@@ -1070,6 +1075,7 @@ def _run_chess(args: argparse.Namespace, *, parser: argparse.ArgumentParser | No
 
 
 def _run_chess_study(args: argparse.Namespace) -> int:
+    from chess_fen_review_corpus import export_fen_review_corpus
     from chess_study_export import (
         ChessStudyConfig,
         audit_current_html,
@@ -1271,6 +1277,16 @@ def _run_chess_study(args: argparse.Namespace) -> int:
         payload = evaluate_fen_ensemble(config.out, min_confidence=args.min_confidence)
     elif args.chess_study_command == "calibrate-fen-confidence":
         payload = calibrate_fen_confidence(config.out)
+    elif args.chess_study_command == "export-fen-review-corpus":
+        if not str(args.artifact_id or "").strip():
+            _print_json({"status": "failed", "error": "Provide --artifact-id for export-fen-review-corpus."})
+            return 1
+        payload = export_fen_review_corpus(
+            artifact_id=args.artifact_id,
+            out_dir=config.out,
+            review_dir=args.review_dir or None,
+            service_base_url=args.service_base_url,
+        )
     elif args.chess_study_command == "export-fen-corpus-manifest":
         payload = export_fen_corpus_manifest(config.out)
     elif args.chess_study_command == "audit-current":

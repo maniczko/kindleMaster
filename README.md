@@ -141,6 +141,7 @@ Chess-study FEN quality loop commands are also available under the same entrypoi
 python kindlemaster.py chess-study quality-baseline --out output\yusupov_study
 python kindlemaster.py chess-study two-crop-performance --job-output output\chess_auto --report-dir reports\performance\chess_two_crop
 python kindlemaster.py chess-study preprocess-boards --out output\yusupov_study
+python kindlemaster.py chess-study export-fen-review-corpus --artifact-id <artifact-id> --service-base-url https://kindlemaster-production.up.railway.app --out output\fen_gold
 python kindlemaster.py chess-study build-square-dataset --out output\yusupov_study --labels output\yusupov_study\review\fen_verified_labels.jsonl
 python kindlemaster.py chess-study train-fen-classifier --out output\yusupov_study
 python kindlemaster.py chess-study recognize-fen-local --out output\yusupov_study
@@ -152,6 +153,10 @@ python scripts\audit_chess_fen_false_positives.py output\yusupov_study\review\ai
 `two-crop-performance` reads an existing job output and writes timing, candidate-count,
 artifact-I/O, and semantic-digest evidence. It never substitutes generated fixtures for
 missing real-corpus output and does not package source PDFs or crop bytes in the report.
+
+`export-fen-review-corpus` reads the completed review from Supabase directly or through the
+Railway progress endpoint, resolves source-bound crops, verifies SHA256, and writes only
+canonical human-verified labels to the training JSONL. Excluded rows remain audit-only.
 
 `process --resume` reuses only compatible, atomically checkpointed two-crop pages. Omitting
 the flag always starts a cold two-crop run and ignores existing checkpoints.

@@ -17,6 +17,7 @@ from supabase_library import (
 SAVE_REVIEW_RPC = "save_chess_fen_review"
 DATABASE_ROW_FIELDS = frozenset(
     {
+        "id",
         "schema",
         "review_contract",
         "artifact_id",
@@ -63,11 +64,13 @@ DATABASE_ROW_FIELDS = frozenset(
         "notes",
         "manual_placement",
         "manual_fen",
+        "fen",
         "fen_human_verified",
         "piece_labels_source",
         "manual_label",
         "human_verified",
         "verification_source",
+        "square_diff_ack",
         "label_provenance",
     }
 )

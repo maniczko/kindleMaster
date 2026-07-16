@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
@@ -89,11 +90,22 @@ class ChessFenModelPipelineTests(unittest.TestCase):
             labels.write_text(
                 json.dumps(
                     {
+                        "schema": "kindlemaster.chess_fen_label.v2",
+                        "id": "p001_d001",
                         "diagram_id": "p001_d001",
+                        "diagram_fingerprint": "1" * 64,
+                        "source_document_sha256": "a" * 64,
                         "manual_fen": "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+                        "fen": "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
                         "manual_label": "correct_diagram",
                         "label_status": "verified",
                         "crop_path": str(crop),
+                        "crop_sha256": hashlib.sha256(crop.read_bytes()).hexdigest(),
+                        "verified_by": "unit-test",
+                        "verified_at": "2026-07-16T12:00:00Z",
+                        "verification_source": "human_visual",
+                        "human_verified": True,
+                        "square_diff_ack": True,
                         "page": 1,
                     }
                 )
@@ -131,11 +143,22 @@ class ChessFenModelPipelineTests(unittest.TestCase):
             labels.write_text(
                 json.dumps(
                     {
+                        "schema": "kindlemaster.chess_fen_label.v2",
+                        "id": "p001_d001",
                         "diagram_id": "p001_d001",
+                        "diagram_fingerprint": "1" * 64,
+                        "source_document_sha256": "a" * 64,
                         "manual_fen": "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+                        "fen": "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
                         "manual_label": "correct_diagram",
                         "label_status": "verified",
                         "crop_path": str(crop),
+                        "crop_sha256": hashlib.sha256(crop.read_bytes()).hexdigest(),
+                        "verified_by": "unit-test",
+                        "verified_at": "2026-07-16T12:00:00Z",
+                        "verification_source": "human_visual",
+                        "human_verified": True,
+                        "square_diff_ack": True,
                         "page": 1,
                     }
                 )

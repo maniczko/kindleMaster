@@ -74,7 +74,12 @@ class ChessFenReviewStoreTests(unittest.TestCase):
             loaded = load_fen_review_progress(review_dir)
             self.assertEqual(len(loaded["rows"]), 2)
             self.assertEqual(loaded["rows"][0]["manual_fen"], "4k3/8/8/8/8/8/8/4K3 w - - 0 1")
+            self.assertEqual(loaded["rows"][0]["fen"], "4k3/8/8/8/8/8/8/4K3 w - - 0 1")
             self.assertTrue(loaded["rows"][0]["fen_human_verified"])
+            self.assertTrue(loaded["rows"][0]["human_verified"])
+            self.assertTrue(loaded["rows"][0]["square_diff_ack"])
+            self.assertEqual(loaded["rows"][0]["verification_source"], "human_visual")
+            self.assertEqual(loaded["rows"][0]["id"], "p001-d1")
             self.assertEqual(loaded["rows"][1]["label_status"], "needs_piece_labels")
             self.assertTrue((review_dir / FEN_REVIEW_PROGRESS_FILENAME).is_file())
 

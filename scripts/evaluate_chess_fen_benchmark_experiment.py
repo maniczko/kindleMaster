@@ -47,6 +47,7 @@ def evaluate_chess_fen_benchmark_experiment(
         out_dir=out,
         fold_count=fold_count,
         holdout_fold=holdout_fold,
+        require_canonical_labels=False,
     )
     model_eval = train_fen_square_classifier(out)
     model_path = Path(str(model_eval.get("model_path") or out / "models" / "chess_fen_square_v1.json"))

@@ -68,6 +68,7 @@ QUICK_TESTS = [
     "test_chess_diagram_multi_pass_detection.py",
     "test_chess_diagram_fingerprint.py",
     "test_chess_diagram_manifest_reconciliation.py",
+    "test_chess_evidence_coverage_join.py",
     "test_chess_yusupov_acceptance_manifest.py",
     "test_chess_fen_gold_corpus.py",
     "test_chess_fen_auto_adjudication.py",
@@ -597,6 +598,18 @@ def main() -> int:
     reconcile_manifest_parser.add_argument("--out", required=True)
     reconcile_manifest_parser.add_argument("--source-profile", required=True)
     reconcile_manifest_parser.add_argument("--bbox-iou-threshold", type=float, default=0.90)
+    evidence_join_parser = chess_subparsers.add_parser(
+        "join-chess-evidence",
+        help="Join reconciled diagrams, canonical FEN labels, and marker labels into one review queue.",
+    )
+    evidence_join_parser.add_argument("--reconciliation-draft", required=True)
+    evidence_join_parser.add_argument("--fen-labels", required=True)
+    evidence_join_parser.add_argument("--fen-review-rows", required=True)
+    evidence_join_parser.add_argument("--marker-labels", required=True)
+    evidence_join_parser.add_argument("--source-pdf", required=True)
+    evidence_join_parser.add_argument("--out", required=True)
+    evidence_join_parser.add_argument("--source-profile", required=True)
+    evidence_join_parser.add_argument("--bbox-iou-threshold", type=float, default=0.90)
 
     chess_study_parser = subparsers.add_parser("chess-study", help="Build a static chess training-book study export.")
     chess_study_subparsers = chess_study_parser.add_subparsers(dest="chess_study_command")
@@ -1078,6 +1091,27 @@ def _run_chess(args: argparse.Namespace, *, parser: argparse.ArgumentParser | No
                 intake_manifest=args.intake_manifest,
                 marker_labels=args.marker_labels or None,
                 source_pdf=args.source_pdf or None,
+                output_dir=args.out,
+                source_profile=args.source_profile,
+                bbox_iou_threshold=args.bbox_iou_threshold,
+            )
+        except Exception as error:
+            payload = {"status": "failed", "error": type(error).__name__, "message": str(error)}
+        _print_json(payload)
+        if payload.get("status") == "passed":
+            return 0
+        return 2 if payload.get("status") == "needs_review" else 1
+
+    if args.chess_command == "join-chess-evidence":
+        from chess_evidence_coverage_join import join_chess_evidence_files
+
+        try:
+            payload = join_chess_evidence_files(
+                reconciliation_draft=args.reconciliation_draft,
+                fen_labels=args.fen_labels,
+                fen_review_rows=args.fen_review_rows,
+                marker_labels=args.marker_labels,
+                source_pdf=args.source_pdf,
                 output_dir=args.out,
                 source_profile=args.source_profile,
                 bbox_iou_threshold=args.bbox_iou_threshold,

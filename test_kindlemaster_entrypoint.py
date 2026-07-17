@@ -687,6 +687,53 @@ class KindleMasterEntrypointTests(unittest.TestCase):
         )
         print_mock.assert_called_once_with(payload)
 
+    def test_join_chess_evidence_command_routes_arguments(self) -> None:
+        payload = {"status": "needs_review", "counts": {"fen_labels_bound": 204}}
+        with patch(
+            "chess_evidence_coverage_join.join_chess_evidence_files",
+            return_value=payload,
+        ) as join_mock:
+            with patch.object(kindlemaster, "_print_json") as print_mock:
+                with patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "kindlemaster.py",
+                        "chess",
+                        "join-chess-evidence",
+                        "--reconciliation-draft",
+                        "draft.json",
+                        "--fen-labels",
+                        "fen.jsonl",
+                        "--fen-review-rows",
+                        "review.jsonl",
+                        "--marker-labels",
+                        "markers.jsonl",
+                        "--source-pdf",
+                        "source.pdf",
+                        "--out",
+                        "evidence",
+                        "--source-profile",
+                        "fixed-edition",
+                        "--bbox-iou-threshold",
+                        "0.92",
+                    ],
+                ):
+                    exit_code = kindlemaster.main()
+
+        self.assertEqual(exit_code, 2)
+        join_mock.assert_called_once_with(
+            reconciliation_draft="draft.json",
+            fen_labels="fen.jsonl",
+            fen_review_rows="review.jsonl",
+            marker_labels="markers.jsonl",
+            source_pdf="source.pdf",
+            output_dir="evidence",
+            source_profile="fixed-edition",
+            bbox_iou_threshold=0.92,
+        )
+        print_mock.assert_called_once_with(payload)
+
     def test_import_fen_gold_labels_command_preserves_needs_review_exit_code(self) -> None:
         payload = {"status": "needs_review", "pending_row_count": 3}
         with patch("chess_fen_gold_corpus.validate_fen_gold_corpus_labels", return_value=payload):

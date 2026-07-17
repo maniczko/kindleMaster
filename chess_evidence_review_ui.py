@@ -1,33 +1,8 @@
 from __future__ import annotations
 
-import html
-import json
-from collections.abc import Mapping
-from typing import Any
 
-
-def render_chess_evidence_review_html(payload: Mapping[str, Any]) -> str:
-    artifact_id = str(payload.get("artifact_id") or "")
-    source_profile = str(payload.get("source_profile") or "")
-    source_digest = str(payload.get("source_document_sha256") or "")
-    browser_payload = dict(payload)
-    browser_payload.pop("source_document_sha256", None)
-    browser_payload["rows"] = [
-        {key: value for key, value in dict(row).items() if key != "source_document_sha256"}
-        for row in payload.get("rows") or []
-        if isinstance(row, Mapping)
-    ]
-    seed = json.dumps(browser_payload, ensure_ascii=False).replace("</", "<\\/")
-    replacements = {
-        "__ARTIFACT__": html.escape(artifact_id),
-        "__PROFILE__": html.escape(source_profile),
-        "__SOURCE_SHORT__": html.escape(source_digest[:12] + "..." if source_digest else "brak"),
-        "__SEED__": seed,
-    }
-    result = _PAGE
-    for key, value in replacements.items():
-        result = result.replace(key, value)
-    return result
+def render_chess_evidence_review_html() -> str:
+    return _PAGE
 
 
 _PAGE = """<!doctype html>
@@ -49,9 +24,9 @@ _PAGE = """<!doctype html>
         <p class="lede">Rysuj prostokat tylko wokol widocznego symbolu. Brak markera potwierdzaj wylacznie na kompletnym cropie.</p>
       </div>
       <dl class="source-card">
-        <div><dt>Artefakt</dt><dd>__ARTIFACT__</dd></div>
-        <div><dt>Profil</dt><dd>__PROFILE__</dd></div>
-        <div><dt>Zrodlo</dt><dd>__SOURCE_SHORT__</dd></div>
+        <div><dt>Artefakt</dt><dd id="source-artifact">ladowanie...</dd></div>
+        <div><dt>Profil</dt><dd id="source-profile">ladowanie...</dd></div>
+        <div><dt>Zrodlo</dt><dd id="source-sha">ladowanie...</dd></div>
       </dl>
     </header>
 
@@ -127,7 +102,6 @@ _PAGE = """<!doctype html>
       </section>
     </div>
   </main>
-  <script type="application/json" id="review-seed">__SEED__</script>
   <script defer src="/static/chess_evidence_review.js"></script>
 </body>
 </html>

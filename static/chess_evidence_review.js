@@ -1,10 +1,10 @@
 (() => {
   'use strict';
 
-  const seed = JSON.parse(document.getElementById('review-seed').textContent);
-  const rows = Array.isArray(seed.rows) ? seed.rows : [];
-  const artifactId = seed.artifact_id || '';
-  const endpoint = `/convert/artifact/${encodeURIComponent(artifactId)}/chess_evidence_review_progress`;
+  const artifactSegment = window.location.pathname.match(/\/convert\/artifact\/([^/]+)\/chess_evidence_review$/)?.[1] || '';
+  const artifactId = decodeURIComponent(artifactSegment);
+  const endpoint = `${window.location.pathname}_progress`;
+  const rows = [];
   const byId = id => document.getElementById(id);
   const elements = {
     list: byId('queue-list'), search: byId('queue-search'), form: byId('review-form'),
@@ -13,8 +13,9 @@
     side: byId('side-to-move'), complete: byId('crop-complete'), reviewer: byId('reviewer'),
     notes: byId('notes'), validation: byId('validation'), assetKind: byId('asset-kind'),
     saveState: byId('save-state'), progressLabel: byId('progress-label'), progressBar: byId('progress-bar'),
+    sourceArtifact: byId('source-artifact'), sourceProfile: byId('source-profile'), sourceSha: byId('source-sha'),
   };
-  let currentIndex = Math.max(0, rows.findIndex(row => (row.label_status || 'open') === 'open'));
+  let currentIndex = 0;
   let currentFilter = 'all';
   let drawing = null;
   const reviewerKey = `kindlemaster.evidence-review.reviewer.${artifactId}`;
@@ -64,10 +65,20 @@
       button.type = 'button';
       button.className = `queue-item${index === currentIndex ? ' is-active' : ''}`;
       button.dataset.status = row.label_status || 'open';
-      button.innerHTML = '<span class="queue-index"></span><span class="queue-copy"><b></b><small></small></span><span class="queue-dot" aria-hidden="true"></span>';
-      button.querySelector('.queue-index').textContent = String(row.queue_index || index + 1).padStart(3, '0');
-      button.querySelector('b').textContent = row.canonical_diagram_id || row.legacy_intake_diagram_id || 'Diagram';
-      button.querySelector('small').textContent = `strona ${row.page || '?'} / ${row.label_status || 'open'}`;
+      const queueIndex = document.createElement('span');
+      queueIndex.className = 'queue-index';
+      queueIndex.textContent = String(row.queue_index || index + 1).padStart(3, '0');
+      const queueCopy = document.createElement('span');
+      queueCopy.className = 'queue-copy';
+      const queueTitle = document.createElement('b');
+      queueTitle.textContent = row.canonical_diagram_id || row.legacy_intake_diagram_id || 'Diagram';
+      const queueMeta = document.createElement('small');
+      queueMeta.textContent = `strona ${row.page || '?'} / ${row.label_status || 'open'}`;
+      queueCopy.append(queueTitle, queueMeta);
+      const queueDot = document.createElement('span');
+      queueDot.className = 'queue-dot';
+      queueDot.setAttribute('aria-hidden', 'true');
+      button.append(queueIndex, queueCopy, queueDot);
       button.addEventListener('click', () => { currentIndex = index; render(); });
       elements.list.append(button);
     });
@@ -259,5 +270,28 @@
     if (event.key === '[') navigate(-1);
   });
 
-  render();
+  async function initialize() {
+    setSaveState('loading', 'Ladowanie...');
+    try {
+      const response = await fetch(endpoint, {headers: {Accept: 'application/json'}});
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload.success !== true || !Array.isArray(payload.rows)) {
+        throw new Error(payload.error || payload.message || `HTTP ${response.status}`);
+      }
+      rows.splice(0, rows.length, ...payload.rows);
+      currentIndex = Math.max(0, rows.findIndex(row => (row.label_status || 'open') === 'open'));
+      elements.sourceArtifact.textContent = payload.artifact_id || artifactId || 'brak';
+      elements.sourceProfile.textContent = payload.source_profile || 'brak';
+      elements.sourceSha.textContent = payload.source_sha_short || 'brak';
+      setSaveState('ready', 'Gotowe');
+      render();
+    } catch (error) {
+      elements.title.textContent = 'Nie udalo sie zaladowac kolejki';
+      elements.validation.textContent = error.message || 'Blad ladowania.';
+      elements.validation.classList.add('is-error');
+      setSaveState('error', 'Blad ladowania');
+    }
+  }
+
+  initialize();
 })();

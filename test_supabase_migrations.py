@@ -19,7 +19,7 @@ class SupabaseMigrationTests(unittest.TestCase):
         for table in ("user_profiles", "conversion_jobs", "conversion_artifacts"):
             self.assertIn(f"create table if not exists public.{table}", sql)
             self.assertIn(f"alter table public.{table} enable row level security", sql)
-            self.assertIn(f"(select auth.uid()) = user_id", sql)
+            self.assertIn("(select auth.uid()) = user_id", sql)
 
         self.assertIn("kindlemaster-artifacts", sql)
         self.assertIn("storage.objects", sql)
@@ -56,6 +56,21 @@ class SupabaseMigrationTests(unittest.TestCase):
         self.assertIn("'human_verified', true", sql)
         self.assertIn("label_status = 'verified'", sql)
         self.assertIn("piece_labels_verified is true", sql)
+
+    def test_evidence_review_queue_is_backend_only_and_revision_guarded(self) -> None:
+        migration = Path("supabase/migrations/20260717150334_chess_evidence_review_queue.sql")
+        self.assertTrue(migration.exists(), "Supabase evidence review migration is missing.")
+        sql = migration.read_text(encoding="utf-8").lower()
+
+        for table in ("chess_evidence_review_sessions", "chess_evidence_review_items"):
+            self.assertIn(f"create table if not exists public.{table}", sql)
+            self.assertIn(f"alter table public.{table} enable row level security", sql)
+            self.assertIn(f"revoke all on table public.{table} from anon, authenticated", sql)
+        self.assertIn("evidence_review_revision_conflict", sql)
+        self.assertIn("visible_marker_requires_bbox", sql)
+        self.assertIn("marker_absence_requires_complete_crop", sql)
+        self.assertIn("security invoker", sql)
+        self.assertNotIn("security definer", sql)
 
 
 if __name__ == "__main__":

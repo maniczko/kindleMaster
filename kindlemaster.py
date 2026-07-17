@@ -69,6 +69,10 @@ QUICK_TESTS = [
     "test_chess_diagram_fingerprint.py",
     "test_chess_diagram_manifest_reconciliation.py",
     "test_chess_evidence_coverage_join.py",
+    "test_chess_evidence_review_store.py",
+    "test_chess_evidence_review_repository.py",
+    "test_supabase_evidence_review.py",
+    "test_app_chess_evidence_review.py",
     "test_chess_yusupov_acceptance_manifest.py",
     "test_chess_fen_gold_corpus.py",
     "test_chess_fen_auto_adjudication.py",
@@ -610,6 +614,21 @@ def main() -> int:
     evidence_join_parser.add_argument("--out", required=True)
     evidence_join_parser.add_argument("--source-profile", required=True)
     evidence_join_parser.add_argument("--bbox-iou-threshold", type=float, default=0.90)
+    evidence_import_parser = chess_subparsers.add_parser(
+        "import-evidence-review-queue",
+        help="Import a source-bound chess evidence queue into Supabase.",
+    )
+    evidence_import_parser.add_argument("--coverage", required=True)
+    evidence_import_parser.add_argument("--source-pdf", required=True)
+    evidence_import_parser.add_argument("--artifact-id", required=True)
+    evidence_import_parser.add_argument("--source-profile", required=True)
+    evidence_import_parser.add_argument("--owner-user-id", default="")
+    evidence_export_parser = chess_subparsers.add_parser(
+        "export-evidence-review-labels",
+        help="Export terminal marker labels from the Supabase evidence queue.",
+    )
+    evidence_export_parser.add_argument("--artifact-id", required=True)
+    evidence_export_parser.add_argument("--out", required=True)
 
     chess_study_parser = subparsers.add_parser("chess-study", help="Build a static chess training-book study export.")
     chess_study_subparsers = chess_study_parser.add_subparsers(dest="chess_study_command")
@@ -1122,6 +1141,35 @@ def _run_chess(args: argparse.Namespace, *, parser: argparse.ArgumentParser | No
         if payload.get("status") == "passed":
             return 0
         return 2 if payload.get("status") == "needs_review" else 1
+
+    if args.chess_command == "import-evidence-review-queue":
+        from chess_evidence_review_import import import_evidence_review_queue_file
+
+        try:
+            payload = import_evidence_review_queue_file(
+                coverage_path=args.coverage,
+                source_pdf=args.source_pdf,
+                artifact_id=args.artifact_id,
+                source_profile=args.source_profile,
+                owner_user_id=args.owner_user_id,
+            )
+        except Exception as error:
+            payload = {"status": "failed", "error": type(error).__name__, "message": str(error)}
+        _print_json(payload)
+        return 0 if payload.get("status") == "imported" else 1
+
+    if args.chess_command == "export-evidence-review-labels":
+        from chess_evidence_review_import import export_evidence_review_labels_file
+
+        try:
+            payload = export_evidence_review_labels_file(
+                artifact_id=args.artifact_id,
+                output_path=args.out,
+            )
+        except Exception as error:
+            payload = {"status": "failed", "error": type(error).__name__, "message": str(error)}
+        _print_json(payload)
+        return 0 if payload.get("status") == "exported" else 1
 
     if args.chess_command != "export-side-to-move-audit":
         if parser is not None:

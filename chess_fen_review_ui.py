@@ -645,6 +645,7 @@ _PAGE_TEMPLATE = r"""<!doctype html>
     reviewer.addEventListener('input',()=>{localStorage.setItem(reviewerKey,reviewer.value.trim());localStorage.setItem(localModifiedKey,nowIso());stateRevision+=1;refresh();scheduleServerSave();});
     for(const id of ['search','status-filter','priority-filter'])document.getElementById(id).addEventListener('input',filterCards);
     document.getElementById('next-pending').addEventListener('click',nextPending);
+    const evidenceReviewButton=document.createElement('button');evidenceReviewButton.type='button';evidenceReviewButton.textContent='Markery bbox';evidenceReviewButton.addEventListener('click',()=>{window.location.href='chess_evidence_review';});document.getElementById('import-jsonl').before(evidenceReviewButton);
     document.getElementById('save-server').addEventListener('click',()=>saveAllToServer(true));
     document.addEventListener('keydown',event=>{if(event.altKey&&event.key.toLowerCase()==='n'){event.preventDefault();nextPending();}});
     document.getElementById('import-jsonl').addEventListener('click',()=>document.getElementById('import-file').click());

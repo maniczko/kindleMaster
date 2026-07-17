@@ -6966,6 +6966,21 @@ def _get_publication_recommendation(publication_analysis: dict) -> str:
     return mapping.get(profile, "Auto Premium")
 
 
+from chess_evidence_review_routes import register_chess_evidence_review_routes
+
+register_chess_evidence_review_routes(
+    app,
+    mark_timed_out_conversion_jobs=_mark_timed_out_conversion_jobs,
+    cleanup_expired_conversion_jobs=_cleanup_expired_conversion_jobs,
+    get_conversion_job=_get_conversion_job,
+    ensure_local_artifact_history_loaded=_ensure_local_artifact_history_loaded,
+    restore_local_artifact_job_by_id=_restore_local_artifact_job_by_id,
+    json_error=_json_error,
+    error_missing_output=ERROR_MISSING_OUTPUT,
+    error_upload_failed=ERROR_UPLOAD_FAILED,
+)
+
+
 if __name__ == "__main__":
     host = _resolve_server_host()
     port = _resolve_server_port()

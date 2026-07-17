@@ -67,6 +67,7 @@ QUICK_TESTS = [
     "test_chess_diagram_detection.py",
     "test_chess_diagram_multi_pass_detection.py",
     "test_chess_diagram_fingerprint.py",
+    "test_chess_diagram_manifest_reconciliation.py",
     "test_chess_yusupov_acceptance_manifest.py",
     "test_chess_fen_gold_corpus.py",
     "test_chess_fen_auto_adjudication.py",
@@ -585,6 +586,17 @@ def main() -> int:
     fen_auto_parser.add_argument("--out", required=True)
     fen_auto_parser.add_argument("--vision-mode", choices=("off", "replay", "live"), default="replay")
     fen_auto_parser.add_argument("--replay", default="")
+    reconcile_manifest_parser = chess_subparsers.add_parser(
+        "reconcile-diagram-manifest",
+        help="Reconcile current detector records with a source-bound historical intake manifest.",
+    )
+    reconcile_manifest_parser.add_argument("--detected-manifest", required=True)
+    reconcile_manifest_parser.add_argument("--intake-manifest", required=True)
+    reconcile_manifest_parser.add_argument("--marker-labels", default="")
+    reconcile_manifest_parser.add_argument("--source-pdf", default="")
+    reconcile_manifest_parser.add_argument("--out", required=True)
+    reconcile_manifest_parser.add_argument("--source-profile", required=True)
+    reconcile_manifest_parser.add_argument("--bbox-iou-threshold", type=float, default=0.90)
 
     chess_study_parser = subparsers.add_parser("chess-study", help="Build a static chess training-book study export.")
     chess_study_subparsers = chess_study_parser.add_subparsers(dest="chess_study_command")
@@ -1056,6 +1068,26 @@ def _run_chess(args: argparse.Namespace, *, parser: argparse.ArgumentParser | No
         if payload.get("status") == "passed":
             return 0
         return 2 if payload.get("status") == "corpus_unavailable" else 1
+
+    if args.chess_command == "reconcile-diagram-manifest":
+        from chess_diagram_manifest_reconciliation import reconcile_diagram_manifest_files
+
+        try:
+            payload = reconcile_diagram_manifest_files(
+                detected_manifest=args.detected_manifest,
+                intake_manifest=args.intake_manifest,
+                marker_labels=args.marker_labels or None,
+                source_pdf=args.source_pdf or None,
+                output_dir=args.out,
+                source_profile=args.source_profile,
+                bbox_iou_threshold=args.bbox_iou_threshold,
+            )
+        except Exception as error:
+            payload = {"status": "failed", "error": type(error).__name__, "message": str(error)}
+        _print_json(payload)
+        if payload.get("status") == "passed":
+            return 0
+        return 2 if payload.get("status") == "needs_review" else 1
 
     if args.chess_command != "export-side-to-move-audit":
         if parser is not None:

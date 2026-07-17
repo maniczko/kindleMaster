@@ -151,6 +151,10 @@ python kindlemaster.py chess-study export-fen-corpus-manifest --out output\yusup
 python scripts\audit_chess_fen_false_positives.py output\yusupov_study\review\ai_fen_candidates.jsonl output\yusupov_study\review\fen_verified_labels.jsonl --output output\yusupov_study\reports\fen_false_positive_audit.json
 ```
 
+The calibrated square runtime, trust boundaries, measured fixed-edition
+holdout, and one-setting rollback are documented in
+[`docs/chess/fen_square_runtime.md`](docs/chess/fen_square_runtime.md).
+
 `two-crop-performance` reads an existing job output and writes timing, candidate-count,
 artifact-I/O, and semantic-digest evidence. It never substitutes generated fixtures for
 missing real-corpus output and does not package source PDFs or crop bytes in the report.

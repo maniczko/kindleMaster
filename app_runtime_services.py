@@ -642,6 +642,10 @@ def build_conversion_config(request: ConversionRequest) -> Any:
         route_model_mode=request.route_model_mode,
         quality_gate_mode=request.quality_gate_mode,
         interactive_runtime_budget=request.interactive_runtime_budget,
+        chess_fen_model_mode=str(
+            os.environ.get("KINDLEMASTER_CHESS_FEN_MODEL_MODE", "shadow")
+        ).strip().lower()
+        or "shadow",
     )
 
 

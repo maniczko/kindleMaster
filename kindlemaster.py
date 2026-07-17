@@ -98,6 +98,7 @@ QUICK_TESTS = [
     "test_chess_fen_pipeline_hardening.py",
     "test_chess_fen_ml_acceptance.py",
     "test_chess_fen_model_pipeline.py",
+    "test_chess_fen_runtime.py",
     "test_chess_fen_review_store.py",
     "test_chess_fen_review_repository.py",
     "test_chess_fen_review_corpus.py",

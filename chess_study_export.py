@@ -25,6 +25,8 @@ from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageOps
 
 from chess_diagram_fingerprint import DIAGRAM_FINGERPRINT_SCHEMA, source_document_sha256
+from chess_fen_runtime import DEFAULT_FEN_MODEL_PATH
+from chess_fen_square_model import predict_portable_fen_board
 from chess_position_recognizer import validate_fen
 from chess_side_marker_blockers import build_side_marker_blocker_attribution, side_marker_blocker_attribution_markdown
 from chess_side_to_move_trust_audit import build_side_to_move_diagnostic_report
@@ -2419,7 +2421,10 @@ def train_fen_square_classifier(
         "validation": _evaluate_square_classifier(rows, legacy_model, splits={"val"}),
         "holdout": _evaluate_square_classifier(rows, legacy_model, splits={"holdout"}),
     }
-    from chess_fen_square_model import train_fen_square_candidate
+    from chess_fen_square_model import (
+        export_portable_fen_square_model,
+        train_fen_square_candidate,
+    )
 
     candidate = train_fen_square_candidate(
         rows,
@@ -2429,6 +2434,19 @@ def train_fen_square_classifier(
         model_name=model_name,
         profile=profile,
         baseline=baseline,
+    )
+    portable_export = (
+        export_portable_fen_square_model(
+            str(candidate.get("model_path") or ""),
+            output_path=models_dir
+            / f"{_safe_filename(model_name)}_portable.npz",
+        )
+        if str(candidate.get("model_path") or "").strip()
+        else {
+            "schema": "kindlemaster.fen_square_classifier.portable.v1",
+            "status": "not_exported",
+            "error": "candidate_model_missing",
+        }
     )
     candidate_holdout = candidate.get("holdout") if isinstance(candidate.get("holdout"), dict) else {}
     eval_payload = {
@@ -2446,6 +2464,7 @@ def train_fen_square_classifier(
         "exact_board_accuracy": candidate_holdout.get("exact_board_accuracy") or 0.0,
         "confusion": candidate_holdout.get("confusion") or {},
         "promotion": candidate.get("promotion") or {"status": "blocked", "passed": False},
+        "portable_runtime": portable_export,
         "rollback_model_path": str(legacy_model_path),
     }
     _write_json(reports_dir / "fen_square_model_eval.json", eval_payload)
@@ -2501,7 +2520,7 @@ def recognize_fen_local(
     reports_dir = out / "reports"
     review_dir.mkdir(parents=True, exist_ok=True)
     reports_dir.mkdir(parents=True, exist_ok=True)
-    resolved_model = Path(model_path) if model_path else out / "models" / "chess_fen_square_v1.json"
+    resolved_model = Path(model_path) if model_path else DEFAULT_FEN_MODEL_PATH
     if not resolved_model.is_file():
         payload = {
             "schema": "kindlemaster.fen_model_runtime_eval.v1",
@@ -2516,19 +2535,24 @@ def recognize_fen_local(
         _write_jsonl(review_dir / "fen_model_predictions.jsonl", [])
         return payload
 
-    model = json.loads(resolved_model.read_text(encoding="utf-8"))
     sources = _board_preprocess_sources(out, labels_path=None)
     if limit and limit > 0:
         sources = sources[: int(limit)]
     rows: list[dict[str, Any]] = []
-    for source in sources:
-        rows.append(_predict_fen_for_source(source, out, model))
+    if resolved_model.suffix.lower() == ".json":
+        model = json.loads(resolved_model.read_text(encoding="utf-8"))
+        for source in sources:
+            rows.append(_predict_fen_for_source(source, out, model))
+    else:
+        for source in sources:
+            rows.append(_predict_portable_fen_for_source(source, resolved_model))
     _write_jsonl(review_dir / "fen_model_predictions.jsonl", rows)
     valid_count = len([row for row in rows if row.get("deterministic_validation", {}).get("valid")])
     payload = {
         "schema": "kindlemaster.fen_model_runtime_eval.v1",
         "status": "ok",
         "model_path": str(resolved_model),
+        "model_runtime": "portable_rbf_svm" if resolved_model.suffix.lower() == ".npz" else "legacy_centroid",
         "prediction_count": len(rows),
         "deterministic_valid": valid_count,
         "high_confidence_count": len([row for row in rows if float(row.get("global_confidence") or 0.0) >= 0.92]),
@@ -11359,6 +11383,101 @@ def _predict_fen_for_source(source: dict[str, Any], out_dir: Path, model: dict[s
             row.setdefault("warnings", []).append("no_square_alternatives")
     except Exception as exc:
         row["deterministic_validation"] = {"valid": False, "warnings": [type(exc).__name__ + ": " + str(exc)]}
+    return row
+
+
+def _predict_portable_fen_for_source(
+    source: dict[str, Any],
+    model_path: Path,
+) -> dict[str, Any]:
+    diagram_id = str(source.get("diagram_id") or "diagram")
+    crop_path = Path(str(source.get("crop_path") or ""))
+    row: dict[str, Any] = {
+        "schema": "kindlemaster.fen_model_prediction.v1",
+        "diagram_id": diagram_id,
+        "diagram_fingerprint": str(source.get("diagram_fingerprint") or ""),
+        "source_document_sha256": str(source.get("source_document_sha256") or ""),
+        "page": int(source.get("page") or 0),
+        "source_crop": str(crop_path),
+        "status": "needs_review",
+        "fen_candidate": "",
+        "placement": "",
+        "global_confidence": 0.0,
+        "confidence_policy": "minimum_square_confidence",
+        "mean_entropy": 1.0,
+        "squares": [],
+        "deterministic_validation": {"valid": False, "warnings": ["not_run"]},
+        "model_runtime": {},
+        "recognition_blockers": [],
+    }
+    if not crop_path.is_file():
+        row["deterministic_validation"] = {
+            "valid": False,
+            "warnings": ["source_crop_missing"],
+        }
+        row["recognition_blockers"] = ["source_crop_missing"]
+        return row
+    try:
+        with Image.open(crop_path) as image:
+            board = image.convert("RGB")
+        runtime = predict_portable_fen_board(
+            board,
+            model_path=model_path,
+            mode="shadow",
+        )
+        placement = str(runtime.get("placement") or "")
+        side_label = str(_infer_side_to_move(str(source.get("caption") or "")) or "").strip().lower()
+        side = {"white": "w", "black": "b", "w": "w", "b": "b"}.get(side_label, "unknown")
+        fen = f"{placement} {side} - - 0 1" if placement and side in {"w", "b"} else ""
+        valid, warnings = validate_fen(fen) if fen else (False, ["side_to_move_unknown"])
+        blockers = list(runtime.get("blockers") or [])
+        if side not in {"w", "b"}:
+            blockers.append("side_to_move_unknown")
+        square_rows = [dict(square) for square in runtime.get("squares") or []]
+        entropy_values: list[float] = []
+        for square in square_rows:
+            probabilities = [
+                float(item.get("confidence") or 0.0)
+                for item in square.get("alternatives") or []
+            ]
+            if probabilities:
+                total = sum(probabilities)
+                normalized = [value / total for value in probabilities if value > 0.0]
+                entropy_values.append(
+                    -sum(value * math.log(value) for value in normalized)
+                    / max(math.log(max(2, len(normalized))), 1e-9)
+                )
+            square["source"] = "portable_rbf_svm"
+        row.update(
+            {
+                "status": (
+                    "deterministic_valid"
+                    if runtime.get("candidate_accepted") and valid and not warnings
+                    else "needs_review"
+                ),
+                "fen_candidate": fen,
+                "placement": placement,
+                "global_confidence": float(runtime.get("confidence") or 0.0),
+                "mean_entropy": round(
+                    sum(entropy_values) / max(1, len(entropy_values)),
+                    4,
+                ),
+                "squares": square_rows,
+                "deterministic_validation": {
+                    "valid": bool(runtime.get("candidate_accepted") and valid and not warnings),
+                    "warnings": list(dict.fromkeys([*warnings, *runtime.get("blockers", [])])),
+                },
+                "model_runtime": runtime,
+                "recognition_blockers": list(dict.fromkeys(blockers)),
+            }
+        )
+    except Exception as exc:
+        blocker = f"model_runtime_error:{type(exc).__name__}"
+        row["deterministic_validation"] = {
+            "valid": False,
+            "warnings": [blocker],
+        }
+        row["recognition_blockers"] = [blocker]
     return row
 
 

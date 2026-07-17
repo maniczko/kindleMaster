@@ -16,6 +16,7 @@ import json
 import re
 import time
 import zipfile
+from functools import wraps
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Optional
@@ -60,6 +61,11 @@ from chess_position_recognizer import (
     validate_fen,
 )
 from chess_fen_hardening import machine_accept_fen, machine_accept_placement
+from chess_fen_runtime import (
+    apply_fen_square_runtime,
+    current_marker_runtime_calibration,
+    fen_runtime_scope,
+)
 from chess_pgn_extractor import (
     UNMAPPED_CHESS_GLYPH_WARNING,
     _detect_unmapped_pgn_glyphs,
@@ -76,6 +82,47 @@ from chess_pgn_extractor import (
     render_chess_pgn_html_parts,
     summarize_chess_pgn_records,
 )
+
+
+def _recognize_chess_position_with_runtime(
+    crop_bytes: bytes,
+    *,
+    bbox: tuple[float, float, float, float] | None,
+    min_confidence: float,
+    piece_templates: dict,
+    config: ConversionConfig | None,
+    allow_recognition_recovery: bool = True,
+) -> ChessFenResult:
+    recognition = recognize_chess_position_from_image(
+        crop_bytes,
+        bbox=bbox,
+        min_confidence=min_confidence,
+        piece_templates=piece_templates,
+        allow_recognition_recovery=allow_recognition_recovery,
+    )
+    if config is None or not recognition.board_detected:
+        return recognition
+    return apply_fen_square_runtime(
+        recognition,
+        crop_bytes,
+        model_path=str(getattr(config, "chess_fen_model_path", "") or ""),
+        mode=str(getattr(config, "chess_fen_model_mode", "shadow") or "shadow"),
+    )
+
+
+def _fen_runtime_scoped(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        config = kwargs.get("config")
+        if config is None and len(args) >= 2:
+            config = args[1]
+        if config is None:
+            return function(*args, **kwargs)
+        with fen_runtime_scope(config):
+            return function(*args, **kwargs)
+
+    return wrapped
+
 
 WINGDINGS_TICK = "\uf0fc"
 UNICODE_TICK = "✓"
@@ -510,11 +557,12 @@ def _recognize_scan_chess_preprocessed_variants(
     best_variant = "original"
     for variant_name in ("original", "autocontrast", "unsharp_mask", "threshold_bw"):
         data, _, _ = _encode_scan_chess_preprocessed_image(variants[variant_name], config)
-        result = recognize_chess_position_from_image(
+        result = _recognize_chess_position_with_runtime(
             data,
             bbox=bbox,
             min_confidence=float(getattr(config, "chess_fen_min_confidence", 0.85) or 0.85),
             piece_templates=piece_templates,
+            config=config,
         )
         if best_result is None or float(getattr(result, "confidence", 0.0) or 0.0) > float(getattr(best_result, "confidence", 0.0) or 0.0):
             best_result = result
@@ -1092,6 +1140,7 @@ def _glyph_audit_sample(text: str, *, limit: int = 120) -> str:
     return "".join(escaped)
 
 
+@_fen_runtime_scoped
 def extract_chess_notation_pdf_reflow(
     pdf_path: str,
     config: ConversionConfig,
@@ -1446,6 +1495,7 @@ def _chess_notation_diagram_records_from_page(
                     bbox=bbox_tuple,
                     piece_templates=piece_templates,
                     min_confidence=min_confidence,
+                    config=config,
                 )
                 selected_variant = "full_page_bbox_recognition"
                 preprocessed_recognition, preprocessed_variant, _preprocessed_metadata = _recognize_scan_chess_preprocessed_variants(
@@ -2014,11 +2064,12 @@ def _notation_layout_placement_consensus(
             resample=Image.Resampling.LANCZOS,
         )
         png_data, _width, _height = _encode_scan_chess_diagram_crop(crop, config)
-        result = recognize_chess_position_from_image(
+        result = _recognize_chess_position_with_runtime(
             png_data,
             bbox=page_bbox,
             min_confidence=min_confidence,
             piece_templates=piece_templates,
+            config=config,
         )
         result_payload = result.to_dict()
         placement = str(result_payload.get("placement") or "").strip()
@@ -2216,11 +2267,12 @@ def _notation_layout_diagrams_from_page(
         min_fen_confidence = float(
             getattr(config, "chess_fen_min_confidence", 0.835) or 0.835
         )
-        result = recognize_chess_position_from_image(
+        result = _recognize_chess_position_with_runtime(
             png_data,
             bbox=page_bbox,
             min_confidence=min_fen_confidence,
             piece_templates=piece_templates,
+            config=config,
         )
         filename = f"notation_layout_p{page_num + 1:03d}_{candidate_index:02d}.png"
         payload = result.to_dict()
@@ -2497,11 +2549,12 @@ def _scan_image_for_board_candidates(
                 crop = page_image.crop(crop_box)
                 output = io.BytesIO()
                 crop.save(output, format="PNG")
-                template_result = recognize_chess_position_from_image(
+                template_result = _recognize_chess_position_with_runtime(
                     output.getvalue(),
                     bbox=candidate.bbox,
                     min_confidence=float(getattr(config, "chess_fen_min_confidence", 0.85) or 0.85),
                     piece_templates=piece_templates,
+                    config=config,
                 )
                 recognized.append(template_result)
             candidates = recognized
@@ -2765,7 +2818,7 @@ def _reconstruct_row_grouped_diagrams(html_parts: list[str]) -> Optional[list[st
 
 SCAN_CHESS_CACHE_VERSION = 3
 SCAN_CHESS_PAGE_CANDIDATE_CACHE_VERSION = 17
-SCAN_CHESS_RECOGNITION_CACHE_VERSION = 8
+SCAN_CHESS_RECOGNITION_CACHE_VERSION = 9
 SCAN_CHESS_SPARSE_EXACT_CONSENSUS_MIN_PIECES = 3
 SCAN_CHESS_SPARSE_EXACT_CONSENSUS_MIN_CONFIDENCE = 0.827
 SCAN_CHESS_SPARSE_EXACT_CONSENSUS_MAX_PIECES = 8
@@ -2825,6 +2878,7 @@ def _scan_chess_is_partial_separator_crop(image: Image.Image) -> bool:
     return bool(long_horizontal_gap or long_vertical_gap)
 
 
+@_fen_runtime_scoped
 def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConfig, pdf_metadata: dict | None = None) -> dict:
     """Extract image-only chess books as compact reflow chapters with board crops."""
     started = time.perf_counter()
@@ -2979,6 +3033,7 @@ def extract_scanned_chess_pdf_with_support(pdf_path: str, config: ConversionConf
                         bbox=tuple(float(value) for value in bbox),
                         piece_templates=piece_templates,
                         min_confidence=float(getattr(config, "chess_fen_min_confidence", 0.85) or 0.85),
+                        config=config,
                     )
                     recognition = _scan_chess_apply_verified_crop_label(
                         recognition,
@@ -3672,6 +3727,7 @@ def _recognize_scan_chess_candidate_bbox(
         min_confidence=min_confidence,
         piece_templates=piece_templates,
         allow_recognition_recovery=False,
+        config=config,
     )
     if (
         getattr(recognition, "fen", "")
@@ -3705,6 +3761,7 @@ def _recognize_scan_chess_candidate_bbox(
         min_confidence=min_confidence,
         piece_templates=piece_templates,
         allow_recognition_recovery=False,
+        config=config,
     )
     if _scan_chess_reader_visible_crop_publish_is_safe(
         recognition,
@@ -3735,6 +3792,7 @@ def _recognize_scan_chess_candidate_bbox(
             min_confidence=min_confidence,
             piece_templates=piece_templates,
             allow_recognition_recovery=False,
+            config=config,
         )
         if _scan_chess_reader_visible_crop_publish_is_safe(
             recognition,
@@ -3773,6 +3831,7 @@ def _recognize_scan_chess_candidate_bbox(
             min_confidence=min_confidence,
             piece_templates=piece_templates,
             allow_recognition_recovery=True,
+            config=config,
         )
         if getattr(recovered_recognition, "fen", "") and not getattr(recovered_recognition, "requires_review", True):
             return recovered_recognition
@@ -3792,14 +3851,19 @@ def _recognize_scan_chess_candidate_bbox(
             return ChessFenResult(
                 fen=str(getattr(best_review_result, "fen", "") or ""),
                 placement=str(getattr(best_review_result, "placement", "") or ""),
+                full_fen=str(getattr(best_review_result, "full_fen", "") or ""),
                 confidence=float(getattr(best_review_result, "confidence", 0.0) or 0.0),
                 side_to_move=str(getattr(best_review_result, "side_to_move", "w") or "w"),
+                side_to_move_status=str(getattr(best_review_result, "side_to_move_status", "unknown") or "unknown"),
+                side_to_move_evidence=str(getattr(best_review_result, "side_to_move_evidence", "none") or "none"),
                 bbox=getattr(best_review_result, "bbox", None),
                 method=str(getattr(best_review_result, "method", "") or "image-template-board"),
                 warnings=merged_warnings,
                 requires_review=True,
                 board_detected=bool(getattr(best_review_result, "board_detected", False)),
                 squares=[dict(square) for square in (getattr(best_review_result, "squares", []) or []) if isinstance(square, dict)],
+                model_runtime=dict(getattr(best_review_result, "model_runtime", {}) or {}),
+                recognition_blockers=list(getattr(best_review_result, "recognition_blockers", []) or []),
             )
 
     return best_review_result
@@ -3812,6 +3876,7 @@ def _recognize_scan_chess_crop_with_cache(
     min_confidence: float,
     piece_templates: dict,
     allow_recognition_recovery: bool = True,
+    config: ConversionConfig | None = None,
 ):
     cache_path = _scan_chess_recognition_cache_path(
         crop_bytes,
@@ -3819,6 +3884,7 @@ def _recognize_scan_chess_crop_with_cache(
         min_confidence=min_confidence,
         piece_templates=piece_templates,
         allow_recognition_recovery=allow_recognition_recovery,
+        config=config,
     )
     try:
         if cache_path.exists():
@@ -3861,12 +3927,13 @@ def _recognize_scan_chess_crop_with_cache(
                 return result
     except Exception:
         pass
-    recognition = recognize_chess_position_from_image(
+    recognition = _recognize_chess_position_with_runtime(
         crop_bytes,
         bbox=bbox,
         min_confidence=min_confidence,
         piece_templates=piece_templates,
         allow_recognition_recovery=allow_recognition_recovery,
+        config=config,
     )
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3893,6 +3960,7 @@ def _scan_chess_confirm_final_rendered_crop_recognition(
     bbox: tuple[float, float, float, float],
     piece_templates: dict,
     min_confidence: float,
+    config: ConversionConfig | None = None,
 ):
     """Confirm uncertain raw recognition against the exact PNG written to EPUB."""
     if not _scan_chess_recognition_needs_bbox_recovery(recognition):
@@ -3903,6 +3971,7 @@ def _scan_chess_confirm_final_rendered_crop_recognition(
         min_confidence=min_confidence,
         piece_templates=piece_templates,
         allow_recognition_recovery=True,
+        config=config,
     )
     if _scan_chess_reader_visible_crop_publish_is_safe(
         recognition,
@@ -3928,6 +3997,7 @@ def _scan_chess_recognition_cache_path(
     min_confidence: float,
     piece_templates: dict,
     allow_recognition_recovery: bool = True,
+    config: ConversionConfig | None = None,
 ) -> Path:
     rounded_bbox = ",".join(f"{float(value):.2f}" for value in bbox)
     recovery_mode = "recovery" if allow_recognition_recovery else "base"
@@ -3936,12 +4006,29 @@ def _scan_chess_recognition_cache_path(
             str(SCAN_CHESS_RECOGNITION_CACHE_VERSION),
             recovery_mode,
             _piece_templates_runtime_token(piece_templates),
+            _fen_model_runtime_token(config),
             rounded_bbox,
             hashlib.sha256(crop_bytes).hexdigest(),
         ]
     )
     digest = hashlib.sha256(token.encode("utf-8", errors="ignore")).hexdigest()[:24]
     return Path("output") / "cache" / "scanned_chess" / "recognition" / f"{digest}.json"
+
+
+def _fen_model_runtime_token(config: ConversionConfig | None) -> str:
+    if config is None:
+        return "model-runtime:none"
+    mode = str(getattr(config, "chess_fen_model_mode", "shadow") or "shadow").strip().lower()
+    raw_path = str(getattr(config, "chess_fen_model_path", "") or "").strip()
+    path = Path(raw_path).expanduser()
+    if raw_path and not path.is_absolute():
+        path = Path(__file__).resolve().parent / path
+    try:
+        stat = path.stat()
+        artifact = f"{path.resolve()}:{stat.st_mtime_ns}:{stat.st_size}"
+    except OSError:
+        artifact = str(path)
+    return f"model-runtime:{mode}:{artifact}"
 
 
 def _scan_chess_legacy_recognition_cache_paths(
@@ -3989,6 +4076,11 @@ def _scan_chess_recalibrate_cached_result(result, *, min_confidence: float):
     """Apply the current FEN acceptance threshold to cached recognition data."""
     if not getattr(result, "board_detected", False):
         return result
+    if (
+        getattr(result, "model_runtime", None)
+        and str(getattr(result, "side_to_move_status", "") or "").lower() != "explicit"
+    ):
+        return result
 
     confidence = float(getattr(result, "confidence", 0.0) or 0.0)
     placement = str(getattr(result, "placement", "") or "").strip()
@@ -4024,14 +4116,19 @@ def _scan_chess_recalibrate_cached_result(result, *, min_confidence: float):
             return ChessFenResult(
                 fen="",
                 placement=placement,
+                full_fen=str(getattr(result, "full_fen", "") or ""),
                 confidence=confidence,
                 side_to_move=side_to_move,
+                side_to_move_status=str(getattr(result, "side_to_move_status", "unknown") or "unknown"),
+                side_to_move_evidence=str(getattr(result, "side_to_move_evidence", "none") or "none"),
                 bbox=getattr(result, "bbox", None),
                 method=str(getattr(result, "method", "") or "image-template-board"),
                 warnings=recalibrated_warnings,
                 requires_review=True,
                 board_detected=True,
                 squares=[dict(square) for square in (getattr(result, "squares", []) or []) if isinstance(square, dict)],
+                model_runtime=dict(getattr(result, "model_runtime", {}) or {}),
+                recognition_blockers=list(getattr(result, "recognition_blockers", []) or []),
             )
         return result
 
@@ -4043,14 +4140,19 @@ def _scan_chess_recalibrate_cached_result(result, *, min_confidence: float):
     return ChessFenResult(
         fen=fen,
         placement=placement,
+        full_fen=fen,
         confidence=confidence,
         side_to_move=side_to_move,
+        side_to_move_status=str(getattr(result, "side_to_move_status", "unknown") or "unknown"),
+        side_to_move_evidence=str(getattr(result, "side_to_move_evidence", "none") or "none"),
         bbox=getattr(result, "bbox", None),
         method=str(getattr(result, "method", "") or "image-template-board"),
         warnings=recalibrated_warnings,
         requires_review=False,
         board_detected=True,
         squares=[dict(square) for square in (getattr(result, "squares", []) or []) if isinstance(square, dict)],
+        model_runtime=dict(getattr(result, "model_runtime", {}) or {}),
+        recognition_blockers=list(getattr(result, "recognition_blockers", []) or []),
     )
 
 
@@ -4090,14 +4192,19 @@ def _scan_chess_result_from_dict(data: dict[str, Any]):
     return ChessFenResult(
         fen=str(data.get("fen") or ""),
         placement=str(data.get("placement") or ""),
+        full_fen=str(data.get("full_fen") or data.get("fen") or ""),
         confidence=float(data.get("confidence", 0.0) or 0.0),
         side_to_move=str(data.get("side_to_move") or "w"),
+        side_to_move_status=str(data.get("side_to_move_status") or "unknown"),
+        side_to_move_evidence=str(data.get("side_to_move_evidence") or "none"),
         bbox=bbox,
         method=str(data.get("method") or "image-template-board"),
         warnings=list(data.get("warnings") or []),
         requires_review=bool(data.get("requires_review", True)),
         board_detected=bool(data.get("board_detected", False)),
         squares=[dict(square) for square in (data.get("squares") or []) if isinstance(square, dict)],
+        model_runtime=dict(data.get("model_runtime") or {}),
+        recognition_blockers=list(data.get("recognition_blockers") or []),
     )
 
 
@@ -4142,6 +4249,8 @@ def _scan_chess_apply_verified_crop_label(
         requires_review=False,
         board_detected=True,
         squares=[],
+        model_runtime=dict(getattr(recognition, "model_runtime", {}) or {}),
+        recognition_blockers=list(getattr(recognition, "recognition_blockers", []) or []),
     )
 
 
@@ -4328,14 +4437,35 @@ def _scan_chess_sparse_exact_consensus_result(
     return ChessFenResult(
         fen=fen,
         placement=placement,
+        full_fen=fen,
         confidence=max(raw_confidence, reader_confidence),
         side_to_move=side_to_move,
+        side_to_move_status=str(
+            getattr(reader_result, "side_to_move_status", "")
+            or getattr(raw_result, "side_to_move_status", "")
+            or "unknown"
+        ),
+        side_to_move_evidence=str(
+            getattr(reader_result, "side_to_move_evidence", "")
+            or getattr(raw_result, "side_to_move_evidence", "")
+            or "none"
+        ),
         bbox=getattr(reader_result, "bbox", None) or getattr(raw_result, "bbox", None),
         method=str(getattr(reader_result, "method", "") or getattr(raw_result, "method", "") or "image-template-board"),
         warnings=warnings,
         requires_review=False,
         board_detected=True,
         squares=[dict(square) for square in (getattr(reader_result, "squares", []) or []) if isinstance(square, dict)],
+        model_runtime=dict(
+            getattr(reader_result, "model_runtime", {})
+            or getattr(raw_result, "model_runtime", {})
+            or {}
+        ),
+        recognition_blockers=list(
+            getattr(reader_result, "recognition_blockers", [])
+            or getattr(raw_result, "recognition_blockers", [])
+            or []
+        ),
     )
 
 
@@ -4377,14 +4507,19 @@ def _scan_chess_result_with_warning(result, warning: str):
     return ChessFenResult(
         fen=str(getattr(result, "fen", "") or ""),
         placement=str(getattr(result, "placement", "") or ""),
+        full_fen=str(getattr(result, "full_fen", "") or ""),
         confidence=float(getattr(result, "confidence", 0.0) or 0.0),
         side_to_move=str(getattr(result, "side_to_move", "w") or "w"),
+        side_to_move_status=str(getattr(result, "side_to_move_status", "unknown") or "unknown"),
+        side_to_move_evidence=str(getattr(result, "side_to_move_evidence", "none") or "none"),
         bbox=getattr(result, "bbox", None),
         method=str(getattr(result, "method", "") or "image-template-board"),
         warnings=warnings,
         requires_review=bool(getattr(result, "requires_review", True)),
         board_detected=bool(getattr(result, "board_detected", False)),
         squares=[dict(square) for square in (getattr(result, "squares", []) or []) if isinstance(square, dict)],
+        model_runtime=dict(getattr(result, "model_runtime", {}) or {}),
+        recognition_blockers=list(getattr(result, "recognition_blockers", []) or []),
     )
 
 
@@ -5172,6 +5307,27 @@ def _chess_diagram_record_from_image(
         "marker_candidate_confidence": float(
             fen_result.get("marker_candidate_confidence") or 0.0
         ),
+        "marker_candidate_classifier_version": str(
+            fen_result.get("marker_candidate_classifier_version") or ""
+        ),
+        "marker_candidate_calibration_status": str(
+            fen_result.get("marker_candidate_calibration_status") or ""
+        ),
+        "marker_candidate_calibration_version": str(
+            fen_result.get("marker_candidate_calibration_version") or ""
+        ),
+        "marker_candidate_calibration_artifact_sha256": str(
+            fen_result.get("marker_candidate_calibration_artifact_sha256") or ""
+        ),
+        "marker_candidate_calibration_blocker": str(
+            fen_result.get("marker_candidate_calibration_blocker") or ""
+        ),
+        "marker_candidate_classifier_inference_ms": float(
+            fen_result.get("marker_candidate_classifier_inference_ms") or 0.0
+        ),
+        "marker_candidate_dominance_margin": float(
+            fen_result.get("marker_candidate_dominance_margin") or 0.0
+        ),
         "marker_assignment_status": str(
             fen_result.get("marker_assignment_status") or "unassigned"
         ),
@@ -5188,6 +5344,8 @@ def _chess_diagram_record_from_image(
         "fen_suppressed_reason": str(fen_result.get("fen_suppressed_reason") or ""),
         "fen_confidence": float(fen_result.get("confidence", 0.0) or 0.0),
         "fen_method": str(fen_result.get("method") or chess_img.get("fen_method") or ""),
+        "model_runtime": dict(fen_result.get("model_runtime") or {}),
+        "recognition_blockers": list(fen_result.get("recognition_blockers") or []),
         "notation_layout_placement_consensus": dict(
             fen_result.get("notation_layout_placement_consensus") or {}
         ),
@@ -5501,6 +5659,13 @@ TWO_CROP_CONTRACT_FIELDS = {
     "marker_candidate_classifier_crop_variant",
     "marker_candidate_classifier_crop_bbox",
     "marker_candidate_classifier_attempts",
+    "marker_candidate_classifier_version",
+    "marker_candidate_calibration_status",
+    "marker_candidate_calibration_version",
+    "marker_candidate_calibration_artifact_sha256",
+    "marker_candidate_calibration_blocker",
+    "marker_candidate_classifier_inference_ms",
+    "marker_candidate_dominance_margin",
     "marker_candidate_side",
     "marker_candidate_confidence",
     "marker_assignment_status",
@@ -7333,6 +7498,29 @@ def _scan_chess_page_marker_candidates(
                 "marker_candidate_classifier_attempts": list(
                     classification.get("classifier_crop_attempts") or []
                 ),
+                "marker_candidate_classifier_version": str(
+                    classification.get("classifier_version") or ""
+                ),
+                "marker_candidate_calibration_status": str(
+                    classification.get("calibration_runtime_status")
+                    or classification.get("calibration_status")
+                    or ""
+                ),
+                "marker_candidate_calibration_version": str(
+                    classification.get("calibration_version") or ""
+                ),
+                "marker_candidate_calibration_artifact_sha256": str(
+                    classification.get("calibration_artifact_sha256") or ""
+                ),
+                "marker_candidate_calibration_blocker": str(
+                    classification.get("calibration_blocker") or ""
+                ),
+                "marker_candidate_classifier_inference_ms": float(
+                    classification.get("inference_ms") or 0.0
+                ),
+                "marker_candidate_dominance_margin": float(
+                    classification.get("dominance_margin") or 0.0
+                ),
                 "marker_candidate_side": str(classification.get("side") or ""),
                 "marker_candidate_confidence": confidence,
                 "marker_candidate_plausibility": plausibility,
@@ -7609,6 +7797,13 @@ def _scan_chess_assign_page_marker_candidates(
                         "marker_candidate_classifier_crop_variant",
                         "marker_candidate_classifier_crop_bbox",
                         "marker_candidate_classifier_attempts",
+                        "marker_candidate_classifier_version",
+                        "marker_candidate_calibration_status",
+                        "marker_candidate_calibration_version",
+                        "marker_candidate_calibration_artifact_sha256",
+                        "marker_candidate_calibration_blocker",
+                        "marker_candidate_classifier_inference_ms",
+                        "marker_candidate_dominance_margin",
                         "marker_candidate_side",
                         "marker_candidate_confidence",
                     )
@@ -7709,6 +7904,13 @@ def _scan_chess_empty_marker_assignment_fields() -> dict[str, Any]:
         "marker_candidate_classifier_crop_variant": "",
         "marker_candidate_classifier_crop_bbox": [],
         "marker_candidate_classifier_attempts": [],
+        "marker_candidate_classifier_version": "",
+        "marker_candidate_calibration_status": "",
+        "marker_candidate_calibration_version": "",
+        "marker_candidate_calibration_artifact_sha256": "",
+        "marker_candidate_calibration_blocker": "",
+        "marker_candidate_classifier_inference_ms": 0.0,
+        "marker_candidate_dominance_margin": 0.0,
         "marker_candidate_side": "",
         "marker_candidate_confidence": 0.0,
         "marker_assignment_status": "unassigned",
@@ -9007,6 +9209,18 @@ def _scan_chess_side_marker_metadata_from_payload(payload: Mapping[str, Any]) ->
         "marker_assignment_runner_up_margin": payload.get(
             "marker_assignment_runner_up_margin"
         ) or 0.0,
+        "marker_calibration_status": str(
+            payload.get("marker_candidate_calibration_status") or ""
+        ),
+        "marker_calibration_version": str(
+            payload.get("marker_candidate_calibration_version") or ""
+        ),
+        "marker_calibration_artifact_sha256": str(
+            payload.get("marker_candidate_calibration_artifact_sha256") or ""
+        ),
+        "marker_calibration_blocker": str(
+            payload.get("marker_candidate_calibration_blocker") or ""
+        ),
         "marker_assignment_ownership_margin": payload.get(
             "marker_assignment_ownership_margin"
         ) or 0.0,
@@ -9857,12 +10071,31 @@ def classify_scan_chess_side_marker_crop(
     """Classify a local marker with adaptive segmentation and source grammar."""
     from chess_marker_classifier_adaptive import classify_marker_crop_adaptive
 
-    return classify_marker_crop_adaptive(
+    started = time.perf_counter()
+    runtime_calibration: dict[str, Any] = {}
+    effective_calibration = confidence_calibration
+    if effective_calibration is None and isinstance(source_profile, str):
+        runtime_calibration = current_marker_runtime_calibration(source_profile)
+        if runtime_calibration.get("status") == "ready":
+            effective_calibration = runtime_calibration.get("calibration")
+    result = classify_marker_crop_adaptive(
         crop,
         source_profile=source_profile,
         board_cell_size=board_cell_size,
-        confidence_calibration=confidence_calibration,
+        confidence_calibration=effective_calibration,
     )
+    result["inference_ms"] = round((time.perf_counter() - started) * 1000.0, 3)
+    if runtime_calibration:
+        provenance = dict(runtime_calibration.get("provenance") or {})
+        result["calibration_runtime_status"] = str(runtime_calibration.get("status") or "")
+        result["calibration_version"] = str(provenance.get("calibration_version") or "")
+        result["calibration_artifact_sha256"] = str(provenance.get("artifact_sha256") or "")
+        if runtime_calibration.get("error"):
+            result["calibration_blocker"] = str(runtime_calibration.get("error") or "")
+            result["status"] = "side_to_move_marker_local_ambiguous"
+            result["side"] = ""
+            result["side_to_move"] = "unknown"
+    return result
 
 
 def _scan_chess_best_side_marker_component(mask: Any) -> dict[str, float] | None:
@@ -9936,6 +10169,7 @@ def _scan_chess_side_marker_components(mask: Any, *, relaxed: bool = False) -> l
     return components
 
 
+@_fen_runtime_scoped
 def extract_pdf_with_chess_support(
     pdf_path: str,
     config: ConversionConfig,
@@ -10106,11 +10340,12 @@ def extract_pdf_with_chess_support(
                                 min_confidence=float(getattr(config, "chess_fen_min_confidence", 0.85) or 0.85),
                             )
                             if not fen_result.fen and fen_result.board_detected:
-                                image_result = recognize_chess_position_from_image(
+                                image_result = _recognize_chess_position_with_runtime(
                                     png_data,
                                     bbox=region.bbox,
                                     min_confidence=float(getattr(config, "chess_fen_min_confidence", 0.85) or 0.85),
                                     piece_templates=piece_templates,
+                                    config=config,
                                 )
                                 if image_result.confidence > fen_result.confidence:
                                     fen_result = image_result

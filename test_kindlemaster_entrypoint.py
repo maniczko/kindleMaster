@@ -734,6 +734,73 @@ class KindleMasterEntrypointTests(unittest.TestCase):
         )
         print_mock.assert_called_once_with(payload)
 
+    def test_import_evidence_review_queue_routes_arguments(self) -> None:
+        payload = {"status": "imported", "counts": {"total": 421}}
+        with patch(
+            "chess_evidence_review_import.import_evidence_review_queue_file",
+            return_value=payload,
+        ) as import_mock:
+            with patch.object(kindlemaster, "_print_json") as print_mock:
+                with patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "kindlemaster.py",
+                        "chess",
+                        "import-evidence-review-queue",
+                        "--coverage",
+                        "coverage.jsonl",
+                        "--source-pdf",
+                        "source.pdf",
+                        "--artifact-id",
+                        "artifact-1",
+                        "--source-profile",
+                        "fixed-edition",
+                        "--owner-user-id",
+                        "user-1",
+                    ],
+                ):
+                    exit_code = kindlemaster.main()
+
+        self.assertEqual(exit_code, 0)
+        import_mock.assert_called_once_with(
+            coverage_path="coverage.jsonl",
+            source_pdf="source.pdf",
+            artifact_id="artifact-1",
+            source_profile="fixed-edition",
+            owner_user_id="user-1",
+        )
+        print_mock.assert_called_once_with(payload)
+
+    def test_export_evidence_review_labels_routes_arguments(self) -> None:
+        payload = {"status": "exported", "exported_count": 12}
+        with patch(
+            "chess_evidence_review_import.export_evidence_review_labels_file",
+            return_value=payload,
+        ) as export_mock:
+            with patch.object(kindlemaster, "_print_json") as print_mock:
+                with patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "kindlemaster.py",
+                        "chess",
+                        "export-evidence-review-labels",
+                        "--artifact-id",
+                        "artifact-1",
+                        "--out",
+                        "markers.jsonl",
+                    ],
+                ):
+                    exit_code = kindlemaster.main()
+
+        self.assertEqual(exit_code, 0)
+        export_mock.assert_called_once_with(
+            artifact_id="artifact-1",
+            output_path="markers.jsonl",
+        )
+        print_mock.assert_called_once_with(payload)
+
     def test_import_fen_gold_labels_command_preserves_needs_review_exit_code(self) -> None:
         payload = {"status": "needs_review", "pending_row_count": 3}
         with patch("chess_fen_gold_corpus.validate_fen_gold_corpus_labels", return_value=payload):
